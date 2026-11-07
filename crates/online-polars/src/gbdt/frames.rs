@@ -86,7 +86,10 @@ impl Frames for PlanFrames {
         drop(rx);
         let done = engine
             .join()
-            .map_err(|_| GbdtError::msg("the polars engine reading the source panicked"))?;
+            .map_err(|_| GbdtError::msg(
+                    "po.gbdt: internal: Polars panicked while it read the source, which is a defect. \
+                     Open an issue at https://github.com/hgilde/polars-online/issues with this message.",
+                ))?;
         if wanted {
             done?;
         }
@@ -162,7 +165,9 @@ impl Reader {
                     Ok(Ok(())) => Msg::End,
                     Ok(Err(e)) => Msg::Fail(e),
                     Err(p) => Msg::Fail(GbdtError::msg(format!(
-                        "reading the source panicked: {}",
+                        "po.gbdt: reading the source panicked ({}), which is a defect in \
+                         polars-online. Open an issue at \
+                         https://github.com/hgilde/polars-online/issues with this message.",
                         panic_message(&p)
                     ))),
                 };
@@ -195,7 +200,9 @@ impl Reader {
                 Err(e)
             }
             Err(_) => Err(GbdtError::msg(
-                "the thread reading the source stopped before the end of its pass",
+                "po.gbdt: the thread reading the source stopped before the end of its pass, which \
+                 is a defect in polars-online. Open an issue at \
+                 https://github.com/hgilde/polars-online/issues with this message.",
             )),
         }
     }
@@ -255,14 +262,17 @@ fn check_kinds<'a>(
         width += 1;
         if !column_ok(layout, j, c) {
             return Err(GbdtError::msg(format!(
-                "column `{}` arrived as {dtype}, which is not a numeric column the libraries read",
+                "po.gbdt: column `{}` arrived as {dtype}, which is not a numeric column the \
+                 libraries read. Cast it to a number type before the build.",
                 column_name(layout, j)
             )));
         }
     }
     if width != layout.width() {
         return Err(GbdtError::msg(format!(
-            "a frame of {width} columns where {} were expected",
+            "po.gbdt: a frame of {width} columns arrived where {} were expected, which is a \
+             defect in polars-online. Open an issue at \
+             https://github.com/hgilde/polars-online/issues with this message.",
             layout.width()
         )));
     }
@@ -276,7 +286,9 @@ pub(crate) fn segments(df: &DataFrame, layout: &Layout) -> Result<Vec<Segment>, 
     let width = layout.width();
     if df.width() != width {
         return Err(GbdtError::msg(format!(
-            "a frame of {} columns where {width} were expected (the features, the label{}{})",
+            "po.gbdt: a frame of {} columns arrived where {width} were expected (the features, \
+             the label{}{}), which is a defect in polars-online. Open an issue at \
+             https://github.com/hgilde/polars-online/issues with this message.",
             df.width(),
             if layout.weight.is_some() {
                 ", the weight"
@@ -301,8 +313,9 @@ pub(crate) fn segments(df: &DataFrame, layout: &Layout) -> Result<Vec<Segment>, 
         let ok = s.chunks().iter().all(|c| column_ok(layout, j, c.as_ref()));
         if !ok {
             return Err(GbdtError::msg(format!(
-                "column `{name}` arrived as {}, which is not a numeric column the libraries read",
-                s.dtype()
+                "po.gbdt: column `{name}` arrived as {}, which is not a numeric column the \
+                 libraries read. Cast it to a number type before the build.",
+                crate::arrow::dtype_name(s.dtype())
             )));
         }
     }
@@ -525,6 +538,7 @@ pub(crate) fn checked_f64<'a>(
     j: usize,
     layout: &Layout,
     row0: u64,
+    who: &str,
 ) -> Result<&'a [f64], GbdtError> {
     let num = seg.num(j);
     let name = column_name(layout, j);
@@ -536,7 +550,8 @@ pub(crate) fn checked_f64<'a>(
     if let Some(v) = num.validity() {
         let at = v.iter().position(|ok| !ok).unwrap_or(0) as u64;
         return Err(GbdtError::msg(format!(
-            "the {what} column `{name}` has a null at row {}: every row needs a {what}",
+            "{who}: the {what} column `{name}` has a null at row {} (counting from 0), and every \
+             row needs a {what}. Replace the null, or drop the row, before the build.",
             row0 + at
         )));
     }
@@ -548,7 +563,8 @@ pub(crate) fn checked_f64<'a>(
     };
     if let Some(i) = bad {
         return Err(GbdtError::msg(format!(
-            "the {what} column `{name}` holds {:?} at row {}: a {what} must be {}",
+            "{who}: the {what} column `{name}` holds {:?} at row {} (counting from 0), and a \
+             {what} must be {}. Replace it, or drop the row, before the build.",
             vals[i],
             row0 + i as u64,
             if what == "label" {
@@ -654,10 +670,18 @@ pub(crate) fn margin_rows(
     let m = MarginArray::of(seg.cols[j].as_ref()).expect("checked in segments()");
     let vals = m.values();
     out.clear();
+    // The call the reader made, told by the name the library gives the
+    // training set a margin is matched against.
+    let who = if whose == "ref" {
+        "po.gbdt.xgboost_matrix"
+    } else {
+        "po.gbdt.lightgbm_dataset"
+    };
     let null = |r: u64| {
         GbdtError::msg(format!(
-            "the {role} column `{name}` has a null at row {r}, and every row needs a margin. \
-             Fill it before the build, with 0 where the row has no prediction to start from."
+            "{who}: the {role} column `{name}` has a null at row {r} (counting from 0), and every \
+             row needs a margin. Replace the null before the build, with 0 where the row has no \
+             prediction to start from."
         ))
     };
     for i in 0..seg.n {
@@ -668,24 +692,25 @@ pub(crate) fn margin_rows(
             Some((want, _)) if want == k => {}
             Some((want, WidthFrom::Reference)) => {
                 return Err(GbdtError::msg(format!(
-                    "the {role} column `{name}` holds {} at row {r}, and the {whose}'s margin \
-                     holds {} a row. Give every row as many values as the training margin has.",
+                    "{who}: the {role} column `{name}` holds {} at row {r} (counting from 0), and \
+                     the {whose}'s {role} holds {} a row. Give every row as many values as the \
+                     {whose}'s {role} has.",
                     values(k),
                     values(want)
                 )));
             }
             Some((want, WidthFrom::Row(at))) => {
                 return Err(GbdtError::msg(format!(
-                    "the {role} column `{name}` holds {} at row {r} and {want} at row {at}, \
-                     and every row needs the same number. Give every row one value, or one for \
-                     each class.",
+                    "{who}: the {role} column `{name}` holds {} at row {r} (counting from 0) and \
+                     {want} at row {at}, and every row needs the same number. Give every row one \
+                     value, or one for each class.",
                     values(k)
                 )));
             }
             None if k == 0 => {
                 return Err(GbdtError::msg(format!(
-                    "the {role} column `{name}` holds no values at row {r}, and a margin needs \
-                     one. Give every row one value, or one for each class."
+                    "{who}: the {role} column `{name}` holds no values at row {r} (counting from \
+                     0), and a margin needs one. Give every row one value, or one for each class."
                 )));
             }
             None => *width = Some((k, WidthFrom::Row(r))),
@@ -694,9 +719,9 @@ pub(crate) fn margin_rows(
             let v = vals.f64_at(c).ok_or_else(|| null(r))?;
             if !v.is_finite() {
                 return Err(GbdtError::msg(format!(
-                    "the {role} column `{name}` holds {v:?} at row {r}, and a margin must be \
-                     finite. Replace it before the build, with 0 where the row has no \
-                     prediction to start from."
+                    "{who}: the {role} column `{name}` holds {v:?} at row {r} (counting from 0), \
+                     and a margin must be finite. Replace it before the build, with 0 where the \
+                     row has no prediction to start from."
                 )));
             }
             out.push(v);

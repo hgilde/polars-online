@@ -44,6 +44,10 @@ use super::frames::{Frames, Reader, Segment, WidthFrom, checked_f64, margin_rows
 use super::libs::{Handle, LgbLib};
 use super::{GbdtError, Layout, conversion_pool};
 
+/// The call a message of this module names: the only one that builds
+/// through LightGBM.
+const LGB: &str = "po.gbdt.lightgbm_dataset";
+
 /// `C_API_DTYPE_FLOAT32` (`include/LightGBM/c_api.h`).
 const DTYPE_FLOAT32: c_int = 0;
 /// `C_API_DTYPE_FLOAT64`, the type LightGBM takes initial scores in.
@@ -117,7 +121,12 @@ impl Drop for Owned<'_> {
 }
 
 fn cstr(s: &str) -> Result<CString, GbdtError> {
-    CString::new(s).map_err(|_| GbdtError::msg(format!("`{s}` holds a NUL character")))
+    CString::new(s).map_err(|_| {
+        GbdtError::msg(format!(
+            "po.gbdt.lightgbm_dataset: `{s}` holds a NUL character, which LightGBM cannot take. \
+         Rename it without one."
+        ))
+    })
 }
 
 /// Whether `ds` holds the float field `name` (`label`, `weight`): LightGBM
@@ -154,14 +163,14 @@ fn segment_meta(
     let p = layout.names.len();
     labels.clear();
     labels.extend(
-        checked_f64(seg, p, layout, row)?
+        checked_f64(seg, p, layout, row, LGB)?
             .iter()
             .map(|&v| as_lightgbm_f32(v)),
     );
     weights.clear();
     if layout.weight.is_some() {
         weights.extend(
-            checked_f64(seg, p + 1, layout, row)?
+            checked_f64(seg, p + 1, layout, row, LGB)?
                 .iter()
                 .map(|&v| as_lightgbm_f32(v)),
         );
@@ -196,10 +205,10 @@ impl Meta {
 
     fn push(&mut self, seg: &Segment, layout: &Layout, row: u64) -> Result<(), GbdtError> {
         let p = layout.names.len();
-        let lab = checked_f64(seg, p, layout, row)?;
+        let lab = checked_f64(seg, p, layout, row, LGB)?;
         self.labels.extend(lab.iter().map(|&v| v as f32));
         if let Some(w) = self.weights.as_mut() {
-            let vals = checked_f64(seg, p + 1, layout, row)?;
+            let vals = checked_f64(seg, p + 1, layout, row, LGB)?;
             w.extend(vals.iter().map(|&v| v as f32));
         }
         if layout.margin.is_some() {
@@ -301,8 +310,10 @@ fn rows_f32(seg: &Segment, p: usize, buf: &mut Vec<f32>, pool: &rayon::ThreadPoo
 fn rows_i32(n: u64) -> Result<i32, GbdtError> {
     i32::try_from(n).map_err(|_| {
         GbdtError::msg(format!(
-            "{n} rows: LightGBM's C API counts rows in a 32-bit integer, so a dataset holds \
-             {} at most",
+            "{LGB}: the source has {n} rows, but LightGBM's C API counts rows in a 32-bit \
+             integer, so a dataset holds {} at most. Build the dataset from {} rows or fewer, \
+             such as from a slice of the source.",
+            i32::MAX,
             i32::MAX
         ))
     })
@@ -310,8 +321,9 @@ fn rows_i32(n: u64) -> Result<i32, GbdtError> {
 
 fn wrong_rows(expected: u64, got: u64) -> GbdtError {
     GbdtError::msg(format!(
-        "the source was counted at {expected} rows and a pass over it gave {got}: LightGBM \
-         reads it more than once, and every pass must give the same rows"
+        "{LGB}: the source was counted at {expected} rows and a pass over it gave {got}, but \
+         LightGBM reads it more than once, and every pass must give the same rows. Pass a source \
+         that gives the same rows on every read, such as a parquet file."
     ))
 }
 
@@ -327,7 +339,9 @@ pub fn lightgbm_dataset(
 ) -> Result<LgbBuilt, GbdtError> {
     layout.check()?;
     if opts.rows == 0 {
-        return Err(GbdtError::msg("the source has no rows"));
+        return Err(GbdtError::msg(
+            "po.gbdt.lightgbm_dataset: the source has no rows. Pass a source with rows.",
+        ));
     }
     let n = rows_i32(opts.rows)?;
     let pool = conversion_pool(opts.threads)?;
@@ -336,7 +350,9 @@ pub fn lightgbm_dataset(
     let built = if opts.in_memory {
         let Some(from_arrow) = lib.from_arrow else {
             return Err(GbdtError::msg(
-                "in_memory=True hands LightGBM an Arrow stream, which it takes from 4.7.0 on",
+                "po.gbdt.lightgbm_dataset: in_memory=True hands LightGBM an Arrow stream, which \
+                 it takes only from 4.7.0 on. Upgrade LightGBM to 4.7.0 or later, or set \
+                 in_memory=False.",
             ));
         };
         arrow_route(

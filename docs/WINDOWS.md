@@ -168,8 +168,8 @@ for formula in [lagged, spread]:
 ```
 
 ```text
-a window formula is element-wise: columns, literals, arithmetic, negation, comparisons, & and |, log, exp, abs, sqrt, pow, clip, fill_null, is_null, is_not_null, when/then/otherwise, cast and alias over the operators; the function 'Shift' is not read
-with_windows: 'out' holds no operator; a formula of the row alone is Polars' with_columns
+with_windows: a formula over window operators reads each row alone, but its expression (a column computation, such as pl.col("x") + 1) holds the function 'Shift', which it cannot read
+with_windows: 'out' holds no window operator, so it reads only its own row
 ```
 
 **An operator's input can be a formula of the same kind, `po.increment`
@@ -343,7 +343,7 @@ print(po.stream.with_windows(in_order, mid_mean=po.ewm_mean("mid", half_life="5s
 ```
 
 ```text
-clock column "ts" goes backwards by 24m45s118ms961us at row 1502
+clock column "ts" steps back by 24m45s118ms961us at row 1502
 3000
 ```
 
@@ -443,14 +443,14 @@ short = po.spec.ewridge("short", targets=[fwd_edge], features=["trend_5s"], half
 try:
     trends.online.fit_predict([short])                    # refused when the query is built
 except ValueError as e:
-    print(str(e).split(" (got")[0])
+    print(str(e).split(". ")[0])
 ```
 
 ```text
 rows 3000, of which predicted 2761
 largest difference between the two forms: 0.0
 resid_fwd_edge null on 3000 rows
-spec "short": fit_predict needs an embargo of at least 1m, the longest window_size among its formula targets' forward operators
+spec "short": fit_predict needs an embargo of at least 1m, the longest window_size among the look-ahead window operators of its formula targets, but it is 30s
 ```
 
 ## Features in units of their spread
@@ -736,7 +736,7 @@ except (ValueError, pl.exceptions.ComputeError) as e:                # ComputeEr
 ```text
 two files: 1884 rows, then 1116; one run's output: True
 head(500), then the rest: 500 rows, then 2500; one run's output: True
-with_windows: the state was saved under a slice of another input: this input starts before the last row the state read, a step back the clock policy refuses
+with_windows: the state was saved from a slice of its input, and this is another input: it starts before the last row the state read
 ```
 
 The first run returns 1,884 of its 2,000 rows. The other 116 wait in the

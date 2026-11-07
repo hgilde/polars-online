@@ -378,9 +378,11 @@ class TestInputs:
         assert self.trained["m"].struct.field("coef")[38:].is_null().all()
 
     def test_type_and_name_errors_match_fit_predict(self):
-        with pytest.raises(TypeError, match=r"predict takes a DataFrame, not a LazyFrame"):
+        with pytest.raises(TypeError, match=r"predict: it takes a frame, but it was given a query"):
             self.bank.predict(self.later.lazy())
-        with pytest.raises(TypeError, match="takes a polars DataFrame, got dict"):
+        with pytest.raises(
+            TypeError, match="it takes a Polars DataFrame, but it was given an object of type dict"
+        ):
             self.bank.predict({"x0": [1.0]})
         with pytest.raises(ValueError, match="same name as an input column"):
             self.bank.predict(self.later.with_columns(m=pl.lit(1)))

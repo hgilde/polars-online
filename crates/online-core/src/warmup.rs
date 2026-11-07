@@ -94,7 +94,8 @@ impl TryFrom<WarmupWire> for Warmup {
     fn try_from(v: WarmupWire) -> Result<Self, String> {
         if !(v.w.is_finite() && v.w >= 0.0 && v.w2.is_finite() && v.w2 >= 0.0) {
             return Err(format!(
-                "warm-up: the weight sums must be finite and >= 0, got {} and {}",
+                "warm-up: its saved weight sums must be finite and at least 0, but they are {} \
+                 and {}. Load an undamaged copy of the state file, or rebuild it from its input.",
                 v.w, v.w2
             ));
         }

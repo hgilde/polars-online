@@ -139,7 +139,7 @@ def test_the_weights_change_which_entries_move():
     heavy = corr.nearest(HIGHAM_3, w=[100.0, 1.0, 1.0])[0]
     plain = corr.nearest(HIGHAM_3)[0]
     assert abs(heavy[0, 1] - 1.0) < abs(plain[0, 1] - 1.0)
-    with pytest.raises(ValueError, match="positive weights"):
+    with pytest.raises(ValueError, match="weights above 0, one for each column"):
         corr.nearest(HIGHAM_3, w=[1.0, -1.0, 1.0])
 
 
@@ -199,7 +199,7 @@ def test_nearest_refuses_what_it_cannot_answer():
         corr.nearest(np.array([[1.0, np.nan], [np.nan, 1.0]]))
     with pytest.raises(ValueError, match="must be finite"):
         corr.nearest(np.array([[1.0, np.inf], [np.inf, 1.0]]))
-    with pytest.raises(ValueError, match="max_iter must be >= 1"):
+    with pytest.raises(ValueError, match="max_iter must be at least 1"):
         corr.nearest(np.array([[1.2, 0.5], [0.5, 1.0]]), max_iter=0)
 
 
@@ -260,9 +260,9 @@ def test_shrink_repairs_a_singular_sample_matrix():
 
 def test_shrink_needs_the_rows_or_the_intensity():
     r = np.eye(3)
-    with pytest.raises(ValueError, match="fourth moment of the rows"):
+    with pytest.raises(ValueError, match="fourth moments"):
         corr.shrink(r)
-    with pytest.raises(ValueError, match="unknown target"):
+    with pytest.raises(ValueError, match='target must be "constant" or "identity"'):
         corr.shrink(r, target="nope", alpha=0.5)
     with pytest.raises(ValueError, match="alpha must be"):
         corr.shrink(r, alpha=1.5)
@@ -373,7 +373,7 @@ def test_block_means_round_trips_through_from_blocks():
     rebuilt = corr.from_blocks(b, labels)
     again, _ = corr.block_means(rebuilt, labels)
     assert np.allclose(again, b)
-    with pytest.raises(ValueError, match="labels for a"):
+    with pytest.raises(ValueError, match="labels must name a block for each of the matrix"):
         corr.block_means(r, ["a"])
 
 
@@ -473,9 +473,9 @@ def test_z_mse_is_the_scaled_fisher_error():
     b = np.array([[1.0, 0.2], [0.2, 1.0]])
     want = (np.arctanh(0.5) - np.arctanh(0.2)) ** 2 * (100 - 3)
     assert corr.loss(a, b, "z_mse", n=100) == pytest.approx(want)
-    with pytest.raises(ValueError, match="needs `n`"):
+    with pytest.raises(ValueError, match="needs n, the sample size"):
         corr.loss(a, b, "z_mse")
-    with pytest.raises(ValueError, match="unknown kind"):
+    with pytest.raises(ValueError, match='kind must be "qlike"'):
         corr.loss(a, b, "nope")
 
 
@@ -545,7 +545,7 @@ def test_epps_invert_at_l_one_is_the_plain_correlation():
     bank.fit_predict(df)
     g = bank.gram("c")[0]
     assert np.allclose(corr.epps_invert(g, L=1), po.gram.correlation(g))
-    with pytest.raises(ValueError, match="L must be >= 1"):
+    with pytest.raises(ValueError, match="L must be at least 1"):
         corr.epps_invert(g, L=0)
 
 
@@ -565,9 +565,9 @@ def test_epps_invert_names_a_missing_lag():
         [po.spec.ew_cov("c", features=["x0", "x1"], lam=1.0, stats=[], lags=[1, 3])]
     )
     bank.fit_predict(df)
-    with pytest.raises(ValueError, match="lag 2 is not there"):
+    with pytest.raises(ValueError, match="lag 2 is not in the input"):
         corr.epps_invert(bank.gram("c")[0], L=4)
-    with pytest.raises(ValueError, match="L must be >= 1"):
+    with pytest.raises(ValueError, match="L must be at least 1"):
         corr.epps_invert(bank.gram("c")[0], L=0)
 
 
@@ -586,9 +586,9 @@ def test_fisher_se_is_its_closed_forms():
     # with a finite answer and 3 is the last without (K3).
     assert np.isnan(corr.fisher_se(3)) and np.isfinite(corr.fisher_se(4))
     assert corr.fisher_se(4) == pytest.approx(1.0)
-    with pytest.raises(ValueError, match="go together"):
+    with pytest.raises(ValueError, match="must be given together"):
         corr.fisher_se(100, phi_a=0.5)
-    with pytest.raises(ValueError, match=r"must be in \(-1, 1\)"):
+    with pytest.raises(ValueError, match="must be above -1 and below 1"):
         corr.fisher_se(100, phi_a=1.0, phi_b=1.0)
 
 
@@ -612,5 +612,5 @@ def test_matrix_reads_an_array_a_gram_and_a_closed_row():
     assert np.allclose(from_row, from_gram)
     assert np.allclose(corr._matrix(from_row), from_row)
     assert np.allclose(np.diag(from_row), 1.0)
-    with pytest.raises(ValueError, match="expected a square matrix"):
+    with pytest.raises(ValueError, match="must be a square matrix, a Gram or a row of"):
         corr._matrix(np.zeros((2, 3)))

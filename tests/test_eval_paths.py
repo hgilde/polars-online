@@ -35,17 +35,25 @@ def fitted():
 
 def test_a_frame_that_is_not_a_polars_frame_is_refused(fitted):
     out, _, _ = fitted
-    with pytest.raises(TypeError, match="po.eval.metrics takes a polars DataFrame, got dict"):
+    with pytest.raises(
+        TypeError,
+        match="po.eval.metrics: the frame must be a Polars DataFrame, but it is of type dict",
+    ):
         po.eval.metrics(out.to_dict(), "big")  # type: ignore[arg-type]
 
 
 def test_a_spec_that_is_neither_a_name_nor_a_spec_dict_is_refused(fitted):
     out, _, _ = fitted
     with pytest.raises(
-        TypeError, match="po.eval.metrics: spec is a spec's name or its dict, got int"
+        TypeError,
+        match="po.eval.metrics: spec must be a spec's name or the spec itself, but it is of "
+        "type int",
     ):
         po.eval.metrics(out, 3)  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="spec is a spec's name or its dict, got dict"):
+    with pytest.raises(
+        TypeError,
+        match="spec must be a spec's name or the spec itself, but it is a dict with no name",
+    ):
         po.eval.metrics(out, {"model": {}})  # type: ignore[arg-type]
 
 
@@ -55,18 +63,18 @@ def test_the_merged_spellings_of_a_spec_beside_the_new_one(fitted):
     is read, with a deprecation warning."""
     out, small, big = fitted
     with pytest.raises(
-        TypeError, match="po.eval.metrics: spec_name was merged into spec, and both are given"
+        TypeError, match="po.eval.metrics: spec_name was merged into spec, but both are given"
     ):
         po.eval.metrics(out, "big", spec_name="big")
     with pytest.raises(
         ValueError,
-        match="po.eval.metrics: spec 'big' and the spec dict named 'small' disagree; give the "
-        "dict alone as spec",
+        match="po.eval.metrics: the spec name 'big' and the spec named 'small' disagree. Pass "
+        "the spec alone as spec.",
     ):
         po.eval.metrics(out, "big", spec=small)
     with pytest.raises(
         TypeError,
-        match="po.eval.compare_specs: spec_names was merged into specs, and both are given",
+        match="po.eval.compare_specs: spec_names was merged into specs, but both are given",
     ):
         po.eval.compare_specs(out, ["big"], spec_names=["big"])
     with pytest.warns(po.PolarsOnlineDeprecationWarning, match="po.eval.compare_specs"):
@@ -81,7 +89,8 @@ def test_a_spec_dict_whose_target_column_is_missing_is_refused_by_name(fitted):
     out, _, big = fitted
     with pytest.raises(
         ValueError,
-        match=r"cannot find column 'y', which slot 'pred_y' reads for target 'y'; the frame has",
+        match=r"po.eval.metrics: slot 'pred_y' reads target 'y' from column 'y', but the frame "
+        r"has no such column",
     ):
         po.eval.metrics(out.drop("y"), big)
 
@@ -94,8 +103,10 @@ def test_compare_specs_refuses_a_logistic_fit_beside_a_regression(fitted):
     frame = labelled.with_columns(both["logit"])
     with pytest.raises(
         ValueError,
-        match=r"po.eval.compare_specs: specs \['big', 'logit'\] mix a logistic fit with others, "
-        "whose metrics differ in kind; compare them in two calls, or set binary",
+        match=r"po.eval.compare_specs: specs \['logit'\] are fits with loss=\"logistic\" and "
+        r"\['big'\] are "
+        r"not, and the metrics of the two differ in kind. Pass the two sets in two calls, or "
+        r"set binary to True or False.",
     ):
         po.eval.compare_specs(frame, [big, logit])
 
@@ -104,15 +115,17 @@ def test_two_specs_sharing_no_residual_are_refused_by_name(fitted):
     out, _, _ = fitted
     with pytest.raises(
         ValueError,
-        match=r"diebold_mariano: 'big' and 'small' share no residual field \(with a_suffix "
-        r"'_z', b_suffix ''\)",
+        match=r"^po.eval.diebold_mariano: 'big' and 'small' share no residual field with "
+        r"suffixes '_z' and ''",
     ):
         po.eval.diebold_mariano(out, a="big", b="small", a_suffix="_z")
 
 
 def test_clark_west_refuses_negative_lags(fitted):
     out, _, _ = fitted
-    with pytest.raises(ValueError, match="clark_west: lags must be >= 0, got -1"):
+    with pytest.raises(
+        ValueError, match="^po.eval.clark_west: lags must be at least 0, but it is -1"
+    ):
         po.eval.clark_west(out, big="big", small="small", lags=-1)
 
 
@@ -150,7 +163,9 @@ def test_a_window_of_no_length_is_refused_on_a_temporal_clock(fitted):
         )
     )
     for every in (timedelta(0), pl.duration(minutes=-5)):
-        with pytest.raises(ValueError, match="window_metrics: every must be > 0, got"):
+        with pytest.raises(
+            ValueError, match="po.eval.window_metrics: every must be above 0, but it is"
+        ):
             po.eval.window_metrics(stamped, "big", clock="t", every=every)
 
 
@@ -273,8 +288,8 @@ def test_a_name_the_frame_already_has_is_refused(grid, name):
     for who, call in calls.items():
         with pytest.raises(
             ValueError,
-            match=rf"^{who}: name {name!r} is a column of the frame already, and the result "
-            "would replace it; give the result a name the frame has not got",
+            match=rf"^po.eval.{who}: name {name!r} is a column of the frame already, and the "
+            "result would replace it. Give the result a name the frame does not have.",
         ):
             call()
     # Without half_life the result is a table of its own, and name is not read.

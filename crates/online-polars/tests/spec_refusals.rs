@@ -431,7 +431,7 @@ fn a_models_refusal_names_the_spec() {
     ] {
         refused(
             &sup(model, ""),
-            &["window_size must be finite and > 0 (got inf)"],
+            &["window_size must be finite and above 0, but it is inf"],
         );
     }
 }
@@ -686,7 +686,7 @@ fn a_window_runs_clock_rules_are_said_in_a_windows_words() {
     WindowsRun::new(config, &schema).expect("a session without a gap refused");
     let e = refusal(r#", "gap_cap": 5.0, "session_gap": 1.0"#);
     assert!(
-        e.starts_with("with_windows: session_gap needs session;"),
+        e.starts_with("with_windows: session_gap is set, but session is not"),
         "{e}"
     );
 }

@@ -874,7 +874,7 @@ def test_a_hand_built_dict_is_checked_by_path():
     base = dict(name="m", model={"type": "ewridge"}, targets=["y"], features=["x0"])
     for bad, msg in [
         (dict(targets="y"), '[0].targets: invalid type: string "y", expected a sequence'),
-        (dict(half_life="10"), '[0].half_life: "10" is not a duration: 10 has no unit'),
+        (dict(half_life="10"), '[0].half_life: "10" is not a duration, since 10 has no unit'),
         (dict(half_life=[10, "x"]), '[0].half_life[1]: "x" is not a duration'),
         (
             dict(half_life=10, session_gap=[1]),
@@ -911,10 +911,10 @@ def test_a_missing_column_names_the_spec_the_role_and_the_frame(role, kw):
     with pytest.raises(ValueError) as exc:
         bank.fit_predict(_df())
     text = str(exc.value)
-    assert f'spec "m": {role} column "nope" not found' in text, text
+    assert f'spec "m": {role} column "nope" is not in the input' in text, text
     # "input", not "frame": the same message serves the Arrow path, whose
     # caller has a chunk and no frame (review 2026-09-17, A5).
-    assert 'the input has columns ["t", "x0", "y", "s"]' in text, text
+    assert 'whose columns are ["t", "x0", "y", "s"]' in text, text
 
 
 @pytest.mark.parametrize(
@@ -934,13 +934,15 @@ def test_a_string_column_is_refused_not_cast_to_null(role, kw):
     with pytest.raises(ValueError) as exc:
         bank.fit_predict(_df())
     text = str(exc.value)
-    assert f'spec "m": {role} column "s" has dtype str; it must be numeric' in text, text
+    assert f'spec "m": {role} column "s" must be a number, but it is String' in text, text
     assert 'pl.col("s").cast(pl.Float64)' in text
 
 
 def test_a_nested_key_column_is_refused():
     df = _df().with_columns(l=pl.concat_list("x0"))
-    with pytest.raises(ValueError, match='group column "l" has dtype list\\[f64\\], which cannot'):
+    with pytest.raises(
+        ValueError, match=r'group column "l" is List\(Float64\), which cannot be read as text'
+    ):
         po.ModelBank([_spec_dict(group="l")]).fit_predict(df)
 
 
@@ -1092,7 +1094,7 @@ def test_a_feature_of_any_dtype_is_either_used_or_named(name):
     with pytest.raises(ValueError) as exc:
         po.ModelBank([spec]).fit_predict(df)
     assert 'feature column "c"' in str(exc.value), str(exc.value)
-    assert "must be numeric" in str(exc.value), str(exc.value)
+    assert "must be a number, but it is" in str(exc.value), str(exc.value)
 
 
 @pytest.mark.parametrize("dtype", [pl.Int8, pl.UInt16, pl.Int128, pl.Float32, pl.Decimal(12, 4)])
@@ -1139,15 +1141,20 @@ def test_a_spec_named_like_an_input_column_is_refused():
     """Outputs are attached with `with_column`, which would replace the input."""
     with pytest.raises(ValueError) as exc:
         po.ModelBank([po.spec.ewridge("y", **BASE)]).fit_predict(_df())
-    assert 'spec "y" has the same name as an input column' in str(exc.value)
+    assert 'spec "y": it has the same name as an input column' in str(exc.value)
     assert "Rename the spec" in str(exc.value)
 
 
 def test_a_lazyframe_is_told_to_collect():
     bank = po.ModelBank([_spec_dict()])
-    with pytest.raises(TypeError, match=r"not a LazyFrame: collect it first \(lf\.collect\(\)\)"):
+    with pytest.raises(
+        TypeError,
+        match=r"it was given a query \(a LazyFrame\)\. Pass the query's result as a DataFrame",
+    ):
         bank.fit_predict(_df().lazy())
-    with pytest.raises(TypeError, match="takes a polars DataFrame, got dict"):
+    with pytest.raises(
+        TypeError, match="it takes a Polars DataFrame, but it was given an object of type dict"
+    ):
         bank.fit_predict({"y": [1.0]})
 
 
@@ -1261,7 +1268,7 @@ def test_the_stream_operators_release_the_gil(what):
         w.feed(big)
         return w
 
-    cls, method = what.split(".")
+    cls = what.split(".")[0]
     make, call = {
         "RefreshTime.feed": (
             lambda: native.RefreshTime(["a", "b"], "series", "t", "v"),
@@ -1270,8 +1277,10 @@ def test_the_stream_operators_release_the_gil(what):
         "Windows.feed": (windows, lambda o: o.feed(big)),
         "Windows.finish": (fed, lambda o: o.finish()),
     }[what]
+    # The classes are private: each refusal names the call its reader made.
+    where = {"RefreshTime": "po.stream.refresh_time: ", "Windows": "with_windows: "}[cls]
     for e in _overlapping_calls(make, call):
-        assert f"{cls}.{method}: " in str(e), str(e)
+        assert str(e).startswith(where), str(e)
         assert "in use on another thread" in str(e), str(e)
 
 
@@ -1594,7 +1603,10 @@ def test_a_models_refusal_names_the_spec():
         spec = {"name": "m", "model": model, "targets": ["y"], "features": ["x0"], "half_life": 10}
         with pytest.raises(ValueError) as exc:
             po.ModelBank([spec])
-        assert str(exc.value) == 'spec "m": window_size must be finite and > 0 (got inf)'
+        assert str(exc.value) == (
+            'spec "m": window_size must be finite and above 0, but it is inf. Set window_size '
+            "to a finite positive number of clock units."
+        )
 
 
 def test_a_type_error_inside_the_model_names_the_key():
@@ -1676,6 +1688,7 @@ def test_a_mismatched_spec_on_load_is_named():
     with pytest.raises(ValueError) as exc:
         po.ModelBank.load_bytes(bank.save_bytes(), other)
     assert str(exc.value) == (
-        'saved specs do not match the bank\'s specs: spec "b" (2 of 3) differs at half_life: '
-        "20.0 in the file, 25.0 in the bank; refusing to load"
+        'state file: its specs do not match the bank\'s specs: spec "b" (2 of 3) differs at '
+        "half_life: 20.0 in the file, 25.0 in the bank. Load the state with the specs it was "
+        "saved with."
     )

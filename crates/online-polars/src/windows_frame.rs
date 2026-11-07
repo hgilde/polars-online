@@ -211,14 +211,19 @@ fn dtypes_of(schema: &Schema, exprs: Vec<Expr>) -> Result<Schema, String> {
 
 fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
     if config.formulas.is_empty() {
-        return Err(format!("{WHO}: no formulas; give at least one expression"));
+        return Err(format!(
+            "{WHO}: no expression (a column computation, such as pl.col(\"x\") + 1) was given. \
+             Give at least one that holds a window operator or an increment, such as \
+             po.ewm_mean(pl.col(\"x\"), half_life=10)."
+        ));
     }
     let has = |role: &str, c: &str| -> Result<(), String> {
         if input.contains(c) {
             Ok(())
         } else {
             Err(format!(
-                "{WHO}: no {role} column {c:?} in the frame; it has {:?}",
+                "{WHO}: the {role} column {c:?} is not in the input, whose columns are {:?}. \
+                 Name a column the input has, or add {c:?} to it.",
                 input.iter_names().map(|n| n.as_str()).collect::<Vec<_>>()
             ))
         }
@@ -227,33 +232,46 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
     for f in &config.formulas {
         if f.name.is_empty() || f.name.starts_with("@po:") || f.name.starts_with("@in:") {
             return Err(format!(
-                "{WHO}: {:?} is no name for an output; name the expression with .alias() or a keyword",
+                "{WHO}: an output cannot be named {:?}: a name must not be empty or start with \
+                 \"@po:\" or \"@in:\". Name the expression (a column computation, such as \
+                 pl.col(\"x\") + 1) with .alias() or a keyword argument, such as \
+                 with_windows(lf, m=...).",
                 f.name
             ));
         }
         if input.contains(&f.name) {
             return Err(format!(
-                "{WHO}: output {:?} is already a column of the frame; a positional expression is \
-                 named after its leftmost column unless .alias() names it, so give it another name",
+                "{WHO}: the output {:?} is already a column of the input. An expression (a \
+                 column computation, such as pl.col(\"x\") + 1) given by position is named after \
+                 its leftmost column unless .alias() names it. Give it another name with \
+                 .alias() or a keyword argument, such as with_windows(lf, m=...).",
                 f.name
             ));
         }
         if !names.insert(&f.name) {
-            return Err(format!("{WHO}: two expressions are named {:?}", f.name));
+            return Err(format!(
+                "{WHO}: two expressions (column computations, such as pl.col(\"x\") + 1) are \
+                 named {:?}. Give each a name of its own with .alias() or a keyword argument, such as \
+                 with_windows(lf, m=...).",
+                f.name
+            ));
         }
         // Each formula holds an operator (one rule with the Python side,
         // review R1, N7), and reads no column under a reserved prefix (N8).
         if f.tree.operators().is_empty() {
             return Err(format!(
-                "{WHO}: {:?} holds no operator; a formula of the row alone is Polars' with_columns",
+                "{WHO}: the expression {:?} (a column computation, such as pl.col(\"x\") + 1) \
+                 holds no window operator or increment, and a window run computes only those. \
+                 Compute an expression of the row alone with Polars' with_columns.",
                 f.name
             ));
         }
         for c in f.tree.columns() {
             if c.starts_with("@po:") || c.starts_with("@in:") {
                 return Err(format!(
-                    "{WHO}: {:?} reads column {c:?}; names starting with \"@po:\" and \"@in:\" are \
-                     reserved for the operators' own columns",
+                    "{WHO}: the expression {:?} (a column computation, such as pl.col(\"x\") + \
+                     1) reads column {c:?}, but a name that starts with \"@po:\" or \"@in:\" is \
+                     kept for the window run's own columns. Rename the column before the call.",
                     f.name
                 ));
             }
@@ -285,8 +303,10 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
                 .any(|o| o.kind == OpKind::Increment)
             {
                 return Err(format!(
-                    "{WHO}: {}: an increment's input is a formula of the row's columns, not of \
-                     another increment",
+                    "{WHO}: {}: an increment's input holds another increment, but it must be an \
+                     expression (a column computation, such as pl.col(\"x\") + 1) of the row's \
+                     own columns. Compute the inner increment in one \
+                     with_windows call, and the increment of its output in a second.",
                     f.name
                 ));
             }
@@ -296,7 +316,8 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
             )
             .map_err(|e| {
                 format!(
-                    "{WHO}: {}: the increment's input cannot be evaluated: {e}",
+                    "{WHO}: {}: Polars cannot compute the increment's input ({e}). Check that \
+                     the input reads columns of the right type.",
                     f.name
                 )
             })?;
@@ -304,8 +325,10 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
             let temporal = dtype.is_temporal();
             if !(numeric(&dtype) || temporal) {
                 return Err(format!(
-                    "{WHO}: {}: an increment's input is a number or a temporal column, got {dtype}",
-                    f.name
+                    "{WHO}: {}: an increment's input must be a number or a temporal column, but \
+                     it is {}. Cast the input to a number, such as with .cast(pl.Float64).",
+                    f.name,
+                    crate::arrow::dtype_name(&dtype)
                 ));
             }
             p.increments.push((key, (*op.input).clone(), temporal));
@@ -364,7 +387,8 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
                     )
                     .map_err(|e| {
                         format!(
-                            "{WHO}: {}: {}'s input cannot be evaluated: {e}",
+                            "{WHO}: {}: Polars cannot compute {}'s input ({e}). Check that the \
+                             input reads columns of the right type.",
                             f.name,
                             op.kind.name()
                         )
@@ -372,9 +396,11 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
                     let dtype = dtype.get("@t").expect("aliased").clone();
                     if !numeric(&dtype) {
                         return Err(format!(
-                            "{WHO}: {}: {}'s input must be a number, got {dtype}",
+                            "{WHO}: {}: {}'s input must be a number, but it is {}. Cast \
+                             the input to a number, such as with .cast(pl.Float64).",
                             f.name,
-                            op.kind.name()
+                            op.kind.name(),
+                            crate::arrow::dtype_name(&dtype)
                         ));
                     }
                     p.inputs.push((*op.input).clone());
@@ -507,25 +533,27 @@ fn check_scale(
     match (duration, number) {
         (Some(d), Some(n)) => {
             return Err(format!(
-                "{WHO}: {d} is a duration and {n} a number; on one clock every clock parameter \
-                 is written the same way"
+                "{WHO}: {d} is a duration and {n} is a number, but every parameter on one \
+                 clock is written the same way. Give both as durations on a temporal clock, or \
+                 both as numbers of clock units on a number clock."
             ));
         }
         (Some(d), None) if !temporal => {
             return Err(format!(
                 "{WHO}: {d} is a duration, which needs a temporal clock column (Datetime, \
-                 Date or Duration); clock is {}",
+                 Date or Duration), but clock is {}. Give {d} as a number of clock units, or \
+                 name a temporal clock column.",
                 clock.map_or("not given".to_string(), |c| {
-                    format!("{c:?} ({})", dtype_of(input, c))
+                    format!("{c:?} ({})", crate::arrow::dtype_name(dtype_of(input, c)))
                 })
             ));
         }
         (None, Some(n)) if temporal => {
             return Err(format!(
-                "{WHO}: {n} is a number, and clock column {:?} is {}; write it as a duration \
-                 (\"10m\", a timedelta or pl.duration)",
+                "{WHO}: {n} is a number, but clock column {:?} is {}, which measures time. Give \
+                 {n} as a duration, such as \"10m\", a timedelta or pl.duration(minutes=10).",
                 clock.unwrap_or(""),
-                dtype_of(input, clock.unwrap_or(""))
+                crate::arrow::dtype_name(dtype_of(input, clock.unwrap_or("")))
             ));
         }
         _ => {}
@@ -541,23 +569,33 @@ fn check_scale(
             },
             _ => 1e-9,
         };
+        let step = match dtype {
+            DataType::Date => "a day",
+            DataType::Datetime(TimeUnit::Milliseconds, _)
+            | DataType::Duration(TimeUnit::Milliseconds) => "a millisecond",
+            DataType::Datetime(TimeUnit::Microseconds, _)
+            | DataType::Duration(TimeUnit::Microseconds) => "a microsecond",
+            _ => "a nanosecond",
+        };
         for (param, s) in &all {
-            let why = match *param {
-                "gap_cap" => {
-                    "every step would be capped to it, so the clock would count rows rather \
-                     than measure time"
-                }
-                "restart_after_step_back" => {
-                    "no step back could be as small, so every one would start the windows over, \
-                     which 0 says directly"
-                }
+            let (why, or_zero) = match *param {
+                "gap_cap" => (
+                    "every step would be cut to it and the clock would count rows rather than \
+                     measure time",
+                    "",
+                ),
+                "restart_after_step_back" => (
+                    "no step back could be as small and every one would reset the windows",
+                    ", or to 0 to reset at every step back",
+                ),
                 _ => continue,
             };
             let v = s.value();
             if s.is_duration() && v > 0.0 && v < tick {
                 return Err(format!(
-                    "{WHO}: {param} is {s}, less than the smallest step clock column {c:?} \
-                     ({dtype}) can take: {why}"
+                    "{WHO}: {param} is {s}, less than {step}, the smallest step clock column \
+                     {c:?} ({}) can take, so {why}. Set {param} to at least {step}{or_zero}.",
+                    crate::arrow::dtype_name(dtype)
                 ));
             }
         }
@@ -575,6 +613,84 @@ fn same_call(config: &WindowsConfig) -> WindowsConfig {
         c.session_gap = None;
     }
     c
+}
+
+/// What differs between the call a state was saved by and this one, each
+/// setting with both its values, for the refusal of another call.
+fn call_differences(saved: &WindowsConfig, now: &WindowsConfig) -> String {
+    fn text<T: std::fmt::Display>(v: Option<&T>) -> String {
+        v.map_or_else(|| "not set".to_string(), |v| format!("\"{v}\""))
+    }
+    let reset = |c: &WindowsConfig| {
+        if c.session_gap.is_some() {
+            "\"reset\"".to_string()
+        } else {
+            "not set".to_string()
+        }
+    };
+    let like = |c: &WindowsConfig| text(c.like.as_ref().map(|l| &l.spec));
+    let mut out: Vec<String> = Vec::new();
+    if saved.formulas != now.formulas {
+        out.push("the expressions differ".into());
+    }
+    // Compared as the call compares them: a duration by its length.
+    let settings = [
+        (
+            "clock",
+            saved.clock != now.clock,
+            text(saved.clock.as_ref()),
+            text(now.clock.as_ref()),
+        ),
+        (
+            "gap_cap",
+            saved.gap_cap != now.gap_cap,
+            text(saved.gap_cap.as_ref()),
+            text(now.gap_cap.as_ref()),
+        ),
+        (
+            "restart_after_step_back",
+            saved.restart_after_step_back != now.restart_after_step_back,
+            text(saved.restart_after_step_back.as_ref()),
+            text(now.restart_after_step_back.as_ref()),
+        ),
+        (
+            "session",
+            saved.session != now.session,
+            text(saved.session.as_ref()),
+            text(now.session.as_ref()),
+        ),
+        (
+            "session_gap",
+            saved.session_gap != now.session_gap,
+            reset(saved),
+            reset(now),
+        ),
+        (
+            "group",
+            saved.group != now.group,
+            text(saved.group.as_ref()),
+            text(now.group.as_ref()),
+        ),
+        ("like=", saved.like != now.like, like(saved), like(now)),
+    ];
+    for (name, differs, was, is) in settings {
+        if !differs {
+            continue;
+        }
+        out.push(if was == is {
+            format!("{name} differs")
+        } else {
+            format!("{name} was {was} when saved and is {is} now")
+        });
+    }
+    match out.len() {
+        0 => "the call differs".into(),
+        1 => out.remove(0),
+        _ => {
+            let last = out.pop().unwrap_or_default();
+            format!("{} and {last}", out.join(", "))
+        }
+    }
 }
 
 /// [`same_call`] for the core's clock rules: a session's gap compares as
@@ -704,7 +820,8 @@ impl WindowsRun {
                 && !input.contains(c)
             {
                 return Err(format!(
-                    "{WHO}: no {role} column {c:?} in the frame; it has {:?}",
+                    "{WHO}: the {role} column {c:?} is not in the input, whose columns are {:?}. \
+                     Name a column the input has, or add {c:?} to it.",
                     input.iter_names().map(|n| n.as_str()).collect::<Vec<_>>()
                 ));
             }
@@ -713,14 +830,16 @@ impl WindowsRun {
         // D3): each was accepted here and changed nothing.
         if config.session_gap.is_some() && config.session.is_none() {
             return Err(format!(
-                "{WHO}: session_gap needs session; it says what a session change does, and \
-                 without a session column there is none"
+                "{WHO}: session_gap is set, but session is not, and session_gap says only what \
+                 a change of session does. Set session to the session column, or leave out \
+                 session_gap."
             ));
         }
         if config.restart_after_step_back.is_some() && config.clock.is_none() {
             return Err(format!(
-                "{WHO}: restart_after_step_back needs clock; a step back is read off the clock \
-                 column, and without one every row is one step forward"
+                "{WHO}: restart_after_step_back is set, but clock is not, and without a clock \
+                 column every row is one step forward, so no row steps back. Set clock to the \
+                 clock column, or leave out restart_after_step_back."
             ));
         }
         let cfg: ClockCfg = clock_cfg_of(&ClockPolicy {
@@ -749,7 +868,9 @@ impl WindowsRun {
         for c in &accept {
             if !input.contains(c) {
                 return Err(format!(
-                    "{WHO}: like= spec {:?} reads column {c:?}, which the frame has not got",
+                    "{WHO}: the spec {:?} given as like= reads column {c:?}, which is not in \
+                     the input. Add {c:?} to the input, or pass a spec that reads only its \
+                     columns.",
                     config.like.as_ref().map_or("", |l| l.spec.as_str())
                 ));
             }
@@ -772,8 +893,12 @@ impl WindowsRun {
                     .alias(f.name.as_str())
             })
             .collect();
-        let evaluated = dtypes_of(&hidden_schema, exprs)
-            .map_err(|e| format!("{WHO}: a formula cannot be evaluated: {e}"))?;
+        let evaluated = dtypes_of(&hidden_schema, exprs).map_err(|e| {
+            format!(
+                "{WHO}: Polars cannot compute an expression on the input's columns ({e}). \
+                     Check that each expression reads columns of the right type."
+            )
+        })?;
         let mut output = input.clone();
         for f in &config.formulas {
             let dtype = evaluated.get(&f.name).expect("aliased").clone();
@@ -922,7 +1047,9 @@ impl WindowsRun {
     pub fn feed_resolving(&mut self, df: &DataFrame, rows: &[u64]) -> PolarsResult<DataFrame> {
         polars_ensure!(
             rows.len() == df.height() && df.get_column_names().iter().any(|c| c.as_str() == "@po:row"),
-            ComputeError: "feed_resolving: a row number per row, and an @po:row column"
+            ComputeError: "internal: feed_resolving: the chunk must carry a row number for each row and an \
+                @po:row column, which is a defect in polars-online. Open an issue at \
+                https://github.com/hgilde/polars-online/issues with this message."
         );
         self.feed_inner(df, None, Some(rows))
     }
@@ -973,19 +1100,19 @@ impl WindowsRun {
                     // R8, F1) -- of its first row's group under `group`, so a
                     // group the state has not read shows none (R9, G1).
                     Ok(Peek::Forward) => polars_bail!(ComputeError:
-                        "{WHO}: the state was saved under a slice of another input: without a \
-                         clock column, this input does not begin with a new session: its first \
-                         row continues the session last read, or is of a group the state has not \
-                         read. A sliced state resumes on the input it was saved from, unsliced, \
-                         or on the next file, which begins with a new session (under group, of a \
-                         group the state has read)"
+                        "{WHO}: the state was saved from a slice of its input, and this is \
+                         another input: its first row continues the session last read, or is of \
+                         a group the state has not read. Resume on the whole input the state was \
+                         saved from, or begin the next file with a new session (and, under group, \
+                         with a group the state has read)."
                     ),
                     Ok(Peek::SameStamp) => polars_bail!(ComputeError:
-                        "{WHO}: the state was saved under a slice of another input: this input \
-                         starts at the last stamp the state read, a file boundary inside a tied \
-                         stamp or the same input sliced inside it. A sliced state resumes on the \
-                         input it was saved from, unsliced, or on the next file, which starts \
-                         after the last stamp it read"
+                        "{WHO}: the state was saved from a slice of its input, and this input \
+                         starts at the last clock value the state read. A file that begins \
+                         inside a run of tied clock values, or the same input sliced inside \
+                         them, starts there too. Resume on the input the state was \
+                         saved from, whole, or on the next file, which starts after the last \
+                         clock value the state read."
                     ),
                     // The policy's own words beside the rule's (review R8, F2):
                     // under `group` a next-day file's step back is refused on
@@ -994,12 +1121,19 @@ impl WindowsRun {
                     Err(r) => {
                         let why = self.refusal(r, self.core.next_seq()).to_string();
                         let why = why.strip_prefix(&format!("{WHO}: ")).unwrap_or(&why);
+                        // Its first sentence, the step back: its remedy is
+                        // not this one's.
+                        let why = why.split_once(". ").map_or(why, |(first, _)| first);
+                        let mut letters = why.chars();
+                        let why: String = letters
+                            .next()
+                            .map(|c| c.to_uppercase().chain(letters).collect())
+                            .unwrap_or_default();
                         polars_bail!(ComputeError:
-                            "{WHO}: the state was saved under a slice of another input: this \
-                             input starts before the last row the state read, a step back the \
-                             clock policy refuses. A sliced state resumes on the input it was \
-                             saved from, unsliced, or on the next file, which starts after the \
-                             last row it read. The policy: {why}"
+                            "{WHO}: the state was saved from a slice of its input, and this is \
+                             another input: it starts before the last row the state read. \
+                             {why}. Resume on the input the state was saved from, whole, or on \
+                             the next file, which starts after the last row the state read."
                         )
                     }
                 }
@@ -1018,11 +1152,12 @@ impl WindowsRun {
                 // with a window target saved there (task 159, B1).
                 if let Ok(Peek::SameStamp) = self.core.peek(key.as_deref(), first_clock, session) {
                     polars_bail!(ComputeError:
-                        "{WHO}: this input starts at the last stamp the state read, so it may be \
-                         another input that repeats rows the state read: a file boundary inside \
-                         a tied stamp cannot be told from one, whose repeated rows would come \
-                         out twice. Resume on the next file, which starts after the last stamp \
-                         the state read"
+                        "{WHO}: this input starts at the last clock value the state read, so it \
+                         may be an input that repeats rows the state read, which would come out \
+                         twice. A file that begins inside a run of tied clock values cannot be \
+                         told from one. Resume on the next file, which starts after the last \
+                         clock value the state read, and cut files between clock values rather \
+                         than inside a run of tied ones."
                     );
                 }
             }
@@ -1284,9 +1419,9 @@ impl WindowsRun {
             let got = stack(&rows)?;
             if got.height() != want.height() || !got.equals_missing(&want) {
                 polars_bail!(ComputeError:
-                    "{WHO}: the state was saved under a slice of another input: the last {} rows \
-                     it read are not this input's rows there. A sliced state resumes on the input \
-                     it was saved from, unsliced",
+                    "{WHO}: the state was saved from a slice of its input, and the last {} rows \
+                     it read are not this input's rows at that place, so this is another input. \
+                     Resume on the input the state was saved from, whole.",
                     want.height()
                 );
             }
@@ -1299,9 +1434,9 @@ impl WindowsRun {
     fn resumed_input_ended_early(&self) -> Option<String> {
         (self.resume_skip > 0).then(|| {
             format!(
-                "{WHO}: the state was saved under a slice of another input: {} rows were \
-                 consumed, and this input ended after {}. A sliced state resumes on the input \
-                 it was saved from, unsliced",
+                "{WHO}: the state was saved from a slice of its input after reading {} rows, \
+                 but this input ended after {}, so it is another input. Resume on the input the \
+                 state was saved from, whole.",
                 self.resume_total, self.skipped
             )
         })
@@ -1421,7 +1556,7 @@ impl WindowsRun {
                     // A time of day is read too, in nanoseconds since
                     // midnight (review round 4, PD5).
                     let c = inputs.column(input_column(i).as_str())?;
-                    let ns = nanos_array(c.as_materialized_series(), 0, NanosRole::Increment)?;
+                    let ns = nanos_array(c.as_materialized_series(), 0, NanosRole::Increment, WHO)?;
                     Ok(Some((0..ns.len()).map(|r| ns.get(r)).collect()))
                 } else {
                     Ok(None)
@@ -1546,13 +1681,16 @@ impl WindowsRun {
         let base = self.core.next_seq() - self.run_base + self.skipped;
         let bad = |i: usize| {
             polars_err!(ComputeError:
-                "{WHO}: row {} has a null or non-finite clock {c:?}", base + i as u64)
+                "{WHO}: clock column {c:?} is null, NaN or infinite at row {} (counting from \
+                 0). Drop the rows whose clock has no value, or fill it in, before the call.",
+                base + i as u64)
         };
         let values: Vec<ClockValue> = if col.dtype().is_temporal() {
             let ns = nanos_array(
                 col.as_materialized_series(),
                 base as usize,
                 NanosRole::Clock,
+                WHO,
             )?;
             (0..ns.len())
                 .map(|i| ns.get(i).map(ClockValue::Ns).ok_or_else(|| bad(i)))
@@ -1567,8 +1705,9 @@ impl WindowsRun {
                     let v = v.ok_or_else(|| bad(i))?;
                     i64::try_from(v).map(ClockValue::I64).map_err(|_| {
                         polars_err!(ComputeError:
-                            "{WHO}: row {} has clock {c:?} = {v}, past {}, the largest value \
-                             an integer clock holds (an Int64's)",
+                            "{WHO}: clock column {c:?} is {v} at row {} (counting from 0), \
+                             past {}, the largest value an integer clock holds (an Int64's). \
+                             Cast the clock to Int64 after subtracting an origin from it.",
                             base + i as u64, i64::MAX)
                     })
                 })
@@ -1591,9 +1730,9 @@ impl WindowsRun {
             && kind_of(*first) != kind_of(last)
         {
             polars_bail!(ComputeError:
-                "{WHO}: clock column {c:?} is {}, and the state it resumes was fed {} one; \
-                 resume a state on the kind of clock that wrote it",
-                col.dtype(),
+                "{WHO}: clock column {c:?} is {}, but the state it resumes read {} one. Resume \
+                 the state on a clock of the kind it was saved with.",
+                crate::arrow::dtype_name(col.dtype()),
                 kind_of(last).name()
             );
         }
@@ -1621,9 +1760,9 @@ impl WindowsRun {
                         v.map_or_else(String::new, |v| crate::spec::num_label(v.seconds()))
                     };
                     return polars_err!(ComputeError:
-                        "{WHO}: clock column {column:?} steps from {} to {} at row {}, a \
-                         difference past the largest double, which is no number of clock \
-                         units. Shift or rescale the clock column so that the step between two \
+                        "{WHO}: clock column {column:?} steps from {} to {} at row {} (counting \
+                         from 0), a difference past the largest float, which cannot be a number \
+                         of clock units. Shift or rescale the clock column so that the step between two \
                          of its values is finite.",
                         label(prev),
                         label(now),
@@ -1643,19 +1782,20 @@ impl WindowsRun {
                 };
                 match min_backwards_jump {
                     None => polars_err!(ComputeError:
-                        "{WHO}: clock column {column:?} goes backwards by {step} at row {} \
-                         (restart_after_step_back is unset, so every step back is refused). \
-                         The input must be in clock order across groups: sort it by the \
-                         clock; or, if a step back this large starts the stream over, set \
-                         restart_after_step_back to the smallest one that does.",
+                        "{WHO}: clock column {column:?} steps back by {step} at row {} \
+                         (counting from 0), and restart_after_step_back is not set, so every \
+                         step back is refused. Sort the whole input by the clock, across groups, \
+                         or set \
+                         restart_after_step_back below the step to reset the windows at such a \
+                         step back (0 resets them at every one).",
                         row(seq)
                     ),
                     Some(m) => polars_err!(ComputeError:
-                        "{WHO}: clock column {column:?} goes backwards by {step} at row {}, no \
-                         more than restart_after_step_back = {}: a late row, not a new start. \
-                         Sort the input by the clock, or lower restart_after_step_back if a \
-                         step back this small starts the stream over (0 starts over at every \
-                         one).",
+                        "{WHO}: clock column {column:?} steps back by {step} at row {} \
+                         (counting from 0), no more than restart_after_step_back = {}, so the \
+                         step back is refused. Sort the input by the clock, or set \
+                         restart_after_step_back below the step to reset the windows at such a \
+                         step back (0 resets them at every one).",
                         row(seq),
                         self.config.restart_after_step_back.as_ref().map_or_else(|| crate::spec::num_label(m), ToString::to_string)
                     ),
@@ -1866,30 +2006,42 @@ impl WindowsRun {
     /// read, another call, or held rows whose columns the input has not got.
     pub fn load_bytes(bytes: &[u8], config: WindowsConfig, input: &Schema) -> Result<Self, String> {
         let header: Header = rmp_serde::from_slice(bytes).map_err(|e| {
-            format!("{WHO}: the state cannot be read: not a state it saved, or damaged ({e})")
+            format!(
+                "{WHO}: the state cannot be read ({e}), so it is damaged or was not saved by a \
+                 window run. Pass a state file a window run saved, or leave out load_state to \
+                 start over."
+            )
         })?;
         if header.magic != WINDOWS_MAGIC {
-            return Err(format!("{WHO}: not a state it saved"));
+            return Err(format!(
+                "{WHO}: the state was not saved by a window run. Pass a state file a window run \
+                 saved, or leave out load_state to start over."
+            ));
         }
         if !(MIN_WINDOWS_VERSION..=WINDOWS_VERSION).contains(&header.version) {
             return Err(format!(
-                "{WHO} state version {} not supported (this build reads \
-                 {MIN_WINDOWS_VERSION} to {WINDOWS_VERSION})",
+                "{WHO}: the state's version is {}, but this version of polars-online reads \
+                 versions {MIN_WINDOWS_VERSION} to {WINDOWS_VERSION}. Load the state with the \
+                 version of polars-online that saved it, or leave out load_state to start \
+                 over.",
                 header.version
             ));
         }
         let file: FileIn = rmp_serde::from_slice(bytes).map_err(|e| {
             format!(
-                "{WHO}: the state is damaged, or was written by a build that changed a field \
-                 without bumping the version ({e})"
+                "{WHO}: the state cannot be read ({e}), so it is damaged or was saved by \
+                 another version of polars-online. Load it with the version that saved it, or \
+                 leave out load_state to start over."
             )
         })?;
         // A duration compares by its length, so "5000ms" is the call that
         // saved "5s" (task 160, PC3).
         if same_call(&file.config) != same_call(&config) {
             return Err(format!(
-                "{WHO}: the state was saved by another call -- other formulas or another clock \
-                 policy -- and resumes only the call that saved it"
+                "{WHO}: the state was saved by another call, and it resumes only the call that \
+                 saved it, but {}. Give the call as the state was saved with it, or leave out \
+                 load_state to start over.",
+                call_differences(&same_call(&file.config), &same_call(&config))
             ));
         }
         let mut run = Self::new(config, input)?;
@@ -1912,10 +2064,15 @@ impl WindowsRun {
                 .iter()
                 .map(|(r, t)| format!("{r} column {:?}: {t}", name(r)))
                 .collect();
+            let what = match (run.config.group.is_some(), run.config.session.is_some()) {
+                (true, true) => "group and session columns",
+                (true, false) => "group column",
+                _ => "session column",
+            };
             return Err(format!(
-                "{WHO}: the state keyed its groups and sessions by {}, and this input has {}; \
-                 a key is its value's text, so a column of another type starts every key \
-                 over. Cast the column to the type the state was saved with",
+                "{WHO}: the state was saved with a {what} of another type ({}), and this \
+                 input's ({}) may not give the same keys. Cast the column to the type the state \
+                 was saved with.",
                 saved.join(", "),
                 now.join(", ")
             ));
@@ -1925,20 +2082,35 @@ impl WindowsRun {
             || same_clock(file.core.clock_cfg()) != same_clock(run.core.clock_cfg())
         {
             return Err(format!(
-                "{WHO}: the state's operators do not match its own call"
+                "{WHO}: the state's window operators are not those of the call that saved it, \
+                 so the state is damaged. Load an undamaged copy of the state file, or leave out \
+                 load_state to start over."
             ));
         }
         // The core's own invariants, beyond the call's (review 2026-10-06,
         // PD1): a damaged core that still decoded panicked at the next call.
-        file.core
-            .check()
-            .map_err(|e| format!("{WHO}: the state is damaged: {e}"))?;
+        // The check's own words name the core's parts, which are this
+        // library's, not the reader's: the reader is told the file is
+        // damaged, and what to do.
+        file.core.check().map_err(|_| {
+            format!(
+                "{WHO}: the state is damaged. Load an undamaged copy of the state file, or leave \
+                 out load_state to start over."
+            )
+        })?;
         let held = IpcReader::new(Cursor::new(file.held))
             .finish()
-            .map_err(|e| format!("{WHO}: the state's held rows cannot be read ({e})"))?;
+            .map_err(|e| {
+                format!(
+                    "{WHO}: the rows the state holds cannot be read ({e}), so it is damaged. \
+                     Load an undamaged copy of the state file, or leave out load_state to start \
+                     over."
+                )
+            })?;
         if held.height() != file.core.held() {
             return Err(format!(
-                "{WHO}: the state holds {} rows and its core {}; it is damaged",
+                "{WHO}: the state holds {} rows but counts {}, so it is damaged. Load an undamaged \
+                 copy of the state file, or leave out load_state to start over.",
                 held.height(),
                 file.core.held()
             ));
@@ -1956,15 +2128,16 @@ impl WindowsRun {
             .collect();
         if held.height() > 0 && held_input != want {
             return Err(format!(
-                "{WHO}: the state holds {} rows with columns {:?}, and the frame has {:?}; a \
-                 state resumes on the input it was saved from",
+                "{WHO}: the state holds {} {} with columns {:?}, but the input has {:?}. \
+                 Resume the state on an input with the columns and types it was saved with.",
                 held.height(),
+                if held.height() == 1 { "row" } else { "rows" },
                 held_input
                     .iter()
-                    .map(|(n, t)| format!("{n}: {t}"))
+                    .map(|(n, t)| format!("{n}: {}", crate::arrow::dtype_name(t)))
                     .collect::<Vec<_>>(),
                 want.iter()
-                    .map(|(n, t)| format!("{n}: {t}"))
+                    .map(|(n, t)| format!("{n}: {}", crate::arrow::dtype_name(t)))
                     .collect::<Vec<_>>()
             ));
         }
@@ -1976,7 +2149,13 @@ impl WindowsRun {
         if file.resume_skip > 0 && !file.last_row.is_empty() {
             let last = IpcReader::new(Cursor::new(file.last_row))
                 .finish()
-                .map_err(|e| format!("{WHO}: the state's last row cannot be read ({e})"))?;
+                .map_err(|e| {
+                    format!(
+                        "{WHO}: the last row the state read cannot be read back ({e}), so it is \
+                         damaged. Load an undamaged copy of the state file, or leave out \
+                         load_state to start over."
+                    )
+                })?;
             let have: Vec<(String, DataType)> = last
                 .schema()
                 .iter()
@@ -1984,13 +2163,14 @@ impl WindowsRun {
                 .collect();
             if have != want {
                 return Err(format!(
-                    "{WHO}: the state's last row has columns {:?}, and the frame has {:?}; a \
-                     state resumes on the input it was saved from",
+                    "{WHO}: the last row the state read has columns {:?}, but the input has \
+                     {:?}. Resume the state on the input it was saved from, whole, or on the \
+                     next file, with the columns and types it was saved with.",
                     have.iter()
-                        .map(|(n, t)| format!("{n}: {t}"))
+                        .map(|(n, t)| format!("{n}: {}", crate::arrow::dtype_name(t)))
                         .collect::<Vec<_>>(),
                     want.iter()
-                        .map(|(n, t)| format!("{n}: {t}"))
+                        .map(|(n, t)| format!("{n}: {}", crate::arrow::dtype_name(t)))
                         .collect::<Vec<_>>()
                 ));
             }
@@ -2033,8 +2213,9 @@ impl WindowsRun {
                 // state with none has lost it (review R8, F5): refused rather
                 // than resumed on anything by a check that compares nothing.
                 return Err(format!(
-                    "{WHO}: the state was saved under a slice of {} rows and carries no row to \
-                     know its input by; it is damaged",
+                    "{WHO}: the state was saved from a slice of {} rows but holds no row to \
+                     know its input by, so it is damaged. Load an undamaged copy of the state \
+                     file, or leave out load_state to start over.",
                     file.resume_skip
                 ));
             }
@@ -2111,8 +2292,9 @@ mod tests {
             .err()
             .expect("refused")
         };
-        let gap = "with_windows: session_gap needs session; it says what a session change \
-                   does, and without a session column there is none";
+        let gap = "with_windows: session_gap is set, but session is not, and session_gap says \
+                   only what a change of session does. Set session to the session column, or \
+                   leave out session_gap.";
         for extra in [
             r#", "session_gap": 1"#,
             r#", "session_gap": "reset""#,
@@ -2126,8 +2308,9 @@ mod tests {
         ] {
             assert_eq!(
                 refused(extra),
-                "with_windows: restart_after_step_back needs clock; a step back is read off \
-                 the clock column, and without one every row is one step forward",
+                "with_windows: restart_after_step_back is set, but clock is not, and without a \
+                 clock column every row is one step forward, so no row steps back. Set clock to \
+                 the clock column, or leave out restart_after_step_back.",
                 "{extra}"
             );
         }
@@ -2365,7 +2548,10 @@ mod tests {
         )
         .err()
         .expect("refused");
-        assert!(err.contains("\"z\" holds no operator"), "{err}");
+        assert!(
+            err.contains("holds no window operator or increment"),
+            "{err}"
+        );
         let mut with_hidden: Schema = (*input).clone();
         with_hidden.insert("@po:x".into(), DataType::Float64);
         let err = WindowsRun::new(
@@ -2377,7 +2563,10 @@ mod tests {
         )
         .err()
         .expect("refused");
-        assert!(err.contains("reserved"), "{err}");
+        assert!(
+            err.contains("is kept for the window run's own columns"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2431,27 +2620,27 @@ mod tests {
         for (json, says) in [
             (
                 r#"{"formulas": [], "clock": "t", "gap_cap": 1}"#,
-                "no formulas",
+                "was given. Give at least one",
             ),
             (
                 r#"{"formulas": [{"name": "x", "tree": ["ewm_mean", ["col", "x"], {"half_life": 1}]}], "clock": "t", "gap_cap": 1}"#,
-                "already a column of the frame",
+                "is already a column of the input",
             ),
             (
                 r#"{"formulas": [{"name": "a", "tree": ["ewm_mean", ["col", "x"], {"half_life": 1}]}, {"name": "a", "tree": ["ewm_sum", ["col", "x"], {"half_life": 1}]}], "clock": "t", "gap_cap": 1}"#,
-                "two expressions are named",
+                "are named \"a\"",
             ),
             (
                 r#"{"formulas": [{"name": "a", "tree": ["ewm_mean", ["col", "nope"], {"half_life": 1}]}], "clock": "t", "gap_cap": 1}"#,
-                "no input column \"nope\"",
+                "the input column \"nope\" is not in the input",
             ),
             (
                 r#"{"formulas": [{"name": "a", "tree": ["ewm_mean", ["col", "wide"], {"half_life": 1}]}], "clock": "t", "gap_cap": 1}"#,
-                "input must be a number, got str",
+                "input must be a number, but it is String",
             ),
             (
                 r#"{"formulas": [{"name": "a", "tree": ["-", ["col", "x"], ["lit", 1]]}], "clock": "t", "gap_cap": 1}"#,
-                "\"a\" holds no operator",
+                "holds no window operator or increment",
             ),
             (
                 r#"{"formulas": [{"name": "a", "tree": ["ewm_mean", ["col", "x"], {"half_life": "1s"}]}], "clock": "t", "gap_cap": 1}"#,
@@ -2459,7 +2648,7 @@ mod tests {
             ),
             (
                 r#"{"formulas": [{"name": "a", "tree": ["shift", ["col", "x"]]}], "clock": "t", "gap_cap": 1}"#,
-                "\"shift\" is not read",
+                "\"shift\" is not one of the operators a formula can hold",
             ),
         ] {
             let err = match serde_json::from_str::<WindowsConfig>(json) {
@@ -2595,7 +2784,10 @@ mod tests {
             .err()
             .expect("refused");
         assert!(
-            err.contains("state version 2 not supported (this build reads 9 to 10)"),
+            err.contains(
+                "the state's version is 2, but this version of polars-online reads versions 9 \
+                 to 10"
+            ),
             "{err}"
         );
         let other = rmp_serde::to_vec_named(&Old {
@@ -2606,7 +2798,7 @@ mod tests {
         let err = WindowsRun::load_bytes(&other, config(FORWARD), &input)
             .err()
             .expect("refused");
-        assert!(err.contains("not a state it saved"), "{err}");
+        assert!(err.contains("was not saved by a window run"), "{err}");
     }
 
     /// Review R5, C1: a resumed run that satisfies its limit from the rows the
@@ -2872,7 +3064,8 @@ mod tests {
         let mut run = WindowsRun::load_bytes(&state, config(plain), tied.schema()).unwrap();
         let err = run.feed(&tied, None).expect_err("refused");
         assert!(
-            err.to_string().contains("at the last stamp the state read"),
+            err.to_string()
+                .contains("at the last clock value the state read"),
             "{err}"
         );
     }
@@ -2954,7 +3147,10 @@ mod tests {
         let err = WindowsRun::load_bytes(&state, config(LEFT), wider.schema())
             .err()
             .expect("refused");
-        assert!(err.contains("the state's last row has columns"), "{err}");
+        assert!(
+            err.contains("the last row the state read has columns"),
+            "{err}"
+        );
     }
 
     /// Task 158, E13: a state saved without a slice refuses an input that
@@ -2973,7 +3169,8 @@ mod tests {
         let mut run = WindowsRun::load_bytes(&state, config(LEFT), again.schema()).unwrap();
         let err = run.feed(&again, None).expect_err("refused");
         assert!(
-            err.to_string().contains("at the last stamp the state read"),
+            err.to_string()
+                .contains("at the last clock value the state read"),
             "{err}"
         );
         let next = frame(&[4.0, 5.0, 6.0]);
@@ -3004,7 +3201,7 @@ mod tests {
             .expect_err("refused again")
             .to_string();
         assert!(
-            first.contains("at the last stamp the state read"),
+            first.contains("at the last clock value the state read"),
             "{first}"
         );
         assert_eq!(first, second);
@@ -3083,8 +3280,7 @@ mod tests {
                 .feed(&df.slice(cut, df.height() - cut as usize), None)
                 .expect_err("refused");
             assert!(
-                err.to_string()
-                    .contains("does not begin with a new session"),
+                err.to_string().contains("continues the session last read"),
                 "{cut}: {err}"
             );
         }
@@ -3126,7 +3322,8 @@ mod tests {
         let mut run = WindowsRun::load_bytes(&state, config(GROUPED), day2.schema()).unwrap();
         let err = run.feed(&day2, None).expect_err("refused").to_string();
         assert!(
-            err.contains("another input") && err.contains("restart_after_step_back"),
+            err.contains("starts before the last row the state read")
+                && err.contains("restart_after_step_back"),
             "{err}"
         );
     }
@@ -3281,14 +3478,14 @@ mod tests {
         let clocked = r#", "clock": "t", "gap_cap": 10"#;
         let sum = r#"["ewm_sum", ["col", "x"], {"half_life": 1}]"#;
         for (json, says) in [
-            (one("", sum, clocked), "\"\" is no name for an output"),
+            (one("", sum, clocked), "an output cannot be named \"\""),
             (
                 one("@po:y", sum, clocked),
-                "\"@po:y\" is no name for an output",
+                "an output cannot be named \"@po:y\"",
             ),
             (
                 one("@in:0", sum, clocked),
-                "\"@in:0\" is no name for an output",
+                "an output cannot be named \"@in:0\"",
             ),
             (
                 one(
@@ -3296,12 +3493,11 @@ mod tests {
                     r#"["ewm_sum", ["increment", ["increment", ["col", "x"]]], {"half_life": 1}]"#,
                     clocked,
                 ),
-                "d: an increment's input is a formula of the row's columns, not of another \
-                 increment",
+                "d: an increment's input holds another increment",
             ),
             (
                 one("d", r#"["increment", ["col", "s"]]"#, clocked),
-                "d: an increment's input is a number or a temporal column, got str",
+                "d: an increment's input must be a number or a temporal column, but it is String",
             ),
             (
                 one(
@@ -3309,7 +3505,7 @@ mod tests {
                     r#"["increment", ["-", ["col", "s"], ["lit", 1]]]"#,
                     clocked,
                 ),
-                "d: the increment's input cannot be evaluated: ",
+                "d: Polars cannot compute the increment's input (",
             ),
             (
                 one(
@@ -3317,15 +3513,16 @@ mod tests {
                     r#"["ewm_sum", ["-", ["col", "s"], ["lit", 1]], {"half_life": 1}]"#,
                     clocked,
                 ),
-                "m: ewm_sum's input cannot be evaluated: ",
+                "m: Polars cannot compute ewm_sum's input (",
             ),
             (
                 one("m", sum, r#", "clock": "nope", "gap_cap": 10"#),
-                "with_windows: no clock column \"nope\" in the frame; it has [\"t\", \"x\", \"s\"]",
+                "with_windows: the clock column \"nope\" is not in the input, whose columns are \
+                 [\"t\", \"x\", \"s\"]. Name a column the input has, or add \"nope\" to it.",
             ),
             (
                 one("m", sum, r#", "group": "g""#),
-                "with_windows: no group column \"g\" in the frame",
+                "with_windows: the group column \"g\" is not in the input",
             ),
             (
                 one(
@@ -3333,7 +3530,8 @@ mod tests {
                     sum,
                     r#", "clock": "t", "gap_cap": 10, "like": {"spec": "fit", "accept": ["x", "w"]}"#,
                 ),
-                "with_windows: like= spec \"fit\" reads column \"w\", which the frame has not got",
+                "with_windows: the spec \"fit\" given as like= reads column \"w\", which is not in \
+                 the input",
             ),
         ] {
             let err = WindowsRun::new(config(&json), df.schema())
@@ -3380,31 +3578,32 @@ mod tests {
             (
                 call(r#""1s""#, r#", "clock": "f", "gap_cap": "10s""#),
                 "with_windows: half_life is a duration, which needs a temporal clock column \
-                 (Datetime, Date or Duration); clock is \"f\" (f64)",
+                 (Datetime, Date or Duration), but clock is \"f\" (Float64)",
             ),
             (
                 call(r#""1s""#, ""),
                 "with_windows: half_life is a duration, which needs a temporal clock column \
-                 (Datetime, Date or Duration); clock is not given",
+                 (Datetime, Date or Duration), but clock is not given",
             ),
             (
                 call("1", r#", "clock": "t", "gap_cap": 10"#),
-                "with_windows: half_life is a number, and clock column \"t\" is datetime[ms]; \
-                 write it as a duration",
+                "with_windows: half_life is a number, but clock column \"t\" is Datetime(\"ms\"), \
+                 which measures time. Give half_life as a duration",
             ),
             (
                 call(r#""3d""#, r#", "clock": "d", "gap_cap": "1h""#),
-                "with_windows: gap_cap is 1h, less than the smallest step clock column \"d\" \
-                 (date) can take: every step would be capped to it",
+                "with_windows: gap_cap is 1h, less than a day, the smallest step clock column \
+                 \"d\" (Date) can take, so every step would be cut to it",
             ),
             (
                 call(
                     r#""3d""#,
                     r#", "clock": "d", "gap_cap": "5d", "restart_after_step_back": "1h""#,
                 ),
-                "with_windows: restart_after_step_back is 1h, less than the smallest step clock \
-                 column \"d\" (date) can take: no step back could be as small, so every one \
-                 would start the windows over, which 0 says directly",
+                "with_windows: restart_after_step_back is 1h, less than a day, the smallest step \
+                 clock column \"d\" (Date) can take, so no step back could be as small and every \
+                 one would reset the windows. Set restart_after_step_back to at least a day, or \
+                 to 0 to reset at every step back.",
             ),
         ] {
             let err = WindowsRun::new(config(&json), df.schema())
@@ -3434,7 +3633,7 @@ mod tests {
         let err = run.feed(&df, None).unwrap_err().to_string();
         assert!(
             err.contains("with_windows: clock column \"t\" steps from")
-                && err.contains("at row 1, a difference past the largest double"),
+                && err.contains("at row 1 (counting from 0), a difference past the largest float"),
             "{err}"
         );
     }
@@ -3454,15 +3653,15 @@ mod tests {
         let nulls = df!("t" => [Some(1i64), None, Some(3)], "x" => [1.0, 2.0, 3.0]).unwrap();
         let err = refused(nulls);
         assert!(
-            err.contains("with_windows: row 1 has a null or non-finite clock \"t\""),
+            err.contains("with_windows: clock column \"t\" is null, NaN or infinite at row 1"),
             "{err}"
         );
         let past = df!("t" => [1u64, u64::MAX], "x" => [1.0, 2.0]).unwrap();
         let err = refused(past);
         assert!(
             err.contains(&format!(
-                "with_windows: row 1 has clock \"t\" = {}, past 9223372036854775807, the \
-                 largest value an integer clock holds (an Int64's)",
+                "with_windows: clock column \"t\" is {} at row 1 (counting from 0), past \
+                 9223372036854775807, the largest value an integer clock holds (an Int64's)",
                 u64::MAX
             )),
             "{err}"
@@ -3479,7 +3678,7 @@ mod tests {
         let mut out = run.feed(&df.slice(0, 3), None).unwrap();
         let err = run.feed(&df.slice(3, 2), None).unwrap_err().to_string();
         assert!(
-            err.contains("clock column \"t\" goes backwards by 3 at row 3"),
+            err.contains("clock column \"t\" steps back by 3 at row 3"),
             "{err}"
         );
         // The refused chunk changed nothing: the chunk that follows the
@@ -3660,7 +3859,7 @@ mod tests {
         .unwrap();
         let err = load(&header);
         assert!(
-            err.starts_with("with_windows: the state is damaged, or was written by a build"),
+            err.starts_with("with_windows: the state cannot be read ("),
             "{err}"
         );
         let encode = |core: &Windows, held: &[u8]| {
@@ -3689,7 +3888,9 @@ mod tests {
         let err = load(&encode(&file3.core, &file.held));
         assert_eq!(
             err,
-            "with_windows: the state's operators do not match its own call"
+            "with_windows: the state's window operators are not those of the call that saved \
+             it, so the state is damaged. Load an undamaged copy of the state file, or leave out \
+             load_state to start over."
         );
         // Held rows of another count than the core's.
         let mut fewer = IpcReader::new(Cursor::new(file.held.clone()))
@@ -3703,7 +3904,8 @@ mod tests {
         assert_eq!(
             err,
             format!(
-                "with_windows: the state holds 1 rows and its core {}; it is damaged",
+                "with_windows: the state holds 1 rows but counts {}, so it is damaged. Load an \
+                 undamaged copy of the state file, or leave out load_state to start over.",
                 file.core.held()
             )
         );
@@ -3719,8 +3921,8 @@ mod tests {
             .expect("refused");
         assert!(
             err.contains(&format!(
-                "with_windows: the state holds {} rows with columns [\"t: f64\", \"x: f64\", \
-                 \"wide: str\"], and the frame has [\"t: i64\", \"x: f64\", \"wide: str\"]",
+                "with_windows: the state holds {} rows with columns [\"t: Float64\", \"x: Float64\", \
+                 \"wide: String\"], but the input has [\"t: Int64\", \"x: Float64\", \"wide: String\"]",
                 file.core.held()
             )),
             "{err}"
@@ -3740,8 +3942,8 @@ mod tests {
             .to_string();
         assert!(
             err.contains(
-                "with_windows: clock column \"t\" is i64, and the state it resumes was fed a \
-                 float one; resume a state on the kind of clock that wrote it"
+                "with_windows: clock column \"t\" is Int64, but the state it resumes read a \
+                 float one. Resume the state on a clock of the kind it was saved with."
             ),
             "{err}"
         );
@@ -3755,7 +3957,7 @@ mod tests {
         let err = resumed.feed(&df.slice(4, 2), None).unwrap_err().to_string();
         assert!(
             err.contains(
-                "with_windows: clock column \"t\" is f64, and the state it resumes was fed an \
+                "with_windows: clock column \"t\" is Float64, but the state it resumes read an \
                  integer one"
             ),
             "{err}"

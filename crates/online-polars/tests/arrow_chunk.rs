@@ -197,7 +197,7 @@ fn a_ragged_chunk_is_refused() {
 fn a_column_given_but_unlisted_is_refused() {
     let cols = vec![("y", ArrowCol::F64(nums(&[1.0, 2.0])))];
     let err = ArrowChunk::new(2, cols, Vec::<&str>::new()).unwrap_err();
-    assert!(err.to_string().contains("not listed in `names`"), "{err}");
+    assert!(err.to_string().contains("not listed in names"), "{err}");
 }
 
 /// `has` answers for every column the source listed, read or not, and for
@@ -355,7 +355,7 @@ fn an_integer_array_is_an_integer_clock() {
         .unwrap_err()
         .to_string();
     assert!(
-        err.contains("clock column \"t\" has 9223372036854775808 at row 5"),
+        err.contains("clock column \"t\" has the value 9223372036854775808 at row 5"),
         "{err}"
     );
 }

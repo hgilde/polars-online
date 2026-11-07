@@ -63,7 +63,7 @@ def weight_sums(out: pl.DataFrame) -> list[float | None]:
 
 @pytest.mark.parametrize(
     ("cast", "now"),
-    [(pl.Float64, "f64"), (pl.String, "str"), (pl.Boolean, "bool")],
+    [(pl.Float64, "Float64"), (pl.String, "String"), (pl.Boolean, "Boolean")],
 )
 def test_a_group_column_of_another_form_is_refused_by_name(cast, now):
     """Int64 keys then Float64 ones were the groups '1' and '1.0', two
@@ -72,7 +72,7 @@ def test_a_group_column_of_another_form_is_refused_by_name(cast, now):
     bank = po.ModelBank([ridge(group="g")])
     bank.fit_predict(df.head(20))
     before = bank.save_bytes()
-    with pytest.raises(ValueError, match=rf'group column "g" was i64 and is now {now}'):
+    with pytest.raises(ValueError, match=rf'group column "g" was Int64 and is now {now}'):
         bank.fit_predict(df.slice(20).with_columns(pl.col("g").cast(cast)))
     assert bank.save_bytes() == before, "a refused chunk moves nothing"
 
@@ -85,7 +85,7 @@ def test_a_session_column_of_another_form_is_refused_by_name():
     spec = ridge(session="s", session_gap="reset", clock="t", gap_cap=1e9)
     bank = po.ModelBank([spec])
     bank.fit_predict(df.head(20))
-    with pytest.raises(ValueError, match=r'session column "s" was i32 and is now f64'):
+    with pytest.raises(ValueError, match=r'session column "s" was Int32 and is now Float64'):
         bank.fit_predict(df.slice(20).with_columns(pl.col("s").cast(pl.Float64)))
 
 
@@ -95,9 +95,9 @@ def test_the_form_is_kept_in_the_state_and_read_by_predict():
     bank.fit_predict(df.head(20))
     loaded = po.ModelBank.load_bytes(bank.save_bytes())
     floats = df.slice(20).with_columns(pl.col("g").cast(pl.Float64))
-    with pytest.raises(ValueError, match=r'group column "g" was i64 and is now f64'):
+    with pytest.raises(ValueError, match=r'group column "g" was Int64 and is now Float64'):
         loaded.fit_predict(floats)
-    with pytest.raises(ValueError, match=r'group column "g" was i64 and is now f64'):
+    with pytest.raises(ValueError, match=r'group column "g" was Int64 and is now Float64'):
         loaded.predict(floats)
 
 
@@ -129,7 +129,7 @@ def test_a_null_typed_column_carries_no_form():
     bank = po.ModelBank([ridge(group="g")])
     bank.fit_predict(df.head(20).with_columns(g=pl.lit(None)))
     bank.fit_predict(df.slice(20, 10))
-    with pytest.raises(ValueError, match=r'group column "g" was i64 and is now f64'):
+    with pytest.raises(ValueError, match=r'group column "g" was Int64 and is now Float64'):
         bank.fit_predict(df.slice(30).with_columns(pl.col("g").cast(pl.Float64)))
 
 
@@ -242,7 +242,10 @@ def test_specs_whose_clocks_differ_are_read_one_at_a_time():
     bank = po.ModelBank([a, b, c])
     bank.fit_predict(df)
     for read in (bank.summary, bank.groups):
-        with pytest.raises(ValueError, match=r'spec "m".*datetime.*spec "b".*f64.*spec='):
+        with pytest.raises(
+            ValueError,
+            match=r'spec "m" keeps its clock as Datetime\("us"\) and spec "b" as Float64.*spec=',
+        ):
             read()
         assert read("m")["clock_last"].dtype == pl.Datetime("us")
         assert read("b")["clock_last"].dtype == pl.Float64
@@ -447,9 +450,9 @@ def test_the_null_group_is_read_alone_with_a_list():
 def test_a_group_list_takes_strings_and_none_only():
     bank = po.ModelBank([ridge(group="g")])
     bank.fit_predict(nulls_and_tens())
-    with pytest.raises(TypeError, match=r"group.*str or None.*int"):
+    with pytest.raises(TypeError, match=r"group.*str, or None.*int"):
         bank.summary("m", group=[1])
-    with pytest.raises(TypeError, match=r"group.*str or None.*int"):
+    with pytest.raises(TypeError, match=r"group must be a group key \(a str\).*of type int"):
         bank.coef("m", group=3)  # type: ignore[arg-type]
 
 
@@ -541,7 +544,7 @@ def test_rows_fed_is_the_frames_count_and_rows_seen_names_it():
     assert bank.rows_fed == 30
     assert bank.summary()["rows_fed"].sum() < 30
     assert "rows_fed=30" in repr(bank)
-    with pytest.raises(AttributeError, match=r"rows_seen was renamed rows_fed"):
+    with pytest.raises(AttributeError, match=r"rows_seen: it was renamed rows_fed, a property"):
         bank.rows_seen()
 
 

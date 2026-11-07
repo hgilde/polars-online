@@ -264,7 +264,9 @@ def test_load_state_resumes_the_bank(tmp_path):
     assert plan.collect().equals(want)  # the plan carries the state; each run starts from it
     assert tail.lazy().online.fit_predict([_spec()], load_state=state).collect().equals(want)
     assert tail.online.fit_predict(load_state=state).equals(want)
-    with pytest.raises(ValueError, match="online.fit_predict needs specs, or load_state="):
+    with pytest.raises(
+        ValueError, match="online.fit_predict: neither specs nor load_state is given"
+    ):
         tail.lazy().online.fit_predict()
 
 
@@ -303,9 +305,9 @@ def test_the_eager_and_typed_forms_are_the_bank():
     bank.fit_predict(df)
     assert po.predict(df, bank).equals(bank.predict(df))
     assert po.predict(df.lazy(), bank).collect().equals(bank.predict(df))
-    with pytest.raises(TypeError, match="online.fit_predict takes a polars DataFrame or LazyFrame"):
+    with pytest.raises(TypeError, match="po.fit_predict: it takes a Polars DataFrame or LazyFrame"):
         po.fit_predict(df.to_dict(), [_spec()])  # type: ignore[call-overload]
-    with pytest.raises(TypeError, match="online.predict takes a polars DataFrame or LazyFrame"):
+    with pytest.raises(TypeError, match="po.predict: it takes a Polars DataFrame or LazyFrame"):
         po.predict([1, 2], bank)  # type: ignore[call-overload]
 
 
@@ -331,10 +333,10 @@ def test_errors_name_the_problem():
     # A spec naming a column the plan lacks, or one of the wrong dtype, is
     # refused while the plan is built, the way polars reports its own schema
     # errors: the output schema comes from the bank run on no rows.
-    with pytest.raises(ValueError, match=r'feature column "nope" not found'):
+    with pytest.raises(ValueError, match=r'feature column "nope" is not in the input'):
         df.lazy().online.fit_predict([_spec(features=["nope"])])
     bad = df.with_columns(pl.col("x0").cast(pl.String))
-    with pytest.raises(ValueError, match="must be numeric"):
+    with pytest.raises(ValueError, match=r'feature column "x0" must be a number, but it is String'):
         bad.lazy().online.fit_predict([_spec()])
     # An error the rows raise surfaces carrying the bank's message -- here a
     # clock that runs backwards -- wrapped or not, by version (`_REFUSAL`).
@@ -516,9 +518,13 @@ def test_load_and_save_the_same_path_resumes_in_place(tmp_path):
 
 def test_save_state_is_checked_when_the_plan_is_built(tmp_path):
     df = _frame(n=100)
-    with pytest.raises(FileNotFoundError, match="save_state: .* is not a directory"):
+    with pytest.raises(
+        FileNotFoundError, match="save_state names a file in the folder .*, which does not exist"
+    ):
         df.lazy().online.fit_predict([_spec()], save_state=tmp_path / "nope" / "bank.state")
-    with pytest.raises(FileNotFoundError, match="save_state: .* is not a directory"):
+    with pytest.raises(
+        FileNotFoundError, match="save_state names a file in the folder .*, which does not exist"
+    ):
         df.online.fit_predict([_spec()], save_state=tmp_path / "nope" / "bank.state")
     with pytest.raises(FileNotFoundError):
         df.lazy().online.fit_predict(load_state=tmp_path / "nope.state")
@@ -543,5 +549,5 @@ def test_a_save_state_that_is_a_directory_is_refused_before_the_stream(tmp_path)
             f=po.ewm_mean("x0", half_life=5.0), clock="t", gap_cap=10.0, save_state=where
         ),
     ):
-        with pytest.raises(IsADirectoryError, match="save_state: .* is a directory"):
+        with pytest.raises(IsADirectoryError, match="save_state .* is a folder, not a file"):
             build()

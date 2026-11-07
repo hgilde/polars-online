@@ -294,7 +294,7 @@ class TestNothingLeaksAcrossTheBoundary:
         bad = frame().with_columns(x1=pl.col("x1").cast(pl.String).cast(pl.Categorical))
 
         def raises():
-            with pytest.raises(ValueError, match="has dtype cat; it must be numeric"):
+            with pytest.raises(ValueError, match="must be a number, but it is Categorical"):
                 po.ModelBank([SPEC]).fit_predict(bad)
 
         assert_plateaus(raises)

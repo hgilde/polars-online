@@ -478,7 +478,7 @@ def test_the_variable_sizes_the_default_pool_and_nothing_given_a_count():
         "    print(str(e).split(' is ')[0])\n",
         POLARS_ONLINE_MAX_THREADS="eight",
     )
-    assert out.split("\n") == ["3", "4", 'POLARS_ONLINE_MAX_THREADS="eight"']
+    assert out.split("\n") == ["3", "4", 'environment variable POLARS_ONLINE_MAX_THREADS: "eight"']
 
 
 # ---------------------------------------------------------------------------

@@ -99,7 +99,7 @@ def test_the_second_run_over_a_single_use_plan_warns():
     lf = _single_use()
     bank = _bank()
     bank.fit(lf)
-    with pytest.warns(po.ConsumedSourceWarning, match="consumed once"):
+    with pytest.warns(po.ConsumedSourceWarning, match="gives its rows once"):
         bank.fit(lf)
 
 

@@ -265,6 +265,11 @@ impl ClockKind {
     }
 }
 
+/// A bool as Python writes it, for a message that echoes a keyword.
+fn py_bool(b: bool) -> &'static str {
+    if b { "True" } else { "False" }
+}
+
 const REFRESH_MAGIC: &str = "polars-online refresh_time";
 const REFRESH_VERSION: u32 = 1;
 /// A state holding points a limited feed held back: a build that reads only
@@ -305,14 +310,18 @@ impl RefreshTime {
     pub fn new(names: Vec<String>, pairs: bool) -> Result<Self, String> {
         if names.len() < 2 {
             return Err(format!(
-                "refresh_time: at least two series are needed (got {}); a grid over one series \
-                 is that series' own ticks",
+                "po.stream.refresh_time: names must list at least two series, but it lists {}. \
+                 List two or more series, since the refresh times of one series are its own \
+                 rows.",
                 names.len()
             ));
         }
         let mut seen = std::collections::HashSet::new();
         if let Some(dup) = names.iter().find(|n| !seen.insert(n.as_str())) {
-            return Err(format!("refresh_time: names lists {dup:?} more than once"));
+            return Err(format!(
+                "po.stream.refresh_time: names lists {dup:?} more than once. List each series \
+                 once."
+            ));
         }
         let pairs = if pairs {
             (0..names.len())
@@ -390,42 +399,59 @@ impl RefreshTime {
         pairs: bool,
         grouped: bool,
     ) -> Result<Self, String> {
-        let file: RefreshFile =
-            rmp_serde::from_slice(bytes).map_err(|e| format!("not a refresh_time state ({e})"))?;
+        let file: RefreshFile = rmp_serde::from_slice(bytes).map_err(|e| {
+            format!(
+                "po.stream.refresh_time: the state cannot be read ({e}), so it is damaged or \
+                     was not saved by refresh_time. Pass a state file a refresh_time run saved, \
+                     or leave out load_state to start over."
+            )
+        })?;
         if file.magic != REFRESH_MAGIC {
-            return Err("not a refresh_time state".into());
+            return Err(
+                "po.stream.refresh_time: the state was not saved by refresh_time. Pass a state \
+                 file a refresh_time run saved, or leave out load_state to start over."
+                    .into(),
+            );
         }
         if file.version != REFRESH_VERSION && file.version != REFRESH_VERSION_HELD {
             return Err(format!(
-                "refresh_time state version {} not supported (this build reads \
-                 {REFRESH_VERSION} and {REFRESH_VERSION_HELD})",
+                "po.stream.refresh_time: the state's version is {}, but this version of \
+                 polars-online reads versions {REFRESH_VERSION} and {REFRESH_VERSION_HELD}. Load \
+                 the state with the version of polars-online that saved it, or leave out \
+                 load_state to start over.",
                 file.version
             ));
         }
         if (file.version == REFRESH_VERSION_HELD) != file.held.is_some() {
             return Err(format!(
-                "refresh_time: the state is damaged: version {} {} held points",
-                file.version,
-                if file.held.is_some() {
-                    "with"
-                } else {
-                    "without"
-                }
+                "po.stream.refresh_time: the state is damaged: its contents do not match its \
+                 version, {}. Load an undamaged copy of the state file, or leave out \
+                 load_state to start over.",
+                file.version
             ));
         }
         if file.names != names || file.pairs != pairs {
             return Err(format!(
-                "refresh_time: the state was saved with names = {:?} and pairs = {}, not {:?} \
-                 and {}; a state resumes only the grid it holds",
-                file.names, file.pairs, names, pairs
+                "po.stream.refresh_time: the state was saved with names = {:?} and pairs = {}, \
+                 but this call gives {:?} and {}. Give the names and pairs the state was saved \
+                 with, or leave out load_state to start over.",
+                file.names,
+                py_bool(file.pairs),
+                names,
+                py_bool(pairs)
             ));
         }
         if file.grouped != grouped {
             return Err(format!(
-                "refresh_time: the state was saved {} a group column and is resumed {} one; \
-                 a grouped state holds a grid per key, an ungrouped one a single grid",
+                "po.stream.refresh_time: the state was saved {} a group column, but this call \
+                 has {}. {}, as the state was saved, or leave out load_state to start over.",
                 if file.grouped { "with" } else { "without" },
-                if grouped { "with" } else { "without" }
+                if grouped { "one" } else { "none" },
+                if file.grouped {
+                    "Give group"
+                } else {
+                    "Leave out group"
+                }
             ));
         }
         let mut rt = Self::new(names, pairs)?;
@@ -441,9 +467,15 @@ impl RefreshTime {
             .iter()
             .find(|(_, grids)| grids.len() != n_grids || !grids.iter().all(|g| g.fits(width)))
         {
+            let holder = match key.as_str() {
+                _ if !grouped => "the state".to_string(),
+                Some(k) => format!("group {k:?}"),
+                None => "the null group".to_string(),
+            };
             return Err(format!(
-                "refresh_time: the state is damaged: group {key}'s grids are not {n_grids} of \
-                 {width} series, each waiting on the series it has not seen"
+                "po.stream.refresh_time: the state is damaged: {holder} does not hold \
+                 {n_grids} sets of {width} series. Load an undamaged copy of the state file, or \
+                 leave out load_state to start over."
             ));
         }
         rt.states = file.states.into_iter().collect();
@@ -459,8 +491,9 @@ impl RefreshTime {
                     .any(|(pi, t, l)| *pi >= n_grids || t.len() != width || l.len() != width)
             {
                 return Err(format!(
-                    "refresh_time: the state is damaged: its held points are not points of \
-                     {n_grids} grids of {width} series"
+                    "po.stream.refresh_time: the state is damaged: the refresh times it holds \
+                     are not of {n_grids} sets of {width} series. Load an undamaged copy of \
+                     the state file, or leave out load_state to start over."
                 ));
             }
         }
@@ -591,16 +624,18 @@ impl RefreshTime {
             || matches!(time_dtype, DataType::Boolean | DataType::Null))
         {
             polars_bail!(ComputeError:
-                "refresh_time: clock column {:?} has dtype {}; it must be numeric or temporal \
-                 (cast it, e.g. pl.col({:?}).cast(pl.Float64) or pl.col({:?}).str.to_datetime())",
-                cols.clock, time_dtype, cols.clock, cols.clock
+                "po.stream.refresh_time: clock column {:?} must be a number or temporal, but it \
+                 is {}. Cast it, such as with pl.col({:?}).cast(pl.Float64) or \
+                 pl.col({:?}).str.to_datetime().",
+                cols.clock, crate::arrow::dtype_name(&time_dtype), cols.clock, cols.clock
             );
         }
         let base = self.rows_fed;
         let grouped = cols.group.is_some();
         match self.grouped {
             Some(g) if g != grouped => polars_bail!(ComputeError:
-                "refresh_time: fed {} a group column after being fed {} one",
+                "po.stream.refresh_time: this chunk comes {} a group column, but the chunks \
+                 before it came {} one. Give every chunk the same columns.",
                 if grouped { "with" } else { "without" },
                 if g { "with" } else { "without" }
             ),
@@ -608,7 +643,7 @@ impl RefreshTime {
         }
         if time_dtype.is_integer() && !crate::arrow::fits_64(&time_dtype) {
             polars_bail!(ComputeError: "{}",
-                crate::arrow::wide_integer_clock("refresh_time", cols.clock, &time_dtype));
+                crate::arrow::wide_integer_clock("po.stream.refresh_time", cols.clock, &time_dtype));
         }
         let integer = time_dtype.is_integer() && crate::arrow::fits_64(&time_dtype);
         let (numbers, nanos) = if time_dtype.is_temporal() {
@@ -616,6 +651,7 @@ impl RefreshTime {
                 time_col.as_materialized_series(),
                 base,
                 crate::arrow::NanosRole::Clock,
+                "po.stream.refresh_time",
             )?;
             (None, Some(ns))
         } else if integer {
@@ -636,9 +672,11 @@ impl RefreshTime {
                         v.map(|v| {
                             i64::try_from(v).map_err(|_| {
                                 polars_err!(ComputeError:
-                                    "refresh_time: row {} has {:?} = {v}, past {}, the largest \
-                                     value an integer clock holds (an Int64's)",
-                                    base + row, cols.clock, i64::MAX)
+                                    "po.stream.refresh_time: clock column {:?} is {v} at row \
+                                     {} (counting from 0), past {}, the largest value an \
+                                     integer clock holds (an Int64's). Cast the clock to \
+                                     Int64 after subtracting an origin from it.",
+                                    cols.clock, base + row, i64::MAX)
                             })
                         })
                         .transpose()
@@ -667,9 +705,9 @@ impl RefreshTime {
         let dtype = value.dtype();
         if !(dtype.is_numeric() || matches!(dtype, DataType::Boolean | DataType::Null)) {
             polars_bail!(ComputeError:
-                "refresh_time: value column {:?} has dtype {}; it must be numeric \
-                 (cast it, e.g. pl.col({:?}).cast(pl.Float64))",
-                cols.value, dtype, cols.value
+                "po.stream.refresh_time: value column {:?} must be a number, but it is {}. \
+                 Cast it, such as with pl.col({:?}).cast(pl.Float64).",
+                cols.value, crate::arrow::dtype_name(dtype), cols.value
             );
         }
         let value = value.cast(&DataType::Float64)?;
@@ -701,25 +739,30 @@ impl RefreshTime {
             let at = base + row;
             let Some(name) = series.get(row) else {
                 polars_bail!(ComputeError:
-                    "refresh_time: row {at} has a null {:?}", cols.series);
+                    "po.stream.refresh_time: series column {:?} is null at row {at} (counting \
+                     from 0). Drop the rows that name no series.", cols.series);
             };
             let Some(&si) = index.get(name) else {
                 polars_bail!(ComputeError:
-                    "refresh_time: row {at} names series {name:?}, which is not in `names` \
-                     ({:?}); a row for an unknown series is a misspelling, not something to drop",
+                    "po.stream.refresh_time: row {at} (counting from 0) names series \
+                     {name:?}, which is not in names ({:?}). Add {name:?} to names, or drop \
+                     its rows before the call.",
                     self.names
                 );
             };
             let Some(t) = instant(row) else {
                 polars_bail!(ComputeError:
-                    "refresh_time: row {at} has a null or non-finite {:?}", cols.clock);
+                    "po.stream.refresh_time: clock column {:?} is null, NaN or infinite at row \
+                     {at} (counting from 0). Drop the rows whose clock has no value, or fill it in.",
+                    cols.clock);
             };
             // The other kind of clock cannot be ordered against a saved one,
             // on any row, a new group's included.
             match self.kind {
                 Some(k) if k != t.kind() => polars_bail!(ComputeError:
-                    "refresh_time: clock column {:?} is {}, and the state it resumes is \
-                     {}; resume a state on the kind of clock that wrote it",
+                    "po.stream.refresh_time: clock column {:?} is {}, but the state it resumes \
+                     was saved on a {} clock. Resume the state on a clock of the kind it was \
+                     saved with.",
                     cols.clock, t.kind().name(), k.name()
                 ),
                 _ => self.kind = Some(t.kind()),
@@ -736,8 +779,9 @@ impl RefreshTime {
                 Some(prev) => {
                     if t < *prev {
                         polars_bail!(ComputeError:
-                            "refresh_time: row {at} has {:?} = {}, below the previous row's \
-                             {} in the same group; the input must be in clock order",
+                            "po.stream.refresh_time: clock column {:?} is {} at row {at} \
+                             (counting from 0), below the previous row's {} in the same group. \
+                             Sort the input by the clock.",
                             cols.clock,
                             t.show(&time_dtype),
                             prev.show(&time_dtype)
@@ -1159,7 +1203,7 @@ mod tests {
                     .unwrap_err()
                     .to_string();
                 assert!(
-                    e.contains("value column \"v\"") && e.contains("must be numeric"),
+                    e.contains("value column \"v\"") && e.contains("must be a number"),
                     "{what}, {} rows: {e}",
                     df.height()
                 );
@@ -1203,7 +1247,7 @@ mod tests {
                     .unwrap_err()
                     .to_string();
                 assert!(
-                    e.contains("clock column \"t\"") && e.contains("must be numeric or temporal"),
+                    e.contains("clock column \"t\"") && e.contains("must be a number or temporal"),
                     "{what}, {} rows: {e}",
                     df.height()
                 );
@@ -1267,7 +1311,10 @@ mod tests {
             .feed(&long(&[("a", 5.0, 1.0), ("b", 2.0, 2.0)]), &cols(&[]))
             .unwrap_err()
             .to_string();
-        assert!(e.contains("row 1") && e.contains("clock order"), "{e}");
+        assert!(
+            e.contains("row 1") && e.contains("Sort the input by the clock"),
+            "{e}"
+        );
 
         assert!(
             RefreshTime::new(vec!["a".into()], false)
@@ -1387,7 +1434,7 @@ mod tests {
         assert!(
             RefreshTime::load_bytes(b"nope", names.clone(), false, false)
                 .unwrap_err()
-                .contains("not a refresh_time state")
+                .contains("the state cannot be read")
         );
         // Resumed on the other kind of clock, or before its last clock.
         let mut resumed = RefreshTime::load_bytes(&bytes, names.clone(), false, false).unwrap();
@@ -1404,7 +1451,10 @@ mod tests {
             .feed(&long(&[("b", 0.5, 1.0)]), &cols(&[]))
             .unwrap_err()
             .to_string();
-        assert!(e.contains("row 0") && e.contains("clock order"), "{e}");
+        assert!(
+            e.contains("row 0") && e.contains("Sort the input by the clock"),
+            "{e}"
+        );
     }
 
     /// Kept in nanoseconds, a temporal clock resumes on another unit: saved
@@ -1447,7 +1497,7 @@ mod tests {
             .feed(&frame(&[1_999], TimeUnit::Nanoseconds, &["b"]), &cols(&[]))
             .unwrap_err()
             .to_string();
-        assert!(e.contains("clock order"), "{e}");
+        assert!(e.contains("Sort the input by the clock"), "{e}");
     }
 
     /// Review 2026-09-28: the file records the grouping and the clock kind,
@@ -1460,7 +1510,7 @@ mod tests {
         let bytes = rt.save_bytes().unwrap();
         let e = RefreshTime::load_bytes(&bytes, names.clone(), false, true).unwrap_err();
         assert!(
-            e.contains("without a group column") && e.contains("resumed with"),
+            e.contains("without a group column") && e.contains("this call has one"),
             "{e}"
         );
         // Fed a new group only, the other kind of clock is still refused.
@@ -1713,7 +1763,7 @@ mod tests {
             df!("series" => [Some("a"), None], "t" => [1.0, 2.0], "v" => [1.0, 2.0]).unwrap(),
         );
         assert!(
-            e.contains("refresh_time: row 1 has a null \"series\""),
+            e.contains("refresh_time: series column \"series\" is null at row 1"),
             "{e}"
         );
         for t in [
@@ -1733,7 +1783,7 @@ mod tests {
             .unwrap();
             let e = refused(df);
             assert!(
-                e.contains("refresh_time: row 1 has a null or non-finite \"t\""),
+                e.contains("refresh_time: clock column \"t\" is null, NaN or infinite at row 1"),
                 "{t:?}: {e}"
             );
         }
@@ -1742,8 +1792,8 @@ mod tests {
         );
         assert!(
             e.contains(&format!(
-                "refresh_time: row 1 has \"t\" = {}, past 9223372036854775807, the largest \
-                 value an integer clock holds (an Int64's)",
+                "refresh_time: clock column \"t\" is {} at row 1 (counting from 0), past \
+                 9223372036854775807, the largest value an integer clock holds (an Int64's)",
                 u64::MAX
             )),
             "{e}"
@@ -1772,7 +1822,9 @@ mod tests {
             .unwrap();
         let e = refused(df!("series" => ["a", "b"], "t" => far, "v" => [1.0, 2.0]).unwrap());
         assert!(
-            e.contains("clock column \"t\" has an instant at row 1 that nanoseconds cannot hold"),
+            e.contains(
+                "column \"t\" holds an instant at row 1 (counting from 0) before 21 September 1677"
+            ),
             "{e}"
         );
         // A group column on one chunk and none on the next, and the reverse.
@@ -1788,12 +1840,14 @@ mod tests {
             (
                 &grouped,
                 &cols(&keep),
-                "fed without a group column after being fed with one",
+                "this chunk comes without a group column, but the chunks before it came with \
+                 one",
             ),
             (
                 &cols(&keep),
                 &grouped,
-                "fed with a group column after being fed without one",
+                "this chunk comes with a group column, but the chunks before it came without \
+                 one",
             ),
         ] {
             let mut rt = RefreshTime::new(ab(), false).unwrap();
@@ -1859,11 +1913,9 @@ mod tests {
                     (false, Err(e)) => {
                         let e = e.to_string();
                         assert!(
-                            e.contains("refresh_time: row ")
-                                && e.contains(" has \"t\" = ")
-                                && e.contains(
-                                    "in the same group; the input must be in clock order"
-                                ),
+                            e.contains("refresh_time: clock column \"t\" is ")
+                                && e.contains(" (counting from 0), below the previous row's ")
+                                && e.contains("in the same group. Sort the input by the clock."),
                             "{first:?} then {then:?}: {e}"
                         );
                     }
@@ -1882,7 +1934,10 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            e.contains("row 1 has \"t\" = 2024-01-01, below the previous row's 2024-01-03"),
+            e.contains(
+                "clock column \"t\" is 2024-01-01 at row 1 (counting from 0), below the \
+                 previous row's 2024-01-03"
+            ),
             "{e}"
         );
         let span = Series::new("t".into(), [90_000i64, 30_000])
@@ -1895,7 +1950,10 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            e.contains("row 1 has \"t\" = 30s, below the previous row's 1m 30s"),
+            e.contains(
+                "clock column \"t\" is 30s at row 1 (counting from 0), below the previous \
+                 row's 1m 30s"
+            ),
             "{e}"
         );
     }
@@ -1921,19 +1979,30 @@ mod tests {
         let load = |b: &[u8]| RefreshTime::load_bytes(b, ab(), false, false);
         assert_eq!(
             load(&file("polars-online windows", REFRESH_VERSION)).err(),
-            Some("not a refresh_time state".to_string())
+            Some(
+                "po.stream.refresh_time: the state was not saved by refresh_time. Pass a state \
+                 file a refresh_time run saved, or leave out load_state to start over."
+                    .to_string()
+            )
         );
         assert_eq!(
             load(&file(REFRESH_MAGIC, REFRESH_VERSION_HELD + 1)).err(),
             Some(format!(
-                "refresh_time state version {} not supported (this build reads \
-                 {REFRESH_VERSION} and {REFRESH_VERSION_HELD})",
+                "po.stream.refresh_time: the state's version is {}, but this version of \
+                 polars-online reads versions {REFRESH_VERSION} and {REFRESH_VERSION_HELD}. Load \
+                 the state with the version of polars-online that saved it, or leave out \
+                 load_state to start over.",
                 REFRESH_VERSION_HELD + 1
             ))
         );
         assert_eq!(
             load(&file(REFRESH_MAGIC, REFRESH_VERSION_HELD)).err(),
-            Some("refresh_time: the state is damaged: version 2 without held points".to_string())
+            Some(
+                "po.stream.refresh_time: the state is damaged: its contents do not match its \
+                 version, 2. Load an undamaged copy of the state file, or leave out load_state \
+                 to start over."
+                    .to_string()
+            )
         );
         assert!(load(&file(REFRESH_MAGIC, REFRESH_VERSION)).is_ok());
     }

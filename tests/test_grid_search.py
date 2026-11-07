@@ -328,7 +328,7 @@ def test_refusals_name_what_to_give(tmp_path):
     lf = wander(tmp_path / "w.parquet", n=600)
     spec = po.spec.ewridge("g", targets=["y"], features=["x0"], half_life=[10.0, 80.0])
     sgd = functools.partial(po.spec.sgd, targets=["y"], features=["x0"], half_life=50.0)
-    with pytest.raises(ValueError, match="scoring is one of"):
+    with pytest.raises(ValueError, match='scoring must be "mse" or "loglik", but it is \'r2\''):
         po.eval.grid_search(lf, spec, scoring="r2")
     with pytest.raises(ValueError, match="n_splits must be"):
         po.eval.grid_search(lf, spec, n_splits=0)
@@ -336,7 +336,7 @@ def test_refusals_name_what_to_give(tmp_path):
         po.eval.grid_search(lf, spec, gap=-1)
     with pytest.raises(TypeError, match="param_grid needs a spec builder"):
         po.eval.grid_search(lf, spec, {"half_life": [1.0]})
-    with pytest.raises(TypeError, match="param_grid is a dict"):
+    with pytest.raises(TypeError, match="param_grid must be a non-empty dict"):
         po.eval.grid_search(lf, sgd)
     with pytest.raises(TypeError, match="list of the values"):
         po.eval.grid_search(lf, sgd, {"learning_rate": 0.1})
@@ -353,7 +353,7 @@ def test_refusals_name_what_to_give(tmp_path):
         )
     with pytest.raises(TypeError, match="LazyFrame or DataFrame"):
         po.eval.grid_search({"y": [1.0]}, spec)
-    with pytest.raises(TypeError, match="a spec, a list of them, or a builder"):
+    with pytest.raises(TypeError, match="specs must be a spec, a list of specs or a spec builder"):
         po.eval.grid_search(lf, [])
     with pytest.raises(ValueError, match='scoring="loglik"'):
         po.eval.grid_search(lf, po.spec.ew_cov("c", features=["x0", "x1"], half_life=50.0))
@@ -362,7 +362,10 @@ def test_refusals_name_what_to_give(tmp_path):
     late = po.spec.ewridge(
         "late", targets=["y"], features=["x0"], half_life=[10.0, 80.0], min_weight=1e9
     )
-    with pytest.raises(ValueError, match="on none of them does every candidate"):
+    with pytest.raises(
+        ValueError,
+        match="None of them has a prediction of target 'y' from every slot with the target present",
+    ):
         po.eval.grid_search(lf, late, n_splits=2)
 
 
@@ -377,12 +380,12 @@ def test_too_few_rows_names_the_spans_and_the_remedy(tmp_path):
     lf = wander(tmp_path / "w.parquet", n=600)
     spec = po.spec.ewridge("g", targets=["y"], features=["x0"], half_life=[10.0, 80.0])
     assert refusal(lambda: po.eval.grid_search(lf.head(4), spec, n_splits=5)) == (
-        "po.eval.grid_search: 4 rows are too few for n_splits=5, which cuts the rows into 6 "
-        "spans of a row or more. Give fewer n_splits, 3 at most, or more rows."
+        "po.eval.grid_search: n_splits=5 cuts the rows into 6 spans of a row or more, but 4 "
+        "rows are too few. Give fewer n_splits, 3 at most, or more rows."
     )
     assert refusal(lambda: po.eval.grid_search(lf.head(1), spec, n_splits=1)) == (
-        "po.eval.grid_search: 1 row is too few for n_splits=1, which cuts the rows into 2 "
-        "spans of a row or more. Give two rows at least."
+        "po.eval.grid_search: n_splits=1 cuts the rows into 2 spans of a row or more, but 1 "
+        "row is too few. Give 2 rows at least, or fewer n_splits."
     )
     assert refusal(lambda: po.eval.grid_search(lf, spec, n_splits=2, gap=200)) == (
         "po.eval.grid_search: the first span, rows 0-199 of 600 at n_splits=2, is 200 rows, "
@@ -410,16 +413,17 @@ def test_a_warm_up_that_outlasts_the_first_span_names_it_and_the_remedy(tmp_path
         "more rows."
     )
     assert refusal(lambda: po.eval.grid_search(lf, ridge, grid, n_splits=3)) == (
-        "po.eval.grid_search: the first choice reads rows 0-149, the 150 before the first "
-        "test span at n_splits=3, and on none of them does every candidate for target 'y' "
-        "predict with the target present: 'pred_y' of spec 'min_weight=200.0' predicts on 0, "
-        "the fewest, and the target is present on 150. " + remedy
+        "po.eval.grid_search: at n_splits=3, the first choice of a grid point reads rows "
+        "0-149, the 150 before the first test span. None of them has a prediction of target 'y' "
+        "from every slot with the target present: 'pred_y' of spec \"min_weight=200.0\" "
+        "predicts on 0, the fewest, and the target is present on 150. " + remedy
     )
     assert refusal(lambda: po.eval.grid_search(lf, ridge, grid, n_splits=1, gap=150)) == (
-        "po.eval.grid_search: the first choice reads rows 0-149, the 150 before the first "
-        "test span less gap=150 at n_splits=1, and on none of them does every candidate for "
-        "target 'y' predict with the target present: 'pred_y' of spec 'min_weight=200.0' "
-        "predicts on 0, the fewest, and the target is present on 150. " + remedy
+        "po.eval.grid_search: at n_splits=1, the first choice of a grid point reads rows "
+        "0-149, the 150 before the gap of 150 rows ahead of the first test span. None of them "
+        "has a prediction of target 'y' from every slot with the target present: 'pred_y' of "
+        'spec "min_weight=200.0" predicts on 0, the fewest, and the target is present on '
+        "150. " + remedy
     )
     # The remedy: one split reads the first 300 rows, and the late setting
     # predicts on the last of them.
@@ -434,7 +438,7 @@ def test_a_warm_up_that_outlasts_the_first_span_names_it_and_the_remedy(tmp_path
     spec = po.spec.ewridge("g", targets=["y"], features=["x0"], half_life=[10.0, 80.0])
     message = refusal(lambda: po.eval.grid_search(unseen, spec, n_splits=2))
     assert (
-        "'pred_y@h10' of spec 'g' predicts on 0, the fewest, and the target is present on 0. "
+        "'pred_y@h10' of spec \"g\" predicts on 0, the fewest, and the target is present on 0. "
         in message
     )
 
@@ -447,10 +451,10 @@ def test_a_loglik_warm_up_that_outlasts_the_first_span_is_named(tmp_path):
     assert refusal(
         lambda: po.eval.grid_search(frame, bocpd, grid, n_splits=2, scoring="loglik")
     ) == (
-        "po.eval.grid_search: the first choice reads rows 0-199, the 200 before the first "
-        "test span at n_splits=2, and on none of them does every candidate have a loglik: "
-        "'loglik' of spec 'hazard=10.0' has one on 0, the fewest. Give fewer n_splits, a "
-        "smaller gap, a shorter warm-up (min_weight, warm_rows) or more rows."
+        "po.eval.grid_search: at n_splits=2, the first choice of a grid point reads rows "
+        "0-199, the 200 before the first test span. None of them has a loglik from every "
+        "slot: 'loglik' of spec \"hazard=10.0\" has one on 0, the fewest. Give fewer "
+        "n_splits, a smaller gap, a shorter warm-up (min_weight, warm_rows) or more rows."
     )
     table = po.eval.grid_search(frame, bocpd, grid, n_splits=1, scoring="loglik")
     assert table.filter(kind="choice")["n"].item() == 300
@@ -474,7 +478,7 @@ def test_a_query_whose_rows_change_between_the_count_and_the_run_is_refused(tmp_
     assert refusal(lambda: po.eval.grid_search(lf, spec, n_splits=2)) == (
         "po.eval.grid_search: the query gave 300 rows when counted and 280 when run, so the "
         "spans placed by the count do not fit the rows scored. Give a query that returns the "
-        "same rows each time it is read, or collect it to a frame first."
+        "same rows each time it runs, or pass its result as a frame."
     )
     assert len(reads) == 2
 

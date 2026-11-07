@@ -628,7 +628,7 @@ class TestEdgeCases:
         msg = str(exc.value)
         assert f'label column "y" has the value "c" at row {first_c}' in msg
         assert 'not one of the classes ["a", "b"]' in msg
-        assert "null the rows that should only be scored" in msg
+        assert "set the label to null on rows the model should predict without learning" in msg
         # A nested label column is refused like any key.
         nested = df.with_columns(pl.struct("y").alias("y"))
         with pytest.raises(ValueError, match="label column"):
@@ -890,7 +890,9 @@ class TestRefusals:
     def test_unpack_says_what_an_ew_class_struct_holds(self):
         X, lab = gaussians(100, seed=27, **THREE)
         out = po.ModelBank([spec()]).fit_predict(frame(X, lab))
-        with pytest.raises(TypeError, match="an ew_class struct a class and its posteriors"):
+        with pytest.raises(
+            TypeError, match="an ew_class model a class and its posterior probabilities"
+        ):
             po.eval.unpack(out, "m")
 
     def test_the_cli_runs_it(self, tmp_path, online_cli):

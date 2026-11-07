@@ -63,7 +63,11 @@ pub fn lars_paths(
         weights.to_vec()
     };
     if weights.len() != n {
-        polars_bail!(ComputeError: "{} penalty weights for {} features", weights.len(), n);
+        return Err(internal(format!(
+            "{} penalty weights were given for {} features",
+            weights.len(),
+            n
+        )));
     }
     threads.install(|| {
         grams
@@ -355,16 +359,22 @@ pub fn fit_jobs(
     Ok(out.into_iter().flatten().collect())
 }
 
-/// Why a column named twice in one fit is refused: what follows "names
-/// column `c` twice; " wherever a fit's columns are checked.
-pub const TWICE: &str = "a column is one regressor, and a fit given it twice solves a singular \
-    system and writes one of its two coefficients over the other: name it once";
-
 /// The first column `slots` names a second time, if any (task 269, D-3).
-/// A selection may repeat a column; a fit may not ([`TWICE`]).
+/// A selection may repeat a column; a fit may not: a fit given a column
+/// twice solves a singular system.
 pub fn repeated_slot(slots: &[usize]) -> Option<usize> {
     let mut seen = std::collections::HashSet::with_capacity(slots.len());
     slots.iter().copied().find(|&c| !seen.insert(c))
+}
+
+/// A refusal the Python calls check before they reach here, said as the
+/// defect it would be: `po.gram` and its native layer resolve every index
+/// from the names a reader gives and check each count first.
+fn internal(what: String) -> PolarsError {
+    polars_err!(ComputeError:
+        "po.gram: internal: {what}, which is a defect in polars-online. Open an issue at \
+         https://github.com/hgilde/polars-online/issues with this message."
+    )
 }
 
 /// Every index [`fit_jobs`] reads, in range, and no column set naming a
@@ -379,37 +389,54 @@ fn check_jobs(
 ) -> PolarsResult<()> {
     let (k, m) = grams.first().map_or((0, 0), |g| (g.k, g.targets()));
     if let Some(g) = grams.iter().find(|g| g.k != k || g.targets() != m) {
-        polars_bail!(ComputeError: "every Gram must have the same columns and targets: \
-            {k} and {m}, then {} and {}", g.k, g.targets());
+        polars_bail!(ComputeError:
+            "po.gram: every Gram must have the same columns and targets, but one has {k} columns \
+             and {m} targets and another {} and {}. Fit together only Grams of the same columns \
+             and targets.",
+            g.k, g.targets());
     }
     for (s, subset) in subsets.iter().enumerate() {
         if subset.is_empty() {
-            polars_bail!(ComputeError: "subset {s} names no Gram");
+            return Err(internal(format!("subset {s} names no Gram")));
         }
         if let Some(&i) = subset.iter().find(|&&i| i >= grams.len()) {
-            polars_bail!(ComputeError: "subset {s} names Gram {i} of {}", grams.len());
+            return Err(internal(format!(
+                "subset {s} names Gram {i}, but there are {} Grams",
+                grams.len()
+            )));
         }
     }
     if let Some(d) = draws
         .iter()
         .find(|d| !d.is_empty() && d.len() != grams.len())
     {
-        polars_bail!(ComputeError: "a draw has {} signs for {} Grams", d.len(), grams.len());
+        return Err(internal(format!(
+            "a draw has {} signs for {} Grams",
+            d.len(),
+            grams.len()
+        )));
     }
     if let Some(&c) = icept.iter().find(|&&c| c >= k) {
-        polars_bail!(ComputeError: "intercept column {c} out of range for {k} columns");
+        return Err(internal(format!(
+            "the intercept is column {c}, but the Gram has {k} columns"
+        )));
     }
     for (i, set) in sets.iter().enumerate() {
         if let Some(&c) = set.slots.iter().find(|&&c| c >= k || Some(c) == icept) {
-            polars_bail!(ComputeError: "column set {i} names column {c}, out of range for {k} \
-                columns or the intercept");
+            return Err(internal(format!(
+                "column set {i} names column {c}, which is the intercept or past the Gram's {k} \
+                 columns"
+            )));
         }
         if let Some(c) = repeated_slot(&set.slots) {
-            polars_bail!(ComputeError: "column set {i} names column {c} twice; {TWICE}");
+            return Err(internal(format!("column set {i} names column {c} twice")));
         }
         if !set.weights.is_empty() && set.weights.len() != set.slots.len() {
-            polars_bail!(ComputeError: "column set {i}: {} penalty weights for {} features",
-                set.weights.len(), set.slots.len());
+            return Err(internal(format!(
+                "column set {i} has {} penalty weights for {} features",
+                set.weights.len(),
+                set.slots.len()
+            )));
         }
     }
     for (j, job) in jobs.iter().enumerate() {
@@ -422,7 +449,7 @@ fn check_jobs(
         .into_iter()
         .find(|&(_, at, n)| at >= n);
         if let Some((what, at, n)) = bad {
-            polars_bail!(ComputeError: "job {j} names {what} {at} of {n}");
+            return Err(internal(format!("job {j} names {what} {at} of {n}")));
         }
     }
     Ok(())

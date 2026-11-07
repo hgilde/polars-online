@@ -1014,7 +1014,7 @@ class TestEdgeCases:
         # The layout has no fixed positions: nothing to name, nothing to index.
         assert po.spec.coef_fields(s).height == 0
         assert po.spec.coef_index(s).height == 0
-        with pytest.raises(ValueError, match="micro's coef is one .* row per established summary"):
+        with pytest.raises(ValueError, match="a micro model keeps a varying number of clusters"):
             po.ModelBank([s]).coef("m")
         flat = po.ModelBank([s]).fit_predict(frame(X)).online.unnest([s])
         assert "coef" in flat.columns and flat["coef"].dtype == pl.List(pl.Float64)
@@ -1121,7 +1121,7 @@ class TestRefusals:
     def test_unpack_says_what_a_micro_struct_holds(self):
         X, _ = blobs(n=100, seed=38)
         out = po.ModelBank([spec()]).fit_predict(frame(X))
-        with pytest.raises(TypeError, match="a kmeans or micro struct assignments"):
+        with pytest.raises(TypeError, match="a kmeans or micro model cluster assignments"):
             po.eval.unpack(out, "m")
 
     def test_the_cli_runs_it(self, tmp_path, online_cli):

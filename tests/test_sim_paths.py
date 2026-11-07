@@ -33,20 +33,25 @@ def test_a_singular_state_is_factored_with_a_rounding_scale_nudge():
     [
         (
             dict(states=[np.array([[1.0, 0.5], [0.4, 1.0]])]),
-            "sim.regimes: state 0 is not symmetric",
+            r"po.sim.regimes: states\[0\] must be a correlation matrix, but it is not symmetric",
         ),
         (
             dict(states=[np.array([[1.0, 0.9, -0.9], [0.9, 1.0, 0.9], [-0.9, 0.9, 1.0]])]),
-            "sim.regimes: state 0 is not positive semi-definite",
+            r"po.sim.regimes: states\[0\] must be a correlation matrix, but it has a negative "
+            "eigenvalue",
         ),
-        (dict(states=[0.3], cycle_rows=0), "sim.regimes: cycle_rows must be >= 1"),
+        (
+            dict(states=[0.3], cycle_rows=0),
+            "po.sim.regimes: cycle_rows must be at least 1, but it is 0",
+        ),
         (
             dict(states=[0.3], scale_state=[0.0, 1.0]),
-            "sim.regimes: scale_state must be a scalar or 1 values",
+            r"po.sim.regimes: scale_state must be one number or 1 values, one per state, but its "
+            r"shape is \(2,\)",
         ),
         (
             dict(states=[0.3], async_rates=[1.0, 0.0]),
-            "sim.regimes: async_rates must be > 0",
+            "po.sim.regimes: each rate of async_rates must be above 0",
         ),
     ],
 )

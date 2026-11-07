@@ -218,7 +218,13 @@ impl Sampler {
     ) -> Result<(), super::GbdtError> {
         let w = if self.weighted {
             let j = layout.names.len() + 1;
-            Some(checked_f64(seg, j, layout, self.seen)?)
+            Some(checked_f64(
+                seg,
+                j,
+                layout,
+                self.seen,
+                "po.gbdt.xgboost_matrix",
+            )?)
         } else {
             None
         };

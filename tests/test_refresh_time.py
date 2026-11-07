@@ -379,7 +379,7 @@ def test_a_value_column_that_is_not_numeric_is_refused_by_name(value):
     all null and the grid was empty with nothing said, and a ``Date`` was
     read as its day count."""
     df = pl.DataFrame({"series": ["a", "b", "c"], "t": [1.0, 2.0, 3.0], "v": value})
-    with pytest.raises(ValueError, match="value column 'v' has dtype .*; it must be numeric"):
+    with pytest.raises(ValueError, match="value column 'v' must be numeric, but it is"):
         run(df)
 
 
@@ -413,9 +413,7 @@ def test_a_clock_column_that_is_neither_numeric_nor_temporal_is_refused_by_name(
     cast without a check: text of digits was read as a clock, and other
     text was refused as a null clock on its first row."""
     df = pl.DataFrame({"series": ["a", "b", "c"], "t": clock, "v": [1.0, 2.0, 3.0]})
-    with pytest.raises(
-        ValueError, match="clock column 't' has dtype .*; it must be numeric or temporal"
-    ):
+    with pytest.raises(ValueError, match="clock column 't' must be numeric or temporal, but it is"):
         run(df)
 
 
@@ -466,7 +464,7 @@ def test_the_output_feeds_a_bank_of_the_wide_frame():
         ({"clock": "nope"}, "no clock column"),
         ({"value": "nope"}, "no value column"),
         ({"group": "nope"}, "no group column"),
-        ({"keep": ["nope"]}, "no keep column"),
+        ({"keep": ["nope"]}, "keep names column 'nope', but the input does not have it"),
     ],
 )
 def test_a_bad_call_is_refused_while_the_plan_is_built(kw, message):
@@ -479,7 +477,7 @@ def test_an_unknown_series_and_a_backwards_clock_are_refused_naming_the_row():
     with pytest.raises(Exception, match="row 2.*'z'|row 2.*\"z\""):
         run(df, names=["a", "b"])
     back = pl.DataFrame({"series": ["a", "b", "a"], "t": [1.0, 5.0, 2.0], "v": [1.0, 2.0, 3.0]})
-    with pytest.raises(Exception, match="row 2.*clock order"):
+    with pytest.raises(Exception, match="row 2.*Sort the input by the clock"):
         run(back, names=["a", "b"])
 
 
@@ -567,14 +565,14 @@ def test_what_a_state_refuses(tmp_path):
     with pytest.raises(ValueError, match="pairs"):
         stream.refresh_time(df, names=NAMES, pairs=True, load_state=state, **kw)
     # The rows the state has learned, again: a step back, refused by row.
-    with pytest.raises(Exception, match="row 0.*clock order"):
+    with pytest.raises(Exception, match="row 0.*Sort the input by the clock"):
         stream.refresh_time(df, names=NAMES, load_state=state, **kw)
     with pytest.raises(FileNotFoundError):
         stream.refresh_time(df, names=NAMES, load_state=tmp_path / "none.state", **kw)
-    with pytest.raises(FileNotFoundError, match="is not a directory"):
+    with pytest.raises(FileNotFoundError, match="does not exist"):
         stream.refresh_time(df, names=NAMES, save_state=tmp_path / "no" / "x.state", **kw)
     (tmp_path / "junk.state").write_bytes(b"junk")
-    with pytest.raises(ValueError, match="not a refresh_time state"):
+    with pytest.raises(ValueError, match="state cannot be read"):
         stream.refresh_time(df, names=NAMES, load_state=tmp_path / "junk.state", **kw)
 
 
@@ -582,7 +580,7 @@ def test_a_run_that_fails_writes_no_state(tmp_path):
     df = poisson_obs(n=100)
     back = df.with_columns(t=pl.when(pl.int_range(pl.len()) == 70).then(0.0).otherwise("t"))
     state = tmp_path / "grid.state"
-    with pytest.raises(Exception, match="clock order"):
+    with pytest.raises(Exception, match="Sort the input by the clock"):
         stream.refresh_time(
             back, series="series", names=NAMES, clock="t", value="v", save_state=state
         )
@@ -600,7 +598,7 @@ def test_a_temporal_clock_is_ordered_to_the_nanosecond():
             "v": [1.0, 2.0, 3.0],
         }
     )
-    with pytest.raises(Exception, match="row 2.*clock order"):
+    with pytest.raises(Exception, match="row 2.*Sort the input by the clock"):
         stream.refresh_time(df, series="series", names=["a", "b"], clock="t", value="v")
 
 
@@ -612,11 +610,11 @@ def test_a_state_resumes_only_under_the_grouping_it_was_saved_with(tmp_path):
     kw = dict(series="series", names=NAMES, clock="t", value="v")
     state = tmp_path / "grid.state"
     stream.refresh_time(df, save_state=state, **kw)
-    with pytest.raises(ValueError, match="grouped"):
+    with pytest.raises(ValueError, match="a group column"):
         stream.refresh_time(df, load_state=state, group="g", **kw)
     grouped = tmp_path / "grouped.state"
     stream.refresh_time(df, save_state=grouped, group="g", **kw)
-    with pytest.raises(ValueError, match="grouped"):
+    with pytest.raises(ValueError, match="a group column"):
         stream.refresh_time(df, load_state=grouped, **kw)
 
 

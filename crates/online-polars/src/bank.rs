@@ -429,9 +429,10 @@ fn label_column(
                         i as f64
                     }
                     None => polars_bail!(ComputeError:
-                        "spec {:?}: label column {:?} has the value {:?} at row {}, which is \
-                         not one of the classes {:?}; list every class the column can hold, \
-                         or null the rows that should only be scored",
+                        "spec {:?}: label column {:?} has the value {:?} at row {} (counting \
+                         from 0), which is not one of the classes {:?}. List every value the \
+                         column can hold in classes, or set the label to null on rows the model \
+                         should predict without learning.",
                         spec.name, name, val, chunk.row_base() + j, classes
                     ),
                 },
@@ -541,9 +542,10 @@ fn extract(
                 ) && let Some(j) = v.iter().position(|&f| usable(f) && f != 0.0 && f != 1.0)
                 {
                     polars_bail!(ComputeError:
-                        "spec {:?}: strict_binary target column {:?} has the value {} at \
-                         row {}, which is neither 0 nor 1; null the rows that should only \
-                         be scored, or drop strict_binary to clamp them into [0, 1]",
+                        "spec {:?}: target column {:?} has the value {} at row {} (counting \
+                         from 0), but strict_binary takes only 0 or 1. Set the target to null \
+                         on rows the model should predict without learning, or leave out \
+                         strict_binary to clamp each value to the range from 0 to 1.",
                         spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
                     );
                 }
@@ -557,9 +559,10 @@ fn extract(
                     && let Some(j) = v.iter().position(|&f| usable(f) && f < 0.0)
                 {
                     polars_bail!(ComputeError:
-                        "spec {:?}: target column {:?} has {} at row {}, and loss=\"poisson\" \
-                         takes a count, which is never negative; null the rows that should \
-                         only be scored, or fit another loss",
+                        "spec {:?}: target column {:?} has the value {} at row {} (counting \
+                         from 0), but loss=\"poisson\" takes a count, which is never negative. \
+                         Set the target to null on rows the model should predict without \
+                         learning, or choose another loss.",
                         spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
                     );
                 }
@@ -581,9 +584,10 @@ fn extract(
                 ) && let Some(j) = v.iter().position(|&f| usable(f) && f <= 1.0)
                 {
                     polars_bail!(ComputeError:
-                        "spec {:?}: hazard column {:?} has {} at row {}; a hazard is the \
-                         expected rows between changepoints and must be > 1 (use null to \
-                         fall back to the spec's own hazard)",
+                        "spec {:?}: hazard column {:?} has the value {} at row {} (counting \
+                         from 0), but a hazard, the expected number of rows between \
+                         changepoints, must be above 1. Set it above 1, or to null to use the \
+                         spec's own hazard on that row.",
                         spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
                     );
                 }
@@ -602,7 +606,9 @@ fn extract(
         // -- a NaN in the numeric form, with inf -- is refused by row.
         let bad = |j: usize| {
             polars_err!(ComputeError:
-                "spec {:?}: clock column {:?} has a null/non-finite value at row {}",
+                "spec {:?}: clock column {:?} has a null, NaN or infinite value at row {} \
+                 (counting from 0), and a clock needs a value on every row. Drop the rows with \
+                 no clock value, or fill them, before the bank reads them.",
                 spec.name, c, chunk.row_base() + source_row(layout, j)
             )
         };
@@ -650,9 +656,10 @@ fn extract(
                     };
                     let Ok(x) = i64::try_from(x) else {
                         polars_bail!(ComputeError:
-                            "spec {:?}: clock column {:?} has {} at row {}, past {}, the \
-                             largest value an integer clock holds (an Int64's); shift the \
-                             clock, or cast it to Int64 after subtracting an origin",
+                            "spec {:?}: clock column {:?} has the value {} at row {} \
+                             (counting from 0), above {}, the largest value an integer clock \
+                             holds (an Int64's). Shift the clock by subtracting an origin, then \
+                             cast it to Int64.",
                             spec.name, c, x, chunk.row_base() + source_row(layout, j), i64::MAX
                         );
                     };
@@ -749,8 +756,10 @@ fn extract(
                 // README says: `-1e101` was refused here (task 278, D-WB).
                 if let Some(j) = v.iter().position(|&f| usable(f) && f < 0.0) {
                     polars_bail!(ComputeError:
-                        "spec {:?}: weight column {:?} has a negative value ({}) at row {}; \
-                         weights must be >= 0 (use null to skip a row)",
+                        "spec {:?}: weight column {:?} has the value {} at row {} (counting \
+                         from 0), but a weight must be at least 0. Set the weight to 0 for a \
+                         row the model should predict without learning, or to null to skip \
+                         the row.",
                         spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
                     );
                 }
@@ -762,8 +771,10 @@ fn extract(
                     && let Some(j) = v.iter().position(|&f| usable(f) && f != 0.0 && f != 1.0)
                 {
                     polars_bail!(ComputeError:
-                        "spec {:?}: weight column {:?} has {} at row {}; rcov takes 0 or 1 \
-                         (a realised covariance is a sum over returns, not a weighted mean)",
+                        "spec {:?}: weight column {:?} has the value {} at row {} (counting \
+                         from 0), but rcov takes a weight of 0 or 1 only, since a realized \
+                         covariance sums returns rather than weighing them. Set the weight to 1 \
+                         on a row that is a return and to 0 on one that is not.",
                         spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
                     );
                 }
@@ -1049,6 +1060,7 @@ fn check_monotone(
     groups: &[(GroupKey, Vec<usize>)],
     n: usize,
     integer: bool,
+    text: bool,
     high_water: Option<&GroupKey>,
     row_base: usize,
 ) -> PolarsResult<()> {
@@ -1058,9 +1070,10 @@ fn check_monotone(
     }
     if let Some((_, idx)) = groups.iter().find(|(k, _)| k.as_str().is_none()) {
         polars_bail!(ComputeError:
-            "spec {:?}: row {} has a null group; group_close = \"monotone\" orders the keys, \
-             and a null has no place in that order (a null key is an ordinary group under \
-             group_close = \"session\")",
+            "spec {:?}: row {} (counting from 0) has a null group key, but group_close = \
+             \"monotone\" closes groups in the order of their keys, and a null has no place in \
+             that order. Give every row a group key, or set group_close = \"session\" with a \
+             session column (session=) whose changes close each group.",
             spec.name, row_base + idx[0]
         );
     }
@@ -1079,13 +1092,24 @@ fn check_monotone(
             && gi != prev
             && key_cmp(&groups[gi].0, &groups[prev].0, integer) == Less
         {
+            let column = spec.group.as_deref().unwrap_or("");
+            // Polars sorts an integer or a text column in the order the
+            // keys are compared in; any other column's keys are compared as
+            // their text, which its own sort does not follow.
+            let sort = if integer || text {
+                format!("Sort the rows by {column:?}, which Polars sorts in that order")
+            } else {
+                format!(
+                    "Cast {column:?} to Int64, where every key is a whole number, or to String, \
+                     and sort the rows by it"
+                )
+            };
             polars_bail!(ComputeError:
-                "spec {:?}: row {}: group {} after group {} -- group_close = \"monotone\" needs \
-                 the keys in non-decreasing order, read as numbers for an integer column and as \
-                 text otherwise (sort the input by {:?}, which Polars sorts under that same \
-                 order, or use group_close = \"session\")",
-                spec.name, row_base + r, groups[gi].0, groups[prev].0,
-                spec.group.as_deref().unwrap_or("")
+                "spec {:?}: row {} (counting from 0) has group {} after group {}, but \
+                 group_close = \"monotone\" needs the keys in ascending order, as numbers for an \
+                 integer column and as text otherwise. {sort}, or set group_close = \"session\" with \
+                 a session column (session=).",
+                spec.name, row_base + r, groups[gi].0, groups[prev].0
             );
         }
         prev = gi;
@@ -1097,8 +1121,10 @@ fn check_monotone(
         // it exists to refuse.
         if integer && hw.as_str().is_none_or(|k| k.parse::<i128>().is_err()) {
             polars_bail!(ComputeError:
-                "spec {:?}: the saved high-water key {} is not an integer, and the group column \
-                 {:?} is; the state was saved under a different key column",
+                "spec {:?}: the largest group key the saved state has read is {}, which is not an \
+                 integer, but group column {:?} is, so the state was saved with a group column \
+                 of another type. Cast the group column back to the type the state was saved \
+                 with, or rebuild the state from its input.",
                 spec.name, hw, spec.group.as_deref().unwrap_or("")
             );
         }
@@ -1107,9 +1133,11 @@ fn check_monotone(
         // already emitted and dropped.
         if key_cmp(&groups[0].0, hw, integer) == Less {
             polars_bail!(ComputeError:
-                "spec {:?}: row {}: group {} is below {}, which this bank has already closed \
-                 past; a closed group cannot be reopened",
-                spec.name, row_base + groups[0].1[0], groups[0].0, hw
+                "spec {:?}: row {} (counting from 0) has group {}, below group {}, the largest the \
+                 bank has read, and group_close = \"monotone\" never takes a group below that. \
+                 Remove the rows whose group is below {}, or sort the rows by the group column \
+                 before the bank's first call.",
+                spec.name, row_base + groups[0].1[0], groups[0].0, hw, hw
             );
         }
     }
@@ -1300,7 +1328,7 @@ fn process<'s>(
                                 None => outs.push((si, Ok(out))),
                             }
                             if let Some((bytes, cadence)) = stream.window_over_budget() {
-                                outs.push((si, Err(over_budget(spec, key, bytes, cadence))));
+                                outs.push((si, Err(over_budget(spec, key, bytes, cadence, true))));
                                 break 'segments;
                             }
                         }
@@ -1486,7 +1514,8 @@ fn compare_targets(
             .position(|f| f.name.as_str() == name)
             .ok_or_else(|| {
                 polars_err!(ColumnNotFound:
-                    "spec {:?}: the compared field {:?} is not in the other spec's output",
+                    "spec {:?}: the field {:?} it compares is not in the output of the spec it \
+                     reads. Set a and b to specs that write a residual for each target.",
                     spec.name, name
                 )
             })?;
@@ -1495,7 +1524,8 @@ fn compare_targets(
             .downcast_ref::<Float64Array>()
             .ok_or_else(|| {
                 polars_err!(ComputeError:
-                    "spec {:?}: the compared field {:?} is not a float", spec.name, name
+                    "spec {:?}: the field {:?} it compares is not a Float64 field. Set a and b \
+                     to specs whose residual fields are Float64.", spec.name, name
                 )
             })?;
         Ok(f64_values(arr).into_owned())
@@ -1511,207 +1541,11 @@ fn compare_targets(
         .collect()
 }
 
-/// The error for a window past a refusing `window_budget` (review
-/// 2026-09-12, P4; the user's decision of 2026-09-15): names the spec, the
-/// group, the ring's size and the ways out. It is found as the rows go in --
-/// after the run of rows in which the ring stopped at the budget -- so the
-/// bank that raises it has learned part of the chunk, and marks itself
-/// `broken`.
-fn over_budget(
-    spec: &Spec,
-    key: &GroupKey,
-    bytes: usize,
-    cadence: online_core::Cadence,
-) -> PolarsError {
-    polars_err!(ComputeError: "{}", over_budget_message(spec, key, bytes, cadence))
-}
-
-/// A clock spacing as the spec writes `snapshot_every`: its own text where the
-/// ring runs at it, otherwise in the same form -- a duration on a temporal
-/// spec, a number of clock units on any other.
-fn spacing_label(spec: &Spec, spacing: f64) -> String {
-    match spec.model.window_cadence().and_then(|(every, _)| every) {
-        Some(every) if every.value() == spacing => every.label(),
-        Some(crate::span::Span::Duration(_)) => {
-            crate::span::format_duration((spacing * 1e9).round() as i64)
-        }
-        _ => crate::spec::num_label(spacing),
-    }
-}
-
-/// How the refusal says to keep fewer snapshots, from the cadence the ring
-/// ran at (docs/PLAN.md task 162): raise what is in force -- the clock
-/// spacing, the row cap, or both, since whichever comes first takes a
-/// snapshot -- and at every row, give either one.
-fn sparser_ring(spec: &Spec, cadence: online_core::Cadence) -> String {
-    match (cadence.clock(), cadence.row_cap()) {
-        (Some(spacing), Some(rows)) => format!(
-            "raise snapshot_every ({} now) and max_rows_between_snapshots ({rows} now), since \
-             whichever comes first takes a snapshot",
-            spacing_label(spec, spacing)
-        ),
-        (Some(spacing), None) => {
-            format!(
-                "raise snapshot_every ({} now)",
-                spacing_label(spec, spacing)
-            )
-        }
-        (None, Some(1)) => "set snapshot_every to the clock between snapshots, or \
-                            max_rows_between_snapshots to the rows between them (every row now)"
-            .to_string(),
-        (None, Some(rows)) => format!(
-            "raise max_rows_between_snapshots ({rows} now), or give snapshot_every, the clock \
-             between snapshots, in its place"
-        ),
-        (None, None) => "set snapshot_every or max_rows_between_snapshots".to_string(),
-    }
-}
-
-/// The words of [`over_budget`]: how far past which budget, and each way
-/// out spelled as the spec writes it -- a larger budget (the user,
-/// 2026-09-28: "on failure it should explain how to raise it"), a sparser
-/// ring, or thinning in place of refusing. A spec that sets no budget is
-/// told it ran under the default, which it never wrote.
-fn over_budget_message(
-    spec: &Spec,
-    key: &GroupKey,
-    bytes: usize,
-    cadence: online_core::Cadence,
-) -> String {
-    let mib = spec.model.window_budget().map_or(0.0, |b| b.mib());
-    let group = key
-        .0
-        .as_deref()
-        .map_or(String::new(), |g| format!(" group {g:?}"));
-    let named = spec.model.window_parts().and_then(|(_, b)| b).is_some();
-    let which = if named {
-        format!("window_budget = {{\"refuse\": {mib}}}")
-    } else {
-        format!("the default window_budget of {mib} MiB, which a spec gets when it sets none")
-    };
-    format!(
-        "spec {:?}{group}: the window's snapshots hold {:.3} MiB, past {which}. To allow more, \
-         set window_budget = {{\"refuse\": MiB}} with a larger number of MiB, or \
-         {{\"refuse\": inf}} for no bound (in Python, float(\"inf\")); to keep fewer \
-         snapshots, {}; or to thin them rather than refuse, set window_budget = \
-         {{\"thin\": MiB}}.",
-        spec.name,
-        bytes as f64 / (1024.0 * 1024.0),
-        sparser_ring(spec, cadence)
-    )
-}
-
-/// Where a step-back error sends its reader: the how-to that says how to
-/// put rows in clock order, at the section on a refused chunk. A message
-/// link is never changed once shipped, so that heading stays.
-pub(crate) const CLOCK_ORDER_HOW_TO: &str = "https://github.com/hgilde/polars-online/blob/main/\
-    docs/how-to/put-rows-in-clock-order.md#fix-a-chunk-the-bank-refused";
-
-/// The error for a refused backwards clock, in the parts every message
-/// takes (WRITING §11): where (the spec), what is wrong and the value (the
-/// clock column, the size of the step back and the row, counted from 0),
-/// what the bank did, and what to do (the ways out, and the how-to that
-/// chooses among them). With `restart_after_step_back` unset, the default
-/// (`disorder` is `None`), or given and no smaller than the step, the ways
-/// out are a sort, skipping what a resumed state has learned, or a setting
-/// below the step. Either way the bank was not updated. A step on a number
-/// clock is printed to three significant figures, and the setting to stay
-/// below it, rounded down, so the remedy holds; a step in integers or
-/// nanoseconds is exact.
-fn backwards_clock(spec: &Spec, refusal: ClockRefusal, row_base: usize) -> PolarsError {
-    use crate::figures::{Round, three_figures};
-    let column = spec.clock.as_deref().unwrap_or("<row count>");
-    let row = row_base + refusal.row;
-    // The step exactly: in integer nanoseconds on a temporal clock, where the
-    // double of seconds resolves more than a nanosecond above about 104 days;
-    // in integers on an integer clock (task 200).
-    let (step, below) = match (
-        refusal.back_ns.and_then(|ns| i64::try_from(ns).ok()),
-        refusal.back_int,
-    ) {
-        (Some(ns), _) => {
-            let s = crate::span::format_duration(ns);
-            (s.clone(), s)
-        }
-        (None, Some(back)) => (back.to_string(), back.to_string()),
-        (None, None)
-            if spec
-                .gap_cap
-                .as_ref()
-                .is_some_and(crate::span::Span::is_duration) =>
-        {
-            let s = clock_amount(spec, -refusal.raw);
-            (s.clone(), s)
-        }
-        // Rounded down both times: the step printed is then never above a
-        // setting it is "no more than", and the setting to stay below holds.
-        (None, None) => {
-            let s = three_figures(-refusal.raw, Round::Down);
-            (s.clone(), s)
-        }
-    };
-    // Each form written whole, so a reading of the message finds its where
-    // and its remedy in one string (WRITING §13).
-    match refusal.disorder {
-        None => polars_err!(ComputeError:
-            "spec {:?}: clock column {column:?} steps back by {step} at row {row} (counting \
-             from 0), and restart_after_step_back is not set, so the bank refused the chunk and \
-             learned none of it. Sort the rows by the clock, skip the rows a saved state has \
-             learned with ModelBank.skip_learned (or --skip-learned), or set \
-             restart_after_step_back below {below} to reset the model at such a step back (0 \
-             resets it at every one). See {CLOCK_ORDER_HOW_TO} for which to choose.",
-            spec.name
-        ),
-        Some(Disorder {
-            min_backwards_jump, ..
-        }) => polars_err!(ComputeError:
-            "spec {:?}: clock column {column:?} steps back by {step} at row {row} (counting \
-             from 0), no more than restart_after_step_back = {}, so the bank refused the chunk \
-             and learned none of it. Sort the rows by the clock, skip the rows a saved state has \
-             learned with ModelBank.skip_learned (or --skip-learned), or set \
-             restart_after_step_back below {below} to reset the model at such a step back (0 \
-             resets it at every one). See {CLOCK_ORDER_HOW_TO} for which to choose.",
-            spec.name,
-            // As the spec wrote it: a duration's text is exact.
-            spec.restart_after_step_back
-                .as_ref()
-                .map_or_else(|| clock_amount(spec, min_backwards_jump), ToString::to_string)
-        ),
-    }
-}
-
-/// The error for a clock step that is not a number of clock units: two
-/// values of a number clock whose difference is past the largest double
-/// (review 2026-10-06, PB7). Names the spec, the column, the two values and
-/// the row; the bank was not updated.
-fn non_finite_step(spec: &Spec, refusal: StepRefusal, row_base: usize) -> PolarsError {
-    polars_err!(ComputeError:
-        "spec {:?}: clock column {:?} steps from {} to {} at row {}, a difference past the \
-         largest double, which is no number of clock units; the bank was not updated. Shift or \
-         rescale the clock column so that the step between two of its values is finite.",
-        spec.name,
-        spec.clock.as_deref().unwrap_or("<row count>"),
-        crate::spec::num_label(refusal.prev),
-        crate::spec::num_label(refusal.now),
-        row_base + refusal.row
-    )
-}
-
-/// A clock amount as the spec measures it: on a temporal clock a duration
-/// (`1d`, not `86400`), whose every clock parameter is one, `gap_cap`
-/// among them (task 120: a `Date` clock's refusal said `86400`); a number of
-/// the column's units otherwise.
-pub(crate) fn clock_amount(spec: &Spec, v: f64) -> String {
-    if spec
-        .gap_cap
-        .as_ref()
-        .is_some_and(crate::span::Span::is_duration)
-    {
-        crate::span::format_duration((v * 1e9).round() as i64)
-    } else {
-        crate::spec::num_label(v)
-    }
-}
+mod refusals;
+pub(crate) use refusals::clock_amount;
+#[cfg(test)]
+use refusals::over_budget_message;
+use refusals::{backwards_clock, non_finite_step, over_budget};
 
 /// Drop the streams a refused chunk materialized, `(spec index, key)` each.
 /// A new group's Huber refit buffers against its spec's `refit_budget`
@@ -1742,19 +1576,36 @@ fn reserve_refits(
     stream.refit_give_up();
     if !*noticed {
         *noticed = true;
-        let group = key
-            .0
-            .as_deref()
-            .filter(|_| spec.group.is_some())
-            .map_or(String::new(), |g| format!(" at group {g:?}"));
+        // Under group, the null key is named too: the warning says which
+        // group gave the refit up first.
+        let group = match key.0.as_deref() {
+            Some(g) => format!("at group {g:?}"),
+            None => "at the null group".to_string(),
+        };
+        // A spec with no groups has one model, which is the one that gives up.
+        // The check runs as a group first appears and reserves its refit's
+        // memory, before it holds a row, so the warning says what the refit
+        // would hold.
+        let need_kib = crate::figures::three_figures(need / 1024.0, crate::figures::Round::Up);
+        let opening = if spec.group.is_some() {
+            format!(
+                "{group}, its groups' refits would hold more than refit_budget = {budget} MiB, \
+                 each group reserving {need_kib} KiB, so that group and every new group after it \
+                 give up the refit and keep the fit made in one pass. The column refit_given_up \
+                 of ModelBank.summary() counts the targets that gave it up. To refit more groups"
+            )
+        } else {
+            format!(
+                "its refit would hold up to {need_kib} KiB of rows, more than refit_budget = \
+                 {budget} MiB, so its model gives up the refit and keeps the fit made in one \
+                 pass. The column refit_given_up of ModelBank.summary() counts the targets that \
+                 gave it up. To keep the refit"
+            )
+        };
         notices.push(format!(
-            "spec {:?}: the refit buffers of its groups reached refit_budget = {budget} \
-             MiB{group}, {:.0} KB a group: that group's refits and those of every later new \
-             group are given up, and their one-pass fits stand (summary()'s refit_given_up \
-             counts them). To refit more groups, raise refit_budget (MiB, or inf for no \
-             bound), or lower {rows}, the rows a buffer holds",
+            "spec {:?}: {opening}, increase refit_budget (in MiB, or inf for no bound), or lower \
+             {rows}, the rows each refit holds.",
             spec.name,
-            need / 1024.0,
             rows = match spec.model {
                 crate::ModelKind::Marginal { .. } => "bin_refit_rows",
                 crate::ModelKind::Quantile { .. } => "quantile_refit_rows",
@@ -1841,10 +1692,9 @@ fn say_notices(notices: &mut Vec<String>, spec: &Spec, key: &GroupKey, stream: &
             .filter(|_| spec.group.is_some())
             .map_or(String::new(), |g| format!(" group {g:?}"));
         let span = notice.span.as_deref().unwrap_or("");
-        notices.push(format!(
-            "spec {:?}{group}{span}: {}",
-            spec.name, notice.body
-        ));
+        // The where every notice body is said behind (WRITING §11).
+        let prefix = format!("spec {:?}{group}{span}", spec.name);
+        notices.push(format!("{prefix}: {}", notice.body));
     }
 }
 
@@ -2409,7 +2259,7 @@ fn spec_bins(s: &Spec) -> bool {
 fn check_closed_row(specs: &[Spec], r: &ClosedRow) -> Result<(), String> {
     let damaged = |what: String| {
         Err(format!(
-            "bank state file is damaged: a closed row of group {} {what}",
+            "state file: it is damaged, since a closed row of group {} {what}. Load an undamaged copy of the state file, or rebuild it from its input.",
             r.group
         ))
     };
@@ -2935,17 +2785,21 @@ fn json_is_faithful(file: &BankFile, text: &str) -> Result<(), String> {
     let want = rmp_serde::to_vec_named(file).map_err(|e| e.to_string())?;
     let back: BankFile = serde_json::from_str(text).map_err(|e| {
         format!(
-            "the JSON export dropped a value the state holds ({e}){}. A non-finite float needs \
-             `#[serde(with = \"crate::humanfloat::f64_or_tag\")]` on its field in online-core; \
-             without it serde_json writes NaN and +/-inf as null",
+            // A field that writes NaN or ±inf as null, which needs
+            // `#[serde(with = "crate::humanfloat::f64_or_tag")]` in online-core.
+            "ModelBank.write_json: the export dropped a value the state holds ({e}), which is a \
+             defect in polars-online. Open an issue at \
+             https://github.com/hgilde/polars-online/issues with this message and the lines it \
+             shows{}",
             near(text, e.line())
         )
     })?;
     let got = rmp_serde::to_vec_named(&back).map_err(|e| e.to_string())?;
     if got != want {
         return Err(
-            "the JSON export did not read back as the state it came from; a field's \
-             human-readable encoding does not round-trip"
+            "ModelBank.write_json: the export did not read back as the state it came from, \
+             which is a defect in polars-online. Open an issue at \
+             https://github.com/hgilde/polars-online/issues with this message."
                 .to_string(),
         );
     }
@@ -3175,6 +3029,42 @@ fn resid_fields(spec: &Spec) -> Vec<String> {
         .collect()
 }
 
+/// A key column's dtype, kept in the state as Polars' Rust display
+/// (`i64`, `str`), as a message names it: Polars' Python class name
+/// (`Int64`, `String`), the form [`crate::arrow::dtype_name`] gives. A
+/// display this does not know is said as it is.
+fn key_dtype_label(display: &str) -> String {
+    let name = match display {
+        "i8" => "Int8",
+        "i16" => "Int16",
+        "i32" => "Int32",
+        "i64" => "Int64",
+        "i128" => "Int128",
+        "u8" => "UInt8",
+        "u16" => "UInt16",
+        "u32" => "UInt32",
+        "u64" => "UInt64",
+        "u128" => "UInt128",
+        "f32" => "Float32",
+        "f64" => "Float64",
+        "str" => "String",
+        "bool" => "Boolean",
+        "cat" => "Categorical",
+        "date" => "Date",
+        other => other,
+    };
+    name.to_string()
+}
+
+/// The refusal of a spec index past the bank's specs, in the shape every
+/// message takes (WRITING §11).
+fn spec_index_out_of_range(si: usize, n: usize) -> String {
+    format!(
+        "spec: index {si} is out of range for a bank of {n} specs. Give an index below {n}, or \
+         the spec's name."
+    )
+}
+
 /// Resolve a `seqtest` comparison against the bank's specs: `a` and `b`
 /// must be specs of the bank, and every target `t` must name a residual
 /// field of both (`resid_<t>`, plus the side's grid suffix). The error names
@@ -3188,15 +3078,15 @@ fn resolve_compare(specs: &[Spec], spec: &Spec) -> Result<Option<(usize, usize)>
         let Some(si) = specs.iter().position(|s| s.name == name) else {
             let have: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
             return Err(format!(
-                "spec {:?}: seqtest {side} = {name:?} is not a spec of this bank (the bank \
-                 has {have:?})",
+                "spec {:?}: seqtest {side} = {name:?} names no spec of this bank, whose specs \
+                 are {have:?}. Set {side} to the name of one of those specs.",
                 spec.name
             ));
         };
         if matches!(specs[si].model, ModelKind::SeqTest { .. }) {
             return Err(format!(
-                "spec {:?}: seqtest {side} = {name:?} is itself a seqtest and has no \
-                 residuals; compare two specs that predict",
+                "spec {:?}: seqtest {side} = {name:?} is itself a seqtest, which writes no \
+                 residuals to compare. Set {side} to a spec that predicts its targets.",
                 spec.name
             ));
         }
@@ -3207,9 +3097,9 @@ fn resolve_compare(specs: &[Spec], spec: &Spec) -> Result<Option<(usize, usize)>
             if !resid.contains(&want) {
                 return Err(format!(
                     "spec {:?}: seqtest target {t:?} names no residual of {side} = {name:?}: \
-                     it has no field {want:?} (its residual fields are {resid:?}); a target \
-                     is the part after \"resid_\", and {side}_suffix the grid part after \
-                     that",
+                     it has no field {want:?}, and its residual fields are {resid:?}. Name each \
+                     target as the part of a residual field after \"resid_\", and set \
+                     {side}_suffix to the grid part after that.",
                     spec.name
                 ));
             }
@@ -3231,7 +3121,11 @@ impl Bank {
     /// names the spec and the parameter, as the Python builders' do.
     pub fn new(mut specs: Vec<Spec>) -> Result<Self, String> {
         if specs.is_empty() {
-            return Err("at least one spec is required".into());
+            return Err(
+                "specs: the list of specs is empty, and a bank needs at least one. \
+                        Give at least one spec."
+                    .into(),
+            );
         }
         // What a spec may leave out, filled before anything reads it, so the
         // bank -- and the state file it writes -- carries the same spec
@@ -3243,7 +3137,11 @@ impl Bank {
         let mut names = std::collections::HashSet::new();
         for s in &specs {
             if !names.insert(s.name.clone()) {
-                return Err(format!("duplicate spec name {:?}", s.name));
+                return Err(format!(
+                    "specs: two specs are named {:?}, but a spec's name names its output \
+                     column, so each must be unique. Rename one of them.",
+                    s.name
+                ));
             }
             // `Spec::check` refuses two outputs rendered to one field name;
             // kept here as a tripwire for a spec built some other way.
@@ -3279,18 +3177,25 @@ impl Bank {
                 let longest = TargetWindows::longest_forward_window(s)?;
                 let embargo = s.embargo.as_ref().map(crate::span::Span::value);
                 (embargo.unwrap_or(0.0) < longest.value()).then(|| {
+                    let has = s
+                        .embargo
+                        .as_ref()
+                        .map_or_else(|| "it has none".to_string(), |e| format!("it is {e}"));
+                    // As Python writes it: a duration is a string.
+                    let set = if longest.is_duration() {
+                        format!("{:?}", longest.label())
+                    } else {
+                        longest.label()
+                    };
                     format!(
                         "spec {:?}: fit_predict needs an embargo of at least {longest}, the \
-                         longest window_size among its formula targets' forward operators \
-                         (got {}): a row's target is known only one window later, and a \
-                         state that learned it before then would score the rows that window \
-                         covers in sample. Give embargo={longest} or longer; a run that keeps no \
-                         prediction (ModelBank.fit, or the command line with --no-output) takes any \
-                         embargo, none included, and learns each row once its window closes",
-                        s.name,
-                        s.embargo
-                            .as_ref()
-                            .map_or_else(|| "none".to_string(), ToString::to_string)
+                         longest window_size among the look-ahead window operators of its \
+                         formula targets, but {has}. A row's target is known only once that \
+                         window closes, so a shorter embargo would predict the rows it covers \
+                         from a state that had learned them. Set embargo={set} or longer, or \
+                         learn without predicting with ModelBank.fit (or --no-output on the \
+                         command line), which takes any embargo.",
+                        s.name
                     )
                 })
             })
@@ -3442,7 +3347,7 @@ impl Bank {
     /// a `Float64` of nulls, where none has.
     fn frame_clock(&self, specs: &[usize]) -> Result<Option<&ClockDtype>, String> {
         if let Some(si) = specs.iter().find(|&&si| si >= self.specs.len()) {
-            return Err(format!("spec index {si} out of range"));
+            return Err(spec_index_out_of_range(*si, self.specs.len()));
         }
         let mut found: Option<(usize, &ClockDtype)> = None;
         for &si in specs {
@@ -3455,12 +3360,13 @@ impl Bank {
             match found {
                 Some((first, f)) if f != d => {
                     return Err(format!(
-                        "spec {:?} keeps its clock as {} and spec {:?} as {}, and one column \
-                         holds one type: read them one spec at a time (spec=)",
+                        "spec: spec {:?} keeps its clock as {} and spec {:?} as {}, but one clock \
+                         column of the result holds one type. Read the two specs one at a time, \
+                         with spec=.",
                         self.specs[first].name,
-                        f.dtype(),
+                        crate::arrow::dtype_name(&f.dtype()),
                         self.specs[si].name,
-                        d.dtype()
+                        crate::arrow::dtype_name(&d.dtype())
                     ));
                 }
                 Some(_) => {}
@@ -3482,7 +3388,7 @@ impl Bank {
         if let Some(si) = spec
             && si >= self.states.len()
         {
-            return Err(format!("spec index {si} out of range"));
+            return Err(spec_index_out_of_range(si, self.specs.len()));
         }
         let mut dropped = 0;
         for (si, hm) in self.states.iter_mut().enumerate() {
@@ -3597,8 +3503,9 @@ impl Bank {
         let (s, states) = (&self.specs[spec], &self.states[spec]);
         if !matches!(s.model, ModelKind::Marginal { .. }) {
             return Err(format!(
-                "spec {:?} has model type {:?}, not \"marginal\"; its pairs are not kept (an \
-                 ew_cov's Gram is read with gram())",
+                "spec {:?}: its model is {:?}, not \"marginal\", and only a marginal spec keeps \
+                 its pairs. Name a marginal spec, or read an ew_cov spec's Gram with \
+                 ModelBank.gram.",
                 s.name,
                 s.model.kind_name()
             ));
@@ -3867,7 +3774,10 @@ impl Bank {
                 None => out = Some(frame),
             }
         }
-        out.ok_or_else(|| "no spec to summarise".to_string())
+        out.ok_or_else(|| {
+            "ModelBank.summary: the list of specs to summarize is empty. Name at least one spec."
+                .to_string()
+        })
     }
 
     /// [`Self::summary`] of one spec, its clock columns in `clock`'s dtype.
@@ -3957,7 +3867,7 @@ impl Bank {
         let states = self
             .states
             .get(spec)
-            .ok_or_else(|| format!("spec index {spec} out of range"))?;
+            .ok_or_else(|| spec_index_out_of_range(spec, self.specs.len()))?;
         let integer = self.integer_keys(spec);
         let mut keys: Vec<&GroupKey> = match group {
             Some(want) => {
@@ -3980,8 +3890,8 @@ impl Bank {
             .find(|s| names.iter().any(|n| n.as_str() == s.name.as_str()))
         {
             polars_bail!(Duplicate:
-                "spec {:?} has the same name as an input column; the output struct \
-                 would replace it. Rename the spec.",
+                "spec {:?}: it has the same name as an input column, and its output column \
+                 would replace that column. Rename the spec.",
                 spec.name
             );
         }
@@ -4034,12 +3944,27 @@ impl Bank {
     fn refuse_if_broken(&self) -> PolarsResult<()> {
         match &self.broken {
             None => Ok(()),
-            Some(why) => Err(polars_err!(ComputeError:
-                "this bank cannot go on: a chunk was refused after some of its rows had \
-                 been learned, so its state holds rows whose output was never returned; \
-                 rebuild it from its last save. The refusal was: {}",
-                why
-            )),
+            Some(why) => {
+                // The first refusal's first sentence, which says what was
+                // wrong; its remedy reached the reader with it, on the call
+                // that broke the bank.
+                let first = why
+                    .char_indices()
+                    .find(|&(i, c)| {
+                        c == '.'
+                            && why[i + 1..].starts_with(' ')
+                            && why[i + 2..].starts_with(|n: char| n.is_ascii_uppercase())
+                    })
+                    .map_or(why.trim_end_matches('.'), |(i, _)| &why[..i]);
+                // Said behind the refusal's own where (`spec "m": ...`).
+                Err(polars_err!(ComputeError:
+                    "{first}. That refusal came after the bank had learned part of the chunk, so \
+                     its state holds rows whose output was never returned, and it cannot go on. \
+                     Fix what the refusal names, then load the bank's last saved state, or, where \
+                     the fix changes a spec or nothing was saved, build the bank again and fit it \
+                     from the start of its input."
+                ))
+            }
         }
     }
 
@@ -4190,11 +4115,15 @@ impl Bank {
                 match (kept, s.clock.as_deref()) {
                     (Some(was), Some(c)) if chunk.has(c) && was.conflicts(&now) => {
                         polars_bail!(ComputeError:
-                            "spec {:?}: clock column {:?} was {} and is now {}; an integer \
-                             clock's steps are taken in integers and a float clock's in doubles, \
-                             and an integer clock's fields come out in its own width, so a \
-                             stream keeps the type it began with. Cast it back to {}",
-                            s.name, c, was.dtype(), now.dtype(), was.dtype()
+                            "spec {:?}: clock column {:?} was {} and is now {}, but a stream \
+                             keeps the type its clock began with, since an integer clock steps in \
+                             integers and writes its fields in its own width, and a float clock \
+                             steps in doubles. Cast the column back to {}.",
+                            s.name,
+                            c,
+                            crate::arrow::dtype_name(&was.dtype()),
+                            crate::arrow::dtype_name(&now.dtype()),
+                            crate::arrow::dtype_name(&was.dtype())
                         )
                     }
                     (Some(was), _) => Ok(Some(was.clone())),
@@ -4216,8 +4145,16 @@ impl Bank {
             .map(|(spec, kept)| {
                 let mut forms = kept.clone();
                 let roles = [
-                    ("group", spec.group.as_deref(), "start every group over"),
-                    ("session", spec.session.as_deref(), "cut every session"),
+                    (
+                        "group",
+                        spec.group.as_deref(),
+                        "read some keys as other groups, or order them differently",
+                    ),
+                    (
+                        "session",
+                        spec.session.as_deref(),
+                        "read some values as other sessions, and cut a session there",
+                    ),
                 ];
                 for (slot, (role, column, cost)) in forms.iter_mut().zip(roles) {
                     let Some(now) = column.and_then(|c| chunk.key_form(c)) else {
@@ -4225,11 +4162,17 @@ impl Bank {
                     };
                     match slot {
                         Some(was) if was.form != now.form => polars_bail!(ComputeError:
-                            "spec {:?}: {} column {:?} was {} and is now {}; a key is its \
-                             value's text, so a column of another type would {}. Cast it \
-                             back to {}",
-                            spec.name, role, column.unwrap_or(""), was.dtype, now.dtype, cost,
-                            was.dtype
+                            "spec {:?}: {} column {:?} was {} and is now {}, but the bank reads \
+                             each value as its text, so 1 in an integer column and 1.0 in a \
+                             float one differ, and a column of another type would {}. Cast the \
+                             column back to {}.",
+                            spec.name,
+                            role,
+                            column.unwrap_or(""),
+                            key_dtype_label(&was.dtype),
+                            key_dtype_label(&now.dtype),
+                            cost,
+                            key_dtype_label(&was.dtype)
                         ),
                         Some(_) => {}
                         None => *slot = Some(now),
@@ -4284,6 +4227,7 @@ impl Bank {
                     &groups[si],
                     n,
                     integer_keys[si],
+                    matches!(&key_dtypes[si][0], Some(k) if k.form == KeyForm::Text),
                     self.high_water[si].as_ref(),
                     chunk.row_base(),
                 )?;
@@ -4540,7 +4484,7 @@ impl Bank {
                             *base + start,
                             formulas[*si].as_ref().map(|b| b.targets(key)),
                         ) {
-                            return Some(over_budget(spec, key, bytes, cadence));
+                            return Some(over_budget(spec, key, bytes, cadence, false));
                         }
                     }
                     None
@@ -4614,7 +4558,10 @@ impl Bank {
         // A return here leaves the notices the rows raised in their streams,
         // as an output that cannot be assembled below would.
         if std::mem::take(&mut self.fail_after_learning) {
-            return Err(polars_err!(ComputeError: "a failure after learning, for a test"));
+            return Err(polars_err!(ComputeError:
+                "bank: a failure after learning, which a test asked for. Turn off \
+                 fail_next_call_after_learning to learn without it."
+            ));
         }
         let mut t_process = t2.elapsed();
         let t3 = std::time::Instant::now();
@@ -4969,7 +4916,7 @@ impl Bank {
         if let Some(si) = spec
             && si >= self.specs.len()
         {
-            return Err(format!("spec index {si} out of range"));
+            return Err(spec_index_out_of_range(si, self.specs.len()));
         }
         // Before anything is taken: a frame the clock columns cannot make
         // drains nothing.
@@ -5122,14 +5069,25 @@ impl Bank {
     /// differ from the file's -- the state would not be the state of the bank
     /// the caller has in mind.
     pub fn load_bytes(bytes: &[u8], expected_specs: Option<&[Spec]>) -> Result<Self, String> {
-        let header: BankHeader = rmp_serde::from_slice(bytes)
-            .map_err(|e| format!("not a polars-online bank state file ({e})"))?;
+        // The decoder's own text names the file's fields and MessagePack
+        // markers, words of the code: the header's failure is said whole.
+        let header: BankHeader = rmp_serde::from_slice(bytes).map_err(|_| {
+            "state file: these bytes are not a polars-online bank state file, or the file is \
+             cut short. Load a whole file that ModelBank.save or the command line's save_state \
+             wrote."
+                .to_string()
+        })?;
         if header.magic != BANK_MAGIC {
-            return Err("not a polars-online bank state file".into());
+            return Err(
+                "state file: these bytes are not a polars-online bank state file. Load a \
+                        file that ModelBank.save or the command line's save_state wrote."
+                    .into(),
+            );
         }
         if header.format_version > BANK_FORMAT_VERSION {
             return Err(format!(
-                "bank state file format version {} is newer than this build supports ({})",
+                "state file: its format version is {}, newer than the {} this build of \
+                 polars-online reads. Upgrade polars-online to load it.",
                 header.format_version, BANK_FORMAT_VERSION
             ));
         }
@@ -5137,20 +5095,83 @@ impl Bank {
         let (found, reads) = (header.schema_version, online_core::SCHEMA_VERSION);
         if found > reads {
             return Err(format!(
-                "bank state file written by a newer version (schema {found}, this build reads \
-                 up to {reads}): upgrade polars-online"
+                "state file: it was written by a newer version of polars-online (schema \
+                 {found}, where this build reads up to {reads}). Upgrade polars-online to load it."
             ));
         }
         if found < MIN_BANK_SCHEMA_VERSION {
             return Err(format!(
-                "state schema version {found} not supported (this build loads \
-                 {MIN_BANK_SCHEMA_VERSION}..={reads}); a bank saved before schema \
-                 {MIN_BANK_SCHEMA_VERSION} keeps settings and diagnostics this build no \
-                 longer has, so refit it from its input"
+                "state file: its state schema version {found} is not supported, since this \
+                 build loads schemas {MIN_BANK_SCHEMA_VERSION} to {reads}, and a bank saved before \
+                 schema {MIN_BANK_SCHEMA_VERSION} keeps settings and diagnostics this build no \
+                 longer has. Build the bank again from its specs and fit it on its input."
             ));
         }
-        let file: BankFile = rmp_serde::from_slice(bytes)
-            .map_err(|e| format!("not a polars-online bank state file ({e})"))?;
+        // Past the header, the bytes are a bank file of a version this build
+        // reads, so a refusal is damage. A model's own refusal (a `try_from`
+        // of its saved form, which rmp-serde shows bare) already says what to
+        // do; any other is said with the remedy here, so the text has one.
+        let file: BankFile = rmp_serde::from_slice(bytes).map_err(|e| {
+            use rmp_serde::decode::Error as De;
+            // The decoder's own failures in plain words: its text names
+            // MessagePack markers, a word of the code.
+            // serde's own refusals arrive as `Syntax` too, in its words.
+            const KIND: &str = "a value is not of the kind the file holds there";
+            const KNOWN: &str = "a value it must hold is missing, or it holds one this build \
+                                 does not know";
+            let plain = match &e {
+                De::InvalidMarkerRead(_) | De::InvalidDataRead(_) => Some("it is cut short"),
+                De::TypeMismatch(_)
+                | De::OutOfRange
+                | De::LengthMismatch(_)
+                | De::Uncategorized(_) => Some(KIND),
+                De::Utf8Error(_) => Some("a text value is not valid text"),
+                De::DepthLimitExceeded => {
+                    Some("its values nest deeper than a state file's values ever do")
+                }
+                De::Syntax(m)
+                    if ["invalid type", "invalid value", "invalid length"]
+                        .iter()
+                        .any(|p| m.starts_with(p)) =>
+                {
+                    Some(KIND)
+                }
+                De::Syntax(m)
+                    if [
+                        "missing field",
+                        "unknown field",
+                        "unknown variant",
+                        "duplicate field",
+                    ]
+                    .iter()
+                    .any(|p| m.starts_with(p)) =>
+                {
+                    Some(KNOWN)
+                }
+                De::Syntax(_) => None,
+            };
+            if let Some(what) = plain {
+                return format!(
+                    "state file: it is damaged ({what}). Load an undamaged copy of the state \
+                     file, or rebuild it from its input."
+                );
+            }
+            let body = e.to_string();
+            if body.ends_with("rebuild it from its input.") {
+                format!("state file: it is damaged: {body}")
+            } else {
+                // Its first sentence only: a refusal written for another
+                // reader, such as a formula's for the command line's TOML,
+                // ends with a remedy that cannot mend a state file.
+                let cut = [". ", "; "].iter().filter_map(|sep| body.find(sep)).min();
+                let what =
+                    cut.map_or_else(|| body.strip_suffix('.').unwrap_or(&body), |at| &body[..at]);
+                format!(
+                    "state file: it is damaged ({what}). Load an undamaged copy of the state \
+                     file, or rebuild it from its input."
+                )
+            }
+        })?;
         if let Some(exp) = expected_specs {
             // Both sides filled, since filling is what a bank does to its
             // specs before it runs them: a caller who wrote the spec in TOML
@@ -5186,7 +5207,8 @@ impl Bank {
                 // job of ten specs was told only that they differ.
                 let canon = |s: Spec| unsharded(fill(&s));
                 return Err(format!(
-                    "saved specs do not match the bank's specs: {}; refusing to load",
+                    "state file: its specs do not match the bank's specs: {}. Load the state \
+                     with the specs it was saved with.",
                     crate::spec_diff::spec_difference(&saved, &exp_filled, canon)
                 ));
             }
@@ -5200,8 +5222,8 @@ impl Bank {
         // list for (task 160, PA1).
         if file.states.len() != file.specs.len() || file.specs.len() != specs.len() {
             return Err(format!(
-                "bank state file is damaged: it holds group states for {} specs and names {} \
-                 (the bank has {})",
+                "state file: it is damaged, since it holds group states for {} specs, names {} \
+                 specs, and the bank has {}. Load an undamaged copy of the state file, or rebuild it from its input.",
                 file.states.len(),
                 file.specs.len(),
                 specs.len()
@@ -5216,19 +5238,35 @@ impl Bank {
         // And every other per-spec entry: one past the specs was dropped in
         // silence, or kept and saved again for ever (review 2026-10-06, PA8).
         let past = [
-            ("high_water", file.high_water.iter().map(|e| e.0).max()),
-            ("clock_dtypes", file.clock_dtypes.iter().map(|e| e.0).max()),
-            ("key_dtypes", file.key_dtypes.iter().map(|e| e.0).max()),
-            ("resolvers", file.resolvers.iter().map(|e| e.0).max()),
-            ("pca_prev", file.pca_prev.iter().map(|e| e.0).max()),
             (
-                "pca_prev_by_group",
+                "the last group key it closed",
+                file.high_water.iter().map(|e| e.0).max(),
+            ),
+            (
+                "the clock type it kept",
+                file.clock_dtypes.iter().map(|e| e.0).max(),
+            ),
+            (
+                "the key column types it kept",
+                file.key_dtypes.iter().map(|e| e.0).max(),
+            ),
+            (
+                "what it holds for formula targets",
+                file.resolvers.iter().map(|e| e.0).max(),
+            ),
+            (
+                "the PCA signs it kept",
+                file.pca_prev.iter().map(|e| e.0).max(),
+            ),
+            (
+                "the PCA signs it kept for a group",
                 file.pca_prev_by_group.iter().map(|e| e.0).max(),
             ),
         ];
         if let Some((what, Some(si))) = past.into_iter().find(|(_, si)| *si >= Some(specs.len())) {
             return Err(format!(
-                "bank state file is damaged: its {what} names spec {si}, and it has {}",
+                "state file: it is damaged, since {what} names spec {si} (counting from 0), and it \
+                 has {} specs. Load an undamaged copy of the state file, or rebuild it from its input.",
                 specs.len()
             ));
         }
@@ -5270,7 +5308,17 @@ impl Bank {
         };
         for (si, groups) in file.states.iter().enumerate() {
             for (key, st) in groups {
-                let stream = Stream::restore(&bank.specs[si], st)?;
+                let stream = Stream::restore(&bank.specs[si], st).map_err(|e| {
+                    // The where of every refusal a stream's restore says.
+                    let spec = &bank.specs[si];
+                    let group = match (&spec.group, key.as_str()) {
+                        (None, _) => String::new(),
+                        (Some(_), Some(g)) => format!(" group {g:?}"),
+                        (Some(_), None) => " group null".to_string(),
+                    };
+                    let prefix = format!("state file: spec {:?}{group}", spec.name);
+                    format!("{prefix}: {e}")
+                })?;
                 bank.states[si].insert(key.clone(), stream);
             }
         }
@@ -5324,11 +5372,19 @@ impl Bank {
         for &(si, bytes) in &file.refit_reserved {
             match bank.refit_reserved.get_mut(si) {
                 Some(slot) if bytes.is_finite() && bytes >= 0.0 => *slot = bytes,
-                _ => {
+                Some(_) => {
                     return Err(format!(
-                        "bank state file is damaged: its refit reservation names spec {si} \
-                         with {bytes} bytes, and it has {} specs",
-                        specs_len
+                        "state file: it is damaged, since the memory it reserved for spec {:?}'s \
+                         refits is {bytes} bytes, which is not a size. Load an undamaged copy of \
+                         the state file, or rebuild it from its input.",
+                        bank.specs[si].name
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "state file: it is damaged, since the memory it reserved for refits names \
+                         spec {si} (counting from 0), and it has {specs_len} specs. Load an \
+                         undamaged copy of the state file, or rebuild it from its input."
                     ));
                 }
             }

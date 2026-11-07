@@ -41,6 +41,7 @@ polars-online[numpy]``), and nothing else.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -56,7 +57,7 @@ def _np() -> Any:
         import numpy as np
     except ModuleNotFoundError as e:  # pragma: no cover - exercised by a stub
         msg = (
-            "polars_online.sim draws with numpy, and numpy is not installed. "
+            "po.sim: it draws with numpy, but numpy is not installed. "
             "Install it with `pip install numpy` or `pip install polars-online[numpy]`."
         )
         raise ModuleNotFoundError(msg) from e
@@ -71,9 +72,15 @@ def _states(np: Any, states: Sequence[Any], m: int) -> list[Any]:
         if arr.ndim == 0:
             rho = float(arr)
             if not -1.0 / (m - 1) < rho < 1.0:
+                # The bound to three figures, rounded toward 0, so a value
+                # above the figure shown is above the bound.
+                low = -1.0 / (m - 1)
+                scale = 10.0 ** (2 - math.floor(math.log10(-low)))
+                shown = math.ceil(low * scale) / scale
                 msg = (
-                    f"sim.regimes: state {i} is an equicorrelation of {rho}, which is outside "
-                    f"(-1/{m - 1}, 1) and so not a correlation matrix"
+                    f"po.sim.regimes: states[{i}] is an equicorrelation of {rho}, but for {m} "
+                    f"series an equicorrelation must be above {shown:.3g} and below 1 to be a "
+                    f"correlation matrix. Give states[{i}] a correlation in that range."
                 )
                 raise ValueError(msg)
             r = np.full((m, m), rho)
@@ -81,16 +88,28 @@ def _states(np: Any, states: Sequence[Any], m: int) -> list[Any]:
         else:
             r = arr
             if r.shape != (m, m):
-                msg = f"sim.regimes: state {i} is {r.shape}, not ({m}, {m})"
+                msg = (
+                    f"po.sim.regimes: states[{i}] must be a {m} by {m} matrix, one row and column "
+                    f"per series, but its shape is {r.shape}. Give a {m} by {m} matrix."
+                )
                 raise ValueError(msg)
             if not np.allclose(np.diag(r), 1.0):
-                msg = f"sim.regimes: state {i} has a diagonal that is not 1"
+                msg = (
+                    f"po.sim.regimes: states[{i}] must be a correlation matrix, but its diagonal "
+                    f"is not all 1. Set its diagonal to 1."
+                )
                 raise ValueError(msg)
             if not np.allclose(r, r.T):
-                msg = f"sim.regimes: state {i} is not symmetric"
+                msg = (
+                    f"po.sim.regimes: states[{i}] must be a correlation matrix, but it is not "
+                    f"symmetric. Give a matrix equal to its transpose."
+                )
                 raise ValueError(msg)
             if np.linalg.eigvalsh(r).min() < -1e-10:
-                msg = f"sim.regimes: state {i} is not positive semi-definite"
+                msg = (
+                    f"po.sim.regimes: states[{i}] must be a correlation matrix, but it has a "
+                    f"negative eigenvalue. Give a positive semi-definite matrix."
+                )
                 raise ValueError(msg)
         out.append(r)
     return out
@@ -108,10 +127,18 @@ def _chain(
     the diagonal removed (the recurring-state design)."""
     p = np.asarray(transition, dtype=float)
     if p.shape != (k, k):
-        msg = f"sim.regimes: transition is {p.shape}, not ({k}, {k}) for {k} states"
+        msg = (
+            f"po.sim.regimes: transition must be a {k} by {k} matrix for the {k} entries of "
+            f"states, but its shape is {p.shape}. Give one row and one column per state."
+        )
         raise ValueError(msg)
     if (p < 0).any() or not np.allclose(p.sum(axis=1), 1.0):
-        msg = "sim.regimes: transition must be row-stochastic (non-negative rows summing to 1)"
+        bad = next(j for j in range(k) if (p[j] < 0).any() or not np.isclose(p[j].sum(), 1.0))
+        msg = (
+            f"po.sim.regimes: each row of transition must be probabilities, at least 0 and "
+            f"summing to 1, but row {bad} is {p[bad].tolist()}. Give rows of probabilities "
+            f"that sum to 1."
+        )
         raise ValueError(msg)
     # `np.allclose` accepts a row summing to `1 + 1e-6`; `rng.choice` does
     # not, and raises from inside numpy with nothing to say which row. The
@@ -125,7 +152,10 @@ def _chain(
         return out
     d = list(durations)
     if len(d) != k or any(v < 1 for v in d):
-        msg = f"sim.regimes: durations needs one positive block count per state ({k})"
+        msg = (
+            f"po.sim.regimes: durations must hold one block count of at least 1 for each of "
+            f"the {k} states, but it is {d}. Give {k} counts of 1 or more."
+        )
         raise ValueError(msg)
     # The sojourn is `durations[s]` blocks; the next state is drawn from the
     # row with its own entry removed, so a state never "transitions" to
@@ -263,13 +293,19 @@ def regimes(
     """
     np = _np()
     if m < 2:
-        msg = f"sim.regimes: at least two series are needed, got {m}"
+        msg = f"po.sim.regimes: m must be at least 2, but it is {m}. Set m to 2 or more series."
         raise ValueError(msg)
     if design not in ("step", "smooth"):
-        msg = f'sim.regimes: design must be "step" or "smooth", got {design!r}'
+        msg = (
+            f'po.sim.regimes: design must be "step" or "smooth", but it is {design!r}. '
+            f"Set design to one of those words."
+        )
         raise ValueError(msg)
     if n_blocks < 1 or rows_per_block < 1:
-        msg = "sim.regimes: n_blocks and rows_per_block must be >= 1"
+        msg = (
+            f"po.sim.regimes: n_blocks and rows_per_block must each be at least 1, but they are "
+            f"{n_blocks} and {rows_per_block}. Set both to 1 or more."
+        )
         raise ValueError(msg)
     rng = np.random.default_rng(seed)
     mats = _states(np, states, m)
@@ -278,29 +314,49 @@ def regimes(
     n = n_blocks * rows_per_block
     cycle_len = cycle_rows if cycle_rows is not None else rows_per_block
     if cycle_len < 1:
-        msg = "sim.regimes: cycle_rows must be >= 1"
+        msg = (
+            f"po.sim.regimes: cycle_rows must be at least 1, but it is {cycle_len}. "
+            f"Set cycle_rows to 1 or more."
+        )
         raise ValueError(msg)
     if cycle_profile is not None and len(cycle_profile) != cycle_len:
-        msg = f"sim.regimes: cycle_profile needs one multiplier per cycle row ({cycle_len})"
+        msg = (
+            f"po.sim.regimes: cycle_profile must hold one multiplier per row of the cycle, "
+            f"{cycle_len}, but it holds {len(cycle_profile)}. Give {cycle_len} multipliers."
+        )
         raise ValueError(msg)
     if cycle_profile is not None and not all(0.0 < d <= 1.0 for d in cycle_profile):
-        msg = "sim.regimes: cycle_profile multipliers must be in (0, 1]"
+        bad = next(j for j, d in enumerate(cycle_profile) if not 0.0 < d <= 1.0)
+        msg = (
+            f"po.sim.regimes: each multiplier of cycle_profile must be above 0 and at most 1, "
+            f"but multiplier {bad} is {cycle_profile[bad]}. Give multipliers in that range."
+        )
         raise ValueError(msg)
 
     phis = np.asarray(phi, dtype=float)
     if phis.ndim == 0:
         phis = np.full(m, phis)
     if phis.shape != (m,):
-        msg = f"sim.regimes: phi must be a scalar or {m} values, got {phis.shape}"
+        msg = (
+            f"po.sim.regimes: phi must be one number or {m} values, one per series, but its "
+            f"shape is {phis.shape}. Give one number or {m}."
+        )
         raise ValueError(msg)
     if (np.abs(phis) >= 1.0).any():
-        msg = "sim.regimes: |phi| must be < 1 for a stationary series"
+        bad = int(np.argmax(np.abs(phis) >= 1.0))
+        msg = (
+            f"po.sim.regimes: each phi must be above -1 and below 1 for a stationary series, "
+            f"but series {bad}'s is {phis[bad]}. Give values in that range."
+        )
         raise ValueError(msg)
     vol_exp = np.asarray(scale_state, dtype=float)
     if vol_exp.ndim == 0:
         vol_exp = vol_exp * np.arange(k, dtype=float)
     elif vol_exp.shape != (k,):
-        msg = f"sim.regimes: scale_state must be a scalar or {k} values"
+        msg = (
+            f"po.sim.regimes: scale_state must be one number or {k} values, one per state, but "
+            f"its shape is {vol_exp.shape}. Give one number or {k}."
+        )
         raise ValueError(msg)
 
     block_of = np.arange(n) // rows_per_block
@@ -373,7 +429,10 @@ def regimes(
     if activity is not None:
         mean, shape = activity
         if mean <= 0.0 or shape <= 0.0:
-            msg = "sim.regimes: activity is (mean, shape), both > 0"
+            msg = (
+                f"po.sim.regimes: activity must be (mean, shape), both above 0, but it is "
+                f"{activity!r}. Give two positive numbers."
+            )
             raise ValueError(msg)
         activity_col = rng.gamma(shape, scale=mean / shape, size=n) * vol
         clock = np.cumsum(activity_col)
@@ -382,10 +441,17 @@ def regimes(
     if async_rates is not None:
         rates = np.asarray(async_rates, dtype=float)
         if rates.shape != (m,):
-            msg = f"sim.regimes: async_rates needs one expected report rate per series ({m})"
+            msg = (
+                f"po.sim.regimes: async_rates must hold one expected report rate per series, "
+                f"{m}, but its shape is {rates.shape}. Give {m} rates."
+            )
             raise ValueError(msg)
         if (rates <= 0).any():
-            msg = "sim.regimes: async_rates must be > 0"
+            bad = int(np.argmax(rates <= 0))
+            msg = (
+                f"po.sim.regimes: each rate of async_rates must be above 0, but series {bad}'s "
+                f"is {rates[bad]}. Give positive rates."
+            )
             raise ValueError(msg)
         reports = rng.poisson(rates, size=(n, m))
         observed = np.where(reports > 0, levels, np.nan)

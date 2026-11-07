@@ -205,11 +205,17 @@ pub(crate) fn check_cadence(
 ) -> Result<(), String> {
     if window.is_none() {
         if every.is_some() {
-            return Err(format!("{model}: snapshot_every needs `window_size`"));
+            return Err(format!(
+                "{model}: snapshot_every is set, but window_size is not, and snapshot_every \
+                 spaces the snapshots of a hard window. Set window_size, or leave out \
+                 snapshot_every."
+            ));
         }
         if max_rows.is_some() {
             return Err(format!(
-                "{model}: max_rows_between_snapshots needs `window_size`"
+                "{model}: max_rows_between_snapshots is set, but window_size is not, and \
+                 max_rows_between_snapshots spaces the snapshots of a hard window. Set \
+                 window_size, or leave out max_rows_between_snapshots."
             ));
         }
     }
@@ -217,16 +223,18 @@ pub(crate) fn check_cadence(
         && !(e.is_finite() && e >= 0.0)
     {
         return Err(format!(
-            "{model}: snapshot_every must be finite and >= 0 clock units (0 snapshots every row), \
-             got {e}"
+            "{model}: snapshot_every must be finite and at least 0 clock units, but it is {e}. \
+             Set snapshot_every to a finite number of clock units, or to 0 for a snapshot on \
+             every row."
         ));
     }
     // A cap of no rows is no schedule; the clock form's `0` is every row
     // (docs/PLAN.md task 196, U7).
     if max_rows == Some(0) {
         return Err(format!(
-            "{model}: max_rows_between_snapshots must be >= 1 (snapshot_every = 0 snapshots every \
-             row), got 0"
+            "{model}: max_rows_between_snapshots must be at least 1, but it is 0. Set \
+             max_rows_between_snapshots to 1 or more, or set snapshot_every to 0 for a snapshot \
+             on every row."
         ));
     }
     Ok(())
@@ -830,14 +838,22 @@ impl<S: Pack + Footprint + Clone> Snapshots<S> {
         if !window.is_finite() || window <= 0.0 {
             // "Finite" said: "> 0 (got inf)" is untrue of infinity (review
             // 2026-10-06, YA4).
-            return Err(format!("window_size must be finite and > 0 (got {window})"));
+            return Err(format!(
+                "window_size must be finite and above 0, but it is {window}. Set window_size to \
+                 a finite positive number of clock units."
+            ));
         }
         if cadence.rows == 0 {
-            return Err("the rows between a window's snapshots must be >= 1".into());
+            return Err(
+                "max_rows_between_snapshots must be at least 1, but it is 0. Set \
+                        max_rows_between_snapshots to 1 or more."
+                    .into(),
+            );
         }
         if cadence.spacing.is_nan() || cadence.spacing <= 0.0 {
             return Err(format!(
-                "the clock between a window's snapshots must be > 0 units, or none (got {})",
+                "snapshot_every must be above 0 clock units, but it is {}. Set snapshot_every \
+                 to a positive number of clock units, or leave it out.",
                 cadence.spacing
             ));
         }
@@ -3203,7 +3219,7 @@ mod tests {
         assert!(Snapshots::<usize>::with_cadence(5.0, Cadence::of(None, Some(0))).is_err());
         let refused = check_cadence("m", Some(5.0), None, Some(0)).unwrap_err();
         assert!(
-            refused.contains("max_rows_between_snapshots must be >= 1"),
+            refused.contains("max_rows_between_snapshots must be at least 1"),
             "{refused}"
         );
         assert!(check_cadence("m", Some(5.0), None, Some(1)).is_ok());
@@ -3217,7 +3233,13 @@ mod tests {
     fn a_window_that_is_not_a_finite_positive_number_is_refused_as_such() {
         for w in [f64::INFINITY, f64::NAN, 0.0, -1.0] {
             let e = Snapshots::<usize>::new(w, 1).unwrap_err();
-            assert_eq!(e, format!("window_size must be finite and > 0 (got {w})"));
+            assert_eq!(
+                e,
+                format!(
+                    "window_size must be finite and above 0, but it is {w}. Set window_size to \
+                     a finite positive number of clock units."
+                )
+            );
         }
     }
 
@@ -3367,19 +3389,19 @@ mod tests {
                 None,
                 Some(1.0),
                 None,
-                "m: snapshot_every needs `window_size`",
+                "m: snapshot_every is set, but window_size is not",
             ),
             (
                 None,
                 None,
                 Some(3),
-                "m: max_rows_between_snapshots needs `window_size`",
+                "m: max_rows_between_snapshots is set, but window_size is not",
             ),
             (
                 Some(10.0),
                 Some(-1.0),
                 None,
-                "snapshot_every must be finite and >= 0",
+                "snapshot_every must be finite and at least 0",
             ),
             (
                 Some(10.0),

@@ -24,6 +24,21 @@ from typing import NoReturn
 
 from polars_online._warnings import RENAMED_MARK
 
+#: The qualified names a decorated function reports, as the reader calls it.
+_READER_NAMES = {
+    "LazyFrameOnlineNamespace.fit_predict()": "lf.online.fit_predict",
+    "LazyFrameOnlineNamespace.predict()": "lf.online.predict",
+    "DataFrameOnlineNamespace.fit_predict()": "df.online.fit_predict",
+    "DataFrameOnlineNamespace.predict()": "df.online.predict",
+    "fit_predict()": "po.fit_predict",
+    "predict()": "po.predict",
+    "refresh_time()": "po.stream.refresh_time",
+    "with_windows()": "po.stream.with_windows",
+    "embargo()": "po.stream.embargo",
+    "ModelBank.fit_predict_batches()": "ModelBank.fit_predict_batches",
+    "ModelBank.fit()": "ModelBank.fit",
+}
+
 
 def renamed_keywords[**P, R](
     who: str, table: Mapping[str, str]
@@ -37,7 +52,8 @@ def renamed_keywords[**P, R](
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             for old, new in table.items():
                 if old in kwargs:
-                    raise TypeError(f"{who}: {old} was renamed {new}")
+                    where = _READER_NAMES.get(who, who)
+                    raise TypeError(f"{where}: {old} was renamed {new}. Use {new} instead.")
             return fn(*args, **kwargs)
 
         return wrapper
@@ -73,7 +89,8 @@ def renamed_function(old: str, new: str, more: str = "") -> Callable[..., NoRetu
     snapshot show the new name only."""
 
     def stub(*args: object, **kwargs: object) -> NoReturn:
-        raise TypeError(f"{old} was renamed {new}{more}")
+        who = old
+        raise TypeError(f"{who}: this function was renamed {new}{more}. Call {new} instead.")
 
     stub.__name__ = stub.__qualname__ = old.rsplit(".", 1)[-1]
     stub.__doc__ = f"Renamed {new}: calling it raises TypeError, naming the new name."
@@ -90,14 +107,21 @@ def is_renamed(obj: object) -> bool:
     return getattr(target, RENAMED_MARK, None) is not None
 
 
-def renamed_method(cls: str, old: str, new: str) -> Callable[..., NoReturn]:
+def renamed_method(
+    cls: str, old: str, new: str, *, read_as: str | None = None
+) -> Callable[..., NoReturn]:
     """A method stub for a method renamed ``new``, raising ``AttributeError``
     naming it, as a missing attribute does. Marked, as
     :func:`renamed_function`'s stubs are, so the reference and the API
     snapshot show the new name only."""
 
     def stub(self: object, *args: object, **kwargs: object) -> NoReturn:
-        raise AttributeError(f"{cls}.{old} was renamed {new}")
+        who = f"{cls}.{old}"
+        if read_as is not None:
+            raise AttributeError(
+                f"{who}: it was renamed {new}, a property. Read {read_as}, without the call."
+            )
+        raise AttributeError(f"{who}: this method was renamed {new}. Use {new} instead.")
 
     stub.__name__ = old
     stub.__qualname__ = f"{cls}.{old}"

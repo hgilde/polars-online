@@ -54,9 +54,11 @@ from polars_online import _formula, _warnings
 from polars_online import _polars_online as _native
 from polars_online._bank import _refuse_uint128
 from polars_online._duration import Duration, clock_nanoseconds, duration_text
+from polars_online._errors import ColumnNotFoundError
 from polars_online._frame import (
     ConsumedSourceWarning,
     State,
+    _and_list,
     _explain_named,
     _in_morsels,
     _is_python_scan,
@@ -232,27 +234,36 @@ def embargo(
     lazy = lf.lazy()
     schema = lazy.collect_schema()
     if clock not in schema:
-        msg = f"embargo: no clock column {clock!r} in the frame; it has {schema.names()}"
-        raise ValueError(msg)
+        msg = (
+            f"po.stream.embargo: the input has no clock column {clock!r}, only {schema.names()}. "
+            "Set clock to one of those columns."
+        )
+        raise ColumnNotFoundError(msg)
     if not (schema[clock].is_numeric() or schema[clock].is_temporal()):
         # Named before the plan is built; a String clock failed inside polars'
         # arithmetic when the plan ran (review round 4, YB15).
-        msg = f"embargo: clock column {clock!r} must be numeric or temporal, got {schema[clock]}"
+        msg = (
+            f"po.stream.embargo: clock column {clock!r} must be numeric or temporal, but it is "
+            f"{schema[clock]}. Cast it to a number or a Datetime."
+        )
         raise TypeError(msg)
     if schema[clock].is_integer() and schema[clock] not in _INTEGER_CLOCKS:
         # An integer clock is held as an Int64 (task 200), so a bank refuses
         # an Int128 by name; said here, before the doubled frame is built
         # for a bank that would refuse it (review round 5, B3).
         msg = (
-            f"embargo: clock column {clock!r} is {schema[clock]}, wider than the Int64 an "
-            "integer clock is held in; cast it to Int64 if its values fit, or after "
-            "subtracting an origin"
+            f"po.stream.embargo: clock column {clock!r} is {schema[clock]}, wider than the Int64 "
+            "an integer clock is held in. Cast it to Int64 if its values fit, or after "
+            "subtracting an origin."
         )
         raise TypeError(msg)
-    ns = clock_nanoseconds(delay, schema[clock], "embargo", "delay", clock)
+    ns = clock_nanoseconds(delay, schema[clock], "po.stream.embargo", "delay", clock)
     if ns is None:
         if not (delay > 0.0) or delay == float("inf"):  # type: ignore[operator]
-            msg = f"embargo: delay must be finite and > 0, got {delay!r}"
+            msg = (
+                f"po.stream.embargo: delay must be finite and above 0, but it is {delay!r}. Set "
+                "delay to the time from predicting a row to learning it, such as 5 clock units."
+            )
             raise ValueError(msg)
         later = pl.col(clock) + delay
         if schema[clock].is_integer():
@@ -261,9 +272,9 @@ def embargo(
             # example above, did (review 2026-10-05, YB3).
             if not float(delay).is_integer():  # type: ignore[arg-type]
                 msg = (
-                    f"embargo: delay {delay!r} is not a whole number, and clock column "
-                    f"{clock!r} is {schema[clock]}, which holds whole numbers; give a whole "
-                    "delay, or cast the clock to a float"
+                    f"po.stream.embargo: delay {delay!r} is not a whole number, but clock column "
+                    f"{clock!r} is {schema[clock]}, which holds whole numbers. Give a whole "
+                    "delay, or cast the clock to a float."
                 )
                 raise ValueError(msg)
             # Widened before the add, and cast back strictly: Polars adds
@@ -280,10 +291,16 @@ def embargo(
         # its own dtype drops nothing.
         later = (pl.col(clock) + pl.duration(nanoseconds=ns)).cast(schema[clock])
     if weight is not None and weight not in schema:
-        msg = f"embargo: no weight column {weight!r} in the frame; it has {schema.names()}"
-        raise ValueError(msg)
+        msg = (
+            f"po.stream.embargo: the input has no weight column {weight!r}, only {schema.names()}. "
+            "Set weight to one of those columns, or leave it out."
+        )
+        raise ColumnNotFoundError(msg)
     if role in schema:
-        msg = f"embargo: the frame already has a column named {role!r}; pass another `role=`"
+        msg = (
+            f"po.stream.embargo: the input already has a column named {role!r}, the name of the "
+            "column this adds. Pass another role=."
+        )
         raise ValueError(msg)
 
     wcol = weight if weight is not None else f"{role}_weight"
@@ -291,21 +308,22 @@ def embargo(
         # The weight column added beside the role, which polars refused as a
         # duplicate (review 2026-10-05, YB10).
         msg = (
-            f"embargo: the frame already has a column named {wcol!r}, the weight column this "
-            "adds; pass another `role=`, or name that column as the `weight=` to zero"
+            f"po.stream.embargo: the input already has a column named {wcol!r}, the name of the "
+            "weight column this adds. Pass another role=, or pass that column as weight= to have "
+            "it set to 0 on the rows that only predict."
         )
         raise ValueError(msg)
     if _is_python_scan(lazy):
         # The two copies are two reads of the input (review round 4, YB3).
         warnings.warn(
             ConsumedSourceWarning(
-                "embargo: the input's source is a Python scan, and embargo reads its input "
-                "twice, once for each copy. A source that can be read once only -- what "
-                "`pl.scan_arrow_c_stream` builds over a DuckDB relation, a pyarrow reader, or "
-                "anything exposing `__arrow_c_stream__` -- gives the second read nothing, and "
-                "half the doubled stream goes missing with no error. Write the input to a file "
-                "and scan that, or collect it first. If the source can be read twice, silence "
-                'this with warnings.simplefilter("ignore", polars_online.ConsumedSourceWarning).'
+                "po.stream.embargo: the query reads a source written in Python, and embargo reads "
+                "its input twice, once for each copy, so a source that gives its rows once, such "
+                "as `pl.scan_arrow_c_stream` over a DuckDB relation or a pyarrow reader, gives the "
+                "second read nothing and half the doubled stream goes missing with no error. "
+                "Write the input to a file and read that file as a query, or pass its result "
+                "as a frame, or, if the source can be read twice, silence this warning with "
+                '`warnings.simplefilter("ignore", polars_online.ConsumedSourceWarning)`.'
             ),
             stacklevel=_user_stacklevel(),
         )
@@ -525,15 +543,21 @@ def refresh_time(
         [("group", group)] if group is not None else []
     ):
         if col not in in_schema:
-            msg = f"refresh_time: no {role} column {col!r} in the frame; it has {in_schema.names()}"
-            raise ValueError(msg)
+            msg = (
+                f"po.stream.refresh_time: the input has no {role} column {col!r}, "
+                f"only {in_schema.names()}. Set {role} to one of those columns."
+            )
+            raise ColumnNotFoundError(msg)
     for col in keep:
         if col not in in_schema:
-            msg = f"refresh_time: no keep column {col!r} in the frame; it has {in_schema.names()}"
-            raise ValueError(msg)
+            msg = (
+                f"po.stream.refresh_time: keep names column {col!r}, but the input does not "
+                f"have it, only {in_schema.names()}. List only those columns in keep."
+            )
+            raise ColumnNotFoundError(msg)
     # Every column of a chunk crosses to the extension, which cannot take a
     # `UInt128` one in.
-    _refuse_uint128(in_schema, "refresh_time", (clock,))
+    _refuse_uint128(in_schema, "po.stream.refresh_time", (clock,))
     # A number or a temporal column, as a spec's clock is: a boolean or a
     # column of nulls is a number (task 197, PC7's rule). Read through a
     # non-strict cast, text of digits was taken as a clock.
@@ -544,9 +568,9 @@ def refresh_time(
         or clock_dtype in (pl.Boolean, pl.Null)
     ):
         msg = (
-            f"refresh_time: clock column {clock!r} has dtype {clock_dtype}; it must be numeric or "
-            f"temporal (cast it, e.g. pl.col({clock!r}).cast(pl.Float64) or "
-            f"pl.col({clock!r}).str.to_datetime())"
+            f"po.stream.refresh_time: clock column {clock!r} must be numeric or temporal, "
+            f"but it is {clock_dtype}. Cast it, such as with pl.col({clock!r}).cast(pl.Float64) or "
+            f"pl.col({clock!r}).str.to_datetime()."
         )
         raise ValueError(msg)
     # A number, as a spec's feature is: a boolean or a column of nulls too
@@ -555,18 +579,21 @@ def refresh_time(
     value_dtype = in_schema[value]
     if not (value_dtype.is_numeric() or value_dtype in (pl.Boolean, pl.Null)):
         msg = (
-            f"refresh_time: value column {value!r} has dtype {value_dtype}; it must be numeric "
-            f"(cast it, e.g. pl.col({value!r}).cast(pl.Float64))"
+            f"po.stream.refresh_time: value column {value!r} must be numeric, "
+            f"but it is {value_dtype}. Cast it, such as with pl.col({value!r}).cast(pl.Float64)."
         )
         raise ValueError(msg)
     rows = chunk_size if chunk_size is not None else _native.default_chunk_size()
     if rows < 1:
-        msg = f"chunk_size must be at least 1, got {rows}"
+        msg = (
+            f"po.stream.refresh_time: chunk_size must be at least 1, but it is {rows}. "
+            "Set chunk_size to 1 or more, or leave it out."
+        )
         raise ValueError(msg)
     # Read now, as a bank's `load_state` is: a plan collected twice goes on
     # from the same state, whatever the file holds by then.
     loaded = _read_state(load_state) if load_state is not None else None
-    save_path = _save_path(save_state)
+    save_path = _save_path(save_state, "po.stream.refresh_time")
 
     def build() -> _native.RefreshTime:
         if loaded is not None:
@@ -644,7 +671,10 @@ def _clock_value(value: Any, who: str, key: str) -> Any:
     if isinstance(value, numbers.Real) and not isinstance(value, bool):
         x = float(value)
         if math.isnan(x):
-            raise ValueError(f"{who}: {key} must not be NaN")
+            raise ValueError(
+                f"{who}: {key} is NaN, which is no number of clock units. Set {key} to a number "
+                "or a duration."
+            )
         return ("inf" if x > 0 else "-inf") if math.isinf(x) else value
     return duration_text(value, who, key)
 
@@ -654,11 +684,10 @@ def _warn_session_gap_ignored(who: str, value: Any) -> None:
     ``session_gap`` that is a number or a duration, which no window reads,
     pointed at the first line outside the package."""
     warnings.warn(
-        f"{who}: session_gap = {value!r} is deprecated: a number or a duration has no "
-        f"effect here. Every window ends at a session change, so no window measures the "
-        f"clock's step across one, and a session needs no session_gap. Leave it out, or give "
-        f'"reset" to discard the windows still open ahead of a session change rather than '
-        f"cut them. It is accepted and ignored until the next major version, which refuses it",
+        f"{who}: session_gap = {value!r} is deprecated and ignored until the next major "
+        "version, which refuses it: every window ends at a session change, so no window "
+        "measures the clock's step across one. Leave session_gap out, or set it to "
+        '"reset" to discard the windows still open at a session change rather than cut them.',
         _warnings.PolarsOnlineDeprecationWarning,
         skip_file_prefixes=(_PACKAGE_DIR,),
     )
@@ -680,31 +709,46 @@ def _formulas(who: str, exprs: tuple[Any, ...], named: dict[str, Any]) -> list[d
     for e in exprs:
         if not isinstance(e, pl.Expr):
             raise TypeError(
-                f"{who}: an expression is a pl.Expr over the operators, got {type(e).__name__}"
+                f"{who}: each value passed by position must be a Polars expression (a column "
+                f"computation, "
+                f'such as pl.col("x") + 1) over the window operators, but one is of type '
+                f"{type(e).__name__}. "
+                'Pass expressions such as po.ewm_mean("x", half_life=10).alias("m"), or name '
+                'each as a keyword, as in with_windows(m=po.ewm_mean("x", half_life=10)).'
             )
-        tree = _formula.to_tree(e)
+        tree = _formula.to_tree(e, who)
         name = e.meta.output_name()
         if name.startswith(_formula.PREFIX):
             raise ValueError(
-                f"{who}: an expression whose name would be an operator's needs a name: give it "
-                f'with .alias("...") or as a keyword, with_windows(name=expr)'
+                f"{who}: an expression has no name of its own, only its window operator's. "
+                f'Name it with .alias("...") or as a keyword, as in with_windows(name=expr).'
             )
         out.append({"name": name, "tree": tree})
     for name, e in named.items():
-        if name in _RENAMED:
-            raise TypeError(f"{who}: {name} was renamed {_RENAMED[name]}")
         if name in _RENAMED_KEYWORDS:
-            raise TypeError(f"{who}: {name} was renamed {_RENAMED_KEYWORDS[name]}")
+            new = _RENAMED_KEYWORDS[name]
+            raise TypeError(f"{who}: {name} was renamed {new}. Use {new} instead.")
+        if name in _RENAMED and _RENAMED[name] in _WINDOW_KEYS:
+            raise TypeError(
+                f"{who}: {name} was renamed {_RENAMED[name]}. Use {_RENAMED[name]} instead."
+            )
+        if name in _RENAMED:
+            raise TypeError(
+                f"{who}: {name} is the old name of a spec's {_RENAMED[name]}, so it cannot name "
+                "an output column. Give the output column another name."
+            )
         if not isinstance(e, pl.Expr):
             raise TypeError(
-                f"{who}: {name} is a pl.Expr over the operators, got {type(e).__name__} {e!r}"
+                f"{who}: the keyword {name} names an output column, so it must be a pl.Expr "
+                f"over the window operators, but it is of type {type(e).__name__} ({e!r}). "
+                "Pass an expression such as po.ewm_mean(...)."
             )
-        out.append({"name": name, "tree": _formula.to_tree(e)})
+        out.append({"name": name, "tree": _formula.to_tree(e, who)})
     for f in out:
         if not _formula.operators(f["tree"]):
             raise ValueError(
-                f"{who}: {f['name']!r} holds no operator; a formula of the row alone is Polars' "
-                f"with_columns"
+                f"{who}: {f['name']!r} holds no window operator, so it reads only its own row. "
+                "Compute it with Polars' with_columns instead."
             )
     return out
 
@@ -958,23 +1002,35 @@ def with_windows(
         "group": group,
     }
     for key, value in given.items():
-        if isinstance(value, pl.Expr):
+        if isinstance(value, pl.Expr) and key in ("clock", "session", "group"):
+            example = {"clock": "ts", "session": "day", "group": "symbol"}[key]
             raise TypeError(
-                f"{who}: {key} is a clock keyword of the call, not an output name; name the "
-                f"expression with .alias({key!r}) or another keyword"
+                f"{who}: {key} takes a column name, but it is given an expression (a column "
+                f'computation, such as pl.col("x") + 1). Give the column\'s name, as '
+                f'{key}="{example}", or, for an output column named {key!r}, name the '
+                f"expression with .alias({key!r}) and pass it by position."
+            )
+        if isinstance(value, pl.Expr):
+            # gap_cap, restart_after_step_back and session_gap: each a span
+            # of the clock.
+            raise TypeError(
+                f"{who}: {key} takes a number or a duration as text or a timedelta, but it is "
+                f'given an expression. Give {key} as "5m" or timedelta(minutes=5).'
             )
     formulas = _formulas(who, exprs, named)
     config: dict[str, Any] = {"formulas": formulas}
     if like is not None:
         if not (isinstance(like, dict) and isinstance(like.get("features"), list)):
             raise TypeError(
-                f"{who}: like must be a spec, such as po.spec.ewridge(...), got {like!r}"
+                f"{who}: like must be a spec, such as po.spec.ewridge(...), but it is "
+                f"{like!r}. Pass a spec."
             )
         clash = [k for k, v in given.items() if v is not None]
         if clash:
             raise TypeError(
-                f"{who}: like= takes the clock policy from spec {like.get('name')!r}; leave out "
-                f"{', '.join(clash)}"
+                f'{who}: like= takes the clock settings from spec "{like.get("name")}", but '
+                f"{_and_list(clash)} {'is' if len(clash) == 1 else 'are'} given too. Leave out "
+                f"{_and_list(clash)}, or like=."
             )
         # A hand-written dict with a clock key under its old name would be
         # read as not setting it (review R1, F1): refused naming the new one,
@@ -984,7 +1040,8 @@ def with_windows(
         )
         if old := [k for k in like if k in _RENAMED]:
             raise TypeError(
-                f"{who}: like= spec {like.get('name')!r}: {old[0]} was renamed {_RENAMED[old[0]]}"
+                f"{who}: like= spec {like.get('name')!r}: {old[0]} was renamed "
+                f"{_RENAMED[old[0]]}. Use {_RENAMED[old[0]]} in the spec."
             )
         policy = {k: like.get(k) for k in _CLOCK_KEYS}
         weight = like.get("weight")
@@ -1009,7 +1066,10 @@ def with_windows(
     _refuse_uint128(in_schema, who, (policy.get("clock"),))
     rows = chunk_size if chunk_size is not None else _native.default_chunk_size()
     if rows < 1:
-        msg = f"chunk_size must be at least 1, got {rows}"
+        msg = (
+            f"{who}: chunk_size must be at least 1, but it is {rows}. Set chunk_size to 1 or "
+            "more, or leave it out."
+        )
         raise ValueError(msg)
     # The two plan checks a bank makes of its input, made here of this one's:
     # a bank after this sees only this source, and not the plan beneath it.
@@ -1023,7 +1083,7 @@ def with_windows(
     # Read now, as a bank's `load_state` is: a plan collected twice goes on
     # from the same state, whatever the file holds by then.
     loaded = _read_state(load_state) if load_state is not None else None
-    save_path = _save_path(save_state)
+    save_path = _save_path(save_state, who)
     empty = pl.DataFrame(schema=in_schema)
 
     def build() -> _native.Windows:
@@ -1097,14 +1157,13 @@ def with_windows(
         if python_scan and read == 0 and n_rows != 0 and not _sources_ran_since(this_run):
             warnings.warn(
                 ConsumedSourceWarning(
-                    f"{who}: the plan yielded no rows, and its source is a Python scan -- "
-                    "which is what `pl.scan_arrow_c_stream` builds over a DuckDB relation, a "
-                    "pyarrow reader, or anything exposing `__arrow_c_stream__`. Such a stream "
-                    "is consumed once: collected a second time it yields nothing, with no "
-                    "error. Rebuild the plan per collect (call `pl.scan_arrow_c_stream(...)` "
-                    "inside the loop, not outside it). If the source really is empty, "
-                    'silence this with warnings.simplefilter("ignore", '
-                    "polars_online.ConsumedSourceWarning)."
+                    f"{who}: the query gave no rows, and it reads a source written in Python, "
+                    "such as `pl.scan_arrow_c_stream` over a DuckDB relation, a pyarrow reader or "
+                    "anything with `__arrow_c_stream__`, which gives its rows once, so a second "
+                    "run of the query reads nothing. Build the query again for each run, calling "
+                    "`pl.scan_arrow_c_stream(...)` inside the loop, or, if the source "
+                    "really is empty, silence this warning with "
+                    '`warnings.simplefilter("ignore", polars_online.ConsumedSourceWarning)`.'
                 ),
                 stacklevel=_user_stacklevel(),
             )

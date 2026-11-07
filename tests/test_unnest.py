@@ -242,11 +242,11 @@ class TestUnnest:
     def test_errors_while_the_plan_is_built(self, tmp_path):
         df = _frame()
         nested = df.online.fit_predict([OLS])
-        with pytest.raises(ValueError, match="no column.*'grid'"):
+        with pytest.raises(ValueError, match='no output column of spec "grid"'):
             nested.lazy().online.unnest([GRID])
-        with pytest.raises(ValueError, match="'t' is Int64, not spec 't'"):
+        with pytest.raises(ValueError, match="'t' is Int64, not the output column of spec \"t\""):
             nested.lazy().online.unnest([{**OLS, "name": "t"}])
-        with pytest.raises(ValueError, match="lacks the field.*coef@h50"):
+        with pytest.raises(ValueError, match="lacks the fields.*coef@h50"):
             nested.lazy().online.unnest([{**OLS, "half_life": [50.0, 200.0]}])
         with pytest.raises(ValueError, match="given twice"):
             nested.lazy().online.unnest([OLS, OLS])
@@ -298,7 +298,7 @@ class TestUnnest:
         with pytest.raises(pl.exceptions.DuplicateError) as err:
             nested.lazy().online.unnest([OLS])
         assert str(err.value).startswith(
-            'online.unnest: weight_sum is a field of spec "ols" and a column of the frame, '
+            'online.unnest: weight_sum is a field of spec "ols" and a column of the input, '
             "so the columns unnested would share a name. "
             'Pass separator="." to name each column after its spec'
         )
@@ -307,9 +307,8 @@ class TestUnnest:
         with pytest.raises(pl.exceptions.DuplicateError) as err:
             clash.online.unnest([OLS], separator=".")
         assert str(err.value) == (
-            'online.unnest: ols.weight_sum is a field of spec "ols" and a column of the frame, '
-            "so the columns unnested would share a name. Pass a separator other than '.', or "
-            'take the fields you need with pl.col("ols").struct.field("ols.weight_sum").'
+            'online.unnest: ols.weight_sum is a field of spec "ols" and a column of the input, '
+            "so the columns unnested would share a name. Pass a separator other than '.'."
         )
 
 

@@ -113,8 +113,8 @@ fn the_timings_are_on_at_polars_online_timing_1_alone() {
         assert!(!off.contains("TIMING"), "{env:?}: {off}");
     }
     let old = stderr(&[("ONLINE_TIMING", "1")]);
-    let notice = "polars-online: warning: ONLINE_TIMING was renamed POLARS_ONLINE_TIMING; \
-                  set POLARS_ONLINE_TIMING=1 for the timings";
+    let notice = "polars-online: warning: ONLINE_TIMING was renamed POLARS_ONLINE_TIMING, so \
+                  it turns no timings on. Set POLARS_ONLINE_TIMING=1 for the timings.";
     assert_eq!(old.lines().filter(|l| *l == notice).count(), 1, "{old}");
     assert!(
         !old.contains("TIMING rows") && !old.contains("TIMING run"),
@@ -255,7 +255,7 @@ fn a_chunk_size_of_0_is_refused_as_python_refuses_it() {
         let (code, _, err) = run(cli().args(["--config", text(&cfg)]).args(flag));
         assert_eq!(code, Some(1), "{err}");
         assert!(
-            err.contains("chunk_size must be at least 1, got 0"),
+            err.contains("chunk_size must be at least 1, but it is 0"),
             "{extra} {flag:?}: {err}"
         );
     }
@@ -278,7 +278,7 @@ fn threads_from_the_flag_or_the_key_and_the_variable_only_without_them() {
         let (code, _, err) = run(cli().args(["--config", text(&cfg)]).args(flag));
         assert_eq!(code, Some(1), "{err}");
         assert!(
-            err.contains("threads=0 is not a number of threads"),
+            err.contains("threads: 0 is not a number of threads"),
             "{extra} {flag:?}: {err}"
         );
     }
@@ -323,7 +323,10 @@ fn threads_from_the_flag_or_the_key_and_the_variable_only_without_them() {
         .args(["--config", text(&cfg)])
         .env("POLARS_ONLINE_MAX_THREADS", "eight"));
     assert_eq!(code, Some(1), "{err}");
-    assert!(err.contains("POLARS_ONLINE_MAX_THREADS=\"eight\""), "{err}");
+    assert!(
+        err.contains("POLARS_ONLINE_MAX_THREADS: \"eight\""),
+        "{err}"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -500,9 +503,7 @@ fn a_threads_that_is_no_count_is_refused_in_the_one_message() {
         let (code, _, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));
         assert_eq!(code, Some(1), "{err}");
         assert!(
-            err.contains(&format!(
-                "threads={shown} is not a number of threads: give an integer of 1 or more"
-            )),
+            err.contains(&format!("threads: {shown} is not a number of threads")),
             "{value}: {err}"
         );
         assert!(!err.contains("expected usize"), "{value}: {err}");

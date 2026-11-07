@@ -1000,7 +1000,11 @@ impl TryFrom<KalmanV4> for Kalman {
             || v.wsig.len() != m
             || v.wj.len() != m
         {
-            return Err("kalman: state has the wrong shape".into());
+            return Err(
+                "kalman: its saved state has the wrong shape. Load an undamaged copy of \
+                        the state file, or rebuild it from its input."
+                    .into(),
+            );
         }
         // The anchor is the standardizer's: without one there is no
         // coordinate to hold (docs/PLAN.md task 211).
@@ -1008,7 +1012,12 @@ impl TryFrom<KalmanV4> for Kalman {
             || v.anchor_lo.len() != anchored
             || v.anchor_scale.len() != anchored
         {
-            return Err("kalman: the state's anchor does not match its cfg's standardize".into());
+            let set = if cfg.standardize { "True" } else { "False" };
+            return Err(format!(
+                "kalman: its saved feature means and scales do not match its setting \
+                 standardize={set}. Load an undamaged copy of the state file, or rebuild it from its \
+                 input."
+            ));
         }
         if !v.anchor_scale.iter().all(|s| s.is_finite() && *s > 0.0)
             || !v
@@ -1018,20 +1027,28 @@ impl TryFrom<KalmanV4> for Kalman {
                 .all(|m| m.is_finite())
         {
             return Err(
-                "kalman: the anchor's scales must be finite and > 0, its means finite".into(),
+                "kalman: its saved feature means and scales hold values no fit could \
+                 have. Load an undamaged copy of the state file, or rebuild it from its input."
+                    .into(),
             );
         }
         if !v.elapsed.iter().all(|e| e.is_finite() && *e >= 0.0) {
-            return Err("kalman: the clocks since an observation must be finite and >= 0".into());
+            return Err(
+                "kalman: its saved clocks since each observation hold values no fit \
+                 could have. Load an undamaged copy of the state file, or rebuild it from its \
+                 input."
+                    .into(),
+            );
         }
         // Each message says what its check requires (docs/PLAN.md task 218):
         // the basis's said ">= 0" of a check that refuses a 0, and named
         // neither its lengths nor its bound.
         if !v.basis.iter().all(NoiseBasis::is_valid) {
-            return Err(format!(
-                "kalman: the noise basis must hold at most {PRIOR_ROWS} rows, as many weights \
-                 as squared innovations, each finite and > 0"
-            ));
+            return Err(
+                "kalman: its saved prior rows hold values no fit could have. Load an \
+                 undamaged copy of the state file, or rebuild it from its input."
+                    .into(),
+            );
         }
         // The scratch buffers are sized by `ensure_buffers` on the first use.
         Ok(Self {
@@ -4530,7 +4547,7 @@ mod tests {
         for field in ["beta", "wsig", "wj"] {
             let err = reread(&m, |v| shorten(v, field)).unwrap_err();
             assert!(
-                err.contains("kalman: state has the wrong shape"),
+                err.contains("kalman: its saved state has the wrong shape"),
                 "{field}: {err}"
             );
         }

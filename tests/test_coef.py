@@ -116,10 +116,10 @@ def test_mistakes_and_edges_are_named():
     assert empty.shape == (0, 16) and empty.schema == bank.coef("ols").schema
     with pytest.raises(KeyError, match="no spec named 'nope'"):
         bank.coef("nope")
-    with pytest.raises(IndexError, match="spec index 3 out of range"):
+    with pytest.raises(IndexError, match="spec index 3 is out of range"):
         bank.coef(3)
     cov = po.ModelBank([po.spec.ew_cov("c", features=["x1", "x2"], half_life=20)])
-    with pytest.raises(ValueError, match="ew_cov emits statistics, not coefficients"):
+    with pytest.raises(ValueError, match="an ew_cov model gives statistics, not coefficients"):
         cov.coef("c")
 
 

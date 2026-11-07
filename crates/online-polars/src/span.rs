@@ -47,7 +47,7 @@ pub fn seconds_of(v: i64, per: i64) -> f64 {
 /// A duration's length in nanoseconds, from its text: `"10m"`, `"1h30m"`,
 /// `"-5s"`. The error says what is wrong and shows the right form.
 pub fn parse_duration(text: &str) -> Result<i64, String> {
-    let bad = |why: String| format!("{text:?} is not a duration: {why}");
+    let bad = |why: String| format!("{text:?} is not a duration, since {why}");
     let t = text.trim();
     // No trim after the sign: `"- 5m"` has a space in it, as polars says, and
     // would otherwise name a grid's field `@h- 5m` (a property test found it).
@@ -57,28 +57,33 @@ pub fn parse_duration(text: &str) -> Result<i64, String> {
     };
     if body.is_empty() {
         return Err(bad(
-            "it is empty; write a number and a unit, as in \"10m\"".into()
+            "it is empty. Write a number and a unit, as in \"10m\".".into(),
         ));
     }
     if body.chars().any(char::is_whitespace) {
         return Err(bad(
-            "it has a space in it; write it as one word, as in \"1h30m\"".into(),
+            "it has a space in it. Write it as one word, as in \"1h30m\".".into(),
         ));
     }
-    let too_long = || bad("it is longer than 292 years, the most a clock can hold".into());
+    let too_long = || {
+        bad(
+            "it is longer than 292 years, the most a clock can hold. Give a shorter duration."
+                .into(),
+        )
+    };
     let mut total: i128 = 0;
     let mut rest = body;
     while !rest.is_empty() {
         let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
         if digits == 0 {
             return Err(bad(format!(
-                "expected a whole number at {rest:?}; write a number and a unit, as in \"10m\""
+                "it has no whole number at {rest:?}. Write a number and a unit, as in \"10m\"."
             )));
         }
         let (num, after) = rest.split_at(digits);
         if after.starts_with('.') {
             return Err(bad(
-                "use whole numbers of a smaller unit, as in \"1h30m\" for an hour and a half"
+                "it has a fraction in it. Use whole numbers of a smaller unit, as in \"1h30m\" for an hour and a half."
                     .into(),
             ));
         }
@@ -86,39 +91,39 @@ pub fn parse_duration(text: &str) -> Result<i64, String> {
         let (unit, after) = after.split_at(letters);
         let n: i128 = num
             .parse()
-            .map_err(|_| bad(format!("{num} is too large")))?;
+            .map_err(|_| bad(format!("{num} is too large. Give a shorter duration.")))?;
         let per = match unit {
             "" => {
                 return Err(bad(format!(
-                    "{num} has no unit; write one, as in \"{num}s\" or \"{num}m\""
+                    "{num} has no unit. Write one, as in \"{num}s\" or \"{num}m\"."
                 )));
             }
             "µs" | "μs" => 1_000,
             "mo" => {
                 return Err(bad(
-                    "a month has no fixed length; write days, as in \"30d\"".into(),
+                    "a month has no fixed length. Write days, as in \"30d\".".into(),
                 ));
             }
             "q" => {
                 return Err(bad(
-                    "a quarter has no fixed length; write days, as in \"91d\"".into(),
+                    "a quarter has no fixed length. Write days, as in \"91d\".".into(),
                 ));
             }
             "y" => {
                 return Err(bad(
-                    "a year has no fixed length; write days, as in \"365d\"".into(),
+                    "a year has no fixed length. Write days, as in \"365d\".".into(),
                 ));
             }
             "i" => {
                 return Err(bad(
-                    "\"i\" counts rows, not time; use a number of rows".into()
+                    "\"i\" counts rows, not time. Use a whole number of rows in place of the duration.".into()
                 ));
             }
             u => match UNITS.iter().find(|(name, _)| *name == u) {
                 Some((_, per)) => *per,
                 None => {
                     return Err(bad(format!(
-                        "unknown unit {u:?}; use ns, us, ms, s, m, h, d or w"
+                        "{u:?} is not a unit. Use ns, us, ms, s, m, h, d or w."
                     )));
                 }
             },
@@ -381,7 +386,7 @@ mod tests {
             ("1q", "quarter"),
             ("1y", "year"),
             ("3i", "counts rows"),
-            ("5x", "unknown unit"),
+            ("5x", "is not a unit"),
             ("m", "whole number"),
             ("1h 30m", "space"),
             ("99999999999w", "292 years"),

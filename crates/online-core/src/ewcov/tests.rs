@@ -961,7 +961,10 @@ fn a_state_with_p2_markers_is_refused() {
     let err = <EwCovModel as crate::OnlineModel>::restore(&crate::OnlineModel::state(&m))
         .unwrap_err()
         .to_string();
-    assert!(err.contains("no sketch for its mahal_quantiles"), "{err}");
+    assert!(
+        err.contains("it saved nothing for its mahal_quantiles"),
+        "{err}"
+    );
 }
 
 #[test]

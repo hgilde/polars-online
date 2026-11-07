@@ -330,7 +330,7 @@ fn a_held_row_takes_the_inputs_dtypes_or_is_refused_by_name() {
     let ints = df!("t" => [0i64], "k" => [0i32]).unwrap();
     let e = held.frame(&ints, &["k"]).unwrap_err().to_string();
     assert!(
-        e.contains("\"k\" is a str") && e.contains("cannot hold"),
+        e.contains("\"k\" is String") && e.contains("cannot hold"),
         "{e}"
     );
     let e = held.frame(&input, &["t", "z"]).unwrap_err().to_string();
@@ -359,7 +359,8 @@ fn a_state_holding_points_is_version_two_and_checked_on_load() {
     file.version = super::REFRESH_VERSION;
     assert_eq!(
         load(&file).err().unwrap(),
-        "refresh_time: the state is damaged: version 1 with held points"
+        "po.stream.refresh_time: the state is damaged: its contents do not match its version, \
+         1. Load an undamaged copy of the state file, or leave out load_state to start over."
     );
     file.version = super::REFRESH_VERSION_HELD;
     for damage in [
@@ -375,7 +376,7 @@ fn a_state_holding_points_is_version_two_and_checked_on_load() {
         file.held = Some(h);
         let e = load(&file).err().unwrap();
         assert!(
-            e.contains("its held points are not points of 6 grids of 2 series"),
+            e.contains("the refresh times it holds are not of 6 sets of 2 series"),
             "{e}"
         );
     }

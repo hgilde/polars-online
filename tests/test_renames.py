@@ -587,7 +587,9 @@ def test_an_eval_keyword_renamed_is_refused_naming_the_new_one(case):
     N4 (YB5): ``window_metrics``' bucket width is ``every``, as Polars'
     ``group_by_dynamic(every=)``."""
     call, old, new = _OLD_EVAL_KEYWORDS[case]
-    with pytest.raises(TypeError, match=f"^po\\.eval\\.[a-z_]+: {old} was renamed {new}$"):
+    with pytest.raises(
+        TypeError, match=f"^po\\.eval\\.[a-z_]+: {old} was renamed {new}\\. Use {new} instead\\.$"
+    ):
         call(_scored_fit())
 
 
@@ -636,7 +638,8 @@ def test_rolling_metrics_is_window_metrics_with_every():
     ``group_by_dynamic(every=)``; ``rolling`` is its overlapping window."""
     out = _scored_fit()
     with pytest.raises(
-        TypeError, match="^po.eval.rolling_metrics was renamed po.eval.window_metrics"
+        TypeError,
+        match="^po.eval.rolling_metrics: this function was renamed po.eval.window_metrics",
     ):
         po.eval.rolling_metrics(out, "m", clock="t", window_size=50.0)
     assert "rolling_metrics" not in po.eval.__all__ and "window_metrics" in po.eval.__all__
@@ -652,7 +655,11 @@ def test_rows_seen_is_rows_fed():
     method stays as a stub that raises naming the new one, as the helpers'
     renamed functions do (``tests/test_state_frames.py`` holds the count)."""
     bank = po.ModelBank([po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)])
-    with pytest.raises(AttributeError, match=r"^ModelBank\.rows_seen was renamed rows_fed$"):
+    with pytest.raises(
+        AttributeError,
+        match=r"^ModelBank\.rows_seen: it was renamed rows_fed, a property\. Read bank\.rows_fed, "
+        r"without the call\.$",
+    ):
         bank.rows_seen()
     assert bank.rows_fed == 0
 
@@ -661,7 +668,11 @@ def test_corr_shift_is_absorption_shift():
     """N5 (YB10): Polars' ``shift`` is a lag; this is Kritzman's
     standardised absorption shift."""
     fast, slow = np.array([0.5, 0.6, 0.7]), np.array([0.4, 0.4, 0.5])
-    with pytest.raises(TypeError, match="^po.corr.shift was renamed po.corr.absorption_shift$"):
+    with pytest.raises(
+        TypeError,
+        match="^po.corr.shift: this function was renamed po.corr.absorption_shift\\. "
+        "Call po.corr.absorption_shift instead\\.$",
+    ):
         po.corr.shift(fast, slow)
     assert "shift" not in po.corr.__all__ and "absorption_shift" in po.corr.__all__
     assert np.allclose(po.corr.absorption_shift(fast, slow, scale=0.1), [1.0, 2.0, 2.0])
@@ -679,9 +690,12 @@ def test_lasso_path_takes_penalties():
     g = bank.gram("m")[0]
     want = po.gram.lasso_path(g, [0.1, 0.01])
     assert np.array_equal(po.gram.lasso_path(g, penalties=[0.1, 0.01]), want)
-    with pytest.raises(TypeError, match="^po.gram.lasso_path: lambdas was renamed penalties$"):
+    with pytest.raises(
+        TypeError,
+        match="^po.gram.lasso_path: lambdas was renamed penalties\\. Use penalties instead\\.$",
+    ):
         po.gram.lasso_path(g, lambdas=[0.1, 0.01])
-    with pytest.raises(ValueError, match="penalties must be finite and >= 0"):
+    with pytest.raises(ValueError, match="penalties must be finite and at least 0"):
         po.gram.lasso_path(g, [-1.0])
 
 

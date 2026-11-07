@@ -304,6 +304,6 @@ for path, specs in [("nowhere.state", [spec]), ("bank.state", [other]), ("ticks.
 
 ```text
 FileNotFoundError: [Errno 2] No such file or directory: 'nowhere.state'
-ValueError: saved specs do not match the bank's specs: spec "ridge" (1 of 1) differs at features: ["x0","x1"] in the file, ["x0"] in the bank; refusing to load
-ValueError: not a polars-online bank state file (invalid type: integer `80`, expected struct BankHeader)
+ValueError: state file: its specs do not match the bank's specs: spec "ridge" (1 of 1) differs at features: ["x0","x1"] in the file, ["x0"] in the bank. Load the state with the specs it was saved with.
+ValueError: state file: these bytes are not a polars-online bank state file, or the file is cut short. Load a whole file that ModelBank.save or the command line's save_state wrote.
 ```

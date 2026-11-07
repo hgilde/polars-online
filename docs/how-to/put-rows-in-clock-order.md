@@ -83,8 +83,7 @@ one, so every chunk the bank takes is in order.
 
 3. **Run the query, and read any `OrderNotGuaranteedWarning`.** The bank
    reads the query before it runs, and warns of each step whose order
-   Polars does not promise, naming the step and its fix. The warning calls
-   the query a *plan*, and its steps *nodes*, as Polars does. This code
+   Polars does not promise, naming the step and its fix. This code
    joins each row's venue to a fee, once as Polars' `join` does by default
    and once with `maintain_order="left"`, and prints what the bank warns of
    each. It uses `lf` from [Example data](../../README.md#example-data):
@@ -107,13 +106,12 @@ one, so every chunk the bank takes is in order.
    ```
 
    ```text
-   maintain_order=None: lf.online.fit_predict: the plan's row order is not guaranteed, and an online model learns in row
-   order. 1 node(s) leave it unspecified: a join without maintain_order (pass maintain_order="left" to
-   keep the order of the left input). The streaming engine that runs the plan may deliver rows in an
-   order lf.collect() would not, and it may differ between runs. Give the plan a fixed order --
-   maintain_order="left" on a join, maintain_order=True on a group_by, a sort after a unique() or
-   before the bank -- or, for a plan whose order is fixed by other means,
-   warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning).
+   maintain_order=None: lf.online.fit_predict: the query's row order is not guaranteed, and an online model learns in row
+   order. Its steps that leave the order open (a join without maintain_order) let Polars give the rows
+   in another order when it runs the query, so the output can change from run to run. Fix the order
+   with maintain_order="left" on a join, maintain_order=True on a group_by, or a sort after a unique()
+   or before the bank, or, where the order is fixed by other means, silence this warning with
+   `warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning)`.
    maintain_order='left': no warning
    ```
 

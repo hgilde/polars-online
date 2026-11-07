@@ -501,7 +501,7 @@ fn the_refusals_name_the_problem() {
         Err(e) => e,
     };
     let e = err(vec![ridge("a", 20.0, false), compare("c", "a", "b", false)]);
-    assert!(e.contains("b = \"b\" is not a spec of this bank"), "{e}");
+    assert!(e.contains("b = \"b\" names no spec of this bank"), "{e}");
     assert!(e.contains("[\"a\", \"c\"]"), "{e}");
 
     let e = err(vec![
@@ -552,7 +552,7 @@ fn the_refusals_name_the_problem() {
     assert!(Bank::new(vec![grid.clone(), ridge("b", 200.0, false), picked("@h20")]).is_ok());
     let e = err(vec![grid.clone(), ridge("b", 200.0, false), picked("@h50")]);
     assert!(e.contains("no field \"resid_y@h50\""), "{e}");
-    assert!(e.contains("a_suffix the grid part"), "{e}");
+    assert!(e.contains("set a_suffix to the grid part"), "{e}");
     let e = picked("@h20")
         .clone()
         .validate()

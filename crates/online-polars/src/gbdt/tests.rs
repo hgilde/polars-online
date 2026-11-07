@@ -86,7 +86,7 @@ fn segments_cut_where_any_column_s_chunks_end_and_copy_nothing() {
 fn a_column_of_the_wrong_kind_is_refused_by_name() {
     let df = df!("x0" => ["a", "b"], "x1" => [1i32, 2], "y" => [1.0, 2.0]).unwrap();
     let e = segments(&df, &layout(2, false)).err().unwrap().to_string();
-    assert!(e.contains("`x0`") && e.contains("str"), "{e}");
+    assert!(e.contains("`x0`") && e.contains("String"), "{e}");
     // The label must arrive as Float64.
     let df = df!("x0" => [1.0, 2.0], "x1" => [1i32, 2], "y" => [1i64, 2]).unwrap();
     let e = segments(&df, &layout(2, false)).err().unwrap().to_string();
@@ -511,7 +511,15 @@ fn a_source_that_panics_is_an_error_naming_the_panic() {
     ] {
         let mut r = Reader::new(Box::new(Panicking(f)), 1);
         let e = r.next().err().unwrap().to_string();
-        assert_eq!(e, want);
+        let what = want.strip_prefix("reading the source panicked: ").unwrap();
+        assert_eq!(
+            e,
+            format!(
+                "po.gbdt: reading the source panicked ({what}), which is a defect in \
+                 polars-online. Open an issue at https://github.com/hgilde/polars-online/issues \
+                 with this message."
+            )
+        );
         assert!(r.next().unwrap().is_none(), "a failed pass has ended");
     }
 }
@@ -522,12 +530,16 @@ fn a_frame_of_the_wrong_width_is_refused_naming_the_columns_expected() {
     let e = segments(&df, &layout(2, false)).err().unwrap().to_string();
     assert_eq!(
         e,
-        "a frame of 2 columns where 3 were expected (the features, the label)"
+        "po.gbdt: a frame of 2 columns arrived where 3 were expected (the features, the label), \
+         which is a defect in polars-online. Open an issue at \
+         https://github.com/hgilde/polars-online/issues with this message."
     );
     let e = segments(&df, &layout(2, true)).err().unwrap().to_string();
     assert_eq!(
         e,
-        "a frame of 2 columns where 4 were expected (the features, the label, the weight)"
+        "po.gbdt: a frame of 2 columns arrived where 4 were expected (the features, the label, the \
+         weight), which is a defect in polars-online. Open an issue at \
+         https://github.com/hgilde/polars-online/issues with this message."
     );
 }
 
@@ -538,14 +550,20 @@ fn a_layout_without_features_or_with_a_kind_short_is_refused() {
         kinds: Vec::new(),
         ..layout(0, false)
     };
-    assert_eq!(none.check().unwrap_err().to_string(), "no feature columns");
+    assert_eq!(
+        none.check().unwrap_err().to_string(),
+        "po.gbdt: no feature columns are named. Name at least one feature."
+    );
     let short = Layout {
         kinds: vec![Kind::Float],
         ..layout(2, false)
     };
-    assert_eq!(
-        short.check().unwrap_err().to_string(),
-        "2 feature names for 1 kinds"
+    assert!(
+        short
+            .check()
+            .unwrap_err()
+            .to_string()
+            .starts_with("po.gbdt: internal: 2 feature names for 1 kinds, which is a defect")
     );
     assert!(layout(2, true).check().is_ok());
 }
@@ -575,7 +593,7 @@ fn a_record_batch_of_the_wrong_kind_or_width_or_no_rows() {
     .unwrap()
     .to_string();
     assert!(
-        e.starts_with("column `x0` arrived as Utf8View, which is not a numeric column"),
+        e.starts_with("po.gbdt: column `x0` arrived as Utf8View, which is not a numeric column"),
         "{e}"
     );
     let e = segments_of(
@@ -588,7 +606,10 @@ fn a_record_batch_of_the_wrong_kind_or_width_or_no_rows() {
     .err()
     .unwrap()
     .to_string();
-    assert_eq!(e, "a frame of 2 columns where 3 were expected");
+    assert!(
+        e.contains("a frame of 2 columns arrived where 3 were expected"),
+        "{e}"
+    );
     let empty = segments_of(
         Frame::Cols {
             n: 0,
@@ -844,8 +865,8 @@ mod ipc {
             false,
         );
         let e = read_cat(&path, Kind::Float).err().unwrap().to_string();
-        assert!(e.starts_with("column `cat` is Dictionary("), "{e}");
-        assert!(e.ends_with("in the Arrow IPC file, which is not a column the libraries read"));
+        assert!(e.starts_with("po.gbdt: column `cat` is Dictionary("), "{e}");
+        assert!(e.contains("in the Arrow IPC file, which is not a column the libraries read"));
         // A dictionary of numbers, which no Enum is.
         let path = dir.join("numbers.arrow");
         let ints = PrimitiveArray::<i32>::from_vec(vec![5, 6, 7]).boxed();
@@ -854,7 +875,7 @@ mod ipc {
             .err()
             .unwrap()
             .to_string();
-        assert!(e.starts_with("column `cat` is Dictionary("), "{e}");
+        assert!(e.starts_with("po.gbdt: column `cat` is Dictionary("), "{e}");
         // A label of strings, and one of Booleans, which reads as 0 and 1.
         let path = dir.join("label.arrow");
         let label = Utf8Array::<i32>::from_slice(["1", "2"]).boxed();
@@ -868,7 +889,7 @@ mod ipc {
             .err()
             .unwrap()
             .to_string();
-        assert!(e.starts_with("column `y` is Utf8"), "{e}");
+        assert!(e.starts_with("po.gbdt: column `y` is Utf8"), "{e}");
         let path = dir.join("bool.arrow");
         let label = BooleanArray::from([Some(true), None]).boxed();
         write_batches(
@@ -922,10 +943,10 @@ mod ipc {
         let e = IpcFrames::new(Vec::new(), lay.clone(), vec![None])
             .err()
             .unwrap();
-        assert_eq!(e.to_string(), "no Arrow IPC files");
+        assert!(e.to_string().contains("no Arrow IPC files"), "{e}");
         let e = IpcFrames::new(vec!["a.arrow".into()], lay, Vec::new())
             .err()
             .unwrap();
-        assert_eq!(e.to_string(), "a category list per feature");
+        assert!(e.to_string().contains("a category list per feature"), "{e}");
     }
 }

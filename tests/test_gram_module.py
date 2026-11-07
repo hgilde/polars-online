@@ -178,7 +178,7 @@ class TestSolveIsTheModelsSolve:
     def test_the_intercept_is_not_a_feature(self):
         df, _ = stream(n=300)
         g = fit(df).gram("m")[0]
-        with pytest.raises(ValueError, match="constant column, not a feature"):
+        with pytest.raises(ValueError, match="it is the intercept's constant column"):
             pg.solve(g, features=[pg.INTERCEPT, "x0"])
 
     def test_target_by_name_or_position(self):
@@ -192,7 +192,10 @@ class TestSolveIsTheModelsSolve:
         assert b == pytest.approx([3.0, -2.0, 0.0], abs=1e-8)
         with pytest.raises(KeyError, match="no target 'nope'"):
             pg.solve(g, target="nope")
-        with pytest.raises(IndexError, match="target 5 out of range"):
+        with pytest.raises(
+            IndexError,
+            match="a target's position must be from -2 to 1 for a Gram of 2 targets, but it is 5",
+        ):
             pg.solve(g, target=5)
 
 
@@ -419,7 +422,7 @@ class TestLassoPathIsTheModelsPath:
     def test_penalty_weights_must_match_the_features(self):
         df, _ = stream(n=300)
         g = fit(df).gram("m")[0]
-        with pytest.raises(ValueError, match="one entry per feature"):
+        with pytest.raises(ValueError, match=r"one entry for each of the \d+ features"):
             pg.lasso_path(g, [0.1], penalty_weights=[1.0])
 
 
@@ -619,31 +622,34 @@ class TestTheSolversCheckTheirNumbers:
 
     @pytest.mark.parametrize("ridge", [-1.0, float("nan"), float("inf"), [0.1, -1e-9]], ids=str)
     def test_solve_refuses_a_ridge_that_is_not_a_penalty(self, g, ridge):
-        with pytest.raises(ValueError, match="^solve: ridge must be finite and >= 0"):
+        with pytest.raises(ValueError, match="^po.gram.solve: ridge must be finite and at least 0"):
             pg.solve(g, ridge=ridge)
 
     @pytest.mark.parametrize(
         "kw, says",
         [
-            ({"penalties": [0.1, -0.1]}, "penalties must be finite and >= 0"),
-            ({"penalties": [float("nan")]}, "penalties must be finite and >= 0"),
-            ({"penalties": [float("inf")]}, "penalties must be finite and >= 0"),
-            ({"max_iter": 0}, "max_iter must be >= 1"),
-            ({"max_iter": -3}, "max_iter must be >= 1"),
-            ({"tol": float("nan")}, "tol must be finite and > 0"),
-            ({"tol": 0.0}, "tol must be finite and > 0"),
-            ({"tol": float("inf")}, "tol must be finite and > 0"),
-            ({"l1_ratio": 1.5}, r"l1_ratio must be in \[0, 1\]"),
-            ({"l1_ratio": -0.1}, r"l1_ratio must be in \[0, 1\]"),
-            ({"l1_ratio": float("nan")}, r"l1_ratio must be in \[0, 1\]"),
-            ({"penalty_weights": [1.0, -1.0, 1.0]}, "penalty_weights must be finite and >= 0"),
+            ({"penalties": [0.1, -0.1]}, "penalties must be finite and at least 0"),
+            ({"penalties": [float("nan")]}, "penalties must be finite and at least 0"),
+            ({"penalties": [float("inf")]}, "penalties must be finite and at least 0"),
+            ({"max_iter": 0}, "max_iter must be at least 1"),
+            ({"max_iter": -3}, "max_iter must be at least 1"),
+            ({"tol": float("nan")}, "tol must be finite and above 0"),
+            ({"tol": 0.0}, "tol must be finite and above 0"),
+            ({"tol": float("inf")}, "tol must be finite and above 0"),
+            ({"l1_ratio": 1.5}, "l1_ratio must be from 0 to 1"),
+            ({"l1_ratio": -0.1}, "l1_ratio must be from 0 to 1"),
+            ({"l1_ratio": float("nan")}, "l1_ratio must be from 0 to 1"),
+            (
+                {"penalty_weights": [1.0, -1.0, 1.0]},
+                "penalty_weights must be finite and at least 0",
+            ),
             ({"penalty_weights": [1.0, float("nan"), 1.0]}, "penalty_weights must be finite"),
         ],
     )
     def test_lasso_path_refuses_what_is_not_its_number(self, g, kw, says):
         args = {"penalties": [0.1], **kw}
         penalties = args.pop("penalties")
-        with pytest.raises(ValueError, match=f"^lasso_path: {says}"):
+        with pytest.raises(ValueError, match=f"^po.gram.lasso_path: {says}"):
             pg.lasso_path(g, penalties, **args)
 
     def test_the_edges_of_each_range_are_taken(self, g):
@@ -684,7 +690,9 @@ class TestReadingTheMatrix:
         assert pg.subset(g, [0, 2])["columns"] == [pg.INTERCEPT, "x1"]
         with pytest.raises(KeyError, match="no column 'nope'"):
             pg.subset(g, ["nope"])
-        with pytest.raises(IndexError, match="column 9 out of range"):
+        with pytest.raises(
+            IndexError, match="a column's position must be from -3 to 2 .*, but it is 9"
+        ):
             pg.subset(g, [9])
 
     def test_vif_finds_the_collinear_pair(self):
@@ -862,13 +870,13 @@ class TestCoefStats:
         df, _ = stream(n=300, k=2)
         g = dict(fit(df).gram("m")[0])
         g["target_vars"] = None
-        with pytest.raises(ValueError, match="no target moments"):
+        with pytest.raises(ValueError, match="has no target_vars or no target_n_kish"):
             pg.coef_stats(g, np.zeros(3))
 
     def test_it_checks_the_coefficient_count(self):
         df, _ = stream(n=300, k=2)
         g = fit(df).gram("m")[0]
-        with pytest.raises(ValueError, match="one entry per Gram column"):
+        with pytest.raises(ValueError, match="coef must have one entry for each of the Gram.s"):
             pg.coef_stats(g, [1.0, 2.0])
 
 
@@ -886,7 +894,7 @@ class TestItWorksOnEveryGramItIsGiven:
         assert pg.condition(g)["kappa"] > 0
         assert pg.subset(g, ["x1"])["columns"] == ["x1"]
         assert pg.merge([g, g])["weight_sum"] == pytest.approx(2 * g["weight_sum"], rel=1e-9)
-        with pytest.raises(IndexError, match="target 0 out of range"):
+        with pytest.raises(IndexError, match="the Gram has no targets, but target is 0"):
             pg.solve(g)
 
     def test_a_loaded_state_is_the_same_gram(self, tmp_path):

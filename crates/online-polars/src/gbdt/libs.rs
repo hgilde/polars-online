@@ -31,8 +31,12 @@ fn open(path: &str, what: &str) -> Result<Library, GbdtError> {
     // SAFETY: opening a shared library runs its initializers. The path is
     // the one the library's own Python package has already loaded, so the
     // image is in the process and its initializers have run.
-    unsafe { Library::new(path) }
-        .map_err(|e| GbdtError::msg(format!("{what} could not be loaded from {path}: {e}")))
+    unsafe { Library::new(path) }.map_err(|e| {
+        GbdtError::msg(format!(
+            "po.gbdt: {what} could not be loaded from {path} ({e}). Pass engine=\"python\" to \
+             build through {what}'s Python package."
+        ))
+    })
 }
 
 macro_rules! symbols {
@@ -41,9 +45,16 @@ macro_rules! symbols {
             // SAFETY: the type the struct declares for the field is the one
             // the library's header declares for the symbol.
             let $field = *unsafe { $lib.get(concat!($name, "\0").as_bytes()) }.map_err(|_| {
+                // The call the reader made, by the library it builds through.
+                let who = if $what.starts_with("XGBoost") {
+                    "po.gbdt.xgboost_matrix"
+                } else {
+                    "po.gbdt.lightgbm_dataset"
+                };
                 GbdtError::msg(format!(
-                    "{} at {} has no `{}`: it is not a version whose C API po.gbdt's native \
-                     engine calls; engine=\"python\" builds through the library's Python API",
+                    "{who}: {} at {} has no `{}`, so it is not a version whose C API the native \
+                     engine calls. Pass engine=\"python\" to build through the library's Python \
+                     API.",
                     $what, $path, $name
                 ))
             })?;
@@ -92,9 +103,10 @@ impl XgbLib {
         let ((lo_a, lo_b), (hi_a, hi_b)) = XGB_VERSIONS;
         if (a, b) < (lo_a, lo_b) || (a, b) >= (hi_a, hi_b) {
             return Err(GbdtError::msg(format!(
-                "XGBoost {a}.{b}.{c} at {path}: po.gbdt's native engine calls the C API of \
-                 XGBoost {lo_a}.{lo_b} up to {hi_a}.{hi_b} (not included); engine=\"python\" \
-                 builds through the library's Python API"
+                "po.gbdt.xgboost_matrix: XGBoost {a}.{b}.{c} at {path} is not a version whose C \
+                 API the native engine calls, which are {lo_a}.{lo_b} up to {hi_a}.{hi_b} (not \
+                 included). Pass engine=\"python\" to build through the library's Python API, or \
+                 install XGBoost {lo_a}.{lo_b} or later, below {hi_a}.{hi_b}."
             )));
         }
         symbols!(lib, "XGBoost's library", path;
@@ -137,8 +149,9 @@ impl XgbLib {
         // until its next call on this thread.
         let msg = unsafe { CStr::from_ptr((self.last_error)()) };
         Err(GbdtError::msg(format!(
-            "XGBoost, {doing}: {}",
-            first_line(&msg.to_string_lossy())
+            "po.gbdt.xgboost_matrix: XGBoost refused {doing}: {}. Check the parameters named \
+             there, or pass engine=\"python\".",
+            first_line(&msg.to_string_lossy()).trim_end_matches('.')
         )))
     }
 }
@@ -214,9 +227,10 @@ impl LgbLib {
             Some(v) if v >= (lo_a, lo_b) && v < (hi_a, hi_b) => {}
             _ => {
                 return Err(GbdtError::msg(format!(
-                    "LightGBM {version}: po.gbdt's native engine calls the C API of LightGBM \
-                     {lo_a}.{lo_b} up to {hi_a}.{hi_b} (not included); engine=\"python\" builds \
-                     through the library's Python API"
+                    "po.gbdt.lightgbm_dataset: LightGBM {version} is not a version whose C API the \
+                     native engine calls, which are {lo_a}.{lo_b} up to {hi_a}.{hi_b} (not \
+                     included). Pass engine=\"python\" to build through the library's Python \
+                     API, or install LightGBM {lo_a}.{lo_b} or later, below {hi_a}.{hi_b}."
                 )));
             }
         }
@@ -271,8 +285,9 @@ impl LgbLib {
         // SAFETY: LightGBM returns a NUL-terminated message it owns.
         let msg = unsafe { CStr::from_ptr((self.last_error)()) };
         Err(GbdtError::msg(format!(
-            "LightGBM, {doing}: {}",
-            first_line(&msg.to_string_lossy())
+            "po.gbdt.lightgbm_dataset: LightGBM refused {doing}: {}. Check the parameters named \
+             there, or pass engine=\"python\".",
+            first_line(&msg.to_string_lossy()).trim_end_matches('.')
         )))
     }
 }

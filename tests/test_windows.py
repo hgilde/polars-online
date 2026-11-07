@@ -682,11 +682,11 @@ def test_what_is_not_element_wise_is_refused_by_name() -> None:
     ]:
         with pytest.raises(FormulaError, match=says):
             po.stream.with_windows(df, y=expr, **CLOCK)
-    with pytest.raises(ValueError, match="not another window operator"):
+    with pytest.raises(ValueError, match="the input holds another window operator"):
         po.ewm_mean(po.ewm_sum("x", half_life=2.0), half_life=2.0)
-    with pytest.raises(ValueError, match="holds no operator"):
+    with pytest.raises(ValueError, match="holds no window operator"):
         po.stream.with_windows(df, y=pl.col("x") * 2, **CLOCK)
-    with pytest.raises(ValueError, match="needs a name"):
+    with pytest.raises(ValueError, match="an expression has no name of its own"):
         po.stream.with_windows(df, po.ewm_mean("x", half_life=2.0), **CLOCK)
     assert (
         "y"
@@ -723,7 +723,7 @@ def test_the_refusal_lists_exactly_what_a_formula_reads() -> None:
 
     with pytest.raises(FormulaError) as refused:
         po.stream.with_windows(ticks(50, 1), y=w.shift(1), **CLOCK)
-    assert f"element-wise: {accepted_text()} over the operators;" in str(refused.value)
+    assert f"Build the formula from {accepted_text()} around the operators" in str(refused.value)
 
     guide = (Path(__file__).resolve().parent.parent / "docs" / "WINDOWS.md").read_text(
         encoding="utf-8"
@@ -747,7 +747,7 @@ def test_the_calls_own_keywords_are_not_output_names() -> None:
     """3(a), the user, 2026-10-02: the clock policy's keywords are reserved."""
     df = ticks(50, 1)
     for key in ("clock", "gap_cap", "restart_after_step_back", "session", "session_gap", "group"):
-        with pytest.raises(TypeError, match=f"{key} is a clock keyword"):
+        with pytest.raises(TypeError, match=f"{key} takes a (number or a duration|column name)"):
             po.stream.with_windows(
                 df,
                 **{key: po.ewm_mean("x", half_life=2.0)},
@@ -763,7 +763,7 @@ def test_an_operators_parameters_are_checked_by_name() -> None:
     for kw, says in [
         (dict(half_life=0), "half_life must be above 0"),
         (dict(half_life=-1.0), "half_life must be above 0"),
-        (dict(half_life=math.nan), "must not be NaN"),
+        (dict(half_life=math.nan), "half_life must be above 0, but it is NaN"),
         (dict(half_life="x"), "half_life"),
         (dict(half_life=2.0, window_size=math.inf), "window_size must be finite"),
         (dict(half_life=2.0, closed="up"), "closed must be"),
@@ -777,11 +777,11 @@ def test_an_operators_parameters_are_checked_by_name() -> None:
     with pytest.raises(TypeError, match="half_life"):
         po.ewm_mean("x")  # type: ignore[call-arg]
     df = ticks(50, 1)
-    with pytest.raises(ValueError, match="half_life = inf needs a window_size"):
+    with pytest.raises(ValueError, match="half_life is inf and window_size is not set"):
         po.stream.with_windows(df, y=po.ewm_mean("x", half_life=math.inf), **CLOCK)
     with pytest.raises(ValueError, match="input must be a number"):
         po.stream.with_windows(df, y=po.ewm_mean("g", half_life=2.0), **CLOCK)
-    with pytest.raises(ValueError, match="no input column"):
+    with pytest.raises(ValueError, match="the input column"):
         po.stream.with_windows(df, y=po.ewm_mean("nope", half_life=2.0), **CLOCK)
     with pytest.raises(ValueError, match="already a column"):
         po.stream.with_windows(df, x=po.ewm_mean("x", half_life=2.0), **CLOCK)
@@ -833,7 +833,7 @@ def test_a_gap_past_the_cap_and_a_session_change_cut_the_windows() -> None:
 
 def test_a_reset_discards_and_a_late_row_is_refused() -> None:
     df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 1.5, 2.5, 3.5], "x": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]})
-    with pytest.raises(_REFUSAL, match="goes backwards by 0.5 at row 3"):
+    with pytest.raises(_REFUSAL, match="steps back by 0.5 at row 3"):
         po.stream.with_windows(df, y=po.ewm_sum("x", half_life=1.0), **CLOCK)
     with pytest.raises(_REFUSAL, match="no more than restart_after_step_back = 1"):
         po.stream.with_windows(
@@ -888,7 +888,7 @@ def test_like_takes_the_specs_clock_and_its_rule() -> None:
     quotes = (df["price"].is_null()).to_list()
     for a, b, q in zip(out["f"].to_list(), plain["f"].to_list(), quotes, strict=True):
         assert (a is None) if q else (a == b)
-    with pytest.raises(TypeError, match="leave out clock"):
+    with pytest.raises(TypeError, match="Leave out clock"):
         po.stream.with_windows(
             df,
             f=po.ewm_mean("mid", half_life=5.0, window_size=10.0, reverse=True),
@@ -997,7 +997,7 @@ def test_a_temporal_clock_takes_durations() -> None:
         assert_close(got["m"].to_list(), want["m"].to_list(), tol=1e-7)
     with pytest.raises(ValueError, match="half_life is a duration"):
         po.stream.with_windows(df, m=po.ewm_mean("x", half_life="3s"), **CLOCK)
-    with pytest.raises(ValueError, match="half_life a number"):
+    with pytest.raises(ValueError, match="gap_cap is a duration and half_life is a number"):
         po.stream.with_windows(df, m=po.ewm_mean("x", half_life=3.0), clock="ts", gap_cap="1000s")
 
 
@@ -1116,7 +1116,7 @@ def test_the_operators_prefix_is_reserved_on_inputs() -> None:
     """R1-N8: a column named like an operator's hidden column raised a JSON
     error; it is refused by name on both sides."""
     df = pl.DataFrame({"t": [0.0, 1.0], "@po:x": [1.0, 2.0]})
-    with pytest.raises(FormulaError, match="reserved"):
+    with pytest.raises(FormulaError, match="which is kept for the window operators. own columns"):
         po.stream.with_windows(df, y=po.ewm_sum("@po:x", half_life=1.0), **CLOCK)
 
 
@@ -1340,7 +1340,7 @@ def test_a_subnormal_half_life_is_refused() -> None:
     """Task 159 (W5): a subnormal half-life gave a mean of 0 and a rate of
     inf, where every other bad half-life is refused by name."""
     df = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x": [0.3, 0.3, 0.3]})
-    with pytest.raises(ValueError, match="half_life must be a normal number"):
+    with pytest.raises(ValueError, match="half_life must be at least"):
         po.stream.with_windows(df, y=po.ewm_rate("x", half_life=5e-324, window_size=2.0), **CLOCK)
 
 
@@ -1506,7 +1506,10 @@ def test_a_windows_state_of_another_version_is_refused_by_its_version(tmp_path: 
     header = b"\x82" + b"\xa5magic" + b"\xb5polars-online windows" + b"\xa7version" + b"\x02"
     path = tmp_path / "v2.state"
     path.write_bytes(header)
-    with pytest.raises(ValueError, match=r"version 2 not supported \(this build reads 9 to 10\)"):
+    with pytest.raises(
+        ValueError,
+        match=r"the state's version is 2, but this version of polars-online reads versions 9 to 10",
+    ):
         po.stream.with_windows(
             ticks(5, 1), y=po.ewm_sum("x", half_life=1.0), load_state=path, **CLOCK
         )
@@ -1683,7 +1686,7 @@ def test_a_next_file_starts_after_the_last_stamp_the_state_read(tmp_path: Any) -
     a = first.lazy().online.with_windows(**y, save_state=state, **CLOCK).head(100).collect()
     assert a.height == 1, "rows 1..4 wait for their windows"
     tied = pl.DataFrame({"t": [3.0, 4.0, 5.0], "x": [5.0, 6.0, 7.0]})
-    with pytest.raises(_REFUSAL, match="at the last stamp the state read"):
+    with pytest.raises(_REFUSAL, match="at the last clock value the state read"):
         po.stream.with_windows(tied, **y, load_state=state, **CLOCK)
     second = pl.DataFrame({"t": [4.0, 5.0, 6.0], "x": [5.0, 6.0, 7.0]})
     c = po.stream.with_windows(second, **y, load_state=state, **CLOCK)
@@ -1703,7 +1706,7 @@ def test_an_unsliced_state_refuses_an_input_that_repeats_its_last_row(tmp_path: 
     state = tmp_path / "unsliced.state"
     a = po.stream.with_windows(first, **y, save_state=state, **CLOCK)
     again = pl.DataFrame({"t": [3.0, 4.0, 5.0], "x": [4.0, 5.0, 6.0]})
-    with pytest.raises(_REFUSAL, match="at the last stamp the state read"):
+    with pytest.raises(_REFUSAL, match="at the last clock value the state read"):
         po.stream.with_windows(again, **y, load_state=state, **CLOCK)
     second = again.slice(1)
     c = po.stream.with_windows(second, **y, load_state=state, **CLOCK)
@@ -1770,7 +1773,7 @@ def test_without_a_clock_the_next_file_begins_with_a_new_session(tmp_path: Any) 
     head = df.lazy().online.with_windows(**y, save_state=state, **kw).head(4).collect()
     assert head.height == 4
     for cut in (3, 5):
-        with pytest.raises(_REFUSAL, match="does not begin with a new session"):
+        with pytest.raises(_REFUSAL, match="its first row continues the session last read"):
             po.stream.with_windows(df.slice(cut), **y, load_state=state, **kw)
     nxt = pl.DataFrame({"x": [7.0, 8.0], "s": ["c", "c"]})
     rest = po.stream.with_windows(nxt, **y, load_state=state, **kw)
@@ -1816,7 +1819,13 @@ def test_a_state_refuses_a_group_or_session_column_of_another_dtype(tmp_path: An
     second = pl.DataFrame({"t": [4.0, 5.0], "x": [5.0, 6.0], "g": [1.0, 2.0]})
     state = tmp_path / "keys.state"
     po.stream.with_windows(first, **y, save_state=state, group="g", **CLOCK)
-    with pytest.raises(ValueError, match='group column "g": i64.*this input has.*f64'):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r'another type \(group column "g": i64\), '
+            r"and this input's \(group column \"g\": f64\)"
+        ),
+    ):
         po.stream.with_windows(second, **y, load_state=state, group="g", **CLOCK)
     same = po.stream.with_windows(
         second.with_columns(pl.col("g").cast(pl.Int64)), **y, load_state=state, group="g", **CLOCK
@@ -1825,7 +1834,10 @@ def test_a_state_refuses_a_group_or_session_column_of_another_dtype(tmp_path: An
     assert same["t"].to_list() == [3.0, 4.0, 5.0]
     sessions = {**CLOCK, "session": "s"}
     po.stream.with_windows(first.with_columns(s=pl.lit(1)), **y, save_state=state, **sessions)
-    with pytest.raises(ValueError, match='session column "s": i32.*this input has'):
+    with pytest.raises(
+        ValueError,
+        match=r'\(session column "s": i32\), and this input\'s \(session column "s": f64\)',
+    ):
         po.stream.with_windows(
             second.with_columns(s=pl.lit(1.0)), **y, load_state=state, **sessions
         )
@@ -1903,7 +1915,7 @@ def test_a_cast_to_a_parametrized_dtype_is_refused_by_name(dtype: Any, name: str
     """Review 2026-10-05 (YB2): a dtype with parameters serializes as a
     mapping, which the refusal's lookup could not hash, so the cast died in a
     ``TypeError`` before it was named."""
-    with pytest.raises(FormulaError, match=f"a cast to {name} is not read"):
+    with pytest.raises(FormulaError, match=f"holds a cast to {name}, which it cannot read"):
         to_tree(po.ewm_mean("x", half_life=5.0).cast(dtype))
 
 
@@ -1927,7 +1939,7 @@ def test_a_literal_that_is_not_finite_is_refused_by_name() -> None:
     df = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x": [-1.0, 2.0, 3.0]})
     m = po.ewm_mean("x", half_life=5.0)
     for bad in (m.clip(0, float("inf")), m.clip(float("nan"), 1)):
-        with pytest.raises(FormulaError, match="not finite .*inf or nan"):
+        with pytest.raises(FormulaError, match="not finite .*inf and nan as null"):
             po.stream.with_windows(df, y=bad, **CLOCK)
     out = po.stream.with_windows(df, y=m.clip(lower_bound=0), **CLOCK)
     assert out["y"].min() >= 0
@@ -2205,7 +2217,7 @@ def test_a_hand_built_operator_column_that_is_no_operator_is_refused_as_reserved
     operator's column; anything else under the prefix is the reserved-name
     refusal."""
     df = pl.DataFrame({"t": [0.0, 1.0], "x": [1.0, 2.0]})
-    with pytest.raises(FormulaError, match="reserved for the operators' own columns"):
+    with pytest.raises(FormulaError, match="which is kept for the window operators' own columns"):
         po.stream.with_windows(df, y=pl.col(name), **CLOCK)
     # The operators' own form, written by hand, is the operator.
     hand = pl.col('@po:["ewm_mean",["col","x"],{"half_life":1}]')
@@ -2236,7 +2248,7 @@ def test_min_samples_takes_an_integer_of_any_kind_up_to_its_ceiling() -> None:
     # A tree written elsewhere -- by hand, in TOML, in a state file -- meets
     # the Rust side's check, which names the ceiling too.
     tree = '@po:["ewm_sum",["col","x"],{"half_life":2.0,"min_samples":1099511627776}]'
-    with pytest.raises(ValueError, match="min_samples must be .* at most 4294967295"):
+    with pytest.raises(ValueError, match="min_samples must be a whole number from 1 to 4294967295"):
         po.stream.with_windows(df, s=pl.col(tree), **CLOCK)
 
 
@@ -2256,26 +2268,29 @@ def test_an_increment_of_a_time_of_day_is_seconds_and_negative_across_midnight()
     diff = df.select(pl.col("tod").diff().dt.total_nanoseconds() / 1e9)["tod"].to_list()
     assert got[1] == pytest.approx(diff[1], rel=1e-15), diff
     assert got[4] == pytest.approx(diff[4], rel=1e-15), diff
-    with pytest.raises(_REFUSAL, match="time column cannot be read as a clock"):
+    with pytest.raises(_REFUSAL, match="is a time of day, which starts again at midnight"):
         po.stream.with_windows(df, d=po.increment("t"), clock="tod", gap_cap="1h")
 
 
 @pytest.mark.parametrize(
     ("kw", "says"),
     [
-        ({"half_life": "nan"}, "half_life must not be NaN"),
-        ({"half_life": "NaN"}, "half_life must not be NaN"),
-        ({"half_life": "-inf"}, "half_life must be finite and above 0, got -inf"),
-        ({"half_life": "-Infinity"}, "half_life must be finite and above 0, got -Infinity"),
-        ({"half_life": "reset"}, "half_life must be a number or a duration, got 'reset'"),
+        ({"half_life": "nan"}, "half_life must be above 0, but it is NaN"),
+        ({"half_life": "NaN"}, "half_life must be above 0, but it is NaN"),
+        ({"half_life": "-inf"}, "half_life must be above 0, but it is -inf"),
+        ({"half_life": "-Infinity"}, "half_life must be above 0, but it is -Infinity"),
+        ({"half_life": "reset"}, "half_life must be a number or a duration, but it is 'reset'"),
         ({"half_life": 2.0, "window_size": "inf"}, "window_size must be finite and above 0"),
         ({"half_life": 2.0, "window_size": "+Infinity"}, "window_size must be finite and above"),
-        ({"half_life": 2.0, "window_size": "nan"}, "window_size must not be NaN"),
-        ({"half_life": timedelta(seconds=-5)}, "half_life must be above 0, got -5s"),
-        ({"half_life": timedelta(0)}, "half_life must be above 0, got 0s"),
-        ({"half_life": pl.duration(seconds=-5)}, "half_life must be above 0, got -5s"),
-        ({"half_life": "-5s"}, "half_life must be above 0, got -5s"),
-        ({"half_life": "1s", "window_size": "0s"}, "window_size must be above 0, got 0s"),
+        (
+            {"half_life": 2.0, "window_size": "nan"},
+            "window_size must be finite and above 0, but it is NaN",
+        ),
+        ({"half_life": timedelta(seconds=-5)}, "half_life must be above 0, but it is -5s"),
+        ({"half_life": timedelta(0)}, "half_life must be above 0, but it is 0s"),
+        ({"half_life": pl.duration(seconds=-5)}, "half_life must be above 0, but it is -5s"),
+        ({"half_life": "-5s"}, "half_life must be above 0, but it is -5s"),
+        ({"half_life": "1s", "window_size": "0s"}, "window_size must be above 0, but it is 0s"),
         ({"half_life": "1s", "window_size": timedelta(minutes=-1)}, "window_size must be above 0"),
     ],
 )
@@ -2542,10 +2557,10 @@ def test_a_variance_at_a_level_decays_with_its_history() -> None:
 def test_bias_is_a_variances_own_and_a_boolean() -> None:
     with pytest.raises(TypeError, match="bias"):
         po.ewm_mean("x", half_life=2.0, bias=True)  # type: ignore[call-arg]
-    with pytest.raises(TypeError, match="bias must be a bool"):
+    with pytest.raises(TypeError, match="bias must be True or False, but it is of type int"):
         po.ewm_var("x", half_life=2.0, bias=1)  # type: ignore[arg-type]
     df = ticks(50, 1)
-    with pytest.raises(ValueError, match="half_life = inf needs a window_size"):
+    with pytest.raises(ValueError, match="half_life is inf and window_size is not set"):
         po.stream.with_windows(df, y=po.ewm_std("x", half_life=math.inf), **CLOCK)
     tree = to_tree(po.ewm_std("x", half_life=2.0, bias=True) - pl.col("x"))
     assert to_tree(from_tree(tree)) == tree
@@ -2589,11 +2604,10 @@ def test_the_readmes_zscore_recipe_runs_and_is_polars_own_on_a_row_clock(
 
 #: The message a numeric ``session_gap`` warns with, after its value.
 _GAP_IGNORED = (
-    " is deprecated: a number or a duration has no effect here. Every window ends at a session "
-    "change, so no window measures the clock's step across one, and a session needs no "
-    'session_gap. Leave it out, or give "reset" to discard the windows still open ahead of a '
-    "session change rather than cut them. It is accepted and ignored until the next major "
-    "version, which refuses it"
+    " is deprecated and ignored until the next major version, which refuses it: every window "
+    "ends at a session change, so no window measures the clock's step across one. Leave "
+    'session_gap out, or set it to "reset" to discard the windows still open at a session '
+    "change rather than cut them."
 )
 
 #: The window, the half-life and the gap cap of the session streams below.
@@ -2714,7 +2728,9 @@ def test_a_duration_session_gap_changes_nothing_on_a_temporal_clock() -> None:
     want = run()
     assert want["ahead"].null_count() < df.height - 10
     for gap in ("1m", timedelta(hours=3), "0s"):
-        with pytest.warns(po.PolarsOnlineDeprecationWarning, match="session_gap = .* no effect"):
+        with pytest.warns(
+            po.PolarsOnlineDeprecationWarning, match="session_gap = .* is deprecated and ignored"
+        ):
             assert run(session_gap=gap).equals(want), gap
 
 
@@ -2812,7 +2828,8 @@ _CLOCK_REFUSALS: dict[str, tuple[dict[str, Any], type[Exception], str]] = {
     "gap_cap NaN": (
         dict(clock="t", gap_cap=math.nan),
         ValueError,
-        "with_windows: gap_cap must not be NaN",
+        "with_windows: gap_cap is NaN, which is no number of clock units. Set gap_cap to a "
+        "number or a duration.",
     ),
     "gap_cap without clock": (
         dict(gap_cap=5.0),
@@ -2823,14 +2840,14 @@ _CLOCK_REFUSALS: dict[str, tuple[dict[str, Any], type[Exception], str]] = {
     "session_gap without session": (
         dict(clock="t", gap_cap=5.0, session_gap=1.0),
         ValueError,
-        "with_windows: session_gap needs session; it says what a session change does, and "
-        "without a session column there is none",
+        "with_windows: session_gap is set, but session is not, and session_gap says only what "
+        "a change of session does. Set session to the session column, or leave out session_gap.",
     ),
     "reset without session": (
         dict(session_gap="reset"),
         ValueError,
-        "with_windows: session_gap needs session; it says what a session change does, and "
-        "without a session column there is none",
+        "with_windows: session_gap is set, but session is not, and session_gap says only what "
+        "a change of session does. Set session to the session column, or leave out session_gap.",
     ),
     "session_gap inf": (
         dict(clock="t", gap_cap=5.0, session="s", session_gap=math.inf),
@@ -2847,13 +2864,14 @@ _CLOCK_REFUSALS: dict[str, tuple[dict[str, Any], type[Exception], str]] = {
     "session_gap NaN": (
         dict(clock="t", gap_cap=5.0, session="s", session_gap=math.nan),
         ValueError,
-        "with_windows: session_gap must not be NaN",
+        "with_windows: session_gap is NaN, which is no number of clock units. Set session_gap "
+        "to a number or a duration.",
     ),
     "session_gap word": (
         dict(clock="t", gap_cap=5.0, session="s", session_gap="restart"),
         ValueError,
-        'with_windows: session_gap "restart" is not a duration: expected a whole number at '
-        '"restart"; write a number and a unit, as in "10m"',
+        'with_windows: session_gap "restart" is not a duration, since it has no whole number at '
+        '"restart". Write a number and a unit, as in "10m".',
     ),
     "restart negative": (
         dict(clock="t", gap_cap=5.0, restart_after_step_back=-1.0),
@@ -2872,55 +2890,63 @@ _CLOCK_REFUSALS: dict[str, tuple[dict[str, Any], type[Exception], str]] = {
     "restart NaN": (
         dict(clock="t", gap_cap=5.0, restart_after_step_back=math.nan),
         ValueError,
-        "with_windows: restart_after_step_back must not be NaN",
+        "with_windows: restart_after_step_back is NaN, which is no number of clock units. Set "
+        "restart_after_step_back to a number or a duration.",
     ),
     "restart without clock": (
         dict(restart_after_step_back=1.0),
         ValueError,
-        "with_windows: restart_after_step_back needs clock; a step back is read off the clock "
-        "column, and without one every row is one step forward",
+        "with_windows: restart_after_step_back is set, but clock is not, and without a clock "
+        "column every row is one step forward, so no row steps back. Set clock to the clock "
+        "column, or leave out restart_after_step_back.",
     ),
     "duration on a number clock": (
         dict(clock="t", gap_cap="5m"),
         ValueError,
         "with_windows: gap_cap is a duration, which needs a temporal clock column (Datetime, "
-        'Date or Duration); clock is "t" (f64)',
+        'Date or Duration), but clock is "t" (Float64). Give gap_cap as a number of clock units, '
+        "or name a temporal clock column.",
     ),
     "number on a temporal clock": (
         dict(clock="ts", gap_cap=5.0),
         ValueError,
-        'with_windows: gap_cap is a number, and clock column "ts" is datetime[ms]; write it as '
-        'a duration ("10m", a timedelta or pl.duration)',
+        'with_windows: gap_cap is a number, but clock column "ts" is Datetime("ms"), which '
+        'measures time. Give gap_cap as a duration, such as "10m", a timedelta or '
+        "pl.duration(minutes=10).",
     ),
     "duration beside a number": (
         dict(clock="ts", gap_cap="5m", restart_after_step_back=1.0),
         ValueError,
-        "with_windows: gap_cap is a duration and restart_after_step_back a number; on one clock "
-        "every clock parameter is written the same way",
+        "with_windows: gap_cap is a duration and restart_after_step_back is a number, but every "
+        "parameter on one clock is written the same way. Give both as durations on a temporal "
+        "clock, or both as numbers of clock units on a number clock.",
     ),
     "gap_cap below the clock's tick": (
         dict(clock="day", gap_cap="1h"),
         ValueError,
-        'with_windows: gap_cap is 1h, less than the smallest step clock column "day" (date) '
-        "can take: every step would be capped to it, so the clock would count rows rather than "
-        "measure time",
+        'with_windows: gap_cap is 1h, less than a day, the smallest step clock column "day" '
+        "(Date) can take, so every step would be cut to it and the clock would count rows rather "
+        "than measure time. Set gap_cap to at least a day.",
     ),
     "restart below the clock's tick": (
         dict(clock="day", gap_cap="5d", restart_after_step_back="1h"),
         ValueError,
-        "with_windows: restart_after_step_back is 1h, less than the smallest step clock column "
-        '"day" (date) can take: no step back could be as small, so every one would start the '
-        "windows over, which 0 says directly",
+        "with_windows: restart_after_step_back is 1h, less than a day, the smallest step clock "
+        'column "day" (Date) can take, so no step back could be as small and every one would '
+        "reset the windows. Set restart_after_step_back to at least a day, or to 0 to reset at "
+        "every step back.",
     ),
     "no clock column": (
         dict(clock="nope", gap_cap=5.0),
         ValueError,
-        'with_windows: no clock column "nope" in the frame; it has ["t", "ts", "day", "s", "x"]',
+        'with_windows: the clock column "nope" is not in the input, whose columns are ["t", '
+        '"ts", "day", "s", "x"]. Name a column the input has, or add "nope" to it.',
     ),
     "no session column": (
         dict(session="nope"),
         ValueError,
-        'with_windows: no session column "nope" in the frame; it has ["t", "ts", "day", "s", "x"]',
+        'with_windows: the session column "nope" is not in the input, whose columns are ["t", '
+        '"ts", "day", "s", "x"]. Name a column the input has, or add "nope" to it.',
     ),
 }
 
@@ -3267,7 +3293,10 @@ def test_reverse_must_be_a_bool() -> None:
         extra: dict[str, Any] = {"quantile": 0.5} if name == "quantile" else {}
         with pytest.raises(TypeError) as exc:
             getattr(po, f"ewm_{name}")("x", half_life=1.0, window_size=2.0, reverse=1, **extra)
-        assert str(exc.value) == f"po.ewm_{name}: reverse must be a bool, got int"
+        assert str(exc.value) == (
+            f"po.ewm_{name}: reverse must be True or False, but it is 1. "
+            "Pass reverse=True to read the rows after each row, or reverse=False."
+        )
 
 
 # --------------------------------------------------------------------------
@@ -3419,12 +3448,12 @@ def test_a_step_back_restarts_only_past_the_threshold(closed: str, seed: int) ->
         assert got.equals(reset.drop("s")), after
     for after in (7.5, math.nextafter(7.5, math.inf)):
         says = (
-            f'clock column "t" goes backwards by 7.5 at row {k}, no more than '
-            f"restart_after_step_back = {after!r}: a late row"
+            f'clock column "t" steps back by 7.5 at row {k} (counting from 0), no more than '
+            f"restart_after_step_back = {after!r}, so the step back is refused"
         )
         with pytest.raises(_REFUSAL, match=re.escape(says)):
             _rel_run(alone, ops, restart_after_step_back=after)
-    with pytest.raises(_REFUSAL, match=re.escape(f"goes backwards by 7.5 at row {k} (")):
+    with pytest.raises(_REFUSAL, match=re.escape(f"steps back by 7.5 at row {k} (")):
         _rel_run(alone, ops)
 
 

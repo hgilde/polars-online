@@ -133,7 +133,7 @@ def test_strict_binary_refuses_a_target_other_than_0_or_1():
     )
     bank = po.ModelBank([_spec(strict_binary=True, min_weight=0.0)])
     before = bank.save_bytes()
-    with pytest.raises(ValueError, match=r"strict_binary.*row 2") as exc:
+    with pytest.raises(ValueError, match=r"row 2 .*strict_binary") as exc:
         bank.fit_predict(df)
     assert "0.5" in str(exc.value)
     assert bank.save_bytes() == before, "the refused chunk touched the bank"
@@ -177,7 +177,9 @@ class TestStrictBinaryEdges:
         )
         bank = po.ModelBank([_spec(strict_binary=True, weight="w")])
         before = bank.save_bytes()
-        with pytest.raises(ValueError, match=r"has the value 0.5 at row 17.*null the rows"):
+        with pytest.raises(
+            ValueError, match=r"has the value 0.5 at row 17 .*Set the target to null on rows"
+        ):
             bank.fit_predict(df)
         assert bank.save_bytes() == before
 

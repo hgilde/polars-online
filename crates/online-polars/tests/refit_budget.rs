@@ -155,9 +155,9 @@ fn the_default_budget_refits_what_320_mib_holds() {
     assert_eq!(given_up(&old), vec![0, 0, 1]);
     let notices = old.take_notices();
     assert!(
-        notices
-            .iter()
-            .any(|n| n.contains("refit_budget = 256 MiB at group \"2\"")),
+        notices.iter().any(|n| n.contains(
+            "at group \"2\", its groups' refits would hold more than refit_budget = 256 MiB"
+        )),
         "{notices:?}"
     );
 }
@@ -423,7 +423,7 @@ fn a_damaged_reservation_is_refused() {
         let e = Bank::load_bytes(&bad, Some(&specs))
             .err()
             .unwrap_or_else(|| panic!("{what}"));
-        assert!(e.contains("refit reservation"), "{what}: {e}");
+        assert!(e.contains("the memory it reserved for"), "{what}: {e}");
     }
 }
 

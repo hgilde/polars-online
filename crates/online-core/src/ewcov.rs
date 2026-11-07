@@ -519,14 +519,18 @@ impl EwCov {
     ) -> Result<Self, String> {
         if means.len() != k || comoments.len() != k * k {
             return Err(format!(
-                "EwCov::from_moments: {k} columns need {k} means and {} co-moments, got {} and {}",
+                "{k} columns need {k} means and {} co-moments, but there are {} and {}. Give \
+                 one mean for each column and one co-moment for each pair of columns.",
                 k * k,
                 means.len(),
                 comoments.len()
             ));
         }
         if w_sum < 0.0 || !w_sum.is_finite() {
-            return Err("EwCov::from_moments: w_sum must be finite and >= 0".into());
+            return Err(format!(
+                "the weight of the rows must be finite and at least 0, but it is {w_sum}. Give a \
+                 finite weight of at least 0."
+            ));
         }
         let mut ew = Self::with_precision_prior(k, prior)?;
         ew.w_sum = w_sum;
@@ -2754,7 +2758,8 @@ impl crate::OnlineModel for EwCovModel {
                 // Levels need the sketch they are read from.
                 if m.mahal_q.is_none() && !m.cfg.mahal_quantiles.is_empty() {
                     return Err(crate::StateError::Invalid(
-                        "ew_cov: the state keeps no sketch for its mahal_quantiles".into(),
+                        "ew_cov: it is damaged, since it saved nothing for its mahal_quantiles. Load an undamaged copy of the state file, or rebuild it from its input."
+                            .into(),
                     ));
                 }
                 // A state written before task 48, resumed under a spec that
@@ -2792,7 +2797,8 @@ impl crate::OnlineModel for EwCovModel {
                     || m.win.is_some() != m.cfg.window.is_some()
                 {
                     return Err(crate::StateError::Invalid(
-                        "ew_cov: the state has the wrong shape".into(),
+                        "ew_cov: it is damaged, since its running sums have the wrong shape. Load an undamaged copy of the state file, or rebuild it from its input."
+                            .into(),
                     ));
                 }
                 // The runs follow the window, not the file: a state written
@@ -2804,7 +2810,8 @@ impl crate::OnlineModel for EwCovModel {
                     None => m.cov.set_runs_off(),
                     Some(_) if !m.cov.keeps_runs() => {
                         return Err(crate::StateError::Invalid(
-                            "ew_cov: a windowed state whose runs are off".into(),
+                            "ew_cov: it is damaged, since what it saved for its hard window does not match this spec. Load an undamaged copy of the state file, or rebuild it from its input."
+                                .into(),
                         ));
                     }
                     Some(_) => {}

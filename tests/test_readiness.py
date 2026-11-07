@@ -524,7 +524,7 @@ class TestSummaryAndWarnings:
         assert got[0].startswith('spec "m" group "1" session "one": '), got
         assert got[1].startswith('spec "m" group "1" session "two": '), got
         bodies = [m.split(": ", 1)[1] for m in got]
-        assert bodies[0] == bodies[1] and "support_coef < 0.5" in bodies[0], got
+        assert bodies[0] == bodies[1] and "support_coef is below 0.5" in bodies[0], got
 
     def test_an_unreachable_gate_is_named_with_the_fix(self):
         """Half-life 2 rows tops Kish's ``n`` out near 5.8; with ten features
@@ -944,11 +944,11 @@ class TestSettledWeight:
         fitted = _fit_noting(po.ModelBank([s]), self._stopped(stop=15))
         assert fitted.notices == [
             'spec "m": min_weight = 10 has not been met for target "y" on any row for the last '
-            "half-life, with the model within 5% of its steady state. At the row weights seen so "
-            f"far, the weight the gate reads tops out near {figure} if every row carries a value "
-            'of target "y", and the model has not learned the target from every row, so '
-            'predictions for target "y" stay withheld unless the rows carry more weight, and each '
-            f"carries a value of the target. Lower min_weight below {figure}, or increase "
+            "half-life, with the model within 5% of its steady state. The model has not learned "
+            'target "y" from every row. If every row carried it, the weight the gate reads would '
+            f"top out near {figure} at the row weights seen so far, so predictions for target "
+            '"y" stay withheld unless the rows carry more weight. Lower min_weight below '
+            f"{figure}, or increase "
             f"half_life above {math.ceil(need * 100) / 100}, as {READY} explains."
         ]
 
@@ -1222,10 +1222,10 @@ class TestSettledWeight:
         s = spec(features=[f"x{j}" for j in range(k)], half_life=2.0, weight="w")
         fitted = _fit_noting(po.ModelBank([s]), df)
         opening = (
-            'spec "m": max_error_inflation = 1.414 has not been met on any row for the last '
-            "half-life, with the model within 5% of its steady state"
+            'spec "m": max_error_inflation = 1.41 (its default) has not been met on any row for '
+            "the last half-life, with the model within 5% of its steady state"
         )
-        needs = "the 11 the model needs before it fits at all, one for each of its 11 coefficients"
+        needs = "11, one for each of the model's 11 coefficients"
         if weights == "steady":
             want = (
                 f"{opening}. At the row weights seen so far, weight_sum tops out near 3.41, below "
@@ -1234,10 +1234,10 @@ class TestSettledWeight:
             )
         else:
             want = (
-                f"{opening}, so error_inflation stays infinite and predictions stay withheld until "
-                f"weight_sum reaches {needs}. This warning comes on a row of weight 0, which adds "
-                "nothing to the weight, so it cannot say where weight_sum tops out. Check that "
-                "rows reach the model with a positive weight, or increase half_life, as "
+                f"{opening}. Predictions stay withheld, and error_inflation infinite, until "
+                f"weight_sum reaches {needs}, but this warning comes on a row of weight 0, which "
+                "adds nothing to the weight, so it cannot say where weight_sum tops out. Check "
+                "that rows reach the model with a positive weight, or increase half_life, as "
                 f"{READY} explains."
             )
         assert fitted.notices == [want]

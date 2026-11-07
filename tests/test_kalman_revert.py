@@ -637,7 +637,7 @@ class TestRefusals:
             (
                 "10",
                 ValueError,
-                'revert_half_life "10" is not a duration: 10 has no unit',
+                'revert_half_life "10" is not a duration, since 10 has no unit',
             ),
             (float("nan"), ValueError, "revert_half_life must be a number, but it is NaN"),
             (

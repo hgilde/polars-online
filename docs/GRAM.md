@@ -1739,7 +1739,7 @@ float64   full: 323,208 bytes a week; the fit moved by 0e+00 of its largest coef
 float64 packed: 162,408 bytes a week; the fit moved by 0e+00 of its largest coefficient
 float32   full: 161,604 bytes a week; the fit moved by 7e-09 of its largest coefficient
 float32 packed:  81,204 bytes a week; the fit moved by 7e-09 of its largest coefficient
-gram(dtype="float32"): the co-moment of 'a' with itself is 1.029e40, past float32's largest number, 3.4e38, where it reads inf: rescale 'a' upstream, or read the Gram in float64
+ModelBank.gram(dtype="float32"): the co-moment of "a" with itself is 1.03e40, larger in size than float32's largest number, 3.40e38, where it reads inf. Change the scale of "a" before the bank learns the rows, or leave dtype at its default, "float64".
 ```
 
 The packed float64 form solves to the same bits as the full one. In

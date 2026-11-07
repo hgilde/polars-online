@@ -27,7 +27,8 @@ def bank() -> po.ModelBank:
 def test_save_refuses_what_is_neither_a_path_nor_a_writer(bank):
     with pytest.raises(
         TypeError,
-        match="ModelBank.save takes a path or a file object opened for binary writing, got int",
+        match="ModelBank.save: file must be a path or a file object opened for binary writing, "
+        "but it is of type int",
     ):
         bank.save(123)  # type: ignore[arg-type]
     # The refusal wrote nothing and left the bank whole: it saves after it.
@@ -64,7 +65,9 @@ def test_write_json_gives_a_text_only_writer_the_text(bank):
 
 def test_write_json_refuses_what_is_neither_a_path_a_writer_nor_none(bank):
     with pytest.raises(
-        TypeError, match="ModelBank.write_json takes a path, a file object or None, got int"
+        TypeError,
+        match="ModelBank.write_json: file must be a path, a file object or None, but it is "
+        "of type int",
     ):
         bank.write_json(123)  # type: ignore[call-overload]
 
@@ -72,13 +75,14 @@ def test_write_json_refuses_what_is_neither_a_path_a_writer_nor_none(bank):
 def test_load_refuses_a_text_mode_file_and_what_is_not_a_source(bank):
     with pytest.raises(
         TypeError,
-        match=r"ModelBank.load: the file object gave str; open the file in binary mode \('rb'\)",
+        match=r"ModelBank.load: the file object gave an object of type str, not bytes\. Open the "
+        r"file in binary mode \('rb'\)",
     ):
         po.ModelBank.load(io.StringIO("not msgpack"))  # type: ignore[arg-type]
     with pytest.raises(
         TypeError,
-        match="ModelBank.load takes a path, bytes or a file object opened for binary reading, "
-        "got int",
+        match="ModelBank.load: source must be a path, bytes or a file object opened for binary "
+        "reading, but it is of type int",
     ):
         po.ModelBank.load(123)  # type: ignore[arg-type]
     # The binary file object of the same state loads.
@@ -94,11 +98,11 @@ def test_a_keyword_once_positional_is_refused_past_its_count_or_given_twice(bank
     df = pl.DataFrame({"x": [1.0, 2.0], "y": [1.0, 2.0]})
     before = bank.save_bytes()
     with pytest.raises(
-        TypeError, match=r"ModelBank.fit\(\) takes 2 positional arguments but 5 were given"
+        TypeError, match=r"ModelBank.fit: it takes 2 positional arguments, but 5 were given"
     ):
         bank.fit(df, None, 10, "extra")  # type: ignore[misc]
     with pytest.raises(
-        TypeError, match=r"ModelBank.fit\(\) got multiple values for argument 'closed_groups'"
+        TypeError, match=r"ModelBank.fit: closed_groups is given both by position and by keyword"
     ):
         bank.fit(df, None, closed_groups=None)  # type: ignore[misc]
     assert bank.save_bytes() == before, "neither call read a row"
@@ -111,12 +115,14 @@ def test_one_spec_or_a_string_in_place_of_the_list_is_refused_by_name():
     spec = po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)
     with pytest.raises(
         ValueError,
-        match=r"ModelBank takes a list of specs, and got one spec: pass \[spec\] for a bank of one",
+        match=r"ModelBank: specs must be a list of specs, but it is one spec\. Pass the spec in a "
+        r"list, as \[spec\]",
     ):
         po.ModelBank(spec)  # type: ignore[arg-type]
     with pytest.raises(
         ValueError,
-        match=r"ModelBank takes a list of specs, such as \[po.spec.ewridge\(...\)\], got str",
+        match=r"ModelBank: specs must be a list of specs, such as \[po.spec.ewridge\(...\)\], "
+        r"but it is of type str",
     ):
         po.ModelBank("m")  # type: ignore[arg-type]
     assert po.ModelBank([spec]).specs[0]["name"] == "m"

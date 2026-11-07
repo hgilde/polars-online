@@ -54,7 +54,10 @@ def test_the_frame_namespace_writes_the_closed_groups_sidecar(tmp_path):
 
 def test_a_closed_groups_sidecar_in_a_missing_directory_is_refused_before_the_fit(tmp_path):
     side = tmp_path / "no" / "such" / "closed.parquet"
-    with pytest.raises(FileNotFoundError, match=r"closed_groups: '.*such' is not a directory"):
+    with pytest.raises(
+        FileNotFoundError,
+        match=r"closed_groups names a file in the folder '.*such', which does not exist",
+    ):
         _groups().online.fit_predict([SPEC], closed_groups=side)
     assert not side.parent.exists()
 

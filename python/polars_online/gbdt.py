@@ -99,6 +99,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import polars as pl
 
 from polars_online import _polars_online as _native
+from polars_online._errors import ColumnNotFoundError
 from polars_online._warnings import unstable
 
 if TYPE_CHECKING:
@@ -126,19 +127,29 @@ _ENGINES = ("auto", "native", "python")
 _LAST_STATS: dict[str, float] = {}
 
 
-def _format(path: str | os.PathLike[str]) -> str:
+def _listed(names: Sequence[Any]) -> str:
+    """Names for a message: the list whole up to ten, else its first ten and
+    the count of the rest."""
+    names = list(names)
+    if len(names) <= 10:
+        return repr(names)
+    return f"{names[:10]!r} and {len(names) - 10} more"
+
+
+def _format(path: str | os.PathLike[str], who: str) -> str:
     ext = Path(os.fspath(path)).suffix.lower()
     if ext in (".arrow", ".ipc", ".feather"):
         return "ipc"
     if ext in (".parquet", ".pq"):
         return "parquet"
     raise ValueError(
-        f"cannot tell the format of {os.fspath(path)!r} from its extension: po.gbdt reads Arrow "
-        "IPC (.arrow, .ipc, .feather) and Parquet (.parquet, .pq) files, or a LazyFrame"
+        f"{who}: the format of {os.fspath(path)!r} cannot be told from its extension, and "
+        "po.gbdt reads Arrow IPC (.arrow, .ipc, .feather) and Parquet (.parquet, .pq) files. "
+        "Rename the file to one of those extensions, or pass a query that reads it."
     )
 
 
-def _expand(paths: list[str | os.PathLike[str]]) -> list[str]:
+def _expand(paths: list[str | os.PathLike[str]], who: str) -> list[str]:
     """The files a list of paths and globs names, each glob's sorted, as
     polars' scans order them."""
     out: list[str] = []
@@ -147,7 +158,10 @@ def _expand(paths: list[str | os.PathLike[str]]) -> list[str]:
         if any(c in s for c in "*?["):
             found = sorted(glob.glob(s))
             if not found:
-                raise FileNotFoundError(f"no file matches {s!r}")
+                raise FileNotFoundError(
+                    f"{who}: no file matches the pattern {s!r}. Check the path and the "
+                    "pattern's wildcards."
+                )
             out.extend(found)
         else:
             out.append(s)
@@ -167,16 +181,22 @@ def _plan(source: Source, who: str) -> tuple[pl.LazyFrame, list[str] | None]:
         paths = list(source)
     else:
         raise TypeError(
-            f"{who}: source must be paths, a LazyFrame or a DataFrame, not {type(source).__name__}"
+            f"{who}: source must be a path, a list of paths, a query or a frame, but its type "
+            f"is {type(source).__name__}. Pass one of those."
         )
     if not paths:
-        raise ValueError(f"{who}: source names no files")
-    formats = {_format(p) for p in paths}
+        raise ValueError(
+            f"{who}: source must name at least one file, but it is empty. Pass the files to read."
+        )
+    formats = {_format(p, who) for p in paths}
     if len(formats) > 1:
-        raise ValueError(f"{who}: source mixes Arrow IPC and Parquet files; pass one kind")
+        raise ValueError(
+            f"{who}: source must be files of one format, but it mixes Arrow IPC and Parquet "
+            "files. Pass files of one format."
+        )
     names = [os.fspath(p) for p in paths]
     if formats.pop() == "ipc":
-        return pl.scan_ipc(names), _expand(paths)
+        return pl.scan_ipc(names), _expand(paths, who)
     return pl.scan_parquet(names), None
 
 
@@ -200,7 +220,10 @@ class _Columns:
         schema = plan.collect_schema()
         for role, name in (("label", label), ("weight", weight), (margin_role, margin)):
             if name is not None and name not in schema:
-                raise ValueError(f"{who}: the {role} column {name!r} is not in the source")
+                raise ColumnNotFoundError(
+                    f"{who}: the {role} column {name!r} is not in the source, which has "
+                    f"{_listed(list(schema))}. Name a column the source has."
+                )
         if label == margin or (weight is not None and weight == margin):
             raise ValueError(
                 f"{who}: {margin!r} is named as the {margin_role} and as the label or weight. "
@@ -211,25 +234,55 @@ class _Columns:
             names = [c for c in schema if c not in own]
         else:
             if isinstance(features, str):
-                raise TypeError(f"{who}: features is a list of column names, not one name")
+                raise TypeError(
+                    f"{who}: features must be a list of column names, but it is the one name "
+                    f"{features!r}. Pass it in a list, as [{features!r}]."
+                )
             names = list(features)
             missing = [c for c in names if c not in schema]
             if missing:
-                raise ValueError(f"{who}: feature columns not in the source: {missing}")
+                raise ColumnNotFoundError(
+                    f"{who}: features names columns the source does not have, {missing}, and "
+                    f"the source has {_listed(list(schema))}. Name columns the source has."
+                )
             clash = [c for c in names if c in (label, weight)]
             if clash:
-                raise ValueError(f"{who}: {clash} named as a feature and as the label or weight")
+                raise ValueError(
+                    f"{who}: {clash[0]!r} is named as a feature and as the label or weight, but "
+                    "a column can be only one of them. Remove it from features."
+                )
             if margin is not None and margin in names:
                 raise ValueError(
-                    f"{who}: {margin!r} is named as a feature and as the {margin_role}. To "
-                    f"pass it as both, add a copy with pl.col({margin!r}).alias(...) and name "
-                    "the copy as the feature."
+                    f"{who}: {margin!r} is named as a feature and as the {margin_role}. Add a "
+                    "copy in the query you pass as source, as "
+                    f"with_columns(pl.col({margin!r}).alias({margin + '_feature'!r})), and name "
+                    "the copy in features."
                 )
             if len(set(names)) != len(names):
-                raise ValueError(f"{who}: a feature is named twice in {names}")
+                twice = next(c for c in names if names.count(c) > 1)
+                raise ValueError(
+                    f"{who}: features names column {twice!r} twice. Name each column once."
+                )
+        if not names and features is not None:
+            raise ValueError(
+                f"{who}: features must name at least one column, but it is empty. Name the "
+                "feature columns, or leave features out to take every other column."
+            )
         if not names:
-            raise ValueError(f"{who}: the source has no feature columns besides the label")
+            taken = ["the label"] + ["the weight"] * (weight is not None)
+            taken += [f"the {margin_role}"] * (margin is not None)
+            besides = (
+                " and ".join(taken)
+                if len(taken) < 3
+                else "the label, the weight and the " + margin_role
+            )
+            raise ValueError(
+                f"{who}: the source has no column besides {besides} to be a feature. Add a "
+                "feature column to the source."
+            )
         self.names = names
+        #: The call the reader made, which every refusal of a row names.
+        self.who = who
         self.label = label
         self.weight = weight
         self.margin = margin
@@ -266,13 +319,14 @@ class _Columns:
             elif isinstance(dt, pl.Categorical):
                 raise ValueError(
                     f"{who}: feature {c!r} is a pl.Categorical, whose codes depend on the "
-                    "process that made them, so a model trained on them could not be read "
-                    "again; cast it to a pl.Enum, whose categories fix the codes"
+                    "process that made them, so a model trained on them could not read them "
+                    "again. Cast it to a pl.Enum, whose categories fix the codes."
                 )
             else:
                 raise ValueError(
-                    f"{who}: feature {c!r} is {dt}: po.gbdt reads numeric, Boolean and pl.Enum "
-                    "columns; cast it to one of them or leave it out of features"
+                    f"{who}: feature {c!r} is {dt}, but po.gbdt reads integer, float, Boolean "
+                    "and pl.Enum columns. Cast it to Float64 or a pl.Enum, or leave it out of "
+                    "features."
                 )
             if len(self.categories) < len(self.kinds):
                 self.categories.append(None)
@@ -281,7 +335,10 @@ class _Columns:
                 continue
             dt = schema[name]
             if not (dt.is_numeric() or dt == pl.Boolean) or dt.is_decimal():
-                raise ValueError(f"{who}: the {role} column {name!r} is {dt}, not numeric")
+                raise ValueError(
+                    f"{who}: the {role} column {name!r} is {dt}, but it must be an integer, "
+                    "float or Boolean column. Cast it to Float64."
+                )
             exprs.append(pl.col(name).cast(pl.Float64))
         if margin is not None:
             exprs.append(_margin_expr(who, margin_role, margin, schema[margin]))
@@ -307,15 +364,20 @@ class _Columns:
             if s.null_count():
                 at = row + int(s.is_null().arg_max() or 0)
                 raise ValueError(
-                    f"the {role} column `{name}` has a null at row {at}: every row needs a {role}"
+                    f"{self.who}: the {role} column `{name}` has a null at row {at} (counting from "
+                    f"0), and every row needs a {role}. Replace the null, or drop the row, before "
+                    "the build."
                 )
             bad = ~s.is_finite() if role == "label" else (~s.is_finite()) | (s < 0)
             if bad.any():
                 i = int(bad.arg_max() or 0)
                 need = "finite" if role == "label" else "finite and not negative"
+                v = float(s[i])
+                shown = "NaN" if math.isnan(v) else repr(v)
                 raise ValueError(
-                    f"the {role} column `{name}` holds {s[i]} at row {row + i}: a {role} "
-                    f"must be {need}"
+                    f"{self.who}: the {role} column `{name}` holds {shown} at row {row + i} "
+                    f"(counting from 0), and a {role} must be {need}. Replace it, or drop the row, "
+                    "before the build."
                 )
 
     def margin_numpy(self, frame: pl.DataFrame, row: int) -> Any:
@@ -353,9 +415,11 @@ class _Columns:
         """The native engine's refusal of row ``at``'s margin, word for word."""
         role, name = self.margin_role, self.margin
         whose = "ref" if role == "base_margin" else "reference"
+        who = self.who
         null = ValueError(
-            f"the {role} column `{name}` has a null at row {at}, and every row needs a margin. "
-            "Fill it before the build, with 0 where the row has no prediction to start from."
+            f"{who}: the {role} column `{name}` has a null at row {at} (counting from 0), and "
+            "every row needs a margin. Replace the null before the build, with 0 where the row "
+            "has no prediction to start from."
         )
         if value is None:
             raise null
@@ -363,21 +427,21 @@ class _Columns:
         k = len(values)
         if self.margin_width is None:
             raise ValueError(
-                f"the {role} column `{name}` holds no values at row {at}, and a margin needs "
-                "one. Give every row one value, or one for each class."
+                f"{who}: the {role} column `{name}` holds no values at row {at} (counting from 0), "
+                "and a margin needs one. Give every row one value, or one for each class."
             )
         want, set_at = self.margin_width
         if k != want:
             if set_at is None:
                 raise ValueError(
-                    f"the {role} column `{name}` holds {_values(k)} at row {at}, and the "
-                    f"{whose}'s margin holds {_values(want)} a row. Give every row as many "
-                    "values as the training margin has."
+                    f"{who}: the {role} column `{name}` holds {_values(k)} at row {at} (counting "
+                    f"from 0), and the {whose}'s {role} holds {_values(want)} a row. Give every "
+                    f"row as many values as the {whose}'s {role} has."
                 )
             raise ValueError(
-                f"the {role} column `{name}` holds {_values(k)} at row {at} and {want} at row "
-                f"{set_at}, and every row needs the same number. Give every row one value, "
-                "or one for each class."
+                f"{who}: the {role} column `{name}` holds {_values(k)} at row {at} (counting from "
+                f"0) and {want} at row {set_at}, and every row needs the same number. Give every "
+                "row one value, or one for each class."
             )
         for v in values:
             if v is None:
@@ -385,11 +449,15 @@ class _Columns:
             if not math.isfinite(v):
                 shown = "NaN" if math.isnan(v) else ("inf" if v > 0 else "-inf")
                 raise ValueError(
-                    f"the {role} column `{name}` holds {shown} at row {at}, and a margin must "
-                    "be finite. Replace it before the build, with 0 where the row has no "
-                    "prediction to start from."
+                    f"{who}: the {role} column `{name}` holds {shown} at row {at} (counting from "
+                    "0), and a margin must be finite. Replace it before the build, with 0 where "
+                    "the row has no prediction to start from."
                 )
-        raise AssertionError("a margin refused with nothing wrong")  # pragma: no cover
+        raise AssertionError(  # pragma: no cover
+            f"{who}: internal: a margin was refused with nothing wrong, which is a defect in "
+            "polars-online. Open an issue at https://github.com/hgilde/polars-online/issues "
+            "with this message."
+        )
 
 
 def _values(k: int) -> str:
@@ -411,9 +479,9 @@ def _margin_expr(who: str, role: str, name: str, dt: pl.DataType) -> pl.Expr:
     if isinstance(dt, pl.Array) and len(dt.shape) == 1 and numeric(dt.inner):
         return pl.col(name).cast(pl.Array(pl.Float64, dt.size))
     raise ValueError(
-        f"{who}: the {role} column {name!r} is {dt}, and a margin is a number a row, or a "
-        "List or Array of one number for each class. Cast it to Float64, or to a List of "
-        "Float64."
+        f"{who}: the {role} column {name!r} is {dt}, but a margin is a float or integer "
+        "column (one value for each row), or a List or Array of one value for each class. "
+        "Cast it to Float64, or to a List of Float64."
     )
 
 
@@ -461,18 +529,25 @@ def _check_ref(
     codes would be read as the training levels in order."""
     if names is not None and list(names) != cols.names:
         raise ValueError(
-            f"{who}: {what} has the features {list(names)}, and this source "
-            f"{cols.names}: {binned} needs the same features in order"
+            f"{who}: {what} has the features {list(names)}, and this source {cols.names}, but "
+            f"{binned} needs the same features in order. Pass the features {what} was built "
+            "with, in its order."
         )
     theirs = getattr(ref, "_po_categories", None)
     if theirs is None or len(theirs) != len(cols.names):
         return
     for name, a, b in zip(cols.names, theirs, cols.categories, strict=True):
+        if a != b and a is None:
+            raise ValueError(
+                f"{who}: {what} was built with {name!r} as {_enum_of(a)}, and this source has "
+                f"it as {_enum_of(b)}. Cast {name!r} back to the type {what} was built with."
+            )
         if a != b:
             raise ValueError(
                 f"{who}: {what} was built with {name!r} as {_enum_of(a)}, and this source has "
-                f"it as {_enum_of(b)}: a pl.Enum's codes mean its categories in order, so "
-                f"{binned} needs the same categories"
+                f"it as {_enum_of(b)}. A pl.Enum's codes mean its categories in order, so "
+                f"{binned} needs the same categories. Cast {name!r} to the pl.Enum {what} was "
+                "built with."
             )
 
 
@@ -485,21 +560,41 @@ def _record(obj: Any, cols: _Columns) -> None:
 
 
 def _check_common(who: str, max_bin: int, threads: int | None, engine: str) -> None:
-    if isinstance(max_bin, bool) or not isinstance(max_bin, int) or max_bin < 2:
-        raise ValueError(f"{who}: max_bin must be an integer of 2 or more, not {max_bin!r}")
-    if threads is not None and (
-        isinstance(threads, bool) or not isinstance(threads, int) or threads < 1
-    ):
-        raise ValueError(f"{who}: threads must be a positive integer or None, not {threads!r}")
+    if isinstance(max_bin, bool) or not isinstance(max_bin, int):
+        raise ValueError(
+            f"{who}: max_bin must be a Python int of at least 2, but it is {max_bin!r}. Pass a "
+            "Python int of at least 2."
+        )
+    if max_bin < 2:
+        raise ValueError(
+            f"{who}: max_bin must be at least 2, but it is {max_bin}. Set max_bin to 2 or more."
+        )
+    library = "XGBoost's" if "xgboost" in who else "LightGBM's"
+    if threads is not None and (isinstance(threads, bool) or not isinstance(threads, int)):
+        raise ValueError(
+            f"{who}: threads must be a Python int of at least 1, or None, but it is "
+            f"{threads!r}. Pass a Python int of at least 1, or None for {library} default."
+        )
+    if threads is not None and threads < 1:
+        raise ValueError(
+            f"{who}: threads must be at least 1, or None, but it is {threads}. Set threads to "
+            f"1 or more, or to None for {library} default."
+        )
     if engine not in _ENGINES:
-        raise ValueError(f"{who}: engine must be one of {_ENGINES}, not {engine!r}")
+        raise ValueError(
+            f'{who}: engine must be "auto", "native" or "python", but it is {engine!r}. Set '
+            "engine to one of those words."
+        )
 
 
-def _library_path(lib: Any) -> str:
+def _library_path(lib: Any, who: str = "po.gbdt", what: str = "the library") -> str:
     """The file a library's Python package loaded it from."""
     path = getattr(lib, "path", None) or getattr(lib, "_name", None)
     if not path:
-        raise ValueError("the library's Python package does not say which file it loaded")
+        raise ValueError(
+            f"{who}: {what}'s Python package does not say which file it loaded, so the native "
+            "engine cannot load it. Pass engine='python'."
+        )
     return str(path)
 
 
@@ -513,7 +608,9 @@ def _lgb_native(path: str, version: str) -> Any:
     return _native.GbdtLightgbm(path, version)
 
 
-def _native_or_none(load: Callable[[], Any], engine: str, what: str, stacklevel: int) -> Any:
+def _native_or_none(
+    load: Callable[[], Any], engine: str, what: str, stacklevel: int, who: str
+) -> Any:
     if engine == "python":
         return None
     try:
@@ -521,9 +618,15 @@ def _native_or_none(load: Callable[[], Any], engine: str, what: str, stacklevel:
     except (ValueError, OSError) as e:
         if engine == "native":
             raise
+        # The cause alone: the refusal's first sentence, without its where
+        # or its remedy, which this warning gives for itself.
+        cause = str(e).split(". ")[0].rstrip(".")
+        if cause.startswith(f"{who}: "):
+            cause = cause[len(who) + 2 :]
         warnings.warn(
-            f"po.gbdt cannot load {what} natively ({e}); building with the Python engine, which "
-            "grows the same trees more slowly. Pass engine='python' to choose it and silence this.",
+            f"{who}: the native engine cannot load {what} ({cause}), so the build runs on the "
+            "Python engine, which grows the same trees more slowly. Pass engine='python' to "
+            "choose it and silence this warning.",
             UserWarning,
             stacklevel=stacklevel,
         )
@@ -740,16 +843,26 @@ def xgboost_matrix(
     """
     import xgboost as xgb
 
-    who = "xgboost_matrix"
+    who = "po.gbdt.xgboost_matrix"
     _check_common(who, max_bin, threads, engine)
     if sample_rows is not None and (
-        isinstance(sample_rows, bool) or not isinstance(sample_rows, int) or sample_rows < 1
+        isinstance(sample_rows, bool) or not isinstance(sample_rows, int)
     ):
         raise ValueError(
-            f"{who}: sample_rows must be a positive integer or None, not {sample_rows!r}"
+            f"{who}: sample_rows must be a Python int of at least 1, or None, but it is "
+            f"{sample_rows!r}. Pass a Python int of at least 1, or None for XGBoost's own "
+            "sketch of every row."
+        )
+    if sample_rows is not None and sample_rows < 1:
+        raise ValueError(
+            f"{who}: sample_rows must be at least 1, or None, but it is {sample_rows}. Set "
+            "sample_rows to 1 or more, or to None for XGBoost's own sketch of every row."
         )
     if ref is not None and not isinstance(ref, xgb.DMatrix):
-        raise TypeError(f"{who}: ref must be an xgboost.DMatrix, not {type(ref).__name__}")
+        raise TypeError(
+            f"{who}: ref must be an xgboost.DMatrix, but its type is {type(ref).__name__}. "
+            "Pass the training matrix xgboost_matrix returned."
+        )
     plan, files = _plan(source, who)
     cols = _Columns(
         plan,
@@ -765,7 +878,11 @@ def xgboost_matrix(
         theirs = _margin_width_of(ref, ref.get_base_margin, ref.num_row)
         _check_margin_ref(who, "ref", cols, theirs)
     native = _native_or_none(
-        lambda: _xgb_native(_library_path(xgb.core._LIB)), engine, "XGBoost", 4
+        lambda: _xgb_native(_library_path(xgb.core._LIB, who, "XGBoost")),
+        engine,
+        "XGBoost",
+        4,
+        who,
     )
     if native is not None:
         handle, stats = native.matrix(
@@ -829,7 +946,9 @@ def _xgb_python(
         for frame in cols.batches():
             sampler.push(frame)
         if sampler.rows_seen == 0:
-            raise ValueError("the source has no rows")
+            raise ValueError(
+                "po.gbdt.xgboost_matrix: the source has no rows. Pass a source with rows."
+            )
         data, rows, p = sampler.ref_matrix(max_bin)
         planted = np.frombuffer(data, dtype="<f4").reshape(rows, p)
         refm = xgb.DMatrix(
@@ -857,12 +976,16 @@ def _xgb_python(
             frame = next(self._it, None)
             if frame is None:
                 if self._row == 0:
-                    raise ValueError("the source has no rows")
+                    raise ValueError(
+                        "po.gbdt.xgboost_matrix: the source has no rows. Pass a source with rows."
+                    )
                 if self._rows is not None and self._rows != self._row:
                     raise ValueError(
-                        f"the source gave {self._rows} rows in one pass and {self._row} in "
-                        "another: XGBoost reads it more than once, and every pass must give "
-                        "the same rows"
+                        "po.gbdt.xgboost_matrix: the source gave "
+                        f"{self._rows} rows in one pass and "
+                        f"{self._row} in another, but XGBoost reads it more than once, and "
+                        "every pass must give the same rows. Pass a source that reads the "
+                        "same rows each time, such as files or a frame."
                     )
                 self._rows = self._row
                 return False
@@ -1130,21 +1253,28 @@ def lightgbm_dataset(
     """
     import lightgbm as lgb
 
-    who = "lightgbm_dataset"
+    who = "po.gbdt.lightgbm_dataset"
     _check_common(who, max_bin, threads, engine)
     # By type: `1 in (True, False)` holds, and 1 is not an answer.
     if not isinstance(in_memory, bool) and in_memory != "auto":
-        raise ValueError(f"{who}: in_memory must be True, False or 'auto', not {in_memory!r}")
+        raise ValueError(
+            f"{who}: in_memory must be True, False or 'auto', but it is {in_memory!r}. Set "
+            "in_memory to one of those."
+        )
     if reference is not None:
         if not isinstance(reference, lgb.Dataset):
             raise TypeError(
-                f"{who}: reference must be a lightgbm.Dataset, not {type(reference).__name__}"
+                f"{who}: reference must be a lightgbm.Dataset, but its type is "
+                f"{type(reference).__name__}. Pass the training set lightgbm_dataset returned."
             )
         reference.construct()
     given = dict(params or {})
     for key, arg in _LGB_OWN.items():
         if key in given:
-            raise ValueError(f"{who}: params names {key!r}; pass it as {arg}= instead")
+            raise ValueError(
+                f"{who}: params names {key!r}, which this call takes as an argument of its "
+                f"own. Pass it as {arg}= instead."
+            )
     plan, files = _plan(source, who)
     cols = _Columns(
         plan,
@@ -1173,16 +1303,23 @@ def lightgbm_dataset(
         cats = [j for j, k in enumerate(cols.kinds) if k == "category"]
     else:
         if isinstance(categorical, str):
-            raise TypeError(f"{who}: categorical is a list of column names, not one name")
+            raise TypeError(
+                f"{who}: categorical must be a list of column names, but it is the one name "
+                f"{categorical!r}. Pass it in a list, as [{categorical!r}]."
+            )
         cats = []
         for c in categorical:
             if c not in cols.names:
-                raise ValueError(f"{who}: categorical names {c!r}, which is not a feature")
+                raise ValueError(
+                    f"{who}: categorical names {c!r}, but it is not a feature. Name one of "
+                    "the features."
+                )
             j = cols.names.index(c)
             if cols.kinds[j] not in ("category", "int", "bool"):
                 raise ValueError(
-                    f"{who}: categorical names {c!r}, a float column: LightGBM reads a "
-                    "categorical feature as integer codes"
+                    f"{who}: categorical names {c!r}, a float column, but LightGBM reads a "
+                    "categorical feature as integer codes. Cast it to an integer or a pl.Enum, "
+                    "or leave it out of categorical."
                 )
             cats.append(j)
         cats = sorted(set(cats))
@@ -1203,12 +1340,13 @@ def lightgbm_dataset(
         build["num_threads"] = threads
     rows = int(cols.plan.select(pl.len()).collect().item())
     if rows == 0:
-        raise ValueError(f"{who}: the source has no rows")
+        raise ValueError(f"{who}: the source has no rows. Pass a source with rows.")
     native = _native_or_none(
-        lambda: _lgb_native(_library_path(lgb.basic._LIB), lgb.__version__),
+        lambda: _lgb_native(_library_path(lgb.basic._LIB, who, "LightGBM"), lgb.__version__),
         engine,
         "LightGBM",
         4,
+        who,
     )
     if in_memory == "auto":
         fits = rows * len(cols.names) * 4 * 4 <= _available_memory()
@@ -1218,9 +1356,9 @@ def lightgbm_dataset(
     if native is not None:
         if not hasattr(lgb.Dataset(None), "_handle"):
             raise ValueError(
-                f"{who}: this lightgbm.Dataset holds its native handle elsewhere than "
-                f"`_handle` (lightgbm {lgb.__version__}); engine='python' builds through its "
-                "Python API"
+                f"{who}: the native engine does not support lightgbm {lgb.__version__}, whose "
+                "Dataset holds its native handle where the engine does not look. Pass "
+                "engine='python', which builds through LightGBM's Python API."
             )
         ref_handle = None
         if reference is not None:
@@ -1297,8 +1435,11 @@ def _lgb_python(
             row += frame.height
         if row != rows:
             raise ValueError(
-                f"the source was counted at {rows} rows and a pass over it gave {row}: "
-                "LightGBM reads it more than once, and every pass must give the same rows"
+                "po.gbdt.lightgbm_dataset: the source was counted at "
+                f"{rows} rows and a pass over it gave {row}, "
+                "but the build reads it more than once, to count its rows and then to read "
+                "them, and every pass must give the same rows. Pass a source that reads the "
+                "same rows each time, such as files or a frame."
             )
         data: Any = pl.concat(frames).to_numpy(order="c")
     else:
@@ -1322,8 +1463,11 @@ def _lgb_python(
             row += frame.height
         if row != rows:
             raise ValueError(
-                f"the source was counted at {rows} rows and a pass over it gave {row}: "
-                "LightGBM reads it more than once, and every pass must give the same rows"
+                "po.gbdt.lightgbm_dataset: the source was counted at "
+                f"{rows} rows and a pass over it gave {row}, "
+                "but the build reads it more than once, to count its rows and then to read "
+                "them, and every pass must give the same rows. Pass a source that reads the "
+                "same rows each time, such as files or a frame."
             )
         data = _lgb_rows(lgb, cols, rows, gathered, as_f32)
     label = np.concatenate(labels).astype(np.float32)
@@ -1372,16 +1516,22 @@ def _lgb_rows(
                 return gathered[int(idx)]
             start, stop, _ = idx.indices(rows)
             if start != self._at:
-                raise RuntimeError("po.gbdt's Sequence is read in order")
+                raise RuntimeError(
+                    "po.gbdt.lightgbm_dataset: LightGBM asked for the rows out of order, and "
+                    "the source can be read only in order. Pass in_memory=True, which holds the "
+                    "rows in memory."
+                )
             if self._it is None:
                 self._it = cols.batches()
             while self._buf.shape[0] < stop - start:
                 frame = next(self._it, None)
                 if frame is None:
                     raise ValueError(
-                        f"the source was counted at {rows} rows and a pass over it gave "
-                        f"{self._at + self._buf.shape[0]}: LightGBM reads it more than once, "
-                        "and every pass must give the same rows"
+                        "po.gbdt.lightgbm_dataset: the source was counted at "
+                        f"{rows} rows and a pass over it gave {self._at + self._buf.shape[0]}, "
+                        "but the build reads it more than once, and every pass must give the "
+                        "same rows. Pass a source that reads the same rows each time, such as "
+                        "files or a frame."
                     )
                 block = frame.select(as_f32).to_numpy(order="c")
                 self._buf = np.concatenate([self._buf, block]) if self._buf.size else block
@@ -1394,9 +1544,10 @@ def _lgb_rows(
                 more = self._buf.shape[0] + sum(f.height for f in self._it)
                 if more:
                     raise ValueError(
-                        f"the source was counted at {rows} rows and a pass over it gave "
-                        f"{rows + more}: LightGBM reads it more than once, and every pass "
-                        "must give the same rows"
+                        "po.gbdt.lightgbm_dataset: the source was counted at "
+                        f"{rows} rows and a pass over it gave {rows + more}, but the build "
+                        "reads it more than once, and every pass must give the same rows. Pass "
+                        "a source that reads the same rows each time, such as files or a frame."
                     )
             return out
 

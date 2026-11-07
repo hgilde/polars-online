@@ -110,7 +110,9 @@ def test_unpack_is_long_form():
 
 def test_rejects_non_struct_column():
     out = _fitted(n_groups=1, n_rows=50)
-    with pytest.raises(TypeError, match="not a model-output struct"):
+    with pytest.raises(
+        TypeError, match="po.eval.metrics: column 'x0' must be a spec's output column, but it is"
+    ):
         po.eval.metrics(out, "x0")
 
 
@@ -120,16 +122,18 @@ def test_mistakes_are_named():
     # target the frame has lost, a window that would divide by zero, and a
     # clock that is not a number.
     out = _fitted(n_groups=1, n_rows=50)
-    with pytest.raises(KeyError, match="nope"):
+    with pytest.raises(KeyError, match='spec "nope" has no output column in the frame'):
         po.eval.metrics(out, "nope")
     cov = po.ModelBank([po.spec.ew_cov("c", features=["x0", "x1"], half_life=20.0)]).fit_predict(
         out.drop("m")
     )
-    with pytest.raises(TypeError, match="no prediction fields"):
+    with pytest.raises(TypeError, match="output column 'c' has no prediction fields"):
         po.eval.unpack(cov, "c")
-    with pytest.raises(ValueError, match="cannot infer the target column for slot 'pred_y0'"):
+    with pytest.raises(
+        ValueError, match="po.eval.unpack: no column of the frame is named after slot 'pred_y0'"
+    ):
         po.eval.unpack(out.drop("y0"), "m")
-    with pytest.raises(ValueError, match="every must be > 0, got 0"):
+    with pytest.raises(ValueError, match="every must be above 0, but it is 0"):
         po.eval.window_metrics(out, "m", clock="t", every=0)
     with pytest.raises(TypeError, match="clock column 'group' must be numeric"):
         po.eval.window_metrics(out, "m", clock="group", every=10.0)
@@ -312,7 +316,7 @@ def test_window_metrics_refuses_a_window_that_is_not_finite():
     """Review 2026-10-05 (YB11): ``window_size=inf`` gave one bucket, whose
     ``window_start`` was NaN."""
     out = _fitted(n_groups=1, n_rows=50)
-    with pytest.raises(ValueError, match="^window_metrics: every must be finite"):
+    with pytest.raises(ValueError, match="^po.eval.window_metrics: every must be finite"):
         po.eval.window_metrics(out, "m", clock="t", every=float("inf"))
 
 
@@ -412,9 +416,9 @@ def test_without_the_spec_a_slot_named_after_no_column_says_to_pass_it():
     column: without the spec there is no way to know what ``y`` is, and the
     refusal says where it is written down."""
     _, out = _named_fit("fwd")
-    with pytest.raises(ValueError, match=r"slot 'pred_fwd'.*pass spec="):
+    with pytest.raises(ValueError, match=r"slot 'pred_fwd'.*pass the spec itself as spec"):
         po.eval.metrics(out, "m", min_samples=1)
-    with pytest.raises(ValueError, match=r"slot 'pred_fwd'.*pass spec="):
+    with pytest.raises(ValueError, match=r"slot 'pred_fwd'.*pass the spec itself as spec"):
         po.eval.unpack(out, "m")
 
 
@@ -466,7 +470,10 @@ def test_window_metrics_keeps_an_integer_clocks_dtype(dtype):
         )
         assert got["window_start"].dtype == dtype, window
         assert got.with_columns(pl.col("window_start").cast(pl.Float64)).equals(want), window
-    with pytest.raises(ValueError, match="^window_metrics: every 2.5 is not a whole number"):
+    with pytest.raises(
+        ValueError,
+        match="^po.eval.window_metrics: every must be a whole number, since clock column",
+    ):
         po.eval.window_metrics(ints, "m", clock="t", every=2.5)
 
 
@@ -614,7 +621,9 @@ def test_a_score_carries_only_the_columns_it_reads(monkeypatch):
     full = po.eval.unpack(out, spec)
     assert full.width > 45 and full.estimated_size() > 8 * max(s.estimated_size() for s in seen)
     # The same scores from the whole long form, as the scores built it.
-    monkeypatch.setattr(po.eval, "_unpack", lambda df, spec, targets=None, columns=None: full)
+    monkeypatch.setattr(
+        po.eval, "_unpack", lambda df, spec, targets=None, columns=None, who=None: full
+    )
     want = {
         "metrics": po.eval.metrics(out, spec, group="group"),
         "window_metrics": po.eval.window_metrics(out, spec, clock="t", every=100.0, group="group"),

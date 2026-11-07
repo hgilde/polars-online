@@ -169,7 +169,7 @@ class TestNullPolicy:
         w = df["w"].to_list()
         w[5] = -1.0
         df = df.with_columns(w=pl.Series(w, dtype=pl.Float64))
-        with pytest.raises(_REFUSAL, match="negative"):
+        with pytest.raises(_REFUSAL, match="but a weight must be at least 0"):
             run(model, extra, df, weight="w")
 
 

@@ -107,8 +107,9 @@ def test_a_within_merge_with_no_way_to_centre_the_cross_moments_is_refused():
     grams = [_bare(r) for r in _closed_rows(fit_intercept=False)]
     with pytest.raises(
         ValueError,
-        match="merge\\(within=True\\) needs each target's cross-moments about its means: this "
-        "part has no cross_centered, and no intercept or target_means to centre them at",
+        match="po.gram.merge: within=True needs each target's cross-moments about its means, "
+        "but a Gram has no cross_centered, and no intercept column or target_means to center "
+        "them at",
     ):
         po.gram.merge(grams, within=True)
 
@@ -116,25 +117,32 @@ def test_a_within_merge_with_no_way_to_centre_the_cross_moments_is_refused():
 def test_merge_refuses_parts_with_other_targets():
     a = po.gram.from_row(_closed_rows()[0])
     b = dict(a, targets=["z"])
-    with pytest.raises(ValueError, match="merge\\(\\) needs the same targets in every part"):
+    with pytest.raises(ValueError, match="po.gram.merge: every Gram must have the same targets"):
         po.gram.merge([a, b])
 
 
 def test_from_row_refuses_what_is_not_one_closed_row():
     rows = _closed_rows()
     frame = pl.DataFrame(rows)
-    with pytest.raises(ValueError, match="from_row\\(\\) takes one closed row; this frame has 2"):
+    with pytest.raises(
+        ValueError,
+        match="po.gram.from_row: row must be one closed group's row, but the frame has 2 rows",
+    ):
         po.gram.from_row(frame)
-    with pytest.raises(ValueError, match="this frame has 0"):
+    with pytest.raises(ValueError, match="but the frame has 0 rows"):
         po.gram.from_row(frame.clear())
     with pytest.raises(
         TypeError,
-        match="from_row\\(\\) takes a one-row frame from ModelBank.closed_groups\\(\\), a row of "
-        "its iter_rows\\(named=True\\), or a mapping; got int",
+        match="po.gram.from_row: row must be a one-row frame of ModelBank.closed_groups\\(\\), a "
+        "row of its iter_rows\\(named=True\\), or a mapping, but its type is int",
     ):
         po.gram.from_row(42)
     short = dict(rows[0], comoments=rows[0]["comoments"][:-1])
-    with pytest.raises(ValueError, match="comoments has 5 entries; a 3-column Gram packs 6"):
+    with pytest.raises(
+        ValueError,
+        match="comoments must hold 6 entries, the upper triangle of a Gram of 3 columns, but it "
+        "holds 5",
+    ):
         po.gram.from_row(short)
     # One row of the frame reads as the row itself.
     one = po.gram.from_row(frame.head(1))
@@ -160,8 +168,8 @@ def test_coef_stats_through_the_origin_needs_the_target_mean():
     po.gram.coef_stats(g, coef, target="y")  # with target_means it answers
     with pytest.raises(
         ValueError,
-        match=r"a fit through the origin reads the target's mean square, Var\[y\] \+ "
-        r"mean\*\*2, and this Gram has no target_means",
+        match="po.gram.coef_stats: a fit with no intercept reads the target's mean as well as "
+        "its variance, but the Gram has no target_means",
     ):
         po.gram.coef_stats(dict(g, target_means=None), coef, target="y")
 
@@ -208,9 +216,11 @@ def test_a_float32_gram_names_the_pair_whose_co_moment_overflows():
     bank.fit_predict(df)
     with pytest.raises(
         ValueError,
-        match=r"gram\(dtype=\"float32\"\): the co-moment of 'x0' and 'x1' is -?\d\.\d{3}e44, "
-        "past float32's largest number, 3.4e38, where it reads inf: rescale those columns "
-        "upstream, or read the Gram in float64",
+        match=r"ModelBank\.gram\(dtype=\"float32\"\): the co-moment of \"x0\" and \"x1\" is "
+        r"-?\d\.\d{2}e\+?44, larger in size than float32's largest number, 3\.40e38, where it "
+        r"reads inf\. "
+        r"Change the scale of those columns before the bank learns the rows, or leave dtype "
+        r"at its default, \"float64\"\.",
     ):
         bank.gram("c", dtype="float32")
     assert np.isfinite(bank.gram("c")[0]["comoments"]).all(), "float64 holds it"

@@ -164,8 +164,8 @@ def warn_unstable(what: str, *, stacklevel: int = 3) -> None:
     if not _unstable_on():
         return
     warnings.warn(
-        f"{what} is considered unstable. It may be changed at any point without it being "
-        f"considered a breaking change (set {UNSTABLE_VAR}=0 or unset it to silence this).",
+        f"{what}: this is unstable, so it may change in any release without that counting "
+        f"as a breaking change. Set {UNSTABLE_VAR}=0, or unset it, to silence this warning.",
         UnstableWarning,
         stacklevel=stacklevel,
     )
@@ -221,13 +221,13 @@ def forward_model(
 
     def warn(message: str) -> None:
         warnings.warn(
-            f"{who}: {message} until the next major version, which refuses it",
+            message,
             PolarsOnlineDeprecationWarning,
             stacklevel=stacklevel + 1,
         )
 
     def both(old: str, new: str) -> TypeError:
-        return TypeError(f"{who}: {old} was renamed {new}, and both are given: give {new} alone")
+        return TypeError(f"{who}: {old} was renamed {new}, and both are given. Give {new} alone.")
 
     if kind == "bocpd" and "emission" in out:
         if "covariance_type" in out:
@@ -237,13 +237,13 @@ def forward_model(
             _EMISSION.get(word, (word, False)) if isinstance(word, str) else (word, False)
         )
         out["covariance_type"] = covariance
-        robust = ""
         if tempered:
             out.setdefault("robust_beta", 0.1)
-            robust = " with robust_beta, 0.1 where none is given"
+        and_beta = f" and robust_beta = {out['robust_beta']!r}" if tempered else ""
         warn(
-            f"emission = {_quoted(word)} is deprecated: it is covariance_type = "
-            f"{_quoted(covariance)}{robust}. It is read so"
+            f"{who}: emission = {_quoted(word)} is deprecated: it is read as covariance_type = "
+            f"{_quoted(covariance)}{and_beta} until the next major version, which refuses it. "
+            f"Write covariance_type = {_quoted(covariance)}{and_beta} instead."
         )
     if kind == "corrchange" and "reset_on_flag" in out:
         if "change_action" in out:
@@ -251,17 +251,26 @@ def forward_model(
         value = out.pop("reset_on_flag")
         action = "reset" if value is True else "flag"
         out["change_action"] = action if isinstance(value, bool) else value
-        warn(
-            f"reset_on_flag = {value!r} is deprecated: it is change_action = "
-            f"{_quoted(action)}. It is read so"
-        )
+        if isinstance(value, bool):
+            warn(
+                f"{who}: reset_on_flag = {value!r} is deprecated: it is read as change_action = "
+                f"{_quoted(action)} until the next major version, which refuses it. Write "
+                f"change_action = {_quoted(action)} instead."
+            )
+        else:
+            warn(
+                f"{who}: reset_on_flag = {value!r} is deprecated: it is read as change_action = "
+                f"{value!r} until the next major version, which refuses it. Write "
+                'change_action = "reset" or "flag" instead.'
+            )
     for key, words in _DEPRECATED_WORDS_IN.get(kind, {}).items():
         word = out.get(key)
         if isinstance(word, str) and word in words:
             out[key] = words[word]
             warn(
-                f"{key} = {_quoted(word)} is deprecated: it was renamed "
-                f"{_quoted(words[word])}. It is read as {_quoted(words[word])}"
+                f"{who}: {key} = {_quoted(word)} is deprecated: it was renamed "
+                f"{_quoted(words[word])}, and is read as {_quoted(words[word])} until the next "
+                f"major version, which refuses it. Write {key} = {_quoted(words[word])} instead."
             )
     return out
 
@@ -285,10 +294,12 @@ def forward_deprecated(
         if old not in out:
             continue
         if new in out:
-            raise TypeError(f"{who}: {old} was renamed {new}, and both are given: give {new} alone")
+            raise TypeError(
+                f"{who}: {old} was renamed {new}, and both are given. Give {new} alone."
+            )
         warnings.warn(
-            f"{who}: {old} is deprecated: it was renamed {new}. It is read as {new} until the "
-            f"next major version, which refuses it",
+            f"{who}: {old} is deprecated: it was renamed {new}, and is read as {new} until the "
+            f"next major version, which refuses it. Write {new} instead.",
             PolarsOnlineDeprecationWarning,
             stacklevel=stacklevel,
         )
@@ -341,15 +352,19 @@ def keyword_only_forwarded[**P, R](
                 extra = args[n_pos:]
                 if len(extra) > len(names):
                     raise TypeError(
-                        f"{who}() takes {n_pos} positional arguments but {len(args)} were given"
+                        f"{who}: it takes {n_pos} positional arguments, but {len(args)} were "
+                        f"given. Pass {' and '.join(names)} by keyword, and remove the "
+                        "arguments past them."
                     )
                 for name, value in zip(names, extra, strict=False):
                     if name in kwargs:
-                        raise TypeError(f"{who}() got multiple values for argument {name!r}")
+                        raise TypeError(
+                            f"{who}: {name} is given both by position and by keyword. Pass it "
+                            "once, by keyword."
+                        )
                     warnings.warn(
-                        f"{who}: {name} given by position is deprecated: pass it by keyword, "
-                        f"as {name}=... It is read until the next major version, which "
-                        "refuses it",
+                        f"{who}: {name} given by position is deprecated, and is read until the "
+                        f"next major version, which refuses it. Pass it by keyword, as {name}=...",
                         PolarsOnlineDeprecationWarning,
                         stacklevel=2,
                     )
@@ -374,9 +389,10 @@ def deprecated_alias[**P, R](
     def decorate(fn: Callable[P, R]) -> Callable[P, R]:
         @functools.wraps(fn)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            who = old
             warnings.warn(
-                f"{old} is deprecated: it was renamed {new}{more}. It works as before until "
-                "the next major version, which refuses it",
+                f"{who}: it is deprecated, and works as before until the next major version, "
+                f"which refuses it. It was renamed {new}{more}. Call {new} instead.",
                 PolarsOnlineDeprecationWarning,
                 stacklevel=2,
             )

@@ -57,7 +57,7 @@ fn check_parent(what: &str, path: &Path) -> PolarsResult<()> {
     if path.is_dir() {
         let e = std::io::Error::new(
             std::io::ErrorKind::IsADirectory,
-            format!("{} is a directory", path.display()),
+            format!("{} is a directory. Name a file in it.", path.display()),
         );
         return Err(io_err(what, path, e));
     }
@@ -70,7 +70,10 @@ fn check_parent(what: &str, path: &Path) -> PolarsResult<()> {
     }
     let e = std::io::Error::new(
         std::io::ErrorKind::NotFound,
-        format!("{} is not a directory", parent.display()),
+        format!(
+            "{} is not a directory. Create the directory, or name a path in one that exists.",
+            parent.display()
+        ),
     );
     Err(io_err(what, path, e))
 }
@@ -108,8 +111,17 @@ impl Format {
     }
 
     /// The format a path's extension names: `parquet`/`pq`, `ipc`/`arrow`/
-    /// `feather`, `csv`, `ndjson`/`jsonl`. Case-insensitive.
+    /// `feather`, `csv`, `ndjson`/`jsonl`. Case-insensitive. The refusal
+    /// names the path as a file; [`Self::from_path_named`] names its role.
     pub fn from_path(path: &Path) -> Result<Format, String> {
+        Self::from_path_named(path, "file", "")
+    }
+
+    /// [`Self::from_path`], its refusal naming the path by `who` -- the
+    /// setting that gave it, such as `config: input` or `closed_groups` --
+    /// and ending its remedy with `or`, the other way out where that
+    /// setting has one, such as `", or set input_format"`.
+    pub fn from_path_named(path: &Path, who: &str, or: &str) -> Result<Format, String> {
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
@@ -120,11 +132,19 @@ impl Format {
             "ipc" | "arrow" | "feather" => Ok(Format::Ipc),
             "csv" => Ok(Format::Csv),
             "ndjson" | "jsonl" => Ok(Format::Ndjson),
-            _ => Err(format!(
-                "cannot tell the format of `{}` from its extension (parquet, pq, ipc, arrow, \
-                 feather, csv, ndjson, jsonl); name it with input_format / output_format",
-                path.display()
-            )),
+            _ => {
+                let why = if ext.is_empty() {
+                    "it has no extension".to_string()
+                } else {
+                    format!("its extension, {ext:?}, names none")
+                };
+                Err(format!(
+                    "{who} \"{}\": polars-online cannot tell its format, since {why}. Name the \
+                     file with one of the extensions parquet, pq, ipc, arrow, feather, csv, \
+                     ndjson or jsonl{or}.",
+                    path.display()
+                ))
+            }
         }
     }
 
@@ -201,8 +221,8 @@ pub fn url_scheme(path: &Path) -> Option<&str> {
 /// retries before anything here refused it.
 fn url_refusal(what: &str, path: &Path) -> String {
     format!(
-        "{what} {} is a URL; the command line reads and writes local files, so give a local \
-         path (copy the file down first)",
+        "config: {what} {} is a URL, but the command line reads and writes local files only. \
+         Copy the file to a local path and give that path.",
         path.display()
     )
 }
@@ -404,10 +424,14 @@ impl RunConfig {
         // Before anything reads a path: a URL went to polars' cloud reader.
         self.check_local()?;
         if self.specs.is_empty() {
-            return Err("config has no [[specs]] entries".into());
+            return Err(
+                "config: there are no [[specs]] entries, so the run has no model to fit. \
+                 Add a [[specs]] table for each spec."
+                    .into(),
+            );
         }
         if self.chunk_size == 0 {
-            return Err("chunk_size must be at least 1, got 0".into());
+            return Err(CHUNK_SIZE_ZERO.into());
         }
         if let Some(n) = self.threads {
             crate::pool::check_threads(n).map_err(|e| e.to_string())?;
@@ -417,54 +441,61 @@ impl RunConfig {
         // (task 160, YB13).
         if self.no_output() && self.predict {
             return Err(
-                "predict = true (--predict) scores the rows and learns nothing, so its output is \
-                 its only product: it needs an `output` path, and has none (--no-output, or no \
-                 `output` in the config)"
+                "config: predict = true (--predict) predicts the rows and learns nothing, so its \
+                 output is its only product, but the run has no output path (--no-output, or no \
+                 output in the config). Give an output path, or leave out predict."
                     .into(),
             );
         }
         if self.no_output() && self.save_state.is_none() && self.closed_groups.is_none() {
             return Err(
-                "a run needs somewhere to put its work: an `output` path, `closed_groups`, or \
-                 `save_state` for a run whose product is the state (--no-output)"
+                "config: a run must write something, but this one has no output path \
+                 (--no-output, or no output in the config), no closed_groups and no save_state. \
+                 Give an output path, closed_groups, or save_state for a run whose product is \
+                 the state."
                     .into(),
             );
         }
         if let Some(p) = &self.closed_groups {
             if self.predict {
                 return Err(
-                    "predict = true does not learn, so no group ever closes and closed_groups \
-                     would be an empty file; drop one or the other"
+                    "config: predict = true learns nothing, so no group ever closes, but \
+                     closed_groups names a file it would leave empty. Leave out closed_groups, \
+                     or leave out predict."
                         .into(),
                 );
             }
             if !self.specs.iter().any(|s| s.group_close.is_some()) {
                 return Err(
-                    "closed_groups names a file but no spec closes groups; add group_close = \
-                     \"monotone\" or \"session\" to the spec whose groups should be emitted"
+                    "config: closed_groups names a file, but no spec closes groups. Set \
+                     group_close = \"monotone\" or \"session\" on the spec whose closed groups \
+                     should be written, or leave out closed_groups."
                         .into(),
                 );
             }
-            Format::from_path(p)?;
+            Format::from_path_named(p, "config: closed_groups", "")?;
         }
         if self.skip_learned && self.load_state.is_none() {
             return Err(
-                "skip_learned = true (--skip-learned) needs load_state (--load-state): a fresh \
-                 bank has learned nothing to skip"
+                "config: skip_learned = true (--skip-learned) needs load_state (--load-state), \
+                 but load_state is not set, and a bank that starts with nothing learned has no \
+                 rows to skip. Set load_state, or leave out skip_learned."
                     .into(),
             );
         }
         if self.predict {
             if self.load_state.is_none() {
                 return Err(
-                    "predict = true needs load_state: a fresh bank has nothing to score with"
+                    "config: predict = true needs load_state, but load_state is not set, and a \
+                     bank that starts with nothing learned has nothing to predict with. Set \
+                     load_state, or leave out predict."
                         .into(),
                 );
             }
             if self.save_state.is_some() {
                 return Err(
-                    "predict = true does not update the bank, so save_state has nothing to save; \
-                     drop one or the other"
+                    "config: predict = true learns nothing, so save_state has nothing to save. \
+                     Leave out save_state, or leave out predict."
                         .into(),
                 );
             }
@@ -503,25 +534,34 @@ impl RunConfig {
     /// `input_format`, or what the input path's extension says.
     pub fn input_format(&self) -> Result<Format, String> {
         if self.input.as_os_str().is_empty() {
-            return Err("input is required: the config's `input`, or --input".into());
+            return Err(
+                "config: the run has no input. Set input in the config, or pass --input.".into(),
+            );
         }
         if url_scheme(&self.input).is_some() {
             return Err(url_refusal("input", &self.input));
         }
-        self.input_format
-            .map_or_else(|| Format::from_path(&self.input), Ok)
+        self.input_format.map_or_else(
+            || Format::from_path_named(&self.input, "config: input", ", or set input_format"),
+            Ok,
+        )
     }
 
     /// `output_format`, or what the output path's extension says.
     pub fn output_format(&self) -> Result<Format, String> {
-        self.output_format
-            .map_or_else(|| Format::from_path(&self.output), Ok)
+        self.output_format.map_or_else(
+            || Format::from_path_named(&self.output, "config: output", ", or set output_format"),
+            Ok,
+        )
     }
 
     /// The `closed_groups` sidecar's path and format, when there is one.
     pub fn closed_groups_target(&self) -> Result<Option<(&Path, Format)>, String> {
         match &self.closed_groups {
-            Some(p) => Ok(Some((p.as_path(), Format::from_path(p)?))),
+            Some(p) => Ok(Some((
+                p.as_path(),
+                Format::from_path_named(p, "config: closed_groups", "")?,
+            ))),
             None => Ok(None),
         }
     }
@@ -593,8 +633,13 @@ impl RunConfig {
         match &self.load_state {
             Some(p) => {
                 let bytes = std::fs::read(p).map_err(|e| io_err("loading state", p, e))?;
-                Bank::load_bytes(&bytes, Some(&self.specs))
-                    .map_err(|e| polars_err!(ComputeError: "loading state {}: {}", p.display(), e))
+                Bank::load_bytes(&bytes, Some(&self.specs)).map_err(|e| {
+                    // The bank's refusal names the state file; this names
+                    // which one, in its place.
+                    let e = e.to_string();
+                    let body = e.strip_prefix("state file: ").unwrap_or(&e);
+                    polars_err!(ComputeError: "state file \"{}\": {}", p.display(), body)
+                })
             }
             None => Bank::new(self.specs.clone()).map_err(|e| polars_err!(ComputeError: "{}", e)),
         }
@@ -677,8 +722,8 @@ impl Default for RunOptions {
 /// cannot be read, and for a `save_state` whose directory is not there or
 /// that is a directory itself, checked before the run because finding out
 /// after it would leave the output written and the state lost (the output
-/// and `closed_groups` paths are held to the same); `ComputeError` as `loading state
-/// <path>: ...` for a `load_state` that is not a bank this build loads or
+/// and `closed_groups` paths are held to the same); `ComputeError` as `state file
+/// "<path>": ...` for a `load_state` that is not a bank this build loads or
 /// whose specs are not the config's. During the run (the scan is lazy):
 /// polars' own error for `input` (a missing file is its `IO`, naming the
 /// path; `keep_columns` naming a column it has not got is `ColumnNotFound`),
@@ -838,6 +883,14 @@ pub fn run_config_on_reported(
 /// own error replaces it on the way out.
 const WRITER_STOPPED: &str = "the writer stopped";
 
+/// The refusal of a `chunk_size` of 0, by the config's check and by a run
+/// given one directly.
+const CHUNK_SIZE_ZERO: &str =
+    "config: chunk_size must be at least 1, but it is 0. Set chunk_size to 1 or more.";
+
+/// Where an internal error sends its reader: the project's issues.
+const ISSUES: &str = "https://github.com/hgilde/polars-online/issues";
+
 /// What the reader hands the run: frames in stream order, then how the
 /// query ended.
 enum Read {
@@ -904,7 +957,7 @@ fn run_with(
     mut progress: impl FnMut(RunStats) -> PolarsResult<()>,
 ) -> PolarsResult<RunStats> {
     let chunk_size = NonZeroUsize::new(opts.chunk_size)
-        .ok_or_else(|| polars_err!(ComputeError: "chunk_size must be at least 1, got 0"))?;
+        .ok_or_else(|| polars_err!(ComputeError: "{}", CHUNK_SIZE_ZERO))?;
     // The schema of an empty output, when the source turns out to be empty
     // and no frame ever reaches the bank.
     let empty_input = match &input {
@@ -938,7 +991,10 @@ fn run_with(
                 layout,
             } => (
                 None,
-                Some(scope.spawn(move || write_file(path, format, layout, write_rx))),
+                Some(scope.spawn(move || {
+                    let who = format!("config: output \"{}\"", path.display());
+                    write_file(path, format, layout, write_rx, &who)
+                })),
             ),
             Output::Batches(f) => (Some(f), None),
             // No writer thread and no sink: `deliver` drops the frame.
@@ -947,7 +1003,10 @@ fn run_with(
         // The closed groups' writer, fed a drained frame after every chunk.
         let (closed_tx, closed_rx) = sync_channel::<Write_>(1);
         let closed_writer = closed.map(|(path, format)| {
-            scope.spawn(move || write_file(path, format, OutputLayout::Struct, closed_rx))
+            scope.spawn(move || {
+                let who = format!("config: closed_groups \"{}\"", path.display());
+                write_file(path, format, OutputLayout::Struct, closed_rx, &who)
+            })
         });
         let mut closed_sent = false;
         // Hand a frame on, to the writer thread or the caller's callback.
@@ -976,7 +1035,11 @@ fn run_with(
                         break;
                     }
                     // The reader thread is gone without a word: a panic.
-                    Err(_) => polars_bail!(ComputeError: "the reader stopped"),
+                    Err(_) => polars_bail!(
+                        ComputeError: "internal: the reader thread stopped without an error, \
+                         which is a defect in polars-online. Open an issue at {ISSUES} with this \
+                         message."
+                    ),
                 };
                 let chunk = match skip {
                     Some(learned) => {
@@ -1221,9 +1284,9 @@ fn augment(
     // instance) -- under `group_close = "session"` once per span, which it
     // names -- as the Python layer warns once (docs/WARMUP-AND-CONVERGENCE.md
     // §3): a coefficient more ridge than data, or a noise gate that cannot
-    // be met.
+    // be met. Led as the command line leads every other warning.
     for notice in bank.take_notices() {
-        eprintln!("online: {notice}");
+        eprintln!("polars-online: warning: {notice}");
     }
     let mut out = with_columns(chunk, cols)?;
     out.align_chunks_par();
@@ -1254,6 +1317,8 @@ fn with_columns(frame: DataFrame, cols: Vec<Column>) -> PolarsResult<DataFrame> 
         if column.len() != height && column.len() == 1 {
             column = column.new_from_index(0, height);
         }
+        // Polars' own text for the refusal, word for word: this stands in for
+        // `DataFrame::with_column`, and its test holds the two errors equal.
         polars_ensure!(
             column.len() == height,
             ShapeMismatch: "unable to add a column of length {} to a DataFrame of height {}",
@@ -1327,14 +1392,17 @@ fn read_frames(
 ///
 /// The writer's: `IO` naming the file, or [`csv_flat`]'s refusal of a
 /// column CSV cannot carry.
-pub fn write_frame(path: &Path, format: Format, df: DataFrame) -> PolarsResult<()> {
+pub fn write_frame(path: &Path, format: Format, df: DataFrame, who: &str) -> PolarsResult<()> {
     let (tx, rx) = sync_channel::<Write_>(2);
     // Both fit in the channel, so neither send waits for the writer.
     tx.send(Write_::Chunk(df))
         .and_then(|()| tx.send(Write_::End))
-        .map_err(|_| polars_err!(ComputeError: "internal: the writer's channel closed"))?;
+        .map_err(|_| {
+            polars_err!(ComputeError: "internal: the writer's channel closed, which is a defect \
+             in polars-online. Open an issue at {ISSUES} with this message.")
+        })?;
     drop(tx);
-    write_file(path, format, OutputLayout::Struct, rx).map(|_| ())
+    write_file(path, format, OutputLayout::Struct, rx, who).map(|_| ())
 }
 
 /// A config's `threads`, read from any value so that what is no count --
@@ -1392,8 +1460,9 @@ fn write_file(
     format: Format,
     layout: OutputLayout,
     rx: Receiver<Write_>,
+    who: &str,
 ) -> PolarsResult<Duration> {
-    write_frames(path, format, layout, rx).map_err(|e| match e {
+    write_frames(path, format, layout, rx, who).map_err(|e| match e {
         // Polars' writers report the filesystem without the file; name it.
         PolarsError::IO { error, msg } => {
             let inner = msg.map_or_else(|| error.to_string(), |m| m.to_string());
@@ -1411,6 +1480,7 @@ fn write_frames(
     format: Format,
     layout: OutputLayout,
     rx: Receiver<Write_>,
+    who: &str,
 ) -> PolarsResult<Duration> {
     // Each frame as the layout has it, before the writer sees it; a CSV
     // flattens its own (`csv_flat`).
@@ -1425,11 +1495,14 @@ fn write_frames(
     // source -- so the first message is what the writer is opened on.
     let first = match rx.recv() {
         Ok(Write_::Chunk(df)) => laid_out(df)?,
-        Ok(Write_::End) => polars_bail!(ComputeError: "internal: a run with no frames"),
+        Ok(Write_::End) => polars_bail!(
+            ComputeError: "internal: a run with no frames, which is a defect in polars-online. \
+             Open an issue at {ISSUES} with this message."
+        ),
         Err(_) => return Ok(busy),
     };
     let t = Instant::now();
-    let mut writer = FormatWriter::open(format, &mut buf, &first)?;
+    let mut writer = FormatWriter::open(format, &mut buf, &first, who)?;
     writer.write(&first)?;
     busy += t.elapsed();
     let mut complete = false;
@@ -1465,14 +1538,15 @@ type Sink<'a> = &'a mut BufWriter<File>;
 enum FormatWriter<'a> {
     Parquet(Box<ParquetSink<'a>>),
     Ipc(polars::io::ipc::BatchedWriter<Sink<'a>>),
-    Csv(polars::io::csv::write::BatchedWriter<Sink<'a>>),
+    /// With the `who` its refusals name ([`csv_flat`]).
+    Csv(polars::io::csv::write::BatchedWriter<Sink<'a>>, String),
     /// The file itself: NDJSON has no header or footer (`ndjson_write`).
     Ndjson(Sink<'a>),
 }
 
 impl<'a> FormatWriter<'a> {
     /// Open a writer for frames shaped like `first`.
-    fn open(format: Format, sink: Sink<'a>, first: &DataFrame) -> PolarsResult<Self> {
+    fn open(format: Format, sink: Sink<'a>, first: &DataFrame, who: &str) -> PolarsResult<Self> {
         Ok(match format {
             Format::Parquet => FormatWriter::Parquet(Box::new(ParquetSink::open(sink, first)?)),
             Format::Ipc => {
@@ -1482,8 +1556,11 @@ impl<'a> FormatWriter<'a> {
                 FormatWriter::Ipc(IpcWriter::new(sink).batched(schema, fields)?)
             }
             Format::Csv => {
-                let flat = csv_flat(first)?;
-                FormatWriter::Csv(CsvWriter::new(sink).batched(flat.schema())?)
+                let flat = csv_flat(first, who)?;
+                FormatWriter::Csv(
+                    CsvWriter::new(sink).batched(flat.schema())?,
+                    who.to_string(),
+                )
             }
             Format::Ndjson => FormatWriter::Ndjson(sink),
         })
@@ -1497,7 +1574,7 @@ impl<'a> FormatWriter<'a> {
         match self {
             FormatWriter::Parquet(w) => w.write(df),
             FormatWriter::Ipc(w) => w.write_batch(df),
-            FormatWriter::Csv(w) => w.write_batch(&csv_flat(df)?),
+            FormatWriter::Csv(w, who) => w.write_batch(&csv_flat(df, who)?),
             FormatWriter::Ndjson(sink) => ndjson_write(sink, df),
         }
     }
@@ -1506,7 +1583,7 @@ impl<'a> FormatWriter<'a> {
         match self {
             FormatWriter::Parquet(w) => w.writer.finish().map(|_| ()),
             FormatWriter::Ipc(mut w) => w.finish(),
-            FormatWriter::Csv(mut w) => w.finish(),
+            FormatWriter::Csv(mut w, _) => w.finish(),
             FormatWriter::Ndjson(_) => Ok(()),
         }
     }
@@ -1626,7 +1703,7 @@ impl<'a> ParquetSink<'a> {
 ///
 /// `ComputeError` naming a nested column that is neither a struct nor a
 /// list of numbers or strings.
-pub fn csv_flat(df: &DataFrame) -> PolarsResult<DataFrame> {
+pub fn csv_flat(df: &DataFrame, who: &str) -> PolarsResult<DataFrame> {
     let mut flat = unnest_structs(df)?;
     for i in 0..flat.width() {
         let c = &flat.columns()[i];
@@ -1641,9 +1718,17 @@ pub fn csv_flat(df: &DataFrame) -> PolarsResult<DataFrame> {
             }
             dt if dt.is_nested() => polars_bail!(
                 ComputeError:
-                "csv cannot carry `{}` ({}): write parquet, ipc or ndjson instead",
+                "{who}: CSV cannot carry column \"{}\", since its type is {}. {}",
                 c.name(),
-                dt
+                crate::arrow::dtype_name(dt),
+                // The run's output takes its format from output_format where
+                // that is set, and from the extension only otherwise.
+                if who.starts_with("config: output") {
+                    "Set output_format to parquet, ipc or ndjson, or, where output_format is not \
+                     set, name the file with a .parquet, .arrow or .ndjson extension."
+                } else {
+                    "Name the file with a .parquet, .arrow or .ndjson extension instead."
+                }
             ),
             _ => {}
         }
@@ -1892,7 +1977,8 @@ mod tests {
         ] {
             let err = local_path("output", Path::new(path)).unwrap_err();
             assert!(
-                err.starts_with(&format!("output {path} is a URL")) && err.contains("local files"),
+                err.starts_with(&format!("config: output {path} is a URL"))
+                    && err.contains("local files"),
                 "{err}"
             );
         }

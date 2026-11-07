@@ -35,6 +35,15 @@ fn to_py(e: GbdtError) -> PyErr {
     }
 }
 
+/// A layout no call of `po.gbdt` hands over, since the Python layer builds
+/// it: a defect if met, or a direct call of the private native module.
+fn internal(what: String) -> PyErr {
+    PyValueError::new_err(format!(
+        "po.gbdt: internal: {what}, which is a defect in polars-online. Open an issue at \
+         https://github.com/hgilde/polars-online/issues with this message."
+    ))
+}
+
 /// Frames from a Python callable that returns a fresh iterator of
 /// `pl.DataFrame`s for each pass (`lambda: plan.collect_batches(...)`).
 struct PyFrames {
@@ -108,7 +117,7 @@ fn layout(
     margin: Option<String>,
 ) -> PyResult<Layout> {
     if kinds.len() != names.len() || levels.len() != names.len() {
-        return Err(PyValueError::new_err(format!(
+        return Err(internal(format!(
             "{} names, {} kinds and {} level counts",
             names.len(),
             kinds.len(),
@@ -123,7 +132,7 @@ fn layout(
             "int" => Ok(Kind::Int),
             "bool" => Ok(Kind::Bool),
             "category" => Ok(Kind::Category { levels: n }),
-            other => Err(PyValueError::new_err(format!("feature kind {other:?}"))),
+            other => Err(internal(format!("a feature of kind {other:?}"))),
         })
         .collect::<PyResult<Vec<_>>>()?;
     Ok(Layout {

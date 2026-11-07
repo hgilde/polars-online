@@ -403,16 +403,17 @@ impl ArrowChunk {
         let names: Vec<PlSmallStr> = names.into_iter().map(Into::into).collect();
         if let Some((name, col)) = cols.iter().find(|(_, c)| c.len() != height) {
             polars_bail!(ShapeMismatch:
-                "column {:?} has {} rows, the chunk has {}",
+                "chunk: column {:?} has {} rows, but the chunk has {}. Give every column the \
+                 chunk's number of rows.",
                 name.as_str(), col.len(), height
             );
         }
         let name_set: PlHashSet<PlSmallStr> = names.iter().cloned().collect();
         if let Some((name, _)) = cols.iter().find(|(n, _)| !name_set.contains(n)) {
             polars_bail!(ColumnNotFound:
-                "column {:?} is given but not listed in `names`; every column given must be \
-                 listed, since `names` decides whether a column a scoring call may leave out \
-                 is absent",
+                "chunk: column {:?} is given but not listed in names, which decides whether a \
+                 column a predict call may leave out is absent. List every column given in \
+                 names.",
                 name.as_str()
             );
         }
@@ -421,7 +422,9 @@ impl ArrowChunk {
         for (name, col) in &cols {
             if !seen.insert((name.as_str(), col.form())) {
                 polars_bail!(Duplicate:
-                    "column {:?} is given twice as {}", name.as_str(), col.form()
+                    "chunk: column {:?} is given twice as {}. Give each column once in each \
+                     form.",
+                    name.as_str(), col.form()
                 );
             }
         }
@@ -648,18 +651,20 @@ impl ArrowChunk {
             if let ArrowCol::Num(a) = c {
                 return polars_err!(SchemaMismatch:
                     "spec {:?}: {} column {:?} is given as {} numbers, which only a feature \
-                     reads; a {} is read as {}, and a number as Float64",
+                     reads in their own type. Give a {} column as {}.",
                     spec.name, role, name, a.dtype_name(), role, wanted
                 );
             }
             return polars_err!(SchemaMismatch:
-                "spec {:?}: {} column {:?} is given as {}, but a {} is read as {}",
-                spec.name, role, name, c.form(), role, wanted
+                "spec {:?}: {} column {:?} is given as {}, but a {} is read as {}. Give the \
+                 column as {}.",
+                spec.name, role, name, c.form(), role, wanted, wanted
             );
         }
         let have: Vec<&str> = self.names.iter().map(|n| n.as_str()).collect();
         polars_err!(ColumnNotFound:
-            "spec {:?}: {} column {:?} not found; the input has columns {:?}",
+            "spec {:?}: {} column {:?} is not in the input, whose columns are {:?}. Name a \
+             column the input has, or add it to the input.",
             spec.name, role, name, have
         )
     }
@@ -788,6 +793,50 @@ fn wanted(specs: &[Spec]) -> Vec<(PlSmallStr, Want)> {
     out
 }
 
+/// Each column's first reader in each form [`wanted`] reads it in: the spec
+/// and the role a failed cast names, so a column one spec reads as a group
+/// key and another as a feature is named, when its number cast fails, by
+/// the spec that reads it as a number.
+fn want_readers(specs: &[Spec]) -> PlHashMap<(&str, Want), (&str, &'static str)> {
+    let mut out: PlHashMap<(&str, Want), (&str, &'static str)> = PlHashMap::default();
+    for s in specs {
+        let name = s.name.as_str();
+        let (target_want, target_role) = match &s.model {
+            ModelKind::EwClass { .. } => (Want::Text, "label"),
+            _ => (Want::Number, "target"),
+        };
+        let mut reads: Vec<(&str, Want, &'static str)> = s
+            .features
+            .iter()
+            .map(|f| (f.as_str(), Want::Feature, "feature"))
+            .collect();
+        if s.model.compares().is_none() {
+            for t in s.targets.defs() {
+                if let Some(tree) = &t.formula {
+                    for c in tree.columns_ref() {
+                        reads.push((c, Want::Value, "formula target"));
+                    }
+                    continue;
+                }
+                reads.push((t.column.as_str(), target_want, target_role));
+            }
+        }
+        reads.extend(s.clock.as_deref().map(|c| (c, Want::Clock, "clock")));
+        reads.extend(
+            s.label_clock
+                .as_ref()
+                .map(|l| (l.column(), Want::Clock, "label_clock")),
+        );
+        reads.extend(s.weight.as_deref().map(|c| (c, Want::Number, "weight")));
+        reads.extend(s.session.as_deref().map(|c| (c, Want::Text, "session")));
+        reads.extend(s.group.as_deref().map(|c| (c, Want::Key, "group")));
+        for (column, want, role) in reads {
+            out.entry((column, want)).or_insert((name, role));
+        }
+    }
+    out
+}
+
 /// The form [`cast_to`] produces for a role on a dtype, known before the cast:
 /// a duplicate can then be skipped without paying for the cast it would throw
 /// away. Must agree with [`ArrowCol::form`].
@@ -824,9 +873,9 @@ fn cast_to(
             let dtype = s.dtype();
             if !(dtype.is_numeric() || matches!(dtype, DataType::Boolean | DataType::Null)) {
                 polars_bail!(ComputeError:
-                    "spec {:?}: {} column {:?} has dtype {}; it must be numeric \
-                     (cast it, e.g. pl.col({:?}).cast(pl.Float64))",
-                    spec_name, role, name, dtype, name
+                    "spec {:?}: {} column {:?} must be a number, but it is {}. Cast it, such \
+                     as with pl.col({:?}).cast(pl.Float64).",
+                    spec_name, role, name, dtype_name(dtype), name
                 );
             }
             let f = s.cast(&DataType::Float64)?.rechunk();
@@ -851,10 +900,11 @@ fn cast_to(
             let dtype = s.dtype();
             if dtype.is_temporal() {
                 polars_bail!(ComputeError:
-                    "spec {:?}: {} column {:?} has dtype {}; a formula target reads numbers \
-                     and text, and a temporal column can only be a clock (cast it, e.g. \
-                     pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64))",
-                    spec_name, role, name, dtype, name
+                    "spec {:?}: {} column {:?} is {}, but a formula target reads numbers, \
+                     booleans and text, and a temporal column can only be a clock. Cast it to a number, such \
+                     as with pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64), or \
+                     pl.col({:?}).dt.total_seconds() for a Duration.",
+                    spec_name, role, name, dtype_name(dtype), name, name
                 );
             }
             if value_is_number(dtype) {
@@ -920,6 +970,47 @@ pub(crate) fn fits_64(dtype: &DataType) -> bool {
     )
 }
 
+/// A dtype as a reader writes it in Python: Polars' class names, `String`,
+/// `Float64`, `Datetime("us")`, `List(Float64)`, where the Rust display is
+/// `str`, `f64`, `datetime[μs]` and `list[f64]`. Every message that prints a
+/// dtype says it this way (WRITING §11: the reader's own words).
+pub(crate) fn dtype_name(dtype: &DataType) -> String {
+    let unit = |tu: &TimeUnit| match tu {
+        TimeUnit::Milliseconds => "ms",
+        TimeUnit::Microseconds => "us",
+        TimeUnit::Nanoseconds => "ns",
+    };
+    match dtype {
+        DataType::Boolean => "Boolean".into(),
+        DataType::UInt8 => "UInt8".into(),
+        DataType::UInt16 => "UInt16".into(),
+        DataType::UInt32 => "UInt32".into(),
+        DataType::UInt64 => "UInt64".into(),
+        DataType::UInt128 => "UInt128".into(),
+        DataType::Int8 => "Int8".into(),
+        DataType::Int16 => "Int16".into(),
+        DataType::Int32 => "Int32".into(),
+        DataType::Int64 => "Int64".into(),
+        DataType::Int128 => "Int128".into(),
+        DataType::Float32 => "Float32".into(),
+        DataType::Float64 => "Float64".into(),
+        DataType::String => "String".into(),
+        DataType::Binary => "Binary".into(),
+        DataType::Date => "Date".into(),
+        DataType::Time => "Time".into(),
+        DataType::Null => "Null".into(),
+        DataType::Datetime(tu, None) => format!("Datetime(\"{}\")", unit(tu)),
+        DataType::Datetime(tu, Some(tz)) => format!("Datetime(\"{}\", \"{tz}\")", unit(tu)),
+        DataType::Duration(tu) => format!("Duration(\"{}\")", unit(tu)),
+        DataType::List(inner) => format!("List({})", dtype_name(inner)),
+        DataType::Categorical(..) => "Categorical".into(),
+        DataType::Enum(..) => "Enum".into(),
+        DataType::Struct(_) => "Struct".into(),
+        DataType::Decimal(..) => "Decimal".into(),
+        other => other.to_string(),
+    }
+}
+
 /// The refusal of an integer clock wider than 64 bits, `who` the caller as
 /// its own errors name it (review round 5, B3). An integer clock is held as
 /// an `i64` (task 200); an `Int128` was read as a double instead, which
@@ -927,14 +1018,10 @@ pub(crate) fn fits_64(dtype: &DataType) -> bool {
 /// row it should not -- and said nothing. The advice is the one a `UInt64`
 /// past the largest `Int64` gets.
 pub(crate) fn wide_integer_clock(who: &str, clock: &str, dtype: &DataType) -> String {
-    let name = match dtype {
-        DataType::Int128 => "Int128".to_string(),
-        DataType::UInt128 => "UInt128".to_string(),
-        other => other.to_string(),
-    };
+    let name = dtype_name(dtype);
     format!(
         "{who}: clock column {clock:?} is {name}, wider than the Int64 an integer clock is \
-         held in; cast it to Int64 if its values fit, or after subtracting an origin"
+         held in. Cast it to Int64 if its values fit, or after subtracting an origin."
     )
 }
 
@@ -962,8 +1049,10 @@ pub(crate) fn key_text(s: &Series) -> PolarsResult<Series> {
 fn text_array(s: &Series, spec_name: &str, role: &str, name: &str) -> PolarsResult<Utf8ViewArray> {
     let cast = key_text(s).map_err(|e| {
         polars_err!(ComputeError:
-            "spec {:?}: {} column {:?} has dtype {}, which cannot be used as a key: {}",
-            spec_name, role, name, s.dtype(), e
+            "spec {:?}: {} column {:?} is {}, which cannot be read as text ({}). Give a column \
+             with one value per row, such as String or an integer; join a list's items into \
+             one, such as with pl.col({:?}).cast(pl.List(pl.String)).list.join(\",\").",
+            spec_name, role, name, dtype_name(s.dtype()), e, name
         )
     })?;
     let r = cast.rechunk();
@@ -1006,15 +1095,15 @@ pub fn chunk_from_frame_at(
         let dt = col.dtype();
         if !(dt.is_integer() || matches!(dt, DataType::String | DataType::Categorical(..))) {
             polars_bail!(ComputeError:
-                "spec {:?}: group_close = \"monotone\" needs a group column it can order, and \
-                 {:?} is {}; use an integer, String or Categorical key (a float or a temporal \
-                 column can be cast to one)",
-                spec.name, g, dt
+                "spec {:?}: group_close = \"monotone\" needs a group column it can order, but \
+                 {:?} is {}. Cast it to an integer, String or Categorical column.",
+                spec.name, g, dtype_name(dt)
             );
         }
     }
     check_clocks(df, specs)?;
     let readers = first_readers(specs);
+    let by_want = want_readers(specs);
     let mut cols: Vec<(PlSmallStr, ArrowCol)> = Vec::new();
     let mut clock_dtypes: Vec<(PlSmallStr, DataType)> = Vec::new();
     let mut integer_text: Vec<PlSmallStr> = Vec::new();
@@ -1047,8 +1136,8 @@ pub fn chunk_from_frame_at(
         .map(|(name, _)| name.as_str())
         .collect();
     let mut have: PlHashSet<(PlSmallStr, &'static str)> = PlHashSet::default();
-    for (name, want) in wanted.iter().cloned() {
-        let want = match want {
+    for (name, asked) in wanted.iter().cloned() {
+        let want = match asked {
             Want::Feature if numbers.contains(name.as_str()) => Want::Number,
             w => w,
         };
@@ -1057,8 +1146,10 @@ pub fn chunk_from_frame_at(
         let Some(col) = df.column(name.as_str()).ok() else {
             continue;
         };
-        let (spec, role) = readers
-            .get(name.as_str())
+        // The spec and role of this read, for the errors its cast raises.
+        let (spec, role) = by_want
+            .get(&(name.as_str(), asked))
+            .or_else(|| readers.get(name.as_str()))
             .copied()
             .unwrap_or(("", "column"));
         let s = col.as_materialized_series();
@@ -1071,7 +1162,8 @@ pub fn chunk_from_frame_at(
         // for Datetime(ms/us/ns) (docs/TESTING.md T-E10). `check_clocks` has
         // already refused a spec that gives this clock plain numbers.
         if want == Want::Clock && s.dtype().is_temporal() {
-            let col = ArrowCol::Nanos(nanos_array(s, row_base, NanosRole::Clock)?);
+            let who = format!("spec {spec:?}");
+            let col = ArrowCol::Nanos(nanos_array(s, row_base, NanosRole::Clock, &who)?);
             clock_dtypes.push((name.clone(), s.dtype().clone()));
             have.insert((name.clone(), col.form()));
             cols.push((name.clone(), col));
@@ -1135,7 +1227,7 @@ fn first_readers(specs: &[Spec]) -> PlHashMap<&str, (&str, &'static str)> {
                     Some(tree) => tree
                         .columns_ref()
                         .into_iter()
-                        .map(|c| (c, "target formula"))
+                        .map(|c| (c, "formula target"))
                         .collect(),
                     None => Vec::new(),
                 };
@@ -1177,8 +1269,8 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
         if matches!(dtype, DataType::Time) {
             polars_bail!(ComputeError:
                 "spec {:?}: clock column {:?} is a time of day, which starts again at \
-                 midnight, so it cannot be a clock; combine it with its date into a \
-                 Datetime, e.g. pl.col(\"date\").dt.combine(pl.col({:?}))",
+                 midnight, so it cannot be a clock. Combine it with its date into a Datetime, \
+                 such as with pl.col(\"date\").dt.combine(pl.col({:?})).",
                 spec.name, clock, clock
             );
         }
@@ -1188,30 +1280,31 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
         }
         if dtype.is_temporal() {
             if let ClockScale::Numbers(param @ ("lam" | "q")) = scale {
-                let instead = if param == "lam" {
-                    "half_life"
+                let (instead, what) = if param == "lam" {
+                    ("half_life", "lam is a decay per clock unit")
                 } else {
-                    "coef_half_life"
+                    ("coef_half_life", "q is the noise per clock unit")
                 };
                 polars_bail!(ComputeError:
-                    "spec {:?}: clock column {:?} has dtype {}, a temporal clock, but {} is a \
-                     number in the clock's own units, which has no duration form; leave it out and give {} \
-                     as a duration, e.g. pl.duration(minutes=10), timedelta(minutes=10) or \
-                     \"10m\"; or cast the clock to the unit you mean, e.g. \
-                     pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64), and use that column.",
-                    spec.name, clock, dtype, param, instead, clock
+                    "spec {:?}: clock column {:?} is {}, a temporal clock, but {}, which has \
+                     no duration form. Leave out {} and \
+                     give {} as a duration, such as \"10m\" or pl.duration(minutes=10), or cast \
+                     the clock to a number of the units you mean, such as with \
+                     pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64) (pl.col({:?}).dt.total_seconds() \
+                     for a Duration).",
+                    spec.name, clock, dtype_name(dtype), what, param, instead, clock, clock
                 );
             }
             if let ClockScale::Numbers(param) = scale {
                 polars_bail!(ComputeError:
-                    "spec {:?}: clock column {:?} has dtype {}, a temporal clock, but {} is a \
-                     plain number, which it cannot read: a number has no unit, and the \
-                     column's own (e.g. epoch microseconds) would silently become it. Give {} \
-                     and the other clock parameters as durations, e.g. \
-                     pl.duration(minutes=10), timedelta(minutes=10) or \"10m\"; or cast the \
-                     clock to the unit you mean, e.g. \
-                     pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64), and use that column.",
-                    spec.name, clock, dtype, param, param, clock
+                    "spec {:?}: clock column {:?} is {}, a temporal clock, but {} is a plain \
+                     number. A number has no unit, so the unit the column is stored in, such as \
+                     microseconds since 1970, would silently become its unit. Give {} and the other clock \
+                     parameters as durations, such as \"10m\" or pl.duration(minutes=10), or \
+                     cast the clock to a number of the units you mean, such as with \
+                     pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64) (pl.col({:?}).dt.total_seconds() \
+                     for a Duration).",
+                    spec.name, clock, dtype_name(dtype), param, param, clock, clock
                 );
             }
             // A cap or a late-row threshold finer than the clock's own step
@@ -1242,21 +1335,22 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
                 if !(span.is_duration() && v > 0.0 && v < tick) {
                     continue;
                 }
-                let why = match param {
-                    "gap_cap" => {
-                        "every step would be capped to it, so the clock would count rows \
-                         rather than measure time"
-                    }
-                    "restart_after_step_back" => {
-                        "no step back could be as small, so every one would start the model \
-                         over, which 0 says directly"
-                    }
+                let (why, or_zero) = match param {
+                    "gap_cap" => (
+                        "every step would be cut to it and the clock would count rows rather \
+                         than measure time",
+                        "",
+                    ),
+                    "restart_after_step_back" => (
+                        "no step back could be as small and every one would reset the model",
+                        ", or to 0 to reset at every step back",
+                    ),
                     _ => continue,
                 };
                 polars_bail!(ComputeError:
                     "spec {:?}: {} is {}, less than {}, the smallest step clock column {:?} \
-                     ({}) can take: {}",
-                    spec.name, param, span, step, clock, dtype, why
+                     ({}) can take, so {}. Set {} to at least {}{}.",
+                    spec.name, param, span, step, clock, dtype_name(dtype), why, param, step, or_zero
                 );
             }
             // Read in seconds, a temporal column would feed any other
@@ -1264,37 +1358,42 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
             for other in specs {
                 // By column, not name (review 2026-09-26, D6).
                 let defs = other.targets.defs();
-                let role = if other.features.iter().any(|f| f == clock) {
-                    "a feature"
+                let (role, must) = if other.features.iter().any(|f| f == clock) {
+                    ("a feature", "a number")
                 } else if other.weight.as_deref() == Some(clock) {
-                    "a weight"
+                    ("a weight", "a number")
                 } else if defs.iter().any(|t| t.column == *clock)
                     && other.model.compares().is_none()
                     && !matches!(other.model, ModelKind::EwClass { .. })
                 {
-                    "a target"
+                    ("a target", "a number")
                 } else if defs
                     .iter()
                     .any(|t| t.is_formula() && t.columns().iter().any(|c| c == clock))
                 {
-                    "a column of a target's formula"
+                    (
+                        "a column of a formula target",
+                        "a number, a boolean or text",
+                    )
                 } else {
                     continue;
                 };
                 polars_bail!(ComputeError:
-                    "spec {:?}: column {:?} has dtype {}, and {} reads it as {}, which must be \
-                     numeric; a temporal column can only be a clock (cast it for the other \
-                     role, e.g. pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64))",
-                    other.name, clock, dtype, other.name, role, clock
+                    "spec {:?}: it reads column {:?} as {}, which must be {must}, but the \
+                     column is {}, and a temporal column can only be a clock. Add a number \
+                     column for that use, such as \
+                     pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64).alias(\"{}_s\") \
+                     (pl.col({:?}).dt.total_seconds() for a Duration), and read {}_s as {}.",
+                    other.name, clock, role, dtype_name(dtype), clock, clock, clock, clock, role
                 );
             }
         } else if let ClockScale::Durations(param) = scale {
             polars_bail!(ComputeError:
-                "spec {:?}: {} is a duration, but clock column {:?} has dtype {}, which has no \
-                 unit to measure it in. Use a temporal clock -- a Datetime, Date or Duration \
-                 column, e.g. pl.from_epoch({:?}, time_unit=\"s\") -- or give {} as a number \
-                 of the clock's own units.",
-                spec.name, param, clock, dtype, clock, param
+                "spec {:?}: {} is a duration, but clock column {:?} is {}, which has no unit \
+                 to measure it in. Use a temporal clock, a Datetime, Date or Duration column \
+                 such as pl.from_epoch({:?}, time_unit=\"s\"), or give {} as a number of the \
+                 clock's own units.",
+                spec.name, param, clock, dtype_name(dtype), clock, param
             );
         }
     }
@@ -1325,14 +1424,14 @@ fn check_label_clock(
     };
     if !fits {
         let want = if dtype.is_temporal() {
-            "a temporal column, as the clock is"
+            "a Datetime, Date or Duration column"
         } else {
-            "a numeric column of the clock's own units"
+            "a number column of at most 64 bits, in the clock's own units"
         };
         polars_bail!(ComputeError:
-            "spec {:?}: label_clock column {:?} has dtype {}, and clock column {:?} has dtype \
-             {}, so its values are no places on the clock. Give label_clock {want}.",
-            spec.name, label, ldt, clock, dtype
+            "spec {:?}: label_clock column {:?} is {}, and clock column {:?} is {}, so its \
+             values are not times on that clock. Give label_clock {want}.",
+            spec.name, label, dtype_name(ldt), clock, dtype_name(dtype)
         );
     }
     Ok(())
@@ -1364,7 +1463,8 @@ impl NanosRole {
 /// `Time`, read as an increment's input only, nanoseconds since midnight, so
 /// a step across midnight is negative, as Polars' `diff` on a `Time` gives
 /// it. A `Time` clock is refused: it starts again every midnight.
-fn nanos_per_unit(dtype: &DataType, role: NanosRole) -> PolarsResult<i64> {
+fn nanos_per_unit(s: &Series, role: NanosRole, who: &str) -> PolarsResult<i64> {
+    let dtype = s.dtype();
     Ok(match dtype {
         DataType::Datetime(TimeUnit::Milliseconds, _)
         | DataType::Duration(TimeUnit::Milliseconds) => 1_000_000,
@@ -1374,7 +1474,15 @@ fn nanos_per_unit(dtype: &DataType, role: NanosRole) -> PolarsResult<i64> {
         | DataType::Duration(TimeUnit::Nanoseconds) => 1,
         DataType::Date => 86_400 * 1_000_000_000,
         DataType::Time if role == NanosRole::Increment => 1,
-        dt => polars_bail!(ComputeError: "a {} column cannot be read as {}", dt, role.what()),
+        DataType::Time => polars_bail!(ComputeError:
+            "{who}: clock column {:?} is a time of day, which starts again at midnight, so it \
+             cannot be a clock. Combine it with its date into a Datetime, such as with \
+             pl.col(\"date\").dt.combine(pl.col({:?})).",
+            s.name(), s.name()),
+        dt => polars_bail!(ComputeError:
+            "{who}: column {:?} is {}, which cannot be read as {}. Use a Datetime, Date or \
+             Duration column.",
+            s.name(), dtype_name(dt), role.what()),
     })
 }
 
@@ -1391,15 +1499,26 @@ pub(crate) fn nanos_array(
     s: &Series,
     row_base: usize,
     role: NanosRole,
+    who: &str,
 ) -> PolarsResult<Int64Array> {
-    let per = nanos_per_unit(s.dtype(), role)?;
+    let per = nanos_per_unit(s, role, who)?;
     let phys = s.to_physical_repr();
     let too_far = |i: usize| {
-        polars_err!(ComputeError:
-            "clock column {:?} has an instant at row {} that nanoseconds cannot hold (before \
-             1677 or after 2262)",
-            s.name(), row_base + i
-        )
+        if matches!(s.dtype(), DataType::Duration(_)) {
+            polars_err!(ComputeError:
+                "{who}: column {:?} holds a duration at row {} (counting from 0) longer than \
+                 about 292 years, which nanoseconds cannot hold. Drop or correct the rows with \
+                 such a duration.",
+                s.name(), row_base + i
+            )
+        } else {
+            polars_err!(ComputeError:
+                "{who}: column {:?} holds an instant at row {} (counting from 0) before 21 \
+                 September 1677 or after 11 April 2262, which nanoseconds cannot hold. Drop or \
+                 correct the rows outside those dates.",
+                s.name(), row_base + i
+            )
+        }
     };
     let scaled = |i: usize, v: i64| v.checked_mul(per).ok_or_else(|| too_far(i));
     let ns: Int64Chunked = match s.dtype() {
@@ -1454,7 +1573,7 @@ fn role_of(specs: &[Spec], name: &str) -> &'static str {
                 };
             }
             if t.is_formula() && t.columns().iter().any(|c| c == name) {
-                return "target formula";
+                return "formula target";
             }
         }
         if s.clock.as_deref() == Some(name) {
@@ -1532,20 +1651,22 @@ mod tests {
         let tod = Int64Chunked::new("tod".into(), since_midnight)
             .into_time()
             .into_series();
-        let ns = nanos_array(&tod, 0, NanosRole::Increment).unwrap();
+        let ns = nanos_array(&tod, 0, NanosRole::Increment, "w").unwrap();
         let read: Vec<Option<i64>> = (0..ns.len()).map(|i| ns.get(i)).collect();
         assert_eq!(read, since_midnight);
-        let err = nanos_array(&tod, 0, NanosRole::Clock).unwrap_err();
+        let err = nanos_array(&tod, 0, NanosRole::Clock, "w").unwrap_err();
         assert!(
-            err.to_string()
-                .contains("a time column cannot be read as a clock"),
+            err.to_string().contains(
+                "w: clock column \"tod\" is a time of day, which starts again at midnight"
+            ),
             "{err}"
         );
         let text = Series::new("s".into(), ["a"]);
-        let err = nanos_array(&text, 0, NanosRole::Increment).unwrap_err();
+        let err = nanos_array(&text, 0, NanosRole::Increment, "w").unwrap_err();
         assert!(
-            err.to_string()
-                .contains("a str column cannot be read as an increment's input"),
+            err.to_string().contains(
+                "w: column \"s\" is String, which cannot be read as an increment's input"
+            ),
             "{err}"
         );
         // The other temporal dtypes read alike in both roles.
@@ -1554,7 +1675,7 @@ mod tests {
             .into_series();
         for role in [NanosRole::Clock, NanosRole::Increment] {
             assert_eq!(
-                nanos_array(&date, 0, role).unwrap().value(0),
+                nanos_array(&date, 0, role, "w").unwrap().value(0),
                 86_400_000_000_000
             );
         }

@@ -203,8 +203,8 @@ fn load_rejects_mismatched_specs() {
         .expect("refused");
     assert_eq!(
         e,
-        "saved specs do not match the bank's specs: spec 1 of 1 is named \"m\" in the file and \
-         \"different\" in the bank; refusing to load"
+        "state file: its specs do not match the bank's specs: spec 1 of 1 is named \"m\" in the \
+         file and \"different\" in the bank. Load the state with the specs it was saved with."
     );
     // The second of three, by a value inside its model.
     let three = |ridge: &str| -> Vec<Spec> {
@@ -228,8 +228,9 @@ fn load_rejects_mismatched_specs() {
         .expect("refused");
     assert_eq!(
         e,
-        "saved specs do not match the bank's specs: spec \"b\" (2 of 3) differs at model.ridge: \
-         0.5 in the file, 0.25 in the bank; refusing to load"
+        "state file: its specs do not match the bank's specs: spec \"b\" (2 of 3) differs at \
+         model.ridge: 0.5 in the file, 0.25 in the bank. Load the state with the specs it was \
+         saved with."
     );
     // A spec more or fewer.
     let e = Bank::load_bytes(&bytes3, Some(&three("0.5")[..2]))
@@ -270,7 +271,7 @@ fn a_clock_step_past_the_largest_double_is_refused_by_row() {
         .to_string();
     assert!(
         e.contains("spec \"m\": clock column \"t\" steps from -1e308 to 1e308 at row 1")
-            && e.contains("the bank was not updated"),
+            && e.contains("so the bank refused the chunk"),
         "{e}"
     );
     assert_eq!(bank.rows_fed(), 0, "the refused chunk taught nothing");
@@ -536,7 +537,8 @@ fn a_poisson_fit_refuses_a_negative_count_by_row() {
     let before = bank.save_bytes().unwrap();
     let err = bank.fit_predict(&bad).unwrap_err().to_string();
     assert!(
-        err.contains(r#"target column "y" has -2 at row 3"#) && err.contains("never negative"),
+        err.contains(r#"target column "y" has the value -2 at row 3"#)
+            && err.contains("never negative"),
         "{err}"
     );
     assert!(
@@ -583,7 +585,7 @@ fn coef_is_the_output_s_last_coef_per_group() {
     assert!(
         bank.coef(1, None)
             .unwrap_err()
-            .contains("spec index 1 out of range")
+            .contains("index 1 is out of range")
     );
 
     let restored = Bank::load_bytes(&bank.save_bytes().unwrap(), None).unwrap();
@@ -1942,21 +1944,21 @@ fn a_value_past_the_input_bound_is_missing_to_every_value_check() {
             col: "w",
             missing: &[-1e101, 1e101, f64::NEG_INFINITY],
             refused: &[-1.0, -INPUT_BOUND],
-            why: "negative value",
+            why: "a weight must be at least 0",
         },
         Check {
             json: rcov,
             col: "w",
             missing: &[-1e101, 1e101, f64::INFINITY],
             refused: &[0.5, 2.0, INPUT_BOUND],
-            why: "rcov takes 0 or 1",
+            why: "rcov takes a weight of 0 or 1 only",
         },
         Check {
             json: binary,
             col: "y",
             missing: &[-1e101, 1e101],
             refused: &[2.0, -INPUT_BOUND, INPUT_BOUND],
-            why: "neither 0 nor 1",
+            why: "strict_binary takes only 0 or 1",
         },
         Check {
             json: poisson,
@@ -1970,7 +1972,7 @@ fn a_value_past_the_input_bound_is_missing_to_every_value_check() {
             col: "h",
             missing: &[-1e101, 1e101, f64::NEG_INFINITY],
             refused: &[1.0, -INPUT_BOUND],
-            why: "must be > 1",
+            why: "must be above 1",
         },
     ];
     for Check {

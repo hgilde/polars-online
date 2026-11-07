@@ -160,9 +160,12 @@ def test_drop_groups_counts_streams_and_can_be_scoped_to_one_spec():
     # groups() reports, so the stale-group idiom works for it too.
     assert bank.drop_groups([""]) == 1
     assert bank.groups()["spec"].to_list() == ["m"]
-    with pytest.raises(KeyError, match="no spec named 'nope'; the bank has \\['m', 'r'\\]"):
+    with pytest.raises(
+        KeyError,
+        match="ModelBank.drop_groups: the bank has no spec named 'nope', only \\['m', 'r'\\]",
+    ):
         bank.drop_groups(["a"], spec="nope")
-    with pytest.raises(IndexError, match="spec index 7 out of range"):
+    with pytest.raises(IndexError, match="ModelBank.drop_groups: spec index 7 is out of range"):
         bank.drop_groups(["a"], spec=7)
 
 
@@ -346,11 +349,16 @@ def test_the_chunked_runs_name_the_method_the_caller_used():
     takes, a method the caller had not called (review round 4, SF11)."""
     for method in ("fit_predict_batches", "fit"):
         call = getattr(po.ModelBank([_one()]), method)
-        with pytest.raises(TypeError, match=rf"^ModelBank\.{method} takes a polars DataFrame, got"):
+        with pytest.raises(
+            TypeError,
+            match=rf"^ModelBank\.{method}: it takes a Polars DataFrame, but it was given a",
+        ):
             r = call([{"x0": [1.0], "y": [1.0]}])
             if r is not None:
                 list(r)
-        with pytest.raises(TypeError, match=rf"^ModelBank\.{method} takes a DataFrame, not a"):
+        with pytest.raises(
+            TypeError, match=rf"^ModelBank\.{method}: it takes a frame, but it was given a query"
+        ):
             r = call([_stream().lazy()])
             if r is not None:
                 list(r)
@@ -359,7 +367,9 @@ def test_the_chunked_runs_name_the_method_the_caller_used():
 def test_a_bank_needs_a_spec():
     """``ModelBank([])`` is refused, as its docstring says (review round 4,
     SF11): the command line's "no [[specs]]" was tested, this was not."""
-    with pytest.raises(ValueError, match="at least one spec is required"):
+    with pytest.raises(
+        ValueError, match="the list of specs is empty, and a bank needs at least one"
+    ):
         po.ModelBank([])
 
 

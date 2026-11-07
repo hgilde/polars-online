@@ -141,7 +141,7 @@ def test_the_warning_is_exported_and_named_as_polars_names_it():
 @pytest.mark.parametrize("surface", SURFACES)
 def test_each_surface_warns_under_the_variable(surface, calls, monkeypatch):
     monkeypatch.setenv(UNSTABLE_VAR, "1")
-    with pytest.warns(po.UnstableWarning, match="considered unstable") as caught:
+    with pytest.warns(po.UnstableWarning, match="this is unstable, so it may change") as caught:
         calls[surface]()
     assert caught, surface
 

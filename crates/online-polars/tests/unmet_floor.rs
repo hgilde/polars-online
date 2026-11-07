@@ -127,11 +127,10 @@ fn a_target_short_of_the_rows_is_given_the_rows_ceiling() {
     let figure = format!("{:.2}", (ceiling * 100.0).floor() / 100.0);
     assert_eq!(figure, "7.72");
     let want = format!(
-        "{}. At the row weights seen so far, the weight the gate reads tops out near 7.72 if every \
-         row carries a value of target \"y\", and the model has not learned the target from every \
-         row, so predictions for target \"y\" stay withheld unless the rows carry more weight, and \
-         each carries a value of the target. Lower min_weight below 7.72, or increase half_life \
-         above 6.58, as {READY} explains.",
+        "{}. The model has not learned target \"y\" from every row. If every row carried it, the \
+         weight the gate reads would top out near 7.72 at the row weights seen so far, so \
+         predictions for target \"y\" stay withheld unless the rows carry more weight. Lower \
+         min_weight below 7.72, or increase half_life above 6.58, as {READY} explains.",
         unmet("10")
     );
     for cuts in [&[][..], &[20, 27, 28][..]] {
@@ -224,8 +223,8 @@ fn unsolved(w: &[f64]) -> Vec<String> {
 }
 
 /// The noise gate's opening while the model has not fit.
-const UNSOLVED: &str = "spec \"m\": max_error_inflation = 1.414 has not been met on any row for \
-     the last half-life, with the model within 5% of its steady state";
+const UNSOLVED: &str = "spec \"m\": max_error_inflation = 1.41 (its default) has not been met on \
+     any row for the last half-life, with the model within 5% of its steady state";
 
 /// The rows keep coming at weight 1: `weight_sum` tops out near 3.41,
 /// rounded down, and the half-life that lets the model fit with a Kish size
@@ -235,8 +234,8 @@ const UNSOLVED: &str = "spec \"m\": max_error_inflation = 1.414 has not been met
 #[test]
 fn the_unsolved_noise_gate_gives_where_weight_sum_tops_out() {
     let want = format!(
-        "{UNSOLVED}. At the row weights seen so far, weight_sum tops out near 3.41, below the 11 \
-         the model needs before it fits at all, one for each of its 11 coefficients, so \
+        "{UNSOLVED}. At the row weights seen so far, weight_sum tops out near 3.41, below 11, one \
+         for each of the model's 11 coefficients, so \
          error_inflation stays infinite and predictions stay withheld unless the rows carry more \
          weight. Increase half_life above 7.28, as {READY} explains."
     );
@@ -251,11 +250,10 @@ fn the_unsolved_noise_gate_gives_where_weight_sum_tops_out() {
 fn the_unsolved_noise_gate_on_a_row_of_weight_zero_gives_no_figure() {
     let w: Vec<f64> = (0..40).map(|i| if i < 3 { 1.0 } else { 0.0 }).collect();
     let want = format!(
-        "{UNSOLVED}, so error_inflation stays infinite and predictions stay withheld until \
-         weight_sum reaches the 11 the model needs before it fits at all, one for each of its 11 \
-         coefficients. This warning comes on a row of weight 0, which adds nothing to the weight, \
-         so it cannot say where weight_sum tops out. Check that rows reach the model with a \
-         positive weight, or increase half_life, as {READY} explains."
+        "{UNSOLVED}. Predictions stay withheld, and error_inflation infinite, until weight_sum \
+         reaches 11, one for each of the model's 11 coefficients, but this warning comes on a row of weight 0, which adds nothing to the \
+         weight, so it cannot say where weight_sum tops out. Check that rows reach the model with \
+         a positive weight, or increase half_life, as {READY} explains."
     );
     assert_eq!(unsolved(&w), vec![want]);
 }
@@ -281,9 +279,8 @@ fn the_unsolved_noise_gate_on_a_row_of_weight_zero_gives_no_figure() {
 fn the_unsolved_noise_gate_on_uneven_rows_gives_no_figure() {
     let w: Vec<f64> = (0..40).map(|i| if i == 12 { 1e3 } else { 1.0 }).collect();
     let want = format!(
-        "{UNSOLVED}, so error_inflation stays infinite and predictions stay withheld until \
-         weight_sum reaches the 11 the model needs before it fits at all, one for each of its 11 \
-         coefficients. The rows so far are too uneven (such as one row far heavier than the \
+        "{UNSOLVED}. Predictions stay withheld, and error_inflation infinite, until weight_sum \
+         reaches 11, one for each of the model's 11 coefficients, but the rows so far are too uneven (such as one row far heavier than the \
          rest) to project where weight_sum tops out. Increase half_life, as {READY} explains."
     );
     assert_eq!(unsolved(&w), vec![want]);

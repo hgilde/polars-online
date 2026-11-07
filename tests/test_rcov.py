@@ -614,7 +614,9 @@ def test_a_clock_break_splits_the_block_into_stretches():
 def test_a_fractional_weight_is_refused_naming_the_row():
     df = ticks(n=50).with_columns(w=pl.when(pl.int_range(pl.len()) == 20).then(0.5).otherwise(1.0))
     bank = po.ModelBank([spec(kind="plain", weight="w")])
-    with pytest.raises(ValueError, match="row 20; rcov takes 0 or 1"):
+    with pytest.raises(
+        ValueError, match=r"row 20 \(counting from 0\), but rcov takes a weight of 0 or 1 only"
+    ):
         bank.fit_predict(df)
 
 

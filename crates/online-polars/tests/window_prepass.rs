@@ -84,7 +84,21 @@ fn prepass_against_the_ring(spec: &Spec, df: &DataFrame, size: usize) -> Option<
                 }
             }
             (Err(a), Err(b)) => {
-                let (a, b) = (a.to_string(), b.to_string());
+                // The bank without the pre-pass learned part of the piece, and
+                // says so where the pre-pass refused it whole: past that
+                // clause the two say the same.
+                let (a, b) = (
+                    a.to_string(),
+                    b.to_string()
+                        .replace(
+                            "the bank stopped after learning part of the chunk",
+                            "the bank refused the chunk",
+                        )
+                        .replace(
+                            ", then build the bank again and fit it from the start of its input",
+                            "",
+                        ),
+                );
                 assert_eq!(a, b, "piece {k}: the two refusals differ");
                 assert!(a.contains("window_budget"), "{a}");
                 assert_eq!(

@@ -630,7 +630,9 @@ impl DataSummary {
     pub fn validate(&self, spec: &Spec, rows_seen: u64) -> Result<(), String> {
         let fail = |what: &str| {
             Err(format!(
-                "saved data summary of spec {:?} is not its spec's ({what})",
+                "it is damaged, since the data summary of spec {:?} could not have come from its \
+                 rows ({what}). Load an undamaged copy of the state file, or rebuild it from its \
+                 input.",
                 spec.name
             ))
         };

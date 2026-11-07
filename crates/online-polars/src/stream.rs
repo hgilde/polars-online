@@ -987,7 +987,11 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     "partial_corr" => Ok(EwCovStat::PartialCorr),
                     "mahal" => Ok(EwCovStat::Mahal),
                     "lag_corr" => Ok(EwCovStat::LagCorr),
-                    other => Err(format!("unknown ew_cov statistic {other:?}")),
+                    other => Err(format!(
+                        "stats lists {other:?}, which is not an ew_cov statistic. Use \
+                         \"mean\", \"var\", \"std\", \"cov\", \"corr\", \"partial_corr\", \
+                         \"mahal\" or \"lag_corr\"."
+                    )),
                 })
                 .collect::<Result<Vec<_>, String>>()?;
             let cfg = EwCovCfg {
@@ -1030,7 +1034,12 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 "pa" => PaMode::Pa,
                 "pa1" => PaMode::Pa1,
                 "pa2" => PaMode::Pa2,
-                other => return Err(format!("unknown pa mode {other:?}")),
+                other => {
+                    return Err(format!(
+                        "mode must be \"pa\", \"pa1\" or \"pa2\", but it is {other:?}. Set mode \
+                         to one of those words."
+                    ));
+                }
             };
             let cfg = PaCfg {
                 n_features: spec.k(),
@@ -1283,8 +1292,8 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     Some("shared") => online_core::FeatureMomentLayout::Shared,
                     Some(other) => {
                         return Err(format!(
-                            "marginal: unknown feature_moments {other:?}; expected \"per_target\" \
-                             or \"shared\""
+                            "feature_moments must be \"per_target\" or \"shared\", but it is \
+                             {other:?}. Set feature_moments to one of those words."
                         ));
                     }
                 },
@@ -1850,33 +1859,16 @@ fn no_score_preds(v: &[std::collections::VecDeque<Vec<f64>>]) -> bool {
     v.iter().all(std::collections::VecDeque::is_empty)
 }
 
-/// The notice of an `sgd` target withheld because its learning rate is past
-/// its stability bound (task 278, D8): what the gate reads, and the ways
-/// out.
-fn unstable_rate_notice(spec: &Spec, target: &str) -> String {
-    // The one-row mean-square contraction `E[(1 − q)²] < 1`, that is
-    // `E[q²] < 2·E[q]`, at unit weight, no `l2` and the squared loss, on
-    // `p` standardized normal columns: `|z̃|²` is `χ²_p`, or `1 + χ²_p` with
-    // the intercept's 1, whose first two moments give the bound.
-    let p = spec.k() as f64;
-    let bound = if spec.fit_intercept {
-        2.0 * (p + 1.0) / (p * p + 4.0 * p + 1.0)
-    } else {
-        2.0 / (p + 2.0)
-    };
-    format!(
-        "the learning rate is past its stability bound for target {target:?}: a step \
-         multiplies its own row's residual by 1 - q, q = learning_rate * (weight * c * \
-         |z|^2 + l2) with c the loss's curvature, and over the recent steps the mean of q^2 \
-         passed twice the mean of q (each q bounded at the larger of 2 and four times their \
-         running mean, so one wide row moves it only a bounded amount), so the fit diverges \
-         in mean square. Its predictions are withheld (withheld_reason \"unstable_rate\") \
-         while that holds. Lower learning_rate \
-         (standardized, {} independent normal features put a constant rate's bound at \
-         {bound:.3}), or use schedule = \"inv_scaling\", which lowers it row by row, or \
-         \"adagrad\"",
-        spec.k()
-    )
+/// Whether a spec's model standardizes its features before its ridge
+/// applies (`ewridge`, `huber`, `quantile`): the models whose coefficients
+/// report `support_coef`.
+fn standardizes(spec: &Spec) -> bool {
+    match &spec.model {
+        ModelKind::EwRidge { standardize, .. }
+        | ModelKind::Huber { standardize, .. }
+        | ModelKind::Quantile { standardize, .. } => *standardize,
+        _ => false,
+    }
 }
 
 /// How long a gate has withheld every row, on the learned rows' clock: the
@@ -2122,8 +2114,8 @@ fn solve_floor(spec: &Spec) -> f64 {
     }
 }
 
-/// What the noise gate's notice asks of the decay: the half-life above which
-/// the gate opens at steady state on a regular stream (docs/PLAN.md task
+/// What the noise gate's warning asks of the decay, in clock units: the
+/// half-life above which the gate opens at steady state on a regular stream (docs/PLAN.md task
 /// 198, D8; WARMUP-AND-CONVERGENCE §7).
 ///
 /// The gate reads `sqrt(1 + edf/n)`, `n` Kish's effective sample size, and
@@ -2140,24 +2132,10 @@ fn solve_floor(spec: &Spec) -> f64 {
 /// `N`, and `d/−log2((n − 1)/(n + 1))` with `n = k/(max² − 1)`, for Kish's
 /// size to carry `k` degrees of freedom, the most a ridge leaves.
 ///
-/// "Above", since the gate withholds at equality. In the spec's own terms: a
-/// duration on a temporal clock, `lam` where the spec gives one.
-fn half_life_figure(spec: &Spec, decay: Decay, at: &Unmet) -> String {
-    let need = half_life_need(spec, decay, at);
-    if !(need.is_finite() && need > 0.0) {
-        return "raise the half_life".into();
-    }
-    match decay {
-        Decay::Lam(_) => format!("raise lam above {:.6}", (-1.0 / need).exp2()),
-        Decay::Halflife(_) => format!(
-            "raise the half_life above {}",
-            crate::bank::clock_amount(spec, need)
-        ),
-    }
-}
-
-/// The half-life [`half_life_figure`] names, in clock units: NaN or not
-/// positive where none opens the gate on the rows so far.
+/// "Above", since the gate withholds at equality; `unmet_floor::decay_above`
+/// puts it in the spec's own terms.
+///
+/// NaN or not positive where none opens the gate on the rows so far.
 fn half_life_need(spec: &Spec, decay: Decay, at: &Unmet) -> f64 {
     let h = half_life_of(decay);
     let (max, s, w) = (at.max, at.settled, at.row_weight);
@@ -2536,7 +2514,9 @@ mod notified;
 mod unmet_floor;
 use notified::span_name;
 pub use notified::{Notice, Notified};
-use unmet_floor::{Projection, unmet_floor_notice, unsolved_notice};
+use unmet_floor::{
+    Projection, inflation_notice, unmet_floor_notice, unsolved_notice, unstable_rate_notice,
+};
 
 impl Stream {
     pub fn new(spec: &Spec) -> Result<Self, String> {
@@ -2665,7 +2645,13 @@ impl Stream {
     pub fn restore(spec: &Spec, saved: &StreamState) -> Result<Self, String> {
         let mut stream = Stream::new(spec)?;
         if stream.models.len() != saved.models.len() {
-            return Err("saved state has a different number of model instances".into());
+            return Err(format!(
+                "it is damaged, since it holds {} instances (the parts of the model that fit one \
+                 half-life each) where this spec keeps {}. Load an undamaged copy of the state file, \
+                 or rebuild it from its input.",
+                saved.models.len(),
+                stream.models.len()
+            ));
         }
         let models = stream
             .models
@@ -2684,8 +2670,17 @@ impl Stream {
                     || m.n_targets() != fresh.n_targets()
                     || m.n_outputs() != fresh.n_outputs()
                 {
+                    let which = if suffix.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " for instance {suffix:?} (the part of the model that fits one \
+                             half-life)"
+                        )
+                    };
                     return Err(format!(
-                        "saved state's model {suffix:?} is not this spec's shape"
+                        "it is damaged, since its saved model{which} does not have this spec's \
+                         shape. Load an undamaged copy of the state file, or rebuild it from its input."
                     ));
                 }
                 Ok((suffix, m))
@@ -2709,7 +2704,9 @@ impl Stream {
         // notices are flags, and a wrong length of those starts them over.
         if p.decay_time.len() != fresh.decay_time.len() {
             return Err(format!(
-                "saved state's decay time has {} entries where this spec keeps {}",
+                "it is damaged, since its record of how far each instance (the part of the model \
+                 that fits one half-life) has decayed has {} entries where this spec keeps {}. \
+                 Load an undamaged copy of the state file, or rebuild it from its input.",
                 p.decay_time.len(),
                 fresh.decay_time.len()
             ));
@@ -2721,7 +2718,9 @@ impl Stream {
             p.restarted = fresh.restarted.clone();
         } else if p.restarted.len() != fresh.restarted.len() {
             return Err(format!(
-                "saved state's restart marks have {} entries where this spec keeps {}",
+                "it is damaged, since its record of which instances (the parts of the model that \
+                 fit one half-life each) have reset has {} entries where this spec keeps {}. Load \
+                 an undamaged copy of the state file, or rebuild it from its input.",
                 p.restarted.len(),
                 fresh.restarted.len()
             ));
@@ -2751,7 +2750,10 @@ impl Stream {
                 .zip(fresh)
                 .all(|(s, l)| s.len() == l.len() && s.iter().zip(l).all(|(a, b)| same(a, b)));
             if !fits {
-                return Err(format!("saved state's {name} do not fit this spec"));
+                return Err(format!(
+                    "it is damaged, since its {name} do not match this spec. Load an undamaged copy \
+                     of the state file, or rebuild it from its input."
+                ));
             }
             Ok(())
         }
@@ -2766,7 +2768,11 @@ impl Stream {
                     .chain(p.resid_w.iter().zip(&fresh.resid_w))
                     .all(|(s, l)| s.len() == l.len());
             if !fits {
-                return Err("saved state's residual variances do not fit this spec".into());
+                return Err(
+                    "it is damaged, since its residual variances do not match this spec. \
+                            Load an undamaged copy of the state file, or rebuild it from its input."
+                        .into(),
+                );
             }
         } else {
             p.resid_var = fresh.resid_var.clone();
@@ -2785,7 +2791,12 @@ impl Stream {
         {
             if let (Some(live), Some(saved)) = (live.as_mut(), saved) {
                 if !saved.fits(slots) {
-                    return Err("saved state's residual window does not fit this spec".into());
+                    return Err(
+                        "it is damaged, since the residuals it keeps for a spread under \
+                                a hard window do not match this spec. Load an undamaged copy of the \
+                                state file, or rebuild it from its input."
+                            .into(),
+                    );
                 }
                 *live = saved.clone();
                 live.set_budget(budget);
@@ -2840,10 +2851,10 @@ impl Stream {
             .all(|(s, l)| s.fits(l, spec))
         {
             return Err(
-                "saved state's residual diagnostics (the calibration, breaks, robust standard \
-                 errors, specification tests, tails, influence and feature health this spec \
-                 switches on) do not fit this spec: the same switches, but shaped for other \
-                 features, lags or levels, which is a damaged state"
+                "it is damaged, since its residual diagnostics (the calibration, breaks, robust \
+                 standard errors, specification tests, tails, influence and feature health this \
+                 spec switches on) are shaped for other features, lags or levels. Load an \
+                 undamaged copy of the state file, or rebuild it from its input."
                     .into(),
             );
         }
@@ -2861,7 +2872,11 @@ impl Stream {
             .iter()
             .any(|r| r.xs.len() != nf || r.ys.len() != nt || r.arrived.is_none())
         {
-            return Err("saved state's pending rows do not fit this spec".into());
+            return Err(
+                "it is damaged, since the rows it holds to learn later do not match this spec. \
+                 Load an undamaged copy of the state file, or rebuild it from its input."
+                    .into(),
+            );
         }
         held_kind(spec, &mut p)?;
         // And values the bank would send a model: a held row is learned at
@@ -2877,13 +2892,21 @@ impl Stream {
             } else if !r.ys.iter().flatten().all(|&y| usable(y)) {
                 "a target that is not a usable number"
             } else if !(usable(r.w) && r.w >= 0.0) {
-                "a weight that is not a usable number >= 0"
+                "a weight that is not a usable number of at least 0"
             } else if !(r.d_clock.is_finite() && r.d_clock >= 0.0 && r.d_clock <= cap) {
-                "a step outside [0, gap_cap]"
+                // `gap_cap` is a clock's: without one, a step is a row.
+                if spec.clock.is_some() {
+                    "a clock step below 0 or above gap_cap"
+                } else {
+                    "a step below 0"
+                }
             } else {
                 continue;
             };
-            return Err(format!("saved state's held row {i} is damaged: {what}"));
+            return Err(format!(
+                "it is damaged, since row {i} (counting from 0) of those it holds to learn later \
+                 has {what}. Load an undamaged copy of the state file, or rebuild it from its input."
+            ));
         }
         // The held rows' clock per instance, kept where a delay holds rows
         // and nowhere else. (A schema-14 file had none, and its loader
@@ -2892,7 +2915,9 @@ impl Stream {
         let instances = fresh.decay_time.len();
         if p.pending_clock.len() != fresh.pending_clock.len() {
             return Err(format!(
-                "saved state's held-rows clock has {} entries where this spec keeps {}",
+                "it is damaged, since the clock of the rows it holds to learn later has {} \
+                 entries where this spec keeps \
+                 {}. Load an undamaged copy of the state file, or rebuild it from its input.",
                 p.pending_clock.len(),
                 fresh.pending_clock.len()
             ));
@@ -5018,20 +5043,8 @@ fn run_instance(
             let worst = unmet.worst;
             inst.notified.unreachable = true;
             inst.notified.restart_waits();
-            let k = inst.spec.k() + usize::from(inst.spec.fit_intercept);
             inst.notified.raise(if worst.is_finite() {
-                let figure = half_life_figure(inst.spec, inst.decay, &unmet);
-                format!(
-                    "max_error_inflation = {max_infl:.3} has not been met on any row for a \
-                     half-life since the stream settled (it is {:.0}% settled): \
-                     error_inflation is still {worst:.3}, and at the row rate seen so far it \
-                     stays above the limit, so predictions stay withheld unless the rows come \
-                     faster. Kish's effective sample size tops out near 2.9 half_lives of rows; \
-                     {figure} so it can carry the {k} coefficients, or raise \
-                     max_error_inflation to at least {worst:.3} to accept this much estimation \
-                     noise (the README, *Warm-up*).",
-                    100.0 * learned
-                )
+                inflation_notice(inst.spec, inst.decay, &unmet)
             } else {
                 // Infinite: the model has not solved, its weight short of the
                 // floor its first solve needs, which no ratio can loosen.
@@ -5482,14 +5495,31 @@ fn run_instance(
                         .get(i % k_total - usize::from(inst.spec.fit_intercept))
                         .map_or("?", String::as_str);
                     inst.notified.support = true;
+                    // Under `standardize` the ridge competes with a
+                    // standardized feature's variance, 1; otherwise with the
+                    // feature's own.
+                    let below = if standardizes(inst.spec) {
+                        "1, a standardized feature's variance"
+                    } else {
+                        "the feature's variance"
+                    };
+                    // Three figures (WRITING §11): two decimals read a share of
+                    // 0.004 as "0.00 data and 1.00 ridge".
+                    let (data, ridge) = {
+                        use crate::figures::{Round, three_figures};
+                        (
+                            three_figures(share, Round::Down),
+                            three_figures(1.0 - share, Round::Up),
+                        )
+                    };
                     inst.notified.raise(format!(
-                        "the coefficient of {feature:?} is {share:.2} data and {:.2} \
-                             ridge (support_coef < 0.5): the design does not determine it \
-                             -- a duplicated or constant column, or a ridge as large as the \
-                             feature's variance. Predictions are unaffected in sample; the \
-                             split among such columns is arbitrary and moves the moment the \
-                             collinearity breaks (the README, *Warm-up*).",
-                        1.0 - share
+                        "the coefficient of {feature:?} is {data} data and {ridge} ridge, so \
+                         its support_coef is below 0.5 and the rows do not determine it. Where \
+                         the column duplicates another or is constant, predictions are \
+                         unaffected but the coefficient's split among such columns is arbitrary, \
+                         and where the ridge is as large as {below}, the ridge shrinks the \
+                         coefficient toward 0. Remove the duplicated or constant column, or \
+                         lower ridge below {below}."
                     ));
                 }
             }

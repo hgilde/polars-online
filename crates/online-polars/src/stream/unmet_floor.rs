@@ -6,7 +6,7 @@
 use online_core::Decay;
 
 use super::{Unmet, half_life_need, half_life_of, projected_figure, settled_weight, solve_floor};
-use crate::spec::Spec;
+use crate::spec::{ModelKind, Spec};
 
 /// Where a readiness warning sends its reader: the reference section on
 /// the gates, which a message keeps linking once it has shipped.
@@ -232,21 +232,16 @@ pub(super) fn unmet_floor_notice(
     } else {
         format!("Lower min_weight below {figure}, or increase {decay_name}{to}")
     };
-    let (every, carries) = short.map_or_else(
-        || (String::new(), String::new()),
-        |t| {
-            (
-                format!(
-                    " if every row carries a value of target {t:?}, and the model has not learned \
-                     the target from every row"
-                ),
-                ", and each carries a value of the target".to_string(),
-            )
-        },
-    );
+    if let Some(t) = short {
+        return format!(
+            "{unmet}. The model has not learned target {t:?} from every row. If every row carried \
+             it, the weight the gate reads would top out near {figure} at the {rate} seen so far, \
+             so {withheld} unless {faster}. {remedy}, as {READY_LINK} explains."
+        );
+    }
     format!(
-        "{unmet}. At the {rate} seen so far, the weight the gate reads tops out near {figure}{every}, \
-         so {withheld} unless {faster}{carries}. {remedy}, as {READY_LINK} explains."
+        "{unmet}. At the {rate} seen so far, the weight the gate reads tops out near {figure}, so \
+         {withheld} unless {faster}. {remedy}, as {READY_LINK} explains."
     )
 }
 
@@ -339,39 +334,40 @@ pub(super) fn unsolved_notice(spec: &Spec, decay: Decay, at: &Unmet) -> String {
     let floor = solve_floor(spec);
     let k = spec.k() + usize::from(spec.fit_intercept);
     let needs = if spec.min_weight.is_some() {
-        format!("the {floor} that min_weight sets for the model's first fit")
+        format!("{floor}, which min_weight sets for the model's first fit")
     } else {
-        format!(
-            "the {floor} the model needs before it fits at all, one for each of its {k} \
-             coefficients"
-        )
+        format!("{floor}, one for each of the model's {k} coefficients")
     };
     let unmet = format!(
-        "{}max_error_inflation = {:.3} has not been met on any row for the last half-life, with \
+        "{}max_error_inflation = {} has not been met on any row for the last half-life, with \
          the model within 5% of its steady state",
         instance_name(spec, decay),
-        at.max
+        max_label(spec, at.max)
     );
     let withheld = "error_inflation stays infinite and predictions stay withheld";
+    // The opening ends its own sentence (WRITING §5: no sentence of 45
+    // words or more), and what the rows bring follows in the next.
+    let until = format!(
+        "Predictions stay withheld, and error_inflation infinite, until weight_sum reaches {needs}"
+    );
     let decay_name = match decay {
         Decay::Lam(_) => "lam",
         Decay::Halflife(_) => "half_life",
     };
     if at.row_weight <= 0.0 {
         return format!(
-            "{unmet}, so {withheld} until weight_sum reaches {needs}. This warning comes on a row \
-             of weight 0, which adds nothing to the weight, so it cannot say where weight_sum tops \
-             out. Check that rows reach the model with a positive weight, or increase \
-             {decay_name}, as {READY_LINK} explains."
+            "{unmet}. {until}, but this warning comes on a row of weight 0, which adds nothing to \
+             the weight, so it cannot say where weight_sum tops out. Check that rows reach the \
+             model with a positive weight, or increase {decay_name}, as {READY_LINK} explains."
         );
     }
     let ceiling = settled_weight(at.weight, at.row_weight, at.settled, at.steps);
     let Some(figure) = projected_figure(ceiling).map(|_| three_figures(ceiling, Round::Down))
     else {
         return format!(
-            "{unmet}, so {withheld} until weight_sum reaches {needs}. The rows so far are too \
-             uneven (such as one row far heavier than the rest) to project where weight_sum tops \
-             out. Increase {decay_name}, as {READY_LINK} explains."
+            "{unmet}. {until}, but the rows so far are too uneven (such as one row far heavier \
+             than the rest) to project where weight_sum tops out. Increase {decay_name}, as \
+             {READY_LINK} explains."
         );
     };
     let (rate, faster) = rate_words(spec);
@@ -380,5 +376,88 @@ pub(super) fn unsolved_notice(spec: &Spec, decay: Decay, at: &Unmet) -> String {
     format!(
         "{unmet}. At the {rate} seen so far, weight_sum tops out near {figure}, below {needs}, so \
          {withheld} unless {faster}. Increase {decay_name}{to}, as {READY_LINK} explains."
+    )
+}
+
+/// `max_error_inflation` as a warning names it: as the spec wrote it, or,
+/// where the spec left it out, its default (√2 for `ewridge`) to three
+/// figures, said to be the default.
+fn max_label(spec: &Spec, max: f64) -> String {
+    match spec.max_error_inflation {
+        Some(_) => crate::spec::num_label(max),
+        None => format!(
+            "{} (its default)",
+            crate::figures::three_figures(max, crate::figures::Round::Down)
+        ),
+    }
+}
+
+/// The noise gate's warning where its ratio is finite: the model fits, but
+/// at the rows' spacing so far `error_inflation` stays above
+/// `max_error_inflation` at steady state ([`Unmet::stays_shut`]). In the
+/// shape every message takes (WRITING §11): the ratio as it stands,
+/// rounded up, since the remedy sets the limit to it or more; and the
+/// half-life (or `lam`) above which Kish's size carries the coefficients
+/// ([`half_life_need`]), rounded up, so the remedy holds. The derivation --
+/// Kish's size topping out near 2.9 half-lives of rows -- is the guide's,
+/// which the link reaches.
+pub(super) fn inflation_notice(spec: &Spec, decay: Decay, at: &Unmet) -> String {
+    use crate::figures::{Round, three_figures};
+    let k = spec.k() + usize::from(spec.fit_intercept);
+    let worst = three_figures(at.worst, Round::Up);
+    let (rate, faster) = rate_words(spec);
+    let decay_name = match decay {
+        Decay::Lam(_) => "lam",
+        Decay::Halflife(_) => "half_life",
+    };
+    let to = decay_above(spec, decay, half_life_need(spec, decay, at))
+        .map_or_else(String::new, |v| format!(" above {v}"));
+    format!(
+        "{}max_error_inflation = {} has not been met on any row for the last half-life, with the \
+         model within 5% of its steady state. Its error_inflation is still {worst}, and at the \
+         {rate} seen so far it stays above that limit, so predictions stay withheld unless \
+         {faster}. \
+         Increase {decay_name}{to} so the fit can carry its {k} coefficients, or set \
+         max_error_inflation to {worst} or more to accept this much estimation noise, as \
+         {READY_LINK} explains.",
+        instance_name(spec, decay),
+        max_label(spec, at.max)
+    )
+}
+
+/// The notice of an `sgd` target withheld because its learning rate is past
+/// its stability bound (task 278, D8): what the gate reads, and the ways
+/// out.
+pub(super) fn unstable_rate_notice(spec: &Spec, target: &str) -> String {
+    // The one-row mean-square contraction `E[(1 − q)²] < 1`, that is
+    // `E[q²] < 2·E[q]`, at unit weight, no `l2` and the squared loss, on
+    // `p` standardized normal columns: `|z̃|²` is `χ²_p`, or `1 + χ²_p` with
+    // the intercept's 1, whose first two moments give the bound.
+    let p = spec.k() as f64;
+    let bound = if spec.fit_intercept {
+        2.0 * (p + 1.0) / (p * p + 4.0 * p + 1.0)
+    } else {
+        2.0 / (p + 2.0)
+    };
+    // Rounded down: a rate to stay below (WRITING §11).
+    let bound = crate::figures::three_figures(bound, crate::figures::Round::Down);
+    // Only the schedules not in force are offered.
+    let schedule = match &spec.model {
+        ModelKind::Sgd { schedule, .. } => schedule.as_deref().unwrap_or("constant"),
+        _ => "constant",
+    };
+    let others = match schedule {
+        "inv_scaling" => ", or set schedule to \"adagrad\"",
+        "adagrad" => ", or set schedule to \"inv_scaling\", which lowers it row by row",
+        _ => ", or set schedule to \"inv_scaling\", which lowers it row by row, or to \"adagrad\"",
+    };
+    format!(
+        "the learning rate is past its stability bound for target {target:?}: over the recent \
+         rows its steps have grown each row's own residual on average rather than shrunk it, \
+         so the fit diverges. Its predictions are withheld (withheld_reason \"unstable_rate\") \
+         while that holds. Lower learning_rate (under the squared loss with no l2, on \
+         standardized features, {} independent normal ones put a constant rate's bound at \
+         {bound}){others}.",
+        spec.k()
     )
 }

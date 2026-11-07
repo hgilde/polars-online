@@ -96,7 +96,10 @@ fn a_held_row_without_its_place_on_the_elapsed_clock_is_refused() {
         held[0].arrived = None;
     });
     let err = Bank::load_bytes(&damaged, None).err().expect("loaded");
-    assert!(err.contains("pending rows do not fit"), "{err}");
+    assert!(
+        err.contains("the rows it holds to learn later do not match"),
+        "{err}"
+    );
     assert!(Bank::load_bytes(&bytes, None).is_ok());
 }
 
@@ -122,7 +125,10 @@ fn a_held_rows_clock_of_the_wrong_length_is_refused() {
             edit(&mut f.states[0][0].1.persisted.pending_clock)
         });
         let err = Bank::load_bytes(&damaged, None).err().expect(what);
-        assert!(err.contains("held-rows clock"), "{what}: {err}");
+        assert!(
+            err.contains("the clock of the rows it holds"),
+            "{what}: {err}"
+        );
     }
     let mut plain = Bank::new(vec![ridge()]).unwrap();
     plain.fit_predict(&frame()).unwrap();
@@ -130,7 +136,7 @@ fn a_held_rows_clock_of_the_wrong_length_is_refused() {
         f.states[0][0].1.persisted.pending_clock = vec![0.0];
     });
     let err = Bank::load_bytes(&damaged, None).err().expect("no embargo");
-    assert!(err.contains("held-rows clock"), "{err}");
+    assert!(err.contains("the clock of the rows it holds"), "{err}");
     assert!(Bank::load_bytes(&bytes, None).is_ok());
 }
 
@@ -183,7 +189,7 @@ fn a_held_row_whose_values_the_bank_never_sends_is_refused() {
             .err()
             .unwrap_or_else(|| panic!("{what}: loaded"));
         assert!(
-            err.contains("held row") && err.contains("damaged"),
+            err.contains("of those it holds to learn later") && err.contains("damaged"),
             "{what}: {err}"
         );
     }
@@ -269,7 +275,7 @@ fn a_decay_time_of_the_wrong_length_is_refused() {
     ] {
         let damaged = reencoded(&bytes, |f| edit(&mut f.states[0][0].1.persisted.decay_time));
         let err = Bank::load_bytes(&damaged, None).err().expect(what);
-        assert!(err.contains("decay time"), "{what}: {err}");
+        assert!(err.contains("has decayed has"), "{what}: {err}");
     }
     assert!(Bank::load_bytes(&bytes, None).is_ok());
 }
@@ -293,16 +299,22 @@ fn an_envelope_entry_for_a_spec_the_bank_has_not_got_is_refused() {
     let z = || GroupKey(Some("z".into()));
     type Edit<'a> = (&'a str, &'a dyn Fn(&mut BankFile));
     let edits: [Edit; 6] = [
-        ("high_water", &|f| f.high_water.push((7, z()))),
-        ("clock_dtypes", &|f| {
+        ("the last group key it closed", &|f| {
+            f.high_water.push((7, z()))
+        }),
+        ("the clock type it kept", &|f| {
             f.clock_dtypes.push((7, crate::stream::ClockDtype::Numeric));
         }),
-        ("key_dtypes", &|f| f.key_dtypes.push((7, [None, None]))),
-        ("resolvers", &|f| {
+        ("the key column types it kept", &|f| {
+            f.key_dtypes.push((7, [None, None]))
+        }),
+        ("what it holds for formula targets", &|f| {
             f.resolvers.push((7, vec![(z(), vec![1, 2])]))
         }),
-        ("pca_prev", &|f| f.pca_prev.push((7, String::new(), pca()))),
-        ("pca_prev_by_group", &|f| {
+        ("the PCA signs it kept", &|f| {
+            f.pca_prev.push((7, String::new(), pca()))
+        }),
+        ("the PCA signs it kept for a group", &|f| {
             f.pca_prev_by_group.push((7, z(), String::new(), pca()));
         }),
     ];
@@ -347,7 +359,7 @@ fn a_schema_refusal_says_which_side_of_the_range_the_file_is_on() {
         newer.contains("written by a newer version")
             && newer.contains(&format!("schema {}", current + 1))
             && newer.contains(&format!("this build reads up to {current}"))
-            && newer.contains("upgrade polars-online")
+            && newer.contains("Upgrade polars-online")
             && !newer.contains("refit"),
         "{newer}"
     );
@@ -356,7 +368,7 @@ fn a_schema_refusal_says_which_side_of_the_range_the_file_is_on() {
         .expect("an older file loaded");
     assert!(
         older.contains("not supported")
-            && older.contains("refit it from its input")
+            && older.contains("fit it on its input")
             && !older.contains("newer"),
         "{older}"
     );
@@ -453,7 +465,7 @@ fn a_refused_monotone_chunk_keeps_no_key_order() {
     )
     .unwrap();
     let err = bank.fit_predict(&backwards).unwrap_err().to_string();
-    assert!(err.contains("non-decreasing order"), "{err}");
+    assert!(err.contains("ascending order"), "{err}");
     let file: BankFile = rmp_serde::from_slice(&bank.save_bytes().unwrap()).unwrap();
     assert!(file.key_dtypes.is_empty(), "{:?}", file.key_dtypes);
     // Taken, the chunk keeps it.
@@ -547,13 +559,13 @@ fn a_diagnostic_shaped_for_another_lag_or_horizon_is_refused() {
             "autocorrelation",
             r#", "emit_autocorr": true, "resid_autocorr_lag": 1"#,
             |s| s.resid_autocorr_lag = Some(3),
-            "saved state's autocorrelations do not fit this spec",
+            "it is damaged, since its autocorrelations do not match this spec",
         ),
         (
             "horizon",
             r#", "emit_calibration": true, "horizon_rows": 1"#,
             |s| s.horizon_rows = Some(4),
-            "saved state's residual diagnostics",
+            "it is damaged, since its residual diagnostics",
         ),
     ];
     for (what, extra, edit, want) in cases {
@@ -709,7 +721,7 @@ fn a_closed_row_its_spec_or_its_own_gram_contradicts_is_refused() {
         let b = reencoded(&bytes, edit);
         let err = Bank::load_bytes(&b, None).err().expect(want);
         assert!(
-            err.starts_with("bank state file is damaged: a closed row of group 1")
+            err.starts_with("state file: it is damaged, since a closed row of group 1")
                 && err.contains(want),
             "{want}: {err}"
         );
@@ -764,7 +776,8 @@ fn a_file_of_a_newer_format_is_refused_by_number() {
     assert_eq!(
         err,
         format!(
-            "bank state file format version {newer} is newer than this build supports ({})",
+            "state file: its format version is {newer}, newer than the {} this build of \
+             polars-online reads. Upgrade polars-online to load it.",
             super::BANK_FORMAT_VERSION
         )
     );
@@ -786,7 +799,8 @@ fn a_high_water_mark_that_is_not_an_integer_is_refused_under_an_integer_key() {
     let err = bank.fit_predict(&next).unwrap_err().to_string();
     assert!(
         err.contains(
-            "the saved high-water key one is not an integer, and the group column \"g\" is"
+            "the largest group key the saved state has read is one, which is not an integer, but \
+             group column \"g\" is"
         ),
         "{err}"
     );
@@ -821,10 +835,10 @@ fn a_json_export_that_is_not_the_state_is_refused_with_its_place() {
         .join("\n");
     let err = super::json_is_faithful(&file, &broken).unwrap_err();
     assert!(
-        err.starts_with("the JSON export dropped a value the state holds")
+        err.starts_with("ModelBank.write_json: the export dropped a value the state holds")
             && err.contains(", at:\n")
             && err.contains("\n  >   \"package_version\": null,")
-            && err.contains("without it serde_json writes NaN and +/-inf as null"),
+            && err.contains("which is a defect in polars-online"),
         "{err}"
     );
     assert_eq!(super::near(&broken, 0), "", "no line, no context");
@@ -835,7 +849,7 @@ fn a_json_export_that_is_not_the_state_is_refused_with_its_place() {
     other.rows_fed += 1;
     let err = super::json_is_faithful(&file, &serde_json::to_string(&other).unwrap()).unwrap_err();
     assert!(
-        err.starts_with("the JSON export did not read back"),
+        err.starts_with("ModelBank.write_json: the export did not read back"),
         "{err}"
     );
 }
@@ -881,8 +895,26 @@ fn a_windowed_spreads_ring_of_another_width_is_refused() {
     rmpv::encode::write_value(&mut b, &v).unwrap();
     let err = Bank::load_bytes(&b, None).err().expect("loaded");
     assert!(
-        err.contains("saved state's residual window does not fit this spec"),
+        err.contains("the residuals it keeps for a spread under a hard window do not match"),
         "{err}"
     );
     assert!(Bank::load_bytes(&bytes, None).is_ok());
+}
+
+/// A file cut short is said in plain words: the decoder's own text names
+/// MessagePack markers and the file's field names (task 338).
+#[test]
+fn the_decoders_own_failures_are_said_in_plain_words() {
+    let mut bank = Bank::new(vec![ridge()]).unwrap();
+    bank.fit_predict(&frame()).unwrap();
+    let bytes = bank.save_bytes().unwrap();
+    let cut = Bank::load_bytes(&bytes[..bytes.len() - 7], None)
+        .err()
+        .expect("loaded")
+        .to_string();
+    assert_eq!(
+        cut,
+        "state file: these bytes are not a polars-online bank state file, or the file is cut \
+         short. Load a whole file that ModelBank.save or the command line's save_state wrote."
+    );
 }

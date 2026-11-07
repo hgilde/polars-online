@@ -104,14 +104,22 @@ def _bank(
         state = _read_state(load_state)
         return lambda: ModelBank.load_bytes(state, specs, threads=threads)
     if specs is None:
-        msg = f"online.{what} needs specs, or load_state= to take them from a saved bank"
+        who = what
+        msg = (
+            f"{who}: neither specs nor load_state is given, so there is no spec to fit. Pass "
+            "specs, or load_state= to take them from a saved state."
+        )
         raise ValueError(msg)
     return lambda: ModelBank(specs, threads=threads)
 
 
-def _check_chunk_size(chunk_size: int | None) -> None:
+def _check_chunk_size(chunk_size: int | None, what: str) -> None:
     if chunk_size is not None and chunk_size < 1:
-        msg = f"chunk_size must be at least 1, got {chunk_size}"
+        who = f"df.online.{what}"
+        msg = (
+            f"{who}: chunk_size must be at least 1, but it is {chunk_size}. Set chunk_size to "
+            "1 or more, or leave it out."
+        )
         raise ValueError(msg)
 
 
@@ -138,7 +146,7 @@ def _read_state(state: State) -> bytes:
         return f.read()
 
 
-def _save_path(save_state: State | None) -> str | None:
+def _save_path(save_state: State | None, who: str) -> str | None:
     """The ``save_state`` path, checked while the plan is built: a directory
     that is not there, and a path that is itself a directory, are reported
     now, not after the stream (review 2026-10-05, YB7: the second failed once
@@ -149,10 +157,13 @@ def _save_path(save_state: State | None) -> str | None:
     path = os.fspath(save_state)
     parent = os.path.dirname(os.path.abspath(path))
     if not os.path.isdir(parent):
-        msg = f"save_state: {parent!r} is not a directory"
+        msg = (
+            f"{who}: save_state names a file in the folder {parent!r}, which does not exist. "
+            "Make the folder, or name a file in a folder that does."
+        )
         raise FileNotFoundError(msg)
     if os.path.isdir(path):
-        msg = f"save_state: {path!r} is a directory; name a file in it"
+        msg = f"{who}: save_state {path!r} is a folder, not a file. Name a file in it."
         raise IsADirectoryError(msg)
     return path
 
@@ -164,7 +175,9 @@ _WRITE: dict[str, str] = {
 }
 
 
-def _closed_path(closed_groups: State | None, specs: Iterable[dict[str, Any]]) -> str | None:
+def _closed_path(
+    closed_groups: State | None, specs: Iterable[dict[str, Any]], who: str
+) -> str | None:
     """The ``closed_groups`` sidecar path, checked while the plan is built:
     a directory that is not there, an extension that names no format, and a
     bank with nothing to close are all reported now (E54)."""
@@ -173,26 +186,30 @@ def _closed_path(closed_groups: State | None, specs: Iterable[dict[str, Any]]) -
     path = os.fspath(closed_groups)
     parent = os.path.dirname(os.path.abspath(path))
     if not os.path.isdir(parent):
-        msg = f"closed_groups: {parent!r} is not a directory"
+        msg = (
+            f"{who}: closed_groups names a file in the folder {parent!r}, which does not exist. "
+            "Make the folder, or name a file in a folder that does."
+        )
         raise FileNotFoundError(msg)
     # Raises ValueError naming the extensions it knows.
-    _native.format_of_path(path)
+    _native.format_of_path(path, f"{who}: closed_groups")
     if not any(spec.get("group_close") for spec in specs):
         msg = (
-            "closed_groups names a file but no spec closes groups; add "
-            'group_close = "monotone" or "session" to the spec whose groups should be emitted'
+            f"{who}: closed_groups names a file, but no spec closes groups, so the file would "
+            'stay empty. Add group_close="monotone" or "session" to the spec whose closed '
+            "groups you want, or leave closed_groups out."
         )
         raise ValueError(msg)
     return path
 
 
-def _check_closed_format(path: str | None, schema: pl.DataFrame) -> None:
+def _check_closed_format(path: str | None, schema: pl.DataFrame, who: str) -> None:
     """A ``closed_groups`` file the closed rows' columns can be written to,
     checked before the fit: CSV carries a list column only as JSON text,
     and a nested column that is not such a list not at all (the error
     names it)."""
     if path is not None and _native.format_of_path(path) == "csv":
-        _native.csv_flat(schema)
+        _native.csv_flat(schema, f'{who}: closed_groups "{path}"')
 
 
 def _write_closed(path: str, frames: list[pl.DataFrame], schema: pl.DataFrame) -> None:
@@ -588,18 +605,15 @@ def _walk(node: Any, found: list[str]) -> None:
             keys = body.get("by_column", [])
             if len(keys) > 1 and not opts.get("maintain_order", False):
                 found.append(
-                    "a sort by several keys without maintain_order=True (rows with equal "
-                    "keys come out in no particular order)"
+                    "a sort by several keys without maintain_order=True, which gives rows "
+                    "with equal keys in no particular order"
                 )
             return
         if tag == "Join" and isinstance(body, dict):
             args = body.get("options", {}).get("args", {})
             mode = str(args.get("maintain_order", "None")).lower()
             if mode == "none":
-                found.append(
-                    'a join without maintain_order (pass maintain_order="left" to keep the '
-                    "order of the left input)"
-                )
+                found.append("a join without maintain_order")
                 _walk(body.get("input_left"), found)
                 _walk(body.get("input_right"), found)
             elif mode == "left":
@@ -617,8 +631,8 @@ def _walk(node: Any, found: list[str]) -> None:
             return
         if tag == "Distinct" and isinstance(body, dict):
             found.append(
-                "a unique(): the streaming engine does not honour maintain_order here, "
-                "so sort after it"
+                "a unique(), whose order Polars does not keep when it runs a query in "
+                "chunks, even under maintain_order=True"
             )
             _walk(body.get("input"), found)
             return
@@ -897,13 +911,13 @@ def _warn_if_order_unspecified(
     if not hazards:
         return
     msg = (
-        f"{what}: the plan's row order is not guaranteed, and {reads}. "
-        f"{len(hazards)} node(s) leave it unspecified: " + "; ".join(hazards) + ". "
-        "The streaming engine that runs the plan may deliver rows in an order lf.collect() "
-        "would not, and it may differ between runs. Give the plan a fixed order -- "
-        'maintain_order="left" on a join, maintain_order=True on a group_by, a sort after '
-        f"a unique() or before {before} -- or, for a plan whose order is fixed by other "
-        'means, warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning).'
+        f"{what}: the query's row order is not guaranteed, and {reads}. Its steps that "
+        "leave the order open (" + "; ".join(hazards) + ") let Polars give the rows in "
+        "another order when it runs the query, so the output can change from run to run. "
+        'Fix the order with maintain_order="left" on a join, maintain_order=True on a '
+        f"group_by, or a sort after a unique() or before {before}, or, where the order is "
+        "fixed by other means, silence this warning with "
+        '`warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning)`.'
     )
     warnings.warn(OrderNotGuaranteedWarning(msg), stacklevel=_user_stacklevel())
 
@@ -920,7 +934,11 @@ def _source(
     ``make_bank``, as a plan. Each chunk is fed as rows of the whole input, so an
     error names the input's row."""
     if chunk_size is not None and chunk_size < 1:
-        msg = f"chunk_size must be at least 1, got {chunk_size}"
+        who = f"lf.online.{step}"
+        msg = (
+            f"{who}: chunk_size must be at least 1, but it is {chunk_size}. Set chunk_size to "
+            "1 or more, or leave it out."
+        )
         raise ValueError(msg)
     # At build time, before anything runs: the order the plan will deliver is
     # decided here, and a caller should hear about it before the first chunk.
@@ -937,7 +955,7 @@ def _source(
     # see the caller's plan, and acted on below only if the run sees no rows.
     python_scan = _is_python_scan(lf, plan_text)
     rows = chunk_size or _native.default_chunk_size()
-    save_path = _save_path(save_state)
+    save_path = _save_path(save_state, called)
     in_schema = lf.collect_schema()
     # The output schema, from a bank run on no rows. This is also where a spec
     # naming a column the input lacks is reported: while the plan is built,
@@ -948,12 +966,12 @@ def _source(
     _refuse_uint128(in_schema, called, bank._clocks())
     schema = run(bank, pl.DataFrame(schema=in_schema), 0).schema
     needed = _spec_columns(bank.specs)
-    closed_path = _closed_path(closed_groups, bank.specs)
+    closed_path = _closed_path(closed_groups, bank.specs, called)
     # Peeked, not drained: `make_bank` can hand back the caller's own bank
     # (`lf.online.predict(bank)`), whose queue building a plan must leave
     # alone (review 2026-09-12, C4).
     closed_schema = bank.closed_groups(drop=False).clear()
-    _check_closed_format(closed_path, closed_schema)
+    _check_closed_format(closed_path, closed_schema, called)
 
     def source(
         with_columns: list[str] | None,
@@ -1028,14 +1046,14 @@ def _source(
         if python_scan and seen == 0 and n_rows != 0 and not _sources_ran_since(this_run):
             warnings.warn(
                 ConsumedSourceWarning(
-                    f"{called}: the plan yielded no rows, and its source is a Python scan -- "
-                    "which is what `pl.scan_arrow_c_stream` builds over a DuckDB relation, a "
-                    "pyarrow reader, or anything exposing `__arrow_c_stream__`. Such a stream "
-                    "is consumed once: collected a second time it yields nothing, with no "
-                    "error, so this bank has learned from nothing. Rebuild the plan per "
-                    "collect (call `pl.scan_arrow_c_stream(...)` inside the loop, not outside "
-                    "it). If the source really is empty, silence this with "
-                    'warnings.simplefilter("ignore", polars_online.ConsumedSourceWarning).'
+                    f"{called}: the query gave no rows, and it reads a source written in Python, "
+                    "such as `pl.scan_arrow_c_stream` over a DuckDB relation, a pyarrow reader or "
+                    "anything with `__arrow_c_stream__`, which gives its rows once, so a second "
+                    "run of the query reads nothing and this bank learns from nothing. Build the "
+                    "query again for each run, calling "
+                    "`pl.scan_arrow_c_stream(...)` inside the loop, or, if the source "
+                    "really is empty, silence this warning with "
+                    '`warnings.simplefilter("ignore", polars_online.ConsumedSourceWarning)`.'
                 ),
                 stacklevel=_user_stacklevel(),
             )
@@ -1091,7 +1109,7 @@ def _fit_predict_lazy(
     specs = list(specs) if specs is not None else None
     return _source(
         lf,
-        _bank(specs, load_state, "fit_predict", threads),
+        _bank(specs, load_state, "lf.online.fit_predict", threads),
         "fit_predict",
         chunk_size,
         save_state,
@@ -1102,10 +1120,18 @@ def _fit_predict_lazy(
 def _predict_lazy(
     lf: pl.LazyFrame, bank: ModelBank | State, chunk_size: int | None, threads: int | None = None
 ) -> pl.LazyFrame:
+    if bank is None:
+        # Read as no load_state, it would be refused for the specs it has not
+        # got; the bank is what is missing.
+        msg = (
+            "lf.online.predict: bank must be a ModelBank or the path of a state file, but it is "
+            "None. Pass a bank."
+        )
+        raise ValueError(msg)
     if not isinstance(bank, ModelBank) or _check_threads(threads) is not None:
         # A bank given with a count of its own is scored as a copy on that
         # pool: the caller's bank keeps its pool.
-        return _source(lf, _bank(None, bank, "predict", threads), "predict", chunk_size)
+        return _source(lf, _bank(None, bank, "lf.online.predict", threads), "predict", chunk_size)
 
     def own() -> ModelBank:
         # `predict` leaves a bank as it was, so the caller's own is safe to
@@ -1122,9 +1148,21 @@ def _specs_of(specs: Specs | ModelBank | State, what: str) -> list[dict[str, Any
         return specs.specs
     if isinstance(specs, (str, os.PathLike)):
         return ModelBank.load(os.fspath(specs)).specs
+    who = f"online.{what}"
+    if isinstance(specs, dict):
+        msg = (
+            f"{who}: specs must be a list of specs, a ModelBank or the path of a state file, "
+            "but it is one spec. Pass it in a list, as [spec]."
+        )
+        raise TypeError(msg)
     out = list(specs)
-    if not all(isinstance(spec, dict) for spec in out):
-        msg = f"online.{what} takes specs, a ModelBank or the path of a saved one"
+    bad = [spec for spec in out if not isinstance(spec, dict)]
+    if bad:
+        msg = (
+            f"{who}: specs must be a list of specs, a ModelBank or the path of a state file, "
+            f"but one of its items is of type {type(bad[0]).__name__}. Pass a list whose every "
+            "item is a spec."
+        )
         raise TypeError(msg)
     return out
 
@@ -1147,18 +1185,24 @@ def _unnest_exprs(
     the spec produces, is reported here, while the plan is built.
     """
     if separator is not None and not isinstance(separator, str):
-        msg = f"online.unnest: separator must be a string or None, got {separator!r}"
+        msg = (
+            f"online.unnest: separator must be a str or None, but it is {separator!r}. Pass a "
+            "str, or None to keep the field names as they are."
+        )
         raise TypeError(msg)
     by_name: dict[str, dict[str, Any]] = {}
     for spec in specs:
         if spec["name"] in by_name:
-            msg = f"online.unnest: spec {spec['name']!r} given twice"
+            msg = f'online.unnest: spec "{spec["name"]}" is given twice. Pass each spec once.'
             raise ValueError(msg)
         by_name[spec["name"]] = spec
     exprs: list[pl.Expr] = []
     # Each output column's name and where it comes from: a spec's name, or
     # None for a column of the frame kept as it is.
     origins: list[tuple[str, str | None]] = []
+    # The output names that are a struct field taken whole, by name, with
+    # the spec they come from: the only ones `struct.field` can take again.
+    plain: set[tuple[str, str]] = set()
     for column, dtype in schema.items():
         if column not in by_name:
             exprs.append(pl.col(column))
@@ -1166,7 +1210,10 @@ def _unnest_exprs(
             continue
         spec = by_name.pop(column)
         if not isinstance(dtype, pl.Struct):
-            msg = f"online.unnest: column {column!r} is {dtype}, not spec {column!r}'s struct"
+            msg = (
+                f"online.unnest: column {column!r} is {dtype}, not the output column of spec "
+                f'"{column}". Rename the column, or leave spec "{column}" out of specs.'
+            )
             raise ValueError(msg)
         fields = [f.name for f in dtype.fields]
         dtypes = {f.name: f.dtype for f in dtype.fields}
@@ -1174,8 +1221,8 @@ def _unnest_exprs(
         missing = [f for f in idx["field"] if f not in fields]
         if missing:
             msg = (
-                f"online.unnest: column {column!r} lacks the field(s) spec {column!r} "
-                f"produces: {', '.join(missing)}"
+                f'online.unnest: column {column!r} lacks the fields spec "{column}" writes: '
+                f"{', '.join(missing)}. Pass the spec the column was written by."
             )
             raise ValueError(msg)
         coefs = coef_fields(spec)
@@ -1199,6 +1246,8 @@ def _unnest_exprs(
             if base not in lists:
                 exprs.append(col.alias(named(field)))
                 origins.append((named(field), column))
+                if separator is None:
+                    plain.add((field, column))
                 continue
             # A `List` as the bank writes it, or an `Array` as a file written
             # by a build that wrote one (task 244, reverted by task 250).
@@ -1210,9 +1259,14 @@ def _unnest_exprs(
                 exprs.append(get(position, null_on_oob=False).alias(named(out)))
                 origins.append((named(out), column))
     if by_name:
-        msg = f"online.unnest: the frame has no column(s) {', '.join(map(repr, by_name))}"
+        missing = [f'"{name}"' for name in by_name]
+        specs_word = "spec" if len(missing) == 1 else "specs"
+        msg = (
+            f"online.unnest: the input has no output column of {specs_word} "
+            f"{_and_list(missing)}. Pass only the specs whose output columns the input holds."
+        )
         raise ValueError(msg)
-    _refuse_shared_names(origins, separator)
+    _refuse_shared_names(origins, separator, plain)
     return exprs
 
 
@@ -1221,7 +1275,11 @@ def _and_list(words: list[str]) -> str:
     return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
 
 
-def _refuse_shared_names(origins: list[tuple[str, str | None]], separator: str | None) -> None:
+def _refuse_shared_names(
+    origins: list[tuple[str, str | None]],
+    separator: str | None,
+    plain: set[tuple[str, str]],
+) -> None:
     """Refuse an unnest that would name two columns alike: two specs with a
     field of the same name (three fits of one kind each have ``weight_sum``),
     or a spec's field and a column of the frame. Polars would refuse the
@@ -1247,22 +1305,36 @@ def _refuse_shared_names(origins: list[tuple[str, str | None]], separator: str |
         whose = "a field of " if one else "fields of "
         whose += ("spec " if len(specs) == 1 else "specs ") + _and_list(specs)
         if None in where:
-            whose += " and a column of the frame" if one else " and columns of the frame"
+            whose += " and a column of the input" if one else " and columns of the input"
         # Two specs of one target share their coefficients' names too, a
         # dozen fields or more: the first few name the clash.
         shown = names if len(names) <= 6 else [*names[:5], f"{len(names) - 5} more"]
         clauses.append(f"{_and_list(shown)} {'is' if one else 'are'} {whose}")
-    (where, names), *_ = shared.items()
-    spec = next(w for w in where if w is not None)
+    # A field to take again by name: the first shared one that is a spec's
+    # struct field whole, not a coefficient's element or a prefixed name.
+    field = next(
+        (
+            (w, n)
+            for where, names in shared.items()
+            for n in names
+            for w in where
+            if w is not None and (n, w) in plain
+        ),
+        None,
+    )
     other = (
         'separator="." to name each column after its spec'
         if separator is None
         else f"a separator other than {separator!r}"
     )
+    take = (
+        ""
+        if field is None
+        else f', or take the fields you need with pl.col("{field[0]}").struct.field("{field[1]}")'
+    )
     msg = (
         f"online.unnest: {'; '.join(clauses)}, so the columns unnested would share a name. "
-        f'Pass {other}, or take the fields you need with pl.col("{spec}").struct.field('
-        f'"{names[0]}").'
+        f"Pass {other}{take}."
     )
     raise pl.exceptions.DuplicateError(msg)
 
@@ -1614,12 +1686,14 @@ class DataFrameOnlineNamespace:
         :meth:`LazyFrameOnlineNamespace.fit_predict` refuses is refused here, also
         before the fit.
         """
-        _check_chunk_size(chunk_size)
-        save_path = _save_path(save_state)
-        bank = _bank(specs, load_state, "fit_predict", threads)()
-        closed_path = _closed_path(closed_groups, bank.specs)
+        _check_chunk_size(chunk_size, "fit_predict")
+        save_path = _save_path(save_state, "df.online.fit_predict")
+        bank = _bank(specs, load_state, "df.online.fit_predict", threads)()
+        closed_path = _closed_path(closed_groups, bank.specs, "df.online.fit_predict")
         if closed_path is not None:
-            _check_closed_format(closed_path, bank.closed_groups(drop=False).clear())
+            _check_closed_format(
+                closed_path, bank.closed_groups(drop=False).clear(), "df.online.fit_predict"
+            )
         out = _in_chunks(self._df, chunk_size, bank._fit_predict_from)
         try:
             if closed_path is not None:
@@ -1654,7 +1728,7 @@ class DataFrameOnlineNamespace:
         :meth:`~polars_online.ModelBank.predict` raise, ``TypeError`` for a ``bank``
         that is neither, and ``ValueError`` for ``chunk_size`` below 1.
         """
-        _check_chunk_size(chunk_size)
+        _check_chunk_size(chunk_size, "predict")
         threads = _check_threads(threads)
         if not isinstance(bank, ModelBank):
             bank = ModelBank.load(os.fspath(bank), threads=threads)
@@ -1864,5 +1938,9 @@ def unnest(
 
 def _check_frame(frame: object, what: str) -> None:
     if not isinstance(frame, pl.DataFrame):
-        msg = f"online.{what} takes a polars DataFrame or LazyFrame, got {type(frame).__name__}"
+        who = f"po.{what}"
+        msg = (
+            f"{who}: it takes a Polars DataFrame or LazyFrame, but it was given an object of "
+            f"type {type(frame).__name__}. Pass a DataFrame or a LazyFrame."
+        )
         raise TypeError(msg)

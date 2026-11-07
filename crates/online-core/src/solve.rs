@@ -986,25 +986,32 @@ impl TryFrom<SpdFactorState> for SpdFactor {
             .map(|n| n / 2);
         if packed != Some(st.lower.len()) {
             return Err(format!(
-                "a factor of order {k} holds {} entries, not its triangle",
+                "a saved fit of {k} columns has {} entries, the wrong number for its size. Load an \
+                 undamaged copy of the state file, or rebuild it from its input.",
                 st.lower.len()
             ));
         }
         if st.attempts as usize >= JITTER.len() {
-            return Err(format!("a factor names jitter rung {}", st.attempts));
+            return Err(
+                "a saved fit holds values no fit could have. Load an undamaged copy of the state \
+                 file, or rebuild it from its input."
+                    .into(),
+            );
         }
         if !(st.jitter >= 0.0 && st.jitter.is_finite()) || (st.attempts == 0) != (st.jitter == 0.0)
         {
-            return Err(format!(
-                "a factor's jitter {} does not fit its rung {}",
-                st.jitter, st.attempts
-            ));
+            return Err(
+                "a saved fit holds values no fit could have. Load an undamaged copy of the state \
+                 file, or rebuild it from its input."
+                    .into(),
+            );
         }
         if st.moves > Self::MAX_MOVES || (st.moves > 0 && st.attempts > 0) {
-            return Err(format!(
-                "a factor of rung {} counts {} moves",
-                st.attempts, st.moves
-            ));
+            return Err(
+                "a saved fit holds values no fit could have. Load an undamaged copy of the state \
+                 file, or rebuild it from its input."
+                    .into(),
+            );
         }
         let mut l = Mat::zeros(k, k);
         let mut entries = st.lower.iter();
@@ -1021,7 +1028,11 @@ impl TryFrom<SpdFactorState> for SpdFactor {
             moves: st.moves,
         };
         if !f.is_a_factor() {
-            return Err("a factor's pivots are not all positive, or an entry is not finite".into());
+            return Err(
+                "a saved fit has an entry that is not finite, or is not positive where it must \
+                 be. Load an undamaged copy of the state file, or rebuild it from its input."
+                    .into(),
+            );
         }
         Ok(f)
     }
@@ -1282,7 +1293,10 @@ mod tests {
             })
             .err()
             .unwrap_or_else(|| panic!("order {order}: read"));
-            assert!(refused.contains("not its triangle"), "{order}: {refused}");
+            assert!(
+                refused.contains("the wrong number for its size"),
+                "{order}: {refused}"
+            );
         }
     }
 
@@ -1976,9 +1990,9 @@ mod tests {
         }
         let mut past = SpdFactorState::from(f);
         past.moves += 1;
-        let over = format!("counts {} moves", SpdFactor::MAX_MOVES + 1);
+        let over = "a saved fit holds values no fit could have";
         match SpdFactor::try_from(past) {
-            Err(e) => assert!(e.contains(&over), "{e}"),
+            Err(e) => assert!(e.contains(over), "{e}"),
             Ok(f) => panic!("loaded with {} moves", f.moves()),
         }
     }

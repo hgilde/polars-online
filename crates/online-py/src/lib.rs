@@ -277,11 +277,11 @@ fn column_not_found(msg: String) -> PyErr {
 /// method takes its borrow this way, so the refusal is this message and not
 /// pyo3's "Already mutably borrowed".
 fn busy(what: &str) -> PyErr {
+    let who = format!("ModelBank.{what}");
     PyRuntimeError::new_err(format!(
-        "ModelBank.{what}: the bank is in use on another thread; a bank is one \
-         ordered stream and cannot learn from two places at once (concurrent \
-         `predict` calls are fine). Wait for the call to return, or give each \
-         thread its own bank."
+        "{who}: the bank is in use on another thread, and a bank is one ordered stream, \
+         which cannot learn from two places at once (concurrent `predict` calls are fine). \
+         Wait for the call to return, or give each thread its own bank."
     ))
 }
 
@@ -336,14 +336,17 @@ impl PyArrowStruct {
         // pyo3's "Already borrowed", as every `ModelBank` method takes its.
         let mut this = slf.try_borrow_mut().map_err(|_| {
             PyRuntimeError::new_err(
-                "ArrowStruct.__arrow_c_array__: this struct is being exported on another \
-                 thread; a struct exports once, so wait for that call to return",
+                "ArrowStruct.__arrow_c_array__(): this struct is being exported on another \
+                 thread, and a struct exports once. Wait for that call to return, and read \
+                 the array it gives.",
             )
         })?;
         let st = this.array.take().ok_or_else(|| {
             PyValueError::new_err(
-                "this ArrowStruct has already been exported: the Arrow PyCapsule \
-                 interface hands its buffers to the consumer, so it can be read once",
+                "ArrowStruct.__arrow_c_array__(): this struct has already been exported, and the \
+                 Arrow PyCapsule interface hands its buffers to the consumer, so it can be read \
+                 once. Keep what the first read built, such as its pl.Series or pyarrow \
+                 array, and read that.",
             )
         })?;
         let (schema, array) = export_struct_to_c(&this.name, st);
@@ -952,9 +955,13 @@ impl PyRefreshTime {
 /// was the bank's sentence, naming `ModelBank`, unreachable while `feed`
 /// held the GIL (review round 4, SF12).
 fn refresh_busy(what: &str) -> PyErr {
-    PyRuntimeError::new_err(format!(
-        "RefreshTime.{what}: the sampler is in use on another thread; it is one ordered stream"
-    ))
+    // The class is private: its reader called `po.stream.refresh_time`.
+    let _ = what;
+    PyRuntimeError::new_err(
+        "po.stream.refresh_time: a run of po.stream.refresh_time is one ordered stream, and \
+         this one is in use on another thread, so it cannot be fed from two places at once. \
+         Wait for the call to return, or call po.stream.refresh_time once in each thread.",
+    )
 }
 
 /// `po.stream.with_windows` (`online_polars::WindowsRun`, docs/PLAN.md task 78):
@@ -969,9 +976,13 @@ struct PyWindows {
 /// The error for a run reached from a second thread while a call is on the
 /// first: one stream, fed from one place.
 fn windows_busy(what: &str) -> PyErr {
-    PyRuntimeError::new_err(format!(
-        "Windows.{what}: the run is in use on another thread; it is one ordered stream"
-    ))
+    // The class is private: its reader called `po.stream.with_windows`.
+    let _ = what;
+    PyRuntimeError::new_err(
+        "with_windows: the window run is in use on another thread, and a window run \
+         is one ordered stream, which cannot be fed from two places at once. Wait for the call \
+         to return, or give each thread a window run of its own.",
+    )
 }
 
 #[pymethods]
@@ -1065,8 +1076,11 @@ impl PyWindows {
 /// The name of the format `path`'s extension says it is, or a `ValueError`
 /// naming the extensions the runner knows. One extension table, in Rust.
 #[pyfunction]
-fn format_of_path(path: &str) -> PyResult<&'static str> {
-    online_polars::Format::from_path(std::path::Path::new(path))
+#[pyo3(signature = (path, who="closed_groups"))]
+fn format_of_path(path: &str, who: &str) -> PyResult<&'static str> {
+    // Python reads a path's format only for `closed_groups=`; `who` is the
+    // call and its keyword, `lf.online.fit_predict: closed_groups`.
+    online_polars::Format::from_path_named(std::path::Path::new(path), who, "")
         .map(|f| f.name())
         .map_err(PyValueError::new_err)
 }
@@ -1075,8 +1089,9 @@ fn format_of_path(path: &str) -> PyResult<&'static str> {
 /// list column as JSON text. A nested column it cannot carry is a
 /// `ValueError` naming it.
 #[pyfunction]
-fn csv_flat(df: PyDataFrame) -> PyResult<PyDataFrame> {
-    online_polars::csv_flat(&df.0)
+#[pyo3(signature = (df, who="closed_groups"))]
+fn csv_flat(df: PyDataFrame, who: &str) -> PyResult<PyDataFrame> {
+    online_polars::csv_flat(&df.0, who)
         .map(PyDataFrame)
         .map_err(|e| run_err(&e))
 }
@@ -1086,10 +1101,13 @@ fn csv_flat(df: PyDataFrame) -> PyResult<PyDataFrame> {
 /// the command line's. A file that cannot be written is the `OSError` of
 /// its kind, naming it.
 #[pyfunction]
-fn write_frame(py: Python<'_>, df: PyDataFrame, path: &str) -> PyResult<()> {
+#[pyo3(signature = (df, path, who="closed_groups"))]
+fn write_frame(py: Python<'_>, df: PyDataFrame, path: &str, who: &str) -> PyResult<()> {
     let path = std::path::Path::new(path);
-    let format = online_polars::Format::from_path(path).map_err(PyValueError::new_err)?;
-    py.detach(|| online_polars::write_frame(path, format, df.0))
+    let format =
+        online_polars::Format::from_path_named(path, who, "").map_err(PyValueError::new_err)?;
+    let who = format!("{who} \"{}\"", path.display());
+    py.detach(|| online_polars::write_frame(path, format, df.0, &who))
         .map_err(|e| run_err(&e))
 }
 

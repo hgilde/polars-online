@@ -75,25 +75,29 @@ def duration_text(value: Any, who: str, key: str) -> Any:
 
 def _nanoseconds(expr: pl.Expr, who: str, key: str) -> int:
     """The one duration an expression that reads no column evaluates to."""
-    example = f"pl.duration(minutes=10) for {key}"
     try:
         s = pl.select(expr).to_series()
     except Exception as e:  # a column it reads, an argument polars refuses
         raise TypeError(
-            f"{who}: {key} must be a duration that reads no column, such as {example}; "
-            f"evaluating it failed: {e}"
+            f"{who}: {key} must be a duration that reads no column, but evaluating it failed: "
+            f'{e}. Give {key} as a duration such as pl.duration(minutes=10) or "10m".'
         ) from None
     if s.len() != 1 or not isinstance(s.dtype, pl.Duration):
         raise TypeError(
-            f"{who}: {key} must be one duration, such as {example}; the expression "
-            f"gives {s.len()} value(s) of dtype {s.dtype}"
+            f"{who}: {key} must be one duration, but the expression (a column computation, "
+            f'such as pl.col("x") + 1) gives {s.len()} '
+            f"value{'' if s.len() == 1 else 's'} of dtype {s.dtype}. Give {key} as one "
+            f"duration, such as pl.duration(minutes=10)."
         )
     # The stored integer in the column's own unit, scaled in Python's exact
     # integers: `dt.total_nanoseconds()` wraps past 292 years, so 585 years
     # read as 384 ns (a property test found it, 2026-09-24).
     stored = s.cast(pl.Int64).item()
     if stored is None:
-        raise ValueError(f"{who}: {key} is a null duration")
+        raise ValueError(
+            f"{who}: {key} is a null duration. Give {key} a duration, such as "
+            f'pl.duration(minutes=10) or "10m".'
+        )
     per = {"ns": 1, "us": 1_000, "ms": 1_000_000}[s.dtype.time_unit]
     return int(stored) * per
 
@@ -106,7 +110,10 @@ def _fits(ns: int, who: str, key: str) -> int:
     """``ns`` if a clock can hold it, else a refusal that names the parameter,
     in the words the text form's refusal uses."""
     if abs(ns) > _MAX_NS:
-        raise ValueError(f"{who}: {key} is longer than 292 years, the most a clock can hold")
+        raise ValueError(
+            f"{who}: {key} is longer than 292 years, the most a clock can hold. "
+            f"Give {key} a shorter duration."
+        )
     return ns
 
 
@@ -128,20 +135,28 @@ def clock_nanoseconds(value: Any, dtype: pl.DataType, who: str, key: str, clock:
     if isinstance(dtype, pl.Time):
         raise ValueError(
             f"{who}: clock column {clock!r} is a time of day, which starts again at "
-            "midnight, so it cannot be a clock"
+            "midnight, so it cannot be a clock. Combine it with its date into a Datetime, "
+            f'such as pl.col("date").dt.combine(pl.col({clock!r})).'
         )
     if not dtype.is_temporal():
         if duration:
             raise ValueError(
                 f"{who}: {key} is a duration, but clock column {clock!r} is {dtype}, which "
-                f"has no unit to measure it; give {key} as a number of the clock's own units"
+                f"has no unit to measure it in. Use a numeric clock with {key} as a number of "
+                f"its units, or a temporal clock with {key} as a duration."
             )
         return None
+    if not duration and isinstance(dtype, pl.Date):
+        raise ValueError(
+            f"{who}: clock column {clock!r} is {dtype}, a temporal clock, so {key} must be "
+            f"a duration, but it is {value!r}. Give {key} as a duration of whole days, "
+            f'such as timedelta(days=1) or "1d".'
+        )
     if not duration:
         raise ValueError(
             f"{who}: clock column {clock!r} is {dtype}, a temporal clock, so {key} must be "
-            f'a duration, such as pl.duration(minutes=5), timedelta(minutes=5) or "5m"; '
-            f"got {value!r}"
+            f"a duration, but it is {value!r}. Give {key} as a duration, such as "
+            f'pl.duration(minutes=5), timedelta(minutes=5) or "5m".'
         )
     text = duration_text(value, who, key)
     try:
@@ -152,12 +167,14 @@ def clock_nanoseconds(value: Any, dtype: pl.DataType, who: str, key: str, clock:
         # under the helper's name and the parameter's (review 2026-10-05, YA6).
         raise ValueError(f"{who}: {key} {e}") from None
     if ns <= 0:
-        raise ValueError(f"{who}: {key} must be > 0, got {text}")
+        raise ValueError(
+            f"{who}: {key} must be above 0, but it is {text}. Give {key} a positive duration."
+        )
     tick = _tick_ns(dtype)
     if ns % tick:
         raise ValueError(
             f"{who}: {key} is {text}, which is not a whole number of steps of clock column "
-            f"{clock!r} ({dtype}, one step is {format_duration(tick)}); the column cannot "
-            "hold the result"
+            f"{clock!r} ({dtype}, one step is {format_duration(tick)}), so the column cannot "
+            f"hold the result. Give {key} as a multiple of {format_duration(tick)}."
         )
     return int(ns)

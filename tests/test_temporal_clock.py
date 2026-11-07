@@ -285,7 +285,7 @@ class TestHowADurationIsWritten:
     @pytest.mark.parametrize(
         ("value", "exc", "says"),
         [
-            ("10", ValueError, 'half_life "10" is not a duration: 10 has no unit'),
+            ("10", ValueError, 'half_life "10" is not a duration, since 10 has no unit'),
             ("1mo", ValueError, "a month has no fixed length"),
             ("1.5h", ValueError, "1h30m"),
             ("3i", ValueError, "counts rows"),
@@ -304,9 +304,12 @@ class TestHowADurationIsWritten:
         [
             (
                 lambda df, v: po.eval.window_metrics(df, "m", clock="t", every=v),
-                "window_metrics: every",
+                "po.eval.window_metrics: every",
             ),
-            (lambda df, v: po.stream.embargo(df.lazy(), clock="t", delay=v), "embargo: delay"),
+            (
+                lambda df, v: po.stream.embargo(df.lazy(), clock="t", delay=v),
+                r"po\.stream\.embargo: delay",
+            ),
         ],
         ids=["window_metrics", "embargo"],
     )
@@ -361,7 +364,9 @@ class TestEachMixtureIsRefused:
                 q=[0.0, 0.1],
             )
         # And on a temporal clock without any duration, lam is the number refused.
-        with pytest.raises(ValueError, match="lam is a number in the clock's own units") as e:
+        with pytest.raises(
+            ValueError, match="lam is a decay per clock unit, which has no duration form"
+        ) as e:
             _fit(
                 _temporal(_frame()),
                 po.spec.ewridge(
@@ -697,7 +702,7 @@ class TestADurationTheDataCannotHold:
         restart = dict(gap_cap="3d")
         with pytest.raises(ValueError, match="restart_after_step_back is 12h") as e:
             _fit(self._daily(), self._daily_spec(restart_after_step_back="12h", **restart))
-        assert "every one would start the model over" in str(e.value)
+        assert "every one would reset the model" in str(e.value)
         df = self._daily()
         late = pl.concat([df.slice(0, 3), df.slice(4, 1), df.slice(3, 1), df.slice(5)])
         with pytest.raises(ValueError, match="steps back by 1d at row 4") as e:

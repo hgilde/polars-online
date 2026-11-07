@@ -240,8 +240,8 @@ def check(
     from polars_online._bank import _group_keys
 
     names = bank._native.spec_names()
-    picked = range(len(names)) if spec is None else [bank._spec_index(spec)]
-    keys = _group_keys(group)
+    picked = range(len(names)) if spec is None else [bank._spec_index(spec, "ModelBank.check")]
+    keys = _group_keys(group, "ModelBank.check")
     np: Any
     try:
         import numpy

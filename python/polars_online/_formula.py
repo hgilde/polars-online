@@ -142,17 +142,28 @@ class FormulaError(ValueError):
     a literal with no JSON form, a cast to a dtype not read."""
 
 
-def _refuse(kind: str, detail: str = "") -> FormulaError:
+def _refuse(who: str, kind: str, detail: str = "") -> FormulaError:
+    """The refusal of a node a formula cannot carry, named by ``kind`` (and
+    ``detail``, which follows it in the sentence)."""
     return FormulaError(
-        f"a window formula is element-wise: {accepted_text()} over the operators; "
-        f"{kind} is not read{detail}. A shift, a cumulative or rolling "
-        f"function, an aggregation or a window would depend on the chunking: the formula "
-        f"is evaluated a chunk at a time, row by row, so a node that reads other rows would "
-        f"read only the chunk's, and one stream fed in two chunkings would give two answers."
+        f"{who}: a formula over window operators reads each row alone, but its expression (a "
+        f'column computation, such as pl.col("x") + 1) holds {kind}{detail}, which '
+        f"it cannot read. The formula is computed a chunk at a time, so a node that reads other "
+        f"rows, such as a shift, a cumulative or rolling function or an aggregation, would read "
+        f"only its chunk's rows. Build the formula from {accepted_text()} around the operators, "
+        f"and compute anything else as a column before this call."
     )
 
 
-def _literal(v: Any) -> tuple[Any, str | None]:
+def _reserved(who: str, column: str) -> FormulaError:
+    """The refusal of a column whose name an operator's own column takes."""
+    return FormulaError(
+        f"{who}: the column {column!r} has a name starting with {PREFIX!r}, which is kept for "
+        f"the window operators' own columns. Rename the column."
+    )
+
+
+def _literal(v: Any, who: str) -> tuple[Any, str | None]:
     """The JSON value of a serialized literal and, for a typed one
     (``pl.lit(x, dtype=...)``, or a numpy scalar), its dtype's name; or a
     refusal."""
@@ -169,8 +180,10 @@ def _literal(v: Any) -> tuple[Any, str | None]:
                 # the float's type, so a formula cannot carry either; a clip
                 # with one bound has a form of its own (task 159, F4).
                 raise _refuse(
-                    "a literal that is not finite (inf or nan, which Polars serializes as null)",
-                    "; a clip with one bound takes the other left out, not inf",
+                    who,
+                    "a literal that is not finite",
+                    " (Polars serializes inf and nan as null, so a clip with one bound leaves the "
+                    "other out rather than giving inf)",
                 )
             if isinstance(value, (bool, int, float, str)):
                 # A typed numeric literal keeps its type through a cast, so
@@ -180,19 +193,16 @@ def _literal(v: Any) -> tuple[Any, str | None]:
                 numeric = dtype in _DTYPES and dtype not in ("String", "Boolean")
                 typed = dtype if kind == "Scalar" and numeric else None
                 return value, typed
-    raise _refuse("this literal", f" ({json.dumps(v)[:60]})")
+    raise _refuse(who, "this literal", f" ({json.dumps(v)[:60]})")
 
 
-def _walk(node: Any) -> Any:
+def _walk(node: Any, who: str) -> Any:
     if not isinstance(node, dict) or len(node) != 1:
-        raise _refuse("this node", f" ({json.dumps(node)[:60]})")
+        raise _refuse(who, "this node", f" ({json.dumps(node)[:60]})")
     ((kind, body),) = node.items()
     if kind == "Column":
         if isinstance(body, str) and body.startswith(PREFIX):
-            reserved = _refuse(
-                f"the column {body!r}: names starting with {PREFIX!r} are reserved for "
-                "the operators' own columns"
-            )
+            reserved = _reserved(who, body)
             try:
                 op = json.loads(body[len(PREFIX) :])
             except json.JSONDecodeError:
@@ -207,17 +217,22 @@ def _walk(node: Any) -> Any:
             return op
         return ["col", body]
     if kind == "Literal":
-        value, typed = _literal(body)
+        value, typed = _literal(body, who)
         # A null literal is `["lit"]`: TOML has no null (review R2, P3).
         node = ["lit"] if value is None else ["lit", value]
         return ["cast", node, typed] if typed else node
     if kind == "BinaryExpr":
         op = body.get("op")
         if op not in _BINARY:
-            raise _refuse(f"the operator {op!r}")
-        return [_BINARY[op], _walk(body["left"]), _walk(body["right"])]
+            raise _refuse(who, f"the operator {op!r}")
+        return [_BINARY[op], _walk(body["left"], who), _walk(body["right"], who)]
     if kind == "Ternary":
-        return ["when", _walk(body["predicate"]), _walk(body["truthy"]), _walk(body["falsy"])]
+        return [
+            "when",
+            _walk(body["predicate"], who),
+            _walk(body["truthy"], who),
+            _walk(body["falsy"], who),
+        ]
     if kind == "Cast":
         dtype = body.get("dtype")
         name = dtype.get("Literal") if isinstance(dtype, dict) else dtype
@@ -225,23 +240,25 @@ def _walk(node: Any) -> Any:
             # A dtype with parameters -- Datetime, Duration, Decimal, List,
             # Categorical, Enum, Struct -- is a mapping under its name, which
             # the lookup below could not hash (review 2026-10-05, YB2).
-            raise _refuse(f"a cast to {next(iter(name))}")
+            raise _refuse(who, f"a cast to {next(iter(name))}")
         if not isinstance(name, str) or name not in _DTYPES:
-            raise _refuse(f"a cast to {json.dumps(name if isinstance(name, str) else dtype)[:60]}")
+            raise _refuse(
+                who, f"a cast to {json.dumps(name if isinstance(name, str) else dtype)[:60]}"
+            )
         # Strict, Polars' default, unless the cast says otherwise; a wrapping
         # cast (`wrap_numerical=True`) has no form here.
         options = body.get("options", "Strict")
         if options == "Strict":
-            return ["cast", _walk(body["expr"]), name]
+            return ["cast", _walk(body["expr"], who), name]
         if options == "NonStrict":
-            return ["cast", _walk(body["expr"]), name, "non_strict"]
-        raise _refuse(f"a cast with options {json.dumps(options)}")
+            return ["cast", _walk(body["expr"], who), name, "non_strict"]
+        raise _refuse(who, f"a cast with options {json.dumps(options)}")
     if kind == "Alias":
         expr, name = body
-        return ["alias", _walk(expr), name]
+        return ["alias", _walk(expr, who), name]
     if kind == "Function":
         fn = body.get("function")
-        args = [_walk(a) for a in body.get("input", [])]
+        args = [_walk(a, who) for a in body.get("input", [])]
         if isinstance(fn, str):
             if fn in _UNARY and len(args) == 1:
                 return [_UNARY[fn], args[0]]
@@ -249,7 +266,7 @@ def _walk(node: Any) -> Any:
                 return ["log", args[0], args[1]]
             if fn == "FillNull" and len(args) == 2:
                 return ["fill_null", args[0], args[1]]
-            raise _refuse(f"the function {fn!r}")
+            raise _refuse(who, f"the function {fn!r}")
         if isinstance(fn, dict) and len(fn) == 1:
             ((name, detail),) = fn.items()
             if name == "Pow" and detail == "Generic" and len(args) == 2:
@@ -263,17 +280,18 @@ def _walk(node: Any) -> Any:
                 lo = rest.pop(0) if detail.get("has_min") else ["lit"]
                 hi = rest.pop(0) if detail.get("has_max") else ["lit"]
                 return ["clip", args[0], lo, hi]
-            raise _refuse(f"the function {json.dumps(fn)}")
-        raise _refuse(f"the function {json.dumps(fn)}")
-    raise _refuse(f"a {kind!r} node")
+            raise _refuse(who, f"the function {json.dumps(fn)}")
+        raise _refuse(who, f"the function {json.dumps(fn)}")
+    raise _refuse(who, f"a {kind!r} node")
 
 
-def to_tree(expr: pl.Expr) -> list[Any]:
+def to_tree(expr: pl.Expr, who: str = "window formula") -> list[Any]:
     """The compact tree of ``expr``, the operators inlined.
 
-    Raises :class:`FormulaError` for an expression a formula cannot carry.
+    Raises :class:`FormulaError` for an expression a formula cannot carry,
+    naming ``who``, the call the expression was given to.
     """
-    return _walk(json.loads(expr.meta.serialize(format="json")))
+    return _walk(json.loads(expr.meta.serialize(format="json")), who)
 
 
 def operators(tree: Any) -> list[list[Any]]:
@@ -343,7 +361,10 @@ def from_tree(tree: Any) -> pl.Expr:
     """The expression a tree stands for, rebuilt with Polars' builders; an
     operator comes back as its column."""
     if not isinstance(tree, list) or not tree or not isinstance(tree[0], str):
-        raise FormulaError(f"a formula node is a list headed by its kind, got {tree!r}")
+        raise FormulaError(
+            f"from_tree: a formula node is a list headed by its kind, but it is {tree!r}. "
+            f"Give it a tree that to_tree wrote."
+        )
     head, args = tree[0], tree[1:]
     if head in OPERATORS:
         return operator_column(tree)
@@ -407,34 +428,41 @@ def from_tree(tree: Any) -> pl.Expr:
             return from_tree(args[0]).cast(_DTYPES[args[1]], strict=len(args) < 3)
         case "alias":
             return from_tree(args[0]).alias(args[1])
-    raise FormulaError(f"formula node {head!r} is not read")
+    raise FormulaError(
+        f"from_tree: the formula node {head!r} is not one it reads. Give it a tree that to_tree "
+        f"wrote."
+    )
 
 
 def _input_tree(who: str, value: Any) -> list[Any]:
     if isinstance(value, str):
         if value.startswith(PREFIX):
-            raise _refuse(
-                f"the column {value!r}: names starting with {PREFIX!r} are reserved for the "
-                "operators' own columns"
-            )
+            raise _reserved(who, value)
         return ["col", value]
     if isinstance(value, pl.Expr):
-        tree = to_tree(value)
+        tree = to_tree(value, who)
         if any(op[0] != "increment" for op in operators(tree)):
             raise ValueError(
-                f"{who}: an operator's input is an element-wise formula of the row, increments "
-                f"included, not another window operator; a formula over an operator's output "
-                f"is a second with_windows call, or a target of the first's"
+                f"{who}: the input holds another window operator, but an operator's input may "
+                f"hold only columns and Polars expressions of the same row (a column "
+                f'computation, such as pl.col("x") + 1), or po.increment. To apply an operator to '
+                f"another's output, add the inner one as a column with po.stream.with_windows "
+                f"first, and pass that column."
             )
         return tree
     raise TypeError(
-        f"{who}: the input must be a column name or a pl.Expr, got {type(value).__name__}"
+        f"{who}: the input must be a column name or a pl.Expr, but it is of type "
+        f'{type(value).__name__}. Pass a column name or an expression, such as pl.col("x").'
     )
 
 
 def _span(who: str, key: str, value: Any, *, inf_ok: bool) -> float | str:
     if isinstance(value, bool) or not isinstance(value, (numbers.Real, str, timedelta, pl.Expr)):
-        raise TypeError(f"{who}: {key} must be a number or a duration, got {type(value).__name__}")
+        raise TypeError(
+            f"{who}: {key} must be a number or a duration, but it is of type "
+            f"{type(value).__name__}. "
+            f'Give {key} a number of clock units, or a duration such as "5m".'
+        )
     # A word is checked as the number it names, and a duration as its length,
     # here, as a number is: "nan", "-inf", "reset", an infinite window and a
     # duration at or below 0 passed, and were refused only when the plan was
@@ -443,7 +471,10 @@ def _span(who: str, key: str, value: Any, *, inf_ok: bool) -> float | str:
         word = value.strip().lower()
         if word == "reset":
             # `session_gap`'s word, which the clock parameters' words admit.
-            raise ValueError(f"{who}: {key} must be a number or a duration, got {value!r}")
+            raise ValueError(
+                f"{who}: {key} must be a number or a duration, but it is {value!r}. "
+                f'Give {key} a number of clock units, or a duration such as "5m".'
+            )
         if word == "nan" or word in _INFINITY:
             _number(who, key, math.nan if word == "nan" else _INFINITY[word], value, inf_ok=inf_ok)
             return value.strip()
@@ -451,21 +482,34 @@ def _span(who: str, key: str, value: Any, *, inf_ok: bool) -> float | str:
         return _number(who, key, float(value), value, inf_ok=inf_ok)
     text = duration_text(value, who, key)
     if parse_duration(text) <= 0:
-        raise ValueError(f"{who}: {key} must be above 0, got {text}")
+        raise ValueError(
+            f"{who}: {key} must be above 0, but it is {text}. Give {key} a positive duration."
+        )
     return text
 
 
 def _number(who: str, key: str, x: float, shown: Any, *, inf_ok: bool) -> float | str:
     """A clock parameter given as the number ``x`` (``shown`` as written):
     above 0, and finite unless ``inf_ok``; an infinity is ``"inf"``."""
+    above = "above 0" if inf_ok else "finite and above 0"
+    inf = ", or inf for no decay" if inf_ok else ""
     if math.isnan(x):
-        raise ValueError(f"{who}: {key} must not be NaN")
+        raise ValueError(
+            f"{who}: {key} must be {above}, but it is NaN. Give {key} a positive number of "
+            f"clock units, or a duration{inf}."
+        )
     if math.isinf(x):
         if not inf_ok or x < 0:
-            raise ValueError(f"{who}: {key} must be finite and above 0, got {shown}")
+            raise ValueError(
+                f"{who}: {key} must be {above}, but it is {shown}. Give {key} a positive "
+                f"number of clock units, or a duration{inf}."
+            )
         return "inf"
     if x <= 0:
-        raise ValueError(f"{who}: {key} must be above 0, got {shown}")
+        raise ValueError(
+            f"{who}: {key} must be {above}, but it is {shown}. Give {key} a positive number of "
+            f"clock units, or a duration{inf}."
+        )
     return x
 
 
@@ -497,16 +541,24 @@ def operator(
     if name == "increment":
         return operator_column(["increment", tree])
     if half_life is None:
-        raise TypeError(f"{who}: half_life is required")
+        raise TypeError(
+            f"{who}: half_life is required, but it is not given. Give half_life in clock units, "
+            f"or inf for no decay."
+        )
     params: dict[str, Any] = {"half_life": _span(who, "half_life", half_life, inf_ok=True)}
     if window_size is not None:
         params["window_size"] = _span(who, "window_size", window_size, inf_ok=False)
     elif name.startswith("rewm"):
         raise TypeError(
-            f"{who}: window_size is required; the rows ahead of a row have no end without one"
+            f"{who}: window_size is required when the operator looks ahead, since the rows "
+            f"after a row have no end without one, but it is not given. Give window_size in "
+            f"clock units."
         )
     if closed not in ("right", "left", "both", "none"):
-        raise ValueError(f'{who}: closed must be "right", "left", "both" or "none", got {closed!r}')
+        raise ValueError(
+            f'{who}: closed must be "right", "left", "both" or "none", but it is {closed!r}. '
+            f"Set closed to one of those words."
+        )
     params["closed"] = closed
     # Any integer Polars' `rolling_*_by` takes, a numpy one included, up to
     # the core's ceiling, named; past it the refusal came later and said "at
@@ -518,36 +570,56 @@ def operator(
     ):
         raise ValueError(
             f"{who}: min_samples must be an integer of at least 1 and at most "
-            f"{MAX_MIN_SAMPLES}, got {min_samples!r}"
+            f"{MAX_MIN_SAMPLES}, but it is {min_samples!r}. Set min_samples to a whole number "
+            f"of rows in that range."
         )
     params["min_samples"] = int(min_samples)
     if partial is not None:
         if partial not in ("keep", "null", "drop"):
-            raise ValueError(f'{who}: partial must be "keep", "null" or "drop", got {partial!r}')
+            raise ValueError(
+                f'{who}: partial must be "keep", "null" or "drop", but it is {partial!r}. '
+                f"Set partial to one of those words."
+            )
         if window_size is None:
             # What a window cut short gives needs a window to cut; without
             # one it was taken and did nothing (review 2026-10-05, YB5).
             raise ValueError(
-                f"{who}: partial needs window_size; it says what a window that a gap or a "
-                "session change cuts short gives, and with no window_size nothing is cut short"
+                f"{who}: partial needs window_size, but window_size is not given. partial says "
+                f"what a window cut short by a clock break (a step past gap_cap, or a session "
+                f"change) gives, and without window_size no window is cut short. Give "
+                f"window_size, or leave out partial."
             )
         params["partial"] = partial
     if name in VARIANCES:
         # A bool, as Polars' `bias` is; written always, as `closed` is, so
         # one variance asked for twice is one column.
         if not isinstance(bias, bool):
-            raise TypeError(f"{who}: bias must be a bool, got {type(bias).__name__}")
+            raise TypeError(
+                f"{who}: bias must be True or False, but it is of type {type(bias).__name__}. "
+                f"Set bias to True or False."
+            )
         params["bias"] = bias
     elif bias is not None:
-        raise TypeError(f"{who}: bias is a variance's parameter (ewm_var, ewm_std)")
+        raise TypeError(
+            f"{who}: bias is given, but only a variance (ewm_var, ewm_std) takes it. "
+            f"Leave out bias."
+        )
     if name in QUANTILES:
         # A number in (0, 1), as Polars' `quantile` takes it; NaN and the
         # ends refused by name.
         if isinstance(quantile, bool) or not isinstance(quantile, numbers.Real):
-            raise TypeError(f"{who}: quantile must be a number, got {type(quantile).__name__}")
+            raise TypeError(
+                f"{who}: quantile must be a number, but it is of type {type(quantile).__name__}. "
+                f"Set quantile to a number above 0 and below 1."
+            )
         if not 0.0 < float(quantile) < 1.0:
-            raise ValueError(f"{who}: quantile must be above 0 and below 1, got {quantile!r}")
+            raise ValueError(
+                f"{who}: quantile must be above 0 and below 1, but it is {quantile!r}. "
+                f"Set quantile to a number above 0 and below 1, such as 0.5 for the median."
+            )
         params["quantile"] = float(quantile)
     elif quantile is not None:
-        raise TypeError(f"{who}: quantile is ewm_quantile's parameter")
+        raise TypeError(
+            f"{who}: quantile is given, but only ewm_quantile takes it. Leave out quantile."
+        )
     return operator_column([name, tree, params])
