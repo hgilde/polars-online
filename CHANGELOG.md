@@ -76,6 +76,27 @@ returns.
   one of those words.` A model's message under a spec no longer repeats the
   model's name (`spec "m": sgd: ...` is now `spec "m": ...`). Code that
   matched the old texts must be updated (task 338, stage 2a).
+- **Messages:** every error and warning of the bank, streams, windows,
+  window operators and formula targets, refresh time, Gram fits, `po.gbdt`,
+  `po.eval`, `po.corr`, `po.sim`, the command line and its TOML now follows
+  one shape. Each says where it happened, what is wrong and the value
+  received, then gives the remedy as its own sentence. Each message is at
+  most three sentences, prints numbers to three significant figures, and
+  contains no formula or internal word. Code that matched the old texts must
+  be updated (task 338, stage 2b).
+- **Readiness warnings:** the noise gate's warning no longer says the stream
+  is "settled" or quotes Kish's formula. It gives the half-life to reach,
+  rounded so the remedy holds, and links the guide's *Is it ready?* (task
+  338, stage 2b).
+- **Damaged state files:** loading one says what is damaged and how to
+  recover, in plain words instead of the decoder's text (task 338, stage
+  2b).
+- **Dtypes in messages** print as Python Polars names (`String`, `Float64`,
+  `Datetime("us")`) (task 338, stage 2b).
+- **Missing columns:** a missing column given to `po.stream.embargo`,
+  `po.stream.refresh_time`, `ModelBank.skip_learned`, `po.eval` or `po.gbdt`
+  now raises `polars_online.ColumnNotFoundError`, which is a `ValueError`
+  (task 338, stage 2b).
 - The error for a clock that steps back says where it happened (the row,
   counted from 0), what the bank did, and one list of remedies for both
   forms: sort the rows, skip what a saved state has learned with
@@ -257,6 +278,11 @@ returns.
 
 ### Performance
 
+- The bank no longer builds a list on every row to name the targets whose
+  `min_weight` has not been met; each such notice is raised as it is found.
+  The cheapest bank case runs 2.0% fewer instructions (1,910k to 1,872k
+  native for 1,000 rows), and every output is unchanged (task 353).
+
 - A model under a hard window (`window_size`) holds each snapshot of its
   running sums in about the bytes `window_budget` counts of it, where it
   held several times that: an `ewridge` of three features held about
@@ -343,6 +369,23 @@ returns.
   unchanged, column for column (task 326).
 
 ### Tests and documents
+
+- Tests: the flat window ring's layout (blocks never grown, about a
+  sixteenth spare, the oldest snapshot decoded into its own vectors), its
+  equality and debug form, and the window shadow's accessors are now held by
+  tests. Budgets: `rss.ewridge_window.darwin` tightened to 127.39 MB and
+  `rss.streaming_5m.windows` to 128.46 MB (task 353).
+
+- `conformal_rate` when labels arrive late: the guide now explains why the
+  default step swings when many rows wait for their labels (the radius hears
+  of each miss only when its label arrives, and the loop is stable only
+  while `conformal_rate · g · n` stays below about π/2). It gives the rate
+  to use, `0.05 / (1 + 0.1 · g · n)` with `n` the mean rows waiting (for a
+  90% interval, `0.05 / (1 + n / 48)`). On New York's 2013 flights under an
+  8-hour `embargo` the default covered 90.3% at a half-width of 189 minutes
+  and the rule 89.9% at 46.6; at 50% the default covered 70%. The README's
+  `label_clock` section and `po.spec`'s `conformal` entry give the same
+  rule. The default is unchanged (task 342).
 
 - The scaling test's allocation check counts a block's allocations on
   every thread but the test harness's: libtest's main thread and the other
