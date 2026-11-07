@@ -60,6 +60,22 @@ returns.
 
 ### Changed
 
+- A spec with several problems reports all of them in one refusal,
+  `spec "m": 3 problems.` and then one line for each, where it reported
+  only the first. Where one problem keeps the others from being checked (a
+  model's `kind` or `n_components` outside what it takes, a block naming a
+  column that is not a feature), the refusal says so: "Fix this, then run
+  again to check the spec's other settings." This holds for the Python
+  builders, `ModelBank` and the command line's TOML specs, and the
+  exception types are unchanged. Every error from a spec's settings, and
+  from a model's own settings, says what is wrong, the value given, why
+  where the remedy needs it, and what to do as its own sentence: ranges in
+  words ("finite and above 0"), no formulas or internal terms, computed
+  figures to three significant figures rounded so the remedy holds, and a
+  word parameter refused as `must be "a", "b" or "c", but it is "x". Use
+  one of those words.` A model's message under a spec no longer repeats the
+  model's name (`spec "m": sgd: ...` is now `spec "m": ...`). Code that
+  matched the old texts must be updated (task 338, stage 2a).
 - The error for a clock that steps back says where it happened (the row,
   counted from 0), what the bank did, and one list of remedies for both
   forms: sort the rows, skip what a saved state has learned with
