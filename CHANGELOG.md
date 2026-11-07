@@ -214,6 +214,29 @@ returns.
 
 ### Fixed
 
+- `po.corr.nearest` repairs a Gram from `ModelBank.gram()`, or a row of
+  `ModelBank.closed_groups()`, over its columns without the intercept, the
+  way `po.gram.vif` reads it. It used to refuse every Gram with an
+  intercept. A feature the stream found constant is refused by name.
+- `po.corr.nearest` refuses a weight in `w` that is infinite or NaN. It
+  used to return a matrix of NaNs.
+- Whole-number arguments take NumPy integers: `max_iter` and `max_active`
+  of `po.gram.lars_path` and `lars_paths`; `max_bin`, `threads` and
+  `sample_rows` of `po.gbdt`; `n_splits` and `gap` of `po.eval.grid_search`;
+  and a spec's index in `ModelBank.gram`, `summary`, `coef`, and the other
+  methods that take a spec.
+- `po.gbdt.lightgbm_dataset(engine="auto")` falls back to the Python
+  engine, with its warning, when the installed LightGBM keeps its dataset
+  handle where the native engine does not look. It used to raise.
+- `po.eval.window_metrics` refuses a clock that is neither numeric nor
+  temporal for what it is, before reading `every` against it.
+- `with_windows` accepts an output column named like an old spec
+  parameter, such as `window=`.
+- `with_windows` accepts a duration expression such as
+  `pl.duration(minutes=5)` for `gap_cap` and `restart_after_step_back`, as
+  its annotation says.
+- A TOML config's `reset_on_flag` that is not a boolean, and any `bocpd`
+  `emission`, now get the same deprecation warning as in Python.
 - The readiness warnings no longer read a falling weight as a ceiling. A
   target the rows stopped carrying, or one they do not all carry, was told
   its weight "tops out near" its current, decaying weight, with advice to
