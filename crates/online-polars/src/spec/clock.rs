@@ -464,10 +464,22 @@ impl Spec {
                 .map(|(f, _)| *f)
         });
         match (duration, number) {
+            (Some("half_life"), Some("lam")) => Err(format!(
+                "spec {:?}: half_life is a duration, but lam is set too, and lam is a decay over \
+                 one clock unit, which a duration cannot give. Leave lam out.",
+                self.name
+            )),
+            (Some(d), Some("lam")) if self.clock.is_none() => Err(format!(
+                "spec {:?}: {d} is a duration, but the spec has no clock to measure it, and lam \
+                 is a decay over one row. Set clock to a column of times (Datetime, Date or \
+                 Duration) and give half_life as a duration in place of lam, or {}.",
+                self.name,
+                without_clock(d)
+            )),
             (Some(d), Some("lam")) => Err(format!(
-                "spec {:?}: {d} is a duration, but lam is a decay over one clock unit, and a \
-                 clock of times has no unit to read it in. Give half_life as a duration in \
-                 place of lam.",
+                "spec {:?}: {d} is a duration, but lam is a decay over one clock unit, which a \
+                 duration cannot give. Give half_life as a duration in place of lam, with a \
+                 Datetime, Date or Duration clock.",
                 self.name
             )),
             (Some(d), Some("q")) => Err(format!(
@@ -498,12 +510,23 @@ impl Spec {
             (Some(d), None) if self.clock.is_none() => Err(format!(
                 "spec {:?}: {d} is a duration, but the spec has no clock to measure it, and \
                  without one each row is one clock unit. Set clock to a column of times \
-                 (Datetime, Date or Duration), or give {d} as a number of rows.",
-                self.name
+                 (Datetime, Date or Duration), or {}.",
+                self.name,
+                without_clock(d)
             )),
             (Some(d), None) => Ok(ClockScale::Durations(d)),
             (None, Some(n)) => Ok(ClockScale::Numbers(n)),
             (None, None) => Ok(ClockScale::Free),
         }
+    }
+}
+
+/// The way out without a clock for a clock parameter given as a duration:
+/// a number of rows, but for the two that read a clock's step, which mean
+/// nothing without one.
+fn without_clock(d: &str) -> String {
+    match d {
+        "gap_cap" | "restart_after_step_back" => format!("leave {d} out"),
+        _ => format!("give {d} as a number of rows"),
     }
 }

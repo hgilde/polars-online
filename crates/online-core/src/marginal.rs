@@ -3034,8 +3034,9 @@ impl OnlineModel for Marginal {
                     || !snaps_ok
                     || m.win.is_some() != m.cfg.window.is_some()
                 {
-                    return Err(StateError::Invalid(
-                        "marginal: the state has the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "marginal",
+                        "its saved values have the wrong shape",
                     ));
                 }
                 // A build of schema 64 or earlier anchored each bin scale's

@@ -73,6 +73,21 @@ def test_a_message_in_the_shape_passes():
     assert [wc.message_findings(m) for m in msgs] == [[], []]
 
 
+def test_a_module_constant_is_read_as_its_text():
+    """A remedy kept in a module's constant, named in capitals, is read where
+    an f-string names it; a lowercase name, such as a ``who``, stays a
+    placeholder."""
+    src = (
+        '_REMEDY = "Make the target a column, and name that column in targets."\n'
+        "def f(who, target):\n"
+        '    raise TypeError(f"{who}: {target} is relative, but those were removed. {_REMEDY}")\n'
+    )
+    (msg,), unread = wc.python_messages(src, "p.py")
+    assert not unread
+    assert msg.plain().endswith("and name that column in targets."), msg.plain()
+    assert wc.message_findings(msg) == []
+
+
 def test_a_message_a_static_reading_cannot_see_is_counted_not_judged():
     src = "def f(e):\n    raise ValueError(e)\ndef g():\n    raise make_error()\n"
     msgs, unread = wc.python_messages(src, "p.py")

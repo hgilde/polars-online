@@ -50,7 +50,7 @@ fn a_restored_marginal_whose_cfg_new_refuses_is_refused() {
     match Marginal::restore(&s) {
         Err(StateError::Invalid(e)) => {
             assert!(
-                e.contains("configuration") && e.contains("lags must each be at least 1"),
+                e.contains("marginal refuses:") && e.contains("lags must each be at least 1"),
                 "{e}"
             );
         }
@@ -2136,9 +2136,10 @@ fn state_round_trips_and_continues_identically() {
     )
     .unwrap_err()
     .to_string();
-    assert!(
-        wrong.contains("marginal") && wrong.contains("ew_cov"),
-        "{wrong}"
+    assert_eq!(
+        wrong,
+        "marginal: it is damaged, since it holds a model of another kind. Load an undamaged \
+         copy of the state file, or rebuild it from its input."
     );
 }
 

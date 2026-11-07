@@ -3225,7 +3225,7 @@ fn a_state_whose_cfg_new_refuses_is_refused() {
         assert!(inner.cfg.validate().is_err(), "{says}: `new` refuses it");
         match EwRidge::restore(&st) {
             Err(StateError::Invalid(e)) => {
-                assert!(e.contains("configuration") && e.contains(says), "{e}");
+                assert!(e.contains("ewridge refuses:") && e.contains(says), "{e}");
             }
             Ok(mut back) => {
                 for (x, y, w) in &rows {
@@ -6073,7 +6073,11 @@ fn a_state_with_a_target_min_weight_of_another_length_is_refused() {
     };
     inner.target_min_weight = vec![0.0, 3.0, 1.0];
     match EwRidge::restore(&st) {
-        Err(StateError::Invalid(e)) => assert!(e.contains("ewridge: min_weight"), "{e}"),
+        Err(StateError::Invalid(e)) => assert_eq!(
+            e,
+            "ewridge: it is damaged, since its saved per-target min_weight values do not match \
+             its targets. Load an undamaged copy of the state file, or rebuild it from its input."
+        ),
         Err(e) => panic!("{e}"),
         Ok(_) => panic!("loaded"),
     }

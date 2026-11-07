@@ -540,9 +540,11 @@ def _keyword_problem(
             if isinstance(t, dict) and any(k in t for k in _RELATIVE_KEYS):
                 what = t.get("column", t.get("name"))
                 target = "a target" if what is None else f"target {quoted(what)}"
+                given = next(k for k in _RELATIVE_KEYS if k in t)
                 problems.append(
                     TypeError(
-                        f"{who}: {target} is relative to another column, but {_RELATIVE_REMOVED}"
+                        f"{who}: {target} sets {given}, but relative targets were removed. "
+                        f"{_RELATIVE_REMEDY}"
                     )
                 )
                 return
@@ -786,13 +788,18 @@ TargetList = Sequence[str | Target | FormulaTarget | pl.Expr]
 #: table naming one is refused by name, with :data:`_RELATIVE_REMOVED`.
 _RELATIVE_KEYS = ("relative_to", "relative")
 
-#: What a relative target is told on the Python side; the Rust side says the
-#: same of a spec dict, a TOML file and a saved state.
+#: What a relative target is told to do on the Python side; the Rust side
+#: says the same of a spec dict, a TOML file and a saved state, with the
+#: command line's input file in place of the query.
+_RELATIVE_REMEDY = (
+    "Compute the target as a column with Polars' with_columns in the query before the bank, "
+    'such as lf.with_columns(ret=pl.col("p") - pl.col("mid")), and name that column in '
+    "targets."
+)
+
+#: What ``po.target`` says of ``relative_to`` and ``relative``.
 _RELATIVE_REMOVED = (
-    "relative targets were removed. Make the target a column with Polars' with_columns in "
-    'the query before the bank, such as lf.with_columns(ret=pl.col("p") - pl.col("mid")), '
-    'or for a return the log ratio (pl.col("p") / pl.col("mid")).log(), and name that '
-    "column in targets."
+    "relative targets were removed, and relative_to and relative with them. " + _RELATIVE_REMEDY
 )
 
 
@@ -826,7 +833,7 @@ def formula_target(who: str, expr: pl.Expr) -> Target | FormulaTarget:
     ``po.target("p", name="price")``, and is read as it (task 244, M-11)."""
     from polars_online import _formula
 
-    tree = _formula.to_tree(expr)
+    tree = _formula.to_tree(expr, who)
     name = expr.meta.output_name()
     # The alias names the target; the tree kept is the formula under it.
     if isinstance(tree, list) and tree and tree[0] == "alias":

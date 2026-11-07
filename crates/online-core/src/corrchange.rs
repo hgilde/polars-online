@@ -1804,8 +1804,9 @@ impl crate::OnlineModel for CorrChange {
                     || wrong_mon
                     || wrong_rows
                 {
-                    return Err(crate::StateError::Invalid(
-                        "corrchange: the state has the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "corrchange",
+                        "its saved values have the wrong shape",
                     ));
                 }
                 // Configuration, not state: recomputed on load.
@@ -1921,7 +1922,7 @@ mod tests {
         match CorrChange::restore(&s) {
             Err(StateError::Invalid(e)) => {
                 assert!(
-                    e.contains("configuration") && e.contains("perm_block"),
+                    e.contains("corrchange refuses:") && e.contains("perm_block"),
                     "{e}"
                 );
             }

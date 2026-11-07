@@ -1231,8 +1231,9 @@ impl crate::OnlineModel for Hmm {
                     || m.a.len() != k * k
                     || m.buffer.iter().any(|(x, _)| x.len() != d)
                 {
-                    return Err(crate::StateError::Invalid(
-                        "hmm: the state has the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "hmm",
+                        "its saved values have the wrong shape",
                     ));
                 }
                 // No window reads a run here (review 2026-09-26, C3 and C4).

@@ -1016,8 +1016,9 @@ impl OnlineModel for EwClass {
                     || m.diag_classes.iter().any(|c| !c.has_shape(k))
                     || m.win.is_some() != m.cfg.window.is_some()
                 {
-                    return Err(StateError::Invalid(
-                        "ew_class: the state has the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "ew_class",
+                        "its saved values have the wrong shape",
                     ));
                 }
                 // Every snapshot of the window too: `view()` zips the classes
@@ -1040,8 +1041,9 @@ impl OnlineModel for EwClass {
                 if let Some(win) = &m.win
                     && !win.snaps.iter().all(|s| snap(&s))
                 {
-                    return Err(StateError::Invalid(
-                        "ew_class: the window's snapshots have the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "ew_class",
+                        "the snapshots it keeps for its hard window have the wrong shape",
                     ));
                 }
                 // The runs follow the window, not the file (review 2026-09-26,
@@ -1055,8 +1057,9 @@ impl OnlineModel for EwClass {
                         if !m.classes.iter().all(EwCov::keeps_runs)
                             || !m.diag_classes.iter().all(EwCovDiag::keeps_runs) =>
                     {
-                        return Err(StateError::Invalid(
-                            "ew_class: a windowed state whose runs are off".into(),
+                        return Err(crate::model::damaged(
+                            "ew_class",
+                            "it has a hard window, but it saved nothing its window reads",
                         ));
                     }
                     Some(_) => {}

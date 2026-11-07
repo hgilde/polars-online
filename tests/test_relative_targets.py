@@ -67,13 +67,11 @@ def common(**kw):
     ids=["relative_to", "both", "relative", "named"],
 )
 def test_po_target_refuses_a_relative_target_by_name(kw):
-    """``po.target`` refuses either keyword, naming ``with_columns`` and the
-    log ratio a return should be."""
+    """``po.target`` refuses either keyword, naming ``with_columns``."""
     with pytest.raises(TypeError, match=REMOVED) as err:
         po.target("p", **kw)
     msg = str(err.value)
     assert 'lf.with_columns(ret=pl.col("p") - pl.col("mid"))' in msg, msg
-    assert '(pl.col("p") / pl.col("mid")).log()' in msg, msg
     assert "targets" in msg, msg
 
 
@@ -85,10 +83,14 @@ def test_a_builder_refuses_a_relative_table_by_name():
         {"column": "p", "relative_to": "mid"},
         {"column": "p", "relative": "ratio", "name": "r"},
     ]:
-        with pytest.raises(
-            TypeError, match=f'spec "m": target "p" is relative to another column, but {REMOVED}'
-        ):
+        given = "relative_to" if "relative_to" in table else "relative"
+        with pytest.raises(TypeError) as err:
             po.spec.ewridge("m", targets=["x1", table], features=["x0"], half_life=10.0)
+        assert str(err.value) == (
+            f'spec "m": target "p" sets {given}, but relative targets were removed. Compute the '
+            "target as a column with Polars' with_columns in the query before the bank, such as "
+            'lf.with_columns(ret=pl.col("p") - pl.col("mid")), and name that column in targets.'
+        )
 
 
 @pytest.mark.parametrize(
@@ -108,7 +110,7 @@ def test_a_spec_dict_refuses_a_relative_table_by_name(table):
     base = po.spec.ewridge("m", targets=["p"], **common())
     spec = {**base, "targets": [table]}
     with pytest.raises(
-        ValueError, match=f"{REMOVED}. Make the target a column with Polars' with_columns"
+        ValueError, match=f"{REMOVED}. Compute the target as a column before the bank reads it"
     ):
         po.ModelBank([spec])
     out = po.ModelBank([base]).fit_predict(frame())
@@ -145,9 +147,9 @@ def test_the_cli_refuses_a_relative_table_by_name(tmp_path, online_cli):
         check=False,
     )
     assert res.returncode != 0
-    assert f"{REMOVED}. Make the target a column with Polars' with_columns" in res.stderr, (
+    assert f"{REMOVED}. Compute the target as a column before the bank reads it, in the input " in (
         res.stderr
-    )
+    ), res.stderr
     assert not dst.exists()
 
 

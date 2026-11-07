@@ -168,7 +168,7 @@ for formula in [lagged, spread]:
 ```
 
 ```text
-with_windows: a formula over window operators reads each row alone, but its expression (a column computation, such as pl.col("x") + 1) holds the function 'Shift', which it cannot read
+with_windows: a formula over window operators reads each row alone, but its expression (a column computation, such as pl.col("x") + 1) holds the method shift, which it cannot read
 with_windows: 'out' holds no window operator, so it reads only its own row
 ```
 

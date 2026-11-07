@@ -974,7 +974,9 @@ fn a_state_of_the_wrong_shape_is_refused() {
     let mut zero = m.clone();
     zero.cfg.distinct_cap = 0;
     match Audit::restore(&State::new(ModelState::Audit(Box::new(zero)))) {
-        Err(StateError::Invalid(e)) => assert!(e.contains("configuration"), "{e}"),
+        Err(StateError::Invalid(e)) => {
+            assert!(e.contains("audit refuses:"), "{e}")
+        }
         other => panic!("{other:?}"),
     }
 }

@@ -720,6 +720,17 @@ def _parts(node: ast.expr, scope: dict[str, ast.expr]) -> list[tuple[str, str]] 
         for v in node.values:
             if isinstance(v, ast.Constant):
                 out.append(("lit", str(v.value)))
+            elif (
+                # A module's constant, named in capitals, read as its text.
+                isinstance(v, ast.FormattedValue)
+                and isinstance(v.value, ast.Name)
+                and v.value.id in scope
+                and v.value.id.lstrip("_").isupper()
+                and v.format_spec is None
+                and v.conversion == -1
+                and (inner := _parts(v.value, scope)) is not None
+            ):
+                out.extend(inner)
             elif isinstance(v, ast.FormattedValue):
                 spec = ""
                 if isinstance(v.format_spec, ast.JoinedStr):
@@ -774,7 +785,9 @@ def _own(scope: ast.AST) -> Iterator[ast.AST]:
 def python_messages(src: str, path: str) -> tuple[list[Message], list[Unread]]:
     """Every ``raise X(...)`` and ``warnings.warn(...)`` message in Python
     source. A message held in a name is read from the assignment to that
-    name before it in the same function."""
+    name before it in the same function, or from a module's constant: a
+    name assigned once at the module's top level, which a function reads
+    as the module left it."""
     tree = ast.parse(src)
     found: list[Message] = []
     unread: list[Unread] = []
@@ -789,8 +802,23 @@ def python_messages(src: str, path: str) -> tuple[list[Message], list[Unread]]:
         if isinstance(a, ast.Call)
     }
 
-    def visit(fn: ast.AST) -> None:
-        scope: dict[str, ast.expr] = {}
+    assigned = [
+        n.targets[0].id
+        for n in tree.body
+        if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)
+    ]
+    constants: dict[str, ast.expr] = {
+        n.targets[0].id: n.value
+        for n in tree.body
+        if isinstance(n, ast.Assign)
+        and len(n.targets) == 1
+        and isinstance(n.targets[0], ast.Name)
+        and assigned.count(n.targets[0].id) == 1
+        and isinstance(n.value, ast.Constant | ast.JoinedStr | ast.BinOp)
+    }
+
+    def visit(fn: ast.AST, scope: dict[str, ast.expr]) -> None:
+        scope = dict(scope)
         nodes = sorted(
             (n for n in _own(fn) if isinstance(n, ast.Assign | ast.Raise | ast.Call)),
             key=lambda n: (n.lineno, n.col_offset),
@@ -823,10 +851,10 @@ def python_messages(src: str, path: str) -> tuple[list[Message], list[Unread]]:
         else:
             found.append(Message(path, line, kind, parts))
 
-    visit(tree)
+    visit(tree, {})
     for fn in ast.walk(tree):
         if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
-            visit(fn)
+            visit(fn, constants)
     found.sort(key=lambda m: m.line)
     return found, unread
 
