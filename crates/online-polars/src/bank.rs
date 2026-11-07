@@ -5094,18 +5094,19 @@ impl Bank {
         // A newer build's file is told to upgrade, not to refit (PA2).
         let (found, reads) = (header.schema_version, online_core::SCHEMA_VERSION);
         if found > reads {
-            return Err(format!(
-                "state file: it was written by a newer version of polars-online (schema \
-                 {found}, where this build reads up to {reads}). Upgrade polars-online to load it."
-            ));
+            return Err(
+                "state file: it was written by a newer version of polars-online than \
+                 this one reads. Upgrade polars-online to load it."
+                    .into(),
+            );
         }
         if found < MIN_BANK_SCHEMA_VERSION {
-            return Err(format!(
-                "state file: its state schema version {found} is not supported, since this \
-                 build loads schemas {MIN_BANK_SCHEMA_VERSION} to {reads}, and a bank saved before \
-                 schema {MIN_BANK_SCHEMA_VERSION} keeps settings and diagnostics this build no \
-                 longer has. Build the bank again from its specs and fit it on its input."
-            ));
+            return Err(
+                "state file: it was written by a version of polars-online older than \
+                 this one reads, and keeps settings and diagnostics this version no longer has. \
+                 Build the bank again from its specs and fit it on its input."
+                    .into(),
+            );
         }
         // Past the header, the bytes are a bank file of a version this build
         // reads, so a refusal is damage. A model's own refusal (a `try_from`

@@ -174,8 +174,8 @@ pub use marginal::{
 };
 pub(crate) use marglag::{LagMoments, MarginalLags, PairMix, TargetLag};
 pub use model::{
-    CoefVariance, Extra, INPUT_BOUND, ModelState, OnlineModel, State, StateError, Step, all_usable,
-    check_schema, usable,
+    CoefVariance, DAMAGED, Extra, INPUT_BOUND, ModelState, OnlineModel, State, StateError, Step,
+    all_usable, check_schema, usable,
 };
 pub use pa::{Pa, PaCfg, PaMode};
 pub use rcov::{

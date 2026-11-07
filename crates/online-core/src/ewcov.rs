@@ -2810,7 +2810,7 @@ impl crate::OnlineModel for EwCovModel {
                     None => m.cov.set_runs_off(),
                     Some(_) if !m.cov.keeps_runs() => {
                         return Err(crate::StateError::Invalid(
-                            "ew_cov: it is damaged, since what it saved for its hard window does not match this spec. Load an undamaged copy of the state file, or rebuild it from its input."
+                            "ew_cov: it is damaged, since it has a hard window, but it saved nothing its window reads. Load an undamaged copy of the state file, or rebuild it from its input."
                                 .into(),
                         ));
                     }

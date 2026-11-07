@@ -1041,3 +1041,36 @@ fn a_half_life_grid_names_each_spelling_and_a_model_with_no_decay_says_one_thing
         "{e}"
     );
 }
+
+/// A duration beside lam: each form's remedy is one the reader can follow.
+/// A half-life given as a duration with lam is told to leave lam out, not
+/// to give the half-life it already gave; without a clock, gap_cap is left
+/// out rather than given as a number of rows it has no form for.
+#[test]
+fn a_duration_beside_lam_is_told_the_way_out_that_works() {
+    let e = check(
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x"],
+            "clock": "t", "half_life": "10m", "lam": 0.99, "gap_cap": "1h"}"#,
+    )
+    .unwrap_err();
+    assert!(
+        e.starts_with(
+            "spec \"m\": half_life is a duration, but lam is set too, and lam is a decay over one \
+             clock unit, which a duration cannot give. Leave lam out."
+        ),
+        "{e}"
+    );
+    let e = check(
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x"],
+            "lam": 0.99, "gap_cap": "1h"}"#,
+    )
+    .unwrap_err();
+    assert!(
+        e.contains(
+            "spec \"m\": gap_cap is a duration, but the spec has no clock to measure it, and lam \
+             is a decay over one row. Set clock to a column of times (Datetime, Date or Duration) \
+             and give half_life as a duration in place of lam, or leave gap_cap out."
+        ),
+        "{e}"
+    );
+}

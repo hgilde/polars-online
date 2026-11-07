@@ -1432,8 +1432,11 @@ fn every_model_refuses_at_restore_a_configuration_its_new_refuses() {
             Err(StateError::Invalid(e)) => {
                 // `robust`'s messages name the spec's model, `huber` or
                 // `quantile` by its loss (docs/PLAN.md task 196, N1).
-                let named =
-                    |k: &str| e.starts_with(&format!("{k}: the state's configuration is refused"));
+                let named = |k: &str| {
+                    e.starts_with(&format!(
+                        "{k}: it is damaged, since it saved a setting {k} refuses: "
+                    )) && e.ends_with(online_core::DAMAGED)
+                };
                 let head =
                     named(kind) || (kind == "robust" && (named("huber") || named("quantile")));
                 assert!(head && e.contains(says), "{kind}: {e}");

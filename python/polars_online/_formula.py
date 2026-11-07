@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import math
 import numbers
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -147,12 +148,55 @@ def _refuse(who: str, kind: str, detail: str = "") -> FormulaError:
     ``detail``, which follows it in the sentence)."""
     return FormulaError(
         f"{who}: a formula over window operators reads each row alone, but its expression (a "
-        f'column computation, such as pl.col("x") + 1) holds {kind}{detail}, which '
-        f"it cannot read. The formula is computed a chunk at a time, so a node that reads other "
-        f"rows, such as a shift, a cumulative or rolling function or an aggregation, would read "
-        f"only its chunk's rows. Build the formula from {accepted_text()} around the operators, "
-        f"and compute anything else as a column before this call."
+        f'column computation, such as pl.col("x") + 1) holds {kind}{detail}, which it cannot '
+        f"read. The formula is computed a chunk at a time, so a part that reads other rows, "
+        f"such as a shift, a cumulative or rolling function or an aggregation, would read "
+        f"only its chunk's rows. Build the formula from "
+        f"{accepted_text()} around the operators, and compute anything else as a column first."
     )
+
+
+#: What a refused cast is told: the types a formula casts to.
+_CASTS = (
+    " (a formula casts only to Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64, "
+    "Float32, Float64, Boolean, String, Date or Time)"
+)
+
+#: Polars' serialized names of the binary operators a formula refuses, as
+#: the reader writes them.
+_REFUSED_OPERATORS = {
+    "FloorDivide": "//",
+    "Modulus": "%",
+    "Xor": "^",
+    "EqValidity": "eq_missing",
+    "NotEqValidity": "ne_missing",
+}
+
+#: Polars' serialized names of the expressions that read other rows, as the
+#: reader writes them.
+_REFUSED_KINDS = {
+    "Agg": "an aggregation",
+    "Over": "the method over",
+    "Window": "the method over",
+    "Len": "pl.len()",
+    "Not": "the operator ~",
+    "Selector": "pl.all() or another selector",
+    "Wildcard": "pl.all()",
+    "RollingExpr": "a rolling function",
+    "RollingExprBy": "a rolling function",
+}
+
+#: Function families Polars serializes under one name, the method in the
+#: detail: ``.sin()`` is ``{"Trigonometry": "Sin"}``.
+_FAMILIES = ("Boolean", "Pow", "Trigonometry", "StringExpr", "TemporalExpr")
+
+
+def _method(name: str) -> str:
+    """A serialized function's name as the method the reader called: Polars
+    serializes ``.cum_sum()`` as ``CumSum``."""
+    snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name).lower()
+    # Polars' own methods spell the inverse functions as one word: arcsin.
+    return re.sub(r"^arc_", "arc", snake)
 
 
 def _reserved(who: str, column: str) -> FormulaError:
@@ -181,9 +225,8 @@ def _literal(v: Any, who: str) -> tuple[Any, str | None]:
                 # with one bound has a form of its own (task 159, F4).
                 raise _refuse(
                     who,
-                    "a literal that is not finite",
-                    " (Polars serializes inf and nan as null, so a clip with one bound leaves the "
-                    "other out rather than giving inf)",
+                    "a literal that is inf or nan",
+                    " (for a clip with one bound, leave the other out)",
                 )
             if isinstance(value, (bool, int, float, str)):
                 # A typed numeric literal keeps its type through a cast, so
@@ -193,12 +236,14 @@ def _literal(v: Any, who: str) -> tuple[Any, str | None]:
                 numeric = dtype in _DTYPES and dtype not in ("String", "Boolean")
                 typed = dtype if kind == "Scalar" and numeric else None
                 return value, typed
-    raise _refuse(who, "this literal", f" ({json.dumps(v)[:60]})")
+    raise _refuse(who, "a literal of a type a formula does not carry, such as a list or bytes")
 
 
 def _walk(node: Any, who: str) -> Any:
+    if isinstance(node, str) and node in _REFUSED_KINDS:
+        raise _refuse(who, _REFUSED_KINDS[node])
     if not isinstance(node, dict) or len(node) != 1:
-        raise _refuse(who, "this node", f" ({json.dumps(node)[:60]})")
+        raise _refuse(who, "a part of the expression it does not recognize")
     ((kind, body),) = node.items()
     if kind == "Column":
         if isinstance(body, str) and body.startswith(PREFIX):
@@ -224,7 +269,7 @@ def _walk(node: Any, who: str) -> Any:
     if kind == "BinaryExpr":
         op = body.get("op")
         if op not in _BINARY:
-            raise _refuse(who, f"the operator {op!r}")
+            raise _refuse(who, f"the operator {_REFUSED_OPERATORS.get(op, _method(str(op)))}")
         return [_BINARY[op], _walk(body["left"], who), _walk(body["right"], who)]
     if kind == "Ternary":
         return [
@@ -240,10 +285,12 @@ def _walk(node: Any, who: str) -> Any:
             # A dtype with parameters -- Datetime, Duration, Decimal, List,
             # Categorical, Enum, Struct -- is a mapping under its name, which
             # the lookup below could not hash (review 2026-10-05, YB2).
-            raise _refuse(who, f"a cast to {next(iter(name))}")
+            raise _refuse(who, f"a cast to {json.dumps(next(iter(name)))}", _CASTS)
         if not isinstance(name, str) or name not in _DTYPES:
             raise _refuse(
-                who, f"a cast to {json.dumps(name if isinstance(name, str) else dtype)[:60]}"
+                who,
+                f"a cast to {json.dumps(name if isinstance(name, str) else dtype)[:60]}",
+                _CASTS,
             )
         # Strict, Polars' default, unless the cast says otherwise; a wrapping
         # cast (`wrap_numerical=True`) has no form here.
@@ -260,13 +307,15 @@ def _walk(node: Any, who: str) -> Any:
         fn = body.get("function")
         args = [_walk(a, who) for a in body.get("input", [])]
         if isinstance(fn, str):
+            if fn in _REFUSED_KINDS:
+                raise _refuse(who, _REFUSED_KINDS[fn])
             if fn in _UNARY and len(args) == 1:
                 return [_UNARY[fn], args[0]]
             if fn == "Log" and len(args) == 2:
                 return ["log", args[0], args[1]]
             if fn == "FillNull" and len(args) == 2:
                 return ["fill_null", args[0], args[1]]
-            raise _refuse(who, f"the function {fn!r}")
+            raise _refuse(who, f"the method {_method(fn)}")
         if isinstance(fn, dict) and len(fn) == 1:
             ((name, detail),) = fn.items()
             if name == "Pow" and detail == "Generic" and len(args) == 2:
@@ -280,9 +329,19 @@ def _walk(node: Any, who: str) -> Any:
                 lo = rest.pop(0) if detail.get("has_min") else ["lit"]
                 hi = rest.pop(0) if detail.get("has_max") else ["lit"]
                 return ["clip", args[0], lo, hi]
-            raise _refuse(who, f"the function {json.dumps(fn)}")
-        raise _refuse(who, f"the function {json.dumps(fn)}")
-    raise _refuse(who, f"a {kind!r} node")
+            for part in (name, detail):
+                if isinstance(part, str) and part in _REFUSED_KINDS:
+                    raise _refuse(who, _REFUSED_KINDS[part])
+            shown = name
+            if name in _FAMILIES and isinstance(detail, str):
+                shown = detail
+            elif name in _FAMILIES and isinstance(detail, dict) and detail:
+                shown = str(next(iter(detail)))
+            raise _refuse(who, f"the method {_method(shown)}")
+        if isinstance(fn, dict) and fn:
+            raise _refuse(who, f"the method {_method(str(next(iter(fn))))}")
+        raise _refuse(who, "a function it does not recognize")
+    raise _refuse(who, _REFUSED_KINDS.get(kind, "a part of the expression it does not recognize"))
 
 
 def to_tree(expr: pl.Expr, who: str = "window formula") -> list[Any]:

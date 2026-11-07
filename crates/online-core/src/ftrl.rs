@@ -579,18 +579,21 @@ impl OnlineModel for Ftrl {
                 // as `[]` and `self.prox[j][i]` panicked on the first `step`
                 // (review 2026-09-18, B3).
                 if !rows(&m.n) || !rows(&m.zz) || !rows(&m.prox) {
-                    return Err(StateError::Invalid(
-                        "ftrl: the accumulators have the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "ftrl",
+                        "its running sums have the wrong shape",
                     ));
                 }
                 if m.w_target.len() != n {
-                    return Err(StateError::Invalid(
-                        "ftrl: the target weights have the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "ftrl",
+                        "its saved target weights have the wrong shape",
                     ));
                 }
                 if m.pending.len() != n {
-                    return Err(StateError::Invalid(
-                        "ftrl: the decay owed has the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "ftrl",
+                        "the decay it has yet to apply has the wrong shape",
                     ));
                 }
                 m.ensure_buffers();

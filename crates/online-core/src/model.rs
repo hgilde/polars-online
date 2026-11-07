@@ -92,17 +92,31 @@ pub enum ModelState {
 pub enum StateError {
     /// A version [`check_schema`] does not accept: older than
     /// [`MIN_SCHEMA_VERSION`], or newer than [`SCHEMA_VERSION`], a file a
-    /// later build wrote. The message names the range and which side the
-    /// version is on (review 2026-10-06, CF11).
+    /// later build wrote. The message says which side of the range the
+    /// version is on (review 2026-10-06, CF11), and what to do.
     #[error("{}", schema_refusal(*.found, *.current))]
     SchemaVersion { found: u32, current: u32 },
-    #[error("state is for a different model: expected {expected}, found {found}")]
+    /// The saved model is of another kind than the one restoring it. Each
+    /// message is a body the loader names the state file and the spec in
+    /// front of, as `state file: spec "m": ...`.
+    #[error("{expected}: it is damaged, since it holds a model of another kind. {DAMAGED}")]
     WrongModel {
         expected: &'static str,
         found: &'static str,
     },
-    #[error("invalid state: {0}")]
+    /// A state its own model refuses, the whole message: the model's kind,
+    /// what is wrong and the remedy ([`damaged`] writes most of them).
+    #[error("{0}")]
     Invalid(String),
+}
+
+/// The remedy for a state file a model refuses as it loads.
+pub const DAMAGED: &str = "Load an undamaged copy of the state file, or rebuild it from its input.";
+
+/// A state `kind` refuses as it loads, since `since`: the model's kind,
+/// what is wrong, and [`DAMAGED`].
+pub(crate) fn damaged(kind: &str, since: impl std::fmt::Display) -> StateError {
+    StateError::Invalid(format!("{kind}: it is damaged, since {since}. {DAMAGED}"))
 }
 
 /// [`StateError::SchemaVersion`]'s message: a state from a newer build is
@@ -110,15 +124,13 @@ pub enum StateError {
 /// the words an old one is.
 fn schema_refusal(found: u32, current: u32) -> String {
     if found > current {
-        format!(
-            "state schema version {found} was written by a newer version (this build reads \
-             {MIN_SCHEMA_VERSION}..={current}): upgrade to read it"
-        )
+        "it was written by a newer version of polars-online than this one reads. Upgrade \
+         polars-online to load it."
+            .into()
     } else {
-        format!(
-            "state schema version {found} not supported (this build reads \
-             {MIN_SCHEMA_VERSION}..={current}; {MIN_SCHEMA_VERSION} is the oldest it accepts)"
-        )
+        "it was written by a version of polars-online older than this one reads. Rebuild it \
+         from its input."
+            .into()
     }
 }
 
@@ -130,9 +142,38 @@ fn schema_refusal(found: u32, current: u32) -> String {
 /// of 0 -- loaded and failed at a later row, as a panic or as a NaN for
 /// good (review 2026-10-06, CF4, CA6, CD14).
 pub(crate) fn check_cfg(kind: &str, checked: Result<(), String>) -> Result<(), StateError> {
-    checked.map_err(|e| {
-        StateError::Invalid(format!("{kind}: the state's configuration is refused: {e}"))
-    })
+    checked.map_err(|e| refused_settings(kind, &e))
+}
+
+/// [`check_cfg`]'s message: each problem of the settings' own refusal,
+/// without its model's name, which leads, or its remedy, which tells the
+/// reader to change a setting a state file does not let them reach.
+fn refused_settings(kind: &str, refusal: &str) -> StateError {
+    let (problems, _) = crate::Refusals::parse(refusal);
+    let what: Vec<&str> = problems
+        .iter()
+        .map(|p| {
+            let p = p.trim();
+            let p = p
+                .strip_prefix(kind)
+                .and_then(|p| p.strip_prefix(": "))
+                .unwrap_or(p);
+            // The remedy is the problem's last sentence, where it has more
+            // than one.
+            p.rfind(". ").map_or(p, |i| &p[..=i])
+        })
+        .collect();
+    match what.as_slice() {
+        [one] => StateError::Invalid(format!(
+            "{kind}: it is damaged, since it saved a setting {kind} refuses: {one} \
+             {DAMAGED}"
+        )),
+        many => StateError::Invalid(format!(
+            "{kind}: it is damaged, since it saved settings {kind} refuses:\n- {}\n\
+             {DAMAGED}",
+            many.join("\n- ")
+        )),
+    }
 }
 
 impl ModelState {
@@ -1216,20 +1257,66 @@ mod tests {
             .unwrap_err()
             .to_string()
         };
-        let range = format!("{MIN_SCHEMA_VERSION}..={SCHEMA_VERSION}");
-        let older = refused(MIN_SCHEMA_VERSION - 1);
-        assert!(
-            older.contains(&range)
-                && older.contains(&format!("{MIN_SCHEMA_VERSION} is the oldest it accepts"))
-                && !older.contains("newer"),
-            "{older}"
+        let (min, now) = (MIN_SCHEMA_VERSION, SCHEMA_VERSION);
+        assert_eq!(
+            refused(min - 1),
+            "it was written by a version of polars-online older than this one reads. Rebuild it \
+             from its input."
         );
-        let newer = refused(SCHEMA_VERSION + 1);
-        assert!(
-            newer.contains("written by a newer version")
-                && newer.contains(&range)
-                && newer.contains("upgrade"),
-            "{newer}"
+        assert_eq!(
+            refused(now + 1),
+            "it was written by a newer version of polars-online than this one reads. Upgrade \
+             polars-online to load it."
+        );
+    }
+
+    /// A state its settings contradict says it is damaged, with the one
+    /// remedy; a setting the model refuses is said without the model's name
+    /// or the remedy its own refusal gives, each problem on its line where
+    /// there are several.
+    #[test]
+    fn a_damaged_state_says_so_with_its_remedy() {
+        assert_eq!(
+            damaged("ftrl", "its running sums have the wrong shape").to_string(),
+            "ftrl: it is damaged, since its running sums have the wrong shape. Load an undamaged \
+             copy of the state file, or rebuild it from its input."
+        );
+        let one = check_cfg(
+            "hmm",
+            Err(
+                "hmm: n_components must be at most 1024, but it is 2000. Set n_components to \
+                 1024 or fewer."
+                    .into(),
+            ),
+        );
+        assert_eq!(
+            one.unwrap_err().to_string(),
+            "hmm: it is damaged, since it saved a setting hmm refuses: n_components must be \
+             at most 1024, but it is 2000. Load an undamaged copy of the state file, or rebuild \
+             it from its input."
+        );
+        let two = check_cfg(
+            "deco",
+            Err(format!(
+                "deco: a must be at least 1, but it is 0. Set a to 1.\ndeco: b must be finite, \
+                 but it is NaN. Set b.\n{}",
+                crate::STOPPED_MANY
+            )),
+        );
+        assert_eq!(
+            two.unwrap_err().to_string(),
+            "deco: it is damaged, since it saved settings deco refuses:\n- a must be at \
+             least 1, but it is 0.\n- b must be finite, but it is NaN.\nLoad an undamaged copy \
+             of the state file, or rebuild it from its input."
+        );
+        let other = StateError::WrongModel {
+            expected: "ewridge",
+            found: "sgd",
+        };
+        assert_eq!(
+            other.to_string(),
+            "ewridge: it is damaged, since it holds a model of another kind. Load an undamaged \
+             copy of the state file, or rebuild it from its input."
         );
     }
 

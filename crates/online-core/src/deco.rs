@@ -721,8 +721,9 @@ impl crate::OnlineModel for Deco {
                 // by it: the accumulator's is the data's, so a damaged width
                 // is refused here rather than allocated.
                 if m.diag.k() != m.cfg.n_features {
-                    return Err(crate::StateError::Invalid(
-                        "deco: the state has the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "deco",
+                        "its saved values have the wrong shape",
                     ));
                 }
                 crate::model::check_cfg("deco", m.cfg.validate())?;
@@ -738,8 +739,9 @@ impl crate::OnlineModel for Deco {
                     || m.rho_bar_lo.len() != values
                     || m.rho_w.len() != values
                 {
-                    return Err(crate::StateError::Invalid(
-                        "deco: the state has the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "deco",
+                        "its saved values have the wrong shape",
                     ));
                 }
                 Ok(m)
@@ -919,7 +921,9 @@ mod tests {
             other => panic!("{other:?}"),
         }
         match damaged(&|c| c.decay = Decay::Halflife(0.0)) {
-            Err(StateError::Invalid(e)) => assert!(e.contains("configuration"), "{e}"),
+            Err(StateError::Invalid(e)) => {
+                assert!(e.contains("deco refuses:"), "{e}")
+            }
             other => panic!("{other:?}"),
         }
     }

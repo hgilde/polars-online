@@ -496,8 +496,9 @@ impl OnlineModel for Holt {
                     || (fit_len != 0 && fit_len != n)
                     || fit.iter().any(|v| v.len() != fit_len)
                 {
-                    return Err(StateError::Invalid(
-                        "holt: the state has the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "holt",
+                        "its saved values have the wrong shape",
                     ));
                 }
                 Ok(m)

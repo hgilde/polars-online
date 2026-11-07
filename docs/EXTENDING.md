@@ -180,7 +180,9 @@ rounding noise rather than zero.
 `restore` checks the state's shape against its cfg before returning it.
 Every vector must be at the width `new` gives it, with one accumulator per
 target or class, and a window or a lag ring exactly when the cfg asks for
-one. A mismatch is refused as `StateError::Invalid(".. wrong shape")`. **A
+one. A mismatch is refused with `crate::model::damaged(kind, "its running
+sums have the wrong shape")`, which says the state file is damaged and how
+to recover. **A
 state's vectors are whatever a hand-edited JSON file or a flipped length
 header makes them**, and an unchecked one loaded and panicked on the first
 `step`'s indexing. The nested accumulators (`EwCov`, `EwLagCov`,

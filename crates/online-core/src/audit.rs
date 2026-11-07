@@ -1381,8 +1381,9 @@ impl OnlineModel for Audit {
                 let m = (**m).clone();
                 crate::model::check_cfg("audit", m.cfg.validate())?;
                 if !m.has_shape() {
-                    return Err(StateError::Invalid(
-                        "audit: the state has the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "audit",
+                        "its saved values have the wrong shape",
                     ));
                 }
                 Ok(m)

@@ -1276,8 +1276,9 @@ impl crate::OnlineModel for Rcov {
                     || !m.dense.has_shape(k, m.cfg.noise_stride)
                     || !m.sparse.has_shape(k, m.cfg.iv_stride)
                 {
-                    return Err(crate::StateError::Invalid(
-                        "rcov: the state has the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "rcov",
+                        "its saved values have the wrong shape",
                     ));
                 }
                 Ok(m)

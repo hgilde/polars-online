@@ -1437,16 +1437,18 @@ impl OnlineModel for Lasso {
                     })
                     && m.win.is_some() == m.cfg.window.is_some();
                 if !m.acc.has_shape(n, k) || !selection {
-                    return Err(StateError::Invalid(
-                        "lasso: the accumulators have the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "lasso",
+                        "its running sums have the wrong shape",
                     ));
                 }
                 // Every snapshot of the window too (review 2026-10-06, CA2).
                 if let Some(win) = &m.win
                     && !win.snaps.iter().all(|s| s.has_shape(n, k, np))
                 {
-                    return Err(StateError::Invalid(
-                        "lasso: the window's snapshots have the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "lasso",
+                        "the snapshots it keeps for its hard window have the wrong shape",
                     ));
                 }
                 // The runs follow the window, not the file (review 2026-09-26,
@@ -1454,8 +1456,9 @@ impl OnlineModel for Lasso {
                 match m.cfg.window {
                     None => m.acc.set_runs_off(),
                     Some(_) if !m.acc.keeps_runs() => {
-                        return Err(StateError::Invalid(
-                            "lasso: a windowed state whose runs are off".into(),
+                        return Err(crate::model::damaged(
+                            "lasso",
+                            "it has a hard window, but it saved nothing its window reads",
                         ));
                     }
                     Some(_) => {}
