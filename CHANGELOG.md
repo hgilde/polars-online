@@ -70,6 +70,20 @@ returns.
 
 ### Changed
 
+- A column of a type its role cannot take, refused by the extension, now
+  raises `po.WrongTypeError` (a `TypeError` and a `ValueError`) where it
+  raised `ValueError`: a text target, feature, weight or clock; an `Int128`
+  or time-of-day clock; a temporal column read as anything but the clock; a
+  `label_clock` column whose type does not match the clock's; a key column
+  with no text form; a group column `group_close="monotone"` cannot order;
+  a window operator or increment input of the wrong type; and a `po.gbdt`
+  column the libraries cannot read. Any `except ValueError` still catches
+  them. The time-of-day clock refusal of `po.stream.embargo` and
+  `po.eval.window_metrics` (once `ValueError`) and `window_metrics`'
+  text-clock refusal (once `TypeError`) raise the same class, so every path
+  that refuses one clock raises one class. Messages, and the command line's
+  output and exit code, are unchanged, but for `po.stream.with_windows(like=...)`'s
+  clash, which now begins `po.stream.with_windows:`.
 - Refusals whose exception class did not fit their problem now raise one
   of three new classes, each inheriting from both the class the problem
   calls for and the class raised before, so existing `except` handlers keep
