@@ -84,7 +84,7 @@ weighs about 290 rows in all, too few to estimate forty small effects
 well, so shrinking every one toward 0 lowers the error.
 
 To choose a ridge on weeks held out from the fit, from Grams that one pass
-leaves, see [A ridge and its t](../GRAM.md#a-ridge-and-its-t). That fits on
+leaves, see [Fit a ridge from a Gram](fit-a-ridge-from-a-gram.md). That fits on
 some weeks and scores on others, and needs no stream order.
 
 ## Choose the ridge and the half-life together
@@ -117,7 +117,7 @@ beta[0] = rng.normal(0, 0.1, k)
 step = rng.normal(0, 0.1 * np.sqrt(1 - 0.999**2), (n, k))
 for i in range(1, n):
     beta[i] = 0.999 * beta[i - 1] + step[i]
-# The target, and the table saved for the scan to read.
+# The target, and the table saved for `pl.scan_parquet` to read.
 names = [f"x{j}" for j in range(k)]
 y = (x * beta).sum(axis=1) + rng.standard_normal(n)
 pl.DataFrame({"t": np.arange(n, dtype=float), **dict(zip(names, x.T)), "y": y}).write_parquet("walk.parquet")

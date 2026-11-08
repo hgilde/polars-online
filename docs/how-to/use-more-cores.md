@@ -12,8 +12,10 @@ work into pieces, one per [spec](../GLOSSARY.md#the-model-bank-and-what-it-reads
 and group, or one per spec without a `group`. It runs the pieces on its own
 threads, separate from Polars', largest first, so a few big groups do not
 leave cores idle at the end. So a bank with one spec, one group and one
-[half-life](../GLOSSARY.md#time) is one thread's work per chunk, while Polars reads and writes in
-parallel around it. All of it runs in one process, by design ([What this
+[half-life](../GLOSSARY.md#time) is one thread's work per chunk, unless
+that spec is wide enough to split ([Split one wide spec across
+threads](#split-one-wide-spec-across-threads)), while Polars reads and
+writes in parallel around it. All of it runs in one process, by design ([What this
 is not](../../README.md#what-this-is-not)). The thread count never changes
 the numbers, as [Why the thread count cannot change the
 numbers](../explanation/chunk-invariance-and-streaming.md#why-the-thread-count-cannot-change-the-numbers)
@@ -50,7 +52,7 @@ specs, more half-lives, or a wide spec split across threads.**
 | specs, in the list the bank takes | one piece per spec | eight single-group specs, k=20 over 300k rows, run in 155 ms in one bank, against 641 ms one at a time |
 | half-lives, as a list given to `half_life=` | each half-life in a grid is its own set of running sums, and a piece's half-lives run in parallel on the bank's threads. Ridge and feature-set grids share one set of sums and are expanded at solve time, so they need no thread | |
 | `shards`, on a wide `marginal` | a piece that runs on several threads: `shards` splits its pairs across the bank's threads within a group ([`marginal`](../MODELS.md#marginal--every-pairs-moments-kept-in-the-state)) | |
-| `gram_threads`, on a wide `ewridge` or `ew_cov` | a piece that runs on several threads: the work on each row's `k × k` [Gram](../GLOSSARY.md#fitting-a-model), or a block's merge, is split across the bank's threads within a group, from 725 columns, or 256 under `gram_block_rows`. A count caps the share of the threads. The default, `"auto"`, splits only when the groups running at once leave half the threads idle, since a split speeds a run up only on idle threads | one group at 2,000 features: 3.0× under `"auto"` on 14 threads; four groups at 800 features: 1.6×; 28 groups: even, where taking every thread was 9-11% slower ([`gram_threads`](../GRAM.md#one-wide-gram-on-several-threads)) |
+| `gram_threads`, on a wide `ewridge` or `ew_cov` | a piece that runs on several threads: the work on each row's `k × k` [Gram](../GLOSSARY.md#fitting-a-model), or a block's merge, is split across the bank's threads within a group, from 725 columns, or above 256 under `gram_block_rows`. A count caps the share of the threads. The default, `"auto"`, splits only when the groups running at once leave half the threads idle, since a split speeds a run up only on idle threads | one group at 2,000 features: 3.0× under `"auto"` on 14 threads; four groups at 800 features: 1.6×; 28 groups: even, where taking every thread was 9-11% slower ([`gram_threads`](../GRAM.md#one-wide-gram-on-several-threads)) |
 | a Python thread that reads ahead | Python's global lock is released while a chunk is in the bank, so a Python reader thread can run ahead of `ModelBank.fit_predict` | |
 
 **Specs run side by side, and each gives the numbers it gives alone.**
@@ -160,7 +162,8 @@ spec and one group, the best of three runs, measured on 2026-09-25:
 | the moments of one target alone | 1.2 times as fast, since the bank's own work on each row does not split |
 
 **A wide `ewridge` or `ew_cov` splits by `gram_threads`,** whose default,
-`"auto"`, already splits from 725 columns, or 256 under `gram_block_rows`, when the groups running at once
+`"auto"`, already splits from 725 columns, or above 256 under
+`gram_block_rows`, when the groups running at once
 leave half the threads idle. [One wide Gram on several
 threads](../GRAM.md#one-wide-gram-on-several-threads) measures it.
 

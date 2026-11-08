@@ -3261,7 +3261,8 @@ class TestTheMadScaleIsNumpysWeightedMedian:
 
 
 class TestAlgorithmHOnAGramAgainstStatsmodels:
-    """``docs/GRAM.md``, *Huber regression on a Gram* (task 272 (a), batch
+    """``docs/how-to/fit-huber-on-a-gram.md`` (the theory: ``docs/GRAM.md``,
+    *Huber regression on a Gram*; task 272 (a), batch
     (b)): Huber's algorithm H on the bank's Gram, the pseudo-response's
     moments read by a Polars query a pass, converges to statsmodels' Huber
     M-estimate with the MAD scale, ``RLM(HuberT(1.345)).fit(scale_est="mad")``

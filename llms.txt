@@ -156,9 +156,9 @@ Windows alike.
 ## Reference
 
 [OUTPUTS.md](https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md) (every model's output fields),
-[WINDOWS.md](https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md), [RUNNER.md](https://github.com/hgilde/polars-online/blob/main/docs/RUNNER.md) (every TOML key and flag),
+[RUNNER.md](https://github.com/hgilde/polars-online/blob/main/docs/RUNNER.md) (every TOML key and flag),
 [STATE-WORKFLOW.md](https://github.com/hgilde/polars-online/blob/main/docs/STATE-WORKFLOW.md), [DIAGNOSTICS.md](https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md),
-[DATA-QUALITY.md](https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md), [GRAM.md](https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md),
+[DATA-QUALITY.md](https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md),
 [GBDT.md](https://github.com/hgilde/polars-online/blob/main/docs/GBDT.md), [PERFORMANCE.md](https://github.com/hgilde/polars-online/blob/main/docs/PERFORMANCE.md),
 [VERSIONS.md](https://github.com/hgilde/polars-online/blob/main/docs/VERSIONS.md)
 
@@ -169,6 +169,8 @@ Windows alike.
 - [Time and decay](https://github.com/hgilde/polars-online/blob/main/docs/explanation/time-and-decay.md)
 - [Warm-up and readiness](https://github.com/hgilde/polars-online/blob/main/docs/explanation/warm-up-and-readiness.md)
 - [A bank's state and resuming it](https://github.com/hgilde/polars-online/blob/main/docs/explanation/state-and-resuming.md)
+- [How a window weighs its rows](https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md)
+- [How a Gram stands in for the rows](https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md)
 - [Against scikit-learn](https://github.com/hgilde/polars-online/blob/main/docs/explanation/against-scikit-learn.md): `SGDRegressor`
   beside `sgd` and `ewridge`, and where each wins
 

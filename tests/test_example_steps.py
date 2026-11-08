@@ -136,7 +136,10 @@ def test_the_files_were_read():
         if (n := sum(steps(code)[0] >= N for _, code in python_blocks(_text(path))))
     }
     assert sum(held.values()) > 80, held
-    assert {"README.md", "docs/MODELS.md", "docs/GRAM.md"} <= set(held), held
+    # GRAM.md is an explanation now, whose recipes live in the how-tos it links.
+    assert {"README.md", "docs/MODELS.md", "docs/how-to/fit-weekly-grams-in-one-pass.md"} <= set(
+        held
+    ), held
 
 
 @pytest.mark.parametrize("path", HELD)

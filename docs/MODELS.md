@@ -555,142 +555,23 @@ the ridge is added to the feature's variance in the solve.
 
 #### Choosing its settings
 
-The docstring defines every setting the advice names.
+To fit a grid of `ridge` values and `feature_sets` from one Gram, see
+[Grids, instances and slots](explanation/grids-and-instances.md#how-a-grid-shares-its-work).
 
-```python
-rr = po.spec.ewridge(
-    "rr", targets=["y"], features=["x0", "x1", "x2"], clock="t", gap_cap=300.0, half_life=600.0,
-    ridge=[1e-6, 0.1],             # a grid of two ridge values, solved from one set of sums
-    feature_sets={"mkt": ["x0"], "all": ["x0", "x1", "x2"]},   # named feature subsets, likewise
-    solve_every=12.0,              # solve every 12 clock units ...
-    max_rows_between_solves=100,   # ... and at least every 100 rows, whatever the clock does
-    standardize=True,              # solve on the correlation matrix, then unscale the coefficients
-    ridge_scale="mean",            # the default ("sum", a warm start that fades, is refused beside standardize, a ridge or feature-set grid, or window_size)
-    coef_prior=None,               # the default: shrink toward zero, not toward a stated belief
-    target_gaps="own_rows",        # the default: a target null on some rows is fitted on its own rows
-)
-```
+To choose how often `ewridge` solves, with `solve_every` and
+`max_rows_between_solves`, see [Choose when `ewridge`
+solves](how-to/choose-when-ewridge-solves.md).
 
-**A grid of `ridge` values or of `feature_sets` adds a solve per grid point
-(each ridge value with each feature set: four in `rr`), and the model still
-learns each row once.** Only the named sets are fitted, so
-to keep a fit on every feature, name a set that holds them all, such as
-`"all"`.
+To start from yesterday's fit, with `coef_prior` and `ridge_scale="sum"`,
+see [Start from a prior fit](how-to/start-from-a-prior-fit.md).
 
-**To keep the coefficients current at every row, give
-`max_rows_between_solves=1`.** Otherwise `ewridge` predicts with the
-coefficients of its last solve. Under a finite half-life it solves once the
-weight learned since then reaches `ln 2 / 50` of the weight the fit holds:
-about 1.4%, or every `half_life/50` of clock in steady state.
+To start each session from a blend with the long run, with
+`session_shrink` and `long_half_life`, see [Blend each session with the
+long run](how-to/blend-each-session-with-the-long-run.md).
 
-**While a group's weight is more than about 1.4% below its floor, the
-model runs no solve that nothing would read.** The floor is the least of a
-row per unknown (`k + 1` for `k` features, `k` without an intercept) and
-`min_weight`. Below it every prediction is withheld, so under the schedule
-by weight, and not under a hard window, a solve that comes due there is
-not run, unless `max_rows_between_solves` also brings it due. A row cap's
-solves always run. `bank.solve_failures()`, which counts the solves that
-needed a jitter (a small value added to the diagonal so that a
-near-singular system factorizes) or were withheld as ill-conditioned,
-counts only the solves run. So a group whose
-weight never reaches the floor, such as one of two rows over two features,
-reports no `coef` on any row, in `bank.coef()` or as a closed group. To
-keep every solve, give `min_weight=0`, which makes the floor 0, or
-`max_rows_between_solves=1`, whose solves always run. The docstring's
-Notes, under *The solve schedule*, give the exact margin and its two rare
-cases.
-
-**To solve on the clock instead, give `solve_every` in clock units.** Until
-`solve_every` has passed since the group's first row or its last reset, or
-`max_rows_between_solves` rows with weight have been learned, the model
-solves by weight in a first period. So a fit of its first few rows is not
-held for a whole period. With `solve_every=500` and `min_weight=50`, the mean squared error
-of the predictions over the first 600 rows was 3.1e-6, where holding the
-first fit for the whole period gave 5.6e-4, on five seeds of a
-five-feature stream at a half-life of 1,000.
-
-**To solve only for each target's first fit, and then only where a row
-cap says, give `solve_every=float("inf")`.** Neither it nor any value from
-`1e18` on comes due, since `1e18` lies past the end of any stream. Neither
-has a first period. The model keeps its sums, and solves only to give each
-target its first fit and where a row cap says.
-
-**Under `half_life=float("inf")` or `lam=`, give a `solve_every` when the
-fit need not be current at every row,** since both solve on every row by
-default. On 6M rows × 20 features from a parquet stream, `solve_every=1000`
-took 1.4 s instead of 10.7 s, with the coefficients at most 1000 rows out
-of date.
-
-**To start from a belief that fades as data arrives, such as yesterday's
-fit, give it as `coef_prior` with `ridge_scale="sum"`.** The ridge then
-sits on the decaying sum scale, as `rls`'s `delta` does, and pulls every
-coefficient toward `coef_prior`, the intercept included, until the evidence
-takes over. `S` is a mean, so under the default `"mean"` the ridge is a
-penalty per observation that never fades: use it to hold the slopes near
-`coef_prior`, or near zero, for good.
-
-**To start each session from a blend with the long run, give
-`session_shrink=f` and `long_half_life=`, beside a `session` column and a
-`session_gap` that is a number:**
-
-```python
-blend = po.spec.ewridge(
-    "blend", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=100.0,
-    session="session",       # the column whose change starts a session ...
-    session_gap=60.0,        # ... and the clock step applied there; "reset" is refused beside a blend
-    long_half_life=5000.0,   # a twin of the sums, forgetting at this longer half-life
-    session_shrink=0.3,      # at each session change, the moments become 0.7 of this session's and 0.3 of the twin's
-)
-```
-
-The blended moments keep this session's weight, Kish's effective sample
-size and prior scale (`p` in the update), so `weight_sum`, the warm-up
-gates and the solve schedule do not move. The blend changes the moments and
-nothing else. The coefficients stay as last solved until the next solve the
-schedule brings due, which reads the blended moments. So a small `f` moves the output by a small amount,
-and `0` is the same as no `session_shrink`. With `max_rows_between_solves=1`
-the solve on the session's first row reads the blend, and the next row is
-predicted from it.
-
-**For a fit over hundreds of features, give `gram_block_rows=256`.**
-Learning a row takes O(k²) time in `S` for `k` features, and at a thousand
-features that takes most of the run. The option holds 256 rows back
-and adds them to `S` with one matrix product. Its speed-ups were measured
-on 2026-09-08 by `crates/online-core/examples/gram_block_bench.rs`, for
-`EwRidge::step` with one target on one core. A solve brings `S` up to
-date before it runs, so solve rarely: under `half_life=inf`, give
-`solve_every=float("inf")`, which never comes due, and a row cap, as `wide`
-does:
-
-```python
-wide = po.spec.ewridge(
-    "wide", targets=["y"],
-    features=["x0", "x1", "x2"],   # three here, so the block runs; the speed-ups are for 256 to 2,000
-    half_life=float("inf"), solve_every=float("inf"), max_rows_between_solves=1000,
-    gram_block_rows=256,           # add 256 held rows to S in one matrix product
-)
-```
-
-| features | rows per second with no solve, against one row at a time, on one thread |
-|---:|---:|
-| 256 | 5.1× |
-| 1,000 | 6.6× |
-| 2,000 | 5.9× |
-
-With a solve every 512 rows, each speed-up falls to about 4×, because the
-solve takes the same time either way. Blocking leaves `weight_sum`, the
-timing of every prediction and chunk invariance unchanged, and the
-coefficients agree with the row-by-row fit to rounding.
-
-**That product runs on several cores wherever the bank has idle threads.**
-`gram_threads` defaults to `"auto"`, which splits a group's update only
-when the work the bank runs at once, one piece per spec and group, leaves
-at least half the bank's threads idle. The threads are the bank's own, and
-the output is the same to the bit at every thread count. At 2,000 features a bank
-learned 3.9 times as fast on eight threads, with one target and a
-256-row block (measured on 2026-10-08 at a load average of 16). A bank whose groups
-already keep every core busy gains nothing from a split, so `"auto"` does
-not split there. `gram_threads=8` asks for eight whatever the groups.
+To fit hundreds of features fast, with `gram_block_rows` and
+`gram_threads`, see [Fit hundreds of
+features](how-to/fit-hundreds-of-features.md).
 
 #### See also
 
@@ -1244,10 +1125,11 @@ another side:
   target, on the same sums, scale and refit.
 - [`sgd`](#sgd--stochastic-gradient-descent) with `loss="huber"`, the same
   loss with a step per row in O(k) time.
-- [`rls`](#rls--recursive-least-squares), whose fit `huber` gives with
-  `ridge_scale="sum"` and `huber_delta=inf`.
-- [GRAM.md](GRAM.md#huber-regression-on-a-gram), a Huber fit from one
-  shared Gram, a query over the rows per pass.
+- [`rls`](#rls--recursive-least-squares), whose predictions `huber` gives within 1e-9
+  with `ridge_scale="sum"`, `huber_delta=inf` and `solve_every=0`,
+  where `rls` has `delta=ridge`.
+- [Fit a Huber regression on a Gram](how-to/fit-huber-on-a-gram.md), a
+  Huber fit from one shared Gram, two queries over the rows per pass.
 - [Bound a run's memory](how-to/bound-memory.md#bound-the-rows-a-refit-holds),
   to bound the refit buffers of all a spec's groups with `refit_budget`.
 - [Reproduce an earlier version's fit](how-to/reproduce-an-earlier-versions-fit.md),

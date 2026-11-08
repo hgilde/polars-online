@@ -309,9 +309,9 @@ and the rows still waiting for their windows to close, and a run given
 `load_state=` returns those rows first. Under a slice (`head(n)`) the run
 reads past the last row it returns, so the state also records how many rows
 of the input it consumed, and the input's first row and last rows read.
-WINDOWS.md's [Saving and resuming a window
-run](WINDOWS.md#saving-and-resuming-a-window-run) shows each case with a
-recipe. Here is what each rule guarantees, and the test that holds it:
+[Resume a window run](how-to/resume-a-window-run.md) gives the steps, with
+a recipe for resuming on the next file, resuming after a slice, and a
+refusal. Here is what each rule guarantees, and the test that holds it:
 
 | the input a resumed run is given | the run | held by |
 |---|---|---|

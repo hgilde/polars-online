@@ -3,7 +3,7 @@
 A regime detector makes a claim about a stream: that its correlation has
 changed, how long the current regime has lasted, or which state a row
 belongs to. A claim like that can only be checked on a stream whose answer
-is written down. [`po.sim.regimes`](DIAGNOSTICS.md#data-whose-truth-is-known)
+is written down. [`po.sim.regimes`](how-to/test-a-detector-on-known-truth.md)
 generates one from a seed and returns the truth beside the rows. This page
 reports what the detectors find on such streams, and on Monte-Carlo draws
 whose null distribution is published: where each is right, and what it
@@ -11,7 +11,7 @@ misses.
 
 Five models make a claim about a stream: `deco`, `rcov`, `hmm`,
 `corrchange` and `bocpd`. This page measures all five. It also measures two
-remedies for [series that tick at their own
+ways out for [series that tick at their own
 times](how-to/align-series-that-tick-at-their-own-times.md): refresh-time
 sampling, and the lagged co-moments of `ew_cov(lags=...)`. Each model's
 entry in [MODELS.md](MODELS.md) gives its update rule and a recipe that
@@ -98,7 +98,7 @@ rows and raises 0.53 alarms per 1000. Neither is better: they answer
 different questions ([§5](#5-two-changepoint-detectors-on-the-same-break)).
 
 **Asynchrony leaves almost nothing of a correlation at the finest interval,
-and both remedies recover most of it.** A true correlation of 0.8 reads as
+and both ways out recover most of it.** A true correlation of 0.8 reads as
 0.095 from one-row returns. Refresh-time sampling recovers 0.54 from 19157
 returns, 16 % of the 119991 at the finest interval. The lag inversion of
 §6, on `ew_cov(lags=...)`, recovers 0.77 while reading every return.
@@ -454,11 +454,13 @@ uncapped posterior on the same rows, and none now).
 
 The Epps effect is the fall of a measured correlation toward zero as its
 returns are taken over shorter intervals, when the series tick at their
-own times. The stream here has two series with a true correlation of 0.8,
-over 120,000 rows, each observed at an expected rate of 0.25 per row
-(`async_rates`). Previous-tick sampling carries each series' last value
-forward and takes returns every so many rows. At the finest interval that
-is the naive thing to do, and it reads 0.095:
+own times. [Series that tick at their own
+times](explanation/asynchronous-series.md) explains why it happens and
+how much of it each way out recovers. The stream here has two series with a true
+correlation of 0.8, over 120,000 rows, each observed at an expected rate
+of 0.25 per row (`async_rates`). Previous-tick sampling carries each
+series' last value forward and takes returns every so many rows. At the
+finest interval it reads 0.095:
 
 | sampling interval | returns | correlation |
 |-------------------|---------|-------------|
@@ -469,10 +471,10 @@ is the naive thing to do, and it reads 0.095:
 | 100               | 1199    | 0.752       |
 | 500               | 239     | 0.745       |
 
-The truth is 0.8. Two remedies recover most of it, and they differ in what
+The truth is 0.8. Two ways out recover most of it, and they differ in what
 they read:
 
-| remedy | what it reads | correlation |
+| way out | what it reads | correlation |
 |---|---|---|
 | refresh-time sampling, `po.stream.refresh_time` | a grid point at the first row by which both series have ticked since the last point: 19157 returns, 16 % of the 119991 at the finest interval. On average a grid point kept 81 % of the ticks since the one before | 0.543 |
 | lag inversion, `ew_cov(lags=...)` read through `po.corr.epps_invert` | every one of the 119991 fine returns, with no grid: the correlation at a scale of `L` rows, from the lagged co-moments at one row | 0.772 at `L` = 192 |
@@ -498,9 +500,8 @@ more from the next seeds, so its noise is printed beside it:
 | 768  | 0.760  | 0.771           | 0.026           |
 | 1024 | 0.756  | 0.769           | 0.029           |
 
-**`L` is the same trade-off the sampling interval is, and the sweep
-passes its best point.** Too small, and the cross-covariance at longer
-lags is left out; too large, and the sum takes in noise. The mean over five
+**The sweep passes the best point of `L`'s trade-off** ([The two ways
+out](explanation/asynchronous-series.md#the-two-ways-out)). The mean over five
 seeds levels off at 0.775 from `L` = 256 to 512 and falls after, while its
 spread across seeds grows from 0.001 at 128 to 0.029 at 1024. Seed 7 peaks
 at a smaller `L`, 192. Anywhere from 128 to 512 reads within 0.01 of the best,

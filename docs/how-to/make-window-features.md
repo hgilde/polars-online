@@ -39,8 +39,8 @@ makes a feature. Each operator keeps running sums, so it does the same
 work on a row however long its window, where Polars' `rolling` gathers the
 window's rows again for every row. [What a window operator
 costs](../PERFORMANCE.md#what-a-window-operator-costs) has the timings.
-[docs/WINDOWS.md](../WINDOWS.md) lists every operator, and how each one
-weighs the rows of its window.
+[How a window operator weighs the rows near each row](../WINDOWS.md)
+lists every operator, and how each one weighs the rows of its window.
 
 1. **Write each feature as a formula around a window operator.** Give it
    a `half_life`, how fast the weights fall away from the row, and, to cut
@@ -48,7 +48,8 @@ weighs the rows of its window.
    units: numbers on a numeric clock, and durations such as `"10s"` on a
    temporal one. Around the operators, write element-wise Polars:
    `pl.col("mid") - po.ewm_mean("mid", half_life="5s", window_size="2m")`
-   is the mid against its recent mean. [docs/WINDOWS.md](../WINDOWS.md)
+   is the mid against its recent mean. [What a formula may
+   hold](../WINDOWS.md#why-a-formula-around-the-operators-is-element-wise)
    lists what a formula may hold.
 2. **Call `.online.with_windows` on the query, with each formula as a
    keyword argument.** It adds one column per formula after the input's
@@ -59,11 +60,13 @@ weighs the rows of its window.
 3. **Give the same call the clock keywords, once for every formula in
    it:** `clock`, its `gap_cap`, and `group` for one set of windows per
    group.
-4. **Chain `.online.fit_predict` after it, with a spec that names the new
+4. **Make the target column with Polars' `with_columns`, chained after
+   `with_windows`,** if the input does not hold it.
+5. **Chain `.online.fit_predict` after it, with a spec that names the new
    columns in its `features`.** Give the
    [spec](../GLOSSARY.md#the-model-bank-and-what-it-reads) the same clock
    keywords, so the windows and the model share one clock.
-5. **Run the query.** Each row of the output has the input's columns, the
+6. **Run the query.** Each row of the output has the input's columns, the
    features, and the spec's
    [output column](../GLOSSARY.md#what-a-bank-writes).
 
@@ -79,11 +82,11 @@ trends = pl.scan_parquet("trades.parquet").online.with_windows(    # 1 to 3: the
     trend_30s=pl.col("mid") - po.ewm_mean("mid", half_life="30s", window_size="2m"),
     **clock,
 )
-# 4. A model that reads them: the target, how far from the mid each trade printed, null on a quote.
+# 5. A model that reads them: the target, how far from the mid each trade printed, null on a quote.
 by_trend = po.spec.ewridge("by_trend", targets=["edge"], features=["trend_5s", "trend_30s"], half_life="30m", **clock)
-fitted = (trends.with_columns(edge=(pl.col("price") - pl.col("mid")).abs())
+fitted = (trends.with_columns(edge=(pl.col("price") - pl.col("mid")).abs())  # 4. the target column
                 .online.fit_predict([by_trend])
-                .collect())                                         # 5. run the query
+                .collect())                                         # 6. run the query
 print(fitted.columns)
 print(f"rows {fitted.height}, of which predicted {fitted['by_trend'].struct.field('pred_edge').count()}")
 ```
@@ -215,24 +218,63 @@ clock column "ts" steps back by 24m45s118ms961us at row 1502
 3000
 ```
 
+## Window an operator's output
+
+Use this when a feature is a window over another window, such as the
+recent trend of a rate. An operator's input can be an element-wise formula,
+`po.increment` included, but not another operator, which the outer operator
+refuses when it is called.
+
+1. **Make the inner operator a column in one `.online.with_windows`
+   call.**
+2. **Window that column in a second `.online.with_windows` call,** chained
+   after the first, with the same clock keywords.
+
+Here a rate of traded volume comes from a column of cumulative volume, as
+a feed prints it, and a trend of that rate from the second call. Each
+symbol trades about 1.56 units a second over the whole stream, and the
+rate, read per second, sits near that. This code uses `trades` and
+`trades.parquet` from [Example data](../../README.md#example-data):
+
+```python
+clock = dict(clock="ts", gap_cap="5m", group="symbol")
+volume = (
+    pl.scan_parquet("trades.parquet")
+    .with_columns(cum_volume=pl.col("quantity").cum_sum().over("symbol"))   # a running volume: null on the quotes
+    .online.with_windows(                                                    # 1. an operator over an increment
+        volume_rate=po.ewm_rate(po.increment("cum_volume"), half_life="30s", window_size="5m"),   # units traded per second
+        **clock,
+    )
+    .online.with_windows(                                                    # 2. a mean of that rate
+        rate_trend=po.ewm_mean("volume_rate", half_life="2m", window_size="10m"),
+        **clock,
+    )
+    .collect()
+)
+# The stream's own rate, beside each symbol's median rate and trend.
+seconds = (trades["ts"].max() - trades["ts"].min()).total_seconds()
+print(f"units traded a second by each symbol, over the stream: {trades['quantity'].sum() / seconds / 2:.2f}")
+for symbol, rate, trend in volume.group_by("symbol").agg(pl.col("volume_rate", "rate_trend").median()).sort("symbol").iter_rows():
+    print(f"{symbol}: volume_rate's median {rate:.2f}, rate_trend's median {trend:.2f}")
+```
+
+```text
+units traded a second by each symbol, over the stream: 1.56
+AAA: volume_rate's median 1.61, rate_trend's median 1.51
+BBB: volume_rate's median 1.59, rate_trend's median 1.52
+```
+
 ## Rows the output holds back or leaves out
 
-**`with_windows` returns the rows in input order, each once every window
-over it has its value.** A window that looks back, under the default
-`closed="right"`, has its value at the next row with a later clock value,
-and a window that looks ahead once its span has passed. So the output
-trails the input by one clock step for a window that looks back, and by
-the longest look-ahead window for one that looks ahead. A group that falls
-silent holds back the rows after it for at most `gap_cap` of the stream's time. Only a clock column has a `gap_cap`, so a
-window that looks ahead under `group` needs `clock`, and `with_windows`
-raises `ValueError` without it. Each group's clock would count only its own
-rows, and a silent group's windows would hold back every later row until
-the input ended.
+`with_windows` returns each row once every window over it has its value
+([Which rows a window holds](../WINDOWS.md#which-rows-a-window-holds));
+under `group`, a window that looks ahead needs `clock`.
 
 **Two things keep a row out of the output: `partial="drop"` (each
 operator's `partial` sets what a window cut short by a gap gives), and
 `save_state=`, which saves for the next run the rows still waiting for a
 window when the input ends.** Without `save_state=`, those rows come out
-with their open windows null. [docs/WINDOWS.md](../WINDOWS.md) says what
-`partial` does to a window that a gap or a session change cuts short, and
-how to resume a window run from its saved state.
+with their open windows null. [docs/WINDOWS.md](../WINDOWS.md#the-edges-of-a-window-gaps-sessions-and-resets)
+says what `partial` does to a window that a gap or a session change cuts
+short, and [Resume a window run](resume-a-window-run.md) shows how to go on
+from the saved state.

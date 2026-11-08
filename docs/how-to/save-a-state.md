@@ -144,8 +144,7 @@ rest of what a loaded bank holds.
 build.** A state saved by 0.13.0 or an earlier release does not load in
 the releases after it: refit the bank from its input. A [window
 run](../GLOSSARY.md#fitting-a-model), started with `with_windows`, keeps a
-state of its own ([Saving and resuming a window
-run](../WINDOWS.md#saving-and-resuming-a-window-run)). [Why a state loads
+state of its own ([Resume a window run](resume-a-window-run.md)). [Why a state loads
 in later
 versions](../explanation/state-and-resuming.md#why-a-state-loads-in-later-versions)
 gives the two parts of a state outside that promise, and the reasons.

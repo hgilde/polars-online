@@ -382,7 +382,7 @@ plants an answer and prints it beside what the library found: a planted
 coefficient beside its estimate, a break's row beside the row it was
 flagged. A block whose output is not shown only runs, so a section that
 claims a capability shows it with a recipe instead. Each page with recipes
-has a test that runs them, as `tests/test_gram_page.py` runs GRAM's, and
+has a test that runs them, as `tests/test_kind_pages.py` runs the how-tos', and
 the README's run in what its *Example data* block builds.
 
 **Every code block runs.** A code example is a claim the reader trusts. The

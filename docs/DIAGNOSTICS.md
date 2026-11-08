@@ -1,13 +1,10 @@
 # Is the model working?
 
-A model fitted on a stream always returns a number. Whether that number
-can be trusted is a set of separate questions. Is the prediction scaled
-right? Has the relationship broken? Can a coefficient's t be believed? Is
-the fit missing a lag or a curvature? Another model may predict better,
-and the model may simply not be ready yet. Each question has its own
-diagnostic. A diagnostic is a switch in the spec that adds fields to the
-model's output on every row, or a call in `po.eval` that scores an output
-after the run.
+This reference page lists, for anyone who reads a model's output and
+wants to know whether its predictions can be trusted, each question, the
+diagnostic that answers it and its fields. Each diagnostic is a switch in
+the spec that adds fields to the model's output on every row, or a call in
+`po.eval` that scores an output after the run.
 
 [Data quality](DATA-QUALITY.md) asks whether the data can be
 learned from at all. This page asks whether the model learned from it well.
@@ -102,7 +99,7 @@ These are the words of the library that the page uses:
 | spec | one model's description: the model, the columns it reads, and how it treats time. `po.spec.ewridge(...)` makes one, and [the README's model table](MODELS.md#the-models-at-a-glance) lists every kind |
 | bank | `po.ModelBank`, a set of specs fitted together over the same rows |
 | slot | one prediction of one target, at one point of a grid such as a list of ridge values. A diagnostic writes one field per slot, suffixed with the target, as `cusum_y` |
-| out of sample | a row's prediction is made before the model learns from the row, so its residual `resid = y − pred` is one the model has not seen |
+| out-of-sample | a row's prediction is made before the model learns from the row, so its residual `resid = y − pred` is one the model has not seen |
 | `half_life` | each row's weight halves every `half_life` of the clock column, or of the rows when there is no clock. `inf` forgets nothing |
 | memory | a diagnostic's own half-life, its `*_half_life` keyword. `inf` runs it once over the whole stream |
 | Kish size | `n_kish = (Σw)² / Σw²`: the number of equally weighted rows that a set of decayed weights is worth, `2.885 × half_life` rows in steady state |
@@ -123,20 +120,25 @@ Each question, the diagnostic that answers it, and its fields:
 | is it ready? | `min_weight`, `min_settled_frac`, `max_error_inflation`, `emit_error_inflation` | `weight_sum`, `settled_frac`, `withheld_reason`, `error_inflation_<t>` | [Is it ready?](#is-it-ready) |
 | how wide is its error? | `emit_sigma`, `emit_zscore`, `resid_quantiles`, `conformal` | `sigma_<t>`, `zscore_<t>`, `abs_resid_q<p>_<t>`, `lo_<t>`, `hi_<t>`, `coverage_<t>` | [How wide is its error?](#how-wide-is-its-error) |
 
+[Check a two-stage fit](how-to/check-a-two-stage-fit.md)
+checks a two-stage fit stage by stage with these diagnostics, and [Test a
+detector on known truth](how-to/test-a-detector-on-known-truth.md) scores a
+regime or break detector against streams whose truth is known.
+
 ## How the diagnostics work
 
-Four ideas hold for every diagnostic on this page. Each reads a residual
-the model has not learned, and keeps a memory of its own. Its statistic is
-read on every row, which changes what a threshold means. And each has a
-cost a row and a set of models that take it.
+[How the diagnostics work](explanation/how-diagnostics-work.md) explains
+why each diagnostic keeps a memory of its own, when it starts to read, how
+to read a statistic that is read on every row, and how a fit built in
+stages is checked stage by stage.
 
-### Out of sample, by construction
+### Out-of-sample, by construction
 
 **Every residual a diagnostic reads was made before the model learned from
 its row.** A bank predicts a row, records the residual, and only then
-learns the row. So a diagnostic built from those residuals is a
-*prequential* one, in Dawid's (1984) term. It judges the forecasts the
-model actually made, in the order it made them, on outcomes it had not yet
+learns the row. So a diagnostic built from those residuals is
+out-of-sample, as Dawid's (1984) evaluation is. It judges the predictions the
+model actually made, in the order it made them, on targets it had not yet
 seen. Nothing has to be held out, and nothing is refitted.
 
 **Run once, that residual is Brown, Durbin and Evans' (1975) recursive
@@ -178,62 +180,26 @@ coefficients at `coef_half_life`, so its diagnostics read at that, the
 shortest finite one where it gives one per coefficient; the CUSUM's null
 share alone reads the intercept's entry, since the intercept is what
 absorbs a level. Under `window_size` that share reads the window itself
-([Has it broken?](#has-it-broken)). Beside
-`window_size=400` with no decay, `se_coef_hc0` read the window slope's
-spread over 200 streams, 0.0495 against 0.0498, where at the run-once
-memory it read a third of it. On 30 clean streams beside `window_size=100`,
-`ramsey_reset` passed its 5% value on 4.8% of rows, where run once it passed on
-51%.
+([Has it broken?](#has-it-broken)).
 
 | form | memory | what it is | use it beside |
 |---|---|---|---|
 | run once | `inf` | the classical test, with its critical values, at `n` rows | a fit that does not forget (`half_life=inf`) |
 | windowed | finite | the same statistic over exponentially weighted moments, read at the Kish size `n_kish` in place of `n` | a fit that forgets |
 
-**A run-once test assumes a relationship that does not change and a fit
-that does not forget.** Under those assumptions its statistic has a known
-distribution, and a threshold has a known false-alarm rate. Once a fit
-forgets, the relationship it estimates is allowed to move, and the question
-becomes local: is the fit wrong *now*? A windowed diagnostic answers that.
-It computes the same statistic from moments that decay as the fit's do,
-and reads it at the Kish size of its weights. For exponential weights at a
-half-life of `h` rows, `n_kish = (1 + λ) / (1 − λ)` with `λ = 2^(−1/h)`,
-about `2.885 h`. A half-life of 200 rows is worth about 577 independent
-rows. Windowed, the specification tests and Jarque-Bera passed their 5%
-values on 2% to 7% of the rows of clean streams, as they did run once.
-
-**A fit that forgets absorbs a miscalibration at its own pace, so a
-diagnostic at the fit's own memory sees only part of it.** A calibration
-slope of 0.7 says the predictions are 43% too large (`1 / 0.7` is 1.43).
-The fit drifts toward the truth as it learns. Over one half-life it has
-moved halfway, so the residuals a diagnostic at the same memory reads have
-had half the error taken out of them. That diagnostic is conservative.
-On a fit whose calibration slope was 0.7, the calibration test passed its
-5% value on 5% of rows at the model's memory. It passed on 42% at four
-times that memory, and on 89% run once. On
-calibrated fits it passed on 0.3% to 0.6% of rows at the model's memory
-and 0% to 0.3% at four times. That is why the calibration's memory
-defaults to four times the model's, and every other diagnostic's to the
-model's own.
-
-**A shorter memory finds a change sooner and misses more small ones.** A
-windowed statistic responds to a change within about one memory, so its
-delay scales with its half-life. A shorter memory also has a smaller Kish
-size, which makes the statistic of the same effect smaller, so a small
-effect stays below the threshold. A diagnostic's memory is the place to trade delay for
-power. On 200 streams of 3,000 rows whose intercept moved by half a noise
-sd at row 1,500, the CUSUM at a memory of 200 rows found every break within
-100 rows. Run once over the whole stream, it found each 244 rows after the
-break on the median.
+Why a run-once test needs a fit that does not forget, why the
+calibration's memory is four times the fit's, and what a shorter memory
+trades are in [Run once or
+windowed](explanation/how-diagnostics-work.md#run-once-or-windowed).
 
 **A diagnostic folds a row only once the model is ready.** A row whose
 prediction a gate withheld has no residual, so `min_weight`,
 `max_error_inflation` and `min_settled_frac` keep it out. Beside a fit that
-forgets, a diagnostic also waits until the stream is 95% settled on the
-longest finite memory the model keeps, 4.3 of that memory's half-lives.
+forgets, a diagnostic also waits until the stream has come 95% of the way to its steady state on
+the longest finite memory the model keeps, 4.3 of that memory's half-lives.
 Under `window_size` with no decay that memory is the window's Kish
 half-life, so a diagnostic starts about `1.5 W` rows in. A fit with several
-memories has settled only once the longest has, so four models count a
+memories reaches its steady state only once the longest has, so six models count a
 memory beside their half-life:
 
 | model | the memory it counts beside `half_life` |
@@ -242,66 +208,30 @@ memory beside their half-life:
 | `kalman` | `coef_half_life` |
 | `ewridge` | `long_half_life`, when given |
 | `lasso` | `select_half_life`, when given |
+| `huber`, `sgd` | the Huber scale's `huber_scale_half_life`, when given |
 
-On 20 clean streams at a half-life of 200, `holt`'s CUSUM read ready on
-its level alone spread 2.7, and passed 3 on 28% of the 2,000 rows after
-its diagnostics started. Ready on its trend, it spread 0.74 and passed on
-none. `sgd` and `pa` under `standardize` fold from the row their scaler
+`sgd` and `pa` under `standardize` fold from the row their scaler
 switches the fit to the caller's units, 22 rows of Kish's size in. The
 fields of the twin fits and of feature health read the target and the
 features alone, and fold every row.
 
-**The readiness notices read the model's own half-life, so they can judge
-a stream long before its diagnostics start.** `settled_frac`,
-`min_settled_frac`, `summary()` and the notices that a gate is not met read
-the decay `half_life` sets. A notice projects the weight a stream tops out
-at, `1 / (1 − λ^d)`, or the noise gate's ratio, and both settle on that
-clock. A diagnostic waits for the longest memory, because a residual from
-before that memory has settled carries its warm-up bias, which reads as a
-break. On `holt` at a half-life of 50, with its trend at the default 200,
-the stream is 95% settled on the level at row 218. A `min_weight` above
-the weight's ceiling of 72.6 is named at row 268, a half-life later. The
-first `cusum` comes at row 878, past the trend's 95% at row 866. Under
-`window_size` with no decay nothing settles, so `settled_frac` is null and
-no notice judges the stream. Its diagnostics still start 4.3 of the
-window's Kish half-lives in.
+**The readiness warnings read the model's own half-life, not the longest
+memory.** `settled_frac`, `min_settled_frac`, `summary()` and the readiness
+warnings that a gate is not met read the decay `half_life` sets, so they can judge
+a stream long before its diagnostics start. Under `window_size` with no
+decay there is no steady state to approach, so `settled_frac` is null and no readiness warning
+judges the stream. Its diagnostics still start 4.3 of the hard window's Kish half-lives
+in.
 
-**A fit far from its truth carries its warm-up error for many
-half-lives.** `rls` and `kalman` learn the intercept from a prior at 0, so
-on a target at 5,000 their first predictions are thousands of noise sds
-off. Beside `rls` at a half-life of 50, residuals folded from the first
-prediction held Jarque and Bera's statistic past its 5% value on 81% of
-rows 1,000 to 2,000, 20 to 40 half-lives in. They held the calibration
-test past its own on 100%. Folded from readiness they passed on 4.9% and
-24%. What remains is the prior's bias itself, which fades only as the fit
-forgets it. At a half-life of 200, `rls`'s mean residual was still +2.1
-noise sds over rows 400 to 1,000, and +0.16 over rows 1,000 to 2,000. The
-calibration and the CUSUM flag it there, as they should. `kalman` sizes
-its prior from the first rows. From row 1,000 on it read the same at a
-level as on a target at 0, each test past its 5% value on 0.1% to 8.9% of
-rows.
-
-**A fit that forgets nothing never settles, so run once only the gates
-hold back the warm-up: give the model a `min_weight` of a few rows per
-coefficient.** A fit with three rows for three coefficients predicts
-wildly, and run once those first residuals weigh in the statistic forever.
-On 40 clean streams of 6,000 rows, a run-once `ramsey_reset` beside a run-once
-`ewridge` at its default `min_weight` of 0 passed its 5% value on 26% of
-rows past row 2,000. At `min_weight=10` it passed on 2.6%. The calibration
-test passed on 19% of rows at 0 and 9.4% at 10. Beside a fit at a
-half-life of 200, a run-once `ramsey_reset` passed on 25.8% of rows 1,000 to
-3,000 when it folded from the first prediction, and on 4.8% from
-readiness.
-
-### Reading a statistic that is read on every row
-
-**Over many streams, a windowed statistic sits past its 5% value on about
-5% of rows, but on any one stream that share can be anything from 0% to
-20%.** Each row's statistic shares almost all its data with the row
-before, so the flags come in long runs. Over 40 clean streams, Ljung-Box at
-a memory of 1,000 rows sat past its 5% value on 4.2% of rows. On single
-streams the share ran from 0% to 20%. Read a statistic's median over a
-stretch, or how long it stays past a threshold, before reading one row.
+**Run once, beside a fit that forgets nothing, give the model a
+`min_weight` of a few rows per coefficient,** since only the gates hold
+back the warm-up there. Why a diagnostic waits for the longest memory,
+and what a fit far from its truth or with no `min_weight` does to the
+statistics, are in [When a diagnostic starts to
+read](explanation/how-diagnostics-work.md#when-a-diagnostic-starts-to-read).
+How to read a statistic that is read on every row is in [Reading a
+statistic that is read on every
+row](explanation/how-diagnostics-work.md#reading-a-statistic-that-is-read-on-every-row).
 
 ### Every switch at once
 
@@ -432,9 +362,10 @@ variance.** Targets that overlap correlate the residuals, as [Can its t be
 trusted?](#can-its-t-be-trusted) explains. Under a horizon of `h` rows the
 test of `a = 0, b = 1` is Wald's with the regression's sandwich at `2h`
 lags, built from the residual under the null, `y − pred`. On the two-stage
-example's look-ahead target, a slope of 0.99 came with a `wald` of 72.7
-read as independent, and of 1.1 under `horizon_rows=150` ([A worked
-example](#a-worked-example-the-two-stage-reversion-beta)).
+example's look-ahead target, a slope of 0.99 came with a `wald` of 1.1
+under `horizon_rows=150`, consistent with `a = 0, b = 1` ([Check each
+stage with the diagnostics it asks
+for](how-to/check-a-two-stage-fit.md#check-each-stage-with-the-diagnostics-it-asks-for)).
 
 **A quantile fit's calibration is its coverage.** A prediction of the
 `q`-th quantile is calibrated when the target falls below it on a share
@@ -1330,170 +1261,6 @@ prediction](how-to/put-an-interval-on-a-prediction.md) compares the
 Gaussian, quantile and conformal intervals on Gaussian and heavy-tailed
 noise, and sets `conformal_rate="auto"` under a delay.
 
-## A worked example: the two-stage reversion beta
-
-**A two-stage fit is checked stage by stage, with every diagnostic on this
-page that its stages ask for.** The example estimates how fast a price
-reverts to its fair value. Stage 1 fits the fair value: each series less
-its own 10-minute EWMA, with the mid's regressed on the factors'. Its
-out-of-sample residual, `resid_A`, is the mid less its fair value, known
-at the row. Stage 2 regresses the mid's move over the next 150 seconds on
-`resid_A`, and its coefficient is the reversion beta: the share of the gap
-to fair value that closes.
-
-The stream is generated with the answer planted. The mid is an efficient
-price, a random walk the factors follow, plus a transient `u` that halves
-every 30 seconds and that no factor sees. Over a 150-second window
-weighted at a 30-second half-life, `u`'s expected share that reverts is
-0.490, so the beta on `u` itself is −0.490.
-
-```python
-from datetime import datetime, timedelta
-
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# A quote a second for 17 hours. mid = p + u: p is a random walk (the efficient price) and u a
-# transient that halves every 30 s. Three factors s1-s3 follow p, each with noise of its own; none
-# of them sees u.
-rng = np.random.default_rng(12)
-n = 60_000
-p = 100 + np.cumsum(rng.normal(0, 0.01, n))
-# The transient u, which halves every 30 s.
-phi = 0.5 ** (1 / 30)
-u = np.zeros(n)
-shocks = rng.normal(0, 0.05 * np.sqrt(1 - phi**2), n)
-for i in range(1, n):
-    u[i] = phi * u[i - 1] + shocks[i]
-# Three factors that follow p with noise of their own, and a quote a second.
-s = np.array([1.0, 0.8, 1.2])[:, None] * p + np.cumsum(rng.normal(0, 0.002, (3, n)), axis=1)
-ts = [datetime(2026, 1, 5) + timedelta(seconds=i) for i in range(n)]
-pl.DataFrame({"ts": ts, "mid": p + u, "s1": s[0], "s2": s[1], "s3": s[2]}).write_parquet("quotes.parquet")
-
-# Stage 1, fair value: each series less its own 10-minute EWMA, and A (the mid's) regressed on the
-# factors'. Its out-of-sample residual resid_A is the mid less its fair value, known at the row.
-clock = dict(clock="ts", gap_cap="5m")
-back = dict(half_life="10m", window_size="60m")
-signals = pl.scan_parquet("quotes.parquet").online.with_windows(
-    A=pl.col("mid") - po.ewm_mean("mid", **back),
-    x1=pl.col("s1") - po.ewm_mean("s1", **back),
-    x2=pl.col("s2") - po.ewm_mean("s2", **back),
-    x3=pl.col("s3") - po.ewm_mean("s3", **back),
-    **clock,
-)
-fair = po.spec.ewridge("fair", targets=["A"], features=["x1", "x2", "x3"], half_life="2h", **clock)
-
-# Stage 2, reversion: the next 150 s's 30-second EWMA of the mid, less the mid, regressed on
-# resid_A. Each row is learned once its window has closed (embargo), and its residuals overlap.
-fwd = (po.ewm_mean("mid", half_life="30s", window_size="150s", reverse=True) - pl.col("mid")).alias("B")
-stage2 = dict(
-    targets=[fwd], half_life=float("inf"), embargo="150s", min_weight=1_000.0,
-    emit_se_coef=True, emit_robust_se=True,
-    horizon_rows=150,  # the window in rows: Newey-West to twice it, for se_coef_hac and the calibration
-    emit_calibration=True,  # B on pred: a slope of 1 says the beta needs no rescaling
-    **clock,
-)
-revert = po.spec.ewridge("revert", features=["resid_A"], **stage2)
-joint = po.spec.ewridge("joint", features=["A", "x1", "x2", "x3"], **stage2)  # one stage in place of two
-both = po.spec.ewridge("both", features=["resid_A", "x1", "x2", "x3"], **stage2)  # do the factors add?
-
-# Run both stages in one pass over the file.
-out = (
-    signals.online.fit_predict([fair])
-    .online.unnest([fair])  # pred_A, resid_A
-    .online.fit_predict([revert, joint, both])
-    .collect()
-)
-
-# Each stage-2 fit's calibration, and each coefficient's t by both standard errors.
-for spec in [revert, joint, both]:
-    name = spec["name"]
-    last = out.select(pl.col(name).struct.unnest()).filter(pl.col("se_coef").is_not_null()).tail(1)
-    coef, se, hac = (last[f].item().to_list() for f in ["coef", "se_coef", "se_coef_hac"])
-    slope, wald = last.select("calibration_slope_B", "calibration_wald_B").row(0)
-    print(f"{name}: calibration slope {slope:.2f}, wald {wald:.1f}")
-    for term, b, s_, h in zip(spec["features"], coef[1:], se[1:], hac[1:]):
-        print(f"  {term:8} coef {b:+.3f}, t {b / s_:+7.1f} by se_coef and {b / h:+6.1f} by se_coef_hac")
-
-# The planted beta: the forward EWMA of u over its 150 s window, as a share of u, less 1.
-j = np.arange(1, 151)
-w = 0.5 ** (j / 30)
-print(f"planted beta on u itself: {(w * phi**j).sum() / w.sum() - 1:.3f}")
-```
-
-```text
-revert: calibration slope 0.99, wald 1.1
-  resid_A  coef -0.450, t  -107.7 by se_coef and  -15.8 by se_coef_hac
-joint: calibration slope 0.80, wald 8.3
-  A        coef -0.444, t  -105.4 by se_coef and  -15.5 by se_coef_hac
-  x1       coef +0.124, t   +27.7 by se_coef and   +3.0 by se_coef_hac
-  x2       coef -0.011, t    -2.0 by se_coef and   -0.2 by se_coef_hac
-  x3       coef +0.258, t   +57.3 by se_coef and   +6.1 by se_coef_hac
-both: calibration slope 0.84, wald 5.4
-  resid_A  coef -0.446, t  -104.3 by se_coef and  -15.6 by se_coef_hac
-  x1       coef +0.029, t    +6.8 by se_coef and   +0.7 by se_coef_hac
-  x2       coef -0.083, t   -15.8 by se_coef and   -1.7 by se_coef_hac
-  x3       coef +0.021, t    +5.1 by se_coef and   +0.5 by se_coef_hac
-planted beta on u itself: -0.490
-```
-
-Each check reads one part of the answer:
-
-| check | what it read | what it says |
-|---|---|---|
-| the beta | `revert`'s coefficient on `resid_A`, −0.450 | close to the −0.490 planted on `u`. `resid_A` is `u` plus the fair value's own error, which attenuates the beta toward zero, as noise in a regressor does |
-| calibration | `revert`'s slope 0.99 | the predictions `−0.450 · resid_A` are scaled right, so the beta needs no rescaling |
-| the Wald beside it | 1.1 | under `horizon_rows=150` it takes Newey and West's variance at 300 lags; read as independent, the 150 rows that share each window put it at 72.7 |
-| Newey-West | t of −107.7 by `se_coef`, −15.8 by `se_coef_hac` | the beta is real either way, but the plain t is 6.8 times too large: each residual shares its 150-second window with 149 others |
-| `joint` | one stage, `A` and the factors together: `A`'s coefficient −0.444, calibration slope 0.80 | `A`'s coefficient matches `resid_A`'s, since the factors absorb the fair value. The 0.80 is the warm-up's, not the settled fit's. Run once, the calibration keeps every row, and over rows 1,000 to 15,000 four coefficients learned from overlapping labels read a slope of 0.56. Over the stream's second half, regressed by hand, the one-stage slope is 0.99 and the two-stage's 1.07, so neither needs rescaling. At `calibration_half_life="4h"` their median slopes over that half read 0.94 and 1.11 |
-| `both` | `resid_A` beside the factors: the factors' t are +6.8, −15.8 and +5.1 by `se_coef`, and +0.7, −1.7 and +0.5 by `se_coef_hac` | once `resid_A` is in, the factors add nothing that Newey-West believes. By `se_coef` alone, all three would look significant |
-
-**What the example shows.** The two-stage beta is right, and its
-calibration says so. Every t on a look-ahead target needs `se_coef_hac`:
-`se_coef` would have kept three factors that carry nothing.
-
-## Data whose truth is known
-
-To test a model that claims to find a changing correlation structure, fit
-it on the `rows` of
-[`po.sim.regimes`](https://hgilde.github.io/polars-online/sim.html#polars_online.sim.regimes)
-and compare what it finds with `truth_rows` and `truth_blocks`, the truth
-returned beside them. The measurements in [docs/REGIMES.md](REGIMES.md)
-show what `hmm`, `corrchange` and `bocpd` find on such streams, and what
-they miss.
-
-```python
-import polars_online as po
-
-sim = po.sim.regimes(
-    4, states=[0.2, 0.7],                     # four series; two regimes, at these equicorrelations
-    transition=[[0.98, 0.02], [0.02, 0.98]],  # how the regimes switch
-    n_blocks=8, rows_per_block=500,
-    durations=None,                           # or a block count per state: each state lasts exactly as long as it says
-    design="step", smooth_rows=0,             # or "smooth": interpolate the matrix over smooth_rows rows at a boundary
-    phi=0.3, noise=0.01,                      # returns correlated with their own past; observation noise
-    async_rates=[1.0, 1.0, 0.4, 0.4],         # two series observed less often; a series with no observation is null
-    seed=0,                                   # the same seed twice is byte-identical, under one numpy version
-)
-rows, truth_rows, truth_blocks = sim["rows"], sim["truth_rows"], sim["truth_blocks"]
-for name, frame in [("rows", rows), ("truth_rows", truth_rows), ("truth_blocks", truth_blocks)]:
-    print(f"{name}: {frame.height} rows; {', '.join(frame.columns)}")
-```
-
-```text
-rows: 4000 rows; entity, t, clock, session, x_1, x_2, x_3, x_4, activity
-truth_rows: 4000 rows; t, block, state, scale_mult, mix
-truth_blocks: 8 rows; block, state, n_rows, corr
-```
-
-| frame | what it holds |
-|---|---|
-| `rows` | what a consumer sees: an entity, the row's index `t`, a clock and a session, levels `x_1` .. `x_m`, and `activity`, null unless `activity=(mean, shape)` is given. For returns, `unpivot` the levels into the long input of [`refresh_time`](how-to/align-series-that-tick-at-their-own-times.md), and apply `.diff()` to the grid it builds |
-| `truth_rows` | per row `t`: the block, state, volatility multiplier and interpolation fraction |
-| `truth_blocks` | each block's true correlation matrix, as the upper triangle in a list |
-
 ## Sources
 
 Each claim above that is not measured here rests on one of these.
@@ -1509,7 +1276,7 @@ Each claim above that is not measured here rests on one of these.
 | Chu, C.-S. J., Hornik, K. and Kuan, C.-M. (1995). MOSUM tests for parameter constancy. *Biometrika* 82(3), 603–617. | the moving-sum form of the CUSUM |
 | Clark, T. E. and McCracken, M. W. (2001). Tests of equal forecast accuracy and encompassing for nested models. *Journal of Econometrics* 105(1), 85–110. | why equal-accuracy tests lean toward the smaller of two nested models |
 | Clark, T. E. and West, K. D. (2007). Approximately normal tests for equal predictive accuracy in nested models. *Journal of Econometrics* 138(1), 291–311. | `po.eval.clark_west` |
-| Dawid, A. P. (1984). Statistical theory: the prequential approach. *Journal of the Royal Statistical Society, Series A* 147(2), 278–292. | prequential evaluation |
+| Dawid, A. P. (1984). Statistical theory: the prequential approach. *Journal of the Royal Statistical Society, Series A* 147(2), 278–292. | judging predictions made before each row is learned |
 | Diebold, F. X. and Mariano, R. S. (1995). Comparing predictive accuracy. *Journal of Business and Economic Statistics* 13(3), 253–263. | `po.eval.diebold_mariano` |
 | Hinkley, D. V. (1971). Inference about the change-point from cumulative sum tests. *Biometrika* 58(3), 509–523. | the Page-Hinkley detector behind `drift` |
 | Jarque, C. M. and Bera, A. K. (1980). Efficient tests for normality, homoscedasticity and serial independence of regression residuals. *Economics Letters* 6(3), 255–259. | `jarque_bera` |

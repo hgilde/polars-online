@@ -157,8 +157,8 @@ change in a minor release.** So from 1.0, a state a 1.x build saved loads
 in every later 1.x build. The two parts outside that promise are the
 written form of a formula target (its expression) inside a bank's state,
 and a
-[window run](../GLOSSARY.md#fitting-a-model)'s state ([Saving and resuming
-a window run](../WINDOWS.md#saving-and-resuming-a-window-run)). A state
+[window run](../GLOSSARY.md#fitting-a-model)'s state ([Resume a window
+run](../how-to/resume-a-window-run.md)). A state
 saved by 0.13.0 or an earlier release does not load: refit the bank from
 its input. A build refuses a state whose version it cannot read, such as
 one saved in a newer format, before it reads a row.

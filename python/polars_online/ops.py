@@ -9,10 +9,10 @@ expressions, in which ``pl.col`` reads the current row.
 pass, holding one window of rows in memory, or a spec takes one as its
 target. A target that looks ahead is known only once its window has
 closed, so the bank learns it then, under an ``embargo``
-(:mod:`polars_online.spec`) of at least the window. The guide `Windowed
-means, looking back or ahead
-<https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md>`_ shows
-each in use.
+(:mod:`polars_online.spec`) of at least the window. The guide `How a window
+operator weighs the rows near each row
+<https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md>`_ explains
+each.
 
 Every operator is defined once, by the library that has it, and held to it
 in the tests. A *stamp* is a clock value, which several
@@ -406,7 +406,7 @@ def ewm_mean(
     - :func:`ewm_sum`, for a weighted mean as a ratio of two sums.
     - :func:`polars_online.stream.with_windows`, which computes the operators
       over a stream.
-    - `Windowed means, looking back or ahead
+    - `How a window operator weighs the rows near each row
       <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md>`_,
       the guide.
 
@@ -700,7 +700,7 @@ def ewm_rate(
     - :func:`increment`, the steps of a running total.
     - :func:`polars_online.stream.with_windows`, which computes the operators
       over a stream.
-    - `Windowed means, looking back or ahead
+    - `How a window operator weighs the rows near each row
       <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md>`_,
       the guide.
 

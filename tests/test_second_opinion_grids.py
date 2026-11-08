@@ -430,7 +430,7 @@ def gram_of(frame: Any) -> dict:
 
 
 def algorithm_h(frame: pl.DataFrame, passes: int = 30) -> np.ndarray:
-    """``docs/GRAM.md``'s recipe: the Gram's least-squares solve, then
+    """``docs/how-to/fit-huber-on-a-gram.md``'s recipe: the Gram's least-squares solve, then
     ``passes`` of Huber's algorithm H, each a Polars query over the rows."""
     g = gram_of(frame.lazy())
     m = float(np.asarray(g["means"])[1])
