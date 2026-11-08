@@ -16,8 +16,10 @@
 //!
 //! - **the work of a row**, as the cost of a fixed block of rows (the same
 //!   number at both sizes), after a warm-up that brings the state to where a
-//!   long stream keeps it. Natively it is timed (the least of several
-//!   blocks, small and large interleaved) and its allocations are counted;
+//!   long stream keeps it. Natively it is timed by the process's CPU time
+//!   where the platform reads it, by the wall clock elsewhere (the least of
+//!   several blocks, small and large interleaved) and its allocations are
+//!   counted;
 //!   on CI's Linux runner Callgrind counts its instructions
 //!   (`benches/instructions.rs`, the `scale_*` cases, held by
 //!   `scripts/budgets.py`'s `scaling` check).

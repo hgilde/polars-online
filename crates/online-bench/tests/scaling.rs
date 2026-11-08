@@ -111,6 +111,8 @@ const BLOCKS: usize = 3;
 struct Measured {
     /// The least time of a block.
     time: Duration,
+    /// The least CPU time of a block, where it is read.
+    cpu: Option<Duration>,
     /// Allocations over every block.
     calls: usize,
     /// The harness's allocations meanwhile, which `calls` leaves out.
@@ -132,11 +134,49 @@ fn heap_of(mut run: ScaleRun) -> usize {
     (held - LIVE.load(Ordering::Relaxed)).max(0) as usize
 }
 
+/// The CPU time every thread of this process has run, which a block's time
+/// is judged by where it is read: a thread waiting for a core adds none.
+///
+/// The wall clock reads the machine's load. With more runnable threads than
+/// cores, a thread runs a slice and then waits its turn, so a block longer
+/// than a slice is stretched by about the load over the cores, while one
+/// shorter may run whole in one slice and is not: the least of several
+/// blocks then reads a short block at its own time and a long one
+/// stretched. A thread woken to run a block (a pool's) may also wait a
+/// whole slice first. So a ratio of two sizes' wall times grows with the
+/// load whenever the small size's block is short. At a 1-minute load of
+/// about 50 on 14 cores, four runs of this binary judged by the wall clock
+/// each failed three or four cells (`gbdt.history`, a cell of declared O(1)
+/// growth, read 25-33x against its 2.83x: 0.3 ms -> 9.2 ms), and measuring a
+/// failing cell four times more, keeping each size's least block, still
+/// failed them; judged by CPU time, no cell failed in thirteen runs at
+/// loads of 25-99, the highest reading 0.89 of its bound, and idle the two
+/// agree (no cell above 0.58). A row's work on a pool's threads counts, as
+/// the work the harness cannot name by thread does for the allocations.
+///
+/// `None` where it is not read (`clock_gettime` is POSIX): there the wall
+/// clock is judged.
+#[cfg(unix)]
+fn cpu_time() -> Option<Duration> {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid, writable `timespec` for the call's duration.
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    (rc == 0).then(|| Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32))
+}
+
+#[cfg(not(unix))]
+fn cpu_time() -> Option<Duration> {
+    None
+}
+
 /// One block of a run: its time, its allocations, and the most it held above
 /// the live heap. Its allocations are those on every thread but the
 /// harness's, so this thread counts while the block runs; the harness's
 /// threads' allocations meanwhile are the third.
-fn block(run: &mut ScaleRun) -> (Duration, usize, usize, usize) {
+fn block(run: &mut ScaleRun) -> (Duration, Option<Duration>, usize, usize, usize) {
     let pool = run
         .on_the_pool()
         .then(|| online_polars::pool().expect("the bank's pool"));
@@ -145,17 +185,20 @@ fn block(run: &mut ScaleRun) -> (Duration, usize, usize, usize) {
     let live = LIVE.load(Ordering::Relaxed);
     PEAK.store(live, Ordering::Relaxed);
     HARNESS.set(false);
+    let cpu_at = cpu_time();
     let at = Instant::now();
     let sum = match pool {
         Some(p) => p.install(|| polars_online_budget_scale_rows(run)),
         None => polars_online_budget_scale_rows(run),
     };
     let time = at.elapsed();
+    let cpu = cpu_time().zip(cpu_at).map(|(b, a)| b.saturating_sub(a));
     HARNESS.set(true);
     std::hint::black_box(sum);
     let peak = (PEAK.load(Ordering::Relaxed) - live).max(0) as usize;
     (
         time,
+        cpu,
         CALLS.load(Ordering::Relaxed) - calls,
         peak,
         HARNESS_CALLS.load(Ordering::Relaxed) - harness,
@@ -172,6 +215,7 @@ fn measure(c: &Cell) -> (Measured, Measured) {
     let mut large = scale_setup_blocks(c.id, c.large(), BLOCKS);
     let mut out = [&small, &large].map(|run| Measured {
         time: Duration::MAX,
+        cpu: cpu_time().map(|_| Duration::MAX),
         calls: 0,
         harness: 0,
         saved: 0,
@@ -181,8 +225,9 @@ fn measure(c: &Cell) -> (Measured, Measured) {
     });
     for _ in 0..BLOCKS {
         for (m, run) in out.iter_mut().zip([&mut small, &mut large]) {
-            let (t, calls, peak, harness) = block(run);
+            let (t, cpu, calls, peak, harness) = block(run);
             m.time = m.time.min(t);
+            m.cpu = m.cpu.zip(cpu).map(|(a, b)| a.min(b));
             m.calls += calls;
             m.harness += harness;
             m.peak = m.peak.max(peak);
@@ -247,7 +292,14 @@ fn judge(c: &Cell) -> Verdict {
     // A row's work: a block's, over its rows (the same at both sizes but
     // for a run whose size is its rows).
     let per = |m: &Measured, v: f64| v / m.rows as f64;
-    let t = ratio(per(&s, s.time.as_secs_f64()), per(&l, l.time.as_secs_f64()));
+    let wall = ratio(per(&s, s.time.as_secs_f64()), per(&l, l.time.as_secs_f64()));
+    let cpu = s
+        .cpu
+        .zip(l.cpu)
+        .map(|(a, b)| ratio(per(&s, a.as_secs_f64()), per(&l, b.as_secs_f64())));
+    // The time judged is the CPU time where it is read, the wall clock's
+    // elsewhere (`cpu_time`).
+    let t = cpu.unwrap_or(wall);
     // An allocation a block or two is nothing to scale: the floor is five
     // a block.
     let floor = (5 * BLOCKS) as f64;
@@ -269,7 +321,12 @@ fn judge(c: &Cell) -> Verdict {
             ));
         }
     };
-    check("a block's time", t, time_bound);
+    let what = if cpu.is_some() {
+        "a block's CPU time"
+    } else {
+        "a block's time"
+    };
+    check(what, t, time_bound);
     // Within the declared ratio, or within the slack of the count the
     // declared growth gives the large size from the small one's.
     let expected = s.calls as f64 * work * l.rows as f64 / s.rows as f64;
@@ -286,12 +343,15 @@ fn judge(c: &Cell) -> Verdict {
     check("the saved state", saved, state * (1.0 + COUNT_TOL));
     check("the state's heap", heap, state * (1.0 + COUNT_TOL));
     let line = format!(
-        "{:<28} work {:<10} state {:<10} | time {:>7.2}x (<= {:>7.2}) {:>9.3} ms -> {:>9.3} ms | allocs {:>7.2}x ({} -> {}, harness {} -> {}) | saved {:>6.2}x ({} -> {}) | heap {:>6.2}x ({} -> {}) {}",
+        "{:<28} work {:<10} state {:<10} | cpu {:>7.2}x (<= {:>7.2}) {:>9.3} ms -> {:>9.3} ms | wall {:>7.2}x {:>9.3} ms -> {:>9.3} ms | allocs {:>7.2}x ({} -> {}, harness {} -> {}) | saved {:>6.2}x ({} -> {}) | heap {:>6.2}x ({} -> {}) {}",
         c.id,
         c.work.show("n"),
         c.state.show("n"),
-        t,
+        cpu.unwrap_or(f64::NAN),
         time_bound,
+        s.cpu.map_or(f64::NAN, |d| d.as_secs_f64() * 1e3),
+        l.cpu.map_or(f64::NAN, |d| d.as_secs_f64() * 1e3),
+        wall,
         s.time.as_secs_f64() * 1e3,
         l.time.as_secs_f64() * 1e3,
         a,
