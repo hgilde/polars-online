@@ -18,7 +18,10 @@ regresses its targets:
   is on every row, and `side`, `quantity` and `price` are null on a quote.
 - A [clock](../GLOSSARY.md#time) column, here the timestamp column `ts`,
   with the rows in clock order ([Put rows in clock
-  order](put-rows-in-clock-order.md)).
+  order](put-rows-in-clock-order.md)), and the
+  [`gap_cap`](../GLOSSARY.md#time) a clock requires: the largest clock
+  step a window or a model measures. A longer step ends every window open
+  across it, and a model decays it as a step of `gap_cap`.
 - A [spec](../GLOSSARY.md#the-model-bank-and-what-it-reads) whose model
   regresses its targets. Only such a model takes a target expression.
   Four kinds of model refuse one, saying why: a model that reads only its
@@ -106,7 +109,7 @@ shows how the trends are made.
 ## Check the targets the model learned
 
 **To see the targets the model learned, write the target as a column with
-`with_windows(fwd_edge, like=edge)`, on a frame that holds the spec's
+`with_windows(fwd_edge, like=edge)`, on the query that holds the spec's
 features.** `like=edge` takes the clock keywords from `edge`, and refuses
 any given beside it. It nulls the target on every row the spec would not
 learn from.

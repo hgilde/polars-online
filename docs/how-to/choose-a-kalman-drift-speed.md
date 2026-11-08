@@ -63,7 +63,7 @@ yet seen ranks the settings fairly, in one pass over the stream.
 
 The recipe plants a slope on `x0` that wanders, a fixed slope on `x1` and
 noise of variance 1. No fit can predict closer than that noise on average,
-so 1.00 is the floor each spec's error is printed beside. On a finite
+so 1.00 is the floor, printed beside the error of the choice. On a finite
 sample a spec can land a hair under it. This code builds its own
 data:
 
@@ -131,7 +131,7 @@ the intercept's entry at `inf`, as in `[float("inf"), 50.0, 50.0]`.
 2. **Run the specs in a query,** as
    `pl.scan_parquet(...).online.fit_predict(specs)` does in the recipe.
    Between bursts the slope decays toward zero, so the next burst starts
-   from no effect rather than from the last burst's.
+   from no effect, not from the last burst's slope.
 
 In the recipe, `x` is active for 100 rows in every 1,000, and each burst
 has its own slope, 2 or −2, drawn at random. So the last burst's slope

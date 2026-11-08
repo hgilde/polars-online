@@ -98,14 +98,14 @@ window by when each row's target becomes known:
 
 | the target of row *t* is known | the scale on row *t* | how |
 |---|---|---|
-| at the next row | over the rows before *t* | `closed="left"`: the rows at *t*'s own stamp are outside its window, so its target is too |
+| at the next row | over the rows before *t* | `closed="left"`: the rows at *t*'s own clock value are outside its window, so its target is too |
 | `d` of the clock later, as under a spec's `embargo` | over the rows whose targets have arrived by *t*, those at or before `t − d` | the stream twice, from `po.stream.embargo(lf, clock=, delay=d)`: a predict row at *t* and a learn row at `t + d`; the operator reads the target only on the learn rows, `pl.when(pl.col("_online_role") == "learn").then(...)`, and the predict rows, filtered back, carry the scale |
 
 A shift of the target column by `k` rows in Polars' `with_columns`, before
 the call (`pl.col("y").shift(k).over("symbol")`), lags it by rows rather
 than by clock: right only on a stream whose targets arrive a fixed number
 of rows late. The doubled stream lags it by the clock, as an `embargo`
-does, and in the same order: a target that arrives at the row's own stamp
+does, and in the same order: a target that arrives at the row's own clock value
 counts there.
 
 For a target known `d` of the clock later:

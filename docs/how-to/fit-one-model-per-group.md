@@ -127,7 +127,7 @@ b0 in the bank against b0 alone: 0.0 largest difference
 ## Keep the group column's type
 
 **Give a group or session column the same kind of type in every chunk and
-file,** casting it with Polars' `cast` in the query where one source
+file,** casting it with Polars' `cast` in the query where one file or chunk
 differs. The column keeps the type its first chunk had. A key is
 its value's text, so an `Int64` `1` and a `Float64` `1.0` would be two
 groups. The bank refuses a column of another kind by name, and keeps the

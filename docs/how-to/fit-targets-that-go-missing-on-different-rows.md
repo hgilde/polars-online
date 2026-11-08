@@ -32,8 +32,8 @@ target null is predicted for every target and learned for none.** When the
 targets go missing on different rows, give each its own `rls` spec.
 Otherwise one spec holds them all.
 
-1. **Check which rows each target is present on.** Compare the targets'
-   missing values with Polars, NaN counted as null, as the bank counts NaN:
+1. **Check which rows each target is present on.** Compare where the
+   targets are null with Polars, NaN counted as null, as the bank counts NaN:
    `pl.scan_parquet(...).select((pl.col("a").fill_nan(None).is_null() != pl.col("b").fill_nan(None).is_null()).sum()).collect()`
    counts the rows where `a` and `b` differ. Where it is 0, keep them in
    one `rls` spec.

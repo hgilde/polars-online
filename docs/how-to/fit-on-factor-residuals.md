@@ -41,7 +41,8 @@ ridge on their residuals.
    `pl.col("fac0").struct.field("resid_d0")` in a `with_columns` after the
    factor ridges' `fit_predict`. The field becomes a column named
    `resid_d0`.
-3. **Make the second ridge's target with a window operator that looks
+3. **Make the second ridge's target with a
+   [window operator](../GLOSSARY.md#fitting-a-model) that looks
    ahead,** as `po.ewm_mean("y", half_life=5.0, window_size=10.0,
    reverse=True) - pl.col("y")`: the forward mean of `y` over the next ten
    clock units, less `y`. Under the default `closed="right"`, the window

@@ -111,7 +111,7 @@ always does.
 2. **Name it in the spec's `label_clock=`.** The bank predicts each row
    where it sits, holds it, and learns it at its `label_clock` time, at the
    first row whose clock has reached it. Its target is then compared with
-   the prediction, the interval and the spread the row was served, so every
+   the prediction, the interval and the spread the row was given, so every
    residual diagnostic describes what was shown.
 3. **Fit the bank.**
 
@@ -143,19 +143,19 @@ pl.DataFrame({
 late = po.spec.ewridge(
     "late", targets=["delay"], features=["distance"],
     clock="departed", gap_cap="1h", half_life="2d",
-    label_clock="landed",   # learned at landing; each interval compared with the one served
+    label_clock="landed",   # learned at landing; each interval compared with the one given
     conformal=0.9,          # lo_delay and hi_delay: an interval meant to hold 90% of delays
 )
 rows = pl.scan_parquet("flights.parquet").online.fit_predict([late]).unnest("late").collect()   # 3. fit
-# Count the intervals that held the delay each flight was served.
-served = rows.filter(pl.col("lo_delay").is_not_null())
-covered = served.select(((pl.col("delay") - pl.col("pred_delay")).abs() <= pl.col("hi_delay") - pl.col("pred_delay")).mean()).item()
-print(f"{served.height} intervals served, {covered:.3f} of them held the delay that landed,",
-      f"half-width {served.select((pl.col('hi_delay') - pl.col('pred_delay')).mean()).item():.1f} minutes")
+# Count the intervals that held the delay each flight was given.
+given = rows.filter(pl.col("lo_delay").is_not_null())
+covered = given.select(((pl.col("delay") - pl.col("pred_delay")).abs() <= pl.col("hi_delay") - pl.col("pred_delay")).mean()).item()
+print(f"{given.height} intervals given, {covered:.3f} of them held the delay that landed,",
+      f"half-width {given.select((pl.col('hi_delay') - pl.col('pred_delay')).mean()).item():.1f} minutes")
 ```
 
 ```text
-19973 intervals served, 0.901 of them held the delay that landed, half-width 23.7 minutes
+19973 intervals given, 0.901 of them held the delay that landed, half-width 23.7 minutes
 ```
 
 **How `label_clock` orders the rows it holds, and what it refuses:**
@@ -163,12 +163,12 @@ print(f"{served.height} intervals served, {covered:.3f} of them held the delay t
 | case | what `label_clock` does |
 |---|---|
 | the order of learning | by `label_clock` time, so a short flight landing first is learned before an earlier long one; rows with one such time in the order they arrived. Each is learned at its time: its step is the one from the time learned before it |
-| `resid` on a row | the target less the prediction the row was served |
-| a weight of 0, or a null `label_clock` time | the row is predicted and never held. A null is a target that never arrives: `summary()` counts it in `labels_missing` |
+| `resid` on a row | the target less the prediction the row was given |
+| a weight of 0, or a null `label_clock` time | the row is predicted and never held. A null is a target that never arrives: `bank.summary()` counts it in `labels_missing` |
 | a `label_clock` time before its row's clock | refused, naming the row: the column does not hold the times the targets are known |
 | how many rows wait | `max_held_rows` bounds them per group. Past it the chunk is refused, or with `held_overflow="drop_oldest"` the row that arrived first is dropped, counted in `labels_dropped` |
 | at a reset, and at the end of the stream | a reset drops the rows still waiting, counted in `labels_dropped`. Rows waiting at the end are not learned, unless the state is saved and another run resumes from it |
-| what it refuses | `embargo` beside it, a target that is a window expression, `group_close`, a `session` column and `drift_action="reset"`; and `holt`, `kalman`, `hmm` and `micro`, whose prediction reaches from the newest row learned, which `label_clock` moves to a `label_clock` time |
+| what it refuses | `embargo` beside it, a [formula target](../GLOSSARY.md#fitting-a-model), `group_close`, a `session` column and `drift_action="reset"`; and `holt`, `kalman`, `hmm` and `micro`, whose prediction reaches from the newest row learned, which `label_clock` moves to a `label_clock` time |
 | cost | each held row goes into the waiting rows in `label_clock` order: 0.006 microseconds a row with about 100 waiting, 0.38 with about 800 (Apple M4 Pro) |
 
 **With hundreds of targets in flight, set `conformal_rate="auto"`.** Each
@@ -262,6 +262,8 @@ print(f"the shortest time from the newest row learned to the row predicted: {gap
 the shortest time from the newest row learned to the row predicted: 0:05:00
 ```
 
-**Under `label_clock`, read `summary()`'s `labels_missing` and
-`labels_dropped`.** They count the rows whose target never arrived and the
+**Under `label_clock`, read `bank.summary()`'s `labels_missing` and
+`labels_dropped`.** A query keeps no bank, so fit the spec with one first:
+`bank = po.ModelBank([late])`, then
+`bank.fit(pl.scan_parquet("flights.parquet"))`. The two columns count the rows whose target never arrived and the
 rows dropped while they waited, which the model never learned.
