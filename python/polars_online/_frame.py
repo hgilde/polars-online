@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import itertools
 import json
+import numbers
+import operator
 import os
 import re
 import sys
@@ -51,6 +53,7 @@ from polars.io.plugins import register_io_source
 
 from polars_online import _polars_online as _native
 from polars_online._bank import ModelBank, _check_threads, _refuse_uint128
+from polars_online._errors import WrongTypeError
 from polars_online._spec import _renamed_keywords, coef_fields, output_index, target_columns
 from polars_online._warnings import PolarsOnlineWarning
 
@@ -115,14 +118,26 @@ def _bank(
     return lambda: ModelBank(specs, threads=threads)
 
 
-def _check_chunk_size(chunk_size: int | None, what: str) -> None:
-    if chunk_size is not None and chunk_size < 1:
-        who = f"df.online.{what}"
+def _check_chunk_size(chunk_size: Any, who: str) -> int | None:
+    """``chunk_size`` as an int, or ``None`` left out, once it is checked to
+    be a whole number of at least 1: any whole number, numpy's integers
+    included, but not a bool. ``who`` is the caller's name for the messages."""
+    if chunk_size is None:
+        return None
+    wrong_type = isinstance(chunk_size, bool) or not isinstance(chunk_size, numbers.Integral)
+    if wrong_type:
+        msg = (
+            f"{who}: chunk_size must be a whole number of at least 1, but it is {chunk_size!r}. "
+            "Set chunk_size to a whole number, such as 10_000, or leave it out."
+        )
+        raise WrongTypeError(msg)
+    if operator.index(chunk_size) < 1:
         msg = (
             f"{who}: chunk_size must be at least 1, but it is {chunk_size}. Set chunk_size to "
             "1 or more, or leave it out."
         )
         raise ValueError(msg)
+    return operator.index(chunk_size)
 
 
 def _in_chunks(
@@ -185,6 +200,13 @@ def _closed_path(
     bank with nothing to close are all reported now (E54)."""
     if closed_groups is None:
         return None
+    if not isinstance(closed_groups, (str, os.PathLike)):
+        msg = (
+            f"{who}: closed_groups must be a path, but its type is "
+            f"{type(closed_groups).__name__}. Pass the file to write the closed groups to, "
+            'such as "closed.parquet", or leave closed_groups out.'
+        )
+        raise TypeError(msg)
     path = os.fspath(closed_groups)
     parent = os.path.dirname(os.path.abspath(path))
     if not os.path.isdir(parent):
@@ -1071,13 +1093,7 @@ def _source(
     """``lf`` streamed through the bank method ``step`` names, on a bank from
     ``make_bank``, as a plan. Each chunk is fed as rows of the whole input, so an
     error names the input's row."""
-    if chunk_size is not None and chunk_size < 1:
-        who = f"lf.online.{step}"
-        msg = (
-            f"{who}: chunk_size must be at least 1, but it is {chunk_size}. Set chunk_size to "
-            "1 or more, or leave it out."
-        )
-        raise ValueError(msg)
+    chunk_size = _check_chunk_size(chunk_size, f"lf.online.{step}")
     # At build time, before anything runs: the order the plan will deliver is
     # decided here, and a caller should hear about it before the first chunk.
     called = f"lf.online.{step}"
@@ -2078,7 +2094,7 @@ class DataFrameOnlineNamespace:
         - :func:`polars_online.fit_predict`, this method as a function a
           type checker can see.
         """
-        _check_chunk_size(chunk_size, "fit_predict")
+        chunk_size = _check_chunk_size(chunk_size, "df.online.fit_predict")
         save_path = _save_path(save_state, "df.online.fit_predict")
         bank = _bank(specs, load_state, "df.online.fit_predict", threads)()
         closed_path = _closed_path(closed_groups, bank.specs, "df.online.fit_predict")
@@ -2138,7 +2154,9 @@ class DataFrameOnlineNamespace:
         :meth:`~polars_online.ModelBank.predict` raise, and:
 
         ``TypeError``
-            ``bank`` is neither a bank nor a path.
+            ``bank`` is neither a bank nor a path, or ``chunk_size`` is not a
+            whole number, as :class:`~polars_online.WrongTypeError`, which is
+            a ``ValueError`` too.
         ``ValueError``
             ``chunk_size`` is below 1.
 
@@ -2165,7 +2183,7 @@ class DataFrameOnlineNamespace:
         - :func:`polars_online.predict`, this method as a function a type
           checker can see.
         """
-        _check_chunk_size(chunk_size, "predict")
+        chunk_size = _check_chunk_size(chunk_size, "df.online.predict")
         threads = _check_threads(threads)
         if not isinstance(bank, ModelBank):
             bank = ModelBank.load(os.fspath(bank), threads=threads)

@@ -74,9 +74,12 @@ Polars' either. Nothing here needs scipy or scikit-learn.
 
 from __future__ import annotations
 
+import numbers
+import operator
 from collections.abc import Sequence
 from typing import Any
 
+from polars_online._errors import WrongTypeError
 from polars_online._renamed import renamed_function
 from polars_online._warnings import deprecated_alias, unstable
 
@@ -955,9 +958,8 @@ def spectral(r: Any, k: int) -> tuple[Any, Any]:
         An ``n x n`` symmetric matrix, or a Gram or a closed group's
         row, read as :func:`polars_online.gram.correlation` reads it.
     ``k``
-        How many eigenpairs to keep. A ``k`` above ``n`` keeps all ``n``. A
-        ``k`` of 0 keeps none, and a negative ``k`` is not refused: it keeps
-        all but the last ``-k``, as a Python slice does.
+        How many eigenpairs to keep, a whole number of at least 1. A ``k``
+        above ``n`` keeps all ``n``.
 
     .. rubric:: Returns
 
@@ -968,7 +970,10 @@ def spectral(r: Any, k: int) -> tuple[Any, Any]:
     .. rubric:: Raises
 
     ``ValueError``
-        ``r`` is an array that is not square.
+        ``r`` is an array that is not square, or ``k`` is below 1.
+    :class:`~polars_online.WrongTypeError`
+        ``k`` is not a whole number, such as ``2.5``. It is both a
+        ``TypeError`` and a ``ValueError``.
     ``numpy.linalg.LinAlgError``
         ``r`` holds ``nan`` entries where numpy's eigensolver does not
         converge, as a Gram with an ``intercept`` column does (the module's
@@ -1000,6 +1005,14 @@ def spectral(r: Any, k: int) -> tuple[Any, Any]:
     equal.
     """
     np = _np()
+    wrong_type = isinstance(k, bool) or not isinstance(k, numbers.Integral)
+    if wrong_type or operator.index(k) < 1:
+        msg = (
+            f"po.corr.spectral: k must be a whole number of at least 1, but it is {k!r}. Set k "
+            "to the number of eigenpairs to keep, 1 or more."
+        )
+        raise WrongTypeError(msg) if wrong_type else ValueError(msg)
+    k = operator.index(k)
     m = _matrix(r, "po.corr.spectral")
     vals, vecs = np.linalg.eigh(m)
     order = np.argsort(vals)[::-1][:k]
@@ -1183,8 +1196,9 @@ def from_blocks(b: Any, labels: Sequence[Any]) -> Any:
 
     ``b``
         The block correlations, one row and one column per block, in the
-        order ``labels`` first names the blocks. Give a symmetric table: an
-        asymmetric one is not refused, and gives an asymmetric result.
+        order ``labels`` first names the blocks. It must be symmetric, to
+        within 1e-12, the rounding of two block means summed in different
+        orders; ``nan`` entries match each other.
     ``labels``
         One block label per column of the result.
 
@@ -1197,7 +1211,8 @@ def from_blocks(b: Any, labels: Sequence[Any]) -> Any:
     .. rubric:: Raises
 
     ``ValueError``
-        ``b`` not square in the number of blocks the labels name.
+        ``b`` not square in the number of blocks the labels name, or not
+        symmetric.
 
     .. rubric:: Examples
 
@@ -1229,6 +1244,13 @@ def from_blocks(b: Any, labels: Sequence[Any]) -> Any:
             f"po.corr.from_blocks: labels name {len(names)} blocks, so b must be a "
             f"{len(names)} by {len(names)} matrix, but it has shape {bm.shape}. Pass one row "
             "and one column of b for each block, in the order the labels first name them."
+        )
+        raise ValueError(msg)
+    if not np.allclose(bm, bm.T, rtol=0.0, atol=1e-12, equal_nan=True):
+        i, j = np.unravel_index(int(np.nanargmax(np.abs(bm - bm.T))), bm.shape)
+        msg = (
+            f"po.corr.from_blocks: b must be symmetric, but b[{i}, {j}] is {bm[i, j]:.3g} and "
+            f"b[{j}, {i}] is {bm[j, i]:.3g}. Pass a symmetric table, such as (b + b.T) / 2."
         )
         raise ValueError(msg)
     of = np.array([names.index(v) for v in lab])
@@ -1691,8 +1713,7 @@ def fisher_se(
         The number of observations the correlation is estimated from.
     ``rho``
         Default ``None``, the standard error of Fisher's ``z``. Given, the
-        delta-method error of the correlation ``rho`` itself. A ``rho``
-        outside ``[-1, 1]`` is not refused, and gives a negative error.
+        delta-method error of the correlation ``rho`` itself, from -1 to 1.
     ``phi_a``, ``phi_b``
         The two series' AR(1) coefficients, given together or not at all.
         Given, the error is inflated for the pair's autocorrelation (Notes).
@@ -1712,10 +1733,9 @@ def fisher_se(
     .. rubric:: Raises
 
     ``ValueError``
-        At ``n`` above 3: one ``phi`` without the other, since the
-        inflation is a property of the pair, or ``phi_a * phi_b`` outside
-        ``(-1, 1)``. At ``n <= 3`` the call returns ``nan`` before either
-        check.
+        A ``rho`` outside ``[-1, 1]``, one ``phi`` without the other, since
+        the inflation is a property of the pair, or ``phi_a * phi_b``
+        outside ``(-1, 1)``, at any ``n``.
 
     .. rubric:: Examples
 
@@ -1743,25 +1763,32 @@ def fisher_se(
     the variance of a sample correlation depends on the fourth moments and
     this understates it.
     """
-    if n <= 3:
-        return float("nan")
+    if rho is not None and not -1.0 <= rho <= 1.0:
+        msg = (
+            f"po.corr.fisher_se: rho must be a correlation, from -1 to 1, but it is {rho!r}. "
+            "Set rho to the correlation whose error you want, or leave it out for the error "
+            "of Fisher's z."
+        )
+        raise ValueError(msg)
     if (phi_a is None) != (phi_b is None):
         msg = (
             "po.corr.fisher_se: phi_a and phi_b must be given together, since the inflation "
             "reads both series, but only one is set. Set both, or neither."
         )
         raise ValueError(msg)
+    p = None if phi_a is None or phi_b is None else phi_a * phi_b
+    if p is not None and not -1.0 < p < 1.0:
+        msg = (
+            f"po.corr.fisher_se: the product of phi_a and phi_b must be above -1 and below "
+            f"1, but it is {p:.3g}. Set each to an AR(1) coefficient above -1 and below 1."
+        )
+        raise ValueError(msg)
+    if n <= 3:
+        return float("nan")
     se = (n - 3.0) ** -0.5
     if rho is not None:
         se *= 1.0 - rho * rho
-    if phi_a is not None and phi_b is not None:
-        p = phi_a * phi_b
-        if not -1.0 < p < 1.0:
-            msg = (
-                f"po.corr.fisher_se: the product of phi_a and phi_b must be above -1 and below "
-                f"1, but it is {p:.3g}. Set each to an AR(1) coefficient above -1 and below 1."
-            )
-            raise ValueError(msg)
+    if p is not None:
         se *= ((1.0 + p) / (1.0 - p)) ** 0.5
     return float(se)
 

@@ -203,6 +203,10 @@ def _plan(source: Source, who: str) -> tuple[pl.LazyFrame, list[str] | None]:
     names = [os.fspath(p) for p in paths]
     if formats.pop() == "ipc":
         return pl.scan_ipc(names), _expand(paths, who)
+    # A local glob that matches nothing is refused now, as for Arrow IPC
+    # above: Polars' Parquet scan reports it only when the files are read,
+    # and as a `ComputeError`. A URL's glob is Polars' to expand.
+    _expand([n for n in names if "://" not in n], who)
     return pl.scan_parquet(names), None
 
 
@@ -771,9 +775,9 @@ def xgboost_matrix(
     .. rubric:: Raises
 
     :class:`~polars_online.WrongTypeError`
-        ``max_bin``, ``threads`` or ``sample_rows`` is not a whole number;
-        or a feature, the label, the weight or the margin is of a type
-        XGBoost does not read, a ``pl.Categorical`` among them. It is both
+        ``max_bin``, ``threads``, ``sample_rows`` or ``seed`` is not a
+        whole number; or a feature, the label, the weight or the margin is of
+        a type XGBoost does not read, a ``pl.Categorical`` among them. It is both
         a ``TypeError`` and a ``ValueError``.
     :class:`~polars_online.ColumnNotFoundError`
         A column named is not in the source. It is both Polars'
@@ -782,14 +786,13 @@ def xgboost_matrix(
         ``ref`` is not an ``xgboost.DMatrix``, ``source`` is of another
         type, or ``features`` is one name in place of a list.
     ``FileNotFoundError``
-        A glob of Arrow IPC files matches nothing. A glob of Parquet files
-        that matches nothing raises Polars' ``ComputeError`` instead, when
-        the files are read.
+        A glob of local files matches nothing.
     ``ValueError``
         When, each named in the message:
 
         - ``max_bin`` below 2, ``threads`` or ``sample_rows`` below 1, a
-          ``threads`` above its bound, or an ``engine`` not one of the three;
+          ``threads`` above its bound, a ``seed`` outside 0 to ``2**64 - 1``,
+          or an ``engine`` not one of the three;
         - a source that names no files, mixes Arrow IPC and Parquet, or names a
           file whose extension says neither;
         - a column named twice, or as both a feature and the label, weight or
@@ -806,10 +809,6 @@ def xgboost_matrix(
           ``base_margin`` here and a ``ref`` built without one;
         - under ``engine="native"``, an XGBoost the native engine cannot load.
 
-    ``TypeError`` or ``OverflowError``
-        ``seed`` is not a whole number from 0 to ``2**64 - 1``. It is not
-        checked by name: the error comes from the conversion to an unsigned
-        integer and does not name the parameter.
     ``UserWarning``
         Under ``engine="auto"``, the native engine cannot load XGBoost, and
         the Python engine builds the matrix.
@@ -937,6 +936,17 @@ def xgboost_matrix(
         raise ValueError(
             f"{who}: sample_rows must be at least 1, or None, but it is {sample_rows}. Set "
             "sample_rows to 1 or more, or to None for XGBoost's own sketch of every row."
+        )
+    if _whole(seed) is None:
+        raise WrongTypeError(
+            f"{who}: seed must be a whole number from 0 to 2**64 - 1, but it is {seed!r}. "
+            "Pass a whole number, such as 0."
+        )
+    seed = _whole(seed)  # type: ignore[assignment]
+    if not 0 <= seed < 2**64:
+        raise ValueError(
+            f"{who}: seed must be from 0 to 2**64 - 1, but it is {seed}. Set seed to a whole "
+            "number in that range, such as 0."
         )
     if ref is not None and not isinstance(ref, xgb.DMatrix):
         raise TypeError(
@@ -1257,9 +1267,7 @@ def lightgbm_dataset(
         constructed is constructed here), ``source`` is of another type, or
         ``features`` or ``categorical`` is one name in place of a list.
     ``FileNotFoundError``
-        A glob of Arrow IPC files matches nothing. A glob of Parquet files
-        that matches nothing raises Polars' ``ComputeError`` instead, when
-        the files are read.
+        A glob of local files matches nothing.
     ``ValueError``
         When, each named in the message:
 

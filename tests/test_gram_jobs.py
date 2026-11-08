@@ -433,7 +433,8 @@ def test_jobs_that_are_no_list_of_jobs_are_refused():
 # twice -- singular: `nan`, or an arbitrary split by rounding -- and each
 # slot's coefficient written to the one output column, the last write winning
 # beside the fit's own `r2`. Refused by name wherever a fit reads a column
-# set; `subset()` is a selection and keeps taking one.
+# set; `subset()` and `condition()` too since task 359, since a Gram holding
+# one column twice is singular and every use of it reads that singularity.
 
 
 def test_a_column_named_twice_in_features_is_refused_by_name():
@@ -453,8 +454,9 @@ def test_a_column_named_twice_in_features_is_refused_by_name():
         for feats in (["x0", "x0"], ["x0", "x1", "x1"], ["x1", x1]):
             with pytest.raises(ValueError, match=r"names column 'x\d' twice"):
                 call(feats)
-    # A selection is not a fit: `subset` keeps taking a column twice.
-    assert pg.subset(grams[0], ["x0", "x0"])["columns"][-2:] == ["x0", "x0"]
+    # A selection is refused too (task 359): it would hand a singular Gram on.
+    with pytest.raises(ValueError, match=r"names column 'x0' twice"):
+        pg.subset(grams[0], ["x0", "x0"])
 
 
 @pytest.mark.parametrize("path", [None, {}])

@@ -31,11 +31,9 @@ class ColumnNotFoundError(pl.exceptions.ColumnNotFoundError, ValueError):
     ``po.stream.refresh_time`` and ``po.gbdt`` raise it too, for a column
     they name. ``po.stream.with_windows`` raises a plain ``ValueError``
     instead.
-    ``po.eval`` raises it for a target column when ``spec`` is the spec
-    dict, and a plain ``ValueError`` when ``spec`` is the spec's name
-    alone. For a missing ``group``, ``clock``
-    or ``weight`` column, ``po.eval`` raises Polars' plain
-    ``ColumnNotFoundError``, which is not a ``ValueError``.
+    ``po.eval`` raises it for a missing ``group``, ``clock`` or ``weight``
+    column, and for a target column when ``spec`` is the spec dict; a
+    plain ``ValueError`` when ``spec`` is the spec's name alone.
 
     ``po.ColumnNotFoundError`` is a subclass of Polars'
     ``ColumnNotFoundError``, which Polars raises for a column a query names
