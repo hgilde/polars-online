@@ -889,10 +889,10 @@ def window_metrics(
         it.
     ``clock``
         The column whose values place each row in a window: a number, a
-        ``Datetime``, a ``Date`` or a ``Duration``. The rows whose clock is
-        null are scored together, in a row of their own whose
-        ``window_start`` is null. A ``Time`` is refused, since it starts
-        again at midnight.
+        ``Datetime``, a ``Date`` or a ``Duration``. A row whose clock is
+        null is in no window and is not scored, as Polars leaves a null key
+        out of a group. A ``Time`` is refused, since it starts again at
+        midnight.
     ``every``
         The length of each window, in the clock's units. On a numeric clock
         it is a number, finite and above 0, and a whole number on an
@@ -1051,6 +1051,11 @@ def window_metrics(
             columns=[*keys, clock],
             who="po.eval.window_metrics",
         )
+    ).filter(
+        # A row with no clock is in no window, as Polars leaves a null key out
+        # of `group_by_dynamic`; scored as a window of its own, it was a row
+        # of null `window_start` (task 359).
+        pl.col(clock).is_not_null()
     )
     if start is None:
         long = _dynamic_windows(long, clock, _polars_every(every, ns), keys[:-1])
@@ -2362,8 +2367,8 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
 
     ``first``, ``*rest``
         Frames :func:`sums` returned, over disjoint sets of rows, each with
-        the same key columns. Merging one frame returns its sums again, to
-        rounding: the means are recomputed as ``sum(w * mean) / w``.
+        the same key columns. Merging one frame returns its sums again,
+        exactly, sorted by the keys.
 
     .. rubric:: Returns
 
@@ -2446,24 +2451,34 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
     w = pl.col("w").sum()
     mean_y = (pl.col("w") * pl.col("mean_y")).sum() / w
     mean_p = (pl.col("w") * pl.col("mean_pred")).sum() / w
+    # A key in one part alone keeps that part's sums as they are: recomputed
+    # as `w * mean / w`, about one mean in ten moved by its last bit, and a
+    # small `m2` by `w` times that bit squared (task 359).
+    alone = pl.len() == 1
+
+    def merged(field: str, expr: pl.Expr) -> pl.Expr:
+        return pl.when(alone).then(pl.col(field).first()).otherwise(expr).alias(field)
+
     return (
         pl.concat(frames)
         .group_by(keys)
         .agg(
             pl.col("n").sum(),
             w.alias("w"),
-            mean_y.alias("mean_y"),
-            mean_p.alias("mean_pred"),
-            (pl.col("m2_y") + pl.col("w") * (pl.col("mean_y") - mean_y) ** 2).sum().alias("m2_y"),
-            (pl.col("m2_pred") + pl.col("w") * (pl.col("mean_pred") - mean_p) ** 2)
-            .sum()
-            .alias("m2_pred"),
-            (
-                pl.col("cov")
-                + pl.col("w") * (pl.col("mean_y") - mean_y) * (pl.col("mean_pred") - mean_p)
-            )
-            .sum()
-            .alias("cov"),
+            merged("mean_y", mean_y),
+            merged("mean_pred", mean_p),
+            merged("m2_y", (pl.col("m2_y") + pl.col("w") * (pl.col("mean_y") - mean_y) ** 2).sum()),
+            merged(
+                "m2_pred",
+                (pl.col("m2_pred") + pl.col("w") * (pl.col("mean_pred") - mean_p) ** 2).sum(),
+            ),
+            merged(
+                "cov",
+                (
+                    pl.col("cov")
+                    + pl.col("w") * (pl.col("mean_y") - mean_y) * (pl.col("mean_pred") - mean_p)
+                ).sum(),
+            ),
             pl.col("sse").sum(),
             pl.col("hits").sum(),
             pl.col("signed").sum(),
@@ -2507,10 +2522,10 @@ def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -
     null where the target never varied, and ``ic`` where either the target
     or the prediction never varied, where
     dividing by the variance of 0 would give an infinity that reads as a
-    number. Sums whose ``w`` is 0, from rows that all weigh 0, give ``NaN``
-    for ``r2``, ``ic``, ``mse`` and ``rmse``. There is no ``log_loss`` column under ``binary``:
-    :data:`SUM_FIELDS` carries no sum for it, and :func:`metrics` computes
-    it only over a frame in memory.
+    number. Sums whose ``w`` is 0, from rows that all weigh 0, give null
+    ``r2``, ``ic``, ``mse`` and ``rmse``, since no row counts. There is no
+    ``log_loss`` column under ``binary``: :data:`SUM_FIELDS` carries no sum
+    for it, and :func:`metrics` computes it only over a frame in memory.
 
     .. rubric:: Raises
 
@@ -2544,16 +2559,20 @@ def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -
     """
     _frame("po.eval.from_sums", s)
     keys = [c for c in s.columns if c not in SUM_FIELDS]
-    mse = pl.col("sse") / pl.col("w")
+    # Rows that all weigh 0 have no weighted score: their means are 0/0, so
+    # every sum but `sse` is NaN, and Polars orders NaN above 0, so each
+    # score is null by `w` first, as `hit_rate` is by `signed` (task 359).
+    weighed = pl.col("w") > 0
+    mse = pl.when(weighed).then(pl.col("sse") / pl.col("w"))
     denom = (pl.col("m2_y") * pl.col("m2_pred")).sqrt()
     out = s.select(
         *keys,
         pl.col("n"),
-        pl.when(pl.col("m2_y") > 0)
+        pl.when(weighed & (pl.col("m2_y") > 0))
         .then(1.0 - pl.col("sse") / pl.col("m2_y"))
         .otherwise(None)
         .alias("brier_skill" if binary else "r2"),
-        pl.when(denom > 0).then(pl.col("cov") / denom).otherwise(None).alias("ic"),
+        pl.when(weighed & (denom > 0)).then(pl.col("cov") / denom).otherwise(None).alias("ic"),
         pl.when(pl.col("signed") > 0)
         .then(pl.col("hits") / pl.col("signed"))
         .otherwise(None)

@@ -36,21 +36,15 @@ Every function is a pure function of its inputs: arrays or numbers, or a
 Gram or a closed group's row. Where it takes a correlation matrix, it also
 takes one of the Grams :meth:`~polars_online.ModelBank.gram` returns, or a row of
 :meth:`~polars_online.ModelBank.closed_groups`, and reads its correlation
-matrix as :func:`polars_online.gram.correlation` does. That matrix gives a
-Gram's ``intercept`` column a row and a column of ``nan``, which each
-function meets in its own way:
-
-- :func:`nearest` drops them;
-- :func:`equicorr` leaves them out of its mean, and :func:`block_means` out
-  of each block's, which is ``nan`` where every entry behind it is;
-- :func:`absorption` and :func:`spectral` raise numpy's ``LinAlgError``;
-- :func:`shrink` returns ``nan`` in the intercept's row and column (the
-  whole matrix toward ``target="identity"``), and its estimated intensity
-  comes back as 0, which shrinks nothing;
-- :func:`loss` gives ``nan``.
-
-So pass such a Gram through :func:`polars_online.gram.subset` first, naming
-its features.
+matrix as :func:`polars_online.gram.correlation` does, **without the
+intercept's row and column**. The intercept is the constant column a spec's
+``fit_intercept`` adds, and a constant has no correlation with anything, so
+:func:`polars_online.gram.correlation` gives it ``nan``. Every function here
+reads the Gram as :func:`polars_online.gram.subset` would give it without
+the intercept, and returns one row and column per other column, in their
+order. A feature the stream found constant has no correlation either, and
+is refused by name: pass the Gram without it, as
+:func:`polars_online.gram.subset` returns it.
 
 The arithmetic is the papers', named in each docstring, and every function
 is held against a longhand check in ``tests/test_corr.py``: Higham's own
@@ -132,19 +126,17 @@ def _matrix(obj: Any, who: str = "po.corr", param: str = "r") -> Any:
 
     An array is returned as a float array; a mapping from
     :meth:`~polars_online.ModelBank.gram` or :func:`polars_online.gram.from_row`
-    gives its ``comoments`` scaled; a one-row frame from
-    :meth:`~polars_online.ModelBank.closed_groups` is read through
-    :func:`polars_online.gram.from_row` first. ``ValueError`` for an array that is
-    not square.
+    gives its ``comoments`` scaled, without the intercept's row and column;
+    a one-row frame from :meth:`~polars_online.ModelBank.closed_groups` is
+    read through :func:`polars_online.gram.from_row` first. ``ValueError``
+    for an array that is not square, and for a Gram column other than the
+    intercept with no variance, named.
     """
     np = _np()
     if hasattr(obj, "to_dicts") or (
         isinstance(obj, dict) and "columns" in obj and "comoments" in obj
     ):
-        from polars_online import gram as _gram
-
-        g: Any = obj if isinstance(obj, dict) and "means" in obj else _gram.from_row(obj)
-        return _gram.correlation(g)
+        return _gram_matrix(np, obj, who, param)
     m = np.asarray(obj, dtype=float)
     if m.ndim != 2 or m.shape[0] != m.shape[1]:
         msg = (
@@ -157,6 +149,31 @@ def _matrix(obj: Any, who: str = "po.corr", param: str = "r") -> Any:
     return m
 
 
+def _gram_matrix(np: Any, obj: Any, who: str, param: str) -> Any:
+    """A Gram's correlation matrix without its intercept: the intercept is a
+    constant column, whose correlations are nan, so every function here
+    reads the Gram as :func:`polars_online.gram.subset` without it would
+    give it, as :func:`polars_online.gram.vif` does by default (task 352,
+    then 359 for every function). A feature with no variance has no
+    correlation either, and is refused by name."""
+    from polars_online import gram as _gram
+
+    g: Any = obj if isinstance(obj, dict) and "means" in obj else _gram.from_row(obj)
+    cols = _gram._columns(g, who)
+    keep = [i for i, c in enumerate(cols) if c != _gram.INTERCEPT]
+    x = _gram.correlation(g)[np.ix_(keep, keep)]
+    dead = [cols[keep[i]] for i in range(len(keep)) if not np.isfinite(x[i, i])]
+    if dead:
+        which = f"{dead[0]!r} has" if len(dead) == 1 else f"{', '.join(map(repr, dead))} have"
+        msg = (
+            f"{who}: every column of {param}'s Gram but the intercept must vary, so that it "
+            f"has a correlation, but {which} no variance. Pass the Gram without those "
+            "columns, as po.gram.subset(g, columns) returns it."
+        )
+        raise ValueError(msg)
+    return x
+
+
 @deprecated_alias(
     "po.corr.matrix",
     "po.gram.correlation",
@@ -166,7 +183,16 @@ def _matrix(obj: Any, who: str = "po.corr", param: str = "r") -> Any:
 def matrix(obj: Any) -> Any:
     """Renamed :func:`polars_online.gram.correlation` for a Gram: each call
     raises a :class:`~polars_online.PolarsOnlineDeprecationWarning`, then
-    reads ``obj`` as every function here reads its matrix argument."""
+    returns what :func:`polars_online.gram.correlation` does for a Gram or a
+    closed group's row, its intercept included, and an array as a float
+    array."""
+    if hasattr(obj, "to_dicts") or (
+        isinstance(obj, dict) and "columns" in obj and "comoments" in obj
+    ):
+        from polars_online import gram as _gram
+
+        g: Any = obj if isinstance(obj, dict) and "means" in obj else _gram.from_row(obj)
+        return _gram.correlation(g)
     return _matrix(obj, "po.corr.matrix", "obj")
 
 
@@ -357,42 +383,18 @@ def nearest(
     that matters: clipping it here would break the unit diagonal again.
     """
     np = _np()
-    is_gram = hasattr(a, "to_dicts") or (
-        isinstance(a, dict) and "columns" in a and "comoments" in a
-    )
-    cols: list[str] = []
-    keep: list[int] = []
-    if is_gram:
-        # A Gram's intercept is a constant column, whose correlations are
-        # nan: read it without, as po.gram.vif does by default (task 352).
-        from polars_online import gram as _gram
-
-        g: Any = a if isinstance(a, dict) and "means" in a else _gram.from_row(a)
-        cols = _gram._columns(g, "po.corr.nearest")
-        keep = [i for i, c in enumerate(cols) if c != _gram.INTERCEPT]
-        x = _gram.correlation(g)[np.ix_(keep, keep)]
-    else:
-        x = _matrix(a, "po.corr.nearest", "a")
+    # A Gram is read without its intercept, and a constant feature refused
+    # by name, in `_matrix`.
+    x = _matrix(a, "po.corr.nearest", "a")
     k = x.shape[0]
     # A NaN propagates through the eigendecomposition and comes back as a
     # matrix of NaNs with a NaN distance -- an answer, and a wrong one
     # (docs/REVIEW-E54-E64.md K1).
     if not np.all(np.isfinite(x)):
-        dead = [cols[keep[i]] for i in range(k) if is_gram and not np.isfinite(x[i, i])]
-        if dead:
-            which = (
-                f"{dead[0]!r} has" if len(dead) == 1 else f"{', '.join(repr(c) for c in dead)} have"
-            )
-            msg = (
-                "po.corr.nearest: every column of a's Gram but the intercept must vary, so "
-                f"that it has a correlation, but {which} no variance. Pass the Gram without "
-                "those columns, as po.gram.subset(g, columns) returns it."
-            )
-        else:
-            msg = (
-                "po.corr.nearest: every entry of a must be finite, but one is NaN or infinite. "
-                "Replace the entries that are not finite before the repair."
-            )
+        msg = (
+            "po.corr.nearest: every entry of a must be finite, but one is NaN or infinite. "
+            "Replace the entries that are not finite before the repair."
+        )
         raise ValueError(msg)
     if max_iter < 1:
         msg = (
@@ -487,7 +489,8 @@ def shrink(
     ``r``
         The matrix ``R``: a ``k x k`` correlation or covariance matrix, or a
         Gram or a closed group's row, read as
-        :func:`polars_online.gram.correlation` reads it.
+        :func:`polars_online.gram.correlation` reads it, without the
+        intercept (the module's docstring says why).
     ``target``
         The target ``F``. ``"constant"``, the default, is Ledoit and Wolf's
         constant-correlation target ("Honey, I shrunk the sample covariance
@@ -520,7 +523,8 @@ def shrink(
     ``ValueError``
         A ``target`` that is neither word; ``alpha`` outside ``[0, 1]``;
         neither ``x`` nor ``alpha``; an ``x`` of the wrong shape or with
-        fewer than two rows; ``r`` an array that is not square.
+        fewer than two rows; ``r`` an array that is not square; a Gram
+        column other than the intercept with no variance.
 
     .. rubric:: Examples
 
@@ -676,8 +680,9 @@ def equicorr(r: Any) -> float:
 
     ``r``
         A ``k x k`` correlation matrix, or a Gram or a closed group's row,
-        read as :func:`polars_online.gram.correlation` reads it. ``nan``
-        entries, such as a constant column's, are left out of the mean.
+        read as :func:`polars_online.gram.correlation` reads it, without the
+        intercept (the module's docstring says why). ``nan`` entries of an
+        array are left out of the mean.
 
     .. rubric:: Returns
 
@@ -688,7 +693,8 @@ def equicorr(r: Any) -> float:
     .. rubric:: Raises
 
     ``ValueError``
-        ``r`` is an array that is not square.
+        ``r`` is an array that is not square, or a Gram column other than
+        the intercept has no variance.
 
     .. rubric:: Examples
 
@@ -834,7 +840,8 @@ def absorption(r: Any, k: int) -> float:
 
     ``r``
         An ``n x n`` correlation matrix, or a Gram or a closed group's
-        row, read as :func:`polars_online.gram.correlation` reads it.
+        row, read as :func:`polars_online.gram.correlation` reads it,
+        without the intercept (the module's docstring says why).
     ``k``
         How many of the largest eigenvalues to sum, from 1 to ``n``.
 
@@ -846,11 +853,11 @@ def absorption(r: Any, k: int) -> float:
     .. rubric:: Raises
 
     ``ValueError``
-        ``k`` outside ``1..n``, or ``r`` an array that is not square.
+        ``k`` outside ``1..n``, ``r`` an array that is not square, or a
+        Gram column other than the intercept with no variance.
     ``numpy.linalg.LinAlgError``
-        ``r`` holds ``nan`` entries where numpy's eigensolver does not
-        converge, as a Gram with an ``intercept`` column does (the module's
-        docstring says why).
+        ``r`` is an array holding ``nan`` entries, where numpy's eigensolver
+        does not converge.
 
     .. rubric:: Examples
 
@@ -956,7 +963,8 @@ def spectral(r: Any, k: int) -> tuple[Any, Any]:
 
     ``r``
         An ``n x n`` symmetric matrix, or a Gram or a closed group's
-        row, read as :func:`polars_online.gram.correlation` reads it.
+        row, read as :func:`polars_online.gram.correlation` reads it,
+        without the intercept (the module's docstring says why).
     ``k``
         How many eigenpairs to keep, a whole number of at least 1. A ``k``
         above ``n`` keeps all ``n``.
@@ -970,14 +978,14 @@ def spectral(r: Any, k: int) -> tuple[Any, Any]:
     .. rubric:: Raises
 
     ``ValueError``
-        ``r`` is an array that is not square, or ``k`` is below 1.
+        ``r`` is an array that is not square, a Gram column other than the
+        intercept has no variance, or ``k`` is below 1.
     :class:`~polars_online.WrongTypeError`
         ``k`` is not a whole number, such as ``2.5``. It is both a
         ``TypeError`` and a ``ValueError``.
     ``numpy.linalg.LinAlgError``
-        ``r`` holds ``nan`` entries where numpy's eigensolver does not
-        converge, as a Gram with an ``intercept`` column does (the module's
-        docstring says why).
+        ``r`` is an array holding ``nan`` entries, where numpy's eigensolver
+        does not converge.
 
     .. rubric:: Examples
 
@@ -1110,9 +1118,11 @@ def block_means(r: Any, labels: Sequence[Any]) -> tuple[Any, Any]:
 
     ``r``
         A ``k x k`` correlation matrix, or a Gram or a closed group's
-        row, read as :func:`polars_online.gram.correlation` reads it.
+        row, read as :func:`polars_online.gram.correlation` reads it,
+        without the intercept (the module's docstring says why).
     ``labels``
-        One block label per column, of any type that compares equal.
+        One block label per column, of any type that compares equal: for a
+        Gram, per column other than the intercept.
 
     .. rubric:: Returns
 
@@ -1120,19 +1130,18 @@ def block_means(r: Any, labels: Sequence[Any]) -> tuple[Any, Any]:
     the order the labels first name the blocks. ``B[a, b]`` is the mean of
     ``r[i, j]`` over ``i`` in block ``a`` and ``j`` in block ``b``, leaving
     out the diagonal: a column's correlation with itself is 1 and says
-    nothing about the block. ``counts[a, b]`` is the number of off-diagonal
-    entries of ``r`` in the two blocks, and ``B[a, b]`` is ``nan`` where it
-    is 0, as within a block of one column. ``nan`` entries of ``r`` are left
-    out of the means but still counted, so a count can be larger than the
-    number of entries behind its mean. Where every entry behind a mean is
-    ``nan``, ``B[a, b]`` is ``nan`` too, and numpy issues a
-    ``RuntimeWarning``.
+    nothing about the block. ``counts[a, b]`` is the number of entries
+    behind that mean: the off-diagonal entries of ``r`` in the two blocks
+    that are finite. ``nan`` entries of ``r`` are left out of both.
+    ``B[a, b]`` is ``nan`` where the count is 0, as within a block of one
+    column.
 
     .. rubric:: Raises
 
     ``ValueError``
-        ``labels`` without one label per column, or ``r`` an array that is
-        not square.
+        ``labels`` without one label per column, ``r`` an array that is
+        not square, or a Gram column other than the intercept with no
+        variance.
 
     .. rubric:: Examples
 
@@ -1178,9 +1187,11 @@ def block_means(r: Any, labels: Sequence[Any]) -> tuple[Any, Any]:
             mask = np.ones(block.shape, dtype=bool)
             if a == c:
                 np.fill_diagonal(mask, False)
-            counts[a, c] = int(mask.sum())
-            if counts[a, c]:
-                b[a, c] = float(np.nanmean(block[mask]))
+            vals = block[mask]
+            vals = vals[np.isfinite(vals)]
+            counts[a, c] = vals.size
+            if vals.size:
+                b[a, c] = float(vals.mean())
     return b, counts
 
 
@@ -1480,7 +1491,7 @@ def loss(
     ``fcst``
         The forecast ``F``: a ``k x k`` matrix, or a Gram or a closed
         group's row, read as :func:`polars_online.gram.correlation` reads
-        it.
+        it, without the intercept (the module's docstring says why).
     ``real``
         The realized matrix ``R``, in the same form and of the same shape.
     ``kind``
@@ -1513,7 +1524,8 @@ def loss(
 
     ``ValueError``
         A ``kind`` that is none of the three; matrices of different shapes;
-        ``"z_mse"`` without ``n``; an array that is not square.
+        ``"z_mse"`` without ``n``; an array that is not square; a Gram
+        column other than the intercept with no variance.
 
     .. rubric:: Examples
 
@@ -1612,8 +1624,9 @@ def epps_invert(gram_or_row: Any, *, L: int) -> Any:  # noqa: N803 - the paper's
 
     .. rubric:: Returns
 
-    The ``k x k`` correlation matrix at scale ``L``, with ``nan`` where a
-    column has no variance.
+    The ``k x k`` correlation matrix at scale ``L``, over the input's
+    columns other than an intercept, with ``nan`` where a column has no
+    variance.
 
     .. rubric:: Raises
 
@@ -1694,7 +1707,10 @@ def epps_invert(gram_or_row: Any, *, L: int) -> Any:  # noqa: N803 - the paper's
     out[~np.isfinite(out)] = np.nan
     np.fill_diagonal(out, np.where(auto > 0.0, 1.0, np.nan))
     assert out.shape == (k, k)
-    return out
+    # Without the intercept, as every function here reads a Gram.
+    cols = _gram._columns(g, "po.corr.epps_invert")
+    keep = [i for i, c in enumerate(cols) if c != _gram.INTERCEPT]
+    return out[np.ix_(keep, keep)]
 
 
 def fisher_se(
