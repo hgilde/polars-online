@@ -511,6 +511,14 @@ returns.
 
 ### Tests and documents
 
+- Three tutorials under `docs/tutorials/`, each a path to run step by step,
+  with its data made in the code and the answer planted in it recovered:
+  *Fit a model bank over parquet files in a query* fits two million rows
+  across eight parquet files and writes the predictions to a file; *Follow
+  a local fit through a day* follows a regression's coefficient along a
+  clock through a trading day and starts it over at the next day's open with
+  a session; *Fit, save and serve a model bank* saves a fit, loads it in a
+  new Python process and predicts rows whose target is not yet known.
 - Fifty-two how-to pages under `docs/how-to/`, each one task with its
   prerequisites, numbered steps, a recipe and a check. They cover running a
   bank (serve from a saved state, run from the command line, fit one model
