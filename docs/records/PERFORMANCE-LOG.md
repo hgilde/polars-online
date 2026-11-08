@@ -3395,6 +3395,46 @@ compensated means: the same 0.11 and 1.06 MB as before it. At 0.11.1 the
 same banks save 0.12 and 1.15 MB, since the compensated means give the
 scaler's mean a low part per feature, 8 bytes each.*
 
+*Note of 2026-11-08 (task 363): the `ewridge` rows above no longer
+reproduce, and the old rows are kept as measured.* The script's spec is
+`solve_every=1e9, max_rows_between_solves=1000, min_weight=50`. When
+this table was run, `1e9` was how the script said "never on the clock",
+since a `solve_every` of `inf` was refused (1.3.0 still refuses it).
+From 1.4.0 (task 278, "Default cadence first") a finite `solve_every`
+below `1e18` has a first period that also solves on the weight-share
+schedule until the cadence's first solve, here the row cap at row 1,000.
+Task 311's skip of unread solves does not apply: the floor is
+`min(k + 1, min_weight) = 50`, and from row 50 every row is predicted.
+At `k = 1,000` (release build of 56f54fde and the 1.4.0 and 1.3.0 wheels,
+two threads, load 9-10; `.claude/coord/W121-363-scratch/`):
+
+| build, spec | solves in rows 1-3,000 | rows/sec | R² from row 50 |
+|---|---|---:|---:|
+| 1.3.0, `solve_every=1e9` | rows 50, 1,050, 2,050 | 16,531 | 0.9274 |
+| 1.4.0 and 56f54fde, `solve_every=1e9` | row 50, 183 by weight share (51-998), row cap 1,000, 2,000, 3,000 | 5,389-5,721 | 0.6090 |
+| 1.4.0 and 56f54fde, `solve_every=inf` | rows 50, 1,050, 2,050 | 16,844-18,739 | 0.9274 |
+
+1.4.0's and 56f54fde's predictions are the same to the bit for each
+spec, and `solve_every=inf` at 56f54fde gives 1.3.0's `1e9` predictions
+to the bit. The R² falls where the first period ends, not inside it: the
+first period's fits predict rows 50-999 with a mean squared error of
+0.53, against 1.03 for 1.3.0's fit of 50 rows held to row 1,050 (the
+target's variance is 1.01). But the solve that ends the period falls on
+row 1,000, counted from the stream's start, where 1.3.0 counted the cap
+from its first solve and solved on row 1,050. A fit of 1,000 rows for
+1,001 coefficients at `ridge=1e-6` sits at the interpolation threshold,
+where the variance of least squares, about `σ² n / (p − n)` = 10, blows
+up. Rows 1,000-1,999 read it with a mean squared error of 7-8, against
+0.22 for 1.3.0's fit of 1,050 rows (`σ² p / (n − p)` ≈ 0.2). From row
+2,050 both read 0.012. With `solve_every=inf` beside the cap (the same
+run at load 16-21), `gram_block_rows=256` and `1024` ran at 68,796 and
+73,441 rows a second, against 33,914 and 37,065 above. At `k = 10,000`
+the same specs ran at 171, 584 and 551 rows a second, against 53, 269
+and 379 (those at the bank's default threads). From 1.4.0 the noise
+gate withholds every row from row 50 there as `ill_conditioned` (50 to
+2,000 rows for 10,001 coefficients), so no R² is scored; 1.3.0 predicted
+them (checked on rows 50-119).
+
 **An LMS step is stable only while `eta · |z|² < 2`, and a standardized row
 has `|z|² ≈ k`,** so the rate has to fall as `1/k`. Both libraries run at
 `learning_rate = 0.2 / k`. The first version of this table ran both at 0.01

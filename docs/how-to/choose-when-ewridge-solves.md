@@ -49,7 +49,19 @@ have been learned. So a fit of its first few rows is not held for a whole
 period. With `solve_every=500` and `min_weight=50`, the mean squared error
 of the predictions over the first 600 rows was 3.1e-6, where holding the
 first fit for the whole period gave 5.6e-4, on five seeds of a
-five-feature stream at a half-life of 1,000.
+five-feature stream at a half-life of 1,000. The first period solves by
+weight under `half_life=float("inf")` and `lam` too, where the default
+solves on every row.
+
+**On a wide fit the first period's solves can be most of the time, so
+give `solve_every=float("inf")` for solves by a row cap alone.** Each
+solve factors a matrix of a row and a column per coefficient. At 1,000
+features and `min_weight=50`, over 20,000 rows, `solve_every=1e9` beside
+`max_rows_between_solves=1000` solved 185 times in its first 1,000 rows
+and ran at 5,400 rows a second. `solve_every=float("inf")` with the same
+row cap solved on rows 50, 1,050 and every 1,000 rows after, and ran at
+16,800 rows a second. Both were measured on an M4 Pro on two threads, at
+a load near 10, on 2026-11-08.
 
 **`solve_every=float("inf")` never comes due, and neither does any value
 from `1e18` on,** since `1e18` lies past the end of any stream. Neither has

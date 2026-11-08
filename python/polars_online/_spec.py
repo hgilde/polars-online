@@ -1680,12 +1680,21 @@ def ewridge(
     reaches the floor.
 
     A given ``solve_every`` above 0 and below ``1e18`` starts with a first period that
-    solves by weight, as the default does. The period lasts until
+    solves by weight: once the weight learned since the last solve reaches
+    ``ln 2 / 50`` of the weight the fit holds, under ``half_life = inf``
+    and ``lam`` too, where the default solves on every row. The period lasts until
     ``solve_every`` has passed since the group's first row or its last
     reset, or until ``max_rows_between_solves`` rows with weight have been
     learned. On the row clock, that start is a row before the first row. So an early
     fit of a few rows is not held for a whole period. The row that ends the
     period solves, and the schedule's clock and row count run from there.
+    On a wide fit the period's solves can be most of the time. At 1,000
+    features and ``min_weight = 50``, ``solve_every = 1e9`` beside
+    ``max_rows_between_solves = 1000`` solved 185 times in its first 1,000
+    rows, and ran 20,000 rows at 5,400 a second. ``solve_every = inf``
+    with the same row cap solved on rows 50, 1,050 and every 1,000 rows
+    after, at 16,800 a second (an M4 Pro on two threads, load near 10).
+    For solves by a row cap alone, give ``solve_every = inf``.
 
     A target's first solve falls on the row its weight reaches ``k + 1``
     (``k`` without an intercept), where the schedule has not solved it
