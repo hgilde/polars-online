@@ -70,6 +70,17 @@ returns.
 
 ### Changed
 
+- `ewridge` under its default schedule (a finite half-life and no
+  `solve_every`) no longer runs a solve that `max_rows_between_solves`
+  brings due while its weight is more than about 1.4% below the floor, as
+  it already ran none the weight brought due there: no row can read such a
+  solve before the next one comes due. Every prediction, residual and
+  spread is unchanged to the bit. Below the floor, `coef`, `support_coef`
+  and `se_coef` are the last fit solved (null before the first), and
+  `solve_failures` counts only the solves run. So
+  `max_rows_between_solves=1` no longer keeps every solve below the floor;
+  to keep them, give `min_weight=0` or `solve_every=0`. A given
+  `solve_every`'s clock and row cap still run every solve they bring due.
 - `po.eval.window_metrics` leaves a row whose clock is null out of every
   window, as Polars leaves a null key out of a group. Before, such rows were
   scored together in a row whose `window_start` was null.
@@ -420,6 +431,12 @@ returns.
 
 ### Performance
 
+- `ewridge` with a short row cap under the default schedule no longer
+  factorizes below the floor. At 1,000 features, a row cap of 1 and
+  `min_weight` 1,001, 2,600 rows ran at 188 rows a second, from 117. At
+  10,000 features and a row cap of 100, 10,300 rows took 117 s, from 308.
+  A row cap of 1,000 is unchanged: below the floor the weight brings solves
+  due more often than it does. (M4 Pro, two Polars threads, 2026-11-08.)
 - The bank no longer builds a list on every row to name the targets whose
   `min_weight` has not been met; each such notice is raised as it is found.
   The cheapest bank case runs 2.0% fewer instructions (1,910k to 1,872k

@@ -221,6 +221,18 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    first sees after the load refits until 320 MiB is reserved, where the
    old build would have given it up. No frozen fixture reaches the
    default budget.
+   A twelfth, the user's (2026-11-08, task 364): an `ewridge` state
+   saved by an earlier build no longer runs a solve its row cap brings due
+   under a weight share (the default schedule under a finite half-life)
+   while the weight is below `(1 − s)(1 − 2⁻¹⁶)` of its lowest floor, as it
+   already ran none the weight brought due there. It continues with every
+   residual, spread, weight and Gram to the bit, and every prediction to
+   the bit except in the seventh exception's two cases. Until the next
+   solve run, its `coef`, `support_coef` and `se_coef` report the file's
+   fit and `solve_failures` counts only the solves run, so the state it
+   re-saves after those rows is not the old build's. A given
+   `solve_every`'s clock and row cap still run every solve they bring due.
+   No frozen fixture reaches it.
 6. No `unsafe` in `online-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
 8. **`n_eff` -- the models' accessor, emitted as `weight_sum` -- means the same thing in
