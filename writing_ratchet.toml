@@ -16,9 +16,9 @@
 [finished]
 messages = ["crates/online-cli/src/main.rs", "crates/online-core/src/audit.rs", "crates/online-core/src/bocpd.rs", "crates/online-core/src/clock.rs", "crates/online-core/src/cluster/kmeans.rs", "crates/online-core/src/cluster/micro.rs", "crates/online-core/src/conformal.rs", "crates/online-core/src/constraint.rs", "crates/online-core/src/corrchange.rs", "crates/online-core/src/deco.rs", "crates/online-core/src/ewclass.rs", "crates/online-core/src/ewcov.rs", "crates/online-core/src/ewcov/diag.rs", "crates/online-core/src/ewdiag.rs", "crates/online-core/src/ewlagcov.rs", "crates/online-core/src/ewridge.rs", "crates/online-core/src/ftrl.rs", "crates/online-core/src/gramfit/lars.rs", "crates/online-core/src/hmm.rs", "crates/online-core/src/holt.rs", "crates/online-core/src/kalman.rs", "crates/online-core/src/lasso.rs", "crates/online-core/src/margbins.rs", "crates/online-core/src/marginal.rs", "crates/online-core/src/marglag.rs", "crates/online-core/src/model.rs", "crates/online-core/src/pa.rs", "crates/online-core/src/rcov.rs", "crates/online-core/src/rls.rs", "crates/online-core/src/robust.rs", "crates/online-core/src/seqtest.rs", "crates/online-core/src/sgd.rs", "crates/online-core/src/solve.rs", "crates/online-core/src/stats.rs", "crates/online-core/src/warmup.rs", "crates/online-core/src/window.rs", "crates/online-polars/src/arrow.rs", "crates/online-polars/src/bank.rs", "crates/online-polars/src/bank/audit.rs", "crates/online-polars/src/bank/learned.rs", "crates/online-polars/src/bank/refusals.rs", "crates/online-polars/src/defaults.rs", "crates/online-polars/src/formula.rs", "crates/online-polars/src/gramfit.rs", "crates/online-polars/src/pool.rs", "crates/online-polars/src/refresh.rs", "crates/online-polars/src/refresh/held.rs", "crates/online-polars/src/resolvers.rs", "crates/online-polars/src/runner.rs", "crates/online-polars/src/spec.rs", "crates/online-polars/src/spec/checks.rs", "crates/online-polars/src/spec/clock.rs", "crates/online-polars/src/spec/label_clock.rs", "crates/online-polars/src/spec/limits.rs", "crates/online-polars/src/spec/models.rs", "crates/online-polars/src/spec/names.rs", "crates/online-polars/src/stream.rs", "crates/online-polars/src/stream/last_row.rs", "crates/online-polars/src/stream/model_cfgs.rs", "crates/online-polars/src/summary.rs", "crates/online-polars/src/timing.rs", "crates/online-polars/src/windows.rs", "crates/online-polars/src/windows_frame.rs", "crates/online-py/src/gbdt.rs", "crates/online-py/src/gramfit.rs", "crates/online-py/src/lib.rs", "python/polars_online/_bank.py", "python/polars_online/_duration.py", "python/polars_online/_formula.py", "python/polars_online/_frame.py", "python/polars_online/_renamed.py", "python/polars_online/_spec.py", "python/polars_online/_spec_audit.py", "python/polars_online/_spec_class.py", "python/polars_online/_spec_cluster.py", "python/polars_online/_spec_gradient.py", "python/polars_online/_spec_regimes.py", "python/polars_online/_warnings.py", "python/polars_online/corr.py", "python/polars_online/eval.py", "python/polars_online/gbdt.py", "python/polars_online/gram.py", "python/polars_online/ops.py", "python/polars_online/sim.py", "python/polars_online/stream.py"]
 docstrings = ["crates/online-py/src/lib.rs", "python/polars_online/__init__.py", "python/polars_online/_bank.py", "python/polars_online/_errors.py", "python/polars_online/_frame.py", "python/polars_online/_spec.py", "python/polars_online/_spec_audit.py", "python/polars_online/_spec_changepoint.py", "python/polars_online/_spec_class.py", "python/polars_online/_spec_cluster.py", "python/polars_online/_spec_fields.py", "python/polars_online/_spec_gradient.py", "python/polars_online/_spec_regimes.py", "python/polars_online/_spec_robust.py", "python/polars_online/_spec_trend.py", "python/polars_online/_warnings.py", "python/polars_online/corr.py", "python/polars_online/eval.py", "python/polars_online/gbdt.py", "python/polars_online/gram.py", "python/polars_online/ops.py", "python/polars_online/sim.py", "python/polars_online/stream.py"]
-vocabulary = ["crates/online-py/src/lib.rs#docstrings", "docs/MODELS.md", "docs/OUTPUTS.md", "docs/explanation/chunk-invariance-and-streaming.md", "docs/explanation/grids-and-instances.md", "docs/explanation/out-of-sample.md", "docs/explanation/robust-scale.md", "docs/explanation/state-and-resuming.md", "docs/explanation/time-and-decay.md", "docs/explanation/warm-up-and-readiness.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/resume-from-a-saved-state.md", "python/polars_online/__init__.py#docstrings", "python/polars_online/_bank.py#docstrings", "python/polars_online/_errors.py#docstrings", "python/polars_online/_frame.py#docstrings", "python/polars_online/_spec_audit.py#docstrings", "python/polars_online/_spec_changepoint.py#docstrings", "python/polars_online/_spec_class.py#docstrings", "python/polars_online/_spec_cluster.py#docstrings", "python/polars_online/_spec_fields.py#docstrings", "python/polars_online/_spec_gradient.py#docstrings", "python/polars_online/_spec_regimes.py#docstrings", "python/polars_online/_spec_robust.py#docstrings", "python/polars_online/_spec_trend.py#docstrings", "python/polars_online/_warnings.py#docstrings", "python/polars_online/corr.py#docstrings", "python/polars_online/eval.py#docstrings", "python/polars_online/gbdt.py#docstrings", "python/polars_online/gram.py#docstrings", "python/polars_online/ops.py#docstrings", "python/polars_online/sim.py#docstrings", "python/polars_online/stream.py#docstrings"]
-sentences = ["docs/MODELS.md", "docs/OUTPUTS.md", "docs/explanation/chunk-invariance-and-streaming.md", "docs/explanation/grids-and-instances.md", "docs/explanation/out-of-sample.md", "docs/explanation/robust-scale.md", "docs/explanation/state-and-resuming.md", "docs/explanation/time-and-decay.md", "docs/explanation/warm-up-and-readiness.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/resume-from-a-saved-state.md"]
-kinds = ["docs/MODELS.md", "docs/OUTPUTS.md", "docs/explanation/chunk-invariance-and-streaming.md", "docs/explanation/grids-and-instances.md", "docs/explanation/out-of-sample.md", "docs/explanation/robust-scale.md", "docs/explanation/state-and-resuming.md", "docs/explanation/time-and-decay.md", "docs/explanation/warm-up-and-readiness.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/resume-from-a-saved-state.md"]
+vocabulary = ["crates/online-py/src/lib.rs#docstrings", "docs/CALIBRATION.md", "docs/GBDT.md", "docs/MODELS.md", "docs/OUTPUTS.md", "docs/explanation/chunk-invariance-and-streaming.md", "docs/explanation/grids-and-instances.md", "docs/explanation/how-po-gbdt-builds-training-data.md", "docs/explanation/out-of-sample.md", "docs/explanation/robust-scale.md", "docs/explanation/state-and-resuming.md", "docs/explanation/time-and-decay.md", "docs/explanation/warm-up-and-readiness.md", "docs/how-to/align-series-that-tick-at-their-own-times.md", "docs/how-to/check-feature-health.md", "docs/how-to/check-standard-errors.md", "docs/how-to/check-the-scale.md", "docs/how-to/choose-a-changepoint-hazard.md", "docs/how-to/choose-a-covariance-type.md", "docs/how-to/choose-a-ridge-and-half-life.md", "docs/how-to/choose-among-a-grid-online.md", "docs/how-to/choose-micro-eps.md", "docs/how-to/choose-settings-by-hand.md", "docs/how-to/compare-two-models.md", "docs/how-to/decide-when-a-model-is-ready.md", "docs/how-to/detect-a-break.md", "docs/how-to/estimate-a-blocks-covariance-from-ticks.md", "docs/how-to/evaluate-an-output-frame.md", "docs/how-to/find-an-influential-row.md", "docs/how-to/find-what-the-model-misses.md", "docs/how-to/find-which-series-leads.md", "docs/how-to/flag-joint-outliers.md", "docs/how-to/keep-hmm-states-on-their-regimes.md", "docs/how-to/keep-kmeans-centers-on-the-data.md", "docs/how-to/measure-heavy-tails.md", "docs/how-to/pool-grams.md", "docs/how-to/put-an-interval-on-a-prediction.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/read-a-sequential-test.md", "docs/how-to/resume-from-a-saved-state.md", "docs/how-to/screen-features-against-a-target.md", "docs/how-to/track-principal-components.md", "docs/how-to/track-the-average-correlation.md", "python/polars_online/__init__.py#docstrings", "python/polars_online/_bank.py#docstrings", "python/polars_online/_errors.py#docstrings", "python/polars_online/_frame.py#docstrings", "python/polars_online/_spec_audit.py#docstrings", "python/polars_online/_spec_changepoint.py#docstrings", "python/polars_online/_spec_class.py#docstrings", "python/polars_online/_spec_cluster.py#docstrings", "python/polars_online/_spec_fields.py#docstrings", "python/polars_online/_spec_gradient.py#docstrings", "python/polars_online/_spec_regimes.py#docstrings", "python/polars_online/_spec_robust.py#docstrings", "python/polars_online/_spec_trend.py#docstrings", "python/polars_online/_warnings.py#docstrings", "python/polars_online/corr.py#docstrings", "python/polars_online/eval.py#docstrings", "python/polars_online/gbdt.py#docstrings", "python/polars_online/gram.py#docstrings", "python/polars_online/ops.py#docstrings", "python/polars_online/sim.py#docstrings", "python/polars_online/stream.py#docstrings"]
+sentences = ["docs/CALIBRATION.md", "docs/GBDT.md", "docs/MODELS.md", "docs/OUTPUTS.md", "docs/explanation/chunk-invariance-and-streaming.md", "docs/explanation/grids-and-instances.md", "docs/explanation/how-po-gbdt-builds-training-data.md", "docs/explanation/out-of-sample.md", "docs/explanation/robust-scale.md", "docs/explanation/state-and-resuming.md", "docs/explanation/time-and-decay.md", "docs/explanation/warm-up-and-readiness.md", "docs/how-to/align-series-that-tick-at-their-own-times.md", "docs/how-to/check-feature-health.md", "docs/how-to/check-standard-errors.md", "docs/how-to/check-the-scale.md", "docs/how-to/choose-a-changepoint-hazard.md", "docs/how-to/choose-a-covariance-type.md", "docs/how-to/choose-a-ridge-and-half-life.md", "docs/how-to/choose-among-a-grid-online.md", "docs/how-to/choose-micro-eps.md", "docs/how-to/choose-settings-by-hand.md", "docs/how-to/compare-two-models.md", "docs/how-to/decide-when-a-model-is-ready.md", "docs/how-to/detect-a-break.md", "docs/how-to/estimate-a-blocks-covariance-from-ticks.md", "docs/how-to/evaluate-an-output-frame.md", "docs/how-to/find-an-influential-row.md", "docs/how-to/find-what-the-model-misses.md", "docs/how-to/find-which-series-leads.md", "docs/how-to/flag-joint-outliers.md", "docs/how-to/keep-hmm-states-on-their-regimes.md", "docs/how-to/keep-kmeans-centers-on-the-data.md", "docs/how-to/measure-heavy-tails.md", "docs/how-to/pool-grams.md", "docs/how-to/put-an-interval-on-a-prediction.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/read-a-sequential-test.md", "docs/how-to/resume-from-a-saved-state.md", "docs/how-to/screen-features-against-a-target.md", "docs/how-to/track-principal-components.md", "docs/how-to/track-the-average-correlation.md"]
+kinds = ["docs/CALIBRATION.md", "docs/GBDT.md", "docs/MODELS.md", "docs/OUTPUTS.md", "docs/explanation/chunk-invariance-and-streaming.md", "docs/explanation/grids-and-instances.md", "docs/explanation/how-po-gbdt-builds-training-data.md", "docs/explanation/out-of-sample.md", "docs/explanation/robust-scale.md", "docs/explanation/state-and-resuming.md", "docs/explanation/time-and-decay.md", "docs/explanation/warm-up-and-readiness.md", "docs/how-to/align-series-that-tick-at-their-own-times.md", "docs/how-to/check-feature-health.md", "docs/how-to/check-standard-errors.md", "docs/how-to/check-the-scale.md", "docs/how-to/choose-a-changepoint-hazard.md", "docs/how-to/choose-a-covariance-type.md", "docs/how-to/choose-a-ridge-and-half-life.md", "docs/how-to/choose-among-a-grid-online.md", "docs/how-to/choose-micro-eps.md", "docs/how-to/choose-settings-by-hand.md", "docs/how-to/compare-two-models.md", "docs/how-to/decide-when-a-model-is-ready.md", "docs/how-to/detect-a-break.md", "docs/how-to/estimate-a-blocks-covariance-from-ticks.md", "docs/how-to/evaluate-an-output-frame.md", "docs/how-to/find-an-influential-row.md", "docs/how-to/find-what-the-model-misses.md", "docs/how-to/find-which-series-leads.md", "docs/how-to/flag-joint-outliers.md", "docs/how-to/keep-hmm-states-on-their-regimes.md", "docs/how-to/keep-kmeans-centers-on-the-data.md", "docs/how-to/measure-heavy-tails.md", "docs/how-to/pool-grams.md", "docs/how-to/put-an-interval-on-a-prediction.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/read-a-sequential-test.md", "docs/how-to/resume-from-a-saved-state.md", "docs/how-to/screen-features-against-a-target.md", "docs/how-to/track-principal-components.md", "docs/how-to/track-the-average-correlation.md"]
 
 [[accepted]]
 check = "messages"
@@ -740,16 +740,13 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 [vocabulary."crates/online-py/src/lib.rs#messages"]
 
 [vocabulary."docs/CALIBRATION.md"]
-"british" = 1
-"retired" = 2
 
 [vocabulary."docs/DATA-QUALITY.md"]
 "british" = 16
 "retired" = 21
 
 [vocabulary."docs/DIAGNOSTICS.md"]
-"british" = 9
-"retired" = 25
+"retired" = 12
 
 [vocabulary."docs/EXTENDING.md"]
 "british" = 4
@@ -758,7 +755,7 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 [vocabulary."docs/GBDT.md"]
 
 [vocabulary."docs/GRAM.md"]
-"british" = 24
+"british" = 23
 "retired" = 2
 
 [vocabulary."docs/PERFORMANCE.md"]
@@ -792,6 +789,64 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 [vocabulary."docs/WINDOWS.md"]
 "british" = 2
 "retired" = 7
+
+[vocabulary."docs/explanation/how-po-gbdt-builds-training-data.md"]
+
+[vocabulary."docs/how-to/align-series-that-tick-at-their-own-times.md"]
+
+[vocabulary."docs/how-to/check-feature-health.md"]
+
+[vocabulary."docs/how-to/check-standard-errors.md"]
+
+[vocabulary."docs/how-to/check-the-scale.md"]
+
+[vocabulary."docs/how-to/choose-a-changepoint-hazard.md"]
+
+[vocabulary."docs/how-to/choose-a-covariance-type.md"]
+
+[vocabulary."docs/how-to/choose-a-ridge-and-half-life.md"]
+
+[vocabulary."docs/how-to/choose-among-a-grid-online.md"]
+
+[vocabulary."docs/how-to/choose-micro-eps.md"]
+
+[vocabulary."docs/how-to/choose-settings-by-hand.md"]
+
+[vocabulary."docs/how-to/compare-two-models.md"]
+
+[vocabulary."docs/how-to/decide-when-a-model-is-ready.md"]
+
+[vocabulary."docs/how-to/detect-a-break.md"]
+
+[vocabulary."docs/how-to/estimate-a-blocks-covariance-from-ticks.md"]
+
+[vocabulary."docs/how-to/evaluate-an-output-frame.md"]
+
+[vocabulary."docs/how-to/find-an-influential-row.md"]
+
+[vocabulary."docs/how-to/find-what-the-model-misses.md"]
+
+[vocabulary."docs/how-to/find-which-series-leads.md"]
+
+[vocabulary."docs/how-to/flag-joint-outliers.md"]
+
+[vocabulary."docs/how-to/keep-hmm-states-on-their-regimes.md"]
+
+[vocabulary."docs/how-to/keep-kmeans-centers-on-the-data.md"]
+
+[vocabulary."docs/how-to/measure-heavy-tails.md"]
+
+[vocabulary."docs/how-to/pool-grams.md"]
+
+[vocabulary."docs/how-to/put-an-interval-on-a-prediction.md"]
+
+[vocabulary."docs/how-to/read-a-sequential-test.md"]
+
+[vocabulary."docs/how-to/screen-features-against-a-target.md"]
+
+[vocabulary."docs/how-to/track-principal-components.md"]
+
+[vocabulary."docs/how-to/track-the-average-correlation.md"]
 
 [vocabulary."llms.txt"]
 "retired" = 3
@@ -845,13 +900,12 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "python-word" = 2
 
 [sentences."docs/CALIBRATION.md"]
-"45+" = 1
 
 [sentences."docs/DATA-QUALITY.md"]
 "45+" = 2
 
 [sentences."docs/DIAGNOSTICS.md"]
-"45+" = 6
+"45+" = 5
 "about-the-document" = 1
 "is-a-lead" = 4
 
@@ -863,9 +917,6 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "python-word" = 1
 
 [sentences."docs/GBDT.md"]
-"45+" = 1
-"is-a-lead" = 1
-"python-word" = 1
 
 [sentences."docs/GLOSSARY.md"]
 
@@ -922,6 +973,64 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "is-a-lead" = 7
 "python-word" = 10
 
+[sentences."docs/explanation/how-po-gbdt-builds-training-data.md"]
+
+[sentences."docs/how-to/align-series-that-tick-at-their-own-times.md"]
+
+[sentences."docs/how-to/check-feature-health.md"]
+
+[sentences."docs/how-to/check-standard-errors.md"]
+
+[sentences."docs/how-to/check-the-scale.md"]
+
+[sentences."docs/how-to/choose-a-changepoint-hazard.md"]
+
+[sentences."docs/how-to/choose-a-covariance-type.md"]
+
+[sentences."docs/how-to/choose-a-ridge-and-half-life.md"]
+
+[sentences."docs/how-to/choose-among-a-grid-online.md"]
+
+[sentences."docs/how-to/choose-micro-eps.md"]
+
+[sentences."docs/how-to/choose-settings-by-hand.md"]
+
+[sentences."docs/how-to/compare-two-models.md"]
+
+[sentences."docs/how-to/decide-when-a-model-is-ready.md"]
+
+[sentences."docs/how-to/detect-a-break.md"]
+
+[sentences."docs/how-to/estimate-a-blocks-covariance-from-ticks.md"]
+
+[sentences."docs/how-to/evaluate-an-output-frame.md"]
+
+[sentences."docs/how-to/find-an-influential-row.md"]
+
+[sentences."docs/how-to/find-what-the-model-misses.md"]
+
+[sentences."docs/how-to/find-which-series-leads.md"]
+
+[sentences."docs/how-to/flag-joint-outliers.md"]
+
+[sentences."docs/how-to/keep-hmm-states-on-their-regimes.md"]
+
+[sentences."docs/how-to/keep-kmeans-centers-on-the-data.md"]
+
+[sentences."docs/how-to/measure-heavy-tails.md"]
+
+[sentences."docs/how-to/pool-grams.md"]
+
+[sentences."docs/how-to/put-an-interval-on-a-prediction.md"]
+
+[sentences."docs/how-to/read-a-sequential-test.md"]
+
+[sentences."docs/how-to/screen-features-against-a-target.md"]
+
+[sentences."docs/how-to/track-principal-components.md"]
+
+[sentences."docs/how-to/track-the-average-correlation.md"]
+
 [kinds."CONTRIBUTING.md"]
 "undeclared" = 1
 
@@ -929,7 +1038,6 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "undeclared" = 1
 
 [kinds."docs/CALIBRATION.md"]
-"undeclared" = 1
 
 [kinds."docs/DATA-QUALITY.md"]
 "undeclared" = 1
@@ -941,7 +1049,6 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "undeclared" = 1
 
 [kinds."docs/GBDT.md"]
-"undeclared" = 1
 
 [kinds."docs/GLOSSARY.md"]
 "undeclared" = 1
@@ -978,3 +1085,61 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 
 [kinds."docs/WRITING.md"]
 "undeclared" = 1
+
+[kinds."docs/explanation/how-po-gbdt-builds-training-data.md"]
+
+[kinds."docs/how-to/align-series-that-tick-at-their-own-times.md"]
+
+[kinds."docs/how-to/check-feature-health.md"]
+
+[kinds."docs/how-to/check-standard-errors.md"]
+
+[kinds."docs/how-to/check-the-scale.md"]
+
+[kinds."docs/how-to/choose-a-changepoint-hazard.md"]
+
+[kinds."docs/how-to/choose-a-covariance-type.md"]
+
+[kinds."docs/how-to/choose-a-ridge-and-half-life.md"]
+
+[kinds."docs/how-to/choose-among-a-grid-online.md"]
+
+[kinds."docs/how-to/choose-micro-eps.md"]
+
+[kinds."docs/how-to/choose-settings-by-hand.md"]
+
+[kinds."docs/how-to/compare-two-models.md"]
+
+[kinds."docs/how-to/decide-when-a-model-is-ready.md"]
+
+[kinds."docs/how-to/detect-a-break.md"]
+
+[kinds."docs/how-to/estimate-a-blocks-covariance-from-ticks.md"]
+
+[kinds."docs/how-to/evaluate-an-output-frame.md"]
+
+[kinds."docs/how-to/find-an-influential-row.md"]
+
+[kinds."docs/how-to/find-what-the-model-misses.md"]
+
+[kinds."docs/how-to/find-which-series-leads.md"]
+
+[kinds."docs/how-to/flag-joint-outliers.md"]
+
+[kinds."docs/how-to/keep-hmm-states-on-their-regimes.md"]
+
+[kinds."docs/how-to/keep-kmeans-centers-on-the-data.md"]
+
+[kinds."docs/how-to/measure-heavy-tails.md"]
+
+[kinds."docs/how-to/pool-grams.md"]
+
+[kinds."docs/how-to/put-an-interval-on-a-prediction.md"]
+
+[kinds."docs/how-to/read-a-sequential-test.md"]
+
+[kinds."docs/how-to/screen-features-against-a-target.md"]
+
+[kinds."docs/how-to/track-principal-components.md"]
+
+[kinds."docs/how-to/track-the-average-correlation.md"]

@@ -157,9 +157,11 @@ def bocpd(
         in its mean. A larger power finds a real shift later, and past about
         0.2 mostly not at all. Finite and above 0, and refused beside
         ``"full"``. The tempered predictive is not free of the data's units,
-        so center and scale each feature before a tempered run: in the query
-        before the bank, subtract its ``po.ewm_mean`` and divide by its
-        ``po.ewm_std`` with Polars' ``with_columns``.
+        so center and scale each feature before a tempered run. In the
+        query before the bank, make its z-score ``(pl.col("x") -
+        po.ewm_mean("x", half_life=h)) / po.ewm_std("x", half_life=h)``
+        with ``lf.online.with_windows``, which runs the window operators
+        (Polars' ``with_columns`` cannot).
         *Tempering* in Notes gives the measurements.
     ``prune_below``, ``max_run``
         ``prune_below`` is the share of the mass below which a run is

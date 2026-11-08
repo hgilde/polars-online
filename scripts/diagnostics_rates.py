@@ -33,8 +33,8 @@ Experiments:
     ``recursive_olsresiduals`` against its own boundary is the second
     opinion.
 ``drift_t3``
-    10 streams of 200,000 rows of the ``docs/DIAGNOSTICS.md`` recipe's
-    stable stretch (``y = x0 + 0.5 x1 + t(3)``, half-life 200): ``drift``
+    10 streams of 200,000 rows of the ``docs/how-to/measure-heavy-tails.md``
+    recipe's stable stretch (``y = x0 + 0.5 x1 + t(3)``, half-life 200): ``drift``
     flags per stream at the default threshold of 20.
 
 ``memories``

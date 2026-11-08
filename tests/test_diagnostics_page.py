@@ -30,9 +30,11 @@ RECIPES = recipes(PAGE)
 
 
 def test_the_page_has_its_recipes():
-    """The opening example, every switch at once, and a recipe for each
-    question, the worked example and the simulated data: eighteen."""
-    assert len(RECIPES) >= 18, len(RECIPES)
+    """The opening example, every switch at once, the worked example and the
+    simulated data: four. Each question's recipe moved to its how-to page
+    under ``docs/how-to/`` (task 338 stage 6b), where
+    ``tests/test_kind_pages.py`` runs it."""
+    assert len(RECIPES) >= 4, len(RECIPES)
 
 
 @pytest.mark.parametrize(
