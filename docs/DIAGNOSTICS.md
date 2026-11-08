@@ -1,10 +1,10 @@
 # Is the model working?
 
-Whether a model's predictions can be trusted is a set of separate
-questions, and each has its own diagnostic. A diagnostic is a switch in
+This reference page lists, for anyone who reads a model's output and
+wants to know whether its predictions can be trusted, each question, the
+diagnostic that answers it and its fields. Each diagnostic is a switch in
 the spec that adds fields to the model's output on every row, or a call in
-`po.eval` that scores an output after the run. [How a diagnostic keeps its
-own memory](explanation/how-diagnostics-work.md) explains how they work.
+`po.eval` that scores an output after the run.
 
 [Data quality](DATA-QUALITY.md) asks whether the data can be
 learned from at all. This page asks whether the model learned from it well.
@@ -99,7 +99,7 @@ These are the words of the library that the page uses:
 | spec | one model's description: the model, the columns it reads, and how it treats time. `po.spec.ewridge(...)` makes one, and [the README's model table](MODELS.md#the-models-at-a-glance) lists every kind |
 | bank | `po.ModelBank`, a set of specs fitted together over the same rows |
 | slot | one prediction of one target, at one point of a grid such as a list of ridge values. A diagnostic writes one field per slot, suffixed with the target, as `cusum_y` |
-| out of sample | a row's prediction is made before the model learns from the row, so its residual `resid = y − pred` is one the model has not seen |
+| out-of-sample | a row's prediction is made before the model learns from the row, so its residual `resid = y − pred` is one the model has not seen |
 | `half_life` | each row's weight halves every `half_life` of the clock column, or of the rows when there is no clock. `inf` forgets nothing |
 | memory | a diagnostic's own half-life, its `*_half_life` keyword. `inf` runs it once over the whole stream |
 | Kish size | `n_kish = (Σw)² / Σw²`: the number of equally weighted rows that a set of decayed weights is worth, `2.885 × half_life` rows in steady state |
@@ -120,26 +120,25 @@ Each question, the diagnostic that answers it, and its fields:
 | is it ready? | `min_weight`, `min_settled_frac`, `max_error_inflation`, `emit_error_inflation` | `weight_sum`, `settled_frac`, `withheld_reason`, `error_inflation_<t>` | [Is it ready?](#is-it-ready) |
 | how wide is its error? | `emit_sigma`, `emit_zscore`, `resid_quantiles`, `conformal` | `sigma_<t>`, `zscore_<t>`, `abs_resid_q<p>_<t>`, `lo_<t>`, `hi_<t>`, `coverage_<t>` | [How wide is its error?](#how-wide-is-its-error) |
 
-[Fit on factor
-residuals](how-to/fit-on-factor-residuals.md#check-each-stage-with-the-diagnostics-it-asks-for)
+[Check a two-stage fit](how-to/check-a-two-stage-fit.md)
 checks a two-stage fit stage by stage with these diagnostics, and [Test a
 detector on known truth](how-to/test-a-detector-on-known-truth.md) scores a
 regime or break detector against streams whose truth is known.
 
 ## How the diagnostics work
 
-[How a diagnostic keeps its own
-memory](explanation/how-diagnostics-work.md) explains why each diagnostic
-keeps a memory of its own, when it starts to read, and how to read a
-statistic that is read on every row.
+[How the diagnostics work](explanation/how-diagnostics-work.md) explains
+why each diagnostic keeps a memory of its own, when it starts to read, how
+to read a statistic that is read on every row, and how a fit built in
+stages is checked stage by stage.
 
-### Out of sample, by construction
+### Out-of-sample, by construction
 
 **Every residual a diagnostic reads was made before the model learned from
 its row.** A bank predicts a row, records the residual, and only then
-learns the row. So a diagnostic built from those residuals is a
-*prequential* one, in Dawid's (1984) term. It judges the forecasts the
-model actually made, in the order it made them, on outcomes it had not yet
+learns the row. So a diagnostic built from those residuals is
+out-of-sample, as Dawid's (1984) evaluation is. It judges the predictions the
+model actually made, in the order it made them, on targets it had not yet
 seen. Nothing has to be held out, and nothing is refitted.
 
 **Run once, that residual is Brown, Durbin and Evans' (1975) recursive
@@ -196,11 +195,11 @@ windowed](explanation/how-diagnostics-work.md#run-once-or-windowed).
 **A diagnostic folds a row only once the model is ready.** A row whose
 prediction a gate withheld has no residual, so `min_weight`,
 `max_error_inflation` and `min_settled_frac` keep it out. Beside a fit that
-forgets, a diagnostic also waits until the stream is 95% settled on the
-longest finite memory the model keeps, 4.3 of that memory's half-lives.
+forgets, a diagnostic also waits until the stream has come 95% of the way to its steady state on
+the longest finite memory the model keeps, 4.3 of that memory's half-lives.
 Under `window_size` with no decay that memory is the window's Kish
 half-life, so a diagnostic starts about `1.5 W` rows in. A fit with several
-memories has settled only once the longest has, so four models count a
+memories reaches its steady state only once the longest has, so four models count a
 memory beside their half-life:
 
 | model | the memory it counts beside `half_life` |
@@ -215,12 +214,12 @@ switches the fit to the caller's units, 22 rows of Kish's size in. The
 fields of the twin fits and of feature health read the target and the
 features alone, and fold every row.
 
-**The readiness notices read the model's own half-life, not the longest
-memory.** `settled_frac`, `min_settled_frac`, `summary()` and the notices
-that a gate is not met read the decay `half_life` sets, so they can judge
+**The readiness warnings read the model's own half-life, not the longest
+memory.** `settled_frac`, `min_settled_frac`, `summary()` and the readiness
+warnings that a gate is not met read the decay `half_life` sets, so they can judge
 a stream long before its diagnostics start. Under `window_size` with no
-decay nothing settles, so `settled_frac` is null and no notice judges the
-stream. Its diagnostics still start 4.3 of the window's Kish half-lives
+decay there is no steady state to approach, so `settled_frac` is null and no readiness warning
+judges the stream. Its diagnostics still start 4.3 of the window's Kish half-lives
 in.
 
 **Run once, beside a fit that forgets nothing, give the model a
@@ -362,10 +361,10 @@ variance.** Targets that overlap correlate the residuals, as [Can its t be
 trusted?](#can-its-t-be-trusted) explains. Under a horizon of `h` rows the
 test of `a = 0, b = 1` is Wald's with the regression's sandwich at `2h`
 lags, built from the residual under the null, `y − pred`. On the two-stage
-example's look-ahead target, a slope of 0.99 came with a `wald` of 72.7
-read as independent, and of 1.1 under `horizon_rows=150` ([Check each
+example's look-ahead target, a slope of 0.99 came with a `wald` of 1.1
+under `horizon_rows=150` ([Check each
 stage with the diagnostics it asks
-for](how-to/fit-on-factor-residuals.md#check-each-stage-with-the-diagnostics-it-asks-for)).
+for](how-to/check-a-two-stage-fit.md#check-each-stage-with-the-diagnostics-it-asks-for)).
 
 **A quantile fit's calibration is its coverage.** A prediction of the
 `q`-th quantile is calibrated when the target falls below it on a share
@@ -1276,7 +1275,7 @@ Each claim above that is not measured here rests on one of these.
 | Chu, C.-S. J., Hornik, K. and Kuan, C.-M. (1995). MOSUM tests for parameter constancy. *Biometrika* 82(3), 603–617. | the moving-sum form of the CUSUM |
 | Clark, T. E. and McCracken, M. W. (2001). Tests of equal forecast accuracy and encompassing for nested models. *Journal of Econometrics* 105(1), 85–110. | why equal-accuracy tests lean toward the smaller of two nested models |
 | Clark, T. E. and West, K. D. (2007). Approximately normal tests for equal predictive accuracy in nested models. *Journal of Econometrics* 138(1), 291–311. | `po.eval.clark_west` |
-| Dawid, A. P. (1984). Statistical theory: the prequential approach. *Journal of the Royal Statistical Society, Series A* 147(2), 278–292. | prequential evaluation |
+| Dawid, A. P. (1984). Statistical theory: the prequential approach. *Journal of the Royal Statistical Society, Series A* 147(2), 278–292. | judging predictions made before each row is learned |
 | Diebold, F. X. and Mariano, R. S. (1995). Comparing predictive accuracy. *Journal of Business and Economic Statistics* 13(3), 253–263. | `po.eval.diebold_mariano` |
 | Hinkley, D. V. (1971). Inference about the change-point from cumulative sum tests. *Biometrika* 58(3), 509–523. | the Page-Hinkley detector behind `drift` |
 | Jarque, C. M. and Bera, A. K. (1980). Efficient tests for normality, homoscedasticity and serial independence of regression residuals. *Economics Letters* 6(3), 255–259. | `jarque_bera` |

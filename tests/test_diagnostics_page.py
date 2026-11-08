@@ -32,7 +32,7 @@ RECIPES = recipes(PAGE)
 def test_the_page_has_its_recipes():
     """The opening example and every switch at once: two. Each question's
     recipe moved to its how-to page under ``docs/how-to/`` (task 338 stage
-    6b), the worked two-stage example to how-to/fit-on-factor-residuals.md
+    6b), the worked two-stage example to how-to/check-a-two-stage-fit.md
     and the simulated data to how-to/test-a-detector-on-known-truth.md (stage
     9b), where ``tests/test_kind_pages.py`` runs them."""
     assert len(RECIPES) >= 2, len(RECIPES)

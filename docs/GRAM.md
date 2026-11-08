@@ -41,7 +41,7 @@ how-to that runs it:
 | read Grams back from files | `po.gram.from_row`, `po.ModelBank.load`, or numpy alone | [Read Grams from saved files](how-to/read-grams-from-saved-files.md) |
 | halve or quarter a Gram's bytes | `bank.gram(dtype="float32", layout="packed")` | [Store a compact Gram](how-to/store-a-compact-gram.md) |
 | collect a Gram of hundreds of features fast, in blocks of rows and on several cores | `gram_block_rows`, `gram_threads` | [Fit hundreds of features](how-to/fit-hundreds-of-features.md) |
-| fit Huber's loss, reading the rows once a pass and the Gram once | `po.gram.solve`, a Polars query a pass | [Fit a Huber regression on a Gram](how-to/fit-huber-on-a-gram.md) |
+| fit Huber's loss, reading the rows twice a pass and the Gram once | `po.gram.solve`, two Polars queries a pass | [Fit a Huber regression on a Gram](how-to/fit-huber-on-a-gram.md) |
 
 The library's words, as they are used for Grams:
 
@@ -534,11 +534,14 @@ and a t from the weeks of 4.1.
 
 ## A compact Gram
 
-`comoments` is the one array of a Gram that grows as `k²`: 800 MB a block
-in float64 at 10,000 columns. `bank.gram()` can return it in float32
+`comoments` (and, for an `ew_cov` with `lags`, `lag_comoments`) are the
+arrays of a Gram that grow as `k²`: `comoments` is 800 MB a block in
+float64 at 10,000 columns. `bank.gram()` can return them in float32
 (`dtype="float32"`), which rounds each entry to within a relative `2⁻²⁴`,
-about 6e-8, or as its upper triangle (`layout="packed"`), which drops the
-lower one. Each takes about half the bytes, and both together a quarter.
+about 6e-8, and `comoments` as its upper triangle (`layout="packed"`),
+which drops the lower one. Each takes about half the bytes of
+`comoments`, and both together a quarter. `lag_comoments` is never
+packed, since a lagged matrix is not symmetric, so it stays at half.
 The state itself stays float64 and whole. To choose a form and check what
 it cost a fit, see [Store a compact Gram](how-to/store-a-compact-gram.md).
 
@@ -548,23 +551,16 @@ a solution whose relative error is of the order of `κδ` (Higham 2002).
 Here `κ` is the condition number of the matrix solved, its largest
 eigenvalue over its smallest. For a Gram that matrix is the features'
 correlation matrix, which a standardized solve works on:
-`np.linalg.cond(po.gram.correlation(g)[1:, 1:])`. Belsley's indexes of
-[Is the fit determined?](#is-the-fit-determined) are of the uncentered
-design. The square of the largest is the condition number of that
-design's second moments, so they flag the same trouble on another scale. Rounding moves a solve by about `κδ`
-at most, and usually by far less, since the errors of many entries
-offset one another.
-
-**A packed Gram loses the last bits of a lower triangle that a row-by-row
-update wrote.** Such an update adds the same two products to `C[i][j]`
-and `C[j][i]` in either order, so its two triangles can differ in the
-last bit. Measured on the stream of [Store a compact
-Gram](how-to/store-a-compact-gram.md) without `gram_block_rows`, 73% of
-the off-diagonal entries differed between the two triangles, and a solve
-from the packed form moved by 2e-15 of the largest coefficient. With
-`gram_block_rows` no entry differed, and in float32 the fit moved by
-7e-9 of its largest coefficient, where its condition number of 7.8
+`np.linalg.cond(po.gram.correlation(g)[1:, 1:])`. Rounding moves a
+solve by about `κδ` at the worst, and usually by far less, since the
+errors of many entries offset one another. On the stream of [Store a
+compact Gram](how-to/store-a-compact-gram.md), a float32 Gram moved the
+fit by 7e-9 of its largest coefficient, where its condition number of 7.8
 allowed 4.7e-7.
+
+**A packed Gram solves to the same bits as the full one,** because the
+model keeps only the lower triangle and reads the upper one as its
+mirror, so the matrix is symmetric by construction.
 
 ## One wide Gram on several threads
 
@@ -645,7 +641,7 @@ bank gains less than its Gram's update, since the rest of a row's work,
 
 A Huber fit down-weights the rows that miss by far, so its weights depend
 on each row's residual, and no single Gram holds it: it reads the rows
-again, once a pass. It does not need a Gram for each pass or for each
+again, twice a pass, once for the scale and once for the moments. It does not need a Gram for each pass or for each
 target. Huber's algorithm H (1981) reuses one Gram, that of the rows at
 their own weights, in every pass. To run it over a file, see [Fit a Huber
 regression on a Gram](how-to/fit-huber-on-a-gram.md).
@@ -670,9 +666,9 @@ y* = x'b + s · ψ(r / s)        ψ(u) = u clipped to [−c, c]
 which is the target where the residual is inside the cut, and the fit
 plus or minus `c·s` beyond it. Its least-squares fit, on the rows at
 their own weights, is the next `b`. That fit's matrix is the Gram of the
-rows, which no pass changes, so it is factored once. A pass reads only
-`y*`'s mean and its centered cross-moments with the columns, in one query
-over the rows. At a fixed point the fit of `y*` is `b`, so
+rows, which no pass changes, so it is factored once. A pass reads the
+scale in one query over the rows, and `y*`'s mean and its centered
+cross-moments with the columns in a second. At a fixed point the fit of `y*` is `b`, so
 `Σ x ψ(r / s) = 0`, which is Huber's estimating equation. Each target has
 its own `y*`, and all of them share the one Gram.
 
@@ -689,8 +685,8 @@ fit by at most `c·s`: from 0 at `s = 0.5`, a level of 1,000 takes about
 **Read the scale again in each pass.** The MAD,
 `median(|r|) / 0.6745`, is the noise's standard deviation when the
 errors are normal, and holds until half the rows are outliers. A median
-is a query of its own over the rows, and two blocks' medians do not
-combine into their union's. Huber's Proposal 2 is a scale built from
+is a query of its own over the rows, which holds a value a row while it
+runs, and two blocks' medians do not combine into their union's. Huber's Proposal 2 is a scale built from
 sums, which do combine: the `s` that solves `mean(ψ(r/s)²) = E[ψ(Z)²]`,
 0.7102 at `c = 1.345` for a standard normal `Z`. It holds nearly as well as
 the MAD up to a fifth of the rows wild, and breaks sooner. The stream is

@@ -116,6 +116,7 @@ FILES: list[str] = [
     "docs/how-to/choose-holts-smoothing.md",
     "docs/how-to/fit-a-count-target.md",
     "docs/how-to/fit-on-factor-residuals.md",
+    "docs/how-to/check-a-two-stage-fit.md",
     "docs/how-to/fit-one-model-per-group.md",
     "docs/how-to/fit-targets-that-go-missing-on-different-rows.md",
     "docs/how-to/follow-a-level-that-moves.md",

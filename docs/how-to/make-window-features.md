@@ -219,8 +219,8 @@ clock column "ts" steps back by 24m45s118ms961us at row 1502
 
 Use this when a feature is a window over another window, such as the
 recent trend of a rate. An operator's input can be an element-wise formula,
-`po.increment` included, but not another operator, which `with_windows`
-refuses when it builds the query.
+`po.increment` included, but not another operator, which the outer operator
+refuses when it is called.
 
 1. **Make the inner operator a column in one `.online.with_windows`
    call.**

@@ -456,7 +456,7 @@ The Epps effect is the fall of a measured correlation toward zero as its
 returns are taken over shorter intervals, when the series tick at their
 own times. [Series that tick at their own
 times](explanation/asynchronous-series.md) explains why it happens and
-how each remedy undoes it. The stream here has two series with a true
+how much of it each way out recovers. The stream here has two series with a true
 correlation of 0.8, over 120,000 rows, each observed at an expected rate
 of 0.25 per row (`async_rates`). Previous-tick sampling carries each
 series' last value forward and takes returns every so many rows. At the
@@ -471,10 +471,10 @@ finest interval it reads 0.095:
 | 100               | 1199    | 0.752       |
 | 500               | 239     | 0.745       |
 
-The truth is 0.8. Two remedies recover most of it, and they differ in what
+The truth is 0.8. Two ways out recover most of it, and they differ in what
 they read:
 
-| remedy | what it reads | correlation |
+| way out | what it reads | correlation |
 |---|---|---|
 | refresh-time sampling, `po.stream.refresh_time` | a grid point at the first row by which both series have ticked since the last point: 19157 returns, 16 % of the 119991 at the finest interval. On average a grid point kept 81 % of the ticks since the one before | 0.543 |
 | lag inversion, `ew_cov(lags=...)` read through `po.corr.epps_invert` | every one of the 119991 fine returns, with no grid: the correlation at a scale of `L` rows, from the lagged co-moments at one row | 0.772 at `L` = 192 |
@@ -511,7 +511,8 @@ The lag inversion is here because its lagged co-moments are a state a bank
 already keeps, as `ew_cov(lags=...)`. The lags cost speed: `ew_cov` with
 `lags = 1..5` learned 1.15
 million rows a second, against 2.12 million for the same spec without
-them, since each lag adds a `k × k` outer product a row and the ring of
+them, on an Apple M-series machine, one process, the best of two or three
+runs, since each lag adds a `k × k` outer product a row and the ring of
 rows it needs.
 
 ## 7. `deco`: an equicorrelation that moves

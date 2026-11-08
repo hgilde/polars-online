@@ -1125,10 +1125,11 @@ another side:
   target, on the same sums, scale and refit.
 - [`sgd`](#sgd--stochastic-gradient-descent) with `loss="huber"`, the same
   loss with a step per row in O(k) time.
-- [`rls`](#rls--recursive-least-squares), whose fit `huber` gives with
-  `ridge_scale="sum"` and `huber_delta=inf`.
+- [`rls`](#rls--recursive-least-squares), whose predictions `huber` gives within 1e-9
+  with `ridge_scale="sum"` and `huber_delta=inf`, solved on every row,
+  where `rls` has `delta=ridge`.
 - [Fit a Huber regression on a Gram](how-to/fit-huber-on-a-gram.md), a
-  Huber fit from one shared Gram, a query over the rows per pass.
+  Huber fit from one shared Gram, two queries over the rows per pass.
 - [Bound a run's memory](how-to/bound-memory.md#bound-the-rows-a-refit-holds),
   to bound the refit buffers of all a spec's groups with `refit_budget`.
 - [Reproduce an earlier version's fit](how-to/reproduce-an-earlier-versions-fit.md),

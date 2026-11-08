@@ -20,17 +20,18 @@ These steps need the library, numpy and a pass that leaves Grams:
   features](fit-weekly-grams-in-one-pass.md#keep-weekly-grams-of-hundreds-of-features)
   sets one up.
 
-`comoments` (and, for an `ew_cov` with `lags`, `lag_comoments`) is the
-array of a Gram that grows as `k²`: 800 MB a block in float64 at 10,000
-columns. [A compact Gram](../GRAM.md#a-compact-gram)
+`comoments` (and, for an `ew_cov` with `lags`, `lag_comoments`) are the
+arrays of a Gram that grow as `k²`: `comoments` is 800 MB a block in
+float64 at 10,000 columns. [A compact Gram](../GRAM.md#a-compact-gram)
 explains how far each form can move a fit, and why.
 
 ## Choose a form
 
 Each form shapes only what `gram()` returns: the state itself stays
 float64 and whole, and `po.gram` reads every form in float64. float32 and
-the upper triangle each take about half the bytes, and both together a
-quarter.
+the upper triangle each take about half the bytes of `comoments`, and
+both together a quarter. `lag_comoments` is never packed, since a lagged
+matrix is not symmetric, so it stays at half.
 
 | `bank.gram(...)` | what it loses | what it keeps |
 |---|---|---|

@@ -5,7 +5,7 @@ This how-to is for anyone who fits `ewridge` with a short half-life over a
 stream cut into sessions, such as trading days, and wants each session to
 start from a fit nearer the long run than the last session's end. You
 give `session_shrink` and `long_half_life`, and the model blends its
-[running sums](../GLOSSARY.md#fitting-a-model) with a slower twin at each session change.
+[Gram](../GLOSSARY.md#fitting-a-model) with a slower twin's at each session change.
 
 ## Prerequisites
 
@@ -34,8 +34,8 @@ end.
 
 1. **Name the session column in `session=`, and give `session_gap` in
    clock units.**
-2. **Give `long_half_life`, the half-life of the long run.** A second set
-   of running sums, the slow twin, decays at it. `float("inf")` keeps the
+2. **Give `long_half_life`, the half-life of the long run.** A second
+   Gram, the slow twin, decays at it. `float("inf")` keeps the
    whole history.
 3. **Give `session_shrink=f`, the long run's share, from 0 to 1.** At each
    session change the fit's means and co-moments become `1 − f` of this
@@ -48,7 +48,7 @@ end.
    the blend, and the next row is predicted from it.
 
 **The blend changes the moments and nothing else.** The blended moments
-keep this session's weight, Kish's effective sample size and the ridge's
+keep this session's weight, [Kish's effective sample size](../GLOSSARY.md#the-model-bank-and-what-it-reads) and the ridge's
 decay factor (`p` in [`ewridge`'s update](../MODELS.md#the-update)), so `weight_sum`,
 the warm-up gates and the solve schedule do not move. So a small `f` moves
 the output by a small amount.

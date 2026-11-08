@@ -15,7 +15,8 @@ These steps need the library, numpy and the stream as a file:
   `pip install "polars-online[numpy]"` adds. The recipe builds its own
   data.
 - The rows in a file a Polars query can read in each pass, such as
-  parquet. Each pass reads them all once.
+  parquet. Each pass reads them twice: once for the scale, once for the
+  moments.
 - An `ewridge` spec over the features, with `half_life=float("inf")`, to
   leave the Gram of the rows at their own weights.
 
@@ -37,17 +38,19 @@ weighted least squares would need a Gram for each pass and each target.
    median alone, an intercept and no slopes. Do not start from all zeros:
    from there every residual is the target's level, and the first pass is
    lost.
-4. **In each pass, build the pseudo-response in a Polars expression:**
-   the fit, plus each residual clipped at `c` scales, `y* = x'b +
-   s·clip(r/s, −c, c)`, with `c = 1.345` and the scale `s` the residuals'
-   MAD, `median(|r|) / 0.6745`, read again each pass.
-5. **Read `y*`'s mean and its centered cross-moments with the features in
-   a second query,** centered at the Gram's `means`. The scale's median
-   takes a query of its own, so a pass is two queries over the file.
-6. **Solve the cross-moments against the factor for the slopes,** and take
+4. **In each pass, read the scale in a query of its own:** the
+   residuals' MAD, `s = median(|r|) / 0.6745`, for the current fit. An
+   exact median holds a value a row while it runs, so this query's memory
+   grows with the rows.
+5. **Build the pseudo-response in a Polars expression:** the fit, plus
+   each residual clipped at `c` scales, `y* = x'b + s·clip(r/s, −c, c)`,
+   with `c = 1.345`.
+6. **Read `y*`'s mean and its centered cross-moments with the features in
+   a second query,** centered at the Gram's `means`.
+7. **Solve the cross-moments against the factor for the slopes,** and take
    the intercept from the means. That is the next fit.
-7. **Repeat until the slopes stop moving.** In the recipe ten passes
-   settle the fourth decimal.
+8. **Repeat until the slopes stop moving.** In the recipe ten passes
+   fix the fourth decimal.
 
 This code makes 20,000 rows of `y = 1000 + 2x` plus noise, with 50 added
 to a tenth of the rows with `x` above 0, and leaves their Gram:
@@ -79,7 +82,7 @@ means = np.asarray(g["means"])[1:]  # the features' means; slot 0 is the interce
 factor = np.linalg.cholesky(np.asarray(g["comoments"])[1:, 1:])  # of the centered co-moments
 ```
 
-This code defines one pass, steps 4 to 6: the scale in one query over the
+This code defines one pass, steps 4 to 7: the scale in one query over the
 file, then the pseudo-response's mean and centered cross-moments in a
 second, and their least squares against the one factor. It continues from
 the code before:
@@ -88,12 +91,13 @@ the code before:
 def refit(coef: np.ndarray, c: float = 1.345) -> np.ndarray:
     """One pass of algorithm H: this fit's scale, then its pseudo-response's mean and
     centered cross-moments, each read in a query over the file, then its least squares."""
-    # 4. This fit's residuals, this pass's scale, and the pseudo-response built from them.
+    # 4. This fit's residuals, and this pass's scale in a query of its own.
     fit = coef[0] + sum(b * pl.col(f) for b, f in zip(coef[1:], features))
     r = pl.col("y") - fit
     s = pl.scan_parquet("level.parquet").select(r.abs().median()).collect().item() / 0.6745
-    target = fit + s * (r / s).clip(-c, c)  # each residual clipped at c scales
-    # 5. The pseudo-response's mean and centered cross-moments, in a second query.
+    # 5. The pseudo-response: each residual clipped at c scales.
+    target = fit + s * (r / s).clip(-c, c)
+    # 6. The pseudo-response's mean and centered cross-moments, in a second query.
     moments = (
         pl.scan_parquet("level.parquet")
         .select(
@@ -102,13 +106,13 @@ def refit(coef: np.ndarray, c: float = 1.345) -> np.ndarray:
         )
         .collect()
     )
-    # 6. Its least squares against the one factor; the intercept from the means.
+    # 7. Its least squares against the one factor; the intercept from the means.
     cross = np.asarray(moments.select(features).row(0))
     slopes = np.linalg.solve(factor.T, np.linalg.solve(factor, cross))
     return np.r_[moments["mean"][0] - means @ slopes, slopes]
 ```
 
-This code runs ten passes from each start, step 3 and step 7. It
+This code runs ten passes from each start, step 3 and step 8. It
 continues from the code before:
 
 ```python
@@ -116,7 +120,7 @@ continues from the code before:
 least_squares = po.gram.solve(g)
 median = pl.scan_parquet("level.parquet").select(pl.col("y").median()).collect().item()
 print(f"least squares: slope {least_squares[1]:.4f}, where the planted slope is 2")
-# 7. Ten passes of algorithm H from each start.
+# 8. Ten passes of algorithm H from each start.
 for name, coef in [("least squares", least_squares), ("the median", np.r_[median, 0.0])]:
     slopes = []
     for k in range(1, 11):

@@ -2,9 +2,8 @@
 # How the diagnostics work
 
 This page explains, for anyone who reads the diagnostics a spec writes on
-every row, how each diagnostic keeps a memory of its own, when it starts to
-read, how to read a statistic that is computed on every row, and how a fit
-built in stages is checked stage by stage.
+every row, how each keeps a memory of its own, when it starts to read,
+how to read its statistic, and how a staged fit is checked.
 
 A model fitted on a stream always returns a number. Whether that number
 can be trusted is a set of separate questions. Is the prediction scaled
@@ -156,7 +155,7 @@ A fit built in stages, such as a fair value whose residual feeds a second
 regression, is checked stage by stage. Each stage asks for the
 diagnostics its own construction puts at risk, and [Check each stage with
 the diagnostics it asks
-for](../how-to/fit-on-factor-residuals.md#check-each-stage-with-the-diagnostics-it-asks-for)
+for](../how-to/check-a-two-stage-fit.md#check-each-stage-with-the-diagnostics-it-asks-for)
 runs them on a two-stage fit whose answer is planted.
 
 **The first stage's residual can be a feature because it is
@@ -172,7 +171,7 @@ In the worked example a planted coefficient of −0.490 reads −0.450.
 
 **The calibration says whether a second-stage coefficient needs
 rescaling.** It regresses the target on the prediction, as Mincer and
-Zarnowitz (1969) regress a target on its prediction: a slope of 1 says the
+Zarnowitz (1969) do: a slope of 1 says the
 predictions are scaled right, so the coefficient that made them needs no
 rescaling. Run once, it keeps every row from readiness on, so a second
 stage with several coefficients keeps the early rows of a fit learned from

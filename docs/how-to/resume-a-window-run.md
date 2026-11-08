@@ -23,8 +23,8 @@ makes the windows:
   kind of [clock](../GLOSSARY.md#time) as the run that saved it, or
   `load_state=` raises `ValueError`.
 - The stream cut into parts between stamps (clock values): a part that
-  starts at the last stamp of the part before it is refused, as the
-  [table of inputs](#check-the-result) says.
+  starts at the last stamp of the part before it is refused, as
+  [Check the result](#check-the-result) says.
 - The same polars-online release for every part. The format of a window
   run's state is not promised, so a state one release saved need not load
   in the next, and a build refuses a state it cannot read, naming its

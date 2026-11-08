@@ -1,7 +1,8 @@
 # Data quality
 
-`bank.check()` reads what a bank
-kept during a pass and lists what is wrong with the data, and an `audit`
+This reference page lists, for anyone who runs `bank.check()`, every
+finding it reports, with its threshold and its remedy. `bank.check()`
+reads what a bank kept during a pass and lists what is wrong with the data, and an `audit`
 spec counts what no model keeps. For each problem, the fix is made with
 Polars, in the query before the bank.
 
@@ -514,9 +515,7 @@ passes a limit measured for it.
 
 Each limit is the largest value at which the model's out-of-sample R² fell
 by no more than 0.05, at half-lives of 20, 200 and infinite. `rls`'s level
-limit is not a constant, since its prior fades with its sums
-([A level far above its
-spread](explanation/how-data-quality-checks-work.md#a-level-far-above-its-spread)): it is
+limit is not a constant, since its prior fades with its sums: it is
 `0.9·sqrt(W/delta_left)`, `W` the weight its fit holds and `delta_left`
 the part of its prior that has not decayed. A level or a
 spread ratio counts only when it is five standard errors from chance:
@@ -857,7 +856,10 @@ there.** A random walk is a level whose changes are independent, such as a
 price. Two random walks that have nothing to do with each other wander
 apart and together by chance over any finite stretch. Least squares reads
 the shared drift as a slope, with a t-statistic far past any significance
-line (Granger and Newbold 1974).
+line (Granger and Newbold 1974). The Dickey-Fuller statistic (Dickey and
+Fuller 1979) is the t-statistic of `ρ − 1` in a column's regression on its
+own previous value. A random walk has `ρ = 1` and reads near zero, and
+independent rows read about `−sqrt(n)`.
 
 | code | severity | fires when |
 |---|---|---|
@@ -871,10 +873,7 @@ that persists at 0.99 a row over 2,000 rows reads as a random walk on
 seven seeds of ten, and one at 0.98 on none. A row counter and a clock in
 epoch seconds, fed as columns, are fits with no residual, and read `+inf`.
 
-The Dickey-Fuller statistic (Dickey and Fuller 1979) is the t-statistic
-of `ρ − 1` in a column's regression on its own previous value. A random
-walk has `ρ = 1` and reads near zero, and independent rows read about
-`−sqrt(n)`. [Random walks make a relation out of
+[Random walks make a relation out of
 drift](explanation/how-data-quality-checks-work.md#random-walks-make-a-relation-out-of-drift)
 explains why the false relation looks more certain the longer the stream.
 

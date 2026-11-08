@@ -59,8 +59,8 @@ target.** Statisticians sort gaps by what they depend on (Rubin 1976).
 Gaps *missing completely at random* depend on nothing. Gaps *missing at
 random* depend only on values that are observed. Gaps *missing not at
 random* depend on the value that is missing. Skipping every row with a gap,
-which is called *listwise deletion*, is safe for a regression in a case
-none of those three names covers. Its slopes are unbiased whenever the chance that
+which is called *listwise deletion*, is safe for a regression under a condition
+that cuts across those three names. Its slopes are unbiased whenever the chance that
 a row has a gap does not depend on the target, given the features. That
 holds even when the gap depends on the missing feature's own value (Little
 1992; Allison 2001). Its slopes are only noisier, since the fit sees fewer
@@ -101,7 +101,7 @@ usable acted as a ridge and removed no bias. The [noise
 gate](warm-up-and-readiness.md#the-noise-gate-estimation-error-against-the-noise)'s
 statistic, `error_inflation` (how much estimating the fit widens a
 prediction's error), could not see it: it read 1.03 to 1.05 against 13.5
-realized. It
+realized. The pairwise matrix
 took 3.6 to 6.1 times as long a row, and 1.5 to 3.5 times the state. Its
 gain was real only when gaps were completely at random in a model so wide
 that listwise deletion kept no rows at all. An imputation by online
@@ -212,9 +212,9 @@ same pairs differenced had `|t| > 1.96` in 2.5%.
 **The influence of one row on a least-squares fit grows without bound
 with its residual:** a residual twice as large moves the fit twice as far
 (Huber 1964). Huber's loss is squared near zero and linear past
-`huber_delta` residual scales (the exponentially weighted median absolute
-deviation, MAD, by default,
-`huber_scale`), so a residual's influence is capped, and quantile
+`huber_delta` residual scales. That scale is `huber_scale`, by default the
+exponentially weighted median absolute deviation (MAD). So a residual's
+influence is capped, and quantile
 regression caps it at a constant ([The robust scale and the refit of the
 first rows](robust-scale.md)). `sigma` is an exponentially weighted root
 mean square, so one residual of `k` times the usual size inflates it for

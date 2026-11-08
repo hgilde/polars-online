@@ -29,8 +29,9 @@ place of its rows.
 ## Write each finished week's Gram to a file
 
 Use this when a pass runs over more weeks than memory holds Grams for.
-`group_close="monotone"` closes each week once the next begins, and frees
-it, so the bank holds one week at a time.
+`group_close="monotone"` closes each week once the next begins, and with
+`closed_groups=` on `fit` the bank writes it out and frees it, so it holds
+one week at a time.
 
 1. **Make the week in the query as the Monday's day number,** with
    `pl.col("ts").dt.truncate("1w").dt.date().cast(pl.Int32)`. A

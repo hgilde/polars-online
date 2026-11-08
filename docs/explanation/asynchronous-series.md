@@ -49,7 +49,7 @@ fall in the same interval for both. It does not remove the bias. Each
 series' value at a refresh time is its last tick, which can be up to one of its
 own intervals between ticks old. So a move shortly before a refresh time can be
 recorded by one series in this interval and by the other in the next. The
-grid runs at the pace of the slowest series and drops the faster series'
+refresh grid runs at the pace of the slowest series and drops the faster series'
 other ticks. [Align series that tick at their own
 times](../how-to/align-series-that-tick-at-their-own-times.md) builds the
 grid and fits models on it.

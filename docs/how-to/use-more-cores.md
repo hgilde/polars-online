@@ -261,6 +261,7 @@ threads=4 runs on 4 threads
 
 **Then time the run at `threads=1` and at the count you chose, on the same
 file.** For `ewridge` with 20 features over 64 groups, the rows a second
-rose 7.3 times from 1 to 14 threads on a 14-core machine. [Rows a second at each thread
+rose 7.2 times from 1 to 14 threads on an Apple M4 Pro, from 0.98
+million to 7.08 million. [Rows a second at each thread
 count](../PERFORMANCE.md#rows-a-second-at-each-thread-count) gives the
 figures.

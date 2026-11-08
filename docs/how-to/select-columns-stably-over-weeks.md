@@ -144,8 +144,8 @@ time: 0.19 s by merge and lars_paths, 0.01 s by solve_subsets
 
 Every planted column is chosen on every half, and the stable set at 75%
 is exactly those six. The most chosen of the rest is `x4`, on 45% of the
-halves, a member of `x0`'s family. It shares `x0`'s factor, and so takes
-one of the two places the six planted columns leave in a path of eight.
+halves, a member of `x0`'s family. It shares `x0`'s factor, and so, on 45% of
+the halves, takes one of the two places the six planted columns leave in a path of eight.
 Each half chose 8.0 columns, so where the bound's conditions hold, over
 draws of the halves the stable set holds at most 0.64 columns with no
 effect on average. This draw's holds none. `solve_subsets` chooses the

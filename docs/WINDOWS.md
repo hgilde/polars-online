@@ -41,7 +41,7 @@ temporal one. Each operator then reads the weighted rows its own way:
 |---|---|---|
 | `po.ewm_mean` | each value is held over the interval ending at its row and weighed by that interval's decayed time, so a burst of rows does not outweigh a quiet period, and a row at a repeated clock value moves no mean. Looking ahead, each value is held until the next row | `ewm_mean_by` |
 | `po.ewm_sum` | `Σ 0.5 ** (age / half_life) · x`, each row counted once at its own time. Every row at a repeated clock value carries that value's total | `ewm_sum_by` on distinct clock values, whose sum at a repeated one runs row by row |
-| `po.ewm_rate` | the sum divided by the decayed time the window covers: a quantity per unit of clock | |
+| `po.ewm_rate` | the sum divided by the decayed time the window covers: a quantity per unit of clock | the sum and the decayed time, each as above |
 | `po.ewm_quantile` | each row weighed as `po.ewm_sum` weighs it ([Quantiles and a robust scale](#quantiles-and-a-robust-scale)) | numpy's weighted quantile (`inverted_cdf`), within 0.78% |
 | `po.ewm_var`, `po.ewm_std` | about `po.ewm_mean`, each value weighed as the mean weighs it, and looking back only. With `bias=False`, the default, the variance is corrected for the weights' number and inequality, so a window that one row's weight fills is null. A window that holds one value gives 0 exactly | `ewm_var` and `ewm_std` with `adjust=False`, on a clock that steps by 1 a row with `half_life` in rows. Polars before 1.44 gave the first row 0.0 under `bias=False`, where it now gives null, as these do |
 
@@ -50,8 +50,9 @@ input: `x_t − x_{t−1}`, back to the last row with a value in the group and
 session. It is null on a session's first row and after a reset, and in
 seconds when `x` is a temporal column.
 
-[Check the result](how-to/make-window-features.md#check-the-result) holds
-an operator to the Polars function it is held to, on one symbol's rows.
+[Check the result](how-to/make-window-features.md#check-the-result)
+compares `po.ewm_mean` and `po.ewm_sum` with Polars' `ewm_mean_by` and
+`rolling_sum_by`, on one symbol's rows.
 
 **A row whose value is missing adds nothing, and gets the window's value
 as it stands.** A null is missing, and so is a NaN, an infinite value or
@@ -155,9 +156,9 @@ ends at its row.
 began.** A *stretch* is the rows between two clock breaks: it starts at the
 stream's first row, or at the first row after a gap longer than `gap_cap`,
 a session change or a reset. Those rows are weighed by their decay alone.
-So an evenly weighted window (`half_life=float("inf")`) needs a
-`window_size` for a mean, a variance or a standard deviation, and
-`with_windows` refuses one without it.
+An evenly weighted mean, variance or standard deviation
+(`half_life=float("inf")`) needs a `window_size`, and `with_windows`
+refuses one without it.
 
 ## Why a formula around the operators is element-wise
 
@@ -283,8 +284,8 @@ and when the older one is empty the newer one turns over into it. A row
 leaving must take its weight out of its bucket. A subtraction would leave a
 rounding behind in a bucket that should be empty, and the roundings would
 build up over a long stream. So at the turnover each row records three
-numbers, taken newest row first: its bucket, its bucket's octave, and the
-total weight before it. A row leaving puts those three numbers back, and the sketch is
+weights, taken newest row first: what its bucket, its bucket's octave and
+the whole sketch held before it. A row leaving puts those three weights back, and the sketch is
 then exactly the one built from the rows that are left. A sketch kept per
 row, the textbook form of a two-stack queue, would cost the whole sketch a
 row: about 11 KB for a window of 1,000 rows, where this costs 24 bytes.

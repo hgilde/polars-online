@@ -83,9 +83,9 @@ x0 and x1 before 12:00: +2.00 -1.05
 ## Keep weekly Grams of hundreds of features
 
 Use this for a wide pass: weeks of a stream too large to hold, with
-hundreds or thousands of features. Follow the steps of [Keep a Gram per
-block, and fit from them](#keep-a-gram-per-block-and-fit-from-them), with
-the week as the block and these settings:
+hundreds or thousands of features. These are the steps of [Keep a Gram
+per block, and fit from them](#keep-a-gram-per-block-and-fit-from-them),
+with the week as the block and these settings:
 
 | setting | value in the recipe | what it does |
 |---|---|---|
@@ -95,7 +95,7 @@ the week as the block and these settings:
 | `target_gaps` | `"pairwise"` | one Gram per block whatever rows each target is missing on, so every block has the same targets and they pool |
 | `gram_block_rows` | `256` | adds 256 rows to the matrix in one product, 5.1 to 6.6 times as fast as one row at a time from 256 to 2,000 features ([Fit hundreds of features](fit-hundreds-of-features.md#add-rows-to-the-gram-in-blocks)) |
 | `gram_threads` | left out, so `"auto"` | runs that product on the threads the bank's other groups leave idle ([Fit hundreds of features](fit-hundreds-of-features.md#run-the-grams-work-on-idle-threads)) |
-| `group_close` | not in the recipe; `"monotone"` when the weeks arrive in order | with it, the bank frees each week's Gram once the next week starts, and with `closed_groups=` on `fit` writes it to a file ([Read Grams from saved files](read-grams-from-saved-files.md)) |
+| `group_close` | not in the recipe; `"monotone"` when the weeks arrive in order | with it and `closed_groups=` on `fit`, the bank writes each week's Gram to a file once the next week starts, and holds one week at a time ([Read Grams from saved files](read-grams-from-saved-files.md)) |
 
 1. **Make the week column in the query,** with
    `pl.col("ts").dt.truncate("1w")` in Polars' `with_columns` before the
@@ -112,7 +112,7 @@ bytes, and so has a week of a million rows. At 10,000 columns a block is
 800 MB in float64. 9.5 million rows read as 38 weekly blocks of 10,000
 columns make 30 GB of Grams. The bank holds the Gram of every group it
 has seen, so a pass needs about `8k²` bytes for each block it holds. With
-`group_close="monotone"`, the bank writes each finished week out and holds one week
+`group_close="monotone"` and `closed_groups=` on `fit`, the bank writes each finished week out and holds one week
 at a time. [Store a compact Gram](store-a-compact-gram.md) halves or
 quarters what `gram()` hands back.
 

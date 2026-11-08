@@ -8,9 +8,9 @@ stream, the `lasso` model picks its penalty as it runs: you set the
 `penalties` to try, how the penalty in force is ranked
 (`select_half_life`), and how many sweeps each descent may take
 (`max_iter`). From a [Gram](../GLOSSARY.md#fitting-a-model), you walk the
-path knot by knot with `po.gram.lars_path` (a knot is a penalty at which
-the set of columns with a coefficient other than 0 changes), and choose a
-penalty by its error on weeks held out with `po.gram.lasso_path`.
+path knot by knot with `po.gram.lars_path`, and choose a penalty by its
+error on weeks held out with `po.gram.lasso_path`. A knot is a penalty at
+which the set of columns with a coefficient other than 0 changes.
 
 ## Prerequisites
 
@@ -241,7 +241,7 @@ bank.fit(lf)  # learns from every row, and keeps only the state
 blocks = bank.gram("blocks")  # one dict per week, oldest first
 
 
-# The score of step 4: a fit's mean squared error on any set of weeks, without reading their rows.
+# The score of step 5: a fit's mean squared error on any set of weeks, without reading their rows.
 def mean_squared_error(g, coef):
     """A fit's mean squared error over the rows behind g, from g's arrays alone."""
     b0, b = coef[0], coef[1:]

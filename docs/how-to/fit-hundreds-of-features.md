@@ -53,7 +53,7 @@ of 5,000 rows:
 | 2,000 | 5.9× |
 
 With a solve every 512 rows, each speed-up falls to about 4×, because a
-solve takes the same time either way. Blocking leaves `weight_sum`, the
+solve takes the same time either way. Blocking leaves `weight_sum` and the
 timing of every prediction unchanged, and the output stays the same
 however the stream is cut into chunks ([chunk
 invariance](../explanation/chunk-invariance-and-streaming.md)).
@@ -70,7 +70,7 @@ week's rows, and so has one group to run.
 1. **Leave `gram_threads` out (`"auto"`), or give a whole number for a
    fixed cap.** `"auto"` splits a group's work on its Gram across the
    bank's threads only when the work the bank runs at once, one piece per
-   spec and group, leaves at least half its threads idle; a bank whose
+   spec and group, leaves at least half its threads idle. A bank whose
    groups already keep every core busy gains nothing from a split. A whole
    number such as `gram_threads=8` lets one group's Gram use up to eight
    of the bank's threads whatever the groups. The threads are the bank's
