@@ -73,21 +73,23 @@ fits of the same regression, one at the diagnostic's memory and one at four
 times it, and it grows when a coefficient moves. The two CUSUMs watch the
 residuals' mean and spread. After the flip they pass 3 on 1.8% and 2.8% of
 the rows, near the 0.3% they pass on a stream with no break. A
-slope that flips on a feature centred at zero leaves the residuals' mean at
+slope that flips on a feature centered at zero leaves the residuals' mean at
 zero, so the CUSUM barely sees it, and the spread grows too little here for
 the CUSUM of squares. The calibration
 stays quiet because the fit forgets: within a few half-lives it has learned
 the new slope, and its predictions are scaled right again. The running R²
 falls from 0.51 before the flip to 0.43 a hundred rows after, and is back
 to 0.55 by the end. Each question below has a section of its own: which
-diagnostic answers it, what that diagnostic cannot see, and a recipe that
-runs.
+diagnostic answers it, what that diagnostic cannot see, and a link to the
+how-to page whose recipe runs it.
 
-**Every recipe on this page is a complete program.** It generates its data
+**Every recipe on this page, and on the how-to pages it links, is a
+complete program.** Each recipe generates its data
 with the answer planted, saves it to parquet and reads it back with
 `pl.scan_parquet`, as a stream too large to hold would be read. Its output
-is shown below it. `tests/test_diagnostics_page.py` runs each recipe and
-holds its output to what is shown, so none goes stale. A number past a
+is shown below it. `tests/test_diagnostics_page.py` runs this page's
+recipes, and `tests/test_kind_pages.py` runs the how-to pages'. Each holds
+its output to what is shown, so none goes stale. A number past a
 million in an output is a model that has blown up. Its digits depend on
 the platform's rounding, so the test holds such a number only to being past
 a million. Warnings that a recipe raises, such as a `ReadinessWarning`, go
@@ -404,9 +406,9 @@ switch and names the models that take it.
 
 ## Is it scaled right?
 
-**A prediction can be correlated with the outcome and still be the wrong
+**A prediction can be correlated with the target and still be the wrong
 size, and the calibration measures by how much.** Mincer and Zarnowitz
-(1969) regress the outcome on the prediction, `y = a + b · pred`. A
+(1969) regress the target on the prediction, `y = a + b · pred`. A
 prediction that is scaled right has `b = 1` and `a = 0`. A slope above 1
 says the predictions are too small: a ridge shrank them, or a learning rate
 was too slow. A slope below 1 says they are too large: a fit with too many
@@ -421,13 +423,12 @@ coefficients for its memory follows its own noise.
 | threshold | `wald > 5.99`, `chi2(2)`'s 5% value. Run once on calibrated fits it passed on 5.0% to 7.0% of 400 streams; at the default memory, on 0% to 0.3% of rows |
 | cost, models | 20 ns a row; the ten linear models |
 
-**Rescale a prediction by its calibration: multiply it by the slope and
-add the intercept.** The fields on a row are read before the row, so
-`calibration_intercept + calibration_slope · pred` is still out of sample,
-and it can serve the row.
+[Check the scale of a model's predictions](how-to/check-the-scale.md) reads
+the calibration, rescales a prediction by it, and fixes a fit of the wrong
+size.
 
 **On a target that looks ahead, the Wald statistic takes Newey and West's
-variance.** Overlapping labels correlate the residuals, as [Can its t be
+variance.** Targets that overlap correlate the residuals, as [Can its t be
 trusted?](#can-its-t-be-trusted) explains. Under a horizon of `h` rows the
 test of `a = 0, b = 1` is Wald's with the regression's sandwich at `2h`
 lags, built from the residual under the null, `y − pred`. On the two-stage
@@ -436,7 +437,7 @@ read as independent, and of 1.1 under `horizon_rows=150` ([A worked
 example](#a-worked-example-the-two-stage-reversion-beta)).
 
 **A quantile fit's calibration is its coverage.** A prediction of the
-`q`-th quantile is calibrated when the outcome falls below it on a share
+`q`-th quantile is calibrated when the target falls below it on a share
 `q` of rows. Mincer and Zarnowitz's regression asks whether it is the
 mean, and on a stable fit at `q = 0.9` it passed its 5% value on every
 row. So on `quantile`, and on `sgd` under `loss="quantile"`,
@@ -460,81 +461,12 @@ feature still predicts `E[y | its features]`, whose calibration slope is 1.
 A low R² with a slope of 1 is a model with too little information, which
 no rescaling repairs.
 
-The recipe fits one stream three ways: with a ridge as large as the
-features' variance, with a half-life too short for 21 coefficients (twenty
-features and the intercept), and with neither fault.
-
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# Twenty features, of which two matter: y = 1.0 x0 + 0.5 x1 + noise.
-rng = np.random.default_rng(1)
-n, k = 20_000, 20
-x = rng.standard_normal((n, k))
-y = 1.0 * x[:, 0] + 0.5 * x[:, 1] + rng.standard_normal(n)
-features = [f"x{j}" for j in range(k)]
-pl.DataFrame({"t": np.arange(n, dtype=float), "y": y} | {f: x[:, j] for j, f in enumerate(features)}).write_parquet("wide.parquet")
-lf = pl.scan_parquet("wide.parquet")
-
-# The three fits: too much ridge, too short a memory, and neither fault.
-common = dict(targets=["y"], features=features, clock="t", gap_cap=5.0, emit_calibration=True)
-specs = [
-    po.spec.ewridge("shrunk", half_life=2_000.0, ridge=1.0, **common),  # a ridge the size of each feature's variance
-    po.spec.ewridge("overfit", half_life=30.0, **common),  # 21 coefficients on about 87 rows' worth
-    po.spec.ewridge("steady", half_life=2_000.0, **common),
-]
-out = lf.online.fit_predict(specs).slice(5_000).collect()
-
-# Each fit's calibration, and its error before and after rescaling.
-print(f"{'spec':8} {'slope':>6} {'wald > 5.99':>12} {'mse':>6} {'mse rescaled':>13}")
-for spec in specs:
-    rows = out.select("y", pl.col(spec["name"]).struct.unnest())
-    # Rescale each prediction by the calibration read before its row: still out of sample.
-    rescaled = pl.col("calibration_intercept_y") + pl.col("calibration_slope_y") * pl.col("pred_y")
-    slope, flagged, mse, mse_rescaled = rows.select(
-        slope=pl.col("calibration_slope_y").median(),
-        flagged=(pl.col("calibration_wald_y") > 5.99).mean(),
-        mse=(pl.col("y") - pl.col("pred_y")).pow(2).mean(),
-        mse_rescaled=(pl.col("y") - rescaled).pow(2).mean(),
-    ).row(0)
-    print(f"{spec['name']:8} {slope:>6.2f} {flagged:>12.0%} {mse:>6.3f} {mse_rescaled:>13.3f}")
-```
-
-```text
-spec      slope  wald > 5.99    mse  mse rescaled
-shrunk     2.00         100%  1.329         1.023
-overfit    0.82          98%  1.278         1.241
-steady     1.00           0%  1.018         1.021
-```
-
-The shrunk fit's median slope is 2.00: its ridge halved every
-coefficient, so every prediction is half the size it should be. The Wald
-test flags every row, and rescaling by the slope takes its error from
-1.329 to 1.023, the steady fit's level. The overfit fit's slope is 0.82,
-flagged on 98% of rows: its predictions are about 22% too large. Twenty
-coefficients estimated on about 87 rows' worth of data add their
-estimation noise to every prediction. Rescaling recovers only a little,
-from 1.278 to 1.241, since most of that noise varies from row to row, and
-no single multiplier removes it. Its fix is a longer half-life or fewer
-features. The steady fit's slope is 1.00, flagged on no row, and
-rescaling changes nothing.
-
-**What to do.** When the slope sits away from 1 for many half-lives,
-rescale the predictions by the calibration as the recipe does. Or remove
-the cause: a smaller ridge, a faster learning rate, or a longer half-life.
-When the slope is 1 and the error still high, the model is missing
-information, and [What is it missing?](#what-is-it-missing) is the next
-question.
-
 ## Has it broken?
 
 **A relationship can break in three ways, and each diagnostic sees some of
 them.** The intercept can shift, which gives the residuals a mean. The
 noise can grow, which changes the residuals' spread. Or a slope can move,
-which on a feature centred at zero leaves the residuals' mean at zero and
+which on a feature centered at zero leaves the residuals' mean at zero and
 widens their spread only until the fit catches up.
 
 | field | what it is | sees | with no break |
@@ -546,8 +478,8 @@ widens their spread only until the fit catches up.
 | `drift_<t>` | true on the row a Page-Hinkley detector (Page 1954; Hinkley 1971) on `\|resid\| / sigma` climbs `drift_threshold` above its lowest point | a rise in the residuals' level, beyond `drift_delta` sigmas | false |
 
 `ω` is each row's weight times its decay at `breaks_half_life`, the
-fit's memory by default. `r` and `r₂` are 1 run once and the windowed
-nulls' shares below.
+fit's memory by default. `r` and `r₂` are 1 run once, and windowed they
+are the nulls' shares that *A windowed CUSUM is over its own null* derives.
 
 **Run once, the CUSUM is Brown, Durbin and Evans' test.** With unit
 weights `Σω²` is the row count `r`, so `cusum · sqrt(r)` is their CUSUM
@@ -599,7 +531,7 @@ entry instead, `[inf, 30, 30]` spread 1.40 on clean streams and `[30, 10,
 about 1.03. The CUSUM of squares is studentized by a scale
 at its own memory, which absorbs the squares' level the same way, so its
 share is one half. Each is divided by its share, as far as its sums have
-filled (below). On 30 clean streams beside `ewridge`, `rls`, `lasso` and
+filled (*A young sum's share is nearer 1*). On 30 clean streams beside `ewridge`, `rls`, `lasso` and
 `kalman` at a half-life of 200, at memories of 50 to 800, from each
 stream's readiness on, the spreads read:
 
@@ -612,9 +544,10 @@ The widest reads of the CUSUM of squares come from a few of its first
 values, whose fourth moment is read off a handful of rows.
 `scripts/diagnostics_rates.py memories` makes these streams.
 
-**A young sum's share is nearer 1.** The share above is that of sums which
-have filled their memory. The diagnostics start once the fit has settled,
-so the fit's residuals are steady from the first row, but a sum of a few
+**A young sum's share is nearer 1.** The share that *A windowed CUSUM is
+over its own null* derives is that of sums which have filled their memory.
+The diagnostics start once the stream is 95% of the way to its steady
+state, so the fit's residuals are steady from the first row. But a sum of a few
 of them holds little of what the fit's mean has spread a level over, and
 its variance is nearly the plain sum's. Over sums that have run for a time
 `T`, `x = T ln 2 / h`, the CUSUM's share beside an exponential fit is
@@ -640,7 +573,7 @@ two runs from 1 to 1/4 as `(1 + p)(1 + p²) / 4`, `p = e^(−x/4)`, whatever
 the rows' rate and the weights' scale. Divided by the filled share from
 the first row, the two CUSUMs were too wide while young. Beside `ewridge`
 at a half-life of 200, at memories of 50 to 800, the share of rows past
-1.96 read as below, on 3 sets of 100 clean streams over the filled share
+1.96 read, on 3 sets of 100 clean streams over the filled share
 and of 300 over the share as filled:
 
 | | first 150 rows after readiness | rows 300 to 600 | rows 4,700 on |
@@ -658,7 +591,7 @@ its first row, read 15% there.
 
 `quantile` with an intercept absorbs its coverage the same way, and its
 indicators' CUSUM is divided by the same share. On the 30 clean streams
-above at `q = 0.5`, that CUSUM's spread read 1.03, 1.05 and 1.09 at
+of the spreads' table at `q = 0.5`, that CUSUM's spread read 1.03, 1.05 and 1.09 at
 memories of 50, 200 and 800; at `q = 0.9` it reads up to 1.25 at 800 once
 filled. `huber`, `holt` and the gradient fits absorb at a pace of their
 own, so they keep the plain sum.
@@ -712,17 +645,19 @@ A gradient fit absorbs a level at its learning rate, so the residuals the
 CUSUM sums carry little of the move. Beside `pa` it found no break at any
 memory, and beside `sgd` none to 88% of them by memory. `break_wald` reads the
 target and the features alone, so it finds a break beside every model
-alike. Beside `holt` its pair of fits has only the level to compare. On
+with features alike. Beside `holt` its pair of fits has only the level to compare. On
 the clean streams `|cusum| > 3` held on at most 0.6% of rows beside any
 model, and `break_wald` on at most 0.01%. `calibration_wald` past
 `chi2(2)`'s 0.01% value found none of the breaks beside `sgd` and `ftrl`.
 Beside `pa` it held on every clean row, whose predictions here were not
 calibrated.
 
-Beside a fit at a half-life of 200, each flag found its break as below.
+Beside a fit at a half-life of 200, each flag found its break at the
+rate and delay this paragraph's table gives.
 The breaks are on 200 streams of 3,000 rows, at row 1,500, made by
-`scripts/diagnostics_rates.py breaks` in the three ways of the second
-recipe below. The rows
+`scripts/diagnostics_rates.py breaks` in the three ways of [Detect a
+break](how-to/detect-a-break.md#test-a-fit-that-forgets-for-a-break)'s
+first recipe. The rows
 flagged with no break are on 200 streams of 25,000 rows, the Gaussian
 streams of [Are its tails heavy?](#are-its-tails-heavy), made by
 `scripts/diagnostics_rates.py windowed`:
@@ -757,7 +692,7 @@ or off. A gap long enough to leave the old rows below the rounding of the
 new ones starts the wait over: that is where the history's share of the
 weight after the row, squared, is at most `2^-53`, so for a history of `W`
 rows at weight 1 a gap of `26.5 + log₂ W` half-lives before a row of
-weight 1. Without the restart, the rows just after such a gap read their
+weight 1. Without starting the wait over, the rows just after such a gap read their
 distance off a variance whose rank was theirs alone: multiplying every
 weight by one constant moved it by 8.6e-4 of itself after a gap's decay of
 `2^-60`, by more than itself at `2^-80`, and turned it on or off after
@@ -770,13 +705,15 @@ streams with no break, `break_wald` passed `chi2(3)`'s 5% value on 4.5% to
 and 3.1%, with means of 2.9 and 2.7 for `chi2(3)`'s 3. With 20 features at
 a half-life of 20 its mean was 20.7, for `chi2(21)`'s 21.
 
-**The CUSUM cannot see a slope that moves on a feature centred at zero.**
+**The CUSUM cannot see a slope that moves on a feature centered at zero.**
 The residuals of the old fit on the new relationship are `(b_new − b_old)
 · x + noise`, whose mean is zero when `x`'s mean is. Run once over the
-same 1,000 streams as the intercept breaks above, with `x0`'s slope rising
-by half at row 1,500, the CUSUM crossed on 6.5% of them, against 6.0% of
-the streams with no break: within one standard error of each other.
-`break_wald` exists for this case.
+same 1,000 streams as the intercept breaks of *Run once, the CUSUM is
+Brown, Durbin and Evans' test*, with `x0`'s slope rising
+by half at row 1,500, the CUSUM crossed on 6.5% of them. It crossed on
+6.0% of the streams with no break, within one standard error of 6.5%.
+`break_wald` exists for this case, on a fit that forgets: run once, it is
+null.
 
 **`drift` sees a rise in the residuals' level, and little else.** It is
 scaled by `sigma`, which adapts to a larger spread within a half-life. Beside
@@ -785,160 +722,20 @@ a fit at a half-life of 200 it found 1.5% of the variance breaks on those
 which [Are its tails heavy?](#are-its-tails-heavy) measures. It reads the
 residuals of the predictions a readiness gate withholds too, as `sigma`
 does, so a gate never hides a break: under `drift_action="reset"` the rows
-a `min_weight` withholds after a restart are the rows that show the next
+a `min_weight` withholds after a reset are the rows that show the next
 break.
 
-The first recipe runs the CUSUM once over a stream whose intercept rises
-at row 2,000, and restarts the fit from where the CUSUM crossed:
-
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# y = 0.2 + 1.0 x0 + 0.5 x1 + noise until row 2,000 of 4,000, where the intercept rises to 0.7.
-rng = np.random.default_rng(2)
-n, at = 4_000, 2_000
-x0, x1 = rng.standard_normal((2, n))
-t = np.arange(n, dtype=float)
-y = 0.2 + 0.5 * (t >= at) + 1.0 * x0 + 0.5 * x1 + rng.standard_normal(n)
-pl.DataFrame({"t": t, "x0": x0, "x1": x1, "y": y}).write_parquet("shift.parquet")
-lf = pl.scan_parquet("shift.parquet")
-
-# Run once: half_life=inf weighs every row alike, and the CUSUM runs over the whole stream.
-model = po.spec.ewridge(
-    "ols", targets=["y"], features=["x0", "x1"], half_life=float("inf"), min_weight=30.0,
-    emit_breaks=True,
-)
-out = lf.online.fit_predict([model]).online.unnest([model]).collect()
-
-# Brown, Durbin and Evans' path, the running sum of the studentized residuals, against the 5%
-# boundary for a run of T of them.
-path = out.select(
-    "t",
-    path=pl.col("studentized_y").fill_null(0.0).cum_sum(),
-    r=pl.col("studentized_y").is_not_null().cum_sum(),
-)
-T = path["r"].max()
-path = path.with_columns(bound=0.948 * (T**0.5 + 2 * pl.col("r") / T**0.5))
-# The first row past the boundary, and the path at a few rows around the break.
-crossed = path.filter(pl.col("path").abs() > pl.col("bound"))["t"].min()
-print(f"the path crossed its boundary at row {crossed:.0f}")
-for row, value, bound in path.filter(pl.col("t").is_in([1_000.0, 2_000.0, 2_200.0, crossed])).select("t", "path", "bound").iter_rows():
-    print(f"  row {row:>5.0f}: path {value:>6.1f}, boundary {bound:.1f}")
-
-
-# Refit over all of a query's rows: the whole stream, or from the crossing on.
-def coef(query):
-    """The coefficients of a fit over every row of the query."""
-    bank = po.ModelBank([po.spec.ewridge("ols", targets=["y"], features=["x0", "x1"], half_life=float("inf"))])
-    bank.fit(query)
-    return ", ".join(f"{term} {c:.2f}" for term, c in bank.coef().select("term", "coef").iter_rows())
-
-
-print(f"every row:              {coef(lf)}")
-print(f"from the crossing on:   {coef(lf.filter(pl.col('t') >= crossed))}")
-```
-
-```text
-the path crossed its boundary at row 2310
-  row  1000: path   30.3, boundary 88.6
-  row  2000: path   -9.1, boundary 118.7
-  row  2200: path   69.8, boundary 124.8
-  row  2310: path  128.4, boundary 128.1
-every row:              intercept 0.44, x0 1.02, x1 0.50
-from the crossing on:   intercept 0.69, x0 0.98, x1 0.48
-```
-
-The path reads 30 at row 1,000 and −9 at row 2,000, the wandering of a
-sum of independent residuals. Then it climbs, to 70 by row 2,200, because
-each new row's residual carries part of the half-unit shift the fit has
-not yet absorbed. It crosses the boundary at row 2,310, 310 rows after
-the break. A crossing is a detection, so it comes after the break, by a
-delay that shrinks as the break grows. The fit over every row mixes the two regimes and puts the
-intercept at 0.44, between 0.2 and 0.7. Restarted from the crossing, the
-fit reads 0.69, the new regime's intercept. Every row from the crossing on
-belongs to the new regime, so restarting there loses rows but mixes
-nothing. The model's `min_weight=30` keeps its first, wildest predictions
-out of the run-once CUSUM ([One memory per
-diagnostic](#one-memory-per-diagnostic-run-once-or-windowed)).
-
-The second recipe runs the windowed forms beside a fit that forgets, on
-three streams that break at row 3,000, each in one way:
-
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# Three streams that break at row 3,000 of 6,000, each in one way.
-rng = np.random.default_rng(3)
-n, at = 6_000, 3_000
-x0, x1, e = rng.standard_normal((3, n))
-after = np.arange(n) >= at
-streams = {
-    "mean": 1.0 * x0 + 0.5 * x1 + e + 0.5 * after,  # the intercept rises by half a noise sd
-    "variance": 1.0 * x0 + 0.5 * x1 + e * np.where(after, 2.0, 1.0),  # the noise doubles
-    "slope": 1.0 * x0 + np.where(after, -0.5, 0.5) * x1 + e,  # x1's slope flips sign
-}
-pl.DataFrame({"x0": x0, "x1": x1} | {f"y_{k}": v for k, v in streams.items()}).write_parquet("breaks.parquet")
-lf = pl.scan_parquet("breaks.parquet").with_row_index("row")
-
-# One ridge per stream, with the windowed break tests and drift.
-specs = [
-    po.spec.ewridge(
-        kind, targets=[f"y_{kind}"], features=["x0", "x1"], half_life=200.0,
-        emit_breaks=True,  # memory: the model's 200 rows
-        emit_drift=True,  # at drift_delta=0.5 and drift_threshold=20
-    )
-    for kind in streams
-]
-out = lf.online.fit_predict(specs).collect()
-
-# The four flags, each a test on one stream's fields.
-flags = {
-    "|cusum| > 3": lambda y: pl.col(f"cusum_{y}").abs() > 3,
-    "|cusum_sq| > 3": lambda y: pl.col(f"cusum_sq_{y}").abs() > 3,
-    "break_wald > 21.1": lambda y: pl.col(f"break_wald_{y}") > 21.1,
-    "drift": lambda y: pl.col(f"drift_{y}"),
-}
-print(f"{'break':9}" + "".join(f"{name:>19}" for name in flags))
-flagged_before = 0
-for kind in streams:
-    rows = out.select("row", pl.col(kind).struct.unnest())
-    cells = []
-    # Each flag's first row after the break, and its count on the stable rows before it.
-    for flag in flags.values():
-        first = rows.filter((pl.col("row") >= at) & flag(f"y_{kind}"))["row"].min()
-        cells.append("-" if first is None else str(first))
-        flagged_before += rows.filter(pl.col("row").is_between(1_000, at - 1) & flag(f"y_{kind}")).height
-    print(f"{kind:9}" + "".join(f"{c:>19}" for c in cells))
-print(f"flags on rows 1,000-2,999, before any break: {flagged_before}")
-```
-
-```text
-break            |cusum| > 3     |cusum_sq| > 3  break_wald > 21.1              drift
-mean                    3063                  -               3135                  -
-variance                   -               3024               3313                  -
-slope                      -               3087               3072                  -
-flags on rows 1,000-2,999, before any break: 15
-```
-
-Each cell is the first row the flag fired after the break. Before row
-3,000 the flags fired on 15 of the 24,000 flag-rows (four flags on 2,000
-rows of each of the three streams), under 0.1%, as on any stream with no break, and `drift` fired on none of the
-breaks. Read together, the other three flags tell the breaks apart:
-
-| break | `cusum` | `cusum_sq` | `break_wald` |
-|---|---|---|---|
-| the intercept shifted | fires | quiet, or late | fires, since the intercept is a coefficient |
-| the noise grew | quiet, or late | fires first, within 25 rows | quiet, or late |
-| a slope moved | quiet, or late | fires, while the fit catches up | fires |
-
-Over the 200 streams of each break that `scripts/diagnostics_rates.py
-breaks` makes, "late" means this:
+[Detect a break](how-to/detect-a-break.md) runs these tests on a stream
+that breaks in each of the three ways, dates a break with the run-once
+CUSUM, and says what to do at each. Read together, the flags tell the
+breaks apart: `cusum` fires on an intercept shift and `cusum_sq` first on
+a change of noise. `break_wald` fires on a moved coefficient, the
+intercept's included, so it fires on an intercept shift too. `cusum_sq`
+fires on a slope break as well, while the fit catches up. Apart from those
+two cases, each flag is quiet, or late, on the other kinds. For the noise
+and slope breaks, over the 200 streams of each break that
+`scripts/diagnostics_rates.py breaks` makes, the share of streams each
+flag fired on, and its median delay, are:
 
 | break | flag | streams it fired on | median delay |
 |---|---|---:|---:|
@@ -949,20 +746,12 @@ breaks` makes, "late" means this:
 | a slope moved | `\|cusum\| > 3` | a quarter | 204 rows |
 | a slope moved | `\|cusum_sq\| > 3` | nine in ten | 74 rows |
 
-**What to do.** When `cusum` fires alone or with `break_wald`, the level
-moved: restart the fit from the crossing, or let a fit that forgets catch
-up. When `cusum_sq` fires alone, the noise changed and the coefficients
-did not: the fit is still right, but `sigma` and every interval built on
-it will be wrong until they adapt. When `break_wald` fires with `cusum_sq`
-and without `cusum`, a slope moved. `drift_action="reset"` restarts a
-model at a `drift` flag, which suits a level shift only.
-
 ## Can its t be trusted?
 
 **A coefficient's standard error assumes residuals that are independent
 and equally spread, and a target that looks ahead breaks the first
 assumption.** A target that sums the next `h` rows' changes shares `h − 1`
-of them with its neighbour. Its residuals are then correlated over `h − 1`
+of them with its neighbor. Its residuals are then correlated over `h − 1`
 rows by construction, a moving average of order `h − 1`. Against a feature
 that moves slowly, the coefficient's variance grows by about `1 + 2 Σ ρ_x(l)
 ρ_e(l)` over the lags, close to `h`. So a t that ignores the overlap is
@@ -1045,92 +834,27 @@ long-run variance. The windowed calibration reads low because the fit
 absorbs part of a miscalibration ([Is it scaled
 right?](#is-it-scaled-right)), with or without a horizon.
 
-The recipe fits 100 streams in one pass, one group each. Each target sums
-the next 10 shocks, which the feature knows nothing about, so the true
-slope is 0 and a test at 5% should reject on about 5% of the streams:
+On a target summing the next `h` rows' shocks against a persistent
+feature, the coefficient's true spread was 2.1 to 2.3 times `se_coef` at
+`h = 5`. It was 3.1 to 4.2 times at `h = 20`. `se_coef_hac` read 83% to
+97% of the true spread at `L = h`, and 90% to 104% at `L = 2h`, the
+default.
 
-```python
-import numpy as np
-import polars as pl
+[Check a coefficient's standard error](how-to/check-standard-errors.md)
+compares the three standard errors on 100 streams whose true slope is 0,
+and chooses the one to read.
 
-import polars_online as po
-
-# 100 independent streams of 3,000 rows. x is persistent (AR(1) at 0.95); the target sums the next
-# h = 10 shocks, which x knows nothing about, so its true slope is 0.
-rng = np.random.default_rng(4)
-streams, n, h = 100, 3_000, 10
-frames = []
-for s in range(streams):
-    x = np.zeros(n)
-    u = rng.standard_normal(n)
-    for i in range(1, n):
-        x[i] = 0.95 * x[i - 1] + u[i]
-    # The target sums the next h shocks, so neighbouring targets share h - 1 of them.
-    e = rng.standard_normal(n + h)
-    fwd = np.convolve(e, np.ones(h), "valid")[1 : n + 1]  # e[i+1] + ... + e[i+h]
-    frames.append(pl.DataFrame({"stream": s, "x": x, "fwd": fwd}))
-pl.concat(frames).write_parquet("overlap.parquet")
-lf = pl.scan_parquet("overlap.parquet")
-
-# One slope per stream, with its plain, HC0 and HAC standard errors.
-model = po.spec.ewridge(
-    "m", targets=["fwd"], features=["x"], half_life=float("inf"), group="stream",
-    embargo=h,  # a row's label is known h rows later, and is learned only then
-    emit_se_coef=True,  # se_coef: assumes uncorrelated residuals
-    emit_robust_se=True,  # se_coef_hc0, and se_coef_hac to 2 * embargo = 20 lags
-)
-out = lf.online.fit_predict([model]).collect()
-# Each stream's slope and standard errors at its last row.
-last = out.group_by("stream", maintain_order=True).last().select(pl.col("m").struct.unnest())
-slope = last.select(
-    coef=pl.col("coef").list.get(1),  # [intercept, x]
-    se=pl.col("se_coef").list.get(1),
-    hc0=pl.col("se_coef_hc0").list.get(1),
-    hac=pl.col("se_coef_hac").list.get(1),
-)
-# The slope's real spread, and how often each standard error rejects the true 0.
-print(f"the slope's spread over the {streams} streams: {slope['coef'].std():.4f}")
-for se in ["se", "hc0", "hac"]:
-    rejected = (slope["coef"] / slope[se]).abs().gt(1.96).mean()
-    print(f"{se:4} median {slope[se].median():.4f}, |t| > 1.96 on {rejected:.0%} of the streams")
-```
-
-```text
-the slope's spread over the 100 streams: 0.0546
-se   median 0.0188, |t| > 1.96 on 44% of the streams
-hc0  median 0.0188, |t| > 1.96 on 42% of the streams
-hac  median 0.0504, |t| > 1.96 on 8% of the streams
-```
-
-The slope estimates spread with a standard deviation of 0.0546 over the
-100 streams. `se_coef` puts it at 0.0188, 2.9 times too small, close to
-`sqrt(10) = 3.2`, so a t that reads it finds a slope on 44% of the streams
-where there is none. `se_coef_hc0` is no better, because the residuals'
-spread does not move with `x`: their fault is correlation. `se_coef_hac`
-reads 0.0504, near the true spread, and rejects on 8%.
-
-Measured more widely, on a target summing the next `h` rows' shocks
-against a persistent feature, the coefficient's true spread was 2.1 to 2.3
-times `se_coef` at `h = 5`. It was 3.1 to 4.2 times at `h = 20`. `se_coef_hac`
-read 83% to 97% of the true spread at `L = h`, and 90% to 104% at `L = 2h`,
-the default.
-
-**`po.gram.coef_stats` and `marginal`'s `t` read Kish's size too, and are
+**`po.gram.coef_stats` and `marginal`'s `t_stat` read Kish's size too, and are
 silent about the overlap the same way.** `po.gram.coef_stats` computes each
 coefficient's standard error and t from a Gram, such as one loaded from a
 state, at `n = target_n_kish` ([A ridge and its
 t](GRAM.md#a-ridge-and-its-t)). Read its t as a scale for
-comparing coefficients. `marginal`'s `t_stat_serial` corrects each pair's count
-for rows that resemble their neighbours, after Bartlett (1935): over
+comparing coefficients. `marginal`'s `t_stat_serial` (with `lags=` and
+`serial_rule=`) corrects each pair's count
+for rows that resemble their neighbors, after Bartlett (1935): over
 1,000 pairs of independent AR(1) series, `|t|` passed 1.96 on 45% of them
 and `|t_stat_serial|` on 5.4%
 ([`marginal`](MODELS.md#marginal--every-pairs-moments-kept-in-the-state)).
-
-**What to do.** For a target that looks ahead, read `se_coef_hac`, with
-`robust_se_lags` at least the horizon in rows. For a spread that moves with
-the features, read `se_coef_hc0`. `se_coef` is right only for a one-step
-target with residuals of one spread, which `breusch_pagan` and
-`ljung_box` can confirm.
 
 ## What is it missing?
 
@@ -1143,7 +867,7 @@ correlation look for what is left.
 | `ljung_box_<t>` | Box and Pierce's (1970) `Q = n Σ_{l=1..L} ρ̂_l²` over `ljung_box_lags` lags (default 10), at Kish's `n`; run once, Ljung and Box's (1978) `n(n + 2) Σ ρ̂_l² / (n − l)` | `chi2(L)`: 18.3 at 5% for 10 lags | a lag the fit is missing, or a half-life too long |
 | `breusch_pagan_<t>` | Koenker's (1981) form of Breusch and Pagan's (1979) test: `n R²` of `resid²` regressed on the slot's features | `chi2(k)` for `k` features | a spread that moves with a feature, linearly |
 | `ramsey_reset_<t>` | Ramsey's (1969) RESET as a Lagrange multiplier: `n R²` of `resid` on `pred²` and `pred³` beside `pred` | `chi2(2)`: 5.99 at 5% | a curvature the fit is missing |
-| `autocorr_<t>` (`emit_autocorr`) | the EW correlation of each residual with the one `resid_autocorr_lag` scored rows back (default 1) | near 0 | one lag, read as a correlation |
+| `autocorr_<t>` (`emit_autocorr`) | the EW correlation of each residual with the one `resid_autocorr_lag` predicted rows back (default 1) | near 0 | one lag, read as a correlation |
 
 `emit_specification` writes the first three at `specification_half_life`,
 the model's half-life by default. Run once, they are statsmodels'
@@ -1180,108 +904,17 @@ and 39% of the rows, and the Wald forms on 4.7% and 5.2%.
 
 **Each test sees only its own shape.** Breusch-Pagan regresses `resid²` on
 the features themselves, so a spread symmetric in a feature, as `|x0|`, is
-invisible to it. On the recipe's stream with its noise times `0.5 +
+invisible to it. On the stream of [Find what a model
+misses](how-to/find-what-the-model-misses.md)'s recipe, with its noise times `0.5 +
 |x0|` in place of `exp(0.5 x0)`, it read a median of 3.0, under `chi2(2)`'s
 5% value of 5.99. `ramsey_reset`, whose `pred²` carries `x0²`, read 7.7, and
 caught the spread in its place. Ljung-Box sees correlation at the lags it
 tests and no further. RESET sees curvature along the prediction, so a
 curvature in a feature the prediction barely uses can hide from it.
 
-The recipe plants one fault in each of three streams, fixes two of them
-with Polars before the bank, and reads each statistic's median over rows
-6,000 to 9,999. The tests fold from row 4,300, once the fit is 95%
-settled at its half-life of 1,000 rows:
-
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# y = 1.0 x0 + 0.5 x1 + noise on every stream, but for one fault each.
-rng = np.random.default_rng(5)
-n = 10_000
-x0, x1, e = rng.standard_normal((3, n))
-ar = np.zeros(n)  # noise that carries 0.4 of the row before
-for i in range(1, n):
-    ar[i] = 0.4 * ar[i - 1] + e[i]
-base = 1.0 * x0 + 0.5 * x1
-# A clean stream and one stream per fault.
-pl.DataFrame(
-    {
-        "x0": x0,
-        "x1": x1,
-        "y_clean": base + e,
-        "y_lag": base + ar,  # a lag the fit is missing
-        "y_spread": base + e * np.exp(0.5 * x0),  # a spread that grows with x0
-        "y_curve": base + 0.3 * x0**2 + e,  # a curvature in x0
-    }
-).write_parquet("missing.parquet")
-lf = pl.scan_parquet("missing.parquet").with_columns(
-    # The fixes, made with Polars before the bank: last row's error for the lag, x0's square for the curvature.
-    y_lag_prev=pl.col("y_lag").shift(1) - pl.col("x0").shift(1) - 0.5 * pl.col("x1").shift(1),
-    x0_sq=pl.col("x0") ** 2,
-)
-
-
-# A ridge with the three specification tests, on each stream and each fix.
-def spec(name, target, features):
-    return po.spec.ewridge(
-        name, targets=[target], features=features, half_life=1_000.0,
-        emit_specification=True,  # ljung_box (10 lags), breusch_pagan, ramsey_reset, at a memory of 1,000 rows
-    )
-
-
-specs = [
-    spec("clean", "y_clean", ["x0", "x1"]),
-    spec("lag", "y_lag", ["x0", "x1"]),
-    spec("spread", "y_spread", ["x0", "x1"]),
-    spec("curve", "y_curve", ["x0", "x1"]),
-    spec("lag_fixed", "y_lag", ["x0", "x1", "y_lag_prev"]),
-    spec("curve_fixed", "y_curve", ["x0", "x1", "x0_sq"]),
-]
-out = lf.online.fit_predict(specs).slice(6_000).collect()
-
-# Each statistic's median. With nothing missing: chi2(10) has a median of 9.3, chi2(2) or chi2(3) of 1.4 or 2.4.
-print(f"{'spec':12} {'ljung_box':>10} {'breusch_pagan':>14} {'ramsey_reset':>12}")
-for s in specs:
-    name, y = s["name"], s["targets"][0]
-    medians = out.select(pl.col(name).struct.unnest()).select(
-        pl.col(f"ljung_box_{y}").median(),
-        pl.col(f"breusch_pagan_{y}").median(),
-        pl.col(f"ramsey_reset_{y}").median(),
-    )
-    print(f"{name:12} " + " ".join(f"{v:>{w}.1f}" for v, w in zip(medians.row(0), (10, 14, 12))))
-```
-
-```text
-spec          ljung_box  breusch_pagan ramsey_reset
-clean               8.0            1.0          0.7
-lag               447.7            2.5          0.5
-spread              4.9          337.6          1.8
-curve               8.5            0.8        261.5
-lag_fixed           7.8            1.4          1.0
-curve_fixed         8.0            1.7          1.1
-```
-
-The clean stream reads 8.0, 1.0 and 0.7, each below its 5% value (18.3,
-5.99 and 5.99). Each faulty stream lights one test, by a factor of 50 or
-more over the clean stream. `ljung_box` reads 447.7 for the missing lag,
-`breusch_pagan` 337.6 for the spread, and `ramsey_reset` 261.5 for the
-curvature.
-With last row's error as a feature, the lagged stream's `ljung_box` falls
-back to 7.8, and with `x0²` as a feature the curved stream's `ramsey_reset`
-falls to 1.1. The spread has no fix in the features.
-Its coefficients are still right, but their `se_coef` is not, so read
-`se_coef_hc0` ([Can its t be trusted?](#can-its-t-be-trusted)), or weight
-each row by the inverse of its expected variance.
-
-**What to do.** For `ljung_box`, add the lag the residuals carry, as a
-feature made with Polars' `shift` in the query before the bank, or
-shorten the half-life if the fit is lagging a moving relationship. For
-`ramsey_reset`, add the curvature: a square, a product, or a transform of the
-feature that carries it. For `breusch_pagan`, read the robust standard
-errors.
+[Find what a model misses](how-to/find-what-the-model-misses.md) plants a
+lag, a spread and a curvature, reads which test fires on each, and adds the
+feature that fixes it.
 
 ## Are its tails heavy?
 
@@ -1301,7 +934,7 @@ are more common there, and nothing has broken.
 
 **`drift_threshold` is set against the residuals' kurtosis.** On 200
 streams of 25,000 rows at a half-life of 200, `y = 0.5 + x0 − x1` plus
-noise, `drift` flagged as below. `kurtosis` is read as its mean over each
+noise, `drift` flagged at these rates. `kurtosis` is read as its mean over each
 stream, averaged over the streams.
 `scripts/diagnostics_rates.py windowed` makes the streams and every figure
 in this section's tables:
@@ -1317,7 +950,7 @@ in this section's tables:
 the sum of `z² − 1` by the measured variance of `z²`, `E[z⁴] − 1`, and
 not by a Gaussian's 2. Under an excess kurtosis `κ` that variance is
 `2 + κ`. On the same 200 streams, `|cusum_sq| > 3` held on these
-shares of rows. The bank writes the first column; the second is the same
+shares of rows. The bank writes the first column. The second is the same
 statistic rebuilt from `studentized` with 2 in its place, a rebuild that
 gives the bank's own `cusum_sq` back within 1e-11:
 
@@ -1335,93 +968,14 @@ much that a change of spread takes longer to stand out from it.
 
 **A windowed kurtosis is itself noisy under heavy tails.** The kurtosis of
 Student's t with 3 degrees of freedom is infinite, so a windowed estimate
-never settles. Over the rows of those 200 streams its median was 11.5,
+never steadies. Over the rows of those 200 streams its median was 11.5,
 and its mean 30, the table's figure. Read the mean over a long stable
 stretch, as the measurements in the table did.
 
-The recipe measures the tails and `sigma` over a stretch known to be
-stable, and sets `drift_threshold` from them. Then it counts each
-detector's flags over 200,000 stable rows, and after a break that triples
-the noise:
-
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 200,000 rows of a stable relation whose noise is Student's t with 3 degrees of freedom, then
-# 20,000 rows where the noise is three times as large.
-rng = np.random.default_rng(6)
-n, at = 220_000, 200_000
-x0, x1 = rng.standard_normal((2, n))
-noise = rng.standard_t(3, n) * np.where(np.arange(n) >= at, 3.0, 1.0)
-pl.DataFrame({"x0": x0, "x1": x1, "y": 1.0 * x0 + 0.5 * x1 + noise}).write_parquet("tails.parquet")
-lf = pl.scan_parquet("tails.parquet").with_row_index("row")
-
-# 1. Read the tails over a stretch known to be stable: the mean of kurtosis over rows 1,000-20,000.
-stable = po.spec.ewridge(
-    "m", targets=["y"], features=["x0", "x1"], half_life=200.0, emit_tails=True, emit_sigma=True,
-)
-tails = lf.head(20_000).online.fit_predict([stable]).online.unnest([stable]).collect()
-kurtosis = tails.filter(pl.col("row") >= 1_000)["kurtosis_y"].mean()
-print(f"excess kurtosis of the residuals: {kurtosis:.1f}")
-
-# 2. The threshold that kurtosis calls for, from the table above, and sigma's level over the stretch.
-threshold = 20.0 if kurtosis < 4 else 30.0 if kurtosis < 10 else 50.0 if kurtosis < 30 else 80.0
-level = tails.filter(pl.col("row") >= 1_000)["sigma_y"].median()
-print(f"drift_threshold {threshold:.0f}; sigma over the stretch {level:.2f}")
-
-
-# 3. Count each detector's flags over the 200,000 stable rows, and find the break.
-def report(name, out, flag):
-    false = out.filter(pl.col("row") < at).select(flag.sum()).item()
-    found = out.filter((pl.col("row") >= at) & flag)["row"].min()
-    print(f"{name:18} {false:>6} flags before the break, first after it {'never' if found is None else f'{found - at} rows in'}")
-
-
-# Drift at the default threshold, then at the one the kurtosis called for.
-for value in [20.0, threshold]:
-    spec = po.spec.ewridge(
-        "m", targets=["y"], features=["x0", "x1"], half_life=200.0,
-        emit_drift=True, drift_threshold=value, emit_breaks=True, emit_sigma=True,
-    )
-    out = lf.online.fit_predict([spec]).online.unnest([spec]).collect()
-    report(f"drift at {value:.0f}", out, pl.col("drift_y"))
-# Two other detectors, read off the last fit.
-report("|cusum_sq| > 3", out, pl.col("cusum_sq_y").abs() > 3)
-report("sigma past 2x", out, pl.col("sigma_y") > 2.0 * level)
-```
-
-```text
-excess kurtosis of the residuals: 16.6
-drift_threshold 50; sigma over the stretch 1.63
-drift at 20            11 flags before the break, first after it 15011 rows in
-drift at 50             1 flags before the break, first after it never
-|cusum_sq| > 3       2044 flags before the break, first after it 4717 rows in
-sigma past 2x        1270 flags before the break, first after it 126 rows in
-```
-
-The stretch reads an excess kurtosis of 16.6, which calls for a
-`drift_threshold` of 50. At the default 20, `drift` flagged 11 of the
-200,000 stable rows, the table's rate of 5.6 per 100,000, and at 50 it
-flagged one. Neither found the break: when
-the noise triples, `sigma` triples with it, and `drift` scores each
-residual against `sigma`. Its first flag after the break at 20 is a false alarm,
-15,011 rows in. The CUSUM of squares flagged 2,044 of the stable rows,
-1.0% of them, and found the break only 4,717 rows in. With an infinite
-fourth moment, the squares' own spread swamps a tripling for a long time.
-Over 2, a Gaussian's variance of `z²`, it would have flagged 29% of the
-stable rows, so its flag 4 rows after the break would have said nothing. `sigma` itself, past twice its level
-over the stretch, flagged 0.6% of the stable rows and found the break 126
-rows in.
-
-**What to do.** Measure `kurtosis` over a stable stretch before trusting
-any threshold on the residuals. Set `drift_threshold` from it by the table.
-On residuals with an excess kurtosis past 4, read a change of spread from
-`sigma` against its level over a stable stretch. `cusum_sq` holds its
-false-alarm rate there, but is slow to fire. A robust model, `huber` or
-`quantile`, limits how far one large residual moves the fit.
+[Measure heavy tails](how-to/measure-heavy-tails.md) measures the tails
+over a stable stretch, sets `drift_threshold` from them by the table, and
+counts each detector's flags before and after a break that triples the
+noise.
 
 ## Which row moved it?
 
@@ -1444,67 +998,13 @@ recursive residual, and `s` the spread of those before it at
 not the in-sample DFFITS of an earlier row, which reads the rows after it
 too. It costs 145 ns a row at 5 features, and only `ewridge`, `rls` and
 `kalman` take it, the models that read a row's leverage. Under `embargo` a
-row is folded at its release with the residual and the error inflation it
-was scored with, so its influence is the move it made against the fit that
+row is folded at its release with the residual and the error inflation of
+its prediction, so its influence is the move it made against the fit that
 predicted it.
 
-The recipe plants three bad prints in 10,000 rows, each with `x0` six
-spreads out and `y` six noise sds off the line:
-
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 10,000 rows of y = 1.0 x0 + 0.5 x1 + noise, and three bad prints.
-rng = np.random.default_rng(7)
-n = 10_000
-x0, x1, e = rng.standard_normal((3, n))
-y = 1.0 * x0 + 0.5 * x1 + e
-# The bad prints: a far-out x0 whose y sits far off the line.
-bad = [2_500, 6_000, 8_200]
-x0[bad] = 6.0  # six spreads out ...
-y[bad] = 1.0 * x0[bad] + 0.5 * x1[bad] - 6.0  # ... and six noise sds off the line
-pl.DataFrame({"x0": x0, "x1": x1, "y": y}).write_parquet("prints.parquet")
-lf = pl.scan_parquet("prints.parquet").with_row_index("row")
-
-# A ridge that reports each row's influence, with its coefficients on every row.
-model = po.spec.ewridge(
-    "m", targets=["y"], features=["x0", "x1"], half_life=200.0,
-    emit_influence=True,  # influence_y: how far the row moved the fit
-    coef_every=0, max_rows_between_solves=1,  # solve and write the coefficients on every row
-)
-out = lf.online.fit_predict([model]).online.unnest([model]).collect().slice(1_000)  # past the warm-up
-moved = out.with_columns(step=pl.col("coef_y_x0").diff().abs())  # how far x0's coefficient moved
-
-# The rows that moved the fit most, beside the clean rows for scale.
-print("the five rows that moved the fit most:")
-top = moved.sort(pl.col("influence_y").abs(), descending=True, nulls_last=True).head(5)
-for row, influence, step in top.select("row", "influence_y", "step").iter_rows():
-    print(f"  row {row:>5}: influence {influence:+.2f}, x0's coefficient moved by {step:.3f}")
-clean = moved.filter(~pl.col("row").is_in(bad))["influence_y"].abs()
-print(f"every other row: |influence| at most {clean.max():.2f}, 99.9th percentile {clean.quantile(0.999):.2f}")
-```
-
-```text
-the five rows that moved the fit most:
-  row  8200: influence -1.63, x0's coefficient moved by 0.122
-  row  6000: influence -1.55, x0's coefficient moved by 0.110
-  row  2500: influence -1.49, x0's coefficient moved by 0.114
-  row  2360: influence -0.55, x0's coefficient moved by 0.035
-  row  3593: influence -0.43, x0's coefficient moved by 0.035
-every other row: |influence| at most 0.55, 99.9th percentile 0.30
-```
-
-The three planted rows rank first, each at an influence near −1.5, and
-each moved `x0`'s coefficient by 0.11 to 0.12 in one row. The next row
-reads −0.55. Among the 8,997 clean rows past the warm-up, the largest
-reads 0.55 and the 99.9th percentile 0.30. On a fit at a half-life of 200,
-`|influence| > 0.5` held every planted row and one clean row in 9,000.
-The first rows of a stream move the fit by much more, because a fit on a
-handful of rows has little to resist with, so read `influence` once the
-fit has settled.
+[Find an influential row](how-to/find-an-influential-row.md) plants three
+bad prints, ranks the rows by influence, and decides what to do with the
+rows past the cutoff.
 
 **A cutoff scales with the fit: `4 · sqrt((k + 1) / weight_sum)` for `k`
 features.** A clean row's influence is about its leverage's square root,
@@ -1513,16 +1013,10 @@ features or a shorter memory reads larger on every row. On clean rows at
 half-lives of 20 to 1,000 rows and 2 to 10 features, the 99.9th
 percentile of `|influence|` read 2.5 to 3.2 times `sqrt((k + 1) /
 weight_sum)`. Four times it held 0.001% to 0.014% of the clean rows, and
-every row planted six spreads out and six off the line, one in 200. For
-the recipe's fit, at a half-life of 200 with two features, that cutoff is
-0.41. A fixed 0.5 held 7.3% of the clean rows of a fit at a half-life of
-20 with three features.
-
-**What to do.** Find the rows, then decide what they are: a print error
-to drop with a filter in the query before the bank, or a real event the
-model should keep. A row that is real but rare is the case for `huber`,
-whose loss turns linear past `huber_delta`, so one row cannot move the fit
-far.
+every row planted six spreads out and six off the line, one in 200. For a
+fit at a half-life of 200 with two features, that cutoff is 0.41. A fixed
+0.5 held 7.3% of the clean rows of a fit at a half-life of 20 with three
+features.
 
 ## Are its features healthy?
 
@@ -1533,11 +1027,11 @@ forgetting, the information about that coefficient decays and nothing
 replaces it, so the coefficient winds up (Åström and Wittenmark 1995).
 [Data quality](DATA-QUALITY.md#constant-and-frozen-features)
 measures the windup. `emit_feature_health` watches the features
-themselves, before any coefficient moves.
+themselves, and flags a frozen feed long before a coefficient runs away.
 
 | | `emit_feature_health` |
 |---|---|
-| fields | `spread_ratio_<feature>`, `mean_shift_<feature>`, once per instance and feature, read before the row |
+| fields | `spread_ratio_<feature>`, `mean_shift_<feature>`, once per instance (the part of the model that fits one half-life) and feature, read before the row |
 | update | each feature's EW mean and standard deviation at `feature_health_half_life` and at four times it |
 | statistic | `spread_ratio` is the fast standard deviation over the slow one; `mean_shift` the two means' difference in units of the slow standard deviation. A steady feature reads about 1 and 0 |
 | memory | the fit's memory by default; refused where that is `inf` (run once, with no window), since both memories would be the whole stream |
@@ -1549,67 +1043,9 @@ row's target, so the fields lag the feed by the embargo. On a feed frozen
 at row 1,500 at a half-life of 20, the ratio fell below 0.5 at row 1,547.
 Under an embargo of 100 rows it fell below at row 1,646.
 
-The recipe holds `x1` at its last value for 3,000 rows, as a feed that
-stopped would, and fits `rls`:
-
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# y = x0 + 0.5 x1 + noise. x1's feed stops at row 300 and comes back at row 3,300; the join that
-# built the table carried its last value forward.
-rng = np.random.default_rng(3)
-n = 3_500
-t = np.arange(n, dtype=float)
-x0, x1 = rng.standard_normal((2, n))
-y = x0 + 0.5 * x1 + 0.2 * rng.standard_normal(n)
-# The fault: x1 held at its row-299 value until row 3,300.
-held = (t >= 300) & (t < 3_300)
-pl.DataFrame({"t": t, "x0": x0, "x1": np.where(held, x1[299], x1), "y": y}).write_parquet("feed.parquet")
-lf = pl.scan_parquet("feed.parquet")
-
-# rls, with its coefficients and each feature's health on every row.
-model = po.spec.rls(
-    "m", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=5.0, half_life=20.0,
-    coef_every=0,  # the coefficients on every row
-    emit_feature_health=True,  # spread_ratio_x0, spread_ratio_x1, mean_shift_x0, mean_shift_x1
-)
-out = lf.online.fit_predict([model]).online.unnest([model]).collect()
-
-# When x1's spread collapsed, and when rls's coefficient on it ran away.
-quiet = out.filter((pl.col("t") >= 300) & (pl.col("spread_ratio_x1") < 0.5))["t"].min()
-wound = out.filter((pl.col("t") >= 300) & (pl.col("coef_y_x1").abs() > 1.0))["t"].min()
-print(f"x1 held from row 300; its spread_ratio fell below 0.5 at row {quiet:.0f}")
-print(f"rls's coefficient on x1 (0.5 in the data) passed 1 at row {wound:.0f}")
-for row, ratio, coef in out.filter(pl.col("t").is_in([299.0, quiet, 1_000.0, wound, 3_299.0])).select("t", "spread_ratio_x1", "coef_y_x1").iter_rows():
-    print(f"  row {row:>5.0f}: spread_ratio_x1 {ratio:.3f}, coefficient on x1 {coef:.3g}")
-```
-
-```text
-x1 held from row 300; its spread_ratio fell below 0.5 at row 358
-rls's coefficient on x1 (0.5 in the data) passed 1 at row 1352
-  row   299: spread_ratio_x1 0.891, coefficient on x1 0.492
-  row   358: spread_ratio_x1 0.499, coefficient on x1 0.332
-  row  1000: spread_ratio_x1 0.000, coefficient on x1 0.333
-  row  1352: spread_ratio_x1 0.000, coefficient on x1 1.23
-  row  3299: spread_ratio_x1 0.000, coefficient on x1 -4.61e+13
-```
-
-The feed stops at row 300. `spread_ratio_x1` falls below 0.5 at row 358,
-2.9 half-lives in, while the coefficient has barely moved. `rls`'s
-coefficient on `x1` passes 1 at row 1,352, 52.6 half-lives in, and by the
-time the feed returns it has blown up. The feature-health flag came a
-thousand rows before the fit showed anything.
-
-**What to do.** Fix a stale feed in the query before the bank: null each
-value older than its own sampling interval, so the model skips the rows it
-did not observe ([Data quality](DATA-QUALITY.md#constant-and-frozen-features)
-has the recipe). Or use a model whose ridge does not fade, such as
-`ewridge`, which does not wind up. A `mean_shift` that stays large says the
-feature moved to a new level: a coefficient fitted at the old level may
-not hold there.
+[Check the health of a model's features](how-to/check-feature-health.md)
+freezes a feed, flags it about a thousand rows before `rls`'s coefficient
+runs away, and fixes a stale or moved feature.
 
 ## Is another model better?
 
@@ -1619,12 +1055,12 @@ kinds: a choice among a grid's settings as the stream runs, a test that
 one model predicts better than another, and metrics over an output frame
 after the run.
 
-| kind | switch or call | what it gives |
-|---|---|---|
-| running accuracy | `emit_metrics` | `ic_<t>`, the EW correlation of prediction with target; `r2_<t>`, the out-of-sample R² against the running mean; `hit_rate_<t>`, the share of rows whose sign the prediction got right |
-| a choice as the stream runs | `emit_selected`, `emit_averaged` | the grid slot with the lowest EW error so far, and every slot's prediction weighted by its error |
-| a test of two models | `po.eval.diebold_mariano`, `po.eval.clark_west`, `po.eval.seqtest`, the `seqtest` model | a t statistic, or evidence that can be read at any row |
-| metrics after the run | `po.eval.metrics`, `window_metrics`, `compare_specs`; `po.eval.sums` for an output too large to hold | R², IC, hit rate and MSE, per group or per window |
+| kind | switch or call | what it gives | how-to |
+|---|---|---|---|
+| running accuracy | `emit_metrics` | `ic_<t>`, the EW correlation of prediction with target; `r2_<t>`, the out-of-sample R² against the running mean; `hit_rate_<t>`, the share of rows whose sign the prediction got right | |
+| a choice as the stream runs | `emit_selected`, `emit_averaged` | the grid slot with the lowest EW error so far, and every slot's prediction weighted by its error | [Choose among a grid's settings as the stream runs](how-to/choose-among-a-grid-online.md) |
+| a test of two models | `po.eval.diebold_mariano`, `po.eval.clark_west`, `po.eval.seqtest`, the `seqtest` model | a t statistic, or evidence that can be read at any row | [Compare two models](how-to/compare-two-models.md) |
+| metrics after the run | `po.eval.metrics`, `window_metrics`, `compare_specs`; `po.eval.sums` for an output too large to hold | R², IC, hit rate and MSE, per group or per window | [Evaluate an output frame](how-to/evaluate-an-output-frame.md) |
 
 **`hit_rate` asks whether prediction and outcome fall on the same side of
 zero.** A row where either is exactly zero is on neither side, and both
@@ -1665,63 +1101,10 @@ ridge or feature-set grid, the slots share one half-life and are ranked
 like for like. `lasso`'s `select_half_life` ranks its path on one
 half-life.
 
-The recipe chooses a half-life for a stream whose coefficient on `x0`
-wanders as a slow random walk:
-
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# y = b x0 + 0.5 x1 + noise, where b wanders as a slow random walk.
-rng = np.random.default_rng(9)
-n = 40_000
-x0, x1, e = rng.standard_normal((3, n))
-b = 1.0 + np.cumsum(rng.normal(0, 0.01, n))
-pl.DataFrame({"t": np.arange(n, dtype=float), "x0": x0, "x1": x1, "y": b * x0 + 0.5 * x1 + e}).write_parquet("wander.parquet")
-lf = pl.scan_parquet("wander.parquet")
-
-# One spec, five half-lives, and the best of them chosen as the stream goes.
-grid = po.spec.ewridge(
-    "grid", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=5.0,
-    half_life=[25.0, 100.0, 400.0, 1_600.0, 6_400.0],  # one fit per half-life, from the same rows
-    emit_selected=True,  # selected_y, pred_y__selected: the best half-life so far, row by row
-)
-out = lf.online.fit_predict([grid]).collect()
-
-# Each half-life's out-of-sample error over the whole stream, and the stream-time choice's.
-for slot, mse, r2 in po.eval.metrics(out, "grid").sort("mse").select("slot", "mse", "r2").iter_rows():
-    print(f"{slot:18} mse {mse:.4f}, R² {r2:.4f}")
-held = out.select(pl.col("grid").struct.field("selected_y")).to_series().value_counts(normalize=True)
-for slot, share in held.sort("proportion", descending=True).head(3).iter_rows():
-    print(f"selected {slot}: {share:.0%} of the rows")
-```
-
-```text
-pred_y@h100        mse 1.0249, R² 0.9064
-pred_y@h400        mse 1.0405, R² 0.9050
-pred_y__selected   mse 1.0439, R² 0.9047
-pred_y@h25         mse 1.0523, R² 0.9039
-pred_y@h1600       mse 1.1654, R² 0.8936
-pred_y@h6400       mse 1.7095, R² 0.8439
-selected @h25: 41% of the rows
-selected @h400: 30% of the rows
-selected @h100: 27% of the rows
-```
-
-Over the whole stream, a half-life of 100 rows predicts best, with 400 and
-25 close behind and 6,400 far worse: too long a memory averages over a
-coefficient that has moved. That is the half-life to choose. Chosen as the
-stream ran, the selection held 25 on 41% of the rows, 400 on 30% and 100
-on 27%, and its error sits between the best and the third. Each slot is
-ranked at its own half-life, so the shortest is ranked on the fewest rows
-and wins its share by luck. Use `emit_selected` where the best setting
-itself moves. To choose one setting to run on the rows to come, choose it
-over a long stretch with `po.eval.grid_search`, which also scores the
-choice on rows it had not seen. The best error over the rows that chose
-it is optimistic ([Why the best error over a grid is
-optimistic](explanation/grids-and-instances.md#why-the-best-error-over-a-grid-is-optimistic)).
+[Choose among a grid's settings as the stream
+runs](how-to/choose-among-a-grid-online.md) turns both switches on, reads
+them against the grid's own slots, and says when to fix one setting with
+`po.eval.grid_search` instead.
 
 ### Comparing two models
 
@@ -1737,7 +1120,7 @@ predictions.
 Clark and West's (2007) correction removes the lean.** When the larger
 model's extra coefficients are truly zero, it still estimates them, and
 their noise adds `(pred_small − pred_big)²` to its squared error on
-average. So under the null the differential favours the smaller model,
+average. So under the null the differential favors the smaller model,
 and the test rarely finds the larger one better even when it is (Clark and
 McCracken 2001). Clark and West add the term back:
 
@@ -1754,202 +1137,21 @@ It can be read at any row, as often as you like: reject the first time
 `log_e_a ≥ ln 20` for the 5% level
 ([`seqtest`](MODELS.md#seqtest--a-sequential-test-of-a-sign-by-betting)).
 
-The recipe compares two nested models on 200 streams, one group each: on
-half of them the larger model's extra coefficient is 0.05, on the other
-half 0:
-
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 200 streams of 2,000 rows: y = x0 + c x1 + noise, with c = 0.05 on half of them and 0 on the rest.
-# "small" fits x0 alone; "big" fits x0 and x1, so it nests "small".
-rng = np.random.default_rng(10)
-streams, n = 200, 2_000
-c = np.repeat([0.05, 0.0], streams // 2)
-x0, x1, e = rng.standard_normal((3, streams, n))
-pl.DataFrame(
-    {
-        "stream": np.repeat(np.arange(streams), n),
-        "c": np.repeat(c, n),
-        "x0": x0.ravel(),
-        "x1": x1.ravel(),
-        "y": (x0 + c[:, None] * x1 + e).ravel(),
-    }
-).write_parquet("nested.parquet")
-lf = pl.scan_parquet("nested.parquet")
-
-# The two nested fits, one group per stream, every row weighed alike.
-common = dict(targets=["y"], half_life=float("inf"), group="stream", min_weight=20.0)
-small = po.spec.ewridge("small", features=["x0"], **common)
-big = po.spec.ewridge("big", features=["x0", "x1"], **common)
-out = lf.online.fit_predict([small, big]).collect()
-
-# One test per stream: does big predict better than small?
-dm = po.eval.diebold_mariano(out, a="big", b="small", group="stream")
-cw = po.eval.clark_west(out, big="big", small="small", group="stream")
-tests = (
-    out.group_by("stream").agg(pl.col("c").first())
-    .join(dm.select("stream", "dm", dm_p="p_value"), on="stream")
-    .join(cw.select("stream", cw_p="p_value"), on="stream")
-)
-# The share of streams on which each test finds big better, by the true c.
-found = tests.group_by("c").agg(
-    diebold_mariano=((pl.col("dm") > 0) & (pl.col("dm_p") < 0.10)).mean(),  # one-sided at 5%
-    clark_west=(pl.col("cw_p") < 0.05).mean(),
-)
-for c_, dm_share, cw_share in found.sort("c", descending=True).iter_rows():
-    print(f"extra coefficient {c_:.2f}: big found better on {dm_share:.0%} of streams by "
-          f"Diebold-Mariano, {cw_share:.0%} by Clark-West")
-```
-
-```text
-extra coefficient 0.05: big found better on 1% of streams by Diebold-Mariano, 44% by Clark-West
-extra coefficient 0.00: big found better on 0% of streams by Diebold-Mariano, 2% by Clark-West
-```
-
-Where the extra coefficient is 0.05, Diebold and Mariano's test finds the
-larger model better on 1% of the streams, below its own 5% size. The lean
-toward the smaller model swamps a small real gain. Clark and West's finds
-it on 44%. Where the extra coefficient is 0, Clark and West's rejects on
-2%, within its 5% size. On 200 streams in the measurements behind
-`po.eval`, the same comparison gave 1.5% to 4% and 56%, and 1.5% to 2%
-with nothing to find.
+[Compare two models](how-to/compare-two-models.md) runs both tests on 200
+pairs of nested models, and reads a `seqtest` of two models as the stream
+runs.
 
 ### Evaluating an output frame
 
-After the run, pass the output frame to `po.eval`: its calls score a spec,
-compare specs, or unpack the frame to long form. `po.eval.unpack(out,
-"ridge")` gives one row per row and slot, with its target, `pred` and `y`,
-for a `group_by` of your own.
-
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# Three stocks, a row a second each, y = b x0 + 0.5 x1 + noise, where each stock's b wanders.
-rng = np.random.default_rng(13)
-n = 20_000
-x0, x1, e = rng.standard_normal((3, 3, n))
-b = 1.0 + np.cumsum(rng.normal(0, 0.01, (3, n)), axis=1)
-pl.DataFrame(
-    {
-        "t": np.tile(np.arange(n, dtype=float), 3),
-        "stock": np.repeat(["A", "B", "C"], n),
-        "x0": x0.ravel(),
-        "x1": x1.ravel(),
-        "y": (b * x0 + 0.5 * x1 + e).ravel(),
-    }
-).sort("t", "stock").write_parquet("stocks.parquet")
-lf = pl.scan_parquet("stocks.parquet")
-
-# A ridge and a Kalman filter over the same three stocks.
-common = dict(targets=["y"], features=["x0", "x1"], clock="t", gap_cap=5.0, group="stock")
-ridge = po.spec.ewridge("ridge", half_life=500.0, **common)
-kalman = po.spec.kalman("kalman", half_life=500.0, coef_half_life=100.0, **common)  # coefficients that drift
-out = lf.online.fit_predict([ridge, kalman]).collect()
-
-# One table, many specs: which had the lower error?
-for spec, n_, r2, ic, hit, mse in po.eval.compare_specs(out, ["ridge", "kalman"]).select("spec", "n", "r2", "ic", "hit_rate", "mse").iter_rows():
-    print(f"{spec:7} {n_} rows: R² {r2:.4f}, IC {ic:.4f}, hit rate {hit:.4f}, mse {mse:.4f}")
-# The same metrics per group, and per tumbling window of the clock.
-for stock, r2 in po.eval.metrics(out, "ridge", group="stock").select("stock", "r2").iter_rows():
-    print(f"ridge on {stock}: R² {r2:.4f}")
-for start, r2 in po.eval.window_metrics(out, "ridge", clock="t", every=5_000.0).select("window_start", "r2").iter_rows():
-    print(f"ridge from t = {start:>6.0f}: R² {r2:.4f}")
-# Is kalman closer? Diebold and Mariano's t, and the evidence by betting at the last row.
-dm, p = po.eval.diebold_mariano(out, a="kalman", b="ridge").select("dm", "p_value").row(0)
-log_e = po.eval.seqtest(out, a="kalman", b="ridge").select(pl.col("seqtest").struct.field("log_e_a_y")).max().item()
-print(f"kalman against ridge: dm {dm:.2f}; the betting evidence peaked at log_e_a {log_e:.2f} (ln 20 = 3.00)")
-```
-
-```text
-ridge   59988 rows: R² 0.7899, IC 0.8889, hit rate 0.8255, mse 1.0341
-kalman  59988 rows: R² 0.7927, IC 0.8903, hit rate 0.8264, mse 1.0200
-ridge on A: R² 0.8089
-ridge on B: R² 0.8525
-ridge on C: R² 0.5585
-ridge from t =      0: R² 0.6802
-ridge from t =   5000: R² 0.7853
-ridge from t =  10000: R² 0.8200
-ridge from t =  15000: R² 0.8240
-kalman against ridge: dm 11.58; the betting evidence peaked at log_e_a 8.54 (ln 20 = 3.00)
-```
-
-`kalman`, whose coefficients drift, predicts a little better than `ridge`
-here, with an error of 1.0200 against 1.0341. The difference is small, but
-it holds on enough rows that Diebold and Mariano's t reads 11.6. The
-betting evidence peaks at 8.54, past `ln 20`, the 5% level however often
-it is read. R² differs between stocks because each stock's coefficient
-wandered its own way, and an R² is larger where the signal is larger
-against the same noise. The first window's R² is the lowest because it
-holds the fit's warm-up.
-
-**Pass the spec as `spec=` when a target is renamed or looks ahead.** The
-output frame does not record how a target was formed, so without the spec
-each slot is scored against the column named after it. A target renamed
-with `name=` names no column, and the call asks for `spec=`. A target
-expression looking ahead is scored against a column of its own name, which
-`po.stream.with_windows` makes. `metrics`, `window_metrics`, `sums` and
-`unpack` take `spec=`, and `compare_specs` takes the list as `specs=`.
-
-### Evaluating a stream too large to hold
-
-`po.eval.metrics` needs the whole output in one frame. When the output is
-too large to hold, say fifty slots over a billion rows, reduce each chunk
-to ten numbers per key with `po.eval.sums`. Add the parts with
-`po.eval.merge_sums`, which is exact whatever the split, and turn the total
-into the metrics with `po.eval.from_sums`.
-
-**The sums are centred, so a target far from zero keeps its variance.** Raw
-`Σy` and `Σy²` would lose all of it for a target around 1e8 with unit
-spread, which is what the recipe uses:
-
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# A target near 1e8 with unit spread, three stocks, 30,000 rows.
-rng = np.random.default_rng(15)
-n = 30_000
-x0, x1, e = rng.standard_normal((3, n))
-pl.DataFrame(
-    {"stock": rng.choice(["A", "B", "C"], n), "x0": x0, "x1": x1, "y": 1e8 + 1.0 * x0 + 0.5 * x1 + e}
-).write_parquet("far.parquet")
-lf = pl.scan_parquet("far.parquet")
-
-ridge = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=500.0, group="stock")
-
-# Reduce each chunk of the output to a few sums per stock, and add the parts as they come.
-running = None
-for out in po.ModelBank([ridge]).fit_predict_batches(lf, chunk_size=1_000):
-    part = po.eval.sums(out, "ridge", group="stock")  # weight= names a column to weight the rows by
-    running = part if running is None else po.eval.merge_sums(running, part)
-streamed = po.eval.from_sums(running).sort("stock")
-
-# The same metrics from the whole output held in memory, for comparison.
-held = po.eval.metrics(lf.online.fit_predict([ridge]).collect(), "ridge", group="stock").sort("stock")
-for (stock, n_, r2, mse), (r2_held, mse_held) in zip(
-    streamed.select("stock", "n", "r2", "mse").iter_rows(), held.select("r2", "mse").iter_rows()
-):
-    print(f"{stock}: {n_} rows, R² {r2:.6f} streamed and {r2_held:.6f} held, mse {mse:.6f} and {mse_held:.6f}")
-```
-
-```text
-A: 10160 rows, R² 0.545017 streamed and 0.545017 held, mse 1.017160 and 1.017160
-B: 9801 rows, R² 0.551971 streamed and 0.551971 held, mse 1.006657 and 1.006657
-C: 10027 rows, R² 0.551899 streamed and 0.551899 held, mse 1.017914 and 1.017914
-```
-
-The streamed metrics agree with the ones computed from the whole output to
-every digit printed, with only one chunk of the output in memory at a
-time.
+`po.eval`'s calls score a finished run's output frame: `metrics` per spec
+and group, `window_metrics` per window of the clock, `compare_specs` over
+several specs, and `unpack` to long form. For an output too large to hold,
+`sums` reduces each chunk to ten numbers per slot and group. The sums are centered,
+so a target far from zero keeps its variance. `merge_sums` adds the parts,
+the same to rounding whatever the split, and `from_sums` turns the total
+into the metrics. [Evaluate an output
+frame](how-to/evaluate-an-output-frame.md) runs each, and says when to
+pass the spec dict in place of its name.
 
 ## Is it ready?
 
@@ -1968,7 +1170,7 @@ prediction's `withheld_reason` names the gate that held it:
 | `min_settled_frac` | `below_min_settled_frac` |
 | `min_weight` | `below_min_weight` |
 | `max_error_inflation` | `above_max_error_inflation` |
-| `warm_rows` (`kmeans`, `hmm`, `bocpd`): the rows a model learns from before it has seeded its centres, states or prior; `kalman`'s rows before a target's prior is sized | `below_warm_rows` |
+| `warm_rows` (`kmeans`, `hmm`, `bocpd`): the rows a model learns from before it has seeded its centers, states or prior; `kalman`'s rows before a target's prior is sized | `below_warm_rows` |
 | none, the solve itself (`ewridge`): a fit whose normal equations are past the condition at which a solve keeps a digit, see [`ewridge`](MODELS.md#ewridge--exponentially-weighted-ridge-regression) | `ill_conditioned` |
 | none, the learning rate itself (`sgd`): a target whose recent steps' gains have a mean square above twice their mean, so each step grows its own row's residual and the fit diverges | `unstable_rate` |
 
@@ -2023,68 +1225,17 @@ weight 0, or on rows too uneven to project, it gives no figure. A target's
 nulls do not move `weight_sum`, so this warning has no form for a target
 the rows stopped carrying.
 
-The recipe fits ten features under each gate, and reads when each first
-predicts and how good its early predictions are:
-
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# Ten features, a row a second, y on all of them.
-rng = np.random.default_rng(14)
-n, k = 3_000, 10
-x = rng.standard_normal((n, k))
-y = x @ np.linspace(1.0, 0.1, k) + rng.standard_normal(n)
-features = [f"x{j}" for j in range(k)]
-pl.DataFrame({"t": np.arange(n, dtype=float), "y": y} | {f: x[:, j] for j, f in enumerate(features)}).write_parquet("ready.parquet")
-lf = pl.scan_parquet("ready.parquet")
-
-# The same ridge under each readiness gate.
-common = dict(targets=["y"], features=features, clock="t", gap_cap=5.0, half_life=300.0)
-specs = [
-    po.spec.ewridge("default", **common),  # max_error_inflation=sqrt(2), the one gate on by default
-    po.spec.ewridge("strict", max_error_inflation=1.05, **common),  # 5% over the noise floor
-    po.spec.ewridge("settled", min_settled_frac=0.5, **common),  # one half-life of history
-    po.spec.ewridge("weighted", min_weight=100.0, **common),  # 100 of weight_sum
-]
-out = lf.online.fit_predict(specs).collect()
-
-# Each gate's first prediction, what held it back, and its early error.
-for spec in specs:
-    rows = out.select("t", pl.col(spec["name"]).struct.unnest())
-    first = rows.filter(pl.col("pred_y").is_not_null())["t"].min()
-    reasons = rows["withheld_reason"].drop_nulls().value_counts().sort("withheld_reason")
-    held = ", ".join(f"{reason} on {count} rows" for reason, count in reasons.iter_rows())
-    mse = rows.filter(pl.col("t") < 600).select(pl.col("resid_y").pow(2).mean()).item()
-    print(f"{spec['name']:9} predicts from row {first:>3.0f} ({held}); its mse before row 600: {mse:.2f}")
-```
-
-```text
-default   predicts from row  12 (above_max_error_inflation on 12 rows); its mse before row 600: 1.12
-strict    predicts from row 108 (above_max_error_inflation on 108 rows); its mse before row 600: 1.01
-settled   predicts from row 301 (below_min_settled_frac on 301 rows); its mse before row 600: 0.99
-weighted  predicts from row 114 (below_min_weight on 114 rows); its mse before row 600: 1.02
-```
-
-The default gate holds back the first 12 rows, where 11 coefficients would
-otherwise be fitted on fewer rows than they number. Its predictions before
-row 600 have an error of 1.12 against a noise floor of 1, because the
-earliest ones still carry much estimation error. The strict gate, at 5%
-over the floor, waits for 108 rows and its early error is 1.01. The other
-two gates wait for one half-life of history or for 100 of weight, and
-reach the same early error. Choose a gate by what matters more: a
-prediction on every row, or an early prediction as good as a late one.
-The error inflation gate reads the fit's own
-size, so it moves with the number of features. `min_settled_frac` and
-`min_weight` ask for a fixed amount of history.
+[Decide when a model is ready](how-to/decide-when-a-model-is-ready.md)
+reads `withheld_reason`, chooses among the gates on one stream, and
+applies a warning's remedy.
 
 ## How wide is its error?
 
-**A prediction is only as useful as the error it comes with, and four
-diagnostics measure that error as the stream runs.** Each is read before
-its row, so it can be served with the row's prediction.
+**Four diagnostics measure a prediction's error as the stream runs.**
+Each is read before its row, so it can be served with the row's
+prediction. [Put an interval on a
+prediction](how-to/put-an-interval-on-a-prediction.md) builds an interval
+from each and reads its coverage.
 
 | field | what it is | assumes |
 |---|---|---|
@@ -2108,9 +1259,8 @@ linear models take them.
 
 ### Conformal intervals
 
-**Use `conformal` for an interval when the residuals are not Gaussian.**
-It tracks a quantile of `|resid|` directly, so its long-run coverage is the
-number asked for, whatever the residuals do. Its radius `q` grows by
+**`conformal` tracks a quantile of `|resid|` directly, so its long-run
+coverage is the number asked for, whatever the residuals do.** Its radius `q` grows by
 `conformal_rate · sigma · coverage` on a miss and shrinks by
 `conformal_rate · sigma · (1 − coverage)` on a hit. That is the
 quantile-tracking step of Angelopoulos, Candès and Tibshirani (2023),
@@ -2175,76 +1325,10 @@ radius faster than the labels arrive. Where the noise moves within the
 delay, choose the rate on earlier months, as
 [CALIBRATION.md](CALIBRATION.md) chooses any setting.
 
-The recipe builds three 90% intervals on two streams, one with Gaussian
-noise and one with Student's t at 3 degrees of freedom, scaled to the same
-standard deviation:
-
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# The same relation twice, once with Gaussian noise and once with Student's t at 3 degrees of
-# freedom scaled to the same standard deviation.
-rng = np.random.default_rng(11)
-n = 50_000
-x0, x1 = rng.standard_normal((2, n))
-noise = {"gauss": rng.standard_normal(n), "t3": rng.standard_t(3, n) / np.sqrt(3.0)}
-pl.DataFrame({"x0": x0, "x1": x1} | {f"y_{k}": 1.0 * x0 + 0.5 * x1 + v for k, v in noise.items()}).write_parquet("width.parquet")
-lf = pl.scan_parquet("width.parquet")
-
-# One ridge per stream, with each of the three intervals.
-specs = [
-    po.spec.ewridge(
-        k, targets=[f"y_{k}"], features=["x0", "x1"], half_life=500.0,
-        emit_sigma=True,  # sigma: for the Gaussian interval pred ± 1.645 sigma
-        resid_quantiles=[0.9],  # abs_resid_q0.9: the EW 90% quantile of |resid|
-        conformal=0.9,  # lo, hi: an interval tracked to cover 90% of the rows
-    )
-    for k in noise
-]
-out = lf.online.fit_predict(specs).slice(5_000).collect()
-
-# Each interval's share of rows covered, and its mean half-width.
-print(f"{'noise':6} {'interval':>20} {'covered':>8} {'half-width':>11}")
-for k in noise:
-    rows = out.select(pl.col(k).struct.unnest(), y=pl.col(f"y_{k}"))
-    miss = (pl.col("y") - pl.col(f"pred_y_{k}")).abs()
-    intervals = {
-        "pred ± 1.645 sigma": 1.645 * pl.col(f"sigma_y_{k}"),
-        "pred ± q0.9": pl.col(f"abs_resid_q0.9_y_{k}"),
-        "conformal": (pl.col(f"hi_y_{k}") - pl.col(f"lo_y_{k}")) / 2,
-    }
-    for name, half in intervals.items():
-        covered, width = rows.select(covered=(miss <= half).mean(), width=half.mean()).row(0)
-        print(f"{k:6} {name:>20} {covered:>8.3f} {width:>11.3f}")
-```
-
-```text
-noise              interval  covered  half-width
-gauss    pred ± 1.645 sigma    0.899       1.642
-gauss           pred ± q0.9    0.900       1.647
-gauss             conformal    0.900       1.650
-t3       pred ± 1.645 sigma    0.928       1.585
-t3              pred ± q0.9    0.900       1.359
-t3                conformal    0.900       1.364
-```
-
-On Gaussian noise the three intervals are the same: each covers 90% of the
-rows at the same width. On Student's t, the Gaussian interval covers 92.8%,
-more than asked, because `sigma` is inflated by the rare huge residuals,
-and it is wider than it needs to be for most rows. The quantile and the
-conformal interval cover 90.0% at a half-width of 1.36, against the
-Gaussian interval's 1.59. Three more streams of 200,000 rows had
-Student's t noise at 2.5 degrees of freedom, a scale mixture and a regime
-shift. On them the Gaussian interval covered 94% to 95%, and `conformal`
-stayed within 1 point of 90%.
-
-**What to do.** Serve `lo` and `hi` from `conformal` when the coverage
-must hold, and `sigma` when a scale is enough. A `zscore` beyond 3 is a
-surprise on Gaussian residuals and an ordinary row on heavy-tailed ones,
-so read it against [the tails](#are-its-tails-heavy).
+[Put an interval on a
+prediction](how-to/put-an-interval-on-a-prediction.md) compares the
+Gaussian, quantile and conformal intervals on Gaussian and heavy-tailed
+noise, and sets `conformal_rate="auto"` under a delay.
 
 ## A worked example: the two-stage reversion beta
 

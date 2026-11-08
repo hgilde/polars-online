@@ -730,7 +730,7 @@ use one whenever the items share dimensions:
 | options compared | a row per option, a column per dimension | the three ways to hold a row back: predicted, clock advances, fit moves, `weight_sum`, use it to |
 | settings | the setting, its default, what it does, what it reads | the two warm-up gates |
 | caveats | the caveat, and why | the five things to know before reading the numbers of a model under a hard window |
-| failure modes | what you see, what it means, what to do | `micro`'s two wrong values of `eps`, in MODELS.md |
+| failure modes | what you see, what it means, what to do | `micro`'s two wrong values of `eps`, in [Choose `micro`'s `eps`](how-to/choose-micro-eps.md) |
 | a sweep of measurements | the setting, and the number at each | `bocpd`'s `prune_below`; the two thread configurations |
 | a translation | the problem, and its fix | the query steps that can reorder rows |
 | a catalog | the item, how it works, what it is | the model table, grouped by family |

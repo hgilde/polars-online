@@ -1176,8 +1176,8 @@ def compare_specs(
       spec's squared error is lower than another's.
     - :func:`seqtest`, evidence that one spec predicts closer, to read at
       any row.
-    - `Comparing two models
-      <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#comparing-two-models>`_,
+    - `Compare two models
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/compare-two-models.md>`_,
       with a recipe that compares two models on 200 streams.
 
     .. rubric:: Notes
@@ -1670,7 +1670,7 @@ def grid_search(
     .. rubric:: See also
 
     - :func:`compare_specs`, the scores of specs already run, side by side.
-    - `Calibrating a model
+    - `Choose a model's settings from the stream's own errors
       <https://github.com/hgilde/polars-online/blob/main/docs/CALIBRATION.md>`_,
       the pattern this follows, for every setting.
 

@@ -34,9 +34,11 @@ def _param(line: int, code: str, shown: str) -> object:
 
 
 def test_the_page_has_its_recipes():
-    """The opening example, the planted cuts, the two engines, a categorical
-    feature and LightGBM's binning parameters: five."""
-    assert len(RECIPES) >= 5, len(RECIPES)
+    """The opening example, LightGBM's binning parameters, a categorical
+    feature and the margin: four. The planted cuts and the two engines moved
+    with the reasons to docs/explanation/how-po-gbdt-builds-training-data.md
+    (task 338 stage 6b), whose recipes tests/test_kind_pages.py runs."""
+    assert len(RECIPES) >= 4, len(RECIPES)
 
 
 @pytest.mark.parametrize(("line", "code", "shown"), [_param(*r) for r in RECIPES])

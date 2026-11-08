@@ -141,7 +141,7 @@ The keys of a Gram, in the names the formulas on this page give them:
 | `means_by_target` | per target, the columns' means over the rows the target was present on |
 | `target_weights`, `target_means`, `target_vars`, `target_n_kish` | per target, its weight, its mean, its variance `V` and its Kish size |
 | `lags`, `lag_comoments` | for an `ew_cov(lags=[...])`, the lags and the co-moments of each column with every column that many rows back. `None` for any other spec |
-| `within_parts`, `target_within_parts` | only on a Gram from `po.gram.merge(..., within=True)`: the number of parts with weight, and per target the number with weight for it. The fits read them to leave the intercept out and to take a degree of freedom per part ([Pooling within blocks](#pooling-within-blocks)) |
+| `within_parts`, `target_within_parts` | only on a Gram from `po.gram.merge(..., within=True)`: the number of parts with weight, and per target the number with weight for it. The fits read them to leave the intercept out and to take a degree of freedom per part ([Pool within blocks to leave their levels out](how-to/pool-grams.md#pool-within-blocks-to-leave-their-levels-out)) |
 
 What you can do with a set of Grams, and the calls that do it:
 
@@ -149,8 +149,9 @@ What you can do with a set of Grams, and the calls that do it:
 |---|---|---|
 | collect a Gram per week in one pass | `po.spec.ewridge(..., group="week")`, `bank.gram()` | [Weekly blocks from one pass](#weekly-blocks-from-one-pass) |
 | fit on some of the columns | `po.gram.subset`, or `features=` on any fit | [Every least-squares fit is a function of the Gram](#every-least-squares-fit-is-a-function-of-the-gram) |
-| pool any weeks, and score a fit on others | `po.gram.merge` | [Pooling blocks](#pooling-blocks) |
-| pool weeks and leave their levels out | `po.gram.merge(..., within=True)` | [Pooling within blocks](#pooling-within-blocks) |
+| pool any weeks, and score a fit on others | `po.gram.merge` | [Pool Grams](how-to/pool-grams.md#pool-blocks-and-score-a-fit-on-blocks-held-out) |
+| pool decayed weeks, each aged first | `po.gram.merge`, `bank.groups()` | [Pool Grams](how-to/pool-grams.md#age-decayed-blocks-before-you-pool-them) |
+| pool weeks and leave their levels out | `po.gram.merge(..., within=True)` | [Pool Grams](how-to/pool-grams.md#pool-within-blocks-to-leave-their-levels-out) |
 | fit a ridge and read its t | `po.gram.solve`, `po.gram.coef_stats` | [A ridge and its t](#a-ridge-and-its-t) |
 | know whether a fit is determined | `po.gram.condition`, `po.gram.vif`, `po.gram.correlation` | [Is the fit determined?](#is-the-fit-determined) |
 | choose columns | `po.gram.lars_path`, `po.gram.lasso_path` | [Choosing columns on the lasso path](#choosing-columns-on-the-lasso-path) |
@@ -209,8 +210,8 @@ held-out Gram's moments into the right side, and it gives the fit's mean
 squared error over the held-out rows, without reading them. The target's
 moments and the columns' must cover the same rows, as they do when the
 target is present on every row of the Gram.
-[Pooling blocks](#pooling-blocks) scores a fit on the last ten weeks this
-way.
+[Pool Grams](how-to/pool-grams.md#pool-blocks-and-score-a-fit-on-blocks-held-out)
+scores a fit on the last ten weeks this way.
 
 **The moments are centred, so they keep their digits when a column's
 level, its typical size, is far from zero.** A raw second moment of a
@@ -372,10 +373,11 @@ coefficient.
 ## Pooling blocks
 
 `po.gram.merge` pools the Grams of disjoint rows into the Gram of all of
-them, so one pass serves every choice of weeks a fit makes. Blocks run
-under `half_life=float("inf")` pool as they are. Under a decay, each
-block is first aged to the last row of the stream it joins
-([Aging a block before it is pooled](#aging-a-block-before-it-is-pooled)).
+them, so one pass serves every choice of weeks a fit makes. The parts'
+rows must be disjoint: a row in two parts counts twice, and
+`po.gram.merge` cannot tell.
+
+To pool blocks' Grams into one, aged to a common row, with or without their levels, see [Pool Grams](how-to/pool-grams.md).
 
 **A pooled Gram is formed from the parts' moments and the gaps between
 their means, and never from a difference of two large sums.** This is
@@ -396,170 +398,13 @@ cumulative sums, which is where pooling raw sums loses its digits. The
 forty weeks of [Weekly blocks from one pass](#weekly-blocks-from-one-pass)
 pooled to least squares on their rows within 1e-12.
 
-**The parts' rows must be disjoint.** A row in two parts counts twice,
-and `po.gram.merge` cannot tell. `po.gram.solve_subsets` refuses a subset
-that names one Gram twice.
-
-**A pooled Gram scores a fit on rows it was not fitted on.** The identity
-in [Every least-squares fit is a function of the Gram](#every-least-squares-fit-is-a-function-of-the-gram)
-turns a held-out Gram into the fit's mean squared error over the held-out
-rows. The recipe fits weeks 1 to 30, scores the fit on weeks 31 to 40,
-and checks the score against those weeks' rows:
-
-```python
-from datetime import datetime, timedelta
-
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
-# two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
-# drawn again each week, 0.15 on average.
-rng = np.random.default_rng(7)
-n_weeks, per_week, k = 40, 504, 200
-n = n_weeks * per_week
-x = 0.7 * (rng.standard_normal((n, k)) + np.repeat(rng.standard_normal((n, k // 5)), 5, axis=1))
-b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
-y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
-y += rng.standard_normal(n)
-features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
-start = datetime(2025, 1, 6)  # a Monday
-ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
-pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
-
-# One pass over the file leaves a Gram per week. The week is a column made in the query.
-lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
-spec = po.spec.ewridge(
-    "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
-)
-bank = po.ModelBank([spec])
-bank.fit(lf)  # learns from every row, and keeps only the state
-blocks = bank.gram("blocks")  # one dict per week, oldest first
-
-
-# Score a fit on any set of weeks, without reading their rows.
-def mean_squared_error(g, coef):
-    """A fit's mean squared error over the rows behind g, from g's arrays alone."""
-    b0, b = coef[0], coef[1:]
-    gap = g["cross_moments"][0][0] - b0 - g["means"][1:] @ b  # the target's mean less the fit's
-    spread = g["target_vars"][0] - 2 * b @ g["cross_centered"][0][1:] + b @ g["comoments"][1:, 1:] @ b
-    return spread + gap**2
-
-
-# Fit on the early weeks; score it in sample and on the weeks held out.
-train = po.gram.merge(blocks[:30])  # weeks 1 to 30
-held_out = po.gram.merge(blocks[30:])  # weeks 31 to 40
-coef = po.gram.solve(train)
-print(f"weeks 1-30: {train['weight_sum']:,.0f} rows, error {mean_squared_error(train, coef):.4f} in sample")
-print(f"weeks 31-40: {held_out['weight_sum']:,.0f} rows, error {mean_squared_error(held_out, coef):.4f} held out")
-
-# The held-out error from the rows themselves, read into memory to check.
-rows = pl.read_parquet("weeks.parquet").filter(pl.col("ts") >= start + timedelta(weeks=30))
-pred = coef[0] + rows.select(features).to_numpy() @ coef[1:]
-print(f"from the rows of weeks 31-40: {np.mean((rows['y'].to_numpy() - pred) ** 2):.4f}")
-```
-
-```text
-weeks 1-30: 15,120 rows, error 1.0912 in sample
-weeks 31-40: 5,040 rows, error 1.1337 held out
-from the rows of weeks 31-40: 1.1337
-```
-
-The held-out Gram gives the error the held-out rows give, 1.1337, to
-every digit printed. It is above the in-sample error, 1.0912, as a fit's
-error on rows it never saw is. In `mean_squared_error`, `gap` is the
-target's mean less the fit's, and `spread` the error about it. The spread
-reads `cross_centered`, the form the fit itself is solved from, so the
-score keeps its digits at any level.
-
-### Aging a block before it is pooled
-
-**Under a finite half-life, age each block to the last row of the pooled
-stream before pooling it.** A block's weights are relative to its own
-last row. A week that ended a month before the stream did is therefore
-weighted as if it ended with the stream: too heavily, by exactly the
-decay between its last row and the stream's. Multiply its `weight_sum`
-and `target_weights` by `0.5 ** (dt / half_life)`, with `dt` the clock
-from its last row to the stream's last row, each step capped at `gap_cap`
-as the bank caps it. Leave the means and co-moments as they are, since
-they are weighted means. Leave `n_kish` too, since it does not change
-when every weight is scaled by one factor. `bank.groups()` gives each
-group's `clock_last`, in the order `gram()` gives the groups. Blocks run
-under `half_life=float("inf")` pool as they are.
-
-The recipe runs two specs over the same stream in one pass: a Gram per
-week at a half-life of four weeks, and one Gram of the whole stream at
-the same half-life. Both decay on the clock `ts`, a timestamp, so their
-`half_life`, `gap_cap` and `solve_every` are durations. Steps of 20
-minutes are all below the `gap_cap` of an hour, so `dt` is the plain
-difference of the clocks:
-
-```python
-from datetime import datetime, timedelta
-
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
-# two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
-# drawn again each week, 0.15 on average.
-rng = np.random.default_rng(7)
-n_weeks, per_week, k = 40, 504, 200
-n = n_weeks * per_week
-x = 0.7 * (rng.standard_normal((n, k)) + np.repeat(rng.standard_normal((n, k // 5)), 5, axis=1))
-b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
-y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
-y += rng.standard_normal(n)
-features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
-start = datetime(2025, 1, 6)  # a Monday
-ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
-pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
-
-# One pass, two specs: a decayed Gram per week, and one decayed Gram of the whole stream.
-lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
-decayed = dict(
-    targets=["y"], features=features, clock="ts", gap_cap="1h", half_life="4w",
-    solve_every=float("inf"),
-)
-bank = po.ModelBank(
-    [po.spec.ewridge("by_week", group="week", **decayed), po.spec.ewridge("whole", **decayed)]
-)
-bank.fit(lf)
-blocks, whole = bank.gram("by_week"), bank.gram("whole")[0]
-
-# Age each week to the stream's last row: its weights are relative to its own last row.
-last = bank.groups("by_week")["clock_last"]  # each week's last row, in the order gram() gives them
-aged = []
-for block, end in zip(blocks, last):
-    decay = 0.5 ** ((last.max() - end) / timedelta(weeks=4))  # 0.5 ** (dt / half_life)
-    aged.append(
-        dict(block, weight_sum=block["weight_sum"] * decay, target_weights=block["target_weights"] * decay)
-    )
-
-# Pool the weeks as they are and aged, each against the whole stream's fit.
-for how, parts in [("as they are", blocks), ("aged", aged)]:
-    gap = np.abs(po.gram.solve(po.gram.merge(parts)) - po.gram.solve(whole)).max()
-    shown = "below 1e-12" if gap < 1e-12 else f"{gap:.3f}"
-    print(f"40 weeks pooled {how}: the largest gap from the whole stream's coefficients is {shown}")
-```
-
-```text
-40 weeks pooled as they are: the largest gap from the whole stream's coefficients is 0.085
-40 weeks pooled aged: the largest gap from the whole stream's coefficients is below 1e-12
-```
-
-Pooled as they are, the decayed weeks weigh the first week as much as the
-last, and a coefficient lands 0.085 from the whole stream's. Aged before
-they are pooled, they give the whole stream's own coefficients.
-
-### Pooling within blocks
+**A block's weights are relative to its own last row.** So under a finite
+half-life, a week that ended a month before the stream did is weighted as
+if it ended with the stream. It weighs too much, by exactly the decay
+between its last row and the stream's, unless it is aged to the stream's
+last row before it is pooled ([Age decayed blocks before you pool
+them](how-to/pool-grams.md#age-decayed-blocks-before-you-pool-them)).
+Blocks run under `half_life=float("inf")` pool as they are.
 
 **`po.gram.merge(blocks, within=True)` pools each block's moments about
 its own means, and leaves out the spread between the blocks' means.** The
@@ -572,10 +417,11 @@ W = Σ W_i        C = Σ W_i · C_i / W
 T = Σ T_i        c = Σ T_i · c_i / T        V = Σ T_i · V_i / T
 ```
 
-Each target's weights `T_i`, centred cross-moments `c_i` and variances
+Each target's weights `T_i`, centered cross-moments `c_i` and variances
 `V_i` pool over the rows it was present on. A week with no rows of a
 target adds to `C` and not to that target's moments. Where the blocks'
-means are equal, the two forms give the same numbers.
+means are equal, the two forms give the same co-moments, and so the same
+slopes.
 
 **The pooled Gram is that of the rows less their week's means, and a fit
 on it has an intercept for each week.** A regression on the rows less
@@ -588,19 +434,16 @@ each week's own fit does, and the weekly levels drop out of it. Under
 cross-moments over the rows it is present on, and the co-moments over
 every row of the week
 ([Weekly blocks from one pass](#weekly-blocks-from-one-pass)). So its
-slopes differ slightly from the fixed-effects regression on its rows
+slopes can differ from the fixed-effects regression on its rows
 alone, and a target present on every row gets that regression exactly.
 
 **So the fit has no intercept of its own, and loses a degree of freedom
 for each week.** The pooled Gram's `means` are 0, beside the intercept's
-1, and it counts its weeks in `within_parts` and, per target, in
-`target_within_parts`. `po.gram.solve` and every other fit return `nan`
-for the intercept, since each week had one and the pooled Gram holds none
-of them. `po.gram.coef_stats` divides by `n − p − B`, with `p` the
-features and `B` the weeks the target has rows in.
-`po.gram.solve_subsets(..., within=True)` pools each subset the same way.
-A union of several parts refuses a Gram pooled within, since its means
-are 0 and the union would add the gap from 0 to the others' means.
+1, and the pooled Gram holds none of the weeks' intercepts. It counts its
+weeks with weight in `within_parts`, and each target's in
+`target_within_parts`. `po.gram.coef_stats` reads a target's
+`target_within_parts` as `B` in `n − p − B`, with `n` the target's Kish
+count (`target_n_kish`) and `p` the features that have variance.
 
 **Pooled as one union, a chance correlation of the weekly means reads as
 a correlation of the rows.** Take a feature whose level wanders from week
@@ -609,83 +452,10 @@ week, and a target whose weekly level wanders apart from it. Their forty
 weekly means correlate by chance, at about ±1/√40 = ±0.16 for independent
 series. The union's co-moments hold that correlation, and its standard
 errors divide by the 20,160 rows, as if each row had confirmed it. It
-rests on forty weekly means.
-
-**Pool within weeks to ask how a feature moves the target inside a week,
-and keep the union to ask how their levels move together.** The second
-question has forty observations, one a week, and
-[Per-block coefficients](#per-block-coefficients) or the weekly means
-answer it with forty.
-
-The recipe makes `slow`, whose weekly level wanders, and `quick`, which
-moves `y` inside each week. `y`'s weekly level wanders too, apart from
-both:
-
-```python
-from datetime import datetime, timedelta
-
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 40 weeks, a row every 20 minutes. slow is an exponentially weighted mean of noise at a half-life
-# of a week, so its weekly level wanders. y's weekly level wanders apart from it, drawn for each
-# week. Only quick moves y inside a week, by 0.05.
-rng = np.random.default_rng(7)
-n_weeks, per_week = 40, 504
-n = n_weeks * per_week
-slow = pl.Series(rng.standard_normal(n)).ewm_mean(half_life=per_week).to_numpy()
-slow = slow / slow.std()
-quick = rng.standard_normal(n)
-level = 0.3 * rng.standard_normal(n_weeks)  # y's level in each week
-y = 0.05 * quick + level.repeat(per_week) + rng.standard_normal(n)
-# Stamp each row, from a Monday, and save the table for the scan to read.
-start = datetime(2025, 1, 6)  # a Monday
-ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
-pl.DataFrame({"ts": ts, "slow": slow, "quick": quick, "y": y}).write_parquet("levels.parquet")
-
-# One pass over the file leaves a Gram per week.
-lf = pl.scan_parquet("levels.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
-spec = po.spec.ewridge(
-    "blocks", targets=["y"], features=["slow", "quick"], group="week",
-    half_life=float("inf"), solve_every=float("inf"),
-)
-bank = po.ModelBank([spec])
-bank.fit(lf)
-blocks = bank.gram("blocks")
-
-# The chance correlation of the forty weekly means.
-weekly = np.array([[g["means"][1], g["target_means"][0]] for g in blocks])  # each week's mean of slow and of y
-print(f"the weekly means of slow and y correlate at {np.corrcoef(weekly.T)[0, 1]:.2f} over {n_weeks} weeks")
-# Slow and quick, pooled as one union and pooled within weeks.
-print(f"{'pooled':>12} {'slow':>7} {'t':>5} {'quick':>7} {'t':>5}")
-for how, pooled in [("as a union", po.gram.merge(blocks)), ("within weeks", po.gram.merge(blocks, within=True))]:
-    coef = po.gram.solve(pooled)  # within weeks, coef[0], the intercept, is nan
-    t = po.gram.coef_stats(pooled, coef)["t"]
-    print(f"{how:>12} {coef[1]:>7.3f} {t[1]:>5.1f} {coef[2]:>7.3f} {t[2]:>5.1f}")
-
-# Each week alone, and a t from the spread of the weekly coefficients.
-each = po.gram.solve_subsets(blocks, [[i] for i in range(n_weeks)])  # each week alone
-weekly_slow = np.array([fits[0]["coef"][1] for fits in each])
-t_weeks = weekly_slow.mean() / (weekly_slow.std(ddof=1) / np.sqrt(n_weeks))  # Fama and MacBeth's t
-print(f"each week alone: slow's mean coefficient {weekly_slow.mean():.3f}, its t from the weeks {t_weeks:.1f}")
-```
-
-```text
-the weekly means of slow and y correlate at -0.10 over 40 weeks
-      pooled    slow     t   quick     t
-  as a union  -0.025  -3.4   0.047   6.4
-within weeks  -0.004  -0.3   0.046   6.5
-each week alone: slow's mean coefficient 0.006, its t from the weeks 0.2
-```
-
-The weekly means of `slow` and `y` correlate at −0.10, inside the ±0.16
-that chance gives forty weeks. Pooled as a union, that correlation gives
-`slow` a coefficient of −0.025 and a t of −3.4. Pooled within weeks,
-`slow`'s t is −0.3. Each week alone agrees: the forty weekly coefficients
-average 0.006, with a t of 0.2 from their spread. `quick` moves `y` inside
-each week, and both forms find it, with a t of 6.4 and of 6.5.
+rests on forty weekly means. Pooled within weeks, that correlation drops
+out ([Pool within blocks to leave their levels
+out](how-to/pool-grams.md#pool-within-blocks-to-leave-their-levels-out)
+measures it).
 
 ## A ridge and its t
 

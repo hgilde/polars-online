@@ -25,11 +25,14 @@ RECIPES = recipes(PAGE)
 
 
 def test_the_page_has_its_recipes():
-    """The opening half-life, the hand form beside the call, and one recipe for
-    each of the six settings. The optimism of the best over the same rows moved
-    to docs/explanation/grids-and-instances.md (task 338 stage 5b), whose
-    recipe tests/test_kind_pages.py runs."""
-    assert len(RECIPES) >= 8, len(RECIPES)
+    """The opening half-life. The optimism of the best over the same rows
+    moved to docs/explanation/grids-and-instances.md (task 338 stage 5b); the
+    hand form, the ridge, the ridge with the half-life and the changepoint
+    hazard moved to docs/how-to/ (stage 6b); the Kalman filter's drift speed,
+    the learning rate and Holt's smoothing to choose-a-kalman-drift-speed,
+    choose-a-learning-rate and choose-holts-smoothing (the stage 6 merge).
+    Both directories' recipes run in tests/test_kind_pages.py."""
+    assert len(RECIPES) >= 1, len(RECIPES)
 
 
 @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")

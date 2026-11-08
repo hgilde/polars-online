@@ -40,7 +40,10 @@ before the change should count for nothing.** Two cases call for one:
 - **Give an `ew_class` `window_size` when the class means move,** because
   over a long history the spans before and after a move average
   together. Each class's moments
-  then cover only the rows inside the hard window.
+  then cover only the rows inside the hard window ([Give `window_size`
+  when the classes
+  move](choose-a-covariance-type.md#give-window_size-when-the-classes-move)
+  shows it on `ew_class`).
 
 1. **Give `window_size` the span to keep, in clock units,** as
    `window_size=100.0` for the last 100 units of `t`. The model then keeps

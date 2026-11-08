@@ -53,9 +53,10 @@ yet seen ranks the settings fairly, in one pass over the stream.
    each speed takes a spec of its own.
 2. **Score every spec with `po.eval.grid_search`.** It runs one bank of
    every spec over the query, scores each spec on the same rows, and
-   chooses from earlier rows before each span it reports on. [Choosing
-   with `po.eval.grid_search`](../CALIBRATION.md#choosing-with-poevalgrid_search)
-   describes its keywords and the frame it returns.
+   chooses from earlier rows before each span it reports on. [Choose a
+   half-life with
+   `po.eval.grid_search`](../CALIBRATION.md#choose-a-half-life-with-poevalgrid_search)
+   reads the frame it returns.
 3. **Run the spec ranked 1 on the rows to come.** Read its name with
    `table.filter(kind="candidate", rank=1)["spec"]`. The `choice` row's
    error is the one to report for it, since the rows that made the choice
@@ -105,10 +106,10 @@ chosen from earlier rows: mse 0.9966 (the noise alone: 1.00)
 
 Letting only `x0`'s slope drift predicts closest: the intercept and `x1`'s
 slope never move, so a drift on them adds noise to their estimates. The
-error of the spec ranked 1 sits at the noise's variance. [A Kalman
-filter's drift speed](../CALIBRATION.md#a-kalman-filters-drift-speed)
-searches a single speed for every coefficient the same way, with
-`param_grid`.
+error of the spec ranked 1 sits at the noise's variance. A single speed
+for every coefficient can be searched with a builder and `param_grid`
+instead, as [Choose a setting that takes no
+list](../CALIBRATION.md#choose-a-setting-that-takes-no-list) shows.
 
 ## Forget a feature that is active only now and then
 

@@ -42,9 +42,9 @@ the same time to arrive,** as the next five minutes' return does.
 Everything computed from the targets then sees only those that had
 arrived: the prediction, `sigma`, `zscore`, the metrics, break detection,
 the conformal interval, `weight_sum` and the `min_weight` gate. A
-classifier takes it the same way: when `ew_class`'s classes arrive late,
-give `embargo` the delay, and each row's class is learned once that much
-clock has passed.
+classifier takes it the same way: [Give `embargo` when the classes arrive
+late](choose-a-covariance-type.md#give-embargo-when-the-classes-arrive-late)
+shows it on `ew_class`.
 
 1. **Give the spec `embargo="5m"`,** or any finite delay above 0, in the
    clock's units. The bank predicts each row where it sits and learns from

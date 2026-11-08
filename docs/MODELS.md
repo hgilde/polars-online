@@ -1668,43 +1668,15 @@ follows faster, and gives a noisier estimate.
 
 #### Choosing its settings
 
-**To flag joint outliers without assuming a distribution, give
-`mahal_quantiles=[0.99]` and filter the bank's output on
-`mahal > mahal_q0.99`.** That keeps about one row in a hundred: the rows far
-from the mean once the correlations are allowed for, among them rows whose
-every column is in range and only the combination is not. `mahal` measures the row's
-distance from the mean in standard deviations, allowing for the
-correlations: with one column and a negligible `precision_prior`, it is
-`|z|`. A quantile of its own past values is the safer threshold, because on
-Gaussian columns `mahal²` is only roughly χ² with `k` degrees of freedom,
-since the moments are estimated and the prior adds a little. `odd` holds
-those rows in this code, which uses `df` from [Example
-data](../README.md#example-data):
+To flag rows that are odd only in combination, with `mahal` and
+`mahal_quantiles`, see [Flag joint outliers](how-to/flag-joint-outliers.md).
 
-```python
-mv = po.spec.ew_cov(
-    "mv", features=["x0", "x1", "x2"], clock="t", gap_cap=300.0, half_life=500.0,
-    stats=["mean", "std", "corr", "partial_corr", "mahal"],   # what each row writes
-    precision_prior=1e-6,        # needed by partial_corr and mahal; fades as data arrives
-    mahal_quantiles=[0.99],      # adds mahal_q0.99; needs "mahal" in stats
-    pca=1, pca_every=20,         # one principal component, refreshed every 20 units of t (a row each here)
-)
-moments = po.ModelBank([mv]).fit_predict(df).unnest("mv")   # mean_x0, ..., corr_x0_x1, ..., mahal, pc0_*
-odd = moments.filter(pl.col("mahal") > pl.col("mahal_q0.99"))   # the rows far from the mean, a joint outlier among them
-first = moments.select("pc0_share", "pc0_loading_x0", "pc0_loading_x1", "pc0_loading_x2", "pc0_score")
-```
+To track principal components on a schedule, with `pca`, `pca_every` and
+`max_rows_between_pcas`, see [Track principal
+components](how-to/track-principal-components.md).
 
-**Each eigendecomposition takes O(k³) time, so give `pca_every` to refresh
-the principal components on a schedule.** In `mv`, `pca_every=20` refreshes
-them every 20 units of `t`, a row each in `df`. The rows between refreshes
-read their `pc0_score` from the last loadings.
-`max_rows_between_pcas` caps the rows between refreshes, and whichever
-comes first refreshes.
-
-**Give `lags` to see how each column moves with the others `ℓ` learned
-rows back in its group,** and add `"lag_corr"` to `stats` to write a
-correlation for each lag and each *ordered* pair. A lagged matrix is not
-symmetric: a leading b is not b leading a.
+To find which column leads another, with `lags` and `"lag_corr"`, see
+[Find which series leads](how-to/find-which-series-leads.md).
 
 #### How it works
 
@@ -1863,70 +1835,9 @@ columns: a list over the pairs, such as `pair_split_gain`, or a list of
 lists for the columns that hold a list per pair, the `lag_corr_*` and
 `bin_*` columns, such as `pair_lag_corr_xx` and `pair_bin_n`.
 
-**Use `t_stat` to rank pairs, and never as a p-value**, because the rows are
-neither independent nor Gaussian. `t_stat` is built on `n_kish`, the right
-count for unequal weights, which says nothing about rows that resemble their
-neighbors. So on a smooth stream it claims evidence that is not there.
-Over 1,000 pairs of *independent* AR(1) series with `φ = 0.9` and `0.8`,
-3,000 rows each, `|t_stat|` passed 1.96 on 45% of them.
-
-**To correct the count for rows that resemble their neighbors, give `lags`
-and a `serial_rule`.** Each pair then keeps its moments at each lag, the
-statistic `ew_cov(lags=)` computes, to the bit, under
-[`ew_cov`'s](#ew_cov--exponentially-weighted-moments) rules for the ring:
-the last `max(lags)` learned rows, emptied at a clock break.
-`serial_rule` turns them into a count that allows for the resemblance, after
-Bartlett (1935): `n_serial = n_kish / (1 + 2 Σ_l ρ_x(l)·ρ_y(l))`. Under
-`"geometric"`, `|t_stat_serial|` passed 1.96 on 5.4% of those pairs of AR(1)
-series, the 5% the threshold stands for.
-
-**Read `split_gain` against `corr²` to see the relations a correlation
-cannot.** A feature can be strongly related to a target with `corr` at
-zero: a threshold, a V, a saturation. `split_gain` is a regression stump's
-R², so its excess over `corr²` is the nonlinear surplus. Read
-`split_gain_t` as a ranking: as a p-value it would overstate the evidence,
-because the cut was chosen as the best of `bins − 1`. Binning keeps
-`O(bins)` of state per pair, and takes one search of the edges per feature
-per row, so ten thousand columns bin in the pass that gives their `corr`.
-
-**Give `bin_stat="huber"` when one spike should not draw a shape.** A bin's
-mean moves by a row's size times its share of the bin. So one wild row in a
-thin bin bends the response curve there, and a screen that reads binned
-means of a residual, or of its square, sees a shape that is not in the data.
-Under `"huber"` each bin's location is Huber's M-estimate of location,
-learned in one pass, as [`huber`](#huber--robust-regression) learns a
-regression past its first rows, and its first rows are refit to convergence
-once. This code puts one row of 1,000 into a bin of twenty rows near 0:
-
-```python
-import numpy as np
-import polars as pl
-import polars_online as po
-
-# Twenty rows near 0 in the middle bin, among rows at -5 and +5, then a spike there.
-rng = np.random.default_rng(3)
-i = np.arange(420)
-x = np.where(i % 21 == 0, 0.0, np.where(i % 2 == 0, -0.9, 0.9))
-y = np.where(x == 0.0, 0.0, 5.0 * np.sign(x)) + 0.01 * rng.standard_normal(420)
-pl.DataFrame({"x": np.append(x, 0.0), "y": np.append(y, 1000.0)}).write_parquet("thin.parquet")
-
-# The same bins under each statistic; print the middle bin.
-for stat in ["mean", "huber"]:
-    spec = po.spec.marginal("m", targets=["y"], features=["x"], half_life=float("inf"),
-                            bin_edges=[[-0.5, 0.5]], bin_stat=stat)
-    bank = po.ModelBank([spec])
-    bank.fit(pl.scan_parquet("thin.parquet"))
-    r = bank.marginal("m").row(0, named=True)
-    print(f"{stat}: middle bin {r['bin_mean_y'][1]:.2f} over {r['bin_n'][1]:.0f} rows")
-```
-
-```text
-mean: middle bin 47.62 over 21 rows
-huber: middle bin 0.51 over 21 rows
-```
-
-The mean takes the spike's twenty-first share, 47.6. The location moves by
-the cut over twenty, 0.51, and the count still takes the row.
+To rank the pairs by `t_stat`, correct the ranking with `lags` and
+`serial_rule`, and read `split_gain` and `bin_stat="huber"`'s bins, see
+[Screen features against a target](how-to/screen-features-against-a-target.md).
 
 [Forget rows past a window](how-to/forget-rows-past-a-window.md) shows how
 to give a screen a `window_size` when a relation may flip sign.
@@ -2123,18 +2034,9 @@ reads low, at about two-thirds of the truth here.
 
 #### Choosing its settings
 
-**Use `u` and `rho` as a signal that moves with the market's correlation,
-and for the correlation itself read an `ew_cov`'s `corr`.** Both read low,
-since `u` is biased downward and `rho` averages it. And `rho` is not the
-mean of an `ew_cov`'s `corr` over the columns: `rho` averages each row's
-ratio `u`, where `corr` is a ratio of averaged co-moments, and the two
-differ.
-
-**Leave a column that is constant from its first row out of `features`.**
-It has no standardized value, so it is left out of its block, and the block
-reads the correlation among its other columns. A block left with fewer than
-two has no `u`. `loglik` needs every column, so a constant column nulls
-`loglik` on every row.
+To read `u` and `rho` as a signal, per block with `blocks`, and to leave a
+constant column out of `features`, see [Track the average
+correlation](how-to/track-the-average-correlation.md).
 
 #### How it works
 
@@ -2257,69 +2159,9 @@ under `group_close="monotone"`, so 19 of the 20 report.
 
 #### Choosing its settings
 
-**Give `kind` to pick an estimator for the returns you have.**
-[docs/REGIMES.md
-§8](REGIMES.md#8-rcov-three-estimators-against-each-blocks-truth) measures
-the three against each block's
-truth:
-
-| `kind` | the estimator | use it on |
-|---|---|---|
-| `"plain"` | `sum(x x')`, the plain realized covariance | clean returns, where it has the smallest error |
-| `"kernel"` | the multivariate realized kernel (Barndorff-Nielsen, Hansen, Lunde & Shephard 2011), `sum_h k(h/(H+1)) Gamma_h` with Parzen weights and jittered end points | returns with measurement noise, which barely moves its error |
-| `"preavg"` | the modulated realized covariance (Christensen, Kinnebrock & Podolskij 2010): returns pre-averaged over `k_n = ceil(theta * block_rows^0.6)` rows | series not observed on every row, where it is the least biased |
-
-**Compute the returns from prices with Polars' `diff()` in the query before
-the bank, over each block with `.over("block")`,** so that no return spans
-two blocks. The bank skips each block's first row, whose return is null. For
-a series not observed on every row, carry its last price forward with
-`forward_fill().over("block")` before the diff, and use `kind="preavg"`. Or
-build a common grid with `po.stream.refresh_time` before the diff ([Series
-that tick at their own
-times](../README.md#series-that-tick-at-their-own-times)), and keep the
-kernel. Each parameter is shown in this code, which uses `df` from [Example
-data](../README.md#example-data), cut into blocks of 100 rows:
-
-```python
-by_block = df.with_columns(block=pl.int_range(pl.len()) // 100)   # a block id that rises every 100 rows
-rk = po.spec.rcov(
-    "rk", features=["x0", "x1"],       # x0 and x1 stand in for two prices, differenced in `returns`
-    group="block", group_close="monotone",
-    kind="kernel",               # the realized kernel; or "plain" or "preavg"
-    psd=True,                    # the default: clip any negative eigenvalue
-    block_rows=100,              # the block's expected length, which sizes the ring of recent returns: a hint, not a limit
-    bandwidth=None,              # a fixed H; left out, set from the data
-)
-returns = by_block.with_columns(
-    pl.col("x0", "x1").diff().over("block")   # each row's change since the row before it, within its block
-)
-# Fit, and read the estimate of each block that closed.
-bank = po.ModelBank([rk])
-bank.fit_predict(returns)
-finished = bank.closed_groups()
-# rcov, rcorr                  vech of the upper triangle: its entries as one flat list
-# rcov_n, rcov_kind, rcov_bandwidth_used
-# rcov_omega2, rcov_iv_sparse  the noise variance and sparse integrated variance behind the bandwidth
-# rcov_iq                      a realized-quarticity proxy, labeled one
-# rcov_psd_repaired            whether the estimate had to be made positive semi-definite; null where
-#                              the repair could not run: an entry that is not finite, or a failed eigendecomposition
-# a block too short to estimate from gives nulls, not an error
-
-# A series not observed on every row: carry its last price forward within the block, then difference,
-# and pre-average.
-held = by_block.with_columns(pl.col("x0", "x1").forward_fill().diff().over("block"))
-pre = po.spec.rcov("pre", features=["x0", "x1"], group="block", group_close="monotone",
-                   kind="preavg", block_rows=100)
-po.ModelBank([pre]).fit_predict(held)
-```
-
-**For a correlation read on its own under `"preavg"`, give `psd=False`.**
-It selects the balanced form, a shorter window of
-`k_n = floor(theta * sqrt(block_rows))` rows with the bias term subtracted,
-which was the more accurate on [docs/REGIMES.md
-§8](REGIMES.md#8-rcov-three-estimators-against-each-blocks-truth)'s streams.
-It is not always positive semi-definite, so keep the default where the
-matrix must be.
+To choose `kind` for the returns you have, and to read each block's estimate, see
+[Estimate a block's covariance from
+ticks](how-to/estimate-a-blocks-covariance-from-ticks.md).
 
 #### See also
 
@@ -2327,8 +2169,8 @@ To put the prices on one grid before taking returns, or to read each block's est
 
 - [`ew_cov`](#ew_cov--exponentially-weighted-moments), running moments that
   decay, read before each row.
-- [Series that tick at their own
-  times](../README.md#series-that-tick-at-their-own-times), to put the
+- [Align series that tick at their own
+  times](how-to/align-series-that-tick-at-their-own-times.md), to put the
   prices of several series on one grid with `po.stream.refresh_time` before
   taking returns.
 - [`bank.closed_groups()`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.closed_groups),
@@ -2502,15 +2344,15 @@ n'_j  = λn_j                          every other center
 n'_j* = λn_j* + w                     c'_j* = c_j* + (w/n'_j*)(x − c_j*)
 ```
 
-Three rules keep the centers on the data: seeding, a split–merge move that
+Three rules keep the centers on the data: seeding, a split-merge move that
 finds a cluster born after seeding, and a dead rule that re-places a center
 whose cluster vanished. A row far outside its cluster moves neither `n_j`
-nor `c_j`, and waits for the split–merge move. The docstring's Notes give
+nor `c_j`, and waits for the split-merge move. The docstring's Notes give
 each rule, under *Seeding*, *Far rows, split and merge* and *Dead centers*.
 
 #### Example
 
-**The split–merge move gives a cluster born after seeding a center of its
+**The split-merge move gives a cluster born after seeding a center of its
 own.** This code makes three round clusters, and a fourth that appears at
 row 4,000. It fits `n_clusters=4` and counts each label's rows before the fourth
 appears and at the end:
@@ -2544,23 +2386,14 @@ rows 7000-7999: cluster 0: 237, cluster 1: 266, cluster 2: 255, cluster 3: 242
 ```
 
 Before the fourth cluster appears, clusters 1 and 3 share one of the three,
-about 170 rows each. Once it appears, the split–merge move frees cluster 3
+about 170 rows each. Once it appears, the split-merge move frees cluster 3
 and places it on the new cluster, and each of the four holds about a quarter
 of the rows.
 
 #### Choosing its settings
 
-**Keep the default `init="lloyd"`.** The split–merge move cannot see one
-center that owns two clusters, since that center's rows all sit within its
-own radius. The default seeding, the best of ten starts, prevents that.
-
-**Increase `dead_frac` when regimes change faster than a dead center is
-re-placed.** A center whose cluster vanished fades, and is re-placed once it
-holds less than `dead_frac` of an equal share: `log2(1/dead_frac)`
-half-lives after the cluster vanished, 4.3 at 0.05 and 2 at 0.25. In
-exchange, a cluster lighter than `dead_frac/k` of the stream loses its
-center whenever any row is far. The docstring's Notes, under *Dead
-centers*, give the measurements behind its limit below 0.5.
+To choose `init` and `dead_frac`, see [Keep `kmeans` centers on the
+data](how-to/keep-kmeans-centers-on-the-data.md).
 
 #### How it works
 
@@ -2604,10 +2437,10 @@ round clusters.
 
 Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.micro),
-and the fields it writes in [OUTPUTS.md](OUTPUTS.md#micro). The
-docstring's `eps` entry says how to choose `eps`, and how a wrong value
-shows in the output. The parameters every spec takes are in [What a spec
-names](../README.md#what-a-spec-names).
+and the fields it writes in [OUTPUTS.md](OUTPUTS.md#micro). [Choose
+`micro`'s `eps`](how-to/choose-micro-eps.md) says how to choose `eps`, and
+how a wrong value shows in the output. The parameters every spec takes are
+in [What a spec names](../README.md#what-a-spec-names).
 
 #### The update
 
@@ -2796,21 +2629,9 @@ spreads.
 
 #### Choosing its settings
 
-**Give `covariance_type`, scikit-learn's words, to choose what each class
-keeps.** The docstring gives each shape and the work it takes a row:
-
-| `covariance_type` | the right choice when |
-|---|---|
-| `"full"`, the default (QDA) | in general |
-| `"tied"` (LDA) | the classes differ in location but not in spread. It then gives more than 98% of rows the class `"full"` gives them in the tests, with fewer parameters to learn |
-| `"diag"` (Gaussian naive Bayes) | speed matters most, since it runs about four times as fast as the other two ([Throughput](../README.md#throughput)). It cannot see a correlation, so two classes with the same marginals and opposite correlations are one class to it |
-
-[Forget rows past a window](how-to/forget-rows-past-a-window.md) shows how
-to give `window_size` when the class means move.
-
-[Give every row the same
-delay](how-to/learn-targets-known-late.md#give-every-row-the-same-delay)
-shows how to give `embargo` the delay when the classes arrive late.
+To choose `covariance_type`, and `window_size` and `embargo` when the
+classes move or arrive late, see [Choose a covariance
+type](how-to/choose-a-covariance-type.md).
 
 #### See also
 
@@ -2914,47 +2735,11 @@ none: the evidence first passes the 5% level never
 
 #### Choosing its settings
 
-**To test which of two specs predicts closer, put both in the bank and name
-them in `a` and `b`.** The sign tested is then `|resid_b| - |resid_a|`,
-positive when `a` came closer, on the out-of-sample residuals the two specs'
-output records report. A row where either side is null (warm-up, a skipped
-row) sits out the test. When a side is a grid, pick its residual field with
-`a_suffix` or `b_suffix`: the half-life's suffix, such as `"@h500"`, or a
-grid point's, such as `"__r0.5@h500"` ([Output
-field names](../README.md#output-field-names)). Without the suffix, the bank
-refuses the spec and lists the grid's residual fields. This code uses `df`
-from [Example data](../README.md#example-data):
-
-```python
-common = dict(targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, group="stock_id")
-ridge = po.spec.ewridge("ridge", half_life=500.0, **common)
-kalman = po.spec.kalman("kalman", half_life=500.0, coef_half_life=100.0, **common)
-closer = po.spec.seqtest("closer", targets=["y"], a="kalman", b="ridge", group="stock_id")   # does kalman predict closer?
-out = po.ModelBank([ridge, kalman, closer]).fit_predict(df)
-# log_e_a_y, log_e_b_y, wins_a_y, wins_b_y   the two sides' log wealth and counts, as for a sign
-verdict = out.group_by("stock_id").agg(pl.col("closer").struct.field("log_e_a_y").max())
-# log_e_a_y >= ln(20): on that stock, kalman beat ridge at the 5% level, read at any row
-```
-
-**Reject on the first row where `log_e_pos ≥ ln 20`: that is the 5% level,
-however often you look.** The null is that, given everything so far, the
-next sign is no more likely positive than negative. Under it, `E⁺` is a
-nonnegative supermartingale, and Ville's inequality gives
-`P(E⁺ ever reaches 1/α) ≤ α`, however the rows depend on each other. No
-distribution is assumed, and the size of the values is invisible: 60% small
-gains and 40% huge losses count as "positive". For the two-sided question,
-average the two sides' wealth: that is an e-value.
-This code uses `df` from [Example data](../README.md#example-data):
-
-```python
-import math
-
-signs = po.ModelBank([po.spec.seqtest("signs", targets=["y"], group="stock_id")]).fit_predict(df).unnest("signs")
-rejected = (signs.filter(pl.col("log_e_pos_y") >= math.log(20))         # the rows at the 5% level, read at any row ...
-            .group_by("stock_id", maintain_order=True).first())         # ... and each stock's first
-e_value = (pl.col("log_e_pos_y").exp() + pl.col("log_e_neg_y").exp()) / 2   # two-sided: the mean of the wealth, not of its log
-two_sided = signs.select("stock_id", e_value.alias("e_value"))
-```
+To read its evidence and reject at a level that holds however often you
+look, see [Read a sequential test](how-to/read-a-sequential-test.md). To
+test which of two specs predicts closer, put both in the bank and name
+them in `a` and `b` ([Compare two
+models](how-to/compare-two-models.md#read-the-comparison-on-every-row)).
 
 #### See also
 
@@ -3081,32 +2866,9 @@ the second cycle before the break, is flagged.
 
 #### Choosing its settings
 
-**Increase `boundary_gamma`, the `γ` of `w(b)`, to catch an early change
-sooner.** Above 0 the boundary starts lower, so a change soon after the
-history is caught sooner, and a late one later. Near the top
-of the range it also flags more stable streams. Wied and Galeano measured these rates on
-GARCH pairs (their Table 2):
-
-| `boundary_gamma` | a change soon after the history | stable streams flagged, at a nominal 0.05 |
-|---|---|---|
-| 0, the default | caught latest | 0.050 to 0.077 |
-| 0.25 | caught sooner | 0.047 to 0.087 |
-| 0.45 | caught soonest | 0.106 to 0.174 |
-
-```python
-watch = po.spec.corrchange(
-    "watch", features=["x0", "x1"],
-    kind="sequential",
-    window_rows=500,             # 500 rows of history, assumed stable (kind="monitor" over them checks it)
-    monitor_rows=1000,           # then each of up to 1000 rows tested as it arrives: the paper's T = 2
-    boundary_gamma=0.25,         # between the size of 0 and the early catch of 0.45
-)
-```
-
-**Count a run of the window kind's flags as one change.** Two windows that
-slide by one row are almost the same windows, so a statistic above the
-quantile stays above it for a run of rows, and no rate of `alpha` per row
-applies.
+To catch an early change sooner with `boundary_gamma`, the `γ` of `w(b)`,
+and to count a run of the window kind's flags as one change, see [Detect a
+break](how-to/detect-a-break.md#watch-the-features-correlations-with-corrchange).
 
 #### How it works
 
@@ -3238,52 +3000,10 @@ to lift `p_change`, which is why the answer is read from `run_mode`.
 
 #### Choosing its settings
 
-**Give `hazard` as a duration to make breaks follow time, not rows.** A
-number says breaks follow the row rate, so on irregular rows a weekend counts
-as one row. On a temporal clock, `hazard="1h"` is `τ`, the expected time
-between changepoints. The docstring gives the rules at a gap and at a step
-of 0, under its `hazard` entry and under *A duration hazard* in its Notes.
-
-**Leave `mean_prior` and `covariance_prior` out, and the first rows set
-them in the data's units.** A prior you give decides what counts as
-surprising, so it must be in the data's units. Too wide, and no row is
-surprising. On a column of spread 1e-3 with a four-sigma shift at row 150,
-`covariance_prior=[1e-6]` dated the break to its row, and `[1e-3]`,
-`[1.0]` and `[100.0]` never saw it (`degrees_of_freedom_prior=2.0`,
-`hazard=250.0`).
-
-**Read the regime's age from `run_mode`, and use `p_change` only as an
-alarm.** Under a number `hazard`, `p_change` is `P(r ≤ 1)` given the row,
-a posterior read one row at a time, so it is spiky, and its height depends on the size of the break
-against the prior scale. A break one row makes plain lifts it on that row.
-A break that takes several rows to show, as the recipe's fourfold spread
-does, lifts it hardly at all. By the time the evidence is in, the new run
-is longer than the one row `p_change` reads: the recipe's peak is 0.02. The
-docstring's Notes, under *Reading p_change and run_mode*, measure three
-kinds of break.
-
-**To date each group's current run, count the group's own rows.** This
-code uses `df` from [Example data](../README.md#example-data):
-
-```python
-runs = po.spec.bocpd("regime", features=["ret"], group="stock_id", hazard=250.0)
-out = df.online.fit_predict([runs]).unnest("regime")
-started = out.with_columns(      # the row each group's current run began on, counted in the group's own rows
-    run_start=pl.int_range(pl.len()).over("stock_id") - pl.col("run_mode")
-)
-```
-
-**Keep `robust_beta` below about 0.2.** Above it, the weighting forgives
-the rows of a new regime one at a time, so a real shift is found late or
-not at all. At 0.1 it ignores a single 20-sigma row and still finds a
-four-sigma shift on each of 50 streams, at worst 6 rows late and dated
-within 5 rows of it. Left out, nothing is tempered. The docstring's Notes,
-under *Tempering*, give the measurements. `robust_beta` is refused beside
-`covariance_type="full"`.
-
-**Center and scale each feature before a tempered run.** The tempered
-predictive is not free of the data's units, and the docstring's
-`robust_beta` entry shows how.
+To choose `hazard`, the priors and `robust_beta`, see [Choose a
+changepoint hazard](how-to/choose-a-changepoint-hazard.md). To read the
+regime's age from `run_mode` and use `p_change` only as an alarm, see
+[Detect a break](how-to/detect-a-break.md#date-a-regime-with-bocpd).
 
 #### See also
 
@@ -3402,24 +3122,9 @@ nearer the other blob does not flip its state.
 
 #### Choosing its settings
 
-**When one row says little about its regime, give the matrix a sticky
-prior:** `transition=` a matrix whose diagonal is near 1, and
-`transition_prior=` the number of rows that prior counts as. The README's
-[Detecting changes and regimes](../README.md#detecting-changes-and-regimes)
-runs two series whose returns widen 2.7 times in every other block of 500
-rows. Under the default prior the filter put 58% of the rows after seeding
-in their true regime. Under `transition=[0.998, 0.002, 0.002, 0.998]` and
-`transition_prior=500.0` it put 93% there.
-
-**To keep a single extreme row from capturing a state, clip the features
-with Polars' `clip()` in the query before the bank.** Such a row moves a
-state's mean far from the data, and a state that stops winning never
-forgets (the docstring's Notes, under *Limits*). The other guards are to
-give the states with `means` and `covs` and freeze them with `learn=False`,
-or to give a larger `precision_prior`. Keep that ridge well below the
-data's variance: with the states given and not learned, a ridge of 1.0 on
-data of variance 1.0 halves every correlation (the docstring's
-`precision_prior` entry).
+To give the transition matrix a sticky prior, and keep a single extreme
+row from capturing a state, see [Keep `hmm` states on their
+regimes](how-to/keep-hmm-states-on-their-regimes.md).
 
 #### See also
 

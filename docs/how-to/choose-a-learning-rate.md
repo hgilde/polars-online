@@ -82,9 +82,55 @@ learning_rate 0.03 :  28 rows to cover 63% of the jump (1 / learning_rate = 33)
 
 Each rate follows the jump within about `1 / learning_rate` rows. A rate
 that remembers fewer rows follows a change sooner, and moves more with
-each row's noise. [The learning rate](../CALIBRATION.md#the-learning-rate)
-chooses the rate from the stream's own out-of-sample errors, with
-`po.eval.grid_search`.
+each row's noise.
+
+### Search the rate from the stream's own errors
+
+Every prediction is made before the model learns its row, so each rate's
+error on the rows it had not yet seen ranks the rates fairly. Build one
+spec per rate with `functools.partial`, and give `po.eval.grid_search` the
+builder and the rates to try; it fits them all in one bank, which reads
+the file once. The recipe plants a slope that wanders slowly. This code
+builds its own data:
+
+```python
+import functools
+
+import numpy as np
+import polars as pl
+
+import polars_online as po
+
+# y = b x0 + 0.5 x1 + noise, where b wanders as a slow random walk.
+rng = np.random.default_rng(10)
+n = 30_000
+x0, x1, e = rng.standard_normal((3, n))
+b = 1.0 + np.cumsum(rng.normal(0, 0.01, n))
+pl.DataFrame({"x0": x0, "x1": x1, "y": b * x0 + 0.5 * x1 + e}).write_parquet("slow.parquet")
+
+# One sgd spec per learning rate.
+sgd = functools.partial(po.spec.sgd, targets=["y"], features=["x0", "x1"], half_life=1_000.0)
+table = po.eval.grid_search(pl.scan_parquet("slow.parquet"), sgd, {"learning_rate": [0.0003, 0.001, 0.003, 0.01, 0.03, 0.1]})
+
+for rate, mse, rank in table.filter(kind="candidate").select("learning_rate", "mse", "rank").iter_rows():
+    print(f"learning_rate {rate:<6g} (about {1 / rate:>4.0f} rows): mse {mse:.4f}, rank {rank}")
+print(f"chosen from earlier rows: mse {table.filter(kind='choice')['mse'].item():.4f}")
+```
+
+```text
+learning_rate 0.0003 (about 3333 rows): mse 1.4051, rank 6
+learning_rate 0.001  (about 1000 rows): mse 1.0749, rank 4
+learning_rate 0.003  (about  333 rows): mse 1.0263, rank 2
+learning_rate 0.01   (about  100 rows): mse 1.0262, rank 1
+learning_rate 0.03   (about   33 rows): mse 1.0584, rank 3
+learning_rate 0.1    (about   10 rows): mse 1.2047, rank 5
+chosen from earlier rows: mse 1.0262
+```
+
+A memory of about 100 rows predicts best here, the same as a half-life
+of 100 in the first example on a coefficient wandering at the same speed.
+With a shorter memory each step chases the noise, and with a longer one
+the coefficient has moved on before the fit catches up.
 
 ## Choose `ftrl`'s `alpha`
 
@@ -244,5 +290,6 @@ its steady state or jump at one bad row.
 
 **Compare the settings' out-of-sample errors on the same rows.** Run one
 spec per value in one bank, and score them with `po.eval.grid_search`, as
-[The learning rate](../CALIBRATION.md#the-learning-rate) does for `sgd`'s
+[Search the rate from the stream's own
+errors](#search-the-rate-from-the-streams-own-errors) does for `sgd`'s
 `learning_rate`, and the same way for `pa`'s `c` and `ftrl`'s `alpha`.

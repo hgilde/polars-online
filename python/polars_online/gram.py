@@ -484,10 +484,12 @@ def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
     - :func:`solve_subsets`, which merges many subsets of the Grams and fits
       each.
     - :func:`subset`, which keeps some of a Gram's columns.
-    - *Pooling blocks*, *Aging a block before it is pooled* and *Pooling
-      within blocks* in `docs/GRAM.md
+    - *Pooling blocks* in `docs/GRAM.md
       <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
-      the theory and a recipe of each.
+      the theory, and `Pool Grams
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/pool-grams.md>`__,
+      a recipe for pooling, for aging a block first, and for pooling within
+      blocks.
 
     .. rubric:: Notes
 
@@ -2349,10 +2351,12 @@ def solve_subsets(
     - :func:`merge`, :func:`solve`, :func:`coef_stats` and :func:`lars_path`,
       one merge and one fit at a time.
     - *Stability selection over halves of the weeks*, *Per-block
-      coefficients*, *Pooling within blocks*, *A null for the selection, by
-      sign flips* and *A screen of its own for each path* in `docs/GRAM.md
+      coefficients*, *A null for the selection, by sign flips* and *A
+      screen of its own for each path* in `docs/GRAM.md
       <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
       the theory and a recipe of each use.
+    - *Pool within blocks to leave their levels out* in `Pool Grams
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/pool-grams.md>`__.
 
     .. rubric:: Notes
 

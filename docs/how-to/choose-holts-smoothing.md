@@ -147,9 +147,48 @@ chosen from earlier rows: mse 1.0046 (the noise alone: 1.00)
 ```
 
 On a line whose slope never changes, the longest memories rank first.
-[Holt's smoothing](../CALIBRATION.md#holts-smoothing) runs the same search
-on a trend that wanders, and gives each level half-life as the textbook's
-smoothing constant `α`.
+
+On a trend that wanders, a shorter trend half-life ranks first. A row's
+textbook gain on the level is `α = 1 − 2^(−1/half_life)` once the weight
+has saturated, so a level half-life of 8 rows is an `α` of 0.083; the
+recipe prints each beside its half-life. This code builds its own data:
+
+```python
+import functools
+
+import numpy as np
+import polars as pl
+
+import polars_online as po
+
+# A local linear trend: the slope wanders, and the level follows it with steps of its own.
+rng = np.random.default_rng(12)
+n = 30_000
+slope = np.cumsum(rng.normal(0, 0.002, n))
+level = np.cumsum(slope + rng.normal(0, 0.1, n))
+pl.DataFrame({"t": np.arange(n, dtype=float), "y": level + rng.standard_normal(n)}).write_parquet("trend.parquet")
+
+# One spec per trend half-life, each a grid of five level half-lives: 25 fits.
+holt = functools.partial(po.spec.holt, targets=["y"], clock="t", gap_cap=5.0, half_life=[2.0, 4.0, 8.0, 16.0, 32.0])
+table = po.eval.grid_search(pl.scan_parquet("trend.parquet"), holt, {"trend_half_life": [25.0, 100.0, 400.0, 1_600.0, float("inf")]})
+
+# The three best pairs, and what choosing from earlier rows earned.
+for trend, level, mse in table.filter(kind="candidate").sort("rank").head(3).select("trend_half_life", "half_life", "mse").iter_rows():
+    print(f"level half-life {level:>2.0f} (alpha {1 - 2 ** (-1 / level):.3f}), trend half-life {trend:>4g}: mse {mse:.4f}")
+print(f"chosen from earlier rows: mse {table.filter(kind='choice')['mse'].item():.4f}")
+```
+
+```text
+level half-life  8 (alpha 0.083), trend half-life   25: mse 1.1331
+level half-life  4 (alpha 0.159), trend half-life  100: mse 1.1362
+level half-life  4 (alpha 0.159), trend half-life   25: mse 1.1401
+chosen from earlier rows: mse 1.1342
+```
+
+A level half-life of 8 rows with a trend half-life of 25 ranks first.
+The trend forgets faster than its default, four times the level's, because
+the planted slope wanders. Choosing from earlier rows earned 1.1342
+against the 1.1331 the winner shows over the same rows.
 
 ## Check the result
 

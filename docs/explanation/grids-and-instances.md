@@ -88,7 +88,8 @@ coefficient. `sgd`'s `learning_rate`, `holt`'s `trend_half_life` and
 `bocpd`'s `hazard` take a single value. For each of them, give the bank
 one spec per value, which `po.eval.grid_search` builds from its
 `param_grid`.
-The bank still reads the stream once for all of them. The recipes of [Calibrating a model](../CALIBRATION.md#a-kalman-filters-drift-speed) show each case.
+The bank still reads the stream once for all of them. [Choose a setting that takes no list](../CALIBRATION.md#choose-a-setting-that-takes-no-list)
+shows how.
 
 ## An instance: one half-life, with state of its own
 
@@ -250,6 +251,6 @@ partly by luck. On a stream whose coefficient wanders, a selection among
 five half-lives held the shortest on 41% of the rows, though a longer one
 predicted best over the whole stream. Use `emit_selected` where the best
 grid point itself moves. To choose one grid point to run on the rows to
-come, use `po.eval.grid_search`. [Choosing among a grid's
-settings](../DIAGNOSTICS.md#choosing-among-a-grids-settings) shows both
-switches on that stream.
+come, use `po.eval.grid_search`. [Choose among a grid's settings as the
+stream runs](../how-to/choose-among-a-grid-online.md) shows both switches
+on that stream.

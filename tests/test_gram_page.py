@@ -50,8 +50,10 @@ def _param(line: int, code: str, shown: str) -> object:
 
 
 def test_the_page_has_its_recipes():
-    """The opening example and a recipe for each task: twelve."""
-    assert len(RECIPES) >= 12, len(RECIPES)
+    """The opening example and a recipe for each task: nine, since pooling's
+    three moved to docs/how-to/pool-grams.md (task 338 stage 6b), whose
+    recipes tests/test_kind_pages.py runs."""
+    assert len(RECIPES) >= 9, len(RECIPES)
 
 
 @pytest.mark.parametrize(("line", "code", "shown"), [_param(*r) for r in RECIPES])
@@ -85,8 +87,11 @@ def test_the_page_times_only_what_a_machine_decides():
 
 def test_every_po_gram_function_is_on_the_page():
     """A function added to ``po.gram`` and not to the page fails here, so the
-    page stays the guide to all of them."""
-    text = PAGE.read_text(encoding="utf-8")
+    page, with the how-tos its tasks moved to, stays the guide to all of them."""
+    text = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in [PAGE, *sorted((REPO / "docs" / "how-to").glob("*.md"))]
+    )
     functions = [name for name in po.gram.__all__ if callable(getattr(po.gram, name))]
     assert len(functions) >= 12, functions
     missing = sorted(name for name in functions if f"po.gram.{name}" not in text)

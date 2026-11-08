@@ -932,8 +932,8 @@ once, a coefficient more ridge than data. It also names a noise gate or a
 the rows, at their rate so far, would not meet. It gives the half-life or
 the ceiling that would change that, and promises nothing of rows that come
 faster. The command line closes a run with one line per spec whose groups
-ended withheld or with a coefficient more ridge than data. [Is it
-ready?](docs/DIAGNOSTICS.md#is-it-ready) reads these fields to decide
+ended withheld or with a coefficient more ridge than data. [Decide when a
+model is ready](docs/how-to/decide-when-a-model-is-ready.md) reads these fields to decide
 when a model can be trusted.
 
 ### Labels that arrive late
@@ -2110,12 +2110,12 @@ its rows.
 the theory, the keys of a Gram and what a Gram cannot answer, with a
 recipe that runs for each task:
 
-| task | its section of GRAM.md |
+| task | its recipe |
 |---|---|
 | a Gram per week from one pass | [Weekly blocks from one pass](docs/GRAM.md#weekly-blocks-from-one-pass) |
-| pool any weeks, and score a fit on others | [Pooling blocks](docs/GRAM.md#pooling-blocks) |
-| pool decayed blocks, each aged first | [Aging a block before it is pooled](docs/GRAM.md#aging-a-block-before-it-is-pooled) |
-| pool weeks and leave their levels out | [Pooling within blocks](docs/GRAM.md#pooling-within-blocks) |
+| pool any weeks, and score a fit on others | [Pool blocks, and score a fit on blocks held out](docs/how-to/pool-grams.md#pool-blocks-and-score-a-fit-on-blocks-held-out) |
+| pool decayed blocks, each aged first | [Age decayed blocks before you pool them](docs/how-to/pool-grams.md#age-decayed-blocks-before-you-pool-them) |
+| pool weeks and leave their levels out | [Pool within blocks to leave their levels out](docs/how-to/pool-grams.md#pool-within-blocks-to-leave-their-levels-out) |
 | a ridge and its t | [A ridge and its t](docs/GRAM.md#a-ridge-and-its-t) |
 | the lasso path | [Choosing columns on the lasso path](docs/GRAM.md#choosing-columns-on-the-lasso-path) |
 | columns chosen on most halves of the weeks, and a null for them | [Stability selection over halves of the weeks](docs/GRAM.md#stability-selection-over-halves-of-the-weeks) |
