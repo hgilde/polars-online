@@ -186,7 +186,9 @@ else
 fi
 # The API reference imports the package, so it runs after the build. -W: a
 # docstring that is not valid reStructuredText fails here, not on the site.
-step "sphinx"       uv run --group docs sphinx-build -W -q docs/reference docs/_build/html
+# -E: a fresh environment, since the per-entry pages are generated at build
+# time and a build left from another layout describes each object twice.
+step "sphinx"       uv run --group docs sphinx-build -W -q -E docs/reference docs/_build/html
 
 if [ "$tier" = extended ]; then
     banner="the extended tier: the full suite, the pre-push check"

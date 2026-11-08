@@ -29,10 +29,13 @@ TIER = "essential"
 REPO = Path(__file__).resolve().parents[1]
 META = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
 TESTS = sorted((REPO / "tests").glob("*.py"))
-#: This repository's own modules: the tests' helpers, the examples and
-#: scripts some tests import by path, and the package.
+#: This repository's own modules: the tests' helpers, the examples, the
+#: scripts and the API reference's build modules some tests import by path,
+#: and the package.
 LOCAL = {
-    p.stem for d in ("tests", "tests/_site", "examples", "scripts") for p in (REPO / d).glob("*.py")
+    p.stem
+    for d in ("tests", "tests/_site", "examples", "scripts", "docs/reference")
+    for p in (REPO / d).glob("*.py")
 } | {"polars_online"}
 
 
