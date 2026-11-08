@@ -10,8 +10,9 @@ acts on what it finds.
 
 These steps need the library and a stream to check:
 
-- polars-online installed. The first recipe builds its own data. The
-  last one uses `df` from the README's
+- polars-online installed. The first recipe builds its own data, and the
+  check after it reuses that data. The last two recipes use `df` from the
+  README's
   [Example data](../../README.md#example-data).
 - A [spec](../GLOSSARY.md#the-model-bank-and-what-it-reads) for each
   model you mean to fit, and the

@@ -38,9 +38,11 @@ Each way to serve needs a saved state and the rows to predict:
   guarantee](../explanation/out-of-sample.md#what-predicting-before-learning-cannot-guarantee)).
 - For the command line: the `polars-online` program, whose binaries are
   attached to each GitHub release, the configuration file `job.toml`, and
-  its state `run.state`. [Save the state for the next
+  its state `run.state`. [Run a bank over a
+  file](run-a-bank-from-the-command-line.md#run-a-bank-over-a-file) writes
+  `job.toml`, and [Save the state for the next
   run](run-a-bank-from-the-command-line.md#save-the-state-for-the-next-run)
-  writes both.
+  writes `run.state`.
 
 ## Serve in Python
 
@@ -122,9 +124,10 @@ wrote 400 rows (1 chunk) to today-served.parquet
 ## Check that it worked
 
 **Row *i* of the output carries what `fit_predict` would have reported had
-it been the next row of its group's stream:** `pred`, `weight_sum`,
-`sigma`, `zscore`, the slot `emit_selected` chooses and the metrics,
-field for field ([docs/DIAGNOSTICS.md](../DIAGNOSTICS.md)).
+it been the next row of its group's stream.** Its fields match
+`fit_predict`'s, field for field: `pred`, `weight_sum`, `sigma`, `zscore`,
+the slot `emit_selected` chooses and the metrics
+([docs/DIAGNOSTICS.md](../DIAGNOSTICS.md)).
 [OUTPUTS.md](../OUTPUTS.md) lists every field. Two fields differ. The
 drift detector `emit_drift` adds never fires. And `coef` is filled only on
 each group's last row in each chunk that is not

@@ -183,7 +183,7 @@ moves = flows.online.fit_predict([ahead_5m]).online.unnest([ahead_5m]).collect()
 
 # The same target as a column, made in the query by with_windows on the spec's clock, then named in targets.
 as_column = {**ahead_5m, "targets": ["fwd_move"]}                      # a spec is a dict: a copy with the column as target
-made = po.stream.with_windows(flows, fwd_move, like=ahead_5m).online.fit_predict([as_column])   # like= takes the spec's clock, gap_cap and group
+made = po.stream.with_windows(flows, fwd_move, like=ahead_5m).online.fit_predict([as_column])   # like= takes the spec's clock settings, and nulls the target where the spec would not learn
 column = made.online.unnest([as_column]).collect()
 
 # The two forms side by side.
@@ -251,7 +251,7 @@ hit_rate of diff: 0.51
 **A target expression requires an operator that looks ahead; otherwise,
 make the target a column with Polars' `with_columns`, chained in the query
 before the bank, and name it in `targets`.** For the command line, which
-has no `with_columns`, make the column in the file it reads. The bank's refusal names the
+has no `with_columns`, make the column in the file it reads. The refusal names the
 call that makes the column. Make the column with `with_windows` instead if
 it reads a window that looks back ([Make features that look back over the
 stream](make-window-features.md)). Here the target, how far from the mid

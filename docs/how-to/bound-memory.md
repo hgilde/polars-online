@@ -78,7 +78,8 @@ the bank's `threads` changes only the bank's speed.
    `POLARS_MAX_THREADS=4 python fit.py`, or with `os.environ` at the top of
    the script.
 2. **Leave the bank's `threads` unset,** which gives the bank one thread
-   per core whatever `POLARS_MAX_THREADS` says. [Use more
+   per core whatever `POLARS_MAX_THREADS` says, unless
+   `POLARS_ONLINE_MAX_THREADS` sets another count. [Use more
    cores](use-more-cores.md) lists the calls that take `threads=`, to give
    a count of your own.
 
@@ -116,7 +117,8 @@ Keeping Polars at four threads holds 33% less memory, for 15% more time.
 
 `huber`, a robust regression, refits each target's first rows to
 convergence once it has learned them: 500 rows by default, 10 a feature
-past 50 features, and off above 100, set by `huber_refit_rows`. Until then each target holds those rows, in each
+past 50 features, and off above 100, set by `huber_refit_rows`. Until
+then each target holds those rows, in each
 [group](../GLOSSARY.md#the-model-bank-and-what-it-reads), so a spec over
 many groups can hold many rows at once. `sgd(loss="huber")`, `quantile`
 and `marginal`'s Huber bins refit the same way and take the same bound,

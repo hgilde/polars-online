@@ -53,7 +53,8 @@ pins only weakly: a probability's curvature is at most a quarter. On two
 features at `half_life=200`, with one row a clock unit, the defaults left
 the logistic fit at its steady state up to 0.41 from the decayed maximum
 likelihood in some coefficient, the worst of 50 seeds. `beta=0.1, l2=0`
-left it 0.17 from it.
+left it 0.17 from it. So on a 0/1 target, lower `beta` and `l2` as step
+3 does.
 
 The recipe plants a constant target of 5 beside a feature `x` that is
 noise. It prints each spec's fitted intercept beside `5 / (1 + r)`, the

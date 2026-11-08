@@ -24,8 +24,9 @@ These steps need the library and a stream with a clock:
 
 `coef_half_life` is how fast a [coefficient](../GLOSSARY.md#fitting-a-model)
 may drift, as a [half-life](../GLOSSARY.md#time) in clock units on the
-features standardized by `standardize`, the default. A short one follows a coefficient that moves, and
-a long one averages more rows for a coefficient that holds still.
+features standardized by `standardize`, the default. A short one follows
+a coefficient that moves, and a long one averages more rows for a
+coefficient that holds still.
 
 **For a drift rate per coefficient, give `coef_half_life` a list with the
 intercept's entry leading.** An entry of `inf` gives its coefficient no
@@ -187,8 +188,8 @@ least `2^(−gap_cap/κ)` of its value.
 
 Under `standardize` the reversion shrinks the standardized slopes. So a far
 prediction approaches the target's level at the features' means. That
-level equals `bank.coef()`'s intercept, which is in the features' original
-units, only where the features average 0.
+level equals `bank.coef()`'s intercept, which is reported in the
+unstandardized coordinates, only where the features average 0.
 
 1. **Give the slopes a finite `revert_half_life`, and the intercept
    `inf`,** as in [Forget a feature that is active only now and
@@ -238,7 +239,7 @@ gap_cap   1000: slope read 0.0596, 2^(-gap_cap/200) x 1.9073 = 0.0596; predictio
 Under the short `gap_cap`, a prediction 1,000 clock units out still reads
 almost the whole slope. Under the long one, it reads 3% of it, and the
 prediction stands near the target's level. `x` is 0 between its bursts and
-averages about 0 within them, so here that level is about `bank.coef()`'s
+averages about 0 within them, so here that level is near `bank.coef()`'s
 intercept, which the recipe prints.
 
 ## Set the process noise outright

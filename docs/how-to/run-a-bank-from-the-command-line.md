@@ -37,8 +37,8 @@ needs.
 1. **If a target is computed from its row's columns, such as a return
    against the mid, make it a column of the input file.** Make it with
    Polars' `with_columns` before you write the file the run reads. A
-   target table that names `relative_to`, a column to subtract, is
-   refused by name. A [formula target](../GLOSSARY.md#fitting-a-model) (a
+   target table that names `relative_to` (a reference column the target
+   was once taken against) is refused by name. A [formula target](../GLOSSARY.md#fitting-a-model) (a
    target written as a window expression) in the TOML file must look
    ahead, as in Python, and [Specs in TOML](../RUNNER.md#specs-in-toml)
    shows how to write one.
@@ -112,7 +112,7 @@ CSV's first rows. It opens the bank as the run would, loading
 refuses a state that is not there or was saved from other specs. It
 refuses a column a spec reads that the input lacks, or that the TOML
 file's `keep_columns` (the input columns to keep) leaves out. And it
-refuses a window target's embargo short of its window.
+refuses a formula target's embargo shorter than its window.
 
 ## Save the state for the next run
 
@@ -169,7 +169,7 @@ A run needs somewhere to put its work: an output file, a `save_state`, or
 a `closed_groups` file ([Closed groups to a sidecar
 file](../RUNNER.md#closed-groups-to-a-sidecar-file)). Asked for none of
 the three, it is refused before it reads a row. A run with no output keeps
-no prediction, so it is the command line's `ModelBank.fit`, and a window
+no prediction, so it is the command line's `ModelBank.fit`, and a formula
 target there takes any embargo, as `fit` does.
 
 ## Check that it worked
@@ -216,7 +216,7 @@ print(f"the same spec: {bank.specs[0] == spec}")
 the same spec: True
 ```
 
-The predictions, residuals and weights the run writes are, bit for bit,
-what the same bank writes in Python. [Specs in
+The predictions the run writes are, bit for bit, what the same bank
+writes in Python. [Specs in
 TOML](../RUNNER.md#specs-in-toml) compares the command line's predictions
 with the bank's.

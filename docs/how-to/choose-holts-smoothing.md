@@ -117,8 +117,10 @@ a spec of its own, each with a list of level half-lives.
 2. **Score every pair with `po.eval.grid_search`,** giving it the builder
    and `{"trend_half_life": [...]}`. It calls the builder once per trend
    half-life, and scores every pair on the rows each had not yet seen.
-3. **Run the pair ranked 1 on the rows to come,** and report the `choice`
-   row's error, since the rows that made the choice did not score it.
+3. **Run the pair ranked 1 on the rows to come.** Read it with
+   `table.filter(kind="candidate", rank=1).select("trend_half_life", "half_life")`.
+   Report the `choice` row's error, since the rows that made the choice
+   did not score it.
 
 The recipe scores three level half-lives against three trend half-lives on
 the line of the first recipe, whose noise has variance 1. This code reads

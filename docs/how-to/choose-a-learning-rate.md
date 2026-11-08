@@ -115,7 +115,7 @@ decayed least-squares fit after a break.
    `alpha` if they are too many.** The estimate is not a bound. Over
    breaks of 2 and 20 in the intercept, at half-lives of 200 and 1,000
    and `alpha` from 0.1 to 1, the rows to cover 90% of a break came to
-   0.37 to 1.54 times it.
+   0.37 to 1.54 times the estimate.
 
 A larger `alpha` follows a break sooner, and moves the coefficients more
 from row to row at their steady state.

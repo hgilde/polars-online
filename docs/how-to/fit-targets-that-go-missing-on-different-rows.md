@@ -33,8 +33,8 @@ targets go missing on different rows, give each its own `rls` spec.
 Otherwise one spec holds them all.
 
 1. **Check which rows each target is present on.** Compare the targets'
-   `is_null()` with Polars:
-   `pl.scan_parquet(...).select((pl.col("a").is_null() != pl.col("b").is_null()).sum()).collect()`
+   missing values with Polars, NaN counted as null, as the bank counts it:
+   `pl.scan_parquet(...).select((pl.col("a").fill_nan(None).is_null() != pl.col("b").fill_nan(None).is_null()).sum()).collect()`
    counts the rows where `a` and `b` differ. Where it is 0, keep them in
    one `rls` spec.
 2. **Otherwise, build one `rls` spec per target,** each naming one target

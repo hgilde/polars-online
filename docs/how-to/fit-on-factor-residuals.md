@@ -201,8 +201,8 @@ the bank. With
 the memory allocator returning freed pages at once and Polars reading one
 block of the file ahead, the second ridge alone over
 `pl.scan_parquet(...).with_columns(...)` held 848 MB at 4,000,000 rows. The
-same bank over the file read as a query with nothing between, computing
-the columns in each chunk, held
+same bank in a loop over the file's chunks, computing the columns in each
+chunk, held
 279 MB ([PERFORMANCE
 §47](../PERFORMANCE.md#47-factor-ridges-feeding-a-windowed-forward-ridge-2026-11-06)).
 Add a computed column that the bank does not need after `fit_predict`.

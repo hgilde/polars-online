@@ -56,9 +56,14 @@
 //! decay, so the step's divisor forgets on the half-life; what bounds the
 //! pace is AdaGrad's normalised step. In steady state `n ≈ G²/(1 − lam)`
 //! and `d ≈ G/(2·alpha·sqrt(1 − lam))` for a coordinate's RMS gradient `G`,
-//! so a step `g/d` moves a coefficient at most about `2·alpha·sqrt(1 − lam)`
-//! a row whatever the error, and a break that moves it by `D` takes about
-//! `D/(2·alpha·sqrt(1 − lam))` rows: measured 0.011 a row against 0.012 at
+//! so once the sums hold the break's gradients a step `g/d` closes a
+//! coefficient on it at about `2·alpha·sqrt(1 − lam)` a row whatever the
+//! error, and a break that moves it by `D` takes about
+//! `D/(2·alpha·sqrt(1 − lam))` rows. That is an estimate, not a bound: just
+//! after the break, before the sums grow, one step can reach about `alpha`
+//! (task 338 stage 6a measured 0.020 a row over the first 100 rows against
+//! 0.0118, and 0.37-1.54 times the estimate to close 90%). Measured 0.011 a
+//! row against 0.012 from 4 to 12 half-lives after a break at
 //! `alpha = 0.1`, `half_life = 200` (tests/test_convergence.py,
 //! `test_ftrl_follows_a_break_at_the_pace_of_its_steps`). A larger `alpha`
 //! is faster and noisier; the trade is the caller's, as the learning rate.

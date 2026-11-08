@@ -51,7 +51,7 @@ before the change should count for nothing.** Two cases call for one:
    has left, as it has in the [window
    operators](../../README.md#making-features-and-targets-from-windows)
    and in `rolling_sum_by`.
-   Under `"both"` it stays. A row's weight is then:
+   Under `"both"` it stays. Either way, a row's weight is:
 
    ```
    weight(age) = 0.5 ** (age / half_life)   if age < window_size   (closed="right", the default)

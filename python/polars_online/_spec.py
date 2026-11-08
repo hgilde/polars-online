@@ -2977,11 +2977,13 @@ def ftrl(
     clock, however large the error. Just after the break, before the sums
     have grown, it moves faster, by up to about ``alpha`` in one row. So
     ``D / (2 * alpha * sqrt(1 - f))`` estimates the rows a break that moves
-    a coefficient by ``D`` takes to follow, and is not a bound. Over breaks
+    a coefficient by ``D`` takes to follow, and is not a bound. Under
+    ``loss="squared"`` on one feature with noise of spread 0.3, over breaks
     of 2 and 20 in the intercept, at half-lives of 200 and 1000 and
-    ``alpha`` from 0.1 to 1, the rows to close 90% of the break came to 0.37
-    to 1.54 times it. The large gradients just after a break increase the
-    sums that divide every step for about a half-life. It was measured under
+    ``alpha`` from 0.1 to 1 (two seeds each), the rows to close 90% of the
+    break came to 0.37 to 1.54 times the estimate. The large gradients just after a break
+    increase the sums that divide every step for about a half-life. The
+    table was measured under
     ``loss="squared"`` on two features at ``half_life = 200``, one row a
     clock unit, after a change of regime that moved the intercept by 46.
     The table gives the worst of 50 seeds, the largest coefficient gap to
@@ -3013,10 +3015,9 @@ def ftrl(
 
     At the default the intercept closed at 0.011 a row from 4 to 12
     half-lives after the break, against ``2 * alpha * sqrt(1 - f)`` = 0.012.
-    So a larger ``alpha`` follows a
-    break sooner, and it moves more from row to row at its steady state:
-    at ``alpha = 1`` the gap stops shrinking by 8 half-lives, within twice
-    its steady state's. Over the 24 half-lives after the noise quadrupled, the
+    So a larger ``alpha`` follows a break sooner, and it moves more from
+    row to row at its steady state: at ``alpha = 1`` the gap stops
+    shrinking by 8 half-lives, within twice its steady state's. Over the 24 half-lives after the noise quadrupled, the
     default came at most 0.23 from the decayed least squares, and
     ``alpha = 1`` came 1.17 from it.
 

@@ -1193,8 +1193,9 @@ def with_windows(
 
     **The rows' order and memory.** A backward window under ``closed="right"``
     or ``"both"`` waits for the next distinct stamp (a clock value), and a
-    look-ahead for its window to pass, so the output trails the input by the
-    longest window. A
+    look-ahead for its window to pass, so the output trails the input by
+    one clock step for a backward window and by the longest window for a
+    look-ahead. A
     group that falls silent holds every later row for at most ``gap_cap`` of
     the stream's time. Past that its next row is certain to open with a gap
     past the cap, so its windows end then. Only a clock column has a cap, so a

@@ -66,10 +66,12 @@ each held row now also keeps its one-pass residual and what the exact
 median is read from. So a group reserves `(features + 26) · 8` bytes a
 target for each row of `huber_refit_rows` or `quantile_refit_rows`, where
 1.4.0 reserved `(features + 20) · 8`. At 256 MiB that covers about a fifth
-fewer groups than 1.4.0 did: at 5 features and 500 rows, 2,164 targets
-against 2,684. A budget increased in the same ratio holds the same number
+fewer groups than 1.4.0 did: at 5 features and 500 rows, 2,164 groups of
+one target against 2,684. A budget increased in the same ratio holds the same number
 of groups, and so the same groups, since they reserve in the order they
-first appear: at 5 features, `refit_budget=317.44` refits the first 2,684.
+first appear: at 5 features, `refit_budget=317.44` refits the first 2,684
+such groups. For a budget `B` given to 1.4.0, give
+`B · (features + 26) / (features + 20)`.
 Under `huber_scale="rms"` the reservation did not grow, so
 `refit_budget=256` is 1.4.0's. Either way the rows before each refit read
 the scale this release reads, with no setting to undo it.

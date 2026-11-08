@@ -57,7 +57,8 @@ specs, more half-lives, or a wide spec split across threads.**
 This code runs the comparison of the table's second row on a generated
 parquet file: eight `ewridge` specs of 20 features, one per half-life, in
 one bank and then one at a time. It prints the two times, which are your
-machine's. They include reading the file, where the table times the bank
+machine's; the ones shown were printed on the machine the table was
+measured on. They include reading the file, where the table times the bank
 alone, so they run longer than the table's. It then prints whether the
 outputs are equal to the bit, which they are:
 

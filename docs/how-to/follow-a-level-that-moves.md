@@ -172,7 +172,7 @@ y = 2.0 * x + 0.5 * rng.standard_normal(14_000)
 y[10_000:] += 20.0
 pl.DataFrame({"t": np.arange(14_000.0), "x": x, "y": y}).write_parquet("shift.parquet")
 
-# The five fits of the table, at a fit half-life of 500 rows.
+# The five fits, at a fit half-life of 500 rows.
 common = dict(targets=["y"], features=["x"], clock="t", gap_cap=10.0, half_life=500.0)
 specs = [po.spec.sgd("squared", loss="squared", **common),
          po.spec.sgd("rms", loss="huber", huber_scale="rms", **common),

@@ -19,7 +19,7 @@ These steps need the library and a stream with a clock:
 - A [clock](../GLOSSARY.md#time) column, and the
   [`gap_cap`](../GLOSSARY.md#time) a clock requires: the largest clock
   step a window or a model measures. A longer step ends every window open
-  across it.
+  across it, and a model decays it as a step of `gap_cap`.
 - When each row's target becomes known: at the next row, or a fixed delay
   on the clock later, as under a spec's [`embargo`](../GLOSSARY.md#time)
   (the delay on the clock between predicting a row and learning from it).

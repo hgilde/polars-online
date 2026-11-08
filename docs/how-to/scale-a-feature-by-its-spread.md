@@ -17,7 +17,7 @@ These steps need the library and a stream with a clock:
 - A [clock](../GLOSSARY.md#time) column, and the
   [`gap_cap`](../GLOSSARY.md#time) a clock requires: the largest clock
   step a window or a model measures. A longer step ends every window open
-  across it.
+  across it, and a model decays it as a step of `gap_cap`.
 
 ## Fit the model on z-scores
 
@@ -97,10 +97,9 @@ window's rows in the `with_windows` pass. A model reads it as any other column, 
 unit of its features, so z-scored features give coefficients per standard
 deviation.
 
-**For `kalman`, give the z-score columns with `standardize=False`.**
-Under `standardize`, `kalman`'s default, the filter standardizes each
-column again against its own moments, and reports its coefficients in the
-columns' own units however those moments move.
+**For `kalman`, give the z-score columns with `standardize=False`,** so
+the filter does not standardize them a second time against its own
+moments.
 
 **For `ftrl`, give it features near 0, z-scored or standardized in the
 query before the bank.** `ftrl` does not center a feature. The docstring
