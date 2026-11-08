@@ -242,12 +242,7 @@ fn run(rows: &[Row], block: usize, threads: usize, gaps: TargetGaps) -> Acc {
 /// A named change to a `T`: a damage, or a part changed alone.
 pub(super) type Damage<'a, T> = (&'a str, &'a dyn Fn(&mut T));
 
-fn pool(n: usize) -> rayon::ThreadPool {
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(n)
-        .build()
-        .expect("a test pool")
-}
+use crate::test_pool::pool;
 
 fn bits(acc: &Acc) -> Vec<u64> {
     acc.cross

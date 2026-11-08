@@ -327,7 +327,12 @@ jobs:
       # of it, so tests multiplying on many threads at once ran out of
       # commit ("memory allocation of 1006632960 bytes failed", online-core's
       # unit tests, 2026-10-13, twice). Two at a time fits; the tests are the
-      # same. Every x86 build keeps that kernel, the faster product (PLAN
+      # same. Beside it, online-core's tests that run one computation in
+      # pools of several sizes take their pools from `src/test_pool.rs`,
+      # which on Windows x86-64 caps a pool at four threads and all of them
+      # together at four: on an Intel Xeon 6973P runner (480 MiB of L3)
+      # pools of 1, 3, 8 and 14 held at once ran out of commit at two test
+      # threads (2026-11-08, PLAN task 362). Every x86 build keeps that kernel, the faster product (PLAN
       # task 264); the Windows alternatives are measured in PLAN task 263.
       - name: cargo test
         run: uv run cargo test --workspace --exclude online-py --no-fail-fast --locked -- --include-ignored ${{ runner.os == 'Windows' && '--test-threads=2' || '' }}

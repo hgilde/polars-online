@@ -4,7 +4,9 @@
 //! from `k = 512` their last bits followed it: a wide `ewridge` gave other
 //! coefficients under another `POLARS_ONLINE_MAX_THREADS`, or on a machine
 //! with another core count. Each case here runs the same inputs in pools of
-//! 1, 3, 8 and 14 threads and compares the results to the bit.
+//! 1, 3, 8 and 14 threads (at most four on Windows x86-64, where each
+//! multiplying thread commits a large buffer: `crate::test_pool`) and
+//! compares the results to the bit.
 
 use super::*;
 
@@ -38,15 +40,16 @@ pub(super) fn spd(k: usize, seed: u64) -> Vec<f64> {
     a
 }
 
-pub(super) fn pools() -> Vec<rayon::ThreadPool> {
-    [1usize, 3, 8, 14]
+/// The pool sizes each case runs in, 1 first.
+const SIZES: [usize; 4] = [1, 3, 8, 14];
+
+/// `f` in a pool of each of [`SIZES`] threads, one pool at a time (at most
+/// four threads on Windows x86-64: `crate::test_pool`), with the size
+/// asked.
+fn in_each_pool<T>(mut f: impl FnMut(&rayon::ThreadPool, usize) -> T) -> Vec<T> {
+    SIZES
         .iter()
-        .map(|&n| {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(n)
-                .build()
-                .expect("a test pool")
-        })
+        .map(|&n| f(&crate::test_pool::pool(n), n))
         .collect()
 }
 
@@ -60,7 +63,6 @@ fn bits(v: &[f64]) -> Vec<u64> {
 #[test]
 #[ignore = "extended: three factorizations up to k = 1,000 in four pools, in a debug build"]
 fn a_solve_is_the_same_in_every_pool() {
-    let pools = pools();
     let mut moved = Vec::new();
     for k in [512usize, 730, 1000] {
         let a = spd(k, 3 + k as u64);
@@ -86,10 +88,10 @@ fn a_solve_is_the_same_in_every_pool() {
                 ]
             })
         };
-        let one = run(&pools[0]);
-
-        for (p, n) in pools.iter().zip([1, 3, 8, 14]).skip(1) {
-            for ((what, got), (_, want)) in run(p).iter().zip(&one) {
+        let all = in_each_pool(|p, n| (n, run(p)));
+        let one = &all[0].1;
+        for (n, got) in &all[1..] {
+            for ((what, got), (_, want)) in got.iter().zip(one) {
                 if got != want {
                     moved.push(format!("k = {k}, pool of {n}: {what}"));
                 }
@@ -103,13 +105,12 @@ fn a_solve_is_the_same_in_every_pool() {
 #[test]
 #[ignore = "extended: a 512-wide inverse in four pools, in a debug build"]
 fn an_inverse_diagonal_is_the_same_in_every_pool() {
-    let pools = pools();
     let k = 512;
     let a = spd(k, 11);
     let f = SpdFactor::of(&a, k).expect("positive definite");
-    let one = bits(&pools[0].install(|| f.inverse_diagonal(k)));
-    for p in &pools[1..] {
-        assert_eq!(bits(&p.install(|| f.inverse_diagonal(k))), one);
+    let all = in_each_pool(|p, n| (n, bits(&p.install(|| f.inverse_diagonal(k)))));
+    for (n, got) in &all[1..] {
+        assert_eq!(got, &all[0].1, "pool of {n}");
     }
 }
 
@@ -119,7 +120,6 @@ fn an_inverse_diagonal_is_the_same_in_every_pool() {
 #[test]
 #[ignore = "extended: eigendecompositions in four pools, in a debug build"]
 fn principal_components_are_the_same_in_every_pool() {
-    let pools = pools();
     let mut moved = Vec::new();
     for k in [300usize, 512, 730] {
         let a = spd(k, 5 + k as u64);
@@ -131,9 +131,9 @@ fn principal_components_are_the_same_in_every_pool() {
                 out
             })
         };
-        let one = run(&pools[0]);
-        for (p, n) in pools.iter().zip([1, 3, 8, 14]).skip(1) {
-            if run(p) != one {
+        let all = in_each_pool(|p, n| (n, run(p)));
+        for (n, got) in &all[1..] {
+            if got != &all[0].1 {
                 moved.push(format!("k = {k}, pool of {n}"));
             }
         }
@@ -225,16 +225,15 @@ fn a_failed_pivot_is_named_as_faer_names_it() {
 /// case shows the thread count deciding nothing (a debug build).
 #[test]
 fn a_finely_cut_factor_is_the_same_at_every_thread_count() {
-    let pools = pools();
     for k in [130usize, 200] {
         let one = factor_bits(k, 1, (16, 8));
-        for (p, n) in pools.iter().zip([1, 3, 8, 14]) {
+        in_each_pool(|p, n| {
             assert_eq!(
                 p.install(|| factor_bits(k, n, (16, 8))),
                 one,
                 "k = {k}, {n} threads"
             );
-        }
+        });
     }
 }
 
