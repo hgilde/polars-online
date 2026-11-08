@@ -1,5 +1,7 @@
 # Documentation phrasing
 
+*Status, 2026-11-08: a record, still added to. The reports of phrasing problems in the docs from which docs/WRITING.md's rules are drawn; a new report goes here.*
+
 A running list of specific phrasing problems in the shipped docs — the
 README, docstrings, `docs/*.md` guides — collected as they are found, for
 the eventual rewrite pass (`docs/PLAN.md` task 68, the README clarity pass,

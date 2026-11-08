@@ -1,5 +1,7 @@
 # Answers to the open points in `docs/PLAN.md` §11a, *Preparing E54–E64 for implementation*
 
+*Status, 2026-11-08: a record. The answers from the papers that the change-detection and regime models (`bocpd`, `hmm`, `rcov` and their kin) were built on, as of 2026-09-05; the models' docstrings and docs/MODELS.md describe them as built.*
+
 Written 2026-09-05 against the papers themselves, before tasks 45–56 were
 built; the implementations followed these answers, and where a build
 departed from one — `bocpd`'s line 6, `hmm`'s two corrections, `rcov`'s

@@ -1,5 +1,7 @@
 # `marginal` at width, round two: what a row costs at 10⁴ features × 50 targets, and five asks
 
+*Status, 2026-11-08: a record. A caller's five asks of `marginal` at 10⁴ features and 50 targets against 0.10.0, and what was measured then; docs/MODELS.md's `marginal` entry and docs/PERFORMANCE.md give its costs now.*
+
 *2026-09-25. Five asks against 0.10.0, from the same caller as
 `MARGINAL-LAGS-AND-BINS.md` (its first pass, the screen of every factor
 against every target and its null targets, one `marginal` per warm-up
