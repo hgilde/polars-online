@@ -530,7 +530,7 @@ class ModelBank:
         picked = range(n) if spec is None else [self._spec_index(spec, "ModelBank.groups")]
         return self._native.groups(list(picked))
 
-    def drop_groups(self, keys: Iterable[str | None], spec: str | int | None = None) -> int:
+    def drop_groups(self, keys: str | Iterable[str | None], spec: str | int | None = None) -> int:
         """Remove the models of these groups, in every spec or in one.
 
         Use it to free the memory a long-running bank holds for groups that
@@ -541,11 +541,11 @@ class ModelBank:
         .. rubric:: Parameters
 
         ``keys``
-            The group keys to drop, a list of keys and not one key, as
-            :meth:`groups` writes them in its ``group`` column: strings, with
-            ``None`` for the null group. A key the bank does not hold drops
-            nothing, and is not an error. A string given alone is read as its
-            characters, each a key.
+            The group keys to drop, as :meth:`groups` writes them in its
+            ``group`` column: strings, with ``None`` for the null group. A
+            list of keys, or one key as a string, as Polars reads one column
+            name where it takes a list of them. A key the bank does not hold
+            drops nothing, and is not an error.
         ``spec``
             A spec's name or position, which drops the groups from that spec
             alone. ``None``, the default, drops them from every spec.
@@ -589,7 +589,10 @@ class ModelBank:
         - :meth:`groups`, which lists the groups and their last clock values.
         """
         index = None if spec is None else self._spec_index(spec, "ModelBank.drop_groups")
-        return self._native.drop_groups(list(keys), index)
+        # A string alone is one key, not its characters: a group key is a
+        # string, and Polars reads a lone name where it takes a list the same way.
+        listed: list[str | None] = [keys] if isinstance(keys, str) else list(keys)
+        return self._native.drop_groups(listed, index)
 
     @overload
     def skip_learned(self, frame: pl.DataFrame) -> pl.DataFrame: ...
@@ -626,18 +629,17 @@ class ModelBank:
         .. rubric:: Raises
 
         ``ValueError``
-            When:
-
-            - no spec reads a clock, so there is no position on a clock to
-              resume from;
-            - a clock column is not a number, a ``Date``, a ``Datetime`` or a
-              ``Duration``;
-            - a clock is temporal in the frame and was numeric in the bank,
-              or the other way round.
+            No spec reads a clock, so there is no position on a clock to
+            resume from.
+        :class:`~polars_online.WrongTypeError`
+            A clock column is not a number, a ``Date``, a ``Datetime`` or a
+            ``Duration``, or a clock is temporal in the frame and was numeric
+            in the bank, or the other way round. It is both a ``TypeError``
+            and a ``ValueError``.
         :class:`~polars_online.ColumnNotFoundError`
             A spec's clock or group column is not in the frame. It is both a
             ``ValueError`` and Polars' ``ColumnNotFoundError``.
-        ``AttributeError``
+        ``TypeError``
             ``frame`` is neither a ``DataFrame`` nor a ``LazyFrame``, such as
             a dict.
 
@@ -678,6 +680,12 @@ class ModelBank:
         counts as learned, a stream that repeats a clock value and was saved
         between two rows with that value loses the later ones.
         """
+        if not isinstance(frame, (pl.DataFrame, pl.LazyFrame)):
+            msg = (
+                "ModelBank.skip_learned: frame must be a DataFrame or a LazyFrame, but its type "
+                f"is {type(frame).__name__}. Pass the input you would pass to fit_predict."
+            )
+            raise TypeError(msg)
         schema = frame.lazy().collect_schema()
         keep: pl.Expr | None = None
         for spec, groups in zip(self.specs, self._native.last_clocks(), strict=True):
@@ -1250,6 +1258,11 @@ class ModelBank:
 
         When called, before a row is read:
 
+        :class:`~polars_online.WrongTypeError`
+            ``chunk_size`` is not a whole number, such as ``2.5``. It is both
+            a ``TypeError`` and a ``ValueError``.
+        ``TypeError``
+            ``closed_groups`` is neither a string nor a path.
         ``ValueError``
             ``chunk_size`` is below 1, or ``closed_groups`` names no format
             by its extension, or names a file beside specs none of which sets
@@ -1335,6 +1348,7 @@ class ModelBank:
         arguments checked eagerly, then a generator. ``what`` is the public
         method the caller used, for the messages that name it."""
         from polars_online._frame import (
+            _check_chunk_size,
             _check_closed_format,
             _closed_path,
             _order_free,
@@ -1342,13 +1356,7 @@ class ModelBank:
             _warn_if_order_unspecified,
         )
 
-        if chunk_size is not None and chunk_size < 1:
-            who = f"ModelBank.{what}"
-            msg = (
-                f"{who}: chunk_size must be at least 1, but it is {chunk_size}. Set chunk_size "
-                "to 1 or more, or leave it out."
-            )
-            raise ValueError(msg)
+        chunk_size = _check_chunk_size(chunk_size, f"ModelBank.{what}")
         path = _closed_path(closed_groups, self._specs, f"ModelBank.{what}")
         if path is not None:
             _check_closed_format(path, self.closed_groups(drop=False).clear(), f"ModelBank.{what}")
@@ -4118,7 +4126,7 @@ def _unlearned(
             f'spec "{name}": clock column {clock!r} has dtype {dtype}, which is not a clock. '
             "Pass the clock as a number, a Date, a Datetime or a Duration."
         )
-        raise ValueError(msg)
+        raise WrongTypeError(msg)
     temporal = not dtype.is_numeric()
     lasts: dict[str | None, float | int] = {}
     whole = True
@@ -4131,7 +4139,7 @@ def _unlearned(
                 f'spec "{name}": clock column {clock!r} is {now} in the frame, but it was {was} '
                 f"in the bank. Cast the clock back to the {was} type the bank learned it as."
             )
-            raise ValueError(msg)
+            raise WrongTypeError(msg)
         seen: float | int
         if nanos is not None:
             seen = nanos // per

@@ -69,6 +69,7 @@ from polars_online._frame import (
     ConsumedSourceWarning,
     State,
     _and_list,
+    _check_chunk_size,
     _explain_named,
     _in_morsels,
     _is_python_scan,
@@ -209,8 +210,9 @@ def embargo(
     :class:`~polars_online.WrongTypeError`
         The ``clock`` column is neither numeric nor temporal, is an integer
         wider than 64 bits (``Int128``), which a bank refuses as a clock, or
-        is a ``Time``, since a time of day starts again at midnight. It is
-        both a ``TypeError`` and a ``ValueError``.
+        is a ``Time``, since a time of day starts again at midnight; or, on
+        a numeric clock, ``delay`` is neither a number nor a duration, such
+        as ``None``. It is both a ``TypeError`` and a ``ValueError``.
     ``ValueError``
         When:
 
@@ -342,7 +344,14 @@ def embargo(
         raise WrongTypeError(msg)
     ns = clock_nanoseconds(delay, schema[clock], "po.stream.embargo", "delay", clock)
     if ns is None:
-        if not (delay > 0.0) or delay == float("inf"):  # type: ignore[operator]
+        if isinstance(delay, bool) or not isinstance(delay, numbers.Real):
+            msg = (
+                f"po.stream.embargo: delay must be a number on numeric clock column {clock!r}, "
+                f"but its type is {type(delay).__name__}. Set delay to the clock units from "
+                "predicting a row to learning it, such as 5."
+            )
+            raise WrongTypeError(msg)
+        if not (delay > 0.0) or delay == float("inf"):
             msg = (
                 f"po.stream.embargo: delay must be finite and above 0, but it is {delay!r}. Set "
                 "delay to the time from predicting a row to learning it, such as 5 clock units."
@@ -353,7 +362,7 @@ def embargo(
             # The learn copy's clock must keep the column's dtype, or the
             # merge of the two copies dies in a SchemaError; `delay=5.0`, the
             # example above, did (review 2026-10-05, YB3).
-            if not float(delay).is_integer():  # type: ignore[arg-type]
+            if not float(delay).is_integer():
                 msg = (
                     f"po.stream.embargo: delay {delay!r} is not a whole number, but clock column "
                     f"{clock!r} is {schema[clock]}, which holds whole numbers. Give a whole "
@@ -368,7 +377,7 @@ def embargo(
             # cast back refuses a sum the column cannot hold when the plan
             # runs. Measured the same on the 1.34.0 floor and on 1.44.2.
             wide = pl.Int128 if schema[clock] in (pl.Int64, pl.UInt64) else pl.Int64
-            later = (pl.col(clock).cast(wide) + int(delay)).cast(schema[clock], strict=True)  # type: ignore[arg-type]
+            later = (pl.col(clock).cast(wide) + int(delay)).cast(schema[clock], strict=True)
     else:
         # Exact: the delay is whole steps of the column, so the cast back to
         # its own dtype drops nothing.
@@ -593,7 +602,8 @@ def refresh_time(
         When:
 
         - ``names`` lists fewer than two series, or one twice;
-        - ``chunk_size`` is below 1;
+        - ``chunk_size`` is below 1, or is not a whole number, which raises
+          :class:`~polars_online.WrongTypeError`;
         - ``load_state`` is not such a state, or was saved with other ``names``
           or ``pairs``, or on the other kind of clock (numeric or temporal), or
           with a ``group`` where this call has none, or the reverse;
@@ -740,13 +750,8 @@ def refresh_time(
             f"but it is {value_dtype}. Cast it, such as with pl.col({value!r}).cast(pl.Float64)."
         )
         raise WrongTypeError(msg)
-    rows = chunk_size if chunk_size is not None else _native.default_chunk_size()
-    if rows < 1:
-        msg = (
-            f"po.stream.refresh_time: chunk_size must be at least 1, but it is {rows}. "
-            "Set chunk_size to 1 or more, or leave it out."
-        )
-        raise ValueError(msg)
+    checked = _check_chunk_size(chunk_size, "po.stream.refresh_time")
+    rows = checked if checked is not None else _native.default_chunk_size()
     # Read now, as a bank's `load_state` is: a plan collected twice goes on
     # from the same state, whatever the file holds by then.
     loaded = _read_state(load_state) if load_state is not None else None

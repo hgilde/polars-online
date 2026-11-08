@@ -63,8 +63,9 @@ spec whose output column the frame does not have, ``TypeError`` for a column
 that is not a spec's output or is the output of a model that predicts no
 target. A slot whose target column cannot be found raises a
 :class:`~polars_online.ColumnNotFoundError` when ``spec`` is the spec dict,
-and ``ValueError`` when it is the spec's name alone. A ``group`` or ``clock`` column the frame does
-not have raises Polars' ``ColumnNotFoundError``.
+and ``ValueError`` when it is the spec's name alone. A ``group``, ``clock`` or
+``weight`` column the frame does not have raises a
+:class:`~polars_online.ColumnNotFoundError` too.
 
 ``group`` names one key column, as a spec's ``group`` does, or a list of
 them, and ``None``, the default, is no key. ``min_samples`` is the fewest
@@ -520,6 +521,21 @@ def _group_keys(group: str | Iterable[str] | None) -> list[str]:
     return [group] if isinstance(group, str) else list(group)
 
 
+def _check_columns(df: pl.DataFrame, who: str, **roles: str | Iterable[str] | None) -> None:
+    """Each column a score reads beside a spec's output, by its role
+    (``group``, ``clock``, ``weight``), checked to be in ``df``: a missing
+    one is :class:`~polars_online.ColumnNotFoundError`, a ``ValueError``
+    too, as a bank's refusal of a missing column is."""
+    for role, value in roles.items():
+        for column in _group_keys(value):
+            if column not in df.schema:
+                msg = (
+                    f"{who}: {role} column {column!r} is not in the frame, whose columns are "
+                    f"{df.columns}. Name a column of the frame as {role}."
+                )
+                raise ColumnNotFoundError(msg)
+
+
 def _usable(value: pl.Expr) -> pl.Expr:
     """Whether a float is one the bank learns from: finite, and within its
     input bound of 1e100; null where ``value`` is."""
@@ -715,8 +731,10 @@ def metrics(
 
     .. rubric:: Raises
 
-    Whatever :func:`unpack` raises for ``df`` and ``spec``, and Polars'
-    ``ColumnNotFoundError`` for a ``group`` column ``df`` does not have.
+    Whatever :func:`unpack` raises for ``df`` and ``spec``, and
+    :class:`~polars_online.ColumnNotFoundError`, both Polars'
+    ``ColumnNotFoundError`` and a ``ValueError``, for a ``group`` column
+    ``df`` does not have.
 
     .. rubric:: Examples
 
@@ -763,6 +781,7 @@ def metrics(
     known, and the sign test reads 1.0.
     """
     spec_name, written = _spec_of("po.eval.metrics", spec)
+    _check_columns(df, "po.eval.metrics", group=group)
     binary = _binary(binary, written)
     keys = ["slot", "target", *_group_keys(group)]
     long = _scored(
@@ -870,10 +889,10 @@ def window_metrics(
         it.
     ``clock``
         The column whose values place each row in a window: a number, a
-        ``Datetime``, a ``Date`` or a ``Duration``. The rows whose clock is
-        null are scored together, in a row of their own whose
-        ``window_start`` is null. A ``Time`` is refused, since it starts
-        again at midnight.
+        ``Datetime``, a ``Date`` or a ``Duration``. A row whose clock is
+        null is in no window and is not scored, as Polars leaves a null key
+        out of a group. A ``Time`` is refused, since it starts again at
+        midnight.
     ``every``
         The length of each window, in the clock's units. On a numeric clock
         it is a number, finite and above 0, and a whole number on an
@@ -906,8 +925,9 @@ def window_metrics(
         The ``clock`` column is neither numeric nor temporal, or is a
         ``Time``, which starts again at midnight. It is both a ``TypeError``
         and a ``ValueError``, as a bank's refusal of the same clock is.
-    Polars' ``ColumnNotFoundError``
-        ``df`` does not have the ``clock`` column or a ``group`` column.
+    :class:`~polars_online.ColumnNotFoundError`
+        ``df`` does not have the ``clock`` column or a ``group`` column. It
+        is both Polars' ``ColumnNotFoundError`` and a ``ValueError``.
 
     .. rubric:: Examples
 
@@ -971,7 +991,8 @@ def window_metrics(
             f"po.eval.window_metrics: clock column {clock!r} is not in the frame, whose "
             f"columns are {df.columns}. Name a column of the frame as clock."
         )
-        raise pl.exceptions.ColumnNotFoundError(msg)
+        raise ColumnNotFoundError(msg)
+    _check_columns(df, "po.eval.window_metrics", group=group)
     # The clock's dtype before `every` is read against it: a String clock was
     # refused for the window, not for itself (task 352).
     if not (dtype.is_numeric() or dtype.is_temporal()):
@@ -1030,6 +1051,11 @@ def window_metrics(
             columns=[*keys, clock],
             who="po.eval.window_metrics",
         )
+    ).filter(
+        # A row with no clock is in no window, as Polars leaves a null key out
+        # of `group_by_dynamic`; scored as a window of its own, it was a row
+        # of null `window_start` (task 359).
+        pl.col(clock).is_not_null()
     )
     if start is None:
         long = _dynamic_windows(long, clock, _polars_every(every, ns), keys[:-1])
@@ -2001,8 +2027,11 @@ def seqtest(
     ``TypeError``
         ``df`` is not a ``DataFrame``, or ``a`` or ``b`` names a column that
         is not a record.
+    :class:`~polars_online.ColumnNotFoundError`
+        ``df`` does not have a ``group`` column. It is both Polars'
+        ``ColumnNotFoundError`` and a ``ValueError``.
     Polars' ``ColumnNotFoundError``
-        ``df`` does not have a column-mode target or a ``group`` column.
+        ``df`` does not have a column-mode target.
 
     .. rubric:: Update equation
 
@@ -2062,6 +2091,7 @@ def seqtest(
     who = "po.eval.seqtest"
     _frame(who, df)
     _check_name("po.eval.seqtest", df, name)
+    _check_columns(df, who, group=group)
     keys = _group_keys(group)
     if (a is None) != (b is None):
         msg = (
@@ -2234,9 +2264,10 @@ def sums(
 
     .. rubric:: Raises
 
-    Whatever :func:`unpack` raises for ``df`` and ``spec``, and Polars'
-    ``ColumnNotFoundError`` for a ``group`` or ``weight`` column ``df`` does
-    not have.
+    Whatever :func:`unpack` raises for ``df`` and ``spec``, and
+    :class:`~polars_online.ColumnNotFoundError`, both Polars'
+    ``ColumnNotFoundError`` and a ``ValueError``, for a ``group`` or
+    ``weight`` column ``df`` does not have.
 
     .. rubric:: Examples
 
@@ -2281,6 +2312,7 @@ def sums(
     rounding, as its Notes measure.
     """
     spec_name, written = _spec_of("po.eval.sums", spec)
+    _check_columns(df, "po.eval.sums", group=group, weight=weight)
     binary = _binary(binary, written)
     columns = [*_group_keys(group), *([] if weight is None else [weight])]
     long = _scored(
@@ -2335,8 +2367,8 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
 
     ``first``, ``*rest``
         Frames :func:`sums` returned, over disjoint sets of rows, each with
-        the same key columns. Merging one frame returns its sums again, to
-        rounding: the means are recomputed as ``sum(w * mean) / w``.
+        the same key columns. Merging one frame returns its sums again,
+        exactly, sorted by the keys.
 
     .. rubric:: Returns
 
@@ -2419,24 +2451,34 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
     w = pl.col("w").sum()
     mean_y = (pl.col("w") * pl.col("mean_y")).sum() / w
     mean_p = (pl.col("w") * pl.col("mean_pred")).sum() / w
+    # A key in one part alone keeps that part's sums as they are: recomputed
+    # as `w * mean / w`, about one mean in ten moved by its last bit, and a
+    # small `m2` by `w` times that bit squared (task 359).
+    alone = pl.len() == 1
+
+    def merged(field: str, expr: pl.Expr) -> pl.Expr:
+        return pl.when(alone).then(pl.col(field).first()).otherwise(expr).alias(field)
+
     return (
         pl.concat(frames)
         .group_by(keys)
         .agg(
             pl.col("n").sum(),
             w.alias("w"),
-            mean_y.alias("mean_y"),
-            mean_p.alias("mean_pred"),
-            (pl.col("m2_y") + pl.col("w") * (pl.col("mean_y") - mean_y) ** 2).sum().alias("m2_y"),
-            (pl.col("m2_pred") + pl.col("w") * (pl.col("mean_pred") - mean_p) ** 2)
-            .sum()
-            .alias("m2_pred"),
-            (
-                pl.col("cov")
-                + pl.col("w") * (pl.col("mean_y") - mean_y) * (pl.col("mean_pred") - mean_p)
-            )
-            .sum()
-            .alias("cov"),
+            merged("mean_y", mean_y),
+            merged("mean_pred", mean_p),
+            merged("m2_y", (pl.col("m2_y") + pl.col("w") * (pl.col("mean_y") - mean_y) ** 2).sum()),
+            merged(
+                "m2_pred",
+                (pl.col("m2_pred") + pl.col("w") * (pl.col("mean_pred") - mean_p) ** 2).sum(),
+            ),
+            merged(
+                "cov",
+                (
+                    pl.col("cov")
+                    + pl.col("w") * (pl.col("mean_y") - mean_y) * (pl.col("mean_pred") - mean_p)
+                ).sum(),
+            ),
             pl.col("sse").sum(),
             pl.col("hits").sum(),
             pl.col("signed").sum(),
@@ -2480,10 +2522,10 @@ def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -
     null where the target never varied, and ``ic`` where either the target
     or the prediction never varied, where
     dividing by the variance of 0 would give an infinity that reads as a
-    number. Sums whose ``w`` is 0, from rows that all weigh 0, give ``NaN``
-    for ``r2``, ``ic``, ``mse`` and ``rmse``. There is no ``log_loss`` column under ``binary``:
-    :data:`SUM_FIELDS` carries no sum for it, and :func:`metrics` computes
-    it only over a frame in memory.
+    number. Sums whose ``w`` is 0, from rows that all weigh 0, give null
+    ``r2``, ``ic``, ``mse`` and ``rmse``, since no row counts. There is no
+    ``log_loss`` column under ``binary``: :data:`SUM_FIELDS` carries no sum
+    for it, and :func:`metrics` computes it only over a frame in memory.
 
     .. rubric:: Raises
 
@@ -2517,16 +2559,20 @@ def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -
     """
     _frame("po.eval.from_sums", s)
     keys = [c for c in s.columns if c not in SUM_FIELDS]
-    mse = pl.col("sse") / pl.col("w")
+    # Rows that all weigh 0 have no weighted score: their means are 0/0, so
+    # every sum but `sse` is NaN, and Polars orders NaN above 0, so each
+    # score is null by `w` first, as `hit_rate` is by `signed` (task 359).
+    weighed = pl.col("w") > 0
+    mse = pl.when(weighed).then(pl.col("sse") / pl.col("w"))
     denom = (pl.col("m2_y") * pl.col("m2_pred")).sqrt()
     out = s.select(
         *keys,
         pl.col("n"),
-        pl.when(pl.col("m2_y") > 0)
+        pl.when(weighed & (pl.col("m2_y") > 0))
         .then(1.0 - pl.col("sse") / pl.col("m2_y"))
         .otherwise(None)
         .alias("brier_skill" if binary else "r2"),
-        pl.when(denom > 0).then(pl.col("cov") / denom).otherwise(None).alias("ic"),
+        pl.when(weighed & (denom > 0)).then(pl.col("cov") / denom).otherwise(None).alias("ic"),
         pl.when(pl.col("signed") > 0)
         .then(pl.col("hits") / pl.col("signed"))
         .otherwise(None)
@@ -2729,6 +2775,22 @@ def _check_half_life(who: str, half_life: float) -> None:
 
 
 @renamed_keywords("po.eval.diebold_mariano", _GROUP)
+def _lags(who: str, lags: Any) -> int:
+    """``lags`` as an int, once it is checked to be a whole number of at least 0:
+    any whole number, numpy's integers included, but not a bool."""
+    wrong_type = isinstance(lags, bool) or not isinstance(lags, numbers.Integral)
+    if wrong_type:
+        msg = (
+            f"{who}: lags must be a whole number of at least 0, but it is {lags!r}. Set lags "
+            "to a whole number, such as 0 for one-step forecasts."
+        )
+        raise WrongTypeError(msg)
+    if operator.index(lags) < 0:
+        msg = f"{who}: lags must be at least 0, but it is {lags}. Set lags to 0 or more."
+        raise ValueError(msg)
+    return operator.index(lags)
+
+
 def diebold_mariano(
     df: pl.DataFrame,
     *,
@@ -2806,7 +2868,9 @@ def diebold_mariano(
     suffixes and ``group``. ``ValueError`` too, for ``lags`` below 0, for a
     ``half_life`` that is not finite and above 0, and, with ``half_life``,
     for a ``name`` that ``df`` already has as a column, which the result
-    would replace.
+    would replace. :class:`~polars_online.WrongTypeError`, both a
+    ``TypeError`` and a ``ValueError``, for a ``lags`` that is not a whole
+    number, such as ``1.5``.
 
     .. rubric:: Update equation
 
@@ -2849,15 +2913,11 @@ def diebold_mariano(
     - :func:`compare_specs`, whose Notes say when to use each test.
     """
     _frame("po.eval.diebold_mariano", df)
+    _check_columns(df, "po.eval.diebold_mariano", group=group)
     keys = _group_keys(group)
     pairs = _paired_residuals(df, a, b, targets, a_suffix, b_suffix, "po.eval.diebold_mariano")
     values = {t: rb * rb - ra * ra for t, (ra, rb) in pairs.items()}
-    if lags < 0:
-        msg = (
-            f"po.eval.diebold_mariano: lags must be at least 0, but it is {lags}. Set lags to "
-            f"0 or more."
-        )
-        raise ValueError(msg)
+    lags = _lags("po.eval.diebold_mariano", lags)
     if half_life is not None:
         _check_half_life("po.eval.diebold_mariano", half_life)
         _check_name("po.eval.diebold_mariano", df, name)
@@ -2977,16 +3037,13 @@ def clark_west(
     to its squared error on average. Clark and West add that term back.
     """
     _frame("po.eval.clark_west", df)
+    _check_columns(df, "po.eval.clark_west", group=group)
     keys = _group_keys(group)
     pairs = _paired_residuals(
         df, big, small, targets, big_suffix, small_suffix, "po.eval.clark_west"
     )
     values = {t: rs * rs - rb * rb + (rb - rs) * (rb - rs) for t, (rb, rs) in pairs.items()}
-    if lags < 0:
-        msg = (
-            f"po.eval.clark_west: lags must be at least 0, but it is {lags}. Set lags to 0 or more."
-        )
-        raise ValueError(msg)
+    lags = _lags("po.eval.clark_west", lags)
     if half_life is not None:
         _check_half_life("po.eval.clark_west", half_life)
         _check_name("po.eval.clark_west", df, name)

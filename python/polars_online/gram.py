@@ -288,6 +288,19 @@ def _repeated(names: list[str], slots: list[int]) -> str | None:
     return None
 
 
+def _refuse_repeated(names: list[str], slots: list[int], who: str, key: str) -> None:
+    """``ValueError`` when ``slots`` names a column twice, by name or by
+    position, or by both: its moments would be read twice, and the matrix
+    of the two copies is singular."""
+    twice = _repeated(names, slots)
+    if twice is not None:
+        msg = (
+            f"{who}: {key} names column {twice!r} twice, and two copies of one column make a "
+            "singular matrix. Name each column once."
+        )
+        raise ValueError(msg)
+
+
 def _means_of(np: Any, g: Gram, t: int) -> Any:
     """The column means target ``t``'s cross-moments are centred at and its
     intercept is recovered from: its own, over the rows it was present on
@@ -1092,6 +1105,9 @@ def subset(g: Gram, columns: Sequence[str | int]) -> Gram:
         A position outside the Gram's columns.
     ``TypeError``
         ``columns`` and its older name ``cols`` are given together.
+    ``ValueError``
+        A column named twice, by name or by position, since two copies of
+        one column make the subset's matrix singular.
 
     .. rubric:: Examples
 
@@ -1125,12 +1141,12 @@ def subset(g: Gram, columns: Sequence[str | int]) -> Gram:
     The subset is exact. The moments of some of the columns are a
     sub-block of the moments of all of them, so this selects that block,
     and a regression on the subset is the regression the whole Gram implies
-    for those columns. A column named twice is kept twice, which makes the
-    subset's matrix singular.
+    for those columns.
     """
     np = _np()
     idx = _col_index(g, columns, "po.gram.subset")
     names = _columns(g, "po.gram.subset")
+    _refuse_repeated(names, idx, "po.gram.subset", "columns")
     como = _comoments(np, g)
     cross = np.asarray(g["cross_moments"], dtype=float)
     by_target = g.get("means_by_target")
@@ -3233,10 +3249,7 @@ def condition(g: Gram, *, features: Sequence[str | int] | None = None) -> dict[s
         The Gram, as :meth:`~polars_online.ModelBank.gram` returns it.
     ``features``
         The columns to diagnose, by name or position. Default ``None``,
-        every column of the Gram, the intercept included. A column named
-        twice is diagnosed twice, as an exact dependency: ``kappa`` is
-        ``inf``, or near 1e8 where rounding leaves the smallest singular
-        value above 0.
+        every column of the Gram, the intercept included.
 
     .. rubric:: Returns
 
@@ -3265,6 +3278,9 @@ def condition(g: Gram, *, features: Sequence[str | int] | None = None) -> dict[s
         A name the Gram does not have.
     ``IndexError``
         A position outside the Gram's columns.
+    ``ValueError``
+        A column named twice, by name or by position: two copies of one
+        column are an exact dependency, which needs no diagnosis.
 
     .. rubric:: Examples
 
@@ -3307,6 +3323,7 @@ def condition(g: Gram, *, features: Sequence[str | int] | None = None) -> dict[s
         if features is None
         else _col_index(g, features, "po.gram.condition")
     )
+    _refuse_repeated(names, slots, "po.gram.condition", "features")
     means = np.asarray(g["means"], dtype=float)
     como = _comoments(np, g)
     raw = (como + np.outer(means, means))[np.ix_(slots, slots)]
