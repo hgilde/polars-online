@@ -7,7 +7,7 @@ them.
 
 **A bank spends its time on the models' own arithmetic and its own work
 around each row, and its memory on their state, a few chunks in flight,
-and what Polars has read ahead of the bank.** A [model
+the rows a delay holds, and what Polars has read ahead of the bank.** A [model
 bank](../GLOSSARY.md#the-model-bank-and-what-it-reads) fits one model for
 each [spec](../GLOSSARY.md#the-model-bank-and-what-it-reads) (the
 description of a model) and each group, and takes its rows a
@@ -16,36 +16,21 @@ thread counts and `chunk_size` change only the speed and the memory, never
 the numbers a bank returns, as [Chunk invariance and
 streaming](chunk-invariance-and-streaming.md) explains.
 [Measured costs](../PERFORMANCE.md) has the measurement behind every
-figure here, and [What to change when a number
-surprises](#what-to-change-when-a-number-surprises) ends this page with a
-table of the setting behind each symptom. Every figure was measured on one Apple M4 Pro with 14 cores (10
+figure here, with its date and how it was made. To find the setting behind
+a symptom, see [What to change when a number
+surprises](#what-to-change-when-a-number-surprises). Every figure was measured on one Apple M4 Pro with 14 cores (10
 performance, 4 efficiency), so your own times will differ.
 
 ## Where the time goes
 
-**The bank's own work is about 60 to 170 ns a row at up to 50 features and
+**The bank's own work is about 60 to 160 ns a row at up to 50 features and
 one target.** Around each row the bank clocks it, keeps its schedule,
 copies its features in and writes its fields out. So its work is half or
 more of a five-feature regression's row, and a sixth of a 50-feature
 ridge's. A model that writes many fields a row spends 2 to 4 ns on each.
-This table times the model's step alone against the same rows through a
-bank, one spec over one group on one thread, in ns a row. It was measured
-on 2026-11-03 at a load average of 5.0:
-
-| model | features | the model's step | through the bank | bank over step |
-|---|---:|---:|---:|---:|
-| `seqtest` | 0 | 13 | 73 | 5.6× |
-| `sgd` | 5 | 46 | 139 | 3.0× |
-| `ewridge` | 5 | 107 | 217 | 2.0× |
-| `ew_cov`, 23 fields | 5 | 46 | 148 | 3.2× |
-| `sgd` | 50 | 158 | 300 | 1.9× |
-| `ewridge` | 50 | 795 | 955 | 1.2× |
-| `ew_cov`, 1,328 fields | 50 | 1,431 | 4,228 | 3.0× |
-| `sgd` | 500 | 1,345 | 2,360 | 1.8× |
-| `ewridge` | 500 | 94,226 | 111,804 | 1.2× |
-| `ew_cov`, 125,753 fields | 500 | 120,315 | 604,538 | 5.0× |
-
-So a regression's row is the bank's bookkeeping as much as the model's at
+[The bank's work around a
+row](../PERFORMANCE.md#the-banks-work-around-a-row) times each model's
+step alone against the same rows through a bank. So a regression's row is the bank's bookkeeping as much as the model's at
 five features, and the model's from about 50. A model that writes a field
 per pair, as `ew_cov` does, spends most of a wide row writing it.
 
@@ -96,7 +81,9 @@ time to score from a state: 6.5 million rows a second
 ```
 
 Scoring from a state skips learning, so it runs more than twice as fast
-as learning does.
+as learning does: 2.2 times at 20 features in this recipe's run. On a frame
+in memory, [`predict` ran](../PERFORMANCE.md#the-banks-work-around-a-row)
+1.85 times as fast as learning at 5 features and 2.82 times at 20.
 
 **A model's speed is set by the work it does on each row.** `ewridge`
 updates its Gram of `k` features on every row, which is `O(k²)` work, and
@@ -237,29 +224,15 @@ here:
 |---|---|---|
 | a row slower than [its model's rows a second](../PERFORMANCE.md#rows-a-second-for-each-model) | the model's own learning step, `O(k²)` a row for a model that solves, and its solves on their schedule; below about 50 features, as much again in the bank's work around the row; and for a model with many fields, writing them | `solve_every` and `max_rows_between_solves`; `gram_block_rows` and `gram_threads` for a wide `ewridge`; only the `stats` you read for `ew_cov` |
 | a grid slower than one model | a ridge or feature-set grid shares one set of sums; each half-life of a grid keeps its own, run alongside the others | the number of half-lives |
-| small chunks slower than large ones | a fixed overhead per call: handing the frame across, gathering the columns and assembling the output, about 8 ms at 10,000 columns | `chunk_size`, 100,000 by default on the query and the command line; the eager call takes the frame whole unless given one |
+| small chunks slower than large ones | a fixed overhead per call: handing the frame across alone takes about 8 ms at 10,000 columns, and gathering the columns and assembling the output add to it | `chunk_size`, 100,000 by default on the query and the command line; the eager call takes the frame whole unless given one |
 | memory that grows with the file | Polars reading ahead in the parquet file, sized from its thread count, and the allocator keeping pages it has freed | `POLARS_ROW_GROUP_PREFETCH_SIZE`, `POLARS_MAX_THREADS` |
-| an eager `fit_predict` above its output | a spec of many groups keeps every run's buffers until its groups are done, about its output again; a spec of one group or none holds its output and two runs | a smaller frame, or the streaming path, whose peak is a chunk's |
+| an eager `fit_predict` above its output | a spec of many groups keeps buffers of about its output again until its groups are done; a spec of one group or none holds its output and two sets of buffers more | a smaller frame, or the streaming path, whose peak is a chunk's |
 | memory that jumps with a filter | a filter before the bank makes Polars hold several blocks of each file per thread | a filter after the bank, or weight 0 on the rows to skip |
 | one core busy | one piece of work per spec and group per chunk; within one, the rows go one at a time | more groups or specs, `POLARS_ONLINE_MAX_THREADS`, `shards` for a wide `marginal`, and `gram_threads` for a wide `ewridge` or `ew_cov` |
-| a query slower than the eager bank at many groups | the query reads its input as the frames Polars hands it, and the same bank code then takes longer to group, run and assemble them | `ModelBank.fit_predict` on a frame that fits in memory; the query where it does not |
+| a query slower than the eager bank at many groups | the query reads its input as the frames Polars hands it, and the same bank code then takes longer to group, run and assemble them: 236 ns a row against 140 at 10,000 groups ([measured](../PERFORMANCE.md#the-banks-work-around-a-row)) | `ModelBank.fit_predict` on a frame that fits in memory; the query where it does not |
 | a window's memory | its ring of snapshots, capped per ring | `snapshot_every`, `max_rows_between_snapshots`, `window_budget` |
 | a wide `marginal` | every pair of every target | `cross_lags`, `bins`, `feature_moments="shared"`, `shards` |
 | `bocpd` slowing as a stream runs | the run lengths it keeps | `max_run`, `prune_below` |
-| a window operator | one queue per kernel, the same work a row whatever the window's length; memory about one window of rows | operators with one direction, half-life, window and `closed` share a kernel |
+| a window operator | one queue of rows for each set of operators that share it, the same work a row whatever the window's length; memory about one window of rows | operators with the same direction, half-life, window and `closed` share one queue of rows |
 | a model whose target is a window expression | the bank's own window core, at 1.5 to 1.6 times the column form's time and less memory | the column form, `with_windows(..., like=spec)` |
-| scoring against learning | `predict` skips learning | |
-
-**A query reads its input as the frames Polars hands it, so at many
-groups it runs slower than the eager bank on the same rows.** On 1M rows of
-a five-feature `ewridge` on all threads, 1.3.0's build on 2026-10-24 (load
-1.9 to 3.4) ran `lf.online.fit_predict(...).collect()` at 236 ns a row at
-10,000 groups, against `ModelBank.fit_predict(df)`'s 140. At 1,000 groups
-it ran 85 against 66, and at one group 205 against 196. 1.2.0's build,
-alongside, ran 247 against 138, 87 against 65 and 211 against 202.
-
-**`predict` skips learning, so serving runs faster than learning, and the
-more so the wider the model.** On a frame of a million rows, `ewridge`
-served 1.85 times as fast as it learned at k=5 and 2.82 times at k=20,
-measured on 2026-09-29. Through a query, the recipe above reads 2.2 at
-k=20.
+| learning slower than scoring | `predict` skips learning | serve with `predict` where the model need not learn from the rows |

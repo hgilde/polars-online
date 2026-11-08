@@ -1,5 +1,5 @@
 # cargo-nextest, which scripts/gate.sh runs the Rust tests with where it is
-# installed (docs/contributing/iterate-on-a-change.md). Each test runs as a process of
+# installed (docs/TESTING.md, "Iterating"). Each test runs as a process of
 # its own, so the run takes as long as its slowest test at best: these
 # start first, so that they do not start last.
 #

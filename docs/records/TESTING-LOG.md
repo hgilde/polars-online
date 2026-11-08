@@ -20,6 +20,201 @@ the opt-in set on two dates: the long-run stability cases and the
 contamination sweep on 2026-10-25, and the worst-seed grids of the
 clustering and changepoint models on 2026-10-26.
 
+### Stories TESTING.md told, moved here on 2026-11-08
+
+The rewrite of 2026-11-08 kept TESTING.md to each rule and its reason in the present tense. The events below are what those rules came from, as TESTING.md told them then.
+
+#### The oracles that found the 0.2.0 batch's defects
+
+**An oracle is written from the paper or the definition, never from the
+code it checks.** An oracle written *from the implementation* agrees with it
+by construction. That is the one that is easy to get wrong, and it is how
+`bocpd`'s line 6 survived twelve unit tests.
+
+The batch that added `deco`, `hmm`, `corrchange`, `bocpd` and `rcov`, with
+four helper modules, shipped in 0.2.0 on 2026-09-06. Its testing pattern is
+what found its defects. Every recursion got a
+longhand oracle written from the paper, and the oracle was allowed to
+disagree. It did, six times:
+
+| model | what the oracle found |
+|---|---|
+| `deco` | its `rho` was not `ew_cov`'s `corr` |
+| `hmm` | its Π seeding was not the prior mean |
+| `corrchange` | its scalar CUSUM was identically zero |
+| `bocpd` | it implemented Algorithm 1's line 6 with the new run holding one row of the old regime |
+| `rcov` | its pre-averaging window was off by one |
+| `corrchange` | its size study was comparing Gaussian draws against a `t₅` table |
+
+#### The libraries taken for tests, as TESTING.md told it
+
+An open license is one the Open Source Initiative approves, or CC0, named in
+the metadata as an SPDX expression or an "OSI Approved" classifier. A library
+whose metadata names none is listed with the license read at its source and
+where: `bayesian-changepoint-detection`'s wheel declares none, and its
+repository's `LICENSE` is MIT. A library that must not be in every
+contributor's environment, for its platforms, gets a group of its own and a
+CI job of its own. For rule 3, `tests/child.py` puts
+`tests/_site/sitecustomize.py`, which installs the same finder, on the path
+of every child interpreter a test spawns. Only
+`tests/test_pyarrow_interop.py`'s children see pyarrow. The children are
+covered because on 2026-09-25 the examples' "nothing needs pyarrow" was
+found running with pyarrow importable. The gate checks the lock with
+`uv lock --check`.
+
+**scikit-learn is taken** (2026-09-25). `tests/test_sgd.py`
+compares `sgd` with `SGDRegressor` live. `tests/test_second_opinion.py` holds `huber`
+to `LinearRegression` at `huber_delta = 1e9`, the limit at which no row is
+down-weighted, and to `HuberRegressor` under outliers. It holds
+`marginal`'s best split to a `DecisionTreeRegressor` stump, and every
+`ewridge` solve to `Ridge`.
+
+**Vowpal Wabbit is taken** (the user, 2026-09-29: "find an alternative
+oracle for ftrl that supports more options"). Its `--ftrl`
+runs the recursion `ftrl.rs` states, and it reaches options river's
+comparison does not: the squared loss, row weights, the intercept and the
+model's own predictions. `TestFtrlIsVowpalWabbits` holds `pred` and `coef`
+to it on every row, to 1e-5, since VW computes in single precision. The
+wheel has no dependencies and ships for Python 3.12 to 3.14 on all three
+operating systems, so it sits in the dev group like the rest. None of the
+libraries checked forgets as a half-life does (river, VW, and Keras's
+`Ftrl`), so a finite half-life stays with `ftrl_ref`.
+
+**hmmlearn and padasip are taken** (2026-10-06). hmmlearn's
+`GaussianHMM` holds `hmm`'s filter at fixed parameters, row by row.
+padasip's `FilterRLS` holds `rls`. hmmlearn ships wheels up to CPython 3.13,
+so the 3.14 legs build its sdist, a small C++ extension. padasip is pure
+Python. In the same round scikit-learn's `SGDRegressor` and `SGDClassifier`
+took on `sgd`'s losses one row at a time, and filterpy the `kalman` settings
+`kalman_ref` alone held.
+
+**Pathway is parked.** It would run the Pathway half of
+`examples/pathway_integration.py`, but it is under the Business Source
+License, which rule 1 parks. `test_pathway_is_not_a_dependency` keeps it
+out of `pyproject.toml` until the user decides.
+
+#### A forward mean's defect, found by two oracles
+
+The brute force and the identity both found a defect while the operators
+were built: a forward mean counted rows that held a value from outside its
+window.
+
+#### The window run's nine rounds of checks
+
+The window run's resume rules came out of nine rounds of checks on
+2026-10-03, R1 to R9. A test pins each finding, and its docstring names the
+finding by its round, such as R5-C1.
+
+#### What ran at once, and what happened
+
+| what ran at once | load on 14 cores | what happened |
+|---|---|---|
+| eight agents, with the other user's jobs | 31 | every build and test slowed in proportion |
+| five essentials gates | 78 | gates of about 300 s took 500 to 2,000 s |
+| four `cargo mutants --in-diff` runs | 88, for hours | the kernel panicked (`watchdog timeout: no checkins from watchdogd in 90 seconds`) and the Mac rebooted |
+| three agents resumed straight after that reboot | | the same panic, eight hours later |
+
+#### Why several branches share one gate
+
+**Several branches in flight share one essentials gate.** A gate per
+branch cost twice over when branches ran side by side. Each gate builds
+and links the release extension with every core, so five at once took 500
+to 2,000 s each where one alone takes about 300. And every branch that
+landed made the others merge `main` and gate again, most often after a
+clean merge.
+
+#### The cache eviction that failed the oracle run
+
+The repository's caches sit at GitHub's 10 GB limit, most of it Rust's build caches, and
+GitHub then evicts the least recently used entry; that took the 0.9 MB
+dataset entry just as Fränti's server stopped answering, and the oracle
+run failed.
+
+#### Fränti's server and the skipped guards
+
+Fränti's server timed out from the runners on nearly every
+leg of the 25 CI runs to 2026-11-05, and the two oracle guards that read
+its sets skipped on each. ... Among hundreds of tests a skip is easy to miss: those two guards skipped on every such leg while the run passed.
+
+#### What the second-opinion twins found
+
+The twins found two of the five
+single-seed bounds narrower than the seeds' spread, and hold the measured
+spread. The third was a defect: `marginal`'s windowed lag correlations
+were centred at the running mean as it stood, 0.165 from `acf` over the 50
+seeds, and are now held to their definition to rounding.
+
+#### The ledger's first CI run
+
+On the ledger's first CI run each shard fetched its own sets from
+a cold cache, one shard's download of Fränti's S4 failed, and its grid
+skipped as offline. Its three cases went unmeasured, and the ledger job
+failed on them.
+
+#### The mutation triage, newest first, and the equivalents it found
+
+**Equivalent mutants are left alone deliberately: no test can kill them.**
+Two from the first passes show the kind. Flipping `Ftrl::weight`'s
+`zz < 0.0` sign test to `<=` changes it only at `zz == 0`, which the
+`|zz| <= l1` guard above it has already returned on. In Holt's
+`beta > 0.0 && d_clock > 0.0`, the second test can never decide, because
+beta is `1 - 0.5^(d/half_life)`, zero exactly when d is. Holt's note in the
+source stood until a rewrite of `holt` (`ddc9d91`) removed `beta`, and the
+branch with it. FTRL's branch, now in `Ftrl::weight_of` in
+`crates/online-core/src/ftrl.rs`, is recorded in
+`scripts/mutants_equivalent.toml` with that reason.
+
+**The last whole-crate count recorded here is run 3's, on 2026-08-30: 217
+missed**, 8.3% surviving, down from 31% at the first-ever pass. Most were in
+`lasso.rs` (50), `stats.rs` (45) and `ewridge.rs` (42), and each of those
+files has since been triaged until every mutant in it is caught or recorded
+with its reason. The triage, newest first:
+
+| scope | date | missed at the start | at the end |
+|---|---|---|---|
+| the 698 mutants the push to `103d721` left untested at the job's time limit, and the lines two batches of fixes changed that day, in `kalman.rs`, `sgd.rs`, `pa.rs`, `rls.rs`, `robust.rs`, `stats.rs`, `lasso.rs` and the cluster summaries | 2026-10-08 | 71, run locally on the essentials tier | 55 caught by twenty-one new tests, 14 equivalent, 2 tolerated (rounding); and one of the equivalents the triage of `103d721`'s changed lines listed, `ewridge`'s `coef_variance` guard, was not: `Q ≤ W²` fails in doubles once `W²` underflows while `λ > 1/2` keeps `Q` at `2^-1074`, and a test now catches it |
+| the lines the push to `103d721` changed, in `kalman.rs`, `ewridge.rs`, `clock.rs` and `lasso.rs` | 2026-10-08 | 105, run 37834489097 | 86 caught by ten new tests, 19 equivalent; two of those went with the code that left a fit with no kept column NaN and `inf` live, where a resumed stream read its documented values |
+| `lasso.rs` and `ewridge.rs`, afresh | 2026-09-27 | 104 of 906, and 152 timed out | every mutant caught or recorded, after two `--iterate` rounds |
+| the lines a batch of performance fixes changed in `gaps.rs` and `ewlagcov.rs` | 2026-09-27 | 43 viable | 42 caught, the other equivalent |
+| `stats.rs`, on its own | 2026-09-24 | 48 of 285, no timeouts | 5: one caught since, and four equivalent |
+
+**`lasso.rs` and `ewridge.rs`.** The tests that closed them lean on
+third-party oracles where there is one. Every `ewridge` solve is held to its
+closed form, solved by `faer` (already a dependency, and not the model's own
+Cholesky). It is held to scikit-learn's `Ridge` too, in
+`tests/test_second_opinion.py`, 20 cases to 1e-8. `lasso` without an
+intercept and no penalty is held to least squares through the origin, again
+by `faer`. The rest hold a definition written out:
+
+| quantity | held to |
+|---|---|
+| the row leverage, and each coefficient's support share | their definitions, per target and ridge |
+| the window's Kish count and residual spread | the rows inside the window |
+| the solve schedule | a count, row by row |
+| a zero-weight copy of every row | no change, to the bit |
+| a saved state | its bytes, since an in-memory `State` clones the kept factors and hid their rebuild |
+
+**`stats.rs`.** Rerun on its own, it left 48 of 285 missed: 30 in
+`P2Quantile`, 12 in `EwAutoCorr` and 6 in `SlotMetrics`, with no timeouts.
+Oracle tests closed them:
+
+| survivors in | held to |
+|---|---|
+| `P2Quantile` | the algorithm box of Jain & Chlamtac (1985), marker by marker, written from the paper, on a continuous stream and a discrete one, where markers tie |
+| `EwAutoCorr` | a regime switch, invariance under a shift and a scale, a zero co-moment before the first pair, and `same_shape`'s bounds |
+| `SlotMetrics` | `weight_sum`'s definition and the strict 0.5 threshold |
+
+After them, 5 of 285 were missed. The discrete stream catches one, the tie
+at the minimum, and the other four were equivalent mutants. Three were in
+`P2Quantile`. One was `d_sign > 0` against `>=`, where `d_sign` is only ever
+±1. The other two were the two `<` of the parabolic order check against
+`<=`, which differ only when the prediction lands exactly on a neighbor.
+On 2026-10-02 `EwQuantile` replaced `P2Quantile`, which never forgot. It is held
+to the exponentially weighted quantile's definition row by row, and the three
+equivalents went with `P2Quantile`. The fourth is still listed: `SlotMetrics::update`'s
+`denom > 0` against `>=`, where a scored row's `w > 0` keeps `denom`
+positive.
+
 ### Beyond the eight classes
 
 These parts test what the eight classes do not name: first how the library

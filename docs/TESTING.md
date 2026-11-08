@@ -2,12 +2,7 @@
 # The test suite
 
 This page is the reference, for a contributor changing the library, on
-what the test suite proves and which tests hold each guarantee. It also
-covers how the suite runs in two tiers, the oracle ledger and the
-performance budgets that only tighten, where the suite runs, the machines
-and their last bits, and where the suite is thin. Its emphasis is on edge
-cases, and on comparing behavior against reference implementations,
-including [river](https://riverml.xyz). [How the library is
+what the test suite proves and which tests hold each guarantee. [How the library is
 tested](explanation/how-the-library-is-tested.md) explains the same
 guarantees for a user deciding whether to trust the numbers.
 
@@ -66,6 +61,9 @@ spec and clock:
 | the mean form | running sums kept as weighted means, such as `S = Σ w zz' / W`, rather than weighted sums, so a factor common to every weight cancels |
 | the slow twin | `ewridge`'s second set of running sums, at `long_half_life`, which `session_shrink` blends toward on a session change |
 | the pending delta | the clock step of a skipped row, held and folded into the next accepted row's decay |
+| the test gate | `scripts/gate.sh`, which runs the lints and the tests of one tier; the essentials test gate is its default tier, and `--extended` runs the full suite |
+| a worktree slot | a git worktree kept between tasks under `.claude/slots/<n>`, with its own builds, which a task takes with `scripts/slot.sh take` and gives back once its branch is merged; not the glossary's *slot*, a prediction a spec writes per row |
+| a wave | the finished branches merged together onto `main` behind one essentials test gate |
 
 ## What the suite proves
 
@@ -80,27 +78,27 @@ systems.
 
 ### The eight test classes
 
-**Seven classes are done, and the sixth was retired when the form it
-compared was removed.** Each class is a property every model, or the bank,
+**Each of the eight classes holds, apart from the sixth, which the Arrow
+path replaces.** Each class is a property every model, or the bank,
 must have:
 
-| class | status | what holds it |
-|---|---|---|
-| 1. Oracle agreement | **Done.** | each model against a reference it cannot share a bug with, in the [Against reference implementations](#against-reference-implementations); each window operator against its definition, Polars and the time-reversal identity ([The window operators and formula targets](#the-window-operators-and-formula-targets)), and the lasso's *pred* path against a numpy `lasso_ref` |
-| 2. Chunk invariance | Done | bitwise at the bank (1/7/100 chunks) and command-line (`chunk_size` sweep) levels, in the window core at chunks of 1, 2, 3, 7, 50 and 499 rows, and for formula targets at 1, 7 and 600 chunks; save/load mid-stream identical. Which rows carry `coef`, and `support_coef` and `se_coef` beside it, is excluded: a reporting cadence, chunk-dependent by design |
-| 3. Out-of-sample by construction | Done | IC ≈ 0 on pure-noise targets asserted for ewridge, kalman, huber, ftrl; lasso selection prefers the all-zero penalty on noise; robust reweighting proven to use the *prior* residual |
-| 4. Clock semantics | Done | cap, a step back (refused, or a reset past `restart_after_step_back`), session gap and reset, first row, row-count clock, skipped-row decay folding, per-group independence |
-| 5. Null policy & warm-up | Done | feature/target/weight nulls and `min_weight`, for all ten regression models |
-| 6. Arrow ≡ Polars output | **Retired, and replaced.** | the Arrow path, after the table |
-| 6b. `predict` ≡ `fit_predict` of the next row | Done | `tests/test_predict.py`; `crates/online-core/tests/model_contract.rs` |
-| 6c. Runner ≡ bank, every source and format | Done | `crates/online-polars/tests/runner.rs`; `run_online` in `tests/conftest.py`; `tests/test_bank_ergonomics.py` |
-| 7a. Frozen states | Done | one state of every `ModelState` variant mid-stream, with what it keeps (a window, lags, bins, a warm-up buffer, far rows, the clusterers' held start), and a bank file, a `with_windows` state and a `refresh_time` state, embedded as bytes with the rows that follow and what they reported; each loads, goes on to the bit on the platform that wrote it (to the golden tolerance elsewhere, libm's last bit) and saves its bytes again (`crates/online-core/tests/state_fixtures.rs`, `crates/online-polars/tests/state_fixtures.rs`). Every schema from the minimum to `SCHEMA_VERSION` must have its set, so a layout change cannot land without one; `PRINT_STATE_FIXTURES=1` regenerates them |
-| 7. Cross-platform state | Done | the macOS→Windows/Linux artifact hand-off in `release.yml`, run at every release since 0.1.0 and at no push: a bank of every kind, with a `Datetime` clock, a window, an embargo, a closed group and a formula target beside them, and a `refresh_time` and a `with_windows` state, each loaded, continued and re-saved to its own bytes (`crates/online-polars/tests/state_portability.rs`). At every push `ci.yml` saves and loads states on each of the three OSes, each reading its own |
-| 8. Benchmark | Done | `scripts/benchmark.py`, numbers in README; `benchmark.yml` reports them on every push to `main` that can move them, never gating |
+| class | what holds it |
+|---|---|
+| 1. Oracle agreement | each model against a reference it cannot share a bug with, in [Against reference implementations](#against-reference-implementations); each window operator against its definition, Polars and the time-reversal identity ([The window operators and formula targets](#the-window-operators-and-formula-targets)), and the lasso's *pred* path against a numpy `lasso_ref` |
+| 2. Chunk invariance | bitwise at the bank (1/7/100 chunks) and command-line (`chunk_size` sweep) levels, in the window core at chunks of 1, 2, 3, 7, 50 and 499 rows, and for formula targets at 1, 7 and 600 chunks; save/load mid-stream identical. Which rows carry `coef`, and `support_coef` and `se_coef` beside it, is excluded: a reporting cadence, chunk-dependent by design |
+| 3. Out-of-sample by construction | IC ≈ 0 on pure-noise targets asserted for ewridge, kalman, huber, ftrl; lasso selection prefers the all-zero penalty on noise; robust reweighting proven to use the *prior* residual |
+| 4. Clock semantics | cap, a step back (refused, or a reset past `restart_after_step_back`), session gap and reset, first row, row-count clock, skipped-row decay folding, per-group independence |
+| 5. Null policy & warm-up | feature/target/weight nulls and `min_weight`, for all ten regression models |
+| 6. Arrow ≡ Polars output, retired and replaced | the Arrow path, after the table |
+| 6b. `predict` ≡ `fit_predict` of the next row | `tests/test_predict.py`; `crates/online-core/tests/model_contract.rs` |
+| 6c. Runner ≡ bank, every source and format | `crates/online-polars/tests/runner.rs`; `run_online` in `tests/conftest.py`; `tests/test_bank_ergonomics.py` |
+| 7. Cross-platform state | the macOS→Windows/Linux artifact hand-off in `release.yml`, run at every release since 0.1.0 and at no push: a bank of every kind, with a `Datetime` clock, a window, an embargo, a closed group and a formula target beside them, and a `refresh_time` and a `with_windows` state, each loaded, continued and re-saved to its own bytes (`crates/online-polars/tests/state_portability.rs`). At every push `ci.yml` saves and loads states on each of the three OSes, each reading its own |
+| 7a. Frozen states | one state of every `ModelState` variant mid-stream, with what it keeps (a window, lags, bins, a warm-up buffer, far rows, the clusterers' held start), and a bank file, a `with_windows` state and a `refresh_time` state, embedded as bytes with the rows that follow and what they reported; each loads, goes on to the bit on the platform that wrote it (to the golden tolerance elsewhere, libm's last bit) and saves its bytes again (`crates/online-core/tests/state_fixtures.rs`, `crates/online-polars/tests/state_fixtures.rs`). Every schema from the minimum to `SCHEMA_VERSION` must have its set, so a layout change cannot land without one; `PRINT_STATE_FIXTURES=1` regenerates them |
+| 8. Benchmark | `scripts/benchmark.py`, numbers in README; `benchmark.yml` reports them on every push to `main` that can move them, never gating |
 
-**6. Arrow ≡ Polars output: retired, and replaced.** This row held the
-expression form to the bank. The library has no expression form, so the
-equivalence it named has no second side. The Arrow path takes its place. `tests/test_arrow_capsule.py` holds
+**6. Arrow ≡ Polars output: retired, and replaced.** The class compared a
+form of the library that no longer exists, so the Arrow path holds its
+place. `tests/test_arrow_capsule.py` holds
 `fit_predict_arrow`'s struct to `fit_predict`'s output column, field for
 field and null for null. The nested `coef` list is included, and nulls are
 compared rather than skipped. `crates/online-polars/tests/arrow_chunk.rs`
@@ -116,7 +114,7 @@ each model's `predict` to its `step`, row by row.
 
 **6c. Runner ≡ bank, every source and format.**
 `crates/online-polars/tests/runner.rs` holds every input format (parquet,
-ipc, csv, ndjson), every output format, `Input::Batches` ≡ a plan, and the
+ipc, csv, ndjson), every output format, `Input::Batches` ≡ a query, and the
 failure paths to the numbers `ModelBank` gives on the same rows. CSV's
 flattened columns and JSON-text `coef` decode bit-exact. The `polars-online` command
 line is held to the same numbers through `run_online` in `tests/conftest.py`
@@ -124,7 +122,7 @@ line is held to the same numbers through `run_online` in `tests/conftest.py`
 `test_label_delay`), and every `sh` block of `docs/RUNNER.md` runs. What a
 `ModelBank` takes is held
 in `tests/test_bank_ergonomics.py`: `fit`, `fit_predict_batches`, over a
-plan, a frame or an iterator, and `chunk_size`. A format is bound in the
+query, a frame or an iterator, and `chunk_size`. A format is bound in the
 tests, never in the API.
 
 ### Against reference implementations
@@ -143,7 +141,7 @@ in `tests/test_second_opinion.py`, Vowpal Wabbit among them.
 |---|---|---|
 | `ewridge`, `rls` | `tests/reference.py`, incl. multi-target, standardize, `lam` decay, row-count clock | 1e-9 |
 | `ewridge` | every solve against scikit-learn's `Ridge` (`TestEwRidgeIsSklearnsRidge`, 20 cases), and in Rust against its closed form solved by `faer` (`every_solve_is_its_closed_form_across_targets_and_ridges`) | 1e-8, relative; 1e-9 |
-| `ewridge`'s grids, windows, sessions and `session_shrink`, schedule, no intercept | `reference_paths.ewridge_paths_ref` (`tests/test_oracles_ewridge_paths.py`), recomputing every statistic from the raw rows at each solve, as the lasso's below does | pred 1.1e-14 |
+| `ewridge`'s grids, windows, sessions and `session_shrink`, schedule, no intercept | `reference_paths.ewridge_paths_ref` (`tests/test_oracles_ewridge_paths.py`), recomputing every statistic from the raw rows at each solve, as `lasso_paths_ref` does | pred 1.1e-14 |
 | `rls` | `rls ≡ ewridge(ridge_scale="sum", solve_every=1)` | <1e-9 |
 | `rls` with several targets, `coef_prior`, no intercept; `kalman` with several targets and nulls | `rls_paths_ref`; `kalman_ref` (`tests/test_oracles_rls_kalman_paths.py`) | pred 5.8e-15; 6.1e-15 |
 | Kalman | `kalman_ref`, across every configuration | ~1e-15 |
@@ -193,8 +191,8 @@ in `tests/test_second_opinion.py`, Vowpal Wabbit among them.
 | `resid_quantiles`, `mahal_quantiles` | the EW quantile by its definition, within the sketch's `tanh(1/128)` (`tests/test_diagnostics.py`); numpy's `quantile` of the past `mahal` scores (`TestMahalQuantiles`) | 3% (1.4e-3 measured); 10% |
 | the `session_shrink` blend | numpy's `cov(aweights=)` of the rows at their blended weights (`TestSessionShrinkBlend`) | 1e-12 |
 | `conformal` | **definition only**: a longhand replay of the recursion over the bank's own `pred`, `resid` and `sigma`, and the telescoped coverage bound (`tests/test_conformal.py`); no library computes an adaptive conformal radius | bit for bit |
-| `huber` and `quantile` under a finite half-life, with nulls, several targets, `standardize` or zero weights; `ftrl` under a half-life; `sgd`'s Poisson loss and AdaGrad schedule; `ew_class` under decay; `EwQuantile` | **definition only**: `robust_ref`, `ftrl_ref`, `sgd_ref` and the definitions in `tests/test_diagnostics.py` and `tests/test_ew_class.py`. No library checked forgets as a half-life does, and scikit-learn's SGD has neither the Poisson loss nor AdaGrad | as each row above |
-| `micro`, `seqtest`, `deco`, `corrchange`, `rcov` | **definition only**: the oracles above, each written from its paper. river's `DenStream` takes another macro step, so it could agree only statistically, and no Python library computes the other four | as each row above |
+| `huber` and `quantile` under a finite half-life, with nulls, several targets, `standardize` or zero weights; `ftrl` under a half-life; `sgd`'s Poisson loss and AdaGrad schedule; `ew_class` under decay; `EwQuantile` | **definition only**: `robust_ref`, `ftrl_ref`, `sgd_ref` and the definitions in `tests/test_diagnostics.py` and `tests/test_ew_class.py`. No library checked forgets as a half-life does, and scikit-learn's SGD has neither the Poisson loss nor AdaGrad | as each such model's row of the table gives |
+| `micro`, `seqtest`, `deco`, `corrchange`, `rcov` | **definition only**: the longhand oracles of [An oracle, not a golden number](#an-oracle-not-a-golden-number), each written from its paper. river's `DenStream` takes another macro step, so it could agree only statistically, and no Python library computes the other four | as each such model's row of the table gives |
 | the window operators | the brute force; the time-reversal identity; Polars' `ewm_mean_by` and `ewm_sum_by`; Polars' `rolling_sum_by`, for which rows a window holds ([The window operators and formula targets](#the-window-operators-and-formula-targets)) | 1e-9; 1e-9; 1e-9; exactly |
 | `po.ewm_quantile`, looking back with and without a window, and looking ahead | numpy's weighted quantile, `np.quantile(..., weights=, method="inverted_cdf")`, over the rows each window holds at the weights `po.ewm_sum` gives them; under even weights, statsmodels' MAD about 0 of the last 101 rows (`tests/test_ewm_quantile.py`) | `tanh(1/128)`, relative, the sketch's accuracy |
 | a formula target | its column form | bit for bit, every prediction |
@@ -203,23 +201,9 @@ in `tests/test_second_opinion.py`, Vowpal Wabbit among them.
 
 **An oracle is written from the paper or the definition, never from the
 code it checks.** An oracle written *from the implementation* agrees with it
-by construction. That is the one that is easy to get wrong, and it is how
-`bocpd`'s line 6 survived twelve unit tests.
-
-The batch that added `deco`, `hmm`, `corrchange`, `bocpd` and `rcov`, with
-four helper modules, shipped in 0.2.0 on 2026-09-06. Its testing pattern is
-what found its defects. Every recursion got a
-longhand oracle written from the paper, and the oracle was allowed to
-disagree. It did, six times:
-
-| model | what the oracle found |
-|---|---|
-| `deco` | its `rho` was not `ew_cov`'s `corr` |
-| `hmm` | its Π seeding was not the prior mean |
-| `corrchange` | its scalar CUSUM was identically zero |
-| `bocpd` | it implemented Algorithm 1's line 6 with the new run holding one row of the old regime |
-| `rcov` | its pre-averaging window was off by one |
-| `corrchange` | its size study was comparing Gaussian draws against a `t₅` table |
+by construction, so it cannot find a defect in it. An oracle written from
+the paper is allowed to disagree, and where it does, either the code or the
+oracle is wrong, and the test says which to look at.
 
 **A test adds an oracle rather than a golden number.** The tests that close
 [mutation survivors](#mutation-survivors) follow the same rule, and so do
@@ -271,55 +255,39 @@ Four rules govern such a library:
 
 | rule | why | checked by |
 |---|---|---|
-| **1. Declare it in the dev group, by name, under an open license.** | A library that arrives through another package's dependencies breaks tests that never name it when that package goes, as pandas and scipy would if they came in only through statsmodels. A library under source-available or commercial terms is parked, not used (the user, 2026-09-25: "enable every unlicensed library in tests and park using licensed libraries") | `tests/test_dependency_policy.py`: every library a test imports is declared in the dev group, and every library of the dev and docs groups, and every Rust crate's dev-dependency, names an open license in its metadata |
+| **1. Declare it in the dev group, by name, under an open license.** | A library that arrives through another package's dependencies breaks tests that never name it when that package goes, as pandas and scipy would if they came in only through statsmodels. A library under source-available or commercial terms is parked, not used (the user, 2026-09-25: "enable every unlicensed library in tests and park using licensed libraries") | `tests/test_dependency_policy.py`: every library a test imports is declared in the dev group, and every library of the dev and docs groups, and every Rust crate's dev-dependency, names an open license in its metadata; the test gate checks the lock with `uv lock --check` |
 | **2. Import it plainly.** | The dev group is installed wherever the suite runs, so `pytest.importorskip` could only turn a broken environment into a skip. A missing library fails the test | the same file: no test calls `importorskip`, nor skips behind `except ImportError` |
 | **3. Keep it out of the package's reach when its presence changes other libraries.** | pyarrow is the case: pandas and duckdb take other paths when it is importable, and a use of it inside the package would pass the suite | `tests/conftest.py` makes it unimportable; `test_this_session_runs_without_pyarrow` and `test_child_interpreters_run_without_pyarrow_too` check that it is |
 | **4. Never add it to the package's own dependencies.** | Those stay `polars` | `tests/test_dependency_policy.py`: the package depends on polars alone, and its one extra on numpy alone |
 
-An open license is one the Open Source Initiative approves, or CC0, named in
-the metadata as an SPDX expression or an "OSI Approved" classifier. A library
-whose metadata names none is listed with the license read at its source and
-where: `bayesian-changepoint-detection`'s wheel declares none, and its
-repository's `LICENSE` is MIT. A library that must not be in every
-contributor's environment, for its platforms, gets a group of its own and a
-CI job of its own. For rule 3, `tests/child.py` puts
-`tests/_site/sitecustomize.py`, which installs the same finder, on the path
-of every child interpreter a test spawns. Only
-`tests/test_pyarrow_interop.py`'s children see pyarrow. The children are
-covered because on 2026-09-25 the examples' "nothing needs pyarrow" was
-found running with pyarrow importable. The gate checks the lock with
-`uv lock --check`.
+**Rule 1 counts a license as open when the Open Source Initiative
+approves it, or it is CC0,** named in the metadata as an SPDX expression or an "OSI Approved" classifier.
+A library whose metadata names none is listed with the license read at its
+source and where: `bayesian-changepoint-detection`'s wheel declares none,
+and its repository's `LICENSE` is MIT.
 
-**scikit-learn is taken** (2026-09-25). `tests/test_sgd.py`
-compares `sgd` with `SGDRegressor` live. `tests/test_second_opinion.py` holds `huber`
-to `LinearRegression` at `huber_delta = 1e9`, the limit at which no row is
-down-weighted, and to `HuberRegressor` under outliers. It holds
-`marginal`'s best split to a `DecisionTreeRegressor` stump, and every
-`ewridge` solve to `Ridge`.
+**A library that must not be in every contributor's environment, for its
+platforms, gets a group of its own and a CI job of its own.**
 
-**Vowpal Wabbit is taken** (the user, 2026-09-29: "find an alternative
-oracle for ftrl that supports more options"). Its `--ftrl`
-runs the recursion `ftrl.rs` states, and it reaches options river's
-comparison does not: the squared loss, row weights, the intercept and the
-model's own predictions. `TestFtrlIsVowpalWabbits` holds `pred` and `coef`
-to it on every row, to 1e-5, since VW computes in single precision. The
-wheel has no dependencies and ships for Python 3.12 to 3.14 on all three
-operating systems, so it sits in the dev group like the rest. None of the
-libraries checked forgets as a half-life does (river, VW, and Keras's
-`Ftrl`), so a finite half-life stays with `ftrl_ref`.
+**Rule 3 reaches the child interpreters a test spawns.** `tests/child.py`
+puts `tests/_site/sitecustomize.py`, which installs the same finder, on the
+path of every child interpreter a test spawns, so an example run in a child
+cannot see pyarrow either. Only `tests/test_pyarrow_interop.py`'s children
+see pyarrow.
 
-**hmmlearn and padasip are taken** (2026-10-06). hmmlearn's
-`GaussianHMM` holds `hmm`'s filter at fixed parameters, row by row.
-padasip's `FilterRLS` holds `rls`. hmmlearn ships wheels up to CPython 3.13,
-so the 3.14 legs build its sdist, a small C++ extension. padasip is pure
-Python. In the same round scikit-learn's `SGDRegressor` and `SGDClassifier`
-took on `sgd`'s losses one row at a time, and filterpy the `kalman` settings
-`kalman_ref` alone held.
+**Each library a second opinion takes holds what no other oracle reaches:**
 
-**Pathway is parked.** It would run the Pathway half of
-`examples/pathway_integration.py`, but it is under the Business Source
-License, which rule 1 parks. `test_pathway_is_not_a_dependency` keeps it
-out of `pyproject.toml` until the user decides.
+| library | what it holds | where |
+|---|---|---|
+| scikit-learn | `sgd` against `SGDRegressor`, live; `huber` against `LinearRegression` at `huber_delta = 1e9`, the limit at which no row is down-weighted, and against `HuberRegressor` under outliers; `marginal`'s best split against a `DecisionTreeRegressor` stump; every `ewridge` solve against `Ridge`; `sgd`'s losses one row at a time against `SGDRegressor` and `SGDClassifier` | `tests/test_sgd.py`, `tests/test_second_opinion.py` |
+| Vowpal Wabbit | `ftrl`'s `pred` and `coef` on every row, to 1e-5, since VW computes in single precision. Its `--ftrl` runs the recursion `ftrl.rs` states, and reaches options river's comparison does not: the squared loss, row weights, the intercept and the model's own predictions. Its wheel has no dependencies and ships for Python 3.12 to 3.14 on all three operating systems | `TestFtrlIsVowpalWabbits` |
+| hmmlearn | `hmm`'s filter at fixed parameters, row by row. It ships wheels up to CPython 3.13, so the 3.14 legs build its sdist, a small C++ extension | `TestHmmIsHmmlearns` |
+| padasip | `rls`, through its `FilterRLS`; pure Python | `TestRlsIsPadasips` |
+| filterpy | the `kalman` settings, through its `KalmanFilter` | `TestKalmanSettingsAreFilterpy` |
+| Pathway, parked | it would run the Pathway half of `examples/pathway_integration.py`, but it is under the Business Source License, which rule 1 parks | `test_pathway_is_not_a_dependency` keeps it out of `pyproject.toml` until the user decides |
+
+None of the libraries checked forgets as a half-life does (river, VW, and
+Keras's `Ftrl`), so `ftrl` under a finite half-life stays with `ftrl_ref`.
 
 ### The window operators and formula targets
 
@@ -339,9 +307,9 @@ identity.**
 | chunking | chunks of 1, 2, 3, 7, 50 and 499 rows give one chunk's bits | `windows.rs::chunking_changes_no_bit` |
 | a public day of data | one symbol-day of Binance futures quotes and trades through four formulas, chunked; two recipes for one VWAP agree to 1e-6 | `test_the_real_day_runs_and_the_recipes_agree_where_they_should` |
 
-The brute force and the identity both found a defect while the operators
-were built: a forward mean counted rows that held a value from outside its
-window. The day of
+**Each oracle reaches what the others cannot.** The brute force and the
+identity check every row against the definition, so a forward window that
+counts a row from outside its stretch fails both. The day of
 data is ETCUSDT on 2024-01-02, from data.binance.vision.
 `tests/data.py::public_quotes_and_trades` downloads it once and caches it
 under `.cache/microstructure`, and offline that one test skips.
@@ -362,7 +330,8 @@ every row:
 stopped, and a state refuses an input or a version it does not belong to.**
 A bank's state and a window run's can each be saved to a file and loaded
 back. A window run saved under a slice, such as `head(n)`, also records how
-much of its input it consumed:
+much of its input it consumed. Each test's docstring states the case it
+holds:
 
 | what is resumed | the claim | held by |
 |---|---|---|
@@ -377,10 +346,6 @@ much of its input it consumed:
 The first test of the last row is a tripwire. It asserts the windows state's
 version and the bank's schema version together, because a bank file embeds a
 window core for each formula target. So neither can move without the other.
-
-Each finding of the checks that set the window run's resume rules, made on
-2026-10-03, is pinned by a test, and the test's docstring says what was
-found.
 
 ### What the README's guarantees are held to
 
@@ -455,43 +420,56 @@ the boundary with Polars, `tests/test_ffi_memory.py` and
 
 **The essentials gate each commit while a task is in progress, the whole
 suite runs before every push, and CI runs it on Linux, macOS and Windows
-at every push to `main` and every pull request.** A contributor iterates
-inside a worktree slot, with tools that run only what a change touches,
-and clears the build caches the runs leave. The suite's data comes from
+at every push to `main` and every pull request.** The test gate is
+`scripts/gate.sh`, which runs the lints and the tests of one tier. With
+several branches in flight, each task works in a worktree slot (a git
+worktree kept between tasks, with its own builds) and runs only the tests
+its change touches, and the build caches the runs leave are cleared after
+each push. The suite's data comes from
 the network, which CI keeps copies of, and its last bits depend on the
 machine it runs on.
 
 ### Two tiers
 
-**The essentials gate each commit while a task is in progress. The full
-suite runs before every push, always.** The user set the purpose on
+**The essentials gate each commit while a task is in progress, and the
+full suite runs before every push, always.** A contributor working alone
+runs the essentials test gate, `scripts/gate.sh`, on each commit. Where
+several branches are in flight in worktree slots, each task runs
+`scripts/quick.sh` instead, and one essentials test gate runs on each wave
+of merged branches ([Iterate on a
+change](contributing/iterate-on-a-change.md)). The user set the purpose on
 2026-10-08: "We will always run the full tests before a push, the idea of
 the essential tests is to improve the speed of iteration while developing
 many steps." A push never rides on the essentials, whatever they said.
 
 | when | what runs | tier |
 |---|---|---|
-| each commit while a task is in progress | `./scripts/gate.sh` | the essentials |
-| before every push, always | `./scripts/gate.sh --extended` | everything |
-| every push and pull request | `ci.yml` on Linux, macOS and Windows | everything but the oracle grids, and the essentials nowhere |
+| each commit while a task is in progress, working alone | `./scripts/gate.sh` | the essentials |
+| each change inside a task, with other branches in flight | `./scripts/quick.sh`, then one `./scripts/gate.sh` on each wave of merged branches | the tests mapped to the changed paths; then the essentials |
+| before every push, always | `./scripts/gate.sh --extended` | every test but the soak tests and the oracle grids |
+| every push and pull request | `ci.yml` on Linux, macOS and Windows | every test but the soak tests and the oracle grids, and the essentials nowhere |
+| every push and pull request | `mutants.yml`, its pass over the changed lines | every Rust test, the ignored ones included, against each mutant of the changed lines |
+| every push and pull request | `budgets.yml`, on Linux | the instruction counts, against `budgets.toml` ([Budgets that only tighten](#budgets-that-only-tighten)) |
 | every push to `main`, weekly, and on dispatch | `oracles.yml`, sharded across parallel jobs on Linux | the oracle grids (`-m oracle_grid`), each case held to the oracle ledger ([The oracle ledger](#the-oracle-ledger)) |
-| before a release | `release.yml`, which runs `ci.yml` | everything |
-| on their schedules | `polars-canary.yml`; `mutants.yml` | everything; every Rust test, the ignored ones included |
+| before a release | `release.yml`, which runs `ci.yml` and `budgets.yml` | as those two |
+| on their schedules | `polars-canary.yml`; `mutants.yml`'s weekly pass | every test but the soak tests, the oracle grids and the `pins` tests; every Rust test, the ignored ones included, against each mutant of all of `online-core` |
 
-**The rule for a tier was stated before any test moved.** The essentials
+**A test is in the essentials unless it is slow, reaches the network or
+sweeps.** The essentials
 hold a test of every hard rule, every golden and the contract tests. They
 hold the refusals and renames, the API snapshot and the document-structure
 tests too, and each module's own unit tests, each in its fastest form that
 can still fail. A test moves to the extended tier when it takes a second or
 more or needs the network or downloaded data. It moves too when it re-runs
-a document's experiments (REGIMES, VALIDATION), measures memory or threads,
+a document's experiments ([REGIMES.md](REGIMES.md),
+[VALIDATION.md](VALIDATION.md)), measures memory or threads,
 sweeps a grid, or runs a third-party oracle over a long stream. The only
 test of a hard rule never moves whole: a reduced form, with fewer rows or
 cases, stays in the essentials, and the full form moves. A golden stays
 whole however slow, since fewer rows are other numbers. The `soak` tests
 stay opt-in.
 
-**The oracle grids run on CI, not in the gate.** A grid that holds a model
+**The oracle grids run on CI, not in the test gate.** A grid that holds a model
 to a third-party oracle over 50 seeds or orders, with batch fits over long
 streams or downloaded datasets, is marked
 `@pytest.mark.oracle_grid(reason="...")`. The user set the rule on
@@ -514,7 +492,7 @@ essentials, so the code paths stay covered locally.
 | a pytest module | `TIER = "extended"`, or `TIER = "mixed"` when only some of its tests are (or are `oracle_grid`); `TIER = "oracle_grid"` when its `pytestmark` is | `TIER = "essential"` |
 | a Rust test | `#[ignore = "extended: <reason>"]` under its `#[test]` | no `#[ignore]` |
 | a Hypothesis property | the `extended` profile: the count its file names, 30 by default | the `essential` profile: at most 10 examples, or the smaller count its file names |
-| a proptest property | a multiple of proptest's own 256: 128 to 2,048 | `PROPTEST_CASES=32`, an eighth: 16 to 256 |
+| a proptest property | proptest's own 256 scaled by each property: 128 to 2,048 | `PROPTEST_CASES=32`, an eighth: 16 to 256 |
 
 **A plain `pytest` runs both tiers; a plain `cargo test` runs the
 essentials.** `uv run pytest` is the full local run. Its `addopts` leave
@@ -526,7 +504,7 @@ ignored test, so `cargo test` alone runs the Rust essentials, and
 it. The mutation runs in CI test each mutant under cargo-nextest and pass
 `--cargo-test-arg=--run-ignored=all`, nextest's form, and
 `scripts/mutants.sh` passes `-- -- --include-ignored` to `cargo test`, so a
-mutant only an extended test catches is not counted a survivor. The essentials gate
+mutant only an extended test catches is not counted a survivor. The essentials test gate
 runs pytest with `-m "not extended and not soak and not oracle_grid"`, the
 `essential` profile and `PROPTEST_CASES=32`.
 
@@ -543,10 +521,10 @@ missing or extended:
 | 8, `weight_sum` | `crates/online-core/tests/model_contract.rs::ewridge` and each model's probe beside it, which hold the accessor and the reported weight to the one recursion; `tests/test_semantics_all_models.py::TestWarmup::test_n_eff_is_reported_before_the_update` |
 | 9, a zero weight | `crates/online-core/tests/model_contract.rs::ewridge` and each model's probe beside it, which run `zero_weight_rows_only_advance_the_clock`; `tests/test_edge_cases.py::TestWeights::test_zero_weight_is_a_pure_decay_row` |
 
-The build holds rules 4 and 6: `online-core`'s manifest has no Polars
+The build holds rule 4 and rule 6's ban on `unsafe`: `online-core`'s manifest has no Polars
 dependency and forbids `unsafe_code`. Rule 7 is a practice.
 
-**The budget is time, so the gate prints it rather than a test checking
+**The budget is time, so the test gate prints it rather than a test checking
 it.** The essentials aim at pytest under 90 s and `cargo test`'s run under
 60 s at this machine's usual load. On 2026-10-08, at a load of 4 to 5 on 14
 cores, pytest's essentials took 72 s against the full suite's 196 s, and
@@ -560,23 +538,160 @@ that moved gives its reason in its mark.
 ### Iterating
 
 **[Iterate on a change](contributing/iterate-on-a-change.md) is the
-how-to:** `scripts/quick.sh` after each change, `scripts/quick.sh
---extended` and the lints at the end of a task, one essentials gate on
-each wave of merged branches, and `scripts/gate.sh --extended` before
-every push.
+how-to.** Working alone, a contributor runs the essentials test gate,
+`scripts/gate.sh`, on each commit. With several branches in flight, each
+task runs `scripts/quick.sh` after each change and `scripts/quick.sh
+--extended` and the lints at its end, and one essentials test gate runs on
+each wave of merged branches ([Merge a wave of
+branches](contributing/merge-a-wave-of-branches.md)).
+`scripts/gate.sh --extended` runs before every push. The development Mac
+these figures come from has 14 cores, shared with another user's jobs.
 
-**At most two agents build at once on this machine, three while the
-1-minute load is under about 20.** Each exports `CARGO_BUILD_JOBS=6`, runs
-pytest at `-n 4` at most and the gate at `GATE_WORKERS=4`, and a local
-`cargo mutants --in-diff` runs alone. Four such runs at once held a load
-of 88 for hours and panicked the Mac. [Keep the machine's load
-down](contributing/iterate-on-a-change.md#keep-the-machines-load-down) has
-the measurements and the rest of the rules.
+#### What `scripts/quick.sh` runs
+
+**`scripts/quick.sh` runs the tests that cover the paths a branch changed,
+and nothing else.** It reads the paths from `git diff` against the
+merge-base with `main`, with uncommitted edits and new files included. A
+source change in a crate the extension links (`online-core`,
+`online-polars`, `online-py`) rebuilds the extension before pytest, which
+would otherwise test the old binary. A change in a crate with Rust tests
+(`online-core`, `online-polars`, `online-cli`, `online-bench`) runs that
+crate's `cargo test`. A model's source in `online-core` also runs
+`online-polars`' state fixture and portability tests. A bank's frozen
+fixture holds every model's state, and it moves with a model's arithmetic
+while every `online-core` test passes. A Python module runs the test files
+named after it, and any path runs the test files that name it. Its verdict
+says it covers the mapped tests only, because a change can break a test
+the map does not reach.
+
+**Inside a task, the extension is built with the `dev-wheel` profile,
+which takes seconds after an edit where `release` takes minutes.** The
+profile is `release` with incremental compilation and 256 codegen units,
+and without thin LTO, so a rebuild redoes only what changed. `quick.sh`
+builds with it, and so can `uv run maturin develop --profile dev-wheel -m
+crates/online-py/Cargo.toml`.
+
+| the extension's build | `release` | `dev-wheel` |
+|---|---|---|
+| from nothing | 241 s (load 10) | 130 s (load 5 to 18) |
+| after a new function in `ewridge.rs` | 189 s (load 8 to 11) | 4.5 s (load 14 to 24) |
+| after an edit inside `solve()`, which every model's fit calls | 189 s | 37 s (load 9 to 15) |
+| the Python essentials on it, one process | 116 s | 118 to 123 s |
+
+**A `dev-wheel` build computes the same bits as a `release` build.** Rust
+fuses no floating-point operations and reorders none unless the code asks,
+so neither LTO nor the number of codegen units can move a result. That was
+checked rather than assumed. `scripts/release_probe.py` runs every spec
+over a stream built to reach every path. It gave 297 output columns over
+400 rows identical in every bit under both builds, and its 31 saved states
+were identical byte for byte. The whole Python suite passed on the dev
+build, the goldens and the saved-state tests among them. The test gate, CI
+and the shipped wheel still build `release`, because what ships is what a
+push is tested on.
+
+#### How the test gate runs
+
+**At most two test gates run at once on the development Mac.**
+`scripts/gate.sh` takes one of `POLARS_ONLINE_GATES` (default 2) tokens,
+directories in the repository's common git directory holding their test
+gate's pid. It waits for one when all are held, prints that it waited and
+for how long, and starts its timing when it has a token. A token whose
+test gate has died is taken back. CI runs one test gate per job and takes
+none.
+
+**The test gate runs the tests in parallel.** cargo-nextest runs each Rust
+test as a process of its own, and pytest-xdist runs the Python tests in
+several processes. Both run every test that the serial run runs, with the
+same results (measured on 2026-10-11):
+
+| tests | one process | in parallel |
+|---|---|---|
+| the Rust essentials | 19 s, `cargo test` | 12 s: 9.5 s under nextest and 2.6 s for the 5 doctests |
+| every Rust test | 182 s | 78 to 86 s under nextest, and the doctests |
+| the Python essentials | 116 to 123 s | 30 s in 8 processes (39 s in 4) |
+| every Python test | 302 to 318 s | 134 s: 59 s in 8 processes, then 75 s for the 20 `serial` tests of that day alone |
+
+**The test gate starts as many processes as the machine has cores free,
+from 2 to 8.** It reads that as the core count less the last minute's load
+average (`scripts/workers.py`), so it does not crowd out another user's
+jobs, and `GATE_WORKERS=4` overrides it. Past 8, more processes add little
+speed and crowd the machine: 12 took the Python essentials from 30 s to
+27 s and the load average from 23 to 51. The load average counts the test
+gate's own last run too, so a test gate started right after another runs
+in fewer processes. The test gate runs `cargo test --doc` beside nextest,
+which runs no doctests. Where nextest is not installed, it runs `cargo
+test`. `scripts/gate.sh --serial` runs every test in one process.
+
+**A test that reads its process's memory runs alone, after the rest.** The
+memory tests of `tests/test_ffi_memory.py`, `tests/test_gbdt.py` and
+`tests/test_budgets_memory.py` carry the `serial` mark, 23 tests (counted
+2026-11-08). Memory that other processes take can make macOS compress or
+swap pages, which moves the resident size these tests read. The test
+gate's parallel run leaves them out, and a second run takes them in one
+process. Run that way, each leak check still fails a planted leak: keeping
+a bank's every output read 155 KB a call, and keeping every tree-model
+build 1,505 KB a build, while the loop without the leak passed. The leak
+checks run before the tests that read a 2 GB source. Those leave the
+allocator so much freed memory that a planted leak of the tree-model
+builds goes unseen after them.
+
+**A test that writes outside its own temporary directory must write a whole
+file in one step.** Several processes share `.cache/`, where the downloads
+land. A download is written to a file named for the writing process and
+renamed into place (`tests/data.py::write_atomically`), so a reader sees no
+file or the whole one. The released versions' environments, which
+`scripts/compare_release.py` builds, are built under a per-process name and
+renamed the same way.
+
+**A compiler cache does not speed up a new worktree, so it is off unless
+asked for.** sccache, turned on with `POLARS_ONLINE_SCCACHE=1` in
+`scripts/env.sh`, caches each crate rustc compiles, keyed by its inputs. In
+a checkout whose path it had seen, a build from nothing took 33 s for the
+Rust tests and 91 s for the `release` extension, against 66 s and 241 s
+without it. A new worktree has a new path, and from a new path a third of
+the crates missed. A crate that includes a file its build script wrote
+names that file by its absolute path, which differs per checkout. Every
+crate built on such a crate misses with it, serde and Polars among them.
+The misses took longer than the hits saved: 92 s and 519 s, slower than no
+cache. CI never turns it on (`tests/test_dev_loop.py`).
+
+#### Keep the machine's load down
+
+**At most two agents build at once on the development Mac, three while
+the 1-minute load is under about 20, each held to six build jobs and four
+test processes.** An agent here is any process that builds and tests a
+checkout, a contributor's or an automated worker's. Each worktree has its
+own `target/` and compiles Polars there, which takes 66 s for the Rust
+tests and 130 s for the `dev-wheel` extension from nothing, at a load near
+5. More builds at once do not finish sooner, and past a point they bring
+the machine down. Five essentials test gates at once ran at a load of 78
+on 14 cores, and took 500 to 2,000 s each where one alone takes about 300.
+Four `cargo mutants --in-diff` runs at once held a load of 88 for hours,
+and the kernel panicked (`watchdog timeout: no checkins from watchdogd in
+90 seconds`), measured 2026-10-27 and 2026-10-28. A `cargo mutants` run
+builds and tests every mutant, each time with every core, so two at once
+already saturate the machine. So, on that machine:
+
+- **Two agents at most, three while the load is low.** A load under about
+  20 leaves room for a third build, so a third starts only then, and none
+  starts above it. One is the default when their work is builds and tests
+  rather than reading and writing.
+- **Each agent exports `CARGO_BUILD_JOBS=6`.** It runs pytest at `-n 4` at
+  most, and the test gate at `GATE_WORKERS=4`.
+- **A local `cargo mutants --in-diff` runs alone.** It takes the lock
+  directory `.claude/coord/mutants.lock` (`mkdir` it, `rmdir` it after), and
+  any other waits. CI's changed-lines pass on the push checks the same lines
+  on GitHub's machines, so a local run is rare.
+- **Check `uptime` before starting a build.** Wait while the 1-minute load is
+  above about 20.
+- **After a crash, look before resuming.** Read
+  `/Library/Logs/DiagnosticReports/panic-full-*` for the cause, and remove a
+  stale `mutants.lock` that a killed run left.
 
 ### Worktree slots
 
-**A task works in a long-lived worktree slot, so it rebuilds only what it
-changes.** [Use a worktree slot](contributing/use-a-worktree-slot.md) is
+**A task works in a worktree slot, a git worktree kept between tasks with
+its own builds, so it rebuilds only what it changes.** [Use a worktree slot](contributing/use-a-worktree-slot.md) is
 the how-to: `scripts/slot.sh take`, `give`, `list` and `overlap`, and what
 a warm slot saves.
 
@@ -591,33 +706,33 @@ next build.
 ### Where the suite runs
 
 **Every push to `main` and every pull request runs the suite on Linux,
-macOS and Windows.** The gate runs before every commit, the essentials
-while a task is in progress and everything before every push ([Two
+macOS and Windows.** Locally, the test gate runs the essentials while a
+task is in progress and every test before every push ([Two
 tiers](#two-tiers)). Each workflow under `.github/workflows/` runs on its
 own schedule:
 
 | when | where | what runs |
 |---|---|---|
-| each commit while a task is in progress | `./scripts/gate.sh` | `cargo fmt`, `clippy -D warnings`, the Rust tests' essentials (under cargo-nextest where it is installed), `uv lock --check`, `ruff`, `mypy`, the extension's build, `pytest`'s essentials in parallel, and Sphinx with `-W` |
-| before every push, always | `./scripts/gate.sh --extended` | the same checks with every test but the oracle grids |
+| each commit while a task is in progress, working alone, and once on each wave of merged branches | `./scripts/gate.sh` | `cargo fmt`, `clippy -D warnings`, the Rust tests' essentials (under cargo-nextest where it is installed), `uv lock --check`, `ruff`, `mypy`, the extension's build, `pytest`'s essentials in parallel, and Sphinx with `-W` |
+| before every push, always | `./scripts/gate.sh --extended` | the same checks with every test but the soak tests and the oracle grids |
 | every push to `main` and pull request | `ci.yml` | the suite on Linux at Python 3.12, 3.13 and 3.14, on macOS at 3.12 and 3.14, and on two Windows builds, Server 2025 and Server 2022, at 3.12 and 3.14, each leg first printing the machine it ran on ([The machines and the CPU paths](#the-machines-and-the-cpu-paths)); on Linux, the format, lint, type and documentation checks (`cargo fmt`, `clippy`, `ruff`, `mypy` and Sphinx); the release comparison's outputs against the newest release's, bit for bit, as a report; the Python coverage, as a report |
 | every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `online-core` and `online-polars/src/span.rs`, in a shard for every thirty mutants the change lists, with one report. The report fails on a mutant no test catches, unless `scripts/mutants_equivalent.toml` lists it |
 | every push to `main`, weekly, and by hand | `oracles.yml` | the oracle grids (`-m oracle_grid`): the convergence, learning-rate, truth-recovery and long-run grids against third-party batch fits and downloaded datasets, in twelve shards dealt round-robin over the tests (`--oracle-shard`), on Linux; no local run takes them ([Two tiers](#two-tiers)). A last job holds every case each shard recorded to the oracle ledger; the weekly run downloads the datasets afresh ([The oracle ledger](#the-oracle-ledger)) |
+| every push to `main` and pull request, and by hand | `budgets.yml` | the instruction counts under Callgrind, against `budgets.toml` ([Budgets that only tighten](#budgets-that-only-tighten)) |
 | every push to `main` but a docs-only one | `benchmark.yml` | throughput, into the job summary and an artifact, never gating |
-| every release | `release.yml` | the whole of `ci.yml`; a state written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits, on the floor of the range and on the newest NumPy, all blocking; the suite on the next Polars major and on NumPy's next release candidate, both advisory |
+| every release | `release.yml` | the whole of `ci.yml` and of `budgets.yml`; a state written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits, on the floor of the range and on the newest NumPy, all blocking; the suite on the next Polars major and on NumPy's next release candidate, both advisory |
 | weekly | `ci.yml`, `polars-canary.yml`, `leakcheck.yml`, `benchmark.yml`, `mutants.yml`, `msrv.yml`, `advisories.yml`, `cpu-paths.yml` | the suite again; the suite on the newest py-polars, release candidates included, and on NumPy's next release candidate; the leak check across the boundary with Polars, on Linux and macOS, its control included, and the soak tests; throughput; mutation testing of all of `online-core`, as a report; `cargo check` of the workspace on the Rust its `rust-version` declares; both lock files against OSV's published advisories (`scripts/advisories.py`), failing on a vulnerability in a crate the wheel or the command line links and reporting the rest; on Windows, the numeric tests down each CPU path in turn, under Intel SDE and with OpenBLAS's and NumPy's paths pinned ([The machines and the CPU paths](#the-machines-and-the-cpu-paths)) |
 | monthly | `polars-canary.yml` | the suite on the floor of the Polars range, the version `pyproject.toml` declares |
 
-The canary and the release's Polars and NumPy legs leave out the tests
-marked `pins`. Those assert this repo's own Polars pins, so they cannot pass
-on another Polars. On the floor, a test that needs a newer Polars skips,
-naming the version it needs and why (`tests/polars_version.py`). Tests
-generate or download their own data (hard rule 1). Downloads are cached
-under `.cache/`, and a test that needs one skips offline: the public
-intraday data (`tests/data.py::public_intraday`), the released wheels, the
-day of quotes and trades, and the public benchmark sets. CI keeps the
-datasets through an outage at their source, below, and where it has
-restored them a test that skips offline fails instead.
+**The canary and the release's Polars and NumPy legs leave out the tests
+marked `pins`.** Those assert this repo's own Polars pins, so they cannot
+pass on another Polars.
+
+**On the floor of the Polars range, a test that needs a newer Polars
+skips,** naming the version it needs and why (`tests/polars_version.py`).
+
+**Tests generate or download their own data (hard rule 1),** as [Downloaded
+data in CI](#downloaded-data-in-ci) describes.
 
 #### The policy, as the test holds it
 
@@ -626,14 +741,14 @@ thirteen classes, counted on 2026-11-08:
 
 | class | what it asserts |
 |---|---|
-| `TestEveryJobIsBounded` | every job in every workflow has a timeout of at most two hours, and every workflow a concurrency group; superseded runs are cancelled, and releases queue instead. The longer jobs are the mutation shards, on Linux: the changed lines' at 330 minutes on every push, the weekly pass's at 350 and only while public or by hand |
+| `TestEveryJobIsBounded` | every job in every workflow has a timeout of at most two hours, and every workflow a concurrency group; superseded runs are canceled, and releases queue instead. The longer jobs are the mutation shards, on Linux: the changed lines' at 330 minutes on every push, the weekly pass's at 350 and only while public or by hand; and `ci.yml`'s test legs at 300 minutes while the repository is public, since Windows Server 2022's two-thread legs take 2.4 to 2.9 hours |
 | `TestTheMatrixDefaultsToCheap` | lint stays on Linux and never builds the extension; the expensive runners are opt-in; the visibility test fails safe on a missing field; macOS is reachable only by a manual dispatch or the repository being public |
 | `TestWindowsIsTwoImagesAndEveryJobNamesItsMachine` | the test matrix runs Windows Server 2022 beside the newest wherever it runs Windows, and every job that can land on Windows prints its machine first, so a failure names it |
 | `TestStepOrderingThatHasAlreadyBrokenCI` | disk is freed before the cache is restored, rustflags are set before anything compiles, and the cache survives a failing job |
 | `TestDocOnlyPushesAreFree` | CI has no paths filter on a push or a pull request; the benchmark, which reports and never gates, skips doc-only pushes |
 | `TestPythonVersions` | every Python the package declares runs on Linux, and the floor and the newest on every OS; the release comparison reports once and never gates; the API reference is built and published once |
 | `TestMutationTesting` | the mutation run over changed lines gates every push and pull request, with one report, in as many shards as its mutants need: a first job lists them, with the scope, the diff and the pinned cargo-mutants the shards use, and takes a shard for every thirty, at most four-fifths of the slowest shard measured, each stopped at 300 minutes (three times the slowest shard measured, 98) with every run inside a memory scope whose cgroup the kernel holds to 12 GiB, so a runaway mutant is killed alone and cannot shut the runner down (a job proves it on every run), each mutant tested under cargo-nextest with the extended tier, and the report expects that many; each push's pass has a concurrency group of its own, so no later push cancels or replaces it, while a pull request's newer commit cancels its older; the weekly pass runs only while public or by hand, and reports its survivors; every run skips the doctests, stops a mutant at ten times the baseline, stops itself inside its job, and lists the mutants it was given, and its report fails on a run that tested fewer or a shard that sent nothing |
-| `TestTheRustTestsLinkNoPython` | every workflow and the local gate leave `online-py` out of `cargo test`, so no test binary links libpython |
+| `TestTheRustTestsLinkNoPython` | every workflow and the local test gate leave `online-py` out of `cargo test`, so no test binary links libpython |
 | `TestTheLinuxPrepIsOneAction` | the step that frees the disk and swaps in `lld` is one composite action, called after the checkout and on Linux alone |
 | `TestActionsArePinnedToCommits` | every external action is pinned to a commit, with the version it names in a comment |
 | `TestTheDeclaredRustVersionBuildsTheLock` | the workspace's `rust-version` covers every locked dependency's own |
@@ -642,10 +757,13 @@ thirteen classes, counted on 2026-11-08:
 
 ### Downloaded data in CI
 
-No dataset is in the repository, and none is published anew: the public
-sets stay at their sources, and CI keeps a copy of each where only this
-repository's workflows can read it. Three copies stand between a run and a
-server that is down.
+**No dataset is in the repository, and none is published anew.** The
+public sets stay at their sources, and CI keeps a copy of each where only
+this repository's workflows can read it. Downloads are cached under
+`.cache/`, and a test that needs one skips offline: the public intraday
+data (`tests/data.py::public_intraday`), the released wheels, the day of
+quotes and trades, and the public benchmark sets. Three copies stand
+between a CI run and a server that is down.
 
 1. **The Actions cache**, keyed on the list of sets alone:
    `uv run python scripts/oracles.py datasets [--suite] --digest` hashes
@@ -657,14 +775,13 @@ server that is down.
    own `.cache/`, which nothing clears either.
 2. **The `oracle-datasets` artifact**, on a cache miss. The repository's
    caches sit at GitHub's 10 GB limit, most of it Rust's build caches, and
-   GitHub then evicts the least recently used entry; that took the 0.9 MB
-   dataset entry just as Fränti's server stopped answering, and the oracle
-   run failed. An artifact is kept for its retention period (90 days)
+   GitHub then evicts the least recently used entry, which can be the
+   datasets' entry. An artifact is kept for its retention period (90 days)
    whatever the cache does. `.github/actions/last-datasets` copies the
    newest unexpired one, from a run of this repository's `main`, into
    `.cache/`, file by file, leaving every file already there. It holds the
-   ledger's sets, which the oracle job has uploaded every run; it reads the
-   artifact and publishes nothing.
+   ledger's sets, which the oracle job uploads every run. The action reads
+   the artifact and publishes nothing.
 3. **`oracles.py fetch`**, which downloads only what is still missing: a
    set already in `.cache/` is read there. Under CI (`CI` set) a download
    is tried five times, 5, 10, 20 and 40 seconds apart, so a server down
@@ -678,24 +795,22 @@ Where each runs:
 | job | cache | on a miss | then | a set it cannot get |
 |---|---|---|---|---|
 | `oracles.yml`, `datasets`, a push or by hand | `oracle-data-<digest>`, the ledger's sets | the artifact | `fetch`, three rounds | fails the job by name, before any grid runs |
-| `oracles.yml`, `datasets`, the weekly sweep | not read | — | `fetch` afresh first, so a set changed at its source is measured; a set an outage withholds is filled from the artifact, with a warning naming it, and fetched again | fails the job by name (only when the artifact lacks it too) |
+| `oracles.yml`, `datasets`, the weekly sweep | not read | — | `fetch` afresh first, so a set changed at its source is measured; a set an outage withholds is filled from the artifact, with a warning naming it, and fetched again | fails the job by name, before any grid runs (only when the artifact lacks it too) |
 | `ci.yml`, `test`, every leg | `test-data-<OS>-<digest>`, the ledger's sets and `SUITE` (Binance's days and the day of quotes and trades, NIST's NumAcc sets) | the artifact | `fetch --suite`, one round | a warning naming it, and each test that reads it fails, naming it |
 
 The cache is saved where it missed, and in `ci.yml` only once every set is
 in hand, so an entry is never short of one. Binance's days and the quotes
 are in no artifact (only the ledger's sets are published), so the CI cache
-is their one copy: on a miss with Binance down, their tests fail. Without
-these copies, Fränti's server timed out from the runners on nearly every
-leg of the 25 CI runs to 2026-11-05, and the two oracle guards that read
-its sets skipped on each. A test that reads a new public set adds it to
+is their one copy: on a miss with Binance down, their tests fail. A test that reads a new public set adds it to
 `SUITE` (or to its ledger group's `dataset`), or CI fetches it only when
 the test runs and keeps no copy.
 
 **Where the datasets were restored, a test skipped as offline fails.** A
 test whose set cannot be downloaded skips, so a desk with no network still
 runs the suite. In `ci.yml`'s `test` job and in each oracle grid's shard
-the sets are in place before the tests start, so there such a skip means every copy above failed. Among hundreds of
-tests a skip is easy to miss: those two guards skipped on every such leg while the run passed.
+the sets are in place before the tests start, so there such a skip means all three copies, the cache, the artifact
+and `fetch`, failed. Among hundreds of tests a skip is easy to miss, and the run
+would pass without its check.
 The two steps set `POLARS_ONLINE_DATASETS_RESTORED=1`, and
 `tests/offline_skips.py` then turns a skip whose reason begins with the
 loaders' `offline: could not download ` into a failure that names the set
@@ -703,12 +818,10 @@ loaders' `offline: could not download ` into a failure that names the set
 the canary, the release's Polars and NumPy legs and the CPU-path runs also
 run the suite under `CI` and restore nothing, so there an outage at a
 source is a skip, as on a desk. A released wheel or PyPI's list of
-releases, of which no job keeps a copy, skips everywhere. The weekly sweep
-changes nothing here: its `datasets` job already fails, naming the set,
-before any grid runs when neither a fresh download nor the artifact has
-it, as a push's does when its copies fail. So a grid fails here only on a
-set its ledger group does not name, which the `datasets` job never
-fetched; naming the set there mends it.
+releases, of which no job keeps a copy, skips everywhere. An oracle grid
+fails here only on a set its ledger group does not name, which the
+`datasets` job never fetched. Naming the set in the group's `dataset`
+mends it.
 
 ### The machines and the CPU paths
 
@@ -716,7 +829,7 @@ Two things a CI leg does not choose decide the last bits of a numeric test.
 
 - **The math library.** On Windows, `exp`, `ln`, `exp2`, `powf` and
   `exp_m1` come from `ucrtbase.dll`, for Rust, CPython and NumPy alike. That
-  DLL is part of the operating system and changes with the Windows build;
+  DLL is part of the operating system and changes with the Windows build.
   glibc and Apple's library are fixed per runner image. A Rust bound
   measured at 0.9 of its limit on glibc and Apple's `exp` came out at 1.7 on
   Windows Server 2025.
@@ -731,7 +844,7 @@ Two things a CI leg does not choose decide the last bits of a numeric test.
 
 So CI does three things about them.
 
-| what | where | what it buys |
+| what | where | what it gives |
 |---|---|---|
 | two Windows builds | `ci.yml` runs every Windows leg on `windows-latest` (Server 2025) and `windows-2022` (Server 2022), at both Pythons | two `ucrtbase.dll`s for each bound to hold against |
 | the machine, first | every job that can run on Windows, and every leg of `ci.yml`'s test job, starts with `.github/actions/machine-report` | the CPU model, its L2 and L3, whether it has AVX2, AVX-512F and FMA, the logical cores, the OS build and its math library (`ucrtbase.dll`'s file version, glibc's version), in the log and the job summary, so a failure names its machine |
@@ -749,8 +862,8 @@ products and factorizations or compare against `crate::oracle`, the list in
 the job's `SDE_TESTS`. `tests/test_cpu_paths.py` fails when a module that
 does either is missing from it. The tests are a release build with the
 debug build's assertions and overflow checks on, so the tests that expect an
-assertion still pass. Natively the 910 tests took 6.1 seconds on an Apple
-M4 Pro at a load of 30 on its 14 cores; SDE runs code 10 to 100 times
+assertion still pass. Natively the 910 tests took 6.1 seconds on 2026-10-24, on an Apple
+M4 Pro at a load of 30 on its 14 cores. SDE runs code 10 to 100 times
 slower, slowest where it emulates AVX-512 on a host without it.
 
 | leg | what the tests see |
@@ -839,7 +952,7 @@ No leg forces AVX-512 kernels. OpenBLAS runs a forced core type without
 checking the CPU (`force_coretype` in its `driver/others/dynamic.c`), so
 SkylakeX on one of the pool's AMD machines would stop at an illegal
 instruction. Running these tests under SDE instead would make that leg
-independent of the machine; it has not been tried. Until then the pool's
+independent of the machine, but it has not been tried. Until then the pool's
 Intel machines run those kernels in `ci.yml`, and the machine report says
 when.
 
@@ -910,7 +1023,7 @@ they drift far. So `oracles.toml`, the ledger, holds each case's error as
 measured. Every run is held to those fixed numbers, never to the run
 before, as `budgets.toml` holds the speed. The user set the aim on
 2026-10-25: "a way not to drift from all the oracles and data sets for
-every parameter test", without more long tests in the gate.
+every parameter test", without more long tests in the test gate.
 
 | file | holds |
 |---|---|
@@ -921,9 +1034,14 @@ every parameter test", without more long tests in the gate.
 | `tests/test_oracle_ledger.py` | the hash guard, and the rules: the ledger well formed, every grid of a registered module recording, every module with a grid registered or listed as waiting |
 
 **A grid registers in two calls,** `ledger.guard` at module level and
-`ledger.record` in the test. [Update the oracle
-ledger](contributing/update-the-oracle-ledger.md#register-a-new-grid)
-shows both, and how a group's id is formed.
+`ledger.record` in the test. [Register an oracle
+grid](contributing/register-an-oracle-grid.md) shows both, and how a
+group's id is formed. Every module with a grid
+registers. One that could not yet would be listed in `tests/ledger.py`'s
+`PENDING` with the reason it waits, and the rules test fails when a module
+with a grid is in neither. The rules test finds a grid by its mark on the
+test, its class or a parameter, directly or through a module-level name
+such as `marks=_GRID`.
 
 **A test that records carries the `oracle_grid` mark.** `rerun` and CI run
 nothing else, and a case of the ledger that CI's complete run did not
@@ -931,15 +1049,14 @@ measure fails its check. So a single deterministic case whose bound has
 room to drift in joins the grids' tier to be held. NIST's certified regressions are such
 cases, whose bounds are the theory's and sit up to six hundred times
 above the error each solve reaches, and TCPD's annotated series are too, whose F1
-bounds sit 0.05 under the measured. The gate holds their outputs by the
+bounds sit 0.05 under the measured. The test gate holds their outputs by the
 hash instead. A single-seed second opinion in the essentials whose bound
 has room, and that no grid covers, keeps its cheap check and gains a twin
 in `tests/test_second_opinion_grids.py`: the same design over 50 seeds,
-against the same oracle, recorded. The twins found two of the five
-single-seed bounds narrower than the seeds' spread, and hold the measured
-spread. The third was a defect: `marginal`'s windowed lag correlations
-were centered at the running mean as it stood, 0.165 from `acf` over the 50
-seeds, and are now held to their definition to rounding.
+against the same oracle, recorded. Of the five
+single-seed bounds, two were narrower than the seeds' spread, and their
+twins hold the measured spread. A third twin holds `marginal`'s windowed
+lag correlations to their definition, to rounding.
 
 **A case is judged by its gap from its ideal.** The gap is `|value -
 ideal|`: the ideal is 0 for an error and 1 for a score such as an ARI, a
@@ -979,7 +1096,7 @@ written on a developer's Mac, and CI's first run against the same commit
 the two platforms part. Of 1,495 cases, every statistical case but one
 agreed within 1.8%, and that one, a quantile regression's distance from
 statsmodels' `QuantReg` in its standard errors, by 2.9%. The round-off
-cases parted by up to 3.7 times: the regularised prior's fits, the NIST
+cases parted by up to 3.7 times: the regularized prior's fits, the NIST
 Grams and Wampler's polynomials. So the ledger was re-based on CI's
 `measured.json`, and every floor increased to cover both platforms. A run on
 another platform than the ledger's, such as `rerun` on a Mac, is held to
@@ -988,7 +1105,7 @@ since they are not the ones the ledger holds: a gain it sees is reported,
 not applied, and a case new to the ledger gets its table without numbers,
 which `apply` on CI's next `measured.json` fills. A version of the file
 that moves `platform` may move each number by up to the tolerance under a
-`[[rebased]]` entry, which gives the reason and a CHANGELOG line; a larger
+`[[rebased]]` entry, which gives the reason and a CHANGELOG line. A larger
 move, or a wider floor, still needs its own `[[raised]]` entry.
 
 **An increase needs its reason and a CHANGELOG line.** `scripts/oracles.py
@@ -1022,14 +1139,12 @@ its source is measured too.
 downloads every set the ledger's groups name in their `dataset` (Rdatasets,
 NIST StRD, LIBSVM, Fränti's clustering sets, TCPD), retrying each, and
 fails naming any it cannot get. The shards read its files and download
-nothing. On the ledger's first CI run each shard fetched its own sets from
-a cold cache, one shard's download of Fränti's S4 failed, and its grid
-skipped as offline. Its three cases went unmeasured, and the ledger job
-failed on them. The shards also print each skip's reason (`-rfEsxX`).
+nothing, so one shard's failed download cannot leave its grid skipped as
+offline and its cases unmeasured. The shards also print each skip's reason (`-rfEsxX`).
 How that job survives an outage at a source is
 [Downloaded data in CI](#downloaded-data-in-ci).
 
-**The gate keeps a cheap guard instead of the grids.** For each group,
+**The test gate keeps a cheap guard instead of the grids.** For each group,
 `tests/test_oracle_ledger.py` calls the group's callable and hashes this
 library's outputs, with the source of the tests that record the group. Each
 test brings with it every module-level helper and constant it reaches by
@@ -1040,7 +1155,8 @@ is fixed by its pinned version, the inputs by the hash, the test by its
 source. When either moves, the test fails naming the groups and the
 `scripts/oracles.py rerun` command that reruns them, which [Update the
 oracle ledger](contributing/update-the-oracle-ledger.md) walks through. A
-hash changes only after a passing run of its oracles. Fifty-nine groups in sixteen modules hold 755 cases. A
+hash changes only after a passing run of its oracles. Sixty-seven groups in nineteen modules hold 777 cases (counted
+2026-11-08). A
 `rerun` of 38 of them, the convergence grids among them, took 10.6 minutes
 here (2026-10-26, eight processes, at a load of 5 to 35 on 14 cores); the
 first 21 groups' grids took two. A group whose callable is cheap hashes
@@ -1054,7 +1170,7 @@ load of about 6 on 14 cores: the 54 groups' callables took 5.8 s in one
 process, the slowest 0.69 s, and the guard's tests 8.6 s run serially,
 imports included. The first 21 groups' took 4.7 s and 6.0 s. The five
 second-opinion twins added 0.37 s of callables and 0.9 s of imports. The
-gate spreads them over its workers.
+test gate spreads them over its workers.
 
 **The hash survives the last bits and catches a real change.** Each float
 is rounded to 24 significant bits, a float32's mantissa, about 6e-8
@@ -1101,11 +1217,7 @@ elsewhere only the 24-bit hashes are reported.
 source moves the groups whose id names the module, or one of its aliases,
 as a word: `kmeans.rs` the `kmeans_*` groups. A source module that names
 none, such as `solve.rs`, moves every group. A test file moves its own
-groups. Every module with a grid registers. One that could not yet would
-be listed in `tests/ledger.py`'s `PENDING` with the reason it waits, and
-the rules test fails when a module with a grid is in neither. The rules
-test finds a grid by its mark on the test, its class or a parameter,
-directly or through a module-level name such as `marks=_GRID`.
+groups.
 
 ### Budgets that only tighten
 
@@ -1117,7 +1229,7 @@ against the last. There are three kinds:
 
 | kind | what is measured | where it runs | tolerance |
 |---|---|---|---|
-| `instructions` | the instructions one block of 1,000 rows executes, after 2,000 rows of warm-up, counted by Callgrind. The cases are the lists in `crates/online-bench/src/lib.rs`: a step of each of the 22 models at a standard width, and beside them the costlier options (`ewridge` at 50 features with 10 targets folded into a 64-row block's merge, `huber`'s feature sets and `ridge_scale="sum"`, `sgd`'s Huber loss, `bocpd`'s full run, `ew_cov`'s lags, `marginal`'s Huber bins, and `corrchange`'s monitor and window); the clock's step on a float and on a nanosecond clock; `Bank::fit_predict` around `seqtest` and around `ewridge`, as one stream and as 1,000 groups of one row each, and around a window target that holds 1,000 rows back; four window operators through `WindowsRun::feed`; and `Bank::fit_predict` of 8,192 rows of `ew_cov`'s 230 statistics on a pool of one thread | `.github/workflows/budgets.yml`, on Linux | 2% |
+| `instructions` | the instructions one block of 1,000 rows executes, after 2,000 rows of warm-up, counted by Callgrind. The cases are the lists in `crates/online-bench/src/lib.rs`: a step of each of the 22 models at a standard width, and beside them the costlier options (`ewridge` at 200 features, `ewridge` at 50 features with 10 targets folded into a 64-row block's merge, the refit of the first rows of `huber`, `sgd`'s Huber loss and `quantile`, `huber`'s feature sets and `ridge_scale="sum"`, `sgd`'s Huber loss, `bocpd`'s full run, `ew_cov`'s lags, `marginal`'s Huber bins, and `corrchange`'s monitor and window); the clock's step on a float and on a nanosecond clock; `Bank::fit_predict` around `seqtest` and around `ewridge`, as one stream and as 1,000 groups of one row each, and around a window target that holds 1,000 rows back; five window cases through `WindowsRun::feed` (a mean, a sum and two quantiles, one within a window and one running, and a sum over 10,000 groups); and `Bank::fit_predict` of 8,192 rows of `ew_cov`'s 230 statistics on a pool of one thread | `.github/workflows/budgets.yml`, on Linux | 2% |
 | `memory` | the bytes per row of every output field of every model with every output it has switched on, over 20,000 rows, from `estimated_size()` | `tests/test_budgets_memory.py`, on every CI leg | 2% |
 | `rss` | the peak resident memory a standard run adds over its process's baseline, per platform, in MiB, for six runs: `ewridge` with ten targets over 200,000 rows; `ew_cov`'s 230 moments a row over 200,000; an eager `predict` of 1,000 features over 20,000 rows; a windowed `ewridge` (`window_size` 20,000) over 200,000; `bocpd` holding up to 200 runs over 50,000; and five million rows streamed from one parquet file to another. The streamed run has Polars reading one row group ahead on four threads, and the allocator giving freed pages back at once (`_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0`, `MIMALLOC_PURGE_DELAY=0`), so its peak is the live memory. A control reads the same rows whole before the plan, and must exceed the streamed run's budget | the same file, in the extended tier: held on CI at each OS's floor Python, on Windows on `windows-latest` alone, and reported everywhere else, since the interpreter alone moved macOS's peak 18-20% between 3.12 and 3.14, the machine moved the streaming run's 23%, and Windows Server 2022 and Server 2025 read the six runs up to 8% apart on one build, so the two images would each tighten the budget below the other | 30% over: two runs of one build on one CI runner read 14-18% apart; tightened at 7.5% under |
 
@@ -1205,7 +1317,7 @@ Each thin spot, why it is thin, and where it stands:
 |---|---|---|
 | case-insensitive file names on Windows | no test covers it; file locking on a state's rewrite and long paths (`\\?\`) are tested | open since 2026-09-25 |
 | a network share path, `\\server\share\...` | out of a CI runner's reach | untested; drive letters, the `\\?\` extended-length form and paths with spaces pass on both Windows legs |
-| `windows.rs`, `windows_frame.rs`, `formula.rs`, `resolvers.rs` and `targets.rs`, the newest code in `crates/online-polars/src/` | outside the mutation scope, which is `online-core` and `span.rs`, as the rest of `online-polars` is; the first four postdate the coverage run of 2026-09-27 | held by the oracles and resume tests of [The window operators and formula targets](#the-window-operators-and-formula-targets), and by the tests that pin each finding of the checks of 2026-10-03 |
+| `windows.rs`, `windows_frame.rs`, `formula.rs`, `resolvers.rs` and `targets.rs`, the newest code in `crates/online-polars/src/` | outside the mutation scope, which is `online-core` and `span.rs`, as the rest of `online-polars` is; the first four postdate the coverage run of 2026-09-27 | held by the oracles and resume tests of [The window operators and formula targets](#the-window-operators-and-formula-targets), each test's docstring stating the case it holds |
 | the weekly mutation pass over all of `online-core` | the first to finish, on 2026-10-04, ran at a time limit that counted most survivors as timeouts, so its 11 survivors are a floor | the limit corrected on 2026-10-04, to ten times the baseline's test run; a pass at the new limit is the next count; [Mutation survivors](#mutation-survivors) |
 
 Two things are worth doing periodically rather than once:
@@ -1286,37 +1398,20 @@ size of the difference against the bound, so the claim can be checked, and
 the report lists them by kind rather than hiding them.
 
 **Equivalent mutants are left alone deliberately: no test can kill them.**
-Two from the first passes show the kind. Flipping `Ftrl::weight`'s
-`zz < 0.0` sign test to `<=` changes it only at `zz == 0`, which the
-`|zz| <= l1` guard above it has already returned on. In Holt's
-`beta > 0.0 && d_clock > 0.0`, the second test can never decide, because
-beta is `1 - 0.5^(d/half_life)`, zero exactly when d is. Holt's note in the
-source stood until a rewrite of `holt` (`ddc9d91`) removed `beta`, and the
-branch with it. FTRL's branch, now in `Ftrl::weight_of` in
-`crates/online-core/src/ftrl.rs`, is recorded in
-`scripts/mutants_equivalent.toml` with that reason.
+Flipping `Ftrl::weight_of`'s `zz < 0.0` sign test to `<=` changes it only at
+`zz == 0`, which the `|zz| <= l1` guard before it has already returned on,
+so `scripts/mutants_equivalent.toml` records it with that reason.
+`SlotMetrics::update_with`'s `denom > 0` against `>=` is another: a scored
+row's `w > 0` keeps `denom` positive.
 
-**The last whole-crate count recorded here is run 3's, on 2026-08-30: 217
-missed**, 8.3% surviving, down from 31% at the first-ever pass. Most were in
-`lasso.rs` (50), `stats.rs` (45) and `ewridge.rs` (42), and each of those
-files has since been triaged until every mutant in it is caught or recorded
-with its reason. The triage, newest first:
-
-| scope | date | missed at the start | at the end |
-|---|---|---|---|
-| the 698 mutants the push to `103d721` left untested at the job's time limit, and the lines two batches of fixes changed that day, in `kalman.rs`, `sgd.rs`, `pa.rs`, `rls.rs`, `robust.rs`, `stats.rs`, `lasso.rs` and the cluster summaries | 2026-10-08 | 71, run locally on the essentials tier | 55 caught by twenty-one new tests, 14 equivalent, 2 tolerated (rounding); and one of the equivalents the triage of `103d721`'s changed lines listed, `ewridge`'s `coef_variance` guard, was not: `Q ≤ W²` fails in doubles once `W²` underflows while `λ > 1/2` keeps `Q` at `2^-1074`, and a test now catches it |
-| the lines the push to `103d721` changed, in `kalman.rs`, `ewridge.rs`, `clock.rs` and `lasso.rs` | 2026-10-08 | 105, run 37834489097 | 86 caught by ten new tests, 19 equivalent; two of those went with the code that left a fit with no kept column NaN and `inf` live, where a resumed stream read its documented values |
-| `lasso.rs` and `ewridge.rs`, afresh | 2026-09-27 | 104 of 906, and 152 timed out | every mutant caught or recorded, after two `--iterate` rounds |
-| the lines a batch of performance fixes changed in `gaps.rs` and `ewlagcov.rs` | 2026-09-27 | 43 viable | 42 caught, the other equivalent |
-| `stats.rs`, on its own | 2026-09-24 | 48 of 285, no timeouts | 5: one caught since, and four equivalent |
-
-**`lasso.rs` and `ewridge.rs`.** The tests that closed them lean on
-third-party oracles where there is one. Every `ewridge` solve is held to its
-closed form, solved by `faer` (already a dependency, and not the model's own
-Cholesky). It is held to scikit-learn's `Ridge` too, in
-`tests/test_second_opinion.py`, 20 cases to 1e-8. `lasso` without an
-intercept and no penalty is held to least squares through the origin, again
-by `faer`. The rest hold a definition written out:
+**`lasso.rs`, `stats.rs` and `ewridge.rs`, the files that once held most
+survivors, have every mutant caught or recorded with its reason.** The
+tests that close them lean on third-party oracles where there is one. Every
+`ewridge` solve is held to its closed form, solved by `faer` (already a
+dependency, and not the model's own Cholesky). It is held to scikit-learn's
+`Ridge` too, in `tests/test_second_opinion.py`, 20 cases to 1e-8. `lasso`
+without an intercept and no penalty is held to least squares through the
+origin, again by `faer`. The rest hold a definition written out:
 
 | quantity | held to |
 |---|---|
@@ -1324,25 +1419,7 @@ by `faer`. The rest hold a definition written out:
 | the window's Kish count and residual spread | the rows inside the window |
 | the solve schedule | a count, row by row |
 | a zero-weight copy of every row | no change, to the bit |
-| a saved state | its bytes, since an in-memory `State` clones the kept factors and hid their rebuild |
-
-**`stats.rs`.** Rerun on its own, it left 48 of 285 missed: 30 in
-`P2Quantile`, 12 in `EwAutoCorr` and 6 in `SlotMetrics`, with no timeouts.
-Oracle tests closed them:
-
-| survivors in | held to |
-|---|---|
-| `P2Quantile` | the algorithm box of Jain & Chlamtac (1985), marker by marker, written from the paper, on a continuous stream and a discrete one, where markers tie |
+| a saved state | its bytes, since an in-memory `State` clones the kept factors and would hide their rebuild |
+| `EwQuantile` | the exponentially weighted quantile's definition, row by row |
 | `EwAutoCorr` | a regime switch, invariance under a shift and a scale, a zero co-moment before the first pair, and `same_shape`'s bounds |
 | `SlotMetrics` | `weight_sum`'s definition and the strict 0.5 threshold |
-
-After them, 5 of 285 were missed. The discrete stream catches one, the tie
-at the minimum, and the other four were equivalent mutants. Three were in
-`P2Quantile`. One was `d_sign > 0` against `>=`, where `d_sign` is only ever
-±1. The other two were the two `<` of the parabolic order check against
-`<=`, which differ only when the prediction lands exactly on a neighbor.
-On 2026-10-02 `EwQuantile` replaced `P2Quantile`, which never forgot. It is held
-to the exponentially weighted quantile's definition row by row, and the three
-equivalents went with `P2Quantile`. The fourth is still listed: `SlotMetrics::update`'s
-`denom > 0` against `>=`, where a scored row's `w > 0` keeps `denom`
-positive.

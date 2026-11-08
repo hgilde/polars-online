@@ -1,4 +1,5 @@
-"""The public API, rendered to text and pinned (docs/contributing/change-the-api.md).
+"""The public API, rendered to text and pinned (docs/contributing/change-the-api.md;
+docs/RELEASE-READINESS.md, "What the API snapshot pins").
 
 The public surface is much larger than `__all__`: it includes every spec
 constructor's keyword names **and default values** (changing a default silently

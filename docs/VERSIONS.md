@@ -15,8 +15,9 @@ promise it.
 **Version 1.0 starts this package's promise of a stable API.** A minor
 release adds to it, and may rename a stable part while the old name keeps
 working. Only a major release removes a stable part or changes a default
-or a meaning, apart from a few defaults that minor releases changed, each
-with the setting that restores it. The package follows semantic versioning, and
+or a meaning. Minor releases changed a few defaults all the same, each
+with the setting that restores it. The package follows semantic
+versioning, and
 [CHANGELOG.md](../CHANGELOG.md) lists what each release changed.
 
 ### Pinning the version
@@ -36,16 +37,18 @@ them back.
 **Code written for 0.x needs the changes the CHANGELOG lists under
 *Changed (breaking)* before it runs on 1.0.** Version 1.0 renamed and
 removed parts of the 0.x API, to make it more standard and consistent. A
-[spec](GLOSSARY.md#the-model-bank-and-what-it-reads) keyword that 1.0
-renamed is refused with an error that names the new one.
+[spec](GLOSSARY.md#the-model-bank-and-what-it-reads) keyword renamed up to
+2026-10-07 is refused with an error that names the new one. One renamed on
+2026-10-11, when the parameters took the names 1.0 keeps, is still read,
+with a warning, until 2.0 ([Names that changed](#names-that-changed)).
 
 ### What is stable
 
 **Stable means part of this package's API, and a breaking change to a
 stable part needs a new major version.** `tests/test_api_surface.py`
 compares the stable parts with a snapshot of them, `tests/api_surface.txt`,
-so a change to one shows as a diff in review. The command line's exit
-status is held by a test of its own. An unstable part can change its form
+so a change to one shows as a diff in review. The command line's [exit
+status](RUNNER.md#exit-status) is held by a test of its own. An unstable part can change its form
 in any minor release:
 
 | | what it covers |
@@ -62,7 +65,10 @@ unstable across its versions. The Arrow export's input side still arrives
 as a Polars frame, and its import is not built. `po.sim` and `po.corr`
 stand beside the bank: neither reads its outputs, as `po.eval` and
 `po.gram` do. `po.sim`'s frames also rest on NumPy's `Generator`, which
-promises no stream across NumPy versions.
+promises no stream across NumPy versions. `po.gbdt` is built on the
+boosting libraries' C interfaces and on how their Python classes hold a
+native handle, so a new version of one of those libraries may need a new
+release of this package.
 
 ### What the API is
 
@@ -77,18 +83,12 @@ change to one shows as a diff in the snapshot:
 | defaults | every default, whether a builder sets it in Python or the bank resolves it in Rust from a keyword left as `None` | no error: it silently changes your numbers, which is worse than breaking your code |
 | state files and the TOML config | a state file's layout and version, and every key of a run config, a spec and each model type | a file or a config that loaded before is refused |
 
-**A state file carries the versions that decide whether it loads.** It is
-versioned msgpack, with the schema version, `SCHEMA_VERSION`, which
-`po.schema_version()` gives and which moves with every layout change, and
-a bank `format_version`: 2, or 3 when a spec carries a clock parameter as
-a duration. The bank refuses a file older than `MIN_BANK_SCHEMA_VERSION`
-(`crates/online-polars/src/bank.rs`) by its version, and the models' own
-states have a floor of their own, `MIN_SCHEMA_VERSION`, beside
-`SCHEMA_VERSION` in `crates/online-core/src/lib.rs`. A window run's state,
-from `with_windows`, has its own version, `WINDOWS_VERSION`
-(`crates/online-polars/src/windows_frame.rs`), and a change to it moves the
-bank's schema too. The state of `po.stream.refresh_time` has its own
-version, `REFRESH_VERSION` (`crates/online-polars/src/refresh.rs`).
+**A state file records the schema version that decides whether it
+loads.** `po.schema_version()` gives the installed release's, which moves
+with every change to a state's layout. A release refuses a file whose
+schema is older than the oldest it loads, by that version. A window run's
+state and a `po.stream.refresh_time` state each carry a version of their
+own.
 
 ### What each kind of release may change
 
@@ -108,10 +108,11 @@ the model's stated definition, the update equations its docstring gives:
 
 ### Defaults changed in a minor release
 
-**Some defaults have changed in a minor release, against the table's row
-for a changed default.** Each was the maintainer's decision, and the
-CHANGELOG declares each with its size. Those below move a fit's numbers,
-and each can be set back to its old value:
+**Some defaults have changed in a minor release, against the row for a
+changed default in [What each kind of release may
+change](#what-each-kind-of-release-may-change).** Each was the maintainer's
+decision, and the CHANGELOG declares each with its size. Each moves a
+fit's numbers, and each can be set back to its old value:
 
 | parameter | release | old default | new default | to set the old default |
 |---|---|---|---|---|
@@ -176,9 +177,10 @@ the new count does not reach it.
 The budget bounds the rows that the refits of all of a spec's groups hold.
 Each group reserves the most its refit can hold when the bank first sees
 it. The group whose reservation would pass the budget keeps its one-pass
-fit, and so does every new group after it. The same release keeps 40 more
-bytes for each held row: the row's one-pass residual, and its place in the
-tree that the residuals' exact median is read from while the refit waits.
+fit, and so does every new group after it. The same release keeps 48 more
+bytes for each held row: 8 for the row's one-pass residual, and 40 for its
+place in the tree that the residuals' exact median is read from while the
+refit waits.
 At 5 features and 500 rows a target now reserves 124 KB where it reserved
 100 KB, so 256 MiB would refit 2,164 such targets where it refit 2,684.
 320 MiB refits 2,706. Where the budget binds, a bank holds up to 64 MiB
@@ -206,20 +208,24 @@ every `window_rows` rows.
 
 ### Renamed names
 
-**A spec parameter renamed after 1.0 is forwarded by a table, and any
-other renamed name by a forwarding of its own.** The table reads a spec
-builder's old keyword, a spec dict's old key and a TOML file's old key as
-the new one, at any depth of a spec. It does not reach another function's
-keyword, a function, a word a parameter takes, a command-line flag, an
-environment variable, an output field or a frame column. Each of those
-ships its own forwarding in the release that renames it: a check at the
-function's top, a stub, an alias or a second column. Both warn with
-`PolarsOnlineDeprecationWarning`, and both last until the next major.
+**A renamed spec parameter, or a renamed word of one, is forwarded by a
+table, and any other renamed name by a forwarding of its own.** The tables
+read a spec builder's old keyword, a spec dict's old key, a TOML file's old
+key and an old word of a spec parameter as the new one, at any depth of a
+spec. A table covers every model, or the one model whose name changed.
+They do not
+reach another function's keyword or the words it takes, a function, a
+command-line flag, an environment variable, an output field or a frame
+column. Each of those ships its own forwarding in the release that renames
+it: a check at the function's top, a stub, an alias or a second column.
+Both warn with `PolarsOnlineDeprecationWarning`, and both last until the
+next major.
 
 ### Names that changed
 
-**Older pages, notes and the CHANGELOG use the names of their day, so
-look an old name up here.** On 2026-10-02 the
+**Each name renamed or removed since 0.x has one current name or
+replacement, listed by its old name.** Older pages, notes and the
+CHANGELOG use the names of their day. On 2026-10-02 the
 public parameters and output fields were renamed to Polars' words. A few
 other changes renamed one name each, and four surfaces were removed. A
 spec that passes a parameter renamed on 2026-10-02 is refused, and the
@@ -282,13 +288,20 @@ state file a 0.x release saved does not load in 1.0.** A
 [state](GLOSSARY.md#saving-and-serving) is everything a bank has learned.
 The oldest layout a build loads stays at 1.0's for the whole 1.x series,
 and each change to a state's layout ships a loader for the layout before
-it. A saved state of each kind, frozen in the test suite, checks it three
-ways, apart from the cases listed under the next paragraph. The current layout's
+it. A 0.x state is refused by its schema version, with an error that says
+to fit the bank again on its input ([A bank's state and resuming
+it](explanation/state-and-resuming.md)). The 0.x releases wrote schema 14
+(0.10.0), 17 (0.11.1), 19 (0.12.0) and 20 (0.13.0), and on 2026-10-03 the
+release of that day refused every file each of them saved.
+
+**A saved state of each kind, frozen in the test suite, checks the 1.x
+promise three ways,** apart from the states of a model whose computation a
+release changed. The current layout's
 frozen states load, continue to the bit, and save back byte for byte. A
 previous layout's frozen states load through its loader, continue to the
 bit, and save back as the current layout's bytes of the same case. So,
-outside those cases, the loader turns a state into what this build writes
-from the same rows. [Why a state loads in later
+outside those cases, the loader turns a state into what the newer release
+writes from the same rows. [Why a state loads in later
 versions](explanation/state-and-resuming.md#why-a-state-loads-in-later-versions)
 gives the reasons.
 
@@ -312,38 +325,22 @@ the change, or in this list:
 | 1.4.0 or earlier | a bank under the default `refit_budget` | the groups it gave up stay given up, every group it holds continues to the bit, and a group it first sees after the load refits until 320 MiB is reserved |
 
 **The two unstable formats are outside that promise:** a window run's
-state, and a formula target inside a bank's state. A 0.x state is refused
-by its schema version, with an error that says to refit it from its input
-([A bank's state and resuming it](explanation/state-and-resuming.md)). The
-0.x releases wrote schema 14 (0.10.0), 17 (0.11.1), 19 (0.12.0) and 20
-(0.13.0), and on 2026-10-03 each saved all 30 specs of the test's workload
-and this build refused every file by its version.
+state, and a formula target inside a bank's state.
 
-**Every release's files are checked against this build, and the 1.x
-releases are read from PyPI.** `tests/test_released_state.py` installs
-each release and runs `scripts/release_probe.py --states` under it: each
-spec of the workload is fitted on the first half of a stream and saved.
-This build must refuse each 0.x file by its version, naming "refit it from
-its input". It loads each 1.x file with its own spec, and fits the second
-half beside a bank of its own that fitted both halves. Every float, the
-closed groups, the coefficients and `marginal`'s table agree to the bit.
-Two cases differ by design: the kinds of state that go on otherwise after
-the load, and the specs whose numbers a CHANGELOG entry moved since that
-release. The test names each such spec with its entry. A blocked `ewridge` from 1.0.0 or 1.0.1, whose target sums 1.1.0
-took in another order, goes on 5.2e-16 from this build's own. The four
-releases before 1.0 are named in the test. Every 1.x release is read from
-PyPI's description of the package when the suite is collected, every final
-version not yanked, so a release is checked from the moment it is
-uploaded. Offline, the test is skipped, since it downloads the releases.
-
-**Frozen states hold the format inside the repository, and the
-released-state test holds it against what PyPI shipped.** A state of every
-model, a bank file, a `with_windows` state and a `refresh_time` state are
-frozen at each schema this build loads, from `MIN_SCHEMA_VERSION` and
-`MIN_BANK_SCHEMA_VERSION` to `SCHEMA_VERSION`
-(`crates/online-core/tests/state_fixtures.rs`,
-`crates/online-polars/tests/state_fixtures.rs`). For 1.0.0 all three
-constants stood at 61.
+**The state files of every release on PyPI are checked against each new
+release before it ships.** The 1.x releases are read from PyPI, so a
+release is checked from the moment it is uploaded. Each spec of a fixed
+workload is fitted under each release on the first half of a stream and
+saved. The new release must refuse each 0.x file by its version, with the
+message to "fit it on its input". It must load each 1.x file and go on
+over the second half to the bit, against its own fit of both halves. Two
+cases differ by design: the states of a model whose computation a release
+changed, and the specs whose numbers a CHANGELOG entry moved since that release. A
+blocked `ewridge` from 1.0.0 or 1.0.1, whose target sums 1.1.0 took in
+another order, goes on within 5.2e-16 of the new release's own. [The state
+files of earlier
+releases](RELEASE-READINESS.md#the-state-files-of-earlier-releases) has
+how the test runs.
 
 ## The Polars range
 
@@ -377,63 +374,29 @@ be any version in the range:
 | what you use | the lowest py-polars | why |
 |---|---|---|
 | `ModelBank` alone | 1.28.1 | |
-| every call that reads a query, such as `lf.online.fit_predict`, `lf.online.predict`, `ModelBank.fit` and `ModelBank.fit_predict_batches`, `with_windows` and `refresh_time` | 1.37.0 | they read with `LazyFrame.collect_batches`. Before 1.37.0 it reads ahead of a slower reader without limit: reading a 1 GB parquet file to its end as a query held 1.6 GB on 1.34.0 and 1.36.1, and 0.33 GB on 1.37.0 |
+| every call that reads a query, such as `lf.online.fit_predict`, `lf.online.predict`, `ModelBank.fit` and `ModelBank.fit_predict_batches`, `with_windows` and `refresh_time` | 1.37.0 | they read the query one chunk at a time, with `LazyFrame.collect_batches`. Before 1.37.0 Polars reads ahead of a slower reader without limit: reading a 1 GB parquet file to its end as a query held 1.6 GB on 1.34.0 and 1.36.1, and 0.33 GB on 1.37.0 |
 | the examples that stream a DuckDB, ADBC or pyarrow source into a bank | 1.43.0 | for `pl.scan_arrow_c_stream` |
 
-### The floor
+### The floor and the ceiling
 
-**The floor is 1.37.0, the first release whose `LazyFrame.collect_batches`
-waits for its reader.** Every call that reads a query in chunks reads
-with it. py-polars added `collect_batches` in 1.34.0, but until 1.37.0 it
-runs the query ahead of a reader that is slower than the scan, holding
-every batch it has not handed over. Measured on 2026-10-12 by draining
-`pl.scan_parquet` over a 1 GB source (6,000,000 rows of 21 doubles, row
-groups of 100,000) in batches of 65,536 with a 0.5 ms pause each,
-`POLARS_MAX_THREADS=4`, peak resident memory over the process's baseline
-sampled every 2 ms:
+**The floor is 1.37.0, because older py-polars reads a query faster than
+the bank takes its chunks, and holds what it has read.** Below it, a bank fed a file larger than
+memory held the whole file. `ModelBank` alone works from 1.28.1, the
+release that added the `PySeries._export` it calls.
 
-| py-polars | peak |
-|---|---:|
-| 1.34.0 | 1,586 MB |
-| 1.36.1 | 1,591 MB |
-| 1.37.0 | 329 MB |
-| 1.37.1 | 328 MB |
-| 2.0.0 | 169 MB |
-
-**Every model is slower than a parquet scan, so on 1.34.0 to 1.36.1 the
-bank held its whole input.** `lf.online.fit_predict` sunk to parquet over
-the same source peaked at 1,768 MB on 1.34.0, 920 MB on 1.37.1 and 632 MB
-on 2.0.0, and `po.gbdt`'s parquet build at 2.3 GB on 1.34.0 and 1.36.1.
-Below 1.37.0 the library could not keep the promise it is built on,
-running on data that does not fit in memory, so the floor is 1.37.0.
-
-**`ModelBank` alone works from 1.28.1, the release that added the
-`PySeries._export` it calls.** One wheel was measured against 17 py-polars
-releases, and its numbers were identical on every release where it ran.
-On 1.26.0 and 1.27.1 it failed with a clean `AttributeError` before any
-data moved, and 1.28.0 fails on a bug of its own.
-
-### The ceiling
-
-**The ceiling, `<3`, bets on measurement that the interfaces hold through
-2.x.** It moved up from `<2` in 0.5.1, on what the 2.0
-release candidate, `2.0.0rc1`, measured: the whole suite passed with the
-same numbers as on 1.44, every interface of the time worked, and
-`LazyFrame.collect_batches` was unchanged. One behavior moved in the
-library's favor: a query that fails after the bank stops the bank's
-source instead of draining it, so a bank's `save_state` is not written
-on a long stream whose query fails. Moving the
-ceiling up on a release candidate changed nothing for a user at the time,
-because installers do not resolve to a release candidate. Two runs hedge
-the bet: the blocking newest-Polars leg of every release, and the weekly
-canary.
+**The ceiling, `<3`, admits every 2.x on the strength of the 2.0 release
+candidate, on which the whole suite passed with the same numbers as on
+1.44.** Two runs hedge it: the blocking newest-Polars leg of every release,
+and the weekly run on the newest Polars. [Why the range is 1.37.0 to
+3](explanation/polars-interfaces.md#why-the-range-is-1370-to-3) gives the
+measurements behind both ends.
 
 ### Where the suite has passed
 
 **The suite passes on 2.0.0, the pin, at every change, and on the floor,
 1.37.0, before every release and once a month**
-([How a break is
-found](contributing/move-the-polars-range.md#how-a-break-is-found)). On
+([The runs that watch the
+dependencies](RELEASE-READINESS.md#the-runs-that-watch-the-dependencies)). On
 the floor on 2026-10-12, 6,762 tests passed and 27 skipped: two for a
 Windows-only path spelling, and 25 each naming the newer Polars it needs.
 Most of the 25 check against a Polars function that has changed since,
@@ -444,7 +407,7 @@ and the rest stream a database or a pyarrow reader through
 
 **The Rust `polars` inside the wheel is 0.55.2, and the command line uses
 it alone:** the `polars-online` command never touches py-polars, so the
-range above does not apply to it.
+py-polars range does not apply to it.
 
 [Polars interfaces](explanation/polars-interfaces.md) explains why a
 break on a new Polars is expected maintenance, and which paths to check

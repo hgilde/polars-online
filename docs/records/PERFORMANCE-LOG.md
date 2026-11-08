@@ -1,7 +1,7 @@
 <!-- kind: record -->
 # The performance log
 
-*Status, 2026-11-08: a record. Every dated measurement of the library's speed and memory from 2026-08-30 to 2026-11-06, moved here whole from `docs/PERFORMANCE.md` with its section numbers (§1 to §47), which code comments, tests and the other records cite. Each section reads as of its date; a later section, a release's comparison or the current figures in `docs/PERFORMANCE.md` may supersede its numbers. `docs/PERFORMANCE.md` holds the figures as they stand, how they are measured and how cost grows with size.*
+*Status, 2026-11-08: a record. Every dated measurement of the library's speed and memory from 2026-08-30 to 2026-11-06, moved here whole from `docs/PERFORMANCE.md` with its section numbers (§1 to §47, and §48, the scaling table's findings), which code comments, tests and the other records cite. Each section reads as of its date; a later section, a release's comparison or the current figures in `docs/PERFORMANCE.md` may supersede its numbers. `docs/PERFORMANCE.md` holds the figures as they stand, how they are measured and how cost grows with size.*
 
 **Section numbers are kept, so the order in the file is by topic, not by number.**
 
@@ -5974,3 +5974,61 @@ build's `target` run), 3.1 to 3.5 for the second. Seconds of wall time, each run
 - The first build was measured before its gate and never committed. A
   change to the window core's row path is benchmarked this way, the two
   modules alternating, before it goes to the gate.
+
+## How cost grows with size
+
+### 48. What the scaling table found (2026-11-05)
+
+*Provenance: moved here on 2026-11-08 from `docs/PERFORMANCE.md`'s *How
+cost grows with size*, as it stood, when that page became the reference of
+the figures as they stand. The cells, their declarations and their current
+ratios stay there. The measurements are the scaling table's own (a debug
+build, `crates/online-bench/tests/scaling.rs`) unless a figure names
+another.*
+
+Why the table exists: `with_windows(group=...)` once walked every
+group the stream had seen on every row, `O(groups)` a row. The budget case
+with 1,000 groups absorbed that cost on the day its number was set, and every
+window test used a handful of groups, where the walk costs nothing
+measurable, so it shipped in every release until a realistic shape found it.
+
+From *Specs on one stream*: the command line's runner was the
+one surface past linear, in its allocations, until finding S1 below was
+fixed.
+
+Every cell above was measured before any of them gated. Three findings
+exceeded their declaration. All three are fixed, and their cells gate
+with the rest:
+
+| finding | cell | measured | declared | the cause |
+|---|---|---|---|---|
+| S1, fixed | `runner.specs_per_call` | allocations 10.5x for 8x the specs from 8 to 64, at calls of 16 rows, and 13.3x from 16 to 128 (376,098 to 5,008,296 over three blocks of 512 rows), time 10.3x; 407 allocations a call at 16 specs and 24,770 at 128 (61x for 8x) | O(specs) a call | `crates/online-polars/src/runner.rs`, `augment`: the bank's columns were appended to the chunk one spec at a time with `DataFrame::with_column`, which looks each name up through the frame's cached schema; the insert before it dropped that cache, so each spec's struct column rebuilt the schema of every column before it, copying their fields. Now `with_columns` joins them in one pass over the names, the same frame column for column (a name the chunk has is replaced where it stands, as before): 7.79x in allocations and 7.75x in time from 16 specs to 128 |
+| S2, fixed | `hmm.k`, `ew_class.k_diag` | saved state 13.6x for 8x the columns (`hmm`, 2 to 16), 33.2x (`ew_class`, 4 to 32); now 3.1x and 5.1x | O(k) under `covariance_type="diag"` | every state or class kept its full co-moment matrix and updated it, O(k²) a row, where the diagonal model reads only the k variances. Each now keeps the k variances alone (`EwCovDiag`, `crates/online-core/src/ewcov/diag.rs`), and a window's snapshots too. A variance's update reads no other entry of the matrix, so every output is the same to the bit. At 32 features a state file of 2 states is 2,408 bytes where it was 20,251, and a row takes 242 ns where it took 425 (`ew_class`, 3 classes: 3,295 bytes where 30,065, and 324 ns where 426; Apple M-series, release build, the least of five blocks of 20,000 rows) |
+| S3, fixed | `corrchange.window`, `corrchange.window_crit` | time 7.8x to 7.9x for 8x the window, with a fixed threshold too | O(1) a row in `window_rows` | `crates/online-core/src/corrchange.rs`, the `"window"` report in `step`: both windows' correlations were computed afresh from the ring on every row (`window_stat_by` over `2·window_rows` rows), O(window_rows·k²) a row. Now each window is merged from summaries of blocks of `⌈k/2⌉ + 3` rows -- a count, an anchor row, the mean's offset from it and the centred co-moments, combined by Chan, Golub and LeVeque's pairwise rule, which needs no subtraction of a row that leaves (`crates/online-core/src/window_moments.rs`): a chunk of blocks keeps its suffix sums and a running prefix sum, so a window's full blocks are one suffix and one prefix, and only the rows at its two ends are read. 0.94x and 0.96x in time from 100 to 800 rows (2.31 ms to 2.18 ms a block of 200 rows in a debug build, where the old code took 17.2 ms to 133.7 ms); natively (release, arm64, 200 draws, the default cadence), 6.6, 5.0 and 5.6 µs a row at windows of 100, 800 and 2,500 rows over four columns, where the old code at its cadence of 50 rows took 12.5, 72.0 and 296.9, and 27.8, 28.0 and 29.2 µs over twenty columns, where it took 61.5, 494.0 and 1,598.3. The summaries hold no more numbers than the ring: the state's heap is 1.8x the old one's at both sizes (23,858 and 179,762 bytes), and its saved bytes are the old ones, the summaries rebuilt from the ring on load. A window of fewer than four blocks is read whole, where the two passes cost no more. The permutation draws are a separate O(n_perm·window_rows·k²) at each redraw; unset, `permute_every_rows` is now `window_rows`, so their cost is O(n_perm·k²) a row too |
+
+A fourth defect was found after the table, by timing short calls, and is
+fixed: `Bank::fit_predict` walked every group a spec had ever seen, twice a
+call -- once building a map of every group's state to take the chunk's out
+of it, once taking every group's readiness notices -- so a call's fixed
+cost grew with the groups behind it. A call of four rows to one group cost
+0.83, 4.7 and 44 million instructions (50 µs, 306 µs and 16.7 ms) at 1,000,
+10,000 and 100,000 groups seen. `bank.groups_seen` missed it: its calls are
+1,000 rows, over which the walk was a small share. Now a spec keeps its
+groups' states in an index map, a call borrows its chunk's states at once by
+their places in it, and it takes the notices of those groups alone, the
+only states that learned in it and so the only ones that can hold one; the
+notices now come out by spec and then in the order their groups' rows first
+arrive in the chunk, where they followed the hash map's order. The same call
+costs 0.39 million instructions and 22-23 µs at every one of the three sizes,
+with the same 257 allocations (Apple M-series, an optimized build, the least
+of three runs of seven blocks of 200 calls, a pool of one thread). The new
+cell `bank.groups_seen_per_call` holds it: 4.95x in time from 1,000 to
+8,000 groups on the old code, 1.00x now.
+
+Three declarations were corrected, each the algorithm's own growth:
+`rcov.k` (O(k) to O(k²): each lag of the kernel adds a k×k outer product,
+as `rcov`'s documentation says), `rcov.block_rows` (O(1) to O(n^(3/5)): the
+automatic bandwidth's ring depth is `c·block_rows^(3/5)` lags, all read on a
+row) and `audit.history`'s saved state (O(1) to O(log rows): a counter's
+msgpack encoding lengthens as its count grows, while its heap stays flat).
+

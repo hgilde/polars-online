@@ -1,4 +1,4 @@
-"""The tools of the development loop (docs/contributing/iterate-on-a-change.md): the
+"""The tools of the development loop (docs/TESTING.md, "Iterating"): the
 compiler cache, the extension's dev build, the parallel gate and
 `scripts/quick.sh`. Each is a dev tool on a contributor's machine, so these
 hold that none of them reaches what ships or what CI runs, and that each

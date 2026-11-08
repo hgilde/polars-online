@@ -697,7 +697,7 @@ def test_publishing_a_version_whose_tag_exists_is_refused(copy):
 
 
 def test_the_versions_pages_pin_names_the_current_minor(copy):
-    """Step 5 of a release moves the example pin, in docs/VERSIONS.md since
+    """Step 8 of a release moves the example pin, in docs/VERSIONS.md since
     the README became a landing page (task 338), to the new minor, and
     nothing checked it (review 2026-10-06, CI13): a pin left on the old
     minor tells a reader to stay on it. The check runs on every dispatch,
@@ -946,7 +946,7 @@ def test_publishing_refuses_a_version_older_than_a_spec_it_is_said_to_build(copy
 def test_the_throughput_table_postdates_the_previous_release():
     """The throughput table was measured on 2026-09-29, three releases
     before anyone noticed, and a third of its rows had moved past its own
-    stated noise (review round 9, K-1). Release step 2 now pastes the
+    stated noise (review round 9, K-1). Release step 3 now pastes the
     release's ``benchmark.py`` run into it; this holds the date the table
     states to no older than the release before the newest in the CHANGELOG,
     so a release can ship the table it measured during its own steps, but
@@ -982,7 +982,7 @@ def test_the_throughput_table_postdates_the_previous_release():
 
 
 def test_publishing_with_entries_left_under_unreleased_is_refused(copy):
-    """Step 4 promotes `[Unreleased]` to the version's section, and the tag's
+    """Step 7 promotes `[Unreleased]` to the version's section, and the tag's
     notes are that section, so an entry left behind would ship with notes
     that miss it (review 2026-10-06, CI13). Publishing refuses it; a
     rehearsal does not ask, since between releases the section fills."""

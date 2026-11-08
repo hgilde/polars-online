@@ -107,7 +107,7 @@ strip = "symbols"
 strip = "none"
 
 # The extension for the loop inside a task: `maturin develop --profile
-# dev-wheel` (scripts/quick.sh, docs/contributing/iterate-on-a-change.md). The release
+# dev-wheel` (scripts/quick.sh, docs/TESTING.md, "Iterating"). The release
 # profile above without its two slow parts: thin LTO and one codegen unit
 # make the linker and the optimizer see the whole crate graph at once,
 # which is what a rebuild after a one-line change spends its minutes on.

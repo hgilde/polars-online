@@ -8,8 +8,9 @@ promise, and what a break on a new Polars looks like.
 **Treat a break on a new Polars as expected maintenance, because three of
 the four ways this library crosses into Polars carry no promise from
 Polars.** The two that stream data, `ModelBank` and the IO plugin behind
-`lf.online.fit_predict`, are among the three, so check those paths first:
-`ModelBank`, then the IO plugin's tests. The range of Polars the package
+`lf.online.fit_predict`, are among the three. So after you upgrade
+Polars, check a `ModelBank` call first, then a `lf.online.fit_predict`
+query. The range of Polars the package
 accepts is measured by this project, run by run, as [Versions and the
 Polars pin](../VERSIONS.md#where-the-suite-has-passed) lists, and not
 promised by Polars.
@@ -18,7 +19,7 @@ promised by Polars.
 
 **The wheel carries its own Rust `polars`, pinned exactly, and shares one
 process with the py-polars you install.** Data crosses between the two
-only through the four interfaces below. So the py-polars you install can
+only through [the four interfaces](#the-four-interfaces). So the py-polars you install can
 be any version in the range, and the Rust `polars` inside the wheel
 does not move with it. [What is pinned](../VERSIONS.md#what-is-pinned)
 gives the versions on each side.
@@ -31,8 +32,9 @@ language-independent binary interface whose carrier, `SeriesExport`, is a
 crosses. Each `SeriesExport` carries a `release` callback, a function
 pointer into the binary that produced it, so each side frees its own
 memory with its own allocator. `polars-ffi` 0.55.2's `import_series` goes
-through Arrow's `import_array`. 300 round trips of 5,000-row frames, and
-50 outputs kept past the inputs they came from, ran clean.
+through Arrow's `import_array`. On 2026-08-31, 300 round trips of
+5,000-row frames, and 50 outputs kept past the inputs they came from, ran
+clean.
 
 **The allocator is shared on purpose.** pyo3-polars' `PolarsAllocator`
 routes every allocation this extension makes through py-polars' own
@@ -57,7 +59,7 @@ package that names the real runtime module, which on 2026-08-31 was
 name by importing and then reading attributes, which is the only reason
 the lookup succeeds. And `PolarsAllocator` falls back to the system
 allocator without an error when the lookup fails, so a rename in Polars
-would silently cost the throughput above. `tests/test_scaffold.py`
+would silently cost the 43% gain. `tests/test_scaffold.py`
 asserts the lookup's path for that reason.
 
 **Linking the user's Polars dynamically is not possible, because Rust has
@@ -98,9 +100,9 @@ absence of `PySeries._export` is why `ModelBank` alone needs py-polars
 unwritten part of its contract is its pushdowns.** Polars pushes a
 projection, a predicate and a slice into a Python source, and does not
 re-apply any of them to what the source returns. So the source honors all
-three itself (`python/polars_online/_frame.py`, and `stream.py` for
+three itself (`python/polars_online/_frame.py`, and `python/polars_online/stream.py` for
 `with_windows` and `refresh_time`). `tests/test_frame.py` checks every
-pushdown against the collected frame, in both orders, and the weekly run
+pushdown against the frame the query returns, in both orders, and the weekly run
 on the newest Polars runs those tests.
 
 **The serialized form is read narrowly, because it is not stable.** Seven
@@ -108,3 +110,50 @@ node kinds are read, when the formula is taken, under the caller's own
 Polars, and an unknown node is refused by name. Python and Rust then
 rebuild the formula through Polars' public builders
 (`python/polars_online/_formula.py`).
+
+## Why the range is 1.37.0 to 3
+
+**The floor is 1.37.0, the first py-polars whose `LazyFrame.collect_batches`,
+which gives a query's result one chunk at a time, waits for its reader.**
+Every call that reads a query in chunks reads with it. The method arrived
+in py-polars 1.34.0. Until 1.37.0 it runs the query ahead of a reader that
+is slower than the file can be read, and holds every chunk it has not
+handed over. The measurement, on 2026-10-12, read a 1 GB parquet file
+(6,000,000 rows of 21 doubles, in blocks of 100,000 rows) as a query, in
+chunks of 65,536 rows with a 0.5 ms pause each, at
+`POLARS_MAX_THREADS=4`. It sampled the peak resident memory over the
+process's baseline every 2 ms:
+
+| py-polars | peak |
+|---|---:|
+| 1.34.0 | 1,586 MB |
+| 1.36.1 | 1,591 MB |
+| 1.37.0 | 329 MB |
+| 1.37.1 | 328 MB |
+| 2.0.0 | 169 MB |
+
+**Every model is slower than reading the file, so on 1.34.0 to 1.36.1 the
+bank held its whole input.** `lf.online.fit_predict`, its result written to
+a parquet file without holding it all in memory, peaked at 1,768 MB on
+1.34.0, 920 MB on 1.37.1 and 632 MB on 2.0.0 over the same file, and
+`po.gbdt`'s parquet build at 2.3 GB on 1.34.0 and 1.36.1. Below 1.37.0 the
+library could not keep the promise it is built on, running on data that
+does not fit in memory, so the floor is 1.37.0.
+
+**`ModelBank` alone works from 1.28.1, the release that added the
+`PySeries._export` it calls.** One wheel was measured against 17 py-polars
+releases, and its numbers were identical on every release where it ran.
+On 1.26.0 and 1.27.1 it failed with a clean `AttributeError` before any
+data moved, and 1.28.0 fails on a bug of its own.
+
+**The ceiling, `<3`, bets on measurement that the interfaces hold through
+2.x.** It moved up from `<2` in 0.5.1, on what the 2.0 release candidate,
+`2.0.0rc1`, measured: the whole suite passed with the same numbers as on
+1.44, every interface of the time worked, and `LazyFrame.collect_batches`
+was unchanged. One behavior moved in the library's favor: a query that
+fails after the bank stops the bank's source instead of draining it, so a
+bank's `save_state` is not written on a long stream whose query fails.
+Moving the ceiling up on a release candidate changed nothing for a user
+at the time, because installers do not resolve to a release candidate.
+Two runs hedge the bet: the blocking newest-Polars leg of every release,
+and the weekly run on the newest Polars.

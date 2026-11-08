@@ -18,8 +18,9 @@ for a different thing. Every page means the README, `llms.txt`,
 `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, every guide and
 map under `docs/`, the API reference's own pages under `docs/reference/`,
 the docstrings and the messages. The guides include the guides for users,
-which [docs/README.md](README.md#guides) lists under *Using the library*,
-and the contributor guides, which it lists under *Changing the library* and
+which [docs/README.md](README.md#guides) lists under *Start here*,
+*Tutorials*, the *How-tos* groups, *Reference* and *Explanations*, and the
+contributor guides, which it lists under *Changing the library* and
 *Writing the documentation*, with `CONTRIBUTING.md`, `SECURITY.md` and
 `CODE_OF_CONDUCT.md`. Two kinds of document keep their own words and are
 not pages in this sense: `CHANGELOG.md`, and the records, the documents
@@ -190,7 +191,7 @@ contributor guide may use them, since its subject is the code.
 | word | what it means | say instead |
 |---|---|---|
 | *settled* | how far a model has come toward its steady state under decay | use the field `settled_frac`, or say *how far the model has come toward its steady state* |
-| *cfg*, *ModelKind*, *ModelState*, *AnyModel* | the Rust names of a spec and a model | *the spec*, *the model* |
+| *cfg*, *ModelKind*, *ModelState*, *AnyModel* | the Rust names of a model's settings, a spec's kind, a model's saved state and a model | *the spec*, *the model* |
 | `Span` | a clock parameter as the Rust code holds it | *a value in clock units* |
 | *O(state)*, *O(data)* | how memory grows, in the code's shorthand | *memory grows with the model's state, and never with the number of rows that have passed* |
 | *O(window)* | the same shorthand, for what a hard window or a window operator keeps | *memory grows with the snapshots a hard window keeps, or the rows a window operator holds* |
@@ -208,7 +209,7 @@ contributor guide may use them, since its subject is the code.
 | *task*, meaning the work the bank gives one thread | the bank's unit of work | *the work each thread does* |
 | *stream*, meaning one spec over one group's rows | the bank's unit of parallel work, in the code's and the profiles' sense: one spec over one group, or over the whole input when the spec has no `group` | *the model's rows*; *a piece of work*, as [Use more cores](how-to/use-more-cores.md) says |
 | *slot*, meaning one value an instance writes | one field an [instance](#grids) writes on every row, such as a target's prediction or one of `ew_cov`'s statistics, in the bank's output buffers | *a field* |
-| *run*, meaning `ChunkOut::run_rows` | the rows a stream feeds through one set of the bank's output buffers before it starts the next | *the rows the bank writes at once* |
+| *run*, meaning `ChunkOut::run_rows` | the rows one spec over one group feeds through one set of the bank's output buffers before it starts the next | *the rows the bank writes at once* |
 | *section*, meaning a part of a chunk's work | one of the four parts of a chunk's work that `POLARS_ONLINE_TIMING=1` times: `extract` (reading the columns), `group` (finding each group's rows), `process` (the models) and `assemble` (building the output columns) | the part itself: *reading the columns*, *finding each group's rows*, *running the models*, *building the output* |
 | *stride*, *gather* | two ways to read one group's values from an interleaved column: a stride reads every n-th row in place, and a gather copies them into one contiguous run first | *reading a group's rows in place*, *copying a group's rows together first* |
 | *solve cadence* | how often a regression solves: every `solve_every` clock units, or by default once the weight learned since the last solve reaches `ln 2 / 50` of the weight the fit holds, which is `half_life / 50` of clock in steady state | *how often the model solves* |

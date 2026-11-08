@@ -1340,7 +1340,8 @@ pub use model_cfgs::{
 };
 
 /// One grid combo: the rendered label plus the machine values it encodes, so
-/// metadata can never drift from the string (docs/contributing/change-the-api.md).
+/// metadata can never drift from the string (docs/RELEASE-READINESS.md, "What
+/// the API snapshot pins").
 #[derive(Debug, Clone, Default)]
 pub struct Combo {
     /// Rendered suffix ("" when there is only one combo).
