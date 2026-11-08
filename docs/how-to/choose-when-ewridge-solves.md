@@ -59,8 +59,10 @@ target its first fit and where the row cap says.
 1. **Choose a schedule from the table.**
 2. **Fit it beside `max_rows_between_solves=1` in one bank,** over the same
    rows.
-3. **Compare the two specs' `pred_<target>` fields.** Time each schedule
-   in a bank of its own, as the next recipe does.
+3. **Compare the two specs' `pred_<target>` fields.**
+4. **Time each schedule in a bank of its own,** as [Space the solves under
+   `half_life=float("inf")` or
+   `lam`](#space-the-solves-under-half_lifefloatinf-or-lam) does.
 
 This code fits one stream under four schedules, at a half-life of 200
 rows, and holds each to the fit that solves on every row. A slope jumps
@@ -160,10 +162,10 @@ solve_every=1000: largest slope error 0.006
 ## Keep the solves a group's warm-up skips
 
 Use this when a group's weight stays below its floor, and you need its
-`coef` or its count of failed solves. **While a group's weight is well below
-its floor, the default schedule skips each solve that nothing would
-read.** Well below is more than about 1.4% below, and the default
-schedule is the one by weight. The floor is the least of a row per unknown (`k + 1` for `k`
+`coef` or its count of failed solves. **While a group's weight is more
+than about 1.4% below its floor, the schedule by weight skips each solve
+that nothing would read.** That schedule is the default under a finite
+half-life. The floor is the least of a row per unknown (`k + 1` for `k`
 features, `k` without an intercept) and `min_weight`. Below it every
 prediction is withheld. So a group whose weight never reaches the floor,
 such as one of two rows over two features, reports no `coef` on any row,
@@ -180,8 +182,10 @@ whose solves always run.
 
 **Hold a schedule to the fit that solves on every row, as the first recipe
 does:** fit both in one bank and compare their `pred_<target>` fields. The
-mean squared difference is what the schedule costs in staleness, and the
-time a run takes is what it saves.
+mean squared difference is what the schedule costs in staleness. What it
+saves is the time of a run, measured in a bank of each schedule's own, as
+[Space the solves under `half_life=float("inf")` or
+`lam`](#space-the-solves-under-half_lifefloatinf-or-lam) does.
 
 | what you see | what it means | what to do |
 |---|---|---|

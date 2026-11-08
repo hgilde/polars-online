@@ -11,7 +11,7 @@ misses.
 
 Five models make a claim about a stream: `deco`, `rcov`, `hmm`,
 `corrchange` and `bocpd`. This page measures all five. It also measures two
-remedies for [series that tick at their own
+ways out for [series that tick at their own
 times](how-to/align-series-that-tick-at-their-own-times.md): refresh-time
 sampling, and the lagged co-moments of `ew_cov(lags=...)`. Each model's
 entry in [MODELS.md](MODELS.md) gives its update rule and a recipe that
@@ -98,7 +98,7 @@ rows and raises 0.53 alarms per 1000. Neither is better: they answer
 different questions ([§5](#5-two-changepoint-detectors-on-the-same-break)).
 
 **Asynchrony leaves almost nothing of a correlation at the finest interval,
-and both remedies recover most of it.** A true correlation of 0.8 reads as
+and both ways out recover most of it.** A true correlation of 0.8 reads as
 0.095 from one-row returns. Refresh-time sampling recovers 0.54 from 19157
 returns, 16 % of the 119991 at the finest interval. The lag inversion of
 §6, on `ew_cov(lags=...)`, recovers 0.77 while reading every return.

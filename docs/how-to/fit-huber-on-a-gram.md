@@ -39,9 +39,7 @@ weighted least squares would need a Gram for each pass and each target.
    from there every residual is the target's level, and the first pass is
    lost.
 4. **In each pass, read the scale in a query of its own:** the
-   residuals' MAD, `s = median(|r|) / 0.6745`, for the current fit. An
-   exact median holds a value a row while it runs, so this query's memory
-   grows with the rows.
+   residuals' MAD, `s = median(|r|) / 0.6745`, for the current fit.
 5. **Build the pseudo-response in a Polars expression:** the fit, plus
    each residual clipped at `c` scales, `y* = x'b + s·clip(r/s, −c, c)`,
    with `c = 1.345`.
@@ -51,6 +49,9 @@ weighted least squares would need a Gram for each pass and each target.
    the intercept from the means. That is the next fit.
 8. **Repeat until the slopes stop moving.** In the recipe ten passes
    fix the fourth decimal.
+
+An exact median holds a value a row while it runs, so step 4's query
+takes memory in proportion to the rows.
 
 This code makes 20,000 rows of `y = 1000 + 2x` plus noise, with 50 added
 to a tenth of the rows with `x` above 0, and leaves their Gram:

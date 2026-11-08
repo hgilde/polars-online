@@ -31,7 +31,7 @@ Each form shapes only what `gram()` returns: the state itself stays
 float64 and whole, and `po.gram` reads every form in float64. float32 and
 the upper triangle each take about half the bytes of `comoments`, and
 both together a quarter. `lag_comoments` is never packed, since a lagged
-matrix is not symmetric, so it stays at half.
+matrix is not symmetric, so with both options together it takes half its bytes, from float32 alone.
 
 | `bank.gram(...)` | what it loses | what it keeps |
 |---|---|---|

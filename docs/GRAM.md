@@ -541,7 +541,7 @@ float64 at 10,000 columns. `bank.gram()` can return them in float32
 about 6e-8, and `comoments` as its upper triangle (`layout="packed"`),
 which drops the lower one. Each takes about half the bytes of
 `comoments`, and both together a quarter. `lag_comoments` is never
-packed, since a lagged matrix is not symmetric, so it stays at half.
+packed, since a lagged matrix is not symmetric, so with both options together it takes half its bytes, from float32 alone.
 The state itself stays float64 and whole. To choose a form and check what
 it cost a fit, see [Store a compact Gram](how-to/store-a-compact-gram.md).
 

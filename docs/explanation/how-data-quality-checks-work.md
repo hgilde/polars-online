@@ -212,10 +212,10 @@ same pairs differenced had `|t| > 1.96` in 2.5%.
 **The influence of one row on a least-squares fit grows without bound
 with its residual:** a residual twice as large moves the fit twice as far
 (Huber 1964). Huber's loss is squared near zero and linear past
-`huber_delta` residual scales. That scale is `huber_scale`, by default the
-exponentially weighted median absolute deviation (MAD). So a residual's
-influence is capped, and quantile
-regression caps it at a constant ([The robust scale and the refit of the
+`huber_delta` residual scales, so a residual's influence is capped. That
+scale is `huber_scale`, by default the exponentially weighted median
+absolute deviation (MAD). Quantile regression caps a residual's influence
+at a constant ([The robust scale and the refit of the
 first rows](robust-scale.md)). `sigma` is an exponentially weighted root
 mean square, so one residual of `k` times the usual size inflates it for
 several half-lives, the more the larger `k` is. When the residuals have

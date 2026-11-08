@@ -95,7 +95,7 @@ with the week as the block and these settings:
 | `target_gaps` | `"pairwise"` | one Gram per block whatever rows each target is missing on, so every block has the same targets and they pool |
 | `gram_block_rows` | `256` | adds 256 rows to the matrix in one product, 5.1 to 6.6 times as fast as one row at a time from 256 to 2,000 features ([Fit hundreds of features](fit-hundreds-of-features.md#add-rows-to-the-gram-in-blocks)) |
 | `gram_threads` | left out, so `"auto"` | runs that product on the threads the bank's other groups leave idle ([Fit hundreds of features](fit-hundreds-of-features.md#run-the-grams-work-on-idle-threads)) |
-| `group_close` | not in the recipe; `"monotone"` when the weeks arrive in order | with it and `closed_groups=` on `fit`, the bank writes each week's Gram to a file once the next week starts, and holds one week at a time ([Read Grams from saved files](read-grams-from-saved-files.md)) |
+| `group_close` | not in the recipe; `"monotone"` when the weeks arrive in order | with it and `closed_groups=` on `fit`, the bank hands each week's Gram out once the next week starts, and the pass writes them all to a file when it ends ([Read Grams from saved files](read-grams-from-saved-files.md)) |
 
 1. **Make the week column in the query,** with
    `pl.col("ts").dt.truncate("1w")` in Polars' `with_columns` before the
@@ -112,9 +112,14 @@ bytes, and so has a week of a million rows. At 10,000 columns a block is
 800 MB in float64. 9.5 million rows read as 38 weekly blocks of 10,000
 columns make 30 GB of Grams. The bank holds the Gram of every group it
 has seen, so a pass needs about `8k²` bytes for each block it holds. With
-`group_close="monotone"` and `closed_groups=` on `fit`, the bank writes each finished week out and holds one week
-at a time. [Store a compact Gram](store-a-compact-gram.md) halves or
-quarters what `gram()` hands back.
+`group_close="monotone"` and `closed_groups=` on `fit`, the bank holds only
+the open week, but the closed weeks wait in the process's memory until the
+pass ends. To hold only the weeks of one chunk at a time, loop over
+`bank.fit_predict_batches(lf)` and write `bank.closed_groups()` to a file
+of its own after each chunk ([Read Grams from saved
+files](read-grams-from-saved-files.md)). [Store a compact
+Gram](store-a-compact-gram.md) halves or quarters what `gram()` hands
+back.
 
 **Choose the block so that every question a fit will ask is a set of
 whole blocks.** Weeks let a fit pool any run of weeks, hold out the last
@@ -242,7 +247,7 @@ hundreds of features](#keep-weekly-grams-of-hundreds-of-features) checks.
 | what you see | what it means | what to do |
 |---|---|---|
 | `po.gram.merge` refuses parts whose targets differ | under `target_gaps="own_rows"` a block holds a Gram per pattern of gaps | pool the Grams with the same `targets`, or give `target_gaps="pairwise"` where its condition holds |
-| the pass runs out of memory | the bank holds a `k²` Gram for every block it has seen | give `group_close="monotone"` and `closed_groups=`, so it holds one week at a time and writes each finished week to a file ([Close groups and read each one's row](close-groups.md), [Read Grams from saved files](read-grams-from-saved-files.md)) |
+| the pass runs out of memory | the bank holds a `k²` Gram for every block it has seen | give `group_close="monotone"`, loop over `bank.fit_predict_batches(lf)` and write `bank.closed_groups()` to a file of its own after each chunk, so the process holds only the weeks of one chunk at a time ([Close groups and read each one's row](close-groups.md), [Read Grams from saved files](read-grams-from-saved-files.md)) |
 | `bank.coef()` differs from `po.gram.solve` on the Gram | `bank.coef()` is as of the last solve, and the pass solves nothing | solve the Gram with `po.gram.solve` |
 
 ## Go on from the Grams

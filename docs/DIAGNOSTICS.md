@@ -362,7 +362,7 @@ trusted?](#can-its-t-be-trusted) explains. Under a horizon of `h` rows the
 test of `a = 0, b = 1` is Wald's with the regression's sandwich at `2h`
 lags, built from the residual under the null, `y − pred`. On the two-stage
 example's look-ahead target, a slope of 0.99 came with a `wald` of 1.1
-under `horizon_rows=150` ([Check each
+under `horizon_rows=150`, consistent with `a = 0, b = 1` ([Check each
 stage with the diagnostics it asks
 for](how-to/check-a-two-stage-fit.md#check-each-stage-with-the-diagnostics-it-asks-for)).
 

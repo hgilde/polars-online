@@ -1126,7 +1126,7 @@ another side:
 - [`sgd`](#sgd--stochastic-gradient-descent) with `loss="huber"`, the same
   loss with a step per row in O(k) time.
 - [`rls`](#rls--recursive-least-squares), whose predictions `huber` gives within 1e-9
-  with `ridge_scale="sum"` and `huber_delta=inf`, solved on every row,
+  with `ridge_scale="sum"`, `huber_delta=inf` and `solve_every=0`,
   where `rls` has `delta=ridge`.
 - [Fit a Huber regression on a Gram](how-to/fit-huber-on-a-gram.md), a
   Huber fit from one shared Gram, two queries over the rows per pass.

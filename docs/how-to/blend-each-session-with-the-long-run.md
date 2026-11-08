@@ -4,7 +4,7 @@
 This how-to is for anyone who fits `ewridge` with a short half-life over a
 stream cut into sessions, such as trading days, and wants each session to
 start from a fit nearer the long run than the last session's end. You
-give `session_shrink` and `long_half_life`, and the model blends its
+give `session_shrink` and `long_half_life`, and the model blends the means and co-moments of its
 [Gram](../GLOSSARY.md#fitting-a-model) with a slower twin's at each session change.
 
 ## Prerequisites

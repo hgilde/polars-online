@@ -28,10 +28,15 @@ place of its rows.
 
 ## Write each finished week's Gram to a file
 
-Use this when a pass runs over more weeks than memory holds Grams for.
-`group_close="monotone"` closes each week once the next begins, and with
-`closed_groups=` on `fit` the bank writes it out and frees it, so it holds
-one week at a time.
+Use this when a later program should fit from the Grams without reading
+the rows. `group_close="monotone"` closes each week once the next begins,
+and `closed_groups=` on `fit` takes each closed week out of the bank and
+writes them all to the file when the pass ends. Until then the closed
+weeks wait in the process's memory. To hold only the weeks of one chunk
+at a time, loop over `bank.fit_predict_batches(lf)` and write
+`bank.closed_groups()` to a file of its own after each chunk; read the
+files back together with `pl.read_parquet` on a glob, such as
+`"blocks-*.parquet"`.
 
 1. **Make the week in the query as the Monday's day number,** with
    `pl.col("ts").dt.truncate("1w").dt.date().cast(pl.Int32)`. A
@@ -39,7 +44,8 @@ one week at a time.
    closes must be an integer, text or categorical column.
 2. **Give the spec `group="week"` and `group_close="monotone"`.**
 3. **Run the pass with `bank.fit(lf, closed_groups="blocks.parquet")`.**
-   The bank writes each closed week's Gram to that file as a row.
+   Each closed week's Gram becomes a row of that file, written when the
+   pass ends.
 4. **Save the state with `bank.save`.** The last week never closes, since
    no row shows it has finished, so its Gram stays in the state.
    [Close groups and read each one's row](close-groups.md) has the rules
@@ -82,7 +88,7 @@ spec = po.spec.ewridge(
     half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
 )
 bank = po.ModelBank([spec])
-bank.fit(lf, closed_groups="blocks.parquet")  # 3. a row per week, written once the next week begins
+bank.fit(lf, closed_groups="blocks.parquet")  # 3. a row per closed week, written when the pass ends
 bank.save("blocks.state")  # 4. the state holds the last week, which no later row closed
 ```
 

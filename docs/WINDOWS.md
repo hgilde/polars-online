@@ -285,7 +285,7 @@ leaving must take its weight out of its bucket. A subtraction would leave a
 rounding behind in a bucket that should be empty, and the roundings would
 build up over a long stream. So at the turnover each row records three
 weights, taken newest row first: what its bucket, its bucket's octave and
-the whole sketch held before it. A row leaving puts those three weights back, and the sketch is
+the whole sketch held over the rows newer than it. A row leaving puts those three weights back, and the sketch is
 then exactly the one built from the rows that are left. A sketch kept per
 row, the textbook form of a two-stack queue, would cost the whole sketch a
 row: about 11 KB for a window of 1,000 rows, where this costs 24 bytes.
