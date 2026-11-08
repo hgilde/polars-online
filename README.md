@@ -3121,7 +3121,7 @@ against.
 | [`rls`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rls) · [math](docs/MODELS.md#rls--recursive-least-squares) | solve | recursive least squares, in the numerically safe square-root form |
 | [`lasso`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.lasso) · [math](docs/MODELS.md#lasso--lasso-path-its-penalty-chosen-as-it-runs) | solve | lasso and elastic-net path, with the penalty chosen as the stream runs |
 | [`kalman`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kalman) · [math](docs/MODELS.md#kalman--random-walk-β-dynamic-linear-model) | filter | a Kalman filter whose coefficients drift as random walks |
-| [`huber`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber) · [`quantile`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.quantile) · [math](docs/MODELS.md#huber--quantile--robust-regression) | reweight | robust and quantile regression |
+| [`huber`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber) · [`quantile`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.quantile) · [math](docs/MODELS.md#huber--robust-regression) | reweight | robust and quantile regression |
 | [`sgd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.sgd) · [math](docs/MODELS.md#sgd--stochastic-gradient-descent) | step | stochastic gradient descent with squared, Huber, quantile, ε-insensitive, Poisson and logistic losses |
 | [`pa`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.pa) · [math](docs/MODELS.md#pa--passive-aggressive-regression) | step | passive-aggressive regression, with no learning rate to tune |
 | [`ftrl`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl) · [math](docs/MODELS.md#ftrl--online-logistic-regression) | step | FTRL-proximal regression, logistic by default, with an L1 penalty that zeroes coefficients |
@@ -3130,7 +3130,7 @@ against.
 | [`ew_cov`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_cov) · [math](docs/MODELS.md#ew_cov--exponentially-weighted-moments) | accumulate | running mean, variance, covariance, correlation, partial correlation, Mahalanobis distance and principal components |
 | [`marginal`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.marginal) · [math](docs/MODELS.md#marginal--every-pairs-moments-kept-in-the-state) | accumulate | every (feature, target) pair's running mean, variance, covariance, correlation, slope and t, for a wide set of columns, kept in the state and read back as a table; optionally at a set of lags, and with binned target moments for the relations a correlation cannot see |
 | [`deco`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.deco) · [math](docs/MODELS.md#deco--one-correlation-for-the-whole-matrix) | accumulate | one correlation for the whole matrix: Engle & Kelly's equicorrelation, or one per block and per pair of blocks |
-| [`rcov`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rcov) · [math](docs/MODELS.md#rcov--a-blocks-realised-covariance-robust-to-noise) | accumulate | a block's realised covariance, robust to microstructure noise: the Barndorff-Nielsen–Hansen–Lunde–Shephard kernel or Christensen–Kinnebrock–Podolskij pre-averaging, reported when a group closes |
+| [`rcov`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rcov) · [math](docs/MODELS.md#rcov--a-blocks-realized-covariance-robust-to-noise) | accumulate | a block's realised covariance, robust to microstructure noise: the Barndorff-Nielsen–Hansen–Lunde–Shephard kernel or Christensen–Kinnebrock–Podolskij pre-averaging, reported when a group closes |
 | [`audit`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.audit) · [math](docs/MODELS.md#audit--what-a-streams-columns-hold) | accumulate | what each column holds, counted in one pass: nulls, NaNs and infinities apart, repeated values, runs, persistence, tails and duplicated columns, and the clock's duplicate stamps and gaps, read back as a table and by `bank.check()` |
 | **[Clustering and classification](docs/MODELS.md#clustering-and-classification)** | | put labels on rows |
 | [`kmeans`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kmeans) · [math](docs/MODELS.md#kmeans--exponentially-weighted-k-means) | step | exponentially weighted k-means: cluster labels assigned before the row is learned from, with a split–merge move that finds a cluster born after seeding |
@@ -4294,7 +4294,7 @@ catch them, and the fit drifted toward least squares. A median absolute
 deviation moves by a wild row's weight, whatever the size of its miss.
 `huber_scale="rms"` restores the earlier numbers to the bit, and a state
 saved under the old default loads under it. The CHANGELOG declares the
-move with its size, and [MODELS.md](docs/MODELS.md#huber--quantile--robust-regression)
+move with its size, and [MODELS.md](docs/MODELS.md#huber--robust-regression)
 gives the slopes measured under each scale.
 
 Release 1.4.0 turned on `huber_refit_rows`, at 500. One pass weighs each

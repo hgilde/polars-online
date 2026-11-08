@@ -60,35 +60,45 @@ MEANING: dict[str, str] = {
     "pred_<t>": "the prediction for `<t>`, computed from the state **before** this row",
     "pred_<f>": "the predictive mean for feature `<f>` under the fitted model",
     "resid_<t>": "`y - pred` for `<t>`",
-    "weight_sum": f"accumulated weight before this row's update and before its own decay {SHARED}",
+    "weight_sum": (
+        f"accumulated weight before the model learns this row, and before its own decay {SHARED}"
+    ),
     "coef": f"the numbers behind the fit as one list {SHARED}",
-    "settled_frac": f"how far the decay window had filled before this row {SHARED}",
+    "settled_frac": (
+        f"how far the model had come toward its steady state under decay before this row {SHARED}"
+    ),
     "withheld_reason": f"why the row's predictions are null {SHARED}",
     "support_coef": (
-        "on `coef`'s rows, each coefficient's data share `1 - ridge * (S^-1)_jj`, laid "
-        "out like `coef`"
+        "on `coef`'s rows, each coefficient's data share `1 - ridge * (S^-1)_jj`, with `S` "
+        "the system the solve inverts, laid out like `coef`"
     ),
-    "penalty_selected_<t>": "the path point in force for `<t>`, by lowest EW out-of-sample error",
+    "penalty_selected_<t>": (
+        "the penalty of the grid point in force for `<t>` before this row, the one with the "
+        "lowest EW out-of-sample error"
+    ),
     "mean_<f>": "EW mean of `<f>`",
     "var_<f>": "EW variance of `<f>`, corrected for the unequal weights as Polars' `ewm_var` "
     "is, unless `bias`",
-    "std_<f>": "EW standard deviation of `<f>`, the square root of `var_<f>`",
+    "std_<f>": "EW standard deviation of `<f>`, the square root of its EW variance",
     "cov_<a>_<b>": "EW covariance of the pair, corrected as `var_<f>` is",
     "corr_<a>_<b>": "EW correlation of the pair",
     "partial_corr_<a>_<b>": "the pair's correlation controlling for every other column",
     "mahal": "Mahalanobis distance of the row from the running mean, in standard deviations",
     "cluster": "the nearest cluster's label, read before the row is learned from",
-    "dist": "distance from the row to the centre `cluster` was read from",
-    "dist_second": "distance to the second-nearest centre, so `dist_second - dist` is the margin",
-    "micro_id": "id of the micro-cluster the row joins, or opens when none can take it",
-    "outlier": "true when no established micro-cluster takes the row",
-    "n_clusters": "macro-clusters currently linked",
-    "n_micro": "live micro-clusters",
+    "dist": (
+        "distance from the row to the center `cluster` was read from, in EW standard "
+        "deviations under `standardize` and in the features' own units otherwise"
+    ),
+    "dist_second": "distance to the second-nearest center, so `dist_second - dist` is the margin",
+    "micro_id": "id of the summary the row joins, or the one it opens when none can take it",
+    "outlier": "true when no established summary takes the row",
+    "n_clusters": "clusters currently linked",
+    "n_micro": "live summaries",
     "class": "the most likely class label",
     "p_<label>": "posterior probability of class `<label>`",
     "log_e_pos_<t>": (
         "log of the e-process betting the sign of `<t>` is positive: 0 is no evidence, and "
-        "`log(20)`, 3.0, is evidence at level 0.05"
+        "`log(20)`, about 3.0, is evidence at level 0.05"
     ),
     "log_e_neg_<t>": "log of the e-process betting it is negative",
     "n_pos_<t>": "learned rows whose `<t>` was positive",
@@ -98,7 +108,10 @@ MEANING: dict[str, str] = {
         " (Engle and Kelly's Lemma 2.3, from the standardized row)"
     ),
     "rho": "the block's equicorrelation level, the smoothed value `u` is folded into",
-    "stat": "the test statistic for the span, the pair of windows or the monitored row",
+    "stat": (
+        "the test statistic, this row included, for the span, the pair of windows or the "
+        "monitored row"
+    ),
     "crit": "the critical value `stat` is compared against",
     "flag": "true on the row where `stat` crossed `crit`",
     "since_flag": "learned rows since the last flag",
@@ -106,13 +119,20 @@ MEANING: dict[str, str] = {
         "on a flag, the rows since the change it dates, through the flag's row from the first "
         "changed one"
     ),
-    "p_change": "`P(run length <= 1)`: the mass sitting on a change at or just before this row",
-    "run_mode": "most likely run length *before* this row, so `t - run_mode` dates the regime",
+    "p_change": (
+        "`P(run length <= 1)` once this row's evidence is in: the mass sitting on a change at "
+        "or just before this row, the one `bocpd` field read after the row"
+    ),
+    "run_mode": (
+        "most likely run length *before* this row, so the current run began `run_mode` rows "
+        "before this one"
+    ),
     "run_mean": "posterior mean run length",
     "loglik": "log predictive density of the row, under the model as it stood before the row",
     "filtered_state<j>": "posterior probability of state `<j>` before this row",
     "predicted_state<j>": "one-step-ahead probability of state `<j>`",
     "state": "the most likely state for this row: the one with the largest `predicted_state<j>`",
+    "huber_scale_<t>": "the scale the row's cut for `<t>` is drawn in",
 }
 
 #: Where a field is null besides a skipped row, which nulls every field (see
@@ -121,20 +141,25 @@ MEANING: dict[str, str] = {
 #: a weight of 0 in its stream (review 2026-10-06, DA14).
 WITHHELD = "while withheld"
 UNTIL_SEEDED = (
-    "while withheld, and until `warm_rows` learned rows (by default 1,000, or `k` where that is "
-    "more) have seeded the states"
+    "while withheld, which includes the `warm_rows` learned rows (by default 1,000, or "
+    "`n_components` where that is more) that seed the states"
+)
+EW_CLASS_NULL = (
+    "while withheld, before any row has carried a class, and on a row whose class "
+    "covariance cannot be factorized"
 )
 ALSO_NULL: dict[str, str] = {
     "pred_<t>": WITHHELD,
     "pred_<f>": WITHHELD,
     "resid_<t>": (
         "while withheld; where the target is null; and on every row of a target that is a "
-        "window expression, whose value is not known at its row"
+        "formula target, whose value is not known at its row"
     ),
     "weight_sum": "never",
     "coef": (
-        "on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the "
-        "model has anything to report"
+        "on every row but those `coef_every` or `max_rows_between_coefs` fills (by default, each "
+        "group's last row not skipped in each chunk), and before the model has anything "
+        "to report"
     ),
     "settled_frac": "where nothing decays",
     "withheld_reason": "where nothing was withheld",
@@ -144,7 +169,7 @@ ALSO_NULL: dict[str, str] = {
     "var_<f>": WITHHELD,
     "std_<f>": WITHHELD,
     "cov_<a>_<b>": WITHHELD,
-    "corr_<a>_<b>": WITHHELD,
+    "corr_<a>_<b>": "while withheld, and where either column's EW variance is 0",
     "partial_corr_<a>_<b>": WITHHELD,
     "mahal": WITHHELD,
     "dist": "where `cluster` is",
@@ -153,19 +178,26 @@ ALSO_NULL: dict[str, str] = {
     "outlier": WITHHELD,
     "n_clusters": WITHHELD,
     "n_micro": WITHHELD,
-    "class": WITHHELD,
-    "p_<label>": WITHHELD,
+    "class": EW_CLASS_NULL,
+    "p_<label>": EW_CLASS_NULL,
     "log_e_pos_<t>": WITHHELD,
     "log_e_neg_<t>": WITHHELD,
     "n_pos_<t>": WITHHELD,
     "n_neg_<t>": WITHHELD,
-    "u": WITHHELD,
-    "rho": WITHHELD,
+    "u": (
+        "while withheld, where fewer than two of the block's columns have a positive variance "
+        "before the row, and where every standardized value is 0"
+    ),
+    "rho": "while withheld, and until the row after the first `u`",
     "stat": "while withheld, and on every row but those a test is due on",
     "crit": "where `stat` is",
     "flag": "where `stat` is",
     "since_flag": "where `stat` is",
-    "since_change": "on every row but a flag's",
+    "since_change": (
+        'on every row but a flag\'s; and on a `"sequential"` flag of the test between pairs '
+        "(without `scalar`) that has fewer than two monitored rows before it, or where either "
+        "column of the flagged pair is constant over those rows"
+    ),
     "p_change": WITHHELD,
     "run_mode": WITHHELD,
     "run_mean": WITHHELD,
@@ -173,24 +205,49 @@ ALSO_NULL: dict[str, str] = {
     "filtered_state<j>": UNTIL_SEEDED,
     "predicted_state<j>": UNTIL_SEEDED,
     "state": UNTIL_SEEDED,
+    "huber_scale_<t>": "until the target has a scale above 0",
 }
 
 #: `bocpd`'s fields, null while its first rows set a prior left out (task 195).
 BOCPD_STEMS = ("p_change", "run_mode", "run_mean", "pred_<f>", "loglik")
 BOCPD_WARM = (
-    "while withheld, and on the first `warm_rows` learned rows (by default the feature count "
-    "plus 2) where `mean_prior` or `covariance_prior` is left out, which set it"
+    "while withheld, which includes the first `warm_rows` learned rows (by default the feature "
+    "count plus 2) where `mean_prior` or `covariance_prior` is left out, since they set the prior "
+    "left out; and on a row whose predictive cannot be evaluated (counted by "
+    "`ModelBank.solve_failures()`)"
 )
 
 #: A model whose rule for a stem differs from `ALSO_NULL`'s.
 ALSO_NULL_BY_MODEL: dict[tuple[str, str], str] = {
     ("kmeans", "cluster"): (
-        "while withheld, and before seeding, which waits for `warm_rows` learned rows (at "
-        "least `k`; by default 500, or `k` where that is more)"
+        "while withheld, which includes the rows before seeding: seeding waits for `warm_rows` "
+        "learned rows (at least `n_clusters`; by default 500, or `n_clusters` where that is "
+        'more), and under `init="first"` past them until `n_clusters` distinct rows have '
+        "come, holding at most `max(warm_rows, 1000)` rows"
     ),
-    ("micro", "cluster"): "while withheld, and while no micro-cluster is established",
+    ("ewridge", "coef"): (
+        "on every row but those `coef_every` or `max_rows_between_coefs` fills (by default, each "
+        "group's last row not skipped in each chunk), on an `ill_conditioned` row, and "
+        "before the model has anything to report"
+    ),
+    ("kmeans", "dist_second"): "where `cluster` is, and throughout when `n_clusters` is 1",
+    ("kalman", "pred_<t>"): "while withheld, and on a target's first row, which has nothing to "
+    "predict from",
+    ("holt", "pred_<t>"): "while withheld, and on a target's first observation, which has "
+    "nothing to predict from",
+    ("deco", "loglik"): (
+        "while withheld, where any column has no positive variance before the row, and where "
+        "the levels hold no correlation matrix the density can be solved for"
+    ),
+    ("micro", "cluster"): "while withheld, and while no summary is established",
     ("hmm", "loglik"): UNTIL_SEEDED,
     **{("bocpd", stem): BOCPD_WARM for stem in BOCPD_STEMS},
+}
+
+#: The fields a model's own switch adds, shown under its table: the model, the
+#: switch, and the spec keywords that turn it on.
+SWITCHED: dict[str, tuple[str, dict[str, object]]] = {
+    "huber": ("emit_huber_scale=True", {"emit_huber_scale": True}),
 }
 
 #: What a model writes when it writes nothing per row.
@@ -206,15 +263,16 @@ STATE_ONLY = {
     "rcov": (
         "`rcov` writes nothing per row but `weight_sum`. Its product is the closed block, in the "
         "row `ModelBank.closed_groups()` gives when a group closes (`group_close`). That row's "
-        "`rcov_psd_repaired` is null where the repair could not run, on an estimate with an entry "
-        "that is not finite."
+        "`rcov_psd_repaired` is null where the repair could not run: on an estimate with an entry "
+        "that is not finite, or where its eigendecomposition failed."
     ),
 }
 
 INTRO = """\
-Every spec adds one column to the output, named after the spec. Its value in
-each row is a record of named fields, and this page lists the fields each
-model writes, one section per model. `po.spec.output_fields(spec)` answers
+The fields each model writes into its output column, one section per model,
+for a reader who wants to know what a field holds, its type, and when it is
+null. Every spec adds one column to the output, named after the spec, and its
+value in each row is a record of these fields. `po.spec.output_fields(spec)` answers
 the same question at runtime, for the exact spec you built.
 """
 
@@ -243,12 +301,12 @@ NAME_PARTS: list[tuple[str, str, str]] = [
 SHARED_FIELDS: list[tuple[str, str, str]] = [
     (
         "weight_sum",
-        "the accumulated weight before this row's update and before its own decay",
+        "the accumulated weight before the model learns this row, and before the row's own decay",
         "never",
     ),
     (
         "settled_frac",
-        "how far the decay window had filled toward steady state before this row: "
+        "how far the model had come toward its steady state under decay before this row: "
         "`1 - 2^(-T/half_life)`, with `T` the decay time seen so far, so 0.5 at one half-life "
         "and 0.75 at two. `min_settled_frac` gates on it",
         "where nothing decays",
@@ -259,8 +317,9 @@ SHARED_FIELDS: list[tuple[str, str, str]] = [
         "`above_max_error_inflation`, `below_warm_rows`, `ill_conditioned` or `unstable_rate`. "
         "That order is their precedence, so the first that applies is the one named. "
         "`below_warm_rows` is the model's own warm-up, the rows `kmeans`, `hmm` and `bocpd` hold "
-        "to seed themselves from, and the rows before `kalman` has sized any of a target's "
-        "coefficients, standardized with no intercept. `ill_conditioned` is an `ewridge` fit "
+        "to seed themselves from, and the rows after a target's first while `kalman` sizes its "
+        "prior (its second and third observed rows under the default `standardize` without "
+        "`obs_var`). `ill_conditioned` is an `ewridge` fit "
         "whose normal equations are too nearly singular for a solve to keep a digit. "
         "`unstable_rate` is an `sgd` target whose learning rate is past its stability bound: its "
         "recent steps' gains have a mean square above twice their mean, so each step grows its "
@@ -269,20 +328,22 @@ SHARED_FIELDS: list[tuple[str, str, str]] = [
     ),
     (
         "coef",
-        "the numbers behind the fit, as one flat list written after the row's update: a "
+        "the numbers behind the fit, as one flat list written after the row is learned: a "
         "regression's coefficients, or what a model that is not a regression keeps in their "
-        "place, such as its centres or state means. Its builder's docstring lays the list "
-        "out. A model that solves on a schedule (`solve_every`) shows its latest solve, and "
-        "the entries of a target no solve has fit yet are null. `ewridge` does not run a "
+        "place, such as its centers or state means. Its builder's docstring lays the list "
+        "out. A model that solves on a schedule (`solve_every`) shows its latest solve. The "
+        "entries of a target or class with no fit yet are null: a target no solve has fit, a "
+        "`holt` target not yet observed, an `ew_class` class not yet seen. `hmm` writes zeros, "
+        "not nulls, on its seeding rows before the last. `ewridge` does not run a "
         "solve that comes due while its weight is too far below the floor for any row to "
         "read it before the next one, so there it shows the last fit solved. "
-        "Under an `embargo` the row's own update waits for the delay, so `coef` is written "
+        "Under an `embargo`, learning the row waits for the delay, so `coef` is written "
         "after the rows this row releases, and is the fit the next row is predicted with "
         "only when the next row releases none",
         "on every row but those `coef_every` or `max_rows_between_coefs` fills, which with "
-        "neither are each group's last accepted row in each chunk; and before the model has "
-        "anything "
-        "to report, such as a first solve",
+        "neither are each group's last row not skipped in each chunk; on an "
+        "`ill_conditioned` row; and before the model has anything to report, such as a first "
+        "solve",
     ),
 ]
 
@@ -299,11 +360,11 @@ def table(head: tuple[str, ...], rows: Sequence[tuple[str, ...]]) -> str:
 #: Where each optional output is shown, and the fields any spec can add.
 OPTIONAL: list[tuple[str, str]] = [
     (
-        "the residual diagnostics: `emit_sigma`, `emit_zscore`, `emit_selected`, "
+        "the diagnostics: `emit_sigma`, `emit_zscore`, `emit_selected`, "
         "`emit_averaged`, `emit_drift`, `emit_metrics`, `emit_autocorr`, `resid_quantiles`, "
         "`conformal`, `emit_calibration`, `emit_breaks`, `emit_specification`, "
         "`emit_tails`, `emit_influence` (`ewridge`'s, `rls`'s and `kalman`'s), "
-        "`emit_feature_health`",
+        "`emit_feature_health` (not `holt`'s, which has no features)",
         "[Is the model working?](DIAGNOSTICS.md), for the models that "
         "predict a target. `emit_metrics`' `hit_rate_<t>` is null throughout on an `sgd` "
         'fit with `loss="poisson"`, whose rate and count have no sign to hit',
@@ -322,23 +383,37 @@ OPTIONAL: list[tuple[str, str]] = [
     ),
     (
         "`emit_huber_scale`, `huber`'s: `huber_scale_<t>`, the scale each row's cut is drawn in",
-        "its own [section](MODELS.md#huber--quantile--robust-regression)",
+        "[`huber`'s table](#huber), and its [entry](MODELS.md#huber--robust-regression)",
     ),
     (
-        "`ew_cov`'s extra `stats`",
-        "its own [section](MODELS.md#ew_cov--exponentially-weighted-moments)",
+        "`ew_cov`'s extra `stats`, its `lags` (`lag_corr_l<l>_<a>_<b>`), `pca` (`pc<j>_*`) and "
+        "`mahal_quantiles` (`mahal_q<p>`)",
+        "its own [section](MODELS.md#ew_cov--exponentially-weighted-moments) and its "
+        "[docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_cov)",
+    ),
+    (
+        "`seqtest`'s `a` and `b`, which replace its four fields with `log_e_a_<t>`, "
+        "`log_e_b_<t>`, `wins_a_<t>` and `wins_b_<t>`",
+        "its own [section](MODELS.md#seqtest--a-sequential-test-of-a-sign-by-betting) and its "
+        "[docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.seqtest)",
+    ),
+    (
+        "`deco`'s named blocks, which turn `u` and `rho` into one field per block and pair of "
+        "blocks",
+        "its [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.deco)",
     ),
 ]
 CLOCK_FIELDS: list[tuple[str, str, str]] = [
     (
         "scored_clock",
-        "the clock the row was scored at, in the clock column's own type; with no clock, the "
+        "the clock the row was predicted at, in the clock column's own type; with no clock, the "
         "row's index in its group",
         "never",
     ),
     (
         "learned_clock",
-        "the clock of the newest row the model had learned from when this row was scored, in "
+        "the clock of the newest row the model had learned from at a positive weight when this "
+        "row was predicted, in "
         "the same type: under an `embargo`, at least the delay behind `scored_clock`",
         "before the first row learned, and after a reset",
     ),
@@ -375,8 +450,9 @@ DTYPES: list[tuple[str, str]] = [
         "`list[f64]`",
         "`List(Float64)`: `coef` and the fields laid out like it. A list stores nothing for a "
         "null row, and `coef` is null on most rows. For an `(n, k)` matrix, `k` the height of "
-        "`po.spec.coef_index(spec)`, keep the rows that carry it and fix their width: "
-        '`out.filter(pl.col("coef").is_not_null())'
+        "`po.spec.coef_index(spec)`, keep the rows that carry it and fix their width. For the "
+        "output `out` of a spec named `m`: "
+        '`out.select(pl.col("m").struct.field("coef")).filter(pl.col("coef").is_not_null())'
         '.select(pl.col("coef").list.to_array(k)).to_series().to_numpy()`',
     ),
     (
@@ -384,7 +460,11 @@ DTYPES: list[tuple[str, str]] = [
         "an `Enum` of its values, in their order: `withheld_reason`'s six, an `ew_class` "
         "spec's `classes` for `class`, a grid's slots for `selected_<t>`",
     ),
-    ("`clock`", "the clock column's own type"),
+    (
+        "`clock`",
+        "the clock column's own type, an integer clock in its own width; with no clock, "
+        "`Int64`, the group's row index",
+    ),
 ]
 
 
@@ -449,13 +529,14 @@ own spec's fields carry your column names in their place.
 **Every name follows one grammar, which is stable.** Read left to right, a
 name is the kind (`pred`, `abs_resid`, `lag_corr`), then its qualifier, then
 the target or the columns it is about (`_<t>`, `_<f>`, `_<a>_<b>`), then the
-grid point after `__` and the instance after `@`. A qualifier is a number
+grid point after `__` and the instance after `@`. An instance is the part of
+the model that fits one half-life of a grid. A qualifier is a number
 glued to the letter that says what it is: `q` a quantile level, `l` a lag
 (`abs_resid_q0.05_y`, `mahal_q0.99`, `lag_corr_l1_x0_x1`). The grid point
 uses letters too, `r` a ridge and `p` a lasso penalty, and the instance `h`,
 a half-life. A thing the spec has several of is numbered where it is named,
 glued to its word: a principal component `pc0` (`pc0_var`), an `hmm` state
-`state0` (`filtered_state0`), a `kmeans` centre `cluster0`
+`state0` (`filtered_state0`), a `kmeans` center `cluster0`
 (`coef_cluster0_x1`). The README's [Output field
 names](../README.md#output-field-names) builds a grid and reads its fields.
 
@@ -473,20 +554,23 @@ row, as `po.spec.output_index(spec)` lists it:
 **Every integer is an `Int64`**, in a field and in every frame the bank and
 `po.spec` return: a count, a state, a cluster label, a position, a row's
 index. It is Polars' own default integer, so a join, a concatenation or a
-comparison between two frames never meets two widths.
+comparison between two frames never meets two widths. Only the clock values
+differ, in a field or in a frame such as `groups()`' `clock_last`: an
+integer clock keeps its own width.
 
 ### When a field is null
 
 **Every field is null on a skipped row**: a row whose features or weight
 hold a null, or a value that counts as one (NaN, ±inf, or a magnitude above
-`1e100`). The model learns nothing from such a row. A row of weight 0 is
-not skipped: it is scored, and teaches the model nothing.
+`1e100`). The model learns nothing from such a row. `audit` skips no row:
+it reads every row and counts what it cannot use. A row of weight 0 is
+not skipped: it is predicted, and the model learns nothing from it.
 
 **Most of a model's own fields are also null on a withheld row**: a row
-whose outputs a warm-up gate held back, which `withheld_reason` names
-([Warm-up](../README.md#warm-up)). Each table's last column, *also null*,
-says where a field is null besides a skipped row, and *withheld* there
-means such a row.
+whose outputs a gate held back, or whose fit cannot be trusted there.
+`withheld_reason` names which ([Warm-up](../README.md#warm-up)). Each
+table's last column, *also null*, says where a field is null besides a
+skipped row, and *withheld* there means such a row.
 
 ### Fields most models write
 
@@ -496,12 +580,17 @@ Four fields appear in nearly every table below, and are defined here once:
 
 ### What is not listed
 
-The optional outputs are left out: the `emit_*` switches, `conformal`,
-`resid_quantiles` and extra `stats`. Each is shown where the docs set it:
+The optional outputs are left out of the tables: the `emit_*` switches (all
+but `emit_clocks` and `huber`'s `emit_huber_scale`, whose fields are listed),
+`conformal`, `resid_quantiles`, and the options that add or rename a model's
+fields, such as `ew_cov`'s `stats`. Each optional output is shown where
+the docs set it:
 
 {table(("the switch", "where the docs show it"), OPTIONAL)}
 
-`emit_clocks` is the one switch every model takes, and it adds two fields:
+`huber`'s `emit_huber_scale` adds a field listed under `huber`'s table.
+`emit_clocks` is the one switch
+every model takes, and it adds two fields:
 
 {table(FIELD_HEAD, field_rows(CLOCK_FIELDS, CLOCK_SPEC))}
 
@@ -532,6 +621,7 @@ def stem(field: str, targets: tuple[str, ...], features: tuple[str, ...]) -> str
         for pre in (
             "pred",
             "resid",
+            "huber_scale",
             "penalty_selected",
             "log_e_pos",
             "log_e_neg",
@@ -566,6 +656,7 @@ def check_families() -> None:
 
 def main() -> None:
     check_families()
+    print("<!-- kind: reference -->")
     print("# What each model writes\n")
     print(INTRO)
     print("| family | models |")
@@ -592,6 +683,21 @@ def main() -> None:
                 null = ALSO_NULL_BY_MODEL.get((name, s), ALSO_NULL.get(s, "**undocumented**"))
                 rows.append((f"`{f}`", f"`{dtype}`", MEANING.get(s, "**undocumented**"), null))
             print(table(FIELD_HEAD, rows))
+            if name in SWITCHED:
+                switch, extra = SWITCHED[name]
+                kw = {**BASE_KWARGS, **MINIMAL[name], **extra}
+                more = dtypes(
+                    getattr(po.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
+                )
+                rows = []
+                for f, dtype in more.items():
+                    if f in declared:
+                        continue
+                    s = stem(f, targets, features)
+                    null = ALSO_NULL.get(s, "**undocumented**")
+                    rows.append((f"`{f}`", f"`{dtype}`", MEANING.get(s, "**undocumented**"), null))
+                print(f"\nUnder `{switch}`, it also writes:\n")
+                print(table(FIELD_HEAD, rows))
 
 
 if __name__ == "__main__":

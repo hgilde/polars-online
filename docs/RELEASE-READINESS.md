@@ -1160,7 +1160,7 @@ moves by a wild row's weight, whatever the size of its miss. Measured on
 one-sided wild rows, it held a converged fit's slope near the truth with a
 fifth of the rows wild, and one pass within 0.13 of it at an eighth. The
 slopes measured under each scale are in
-[MODELS.md](MODELS.md#huber--quantile--robust-regression).
+[MODELS.md](MODELS.md#huber--robust-regression).
 `huber_scale="rms"` is the way back: it restores the earlier numbers to the
 bit, and a state saved under the old default loads under it.
 
@@ -1182,7 +1182,7 @@ with the default, 1 of them more than 0.25, where 29 were without it and
 200 rows left 18, and `huber_refit_rows=1000` left 3. `refit_budget`, 256
 MiB by default, bounds the buffers of all a spec's groups together: past it
 a new group keeps its one-pass fit, which a notice and `summary()` say. The capture measured with and without it is
-in [MODELS.md](MODELS.md#huber--quantile--robust-regression).
+in [MODELS.md](MODELS.md#huber--robust-regression).
 `huber_refit_rows=0` turns the refit off. Under `huber_scale="mad"`, the
 default, the numbers still move from 1.3.0's by the same release's anchored
 MAD sketch, by up to a bucket of the sketch; under `"rms"`, which keeps no
