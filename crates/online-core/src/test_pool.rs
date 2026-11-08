@@ -2,7 +2,8 @@
 //! several sizes, built so that the threads they hold stay within what a
 //! Windows test runner can commit.
 //!
-//! On x86-64 faer's matrix product (`private-gemm-x86`) gives every thread
+//! On x86-64 the linear-algebra crate's matrix product (`private-gemm-x86`)
+//! gives every thread
 //! that runs a product past 16 x 16 x 16 a packing buffer of twice the L3
 //! cache its CPUID reports, held until the thread exits. Linux and macOS
 //! back only the pages touched, but Windows commits the whole reservation
