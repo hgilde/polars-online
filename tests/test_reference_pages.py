@@ -55,9 +55,10 @@ def _readme_links() -> list[tuple[str, str]]:
 
 def test_the_readme_links_the_reference():
     """The README's links into the reference are found: 36 when this was
-    written, every one to a module page."""
+    written, 34 once the how-tos took the README's task sections (task 338
+    stage 6a), every one to a module page."""
     links = _readme_links()
-    assert len(links) >= 36, links
+    assert len(links) >= 34, links
     assert sum(1 for _, anchor in links if anchor) >= 30, links
 
 
