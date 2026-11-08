@@ -3440,7 +3440,7 @@ def ew_cov(
 
     **Threads.** Learning a row is bound by memory: at 2,000 features a spec
     that wrote no statistic learned 2.5 times as fast on eight threads and
-    3.1 times on fourteen (``docs/PERFORMANCE.md`` §37). Below 725 features
+    3.1 times on fourteen (measured on 2026-10-08). Below 725 features
     learning a row stays on one thread, and the lagged cross-moments of
     ``lags`` always do.
 
@@ -4598,7 +4598,7 @@ def marginal(
     alone of fewer than about 1,300 pairs stay whole. Through the bank at
     10,000 features on 14 threads, ``"auto"`` ran 1.2 times as fast at one
     target and 4.9 times with nine targets, lags and bins. The bank's own
-    work on each row does not split (``docs/PERFORMANCE.md`` §25).
+    work on each row does not split (measured on 2026-09-25).
 
     **Lags under a hard window.** Each lag correlation under a hard window
     is that of the rows inside it, each row's product with the row ``l``
@@ -4613,8 +4613,8 @@ def marginal(
     half-life of 69 rows, measured, ``corr`` moved by at most 0.0065 and
     ``var_x`` by 2.5% at the median. At 20,000 pairs ``"shared"`` runs 2.7
     times as fast at ten targets and 3.2 times at thirty, the same at one,
-    and a ten-target state is under half the size (``docs/PERFORMANCE.md``
-    §27). With ``lags`` it keeps the feature's autocovariance per feature
+    and a ten-target state is under half the size (measured on 2026-09-29).
+    With ``lags`` it keeps the feature's autocovariance per feature
     too, and at ten targets runs 4.6 times as fast with no cross lags.
     """
     edges: list[list[float]] | None

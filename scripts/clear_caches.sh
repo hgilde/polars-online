@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Clear the build caches this checkout fills, and say what each freed
-# (docs/TESTING.md, "Caches and when to clear them").
+# (docs/contributing/clear-the-caches.md).
 #
 #   scripts/clear_caches.sh              the build caches: target/ and sccache's cache
 #   scripts/clear_caches.sh --dry-run    what it would clear, and the size of each

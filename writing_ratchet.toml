@@ -16,9 +16,16 @@
 [finished]
 messages = ["crates/online-cli/src/main.rs", "crates/online-core/src/audit.rs", "crates/online-core/src/bocpd.rs", "crates/online-core/src/clock.rs", "crates/online-core/src/cluster/kmeans.rs", "crates/online-core/src/cluster/micro.rs", "crates/online-core/src/conformal.rs", "crates/online-core/src/constraint.rs", "crates/online-core/src/corrchange.rs", "crates/online-core/src/deco.rs", "crates/online-core/src/ewclass.rs", "crates/online-core/src/ewcov.rs", "crates/online-core/src/ewcov/diag.rs", "crates/online-core/src/ewdiag.rs", "crates/online-core/src/ewlagcov.rs", "crates/online-core/src/ewridge.rs", "crates/online-core/src/ftrl.rs", "crates/online-core/src/gramfit/lars.rs", "crates/online-core/src/hmm.rs", "crates/online-core/src/holt.rs", "crates/online-core/src/kalman.rs", "crates/online-core/src/lasso.rs", "crates/online-core/src/margbins.rs", "crates/online-core/src/marginal.rs", "crates/online-core/src/marglag.rs", "crates/online-core/src/model.rs", "crates/online-core/src/pa.rs", "crates/online-core/src/rcov.rs", "crates/online-core/src/rls.rs", "crates/online-core/src/robust.rs", "crates/online-core/src/seqtest.rs", "crates/online-core/src/sgd.rs", "crates/online-core/src/solve.rs", "crates/online-core/src/stats.rs", "crates/online-core/src/warmup.rs", "crates/online-core/src/window.rs", "crates/online-polars/src/arrow.rs", "crates/online-polars/src/bank.rs", "crates/online-polars/src/bank/audit.rs", "crates/online-polars/src/bank/learned.rs", "crates/online-polars/src/bank/refusals.rs", "crates/online-polars/src/defaults.rs", "crates/online-polars/src/formula.rs", "crates/online-polars/src/gramfit.rs", "crates/online-polars/src/pool.rs", "crates/online-polars/src/refresh.rs", "crates/online-polars/src/refresh/held.rs", "crates/online-polars/src/resolvers.rs", "crates/online-polars/src/runner.rs", "crates/online-polars/src/spec.rs", "crates/online-polars/src/spec/checks.rs", "crates/online-polars/src/spec/clock.rs", "crates/online-polars/src/spec/label_clock.rs", "crates/online-polars/src/spec/limits.rs", "crates/online-polars/src/spec/models.rs", "crates/online-polars/src/spec/names.rs", "crates/online-polars/src/stream.rs", "crates/online-polars/src/stream/last_row.rs", "crates/online-polars/src/stream/model_cfgs.rs", "crates/online-polars/src/summary.rs", "crates/online-polars/src/timing.rs", "crates/online-polars/src/windows.rs", "crates/online-polars/src/windows_frame.rs", "crates/online-py/src/gbdt.rs", "crates/online-py/src/gramfit.rs", "crates/online-py/src/lib.rs", "python/polars_online/_bank.py", "python/polars_online/_duration.py", "python/polars_online/_formula.py", "python/polars_online/_frame.py", "python/polars_online/_renamed.py", "python/polars_online/_spec.py", "python/polars_online/_spec_audit.py", "python/polars_online/_spec_class.py", "python/polars_online/_spec_cluster.py", "python/polars_online/_spec_gradient.py", "python/polars_online/_spec_regimes.py", "python/polars_online/_warnings.py", "python/polars_online/corr.py", "python/polars_online/eval.py", "python/polars_online/gbdt.py", "python/polars_online/gram.py", "python/polars_online/ops.py", "python/polars_online/sim.py", "python/polars_online/stream.py"]
 docstrings = ["crates/online-py/src/lib.rs", "python/polars_online/__init__.py", "python/polars_online/_bank.py", "python/polars_online/_errors.py", "python/polars_online/_frame.py", "python/polars_online/_spec.py", "python/polars_online/_spec_audit.py", "python/polars_online/_spec_changepoint.py", "python/polars_online/_spec_class.py", "python/polars_online/_spec_cluster.py", "python/polars_online/_spec_fields.py", "python/polars_online/_spec_gradient.py", "python/polars_online/_spec_regimes.py", "python/polars_online/_spec_robust.py", "python/polars_online/_spec_trend.py", "python/polars_online/_warnings.py", "python/polars_online/corr.py", "python/polars_online/eval.py", "python/polars_online/gbdt.py", "python/polars_online/gram.py", "python/polars_online/ops.py", "python/polars_online/sim.py", "python/polars_online/stream.py"]
-vocabulary = ["README.md", "crates/online-py/src/lib.rs#docstrings", "docs/CALIBRATION.md", "docs/FEATURES.md", "docs/GBDT.md", "docs/MODELS.md", "docs/OUTPUTS.md", "docs/README.md", "docs/VERSIONS.md", "docs/explanation/against-scikit-learn.md", "docs/explanation/chunk-invariance-and-streaming.md", "docs/explanation/grids-and-instances.md", "docs/explanation/how-po-gbdt-builds-training-data.md", "docs/explanation/how-the-library-is-tested.md", "docs/explanation/out-of-sample.md", "docs/explanation/polars-interfaces.md", "docs/explanation/robust-scale.md", "docs/explanation/state-and-resuming.md", "docs/explanation/time-and-decay.md", "docs/explanation/warm-up-and-readiness.md", "docs/explanation/where-the-time-and-memory-go.md", "docs/how-to/align-series-that-tick-at-their-own-times.md", "docs/how-to/bound-memory.md", "docs/how-to/bound-the-coefficients.md", "docs/how-to/check-data-quality.md", "docs/how-to/check-feature-health.md", "docs/how-to/check-standard-errors.md", "docs/how-to/check-the-scale.md", "docs/how-to/choose-a-changepoint-hazard.md", "docs/how-to/choose-a-covariance-type.md", "docs/how-to/choose-a-kalman-drift-speed.md", "docs/how-to/choose-a-learning-rate.md", "docs/how-to/choose-a-model.md", "docs/how-to/choose-a-ridge-and-half-life.md", "docs/how-to/choose-among-a-grid-online.md", "docs/how-to/choose-columns-on-the-lasso-path.md", "docs/how-to/choose-ftrl-penalties.md", "docs/how-to/choose-holts-smoothing.md", "docs/how-to/choose-micro-eps.md", "docs/how-to/choose-settings-by-hand.md", "docs/how-to/close-groups.md", "docs/how-to/compare-two-models.md", "docs/how-to/decide-when-a-model-is-ready.md", "docs/how-to/detect-a-break.md", "docs/how-to/estimate-a-blocks-covariance-from-ticks.md", "docs/how-to/evaluate-an-output-frame.md", "docs/how-to/feed-a-bank-from-a-database.md", "docs/how-to/find-an-influential-row.md", "docs/how-to/find-an-output-field.md", "docs/how-to/find-what-the-model-misses.md", "docs/how-to/find-which-series-leads.md", "docs/how-to/fit-a-count-target.md", "docs/how-to/fit-locally-along-a-feature.md", "docs/how-to/fit-on-factor-residuals.md", "docs/how-to/fit-one-model-per-group.md", "docs/how-to/fit-targets-that-go-missing-on-different-rows.md", "docs/how-to/fit-weekly-grams-in-one-pass.md", "docs/how-to/flag-joint-outliers.md", "docs/how-to/follow-a-level-that-moves.md", "docs/how-to/forget-rows-past-a-window.md", "docs/how-to/hand-the-output-to-arrow.md", "docs/how-to/handle-sessions-gaps-and-steps-back.md", "docs/how-to/hold-a-row-back.md", "docs/how-to/inspect-a-bank.md", "docs/how-to/keep-hmm-states-on-their-regimes.md", "docs/how-to/keep-kmeans-centers-on-the-data.md", "docs/how-to/learn-targets-known-late.md", "docs/how-to/make-a-target-that-looks-ahead.md", "docs/how-to/make-window-features.md", "docs/how-to/measure-heavy-tails.md", "docs/how-to/pool-grams.md", "docs/how-to/put-an-interval-on-a-prediction.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/read-a-sequential-test.md", "docs/how-to/read-a-state-without-this-library.md", "docs/how-to/read-the-coefficients.md", "docs/how-to/repair-and-score-a-correlation-matrix.md", "docs/how-to/reproduce-an-earlier-versions-fit.md", "docs/how-to/resume-from-a-saved-state.md", "docs/how-to/run-a-bank-from-the-command-line.md", "docs/how-to/run-a-bank-in-a-python-loop.md", "docs/how-to/run-a-bank-in-a-query.md", "docs/how-to/run-a-bank-in-pathway.md", "docs/how-to/save-a-state.md", "docs/how-to/scale-a-feature-by-its-spread.md", "docs/how-to/screen-features-against-a-target.md", "docs/how-to/serve-from-a-saved-state.md", "docs/how-to/set-the-chunk-size.md", "docs/how-to/track-principal-components.md", "docs/how-to/track-the-average-correlation.md", "docs/how-to/use-more-cores.md", "docs/how-to/weight-rows-by-a-robust-scale.md", "docs/how-to/weight-rows.md", "docs/tutorials/fit-save-and-serve.md", "docs/tutorials/local-fit-with-a-clock.md", "docs/tutorials/stream-from-parquet.md", "llms.txt", "python/polars_online/__init__.py#docstrings", "python/polars_online/_bank.py#docstrings", "python/polars_online/_errors.py#docstrings", "python/polars_online/_frame.py#docstrings", "python/polars_online/_spec_audit.py#docstrings", "python/polars_online/_spec_changepoint.py#docstrings", "python/polars_online/_spec_class.py#docstrings", "python/polars_online/_spec_cluster.py#docstrings", "python/polars_online/_spec_fields.py#docstrings", "python/polars_online/_spec_gradient.py#docstrings", "python/polars_online/_spec_regimes.py#docstrings", "python/polars_online/_spec_robust.py#docstrings", "python/polars_online/_spec_trend.py#docstrings", "python/polars_online/_warnings.py#docstrings", "python/polars_online/corr.py#docstrings", "python/polars_online/eval.py#docstrings", "python/polars_online/gbdt.py#docstrings", "python/polars_online/gram.py#docstrings", "python/polars_online/ops.py#docstrings", "python/polars_online/sim.py#docstrings", "python/polars_online/stream.py#docstrings"]
-sentences = ["README.md", "docs/CALIBRATION.md", "docs/FEATURES.md", "docs/GBDT.md", "docs/MODELS.md", "docs/OUTPUTS.md", "docs/README.md", "docs/VERSIONS.md", "docs/explanation/against-scikit-learn.md", "docs/explanation/chunk-invariance-and-streaming.md", "docs/explanation/grids-and-instances.md", "docs/explanation/how-po-gbdt-builds-training-data.md", "docs/explanation/how-the-library-is-tested.md", "docs/explanation/out-of-sample.md", "docs/explanation/polars-interfaces.md", "docs/explanation/robust-scale.md", "docs/explanation/state-and-resuming.md", "docs/explanation/time-and-decay.md", "docs/explanation/warm-up-and-readiness.md", "docs/explanation/where-the-time-and-memory-go.md", "docs/how-to/align-series-that-tick-at-their-own-times.md", "docs/how-to/bound-memory.md", "docs/how-to/bound-the-coefficients.md", "docs/how-to/check-data-quality.md", "docs/how-to/check-feature-health.md", "docs/how-to/check-standard-errors.md", "docs/how-to/check-the-scale.md", "docs/how-to/choose-a-changepoint-hazard.md", "docs/how-to/choose-a-covariance-type.md", "docs/how-to/choose-a-kalman-drift-speed.md", "docs/how-to/choose-a-learning-rate.md", "docs/how-to/choose-a-model.md", "docs/how-to/choose-a-ridge-and-half-life.md", "docs/how-to/choose-among-a-grid-online.md", "docs/how-to/choose-columns-on-the-lasso-path.md", "docs/how-to/choose-ftrl-penalties.md", "docs/how-to/choose-holts-smoothing.md", "docs/how-to/choose-micro-eps.md", "docs/how-to/choose-settings-by-hand.md", "docs/how-to/close-groups.md", "docs/how-to/compare-two-models.md", "docs/how-to/decide-when-a-model-is-ready.md", "docs/how-to/detect-a-break.md", "docs/how-to/estimate-a-blocks-covariance-from-ticks.md", "docs/how-to/evaluate-an-output-frame.md", "docs/how-to/feed-a-bank-from-a-database.md", "docs/how-to/find-an-influential-row.md", "docs/how-to/find-an-output-field.md", "docs/how-to/find-what-the-model-misses.md", "docs/how-to/find-which-series-leads.md", "docs/how-to/fit-a-count-target.md", "docs/how-to/fit-locally-along-a-feature.md", "docs/how-to/fit-on-factor-residuals.md", "docs/how-to/fit-one-model-per-group.md", "docs/how-to/fit-targets-that-go-missing-on-different-rows.md", "docs/how-to/fit-weekly-grams-in-one-pass.md", "docs/how-to/flag-joint-outliers.md", "docs/how-to/follow-a-level-that-moves.md", "docs/how-to/forget-rows-past-a-window.md", "docs/how-to/hand-the-output-to-arrow.md", "docs/how-to/handle-sessions-gaps-and-steps-back.md", "docs/how-to/hold-a-row-back.md", "docs/how-to/inspect-a-bank.md", "docs/how-to/keep-hmm-states-on-their-regimes.md", "docs/how-to/keep-kmeans-centers-on-the-data.md", "docs/how-to/learn-targets-known-late.md", "docs/how-to/make-a-target-that-looks-ahead.md", "docs/how-to/make-window-features.md", "docs/how-to/measure-heavy-tails.md", "docs/how-to/pool-grams.md", "docs/how-to/put-an-interval-on-a-prediction.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/read-a-sequential-test.md", "docs/how-to/read-a-state-without-this-library.md", "docs/how-to/read-the-coefficients.md", "docs/how-to/repair-and-score-a-correlation-matrix.md", "docs/how-to/reproduce-an-earlier-versions-fit.md", "docs/how-to/resume-from-a-saved-state.md", "docs/how-to/run-a-bank-from-the-command-line.md", "docs/how-to/run-a-bank-in-a-python-loop.md", "docs/how-to/run-a-bank-in-a-query.md", "docs/how-to/run-a-bank-in-pathway.md", "docs/how-to/save-a-state.md", "docs/how-to/scale-a-feature-by-its-spread.md", "docs/how-to/screen-features-against-a-target.md", "docs/how-to/serve-from-a-saved-state.md", "docs/how-to/set-the-chunk-size.md", "docs/how-to/track-principal-components.md", "docs/how-to/track-the-average-correlation.md", "docs/how-to/use-more-cores.md", "docs/how-to/weight-rows-by-a-robust-scale.md", "docs/how-to/weight-rows.md", "docs/tutorials/fit-save-and-serve.md", "docs/tutorials/local-fit-with-a-clock.md", "docs/tutorials/stream-from-parquet.md", "llms.txt"]
-kinds = ["README.md", "docs/CALIBRATION.md", "docs/FEATURES.md", "docs/GBDT.md", "docs/MODELS.md", "docs/OUTPUTS.md", "docs/README.md", "docs/VERSIONS.md", "docs/explanation/against-scikit-learn.md", "docs/explanation/chunk-invariance-and-streaming.md", "docs/explanation/grids-and-instances.md", "docs/explanation/how-po-gbdt-builds-training-data.md", "docs/explanation/how-the-library-is-tested.md", "docs/explanation/out-of-sample.md", "docs/explanation/polars-interfaces.md", "docs/explanation/robust-scale.md", "docs/explanation/state-and-resuming.md", "docs/explanation/time-and-decay.md", "docs/explanation/warm-up-and-readiness.md", "docs/explanation/where-the-time-and-memory-go.md", "docs/how-to/align-series-that-tick-at-their-own-times.md", "docs/how-to/bound-memory.md", "docs/how-to/bound-the-coefficients.md", "docs/how-to/check-data-quality.md", "docs/how-to/check-feature-health.md", "docs/how-to/check-standard-errors.md", "docs/how-to/check-the-scale.md", "docs/how-to/choose-a-changepoint-hazard.md", "docs/how-to/choose-a-covariance-type.md", "docs/how-to/choose-a-kalman-drift-speed.md", "docs/how-to/choose-a-learning-rate.md", "docs/how-to/choose-a-model.md", "docs/how-to/choose-a-ridge-and-half-life.md", "docs/how-to/choose-among-a-grid-online.md", "docs/how-to/choose-columns-on-the-lasso-path.md", "docs/how-to/choose-ftrl-penalties.md", "docs/how-to/choose-holts-smoothing.md", "docs/how-to/choose-micro-eps.md", "docs/how-to/choose-settings-by-hand.md", "docs/how-to/close-groups.md", "docs/how-to/compare-two-models.md", "docs/how-to/decide-when-a-model-is-ready.md", "docs/how-to/detect-a-break.md", "docs/how-to/estimate-a-blocks-covariance-from-ticks.md", "docs/how-to/evaluate-an-output-frame.md", "docs/how-to/feed-a-bank-from-a-database.md", "docs/how-to/find-an-influential-row.md", "docs/how-to/find-an-output-field.md", "docs/how-to/find-what-the-model-misses.md", "docs/how-to/find-which-series-leads.md", "docs/how-to/fit-a-count-target.md", "docs/how-to/fit-locally-along-a-feature.md", "docs/how-to/fit-on-factor-residuals.md", "docs/how-to/fit-one-model-per-group.md", "docs/how-to/fit-targets-that-go-missing-on-different-rows.md", "docs/how-to/fit-weekly-grams-in-one-pass.md", "docs/how-to/flag-joint-outliers.md", "docs/how-to/follow-a-level-that-moves.md", "docs/how-to/forget-rows-past-a-window.md", "docs/how-to/hand-the-output-to-arrow.md", "docs/how-to/handle-sessions-gaps-and-steps-back.md", "docs/how-to/hold-a-row-back.md", "docs/how-to/inspect-a-bank.md", "docs/how-to/keep-hmm-states-on-their-regimes.md", "docs/how-to/keep-kmeans-centers-on-the-data.md", "docs/how-to/learn-targets-known-late.md", "docs/how-to/make-a-target-that-looks-ahead.md", "docs/how-to/make-window-features.md", "docs/how-to/measure-heavy-tails.md", "docs/how-to/pool-grams.md", "docs/how-to/put-an-interval-on-a-prediction.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/read-a-sequential-test.md", "docs/how-to/read-a-state-without-this-library.md", "docs/how-to/read-the-coefficients.md", "docs/how-to/repair-and-score-a-correlation-matrix.md", "docs/how-to/reproduce-an-earlier-versions-fit.md", "docs/how-to/resume-from-a-saved-state.md", "docs/how-to/run-a-bank-from-the-command-line.md", "docs/how-to/run-a-bank-in-a-python-loop.md", "docs/how-to/run-a-bank-in-a-query.md", "docs/how-to/run-a-bank-in-pathway.md", "docs/how-to/save-a-state.md", "docs/how-to/scale-a-feature-by-its-spread.md", "docs/how-to/screen-features-against-a-target.md", "docs/how-to/serve-from-a-saved-state.md", "docs/how-to/set-the-chunk-size.md", "docs/how-to/track-principal-components.md", "docs/how-to/track-the-average-correlation.md", "docs/how-to/use-more-cores.md", "docs/how-to/weight-rows-by-a-robust-scale.md", "docs/how-to/weight-rows.md", "docs/tutorials/fit-save-and-serve.md", "docs/tutorials/local-fit-with-a-clock.md", "docs/tutorials/stream-from-parquet.md", "llms.txt"]
+vocabulary = ["README.md", "crates/online-py/src/lib.rs#docstrings", "docs/CALIBRATION.md", "docs/EXTENDING.md", "docs/FEATURES.md", "docs/GBDT.md", "docs/GLOSSARY.md", "docs/MODELS.md", "docs/OUTPUTS.md", "docs/PERFORMANCE.md", "docs/README.md", "docs/RELEASE-READINESS.md", "docs/TESTING.md", "docs/VERSIONS.md", "docs/contributing/add-an-output-or-a-parameter.md", "docs/contributing/change-the-api.md", "docs/contributing/clear-the-caches.md", "docs/contributing/cut-a-release.md", "docs/contributing/iterate-on-a-change.md", "docs/contributing/move-the-polars-range.md", "docs/contributing/repository-settings.md", "docs/contributing/update-the-oracle-ledger.md", "docs/contributing/use-a-worktree-slot.md", "docs/explanation/against-scikit-learn.md", "docs/explanation/chunk-invariance-and-streaming.md", "docs/explanation/grids-and-instances.md", "docs/explanation/how-po-gbdt-builds-training-data.md", "docs/explanation/how-the-library-is-tested.md", "docs/explanation/out-of-sample.md", "docs/explanation/polars-interfaces.md", "docs/explanation/robust-scale.md", "docs/explanation/state-and-resuming.md", "docs/explanation/time-and-decay.md", "docs/explanation/warm-up-and-readiness.md", "docs/explanation/where-the-time-and-memory-go.md", "docs/how-to/align-series-that-tick-at-their-own-times.md", "docs/how-to/bound-memory.md", "docs/how-to/bound-the-coefficients.md", "docs/how-to/check-data-quality.md", "docs/how-to/check-feature-health.md", "docs/how-to/check-standard-errors.md", "docs/how-to/check-the-scale.md", "docs/how-to/choose-a-changepoint-hazard.md", "docs/how-to/choose-a-covariance-type.md", "docs/how-to/choose-a-kalman-drift-speed.md", "docs/how-to/choose-a-learning-rate.md", "docs/how-to/choose-a-model.md", "docs/how-to/choose-a-ridge-and-half-life.md", "docs/how-to/choose-among-a-grid-online.md", "docs/how-to/choose-columns-on-the-lasso-path.md", "docs/how-to/choose-ftrl-penalties.md", "docs/how-to/choose-holts-smoothing.md", "docs/how-to/choose-micro-eps.md", "docs/how-to/choose-settings-by-hand.md", "docs/how-to/close-groups.md", "docs/how-to/compare-two-models.md", "docs/how-to/decide-when-a-model-is-ready.md", "docs/how-to/detect-a-break.md", "docs/how-to/estimate-a-blocks-covariance-from-ticks.md", "docs/how-to/evaluate-an-output-frame.md", "docs/how-to/feed-a-bank-from-a-database.md", "docs/how-to/find-an-influential-row.md", "docs/how-to/find-an-output-field.md", "docs/how-to/find-what-the-model-misses.md", "docs/how-to/find-which-series-leads.md", "docs/how-to/fit-a-count-target.md", "docs/how-to/fit-locally-along-a-feature.md", "docs/how-to/fit-on-factor-residuals.md", "docs/how-to/fit-one-model-per-group.md", "docs/how-to/fit-targets-that-go-missing-on-different-rows.md", "docs/how-to/fit-weekly-grams-in-one-pass.md", "docs/how-to/flag-joint-outliers.md", "docs/how-to/follow-a-level-that-moves.md", "docs/how-to/forget-rows-past-a-window.md", "docs/how-to/hand-the-output-to-arrow.md", "docs/how-to/handle-sessions-gaps-and-steps-back.md", "docs/how-to/hold-a-row-back.md", "docs/how-to/inspect-a-bank.md", "docs/how-to/keep-hmm-states-on-their-regimes.md", "docs/how-to/keep-kmeans-centers-on-the-data.md", "docs/how-to/learn-targets-known-late.md", "docs/how-to/make-a-target-that-looks-ahead.md", "docs/how-to/make-window-features.md", "docs/how-to/measure-heavy-tails.md", "docs/how-to/pool-grams.md", "docs/how-to/put-an-interval-on-a-prediction.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/read-a-sequential-test.md", "docs/how-to/read-a-state-without-this-library.md", "docs/how-to/read-the-coefficients.md", "docs/how-to/repair-and-score-a-correlation-matrix.md", "docs/how-to/reproduce-an-earlier-versions-fit.md", "docs/how-to/resume-from-a-saved-state.md", "docs/how-to/run-a-bank-from-the-command-line.md", "docs/how-to/run-a-bank-in-a-python-loop.md", "docs/how-to/run-a-bank-in-a-query.md", "docs/how-to/run-a-bank-in-pathway.md", "docs/how-to/save-a-state.md", "docs/how-to/scale-a-feature-by-its-spread.md", "docs/how-to/screen-features-against-a-target.md", "docs/how-to/serve-from-a-saved-state.md", "docs/how-to/set-the-chunk-size.md", "docs/how-to/track-principal-components.md", "docs/how-to/track-the-average-correlation.md", "docs/how-to/use-more-cores.md", "docs/how-to/weight-rows-by-a-robust-scale.md", "docs/how-to/weight-rows.md", "docs/tutorials/fit-save-and-serve.md", "docs/tutorials/local-fit-with-a-clock.md", "docs/tutorials/stream-from-parquet.md", "llms.txt", "python/polars_online/__init__.py#docstrings", "python/polars_online/_bank.py#docstrings", "python/polars_online/_errors.py#docstrings", "python/polars_online/_frame.py#docstrings", "python/polars_online/_spec_audit.py#docstrings", "python/polars_online/_spec_changepoint.py#docstrings", "python/polars_online/_spec_class.py#docstrings", "python/polars_online/_spec_cluster.py#docstrings", "python/polars_online/_spec_fields.py#docstrings", "python/polars_online/_spec_gradient.py#docstrings", "python/polars_online/_spec_regimes.py#docstrings", "python/polars_online/_spec_robust.py#docstrings", "python/polars_online/_spec_trend.py#docstrings", "python/polars_online/_warnings.py#docstrings", "python/polars_online/corr.py#docstrings", "python/polars_online/eval.py#docstrings", "python/polars_online/gbdt.py#docstrings", "python/polars_online/gram.py#docstrings", "python/polars_online/ops.py#docstrings", "python/polars_online/sim.py#docstrings", "python/polars_online/stream.py#docstrings"]
+sentences = ["README.md", "docs/CALIBRATION.md", "docs/EXTENDING.md", "docs/FEATURES.md", "docs/GBDT.md", "docs/GLOSSARY.md", "docs/MODELS.md", "docs/OUTPUTS.md", "docs/PERFORMANCE.md", "docs/README.md", "docs/RELEASE-READINESS.md", "docs/TESTING.md", "docs/VERSIONS.md", "docs/contributing/add-an-output-or-a-parameter.md", "docs/contributing/change-the-api.md", "docs/contributing/clear-the-caches.md", "docs/contributing/cut-a-release.md", "docs/contributing/iterate-on-a-change.md", "docs/contributing/move-the-polars-range.md", "docs/contributing/repository-settings.md", "docs/contributing/update-the-oracle-ledger.md", "docs/contributing/use-a-worktree-slot.md", "docs/explanation/against-scikit-learn.md", "docs/explanation/chunk-invariance-and-streaming.md", "docs/explanation/grids-and-instances.md", "docs/explanation/how-po-gbdt-builds-training-data.md", "docs/explanation/how-the-library-is-tested.md", "docs/explanation/out-of-sample.md", "docs/explanation/polars-interfaces.md", "docs/explanation/robust-scale.md", "docs/explanation/state-and-resuming.md", "docs/explanation/time-and-decay.md", "docs/explanation/warm-up-and-readiness.md", "docs/explanation/where-the-time-and-memory-go.md", "docs/how-to/align-series-that-tick-at-their-own-times.md", "docs/how-to/bound-memory.md", "docs/how-to/bound-the-coefficients.md", "docs/how-to/check-data-quality.md", "docs/how-to/check-feature-health.md", "docs/how-to/check-standard-errors.md", "docs/how-to/check-the-scale.md", "docs/how-to/choose-a-changepoint-hazard.md", "docs/how-to/choose-a-covariance-type.md", "docs/how-to/choose-a-kalman-drift-speed.md", "docs/how-to/choose-a-learning-rate.md", "docs/how-to/choose-a-model.md", "docs/how-to/choose-a-ridge-and-half-life.md", "docs/how-to/choose-among-a-grid-online.md", "docs/how-to/choose-columns-on-the-lasso-path.md", "docs/how-to/choose-ftrl-penalties.md", "docs/how-to/choose-holts-smoothing.md", "docs/how-to/choose-micro-eps.md", "docs/how-to/choose-settings-by-hand.md", "docs/how-to/close-groups.md", "docs/how-to/compare-two-models.md", "docs/how-to/decide-when-a-model-is-ready.md", "docs/how-to/detect-a-break.md", "docs/how-to/estimate-a-blocks-covariance-from-ticks.md", "docs/how-to/evaluate-an-output-frame.md", "docs/how-to/feed-a-bank-from-a-database.md", "docs/how-to/find-an-influential-row.md", "docs/how-to/find-an-output-field.md", "docs/how-to/find-what-the-model-misses.md", "docs/how-to/find-which-series-leads.md", "docs/how-to/fit-a-count-target.md", "docs/how-to/fit-locally-along-a-feature.md", "docs/how-to/fit-on-factor-residuals.md", "docs/how-to/fit-one-model-per-group.md", "docs/how-to/fit-targets-that-go-missing-on-different-rows.md", "docs/how-to/fit-weekly-grams-in-one-pass.md", "docs/how-to/flag-joint-outliers.md", "docs/how-to/follow-a-level-that-moves.md", "docs/how-to/forget-rows-past-a-window.md", "docs/how-to/hand-the-output-to-arrow.md", "docs/how-to/handle-sessions-gaps-and-steps-back.md", "docs/how-to/hold-a-row-back.md", "docs/how-to/inspect-a-bank.md", "docs/how-to/keep-hmm-states-on-their-regimes.md", "docs/how-to/keep-kmeans-centers-on-the-data.md", "docs/how-to/learn-targets-known-late.md", "docs/how-to/make-a-target-that-looks-ahead.md", "docs/how-to/make-window-features.md", "docs/how-to/measure-heavy-tails.md", "docs/how-to/pool-grams.md", "docs/how-to/put-an-interval-on-a-prediction.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/read-a-sequential-test.md", "docs/how-to/read-a-state-without-this-library.md", "docs/how-to/read-the-coefficients.md", "docs/how-to/repair-and-score-a-correlation-matrix.md", "docs/how-to/reproduce-an-earlier-versions-fit.md", "docs/how-to/resume-from-a-saved-state.md", "docs/how-to/run-a-bank-from-the-command-line.md", "docs/how-to/run-a-bank-in-a-python-loop.md", "docs/how-to/run-a-bank-in-a-query.md", "docs/how-to/run-a-bank-in-pathway.md", "docs/how-to/save-a-state.md", "docs/how-to/scale-a-feature-by-its-spread.md", "docs/how-to/screen-features-against-a-target.md", "docs/how-to/serve-from-a-saved-state.md", "docs/how-to/set-the-chunk-size.md", "docs/how-to/track-principal-components.md", "docs/how-to/track-the-average-correlation.md", "docs/how-to/use-more-cores.md", "docs/how-to/weight-rows-by-a-robust-scale.md", "docs/how-to/weight-rows.md", "docs/tutorials/fit-save-and-serve.md", "docs/tutorials/local-fit-with-a-clock.md", "docs/tutorials/stream-from-parquet.md", "llms.txt"]
+kinds = ["README.md", "docs/CALIBRATION.md", "docs/EXTENDING.md", "docs/FEATURES.md", "docs/GBDT.md", "docs/GLOSSARY.md", "docs/MODELS.md", "docs/OUTPUTS.md", "docs/PERFORMANCE.md", "docs/README.md", "docs/RELEASE-READINESS.md", "docs/TESTING.md", "docs/VERSIONS.md", "docs/contributing/add-an-output-or-a-parameter.md", "docs/contributing/change-the-api.md", "docs/contributing/clear-the-caches.md", "docs/contributing/cut-a-release.md", "docs/contributing/iterate-on-a-change.md", "docs/contributing/move-the-polars-range.md", "docs/contributing/repository-settings.md", "docs/contributing/update-the-oracle-ledger.md", "docs/contributing/use-a-worktree-slot.md", "docs/explanation/against-scikit-learn.md", "docs/explanation/chunk-invariance-and-streaming.md", "docs/explanation/grids-and-instances.md", "docs/explanation/how-po-gbdt-builds-training-data.md", "docs/explanation/how-the-library-is-tested.md", "docs/explanation/out-of-sample.md", "docs/explanation/polars-interfaces.md", "docs/explanation/robust-scale.md", "docs/explanation/state-and-resuming.md", "docs/explanation/time-and-decay.md", "docs/explanation/warm-up-and-readiness.md", "docs/explanation/where-the-time-and-memory-go.md", "docs/how-to/align-series-that-tick-at-their-own-times.md", "docs/how-to/bound-memory.md", "docs/how-to/bound-the-coefficients.md", "docs/how-to/check-data-quality.md", "docs/how-to/check-feature-health.md", "docs/how-to/check-standard-errors.md", "docs/how-to/check-the-scale.md", "docs/how-to/choose-a-changepoint-hazard.md", "docs/how-to/choose-a-covariance-type.md", "docs/how-to/choose-a-kalman-drift-speed.md", "docs/how-to/choose-a-learning-rate.md", "docs/how-to/choose-a-model.md", "docs/how-to/choose-a-ridge-and-half-life.md", "docs/how-to/choose-among-a-grid-online.md", "docs/how-to/choose-columns-on-the-lasso-path.md", "docs/how-to/choose-ftrl-penalties.md", "docs/how-to/choose-holts-smoothing.md", "docs/how-to/choose-micro-eps.md", "docs/how-to/choose-settings-by-hand.md", "docs/how-to/close-groups.md", "docs/how-to/compare-two-models.md", "docs/how-to/decide-when-a-model-is-ready.md", "docs/how-to/detect-a-break.md", "docs/how-to/estimate-a-blocks-covariance-from-ticks.md", "docs/how-to/evaluate-an-output-frame.md", "docs/how-to/feed-a-bank-from-a-database.md", "docs/how-to/find-an-influential-row.md", "docs/how-to/find-an-output-field.md", "docs/how-to/find-what-the-model-misses.md", "docs/how-to/find-which-series-leads.md", "docs/how-to/fit-a-count-target.md", "docs/how-to/fit-locally-along-a-feature.md", "docs/how-to/fit-on-factor-residuals.md", "docs/how-to/fit-one-model-per-group.md", "docs/how-to/fit-targets-that-go-missing-on-different-rows.md", "docs/how-to/fit-weekly-grams-in-one-pass.md", "docs/how-to/flag-joint-outliers.md", "docs/how-to/follow-a-level-that-moves.md", "docs/how-to/forget-rows-past-a-window.md", "docs/how-to/hand-the-output-to-arrow.md", "docs/how-to/handle-sessions-gaps-and-steps-back.md", "docs/how-to/hold-a-row-back.md", "docs/how-to/inspect-a-bank.md", "docs/how-to/keep-hmm-states-on-their-regimes.md", "docs/how-to/keep-kmeans-centers-on-the-data.md", "docs/how-to/learn-targets-known-late.md", "docs/how-to/make-a-target-that-looks-ahead.md", "docs/how-to/make-window-features.md", "docs/how-to/measure-heavy-tails.md", "docs/how-to/pool-grams.md", "docs/how-to/put-an-interval-on-a-prediction.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/read-a-sequential-test.md", "docs/how-to/read-a-state-without-this-library.md", "docs/how-to/read-the-coefficients.md", "docs/how-to/repair-and-score-a-correlation-matrix.md", "docs/how-to/reproduce-an-earlier-versions-fit.md", "docs/how-to/resume-from-a-saved-state.md", "docs/how-to/run-a-bank-from-the-command-line.md", "docs/how-to/run-a-bank-in-a-python-loop.md", "docs/how-to/run-a-bank-in-a-query.md", "docs/how-to/run-a-bank-in-pathway.md", "docs/how-to/save-a-state.md", "docs/how-to/scale-a-feature-by-its-spread.md", "docs/how-to/screen-features-against-a-target.md", "docs/how-to/serve-from-a-saved-state.md", "docs/how-to/set-the-chunk-size.md", "docs/how-to/track-principal-components.md", "docs/how-to/track-the-average-correlation.md", "docs/how-to/use-more-cores.md", "docs/how-to/weight-rows-by-a-robust-scale.md", "docs/how-to/weight-rows.md", "docs/tutorials/fit-save-and-serve.md", "docs/tutorials/local-fit-with-a-clock.md", "docs/tutorials/stream-from-parquet.md", "llms.txt"]
+
+[[accepted]]
+check = "vocabulary"
+path = "docs/VERSIONS.md"
+rule = "retired: n_eff"
+text = "`n_eff`, as a field a model writes"
+reason = "The table of names that changed gives each old name beside its new one, so a reader holding an old output column can look it up; the old name is the cell's content, and the models' accessor still bears it."
 
 [[accepted]]
 check = "vocabulary"
@@ -750,24 +757,18 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "retired" = 12
 
 [vocabulary."docs/EXTENDING.md"]
-"british" = 4
-"retired" = 14
 
 [vocabulary."docs/GRAM.md"]
 "british" = 23
 "retired" = 1
 
 [vocabulary."docs/PERFORMANCE.md"]
-"british" = 40
-"retired" = 108
 
 [vocabulary."docs/REGIMES.md"]
 "british" = 2
 "retired" = 9
 
 [vocabulary."docs/RELEASE-READINESS.md"]
-"british" = 12
-"retired" = 23
 
 [vocabulary."docs/RUNNER.md"]
 "british" = 1
@@ -776,14 +777,30 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 [vocabulary."docs/STATE-WORKFLOW.md"]
 
 [vocabulary."docs/TESTING.md"]
-"british" = 15
-"retired" = 47
 
 [vocabulary."docs/VALIDATION.md"]
 "retired" = 1
 
 [vocabulary."docs/WINDOWS.md"]
 "retired" = 5
+
+[vocabulary."docs/contributing/add-an-output-or-a-parameter.md"]
+
+[vocabulary."docs/contributing/change-the-api.md"]
+
+[vocabulary."docs/contributing/clear-the-caches.md"]
+
+[vocabulary."docs/contributing/cut-a-release.md"]
+
+[vocabulary."docs/contributing/iterate-on-a-change.md"]
+
+[vocabulary."docs/contributing/move-the-polars-range.md"]
+
+[vocabulary."docs/contributing/repository-settings.md"]
+
+[vocabulary."docs/contributing/update-the-oracle-ledger.md"]
+
+[vocabulary."docs/contributing/use-a-worktree-slot.md"]
 
 [vocabulary."python/polars_online/_bank.py#messages"]
 
@@ -837,11 +854,6 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "is-a-lead" = 4
 
 [sentences."docs/EXTENDING.md"]
-"45+" = 6
-"about-the-document" = 2
-"is-a-lead" = 1
-"no-opener" = 5
-"python-word" = 1
 
 [sentences."docs/GLOSSARY.md"]
 
@@ -850,23 +862,12 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "python-word" = 1
 
 [sentences."docs/PERFORMANCE.md"]
-"45+" = 47
-"about-the-document" = 21
-"contents-opener" = 1
-"is-a-lead" = 10
-"no-opener" = 2
-"python-word" = 9
 
 [sentences."docs/REGIMES.md"]
 "45+" = 2
 "python-word" = 2
 
 [sentences."docs/RELEASE-READINESS.md"]
-"45+" = 9
-"about-the-document" = 3
-"contents-opener" = 1
-"is-a-lead" = 4
-"python-word" = 22
 
 [sentences."docs/RUNNER.md"]
 "45+" = 2
@@ -876,10 +877,6 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "contents-opener" = 1
 
 [sentences."docs/TESTING.md"]
-"45+" = 23
-"about-the-document" = 1
-"is-a-lead" = 3
-"python-word" = 11
 
 [sentences."docs/VALIDATION.md"]
 "45+" = 1
@@ -894,6 +891,24 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "is-a-lead" = 7
 "python-word" = 10
 
+[sentences."docs/contributing/add-an-output-or-a-parameter.md"]
+
+[sentences."docs/contributing/change-the-api.md"]
+
+[sentences."docs/contributing/clear-the-caches.md"]
+
+[sentences."docs/contributing/cut-a-release.md"]
+
+[sentences."docs/contributing/iterate-on-a-change.md"]
+
+[sentences."docs/contributing/move-the-polars-range.md"]
+
+[sentences."docs/contributing/repository-settings.md"]
+
+[sentences."docs/contributing/update-the-oracle-ledger.md"]
+
+[sentences."docs/contributing/use-a-worktree-slot.md"]
+
 [kinds."CONTRIBUTING.md"]
 "undeclared" = 1
 
@@ -904,22 +919,18 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "undeclared" = 1
 
 [kinds."docs/EXTENDING.md"]
-"undeclared" = 1
 
 [kinds."docs/GLOSSARY.md"]
-"undeclared" = 1
 
 [kinds."docs/GRAM.md"]
 "undeclared" = 1
 
 [kinds."docs/PERFORMANCE.md"]
-"undeclared" = 1
 
 [kinds."docs/REGIMES.md"]
 "undeclared" = 1
 
 [kinds."docs/RELEASE-READINESS.md"]
-"undeclared" = 1
 
 [kinds."docs/RUNNER.md"]
 "undeclared" = 1
@@ -928,7 +939,6 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "undeclared" = 1
 
 [kinds."docs/TESTING.md"]
-"undeclared" = 1
 
 [kinds."docs/VALIDATION.md"]
 "undeclared" = 1
@@ -938,3 +948,21 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 
 [kinds."docs/WRITING.md"]
 "undeclared" = 1
+
+[kinds."docs/contributing/add-an-output-or-a-parameter.md"]
+
+[kinds."docs/contributing/change-the-api.md"]
+
+[kinds."docs/contributing/clear-the-caches.md"]
+
+[kinds."docs/contributing/cut-a-release.md"]
+
+[kinds."docs/contributing/iterate-on-a-change.md"]
+
+[kinds."docs/contributing/move-the-polars-range.md"]
+
+[kinds."docs/contributing/repository-settings.md"]
+
+[kinds."docs/contributing/update-the-oracle-ledger.md"]
+
+[kinds."docs/contributing/use-a-worktree-slot.md"]

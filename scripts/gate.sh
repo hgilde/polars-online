@@ -11,7 +11,7 @@
 #                                  as the gate ran before it ran in parallel
 #                                  (`--extended --serial` for both).
 #
-# The tests run in parallel (docs/TESTING.md, "Iterating"): cargo-nextest
+# The tests run in parallel (docs/contributing/iterate-on-a-change.md): cargo-nextest
 # runs each Rust test as a process of its own, where it is installed, and
 # pytest-xdist runs the Python tests in several processes. Both start as
 # many as `scripts/workers.py` says the machine has cores free (2 to 8;

@@ -1,6 +1,6 @@
 """A forward VWAP over a time window -- two decayed sums, one formula --
 alone and as an embargoed target, against polars' `rolling` recipe
-(docs/PERFORMANCE.md §32); and operators sharing one kernel against as many
+(docs/records/PERFORMANCE-LOG.md §32); and operators sharing one kernel against as many
 kernels (docs/PLAN.md task 143).
 
     uv run python scripts/windows_bench.py [OUTDIR]

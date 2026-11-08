@@ -1,5 +1,5 @@
 # Instruction-count budgets (budgets.toml, scripts/budgets.py,
-# docs/PERFORMANCE.md "Budgets"). Gating, unlike benchmark.yml: an
+# docs/TESTING.md "Budgets that only tighten"). Gating, unlike benchmark.yml: an
 # instruction count does not move with the runner's load, so every push and
 # pull request is held to a fixed number per hot path, and fails past the
 # tolerance in either direction -- slower needs a stated raise, faster

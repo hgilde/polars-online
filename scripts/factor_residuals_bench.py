@@ -1,6 +1,6 @@
 """Factor ridges whose out-of-sample residuals feed a windowed ridge with a
 forward target, in one streaming query: its time a row and peak memory in
-rows, in groups and in the window's length (docs/PERFORMANCE.md §47).
+rows, in groups and in the window's length (docs/records/PERFORMANCE-LOG.md §47).
 
     uv run python scripts/factor_residuals_bench.py [OUTDIR] [--runs N] [--only AXIS]
 

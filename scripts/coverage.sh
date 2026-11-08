@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Report test coverage. Reported, never gating (docs/TESTING.md T-D4).
+# Report test coverage. Reported, never gating (docs/records/TESTING-LOG.md T-D4).
 #
 #   ./scripts/coverage.sh
 #

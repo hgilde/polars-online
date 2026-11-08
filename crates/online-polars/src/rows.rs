@@ -1,4 +1,4 @@
-//! A chunk's features, read a run of rows at a time (docs/PERFORMANCE.md
+//! A chunk's features, read a run of rows at a time (docs/records/PERFORMANCE-LOG.md
 //! §20, §42).
 //!
 //! The bank reads a frame the way polars stores it, a column at a time, but
@@ -304,7 +304,7 @@ impl Source for &[f64] {
 #[derive(Debug, Default)]
 pub struct FeatureCols {
     cols: Vec<FeatureCol>,
-    /// The bank's group-blocked order (docs/PERFORMANCE.md P9): position
+    /// The bank's group-blocked order (docs/records/PERFORMANCE-LOG.md P9): position
     /// `j` is source row `layout[j]`. `None` is the chunk's own order.
     layout: Option<Vec<usize>>,
     n: usize,
@@ -379,7 +379,7 @@ pub struct FeatureRows {
 }
 
 /// The transpose's row tile, the unit of parallelism. A tile is copied one
-/// of two ways, by the row's width, both measured (docs/PERFORMANCE.md §42).
+/// of two ways, by the row's width, both measured (docs/records/PERFORMANCE-LOG.md §42).
 /// Up to [`WIDE`] features, [`by_groups`]: each column read for the tile's
 /// rows at once (one type, one branch on its validity) into a scratch of
 /// [`GROUP`] columns that stays in L1, then written out a cache line of each

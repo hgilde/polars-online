@@ -1,6 +1,6 @@
 name: Mutants
 
-# Mutation testing (docs/TESTING.md T-D4). cargo-mutants makes one small change
+# Mutation testing (docs/records/TESTING-LOG.md T-D4). cargo-mutants makes one small change
 # at a time -- an operator flipped, a body replaced by a constant -- rebuilds,
 # and reruns the Rust tests. A mutant no test catches is a place where a bug
 # would pass the whole suite.
@@ -26,7 +26,7 @@ name: Mutants
 # Every mutant's tests run under cargo-nextest (`--test-tool nextest`), a
 # process per test, so one test binary's slowest test no longer holds up the
 # next binary: the full Rust suite took 84 s under nextest against `cargo
-# test`'s 182 s on a developer machine (docs/TESTING.md, "Iterating"). The
+# test`'s 182 s on a developer machine (docs/contributing/iterate-on-a-change.md). The
 # version is pinned, one in both jobs. cargo-mutants hands each
 # `--cargo-test-arg` to `cargo nextest run` for the test phase alone:
 #

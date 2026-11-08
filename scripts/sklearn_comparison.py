@@ -22,7 +22,7 @@ shorter than 500 rows and reported it 0.003 behind `sgd` on the drifting
 stream; at `half_life=100` the two tie. A sweep whose best point is at its
 edge is not a result, it is a grid.
 
-docs/PERFORMANCE.md section 19 is this script's output, read.
+docs/records/PERFORMANCE-LOG.md section 19 is this script's output, read.
 """
 
 from __future__ import annotations

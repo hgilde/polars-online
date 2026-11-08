@@ -1,4 +1,4 @@
-"""The public API, rendered to text and pinned (docs/RELEASE-READINESS.md).
+"""The public API, rendered to text and pinned (docs/contributing/change-the-api.md).
 
 The public surface is much larger than `__all__`: it includes every spec
 constructor's keyword names **and default values** (changing a default silently
@@ -79,8 +79,8 @@ def signature_of(obj: object) -> str:
         return ""
 
 
-#: The names the policy calls unstable (docs/RELEASE-READINESS.md, "Keeping
-#: the API stable"): the Arrow export, the two helper modules beside the
+#: The names the policy calls unstable (docs/VERSIONS.md, "What is
+#: stable"): the Arrow export, the two helper modules beside the
 #: bank, and the training inputs built on other libraries' C APIs (`gbdt`,
 #: task 242). Each is pinned with the label, so the snapshot says which of
 #: its lines carry no promise (review round 5, E7); `tests/test_unstable.py`
@@ -317,7 +317,7 @@ def describe_api(cli: Path | None = None) -> str:
     w("")
 
     # The frame `closed_groups` drains is as much API as an output field
-    # (docs/RELEASE-READINESS.md). One schema per bank, whatever has closed,
+    # (docs/VERSIONS.md, "What is stable"). One schema per bank, whatever has closed,
     # so a fresh bank already has every column. Each kind as the registry
     # builds it, closing on a key, plus the three blocks only an option
     # turns on: `ew_cov`'s PCA, and `marginal`'s lags and bins.

@@ -11,7 +11,7 @@
 //! `threads=`, bounds how many threads multiply, and with it the packing
 //! buffer of twice the L3 cache that faer's x86 kernel keeps on each of
 //! them, which Windows commits whole (the CHANGELOG's *Known issues* and
-//! docs/PERFORMANCE.md §43 say so).
+//! docs/records/PERFORMANCE-LOG.md §43 say so).
 //!
 //! Only where the `gemm` crate runs, as `product_memory.rs`: x86-64 builds
 //! take faer's x86 kernel, whose buffer is reserved per thread at its

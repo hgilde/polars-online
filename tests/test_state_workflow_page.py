@@ -51,7 +51,7 @@ def test_a_recipe_prints_what_the_page_shows(line, code, shown, tmp_path, monkey
 
 
 def test_the_windows_state_version_is_the_one_the_code_writes():
-    """The guide and the release record each name the window run's state
+    """The guide and VERSIONS.md each name the window run's state
     version, and both had stayed at 7 while the code wrote 9 (review round 9,
     K-3): a reader checking a saved state's header against the guide would
     call a 9 foreign. Both are read against the constant the code writes."""
@@ -62,6 +62,6 @@ def test_the_windows_state_version_is_the_one_the_code_writes():
     guide = re.findall(r"The windows state is version (\d+)", PAGE.read_text(encoding="utf-8"))
     record = re.findall(
         r"The window run's state reached version (\d+)",
-        (REPO / "docs/RELEASE-READINESS.md").read_text(encoding="utf-8"),
+        (REPO / "docs/VERSIONS.md").read_text(encoding="utf-8"),
     )
     assert guide == [written] and record == [written], (written, guide, record)

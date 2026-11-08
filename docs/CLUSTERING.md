@@ -7,7 +7,7 @@ the build changed from the prototypes.** The numbers below are the numpy
 prototypes' and are kept as the record of why those two designs were chosen.
 They keep the names of their day too: since task 144 (2026-10-02)
 `halflife` is `half_life` and `min_periods` is `min_weight`, and
-[PERFORMANCE.md's table of names that changed](PERFORMANCE.md#names-that-changed)
+[VERSIONS.md's table of names that changed](VERSIONS.md#names-that-changed)
 lists every rename. Where `n_eff` names a field a model writes, as in §8's
 output table, it is `weight_sum` today; the models' accessor keeps the
 name `n_eff` (CLAUDE.md rule 8).

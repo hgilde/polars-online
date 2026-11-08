@@ -4,7 +4,7 @@
     uv run python scripts/compare_release.py --against 0.9.1
     uv run python scripts/compare_release.py --report         # print; exit 0 whatever differs
 
-The release step (docs/RELEASE-READINESS.md, "Cutting a release"). A test
+Step 1 of a release (docs/contributing/cut-a-release.md). A test
 with a tolerance lets a small numeric change through, and a change to the
 numbers a model returns makes a release a minor under the pre-1.0 rule, so
 before a release every output field is compared with the last release's,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mutation testing on online-core (docs/TESTING.md T-D4).
+# Mutation testing on online-core (docs/records/TESTING-LOG.md T-D4).
 #
 #   ./scripts/mutants.sh                      # the whole crate (11,138 mutants on 2026-10-03; over a day at 4 jobs)
 #   ./scripts/mutants.sh crates/online-core/src/clock.rs   # one file (85 mutants: minutes)

@@ -606,10 +606,54 @@ KEPT_OUT: dict[str, str] = {
     "the gate": r"\bthe gate\b",
     "mutants": r"\bmutants\b",
     "λ": r"λ",
+    "prefetch": r"\bprefetch(?:es|ed|ing)?\b",
+    "distributor": r"\bdistributors?\b",
+    "linearizer": r"\blinearizers?\b",
+    "peak footprint": r"\bpeak footprint\b",
+    "solve cadence": r"\bsolve cadence\b",
+    "golden number": r"\bgolden numbers?\b",
+    "bit-exact": r"\bbit-exact\b",
+    "stride": r"\bstrides?\b",
 }
 #: The kept-out words no scan stands for, with the reason.
 KEPT_OUT_NOT_SCANNED: dict[str, str] = {
     "task": "kept out only for the work the bank gives one thread, a sense a scan cannot tell",
+    "pipeline": (
+        "kept out only for the command line's reader, bank and writer threads, a sense "
+        "a scan cannot tell from a pipeline of query steps"
+    ),
+    "lane": (
+        "kept out only for one of the streaming engine's threads, a sense a scan cannot "
+        "tell from a SIMD lane in a code comment"
+    ),
+    "stream": (
+        "kept out only in the code's sense of one spec on one group's rows; the "
+        "library's own stream is a term"
+    ),
+    "slot": (
+        "kept out only in the code's sense of a column of the output buffers; a grid's "
+        "slot is a term"
+    ),
+    "run": (
+        "kept out only in the code's sense of a run of rows one group learns at a time, "
+        "a sense a scan cannot tell from running a bank"
+    ),
+    "ChunkOut::run_rows": (
+        "an internal constant's name, which no message has a reason to print; listed so "
+        "the glossary entry for run is placed"
+    ),
+    "section": (
+        "kept out only for a timed part of a run, a sense a scan cannot tell from a "
+        "section of a page"
+    ),
+    "gather": (
+        "kept out only for reading scattered rows into contiguous memory, a sense a "
+        "scan cannot tell from gathering in plain English"
+    ),
+    "bit-identical": (
+        "kept out only as the performance prose's shorthand; a message may say a result "
+        "is the same to the bit"
+    ),
 }
 
 #: A format spec that prints a float past three significant figures:

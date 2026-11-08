@@ -88,7 +88,7 @@ po.spec.marginal("m", features=[...], targets=[...],
   before the option existed. `lagcorr_xy` and `lagcorr_yx` are lists over
   `cross_lags`, and absent under `[]`. The autocorrelations, and so
   `n_serial`, are kept at every lag whatever it says, and are the same to
-  the bit (docs/PERFORMANCE.md §23 has the cost).
+  the bit (docs/records/PERFORMANCE-LOG.md §23 has the cost).
 
 `embargo` is **not** refused. The ring sits inside the model, downstream
 of the delay buffer, and is fed rows in the order they are *learned* — the

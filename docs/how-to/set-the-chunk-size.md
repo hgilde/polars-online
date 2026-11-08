@@ -83,8 +83,8 @@ rows carrying coef: 156 at 10 rows a chunk, 4 at 100,000
 **For a wide frame, use larger chunks, because each chunk carries a fixed
 overhead.** At 10,000 columns, handing a chunk across from Polars alone
 takes about 8 ms a call: 4 µs of every row at 2,000 rows a call, and 0.4 µs
-at 20,000
-([PERFORMANCE §20](../PERFORMANCE.md#20-sgds-per-feature-cost-2026-09-08)).
+at 20,000 (measured on 2026-09-08). That time is pyo3-polars extracting
+the frame's columns, about 0.8 µs a column.
 
 ## Use smaller chunks for less memory
 

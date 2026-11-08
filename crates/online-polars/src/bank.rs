@@ -261,7 +261,7 @@ pub(crate) fn session_hash(v: Option<&str>) -> u64 {
 
 /// Columns extracted once per (spec, chunk).
 ///
-/// Plain `f64` with **NaN for null**, not `Option<f64>` (docs/PERFORMANCE.md
+/// Plain `f64` with **NaN for null**, not `Option<f64>` (docs/records/PERFORMANCE-LOG.md
 /// P3): half the bytes, no per-value branch, and a memcpy instead of an
 /// element-wise walk for a null-free column. Sound because every consumer
 /// already collapses the two — a feature or weight is accepted only when it
@@ -308,7 +308,7 @@ fn f64_column(
     })
 }
 
-/// The spec's feature columns, as the chunk holds them (docs/PERFORMANCE.md
+/// The spec's feature columns, as the chunk holds them (docs/records/PERFORMANCE-LOG.md
 /// §20, §42): each column itself, in its source's type, its nulls in its
 /// validity -- nothing copied. A stream copies the rows of each run it learns into a buffer of its
 /// own just before it learns them ([`FeatureCols::rows_into`]), so the
@@ -355,7 +355,7 @@ fn transposes_in_parallel(specs: &[Spec]) -> bool {
 
 /// The order a spec's columns are extracted in: `None` is the frame's own
 /// order; `Some(perm)` puts row `perm[j]` at position `j`, which the bank uses
-/// to lay a chunk out group after group (docs/PERFORMANCE.md P9). Only ever
+/// to lay a chunk out group after group (docs/records/PERFORMANCE-LOG.md P9). Only ever
 /// a permutation of `0..height`, so every row appears exactly once.
 pub(crate) type Layout<'a> = Option<&'a [usize]>;
 
@@ -378,7 +378,7 @@ fn source_row(layout: Layout<'_>, j: usize) -> usize {
 /// one contiguous run instead of gathering every column at a stride, twice
 /// per row; with many groups interleaved row by row that stride is a cache
 /// line per value, and cost 14% of `process` on one thread and 38% on
-/// fourteen at k=20 (docs/PERFORMANCE.md P9). The gather here is one pass
+/// fourteen at k=20 (docs/records/PERFORMANCE-LOG.md P9). The gather here is one pass
 /// per column, and runs per column in parallel.
 fn layout_of(groups: &[(GroupKey, Vec<usize>)], n: usize) -> Option<Vec<usize>> {
     let mut base = 0;
@@ -449,7 +449,7 @@ fn label_column(
 /// dozen rows each -- spreads their allocations over the pool's threads when
 /// they fan out. Measured as a doubled RSS wobble in
 /// `tests/test_ffi_memory.py` (±4.6 vs ±2 KB per call around a flat mean)
-/// with no change in speed (docs/PERFORMANCE.md §12). Public so that
+/// with no change in speed (docs/records/PERFORMANCE-LOG.md §12). Public so that
 /// `tests/chunk_plan.rs` can run the same frames on both sides of it.
 pub const PAR_MIN_ROWS: usize = 4096;
 
@@ -601,7 +601,7 @@ fn extract(
         };
         // A temporal clock arrives as nanoseconds and a numeric one as
         // numbers: which, is a question about the source column, settled
-        // where the chunk is built (`crate::arrow`, docs/TESTING.md T-E10).
+        // where the chunk is built (`crate::arrow`, docs/records/TESTING-LOG.md T-E10).
         // A clock with no value has no defined delta either way, so a null
         // -- a NaN in the numeric form, with inf -- is refused by row.
         let bad = |j: usize| {
@@ -1180,7 +1180,7 @@ type Processed<'s> = (
 /// Run one phase of a chunk through its streams, learning: every `(spec,
 /// group)` task in parallel, each in runs of [`ChunkOut::run_rows`] rows
 /// through its stream in order, one set of buffers per run. The runs are a
-/// cache-sizing device (docs/PERFORMANCE.md §13); chunk invariance makes them
+/// cache-sizing device (docs/records/PERFORMANCE-LOG.md §13); chunk invariance makes them
 /// the same computation as one, and `last` keeps the coefficient report on
 /// the chunk's final row.
 ///
@@ -1247,7 +1247,7 @@ fn process<'s>(
             let coef_at = last_accepted(&sc.features, sc.weight.as_deref(), base, idx.len());
             // The run's features as rows, copied from the columns just before
             // the run is learned and read from cache, one buffer reused run
-            // after run (docs/PERFORMANCE.md §42).
+            // after run (docs/records/PERFORMANCE-LOG.md §42).
             let mut rows = FeatureRows::default();
             // Each segment's first row: 0, then each boundary.
             let start_of = |seg: usize| if seg == 0 { 0 } else { bounds[seg - 1] };
@@ -1448,7 +1448,7 @@ fn score(
 }
 
 /// Assemble the structs of the specs `pick` selects, in parallel, into
-/// `out` (docs/PERFORMANCE.md P4).
+/// `out` (docs/records/PERFORMANCE-LOG.md P4).
 ///
 /// A spec its sink already assembled as its stream ran (`process`) is left
 /// as it is.
@@ -1702,7 +1702,7 @@ fn say_notices(notices: &mut Vec<String>, spec: &Spec, key: &GroupKey, stream: &
 ///
 /// Keyed on a 64-bit hash of the string value rather than on the string
 /// itself, so the per-row cost is a hash rather than a `String` allocation and
-/// two more clones (docs/PERFORMANCE.md P3). The `GroupKey` is materialized
+/// two more clones (docs/records/PERFORMANCE-LOG.md P3). The `GroupKey` is materialized
 /// once per distinct group, not once per row -- and it is still the *value*
 /// that is stored and serialized, so state files are unaffected. A 64-bit
 /// collision would merge two groups; the same 2^-64 exposure the session hash
@@ -1715,7 +1715,7 @@ fn group_indices(chunk: &ArrowChunk, spec: &Spec) -> PolarsResult<Vec<(GroupKey,
             // String cast would produce (`integer_group_keys_match_the_
             // string_cast` in tests/bank.rs pins the two paths to the same
             // keys and output), so the value itself is the bucket: no cast, no
-            // hash, and no collision to document (docs/PERFORMANCE.md P11).
+            // hash, and no collision to document (docs/records/PERFORMANCE-LOG.md P11).
             // Which form a key arrives in is the chunk's choice, not this
             // function's (`crate::arrow`).
             match chunk.key(spec, "group", g)? {
@@ -4204,7 +4204,7 @@ impl Bank {
         self.refuse_if_broken()?;
         self.refuse_name_clash(chunk.names())?;
         // Independent per spec, and each is a full pass over its columns, so
-        // they run in parallel with each other (docs/PERFORMANCE.md P3). The
+        // they run in parallel with each other (docs/records/PERFORMANCE-LOG.md P3). The
         // groups come first because they decide the layout the columns are
         // extracted in (P9).
         let groups: Vec<Vec<(GroupKey, Vec<usize>)>> = self
@@ -4281,7 +4281,7 @@ impl Bank {
         }
 
         // One flat task pool over (spec x group), not a loop of per-spec pools
-        // (docs/PERFORMANCE.md P2). A bank of N single-group specs used to run
+        // (docs/records/PERFORMANCE-LOG.md P2). A bank of N single-group specs used to run
         // on one core at a time; now every stream in the bank is one task.
         let specs = &self.specs;
         let derived = &self.derived;
@@ -4566,7 +4566,7 @@ impl Bank {
         let mut t_process = t2.elapsed();
         let t3 = std::time::Instant::now();
         finish_sinks(filled1, &mut out)?;
-        // Specs assemble independently (docs/PERFORMANCE.md P4).
+        // Specs assemble independently (docs/records/PERFORMANCE-LOG.md P4).
         assemble_phase(
             specs,
             derived,

@@ -54,6 +54,42 @@ in any minor release:
 | **unstable** | the file format of a window run's state (`with_windows(save_state=...)`); the written form of a formula target, in a TOML config or inside a bank's state; the Arrow export: `fit_predict_arrow`, `predict_arrow` and `ArrowStruct`; and the modules `po.sim`, `po.corr` and `po.gbdt`. Each says so in its docstring, and warns with `UnstableWarning` when used with `POLARS_ONLINE_WARN_UNSTABLE=1` set |
 | **not stable** | any name that starts with an underscore, apart from the two columns `po.stream.embargo` adds, `_online_role` and `_online_role_weight`, which are stable; the Rust crates (`online-core`, `online-polars`, `online-cli` and `online-py`), which are not published to crates.io, so nothing outside this repository builds against them; a model's numbers within the 1e-12 tolerance its stored reference results are held to, which depend on the platform and the Polars version; and the text the command line prints (its summary, readiness warnings and errors) and the timing lines `POLARS_ONLINE_TIMING=1` asks for, which are written for a person and may be reworded in a minor release |
 
+**Each unstable part is unstable for a reason that a promise would make
+costly.** The window run's state reached version 10 in under four weeks
+(2026-09-30 to 2026-10-24), versions 2 to 9 in the first nine days. The
+formula tree is read from `expr.meta.serialize`, whose form Polars calls
+unstable across its versions. The Arrow export's input side still arrives
+as a Polars frame, and its import is not built. `po.sim` and `po.corr`
+stand beside the bank: neither reads its outputs, as `po.eval` and
+`po.gram` do. `po.sim`'s frames also rest on NumPy's `Generator`, which
+promises no stream across NumPy versions.
+
+### What the API is
+
+**The API is bigger than `polars_online.__all__`: four surfaces can break
+your code with no error at import.** Each is stable, and each
+change to one shows as a diff in the snapshot:
+
+| surface | what is API | how a change would break you |
+|---|---|---|
+| output field names, the largest surface | every string you index the output struct by, as `out["m"].struct.field("pred_y")`: `pred_y__r0.000001@h100`, `resid_y__r0.5@h100`, `abs_resid_q0.95_y0`, `weight_sum@h500`. They are built from ridge values, half-life suffixes, feature-set labels, quantile levels and target names | a new output, a renamed suffix or a float rendered another way fails as a `StructFieldNotFound` in your pipeline |
+| the spec constructors | the twenty-two constructors of `po.spec`, every keyword's name and every default. The keywords are keyword-only, so their order is not API | a renamed keyword is refused, or forwarded with a warning ([Renamed names](#renamed-names)) |
+| defaults | every default, whether a builder sets it in Python or the bank resolves it in Rust from a keyword left as `None` | no error: it silently changes your numbers, which is worse than breaking your code |
+| state files and the TOML config | a state file's layout and version, and every key of a run config, a spec and each model type | a file or a config that loaded before is refused |
+
+**A state file carries the versions that decide whether it loads.** It is
+versioned msgpack, with the schema version, `SCHEMA_VERSION`, which
+`po.schema_version()` gives and which moves with every layout change, and
+a bank `format_version`: 2, or 3 when a spec carries a clock parameter as
+a duration. The bank refuses a file older than `MIN_BANK_SCHEMA_VERSION`
+(`crates/online-polars/src/bank.rs`) by its version, and the models' own
+states have a floor of their own, `MIN_SCHEMA_VERSION`, beside
+`SCHEMA_VERSION` in `crates/online-core/src/lib.rs`. A window run's state,
+from `with_windows`, has its own version, `WINDOWS_VERSION`
+(`crates/online-polars/src/windows_frame.rs`), and a change to it moves the
+bank's schema too. The state of `po.stream.refresh_time` has its own
+version, `REFRESH_VERSION` (`crates/online-polars/src/refresh.rs`).
+
 ### What each kind of release may change
 
 **A changed default or meaning needs a major release, and a fix to numbers
@@ -180,6 +216,65 @@ ships its own forwarding in the release that renames it: a check at the
 function's top, a stub, an alias or a second column. Both warn with
 `PolarsOnlineDeprecationWarning`, and both last until the next major.
 
+### Names that changed
+
+**Older pages, notes and the CHANGELOG use the names of their day, so
+look an old name up here.** On 2026-10-02 the
+public parameters and output fields were renamed to Polars' words. A few
+other changes renamed one name each, and four surfaces were removed. A
+spec that passes a parameter renamed on 2026-10-02 is refused, and the
+message names the new one. On 2026-10-11 the parameters took the names they
+keep at 1.0: scikit-learn's for the mixture, clustering and changepoint
+models, and one name for one thing across the models. Those old names are
+still read, with a `PolarsOnlineDeprecationWarning` naming the new one,
+until the next major version.
+
+| a dated section or record says | the name now | changed in |
+|---|---|---|
+| `halflife`, alone or inside a name: `long_halflife`, `coef_halflife`, `revert_halflife`, `select_halflife`, `level_halflife`, `trend_halflife` | `half_life`, and so `long_half_life` and the rest | 2026-10-02 |
+| `max_dclock` | `gap_cap` | 2026-10-02 |
+| `label_delay` | `embargo` | 2026-10-02 |
+| a model's `window`, its hard cutoff, and `po.eval.rolling_metrics`'s | `window_size`, and for `rolling_metrics` then `every`, in `window_metrics` | 2026-10-02, then 2026-10-07 |
+| `min_periods` | `min_weight` | 2026-10-02 |
+| `on_clock_reset` and its policies `"error"` and `"reset_state"`; `min_backwards_jump`; and before it `min_session_clock` | `restart_after_step_back`. Unset, every step back is refused, as `"error"` did; set, a step back larger than it resets the model, as `"reset_state"` did, and `0` resets it at every step back | 2026-10-02; `min_session_clock` was removed in 0.9.0, and the policies `"max"` and `"zero"` in 0.12.0 |
+| `emit_resid_z`, and its field `resid_z_<t>` | `emit_zscore`, and `zscore_<t>` | 2026-10-02 |
+| `sgd`'s `scale_features` | `standardize` | 2026-10-02 |
+| `ridge_decay=True`, and its default `False` | `ridge_scale="sum"`, and the default `"mean"` | 2026-10-02 |
+| `add_intercept` | `fit_intercept` | 2026-10-02 |
+| `lasso`'s `max_cd_iters` and `cd_tol` | `max_iter` and `tol` | 2026-10-02 |
+| `corrchange`'s `reset` | `reset_on_flag` | 2026-10-02 |
+| `n_eff`, as a field a model writes, or a column or key of `closed_groups()`, `coef()`, `last_row()`, `marginal()` or `gram()` | `weight_sum`, as in `weight_sum@h10` and `pair_weight_sum`. The models' accessor keeps the name `n_eff`, and means the same number | 2026-10-02 |
+| `lasso`'s `lam_selected_<t>` | `penalty_selected_<t>` | 2026-10-02 |
+| `pcorr_<a>_<b>`, `absresid_q<p>`, and the PCA loadings `pc<j>_<feature>` | `partial_corr_<a>_<b>`, `abs_resid_q<p>`, and `pc<j>_loading_<feature>` | 2026-10-02 |
+| `bocpd`'s `logscore`; `hmm`'s `p_<k>` and `p1_<k>` | `loglik`; `filtered_<k>` and `predicted_<k>` | 2026-10-02 |
+| `po.prep`, and `refresh_time`'s `time=` and `by=` | `po.stream`, and `clock=` and `group=` | 0.12.0 |
+| `po.corr.signal_share`'s `n_eff_blocks` | `n_kish_blocks` | 2026-10-02 |
+| `po.eval.rolling_metrics` and its `window_size` | `po.eval.window_metrics` and `every`: its windows do not overlap, as Polars' `group_by_dynamic(every=)` | 2026-10-07 |
+| `po.eval`'s `by` and `min_obs` | `group`, which also takes one key as a bare string, and `min_samples` | 2026-10-07 |
+| `po.corr.shift` | `po.corr.absorption_shift` | 2026-10-07 |
+| `po.gram.lasso_path`'s `lambdas` | `penalties` | 2026-10-07 |
+| `corrchange`'s `horizon` and `window`; `rcov`'s `window` | `span_rows`; `preavg_rows` | 0.3.0 |
+| `po.run`, the Python runner | removed: the `polars-online` command line, or `ModelBank.fit(lf)` | 0.7.0 |
+| the expression plugin: `pl.col(...).online.<model>`, `po.online` and `InMemoryExpressionWarning` | removed, because a stateful expression is handed its whole column: `lf.online.fit_predict` | 0.7.0 |
+| `po.window.ewm` and `po.window.lookahead_rewm`, with `split=` | removed: the window operators, such as `po.ewm_mean` and `po.rewm_sum`, run by `with_windows` or as a spec's target | 2026-10-03 |
+| a spec's `type = "ew_ridge"` | `type = "ewridge"`, the builder's spelling | 2026-10-07 |
+| `chunk_rows`, and the command line's `--chunk-rows` | `chunk_size` and `--chunk-size`, Polars' name | 2026-10-07 |
+| the command line's `--resume` | `--load-state`, beside the TOML key `load_state` | 2026-10-07 |
+| `kmeans`' field `dist2` | `dist_second` | 2026-10-07 |
+| `ew_cov`'s statistic `lagcorr` and its fields `lagcorr_<a>_<b>_l<ℓ>`; `marginal`'s `lagcorr_xx`, `lagcorr_yy`, `lagcorr_xy` and `lagcorr_yx`, and their `pair_` columns | `lag_corr`, `lag_corr_<a>_<b>_l<ℓ>`, `lag_corr_xx` and the rest | 2026-10-07 |
+| `kmeans`' `update_every` and `split_merge_every`; `corrchange`'s `permute_every` | `update_every_rows`, `split_merge_every_rows`; `permute_every_rows` | 2026-10-07 |
+| `kmeans`' `k`, and `seed_rule` with its word `"kmeanspp"`; `hmm`'s `k` and `seed_rule` | `n_clusters`, and `init` with `"k-means++"`; `n_components` and `init` | 2026-10-11 |
+| `ew_class`'s and `hmm`'s `covariance`, and its words `"shared"` and `"diagonal"` | `covariance_type`, and `"tied"` and `"diag"` | 2026-10-11 |
+| `bocpd`'s `emission`: `"gaussian"`, `"diag"` and `"robust"` | `covariance_type`: `"full"`, `"diag"`, and `"diag"` with `robust_beta` | 2026-10-11 |
+| `bocpd`'s `prior_mean`, `prior_kappa`, `prior_nu` and `prior_scale` | `mean_prior`, `mean_precision_prior`, `degrees_of_freedom_prior` and `covariance_prior` | 2026-10-11 |
+| `window_every` | `snapshot_every`, beside `max_rows_between_snapshots` | 2026-10-11 |
+| `ew_cov`'s `max_rows_between_pca` | `max_rows_between_pcas`, as `max_rows_between_solves` | 2026-10-11 |
+| `lasso`'s `lasso_path` | `penalties`, as `po.gram.lasso_path` names them | 2026-10-11 |
+| `corrchange`'s `span_rows`, and `reset_on_flag` | `window_rows`, and `change_action`, `"flag"` or `"reset"` as `drift_action` | 2026-10-11 |
+| `holt`'s `level_half_life` | the spec's `half_life` | 2026-10-07 |
+| a model window that keeps a row exactly `window_size` old | `closed="both"`; the default, `closed="right"`, drops it | 2026-10-07 |
+| a relative target: `po.target`'s `relative_to=` and `relative=`, and a target table's `relative_to` and `relative` keys | removed: the target made as a column, `with_columns(ret=(pl.col("p") / pl.col("mid")).log())` or a difference, made upstream for the command line; a window looking ahead less a column of the row stays a formula target | 2026-10-07 |
+
 ### State files across releases
 
 **A state file a 1.x build saved loads in every 1.x build after it, and a
@@ -219,20 +314,50 @@ the change, or in this list:
 **The two unstable formats are outside that promise:** a window run's
 state, and a formula target inside a bank's state. A 0.x state is refused
 by its schema version, with an error that says to refit it from its input
-([A bank's state and resuming it](explanation/state-and-resuming.md)).
+([A bank's state and resuming it](explanation/state-and-resuming.md)). The
+0.x releases wrote schema 14 (0.10.0), 17 (0.11.1), 19 (0.12.0) and 20
+(0.13.0), and on 2026-10-03 each saved all 30 specs of the test's workload
+and this build refused every file by its version.
+
+**Every release's files are checked against this build, and the 1.x
+releases are read from PyPI.** `tests/test_released_state.py` installs
+each release and runs `scripts/release_probe.py --states` under it: each
+spec of the workload is fitted on the first half of a stream and saved.
+This build must refuse each 0.x file by its version, naming "refit it from
+its input". It loads each 1.x file with its own spec, and fits the second
+half beside a bank of its own that fitted both halves. Every float, the
+closed groups, the coefficients and `marginal`'s table agree to the bit.
+Two cases differ by design: the kinds of state that go on otherwise after
+the load, and the specs whose numbers a CHANGELOG entry moved since that
+release. The test names each such spec with its entry. A blocked `ewridge` from 1.0.0 or 1.0.1, whose target sums 1.1.0
+took in another order, goes on 5.2e-16 from this build's own. The four
+releases before 1.0 are named in the test. Every 1.x release is read from
+PyPI's description of the package when the suite is collected, every final
+version not yanked, so a release is checked from the moment it is
+uploaded. Offline, the test is skipped, since it downloads the releases.
+
+**Frozen states hold the format inside the repository, and the
+released-state test holds it against what PyPI shipped.** A state of every
+model, a bank file, a `with_windows` state and a `refresh_time` state are
+frozen at each schema this build loads, from `MIN_SCHEMA_VERSION` and
+`MIN_BANK_SCHEMA_VERSION` to `SCHEMA_VERSION`
+(`crates/online-core/tests/state_fixtures.rs`,
+`crates/online-polars/tests/state_fixtures.rs`). For 1.0.0 all three
+constants stood at 61.
 
 ## The Polars range
 
 **Moving the Polars floor up needs a minor release, and dropping a Polars
 major version a major one.** A resolver that installs the new release
 upgrades Polars with it, inside the same Polars major, so no code has to
-change for a higher floor:
+change for a higher floor. If you must stay on an older Polars, stay on
+the older minor of this package:
 
 | a change to the Polars range | the release it needs |
 |---|---|
 | widening it to admit a newer Polars | minor |
 | moving the floor up | minor |
-| capping it below a Polars that broke this library, as [How the pin moves](RELEASE-READINESS.md#how-the-pin-moves) describes | patch |
+| capping it below a Polars that broke this library, as [Move the Polars range](contributing/move-the-polars-range.md) describes | patch |
 | dropping a Polars major version | major |
 
 ### What is pinned
@@ -255,20 +380,94 @@ be any version in the range:
 | every call that reads a query, such as `lf.online.fit_predict`, `lf.online.predict`, `ModelBank.fit` and `ModelBank.fit_predict_batches`, `with_windows` and `refresh_time` | 1.37.0 | they read with `LazyFrame.collect_batches`. Before 1.37.0 it reads ahead of a slower reader without limit: reading a 1 GB parquet file to its end as a query held 1.6 GB on 1.34.0 and 1.36.1, and 0.33 GB on 1.37.0 |
 | the examples that stream a DuckDB, ADBC or pyarrow source into a bank | 1.43.0 | for `pl.scan_arrow_c_stream` |
 
+### The floor
+
+**The floor is 1.37.0, the first release whose `LazyFrame.collect_batches`
+waits for its reader.** Every call that reads a query in chunks reads
+with it. py-polars added `collect_batches` in 1.34.0, but until 1.37.0 it
+runs the query ahead of a reader that is slower than the scan, holding
+every batch it has not handed over. Measured on 2026-10-12 by draining
+`pl.scan_parquet` over a 1 GB source (6,000,000 rows of 21 doubles, row
+groups of 100,000) in batches of 65,536 with a 0.5 ms pause each,
+`POLARS_MAX_THREADS=4`, peak resident memory over the process's baseline
+sampled every 2 ms:
+
+| py-polars | peak |
+|---|---:|
+| 1.34.0 | 1,586 MB |
+| 1.36.1 | 1,591 MB |
+| 1.37.0 | 329 MB |
+| 1.37.1 | 328 MB |
+| 2.0.0 | 169 MB |
+
+**Every model is slower than a parquet scan, so on 1.34.0 to 1.36.1 the
+bank held its whole input.** `lf.online.fit_predict` sunk to parquet over
+the same source peaked at 1,768 MB on 1.34.0, 920 MB on 1.37.1 and 632 MB
+on 2.0.0, and `po.gbdt`'s parquet build at 2.3 GB on 1.34.0 and 1.36.1.
+Below 1.37.0 the library could not keep the promise it is built on,
+running on data that does not fit in memory, so the floor is 1.37.0.
+
+**`ModelBank` alone works from 1.28.1, the release that added the
+`PySeries._export` it calls.** One wheel was measured against 17 py-polars
+releases, and its numbers were identical on every release where it ran.
+On 1.26.0 and 1.27.1 it failed with a clean `AttributeError` before any
+data moved, and 1.28.0 fails on a bug of its own.
+
+### The ceiling
+
+**The ceiling, `<3`, bets on measurement that the interfaces hold through
+2.x.** It moved up from `<2` in 0.5.1, on what the 2.0
+release candidate, `2.0.0rc1`, measured: the whole suite passed with the
+same numbers as on 1.44, every interface of the time worked, and
+`LazyFrame.collect_batches` was unchanged. One behavior moved in the
+library's favor: a query that fails after the bank stops the bank's
+source instead of draining it, so a bank's `save_state` is not written
+on a long stream whose query fails. Moving the
+ceiling up on a release candidate changed nothing for a user at the time,
+because installers do not resolve to a release candidate. Two runs hedge
+the bet: the blocking newest-Polars leg of every release, and the weekly
+canary.
+
 ### Where the suite has passed
 
 **The suite passes on 2.0.0, the pin, at every change, and on the floor,
 1.37.0, before every release and once a month**
-([How the pin moves](RELEASE-READINESS.md#how-the-pin-moves)). It
-passed on the floor on 2026-10-12. There, 25 tests skip, each naming the
-newer Polars it needs: most check against a Polars function that has
-changed since, and the rest stream a database or a pyarrow reader through
+([How a break is
+found](contributing/move-the-polars-range.md#how-a-break-is-found)). On
+the floor on 2026-10-12, 6,762 tests passed and 27 skipped: two for a
+Windows-only path spelling, and 25 each naming the newer Polars it needs.
+Most of the 25 check against a Polars function that has changed since,
+and the rest stream a database or a pyarrow reader through
 `pl.scan_arrow_c_stream`. The suite has also passed on 1.38.1, 1.44.1,
 1.44.2 (the pin until 2026-10-08) and 2.0.0-rc.1 with identical numbers.
-`tests/test_scaffold.py` asserts the pin and the range, and
-[RELEASE-READINESS.md](RELEASE-READINESS.md) has each run with its date
-and what differed.
+`tests/test_scaffold.py` asserts the pin and the range.
+
+**The Rust `polars` inside the wheel is 0.55.2, and the command line uses
+it alone:** the `polars-online` command never touches py-polars, so the
+range above does not apply to it.
 
 [Polars interfaces](explanation/polars-interfaces.md) explains why a
 break on a new Polars is expected maintenance, and which paths to check
 first.
+
+## NumPy
+
+**NumPy is the one optional dependency, `numpy>=1.26` with no ceiling.**
+It is needed only by the `numpy` extra, `polars-online[numpy]`, for
+`po.sim`, `po.corr`, `po.gram` and `ModelBank.gram`. The floor follows
+the oldest Python this package supports: NumPy's first wheels for Python
+3.12 are 1.26.0. No run on NumPy 1.26 is recorded.
+
+**The newest NumPy blocks a release, and its next release candidate is
+advisory.** Every other job runs on the locked NumPy, so the release runs
+the Python suite with only NumPy upgraded, in two legs:
+
+| leg | resolves to | blocks the publish |
+|---|---|---|
+| the newest NumPy | the newest stable that `numpy>=1.26` admits | yes |
+| NumPy's next release candidate | a release candidate while one is out, and the newest stable again otherwise | no |
+
+The canary runs the advisory leg every week. Only NumPy moves in these
+runs, so a red one names it. With no ceiling, a NumPy that breaks this
+library blocks every release until it is fixed or capped, the same trade
+the Polars range makes.

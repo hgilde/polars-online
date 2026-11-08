@@ -9,8 +9,8 @@ To [serve](../GLOSSARY.md#saving-and-serving) is to predict rows from a
 [state](../GLOSSARY.md#saving-and-serving) without learning from them.
 Every row is predicted from the same state, which `predict` never moves.
 Since it skips learning each row, `ewridge` serves 1.8 times as fast as it
-learns at 5 features, and 2.8 times at 20
-([PERFORMANCE §30](../PERFORMANCE.md#30-where-every-row-solves-2026-09-29)).
+learns at 5 features, and 2.8 times at 20, on a frame of a million rows
+(measured on 2026-09-29).
 To go on learning from the new rows instead, follow [Resume from a saved
 state](resume-from-a-saved-state.md). [A bank's state and resuming
 it](../explanation/state-and-resuming.md) explains why a state carries

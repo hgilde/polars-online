@@ -112,8 +112,8 @@ shows the state's size staying flat from 10,000 rows to 1,000,000.
 **Filter after the bank, not before it.** A `filter` before the bank makes
 Polars read several blocks of each parquet file ahead per thread. A run
 over 12M rows peaked at 2.53 GB with the filter before the bank, against
-0.78 GB with the same filter after it ([Filter after the
-bank](../PERFORMANCE.md#filter-after-the-bank), measured on 2026-09-02). The two
+0.78 GB with the same filter after it, measured on 2026-09-02 as the
+[peak footprint](../PERFORMANCE.md#how-the-numbers-are-made). The two
 also mean different things: a filter after the bank changes only which
 rows come out, and one before it changes which rows the model learns
 from. To keep rows from being learned, give them weight 0 in place of a

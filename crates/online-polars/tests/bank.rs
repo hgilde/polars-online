@@ -737,7 +737,7 @@ fn coef_fields_name_every_slot_of_every_list() {
 #[test]
 fn integer_group_keys_match_the_string_cast() {
     // `group_indices` buckets an integer key on its value rather than on the
-    // text polars' String cast would give it (docs/PERFORMANCE.md P11). The
+    // text polars' String cast would give it (docs/records/PERFORMANCE-LOG.md P11). The
     // two must be the same partition with the same key text, whatever the
     // width and sign, at the extremes, and with nulls -- and the output must
     // be bit-identical to feeding the cast column.
@@ -877,7 +877,7 @@ fn a_monotone_int128_key_is_ordered_as_a_number() {
 #[test]
 fn only_models_that_predict_a_target_have_residual_fields() {
     // `ChunkOut::new` allocates no `resid` buffer for a model whose
-    // `predicts_no_target()` is true (docs/PERFORMANCE.md §13), so the
+    // `predicts_no_target()` is true (docs/records/PERFORMANCE-LOG.md §13), so the
     // schema must never ask for a `resid` field of such a model, and a
     // model that predicts a target must always have one. One spec per
     // `ModelKind`; a new kind that lands on the wrong side of this line
@@ -1024,7 +1024,7 @@ fn coef_rows(out: &DataFrame, name: &str) -> Vec<usize> {
 #[ignore = "extended: a second or more (4.9 s)"]
 fn runs_through_a_wide_model_are_invisible() {
     // The bank feeds a task's rows through its stream in runs of
-    // `ChunkOut::run_rows` rows, one set of buffers each (docs/PERFORMANCE.md
+    // `ChunkOut::run_rows` rows, one set of buffers each (docs/records/PERFORMANCE-LOG.md
     // §13). A 230-statistic `ew_cov` gets runs of 976 rows, so 5 000 rows
     // in one chunk are five runs, the last of them partial; the same rows in
     // five chunks are one run each, and one row at a time is 5 000 runs of

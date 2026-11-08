@@ -970,7 +970,7 @@ fn lagged_pair_moments_are_ew_covs_for_every_feature_and_target() {
 
 /// The runs are a window's, and a model without one keeps none: every
 /// slot's run stays unstarted, where under a window each slot's run
-/// starts at its first learned row (docs/PERFORMANCE.md §24).
+/// starts at its first learned row (docs/records/PERFORMANCE-LOG.md §24).
 #[test]
 fn only_a_window_keeps_the_runs() {
     for window in [None, Some(50.0)] {
@@ -3375,7 +3375,7 @@ fn a_pair_read_with_rows_held_is_refused() {
 
 /// `"auto"` splits a row only when a flush has work for two shards,
 /// never into more than twice the threads, and lags, cross terms and
-/// bins add to the work (docs/PERFORMANCE.md §25).
+/// bins add to the work (docs/records/PERFORMANCE-LOG.md §25).
 #[test]
 fn auto_splits_only_what_fills_two_shards() {
     let shape = |p: usize, t: usize, lags: Vec<usize>, cross: Option<Vec<usize>>, bins: bool| {

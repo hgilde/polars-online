@@ -1,6 +1,6 @@
 """`scripts/mutants_report.py`, `scripts/mutants_equivalent.toml` and
 `scripts/mutants_tolerated.toml`: the report the mutation-testing jobs print,
-and the mutants it does not count (docs/TESTING.md T-D4, task 158). And
+and the mutants it does not count (docs/records/TESTING-LOG.md T-D4, task 158). And
 `scripts/mutants_shards.py`, which sizes the changed lines' pass (task 219)."""
 
 from __future__ import annotations

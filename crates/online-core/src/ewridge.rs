@@ -1529,7 +1529,7 @@ impl EwRidge {
         // diagonal. Unstandardized, every scale is 1 and every column is
         // kept, and a division or product by 1 gives back the same bits, so
         // none is made: at a solve a row the `k²` copy and divisions were a
-        // sixth of the solve (docs/PERFORMANCE.md §29).
+        // sixth of the solve (docs/records/PERFORMANCE-LOG.md §29).
         let standardize = self.cfg.standardize;
         let var = |i: usize| cov.cov(zidx[i + 1], zidx[i + 1]);
         let (s, keep): (Vec<f64>, Vec<usize>) = if standardize {
@@ -2036,7 +2036,7 @@ struct Readiness {
 /// One solve's shares, taken when something reads them (docs/PLAN.md task
 /// 140). `A⁻¹`'s diagonal is `O(k³)` and a solve runs every few rows:
 /// taken at every solve, it cost `ewridge` up to 21% of its throughput at
-/// `k = 20` and 46% at `k = 50` (docs/PERFORMANCE.md §29). Something reads
+/// `k = 20` and 46% at `k = 50` (docs/records/PERFORMANCE-LOG.md §29). Something reads
 /// it far less often: a `coef` row, by default one per group per chunk,
 /// and the noise gate only while its bound cannot decide. The arithmetic is
 /// the solve's, in its order, so the shares are the same bits whenever they

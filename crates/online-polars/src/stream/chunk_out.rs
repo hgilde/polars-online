@@ -5,7 +5,7 @@
 use super::*;
 use std::mem::size_of;
 
-/// Flat output buffers for one (stream, chunk) task (docs/PERFORMANCE.md P1).
+/// Flat output buffers for one (stream, chunk) task (docs/records/PERFORMANCE-LOG.md P1).
 ///
 /// One allocation per output *column* for the whole chunk, rather than the
 /// ~11 `Vec`s per row the previous `RowOut` needed. Every numeric buffer is
@@ -94,7 +94,7 @@ impl Buffers {
             // A model with no target to predict has no residual field, so its
             // `resid` buffer would be filled, written once per slot per row
             // and never read: for a 230-statistic `ew_cov` that was a fifth
-            // of the row (docs/PERFORMANCE.md §13).
+            // of the row (docs/records/PERFORMANCE-LOG.md §13).
             residuals: !spec.model.predicts_no_target(),
             // `sigma` is also the loss that `emit_selected` and
             // `emit_averaged` rank slots by (E13/E14 reuse E12's tracked
@@ -329,7 +329,7 @@ impl ChunkOut {
         .sum::<usize>()
     }
 
-    /// How many rows one learning run covers (docs/PERFORMANCE.md §13).
+    /// How many rows one learning run covers (docs/records/PERFORMANCE-LOG.md §13).
     ///
     /// The buffers are slot-major, so a row is one store per slot, each a
     /// slot's stride apart. Two things about that stride decide how fast a
@@ -362,7 +362,7 @@ impl ChunkOut {
         const PLAN: usize = std::mem::size_of::<RowPlan>().div_ceil(8);
         // The run's features as rows, which the bank copies from the
         // chunk's columns just before the run and the passes read back: a
-        // `f64` a feature (docs/PERFORMANCE.md §42). Inside the budget they
+        // `f64` a feature (docs/records/PERFORMANCE-LOG.md §42). Inside the budget they
         // are read from cache; the whole chunk in rows was written to
         // memory and read back, 160 MB at 20,000 rows of 1,000 features.
         let width = Buffers::of(spec).per_row(spec, n_models, n_slots).max(1) + PLAN + spec.k();

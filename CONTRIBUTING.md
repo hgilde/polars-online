@@ -80,8 +80,8 @@ steps, in this order:
 cores free.** That is its core count less the last minute's load average,
 at least 2 and at most 8 (`scripts/workers.py`); `GATE_WORKERS=4` sets it.
 `--serial` runs every test in one process, as the gate did before; the same
-tests run either way, with the same results. [docs/TESTING.md,
-"Iterating"](docs/TESTING.md#iterating) has the measurements.
+tests run either way, with the same results. [Iterate on a change](docs/contributing/iterate-on-a-change.md) has the
+measurements.
 
 Its first line names the tier, and its last line is `gate: PASS` or
 `gate: FAIL` with the tier beside it. The essentials' verdict says it is not
@@ -157,13 +157,13 @@ rather than going unswept. It holds the release comparison's workload and
 
 **Measure before and after, with the same scripts, on an idle machine, and
 put the numbers in the commit message.** `docs/PERFORMANCE.md` has the
-measured baseline and the methodology. Before a release, compare the head
+current figures and how each is measured. Before a release, compare the head
 against the last release's wheel: `scripts/compare_release.py` for the
 numbers, bit for bit, and the benchmark for the speed.
 
 **Every push and pull request is held to `budgets.toml`**, the instruction
 counts of the hot paths and the memory of every output field
-(`docs/PERFORMANCE.md`, "Budgets that only tighten"). A budget failure
+(`docs/TESTING.md`, "Budgets that only tighten"). A budget failure
 says which of two things happened:
 
 - *over its budget*: the change made a case slower or larger. Find out why.
@@ -180,9 +180,9 @@ pytest on every CI leg, written where `POLARS_ONLINE_BUDGETS_OUT` points;
 the peak resident memory (`rss-<platform>.json`) only on each OS's leg at
 the oldest supported Python, the one that holds its budget.
 
-**A proposal the measurement rejects is a good outcome.** Several in
-`docs/PERFORMANCE.md` were rejected *because* the measurement said so, and
-its §5 collects them.
+**A proposal the measurement rejects is a good outcome.** Record the
+measurement that rejected it in the commit message, so the next person who
+has the same idea finds the answer.
 
 ## Commits and pull requests
 
@@ -212,7 +212,9 @@ Each document has one job, so a question about the library has one place to look
 | a map for coding agents, at the repo root and on the docs site | [llms.txt](llms.txt) ([llmstxt.org](https://llmstxt.org)) |
 | the API reference, built from the docstrings and published from every green push to `main` | <https://hgilde.github.io/polars-online/> |
 | what each release changed | [CHANGELOG.md](CHANGELOG.md) |
-| how to cut a release, and how the Polars pin moves | [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md) |
+| how to cut a release | [docs/contributing/cut-a-release.md](docs/contributing/cut-a-release.md), and what a release is held to in [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md) |
+| how the Polars range moves | [docs/contributing/move-the-polars-range.md](docs/contributing/move-the-polars-range.md) |
+| the other contributor how-tos: iterating, worktree slots, caches, the oracle ledger, outputs and parameters, the API | the *Changing the library* group of [docs/README.md](docs/README.md) |
 | what the test suite proves, and how to run it | [docs/TESTING.md](docs/TESTING.md) |
 | how to add a model: every layer it touches, and the test that catches each one skipped | [docs/EXTENDING.md](docs/EXTENDING.md) |
 | the rules this documentation is written to | [docs/WRITING.md](docs/WRITING.md) |

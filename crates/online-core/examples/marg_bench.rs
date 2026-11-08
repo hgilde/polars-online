@@ -4,7 +4,7 @@
 //! This exists to answer one question: does a stream that asks for no lags,
 //! no bins and no window pay for the fact that they exist? Run it against a
 //! build from before the feature under suspicion, in a separate worktree and
-//! `CARGO_TARGET_DIR`, best of the runs each prints (docs/PERFORMANCE.md
+//! `CARGO_TARGET_DIR`, best of the runs each prints (docs/records/PERFORMANCE-LOG.md
 //! §17). It found two real costs that way -- a call inside `learn`'s loop
 //! and an `O(p)` scan outside its guard -- neither of which any test could
 //! have seen.
@@ -18,7 +18,7 @@
 //! feature ranges that [`Marginal::step_sharded`] steps through each batch of
 //! held rows in turn on this thread (0, unsplit): the same arithmetic with
 //! a range's pairs kept in cache across the batch, which is how task 127
-//! measured the state's traffic (docs/PERFORMANCE.md §39). `stat`, `mean`
+//! measured the state's traffic (docs/records/PERFORMANCE-LOG.md §39). `stat`, `mean`
 //! or `huber`, is each bin's location (docs/PLAN.md task 272 (c)), and
 //! `spikes`, a percentage of rows whose targets take a spike of 50 (0).
 //! `-- targets=9 bins=16` is E71's shape (docs/PLAN.md task 122), and `-- targets=9

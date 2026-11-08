@@ -18,7 +18,7 @@ became.
 *Added 2026-10-06:* each report quotes the docs as they stood on its day,
 so the reports from before task 144 (2026-10-02) use the names that task
 renamed.
-[PERFORMANCE.md's table of names that changed](../PERFORMANCE.md#names-that-changed)
+[VERSIONS.md's table of names that changed](../VERSIONS.md#names-that-changed)
 gives today's for each, such as `half_life` for `halflife`. Where `n_eff`
 names a field a model writes, it is `weight_sum` today; the models'
 accessor keeps the name `n_eff` (CLAUDE.md rule 8).

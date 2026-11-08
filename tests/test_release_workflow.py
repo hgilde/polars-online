@@ -320,7 +320,7 @@ def test_the_numpy_floor_installs_on_the_oldest_python():
         )
         for path in [
             REPO / "README.md",
-            REPO / "docs" / "RELEASE-READINESS.md",
+            REPO / "docs" / "VERSIONS.md",
             *sorted(WORKFLOWS.glob("*.yml")),
             Path(__file__),
         ]
@@ -951,9 +951,12 @@ def test_the_throughput_table_postdates_the_previous_release():
     states to no older than the release before the newest in the CHANGELOG,
     so a release can ship the table it measured during its own steps, but
     the next cannot ship it again. The commit it names is the one the dated
-    section it links to was measured at. The table sat in the README until
-    task 338 moved it to ``docs/PERFORMANCE.md``'s *Rows a second for each
-    model*, where the dated section is a link within the page."""
+    section of the measurement log was measured at. The table sat in the
+    README until task 338 moved it to ``docs/PERFORMANCE.md``'s *Rows a
+    second for each model*; stage 9 moved the dated sections to
+    ``docs/records/PERFORMANCE-LOG.md``, which a guide may not link, so the
+    row states its date and commit and the log's section of that date holds
+    the commit."""
     perf = (REPO / "docs" / "PERFORMANCE.md").read_text(encoding="utf-8")
     (row,) = [line for line in perf.splitlines() if line.startswith("| runs |")]
     ((when, sha),) = re.findall(
@@ -964,14 +967,17 @@ def test_the_throughput_table_postdates_the_previous_release():
     assert len(dates) >= 2, dates
     assert datetime.date.fromisoformat(when) >= datetime.date.fromisoformat(dates[1]), (
         f"the throughput table was measured on {when}, before the previous "
-        f"release ({dates[1]}): rerun scripts/benchmark.py (docs/RELEASE-READINESS.md, step 2)"
+        f"release ({dates[1]}): rerun scripts/benchmark.py "
+        "(docs/contributing/cut-a-release.md, step 2)"
     )
-    (link,) = re.findall(r"\(#(\d+-[^)]+)\)", row)
-    assert link.endswith(when), (link, when)
+    assert "](#" not in row and "records/" not in row, row
+    log_text = (REPO / "docs" / "records" / "PERFORMANCE-LOG.md").read_text(encoding="utf-8")
     heading = next(
-        line for line in perf.splitlines() if line.startswith("### ") and line.endswith(f"({when})")
+        line
+        for line in log_text.splitlines()
+        if line.startswith("### ") and line.endswith(f"({when})")
     )
-    section = perf.split(heading, 1)[1].split("\n### ", 1)[0]
+    section = log_text.split(heading, 1)[1].split("\n### ", 1)[0]
     assert f"`{sha}`" in section, (sha, heading)
 
 

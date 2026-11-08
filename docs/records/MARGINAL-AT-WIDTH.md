@@ -22,7 +22,7 @@ E72's `cov` is not exact where a target is absent on some learned rows,
 and the fixed cost E74 is built on is not in the model.*
 
 *Built the same day: E71 as task 122 and E70 as task 123, each
-bit-identical where the request said it would be. `PERFORMANCE.md` §22 and
+bit-identical where the request said it would be. `docs/records/PERFORMANCE-LOG.md` §22 and
 §23 have the measurements. E71's one-target row moved too, by a fifth,
 where the request expected no change; E70's single cross lag took 30% off
 the lags' cost, where the moment count suggested 56%.*
@@ -33,7 +33,7 @@ at one target. `marginal(shards=)` takes a count or `"auto"`, bit for bit
 at any count. At 10,000 features, nine targets, six lags and sixteen bins
 the model alone ran 5.4× on 14 threads and the bank 4.9×; the moments of
 one target, 1.8× and 1.2×, where each held row's copy and the bank's own
-row work do not split (`PERFORMANCE.md` §25).*
+row work do not split (`docs/records/PERFORMANCE-LOG.md` §25).*
 
 *E72 was built on 2026-09-29 as task 125.
 `marginal(feature_moments="shared")` keeps one mean and one variance per
@@ -42,7 +42,7 @@ feature too, and each pair only its covariance. Where a target is absent on some
 other estimator its section below examines, and the docstring says so. A
 window is refused by name. On the model alone it ran 2.7× at ten targets
 and 3.2× at thirty, level at one, and 4.6× with lags at ten
-(`PERFORMANCE.md` §27).*
+(`docs/records/PERFORMANCE-LOG.md` §27).*
 
 ---
 
@@ -271,7 +271,7 @@ inside it). No state change, no schema bump.
   where each target is absent on a random third of the rows, every `bin_*`
   and `split_*` column equals today's to the bit (the current build as the
   oracle, the way `marg_bench` was held against `7c5327f` in
-  PERFORMANCE.md §17).
+  docs/records/PERFORMANCE-LOG.md §17).
 - `marg_bench` with `bins = 16` at `T = 1` and `T = 9`: the `T = 9` row
   should move and the `T = 1` row should not.
 
@@ -439,7 +439,7 @@ state). Chunk invariance is untouched.
   lags and bins on, on a multi-target stream with absent targets.
 - A bank saved under `shards = 14` loads and continues under `shards = 1`
   to the same state.
-- The thread-scaling table in PERFORMANCE.md §13 gains a `marginal`
+- The thread-scaling table in docs/records/PERFORMANCE-LOG.md §13 gains a `marginal`
   row at `p = 10,000`, one spec, one group.
 
 ---
@@ -464,7 +464,7 @@ on the row's per-target scalars (`a_t`, `b_t`, `dy_t`, the presence of
 > **Examined 2026-09-25: the fixed cost is not in the model.** The bank
 > already casts and transposes each chunk once, in one tiled pass, and
 > hands the model one contiguous row (`feature_rows` in
-> `crates/online-polars/src/bank.rs`, `docs/PERFORMANCE.md` §20): there
+> `crates/online-polars/src/bank.rs`, `docs/records/PERFORMANCE-LOG.md` §20): there
 > is no per-row gather. Measured on the model alone at `p = 10,000`,
 > with no bank, frame or Python around it, the moments cost
 > `0.0 + 3.3·T` ns per feature per row and the first pass's shape

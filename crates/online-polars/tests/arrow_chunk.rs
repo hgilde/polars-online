@@ -202,7 +202,7 @@ fn a_column_given_but_unlisted_is_refused() {
 
 /// `has` answers for every column the source listed, read or not, and for
 /// no other: it is what decides that a column a scoring call may leave out
-/// is absent (docs/PERFORMANCE.md §24 made it a lookup).
+/// is absent (docs/records/PERFORMANCE-LOG.md §24 made it a lookup).
 #[test]
 fn has_knows_every_listed_column_and_no_other() {
     let cols = vec![("y", ArrowCol::F64(nums(&[1.0, 2.0])))];

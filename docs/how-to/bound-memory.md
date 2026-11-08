@@ -65,8 +65,8 @@ with the allocator's page retention off so that the figure is live data:
 
 **The saving depends on how much data a block holds, so compare a run at
 the default with one at `1` on your own files.** On a file whose blocks
-hold 262,000 rows, the setting takes a query from 1.86 GB to 0.51 GB
-([PERFORMANCE §11](../PERFORMANCE.md#11-memory-which-surface-is-odata-2026-09-02)).
+hold 262,000 rows, the setting took a query from 1.86 GB to 0.51 GB,
+measured on 2026-09-02.
 
 ## Give Polars fewer threads and the bank every core
 
@@ -104,8 +104,8 @@ spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1", "x2"], cloc
 ```
 
 On 12M rows over 64 groups, with one spec of four features and two
-half-lives
-([PERFORMANCE §31](../PERFORMANCE.md#31-0130-against-0120-2026-09-29)):
+half-lives, measured on 2026-09-29 on 0.13.0's build at a load average of
+1.9 to 2.1 by `scripts/parallel_bench.py`:
 
 | Polars threads | bank threads | time | peak memory |
 |---:|---:|---:|---:|

@@ -968,7 +968,7 @@ fn run_with(
     // long this thread waited for the reader, spent in the bank, and waited
     // for the writer, and how long the writer was busy. The waits are the
     // pipeline's slack -- a run that waits on the reader is read-bound, one
-    // that waits on the writer is write-bound (docs/PERFORMANCE.md).
+    // that waits on the writer is write-bound (docs/records/PERFORMANCE-LOG.md §10).
     let timing = crate::timing::timing_on();
     let t_start = Instant::now();
     let mut t_read_wait = Duration::ZERO;
@@ -1614,7 +1614,7 @@ fn ndjson_write(sink: &mut BufWriter<File>, df: &DataFrame) -> PolarsResult<()> 
 /// leaf column to pages on polars' thread pool (`POLARS_MAX_THREADS`, like
 /// its readers; the bank's pool is separate), then hand the finished row
 /// group to the writer. Same pages, same file; measured in
-/// docs/PERFORMANCE.md.
+/// docs/records/PERFORMANCE-LOG.md §10.
 struct ParquetSink<'a> {
     writer: polars::io::parquet::write::BatchedWriter<Sink<'a>>,
     fields: Vec<polars_parquet::write::ParquetType>,

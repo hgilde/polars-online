@@ -917,13 +917,16 @@ def test_every_1_x_release_on_pypi_is_held():
 
 
 def test_the_policy_page_says_where_the_releases_come_from():
-    """``docs/RELEASE-READINESS.md``'s section on a released build's state
-    files says the 1.x releases are read from PyPI and names no list to edit
-    on release day: a list of releases by name went stale there (task 269,
-    review 8 F-2), and keeping one current was a commit after every release
-    (task 317). It does not call every release's files refused."""
-    page = (REPO / "docs" / "RELEASE-READINESS.md").read_text(encoding="utf-8")
-    section = page.split("#### A released build's state files", 1)[1].split("\n#### ", 1)[0]
+    """``docs/VERSIONS.md``'s section on state files across releases says
+    the 1.x releases are read from PyPI and names no list to edit on release
+    day: a list of releases by name went stale there (task 269, review 8
+    F-2), and keeping one current was a commit after every release (task
+    317). It does not call every release's files refused. The section moved
+    from RELEASE-READINESS.md's *A released build's state files* in task 338
+    stage 9."""
+    page = (REPO / "docs" / "VERSIONS.md").read_text(encoding="utf-8")
+    section = page.split("### State files across releases", 1)[1].split("\n### ", 1)[0]
+    section = section.split("\n## ", 1)[0]
     flat = " ".join(section.split())
     assert "read from PyPI" in flat, "the section does not say the releases are read from PyPI"
     assert "Add each release" not in flat and "joins the same way, on its release day" not in flat
@@ -954,13 +957,15 @@ def _changelog_entries() -> list[str]:
 def test_a_change_against_the_policy_is_on_the_policy_page():
     """A CHANGELOG entry that says a change went against the release policy
     names a setting, as ``name="value"`` in backticks, that
-    ``docs/RELEASE-READINESS.md``'s policy names too: the page records each
-    departure from its own table, with the reason (task 270, review 9's R4-2:
-    ``huber_scale``'s default moved in a minor and the page did not say)."""
+    ``docs/VERSIONS.md``'s *Defaults changed in a minor release* names too:
+    the page records each departure from its own table, with the reason
+    (task 270, review 9's R4-2: ``huber_scale``'s default moved in a minor
+    and the page did not say). The policy moved there from
+    RELEASE-READINESS.md's *The policy* in task 338 stage 9."""
     import re
 
-    page = (REPO / "docs" / "RELEASE-READINESS.md").read_text(encoding="utf-8")
-    policy = page.split("### The policy", 1)[1].split("\n### ", 1)[0]
+    page = (REPO / "docs" / "VERSIONS.md").read_text(encoding="utf-8")
+    policy = page.split("### Defaults changed in a minor release", 1)[1].split("\n### ", 1)[0]
     against = [e for e in _changelog_entries() if "against the policy" in " ".join(e.split())]
     assert against, "no CHANGELOG entry says it went against the policy"
     for entry in against:

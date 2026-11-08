@@ -1,5 +1,5 @@
 """Determinism and cross-platform concerns testable without a Windows runner
-(docs/TESTING.md sections D and E).
+(docs/records/TESTING-LOG.md sections D and E).
 
 The parts that genuinely need Windows run elsewhere: T-W1, T-W7 and T-W8 in
 `ci.yml` at every push, and T-W2, the cross-OS state hand-off, in
@@ -102,7 +102,7 @@ class TestThreadDeterminism:
     """T-D3: the bank fans out over (spec x group) on its own pool, sized by
     `POLARS_ONLINE_MAX_THREADS`, and from 4096 rows a chunk's columns are
     also laid out, read and assembled in parallel (`PAR_MIN_ROWS`,
-    docs/PERFORMANCE.md P9-P11). Work within one stream is serial, so thread
+    docs/records/PERFORMANCE-LOG.md P9-P11). Work within one stream is serial, so thread
     count must not change a single number -- in any field, on either side
     of that threshold."""
 

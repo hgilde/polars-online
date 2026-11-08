@@ -1,3 +1,4 @@
+<!-- kind: reference -->
 # Glossary
 
 This reference page gives the one word polars-online uses for each concept,
@@ -199,9 +200,21 @@ contributor guide may use them, since its subject is the code.
 | *scan*, `scan_parquet` | a Polars function | *reads the file as a query* |
 | *morsel*, *streaming engine* | the blocks of rows Polars works on, and the part of Polars that runs a query in them | *the blocks of rows Polars works on*; *Polars, when it runs a query* |
 | *row group* | the unit a parquet file stores its rows in | *a block of a parquet file* |
+| *prefetch* | the row groups Polars' reader decodes ahead of whatever consumes them | *Polars reading ahead in the file* |
+| *pipeline*, *lane* | one copy of a parallel stage of Polars' streaming engine, one a thread | *Polars, when it runs a query* |
+| *distributor*, *linearizer* | the stages of Polars' streaming engine that hand its blocks of rows out to the lanes, and gather them back in order | *Polars, when it runs a query* |
+| *peak footprint* | the most physical memory a process held at once, as `/usr/bin/time -l` prints it on macOS. It is not the resident set size (RSS), which also counts the pages of a memory-mapped file | *the most memory the process held* |
 | *the pool* | the bank's threads | *the bank's threads* |
 | *task*, meaning the work the bank gives one thread | the bank's unit of work | *the work each thread does* |
+| *stream*, meaning one spec over one group's rows | the bank's unit of parallel work, in the code's and the profiles' sense: one spec over one group, or over the whole input when the spec has no `group` | *the model's rows*; *a piece of work*, as [Use more cores](how-to/use-more-cores.md) says |
+| *slot*, meaning one value an instance writes | one field an [instance](#grids) writes on every row, such as a target's prediction or one of `ew_cov`'s statistics, in the bank's output buffers | *a field* |
+| *run*, meaning `ChunkOut::run_rows` | the rows a stream feeds through one set of the bank's output buffers before it starts the next | *the rows the bank writes at once* |
+| *section*, meaning a part of a chunk's work | one of the four parts of a chunk's work that `POLARS_ONLINE_TIMING=1` times: `extract` (reading the columns), `group` (finding each group's rows), `process` (the models) and `assemble` (building the output columns) | the part itself: *reading the columns*, *finding each group's rows*, *running the models*, *building the output* |
+| *stride*, *gather* | two ways to read one group's values from an interleaved column: a stride reads every n-th row in place, and a gather copies them into one contiguous run first | *reading a group's rows in place*, *copying a group's rows together first* |
+| *solve cadence* | how often a regression solves: every `solve_every` clock units, or by default once the weight learned since the last solve reaches `ln 2 / 50` of the weight the fit holds, which is `half_life / 50` of clock in steady state | *how often the model solves* |
+| *bit-identical*, *bit-exact* | the same floating-point bits, as a test compares each float column as its `u64` bits, with its validity | *the same to the bit* |
 | *golden*, *oracle*, *the gate*, *mutants* | a stored reference result, an independent check of a computed value, the test run before a commit, and mutation testing | in user-facing text, what each means: *a stored reference result*, *an independent check of the value*, *the tests run before each commit*, *mutation testing*. A contributor guide may use the word itself, with *the test gate* for *the gate*, since a [gate](#warm-up-and-readiness) is a readiness parameter |
+| *golden number* | a value the golden tests pin: `golden.rs` in `online-core`, and `tests/test_golden_pipeline.py` to 1e-12. A change that moves one past that tolerance is wrong by definition, and a reordering of the arithmetic that moves one within it is accepted | *a stored reference result* |
 
 ## Why the contested words were chosen
 

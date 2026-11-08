@@ -183,7 +183,7 @@ impl EwClassCfg {
 /// matrix bit for bit -- [`EwCov::decay`] moves neither the co-moments nor
 /// the precision scale -- so its factor is reused and only the class the row
 /// belongs to is refactorized: one O(k³) factorization per learned row
-/// instead of one per class (docs/PERFORMANCE.md §13). `Failed` is kept
+/// instead of one per class (docs/records/PERFORMANCE-LOG.md §13). `Failed` is kept
 /// too, so a matrix no jitter could factorize is not retried on every row.
 #[derive(Debug, Clone)]
 enum Cached {
@@ -2900,7 +2900,7 @@ mod tests {
     }
 
     /// The `full` shape keeps the factor of every class a row did not move
-    /// (docs/PERFORMANCE.md §13), ready for the next row and for `predict`,
+    /// (docs/records/PERFORMANCE-LOG.md §13), ready for the next row and for `predict`,
     /// which reads it rather than factorizing again; the class the row
     /// taught is stale until it is next scored.
     #[test]

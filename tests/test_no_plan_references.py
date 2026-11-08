@@ -187,6 +187,15 @@ FILES: list[str] = [
     "docs/explanation/where-the-time-and-memory-go.md",
     "docs/FEATURES.md",
     "docs/VERSIONS.md",
+    "docs/contributing/add-an-output-or-a-parameter.md",
+    "docs/contributing/iterate-on-a-change.md",
+    "docs/contributing/use-a-worktree-slot.md",
+    "docs/contributing/clear-the-caches.md",
+    "docs/contributing/update-the-oracle-ledger.md",
+    "docs/contributing/cut-a-release.md",
+    "docs/contributing/move-the-polars-range.md",
+    "docs/contributing/change-the-api.md",
+    "docs/contributing/repository-settings.md",
 ]
 
 

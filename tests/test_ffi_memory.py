@@ -244,7 +244,7 @@ class TestNothingLeaksAcrossTheBoundary:
 
     def test_many_tiny_groups(self):
         """Fifty groups of thirty rows: the shape whose per-call fan-out once
-        doubled the RSS wobble and set `PAR_MIN_ROWS` (docs/PERFORMANCE.md, the
+        doubled the RSS wobble and set `PAR_MIN_ROWS` (docs/records/PERFORMANCE-LOG.md, the
         row floor). It was `test_plugin_over_groups` until the plugin went with
         task 85; the bank's own group column feeds the same shape (review
         2026-09-17, T1)."""

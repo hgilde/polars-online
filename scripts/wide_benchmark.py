@@ -10,7 +10,7 @@ cost a 1,000-feature `ewridge` 44% of its speed and left every
 `ewridge` at 200, 500 and 1,000 features on three solve schedules (and every
 row at 200), with and without `gram_block_rows`, and `lasso` at 200 and 500.
 Run it under the last release and under this build, in turn, before a
-release (docs/RELEASE-READINESS.md, step 2).
+release (docs/contributing/cut-a-release.md, step 2).
 """
 
 from __future__ import annotations

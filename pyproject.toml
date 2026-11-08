@@ -45,14 +45,15 @@ dependencies = [
     # reads ahead of a slower consumer without limit: measured 2026-10-12,
     # draining a 1 GB parquet scan held 1,586 MB on 1.34.0 and 1,591 MB on
     # 1.36.1, against 329 MB on 1.37.0, so a source larger than memory was
-    # held whole. `docs/RELEASE-READINESS.md` has the matrix and the command
-    # to reproduce it.
+    # held whole. `docs/VERSIONS.md` has the measurement, and
+    # `docs/records/RELEASE-HISTORY.md` the matrix and the command to
+    # reproduce it.
     #
     # The ceiling was `<2` and was raised to `<3` for 0.5.1, deliberately and
     # on measurement rather than on 2.x keeping the interface: the whole
     # suite passes on 2.0.0rc1 with the same numbers as on 1.44, all three
     # interfaces work, and `LazyFrame.collect_batches` -- the floor -- is
-    # unchanged (`docs/RELEASE-READINESS.md`). It is still a bet on the rest
+    # unchanged (`docs/records/RELEASE-HISTORY.md`). It is still a bet on the rest
     # of 2.x, hedged two ways: `polars-canary.yml` runs the suite against the
     # latest polars weekly, and `release.yml` runs it again before every
     # upload, on the newest version this range admits, blocking. It was
@@ -97,7 +98,7 @@ dev = [
     # The suite in several processes at once (`pytest -n`): the gate runs it
     # so, sized to the cores the machine has free, and the tests that read
     # memory or wall time run in one process of their own (tests/conftest.py,
-    # docs/TESTING.md "Iterating"). MIT. The floor is the version measured.
+    # docs/contributing/iterate-on-a-change.md). MIT. The floor is the version measured.
     "pytest-xdist>=3.8.0",
     # tests/test_ffi_memory.py reads RSS to detect FFI leaks. One dependency
     # beats three hand-rolled platform branches that could each be wrong.
@@ -246,7 +247,7 @@ filterwarnings = ["error::polars_online.PolarsOnlineDeprecationWarning"]
 markers = [
     "soak: long-running stability tests (millions of rows)",
     "extended: the extended tier, which runs before every push, in CI and before a release, and which the essentials gate leaves out (`scripts/gate.sh`; `scripts/gate.sh --extended` runs it). Every use says why: `pytest.mark.extended(reason=\"...\")`, a second or more, the network, a document's experiments, memory or threads, or a grid (docs/TESTING.md, \"Two tiers\"; tests/test_tiers.py)",
-    "serial: tests that measure the process's memory, which other work on the machine moves; `scripts/gate.sh` runs the rest in several processes (pytest-xdist) and these afterwards in one, alone (docs/TESTING.md, \"Iterating\")",
+    "serial: tests that measure the process's memory, which other work on the machine moves; `scripts/gate.sh` runs the rest in several processes (pytest-xdist) and these afterwards in one, alone (docs/contributing/iterate-on-a-change.md)",
     "oracle: tests that hold this library's numbers to another computation whose last bits follow the CPU's paths -- scipy, statsmodels, scikit-learn, numpy.linalg (OpenBLAS) or the NumPy references in tests/reference*.py; tests/conftest.py marks every test in a module that imports one (tests/oracle_marks.py), and `cpu-paths.yml` runs `-m 'oracle and not soak and not oracle_grid'` under OPENBLAS_CORETYPE and NPY_DISABLE_CPU_FEATURES (docs/TESTING.md, \"The machines and the CPU paths\")",
     "oracle_grid: the heavy grids against a third-party oracle -- 50 seeds or orders, batch fits over long streams, downloaded datasets -- which no local run takes (pyproject's addopts and `scripts/gate.sh` leave them out) and `.github/workflows/oracles.yml` runs on every push, sharded across jobs. Every use says why: `pytest.mark.oracle_grid(reason=\"...\")`. `uv run pytest -m oracle_grid` runs them here (docs/TESTING.md, \"Two tiers\"; tests/test_tiers.py)",
     "pins: tests that can only pass on the versions this repo pins -- assertions about the pins themselves, docs that record the version they were generated with, and another library's current behaviour measured on its locked version (polars' multi-key sort, a pyarrow cast bug, duckdb's refusal); the canary unpins on purpose and runs `-m 'not soak and not pins and not oracle_grid'`",

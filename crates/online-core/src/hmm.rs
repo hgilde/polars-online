@@ -344,7 +344,7 @@ struct RowWork {
 /// Per-state Cholesky factors for the `full` shape: built on demand and
 /// dropped whenever a state changes. Derived state -- a pure function of the
 /// accumulators -- so it is neither serialized (rebuilt after a load) nor
-/// compared. The same cache `ew_class` keeps (docs/PERFORMANCE.md §13); the
+/// compared. The same cache `ew_class` keeps (docs/records/PERFORMANCE-LOG.md §13); the
 /// win is the `learn = false` scorer, which never changes a state and so
 /// factorizes each state once rather than on every row (review 2026-09-18).
 ///

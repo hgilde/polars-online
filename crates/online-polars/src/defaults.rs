@@ -1,5 +1,5 @@
 //! What a spec runs with where it leaves a parameter out
-//! (docs/RELEASE-READINESS.md, "Keeping the API stable").
+//! (docs/VERSIONS.md, "What the API is"; docs/contributing/change-the-api.md).
 //!
 //! About fifty defaults are chosen on this side rather than in the Python
 //! builders, which pass `None` for them, so a builder's signature cannot

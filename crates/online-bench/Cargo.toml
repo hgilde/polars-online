@@ -11,7 +11,7 @@ description = "The instruction-count cases behind budgets.toml: hot paths of onl
 # workloads are the library, run natively by `cargo test` on every
 # platform, so a case that no longer builds or no longer reaches its path
 # fails the gate; `benches/instructions.rs` counts them under Callgrind
-# (docs/PERFORMANCE.md, "Budgets").
+# (docs/TESTING.md, "Budgets that only tighten").
 publish = false
 
 [dependencies]

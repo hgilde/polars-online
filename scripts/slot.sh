@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Long-lived worktree slots, each with its own warm target/ and .venv, so a
 # task rebuilds only the workspace crates it changes, not Polars and its
-# dependencies (docs/TESTING.md, "Worktree slots").
+# dependencies (docs/contributing/use-a-worktree-slot.md).
 #
 #   scripts/slot.sh take <branch> [<base>]   a free slot, on a new <branch> from <base> (default main);
 #                                            prints the slot's path

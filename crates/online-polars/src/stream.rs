@@ -1340,7 +1340,7 @@ pub use model_cfgs::{
 };
 
 /// One grid combo: the rendered label plus the machine values it encodes, so
-/// metadata can never drift from the string (docs/RELEASE-READINESS.md).
+/// metadata can never drift from the string (docs/contributing/change-the-api.md).
 #[derive(Debug, Clone, Default)]
 pub struct Combo {
     /// Rendered suffix ("" when there is only one combo).
@@ -2172,7 +2172,7 @@ pub struct Stream {
     /// Warmup threshold per target (ENHANCEMENTS E7).
     min_weight: Vec<f64>,
     /// Row scratch, reused for the life of the stream so the chunk loop
-    /// itself allocates nothing (docs/PERFORMANCE.md P1). The `pred` `Vec`
+    /// itself allocates nothing (PERFORMANCE-LOG P1). The `pred` `Vec`
     /// inside each `Step` is the one per-row allocation left, and it is cheap
     /// (docs/IMPROVEMENTS.md P2).
     scratch: Vec<Scratch>,
@@ -3340,7 +3340,7 @@ impl Stream {
     }
 
     /// Process this stream's rows of one chunk, writing into flat per-slot
-    /// buffers (docs/PERFORMANCE.md P1, P2).
+    /// buffers (PERFORMANCE-LOG P1, P2).
     ///
     /// Two passes. The first walks the rows advancing the clock and deciding
     /// which are accepted -- that depends only on the clock and the input
@@ -3363,7 +3363,7 @@ impl Stream {
     /// `rows` are the absolute rows of the chunk this stream owns, in order;
     /// they name rows in the output and in errors. The input columns are read
     /// at `base + ri` for the `ri`-th of them: the bank lays every spec's
-    /// columns out group after group (docs/PERFORMANCE.md P9), so a stream's
+    /// columns out group after group (PERFORMANCE-LOG P9), so a stream's
     /// rows are one contiguous run whatever order the frame interleaves its
     /// groups in.
     ///
@@ -4681,7 +4681,7 @@ fn run_instance(
         let sc = &mut *inst.scratch;
         sc.ys.clear();
         // The features go to the model as the chunk holds them: one
-        // contiguous row, not a gather (docs/PERFORMANCE.md §20).
+        // contiguous row, not a gather (PERFORMANCE-LOG §20).
         let xs: &[f64] = if plan.direct() {
             sc.ys
                 .extend(targets.iter().map(|t| Some(t[i]).filter(|f| usable(*f))));
@@ -4858,7 +4858,7 @@ fn run_instance(
         // maps to "target 0" for the warmup check. Slot `s` belongs to target
         // `s / nc`; the passes below walk the slots in groups of `nc` rather
         // than dividing per slot -- two integer divisions a slot were most of
-        // a 230-slot `ew_cov` row (docs/PERFORMANCE.md §13).
+        // a 230-slot `ew_cov` row (PERFORMANCE-LOG §13).
         let nc = n_slots.checked_div(m_targets).unwrap_or(1).max(1);
 
         // The readiness gates (docs/WARMUP-AND-CONVERGENCE.md §2), each
@@ -5142,7 +5142,7 @@ fn run_instance(
         // it, so `r`, `sig` and `zs` stay empty and every loop over them
         // below is a no-op. Tracking a residual for such a model was a
         // division per slot per row, and filling the three buffers a
-        // `memset` per row, that no field ever read (docs/PERFORMANCE.md §13).
+        // `memset` per row, that no field ever read (PERFORMANCE-LOG §13).
         sc.r.clear();
         sc.sig.clear();
         sc.zs.clear();

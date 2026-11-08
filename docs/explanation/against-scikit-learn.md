@@ -26,8 +26,8 @@ the gaps come from what a prediction saw.** The comparison ran on one
 generated stream of 100,000 rows with `k = 20`, on 2026-09-08. Each
 contender ran at its best over a sweep of its own settings, by
 `scripts/sklearn_comparison.py` on scikit-learn 1.9.0. `ewridge` solves on
-every row here, and its rate was re-measured on 2026-09-29
-([PERFORMANCE §30](../PERFORMANCE.md#30-where-every-row-solves-2026-09-29)).
+every row here, and its rate was measured again on 2026-09-29, on the same
+stream.
 The noise ceiling is the R² of the generating signal itself:
 
 | contender | R² stationary | R² drifting | rows/sec | what a prediction saw |
@@ -73,6 +73,5 @@ MB, and moves all of it on every row, so it runs 53 rows a second, or 379 with
 `gram_block_rows=1024`. There, `sgd` at a learning rate of `0.2 / k` runs
 33,271 rows a second from 0.89 MB, faster than `SGDRegressor`'s 20,007 in
 batches.
-[PERFORMANCE §19](../PERFORMANCE.md#19-against-sklearnlinear_modelsgdregressor-2026-09-08)
-has the full tables, the sweeps, and why a half-life gives no edge on
-evenly spaced rows.
+`scripts/sklearn_comparison.py` prints the full tables, with the grid
+each contender was swept over.

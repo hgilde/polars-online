@@ -1,6 +1,6 @@
 //! `marginal` stepped with its pairs split across a rayon pool
 //! (`Marginal::step_sharded`, docs/PLAN.md task 126), against the unsplit
-//! step: what `"auto"`'s threshold is calibrated from (docs/PERFORMANCE.md
+//! step: what `"auto"`'s threshold is calibrated from (docs/records/PERFORMANCE-LOG.md
 //! §25).
 //!
 //! Arguments, all optional, as `key=value`: `features` (10,000), `targets`

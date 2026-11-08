@@ -655,8 +655,9 @@ predicted from it.
 **For a fit over hundreds of features, give `gram_block_rows=256`.**
 Learning a row takes O(k²) time in `S` for `k` features, and at a thousand
 features that takes most of the run. The option holds 256 rows back
-and adds them to `S` with one matrix product
-([docs/PERFORMANCE.md](PERFORMANCE.md) §18). A solve brings `S` up to
+and adds them to `S` with one matrix product. Its speed-ups were measured
+on 2026-09-08 by `crates/online-core/examples/gram_block_bench.rs`, for
+`EwRidge::step` with one target on one core. A solve brings `S` up to
 date before it runs, so solve rarely: under `half_life=inf`, give
 `solve_every=float("inf")`, which never comes due, and a row cap, as `wide`
 does:
@@ -686,8 +687,8 @@ coefficients agree with the row-by-row fit to rounding.
 when the work the bank runs at once, one piece per spec and group, leaves
 at least half the bank's threads idle. The threads are the bank's own, and
 the output is the same to the bit at every thread count. At 2,000 features a bank
-learned 3.9 times as fast on eight threads
-([docs/PERFORMANCE.md](PERFORMANCE.md) §37). A bank whose groups
+learned 3.9 times as fast on eight threads, with one target and a
+256-row block (measured on 2026-10-08 at a load average of 16). A bank whose groups
 already keep every core busy gains nothing from a split, so `"auto"` does
 not split there. `gram_threads=8` asks for eight whatever the groups.
 
@@ -2251,8 +2252,9 @@ to give a screen a `window_size` when a relation may flip sign.
 for speed.** Each feature then keeps one mean and variance, over every
 learned row, in place of one per pair over its target's rows. At 20,000
 pairs that runs 2.7 times as fast at ten targets, with a state under half
-the size and the same table to the bit ([PERFORMANCE
-§27](PERFORMANCE.md#27-marginals-shared-feature-moments-2026-09-29)).
+the size and the same table to the bit (measured on 2026-09-29 on the
+model alone over 4,000 rows, the best of five runs of
+`crates/online-core/examples/marg_bench.rs`).
 Where a target is absent on some rows, `var_x` and the center of `cov` then
 come from every row. That is a different estimator, sound only where the
 absence says nothing about the feature, so otherwise keep the default. It
