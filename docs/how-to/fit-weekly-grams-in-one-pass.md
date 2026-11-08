@@ -42,9 +42,9 @@ them.
 5. **Pool the blocks you want with `po.gram.merge`,** and fit with
    `po.gram.solve`. `po.gram.coef_stats` gives each coefficient's t.
 
-Here one pass leaves eight hourly Grams of `df`'s five features. Pooled,
-they give least squares on all 400 rows, with `df`'s truth and the t of
-each coefficient. Any run of hours, on any of the columns, is one more
+Here one pass over `lf` leaves eight hourly Grams of its five features.
+Pooled, they give least squares on all 400 rows, near the truth
+`1 + 2·x0 − x1`, with the t of each coefficient. Any run of hours, on any of the columns, is one more
 call. This code uses `lf` from [Example data](../../README.md#example-data):
 
 ```python
@@ -161,7 +161,7 @@ b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
 y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
 y += rng.standard_normal(n)
 features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
+# Stamp each row, from a Monday, and save the table for `pl.scan_parquet` to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")

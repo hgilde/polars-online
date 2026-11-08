@@ -67,7 +67,7 @@ truth_blocks: 8 rows; block, state, n_rows, corr
 
 | frame | what it holds |
 |---|---|
-| `rows` | what a detector reads: an entity, the row's index `t`, a clock and a session, levels `x_1` .. `x_m`, and `activity`, null unless `activity=(mean, shape)` is given. For returns, apply `.diff()` to the levels. Under `async_rates`, `unpivot` the levels into the long input of [`refresh_time`](align-series-that-tick-at-their-own-times.md), and apply `.diff()` to the grid it builds |
+| `rows` | what a detector reads: an entity, the row's index `t`, a clock and a session, levels `x_1` .. `x_m`, and `activity`, null unless `activity=(mean, shape)` is given. For returns, apply `.diff()` to the levels. Under `async_rates`, `unpivot` the levels into the long input of [`refresh_time`](align-series-that-tick-at-their-own-times.md), and apply `.diff()` to the refresh grid it builds |
 | `truth_rows` | per row `t`: the block, state, volatility multiplier and interpolation fraction |
 | `truth_blocks` | each block's true correlation matrix, the mean over its rows, as its upper triangle with the diagonal, row by row: for two series `[1, rho, 1]` |
 

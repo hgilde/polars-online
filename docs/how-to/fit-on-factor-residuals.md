@@ -191,14 +191,9 @@ or take the fields you need with pl.col("fac0").struct.field("weight_sum").
 ## Keep the memory bounded
 
 **Two `fit_predict` calls in series in one query hold a bounded amount of
-memory.** Polars bounds what it holds in flight from a step that feeds a
-query, such as the reading of a file or a `fit_predict`, by a count of frames, whatever
-their size. Before a step that runs on every thread, such as a
-`with_columns`, it keeps about ten frames a thread, so the feeding step
-can run that far ahead of a slower step after it. Each query's
-`fit_predict` hands Polars its output in slices of at most 1 MiB, so the
-frames in flight between the two stages are a few chunks' rows, however
-long the stream.
+memory,** since each hands Polars its output in slices of at most 1 MiB
+([Why memory stays
+bounded](../explanation/chunk-invariance-and-streaming.md#why-memory-stays-bounded)).
 
 **A `with_columns` between `pl.scan_parquet` and a slower `fit_predict` is
 not bounded the same way:** the query that reads the file runs ahead of
@@ -233,7 +228,7 @@ the loop's predictions are the query's: True
 **The hard window keeps a snapshot of the running sums for every row it
 covers,** so its memory grows with the rows in the window, in each group.
 To keep fewer, give the second ridge `snapshot_every`: a snapshot every 10
-clock units keeps a tenth of them, and the window then covers between
+clock units keeps a tenth of them, and the hard window then covers between
 `window_size` less 10 and `window_size`. Measured on an Apple M4 Pro,
 each snapshot added about 1.3 KB to the run's peak memory, so a two-hour
-window at one row a second, 7,200 snapshots, held about 9 MB a group.
+hard window at one row a second, 7,200 snapshots, held about 9 MB a group.

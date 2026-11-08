@@ -32,8 +32,8 @@ These steps need the library:
 
 ## Scale the penalties with the target
 
-`lasso` keeps the [running sums](../GLOSSARY.md#fitting-a-model) of
-`ewridge` and solves them, on a schedule, by coordinate descent at each
+`lasso` keeps the same [Gram](../GLOSSARY.md#fitting-a-model) as
+`ewridge` and solves it, on a schedule, by coordinate descent at each
 penalty of `penalties`. Each penalty is a [grid
 point](../GLOSSARY.md#grids) with a prediction of its own, and
 `penalty_selected_<t>` names the one with the lowest exponentially
@@ -133,8 +133,8 @@ short of the lasso's solution.
 
 **If `bank.solve_failures()` counts a descent that ran out of its
 `max_iter` sweeps, give a larger `max_iter`.** Columns that nearly repeat
-each other slow the descent most. The docstring's Notes, under *The
-descent*, measure how many sweeps they take.
+each other slow the descent most. The Notes of `po.spec.lasso`'s
+docstring, under *The descent*, measure how many sweeps they take.
 
 1. **Read `bank.solve_failures()` after a fit.** For `lasso` it counts each
    descent that ran out of `max_iter` sweeps, one per target and penalty.
@@ -225,7 +225,7 @@ b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
 y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
 y += rng.standard_normal(n)
 features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
+# Stamp each row, from a Monday, and save the table for `pl.scan_parquet` to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")

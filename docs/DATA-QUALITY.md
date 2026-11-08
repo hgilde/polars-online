@@ -1308,7 +1308,7 @@ window that has not filled.
 [Too little data leaves the fit to the
 ridge](explanation/how-data-quality-checks-work.md#too-little-data-leaves-the-fit-to-the-ridge)
 explains why, and the weight a half-life can gather. The [Warm-up
-gates](MODELS.md#warm-up-gates) lists the gates.
+gates](MODELS.md#warm-up-gates) section of MODELS.md lists the gates.
 
 ```python
 import numpy as np
@@ -1431,19 +1431,7 @@ Each claim above that is not measured here rests on one of these.
 
 | source | for |
 |---|---|
-| Allison, P. D. (2001). *Missing Data*. Sage. | listwise deletion is unbiased for regression slopes when the gap does not depend on the target |
-| Åström, K. J. and Wittenmark, B. (1995). *Adaptive Control*, 2nd ed. Addison-Wesley. | estimator windup under exponential forgetting |
 | Belsley, D. A., Kuh, E. and Welsch, R. E. (1980). *Regression Diagnostics*. Wiley. | condition indexes and variance-decomposition proportions |
-| Chan, T. F., Golub, G. H. and LeVeque, R. J. (1983). Algorithms for computing the sample variance: analysis and recommendations. *The American Statistician* 37(3), 242–247. | the precision a sum-form variance loses at a level |
 | Dickey, D. A. and Fuller, W. A. (1979). Distribution of the estimators for autoregressive time series with a unit root. *Journal of the American Statistical Association* 74(366), 427–431. | the unit-root statistic `random_walk` reads |
-| Goldberg, D. (1991). What every computer scientist should know about floating-point arithmetic. *ACM Computing Surveys* 23(1), 5–48. | the digits a double keeps |
 | Granger, C. W. J. and Newbold, P. (1974). Spurious regressions in econometrics. *Journal of Econometrics* 2(2), 111–120. | a regression of one random walk on another |
-| Haykin, S. (2002). *Adaptive Filter Theory*, 4th ed. Prentice Hall. | the step-size bound and eigenvalue spread of least mean squares |
-| Huber, P. J. (1964). Robust estimation of a location parameter. *Annals of Mathematical Statistics* 35(1), 73–101. | the influence of a large residual, and Huber's loss |
 | Kaufman, S., Rosset, S. and Perlich, C. (2012). Leakage in data mining: formulation, detection, and avoidance. *ACM Transactions on Knowledge Discovery from Data* 6(4). | leakage |
-| Kulhavý, R. and Zarrop, M. B. (1993). On a general concept of forgetting. *International Journal of Control* 58(4), 905–924. | stabilized forgetting |
-| Little, R. J. A. (1992). Regression with missing X's: a review. *Journal of the American Statistical Association* 87(420), 1227–1237. | what complete-case analysis does to a regression |
-| López de Prado, M. (2018). *Advances in Financial Machine Learning*. Wiley. Chapter 7. | purging and the embargo |
-| Phillips, P. C. B. (1986). Understanding spurious regressions in econometrics. *Journal of Econometrics* 33(3), 311–340. | why the t-statistic grows with the rows |
-| Rubin, D. B. (1976). Inference and missing data. *Biometrika* 63(3), 581–592. | missing completely at random, at random, and not at random |
-| Vovk, V., Gammerman, A. and Shafer, G. (2005). *Algorithmic Learning in a Random World*. Springer. | conformal prediction |

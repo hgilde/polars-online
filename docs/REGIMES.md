@@ -508,12 +508,11 @@ at a smaller `L`, 192. Anywhere from 128 to 512 reads within 0.01 of the best,
 0.775, which is still short of the truth of 0.8.
 
 The lag inversion is here because its lagged co-moments are a state a bank
-already keeps, as `ew_cov(lags=...)`. The lags cost speed: `ew_cov` with
-`lags = 1..5` learned 1.15
-million rows a second, against 2.12 million for the same spec without
-them, on an Apple M-series machine, one process, the best of two or three
-runs, since each lag adds a `k × k` outer product a row and the ring of
-rows it needs.
+already keeps, as `ew_cov(lags=...)`. The lags cost speed, since each lag
+adds a `k × k` outer product a row and the ring of rows it needs. `ew_cov`
+with `lags = 1..5` learned 1.15 million rows a second, against 2.12
+million for the same spec without them (an Apple M-series machine, one
+process, the best of two or three runs).
 
 ## 7. `deco`: an equicorrelation that moves
 

@@ -747,7 +747,7 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "retired" = 18
 
 [vocabulary."docs/DIAGNOSTICS.md"]
-"retired" = 7
+"retired" = 2
 
 [vocabulary."docs/EXTENDING.md"]
 "british" = 4
@@ -791,6 +791,8 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 [vocabulary."docs/how-to/blend-each-session-with-the-long-run.md"]
 
 [vocabulary."docs/how-to/check-a-fit-is-determined.md"]
+
+[vocabulary."docs/how-to/check-a-two-stage-fit.md"]
 
 [vocabulary."docs/how-to/choose-when-ewridge-solves.md"]
 
@@ -930,6 +932,8 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 
 [sentences."docs/how-to/check-a-fit-is-determined.md"]
 
+[sentences."docs/how-to/check-a-two-stage-fit.md"]
+
 [sentences."docs/how-to/choose-when-ewridge-solves.md"]
 
 [sentences."docs/how-to/fit-a-ridge-from-a-gram.md"]
@@ -1004,6 +1008,8 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 [kinds."docs/how-to/blend-each-session-with-the-long-run.md"]
 
 [kinds."docs/how-to/check-a-fit-is-determined.md"]
+
+[kinds."docs/how-to/check-a-two-stage-fit.md"]
 
 [kinds."docs/how-to/choose-when-ewridge-solves.md"]
 

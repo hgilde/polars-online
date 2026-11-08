@@ -52,7 +52,7 @@ recorded by one series in this interval and by the other in the next. The
 refresh grid runs at the pace of the slowest series and drops the faster series'
 other ticks. [Align series that tick at their own
 times](../how-to/align-series-that-tick-at-their-own-times.md) builds the
-grid and fits models on it.
+refresh grid and fits models on it.
 
 **The lag inversion reads every return, and sums the covariance the lags
 hold back.** The covariance the effect moves away from lag 0 is in the

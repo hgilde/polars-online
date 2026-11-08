@@ -8,8 +8,8 @@ whose steps are uneven. It also explains why the formula around the
 operators reads each row alone, what a window gives at its edges, and how
 a quantile and a saved run are kept.
 
-**A window operator returns a Polars expression whose value on each row is
-computed over the rows near it on the [clock](GLOSSARY.md#time): those
+**A window operator returns a Polars expression (a column computation,
+such as `pl.col("x") + 1`) whose value on each row is computed over the rows near it on the [clock](GLOSSARY.md#time): those
 before it, or those after it.** A window that looks back makes a feature,
 such as the last minute's time-weighted mid. A window that looks ahead,
 under `reverse=True`, makes a target, such as the next minute's VWAP
@@ -57,7 +57,7 @@ compares `po.ewm_mean` and `po.ewm_sum` with Polars' `ewm_mean_by` and
 **A row whose value is missing adds nothing, and gets the window's value
 as it stands.** A null is missing, and so is a NaN, an infinite value or
 one beyond 1e100 in magnitude. Polars' `ewm_mean_by` and `ewm_sum_by`
-give such a row null.
+give a null row null.
 
 **A time-weighted mean weighs each value by how long it held.** Here `x`
 is 1 for ten clock units, and then 0 on ten rows in the next unit. A mean
@@ -97,7 +97,7 @@ the last unit. So the time-weighted mean is 0.9, where a mean by count is
 ## Which rows a window holds
 
 **A window holds the rows Polars' `rolling_*_by` would give it.** Windows
-are taken over timestamps, so every row that shares a timestamp (its
+are taken over clock values, so every row that shares a clock value (its
 *stamp*) gets the same window, the rows after it at that stamp included.
 With `w` the `window_size`, `closed` sets which ends are in, and so when a
 window that looks back has its value:
@@ -160,6 +160,18 @@ An evenly weighted mean, variance or standard deviation
 (`half_life=float("inf")`) needs a `window_size`, and `with_windows`
 refuses one without it.
 
+**`with_windows` returns the rows in input order, each once every window
+over it has its value.** A window that looks back, under the default
+`closed="right"`, has its value at the next row with a later clock value,
+and a window that looks ahead once its span has passed. So the output
+trails the input by one clock step for a window that looks back, and by
+the longest look-ahead window for one that looks ahead. A group that falls
+silent holds back the rows after it for at most `gap_cap` of the stream's time. Only a clock column has a `gap_cap`, so a
+window that looks ahead under `group` needs `clock`, and `with_windows`
+raises `ValueError` without it. Each group's clock would count only its own
+rows, and a silent group's windows would hold back every later row until
+the input ended.
+
 ## Why a formula around the operators is element-wise
 
 **`with_windows` computes a formula one chunk of rows at a time, so the
@@ -171,7 +183,7 @@ it by name, and chunking the stream cannot change its output:
 | | in a formula |
 |---|---|
 | allowed, around at least one operator | columns, literals, arithmetic, negation, comparisons, `&` and `\|`, `log`, `exp`, `abs`, `sqrt`, `pow`, `clip`, `fill_null`, `is_null`, `is_not_null`, `when/then/otherwise`, `cast` and `alias` |
-| refused by name when the query is built, since each would depend on where a chunk ended | a `shift`, a cumulative or rolling function, `over` or an aggregation |
+| refused by name when the [query](GLOSSARY.md#the-model-bank-and-what-it-reads) is built, since each would depend on where a chunk ended | a `shift`, a cumulative or rolling function, `over` or an aggregation |
 | refused by name when the query is built: write it with Polars' own `with_columns` | a formula with no operator |
 
 This code tries both refusals on `trades`, a stream of quotes with trades
@@ -206,13 +218,13 @@ output](how-to/make-window-features.md#window-an-operators-output)).
 **The operators read a spec's clock keywords, given once to `with_windows`
 for every formula in the call.** These are `clock`, `gap_cap`,
 `restart_after_step_back`, `session`, `session_gap` and `group`, and
-`gap_cap` is required with a clock. A window target reads them from its
-spec. With `group`, each group keeps its own sessions and windows.
+`gap_cap` is required with a clock. A [formula
+target](GLOSSARY.md#fitting-a-model) reads them from its spec. With `group`, each group keeps its own sessions and windows.
 
 **Unlike a spec, `with_windows` needs no `session_gap` for a session, since
 every window ends at a session change.** So no window measures the clock's
 step across one. A number or a duration given for `session_gap` changes nothing,
-and raises a `PolarsOnlineDeprecationWarning`. Only `session_gap="reset"`
+and issues a `PolarsOnlineDeprecationWarning`. Only `session_gap="reset"`
 acts, on the windows looking ahead that a session change leaves open.
 
 **A gap longer than `gap_cap`, or a session change, ends every window open
@@ -224,7 +236,7 @@ A [reset](GLOSSARY.md#time) (a step back larger than
 `session_gap="reset"`) discards the open windows instead, so their rows
 come out null, never dropped:
 
-| `partial` | a cut window gives | for a window target, the row is | the default for |
+| `partial` | a cut window gives | for a formula target, the row is | the default for |
 |---|---|---|---|
 | `"keep"` | the value over what it saw, the window ending at the last row seen | learned from what the window saw | looking back |
 | `"null"` | null | not learned | looking ahead |
@@ -254,7 +266,7 @@ partial="drop": 2898 rows, 0 null
 **A window that looks ahead under `closed="right"` or `"both"` gives its
 value under any `partial` when its far edge falls on the last row before a
 gap or a reset.** That row is in the window and no later row can join it, so the
-window is whole. For a window target, a reset still starts the model
+window is whole. For a formula target, a reset still starts the model
 over and drops every row waiting to be learned, a whole one with the rest.
 
 ## Quantiles and a robust scale
@@ -278,7 +290,7 @@ in it, at any scale and either sign. A magnitude below the smallest normal
 double, about 2.2e-308, reads as 0. These are DDSketch's buckets (Masson,
 Rim and Lee, 2019), the ones `po.spec.huber`'s MAD scale reads too.
 
-**A row leaves a hard window without a subtraction.** The windowed
+**A row leaves a window that `window_size` cuts off without a subtraction.** The windowed
 operators keep a window's rows in two stacks: new rows join the newer one,
 and when the older one is empty the newer one turns over into it. A row
 leaving must take its weight out of its bucket. A subtraction would leave a

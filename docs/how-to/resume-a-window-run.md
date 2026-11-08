@@ -30,7 +30,8 @@ makes the windows:
   in the next, and a build refuses a state it cannot read, naming its
   version.
 
-A window target, which a spec holds in its `targets`, is saved with its
+A [formula target](../GLOSSARY.md#fitting-a-model), a window
+expression a spec holds in its `targets`, is saved with its
 bank's state instead ([A bank's state and resuming
 it](../explanation/state-and-resuming.md)). [How a window
 operator weighs the rows near each row](../WINDOWS.md#saving-and-resuming-a-window-run)

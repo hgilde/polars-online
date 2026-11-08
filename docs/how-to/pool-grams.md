@@ -3,14 +3,16 @@
 
 This how-to is for anyone with a [Gram](../GLOSSARY.md#fitting-a-model)
 per block of rows, such as one per week from one pass, who wants to fit or score on any set of the blocks.
-It pools them into one Gram, aged to a common row, with or without the
+You pool them into one Gram, aged to a common row, with or without the
 blocks' own levels.
 
 ## Prerequisites
 
 These steps need the library and a Gram per block:
 
-- polars-online and numpy installed. Each recipe generates its own data.
+- polars-online installed with numpy, an optional extra, which
+  `pip install "polars-online[numpy]"` adds. Each recipe generates its
+  own data.
 - A Gram per block, from one pass over the stream: an `ewridge` spec with
   `group=` the block's column, such as a week made in the query with
   `pl.col("ts").dt.truncate("1w")`. Then `bank.gram(name)` gives one dict
@@ -63,7 +65,7 @@ b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
 y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
 y += rng.standard_normal(n)
 features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
+# Stamp each row, from a Monday, and save the table for `pl.scan_parquet` to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
@@ -162,7 +164,7 @@ b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
 y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
 y += rng.standard_normal(n)
 features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
+# Stamp each row, from a Monday, and save the table for `pl.scan_parquet` to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
@@ -210,9 +212,8 @@ they are pooled, they give the whole stream's own coefficients.
 and keep the union to ask how their levels move together.** Pooled as one
 union, a chance correlation of the weekly means reads as a correlation of
 the rows, and its standard errors divide by every row, as if each row had
-confirmed it. The second question has forty observations, one a week, and
-[Per-block coefficients](fit-per-block-coefficients.md) or the weekly
-means answer it with forty.
+confirmed it. The second question has forty observations, one a week: regress each
+week's mean target (`target_means`) on its features' means (`means`).
 
 1. **Pool with `po.gram.merge(blocks, within=True)`.** The pooled Gram is
    that of the rows less their week's means, so a fit on it has an
@@ -250,7 +251,7 @@ slow = slow / slow.std()
 quick = rng.standard_normal(n)
 level = 0.3 * rng.standard_normal(n_weeks)  # y's level in each week
 y = 0.05 * quick + level.repeat(per_week) + rng.standard_normal(n)
-# Stamp each row, from a Monday, and save the table for the scan to read.
+# Stamp each row, from a Monday, and save the table for `pl.scan_parquet` to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, "slow": slow, "quick": quick, "y": y}).write_parquet("levels.parquet")
@@ -309,4 +310,4 @@ see, and what to do:
 | `po.gram.solve_subsets` refuses a subset | the subset names one Gram twice, so its rows would count twice | name each block once |
 | a union of parts refuses a Gram | one part was pooled with `within=True`: its means are 0, and the union would add the gap from 0 to the others' means | pool the blocks themselves as a union, not a Gram already pooled within |
 | the intercept is `nan` | the Gram was pooled within blocks, which holds no intercept | read the slopes, or pool as a union for an intercept |
-| a coefficient's t falls far when you pool within blocks | it rested on a correlation of the blocks' levels | ask the levels' question with one observation a block, as [Fit per-block coefficients](fit-per-block-coefficients.md) does |
+| a coefficient's t falls far when you pool within blocks | it rested on a correlation of the blocks' levels | ask the levels' question with one observation a block: regress the blocks' `target_means` on their `means` |

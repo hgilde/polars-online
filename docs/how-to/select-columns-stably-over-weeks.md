@@ -40,7 +40,7 @@ sample can choose one set of columns and on another sample another set.
 3. **Walk each half's lasso path to the first knot with eight columns
    active, with `po.gram.solve_subsets(blocks, halves, path={"max_active":
    8})`.** It reads the Grams once, then merges each half and walks its
-   path on the bank's thread pool, with no Python copy of a matrix per
+   path on the process's threads (`threads=` caps them), with no Python copy of a matrix per
    half. A loop of `po.gram.merge` and `po.gram.lars_paths` gives the same
    paths.
 4. **Count, for each column, the share of the halves that chose it:**
@@ -74,7 +74,7 @@ b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
 y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
 y += rng.standard_normal(n)
 features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
+# Stamp each row, from a Monday, and save the table for `pl.scan_parquet` to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")

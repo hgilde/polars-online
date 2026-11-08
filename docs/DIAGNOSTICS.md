@@ -199,7 +199,7 @@ forgets, a diagnostic also waits until the stream has come 95% of the way to its
 the longest finite memory the model keeps, 4.3 of that memory's half-lives.
 Under `window_size` with no decay that memory is the window's Kish
 half-life, so a diagnostic starts about `1.5 W` rows in. A fit with several
-memories reaches its steady state only once the longest has, so four models count a
+memories reaches its steady state only once the longest has, so six models count a
 memory beside their half-life:
 
 | model | the memory it counts beside `half_life` |
@@ -208,6 +208,7 @@ memory beside their half-life:
 | `kalman` | `coef_half_life` |
 | `ewridge` | `long_half_life`, when given |
 | `lasso` | `select_half_life`, when given |
+| `huber`, `sgd` | the Huber scale's `huber_scale_half_life`, when given |
 
 `sgd` and `pa` under `standardize` fold from the row their scaler
 switches the fit to the caller's units, 22 rows of Kish's size in. The
@@ -219,7 +220,7 @@ memory.** `settled_frac`, `min_settled_frac`, `summary()` and the readiness
 warnings that a gate is not met read the decay `half_life` sets, so they can judge
 a stream long before its diagnostics start. Under `window_size` with no
 decay there is no steady state to approach, so `settled_frac` is null and no readiness warning
-judges the stream. Its diagnostics still start 4.3 of the window's Kish half-lives
+judges the stream. Its diagnostics still start 4.3 of the hard window's Kish half-lives
 in.
 
 **Run once, beside a fit that forgets nothing, give the model a

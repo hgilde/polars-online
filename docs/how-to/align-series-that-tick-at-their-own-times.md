@@ -3,8 +3,8 @@
 
 This how-to is for anyone with series observed at instants of their own,
 such as the trades of several stocks, who wants to fit a correlation, a
-covariance or a regression across them. It puts the series on one grid
-with `po.stream.refresh_time`, then fits the models on the grid's
+covariance or a regression across them. It puts the series on one refresh grid
+with `po.stream.refresh_time`, then fits the models on the refresh grid's
 changes. [Series that tick at their own
 times](../explanation/asynchronous-series.md) explains why a fine common
 grid fails and what the refresh grid recovers.
@@ -22,26 +22,26 @@ These steps need the library and the ticks:
 - The ticks in clock order, within each group if you give `group`.
   [Put rows in clock order](put-rows-in-clock-order.md) shows how.
 
-## Put the series on one grid
+## Put the series on one refresh grid
 
-The grid has a row at each *refresh time*: the first instant by which
+The refresh grid has a row at each *refresh time*: the first instant by which
 **every** series has ticked at least once since the previous refresh time.
 Nothing is interpolated.
 
 1. **Call `po.stream.refresh_time` with the ticks, naming the `series`
    column, every series in `names`, the `clock` and the `value`.** `names`
    sets the order of the output columns, and a tick of a series not in it
-   is refused by name. Give `group`, such as a trading day, for a grid of
+   is refused by name. Give `group`, such as a trading day, for a refresh grid of
    each group's own.
-2. **Read the grid: one row per refresh time.** `time_refresh` is the clock
+2. **Read the refresh grid: one row per refresh time.** `time_refresh` is the clock
    of the tick that completed the refresh time, and `<s>_value` each series' last
    observed value there. `n_obs_<s>` counts that series' ticks since the
-   previous refresh time, of which the grid kept the last.
+   previous refresh time, of which the refresh grid kept the last.
 3. **Read `retained_fraction` before trusting a correlation,** the share
-   of the ticks since the previous refresh time that the grid kept.
+   of the ticks since the previous refresh time that the refresh grid kept.
 
 This code gives three series eight ticks on a clock `t`, and prints the
-grid they make:
+refresh grid they make:
 
 ```python
 import polars as pl
@@ -71,24 +71,24 @@ dropped. After 1.6, BBB ticks at 2.2 and AAA twice, so CCC's tick at 3.1
 completes the second refresh time. The output looks synchronous and is not: each
 value is up to one of its own series' intervals between ticks old.
 
-## Fit models on the grid
+## Fit models on the refresh grid
 
-A model reads the grid as it reads any stream, with the grid's clock as
+A model reads the refresh grid as it reads any stream, with the refresh grid's clock as
 its own.
 
 1. **Compute each series' change between refresh times with Polars' `diff()`,**
-   in a `select` on the grid.
-2. **Give each spec the grid's clock, `time_refresh`,** with a `gap_cap`,
+   in a `select` on the refresh grid.
+2. **Give each spec the refresh grid's clock, `time_refresh`,** with a `gap_cap`,
    the largest clock step the model decays by. The recipe's refresh times
    fall about two clock units apart, and it gives 10.0.
-3. **Chain `online.fit_predict(specs)` after the grid.** Given a query,
-   `refresh_time` returns one, so the grid and the models run in one pass.
+3. **Chain `online.fit_predict(specs)` after the refresh grid.** Given a query,
+   `refresh_time` returns one, so the refresh grid and the models run in one pass.
    The first refresh time has no change, so the models skip it.
 
 This code plants a correlation: three prices share one move and add one of
 their own, as large, so their changes correlate at 0.5. Each is observed
 at times of its own, about once per clock unit. `ew_cov` reads the
-correlations on the grid, and `ewridge` regresses one series' change on
+correlations on the refresh grid, and `ewridge` regresses one series' change on
 the other two's, whose true coefficients are 1/3 each. It then reads the
 same ticks on a grid every 0.1 clock units, each series' last price
 carried forward:
@@ -116,11 +116,11 @@ grid = po.stream.refresh_time(pl.scan_parquet("own_times.parquet"), series="symb
 returns = grid.select("time_refresh", *(pl.col(f"{s}_value").diff().alias(s) for s in names))  # 1. each series' change
 specs = [
     po.spec.ew_cov("comove", features=names, stats=["corr"],
-                   clock="time_refresh", gap_cap=10.0, half_life=float("inf")),          # 2. the grid's clock
+                   clock="time_refresh", gap_cap=10.0, half_life=float("inf")),          # 2. the refresh grid's clock
     po.spec.ewridge("fit", targets=["AAA"], features=["BBB", "CCC"],
                     clock="time_refresh", gap_cap=10.0, half_life=float("inf")),
 ]
-out = returns.online.fit_predict(specs).collect()         # 3. the grid and the models in one pass
+out = returns.online.fit_predict(specs).collect()         # 3. the refresh grid and the models, one pass
 # The correlations and the coefficients on the last refresh time.
 last = out.row(-1, named=True)
 print(f"{out.height} refresh times from {pl.read_parquet('own_times.parquet').height} ticks")
@@ -149,19 +149,19 @@ ways out](../explanation/asynchronous-series.md#the-two-ways-out)).
 
 ## Check that it worked
 
-**Read `retained_fraction` and each `n_obs_<s>`.** The grid runs at the
+**Read `retained_fraction` and each `n_obs_<s>`.** The refresh grid runs at the
 pace of the slowest series, so a fast series loses most of its ticks. The
-series holding the grid up, whose tick completes each refresh time, keeps an
+series holding the refresh grid up, whose tick completes each refresh time, keeps an
 `n_obs` near 1.
 
 | what you see | what it means | what to do |
 |---|---|---|
-| `retained_fraction` low, and one series' `n_obs` large | one series is much slower than the others, and the grid drops most of the fast ones' ticks | pass `pairs=True` for an independent two-series grid per pair, which keeps far more ticks. The grid is then one long frame with the columns `group` (under `group`), `pair` (the two series' names joined by a vertical bar, the one listed first in `names` as `a`), `time_refresh`, `a_value`, `b_value`, `n_obs_a`, `n_obs_b` and `retained_fraction`: filter it on `pair` and take the changes of `a_value` and `b_value` before fitting |
+| `retained_fraction` low, and one series' `n_obs` large | one series is much slower than the others, and the refresh grid drops most of the fast ones' ticks | pass `pairs=True` for an independent two-series refresh grid per pair, which keeps far more ticks. The refresh grid is then one long frame with the columns `group` (under `group`), `pair` (the two series' names joined by a vertical bar, the one listed first in `names` as `a`), `time_refresh`, `a_value`, `b_value`, `n_obs_a`, `n_obs_b` and `retained_fraction`: filter it on `pair` and take the changes of `a_value` and `b_value` before fitting |
 | an error naming a row whose clock steps back | the ticks are not in clock order within a group | sort the ticks by the clock within each `group` before the call |
 | an error naming a series not in `names` | a tick names a series `names` does not list, such as a misspelling | add it to `names`, or filter it out before the call |
 
 Every parameter is in `refresh_time`'s
 [docstring](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.refresh_time).
-For a block's covariance on the grid's changes, robust to noise, see
+For a block's covariance on the refresh grid's changes, robust to noise, see
 [Estimate a block's covariance from
 ticks](estimate-a-blocks-covariance-from-ticks.md).

@@ -27,7 +27,7 @@ how-to that runs it:
 
 | to | call | how-to |
 |---|---|---|
-| collect a Gram per week in one pass | `po.spec.ewridge(..., group="week")`, `bank.gram()` | [Keep a Gram per block in one pass](how-to/fit-weekly-grams-in-one-pass.md) |
+| keep a Gram per week in one pass | `po.spec.ewridge(..., group="week")`, `bank.gram()` | [Keep a Gram per block in one pass](how-to/fit-weekly-grams-in-one-pass.md) |
 | pool any weeks, and score a fit on others | `po.gram.merge` | [Pool Grams](how-to/pool-grams.md#pool-blocks-and-score-a-fit-on-blocks-held-out) |
 | pool decayed weeks, each aged first | `po.gram.merge`, `bank.groups()` | [Pool Grams](how-to/pool-grams.md#age-decayed-blocks-before-you-pool-them) |
 | pool weeks and leave their levels out | `po.gram.merge(..., within=True)` | [Pool Grams](how-to/pool-grams.md#pool-within-blocks-to-leave-their-levels-out) |
@@ -40,7 +40,7 @@ how-to that runs it:
 | see whether a coefficient holds from week to week | `po.gram.solve_subsets` | [Fit per-block coefficients](how-to/fit-per-block-coefficients.md) |
 | read Grams back from files | `po.gram.from_row`, `po.ModelBank.load`, or numpy alone | [Read Grams from saved files](how-to/read-grams-from-saved-files.md) |
 | halve or quarter a Gram's bytes | `bank.gram(dtype="float32", layout="packed")` | [Store a compact Gram](how-to/store-a-compact-gram.md) |
-| collect a Gram of hundreds of features fast, in blocks of rows and on several cores | `gram_block_rows`, `gram_threads` | [Fit hundreds of features](how-to/fit-hundreds-of-features.md) |
+| keep a Gram of hundreds of features fast, in blocks of rows and on several cores | `gram_block_rows`, `gram_threads` | [Fit hundreds of features](how-to/fit-hundreds-of-features.md) |
 | fit Huber's loss, reading the rows twice a pass and the Gram once | `po.gram.solve`, two Polars queries a pass | [Fit a Huber regression on a Gram](how-to/fit-huber-on-a-gram.md) |
 
 The library's words, as they are used for Grams:
@@ -151,9 +151,9 @@ began, each weighing the same. Under a finite half-life the older rows
 weigh less, and a gap between two rows ages every row before it, by no
 more than `gap_cap`.
 
-**Under a `window_size`, a Gram holds only the window.** Every array is
-the window's, the target moments included, so `po.gram.solve` on it fits
-the window as it stood after the last row.
+**Under a `window_size`, a Gram holds only the hard window.** Every array
+is the hard window's, the target moments included, so `po.gram.solve` on
+it fits the hard window as it stood after the last row.
 
 **`bank.gram()` is as of the last row, and `bank.coef()` as of the last
 solve.** A model solves on the schedule its `solve_every` sets, so between

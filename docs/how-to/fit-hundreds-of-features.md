@@ -37,8 +37,8 @@ of adding each row as it is learned.
    `half_life=float("inf")`, give `solve_every=float("inf")`, which never
    comes due, and a row cap such as `max_rows_between_solves=1000`, or no
    cap where the fits are made from the Grams after the pass. The spec
-   refuses `gram_block_rows` where no schedule spaces the solves, and
-   beside `window_size`.
+   refuses `gram_block_rows` where no schedule spaces the solves, beside
+   `window_size`, and past 256 MiB of held rows.
 
 Each speed-up in the table is of the rows learned a second, against one row at
 a time, on one thread with no solve. It was measured on an Apple M4 Pro of
@@ -62,8 +62,8 @@ bit, since the product sums each entry in another order.
 
 ## Run the Gram's work on idle threads
 
-Use this when a bank's few groups leave its threads idle, as a bank of
-weekly blocks often does: fed a stream in time order, it reads a
+Use this when a bank's few groups leave its threads idle, as a bank that
+keeps a Gram per week often does: fed a stream in time order, it reads a
 [chunk](../GLOSSARY.md#the-model-bank-and-what-it-reads) that holds one
 week's rows, and so has one group to run.
 
@@ -160,7 +160,7 @@ reading the file and each row's `O(k)` work, which stay on one thread, and
 they are your machine's: the ones shown were printed on a 14-core machine
 whose other work kept its load average near 5. The two blocked Grams are
 the same to the bit, and the blocked fit agrees with the row-by-row one
-within 1e-12. Each planted coefficient is found within about 0.02.
+within 1e-12. Each of the three shown is found within 0.02.
 
 ## Check the result
 
@@ -171,5 +171,5 @@ bit for bit, as the recipe does, and time the two runs on the same file.
 |---|---|---|
 | a refusal of `gram_block_rows` | the spec solves on every row, the default under `half_life=float("inf")` and under `lam`, or has a `window_size` | give `solve_every` a spacing, such as `float("inf")` with a row cap, and no `window_size` |
 | no speed-up from blocks | the spec solves often, and a solve takes the same time either way | solve more rarely, or leave the fits to `po.gram` after the pass |
-| no speed-up from `gram_threads` | the bank's groups already keep every thread busy, so `"auto"` does not split, or the spec has fewer than 256 columns with blocks, or 725 without | nothing to gain from it; [Use more cores](use-more-cores.md) lists the other ways to use idle cores |
+| no speed-up from `gram_threads` | the bank's groups already keep every thread busy, so `"auto"` does not split, or the spec has 256 columns or fewer with blocks, or fewer than 725 without | nothing to gain from it; [Use more cores](use-more-cores.md) lists the other ways to use idle cores |
 | the blocked fit differs from the row-by-row one in the last digits | the product sums each entry in another order | expected: the two agree to rounding |

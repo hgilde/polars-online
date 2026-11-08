@@ -51,14 +51,14 @@ diagnostic](../DIAGNOSTICS.md#one-memory-per-diagnostic-run-once-or-windowed)
 gives each default. Under a [hard window](../GLOSSARY.md#fitting-a-model)
 the default is the half-life whose exponential weights have the window's
 Kish size. Beside `window_size=400` with no decay, `se_coef_hc0` read the
-window slope's spread over 200 streams, 0.0495 against 0.0498, where at
+spread of the slope fitted under that hard window over 200 streams, 0.0495 against 0.0498, where at
 the run-once memory it read a third of it. On 30 clean streams beside
 `window_size=100`, `ramsey_reset` passed its 5% value on 4.8% of rows,
 where run once it passed on 51%.
 
 **A fit that forgets absorbs a miscalibration at its own pace, so a
 diagnostic at the fit's own memory sees only part of it.** A calibration
-slope, the slope of the target regressed on the prediction, of 0.7 says the predictions are 43% too large (`1 / 0.7` is 1.43).
+slope (the slope of the target regressed on the prediction) of 0.7 says the predictions are 43% too large (`1 / 0.7` is 1.43).
 The fit drifts toward the truth as it learns. Over one half-life it has
 moved halfway, so the residuals a diagnostic at the same memory reads have
 had half the error taken out of them. That diagnostic is conservative.

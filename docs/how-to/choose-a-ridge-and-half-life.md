@@ -117,7 +117,7 @@ beta[0] = rng.normal(0, 0.1, k)
 step = rng.normal(0, 0.1 * np.sqrt(1 - 0.999**2), (n, k))
 for i in range(1, n):
     beta[i] = 0.999 * beta[i - 1] + step[i]
-# The target, and the table saved for the scan to read.
+# The target, and the table saved for `pl.scan_parquet` to read.
 names = [f"x{j}" for j in range(k)]
 y = (x * beta).sum(axis=1) + rng.standard_normal(n)
 pl.DataFrame({"t": np.arange(n, dtype=float), **dict(zip(names, x.T)), "y": y}).write_parquet("walk.parquet")

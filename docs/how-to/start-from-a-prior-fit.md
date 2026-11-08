@@ -20,7 +20,7 @@ start from:
   intercept first and then a coefficient per feature (`len(features) + 1`
   long when there is an intercept). For a target `y`,
   `[yesterday_bank.coef().filter(pl.col("target") == "y")["coef"].to_list()]`
-  gives them in that order, from a bank of one spec and one group.
+  gives them in that order, from a bank of one spec, one group and one half-life.
 
 `ridge`, `ridge_scale` and `coef_prior` are defined in [`po.spec.ewridge`'s
 docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge),

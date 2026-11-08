@@ -212,8 +212,8 @@ same pairs differenced had `|t| > 1.96` in 2.5%.
 **The influence of one row on a least-squares fit grows without bound
 with its residual:** a residual twice as large moves the fit twice as far
 (Huber 1964). Huber's loss is squared near zero and linear past
-`huber_delta` residual scales, so a residual's influence is capped. That
-scale is `huber_scale`, by default the exponentially weighted median
+`huber_delta` residual scales, so a residual's influence is capped. `huber_scale`
+sets that scale, by default `"mad"`, the exponentially weighted median
 absolute deviation (MAD). Quantile regression caps a residual's influence
 at a constant ([The robust scale and the refit of the
 first rows](robust-scale.md)). `sigma` is an exponentially weighted root
@@ -258,7 +258,7 @@ weight at half-life `h`. That is 3.4 at `h = 2`, so a `min_weight` of 10
 is never met. After a time `T` on the clock, a stream has gathered
 `1 − 2^(−T/h)` of that ceiling, which is `settled_frac` ([Warm-up and
 readiness](warm-up-and-readiness.md)). The [Warm-up
-gates](../MODELS.md#warm-up-gates) lists the gates.
+gates](../MODELS.md#warm-up-gates) section of MODELS.md lists the gates.
 
 ## Sources
 
