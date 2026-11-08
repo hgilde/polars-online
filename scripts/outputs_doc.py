@@ -379,7 +379,8 @@ OPTIONAL: list[tuple[str, str]] = [
     ),
     (
         "`emit_clocks`, every model's",
-        "[Labels that arrive late](../README.md#labels-that-arrive-late), and the table below",
+        "[Learn targets known late](how-to/learn-targets-known-late.md#check-that-it-worked),"
+        " and the table below",
     ),
     (
         "`emit_huber_scale`, `huber`'s: `huber_scale_<t>`, the scale each row's cut is drawn in",

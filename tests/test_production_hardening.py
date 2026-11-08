@@ -966,13 +966,6 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
         # The "windowed means" section's stream: quotes with a mid, and
         # trades between them, for two symbols on the clock `ts`.
         "trades": data["trades"],
-        # The "relative and look-ahead targets" section builds it in its first
-        # block, and its `with_columns` return block reuses it.
-        "flows": pl.scan_parquet(tmp_path / "trades.parquet").with_columns(
-            flow=pl.when(pl.col("side") == "buy")
-            .then(pl.col("quantity"))
-            .otherwise(-pl.col("quantity"))
-        ),
         "today": today,
         # The query forms, as *Example data* makes them: each file read back.
         "later": pl.scan_parquet(tmp_path / "today.parquet"),
@@ -1189,7 +1182,6 @@ class TestReadmeExamples:
         "grid": "last",
         "now": "first",
         "ticks": "first",
-        "flows": "first",
         "blocks": "first",
         "by_block": "first",
         "closed": "first",

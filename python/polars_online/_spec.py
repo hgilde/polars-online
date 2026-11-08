@@ -2475,9 +2475,9 @@ def kalman(
         zeros, no ``revert_half_life`` and a fixed ``obs_var``, the filter is
         exactly Bayesian linear regression. For a coefficient per current standard deviation, which
         moves with the scale, z-score the column in the query before the bank
-        and give it with ``standardize = False``. `Features in units of their
+        and give it with ``standardize = False``. `Scale a feature by its
         spread
-        <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#features-in-units-of-their-spread>`_
+        <https://github.com/hgilde/polars-online/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_
         builds the column with :func:`polars_online.ewm_mean
         <polars_online.ops.ewm_mean>` and :func:`polars_online.ewm_std
         <polars_online.ops.ewm_std>`.
@@ -2971,14 +2971,21 @@ def ftrl(
 
     **Breaks.** Under a half-life the fit follows a break at the pace of its
     steps, not of its half-life. A coefficient steps by its gradient over
-    the root of its recent squared gradients. So a coefficient at its steady
-    state moves at most about ``2 * alpha * sqrt(1 - f)`` a row, ``f`` the
-    decay factor over one row's clock, however large the error. A break that moves
-    a coefficient by ``D`` takes about ``D / (2 * alpha * sqrt(1 - f))``
-    rows to follow. The large gradients just after it increase the sums that
-    divide every step for about a half-life. It was measured under
-    ``loss="squared"`` on two features at ``half_life = 200``, one row a
-    clock unit, after a change of regime that moved the intercept by 46.
+    the root of its recent squared gradients. Once those sums hold the
+    break's large gradients, a coefficient closes on the break at about
+    ``2 * alpha * sqrt(1 - f)`` a row, ``f`` the decay factor over one row's
+    clock, however large the error. Just after the break, before the sums
+    have grown, it moves faster, by up to about ``alpha`` in one row. So
+    ``D / (2 * alpha * sqrt(1 - f))`` estimates the rows a break that moves
+    a coefficient by ``D`` takes to follow, and is not a bound. Under
+    ``loss="squared"`` on one feature with noise of spread 0.3, over breaks
+    of 2 and 20 in the intercept, at half-lives of 200 and 1000 and
+    ``alpha`` from 0.1 to 1 (two seeds each), the rows to close 90% of the
+    break came to 0.37 to 1.54 times the estimate. The large gradients just
+    after a break increase the sums that divide every step for about a
+    half-life. The table was measured under ``loss="squared"`` on two
+    features at ``half_life = 200``, one row a clock unit, after a change
+    of regime that moved the intercept by 46.
     The table gives the worst of 50 seeds, the largest coefficient gap to
     the decayed least squares:
 
@@ -3006,12 +3013,13 @@ def ftrl(
          - 0.61
          - 0.85
 
-    At the default the intercept closed at 0.011 a row, against
-    ``2 * alpha * sqrt(1 - f)`` = 0.012. So a larger ``alpha`` follows a
-    break sooner, and it moves more from row to row at its steady state:
-    at ``alpha = 1`` the gap stops shrinking by 8 half-lives, within twice
-    its steady state's. Over the 24 half-lives after the noise quadrupled, the
-    default came at most 0.23 from the decayed least squares, and
+    At the default the intercept closed at 0.011 a row from 4 to 12
+    half-lives after the break, against ``2 * alpha * sqrt(1 - f)`` = 0.012.
+    So a larger ``alpha`` follows a break sooner, and it moves more from
+    row to row at its steady state: at ``alpha = 1`` the gap stops
+    shrinking by 8 half-lives, within twice its steady state's. Over the 24
+    half-lives after the noise quadrupled, the default came at most 0.23
+    from the decayed least squares, and
     ``alpha = 1`` came 1.17 from it.
 
     **Rows the target is not learned from.** The model learns nothing
@@ -3053,8 +3061,8 @@ def ftrl(
     of ``crates/online-core/tests/held_values.rs``, with one of three features
     at ``L``, the squared loss's error is about ``0.018 * L``: 18.3 at 1,000 and
     at -1,000, and 1.8e6 at 1e8, against 0.75 at 0.5. Standardize or z-score
-    such a feature before the bank, as `Features in units of their spread
-    <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#features-in-units-of-their-spread>`_
+    such a feature before the bank, as `Scale a feature by its spread
+    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_
     shows. There is no ``standardize`` here because ``l1`` zeroes a coefficient
     in the feature's own units: a scale inside the model would move which
     coefficients it zeroes as the feature's spread moved.

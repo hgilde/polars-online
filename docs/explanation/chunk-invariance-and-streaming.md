@@ -85,7 +85,7 @@ rows still go through its model in order. A model with many features can
 also split the learning of one group's rows across threads, up to its
 spec's `gram_threads` (`ewridge`, `ew_cov`), and a `marginal` across its
 `shards`. Either gives the same bits at any thread count. So any thread
-count gives the same numbers ([Parallelism](../../README.md#parallelism)).
+count gives the same numbers ([Use more cores](../how-to/use-more-cores.md)).
 
 ## Why memory stays bounded
 
@@ -101,7 +101,7 @@ holds has four parts:
 | the state | the models, their settings and the number of groups | not the stream's length. A hard window's snapshots and the bins of `marginal` grow with their settings, and each group's are capped, at 256 MiB by default |
 | the chunks the bank is working on | `chunk_size` | a few chunks at once |
 | the rows an embargo, a `label_clock` (each row's own time its target is known) or a formula target's window holds until they can be learned | the delay or the window, times the rows' rate | not the stream's length |
-| what Polars has read ahead of the bank | Polars' thread count | Polars' own settings ([Tuning memory with Polars' own settings](../../README.md#tuning-memory-with-polars-own-settings)) |
+| what Polars has read ahead of the bank | Polars' thread count | Polars' own settings ([Bound a run's memory](../how-to/bound-memory.md#cut-what-polars-reads-ahead)) |
 
 The README's [Memory](../../README.md#memory) measures a whole run's peak,
 says how the figures on this page were measured, and shows the state's
@@ -158,8 +158,8 @@ rows it is given.** Reading, joining and ordering the rows is the job of Polars,
 another tool, in the query before the bank. The bank holds a row back only
 until its target is known, under an embargo, a `label_clock` or a formula
 target's window. It still learns the rows in their order, except under
-`label_clock`, which learns each row at its own label time ([Labels that
-arrive late](../../README.md#labels-that-arrive-late)). The README's [What
+`label_clock`, which learns each row at its own label time ([Learn targets
+known late](../how-to/learn-targets-known-late.md#give-each-row-its-own-target-time)). The README's [What
 this is not](../../README.md#what-this-is-not) says what the library
 leaves to those tools.
 

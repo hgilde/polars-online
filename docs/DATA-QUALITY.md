@@ -12,72 +12,9 @@ The [diagnostics](DIAGNOSTICS.md) ask
 whether a model is working. This page asks whether the data can be learned
 from at all.
 
-Here is a stream with three faults planted, fitted by a ridge regression
-with an audit beside it. `x1` is `-999` where it was not measured, `x2` is
-the same value on every row, and `x3` is null on 30% of the rows:
-
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# Quotes, a row a second, with the three faults planted.
-rng = np.random.default_rng(1)
-n = 20_000
-x0, x1, x3 = rng.standard_normal((3, n))
-y = 1.0 * x0 + 0.5 * x1 + 0.2 * x3 + rng.standard_normal(n)
-pl.DataFrame(
-    {
-        "t": np.arange(n, dtype=float),
-        "x0": x0,
-        "x1": np.where(rng.random(n) < 0.05, -999.0, x1),  # -999 where it was not measured
-        "x2": np.full(n, 1.0),  # one value on every row
-        "x3": np.where(rng.random(n) < 0.3, np.nan, x3),  # null on 30% of the rows
-        "y": y,
-    }
-).fill_nan(None).write_parquet("quotes.parquet")
-lf = pl.scan_parquet("quotes.parquet")
-
-# An audit beside a ridge regression, both fitted over the stream.
-features = ["x0", "x1", "x2", "x3"]
-audit = po.spec.audit("audit", columns=[*features, "y"], clock="t", gap_cap=5.0)
-model = po.spec.ewridge(
-    "ridge", targets=["y"], features=features, clock="t", gap_cap=5.0, half_life=600.0
-)
-bank = po.ModelBank([audit, model])
-bank.fit(lf)  # learn from every row; keep only the state
-
-# The findings, and the advice the worst one gives.
-findings = bank.check()  # one row per problem, the worst first
-shown = findings.select("severity", "code", "spec", "column", pl.col("value").round_sig_figs(3))
-for row in shown.iter_rows():
-    print(*row)
-print(findings.row(0, named=True)["message"])  # what to do, and the section of this page on it
-```
-
-```text
-warning constant audit x2 0.0
-warning sentinel audit x1 0.0464
-warning constant ridge x2 0.0
-warning missing ridge x3 0.3
-info heavy_tails audit x1 951.0
-info missing audit x3 0.3
-column 'x2' took one value (1) on every usable row of the stream: as a feature it is collinear with the intercept, and as a target there is nothing to learn. See https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md#constant
-```
-
-Each finding names the spec that found it. The audit sees every fault:
-`x2` is constant, `-999` is 4.6% of `x1`'s values, and `x3` is missing on
-30% of the rows. The ridge regression sees the two faults it can measure,
-the constant feature and the missing one. It cannot see the sentinel,
-because to a model `-999` is a number like any other. The sentinel also
-gives `x1` heavy tails: one value 951 robust standard deviations from the
-median. The audit reports `x3`'s gaps as `info`, and the model as a
-`warning`. An audit knows no roles, and a gap in a target can be a design,
-where a gap in a feature skips the row. A finding's `value` is the
-number measured, here the share missing, the share of the commonest value,
-or a standard deviation of 0. Every message ends with a link to the
-section of this page that its `code` names.
+[Check a stream's data quality](how-to/check-data-quality.md) shows how to
+run `bank.check()` beside an `audit` spec after a pass, read each finding,
+and fix what it found.
 
 These are the words of the library that the page uses:
 
@@ -818,9 +755,8 @@ return in thousandths, `check()` finds nothing, and all three models read
 bank, such as `pl.col("price") - pl.col("price").first()` or a known
 reference price. When the change is what matters, difference it with
 `diff()` instead ([Random walks](#random-walks)). Put features in units of their
-spread, by hand as the recipe does or with the windowed standardization in
-WINDOWS.md's
-[Features in units of their spread](WINDOWS.md#features-in-units-of-their-spread).
+spread, by hand as the recipe does or with the windowed standardization of
+[Scale a feature by its spread](how-to/scale-a-feature-by-its-spread.md).
 Or use `standardize=True`, the default for `kalman`, `sgd` and `pa`, and an
 option on `ewridge`, `huber` and `quantile`.
 
@@ -1258,11 +1194,11 @@ returns from the rows it has yet to predict. Its coefficients then carry
 part of the very outcomes they are scored on, and a feature built from
 recent returns will seem to predict them. An `embargo` of `k` learns each
 row only once its label would have arrived (López de Prado 2018, ch. 7).
-A target written as a [window expression](WINDOWS.md#windows-as-a-models-inputs-and-target)
+A target written as a [window expression](how-to/make-a-target-that-looks-ahead.md)
 that looks ahead carries its own delay, and `fit_predict` refuses an
 embargo shorter than its window. A target made as a column, as here, does
 not, so the embargo is the caller's to set
-([Labels that arrive late](../README.md#labels-that-arrive-late)).
+([Learn targets known late](how-to/learn-targets-known-late.md)).
 
 ```python
 import numpy as np

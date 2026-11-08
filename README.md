@@ -18,7 +18,7 @@ or from a command line of their own.
 |---|---|
 | [Introduction](#introduction) | [a first fit](#a-first-fit) · [the idea](#the-idea) · [terminology](#terminology) · [what you can rely on](#what-you-can-rely-on) · [install](#install) · [example data](#example-data) |
 | [How a bank sees a stream](#how-a-bank-sees-a-stream) | [what a spec names](#what-a-spec-names) · [time and decay](#time-and-decay) · [a hard window](#a-hard-window) · [a local fit along any feature](#a-local-fit-along-any-feature) · [row order](#row-order-and-the-two-guarantees) · [groups](#groups) · [weights](#weights) · [warm-up](#warm-up) · [labels that arrive late](#labels-that-arrive-late) · [nulls](#nulls-and-three-ways-to-hold-a-row-back) |
-| [Preparing a stream](#preparing-a-stream) | [making features and targets from windows](#making-features-and-targets-from-windows) · [windows as columns](docs/WINDOWS.md#windows-as-columns) · [windows as a model's inputs and target](docs/WINDOWS.md#windows-as-a-models-inputs-and-target) · [features in units of their spread](docs/WINDOWS.md#features-in-units-of-their-spread) · [saving and resuming a window run](docs/WINDOWS.md#saving-and-resuming-a-window-run) · [series that tick at their own times](#series-that-tick-at-their-own-times) |
+| [Preparing a stream](#preparing-a-stream) | [making features and targets from windows](#making-features-and-targets-from-windows) · [window features](docs/how-to/make-window-features.md) · [a target that looks ahead](docs/how-to/make-a-target-that-looks-ahead.md) · [features in units of their spread](docs/how-to/scale-a-feature-by-its-spread.md) · [saving and resuming a window run](docs/WINDOWS.md#saving-and-resuming-a-window-run) · [series that tick at their own times](#series-that-tick-at-their-own-times) |
 | [Running a bank](#running-a-bank) | [as a query](#as-a-query-lfonlinefit_predict) · [in a loop](#in-a-loop-modelbank) · [as a job, without Python](#running-a-bank-as-a-job-without-python) · [output as Arrow](#output-as-arrow) |
 | [Saving, loading and serving](#saving-loading-and-serving) | [save and load](#save-and-load) · [serving without learning](#serving-without-learning) · [a state without this library](#reading-a-state-without-this-library) |
 | [Reading the fit](#reading-the-fit) | [what a bank holds](#what-a-bank-holds) · [output field names](#output-field-names) · [coefficients](#coefficients) · [many features from one pass](#fitting-many-features-from-one-pass) · [one row per closed group](#one-row-per-finished-group) · [correlation matrices](#reading-a-correlation-matrix) |
@@ -276,10 +276,10 @@ These hold for every spec, however a bank is run:
 
 | | |
 |---|---|
-| **honest predictions** | every row is predicted before its own outcome is learned ([Why every prediction is out-of-sample](docs/explanation/out-of-sample.md)), and a target that looks ahead is learned only once its window has closed ([Windows as a model's inputs and target](docs/WINDOWS.md#windows-as-a-models-inputs-and-target)) |
+| **honest predictions** | every row is predicted before its own outcome is learned ([Why every prediction is out-of-sample](docs/explanation/out-of-sample.md)), and a target that looks ahead is learned only once its window has closed ([Make a target that looks ahead](docs/how-to/make-a-target-that-looks-ahead.md)) |
 | **bounded memory** | memory grows with the models' state and the rows a delay or a window holds, and never with the number of rows that have passed ([Memory](#memory)) |
 | **any chunking** | one chunk or a thousand, with or without a save and resume in the middle, gives the same numbers, to the last bit. Only which rows carry the coefficients can change: `coef`, and `support_coef` and the standard errors beside it ([Chunk invariance and streaming](docs/explanation/chunk-invariance-and-streaming.md)) |
-| **any thread count** | the thread count, set with a bank's `threads=` (or `POLARS_ONLINE_MAX_THREADS` for the default pool), changes only the speed. Each spec and group is one task on the bank's thread pool: with 64 groups, 14 threads process 7.3× the rows per second of one ([Parallelism](#parallelism)) |
+| **any thread count** | the thread count, set with a bank's `threads=` (or `POLARS_ONLINE_MAX_THREADS` for the default pool), changes only the speed. Each spec and group is one task on the bank's thread pool: with 64 groups, 14 threads process 7.3× the rows per second of one ([Use more cores](docs/how-to/use-more-cores.md)) |
 | **unusable values** | in a feature, target or weight, NaN, ±inf and any magnitude above `1e100` count as null, so a sentinel value never reaches a model. A null skips an update but never stops the clock ([Nulls, and three ways to hold a row back](#nulls-and-three-ways-to-hold-a-row-back)) |
 | **zero weights** | a row of weight 0 is scored and moves the clock, but teaches the model nothing ([Weights](#weights)) |
 | **one `weight_sum`** | `weight_sum` means the same in every model, so one `min_weight` means the same for every spec in a bank ([`weight_sum`: the weight behind a prediction](docs/explanation/warm-up-and-readiness.md#weight_sum-the-weight-behind-a-prediction)) |
@@ -395,13 +395,13 @@ applies within each group, the clock included.
 | which columns a model reads, and what its output column is called | the spec's name, `targets`, `features`, `fit_intercept` | [What a spec names](#what-a-spec-names) |
 | how far apart two rows are, and how fast the past fades | `clock`, `half_life`, `gap_cap`, `session`, `session_gap`, `restart_after_step_back` | [Time and decay](#time-and-decay) |
 | what a fit becomes when nothing fades | `half_life=inf`, `lam=1.0` | [Without a decay](docs/explanation/time-and-decay.md#without-a-decay) |
-| when an old row stops counting at all | `window_size` | [A hard window](#a-hard-window) |
+| when an old row stops counting at all | `window_size` | [Forget rows past a window](docs/how-to/forget-rows-past-a-window.md) |
 | how to fit along a feature instead of time | `clock` | [A local fit along any feature](#a-local-fit-along-any-feature) |
 | which row order a bank needs, and how it checks it | | [Row order and the two guarantees](#row-order-and-the-two-guarantees), and [why you set the order](docs/explanation/chunk-invariance-and-streaming.md#why-you-set-the-row-order) |
-| which rows belong to which model | `group`, `group_close` | [Groups](#groups) |
+| which rows belong to which model | `group`, `group_close` | [Fit one model per group](docs/how-to/fit-one-model-per-group.md) |
 | how much each row counts | `weight` | [Weights](#weights) |
 | when a model has seen enough to report | `min_weight`, `min_settled_frac`, `max_error_inflation` | [Warm-up](#warm-up) |
-| when a label may be learned | `embargo`, `label_clock` | [Labels that arrive late](#labels-that-arrive-late) |
+| when a label may be learned | `embargo`, `label_clock` | [Learn targets known late](docs/how-to/learn-targets-known-late.md) |
 | what a null does, and how to keep a row from teaching a model | a null, a weight of 0, `predict` | [Nulls, and three ways to hold a row back](#nulls-and-three-ways-to-hold-a-row-back) |
 
 ### What a spec names
@@ -466,136 +466,10 @@ intercept, x0, x1, venue X: [1.02, 1.99, -1.01, -0.05]
 
 #### Relative and look-ahead targets
 
-A target is often one value less another, such as the next five minutes'
-mean trade price less the mid at the row. Build it in one of two ways, by
-when its value is known. Only a model that regresses its targets takes a
-target expression. Four kinds of model refuse one. Two take no targets at
-all: a model that reads only its features, and `ew_class`. Two refuse one
-naming the expression: `seqtest`, and an `ftrl` or `sgd` fitting a
-probability or a count.
-
-**To use a target computed from the rows after its row, write it as a
-Polars expression and put it in the spec's `targets`.** Its `.alias` names
-the output fields, as `pred_fwd_move`. The bank scores each row where it
-sits and learns it once the expression's window has closed, so give the
-spec an `embargo` of at least the window's `window_size`. [Windows as a
-model's inputs and target](docs/WINDOWS.md#windows-as-a-models-inputs-and-target)
-gives the rule in full, with what to do for a shorter one. `pred`,
-`resid`, `sigma` and the metrics are on the target's scale, so
-`pred + mid` predicts the mean trade price itself.
-
-The expression is the column `po.stream.with_windows` makes from it, fed
-back to the bank, so both forms give the same predictions. Only the
-residual tells them apart: a column holds the outcome at the row, so the
-bank can score it there, while the expression's outcome is not known until
-its window closes. This code runs on `trades.parquet`, the quotes and
-trades saved in [Example data](#example-data):
-
-```python
-# A feature, a target that looks ahead, and a fit on the trades.
-flows = pl.scan_parquet("trades.parquet").with_columns(                   # a query, and a feature in it: a trade's signed size
-    flow=pl.when(pl.col("side") == "buy").then(pl.col("quantity")).otherwise(-pl.col("quantity"))
-)
-fwd_move = (
-    po.ewm_mean("price", half_life=float("inf"), window_size="5m", reverse=True)       # the mean trade price over the next five minutes
-    - pl.col("mid")                                                        # less the mid at the row
-).alias("fwd_move")                                                        # the alias names the target
-ahead_5m = po.spec.ewridge("ahead_5m", targets=[fwd_move], features=["flow"],
-                           clock="ts", gap_cap="5m", half_life="30m", embargo="5m", group="symbol")
-moves = flows.online.fit_predict([ahead_5m]).online.unnest([ahead_5m]).collect()   # does buying predict the price rising?
-
-# The same target as a column, made in the query by with_windows on the spec's clock, then named in targets.
-as_column = {**ahead_5m, "targets": ["fwd_move"]}                      # a spec is a dict: a copy with the column as target
-made = po.stream.with_windows(flows, fwd_move, like=ahead_5m).online.fit_predict([as_column])   # like= takes the spec's clock, gap_cap and group
-column = made.online.unnest([as_column]).collect()
-
-# The two forms side by side.
-same = (moves["pred_fwd_move"] == column["pred_fwd_move"]).sum()
-print(f"rows predicted: {moves['pred_fwd_move'].count()} by the expression, {column['pred_fwd_move'].count()} by the column, {same} equal")
-# The rows of the last five minutes have no outcome yet in either form.
-print(f"residuals: {moves['resid_fwd_move'].count()} from the expression, {column['resid_fwd_move'].count()} from the column")
-```
-
-```text
-rows predicted: 733 by the expression, 733 by the column, 733 equal
-residuals: 0 from the expression, 556 from the column
-```
-
-**Write a ratio target to sit about zero, as the quotient less 1 or as its
-`.log()`.** `hit_rate` asks whether prediction and outcome fall on the same
-side of zero ([Is another model
-better?](docs/DIAGNOSTICS.md#is-another-model-better)). A plain ratio sits
-about 1, where two positive numbers always agree, so its `hit_rate` reads
-1.0 whatever the fit. A difference sits about zero too. A target that looks
-ahead takes the same forms: `(next_5m / pl.col("mid")).log()`, where
-`next_5m` is the `po.ewm_mean("price", ..., reverse=True)` inside `fwd_move` above, and `mid * exp(pred)` turns its
-prediction back into a price. This code regresses four forms of a trade's
-price against the mid at its row on the same signed size, `flow`.
-It reads `trades.parquet` from [Example data](#example-data):
-
-```python
-flows = pl.scan_parquet("trades.parquet").with_columns(
-    flow=pl.when(pl.col("side") == "buy").then(pl.col("quantity")).otherwise(-pl.col("quantity"))
-)
-# Four forms of a trade's price against the mid.
-returns = flows.with_columns(
-    ratio=pl.col("price") / pl.col("mid"),                              # price / mid, about 1
-    fwd_return=pl.col("price") / pl.col("mid") - 1,                     # the quotient less 1, about zero
-    log_ret=(pl.col("price") / pl.col("mid")).log(),                    # ln(price / mid), about zero
-    diff=pl.col("price") - pl.col("mid"),                               # price - mid, about zero
-)
-vs_mid = po.spec.ewridge("vs_mid", targets=["ratio", "fwd_return", "log_ret", "diff"], features=["flow"],
-                         clock="ts", gap_cap="5m", half_life="30m", group="symbol", emit_metrics=True)
-against_mid = returns.online.fit_predict([vs_mid]).online.unnest([vs_mid]).collect()
-# How often each form's prediction had the sign right.
-for target in ["ratio", "fwd_return", "log_ret", "diff"]:
-    print(f"hit_rate of {target}: {against_mid[f'hit_rate_{target}'].drop_nulls()[-1]:.2f}")
-```
-
-```text
-hit_rate of ratio: 1.00
-hit_rate of fwd_return: 0.51
-hit_rate of log_ret: 0.51
-hit_rate of diff: 0.51
-```
-
-**A target expression requires an operator that looks ahead
-(`po.ewm_mean`, `po.ewm_sum`, `po.ewm_rate` or `po.ewm_quantile` with `reverse=True`); otherwise, make the
-target a column with Polars' `with_columns`, chained in the query before
-the bank, and name it in `targets`.** The bank's refusal names the call
-that makes the column. Here the target, how far from the mid each trade
-printed, is known at the trade's own row, so the spec needs no embargo.
-The quotes have no `quantity`, so the bank skips them, as it skips any row
-with a null feature.
-This code uses `trades.parquet` from [Example data](#example-data):
-
-```python
-edges = pl.scan_parquet("trades.parquet").with_columns(edge=(pl.col("price") - pl.col("mid")).abs())   # the target as a column, null on the quotes
-by_size = po.spec.ewridge("by_size", targets=["edge"], features=["quantity"],
-                          clock="ts", gap_cap="5m", half_life="30m", group="symbol")
-printed = edges.online.fit_predict([by_size]).online.unnest([by_size]).collect()   # does a larger trade print farther from the mid?
-is_trade = printed["quantity"].is_not_null()
-print(f"trades predicted: {printed.filter(is_trade)['pred_edge'].count()} of {is_trade.sum()}")
-print(f"quotes predicted: {printed.filter(~is_trade)['pred_edge'].count()} of {(~is_trade).sum()}")
-```
-
-```text
-trades predicted: 893 of 899
-quotes predicted: 0 of 2101
-```
-
-If a column holds a value from after its row, such as the price five
-minutes on, give the spec an `embargo` of that horizon ([Labels that
-arrive late](#labels-that-arrive-late)). To make a column from a window
-over the stream, looking back or ahead, use `po.stream.with_windows` in the
-query before the bank ([Windows as
-columns](docs/WINDOWS.md#windows-as-columns)).
-
-The command line has no `with_columns`, so make such a column in the file
-it reads. `po.target`'s `relative_to=` and `relative=` are refused, and the
-error shows the `with_columns` form.
-[`po.target`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.target)
-only names a target's output fields apart from its column.
+[Make a target that looks ahead](docs/how-to/make-a-target-that-looks-ahead.md) shows how to
+build a target from the rows after each row, as a formula in the spec's
+`targets` or as a column made before the bank, and how to write a ratio
+target that sits about zero.
 
 ### Time and decay
 
@@ -630,8 +504,8 @@ caps named `max_rows_between_*`, and each model's docstring names its own.
 
 **Quantities measured on a temporal clock reach the output in seconds.**
 `holt`'s trend, for one, is per second. The clocks themselves keep the
-clock column's own type: `emit_clocks` ([Labels that arrive
-late](#labels-that-arrive-late)), and the clock columns of `summary()`,
+clock column's own type: `emit_clocks` ([Learn targets known
+late](docs/how-to/learn-targets-known-late.md#check-that-it-worked)), and the clock columns of `summary()`,
 `groups()` and `closed_groups()`. This code fits `holt`, a level and its
 trend, to `t`, a column that rises by one each minute, once on the numeric
 clock `t` and once on the `Datetime` clock `ts`. The two clocks mark the
@@ -762,42 +636,9 @@ row      capped    uncapped  one_minute       reset
 
 ### A hard window
 
-A half-life never forgets entirely: three half-lives back still carries
-12.5% of the weight. To make every row `w` clock units old or older count
-for exactly nothing, give `window_size=w`. Five models take it: `ewridge`,
-`lasso`, `ew_cov`, `ew_class` and `marginal`. [A hard
-window](docs/explanation/time-and-decay.md#a-hard-window) explains how the
-model cuts its running sums exactly, and shows a hard window forget a
-change that a half-life still holds.
-
-```
-weight(age) = 0.5 ** (age / half_life)   if age < window_size   (closed="right", the default)
-                                         or age <= window_size  (closed="both")
-            = 0                          otherwise
-```
-
-**`closed` says which edge holds the row exactly `window_size` old, as
-Polars' `rolling_*_by(closed=)` does.** Under `"right"`, the default, that
-row has left, as it has in the [window operators](#making-features-and-targets-from-windows) and in
-`rolling_sum_by`. Under `"both"` it stays. A model's window always holds the
-row it ends at, because the model reads its fit after it has learned that
-row. So `"left"` and `"none"` are refused, and so is `"both"` without a
-`window_size`.
-
-**Inside the window the weights still halve every `half_life`, so the
-newest row counts most.** For a flat rolling fit with equal weights, give
-`half_life=float("inf")` with the `window_size`.
-
-**`snapshot_every` spaces the snapshots on the clock, as `solve_every`
-spaces a regression's solves.** The model keeps a ring of snapshots of its
-running sums to cut them at the hard window's edge, one every row by
-default. `snapshot_every` takes a number of clock units, or a
-duration such as `"1m"` on a temporal clock. `max_rows_between_snapshots`
-caps the rows between them, and whichever comes first takes a snapshot.
-Under `snapshot_every` the hard window in effect spans
-`[window_size − snapshot_every, window_size]`, whatever the row rate, with
-`snapshot_every` the spacing in force: a `window_budget` that thins the
-ring (drops every other snapshot) doubles it.
+[Forget rows past a window](docs/how-to/forget-rows-past-a-window.md) shows how to make every
+row older than a span count for nothing with `window_size`, what each model
+keeps inside the window, and how to cap its snapshots' memory.
 
 Five things to know before reading a windowed model's numbers:
 
@@ -808,35 +649,6 @@ Five things to know before reading a windowed model's numbers:
 | it is a **subtraction** | precision falls with the fraction discarded: negligible at a window of three half-lives, worse as the window shortens toward the half-life |
 | `weight_sum` is the weight inside the window | so `min_weight` gates on a weight that settles once the window is full |
 | a long step **empties** the window | a step longer than `window_size`, after `gap_cap`, empties the window, and the model reports nulls from the row after it, never stale numbers. A cap shorter than the window never empties it |
-
-What the window truncates depends on the model:
-
-| model | inside the window | refused beside `window_size` |
-|---|---|---|
-| `ewridge` | the sums the fit is solved from, and `sigma` and `zscore` with them. The coefficients are the window's as of the last solve | `ridge_scale="sum"`, `session_shrink`, `gram_block_rows` |
-| `lasso` | the same, and the error that selects the penalty. A feature that stays constant inside the window has no evidence there, and goes to exactly zero | |
-| `ew_cov` | every moment, and `mahal`, `partial_corr` and the principal components read from them | `lags`, `mahal_quantiles` |
-| `ew_class` | each class's moments, so the classifier follows class means that move | |
-| `marginal` | every pair's weight, means and second moments, so `corr`, `beta` and `t_stat` describe the window. Its lag correlations, under `window_lags=True`, are the window's rows' own, about the window's means, the first `l` rows paired with the rows before the window | `bins`, `feature_moments="shared"`, and `lags` unless `window_lags=True` |
-
-**`window_budget` caps the snapshots' memory, per ring (one per spec and
-group), in MiB.** The ring's memory grows with the window: for an `ew_cov` over 20 columns, a
-1,000-row window holds about 3 MB per group, divided by the rows between
-snapshots.
-
-| `window_budget` | when a chunk would take a ring past the cap |
-|---|---|
-| not given | the chunk is refused past 256 MiB |
-| `{"refuse": 64}` | the chunk is refused before any of it is learned, and the bank goes on as it was. The error names the ring's size, its snapshot cadence and the ways to lift the cap |
-| `{"thin": 64}` | the ring drops every other snapshot and doubles its spacing, on the clock or in rows, which, like `snapshot_every`, only ever shortens the window |
-| `{"refuse": float("inf")}` | nothing: no cap |
-
-**A refusal comes before the bank learns any of the chunk, except for two
-overruns found only as the rows go in.** One is under
-`drift_action="reset"`. The other is a snapshot that grows within the
-chunk, as an `ewridge`'s or a `lasso`'s does when its targets first go
-missing on different rows. After either, the bank refuses every call that
-follows, so rebuild it from its last save with `po.ModelBank.load`.
 
 ### A local fit along any feature
 
@@ -954,58 +766,9 @@ be, and `0` restarts the model at every step back:
 
 ### Groups
 
-To fit one model per value of a column, name the column with `group`: the
-bank fits a separate model for each distinct value, in the same pass. Each
-group's model sees only its own rows, on its own clock, so a group's
-numbers are those of the same spec fitted to that group's rows alone.
-This code uses `df` from [Example data](#example-data):
-
-```python
-# One model per stock, in one pass.
-per_stock = po.spec.ewridge(
-    "per_stock", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0,
-    group="stock_id",           # one model per distinct value of this column
-)
-bank = po.ModelBank([per_stock])
-together = bank.fit_predict(df)
-for row in bank.groups().iter_rows(named=True):
-    print(f"group {row['group']}: {row['rows_fed']} rows, the last at t = {row['clock_last']}")
-
-# Stock b0's rows alone give the same predictions.
-alone = {**per_stock, "group": None}           # the same spec without a group, fed stock b0's rows alone
-b0 = po.ModelBank([alone]).fit_predict(df.filter(pl.col("stock_id") == "b0"))
-in_bank = together.filter(pl.col("stock_id") == "b0")["per_stock"].struct.field("pred_y")
-print(f"b0 in the bank against b0 alone: {(in_bank - b0['per_stock'].struct.field('pred_y')).abs().max()} largest difference")
-```
-
-```text
-group b0: 100 rows, the last at t = 396.0
-group b1: 100 rows, the last at t = 397.0
-group b2: 100 rows, the last at t = 398.0
-group b3: 100 rows, the last at t = 399.0
-b0 in the bank against b0 alone: 0.0 largest difference
-```
-
-**A group or session column keeps the type its first chunk had.** A key is
-its value's text, so an `Int64` `1` and a `Float64` `1.0` would be two
-groups. The bank refuses a column of another kind by name, and keeps the
-kind in its state: integer, float, text, boolean, or a temporal type with
-its unit and zone. An `Int32` after an `Int64`, or a `Categorical` after a
-`String`, is the same kind and goes on. `bank.groups()` and the other
-readers return the keys as text, an integer column's in numeric order, the
-null group first.
-
-**Without `group_close`, the bank keeps every group it has seen.** To free
-the groups that have gone quiet, find them with `bank.groups()` and drop
-them with `bank.drop_groups(...)` ([In a loop](#in-a-loop-modelbank)).
-
-**With `group_close`, the bank writes out a finished group's running sums
-and frees its memory,** which keeps its memory bounded when new group
-values never stop appearing. `group_close="monotone"` finishes a group once
-a higher key arrives, so it needs the keys in order, as a block number or a
-date is. `group_close="session"` finishes a group once its `session` value
-changes. [One row per finished group](#one-row-per-finished-group) shows
-what is written.
+[Fit one model per group](docs/how-to/fit-one-model-per-group.md) shows how to fit a separate
+model for each value of a column in one pass, and how to bound the memory
+of groups that never stop appearing.
 
 ### Weights
 
@@ -1175,191 +938,9 @@ when a model can be trusted.
 
 ### Labels that arrive late
 
-Some labels arrive after their row: the next five minutes' return is known
-five minutes after its row. A model that learns it at its own row sees
-that much of the future before it predicts the rows in between. Every
-out-of-sample number after that is contaminated, and with a feature
-correlated with its own past, even a pure-noise column starts to look
-predictive. To learn each label only once it would have arrived, give the
-spec an `embargo` when every label takes the same time, or a `label_clock`
-column when each arrives at a time of its own. To write a delay out as
-rows, use `po.stream.embargo` in the query before the bank.
-
-#### The built-in delay
-
-Give a spec `embargo="5m"` (any finite delay above 0), and the bank scores
-each row where it sits and learns from it five minutes later on the clock.
-Everything computed from the labels sees only those that had arrived: the
-prediction, `sigma`, `zscore`, the metrics, break detection, the conformal
-interval, `weight_sum` and the `min_weight` gate.
-
-This code fits `df`'s minute-apart rows under `embargo="5m"`, with
-`emit_clocks=True`, and prints the clocks of five rows, counting from 0.
-Each row is scored from the rows at least five minutes older, the one
-exactly five minutes older included, so the first five rows have learned
-nothing.
-It reads `df` from [Example data](#example-data):
-
-```python
-fwd = po.spec.ewridge("fwd", targets=["y"], features=["x0", "x1"],
-                      clock="ts", gap_cap="1h", half_life="30m",
-                      embargo="5m",      # a label takes five minutes to arrive: learned five minutes later
-                      emit_clocks=True)  # scored_clock and learned_clock on every row
-rows = po.ModelBank([fwd]).fit_predict(df).unnest("fwd")
-for row in [0, 4, 5, 6, 300]:
-    r = rows.row(row, named=True)
-    learned = f"the rows up to {r['learned_clock']:%H:%M}" if r["learned_clock"] else "no row yet"
-    print(f"row {row}: scored at {r['scored_clock']:%H:%M}, having learned {learned}, weight_sum {r['weight_sum']:.2f}")
-```
-
-```text
-row 0: scored at 09:30, having learned no row yet, weight_sum 0.00
-row 4: scored at 09:34, having learned no row yet, weight_sum 0.00
-row 5: scored at 09:35, having learned the rows up to 09:30, weight_sum 1.00
-row 6: scored at 09:36, having learned the rows up to 09:31, weight_sum 1.98
-row 300: scored at 14:30, having learned the rows up to 14:25, weight_sum 43.74
-```
-
-| case | what `embargo` does |
-|---|---|
-| what the delay counts | the time that passed on the clock column, skipped rows included, and `session_gap` where a session restarts the clock. It is not the capped step the model decays by, so the release depends on the rows alone and survives any chunking |
-| the step a row is scored over | the clock from the newest row learned to the row, the held rows' steps included, capped at `gap_cap` as one gap. A `holt` forecast reaches that far ahead, and `kalman`'s `error_inflation` adds that much drift. `predict` against a bank holding rows reads the same clock. Either way the score is the one a bank fed only the learned rows gives |
-| exactly at the delay | the row is learned. The time that passed is held exactly: in integer nanoseconds on a temporal clock, and by one subtraction of the two rows' values on a number clock, in integers on an integer clock. Rows 1 ms apart under `embargo="2s"` are each learned 2,000 rows on |
-| with no clock column | one unit is one row of the group, a skipped row included: `embargo=20` is twenty rows |
-| at a break | nothing is released early. A break's own effect, such as a lag ring's clearing or `session_shrink`'s blend, waits with the row after it, and runs when that row is learned. A reset drops the rows still waiting |
-| at the end of the stream | the rows still waiting are not learned, unless the state is saved and another run resumes from it |
-| in the state | the waiting rows are saved with it: one row's values for each row inside the delay, in each group |
-| row by row | `emit_clocks=True`, on any model, writes `scored_clock`, the row's own clock, and `learned_clock`, the clock of the newest row the model had learned from when it was scored, both in the clock column's own type. With no clock they are the row's index in its group |
-
-#### A label time per row
-
-Give a spec `label_clock="landed"`, a column of each row's label time on
-the clock's own type, when labels arrive at times of their own: a flight's
-delay is known when it lands. The bank scores each row where it sits,
-holds it, and learns it at its label time, at the first row whose clock
-has reached it. Its label is then scored against the prediction, the
-interval and the spread the row was served, so every residual diagnostic
-describes what was shown. `embargo="5m"` is the case where every label
-time is the clock plus five minutes, and the two give the same numbers.
-
-This code makes up flights, writes them to a file and fits them from it:
-
-```python
-from datetime import datetime, timedelta
-
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 1. Make up flights, one every ten minutes, whose delay is known only when each one lands.
-rng = np.random.default_rng(3)
-n = 20_000
-distance = rng.uniform(200.0, 2_000.0, n)                            # miles
-start = datetime(2024, 1, 1)
-pl.DataFrame({
-    "departed": pl.datetime_range(start, start + timedelta(minutes=10 * (n - 1)), "10m", eager=True),
-    "distance": distance,
-    "delay": 0.01 * distance + 10.0 * rng.standard_t(3, n),         # minutes late
-}).with_columns(
-    landed=pl.col("departed") + pl.duration(minutes=pl.col("distance") / 8.0 + 20.0),  # when the delay is known
-).write_parquet("flights.parquet")
-
-# 2. Fit them from the file, each delay learned at its landing.
-late = po.spec.ewridge(
-    "late", targets=["delay"], features=["distance"],
-    clock="departed", gap_cap="1h", half_life="2d",
-    label_clock="landed",   # learned at landing; each interval scored against the one served
-    conformal=0.9,
-)
-rows = pl.scan_parquet("flights.parquet").online.fit_predict([late]).unnest("late").collect()
-# 3. Count the intervals that held the delay each flight was served.
-served = rows.filter(pl.col("lo_delay").is_not_null())
-covered = served.select(((pl.col("delay") - pl.col("pred_delay")).abs() <= pl.col("hi_delay") - pl.col("pred_delay")).mean()).item()
-print(f"{served.height} intervals served, {covered:.3f} of them held the delay that landed,",
-      f"half-width {served.select((pl.col('hi_delay') - pl.col('pred_delay')).mean()).item():.1f} minutes")
-```
-
-```text
-19973 intervals served, 0.901 of them held the delay that landed, half-width 23.7 minutes
-```
-
-| case | what `label_clock` does |
-|---|---|
-| the order of learning | by label time, so a short flight landing first is learned before an earlier long one; rows with one label time in the order they arrived. Each is learned at its label time: its step is the one from the label time learned before it |
-| `resid` on a row | the label less the prediction the row was served |
-| a weight of 0, or a null label time | the row is scored and never held. A null is a label that never arrives: `summary()` counts it in `labels_missing` |
-| a label time before its row's clock | refused, naming the row: the column is not the label times |
-| how many rows wait | `max_held_rows` bounds them per group. Past it the chunk is refused, or with `held_overflow="drop_oldest"` the row that arrived first is dropped, counted in `labels_dropped` |
-| at a reset, and at the end of the stream | a reset drops the rows still waiting, counted in `labels_dropped`. Rows waiting at the end are not learned, unless the state is saved and another run resumes from it |
-| what it refuses | `embargo` beside it, a target that is a window expression, `group_close`, a `session` column and `drift_action="reset"`; and `holt`, `kalman`, `hmm` and `micro`, whose score reaches from the newest row learned, which `label_clock` moves to a label time |
-| cost | each held row goes into the waiting rows in label-time order: 0.006 microseconds a row with about 100 waiting, 0.38 with about 800 (Apple M4 Pro) |
-
-**With hundreds of labels in flight, set `conformal_rate="auto"`.** Each
-row is scored against the radius it was shown, so misses arrive in bursts
-and the default step of 0.05 overshoots. `"auto"` divides the step by the
-rows waiting for their labels, averaged as the stream runs, and is 0.05
-when nothing waits. On New York's 2013 flights under an 8-hour `embargo`,
-with 338 rows waiting, 0.05 held 90% of delays at a half-width of 189
-minutes, and `"auto"` held 90% at 47. To set the rate by hand for a 90%
-interval with `n` rows waiting, use `0.05 / (1 + n / 48)`.
-[DIAGNOSTICS.md](docs/DIAGNOSTICS.md#conformal-intervals) has the
-measurement.
-
-#### The delay as data
-
-Use
-[`po.stream.embargo`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.embargo)
-when the delay has to be visible in the frame, or when another engine fits
-the model. It returns every row twice: a copy to score at `t` with weight
-0, and a copy to learn from at `t + delay`.
-
-**Sort its input by the clock across all rows, as
-`lf.sort("t", maintain_order=True)`, before the call.** Order within each
-group is not enough, since the call merges the two copies by the clock
-alone. It adds two columns: `_online_role`, which says which copy a row is,
-and `_online_role_weight`, which you pass to the spec's `weight`.
-
-**The built-in delay agrees with the doubled stream to the bit on `pred`,
-`resid` and `weight_sum` when each row's `t + delay` is another row's
-clock.** An evenly spaced clock with a delay of whole steps is such a case.
-On an irregular clock they differ, since the doubled stream decays a label
-from `t + delay` and the built-in delay learns it at the row that releases
-it. A model whose score reads the clock since its last learned row differs
-on any clock: `holt`, `hmm`, `micro`, `kalman`'s `error_inflation`, and
-`sgd` and `pa` while their scaler warms up. The doubled stream's last
-lesson sits `delay` after its row, so such a score reads `delay` less clock.
-
-**Every residual diagnostic differs in any case**, from `sigma` and
-`zscore` to the conformal band and drift. `embargo` takes in the residual
-of the prediction the row was scored with. The doubled stream's learning
-copy forms its residual at `t + delay`, from a model that has since learned
-every row before it.
-
-This code doubles `lf`, whose clock `t` moves a row at a time, and holds
-the scored copies to the built-in delay of the same five units.
-It reads `lf` from [Example data](#example-data):
-
-```python
-doubled = po.stream.embargo(lf, clock="t", delay=5.0)     # every row twice, in clock order
-scored = doubled.online.fit_predict(
-    [po.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", gap_cap=10.0,
-                     half_life=50.0, weight="_online_role_weight")]   # 0 on the copies to score, 1 on the rest
-).filter(pl.col("_online_role") == "predict").collect()               # keep the scored copies
-
-# The built-in delay on the same rows: t is a row apart, so each t + 5 is another row's clock.
-built_in = lf.online.fit_predict(
-    [po.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", gap_cap=10.0, half_life=50.0, embargo=5.0)]
-).collect()
-for field in ["pred_y", "weight_sum"]:
-    a, b = scored["m"].struct.field(field), built_in["m"].struct.field(field)
-    print(f"{field}: {a.count()} rows, {(a == b).sum()} equal to the bit")
-```
-
-```text
-pred_y: 393 rows, 393 equal to the bit
-weight_sum: 400 rows, 400 equal to the bit
-```
+[Learn targets known late](docs/how-to/learn-targets-known-late.md) shows how to predict each
+row where it sits and learn from it only once its target is known: with an
+`embargo`, a `label_clock` column, or `po.stream.embargo` in the query.
 
 ### Nulls, and three ways to hold a row back
 
@@ -1374,7 +955,7 @@ is one of three ways to keep a row from teaching a model, beside a weight of
 |---|---|---|---|---|---|
 | **a null target** | yes | yes | not that target's, except under `target_gaps="pairwise"` | counts the row. In a regression model the target's own weight only decays, so a long stretch of nulls can take that target below its `min_weight` | leave a label out |
 | **weight `0`** | yes | yes | no | keeps decaying, so a long stretch can fall below `min_weight` | keep a row's place in the stream |
-| **`predict`** | yes | no | no | frozen | serve ([Serving without learning](#serving-without-learning)) |
+| **`predict`** | yes | no | no | frozen | serve ([Serve from a saved state](docs/how-to/serve-from-a-saved-state.md)) |
 
 This code holds row 100 of `df` back from a model in each of the three
 ways, beside a run that learns it. For each it prints whether row 100 was
@@ -2069,49 +1650,9 @@ spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t",
 
 ### Serving without learning
 
-To score rows without learning from them, call `bank.predict(frame)` on a
-bank object, or `lf.online.predict(...)` in a query. Every row is scored
-from the same state, which `predict` never moves. Since it skips each
-row's update, `ewridge` scores 1.8 times as fast as it learns at 5
-features, and 2.8 times at 20
-([PERFORMANCE §30](docs/PERFORMANCE.md#30-where-every-row-solves-2026-09-29)). A query takes the bank object, read as it stands when the query runs,
-or a path, read when the query is built.
-This code uses `df`, `today` and `later` from [Example data](#example-data):
-
-```python
-spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
-bank = po.ModelBank([spec])
-bank.fit_predict(df)
-bank.save("bank.state")
-# Three ways to score the rows after df's.
-scored = bank.predict(today)                             # every row scored from the same state: nothing moves
-served = later.online.predict(bank).collect()            # a bank, as it stands when the query runs
-from_file = later.online.predict("bank.state").collect() # a path, read when the query is built
-# Every row saw the same state, and the three agree.
-weights = scored["ridge"].struct.field("weight_sum")
-print(f"weight_sum on every row: {weights.min():.4f} to {weights.max():.4f}; the three agree: "
-      f"{scored['ridge'].equals(served['ridge']) and served['ridge'].equals(from_file['ridge'])}")
-```
-
-```text
-weight_sum on every row: 320.4975 to 320.4975; the three agree: True
-```
-
-**Row *i* of `scored` carries what `fit_predict` would have reported had it
-been the next row of its group's stream:** `pred`, `weight_sum`, `sigma`,
-`zscore`, the selection and the metrics, field for field
-([docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md)). Two fields differ: `drift` never
-fires, and `coef` is filled on each group's last accepted row only, since
-the same coefficients score every row. How `predict` reads a row:
-
-| the row | `predict` |
-|---|---|
-| its target column | may be absent; `resid` is then null |
-| its weight column | is not read |
-| of a group the bank has never seen | scores null |
-| before the last clock its group learned | is scored against the state as it stands, with a clock step of 0: never refused, never a restart |
-| where `session_gap="reset"` or `group_close="session"` would restart its group | scores null, with `weight_sum` 0 |
-| after rows an `embargo` still holds | sees the state as it stands, since `predict` releases nothing: a held row whose delay has passed by the scored row's clock stays held until the next `fit_predict` learns it, so `weight_sum` and `learned_clock` are the state's on every row |
+[Serve from a saved state](docs/how-to/serve-from-a-saved-state.md) shows how to predict rows
+from a bank or a saved state without learning from them, in Python or from
+the command line, and how each kind of row is served.
 
 ### Reading a state without this library
 
@@ -2883,7 +2424,7 @@ row, the theory it rests on, and a recipe that runs with its output shown:
 | [is another model better?](docs/DIAGNOSTICS.md#is-another-model-better) | `emit_metrics`, `emit_selected`, `emit_averaged`; `po.eval.metrics`, `window_metrics`, `compare_specs`, `diebold_mariano`, `clark_west`, `seqtest`, and `po.eval.sums` for an output too large to hold | `ic_<t>`, `r2_<t>`, `hit_rate_<t>`; `selected_<t>`, `pred_<t>__selected`, `pred_<t>__averaged`, one per target |
 | [is it ready?](docs/DIAGNOSTICS.md#is-it-ready) | `min_weight`, `min_settled_frac`, `max_error_inflation`, `emit_error_inflation` ([Warm-up](#warm-up)) | `weight_sum`, `settled_frac`, `withheld_reason`, `error_inflation_<t>` |
 | [how wide is its error?](docs/DIAGNOSTICS.md#how-wide-is-its-error) | `emit_sigma`, `emit_zscore`, `resid_quantiles`, `conformal` | `sigma_<t>`, `zscore_<t>`, `abs_resid_q<p>_<t>`, `lo_<t>`, `hi_<t>`, `coverage_<t>` |
-| when was a row scored, and from what? | `emit_clocks`, on every model | `scored_clock`, `learned_clock`, once per spec ([Labels that arrive late](#labels-that-arrive-late)) |
+| when was a row scored, and from what? | `emit_clocks`, on every model | `scored_clock`, `learned_clock`, once per spec ([Learn targets known late](docs/how-to/learn-targets-known-late.md#check-that-it-worked)) |
 | [does a model find a truth it was given?](docs/DIAGNOSTICS.md#data-whose-truth-is-known) | `po.sim.regimes` | a stream whose regimes are known, and the truth beside it |
 
 ## Models
@@ -3328,67 +2869,9 @@ i.i.d. Gaussian rows with no `max_run`
 
 ### Parallelism
 
-**To use more cores, give the bank more tasks: set `group=` on each spec,
-pass more specs, or both.** On every chunk the bank splits its work into
-tasks, one per spec and group, or one per spec without a `group`. It runs
-them on its own thread pool, separate from Polars', largest first, so a
-few big groups do not leave cores idle at the end. Within a task the rows
-go one at a time, because each row's update depends on the last. So a bank
-with one spec, one group and one half-life is one thread's work per chunk,
-while Polars reads and writes in parallel around it. All of it runs in one
-process, by design ([What this is not](#what-this-is-not)).
-
-| what to add | how it runs in parallel | measured |
-|---|---|---|
-| groups, with a spec's `group=` | one task per group | k=20 over 64 groups: 7.3× from 1 to 14 threads on a 14-core machine (below) |
-| specs, in the list the bank takes | one task per spec | eight single-group specs, k=20 over 300k rows, run in 155 ms in one bank, against 641 ms one at a time |
-| half-lives, as a list given to `half_life=` | each half-life in a grid is its own set of running sums, and a task's half-lives run in parallel on the bank's pool. Ridge and feature-set grids share one set of sums and are expanded at solve time, so they need no thread | |
-| `shards`, on a wide `marginal` | a task that runs on several threads: `shards` splits its pairs across the pool within a group ([`marginal`](docs/MODELS.md#marginal--every-pairs-moments-kept-in-the-state)) | |
-| `gram_threads`, on a wide `ewridge` or `ew_cov` | a task that runs on several threads: each row's `k × k` update, or a block's merge, is split across the pool within a group, from 725 columns. A count caps the share of the pool. The default, `"auto"`, splits only when the groups running at once leave half the pool idle, since a split pays only on idle threads | one group at 2,000 features: 3.0× under `"auto"` on 14 threads; four groups at 800 features: 1.6×; 28 groups: even, where taking the whole pool was 9-11% slower ([`gram_threads`](docs/GRAM.md#one-wide-gram-on-several-threads)) |
-| a Python thread that reads ahead | Python's global lock is released while a chunk is in the bank, so a Python reader thread can run ahead of `ModelBank.fit_predict` | |
-
-**Specs run side by side, and each gives the numbers it gives alone.**
-This code runs the comparison of the table's second row on a generated
-parquet file: eight `ewridge` specs of 20 features, one per half-life, in
-one bank and then one at a time. Its times include reading the file, and
-are your machine's, and the outputs are equal to the bit:
-
-```python
-import time
-
-import numpy as np
-import polars as pl
-import polars_online as po
-
-# A file of 20 features, and eight specs that differ only in half-life.
-rng = np.random.default_rng(2)
-n = 300_000
-features = [f"x{j}" for j in range(20)]
-pl.DataFrame(
-    {"y": rng.standard_normal(n)} | {f: rng.standard_normal(n) for f in features}
-).write_parquet("specs.parquet")
-specs = [po.spec.ewridge(f"h{h}", targets=["y"], features=features, half_life=float(h))
-         for h in (100, 200, 400, 800, 1600, 3200, 6400, 12800)]   # eight specs, one task each
-
-# The eight in one bank, then one at a time.
-start = time.perf_counter()
-together = pl.scan_parquet("specs.parquet").online.fit_predict(specs).collect()
-in_one_bank = time.perf_counter() - start
-
-start = time.perf_counter()
-alone = [pl.scan_parquet("specs.parquet").online.fit_predict([s]).collect() for s in specs]
-one_at_a_time = time.perf_counter() - start
-
-# The times, and whether the outputs agree.
-print(f"time: {in_one_bank:.2f} s in one bank, {one_at_a_time:.2f} s one at a time")
-same = all(together[s["name"]].equals(a[s["name"]]) for s, a in zip(specs, alone))
-print("the same output either way:", same)
-```
-
-```text
-time: 0.42 s in one bank, 1.56 s one at a time
-the same output either way: True
-```
+[Use more cores](docs/how-to/use-more-cores.md) shows how to give a bank more work it can
+run at once, set its thread count, and search over factor sets in one
+pass.
 
 Rows a second for k=20 over 64 groups, at each thread count
 ([PERFORMANCE §31](docs/PERFORMANCE.md#31-0130-against-0120-2026-09-29)):
@@ -3396,120 +2879,6 @@ Rows a second for k=20 over 64 groups, at each thread count
 | threads | 1 | 2 | 4 | 8 | 14 |
 |---|---:|---:|---:|---:|---:|
 | rows/s | 0.98M | 1.89M | 3.44M | 5.98M | 7.08M |
-
-**Set the bank's thread count with `threads=`, on the bank or the call
-that makes one.** `ModelBank(specs, threads=8)`, `ModelBank.load(path,
-threads=8)`, `po.fit_predict(..., threads=8)`, `po.predict`, the frame
-namespaces' `fit_predict` and `predict`, and `po.gram`'s `lars_path`,
-`lars_paths` and `solve_subsets` all take it, and so does the command line,
-as `--threads 8` or a `threads` key in the TOML. An integer is a pool of
-that many threads. Every bank given the same count shares one pool, which
-goes away with the last of them, and asking for the size the process pool
-already has uses that pool. `None`, the default, is the process pool. The
-count is not saved with a state, and the output and the saved state are the
-same at any count. A count below 1, a float or a bool is refused, naming
-`threads`: 0 is not "one per core" here, `None` is.
-
-This code fits one spec on one thread and on four, and checks the two agree.
-It uses the file `ticks.parquet` from [Example data](#example-data):
-
-```python
-import polars as pl
-import polars_online as po
-
-spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t",
-                       half_life=600.0, gap_cap=300.0, group="stock_id")
-one = pl.scan_parquet("ticks.parquet").online.fit_predict([spec], threads=1).collect()
-four = pl.scan_parquet("ticks.parquet").online.fit_predict([spec], threads=4).collect()
-print("the same output on 1 and 4 threads:", one.equals(four))
-print("threads=4 is a pool of", po.thread_pool_size(threads=4))   # reports, builds nothing
-```
-
-```text
-the same output on 1 and 4 threads: True
-threads=4 is a pool of 4
-```
-
-**Two environment variables size the default pools, one for each:**
-
-| variable | sizes | unset or `0` | read at | what took effect |
-|---|---|---|---|---|
-| `POLARS_ONLINE_MAX_THREADS` | the bank's default pool, for a bank or call given no `threads` | one thread per core | the first chunk a bank without `threads` fits or scores, or the first `po.thread_pool_size()` | [`po.thread_pool_size()`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.thread_pool_size) |
-| `POLARS_MAX_THREADS` | Polars' readers and writers, and their read-ahead ([Tuning memory with Polars' own settings](#tuning-memory-with-polars-own-settings)) | one thread per core | `import polars`, which `import polars_online` runs | `pl.thread_pool_size()` |
-
-Polars has no per-call thread count, so its pool is set by its variable
-alone, before `import polars`: in the shell, as
-`POLARS_MAX_THREADS=8 python fit.py`, or with `os.environ` at the top of the
-script. `POLARS_ONLINE_MAX_THREADS` is read once, when the default pool is
-first used, and ignored after; `threads=` never reads it. A
-`POLARS_ONLINE_MAX_THREADS` that is not a whole number makes the first call
-that uses the default pool raise `ValueError`, naming the variable.
-Giving both pools every core slows neither, because a bank task never calls
-back into Polars' pool.
-
-**To search over factor sets, build one spec per set and pass the whole
-list to one `lf.online.fit_predict` call.** Each spec runs as its own task
-on each group, and the query reads the file once. Its output has one
-column per spec, which is what `po.eval.compare_specs` reads, and one state
-file, `grid.state`, holds them all. `df`'s target is built from `x0` and
-`x1`, so the set of those two scores best, and adding `x2`, which plays no
-part, scores a little lower. Each spec's grid point is chosen on the
-first half of the rows and scored on the second, because the best point's
-R² over the rows that chose it overstates what choosing it earns
-([Calibrating a model](#calibrating-a-model)). Here the second half
-scores higher all the same, since the first holds each fit's warm-up.
-This code is a script of its own, run in a new process, since Polars reads
-`POLARS_MAX_THREADS` when it is first imported. It uses the file
-`ticks.parquet` from [Example data](#example-data):
-
-```python
-import os
-os.environ["POLARS_MAX_THREADS"] = "8"          # Polars' readers and writers: read at import polars
-
-import polars as pl
-import polars_online as po
-from itertools import product
-
-# Three factor sets, each with and without standardizing: six specs.
-factors = {"mkt": ["x0"], "mkt-sz": ["x0", "x1"], "mkt-sz-val": ["x0", "x1", "x2"]}
-
-def factor_spec(name, features, standardize):
-    return po.spec.ewridge(f"{name}-std{standardize:d}",                  # "mkt-std0", "mkt-std1", ...
-                           targets=["y"], features=features, clock="t", gap_cap=300.0,
-                           group="stock_id", session="session", session_gap=60.0,
-                           half_life=[100.0, 1000.0], ridge=[1e-3, 0.1],   # gridded inside the spec
-                           standardize=standardize)
-
-specs = [factor_spec(n, f, s) for (n, f), s in product(factors.items(), [False, True])]
-
-# One pass over the file fits all six.
-(pl.scan_parquet("ticks.parquet")
-   .online.fit_predict(specs, chunk_size=200_000, save_state="grid.state", threads=8)
-   .sink_parquet("grid.parquet"))
-
-# Each spec's grid point chosen on the first half of the rows, then scored on the second.
-out = pl.read_parquet("grid.parquet")
-half = out.height // 2
-first = po.eval.compare_specs(out.head(half), specs)                 # one row per spec and grid point
-second = po.eval.compare_specs(out.tail(out.height - half), specs)
-picks = first.sort("r2", descending=True).group_by("spec", maintain_order=True).first()
-best = picks.join(second, on=["spec", "slot", "target"], suffix="_after").sort(pl.col("r2_after").round(3), "spec", descending=[True, False])
-for spec_name, r2, after in best.select("spec", "r2", "r2_after").iter_rows():
-    print(f"{spec_name:<15} R² {r2:.3f} where chosen, {after:.3f} after")
-```
-
-```text
-mkt-sz-std0     R² 0.930 where chosen, 0.944 after
-mkt-sz-std1     R² 0.930 where chosen, 0.944 after
-mkt-sz-val-std0 R² 0.915 where chosen, 0.935 after
-mkt-sz-val-std1 R² 0.913 where chosen, 0.935 after
-mkt-std0        R² 0.672 where chosen, 0.738 after
-mkt-std1        R² 0.672 where chosen, 0.738 after
-```
-
-On 2.56M rows over 64 groups, the six specs make 6 × 64 tasks every chunk,
-and the same query takes 29.0 s at one thread and 4.3 s at fourteen
-([PERFORMANCE §31](docs/PERFORMANCE.md#31-0130-against-0120-2026-09-29)).
 
 ### Chunk size
 
@@ -3594,7 +2963,7 @@ the pages it frees across all its threads, so it holds 0.75 GB at 3M rows,
 | the state | the models and their settings, and the number of groups: a bank's `group=` keeps one set of running sums per group, and grows with the number of groups, not the number of rows | it does not grow with the stream, but a window's snapshots and `marginal`'s bins grow with their settings, and each group's is capped, at 256 MiB by default |
 | the chunks in flight | `chunk_size` | a few chunks at once, three on the command line ([Chunk size](#chunk-size)) |
 | the rows a delay or a window holds | the delay or the window, times the rows' rate | never the stream's length |
-| whatever Polars' reader has read ahead | Polars' thread count | `POLARS_MAX_THREADS` shrinks it, and Polars' prefetch settings tune it directly ([Tuning memory with Polars' own settings](#tuning-memory-with-polars-own-settings)) |
+| whatever Polars' reader has read ahead | Polars' thread count | `POLARS_MAX_THREADS` shrinks it, and Polars' prefetch settings tune it directly ([Bound a run's memory](docs/how-to/bound-memory.md#cut-what-polars-reads-ahead)) |
 
 **Measure the first part by saving the state, whose size is what the models
 keep.** This code fits one `ewridge` of 20 features on the first
@@ -3646,73 +3015,9 @@ Peak memory on the same 12M rows:
 
 ### Tuning memory with Polars' own settings
 
-Polars' streaming engine reads blocks of a parquet file ahead of whatever
-consumes them, sized from its thread count. While a bank is the slowest
-step, a local disk needs none of that read-ahead, so it is the part of
-memory you can cut. Three of Polars' environment variables set it, in the
-shell or with `os.environ` in Python:
-
-```python
-import os
-
-os.environ["POLARS_ROW_GROUP_PREFETCH_SIZE"] = "1"   # blocks (row groups) read ahead: read when a query starts to run
-os.environ["POLARS_ROW_GROUP_PREFETCH_KBYTES_BUDGET"] = "65536"   # a byte cap on the same read-ahead: read when a query starts to run
-os.environ["POLARS_MAX_THREADS"] = "4"               # the read-ahead is sized from this too: read at import polars
-```
-
-**`POLARS_ROW_GROUP_PREFETCH_SIZE=1` saves the most.** Polars reads it each
-time a query that scans the file starts to run, so set it at any point
-before the call that runs the query, such as `sink_parquet` or
-`bank.fit_predict_batches(lf)`.
-Measured as peak resident memory on 8M rows of 12 columns in 80 blocks,
-with the allocator's page retention off so that the figure is live data:
-
-| what runs | default prefetch | `POLARS_ROW_GROUP_PREFETCH_SIZE=1` |
-|---|---:|---:|
-| `lf.online.fit_predict(...).sink_parquet(...)` | 1.63 GB | 1.12 GB |
-| `bank.fit_predict_batches(lf)` | 1.41 GB | 1.07 GB |
-
-**The saving depends on how much data a block holds, so compare a run at
-the default with one at `1` on your own files.** On a file whose blocks
-hold 262,000 rows, the setting takes a query from 1.86 GB to 0.51 GB
-([PERFORMANCE §11](docs/PERFORMANCE.md#11-memory-which-surface-is-odata-2026-09-02)).
-
-**The byte cap, `POLARS_ROW_GROUP_PREFETCH_KBYTES_BUDGET`, rarely binds**,
-because it counts *compressed* bytes, which cost almost nothing for a
-memory-mapped local file.
-
-**To fit a run in less memory, give Polars fewer threads and the bank every
-core.** Polars sizes its read-ahead from `POLARS_MAX_THREADS`, while the
-bank's `threads` changes only the bank's speed.
-This code is a script of its own, run in a new process, since Polars reads
-`POLARS_MAX_THREADS` when it is first imported. It uses the file
-`ticks.parquet` from [Example data](#example-data):
-
-```python
-import os
-os.environ["POLARS_MAX_THREADS"] = "4"           # before import polars: sizes the reader's read-ahead
-
-import polars as pl
-import polars_online as po
-
-# The run itself does not change.
-spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1", "x2"], clock="t",
-                       half_life=600.0, gap_cap=300.0, group="stock_id")
-(pl.scan_parquet("ticks.parquet")                     # written in Example data
-   .online.fit_predict([spec], chunk_size=200_000, threads=14)   # the bank keeps every core
-   .sink_parquet("fit.parquet"))
-```
-
-On 12M rows over 64 groups, with one spec of four features and two
-half-lives
-([PERFORMANCE §31](docs/PERFORMANCE.md#31-0130-against-0120-2026-09-29)):
-
-| Polars threads | bank threads | time | peak memory |
-|---:|---:|---:|---:|
-| 14 | 14 | 1.6 s | 0.86 GB |
-| 4 | 14 | 1.9 s | 0.58 GB |
-
-Keeping Polars at four threads holds 33% less memory, for 15% more time.
+[Bound a run's memory](docs/how-to/bound-memory.md) shows how to cut what Polars reads ahead of
+the bank with its own settings, and how to give Polars fewer threads and
+the bank every core.
 
 ### Window operators
 
@@ -3755,8 +3060,8 @@ then runs the window and the bank at once, as two stages of one query. In
 the native form the bank resolves the windows itself, one after the other
 in the same source as the model. With many groups, that adds a Polars
 query per group per chunk on the calling thread.
-[Windows as a model's inputs and
-target](docs/WINDOWS.md#windows-as-a-models-inputs-and-target) runs both
+[Make a target that looks
+ahead](docs/how-to/make-a-target-that-looks-ahead.md#check-the-targets-the-model-learned) runs both
 forms.
 
 ### Against scikit-learn
@@ -3841,7 +3146,7 @@ training objects from files too large to hold.
 polars-online neither buffers nor reorders rows that arrive late.** A row that
 arrives out of clock order is refused, unless its step back is larger than
 `restart_after_step_back`, which starts the model over. A label that
-arrives late can be held back with [`embargo`](#labels-that-arrive-late).
+arrives late can be held back with [`embargo`](docs/how-to/learn-targets-known-late.md).
 `clock`, `gap_cap`, `restart_after_step_back` and `session` describe time
 *within* a stream, and none of them waits for a late row.
 
@@ -3857,7 +3162,7 @@ sums, rates and quantiles over a window of the clock. It deliberately does
 | connectors or ingestion | a Polars reader in the query before the bank, such as `pl.scan_parquet`, or `pl.scan_arrow_c_stream` for a database ([Databases](#databases-duckdb-and-adbc)) |
 | windows beyond those, such as a tumbling or sliding aggregation of any function, and asof or interval joins | Polars' `group_by_dynamic`, `rolling`, `join_asof` or `join_where` in the query before the bank, or a streaming framework such as [Pathway](https://pathway.com) |
 | watermarks or a late-arrival policy | rows put in clock order before the bank, by Polars' `sort` or by a stream processor |
-| distributed execution | one process, with a thread pool across (spec × group) ([Parallelism](#parallelism)) |
+| distributed execution | one process, with a thread pool across (spec × group) ([Use more cores](docs/how-to/use-more-cores.md)) |
 
 [What streams, and what does
 not](docs/explanation/chunk-invariance-and-streaming.md#what-streams-and-what-does-not)

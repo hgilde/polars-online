@@ -20,7 +20,7 @@ elsewhere:
 | use | the call | what the bank guarantees |
 |---|---|---|
 | [resume](../GLOSSARY.md#saving-and-serving) | `po.ModelBank.load(path)`, or `load_state=` on a [query](../GLOSSARY.md#the-model-bank-and-what-it-reads) (a Polars `LazyFrame`, a chain of steps that runs only when you ask for its result) | the next row is learned as one run would learn it |
-| [serve](../GLOSSARY.md#saving-and-serving) | `bank.predict(frame)`, or a query's `online.predict(path)` | each row is predicted from the state as it stands, and the state never moves ([Serving without learning](../../README.md#serving-without-learning) gives how that compares with `fit_predict`) |
+| [serve](../GLOSSARY.md#saving-and-serving) | `bank.predict(frame)`, or a query's `online.predict(path)` | each row is predicted from the state as it stands, and the state never moves ([How each kind of row is served](../how-to/serve-from-a-saved-state.md#how-each-kind-of-row-is-served) gives how that compares with `fit_predict`) |
 | read elsewhere | `bank.write_json()` | everything `save` writes, as JSON |
 
 [Resume from a saved state](../how-to/resume-from-a-saved-state.md) gives

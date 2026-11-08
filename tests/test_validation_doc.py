@@ -113,14 +113,17 @@ def _table(text: str, after: str) -> list[list[str]]:
 
 
 def test_the_readme_quotes_section_6_as_it_stands():
-    """``docs/WINDOWS.md``'s *Features in units of their spread* quotes
+    """``docs/how-to/scale-a-feature-by-its-spread.md`` (once
+    ``docs/WINDOWS.md``'s *Features in units of their spread*) quotes
     section 6's R² for four models, each target, raw and z-scored (task
     212). Read from the committed document, so a regeneration that moves a
     number fails here until the page is brought along: it rounds to four
     places."""
     rows = _table(DOC.read_text(encoding="utf-8"), "## 6. Features as z-scores")
     r2 = {(spec, target, features): float(r) for spec, target, features, _, r, *_ in rows}
-    readme = (REPO / "docs" / "WINDOWS.md").read_text(encoding="utf-8")
+    readme = (REPO / "docs" / "how-to" / "scale-a-feature-by-its-spread.md").read_text(
+        encoding="utf-8"
+    )
     quoted = _table(readme, "**On minute returns, every model lost less with z-scored features.**")
     names = {
         "`ewridge`, at its default solve cadence": "ewridge",

@@ -277,9 +277,9 @@ def embargo(
     - The spec's ``embargo`` and ``label_clock`` (:mod:`polars_online.spec`),
       which delay the learning inside the bank.
     -
-      `Labels that arrive late
-      <https://github.com/hgilde/polars-online#labels-that-arrive-late>`_, the
-      README section.
+      `Learn targets known late
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/learn-targets-known-late.md>`_,
+      the how-to: each of the three ways, with a check that it worked.
 
     .. rubric:: Notes
 
@@ -1147,13 +1147,13 @@ def with_windows(
     - ``lf.online.with_windows`` and ``df.online.with_windows``, the same call
       on a frame's ``online`` namespace.
     -
-      `Windows as columns
-      <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#windows-as-columns>`_,
-      `Windows as a model's inputs and target
-      <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#windows-as-a-models-inputs-and-target>`_
+      `Make features that look back over the stream
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/make-window-features.md>`_,
+      `Make a target that looks ahead
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/make-a-target-that-looks-ahead.md>`_
       and `Saving and resuming a window run
       <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#saving-and-resuming-a-window-run>`_,
-      the guide.
+      the guides.
 
     .. rubric:: Notes
 
@@ -1193,8 +1193,9 @@ def with_windows(
 
     **The rows' order and memory.** A backward window under ``closed="right"``
     or ``"both"`` waits for the next distinct stamp (a clock value), and a
-    look-ahead for its window to pass, so the output trails the input by the
-    longest window. A
+    look-ahead for its window to pass, so the output trails the input by
+    one clock step for a backward window and by the longest window for a
+    look-ahead. A
     group that falls silent holds every later row for at most ``gap_cap`` of
     the stream's time. Past that its next row is certain to open with a gap
     past the cap, so its windows end then. Only a clock column has a cap, so a

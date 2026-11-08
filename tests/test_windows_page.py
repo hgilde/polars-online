@@ -28,10 +28,11 @@ RECIPES = recipes(PAGE)
 
 
 def test_the_page_has_its_recipes():
-    """One for each claim the page shows working: the operators against
-    Polars, the keywords, `closed`, the refused formulas, two calls, `partial`,
-    a VWAP, clock order, a window target, z-scores and resuming."""
-    assert len(RECIPES) >= 11, len(RECIPES)
+    """One for each claim the page shows working: the keywords, `closed`, the
+    refused formulas, two calls, `partial` and resuming. The operators against
+    Polars, a VWAP, clock order, a window target, z-scores and a robust scale
+    moved to the how-tos, whose recipes `tests/test_kind_pages.py` runs."""
+    assert len(RECIPES) >= 6, len(RECIPES)
 
 
 @pytest.mark.parametrize(

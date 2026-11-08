@@ -1630,8 +1630,8 @@ after the run.
 zero.** A row where either is exactly zero is on neither side, and both
 `emit_metrics` and `po.eval.metrics` leave it out. So on a target that is
 always positive, such as a plain ratio, every row counts as a hit. Write a
-return about zero with Polars expressions ([Relative and look-ahead
-targets](../README.md#relative-and-look-ahead-targets)). An `sgd` fit with
+return about zero with Polars expressions ([Write a ratio target to sit
+about zero](how-to/make-a-target-that-looks-ahead.md#write-a-ratio-target-to-sit-about-zero)). An `sgd` fit with
 `loss="poisson"` has no side to be on, a positive rate against a count,
 and its `hit_rate` is null.
 

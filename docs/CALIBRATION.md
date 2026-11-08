@@ -92,8 +92,9 @@ choosing that setting will earn on the next rows. The fewer the rows and
 the more settings, the larger the gap. [Why the best error over a grid is
 optimistic](explanation/grids-and-instances.md#why-the-best-error-over-a-grid-is-optimistic)
 measures it on twenty settings that differ only in their noise. The
-README's factor-grid example reads its R² both ways for the same reason
-([Parallelism](../README.md#parallelism)).
+factor-grid example of [Search over factor sets in one
+pass](how-to/use-more-cores.md#search-over-factor-sets-in-one-pass) reads
+its R² both ways for the same reason.
 
 ### Choosing with `po.eval.grid_search`
 

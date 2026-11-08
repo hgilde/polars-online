@@ -31,8 +31,10 @@ RECIPES = recipes(PAGE)
 
 
 def test_the_page_has_its_recipes():
-    """One recipe for the opening example and one for each problem."""
-    assert len(RECIPES) >= 12, len(RECIPES)
+    """One recipe for each problem. The opening example moved to
+    `docs/how-to/check-data-quality.md`, whose recipes
+    `tests/test_kind_pages.py` runs."""
+    assert len(RECIPES) >= 11, len(RECIPES)
 
 
 @pytest.mark.parametrize(
