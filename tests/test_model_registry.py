@@ -491,8 +491,6 @@ def test_the_models_page_documents_every_model():
     table links to."""
     models = (ROOT / "docs" / "MODELS.md").read_text(encoding="utf-8")
     documented = set(re.findall(r"^### `([a-z_]+)`", models, flags=re.MULTILINE))
-    # `huber` and `quantile` share a heading: "### `huber` / `quantile` -- ...".
-    documented |= set(re.findall(r"^### `[a-z_]+` / `([a-z_]+)`", models, flags=re.MULTILINE))
     assert documented == set(MINIMAL)
 
 

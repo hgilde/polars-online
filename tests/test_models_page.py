@@ -32,7 +32,7 @@ PAGE = REPO / "docs" / "MODELS.md"
 RECIPES = shown_outputs(PAGE)
 
 #: The linear models, each with a recipe in its entry.
-LINEAR = ["ewridge", "rls", "lasso", "kalman", "huber", "sgd", "pa", "ftrl", "holt"]
+LINEAR = ["ewridge", "rls", "lasso", "kalman", "huber", "quantile", "sgd", "pa", "ftrl", "holt"]
 
 
 def _example_data(here: Path) -> dict[str, object]:
@@ -56,8 +56,7 @@ def _entry(line: int) -> str:
 
 
 def test_every_linear_model_has_a_recipe():
-    """One recipe in each linear model's entry; `huber` and `quantile` share
-    one entry, and its recipe runs both."""
+    """One recipe in each linear model's entry."""
     have = {_entry(line) for line, _, _ in RECIPES}
     missing = [m for m in LINEAR if m not in have]
     assert not missing, missing

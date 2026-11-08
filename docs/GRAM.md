@@ -2034,7 +2034,7 @@ against the fit before the row, in one pass over the stream, after
 refitting each target's first 500 rows to convergence: 2.0394 on this
 stream. One pass without that refit (`huber_refit_rows=0`) gives 2.046,
 and on some streams far more, since outliers can capture the first fits
-([MODELS.md](MODELS.md#huber--quantile--robust-regression) measures how
+([MODELS.md](MODELS.md#huber--robust-regression) measures how
 often).
 
 ## Sources
