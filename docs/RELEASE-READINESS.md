@@ -41,7 +41,7 @@ against third-party oracles, which `oracles.yml` runs on every push.
 
 | job in `release.yml` | what it checks or makes | holds back the upload |
 |---|---|---|
-| `version` | the version agrees in its six places; the CHANGELOG has its section; the example pin in `docs/VERSIONS.md` is on the version's minor. Publishing, it also checks that nothing is left under `[Unreleased]`, that no spec or kind in `tests/test_released_state.py`'s `PARAMETER_INTRODUCED` or `INTRODUCED` names a newer version, that the tag is new and that the run is on `main` | yes, and the wheels and the sdist are built only after it |
+| `version` | the version's checks, as [Cut a release](contributing/cut-a-release.md) step 10 lists them, and, publishing, that the run is on `main` | yes, and the wheels and the sdist are built only after it |
 | `ci` | the whole of `ci.yml`, called: lint, and the Rust and Python suites on Linux, macOS and Windows | yes |
 | `budgets` | the whole of `budgets.yml`, called: every instruction count against its budget, and each case's drift since the last release against the sign-off | yes |
 | `baseline` | the run's instruction counts and each OS's floor-Python memory, merged into `budgets-baseline.json` for the release's assets; refused if a budgeted quantity is missing or two legs disagree ([The budgets baseline](#the-budgets-baseline)) | yes |
@@ -70,7 +70,7 @@ step nothing can undo, and in front of nothing else.
 | side of the gate | what happens there | can it be undone |
 |---|---|---|
 | before | dispatching a release, re-running a failed job, canceling a run, declining the approval | yes: all of it can be retried, none of it reaches a user, and none of it creates a tag |
-| after | the upload, then the tag, the GitHub release and the check of what PyPI serves | no: PyPI never allows a version number to be reused, even after a yank, and a `v*` tag cannot be moved or deleted. A failed `tag` or `release` job can be re-run, unless `main`'s workflow files changed since the tested sha. [If a job fails](contributing/cut-a-release.md#if-a-job-fails) has both cases |
+| after | the upload, then the tag, the GitHub release and the check of what PyPI serves | no: PyPI never allows a version number to be reused, even after a yank, and a `v*` tag cannot be moved or deleted. A failed `release` job can always be re-run, and a failed `tag` job unless `main`'s workflow files changed since the tested sha. [If a job fails](contributing/cut-a-release.md#if-a-job-fails) has both cases |
 
 **A tag that turns out to be wrong is *not* fixed by moving it.** The
 `release tags are immutable` ruleset covers `refs/tags/v*` with `deletion`
@@ -128,8 +128,7 @@ install and its script.
 **Two kinds of run look for a break, in Polars and in NumPy, the one
 optional dependency** (`polars-online[numpy]`, `numpy>=1.26`). The canary
 reports one, and the legs every release runs before it publishes withhold
-the release. Each leg of `release.yml` runs in every dispatched release,
-before any tag exists:
+the release:
 
 | run | when | what it resolves to | a red run |
 |---|---|---|---|
@@ -200,6 +199,21 @@ constants stood at 61. [The versions a state file
 carries](#the-versions-a-state-file-carries) names where each version is
 kept.
 
+### The versions a state file carries
+
+**A state file is versioned msgpack, with a schema version and a bank
+`format_version`.** `SCHEMA_VERSION` (`crates/online-core/src/lib.rs`, and
+`po.schema_version()` from Python) moves with every layout change. The
+bank's `format_version` is 2, or 3 when a spec carries a clock parameter
+as a duration. The bank refuses a file older than
+`MIN_BANK_SCHEMA_VERSION` (`crates/online-polars/src/bank.rs`) by its
+version, and the models' own states have a floor of their own,
+`MIN_SCHEMA_VERSION` (`crates/online-core/src/lib.rs`). A window run's
+state, from `with_windows`, has its own version, `WINDOWS_VERSION`
+(`crates/online-polars/src/windows_frame.rs`), and a change to it moves
+the bank's schema too. The state of `po.stream.refresh_time` has its own
+version, `REFRESH_VERSION` (`crates/online-polars/src/refresh.rs`).
+
 ## What the API snapshot pins
 
 **Each stable part is pinned by a section of `tests/api_surface.txt`,
@@ -263,21 +277,6 @@ Rust's float `Display` never uses scientific notation, so a legal
 whose two outputs render to one field name, and `Bank::new` checks again. `test_names_match_the_realized_struct_for_every_model`
 (`tests/test_portability.py`) checks, in 40 cases, that the fields a spec
 declares are the fields its output has.
-
-### The versions a state file carries
-
-**A state file is versioned msgpack, with a schema version and a bank
-`format_version`.** `SCHEMA_VERSION` (`crates/online-core/src/lib.rs`, and
-`po.schema_version()` from Python) moves with every layout change. The
-bank's `format_version` is 2, or 3 when a spec carries a clock parameter
-as a duration. The bank refuses a file older than
-`MIN_BANK_SCHEMA_VERSION` (`crates/online-polars/src/bank.rs`) by its
-version, and the models' own states have a floor of their own,
-`MIN_SCHEMA_VERSION` (`crates/online-core/src/lib.rs`). A window run's
-state, from `with_windows`, has its own version, `WINDOWS_VERSION`
-(`crates/online-polars/src/windows_frame.rs`), and a change to it moves
-the bank's schema too. The state of `po.stream.refresh_time` has its own
-version, `REFRESH_VERSION` (`crates/online-polars/src/refresh.rs`).
 
 ### What is deliberately not done
 
@@ -348,7 +347,7 @@ release:
 
 | test | what it holds |
 |---|---|
-| `tests/test_release_workflow.py` | a dispatch is the only trigger, with `publish` off unless asked; the version is checked before the wheels and the sdist are built; CI runs inside the release on every OS, and its Pages grant is inert; the upload waits for every job, and the tag for the upload, on the tested sha; the NumPy legs; the floor leg, read from `pyproject.toml`, and the canary's monthly run of it; the floor Python in every leg that moves a dependency; the Linux command-line binary built in the manylinux2014 image and held to glibc 2.17; the budgets baseline merged and attached; every wheel held to the README's size row; the tag and the release each tried three times; the `verify` job's install from PyPI on every OS; only the release jobs write; `scripts/release_version.py`'s rules, its refusal of a version older than an `INTRODUCED` or `PARAMETER_INTRODUCED` entry among them; and the throughput table's date, no older than the previous release |
+| `tests/test_release_workflow.py` | a dispatch is the only trigger, with `publish` off unless asked; the version is checked before the wheels and the sdist are built; CI runs inside the release on every OS, and its Pages grant is inert; the upload waits for every job, and the tag for the upload, on the tested sha; the NumPy legs; the floor leg, read from `pyproject.toml`, and the canary's monthly run of it; the floor Python in every leg that moves a dependency; the Linux command-line binaries built in the manylinux2014 image and held to glibc 2.17; the budgets baseline merged and attached; every wheel held to the README's size row; the tag and the release each tried three times; the `verify` job's install from PyPI on every OS; only the release jobs write; `scripts/release_version.py`'s rules, its refusal of a version older than an `INTRODUCED` or `PARAMETER_INTRODUCED` entry among them; and the throughput table's date, no older than the previous release |
 | `tests/test_release_packaging.py` | the release job's steps run for real: the files it collects, each binary named by its target, the Windows `.exe` suffix kept, and no binary sent to PyPI; the tag's push against a local remote, which lands once, succeeds when the tag is there on the tested sha, fails when it is on another and gives up after three tries; the release's creation against a stand-in for `gh`, finished rather than repeated when an attempt landed; and its notes |
 | `tests/test_ci_cost_policy.py` | every workflow bounded by timeouts and a concurrency group, releases queueing rather than canceling, and the rest of the CI policy ([The policy, as the test holds it](TESTING.md#the-policy-as-the-test-holds-it)) |
 
@@ -396,17 +395,8 @@ cannot compare a build with itself. A spec the old release refuses is
 listed as not comparable, not as a difference. `--against 0.9.1` names
 another release, and `--report` prints without failing.
 
-**Declare every difference, or treat it as a regression.** A declared one is in
-the CHANGELOG, and makes the release a minor. An undeclared one is a
-regression: find its cause, and add a test that pins it, before the
-release goes out. CI runs the same comparison on every push, report only,
-so a change shows at the commit that made it.
-
-**A comparison fails where it should.** Measured on 2026-09-24, against
-0.8.0, 112 fields differed, all from 0.9.0's declared readiness gates. On
-2026-11-03, 1.4.0's build against 1.3.0 compared 1,283 fields of 72
-specs, and 637 differed, each where its CHANGELOG declares a change. The
-specs that set a keyword the old release does not take, such as
-`huber_refit_rows` against 1.3.0, are not comparable. That comparison
-corrected two CHANGELOG entries: the co-moments' sizes, which the released
-states had read lower, and the readiness gate's reach into `se_coef`.
+**CI runs the same comparison on every push, report only,** so a change
+shows at the commit that made it. On 2026-11-03, 1.4.0's build against
+1.3.0 compared 1,283 fields of 72 specs, and each of the 637 that differed
+is declared in the CHANGELOG. The specs that set a keyword 1.3.0 does not
+take, such as `huber_refit_rows`, were not comparable.

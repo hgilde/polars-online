@@ -15,9 +15,9 @@ crate's `cargo test`. Python test files run at the essentials tier unless
 
 It never replaces the test gate. Working alone, `scripts/gate.sh` (the
 essentials) runs before each commit; with several branches in flight, it
-runs once on each wave of merged branches; and `scripts/gate.sh --extended`
-runs before each push: a change can break a test this map does not reach,
-and only those find it.
+runs once on each wave of two or more merged branches; and `scripts/gate.sh
+--extended` runs before each push: a change can break a test this map does
+not reach, and only those find it.
 
 How a path maps, first rule that applies:
 

@@ -19,14 +19,21 @@ You need these before the first step:
   column](../GLOSSARY.md#what-a-bank-writes) and its fields.
 - `CLAUDE.md`'s hard rule 5, on state files and their frozen fixtures.
 
-## Add the field or the parameter
+## Find where the addition goes
 
 Each kind of addition touches its own set of files. Follow these steps for
 any of them:
 
 1. **Find the row for what you add** in the table of additions.
 2. **Add it in each place the row's second column names.**
-3. **Regenerate the API snapshot**, which records every keyword, its
+3. **Rebuild the extension**, since the snapshot is read from the
+   installed build:
+
+   ```sh
+   maturin develop --release -m crates/online-py/Cargo.toml
+   ```
+
+4. **Regenerate the API snapshot**, which records every keyword, its
    default and every field name:
 
    ```sh
@@ -34,17 +41,17 @@ any of them:
    ```
 
    Read the snapshot's diff: it should show only what you added.
-4. **Run the tests the row's third column names**, then settle the saved
-   state, under [What each change does to a saved
+5. **Run the tests the row's third column names.**
+6. **Settle the saved state**, under [What each change does to a saved
    state](#what-each-change-does-to-a-saved-state).
 
 | what you add | where it goes | what pins it |
 |---|---|---|
 | **a new *common* parameter**, one every model takes, like `embargo` | the field on `Spec` in `crates/online-polars/src/spec.rs` with `#[serde(default)]`, and its validation in `Spec::validate`; `CommonKwargs` in `python/polars_online/_kwargs.py`; `_common`'s signature *and* the dict it builds, in `python/polars_online/_spec.py` | the API snapshot (`tests/api_surface.txt`) records the new keyword and its default |
-| **a new output field** on every model | `FieldMeta` in `crates/online-polars/src/bank/fields.rs` carries the name and dtype; the emit flag goes on `Spec`, in `CommonKwargs` in `python/polars_online/_kwargs.py`, and in `_common`'s signature and the dict it builds | `test_portability`'s `test_names_match_the_realized_struct_for_every_model`, once the flag is in one of its `extra` output combinations, which compares the declared fields with the produced ones for every model; the snapshot's `[output field grammar]` |
-| **a new clock-policy parameter** | the `ClockPolicy` in `crates/online-polars/src/spec/clock.rs`, and `with_windows`' signatures beside the spec's | the API snapshot, which lists `with_windows`' signatures; nothing else lists the clock-policy keywords: **no check** |
+| **a new output field** on every model | `FieldMeta` in `crates/online-polars/src/bank/fields.rs` carries the name and dtype; the emit flag goes on `Spec`, in `CommonKwargs` in `python/polars_online/_kwargs.py`, and in `_common`'s signature and the dict it builds. The value is written by the stream into a buffer of `ChunkOut` (`crates/online-polars/src/stream/chunk_out.rs`), as `out.scored_clock` is in `stream.rs`; a field with a buffer of its own needs that buffer, its `Source` variant in `fields.rs`, and its read in `assemble` (`crates/online-polars/src/bank/assembly.rs`) | `test_portability`'s `test_names_match_the_realized_struct_for_every_model`, once the flag is in one of its `extra` output combinations, which compares the declared fields with the produced ones for every model; the snapshot's `[output field grammar]` |
+| **a new clock-policy parameter** | everything the common-parameter row names; a field on `ClockPolicy` and its read in `clock_cfg_of`, in `crates/online-polars/src/spec/clock.rs`, and on `ClockCfg` (`crates/online-core/src/clock.rs`) if the clock itself acts on it; a field on `WindowsConfig` in `crates/online-polars/src/windows_frame.rs`; both places that build a `ClockPolicy`, `Spec`'s in `spec.rs` and `WindowsRun`'s in `windows_frame.rs`; and `with_windows`' signatures beside the spec's | the API snapshot, which lists `with_windows`' signatures; nothing else lists the clock-policy keywords: **no check** |
 | **a new kind of input column**, beyond features, targets and the weight | `DataSummary::layout` and `feed_row` in `crates/online-polars/src/summary.rs` decide which columns `describe()` lists, and in what order; `Bank::describe`'s `keep` decides which get moments | `crates/online-polars/tests/summary.rs` pins the frame's column names, and compares every statistic to an oracle computed over the frame, so a column the summary does not know is a failing count there |
-| **a new `withheld_reason`**, a gate that withholds a row's predictions | its name at the end of `WITHHELD_REASONS` in `crates/online-polars/src/stream.rs`, and its `REASON_*` code after the last. Then its four spelled-out lists: the `withheld_reason` entry of `python/polars_online/spec.py`'s module docstring, the `withheld_reason` line in `scripts/outputs_doc.py` (regenerate `docs/OUTPUTS.md`), the `withheld_reason` row of `docs/MODELS.md`'s table of the fields every model shares, and `docs/DIAGNOSTICS.md`'s gate table | `test_portability`'s `REASON_DTYPE`, the dtype every model's field is held to, and `test_readiness`'s `REASONS`, against which each row's reason is read; the state fixtures, whose last rows keep the codes; the four lists in the docs have **no check** |
+| **a new `withheld_reason`**, a gate that withholds a row's predictions | first make room in `crates/online-polars/src/stream.rs`, which stands within a few hundred bytes of the source cap: move a block of it into a submodule, as [Add a model](../EXTENDING.md#step-7--srcstreamrs)'s step 7 says. Then its name at the end of `WITHHELD_REASONS` in `stream.rs`, with the array's length one more, and its `REASON_*` code after the last. Then its four spelled-out lists: the `withheld_reason` entry of `python/polars_online/spec.py`'s module docstring, the `withheld_reason` description in `scripts/outputs_doc.py` that lists the reasons (regenerate `docs/OUTPUTS.md`), the `withheld_reason` row of the readiness-fields table under `docs/MODELS.md`'s *Warm-up gates*, and `docs/DIAGNOSTICS.md`'s gate table | `test_portability`'s `REASON_DTYPE`, the dtype every model's field is held to, and `test_readiness`'s `REASONS`, against which each row's reason is read; the state fixtures, whose last rows keep the codes; the four lists in the docs have **no check** |
 | **a new parameter** on one model | the `Cfg` field and its validation in `new` (step 1), the `ModelKind` field with `#[serde(default)]` (step 6), the `build_one` default (step 7), the builder keyword (step 9), the snapshot (step 10); if `inf` means something for it, `_INF_OK` (step 9). A spec of `scripts/release_probe.py`'s `WORKLOAD` that sets it goes into `tests/test_released_state.py`'s `PARAMETER_INTRODUCED` under the next minor release, the first that will take the keyword | the inf-table test catches the Python half; the compiler catches the Rust half; a workload spec left out of `PARAMETER_INTRODUCED` fails the released-state test, where every release refuses the keyword; an entry under a version newer than the release being published stops `scripts/release_version.py --publish` |
 
 **Append a withheld reason at the end of the list.** The list is
@@ -92,7 +99,7 @@ shipped the schema the field joins:
 
 | the change | what it needs |
 |---|---|
-| a field with `#[serde(default)]`, added inside a schema no release has shipped | no bump: it joins that schema |
+| a field with `#[serde(default)]`, added inside a schema no release has shipped | no bump: it joins that schema. The schema has shipped if the last release's `SCHEMA_VERSION` equals the current one: `git show v<last>:crates/online-core/src/lib.rs \| grep 'SCHEMA_VERSION: u32'` |
 | any other change to a layout a state file holds | a new schema, under hard rule 5: the steps below |
 | a new model's `ModelState` variant, appended | no bump; a fixture case and its frozen name, as [Add a model](../EXTENDING.md#step-3--srcmodelrs)'s step 3 says |
 
@@ -112,7 +119,10 @@ from schema `N` to `N + 1` in these steps, in both crates:
 3. Write the loader the change needs, where the moved layout is read. A
    model's state is read in the model's `Deserialize`, as `check_schema`'s
    doc describes. A bank file is read by `Bank::load_bytes`, in
-   `crates/online-polars/src/bank.rs`.
+   `crates/online-polars/src/bank.rs`. A `with_windows` state is read by
+   `WindowsRun::load_bytes` (`src/windows_frame.rs`), and a `refresh_time`
+   state by `RefreshTime::load_bytes` (`src/refresh.rs`); the bank
+   crate's fixtures freeze both.
 4. Regenerate the current set, which is then schema `N + 1`'s:
 
    ```sh

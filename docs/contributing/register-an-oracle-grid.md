@@ -35,10 +35,19 @@ The steps turn that test into a registered grid:
    as an ARI, a share or an F1. Pass `exact=True` for a count.
 3. **Mark the test `@pytest.mark.oracle_grid(reason="...")`.** `rerun` and
    CI run nothing else.
-4. **Run `uv run python scripts/oracles.py rerun <group>`,** which runs the
+4. **Run `uv run python scripts/oracles.py rerun <group>`,** where
+   `<group>` is the group's full id, its module's name without `test_`, a
+   dot and the group's name, as `truth_recovery.kmeans_blobs`. It runs the
    grid, writes the group's new cases to `oracles.toml` and its hash to
-   `oracle_hashes.toml`.
+   `oracle_hashes.toml`. Off the ledger's platform, Linux x86-64, the new
+   cases' tables carry no numbers, and a case without numbers holds
+   nothing.
 5. **Commit the test, `oracles.toml` and `oracle_hashes.toml` together.**
+6. **After the push, apply CI's numbers,** as [Update the oracle
+   ledger](update-the-oracle-ledger.md#steps), steps 8 to 11, describes:
+   read `oracles.yml`'s conclusion, download its `oracle-ledger-measured`
+   artifact, run `uv run python scripts/oracles.py apply measured.json`, and
+   commit `oracles.toml`. From then on, the ledger holds the grid's error.
 
 This code registers a group and records one quantity:
 
@@ -51,12 +60,11 @@ ledger.record("kmeans_blobs", "raw_ari", aris, ideal=1.0)
 
 To check the result, run `uv run pytest tests/test_oracle_ledger.py`. Its
 rules test fails when a module with a grid is neither registered nor listed
-in `tests/ledger.py`'s `PENDING`, and its guard fails when the group's hash
-is missing.
+in `tests/ledger.py`'s `PENDING`. Its guard fails when the group's hash is
+missing, on the development Mac where the hashes were written; elsewhere
+it reports.
 
-**The ledger names a group by its module and its name,** as
-`truth_recovery.kmeans_blobs`: the module's name without `test_`, a dot
-and the group's name. With `POLARS_ONLINE_ORACLES_OUT` naming a
+**`record` writes only when asked.** With `POLARS_ONLINE_ORACLES_OUT` naming a
 directory, `record` appends what it measured there as JSON lines, one file
 a process, so pytest-xdist's workers do not share one. Without it, `record`
 checks its arguments and writes nothing.

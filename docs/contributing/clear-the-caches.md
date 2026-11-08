@@ -6,8 +6,10 @@ wants to free disk space by clearing the build caches, and to know when
 to do it.
 
 **Clear the build caches after each push wave, once its branches and
-worktrees are removed, or when free disk falls below 100 GB.** Every cache can be deleted while no build or test is using it.
-The next build or run refills what it needs, at the cost [What each cache
+worktrees are removed, or when free disk falls below 100 GB.** Below
+100 GB, a few more worktrees' builds, at up to 28 GB each, would fill the
+disk. Every cache can be deleted while no build or test is using it. The
+next build or run refills what it needs, at the cost [What each cache
 holds](#what-each-cache-holds) gives.
 
 ## Prerequisites

@@ -968,7 +968,7 @@ def test_the_throughput_table_postdates_the_previous_release():
     assert datetime.date.fromisoformat(when) >= datetime.date.fromisoformat(dates[1]), (
         f"the throughput table was measured on {when}, before the previous "
         f"release ({dates[1]}): rerun scripts/benchmark.py "
-        "(docs/contributing/cut-a-release.md, step 2)"
+        "(docs/contributing/cut-a-release.md, step 3)"
     )
     assert "](#" not in row and "records/" not in row, row
     log_text = (REPO / "docs" / "records" / "PERFORMANCE-LOG.md").read_text(encoding="utf-8")

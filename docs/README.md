@@ -145,10 +145,12 @@ mechanism.
 | [EXTENDING.md](EXTENDING.md) | you are adding a model — every layer it touches, with the test that catches skipping each one |
 | [contributing/add-an-output-or-a-parameter.md](contributing/add-an-output-or-a-parameter.md) | you are adding an output field, a spec parameter, a kind of input column or a withheld reason, and want to know what each changes in a saved state |
 | [contributing/change-the-api.md](contributing/change-the-api.md) | you are adding, renaming or removing a public name or changing a default, and need the snapshot diff and the right kind of release |
-| [contributing/iterate-on-a-change.md](contributing/iterate-on-a-change.md) | you want to run the tests for what you changed while you work, merge a wave of branches, and run the full suite before a push |
+| [contributing/iterate-on-a-change.md](contributing/iterate-on-a-change.md) | you want to run the tests for what you changed while you work, and the full suite before a push |
+| [contributing/merge-a-wave-of-branches.md](contributing/merge-a-wave-of-branches.md) | you want to land several finished branches on `main` behind one test gate |
 | [contributing/use-a-worktree-slot.md](contributing/use-a-worktree-slot.md) | you want to take a warm worktree slot for a task, work in it, and give it back |
 | [contributing/clear-the-caches.md](contributing/clear-the-caches.md) | you want to free disk by clearing the build caches, and to know when to |
 | [contributing/update-the-oracle-ledger.md](contributing/update-the-oracle-ledger.md) | you want to rerun an oracle grid your change moved and record its error, which only tightens |
+| [contributing/register-an-oracle-grid.md](contributing/register-an-oracle-grid.md) | you want a new oracle grid's error held to the ledger |
 | [TESTING.md](TESTING.md) | you want to know what the suite proves, which tests hold each guarantee, how it runs and where it is thin |
 | [contributing/cut-a-release.md](contributing/cut-a-release.md) | you are releasing a version — compare with the last release, benchmark, set the version, dispatch, approve and verify |
 | [contributing/move-the-polars-range.md](contributing/move-the-polars-range.md) | a new Polars broke the library, or you need to move the Polars floor or ceiling |

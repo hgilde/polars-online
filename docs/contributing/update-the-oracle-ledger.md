@@ -10,9 +10,10 @@ tightens.
 measured, and every run is held to those fixed numbers.** An oracle grid
 is a test that holds a model to a third-party oracle over many seeds,
 orders or datasets, and carries the `oracle_grid` mark. No local test
-gate runs the grids. The test gate runs a cheap guard instead, which hashes this
-library's outputs on each grid's inputs and fails when a hash or an oracle
-library's version moves. [The oracle ledger](../TESTING.md#the-oracle-ledger)
+gate runs the grids. The test gate runs a cheap guard instead, which
+hashes this library's outputs on each grid's inputs. It fails when a hash
+or an oracle library's version moves, on the development Mac where the
+hashes were written; elsewhere it reports. [The oracle ledger](../TESTING.md#the-oracle-ledger)
 describes the files, how a case is judged and why the numbers are CI's.
 
 ## Prerequisites
@@ -57,11 +58,14 @@ The steps take the change from the failed guard to a ledger CI agrees with:
 8. **After the push, read the conclusion of `oracles.yml`.** Its last job,
    `the oracle ledger`, holds every case to the ledger on CI's platform,
    Linux x86-64.
-9. **If it asks to tighten, or names a new case or a moved version,
-   download CI's measurements,** with `gh run download <run-id> -n
-   oracle-ledger-measured`. The artifact holds `measured.json`.
+9. **If it asks to tighten, names a new case or a moved version, or
+   finds a case past the ledger, download CI's measurements,** with `gh
+   run download <run-id> -n oracle-ledger-measured`. The artifact holds
+   `measured.json`.
 10. **Apply them,** with `uv run python scripts/oracles.py apply
-    measured.json`. `apply` never writes a higher number.
+    measured.json`. `apply` never writes a higher number. A case past the
+    ledger on CI, as one written in step 4 from a Mac's value can be, takes
+    CI's value from `measured.json` by hand, as in steps 4 and 5.
 11. **Commit `oracles.toml` and push it.**
 
 To check the result, run `uv run python scripts/oracles.py raises`. It

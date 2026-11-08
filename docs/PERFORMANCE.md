@@ -4,7 +4,8 @@
 This page is the reference for anyone who found a model bank's run slower
 or larger than they expected. It gives what each model and each way of
 running a bank was measured to cost in time and memory, and how each figure
-was made.
+was made. Its last section, how cost grows with size, is for a contributor:
+it gives the growth each surface declares and the tests that hold it.
 
 [Where the time and memory go](explanation/where-the-time-and-memory-go.md)
 explains what sets each number, and what to change when one is not what you
@@ -13,7 +14,7 @@ expected.
 | section | read it when | subsections |
 |---|---|---|
 | [How the numbers are made](#how-the-numbers-are-made) | you want how every figure was measured, and the commands that measure it again | |
-| [The current figures](#the-current-figures) | you want a figure the guides quote: each model's rows a second, the bank's work around a row, the speed at each thread count, a run's peak memory, or what a window operator costs | [each model](#rows-a-second-for-each-model) · [the bank's work](#the-banks-work-around-a-row) · [threads](#rows-a-second-at-each-thread-count) · [peak memory](#peak-memory-of-each-way-of-running-a-bank) · [window operators](#what-a-window-operator-costs) |
+| [The current figures](#the-current-figures) | you want a figure the guides quote: each model's rows a second, the bank's work around a row, a query against the eager bank, the speed at each thread count, a run's peak memory, or what a window operator costs | [each model](#rows-a-second-for-each-model) · [the bank's work](#the-banks-work-around-a-row) · [the query and `predict`](#a-query-against-the-eager-bank-and-serving-against-learning) · [threads](#rows-a-second-at-each-thread-count) · [peak memory](#peak-memory-of-each-way-of-running-a-bank) · [window operators](#what-a-window-operator-costs) |
 | [How cost grows with size](#how-cost-grows-with-size) | you want how a row's work and a state grow with each size a surface has -- features, targets, groups, specs, a window, the rows already seen -- and the test that holds each | [how a cell is measured](#how-a-cell-is-measured) · [the table](#the-table) · [specs on one stream](#specs-on-one-stream) · [what the table holds](#what-the-table-holds) |
 
 ## How the numbers are made
@@ -21,8 +22,7 @@ expected.
 **Each figure here states the date it was measured on and how it was made,
 so read it as of its date.** Every release measures [Rows a second for each
 model](#rows-a-second-for-each-model) again. The other figures were
-measured once, and are measured again when a change to the code they
-measure moves them.
+measured once, and a change to the code they measure measures them again.
 
 **A figure was measured on one machine unless it says otherwise:** an
 Apple M4 Pro with 10 performance and 4 efficiency cores, a release build
@@ -35,9 +35,7 @@ machines, and the threads of several specs from a build without LTO.
 **Memory is the most memory the process held at once, not the resident
 set size (RSS), unless a figure says otherwise.** It is the number
 `/usr/bin/time -l` prints as "peak memory footprint", which
-`scripts/memory_bench.py` reads, so that script runs on macOS only.
-`scripts/factor_residuals_bench.py` reads the same number from
-`proc_pid_rusage`'s `lifetime_max_phys_footprint`. RSS is the wrong ruler
+`scripts/memory_bench.py` reads, so that script runs on macOS only. RSS is the wrong ruler
 for a bank's memory. Polars memory-maps a local parquet file, and the
 file's clean pages count in RSS, though the system drops them under
 pressure at no cost. On 2026-09-02 the command line's RSS grew from 1.37 to
@@ -91,9 +89,11 @@ call's work independent of the size of the environment.
 says how much.** A sampling profiler counts threads: `assemble` runs on
 every thread and `process` on one for a single group, so on 14 threads a
 20 ms `assemble` reads as 280. The amount is `POLARS_ONLINE_TIMING=1`'s,
-and a profile shows where inside `process` it goes, by function. On macOS
-these commands build the extension with symbols, sample a running Python
-process by its pid, and list the binary's functions and instructions:
+and a profile shows where inside `process` it goes, by function. Its
+attribution to a line inside an inlined recursion is not reliable. On
+macOS these commands build the extension with symbols, sample a Python
+process that runs the workload in a loop by its pid, and list the binary's
+functions and instructions. In `out.txt`, read "Sort by top of stack":
 
 ```sh
 CARGO_PROFILE_RELEASE_STRIP=none CARGO_PROFILE_RELEASE_DEBUG=1 uv run maturin develop --release -m crates/online-py/Cargo.toml
@@ -107,8 +107,8 @@ library against these numbers.
 
 ## The current figures
 
-**These are the figures the guides quote, each with its date and how it
-was made.**
+**Each figure below is what a run cost on one machine on its date, under
+the conditions it states.**
 [Where the time and memory
 go](explanation/where-the-time-and-memory-go.md) explains what sets each
 number.
@@ -220,9 +220,10 @@ process, the best of two or three runs:
 
 **Around each row the bank clocks it, keeps its schedule, copies its
 features in and writes its fields out, and below about 50 features that
-work is as much as the model's own.** A Rust program timed each model's
-step alone in a loop, against the bank's `fit_predict` of the same rows as
-one frame: one spec over one group, on one thread, after a warm-up, on the
+work is as much as the model's own.** A Rust program written for the
+measurement, which the repository does not keep, timed each model's step
+alone in a loop against the bank's `fit_predict` of the same rows as one
+frame. It ran one spec over one group, on one thread, after a warm-up, on the
 system allocator, the best of eight passes. It was measured on 2026-11-03
 at a load average of 5.0, on the build of [Rows a second for each
 model](#rows-a-second-for-each-model). In ns a row:
@@ -240,6 +241,8 @@ model](#rows-a-second-for-each-model). In ns a row:
 | `ewridge` | 500 | 94,226 | 111,804 | 1.2× |
 | `ew_cov`, 125,753 fields | 500 | 120,315 | 604,538 | 5.0× |
 
+### A query against the eager bank, and serving against learning
+
 **A query runs slower than the eager bank on the same rows at many groups,
 because it reads its input as the frames Polars hands it.** On 1M rows of a
 five-feature `ewridge` on all threads,
@@ -254,9 +257,11 @@ five-feature `ewridge` on all threads,
 | one group | 205 | 196 |
 
 **`predict` skips learning, so it runs faster than `fit_predict`, and more
-so for a wider model.** On a frame of a million rows, `ewridge` served 1.85
-times as fast as it learned at k=5 and 2.82 times at k=20, measured on
-2026-09-29.
+so for a wider model.** On one frame of a million rows of one group,
+`ModelBank([spec]).predict(df)` against `ModelBank([spec]).fit_predict(df)`
+for an `ewridge` spec, `predict` ran 1.85 times as fast at k=5 and 2.82
+times at k=20. It was measured on 2026-09-29 on a build of the day
+before 0.13.0's release, whose run recorded neither its repetitions nor its load.
 
 ### Rows a second at each thread count
 
@@ -334,8 +339,8 @@ peak RSS from `getrusage`, which counts the file's mapped pages too:
 **An operator whose input is null on most rows costs about what a dense
 one does.** Every row joins its operator's queue of rows, valued or not. A
 mean's read looks for the operator's oldest valued row from where its last
-search stopped, so it passes each null row once rather than on every
-read. On 300k rows with a window of 2,000 rows, one value in 5,000 takes
+search stopped, so each read passes only the null rows that arrived since
+the last, and each null row is passed once. On 300k rows with a window of 2,000 rows, one value in 5,000 takes
 184 ns a row backward and 195 ahead, the best of two runs at a load
 average of 3.3, measured on 2026-10-24.
 
@@ -402,9 +407,9 @@ factor of 2.8 that the counted one does not need. Callgrind runs on Linux
 alone, so it counts only the cells where a count sees what a timing cannot
 and that stay cheap under Valgrind, the list `BENCH_CELLS` in
 `crates/online-bench/src/scaling.rs` holds. They are three models' rows
-already seen, the bank's, the window operators' and `refresh_time`'s cells
-whose growth must be 1, the spec counts, one width per family, and
-`bank.label_clock`. `scripts/budgets.py
+already seen, one width per family, `ew_cov.window`, the spec counts, the
+bank's, the window operators' and `refresh_time`'s cells whose growth must
+be 1, `windows.kernels`, and `bank.label_clock`. `scripts/budgets.py
 check` holds each to `[scaling.cells]` within the run, a measuring run
 included, since a wrong growth is a defect and not a number to re-measure.
 
@@ -421,8 +426,8 @@ It times the chunked `ModelBank.fit_predict` and the Polars source behind
 ones, and the Polars source by its rows.
 
 A cell whose measurement exceeds its declaration is a *finding*. It is held
-to its declaration in the extended tier, where it fails until it is fixed
-([What the table holds](#what-the-table-holds)). A declaration is corrected
+to its declaration in the extended tier, where it fails until it is fixed.
+A declaration is corrected
 only where the algorithm's own growth is higher by design, with the reason
 in the table.
 
@@ -435,7 +440,7 @@ size it varies, its two sizes, the growth declared for a row's work and for
 the state in that size (written in `n`, the size), and the reason. The last
 column has the four native ratios from large to small, as measured on
 2026-11-05 by a debug build: `SCALING_REPORT=1 cargo test -p online-bench
---test scaling` prints them. `bank.label_clock`'s were measured on
+--test scaling -- --nocapture` prints them. `bank.label_clock`'s were measured on
 2026-11-08, the same way, at a load of 5. The two `.window` cells were
 measured again on 2026-11-06, once a window's snapshots were laid out
 flat. A row's time and allocations are per
@@ -628,8 +633,8 @@ output -- and by the load the machine carried.
 
 ### What the table holds
 
-**Four cells hold a mechanism that keeps a cost at its declared growth, so
-a change that removes the mechanism fails its cell.** Each cell's ratios in
+**Six cells hold four mechanisms that keep a cost at its declared growth,
+so a change that removes one fails its cells.** Each cell's ratios in
 [The table](#the-table) read at its declaration:
 
 | cell | declared | what keeps it there |
@@ -639,13 +644,13 @@ a change that removes the mechanism fails its cell.** Each cell's ratios in
 | `corrchange.window`, `corrchange.window_crit` | O(1) a row in `window_rows` | each window is merged from summaries of blocks of `⌈k/2⌉ + 3` rows: a count, an anchor row, the mean's offset from it and the centered co-moments, combined by Chan, Golub and LeVeque's pairwise rule, which needs no subtraction of a row that leaves (`crates/online-core/src/window_moments.rs`). A chunk of blocks keeps its suffix sums and a running prefix sum, so a window's full blocks are one suffix and one prefix, and only the rows at its two ends are read |
 | `bank.groups_seen_per_call` | O(1) a call in the groups seen | a spec keeps its groups' states in an index map, and a call borrows its chunk's states by their places in it and takes the readiness notices of those groups alone |
 
-A `corrchange` window of fewer than four blocks is read whole, where the
-two passes cost no more. Its permutation draws are a separate
+A `corrchange` window of fewer than four blocks is read whole from its
+rows, which costs no more than merging its blocks. Its permutation draws are a separate
 `O(n_perm · window_rows · k²)` at each redraw. Unset, `permute_every_rows`
 is `window_rows`, so the draws also cost `O(n_perm · k²)` a row.
 
-Three declarations follow the algorithm's own growth, past the first guess
-at it:
+Three declarations are higher than the obvious guess, because the
+algorithm's own growth is:
 
 | cell | from | to | why |
 |---|---|---|---|

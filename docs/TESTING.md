@@ -51,7 +51,7 @@ spec and clock:
 | tolerated mutant | a mutant that differs from the original only at an exact tie or by less than the computation's own error, so no test a correct implementation passes can kill it; listed apart, not as equivalent ([Mutation survivors](#mutation-survivors)) |
 | IC | the correlation of prediction with target, `po.eval`'s `ic` |
 | hard rule N | the numbered hard rules in `CLAUDE.md` |
-| a kind | one of the 22 model types a spec can name; `MINIMAL` in `tests/test_model_registry.py` holds one spec of each |
+| a model kind | one of the 22 model types a spec can name; `MINIMAL` in `tests/test_model_registry.py` holds one spec of each |
 | the ten regression models | the models the per-model sweeps run: `ewridge`, `rls`, `lasso`, `kalman`, `huber`, `quantile`, `sgd`, `pa`, `ftrl` and `holt`, which `REGRESSIONS` in `tests/test_model_registry.py` lists |
 | the window operators | exponentially weighted means, variances, sums, rates and quantiles of a column along the clock, with or without a hard window, which `po.stream.with_windows` runs over a stream: `po.ewm_mean`, `po.ewm_sum`, `po.ewm_rate`, `po.ewm_quantile`, `po.ewm_var` and `po.ewm_std` look back, and the first four look ahead under `reverse=True` |
 | a formula target | a spec's target written as an expression over a window operator that looks ahead, such as `po.ewm_mean("mid", ...) - pl.col("mid")`, which the bank resolves once the window has closed |
@@ -62,8 +62,9 @@ spec and clock:
 | the slow twin | `ewridge`'s second set of running sums, at `long_half_life`, which `session_shrink` blends toward on a session change |
 | the pending delta | the clock step of a skipped row, held and folded into the next accepted row's decay |
 | the test gate | `scripts/gate.sh`, which runs the lints and the tests of one tier; the essentials test gate is its default tier, and `--extended` runs the full suite |
+| the lints | the test gate's checks other than its tests: `cargo fmt`, `clippy -D warnings`, `uv lock --check`, `ruff`, `mypy` and Sphinx with `-W` |
 | a worktree slot | a git worktree kept between tasks under `.claude/slots/<n>`, with its own builds, which a task takes with `scripts/slot.sh take` and gives back once its branch is merged; not the glossary's *slot*, a prediction a spec writes per row |
-| a wave | the finished branches merged together onto `main` behind one essentials test gate |
+| a wave | the finished branches merged together onto `main` behind one essentials test gate; a wave of one branch skips it, and runs only the full suite before its push |
 
 ## What the suite proves
 
@@ -436,7 +437,7 @@ full suite runs before every push, always.** A contributor working alone
 runs the essentials test gate, `scripts/gate.sh`, on each commit. Where
 several branches are in flight in worktree slots, each task runs
 `scripts/quick.sh` instead, and one essentials test gate runs on each wave
-of merged branches ([Iterate on a
+of two or more merged branches ([Iterate on a
 change](contributing/iterate-on-a-change.md)). The user set the purpose on
 2026-10-08: "We will always run the full tests before a push, the idea of
 the essential tests is to improve the speed of iteration while developing
@@ -445,7 +446,7 @@ many steps." A push never rides on the essentials, whatever they said.
 | when | what runs | tier |
 |---|---|---|
 | each commit while a task is in progress, working alone | `./scripts/gate.sh` | the essentials |
-| each change inside a task, with other branches in flight | `./scripts/quick.sh`, then one `./scripts/gate.sh` on each wave of merged branches | the tests mapped to the changed paths; then the essentials |
+| each change inside a task, with other branches in flight | `./scripts/quick.sh`, then one `./scripts/gate.sh` on each wave of two or more merged branches | the tests mapped to the changed paths; then the essentials |
 | before every push, always | `./scripts/gate.sh --extended` | every test but the soak tests and the oracle grids |
 | every push and pull request | `ci.yml` on Linux, macOS and Windows | every test but the soak tests and the oracle grids, and the essentials nowhere |
 | every push and pull request | `mutants.yml`, its pass over the changed lines | every Rust test, the ignored ones included, against each mutant of the changed lines |
@@ -542,7 +543,7 @@ how-to.** Working alone, a contributor runs the essentials test gate,
 `scripts/gate.sh`, on each commit. With several branches in flight, each
 task runs `scripts/quick.sh` after each change and `scripts/quick.sh
 --extended` and the lints at its end, and one essentials test gate runs on
-each wave of merged branches ([Merge a wave of
+each wave of two or more merged branches ([Merge a wave of
 branches](contributing/merge-a-wave-of-branches.md)).
 `scripts/gate.sh --extended` runs before every push. The development Mac
 these figures come from has 14 cores, shared with another user's jobs.
@@ -556,13 +557,15 @@ source change in a crate the extension links (`online-core`,
 `online-polars`, `online-py`) rebuilds the extension before pytest, which
 would otherwise test the old binary. A change in a crate with Rust tests
 (`online-core`, `online-polars`, `online-cli`, `online-bench`) runs that
-crate's `cargo test`. A model's source in `online-core` also runs
+crate's `cargo test`. Any source change in `online-core` also runs
 `online-polars`' state fixture and portability tests. A bank's frozen
 fixture holds every model's state, and it moves with a model's arithmetic
 while every `online-core` test passes. A Python module runs the test files
-named after it, and any path runs the test files that name it. Its verdict
-says it covers the mapped tests only, because a change can break a test
-the map does not reach.
+named after it, and any path runs the test files that name it. A model's
+source and a test file that registers oracle groups also run [the oracle
+ledger](#the-oracle-ledger)'s hash guard for the groups they can move,
+which takes seconds. `quick.sh`'s verdict says it covers the mapped tests
+only, because a change can break a test the map does not reach.
 
 **Inside a task, the extension is built with the `dev-wheel` profile,
 which takes seconds after an edit where `release` takes minutes.** The
@@ -674,8 +677,8 @@ already saturate the machine. So, on that machine:
 
 - **Two agents at most, three while the load is low.** A load under about
   20 leaves room for a third build, so a third starts only then, and none
-  starts above it. One is the default when their work is builds and tests
-  rather than reading and writing.
+  starts above it. When the agents' work is mostly builds and tests rather
+  than reading and writing, run one at a time.
 - **Each agent exports `CARGO_BUILD_JOBS=6`.** It runs pytest at `-n 4` at
   most, and the test gate at `GATE_WORKERS=4`.
 - **A local `cargo mutants --in-diff` runs alone.** It takes the lock
@@ -713,7 +716,7 @@ own schedule:
 
 | when | where | what runs |
 |---|---|---|
-| each commit while a task is in progress, working alone, and once on each wave of merged branches | `./scripts/gate.sh` | `cargo fmt`, `clippy -D warnings`, the Rust tests' essentials (under cargo-nextest where it is installed), `uv lock --check`, `ruff`, `mypy`, the extension's build, `pytest`'s essentials in parallel, and Sphinx with `-W` |
+| each commit while a task is in progress, working alone, and once on each wave of two or more merged branches | `./scripts/gate.sh` | `cargo fmt`, `clippy -D warnings`, the Rust tests' essentials (under cargo-nextest where it is installed), `uv lock --check`, `ruff`, `mypy`, the extension's build, `pytest`'s essentials in parallel, and Sphinx with `-W` |
 | before every push, always | `./scripts/gate.sh --extended` | the same checks with every test but the soak tests and the oracle grids |
 | every push to `main` and pull request | `ci.yml` | the suite on Linux at Python 3.12, 3.13 and 3.14, on macOS at 3.12 and 3.14, and on two Windows builds, Server 2025 and Server 2022, at 3.12 and 3.14, each leg first printing the machine it ran on ([The machines and the CPU paths](#the-machines-and-the-cpu-paths)); on Linux, the format, lint, type and documentation checks (`cargo fmt`, `clippy`, `ruff`, `mypy` and Sphinx); the release comparison's outputs against the newest release's, bit for bit, as a report; the Python coverage, as a report |
 | every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `online-core` and `online-polars/src/span.rs`, in a shard for every thirty mutants the change lists, with one report. The report fails on a mutant no test catches, unless `scripts/mutants_equivalent.toml` lists it |

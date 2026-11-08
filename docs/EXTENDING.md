@@ -13,16 +13,18 @@ what the state is, what the spec calls it, what the outputs are named and
 what the tests assert. What can be done is to make each omission fail. The
 steps run in the order the data flows, and each names the check that
 catches skipping it. Where a step says **no check**, nothing catches the
-omission, and the step says so to warn you. Each step also says what the layer it touches holds, since
-you need that to write the step.
+omission: hold it yourself, in the model's own tests. Each step also says
+what the layer it touches holds, since you need that to write the step.
 
 **Put new code in the file each step names, which is often not the file
 the type lives in.** `tests/test_repo_hygiene.py` holds every source file
 to 250,000 bytes (`MAX_SOURCE_BYTES`). `crates/online-polars/src/bank.rs`
-and `src/stream.rs` stand within a kilobyte of it, and
-`python/polars_online/_spec.py` within nine. So a new model's builder, its
-build configuration and its output layout each go in a smaller file beside
-them: steps 7, 8 and 9 name each one.
+and `src/stream.rs` stand within a few hundred bytes of it, and
+`python/polars_online/_spec.py` within ten kilobytes; `wc -c` gives each
+one's size. So a new model's builder, its build configuration and its
+output layout each go in a smaller file beside them: steps 7, 8 and 9 name
+each one. Step 7 still adds arms to `stream.rs`, so it starts by moving
+code out of it.
 
 **The registry is `ModelKind::KINDS`** in `crates/online-polars/src/spec.rs`:
 the spec `type` names, in enum order. Python reaches it as
@@ -296,7 +298,9 @@ this file. It fails for a model with a `fn <model>()` but no
 Pin the core arithmetic on the fixed 60-row stream:
 
 1. Write a `#[test] fn <kind>_golden()` that runs the model on the stream
-   and calls `check("<kind>", &signature(&mut m, slot), GOLDEN_<KIND>)`.
+   and calls `check("<kind>", &signature(&mut m, slot), GOLDEN_<NAME>)`, where
+   `<NAME>` is the case's name in upper snake case (`ewridge`'s is
+   `GOLDEN_EW_RIDGE`).
 2. Generate the constant:
 
    ```sh
@@ -304,7 +308,7 @@ Pin the core arithmetic on the fixed 60-row stream:
    ```
 
 3. The run prints `GOLDEN <kind>: &[...];`. Declare
-   `const GOLDEN_<KIND>: &[f64] = &[...];` with the printed list, under the
+   `const GOLDEN_<NAME>: &[f64] = &[...];` with the printed list, under the
    `// --- generated` marker.
 
 **Prefer a configuration that exercises the busier path:** a robust loss,
@@ -429,7 +433,15 @@ entry it reads as a number.
 
 ### Step 7 — `src/stream.rs`
 
-Add an `AnyModel::<Model>(Box<...>)` variant, and its arms:
+**First make room in `stream.rs`.** It stands within a few hundred bytes
+of the cap, and the variant and arms below add a few hundred bytes for any
+model. Move a self-contained block of it into a submodule under
+`src/stream/`, declared with `mod` as `model_cfgs.rs` and `last_row.rs`
+are, until `wc -c crates/online-polars/src/stream.rs` leaves room for the
+addition. `tests/test_repo_hygiene.py`'s `test_no_tracked_file_is_data_sized`
+fails while it does not.
+
+Then add an `AnyModel::<Model>(Box<...>)` variant, and its arms:
 
 | where | the arm |
 |---|---|
@@ -437,7 +449,7 @@ Add an `AnyModel::<Model>(Box<...>)` variant, and its arms:
 | `solve_failures` | 0 for a model that never factorizes |
 | `coefficients` | the per-target layout the `coef` field reports |
 | `restore` | the `ModelState` arm |
-| `build_one` | the `ModelKind` arm that turns spec fields into a `Cfg`. Write the function that builds the `Cfg` as a `<kind>_cfg` in `src/stream/model_cfgs.rs`, as `audit_cfg`, `bocpd_cfg` and `hmm_cfg` are, and call it from the arm: `stream.rs` is within 30 bytes of the source cap. Defaults are decided here: `holt` reads the spec's `half_life` as its level half-life, so the shared parameter means the same thing everywhere |
+| `build_one` | the `ModelKind` arm that turns spec fields into a `Cfg`. Write the function that builds the `Cfg` as a `<kind>_cfg` in `src/stream/model_cfgs.rs`, as `audit_cfg`, `bocpd_cfg` and `hmm_cfg` are, and call it from the arm, so the arm stays one line. Defaults are decided here: `holt` reads the spec's `half_life` as its level half-life, so the shared parameter means the same thing everywhere |
 | `combos` | `vec![Combo::default()]`, unless the model fits a grid |
 
 **Answer `n_features`, `n_targets` and `n_outputs` from the cfg.**
@@ -462,8 +474,8 @@ model is in their lists, which step 12 enforces.
 target per [grid point](GLOSSARY.md#grids), or the coefficient vector is
 not `[intercept] + features` per target and grid point.** The output
 layout lives in `crates/online-polars/src/bank/fields.rs`: `FieldMeta`,
-`Source`, `output_index` and `coef_fields`. `src/bank.rs` is within half a
-kilobyte of the source cap, so put the new model's cases in `fields.rs`.
+`Source`, `output_index` and `coef_fields`. `src/bank.rs` is within a few
+hundred bytes of the source cap, so put the new model's cases in `fields.rs`.
 
 The outputs of these models are not one `pred`/`resid` pair per target per
 grid point, and are the cases in `output_index`:
@@ -549,7 +561,7 @@ signature and output fields the API snapshot pins.
 Write the builder in a `python/polars_online/_spec_<family>.py` of its
 family, as `_spec_robust.py` holds `huber` and `quantile` and
 `_spec_changepoint.py` holds `bocpd` and `corrchange`, or in a new one.
-`_spec.py` is within nine kilobytes of the source cap, so a builder and
+`_spec.py` is within ten kilobytes of the source cap, so a builder and
 its docstring do not fit there. Its parts:
 
 | part | what it is |
@@ -559,9 +571,10 @@ its docstring do not fit there. Its parts:
 | the docstring | the update equations |
 | a clock-unit parameter | annotated `float \| Duration`, which is what makes the builder write a duration as text |
 | a parameter where `inf` means something | a `_INF_OK` entry, in `_spec_words.py`. Rust parses those as `Num`, and `validate` says `finite` of every other float |
-| `_spec.py` | an import of the builder among those at the foot of `_spec.py`, after everything the builder uses, and its name in `_spec.py`'s `__all__` |
 
-Then add the import and the name in `__all__` to **`spec.py`**.
+Then import the builder among the imports at the foot of `_spec.py`, after
+everything the builder uses, and add its name to `_spec.py`'s `__all__`.
+Then add the same import and name to **`spec.py`**.
 
 **Write the docstring by [docs/WRITING.md](WRITING.md), since tests read
 some of it.** Its examples run, and each parameter measured in clock units
@@ -823,7 +836,7 @@ until `docs/FEATURES.md` has the builder's line.
 `test_every_model_has_a_section` and `test_no_field_is_left_undocumented`.
 
 **Bump the model count wherever it is spelled out.** Grep for
-`twenty-two`, `22 models` and `all 22`; on 2026-11-08 the count stood in
+`twenty-two`, `22 model` and `all 22`; on 2026-11-08 the count stood in
 these places:
 
 | file | where | check |
@@ -833,9 +846,13 @@ these places:
 | `docs/FEATURES.md` | the contents table's *Models* row | **no check** |
 | `docs/MODELS.md` | the first sentence, and the opener of *The models at a glance* | **no check** |
 | `docs/VERSIONS.md` | the row for the spec constructors | **no check** |
+| `docs/TESTING.md` | the *Terms* table's `a model kind` row, "one of the 22 model types" | **no check** |
 | `docs/TESTING.md` | the `instructions` budget row, "the 22 models" | **no check** |
 | `docs/WRITING.md` | *Plan the map*, on the families | **no check** |
 | `docs/how-to/choose-a-model.md` | the first sentence | **no check** |
+
+The grep also finds "the 22 model kinds" in `docs/PERFORMANCE.md`. Leave
+it: it counts the models of a dated measurement.
 
 **Add the model to `docs/how-to/choose-a-model.md`** too, where a reader
 picks a model by their task. **No check.**

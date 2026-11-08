@@ -32,8 +32,7 @@ A release needs these before step 1:
 
 ## Steps
 
-Steps 1 to 12 check and edit the release on this machine, and steps 13 to
-16 push it, dispatch it, approve its upload and verify it.
+Nothing leaves this machine before step 13.
 
 1. **Compare every output with the last release's,** with
    `uv run python scripts/compare_release.py`. It exits 0 when every
@@ -42,16 +41,27 @@ Steps 1 to 12 check and edit the release on this machine, and steps 13 to
    the CHANGELOG, or find its cause and pin it with a test ([Compare with
    the last release, bit for
    bit](../RELEASE-READINESS.md#compare-with-the-last-release-bit-for-bit)).
-2. **Benchmark this build against the last release.** Run
-   `uv run python scripts/benchmark.py` and
-   `uv run python scripts/wide_benchmark.py` under the last release and
-   under this build, in turn, with the machine's load logged. Run the last
-   release twice: installed from PyPI into a scratch environment
-   (`uv pip install polars-online==<last>`), and built here from a checkout
-   of its tag `v<last>` with
-   `uv run maturin develop --release -m crates/online-py/Cargo.toml`. A
-   wheel built on another machine reads a few percent apart on its own.
-   The wide benchmark reaches the solves and products that
+2. **Benchmark this build against the last release.** Run this
+   checkout's `scripts/benchmark.py` and `scripts/wide_benchmark.py` under
+   three builds in turn, with the machine's load logged: this build, the
+   last release from PyPI, and the last release built here. A wheel built
+   on another machine reads a few percent apart on its own. Give each of
+   the last release's two an environment of its own, so this checkout's
+   build stays installed:
+   - From PyPI: `uv venv <scratch> --python 3.12`, then
+     `uv pip install --python <scratch> "polars-online[numpy]==<last>"`.
+     The scripts import NumPy, which the `numpy` extra brings.
+   - Built here: `git worktree add <tag-dir> v<last>`, then, inside it,
+     `uv sync` and
+     `uv run maturin develop --release -m crates/online-py/Cargo.toml`.
+     Its environment is `<tag-dir>/.venv`.
+
+   Run this build with `uv run python scripts/benchmark.py`, and each of
+   the others with its own interpreter, as
+   `<env>/bin/python scripts/benchmark.py` (`<env>\Scripts\python` on
+   Windows). Run `wide_benchmark.py` the same way. Remove the two with
+   `git worktree remove <tag-dir>` and by deleting `<scratch>`. The
+   wide benchmark reaches the solves and products that
    `benchmark.py`'s 50 features never do, where a change can slow a wide
    fit and move no `benchmark.py` row. Fix a slowdown past the runs'
    scatter, or declare it in the CHANGELOG.
@@ -67,10 +77,11 @@ Steps 1 to 12 check and edit the release on this machine, and steps 13 to
 4. **Sign off each instruction count that moved more than 10%.** The
    `Budgets` run of the last push reports each count's drift since the
    last release, read from that release's measurements. Add a
-   `[[signoff]]` for this version in `budgets.toml` for each case that
-   moved more than 10% either way, or the release's `budgets` job fails
-   ([Budgets that only
-   tighten](../TESTING.md#budgets-that-only-tighten)).
+   `[[signoff]]` to `budgets.toml` for each case that moved more than 10%
+   either way, or the release's `budgets` job fails ([Budgets that only
+   tighten](../TESTING.md#budgets-that-only-tighten)). Each gives the
+   case's `key` as the report names it, this release's `version` and a
+   `reason`.
 5. **Set the version in its six places:** `pyproject.toml`, `Cargo.toml`
    three times, `python/polars_online/__init__.py`, and
    `docs/VALIDATION.md`, regenerated with
@@ -87,7 +98,12 @@ Steps 1 to 12 check and edit the release on this machine, and steps 13 to
 9. **If a wheel's size moved out of the README's install *size* row,
    correct the row.** The release's `wheel-size` job holds every wheel it
    builds to the row, and stops before the upload if one is outside ([The
-   README's size row](../RELEASE-READINESS.md#the-readmes-size-row)).
+   README's size row](../RELEASE-READINESS.md#the-readmes-size-row)). To
+   read this platform's wheel before then, build it with
+   `uv run maturin build --release` and run
+   `python3 scripts/wheel_size.py target/wheels/<wheel>`, which exits 1
+   when it is outside the row. A wheel of another platform shows only in
+   that job, and its fix is a new dispatch.
 10. **Check the version,** with
     `uv run --no-project --python 3.12 python scripts/release_version.py --publish`.
     It prints `version=`, `tag=` and `schema=` and exits 0 when all of
@@ -101,7 +117,10 @@ Steps 1 to 12 check and edit the release on this machine, and steps 13 to
       `PARAMETER_INTRODUCED` or `INTRODUCED` names a newer version.
 11. **Run the suite on the floor of the Polars range, in a scratch copy of
     the checkout,** since `uv sync --upgrade-package` rewrites `uv.lock`.
-    Read the floor with `python3 scripts/polars_floor.py`, then run
+    Make the copy with `git worktree add <dir> HEAD`, which holds the last
+    commit without the edits of steps 4 to 10, and set `UV_PYTHON=3.12` in
+    it, the Python the release's leg runs. Read the
+    floor with `python3 scripts/polars_floor.py`, then run
     `uv sync --upgrade-package "polars==<floor>" --upgrade-package "polars-runtime-32==<floor>"`,
     `uv run maturin develop --release -m crates/online-py/Cargo.toml` and
     `uv run pytest -q -m "not soak and not pins and not oracle_grid"`, as
@@ -113,7 +132,8 @@ Steps 1 to 12 check and edit the release on this machine, and steps 13 to
     the pushed sha to pass.
 14. **Dispatch the release,** with
     `gh workflow run release.yml --ref main -f publish=true`. Never push a
-    tag by hand. Push no change to `.github/workflows` until the tag
+    tag by hand, except as [If a job fails](#if-a-job-fails) says, after
+    the upload. Push no change to `.github/workflows` until the tag
     exists: the tag job's token may not create a ref whose workflow files
     differ from `main`'s.
 15. **Approve the `publish to PyPI` job,** in the `Pypi` environment, once
@@ -142,22 +162,30 @@ The release is done when these hold:
 **Before the approval, fix the cause on `main` and dispatch again.** No
 version is used up, and no tag exists.
 
-**After the upload, re-run a failed `tag` or `release` job, unless
-`main`'s workflow files have changed since the tested sha.** A re-run puts
-the tag on the same sha, and finishes the release where it stopped. If
-`main`'s `.github/workflows` differ from the tested sha's, the tag job's
-token is refused on every re-run. Then make both by hand, as the jobs do:
+**After the upload, re-run a failed `release` job whatever `main` holds,
+and a failed `tag` job unless `main`'s workflow files have changed since
+the tested sha.** The `release` job creates no ref: it makes the GitHub
+release on the tag the `tag` job pushed. A re-run of `tag` puts the tag on
+the same sha, and the release follows it. If `main`'s `.github/workflows`
+differ from the tested sha's, the tag job's token is refused on every
+re-run. Then make the tag and the release by hand, as the jobs do. Push
+the tag with your own credential. A token needs the `workflow` scope, for
+the same reason the job's is refused.
 
-1. **Write the CHANGELOG's section for the version to `notes.md`,** under
+1. **Download the run's files,** with
+   `gh run download <run-id> -D artifacts`.
+2. **Write the CHANGELOG's section for the version to `notes.md`,** under
    the line `polars-online <version>`.
-2. **Tag the tested sha,** with
+3. **Tag the tested sha,** with
    `git tag -a --cleanup=verbatim v<version> -F notes.md <sha>`, and push
    the tag.
-3. **Create the GitHub release** with
-   `gh release create v<version> <files> --verify-tag --title v<version> --notes-file <notes>`,
-   where the files are the run's wheels, sdist, command-line binaries and
-   `budgets-baseline.json`, and the notes are `notes.md` followed by the
-   run's `wheel-sizes` artifact.
+4. **Create the GitHub release** with
+   `gh release create v<version> <files> --verify-tag --title v<version> --notes-file <notes>`.
+   The files are the run's wheels and sdist, each command-line binary
+   renamed `<name>-<target>`, keeping `.exe`, as the `release` job names
+   it, and `artifacts/budgets-baseline/budgets-baseline.json`. The notes
+   are `notes.md`, a blank line, and the run's
+   `artifacts/wheel-sizes/sizes.md`.
 
 **A failed `verify` leg is re-run while PyPI's index lags.** A failure
 that is not the index is a release to fix with the next version, since

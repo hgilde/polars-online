@@ -212,11 +212,10 @@ every `window_rows` rows.
 table, and any other renamed name by a forwarding of its own.** The tables
 read a spec builder's old keyword, a spec dict's old key, a TOML file's old
 key and an old word of a spec parameter as the new one, at any depth of a
-spec. A table covers every model, or the one model whose name changed.
-They do not
-reach another function's keyword or the words it takes, a function, a
-command-line flag, an environment variable, an output field or a frame
-column. Each of those ships its own forwarding in the release that renames
+spec. A table covers every model, or the one model in which the key or
+word changed. They do not reach another function's keyword or the words
+it takes, a function, a command-line flag, an environment variable, an
+output field or a frame column. Each of those ships its own forwarding in the release that renames
 it: a check at the function's top, a stub, an alias or a second column.
 Both warn with `PolarsOnlineDeprecationWarning`, and both last until the
 next major.
@@ -291,8 +290,8 @@ and each change to a state's layout ships a loader for the layout before
 it. A 0.x state is refused by its schema version, with an error that says
 to fit the bank again on its input ([A bank's state and resuming
 it](explanation/state-and-resuming.md)). The 0.x releases wrote schema 14
-(0.10.0), 17 (0.11.1), 19 (0.12.0) and 20 (0.13.0), and on 2026-10-03 the
-release of that day refused every file each of them saved.
+(0.10.0), 17 (0.11.1), 19 (0.12.0) and 20 (0.13.0), all below 1.0's 61,
+so every 1.x release refuses each file they saved.
 
 **A saved state of each kind, frozen in the test suite, checks the 1.x
 promise three ways,** apart from the states of a model whose computation a
@@ -380,8 +379,9 @@ be any version in the range:
 ### The floor and the ceiling
 
 **The floor is 1.37.0, because older py-polars reads a query faster than
-the bank takes its chunks, and holds what it has read.** Below it, a bank fed a file larger than
-memory held the whole file. `ModelBank` alone works from 1.28.1, the
+the bank takes its chunks, and holds what it has read.** Below it, a bank
+reading a file held the whole file in memory: 1.6 GB for a 1 GB file.
+`ModelBank` alone works from 1.28.1, the
 release that added the `PySeries._export` it calls.
 
 **The ceiling, `<3`, admits every 2.x on the strength of the 2.0 release

@@ -64,19 +64,22 @@ it.
    `uv lock`.
 2. **Set `SUPPORTED_FLOOR` in `tests/test_scaffold.py` to the same
    version.** The test pins the declared floor, so a change to either has
-   to change both. It also holds every guide that states the floor to the
-   declared one.
-3. **Remove each `needs_polars` mark at or below the new floor.**
+   to change both.
+3. **Change the floor in every guide that states it,** `docs/VERSIONS.md`,
+   `docs/RUNNER.md` and `docs/RELEASE-READINESS.md` among them.
+   `test_every_guide_that_states_the_floor_states_the_declared_one`, in
+   the same file, names any you miss.
+4. **Remove each `needs_polars` mark at or below the new floor.**
    `needs_polars` in `tests/polars_version.py` skips a test on a Polars
    older than the version it names, and says why. It refuses a version at
    or below the floor, where it would skip nothing, and one above the pin,
    where it would hide the test from CI's own runs.
-4. **Run the suite on the new floor locally,** in a scratch copy of the
+5. **Run the suite on the new floor locally,** in a scratch copy of the
    checkout, as [Cut a release](cut-a-release.md) step 11 runs it: only
    polars and its runtime package move to the floor. The release's floor
    leg runs the same suite, and refuses to go on unless the installed
    py-polars is the floor.
-5. **Ship the change as a minor release.** A resolver that installs it
+6. **Ship the change as a minor release.** A resolver that installs it
    upgrades Polars with it, inside the same Polars major, so no user's code
    has to change.
 
@@ -100,12 +103,18 @@ these five steps are done for it.
 3. **Widen the range in `pyproject.toml`**, today `polars>=1.37.0,<3`, and
    run `uv lock`. That is the only required source change if steps 1 and
    2 are clean.
-4. **If the development environment moves to the new major too,
-   regenerate `docs/VALIDATION.md`** with
+4. **Decide whether the development environment moves to the new
+   major.** Step 3's `uv lock` keeps the locked py-polars while it is
+   inside the range. To move it, run
+   `uv lock --upgrade-package polars --upgrade-package polars-runtime-32`,
+   then `uv sync` and
+   `uv run maturin develop --release -m crates/online-py/Cargo.toml`.
+   Then regenerate `docs/VALIDATION.md` with
    `uv run python scripts/validate.py > docs/VALIDATION.md`, and set
    `BUILT_AGAINST` in `tests/test_scaffold.py` to the version the lock
    holds. The page's header records the Polars version it was generated
-   with, which is why its test is marked `pins`.
+   with, which is why its test is marked `pins`. If the environment stays,
+   `BUILT_AGAINST` and `docs/VALIDATION.md` stay as they are.
 5. **Ship it as a minor**, not a patch. Widening the Polars range is a
    minor release by this package's own rule ([The Polars
    range](../VERSIONS.md#the-polars-range)).

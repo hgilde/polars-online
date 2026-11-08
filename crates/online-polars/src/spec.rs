@@ -78,10 +78,10 @@ pub const HUBER_SCALES: [&str; 2] = ["mad", "rms"];
 /// The MiB a spec's groups' Huber refit buffers may reserve by default
 /// (docs/PLAN.md task 277): 256 at first, `window_budget`'s default, and
 /// 320 since task 331 (the user's, 2026-11-05), when each held row's
-/// one-pass `|e|` and its node in the median's tree (task 323, 40 bytes a
-/// row) raised a target's reservation at 5 features and 500 rows from
-/// 100 KB to 124 KB: 256 MiB then refit 2,164 such targets where it had
-/// refit 2,684, and 320 refits 2,706.
+/// one-pass `|e|` (8 bytes) and its node in the median's tree (task 323,
+/// 40 bytes), 48 bytes a row in all, raised a target's reservation at 5
+/// features and 500 rows from 100 KB to 124 KB: 256 MiB then refit 2,164
+/// such targets where it had refit 2,684, and 320 refits 2,706.
 pub const REFIT_BUDGET_MIB: f64 = 320.0;
 
 /// Model choice + model-specific params (docs/PLAN.md §4).

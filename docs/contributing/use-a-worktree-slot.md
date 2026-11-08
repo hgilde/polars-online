@@ -29,10 +29,13 @@ A worktree slot needs the main checkout and room for its builds:
 
 The steps follow a task from its start to its merge:
 
-1. **Check what the taken worktree slots share,** with `scripts/slot.sh
-   overlap`. It lists the files two taken worktree slots both change, and
-   the files each shares with what `main` changed since its base. Start
-   the task elsewhere, or later, if its files are among them.
+1. **Check what the taken worktree slots change,** with `git -C
+   .claude/slots/<n> diff --name-only main...HEAD` for each taken one
+   (`scripts/slot.sh list` names them), and `git -C .claude/slots/<n>
+   status --short` for its uncommitted files. Start the task elsewhere,
+   or later, if the files it will touch are among them. `scripts/slot.sh
+   overlap` cannot answer this yet: it compares branches that have
+   commits, and the task has none.
 2. **Take a worktree slot,** with `scripts/slot.sh take <branch> main`. It
    moves a free worktree slot onto a new branch cut from `main`, and
    prints its path.
@@ -70,8 +73,8 @@ against the same worktree slot from nothing.
 
 The `release` extension gains least. Thin LTO over one codegen unit
 relinks the whole extension whenever a workspace crate changes. Only the
-test gate builds it, once a commit, and the inner loop builds
-`dev-wheel`.
+test gate builds it: once a wave, or once a commit when working alone. The
+inner loop builds `dev-wheel`.
 
 ## What `take` and `give` refuse, and why
 
