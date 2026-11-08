@@ -5,7 +5,8 @@ This page lists every document of polars-online by kind, for a reader
 deciding which to read. The [README](../README.md) is the landing page:
 what polars-online is, how to install it, a first fit, and a map from each
 task to its pages.
-[FEATURES.md](FEATURES.md) lists every feature, one line each. The API
+[FEATURES.md](FEATURES.md) lists every feature, one line each, and
+[HIGHLIGHTS.md](HIGHLIGHTS.md) runs five tasks end to end. The API
 reference, built from the docstrings, is at
 <https://hgilde.github.io/polars-online/>, and its Sphinx sources are in
 [`reference/`](reference/). Every other document under `docs/` is one of
@@ -26,6 +27,7 @@ mechanism.
 |---|---|
 | **Start here** | |
 | [FEATURES.md](FEATURES.md) | you want the whole list of what the library does, or a feature by its name — every model, function, method, shared parameter and command-line flag, one line each with a link to the page that shows it |
+| [HIGHLIGHTS.md](HIGHLIGHTS.md) | you want to see what the library does for a task like yours — five tasks run end to end on data with a planted answer (a round of model selection, a forward-looking signal deployed on the command line, gradient-boosted trees on files larger than memory, a live model monitored, and tick data), and an index of the capabilities they show, each with the step that shows it and a guide |
 | [GLOSSARY.md](GLOSSARY.md) | you meet a word a page uses without defining it, or you choose the word for a sentence, a docstring or a message — every concept's one word, what it means, the words it replaces and whether a message may use it, with the words kept out of user-facing text and the American spelling of each British one the docs held |
 | **Tutorials** | |
 | [tutorials/stream-from-parquet.md](tutorials/stream-from-parquet.md) | you are new to the library and want to fit a model over parquet files too large to hold, in a Polars query, and write its predictions to a file |

@@ -203,6 +203,7 @@ FILES: list[str] = [
     "docs/how-to/store-a-compact-gram.md",
     "docs/how-to/test-a-detector-on-known-truth.md",
     "docs/FEATURES.md",
+    "docs/HIGHLIGHTS.md",
     "docs/VERSIONS.md",
     "docs/contributing/add-an-output-or-a-parameter.md",
     "docs/contributing/iterate-on-a-change.md",
