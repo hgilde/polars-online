@@ -25,9 +25,11 @@ RECIPES = recipes(PAGE)
 
 
 def test_the_page_has_its_recipes():
-    """The opening half-life, the optimism of the best over the same rows, the
-    hand form beside the call, and one recipe for each of the six settings."""
-    assert len(RECIPES) >= 9, len(RECIPES)
+    """The opening half-life, the hand form beside the call, and one recipe for
+    each of the six settings. The optimism of the best over the same rows moved
+    to docs/explanation/grids-and-instances.md (task 338 stage 5b), whose
+    recipe tests/test_kind_pages.py runs."""
+    assert len(RECIPES) >= 8, len(RECIPES)
 
 
 @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")

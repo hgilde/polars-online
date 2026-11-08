@@ -75,10 +75,9 @@ value per coefficient, not a grid. For `kalman`'s drift speeds,
 `sgd`'s `learning_rate`, `holt`'s `trend_half_life` and `bocpd`'s
 `hazard`, build one spec per value and give the bank all of them. The
 bank reads the file once either way. A grid inside one spec is the faster
-of the two: five half-lives in one spec took 10% to 25% less time than five
-specs of one half-life each, over 400,000 rows of five features, because
-each spec adds its own column and bookkeeping to every row (measured on `ewridge`, `kalman`, `sgd` and
-`holt`).
+of the two, by 13% to 28% for five half-lives on one thread ([How a grid shares its
+work](explanation/grids-and-instances.md#how-a-grid-shares-its-work)
+gives the measurement and the reason).
 
 **Score every setting on the same rows.** A model withholds its
 predictions while it warms up, and settings warm up at different speeds,
@@ -86,51 +85,15 @@ so a setting scored over its own rows is scored over fewer or more rows
 than another. `po.eval.grid_search` counts a row only where every setting
 for its target has a prediction and the target is present.
 
-**Choose from earlier rows, and report the choice on later ones.** Each
-setting's error over a stretch of rows is its true error plus noise. The
-smallest of several such errors belongs to the setting whose noise happened
-to run lowest, so the minimum over the rows you report understates what
-choosing it will earn on the next rows. The fewer the rows and the more
-settings, the larger the gap. This code makes twenty settings that differ
-only in which noise column they read, so none is better than another, and
-chooses one on the first half of the rows:
-
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# y = x0 + noise; z0 ... z19 are noise that y never reads.
-rng = np.random.default_rng(3)
-n = 20_000
-x0, e = rng.standard_normal((2, n))
-z = rng.standard_normal((20, n))
-pl.DataFrame({"x0": x0, **{f"z{j}": z[j] for j in range(20)}, "y": x0 + e}).write_parquet("noise.parquet")
-
-# Twenty feature sets, each x0 and one z: alike but for the noise each z adds.
-sets = {f"z{j}": ["x0", f"z{j}"] for j in range(20)}
-spec = po.spec.ewridge("sets", targets=["y"], features=["x0", *(f"z{j}" for j in range(20))], half_life=50.0, feature_sets=sets)
-out = pl.scan_parquet("noise.parquet").online.fit_predict([spec]).collect()
-
-# The set with the lowest error on the first half, against the average of the twenty, on each half.
-first, second = po.eval.metrics(out.head(n // 2), spec), po.eval.metrics(out.tail(n // 2), spec)
-pick = first.sort("mse").row(0, named=True)
-later = second.filter(slot=pick["slot"])["mse"].item()
-print(f"{pick['slot']} on the rows it was chosen on: mse {pick['mse']:.4f}, the average {first['mse'].mean():.4f}")
-print(f"{pick['slot']} on the rows after: mse {later:.4f}, the average {second['mse'].mean():.4f}, rank {(second['mse'] < later).sum() + 1} of 20")
-```
-
-```text
-pred_y__z18 on the rows it was chosen on: mse 0.9933, the average 0.9953
-pred_y__z18 on the rows after: mse 1.0298, the average 1.0302, rank 5 of 20
-```
-
-On the rows it was chosen on, `z18` beat the average of the twenty by
-0.0021. On the rows after, it beat it by 0.0004, which is noise. The first
-number is the optimism, and on real data it is mixed in with any real
-difference between the settings. The README's factor-grid example reads
-its R² both ways for the same reason ([Parallelism](../README.md#parallelism)).
+**Choose from earlier rows, and report the choice on later ones.** The
+smallest of several settings' errors over the rows you report belongs to
+the setting whose noise happened to run lowest, so it understates what
+choosing that setting will earn on the next rows. The fewer the rows and
+the more settings, the larger the gap. [Why the best error over a grid is
+optimistic](explanation/grids-and-instances.md#why-the-best-error-over-a-grid-is-optimistic)
+measures it on twenty settings that differ only in their noise. The
+README's factor-grid example reads its R² both ways for the same reason
+([Parallelism](../README.md#parallelism)).
 
 ### Choosing with `po.eval.grid_search`
 

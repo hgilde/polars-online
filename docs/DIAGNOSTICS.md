@@ -1717,10 +1717,11 @@ stream ran, the selection held 25 on 41% of the rows, 400 on 30% and 100
 on 27%, and its error sits between the best and the third. Each slot is
 ranked at its own half-life, so the shortest is ranked on the fewest rows
 and wins its share by luck. Use `emit_selected` where the best setting
-itself moves. To choose one setting to run from here on, choose it over a
-long stretch with `po.eval.grid_search`, which also scores the choice on
-rows it had not seen: the best error over the rows that chose it is
-optimistic ([Calibrating a model](CALIBRATION.md)).
+itself moves. To choose one setting to run on the rows to come, choose it
+over a long stretch with `po.eval.grid_search`, which also scores the
+choice on rows it had not seen. The best error over the rows that chose
+it is optimistic ([Why the best error over a grid is
+optimistic](explanation/grids-and-instances.md#why-the-best-error-over-a-grid-is-optimistic)).
 
 ### Comparing two models
 
@@ -1957,7 +1958,9 @@ give one, and three gates say what "enough" means.** A fourth, the
 seeding warm-up, holds back the models that seed themselves from their
 first rows. The gates hold back predictions only: the model learns from
 every row either way. [Warm-up](../README.md#warm-up) in the README
-states each gate, its default and the field it reads. A withheld
+states each gate, its default and the field it reads, and [Warm-up and
+readiness](explanation/warm-up-and-readiness.md) explains what each
+measures. A withheld
 prediction's `withheld_reason` names the gate that held it:
 
 | gate | `withheld_reason` |

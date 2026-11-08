@@ -1145,8 +1145,8 @@ REBREAK: dict[str, dict[str, tuple[float, float]]] = {
         "regime": (12, 7.3),
     },
     # The MAD scale holds the fit back after a level or a regime break until
-    # the median has crossed (MODELS.md, a robust scale after a change of
-    # level). Measured 0.0266 and 0.0115 at 8, 0.0309 (flat from one
+    # the median has crossed (docs/explanation/robust-scale.md, a level
+    # shift). Measured 0.0266 and 0.0115 at 8, 0.0309 (flat from one
     # half-life: the variance changes the scale, not the fit) and 0.0183 at
     # 12; sgd at power 1, 0.0251 and 0.0247 at 8, 0.13 and 0.0326 at 12.
     "huber": {
@@ -1328,7 +1328,7 @@ def test_breakdown_essential():
 # huber, 0.811 and 0.532 for sgd, all seed 21.
 #
 # The 20% cells are the edge of Huber's breakdown, a bound rather than a
-# fault (the user, 2026-10-28; MODELS.md, "huber"): the refit weighs each
+# fault (the user, 2026-10-28; docs/explanation/robust-scale.md): the refit weighs each
 # row by its residual from the one-pass fit the wild rows pulled, so some
 # seeds stay captured. Each is held to at most 10 of 50 seeds captured and
 # the worst slope at most 1.0 off, the counts and gaps above with headroom;

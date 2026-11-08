@@ -37,6 +37,9 @@ kept in [`records/`](records/), and its row links it there.
 | [how-to/put-rows-in-clock-order.md](how-to/put-rows-in-clock-order.md) | you fit a bank on a stream with a clock — how to give it each group's rows in clock order, read its warning about a query's row order, and fix a chunk it refused |
 | [how-to/resume-from-a-saved-state.md](how-to/resume-from-a-saved-state.md) | you have a saved state and want the bank to go on learning, from Python or the command line — including on input that overlaps what it learned |
 | [explanation/out-of-sample.md](explanation/out-of-sample.md) | you want to know why each prediction and diagnostic is made before its row is learned, what that guarantees, and how a target that looks ahead is learned |
+| [explanation/warm-up-and-readiness.md](explanation/warm-up-and-readiness.md) | you want to know why a model withholds its first predictions, what each readiness gate measures, why `min_weight` can be out of reach, and how a model that seeds itself from its first rows differs |
+| [explanation/robust-scale.md](explanation/robust-scale.md) | you fit `huber`, `quantile` or `sgd` with a Huber loss and want to know how the residuals' scale is kept, why each target's first rows are refit, and what a robust scale gives up when the level shifts |
+| [explanation/grids-and-instances.md](explanation/grids-and-instances.md) | you give a spec several values of a setting and want to know how one pass fits them all, what an instance and a slot are, and why the best error over a grid is optimistic |
 
 ## Records
 

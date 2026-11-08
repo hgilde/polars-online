@@ -1,4 +1,4 @@
-# The capture tables of MODELS.md's `huber` and `sgd` sections and HUBER.md §9
+# The capture tables of docs/explanation/robust-scale.md and HUBER.md §9
 # (task 277): one online pass of Huber regression can be captured by the
 # outliers -- the first fits are close to least squares, the scale learns the
 # pulled fit's residuals, the cut is drawn wide -- and `huber_refit_rows`

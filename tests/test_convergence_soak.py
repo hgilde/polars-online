@@ -16,7 +16,7 @@ pass was captured on 13 of 40 seeds while the median gap read 0.001.
 ``quantile`` is the median regression. Its contamination is one-sided and
 concentrated where ``x0 > 0`` (``convergence.contaminate``), so a share
 ``s`` of all rows is ``2 s`` of the rows on that side: the conditional
-median there breaks at ``s = 25%``, which docs/MODELS.md states as the
+median there breaks at ``s = 25%``, which docs/explanation/robust-scale.md states as the
 point where every estimator that reads only residuals breaks (30% of the
 rows, 60% of those with ``x`` above 0, for ``huber``). The sweep stops
 short of it, at 20%. ``huber``'s and ``sgd(loss="huber")``'s sweep, with

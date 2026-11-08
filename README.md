@@ -1263,7 +1263,8 @@ A model should not report a number it is not yet informed enough to give.
 Every model with a decay shares two gates that say what "informed enough"
 means, and the linear fits add a third, on by default on `ewridge` alone.
 The gates hold back output only: the model learns from every row either
-way.
+way. [Warm-up and readiness](docs/explanation/warm-up-and-readiness.md)
+explains what each gate measures, and why.
 
 | setting | default | withholds a prediction while | read from |
 |---|---|---|---|
@@ -1274,12 +1275,10 @@ way.
 **`weight_sum` means the same in every model, so one `min_weight` means
 the same for every spec in a bank.** It is the *weight behind the state*
 that produced a row's prediction: the weight as the previous row left it,
-before this row's decay and its update, and `0` on a stream's first row. It
-runs one behind the row count while nothing is forgotten. For rows of
-weight 1 a step `Δclock` apart, it settles at `1 / (1 − λ)`, with `λ` from
-[Time and decay](#time-and-decay). It is a weight and not a sample size: at
-a half-life of 600 with rows 0.1 apart it settles near 8,657. For the
-sample size, read Kish's `n_kish` from `gram()`.
+before this row's decay and its update, and `0` on a stream's first row.
+It is a weight and not a sample size, and under a decay it stops growing
+at a ceiling set by the row rate ([`weight_sum`: the weight behind a
+prediction](docs/explanation/warm-up-and-readiness.md#weight_sum-the-weight-behind-a-prediction)).
 
 **Every output is null until the model's weight reaches `min_weight`.** A
 regression model checks each target against that target's own weight, the
@@ -1297,16 +1296,17 @@ per target, give `min_weight` a list. The default depends on the model:
 | 1 | `bocpd` |
 | 0, each having a gate of its own or nothing to gate | `ewridge`, `seqtest`, `rcov`, `hmm`, `corrchange`, `audit` |
 
-**`min_settled_frac` is off by default**, because a fit kept as weighted
-means is unbiased from its first row when the process is stationary. Set it
-when the half-life was chosen to average over regimes or seasons that a
-shorter history would not represent.
+**`min_settled_frac` is off by default.** Set it when the half-life was
+chosen to average over regimes or seasons that a shorter history would not
+represent ([`settled_frac`: how near the steady
+state](docs/explanation/warm-up-and-readiness.md#settled_frac-how-near-the-steady-state)
+gives the reason).
 
 **`max_error_inflation` follows the size of the fit:** add a feature, and
-the gate holds predictions back longer. It reads Kish's count, so one row
-carrying a hundred times the weight of the others counts as barely one. Each
-model that has it reads its own estimation variance. The others refuse the
-setting and say why:
+the gate holds predictions back longer. Each model that has it reads its
+own estimation variance ([The noise
+gate](docs/explanation/warm-up-and-readiness.md#the-noise-gate-estimation-error-against-the-noise)
+derives it). The others refuse the setting and say why:
 
 | model | `error_inflation` | |
 |---|---|---|
