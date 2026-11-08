@@ -1216,9 +1216,10 @@ def test_ftrl_follows_a_break_at_the_pace_of_its_steps():
     same break sooner; (c) a logistic fit's lasting gap is the prior's: a
     weaker one closes it. Measured 2026-10-25 over 50 seeds (task 278, D-F):
     (a) 0.0108 a row against 0.0118; (b) at ``alpha = 1`` the worst gap 0.70
-    at 8 half-lives, against 28.5 at the default; (c) at ``beta = 0.1, l2 =
-    0`` the worst gap 0.30 after a slope break and 0.58 after a change of
-    regime at 12 half-lives, against 1.07 and 1.36 at the defaults."""
+    at 8 half-lives (0.763 on 2026-11-08, task 360), against 28.5 at the
+    default; (c) at ``beta = 0.1, l2 = 0`` the worst gap 0.30 after a slope
+    break and 0.58 after a change of regime at 12 half-lives, against 1.07
+    and 1.36 at the defaults."""
     lam = 0.5 ** (1.0 / BREAK_HALF_LIFE)
     pace = 2 * 0.1 * np.sqrt(1 - lam)
     reg = cv.REGISTRY["ftrl:squared"]

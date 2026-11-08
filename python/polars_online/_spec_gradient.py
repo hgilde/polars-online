@@ -317,7 +317,7 @@ def sgd(
          - ``exp(clamp(eta, +/- 30))``
          - ``p - y``
        * - ``logistic``
-         - sigmoid
+         - logit
          - ``sigmoid(eta)``
          - ``p - clamp(y, 0, 1)``
 
@@ -447,10 +447,10 @@ def sgd(
     slopes, so a share of outliers captures the Huber fit. They pull the
     first steps, ``s`` learns the pulled fit's residuals, the cut
     ``delta * s`` is wide, and the outliers keep moving the fit at nearly
-    full weight. Over 2,000 rows at 20% one-sided outliers with no decay, 28
+    full weight. Over 2,000 rows at 20% one-sided outliers with no decay, 29
     of 40 streams ended more than 0.05 in slope from statsmodels' converged
-    ``RLM`` in one pass, the worst by 3.6. At 10%, 4 of 40 did, the worst
-    by 0.069. So on the row a target's count of learned rows reaches
+    ``RLM`` in one pass, the worst by 3.9. At 10%, 3 of 40 did, the worst
+    by 0.070. So on the row a target's count of learned rows reaches
     ``huber_refit_rows``, those rows' converged Huber fit replaces its
     coefficients:
 
@@ -491,9 +491,9 @@ def sgd(
     With the refit, over 2,000 rows, 2 of the 40 streams at 10% were more
     than 0.05 from ``RLM``, the worst by 0.075. At 20%, 8 of the 40 were,
     none more than 0.25. With 200 rows of refit at 20%, 16 were more than
-    0.05 off and 4 more than 0.25.
+    0.05 off and 3 more than 0.25.
     Over 20,000 rows at 20%, one pass leaves 31 of 40 streams more than 0.05
-    off, the worst by 1.6, and the refit 23, none more than 0.25. A constant
+    off, the worst by 1.6, and the refit 24, none more than 0.25. A constant
     learning rate's own wander is about 0.03 at every share. The refit
     takes 0.06 to 7.2 ms once, for 1 to 50 features and 200 to 1,000 rows
     (an Apple M4 Pro under other load, best of 9).

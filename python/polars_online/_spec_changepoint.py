@@ -792,9 +792,9 @@ def corrchange(
 
     **Choosing boundary_gamma.** Above 0 the boundary is lower at the start
     of the period, so a change soon after the history is caught sooner and a
-    late one later. It also increases the size: the paper measured 0.047-0.087
-    at ``boundary_gamma`` of 0 and 0.25, and 0.106-0.174 at 0.45, for a
-    nominal 0.05 on GARCH pairs (their Table 2). Their summary:
+    late one later. It also increases the size: the paper measured 0.050-0.077
+    at ``boundary_gamma`` of 0, 0.047-0.087 at 0.25, and 0.106-0.174 at
+    0.45, for a nominal 0.05 on GARCH pairs (their Table 2). Their summary:
 
     .. list-table::
        :header-rows: 1
