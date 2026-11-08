@@ -37,7 +37,7 @@ after a gap, where the fit moves most.
 
 | if you want | give |
 |---|---|
-| the coefficients current at every row | `max_rows_between_solves=1`: every row is then predicted from a fit of every row before it |
+| the coefficients current at every row | `max_rows_between_solves=1`: every row is then predicted from a fit of every row before it, and below the floor, where no row is predicted, no solve is run |
 | solves on the clock | `solve_every` in clock units, such as `solve_every=100.0` on a clock in seconds |
 | a solve only for each target's first fit, and then where a row cap says | `solve_every=float("inf")` with a `max_rows_between_solves` |
 | a bound on how old the coefficients can get, under any schedule | `max_rows_between_solves`, the most rows between two solves, whatever the clock does |
@@ -121,7 +121,7 @@ for label, spec in schedules.items():
 
 ```text
 the slope on x0 jumps from 1 to 3 at row 10,000; the noise's variance is 0.25
-max_rows_between_solves=1: 20000 solves; gap from every row's fit 0.00000; error over the 200 rows after the jump 2.52
+max_rows_between_solves=1: 19997 solves; gap from every row's fit 0.00000; error over the 200 rows after the jump 2.52
 the default, by weight: 4195 solves; gap from every row's fit 0.00003; error over the 200 rows after the jump 2.54
 solve_every=100: 287 solves; gap from every row's fit 0.00185; error over the 200 rows after the jump 3.23
 solve_every=inf, a row cap of 2,000: 10 solves; gap from every row's fit 0.53283; error over the 200 rows after the jump 3.88
@@ -185,16 +185,19 @@ Use this when a group's weight stays below its floor, and you need its
 `coef` or its count of failed solves. **Under a finite half-life, the
 default schedule skips each solve that nothing would read while a group's
 weight is more than about 1.4% below its floor,** where every prediction
-is withheld. The
-docstring's Notes, under *The solve schedule*, give the floor and the
-cases where such a solve still runs.
+is withheld, whether the weight or `max_rows_between_solves` brings the
+solve due. A given `solve_every` runs every solve its clock or its row cap
+brings due: no share of the weight bounds what the weight learns before
+the next one, so a row past the floor can read the fit. The docstring's
+Notes, under *The solve schedule*, give the floor and the cases where such
+a solve still runs.
 
 1. **Read `bank.coef()` for the group.** A group whose weight never
    reaches the floor, such as one of two rows over two features, reports
    no `coef`, and `bank.solve_failures()` counts only the solves run.
 2. **If you need its solves, give `min_weight=0`,** which makes the floor
-   0 and withholds no prediction for its weight, **or
-   `max_rows_between_solves=1`,** whose solves always run.
+   0 and withholds no prediction for its weight, **or `solve_every=0`,**
+   which solves on every row by the clock and runs every solve.
 
 ## Check the result
 
@@ -209,4 +212,4 @@ saves is the time of a run, measured in a bank of each schedule's own, as
 |---|---|---|
 | a large gap from every row's fit, or a slow response to a change | the solves are too far apart for the half-life | give a smaller `solve_every`, or add `max_rows_between_solves` |
 | a run that spends its time solving, under `half_life=float("inf")` or `lam` | the default solves on every row | give a `solve_every` |
-| no `coef` for a group with only a few rows | its weight never reached the floor, so no solve ran | give `min_weight=0` or `max_rows_between_solves=1` |
+| no `coef` for a group with only a few rows | its weight never reached the floor, so no solve ran | give `min_weight=0` or `solve_every=0` |

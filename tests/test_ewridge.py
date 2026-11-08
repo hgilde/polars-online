@@ -761,8 +761,10 @@ class TestGroupsThatNeverReachTheFloor:
     before the next comes due, so none is run, and the group reports no
     ``coef`` -- on its rows, in ``bank.coef()`` or as a closed group -- where
     1.3.0 reported the ridge fit of its rows. ``min_weight = 0`` (the floor
-    becomes 0) and ``max_rows_between_solves = 1`` (a solve the row cap
-    brings due always runs) each keep every solve (task 313)."""
+    becomes 0) and ``solve_every = 0`` (an explicit cadence of every row,
+    whose solves always run) each keep every solve (task 313). Under the
+    default schedule a row cap of 1 brings every row due, and those solves
+    are not run either (task 364)."""
 
     @staticmethod
     def run(**kw) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
@@ -809,13 +811,16 @@ class TestGroupsThatNeverReachTheFloor:
             *(c is not None and all(v is not None for v in c) for c in closed["coef"]),
         ]
 
-    def test_by_default_no_solve_is_run(self):
-        out, coef, closed = self.run()
+    @pytest.mark.parametrize(
+        "kw", [{}, {"max_rows_between_solves": 1}], ids=["default", "row cap 1"]
+    )
+    def test_by_default_no_solve_is_run(self, kw):
+        out, coef, closed = self.run(**kw)
         assert out["weight_sum"].max() < 3.0 * (1.0 - math.log(2.0) / 50.0)
         assert not any(self.fits(out, coef, closed))
         assert out["coef"].is_null().all()
 
-    @pytest.mark.parametrize("opt_out", [{"min_weight": 0.0}, {"max_rows_between_solves": 1}])
+    @pytest.mark.parametrize("opt_out", [{"min_weight": 0.0}, {"solve_every": 0.0}])
     def test_each_opt_out_keeps_every_solve(self, opt_out):
         got = self.fits(*self.run(**opt_out))
         assert len(got) == 12 and all(got), got

@@ -143,8 +143,10 @@ pub struct EwRidgeCfg {
     /// row with weight (hard rule 9, docs/PLAN.md task 214).
     #[serde(with = "crate::humanfloat::f64_or_tag")]
     pub solve_every: f64,
-    /// Row cap between solves, counted on the rows with weight; 1 solves
-    /// every such row.
+    /// Row cap between solves, counted on the rows with weight; 1 brings a
+    /// solve due on every such row. Under a weight share, one it brings due
+    /// below the floor is not run, as the share's is not (`unread`'s item 8,
+    /// docs/PLAN.md task 364).
     pub max_rows_between_solves: u32,
     /// The default cadence (docs/PLAN.md task 115 (b)): solve once the weight
     /// learned since the last solve reaches this share of the weight the fit
@@ -2691,7 +2693,8 @@ impl OnlineModel for EwRidge {
             );
             // A solve no row can read before the next one comes due is not
             // run, and the schedule moves on as after it (`unread`'s module
-            // docs; task 311).
+            // docs; task 311): under a share, one the row cap brings due too
+            // (task 364). An explicit cadence's solves run.
             if !explicit && self.solve_is_unread(first) {
                 self.pass_unread_solve();
             } else {

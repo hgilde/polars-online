@@ -1656,12 +1656,12 @@ def ewridge(
 
     The floor is the least of a row per unknown (``k + 1``, ``k`` without an
     intercept), ``min_weight`` and each target's own value of it. The
-    schedule by weight runs no solve it brings due while the weight is below
-    ``(1 - ln 2 / 50)(1 - 2**-16)`` of the floor, unless
-    ``max_rows_between_solves`` brings it due too, or a hard window is set.
-    Until the next solve comes due, the weight learned since is less than
-    ``ln 2 / 50`` of the weight, so every row stays below the floor and is
-    withheld, and none could read the solve. The ``2**-16`` covers the
+    schedule by weight runs no solve that comes due while the weight is
+    below ``(1 - ln 2 / 50)(1 - 2**-16)`` of the floor, whether the weight
+    or ``max_rows_between_solves`` brings it due, unless a hard window is
+    set. Until the next solve comes due, the weight learned since is less
+    than ``ln 2 / 50`` of the weight, so every row stays below the floor and
+    is withheld, and none could read the solve. The ``2**-16`` covers the
     weight's rounding. The schedule moves on as after the solve. So every
     prediction, residual and spread is the one running every due solve
     would give, to the bit, apart from two rare cases: a target whose weight
@@ -1674,10 +1674,22 @@ def ewridge(
     rows over two features, reports no ``coef`` on any row, in
     ``bank.coef()`` or as a closed group. To keep every solve, give
     ``min_weight = 0``, which makes the floor 0 and withholds no prediction
-    for its weight, or ``max_rows_between_solves = 1``, whose solves always
-    run. The solves not run are most of the warm-up's at a thousand
-    features, and a fit there runs several times faster until the weight
-    reaches the floor.
+    for its weight, or ``solve_every = 0``, which solves on every row by the
+    clock and runs every solve. The solves not run are most of the
+    warm-up's at a thousand features, and a fit there runs several times
+    faster until the weight reaches the floor. The weight brings a solve
+    due each time it has grown by ``ln 2 / 50``, about 1.4%: at rows of
+    weight 1 and a weight of 1,000, every 14 rows. A row cap brings more
+    solves due than that only where it is shorter, and a row cap of 1
+    brings one due on every row, so the skip saves most there.
+
+    A given ``solve_every`` runs every solve its clock or its row cap
+    brings due. No share of the weight bounds the weight learned between
+    two of those, so it can cross the floor before the next one, and a row
+    then reads the fit of a solve that ran below the floor. With
+    ``solve_every = inf``, a row cap of 3, six features and rows of weight
+    1 with no decay, the solve on the sixth row, below the floor of 7,
+    serves the eighth and ninth rows.
 
     A given ``solve_every`` above 0 and below ``1e18`` starts with a first period that
     solves by weight: once the weight learned since the last solve reaches

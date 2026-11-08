@@ -3061,9 +3061,9 @@ mutation = "replace match guard first with true"
 line_has = "None if first => crate::DEFAULT_SOLVE_SHARE,"
 why = """the arm differs only with no `solve_share` and `first` false, and the \
 caller asks only of a due solve that is not `explicit`. There the share \
-does not bring it due (`by_cadence` is `explicit`, false), so it is due by \
-the row cap -- which returns false a line later either way -- or by a first \
-solve: the model's, at `W ≥ own_floor = capped(min_weight) ≥ F`, or a \
+does not bring it due (`by_cadence` is `explicit`, false), nor does the \
+row cap (with no share, a row the cap brings due is `explicit`), so it is \
+due by a first solve: the model's, at `W ≥ own_floor = capped(min_weight) ≥ F`, or a \
 target's, at its weight `λ w_j + w ≥ capped(threshold_j) ≥ F`, and `W` is \
 never below a target's weight (`unread`'s item 1). So `W ≥ F > F (1 − s)(1 \
 − 2⁻¹⁶)` with the default `s`, the comparison is false, and both forms \

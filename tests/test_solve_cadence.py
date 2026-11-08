@@ -349,12 +349,32 @@ def test_on_each_solve_row_the_fit_is_the_every_row_models_to_the_bit(schedule):
 def test_solve_every_zero_is_a_row_cap_of_one(model, extra):
     """``solve_every=0`` solves on every row, as a row cap of 1 does: the
     same output, every field, to the bit, on two targets with gaps and
-    zero-weight rows."""
+    zero-weight rows. But for ``ewridge``'s fit below the floor: under the
+    default schedule its row cap's solves there are not run, as no row can
+    read them (task 364), so ``coef`` and ``support_coef`` are null on those
+    rows, where the explicit ``solve_every=0`` runs every solve."""
     df = relation_frame(n=600)
     zero = relation_run(model, df, solve_every=0.0, **extra)
     cap = relation_run(model, df, max_rows_between_solves=1, **extra)
     assert zero["pred_y"].is_not_null().sum() > 500
-    assert zero.equals(cap, null_equal=True)
+    if model != "ewridge":
+        assert zero.equals(cap, null_equal=True)
+        return
+    fit = ["coef", "support_coef"]
+    assert zero.drop(fit).equals(cap.drop(fit), null_equal=True)
+    # The weight after each row is the next row's `weight_sum`; the floor is
+    # a row per unknown, 4, below `min_weight` (10).
+    after = zero["weight_sum"].shift(-1).to_numpy()
+    passed = after < 4.0 * (1.0 - math.log(2.0) / 50.0) * (1.0 - 2.0**-16)
+    for c in fit:
+        assert cap[c].is_null().to_numpy()[:-1].tolist() == passed[:-1].tolist(), c
+        # Where the cap's solves were passed, the explicit cadence ran them,
+        # on every such row with weight (one of weight 0 solves in neither).
+        ran = passed & (df["w"].to_numpy() > 0.0)
+        assert zero[c].is_not_null().to_numpy()[:-1][ran[:-1]].all(), c
+        keep = ~np.append(passed[:-1], False)
+        assert zero.filter(keep)[c].equals(cap.filter(keep)[c], null_equal=True), c
+    assert passed[:-1].sum() > 0
 
 
 def test_a_row_cap_longer_than_the_cadence_changes_nothing():
