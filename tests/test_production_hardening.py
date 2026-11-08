@@ -607,9 +607,11 @@ def _doc_blocks(rel: str, fence: str = "python") -> list[tuple[str, int, str]]:
 #: that point: on what the README built before it, and on what the page's
 #: own earlier blocks built.
 MOVED_PAGES = {
-    "docs/WINDOWS.md": "### Making features and targets from windows",
-    "docs/MODELS.md": "### Choosing a model",
-    "docs/GBDT.md": "### Training XGBoost and LightGBM on files larger than memory",
+    # The README is a landing page, and its map, *Where to go next*, is
+    # where it points to each of these (task 338 stage 8).
+    "docs/WINDOWS.md": "## Where to go next",
+    "docs/MODELS.md": "## Where to go next",
+    "docs/GBDT.md": "## Where to go next",
 }
 
 # The README, the pages its sections moved to, and the runner guide its
@@ -700,10 +702,6 @@ RUNNER_PYTHON_RECIPES = shown_outputs(REPO / "docs" / "RUNNER.md")
 #: The runner guide's shell blocks whose output a ```text block shows, held
 #: to what `polars-online` prints, stdout and stderr as a terminal interleaves them.
 RUNNER_RECIPES = shown_outputs(REPO / "docs" / "RUNNER.md", "sh")
-
-#: The README's one shell block whose output it shows: `polars-online` run on the
-#: README's TOML block, held by the test of that block.
-README_CLI_RECIPES = shown_outputs(REPO / "README.md", "sh")
 
 
 def _as_a_terminal_shows(text: str) -> str:
@@ -867,8 +865,9 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     df = data["df"]
     assert isinstance(df, pl.DataFrame)
     common = dict(targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0)
-    # `spec` as section 2 shows it, and `grid` as the "output field names"
-    # section introduces it (ridge 0.5, half-life 500 are what its blocks filter on).
+    # `spec` as section 2 shows it, and `grid` as docs/how-to/find-an-output-field.md
+    # and read-the-coefficients.md build it (ridge 0.5, half-life 500 are what
+    # their blocks filter on).
     spec = po.spec.ewridge(
         "ridge",
         targets=["y"],
@@ -941,8 +940,8 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
         "np": np,
         "po": po,
         "df": df,
-        # The "one row per finished group" section introduces both, and the
-        # run block after it reuses them.
+        # docs/how-to/close-groups.md introduces both, and its check block
+        # reuses them.
         "blocks": po.spec.ew_cov(
             "cov",
             features=["x0", "x1"],
@@ -951,8 +950,8 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
             group_close="monotone",
         ),
         "by_block": df.with_columns(block=pl.int_range(pl.len()) // 100),
-        # The "one row per finished group" block's output, which the
-        # "reading a correlation matrix" section reads.
+        # docs/how-to/close-groups.md's first block's output, which its check
+        # block reads.
         "closed": _closed_rows(df),
         # The "series that tick at their own times" section's eight ticks, which
         # its first block builds and its two-run block reads.
@@ -1177,22 +1176,27 @@ class TestReadmeExamples:
 
     #: The names the namespace hands out that the README also builds, and
     #: which of the README blocks that assign one it copies.
-    COPIES = {
-        "spec": "first",
-        "grid": "last",
-        "now": "first",
-        "ticks": "first",
-        "blocks": "first",
-        "by_block": "first",
-        "closed": "first",
+    COPIES: dict[str, str] = {}
+    #: The names the namespace hands out that a how-to page builds, since the
+    #: README section that built them moved there (task 338 stage 8), and
+    #: the page whose first block assigning one it copies.
+    PAGE_COPIES = {
+        "spec": "docs/how-to/run-a-bank-in-a-query.md",
+        "now": "docs/how-to/run-a-bank-in-a-python-loop.md",
+        "ticks": "docs/how-to/align-series-that-tick-at-their-own-times.md",
+        "grid": "docs/how-to/read-the-coefficients.md",
+        "blocks": "docs/how-to/close-groups.md",
+        "by_block": "docs/how-to/close-groups.md",
+        "closed": "docs/how-to/close-groups.md",
     }
 
     def test_the_namespace_copies_what_the_readme_builds(self, tmp_path, monkeypatch):
         """A README block runs on the names the README itself built
         (`_built_by_the_readme`), but the API reference's examples still
         read the namespace's copies (TC4), so each copy is what the README
-        block it copies builds. `out`'s ``m`` copies the field-names
-        section's (its ``ridge`` and ``kalman`` columns copied a block that
+        block it copies builds, or the how-to page's block where the README
+        section moved to one (`PAGE_COPIES`). `out`'s ``m`` copies the
+        coefficients page's grid block (its ``ridge`` and ``kalman`` columns copied a block that
         has since moved to a how-to page, below); `bank` is `po.ModelBank([spec])` before any row,
         as the README's blocks start it. The fixture's `grid` had a
         `min_weight` and its `now` was 400.0, where the README's have none
@@ -1215,13 +1219,21 @@ class TestReadmeExamples:
                 return a.equals(b)  # type: ignore[arg-type]
             return a == b
 
+        def on_page(name: str, page: str) -> dict:
+            p, ln, c = next(b for b in _doc_blocks(page) if name in _names(b[2])[0])
+            local = dict(ns)
+            exec(compile(c, f"{p}:{ln}", "exec"), local)
+            return local
+
         for name, which in self.COPIES.items():
             assert same(built(name, which)[name], ns[name]), name
+        for name, page in self.PAGE_COPIES.items():
+            assert same(on_page(name, page)[name], ns[name]), name
         # `out`'s ``ridge`` and ``kalman`` columns copied MODELS.md's
         # `seqtest` two-spec block, which moved to
         # docs/how-to/compare-two-models.md (task 338 stage 6b) and now runs
         # on a stream of its own, so no README block builds them any more.
-        fields = built("grid", "last")["out"]
+        fields = on_page("grid", self.PAGE_COPIES["grid"])["out"]
         assert ns["out"].select("m").equals(fields.select("m"))
         assert ns["bank"].save_bytes() == po.ModelBank([ns["spec"]]).save_bytes()
 
@@ -1347,43 +1359,10 @@ class TestReadmeExamples:
         configs = {c for _, _, code in SHELL_BLOCKS for c in re.findall(r"--config (\S+)", code)}
         assert configs == {"job.toml", "blocks.toml"}, configs
 
-    def test_the_readme_config_gives_the_numbers_its_python_spec_gives(
-        self, tmp_path, monkeypatch, online_cli
-    ):
-        """The README's TOML block mirrors its Python `spec` and says the
-        `polars-online` command line gives "the numbers the bank gives in Python".
-        So the block runs here as written, on the example data's
-        `ticks.parquet`, and every prediction, residual and weight it writes
-        must be that spec's in Python, bit for bit. The coefficients are left
-        out: they come on each group's last accepted row of each chunk, and the two
-        runs chunk differently (PLAN §3). The README runs it with the shell
-        line under it, whose output it shows: that line runs here as written,
-        with the built `polars-online` on PATH, the block saved as the `bank.toml` it
-        names, and what it prints is held to the text block under it."""
-        here = tmp_path / "readme"
-        here.mkdir()
-        monkeypatch.chdir(here)
-        shown = [code for _, _, code in _doc_blocks("README.md", "toml")]
-        assert len(shown) == 1, shown
-        ns = _readme_namespace(here)  # writes ticks.parquet
-        (here / "bank.toml").write_text(shown[0], encoding="utf-8")
-        assert len(README_CLI_RECIPES) == 1, README_CLI_RECIPES
-        (_, command, output), *_ = README_CLI_RECIPES
-        assert command.strip() == "polars-online --config bank.toml", command
-        monkeypatch.setenv("PATH", f"{online_cli.parent}{os.pathsep}{os.environ['PATH']}")
-        res = subprocess.run(  # bytes: text mode would turn a carriage return into a newline
-            command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False
-        )
-        printed = _as_a_terminal_shows(res.stdout.decode("utf-8"))
-        assert res.returncode == 0, printed
-        assert not differences(output, printed), printed
-        tmp_path = here
-        got = pl.read_parquet(tmp_path / "fitted.parquet")["ridge"].struct.unnest()
-        want = po.ModelBank([ns["spec"]]).fit_predict(ns["df"])["ridge"].struct.unnest()
-        assert got.columns == want.columns
-        numbers = [c for c in want.columns if c.startswith(("pred_", "resid_", "weight_sum"))]
-        assert len(numbers) == 5, want.columns  # pred and resid at each ridge, and the weight
-        assert got.select(numbers).equals(want.select(numbers))
+    # The README's TOML block, held here to its Python `spec` bit for bit,
+    # moved off the landing page (task 338 stage 8). The runner guide's
+    # *Specs in TOML* recipe holds the same claim: the command line's
+    # predictions are the bank's in Python, bit for bit.
 
     def test_there_are_docstring_blocks_to_check(self):
         assert len(DOCSTRING_BLOCKS) >= 10, DOCSTRING_BLOCKS

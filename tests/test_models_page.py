@@ -48,11 +48,13 @@ def _example_data(here: Path) -> dict[str, object]:
     return ns
 
 
-def _entry(line: int) -> str:
-    """The model heading a page line sits under: its first backticked name."""
+def _entry(line: int) -> str | None:
+    """The model heading a page line sits under: its first backticked name,
+    or None for a line under *What every spec takes*, whose ``###``
+    subsections are no model's."""
     lines = PAGE.read_text(encoding="utf-8").splitlines()[:line]
-    heading = next(h for h in reversed(lines) if h.startswith("### "))
-    return heading.split("`")[1]
+    heading = next(h for h in reversed(lines) if h.startswith(("### ", "## ")))
+    return heading.split("`")[1] if heading.startswith("### `") else None
 
 
 def test_every_linear_model_has_a_recipe():

@@ -79,8 +79,8 @@ predictions on every row, each a [slot](../GLOSSARY.md#grids).
 [`weight_sum`](../GLOSSARY.md#warm-up-and-readiness) is the decayed
 weight of the rows an instance has learned, which a longer half-life
 forgets more slowly. How
-each field's name encodes its grid point is in the README's [Output field
-names](../../README.md#output-field-names).
+each field's name encodes its grid point is in [Find an output field by
+what it holds](../how-to/find-an-output-field.md).
 
 **Some settings take a list that is not a grid, and some take no list.**
 `kalman`'s `coef_half_life`, its drift speed, takes one value per
@@ -148,8 +148,8 @@ one setting that ties them together is `drift_action="reset"`, which resets the 
 [break](../GLOSSARY.md#fitting-a-model) in its residuals. A break flagged in any instance then resets them all, so they
 run one after another. On
 `ewridge` over 20 features, a grid of five half-lives, 500 to 2,500, took
-1.45 times as long as the half-life of 500 alone, as the README's
-[Throughput](../../README.md#throughput) section measures.
+1.45 times as long as the half-life of 500 alone, as [Rows a second for each
+model](../PERFORMANCE.md#rows-a-second-for-each-model) measures.
 
 **On one thread, a half-life grid inside one spec is faster than one spec
 per value.** Each spec is separate work for the bank: it reads its columns

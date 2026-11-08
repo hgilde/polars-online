@@ -49,17 +49,23 @@ def _ids(page: Path) -> set[str]:
 
 
 def _readme_links() -> list[tuple[str, str]]:
-    text = (ROOT / "README.md").read_text(encoding="utf-8")
-    return [(page, anchor) for page, anchor in LINK.findall(text)]
+    """The links into the reference from the README and the pages that took
+    its lists of calls: the feature index and MODELS.md's model table (task
+    338 stage 8)."""
+    texts = [
+        (ROOT / path).read_text(encoding="utf-8")
+        for path in ("README.md", "docs/FEATURES.md", "docs/MODELS.md")
+    ]
+    return [(page, anchor) for text in texts for page, anchor in LINK.findall(text)]
 
 
 def test_the_readme_links_the_reference():
-    """The README's links into the reference are found: 36 when this was
-    written, 34 once the how-tos took the README's task sections (task 338
-    stage 6a), every one to a module page."""
+    """The links into the reference are found: the README's 36 when this was
+    written, and with the feature index well over a hundred, every one to a
+    module page."""
     links = _readme_links()
-    assert len(links) >= 34, links
-    assert sum(1 for _, anchor in links if anchor) >= 30, links
+    assert len(links) >= 100, links
+    assert sum(1 for _, anchor in links if anchor) >= 100, links
 
 
 def test_every_link_the_readme_gives_lands_in_the_built_reference(built):

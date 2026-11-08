@@ -37,8 +37,8 @@ A [window operator](../GLOSSARY.md#fitting-a-model) of
 it on the clock. By default the window looks back from the row, so it
 makes a feature. Each operator keeps running sums, so it does the same
 work on a row however long its window, where Polars' `rolling` gathers the
-window's rows again for every row. [Window
-operators](../../README.md#window-operators) has the timings.
+window's rows again for every row. [What a window operator
+costs](../PERFORMANCE.md#what-a-window-operator-costs) has the timings.
 [docs/WINDOWS.md](../WINDOWS.md) lists every operator, and how each one
 weighs the rows of its window.
 

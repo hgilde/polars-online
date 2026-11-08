@@ -66,8 +66,10 @@ uses letters too, `r` a ridge and `p` a lasso penalty, and the instance `h`,
 a half-life. A thing the spec has several of is numbered where it is named,
 glued to its word: a principal component `pc0` (`pc0_var`), an `hmm` state
 `state0` (`filtered_state0`), a `kmeans` center `cluster0`
-(`coef_cluster0_x1`). The README's [Output field
-names](../README.md#output-field-names) builds a grid and reads its fields.
+(`coef_cluster0_x1`). A number in a name renders as a plain decimal in
+`[1e-6, 1e7)`, as `0.000001`, and in compact scientific notation outside
+it, as `1e-300`. [Find an output field by what it
+holds](how-to/find-an-output-field.md) builds a grid and reads its fields.
 
 | in a name | stands for | in this page's tables |
 |---|---|---|
@@ -115,7 +117,7 @@ not skipped: it is predicted, and the model learns nothing from it.
 
 **Most of a model's own fields are also null on a withheld row**: a row
 whose outputs a gate held back, or whose fit cannot be trusted there.
-`withheld_reason` names which ([Warm-up](../README.md#warm-up)). Each
+`withheld_reason` names which ([Warm-up gates](MODELS.md#warm-up-gates)). Each
 table's last column, *also null*, says where a field is null besides a
 skipped row, and *withheld* there means such a row.
 
@@ -141,7 +143,7 @@ the docs set it:
 | the switch | where the docs show it |
 |---|---|
 | the diagnostics: `emit_sigma`, `emit_zscore`, `emit_selected`, `emit_averaged`, `emit_drift`, `emit_metrics`, `emit_autocorr`, `resid_quantiles`, `conformal`, `emit_calibration`, `emit_breaks`, `emit_specification`, `emit_tails`, `emit_influence` (`ewridge`'s, `rls`'s and `kalman`'s), `emit_feature_health` (not `holt`'s, which has no features) | [Is the model working?](DIAGNOSTICS.md), for the models that predict a target. `emit_metrics`' `hit_rate_<t>` is null throughout on an `sgd` fit with `loss="poisson"`, whose rate and count have no sign to hit |
-| `emit_error_inflation` and `emit_se_coef`, `ewridge`'s, `rls`'s and `kalman`'s | [Warm-up](../README.md#warm-up) |
+| `emit_error_inflation` and `emit_se_coef`, `ewridge`'s, `rls`'s and `kalman`'s | [Warm-up gates](MODELS.md#warm-up-gates) |
 | `emit_robust_se`, `ewridge`'s and `rls`'s | [Can its t be trusted?](DIAGNOSTICS.md#can-its-t-be-trusted) |
 | `emit_clocks`, every model's | [Learn targets known late](how-to/learn-targets-known-late.md#check-that-it-worked), and the table below |
 | `emit_huber_scale`, `huber`'s: `huber_scale_<t>`, the scale each row's cut is drawn in | [`huber`'s table](#huber), and its [entry](MODELS.md#huber--robust-regression) |

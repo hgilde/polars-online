@@ -5,7 +5,7 @@
 //! and writers. The bank keeps separate ones so that the two can be set
 //! apart: polars' count also sizes what its readers hold in flight, so a
 //! reader can be kept small for memory while the bank still has every core
-//! (README, *Parallelism*). Neither pool ever waits on the other -- a bank
+//! (docs/how-to/use-more-cores.md). Neither pool ever waits on the other -- a bank
 //! task never calls back into polars' pool -- so having both busy at once
 //! costs nothing measurable, even with each sized to the whole machine.
 //!

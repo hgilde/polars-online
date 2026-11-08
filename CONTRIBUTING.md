@@ -202,6 +202,21 @@ and the API snapshot the change moves:
   which document holds what, the records included.
 - Keep section numbers where they are — the code and the README cite them.
 
+## Where the documents are
+
+Each document has one job, so a question about the library has one place to look:
+
+| to find | read |
+|---|---|
+| every document, and which to read for what | [docs/README.md](docs/README.md) |
+| a map for coding agents, at the repo root and on the docs site | [llms.txt](llms.txt) ([llmstxt.org](https://llmstxt.org)) |
+| the API reference, built from the docstrings and published from every green push to `main` | <https://hgilde.github.io/polars-online/> |
+| what each release changed | [CHANGELOG.md](CHANGELOG.md) |
+| how to cut a release, and how the Polars pin moves | [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md) |
+| what the test suite proves, and how to run it | [docs/TESTING.md](docs/TESTING.md) |
+| how to add a model: every layer it touches, and the test that catches each one skipped | [docs/EXTENDING.md](docs/EXTENDING.md) |
+| the rules this documentation is written to | [docs/WRITING.md](docs/WRITING.md) |
+
 ## Licensing of contributions
 
 This project is Apache-2.0. Contributions follow the standard inbound =

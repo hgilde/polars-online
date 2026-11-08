@@ -113,8 +113,12 @@ def test_the_link_is_the_page_on_main():
 
 def test_the_readme_links_the_page_beside_check_and_audit():
     readme = (REPO / "README.md").read_text(encoding="utf-8")
-    start = readme.index("\n### Checking your data's quality\n")
-    section = readme[start : readme.index("\n### ", start + 1)]
-    for anchor in ("**`bank.check()` reads what a bank kept", "[`audit`](docs/MODELS.md#audit"):
-        assert anchor in section, anchor
-    assert "docs/DATA-QUALITY.md" in section
+    where = readme.split("\n## Where to go next\n", 1)[1].split("\n## ", 1)[0]
+    # The README is a landing page: its map links the page and the how-to,
+    # and the feature index's line for `check` and `audit` links both (task
+    # 338 stage 8).
+    assert "](docs/DATA-QUALITY.md)" in where
+    assert "](docs/how-to/check-data-quality.md)" in where
+    features = (REPO / "docs" / "FEATURES.md").read_text(encoding="utf-8")
+    line = next(r for r in features.splitlines() if "[`ModelBank.check`]" in r)
+    assert "`ModelBank.audit`" in line and "](DATA-QUALITY.md)" in line

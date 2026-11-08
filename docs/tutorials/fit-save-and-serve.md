@@ -150,7 +150,7 @@ it:
 |---|---|
 | serve from the command line, with no Python, or serve a frame you hold in memory | [Serve from a saved state](../how-to/serve-from-a-saved-state.md) |
 | go on learning from new rows once their targets are known | [Resume from a saved state](../how-to/resume-from-a-saved-state.md) |
-| save and load the state in every way a bank runs | [Save and load](../../README.md#save-and-load) |
+| save and load the state in every way a bank runs | [Save a state](../how-to/save-a-state.md) |
 | know what a state holds, and why a resumed run matches one that never stopped | [A bank's state and resuming it](../explanation/state-and-resuming.md) |
 | know why saving a fit that follows the recent rows is of limited use | [Local fits](../explanation/time-and-decay.md#local-fits) |
 | fit a model over parquet files too large to hold | [Fit a model bank over parquet files in a query](stream-from-parquet.md) |

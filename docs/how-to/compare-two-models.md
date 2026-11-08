@@ -127,8 +127,8 @@ error rate. The evidence a `seqtest` keeps does not.
 2. **Put the two specs and the `seqtest` spec in one bank.**
 3. **When a side is a grid, pick its residual field with `a_suffix` or
    `b_suffix`:** the half-life's suffix, such as `"@h500"`, or a grid
-   point's, such as `"__r0.5@h500"` ([Output field
-   names](../../README.md#output-field-names)). Without the suffix, the
+   point's, such as `"__r0.5@h500"` ([Find an output field by what it
+   holds](find-an-output-field.md)). Without the suffix, the
    bank refuses the spec and lists the grid's residual fields.
 4. **Read `log_e_a_<t>` on each row,** and reject the first time it
    reaches `ln 20`: that is the 5% level, however often you read it.

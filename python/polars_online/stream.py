@@ -651,9 +651,9 @@ def refresh_time(
     - :func:`polars_online.corr.epps_invert`, which corrects a correlation for
       the Epps effect instead.
     -
-      `Series that tick at their own times
-      <https://github.com/hgilde/polars-online#series-that-tick-at-their-own-times>`_,
-      the README section.
+      `Align series that tick at their own times
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/align-series-that-tick-at-their-own-times.md>`_,
+      the how-to.
 
     .. rubric:: Notes
 

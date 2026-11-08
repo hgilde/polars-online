@@ -206,7 +206,8 @@ in `targets` for less memory.** In the column form, Polars runs the window
 and the bank at once, as two stages of one query. In the expression form the bank resolves the windows itself, one after
 the other in the same pass as the model. On 16M rows, the column form
 took 5.87 s at a peak of 1.23 GB, and the expression form 9.37 s at
-1.09 GB ([Window operators](../../README.md#window-operators)).
+1.09 GB ([What a window operator
+costs](../PERFORMANCE.md#what-a-window-operator-costs)).
 
 ## Write a ratio target to sit about zero
 

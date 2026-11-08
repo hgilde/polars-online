@@ -20,7 +20,7 @@ These are the words of the library that the page uses:
 
 | word | what it means here |
 |---|---|
-| spec | one model's description: the model, the columns it reads, and how it treats time. `po.spec.ewridge(...)` makes one; [the README's model table](../README.md#models) lists every kind |
+| spec | one model's description: the model, the columns it reads, and how it treats time. `po.spec.ewridge(...)` makes one; [the README's model table](MODELS.md#the-models-at-a-glance) lists every kind |
 | bank | `po.ModelBank`, a set of specs fitted together over the same rows; `bank.fit(lf)` learns from a query's rows, and `bank.fit_predict_batches(lf)` also returns each row's prediction, made before the row is learned |
 | pass | one run of a bank over the stream |
 | audit | `po.spec.audit`, a spec that learns nothing and counts what its columns hold |
@@ -1285,7 +1285,7 @@ with the same stamp weigh the same. A clock that steps back has no
 elapsed time to decay by, and a long gap would age the fit by all of it.
 The spec's clock policy decides each case, and `check()` reports what the
 policy met
-([Sessions, gaps and steps back](../README.md#sessions-gaps-and-steps-back)).
+([Handle sessions, gaps and steps back](how-to/handle-sessions-gaps-and-steps-back.md)).
 
 | code | severity | fires when |
 |---|---|---|
@@ -1444,7 +1444,7 @@ a decay, a stream whose rows come one clock unit apart can gather at most
 `1/(1 − 2^(−1/h))` of weight at half-life `h`. That is 3.4 at `h = 2`, so
 a `min_weight` of 10 is never met. After a time `T` on the clock, a stream
 has gathered `1 − 2^(−T/h)` of that ceiling, which is `settled_frac`. The
-README's [Warm-up](../README.md#warm-up) section has the gates.
+[Warm-up gates](MODELS.md#warm-up-gates) lists the gates.
 
 ```python
 import numpy as np

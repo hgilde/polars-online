@@ -1043,7 +1043,8 @@ class TestSettledWeight:
 
     def test_the_readmes_kernel_example_does_not_warn(self, tmp_path, monkeypatch):
         """README, *A local fit along any feature*, as it stood, on the README's
-        own ``df``, and the section's block as it stands: a sorted feature as
+        own ``df``, and the block of ``docs/how-to/fit-locally-along-a-feature.md``,
+        where the section moved, as it stands: a sorted feature as
         the clock is sparse in its tails and dense at its mode, so the rows
         come faster after the stream settles
         and the weight climbs from about 7.7 to 103. The notice read the
@@ -1052,18 +1053,21 @@ class TestSettledWeight:
         then 381 of 400 rows were predicted (review round 5, F3). Waiting a
         half-life during which the floor withholds every row, the notice
         never comes: the floor is met inside it."""
-        text = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+        repo = Path(__file__).resolve().parents[1]
 
-        def block(heading: str) -> str:
-            start = text.index(f"\n### {heading}\n")
-            section = text[start : text.index("\n### ", start + 1)]
+        def block(path: str, heading: str) -> str:
+            text = (repo / path).read_text(encoding="utf-8")
+            start = text.index(f"\n{heading}\n")
+            nexts = (text.find("\n## ", start + 1), text.find("\n### ", start + 1))
+            ends = [i for i in nexts if i != -1]
+            section = text[start : min(ends)] if ends else text[start:]
             found = re.findall(r"```python\n(.*?)\n```", section, flags=re.S)
             assert len(found) == 1, (heading, len(found))
             return found[0]
 
         monkeypatch.chdir(tmp_path)  # Example data writes its parquet files here
         ns: dict = {}
-        exec(compile(block("Example data"), "README.md: Example data", "exec"), ns)
+        exec(compile(block("README.md", "### Example data"), "README.md: Example data", "exec"), ns)
         # The README's section now fits a curve of its own (task 238), and
         # its block is held by the README's recipe test; the kernel on
         # `df`'s sorted `x0` that this regression was found on is kept here.
@@ -1074,12 +1078,14 @@ class TestSettledWeight:
             "    min_weight=10.0)\n"
             'fitted = po.ModelBank([kernel]).fit_predict(curve).unnest("kernel")\n'
         )
-        local = block("A local fit along any feature")
+        local = block(
+            "docs/how-to/fit-locally-along-a-feature.md", "## Fit a model locally along a feature"
+        )
         assert 'clock="x"' in local and "min_weight=20.0" in local, local
         with warnings.catch_warnings():
             warnings.simplefilter("error", po.ReadinessWarning)
             exec(compile(kernel, "README.md: A local fit along any feature", "exec"), ns)
-            exec(compile(local, "README.md: A local fit along any feature", "exec"), {})
+            exec(compile(local, "docs/how-to/fit-locally-along-a-feature.md", "exec"), {})
         fitted = ns["fitted"]
         assert fitted["pred_y"].drop_nulls().len() == 381
         assert fitted["weight_sum"].max() > 100.0

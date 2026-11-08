@@ -8,7 +8,7 @@ mid. A window that looks ahead makes a target, such as the next minute's
 VWAP (volume-weighted average price). Each operator does the same work on
 a row however long its window, since it keeps running sums, where
 Polars' `rolling` gathers the window's rows again for every row
-([Window operators](../README.md#window-operators) has the timings). The
+([What a window operator costs](PERFORMANCE.md#what-a-window-operator-costs) has the timings). The
 operators follow one set of rules in each of three uses:
 
 | use | the call | where |
@@ -306,7 +306,7 @@ left waiting before its own, so two runs give what one run gives. A state
 loads only into a call with the same formulas, clock keywords and kind of
 clock; otherwise `load_state=` raises `ValueError`. A window target is
 saved with its bank's state instead ([Saving, loading and
-serving](../README.md#saving-loading-and-serving)). The state file's format
+serving](explanation/state-and-resuming.md)). The state file's format
 is not promised: a state one release saved need not load in the next.
 
 **Under a slice such as `head(500)`, the run reads the input only until the

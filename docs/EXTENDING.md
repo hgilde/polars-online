@@ -1,7 +1,7 @@
 # Adding a model
 
-A model touches every layer, from the recursion in `online-core` to a heading
-in the README. None of the steps can be folded into another, because each is a
+A model touches every layer, from the recursion in `online-core` to its
+line in the feature index. None of the steps can be folded into another, because each is a
 real decision: what the state is, what the spec calls it, what the outputs are
 named, what the tests assert. What *can* be done is to make each omission
 fail. This is the list, in the order the data flows, with the check that
@@ -48,7 +48,7 @@ The steps at a glance:
 | [12](#step-12--per-model-sweeps) | four sweep lists, and `tests/convergence.py` | one entry each; a model that predicts a target registers its convergence: a known-truth stream, a third-party oracle and its classes; a grid against an oracle registers with the oracle ledger | `test_the_sweeps_cover_every_regression_model`; `test_every_regression_registers_its_convergence`; `test_every_module_with_a_grid_registers_or_is_pending` |
 | [13](#step-13--teststest_model_registrypy) | `tests/test_model_registry.py` | the `MINIMAL` entry | `test_minimal_names_every_builder` |
 | [14](#step-14--teststest_golden_pipelinepy) | `tests/test_golden_pipeline.py` | a spec in `specs()`, and its lines in `GOLDEN` | `test_the_golden_pipeline_pins_every_model` |
-| [15](#step-15--docsmodelsmd-and-readmemd) | `docs/MODELS.md`, `README.md`, `docs/OUTPUTS.md`, `llms.txt` | the model's heading, its row and its API links; its family and field meanings in the OUTPUTS generator; the model count | `test_the_models_page_documents_every_model`, the `test_api_links` pair, the `test_outputs_doc` trio, `test_it_says_how_many_models_there_are` |
+| [15](#step-15--docsmodelsmd-and-docsfeaturesmd) | `docs/MODELS.md`, `docs/FEATURES.md`, `docs/OUTPUTS.md`, `llms.txt` | the model's heading, its row and its API links; its line in the feature index; its family and field meanings in the OUTPUTS generator; the model count | `test_the_models_page_documents_every_model`, the `test_api_links` pair, `test_feature_index`, the `test_outputs_doc` trio, `test_it_says_how_many_models_there_are` |
 | [16](#step-16--changelogmd-and-the-design-note) | `CHANGELOG.md`, and the design note | an entry | **no check** |
 | [17](#step-17--cratesonline-benchsrcscalingrs) | `crates/online-bench/src/scaling.rs`, `docs/PERFORMANCE.md` | a `<kind>.history` cell and a cell for each size the model has, each with its declared growth, and their rows in the table | `every_kind_has_its_cells`; each cell's own test in `crates/online-bench/tests/scaling.rs` |
 
@@ -108,7 +108,7 @@ Each such case overrides a method, and each has its check:
 | counts a value that is not usable rather than refusing it, as `audit` does | no `refused_step`; its kind in `model_contract.rs`'s `COUNTS_UNUSABLE`, which `refuses_unusable_values` passes by; an arm in `ModelKind::reads_every_row` (`spec.rs`), so the stream hands it every row, and one in `Instance::reset` (`stream.rs`) if a restart must not rebuild it | the model's own tests of each kind of value; `crates/online-polars/tests/audit.rs` for the rows the stream hands it |
 | solves on a schedule, as `ewridge`, `lasso`, `huber` and `quantile` do | **`set_solve_share`** and **`solve_share`**, reaching the cfg's `solve_share`. The spec's default share goes into the cfg when the model is built, and the stream calls `set_solve_share` with the spec's share on every model it restores (`crates/online-polars/src/stream.rs`), so a state saved before the rule runs at the spec's cadence | `exactly_the_scheduled_solvers_report_a_solve_share` in `tests/model_contract.rs`, which names the four, and to which it is added |
 | refits its first rows to convergence, as `huber`, `sgd`'s Huber loss, `quantile` and `marginal(bin_stat="huber")` do | a buffer of its first learned rows and a `RefitStatus` a target ([`huber_refit.rs`](../crates/online-core/src/huber_refit.rs)), and: a default count beside **`default_refit_rows`** and `default_bin_refit_rows`, with `0` for off; its buffer's bytes through **`refit_reservation`**, against which an arm in **`ModelKind::refit_budget_mib`** (`spec.rs`) bounds a spec's groups under `refit_budget`; arms in `AnyModel::refit_status` and `refit_give_up` (`stream.rs`), which `summary()`'s `refit_given_up` and the budget's notice read; a refit at its pass cap counted in `solve_failures`, and named by `ModelBank.check`'s wording for its kind (`python/polars_online/_check.py`, the `solve_failures` finding); a state saved before the refit loading with it off | **no check**: `refit_status`, `refit_give_up` and `refit_budget_mib` end in a catch-all, so a model left out never refits under the budget and reports nothing. Its own test file holds it, as `tests/test_huber_refit.py` and `tests/test_quantile_refit.py` do: the converged fit against a third-party one on the buffer, one chunk or many, a bank saved before, at and after the refit, the activation (the fit moves only after the buffer fills), and the budget giving up the later groups, which `tests/test_summary.py`'s column list pins |
-| reports the readiness statistics: effective degrees of freedom, each coefficient's data share, a row's leverage | **`error_inflation_into`**, **`error_inflation_gate_into`** (where a bound may stand in below the gate's limit), **`row_error_inflation_into`** and **`support_coef`** (the README's [*Warm-up*](../README.md#warm-up) says what each gates). Which models report them is the table of predicates under [What a model reads for the diagnostics](#what-a-model-reads-for-the-diagnostics), and `Spec::validate` refuses the parameters that read them for every other model, so a new one that reports them is added there | `a_model_without_the_optional_statistics_reports_none_of_them` (`model.rs`) for the defaults; `tests/readiness.rs` for `ewridge` |
+| reports the readiness statistics: effective degrees of freedom, each coefficient's data share, a row's leverage | **`error_inflation_into`**, **`error_inflation_gate_into`** (where a bound may stand in below the gate's limit), **`row_error_inflation_into`** and **`support_coef`** (MODELS.md's [Warm-up gates](MODELS.md#warm-up-gates) says what each gates). Which models report them is the table of predicates under [What a model reads for the diagnostics](#what-a-model-reads-for-the-diagnostics), and `Spec::validate` refuses the parameters that read them for every other model, so a new one that reports them is added there | `a_model_without_the_optional_statistics_reports_none_of_them` (`model.rs`) for the defaults; `tests/readiness.rs` for `ewridge` |
 
 **Row-lagged state.** The stream calls `clear_lags` on a session change and on
 a capped clock gap (`ClockAdvance::capped`). Those are the two events after
@@ -582,8 +582,9 @@ Two more lists have **no check** that holds them to the registered models.
 cases, one per model: add the model's case there, with its
 `[instructions.<case>]` entry in `budgets.toml`, and set the budget from
 CI's first `measured.json` with `python scripts/budgets.py apply`. And
-`scripts/benchmark.py`'s rows are the README's *Throughput* table: add a
-row for the model if the table should show it.
+`scripts/benchmark.py`'s rows are the throughput table,
+[Rows a second for each model](PERFORMANCE.md#rows-a-second-for-each-model):
+add a row for the model if the table should show it.
 
 **A model that predicts a target registers its convergence** in
 `tests/convergence.py`'s `REGISTRY`, once per value of `loss=` if it takes
@@ -677,13 +678,15 @@ that is a finding, not a regeneration.
 
 ## Docs
 
-### Step 15 — `docs/MODELS.md` and `README.md`
+### Step 15 — `docs/MODELS.md` and `docs/FEATURES.md`
 
 A heading `` ### `<name>` — ... `` under its family's `##` heading in
 `docs/MODELS.md`, with the equations, the parameters and when to reach for
 it. The families are linear models; moments and correlation; clustering and
 classification; and sequential tests and regimes. Add a row under the same
-family in the README's model table, its `math` link to the new heading.
+family in MODELS.md's table *The models at a glance*, its `entry` link to the
+new heading, and a line for its builder in `docs/FEATURES.md`'s *Models*,
+linking its entry and its how-tos.
 
 **Check:**
 `test_model_registry::test_the_models_page_documents_every_model`. `huber`
@@ -694,6 +697,8 @@ to link ``
 ``, and `test_every_model_section_links_its_builder_and_its_source` wants
 the heading's section to carry an `*API:*` link to the builder and a
 `*Rust:*` link to `crates/online-core/src/<file>.rs`, which must exist.
+`test_feature_index::test_every_public_name_has_a_line_in_the_index` fails
+until `docs/FEATURES.md` has the builder's line.
 
 **`docs/OUTPUTS.md`** is generated. In `scripts/outputs_doc.py`, place the
 model in its family in `FAMILIES`, give each new field stem a `MEANING` line,

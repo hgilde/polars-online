@@ -242,7 +242,7 @@ pub struct ClockAdvance {
 ///
 /// The decayed clock is the one a window measures a row's age on: each step
 /// after `gap_cap` and any `session_gap`, with a skipped row's step folded
-/// into the next accepted row (README, *A hard window*). Decay reads it as
+/// into the next accepted row (docs/MODELS.md, *A hard window*). Decay reads it as
 /// `d_clock`, a double per row. Summed, those doubles drift: a thousand
 /// steps of 1 ms come to 1.0000000000000007 s, so a row exactly one window
 /// old fell outside the window on some rows and inside on others (review

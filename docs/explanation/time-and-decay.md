@@ -36,7 +36,7 @@ model's cadences, such as `solve_every`
 (how often a regression solves for its coefficients), are all in [clock
 units](../GLOSSARY.md#time). Only a few settings count rows, such as
 `warm_rows`, the rows some models wait for before they predict. The
-README's [Clock types and units](../../README.md#clock-types-and-units)
+README's [Clock types and units](../MODELS.md#the-clock-and-its-units)
 lists every clock parameter, and the value each kind of clock takes, such
 as a duration like `"10m"` for a clock of timestamps.
 
@@ -64,7 +64,7 @@ such a clock, such as `gap_cap=0.5`, is compared as the number it is.
 cannot read exactly is refused, never rounded,** since the step to every
 later row is measured from it. A feature may be null and its row skipped,
 but a clock value cannot be skipped. The README's [Clock types and
-units](../../README.md#clock-types-and-units) lists what is refused, by row
+units](../MODELS.md#the-clock-and-its-units) lists what is refused, by row
 or by name.
 
 ## The running sums that decay
@@ -112,14 +112,14 @@ for a long half-life. Under `half_life=50`, that is about 72.6. The field
 `settled_frac`, `1 − 0.5 ** (T / half_life)` with `T` the clock time the
 model has decayed over, is the share of that ceiling such a stream has
 reached: 0.5 after one half-life, 0.75 after two.
-[Warm-up](../../README.md#warm-up) says how the readiness gates read it.
+[Warm-up gates](../MODELS.md#warm-up-gates) says how the readiness gates read it.
 
 ## Gaps, sessions and steps back
 
 A stream from a market has quiet hours, weekends, day boundaries and
 replays, and the clock's step across each is not the time the fit should
-age by. The spec has a parameter for each kind. The README's
-[Sessions, gaps and steps back](../../README.md#sessions-gaps-and-steps-back)
+age by. The spec has a parameter for each kind. [Handle sessions, gaps
+and steps back](../how-to/handle-sessions-gaps-and-steps-back.md)
 fits one regression under four ways of treating a weekend: two caps and
 two treatments of the session change.
 
@@ -165,14 +165,14 @@ says how the bank checks the order.
 window, the fit of a model that solves or accumulates converges to the
 batch fit over every row it has seen.** Such a model keeps running sums
 and computes its fit from them, and the README's [model
-table](../../README.md#models) gives each model's kind. Its running sums weigh each row by
+table](../MODELS.md#the-models-at-a-glance) gives each model's kind. Its running sums weigh each row by
 its weight alone, as a batch method weighs the rows it is given.
 
 **With decay off, row order does not change the fit of a model that
 solves or accumulates,** because the sums it keeps are the same in any
 order. A model that reweights, steps, filters or tests instead depends on
 the row order whether decay is on or off. Each model's kind is in the
-README's [model table](../../README.md#models), with the outputs that
+README's [model table](../MODELS.md#the-models-at-a-glance), with the outputs that
 depend on the order even so, such as a lag or `lasso`'s
 `penalty_selected`. The settings that read the rows in sequence, such as a
 hard window, a session, a weight or an embargo, are named in [Why you set the row
@@ -186,7 +186,7 @@ reset.
 **For no forgetting, give `half_life=float("inf")`: a huge finite
 half-life still forgets, a little.** Under `half_life=1e12`, `settled_frac`
 stays near zero until the stream has run for about 10¹² clock units, so a
-`min_settled_frac` gate ([Warm-up](../../README.md#warm-up)) stays closed.
+`min_settled_frac` gate ([Warm-up gates](../MODELS.md#warm-up-gates)) stays closed.
 
 This code fits `ewridge` with no decay to `df`'s rows in their order,
 reversed and shuffled, and solves the same least squares with numpy. The
@@ -231,7 +231,7 @@ passed it. A row's age is measured on the clock the model decays by, each
 step after `gap_cap` and any `session_gap`, so a capped weekend ages the
 rows before it by the cap. Five models take a hard window: `ewridge`,
 `lasso`, `ew_cov`, `ew_class` and `marginal`, each described in the
-README's [model table](../../README.md#models). Inside it the weights still
+README's [model table](../MODELS.md#the-models-at-a-glance). Inside it the weights still
 halve every `half_life`, and `half_life=float("inf")` makes them equal.
 [Forget rows past a window](../how-to/forget-rows-past-a-window.md) gives its
 settings and what each model truncates.

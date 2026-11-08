@@ -9,8 +9,9 @@ A [model bank](../GLOSSARY.md#the-model-bank-and-what-it-reads) works a
 memory never grows with the number of rows that have passed. [Why memory
 stays
 bounded](../explanation/chunk-invariance-and-streaming.md#why-memory-stays-bounded)
-explains why, and the README's [Memory](../../README.md#memory) measures a
-whole run. What a run holds has four parts: the
+explains why, and [Peak memory of each way of running a
+bank](../PERFORMANCE.md#peak-memory-of-each-way-of-running-a-bank)
+measures a whole run. What a run holds has four parts: the
 [state](../GLOSSARY.md#saving-and-serving) the models keep, the chunks in
 flight, the rows a delay or a window holds, and what Polars reads ahead of
 the bank. Polars' own settings cut the last part, and `refit_budget` cuts
@@ -221,7 +222,7 @@ set where its topic lives:
 | the groups a bank keeps | `group_close`, or `bank.drop_groups(...)` | [Bound the memory of many groups](fit-one-model-per-group.md#bound-the-memory-of-many-groups) |
 | a hard window's snapshots | `window_budget` | [Cap the snapshots' memory](forget-rows-past-a-window.md#cap-the-snapshots-memory) |
 | the rows a delay holds | the `embargo` or the `label_clock` delay, times the rows' rate; `max_held_rows` caps the rows `label_clock` holds in each group | [Learn targets known late](learn-targets-known-late.md) |
-| the chunks in flight | `chunk_size` | the README's [Chunk size](../../README.md#chunk-size) |
+| the chunks in flight | `chunk_size` | [Set the chunk size](set-the-chunk-size.md) |
 
 ## Check the result
 

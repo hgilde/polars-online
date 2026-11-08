@@ -1,7 +1,8 @@
-"""The README's warm-up defaults, held to the ones the bank resolves.
+"""The warm-up defaults MODELS.md states, held to the ones the bank resolves.
 
-The README's *Warm-up* section states each readiness gate's default, and in
-a table the default `min_weight` of every model as a rule. The bank chooses
+MODELS.md's *Warm-up gates*, under *What every spec takes*, states each
+readiness gate's default, and in a table the default `min_weight` of
+every model as a rule. The bank chooses
 them in Rust (`Spec::default_min_periods`, the `*_or_default` methods), and
 every builder passes `None` for them, so until `_polars_online.resolved_defaults`
 no Python surface showed them and a change to any row would have shipped
@@ -22,7 +23,9 @@ from test_model_registry import MINIMAL
 
 TIER = "essential"
 
-README = Path(__file__).resolve().parent.parent / "README.md"
+# The tables moved from the README to MODELS.md, *What every spec takes*
+# (task 338 stage 8).
+README = Path(__file__).resolve().parent.parent / "docs" / "MODELS.md"
 
 #: Each row of the README's `min_weight` table, by its first cell, as the
 #: rule it states: the threshold for `k` features, with or without an
@@ -99,9 +102,9 @@ def test_the_readme_readiness_gate_defaults_are_what_the_bank_resolves():
     """The two readiness gates, in the README's table above `min_weight`'s:
     `min_settled_frac` off, `max_error_inflation` sqrt(2) on `ewridge` and
     off on the other models that have it (docs/PLAN.md task 116)."""
-    defaults = {row[0]: row[1] for row in table_after("### Warm-up")}
+    defaults = {row[0]: row[1] for row in table_after("#### Warm-up gates")}
     assert defaults == {
-        "`min_weight`": "by model, below",
+        "`min_weight`": "by model, as the table of defaults gives",
         "`min_settled_frac`": "`0`, off",
         "`max_error_inflation`": "`sqrt(2)` on `ewridge`; off on `rls`, `kalman` and `lasso`",
     }

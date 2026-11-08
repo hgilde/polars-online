@@ -16,7 +16,7 @@ These steps need the library and a spec to gate:
   gates. `min_weight` applies to every model that predicts,
   `min_settled_frac` to a spec with a finite `half_life` or a `lam` below 1,
   and `max_error_inflation` to `ewridge`, `rls`, `kalman` and `lasso`.
-  [Warm-up](../../README.md#warm-up) in the README states each gate, its
+  [Warm-up gates](../MODELS.md#warm-up-gates), in MODELS.md, states each gate, its
   default and the field it reads.
 
 ## Read why a prediction is withheld

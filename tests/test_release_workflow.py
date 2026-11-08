@@ -629,7 +629,7 @@ PLACES = [
     "python/polars_online/__init__.py",
     "docs/VALIDATION.md",
     "CHANGELOG.md",
-    "README.md",
+    "docs/VERSIONS.md",
     "tests/test_released_state.py",
 ]
 
@@ -696,23 +696,24 @@ def test_publishing_a_version_whose_tag_exists_is_refused(copy):
     assert release_version.problems(copy, tag_exists=exists) == []
 
 
-def test_the_readmes_pin_names_the_current_minor(copy):
-    """Step 5 of a release moves the README's example pin to the new minor,
-    and nothing checked it (review 2026-10-06, CI13): a pin left on the old
+def test_the_versions_pages_pin_names_the_current_minor(copy):
+    """Step 5 of a release moves the example pin, in docs/VERSIONS.md since
+    the README became a landing page (task 338), to the new minor, and
+    nothing checked it (review 2026-10-06, CI13): a pin left on the old
     minor tells a reader to stay on it. The check runs on every dispatch,
     rehearsal included."""
-    readme = copy / "README.md"
+    page = copy / "docs" / "VERSIONS.md"
     v = release_version.versions(copy)["pyproject.toml"]
     major, minor, _ = v.split(".", 2)
     pin = f"polars-online~={major}.{minor}.0"
-    text = readme.read_text(encoding="utf-8")
+    text = page.read_text(encoding="utf-8")
     assert pin in text
-    readme.write_text(text.replace(pin, "polars-online~=0.1.0"), encoding="utf-8")
+    page.write_text(text.replace(pin, "polars-online~=0.1.0"), encoding="utf-8")
     (bad,) = release_version.problems(copy)
-    assert "README.md" in bad and "~=0.1.0" in bad and f"~={major}.{minor}.0" in bad, bad
-    readme.write_text(text.replace(pin, "polars-online"), encoding="utf-8")
+    assert "VERSIONS.md" in bad and "~=0.1.0" in bad and f"~={major}.{minor}.0" in bad, bad
+    page.write_text(text.replace(pin, "polars-online"), encoding="utf-8")
     (bad,) = release_version.problems(copy)
-    assert "README.md" in bad and f"~={major}.{minor}.0" in bad, bad
+    assert "VERSIONS.md" in bad and f"~={major}.{minor}.0" in bad, bad
 
 
 _wheel_size_spec = importlib.util.spec_from_file_location(
@@ -942,17 +943,19 @@ def test_publishing_refuses_a_version_older_than_a_spec_it_is_said_to_build(copy
         release_version.introduced(copy)
 
 
-def test_the_readmes_throughput_table_postdates_the_previous_release():
-    """The README's throughput table was measured on 2026-09-29, three
-    releases before anyone noticed, and a third of its rows had moved past
-    its own stated noise (review round 9, K-1). Release step 2 now pastes
-    the release's ``benchmark.py`` run into it; this holds the date the table
+def test_the_throughput_table_postdates_the_previous_release():
+    """The throughput table was measured on 2026-09-29, three releases
+    before anyone noticed, and a third of its rows had moved past its own
+    stated noise (review round 9, K-1). Release step 2 now pastes the
+    release's ``benchmark.py`` run into it; this holds the date the table
     states to no older than the release before the newest in the CHANGELOG,
     so a release can ship the table it measured during its own steps, but
     the next cannot ship it again. The commit it names is the one the dated
-    section of ``docs/PERFORMANCE.md`` it links to was measured at."""
-    text = (REPO / "README.md").read_text(encoding="utf-8")
-    (row,) = [line for line in text.splitlines() if line.startswith("| runs |")]
+    section it links to was measured at. The table sat in the README until
+    task 338 moved it to ``docs/PERFORMANCE.md``'s *Rows a second for each
+    model*, where the dated section is a link within the page."""
+    perf = (REPO / "docs" / "PERFORMANCE.md").read_text(encoding="utf-8")
+    (row,) = [line for line in perf.splitlines() if line.startswith("| runs |")]
     ((when, sha),) = re.findall(
         r"measured on (\d{4}-\d{2}-\d{2}) at commit `([0-9a-f]{7,40})`", row
     )
@@ -960,12 +963,11 @@ def test_the_readmes_throughput_table_postdates_the_previous_release():
     dates = re.findall(r"^## \[\d+\.\d+\.\d+\] — (\d{4}-\d{2}-\d{2})$", log, flags=re.M)
     assert len(dates) >= 2, dates
     assert datetime.date.fromisoformat(when) >= datetime.date.fromisoformat(dates[1]), (
-        f"the README's throughput table was measured on {when}, before the previous "
+        f"the throughput table was measured on {when}, before the previous "
         f"release ({dates[1]}): rerun scripts/benchmark.py (docs/RELEASE-READINESS.md, step 2)"
     )
-    (link,) = re.findall(r"\(docs/PERFORMANCE\.md#([^)]+)\)", row)
+    (link,) = re.findall(r"\(#(\d+-[^)]+)\)", row)
     assert link.endswith(when), (link, when)
-    perf = (REPO / "docs" / "PERFORMANCE.md").read_text(encoding="utf-8")
     heading = next(
         line for line in perf.splitlines() if line.startswith("### ") and line.endswith(f"({when})")
     )

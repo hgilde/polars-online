@@ -6,9 +6,9 @@ The version lives in six places (docs/RELEASE-READINESS.md, "The steps of a
 release"): pyproject.toml, the workspace Cargo.toml's version and its two
 path-dependency pins, python/polars_online/__init__.py and the generated
 docs/VALIDATION.md. They must agree, and CHANGELOG.md must have a section for
-it. The README's example pin, ``polars-online~=X.Y.0`` under *This package's
-own versioning*, must name the version's minor, so a minor release cannot
-leave it telling readers to stay on the last one.
+it. The example pin in docs/VERSIONS.md, ``polars-online~=X.Y.0`` under *This
+package's own versioning*, must name the version's minor, so a minor release
+cannot leave it telling readers to stay on the last one.
 
 With ``--publish``, nothing may be left under the CHANGELOG's
 ``[Unreleased]``: the tag's notes are the version's section, so an entry left
@@ -73,8 +73,9 @@ def schema(root: Path = REPO) -> int:
     return int(found)
 
 
-#: The README's example pin: ``polars-online~=0.13.0`` names the 0.13 series.
-README_PIN = re.compile(r"polars-online~=(\d+\.\d+\.\d+)")
+#: docs/VERSIONS.md's example pin: ``polars-online~=0.13.0`` names the 0.13 series.
+VERSIONS = "docs/VERSIONS.md"
+PIN = re.compile(r"polars-online~=(\d+\.\d+\.\d+)")
 
 
 def unreleased(changelog: str) -> str:
@@ -143,11 +144,11 @@ def problems(root: Path = REPO, *, publish: bool = False, tag_exists=None) -> li
         out.append(f"CHANGELOG.md has no `## [{version}]` section")
     major, minor = version.split(".")[:2]
     want = f"{major}.{minor}.0"
-    pins = README_PIN.findall((root / "README.md").read_text(encoding="utf-8"))
+    pins = PIN.findall((root / VERSIONS).read_text(encoding="utf-8"))
     wrong = sorted({p for p in pins if p != want})
     if not pins or wrong:
         out.append(
-            f"README.md's example pin must be `polars-online~={want}`, the minor of "
+            f"{VERSIONS}'s example pin must be `polars-online~={want}`, the minor of "
             f"{version}; it names {', '.join(f'`~={p}`' for p in wrong) or 'none'} "
             "(update the example under *This package's own versioning*)"
         )

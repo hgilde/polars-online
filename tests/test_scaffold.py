@@ -83,7 +83,8 @@ def test_every_guide_that_states_the_floor_states_the_declared_one() -> None:
         found = _FLOOR_STATED.findall(" ".join(text.split()))
         if found:
             stated[path] = found
-    for path in ("README.md", "docs/RUNNER.md", "docs/RELEASE-READINESS.md"):
+    # The README's statement moved to VERSIONS.md (task 338 stage 8).
+    for path in ("docs/VERSIONS.md", "docs/RUNNER.md", "docs/RELEASE-READINESS.md"):
         assert path in stated, f"{path} no longer states the floor by its version"
     wrong = {p: v for p, vs in stated.items() for v in vs if v != SUPPORTED_FLOOR}
     assert not wrong, f"a floor other than {SUPPORTED_FLOOR}: {wrong}"

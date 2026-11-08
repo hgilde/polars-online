@@ -201,8 +201,8 @@ it:
 
 | to | read |
 |---|---|
-| treat a session boundary as a short step in place of a reset | [Sessions, gaps and steps back](../../README.md#sessions-gaps-and-steps-back) |
-| give each day a model of its own, written out when the day ends | [One row per closed group](../../README.md#one-row-per-finished-group) |
+| treat a session boundary as a short step in place of a reset | [Handle sessions, gaps and steps back](../how-to/handle-sessions-gaps-and-steps-back.md) |
+| give each day a model of its own, written out when the day ends | [Close groups and read each one's row](../how-to/close-groups.md) |
 | choose the half-life | [Choose a ridge and a half-life](../how-to/choose-a-ridge-and-half-life.md) |
 | keep each stock's rows in clock order, and read the warning when a query may not | [Put rows in clock order](../how-to/put-rows-in-clock-order.md) |
 | fit a separate model for each stock | [Fit one model per group](../how-to/fit-one-model-per-group.md) |

@@ -176,7 +176,7 @@ plays no part, scores a little lower. Each spec's [grid
 point](../GLOSSARY.md#grids) is chosen on the first half of the rows and
 scored on the second. The best point's R² over the rows that chose it
 overstates what choosing it earns ([Calibrating a
-model](../../README.md#calibrating-a-model)). Here the second half scores
+model](../CALIBRATION.md)). Here the second half scores
 higher all the same, since the first holds each fit's
 [warm-up](../GLOSSARY.md#warm-up-and-readiness).
 

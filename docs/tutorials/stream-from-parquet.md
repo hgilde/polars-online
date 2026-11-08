@@ -168,7 +168,7 @@ To take the query to your own data, start from the task that matches it:
 | fit a separate model for each value of a column, such as one per stock | [Fit one model per group](../how-to/fit-one-model-per-group.md) |
 | fit a model that follows the recent rows, along a clock | [Follow a local fit through a day](local-fit-with-a-clock.md) |
 | save what the bank learned and predict new rows from it | [Fit, save and serve a model bank](fit-save-and-serve.md) |
-| change the chunk size, filter the output or write a wide spec's fields | [As a query](../../README.md#as-a-query-lfonlinefit_predict) |
+| change the chunk size, filter the output or write a wide spec's fields | [Run a bank in a query](../how-to/run-a-bank-in-a-query.md) |
 | keep a large run's memory within a limit | [Bound a run's memory](../how-to/bound-memory.md) |
 | know why the chunking never changes the numbers | [Chunk invariance and streaming](../explanation/chunk-invariance-and-streaming.md) |
 | know why each row is predicted before it is learned | [Why every prediction is out-of-sample](../explanation/out-of-sample.md) |

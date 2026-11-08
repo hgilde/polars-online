@@ -112,7 +112,7 @@ These are the words of the library that the page uses:
 | word | what it means here |
 |---|---|
 | spec, bank | a spec is one model's description: the model, the columns it reads, and how it treats time. `po.ModelBank` fits a set of specs together over the same rows |
-| `ewridge`, `lasso`, `ew_cov` | the three models whose state holds a Gram: a ridge regression, a lasso, and the moments of columns with no target. [The README's model table](../README.md#models) lists every model |
+| `ewridge`, `lasso`, `ew_cov` | the three models whose state holds a Gram: a ridge regression, a lasso, and the moments of columns with no target. [The README's model table](MODELS.md#the-models-at-a-glance) lists every model |
 | Gram | a fit's running sums, as `bank.gram(spec)` returns them: one dict per group, whose keys the next table lists |
 | column | one axis of a Gram: `"intercept"` first when the spec fits one, then the spec's features |
 | block | the rows of one value of a spec's `group` column, and the Gram the bank keeps for them. Most recipes here make a week a block |
@@ -1319,8 +1319,8 @@ an integer or a text column, so make the week the Monday's day number,
 with `dt.date().cast(pl.Int32)` in the query. The last week never closes,
 since no row shows it has finished, so it stays in the state, where
 `bank.gram()` reads it.
-[One row per finished group](../README.md#one-row-per-finished-group) in
-the README has the rules.
+[Close groups and read each one's row](how-to/close-groups.md) has the
+rules.
 
 **A closed row holds the numbers `bank.gram()` would have returned for
 that week, bit for bit, laid out flat.** Its `comoments` is the upper
@@ -1332,7 +1332,7 @@ into the dict `gram()` returns. numpy reads it as it stands: lay
 and solve.
 
 **A state can be exported as JSON for a program in another language,**
-with `bank.write_json(path)` ([Reading a state without this library](../README.md#reading-a-state-without-this-library)).
+with `bank.write_json(path)` ([Read a state without this library](how-to/read-a-state-without-this-library.md)).
 The forty open weeks' state was 19 MB as `bank.save` wrote it, and 106 MB
 as JSON.
 

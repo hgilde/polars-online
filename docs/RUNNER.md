@@ -2,9 +2,9 @@
 
 A *model bank* is a set of models fitted together over the same rows
 ([the README's introduction](../README.md#introduction) defines the words
-this guide uses). The README's
-[Running a bank](../README.md#running-a-bank) drives the rows through a
-bank from a live Python process: a Polars query, or a loop over chunks. A
+this guide uses). [Run a bank in a query](how-to/run-a-bank-in-a-query.md)
+and [Run a bank in a Python loop](how-to/run-a-bank-in-a-python-loop.md)
+drive the rows through a bank from a live Python process. A
 scheduled job, or a deployment with no Python at all, runs the same bank
 from an input file to an output file instead, with the standalone `polars-online`
 program and a configuration file. This part of the library is the
@@ -102,7 +102,7 @@ shows how to run with `--no-output` when a run's product is its state.
 ### Closed groups to a sidecar file
 
 `group_close` emits a finished group's accumulators as one row and frees
-its state ([One row per finished group](../README.md#one-row-per-finished-group)).
+its state ([Close groups and read each one's row](how-to/close-groups.md)).
 A run writes those rows to a sidecar file as it goes. With no per-row
 output at all, that file is the whole product of an accumulate-only pass
 over a stream that does not fit in memory. Here `blocks.toml` holds one
@@ -356,7 +356,7 @@ TOML has no duration type, so the text is the whole spelling. It is the
 same text a Python spec keeps for `pl.duration(minutes=10)` or
 `timedelta(minutes=10)`. A numeric clock takes plain numbers of its own
 units. Either mixture is refused, naming the column and the parameter
-([Clock types and units](../README.md#clock-types-and-units)).
+([Clock types and units](MODELS.md#the-clock-and-its-units)).
 
 ## Memory, threads and chunk size
 
@@ -366,8 +366,8 @@ what Polars has read ahead of it.
 ### Memory
 
 The figures are the peak footprint on one file, `ewridge` with 20
-features, parquet in and out: the same measurement as the README's
-[Memory](../README.md#memory) table, made on 2026-10-24 on macOS with
+features, parquet in and out: the same measurement as the table of
+[Peak memory of each way of running a bank](PERFORMANCE.md#peak-memory-of-each-way-of-running-a-bank), made on 2026-10-24 on macOS with
 Polars 2.0.0 on 14 cores. The 24M rows are the 3M rows eight times over,
 so the state is the same at every size.
 
@@ -466,6 +466,6 @@ So the py-polars floor applies only to the Python calls this guide names.
 That floor is py-polars 1.37.0. `lf.online.fit_predict` and
 `ModelBank.fit_predict_batches` read with `LazyFrame.collect_batches`.
 py-polars added it in 1.34.0, but before 1.37.0 it ran ahead of a slower
-reader without limit, holding the input whole. The README's
-[Versioning and the Polars pin](../README.md#versioning-and-the-polars-pin)
-has the versions the suite passes on and which interfaces carry a promise.
+reader without limit, holding the input whole. [Versions and the Polars
+pin](VERSIONS.md) has the versions the suite passes on, and [Polars
+interfaces](explanation/polars-interfaces.md) which interfaces carry a promise.

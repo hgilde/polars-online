@@ -56,6 +56,6 @@ def test_every_po_gbdt_function_is_on_the_page():
 
 def test_the_readme_section_links_the_page():
     readme = (REPO / "README.md").read_text(encoding="utf-8")
-    start = readme.index("\n### Training XGBoost and LightGBM on files larger than memory\n")
-    section = readme[start : readme.index("\n## ", start + 1)]
-    assert "](docs/GBDT.md)" in section
+    where = readme.split("\n## Where to go next\n", 1)[1].split("\n## ", 1)[0]
+    # The README is a landing page, whose map links the page (task 338 stage 8).
+    assert "](docs/GBDT.md)" in where

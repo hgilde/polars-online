@@ -109,8 +109,8 @@ Three altitudes, each with its own job:
 | altitude | its job | what belongs there | what does not |
 |---|---|---|---|
 | **the introduction** (the top of the README) | make a reader who has never seen the library understand what it does and run one example | one paragraph per idea, the basic API example, the *consequence* of each design choice | mechanisms, measurements, per-model facts, deployment detail |
-| **the user guide** (the rest of the README) | let a reader who has decided to use it do so correctly | the concepts and the shared API, code with comments, the reasons and warnings code cannot carry | how it is implemented, how it is tested, why it was designed that way |
-| **the deep docs** (`docs/*.md`, docstrings, source comments) | answer the question the guide raised | mechanisms, measurements, design records, test citations | — |
+| **the user guide** (the tutorials, how-tos, reference pages and explanations the README's map links) | let a reader who has decided to use it do so correctly, and understand why it works as it does | the concepts and the shared API, code with comments, the reasons and warnings code cannot carry, the mechanism a user needs to trust a number | how it is implemented in the code, and the record of how it was decided |
+| **the deep docs** (the records, the docstrings' Notes, the contributor pages, source comments) | answer the question the guide raised | mechanisms, measurements, design records, test citations | — |
 
 **Depth has an address.** Detail removed from a higher altitude is moved,
 never deleted. It goes to the document that owns it, and a one-line
@@ -245,21 +245,24 @@ introduction carries one table row on testing, one sentence on saving
 state and one number on parallelism. The sections that own those topics
 carry the rest.
 
-**Every feature with a page of its own has a README section that leads to
-it.** A casual reader finds a feature by scanning the README, not the list
-of guides (the user, 2026-10-10: "We want to make sure that features with
-their own doc pages have a section in the main readme so a casual user can
-find"). So the section's heading names what the reader wants to do, as
-*Fitting many features from one pass* does for GRAM, rather than the page.
-It sits in the contents table, its own text links the page before any
-other link, and its recipe shows the capability working. The guides
-for changing the library and writing its docs need only a link.
-`test_every_guide_has_a_readme_section` in `tests/test_doc_structure.py`
-holds every guide in the *Using the library* group of `docs/README.md`'s
-*Guides* table to it, so a page listed there fails the test until its
-section exists. The pages written as one of §9's four kinds sit in the
-table's *New pages* group instead, which the test does not read, until the
-README becomes a landing page whose map links each reader task's pages.
+**Every feature has a line in the feature index, which the README's map
+links first.** A reader discovers a feature by scanning one list, and a
+landing page is too short to hold it (the user, 2026-11-06: "The goal is
+to have one place to discover the full list of features"). So
+[FEATURES.md](FEATURES.md) lists every model, every public function and
+method, the parameters every spec takes, the command line's flags and
+keys and the environment variables the library reads. Each line says in a
+few words what the feature does, and links the page that shows it. The
+README's map, *Where to go next*, links the index before anything else,
+and then gives a row for each reader task, linking that task's pages of
+each kind. `tests/test_feature_index.py` holds the index to the public
+API, read from the API snapshot (`tests/api_surface.txt`) and from
+`po.spec`'s builders. A public name added without a line in the index
+fails it, and so does a line with no link. Every new page also joins
+`docs/README.md`'s index of documents, under its kind. This rule replaced
+the user's rule of 2026-10-10 that every guide has a README section with a
+recipe, which could not hold once the README became a landing page over
+some seventy how-tos.
 
 ## 3. Code with comments, not prose that narrates code
 
@@ -651,7 +654,7 @@ on rereading:
 | 5. structure | break nothing | every table row has its header's cell count; every in-page link lands on a heading; every anchor another file uses survives; a link to moved text points where it went. `uv run python scripts/doc_structure.py [FILE.md ...]` runs all four as GitHub renders the file, and reports a table GitHub shows as code or text |
 | 6. measure again | compare | the same counts as step 1, side by side |
 | 7. render | read it as the repository will show it | GitHub's API renders it: `POST /markdown` with `mode=markdown`. `uv run python scripts/doc_review.py render FILE.md OUT.html` does it through `gh`, as a standalone page |
-| 8. test gate | run the tests that read the README | `tests/test_production_hardening.py` runs every python block and checks that each name a block reads was built by a block before it, `tests/test_llms_txt.py` checks every anchor `llms.txt` uses, `tests/test_api_links.py` resolves every API link and walks every model section, and `tests/test_doc_structure.py` runs step 5 over every Markdown file git tracks. `tests/test_example_steps.py` checks that each long example names its steps (§3). A README recipe is held to the output it shows by `test_a_readme_recipe_prints_what_it_shows`, a guide's by its page's own test, and `test_every_guide_has_a_readme_section` holds each guide to a README section (§2). `tests/test_no_plan_references.py` holds every reader-facing file to §4's rule on citations |
+| 8. test gate | run the tests that read the README | `tests/test_production_hardening.py` runs every python block and checks that each name a block reads was built by a block before it, `tests/test_llms_txt.py` checks every anchor `llms.txt` uses, `tests/test_api_links.py` resolves every API link and walks every model section, and `tests/test_doc_structure.py` runs step 5 over every Markdown file git tracks. `tests/test_example_steps.py` checks that each long example names its steps (§3). A README recipe is held to the output it shows by `test_a_readme_recipe_prints_what_it_shows`, a guide's by its page's own test, and `tests/test_feature_index.py` holds the feature index to the public API (§2). `tests/test_no_plan_references.py` holds every reader-facing file to §4's rule on citations |
 | 9. cold read | read it in order as a newcomer | a reader with none of the pass's context (no brief, no earlier version, no code) reads the rendered page from the top. They mark each paragraph whose purpose they cannot tell from what comes before it, and each example they could not run from what the page has shown. A writer who checks one part against the rules misses both: the rules are about sentences, and a writer knows what each paragraph is for |
 | 10. review in rounds | give the draft to reviewers with none of the pass's context, and revise it from their reports. Round 1 reviews the whole page. Each later round reviews only the text the round before it changed: the changed passages, with enough of their surroundings to read them. When a scoped round finds no *wrong* and no *rule* finding in the changed text, give the page one final full read. Fix its *wrong* and *rule* findings without opening another round, and stop: that read is the page's last | each reviewer has the page, these rules and the repository to check facts against, and nothing else: no brief, no earlier version and no earlier report. The reviewer sorts each finding into one of three classes: *wrong* (a false fact, a contradiction, missing or lost content, a broken link or anchor), *rule* (it breaks a written rule of this guide or the glossary, which the finding cites by section and rule), or *preference* (anything else, such as a better wording that breaks no rule). Fix every *wrong* and *rule* finding. Apply a *preference* only where it is clearly better and cheap, and log the rest. Where two reviewers' *rule* findings contradict each other, the rule is unclear: fix it in this guide in the same change, then go on. Later rounds are scoped because rounds over the whole page never came back clean: the glossary took 27 of them and the map of the rewrite 19. A reviewer who can check about a hundred claims against the code always finds one stated imprecisely, and each round's fixes add text for the next round to fault (the user, 2026-11-06, choosing "Scope later rounds") |
 
