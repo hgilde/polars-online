@@ -529,6 +529,15 @@ returns.
 
 ### Tests and documents
 
+- A new page, `docs/HIGHLIGHTS.md`, runs five tasks end to end on data
+  with a planted answer: automating a round of model selection, building
+  and deploying a forward-looking signal, training XGBoost and LightGBM on
+  files larger than memory, monitoring a live model, and measuring
+  correlations and fitting curves on tick data. It ends with an index of
+  the capabilities they use. The README gains a section, *What you can do
+  with it*, that calls out the five tasks. The glossary names the *bounded
+  EWMA*: `po.ewm_mean` with a `window_size`, an EWMA whose history has a
+  maximum age.
 - Four figures in the guides were measured again and dated, or corrected:
   the wide-row speeds against scikit-learn (`ewridge`'s update alone, and
   with solves every 1,000 rows); the Gaussian interval's coverage on a
