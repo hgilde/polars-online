@@ -9,7 +9,7 @@ without costing features, performance, stability, or any stated goal.
 
 *Added 2026-10-06:* this review uses the names of its day, from before task
 144 (2026-10-02) renamed the parameters and fields.
-[PERFORMANCE.md's table of names that changed](PERFORMANCE.md#names-that-changed)
+[VERSIONS.md's table of names that changed](VERSIONS.md#names-that-changed)
 gives today's for each, such as `half_life` for `halflife`.
 
 Outcome, measured rather than asserted:
@@ -28,7 +28,7 @@ Outcome, measured rather than asserted:
 
 **S5 — declined.** Its own entry says it "is a simplification only if it also
 reads better", and taking `&mut Vec<f64>` scratch through `solve_spd` makes the
-signature worse, not better, for allocations that `docs/PERFORMANCE.md` §5
+signature worse, not better, for allocations that `docs/records/PERFORMANCE-LOG.md` §5
 already measured as noise beside the O(k³) factorization.
 
 **S6 — still deferred**, on its own terms: it changes the state file layout and
@@ -194,7 +194,7 @@ expensive — but the default `solve_every = halflife/50` already amortizes it t
 within 1.5× of never-solving. The allocations are a small share of a solve
 that is dominated by the O(k³) factorization. **This is a simplification only
 if it also reads better**; as a performance change it is not worth the
-argument, and `docs/PERFORMANCE.md` §5 already rejects micro-optimizing here.
+argument, and `docs/records/PERFORMANCE-LOG.md` §5 already rejects micro-optimizing here.
 
 **Risk.** Low. **Expected:** marginal. Do it last or not at all.
 

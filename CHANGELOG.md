@@ -273,7 +273,8 @@ returns.
 - `refit_budget`'s default is 320 MiB (was 256) for `huber`, `quantile`,
   `sgd(loss="huber")` and `marginal(bin_stat="huber")`. Each row a refit
   holds now also keeps its one-pass residual and that residual's place in
-  the tree the warm-up's exact median is read from, 40 bytes a row, so a
+  the tree the warm-up's exact median is read from, 48 bytes a row (8 for
+  the residual and 40 for its place in the tree), so a
   target's reservation at 5 features and 500 rows rose from 100 KB to
   124 KB, and 256 MiB covered about a fifth fewer groups (2,164 such
   targets where it had covered 2,684); 320 MiB covers 2,706. Where the

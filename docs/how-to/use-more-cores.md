@@ -151,8 +151,8 @@ the split to the width and the bank's threads. It leaves whole a narrow
 spec, and a spec under a [hard window](../GLOSSARY.md#fitting-a-model)
 that snapshots every row, the default, whose block is a single row. The
 numbers are the same to the bit at any count, so a saved bank resumes
-under any count. On 14 threads ([PERFORMANCE
-§25](../PERFORMANCE.md#25-a-wide-marginal-split-across-the-pool-2026-09-25)):
+under any count. On 14 threads, through `ModelBank.fit_predict` with one
+spec and one group, the best of three runs, measured on 2026-09-25:
 
 | the spec | `"auto"` ran the bank |
 |---|---|
@@ -231,8 +231,7 @@ mkt-std1        R² 0.672 where chosen, 0.738 after
 
 On 2.56M rows over 64 groups, the six specs make 6 × 64 pieces of work
 every chunk. There the same query takes 29.0 s at one thread and 4.3 s at
-fourteen
-([PERFORMANCE §31](../PERFORMANCE.md#31-0130-against-0120-2026-09-29)).
+fourteen, measured on 2026-09-29 by `scripts/parallel_bench.py`.
 
 ## Check the result
 
@@ -263,7 +262,6 @@ threads=4 runs on 4 threads
 
 **Then time the run at `threads=1` and at the count you chose, on the same
 file.** For `ewridge` with 20 features over 64 groups, the rows a second
-rose 7.3 times from 1 to 14 threads on a 14-core machine. [The Parallelism
-figures,
-re-measured](../PERFORMANCE.md#the-parallelism-figures-re-measured) gives
-the rows a second at each thread count.
+rose 7.3 times from 1 to 14 threads on a 14-core machine. [Rows a second
+at each thread count](../PERFORMANCE.md#rows-a-second-at-each-thread-count)
+gives the rows a second at each count.

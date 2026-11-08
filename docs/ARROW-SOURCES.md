@@ -71,7 +71,7 @@ be stated plainly because they are the whole justification for §4's cost:
    `PySeries._export` this crossing calls. The package's floor of 1.34.0
    would stay. It is `LazyFrame.collect_batches`', which `ModelBank.fit(lf)`,
    the IO plugin and `with_windows` read with whatever the input path is
-   (docs/RELEASE-READINESS.md, *The floor and the ceiling*).
+   (docs/VERSIONS.md, *The floor*).
 2. **One conversion instead of two.** Today a DuckDB chunk becomes a polars
    frame and then an `ArrowChunk`. Both hops are buffer-sharing, so the cost is
    metadata and validity handling, not data — and §4 of

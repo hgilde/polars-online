@@ -2,8 +2,8 @@
 
 Usage: uv run --no-project --python 3.12 python scripts/release_version.py [--publish]
 
-The version lives in six places (docs/RELEASE-READINESS.md, "The steps of a
-release"): pyproject.toml, the workspace Cargo.toml's version and its two
+The version lives in six places (docs/contributing/cut-a-release.md, step
+5): pyproject.toml, the workspace Cargo.toml's version and its two
 path-dependency pins, python/polars_online/__init__.py and the generated
 docs/VALIDATION.md. They must agree, and CHANGELOG.md must have a section for
 it. The example pin in docs/VERSIONS.md, ``polars-online~=X.Y.0`` under *This

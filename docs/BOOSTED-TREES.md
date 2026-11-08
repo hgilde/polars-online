@@ -10,7 +10,7 @@ memory. The answer is a design, the measurements behind it, the ideas that
 did not survive measurement, and what building it in Rust would take. It
 keeps the names of its day: since task 144 (2026-10-02) `halflife` is
 `half_life` and `min_periods` is `min_weight`, and
-[PERFORMANCE.md's table of names that changed](PERFORMANCE.md#names-that-changed)
+[VERSIONS.md's table of names that changed](VERSIONS.md#names-that-changed)
 lists every rename. Where `n_eff` names a field a model writes, it is
 `weight_sum` today; the models' accessor keeps the name `n_eff` (CLAUDE.md
 rule 8).

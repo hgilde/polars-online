@@ -400,9 +400,7 @@ five runs, it took 1.6 times as long with a thousand one-row groups a chunk
 and 1.2 times as long with one stream. On Windows the binary's allocator is
 mimalloc, and these figures were not measured there.
 
-`scripts/memory_bench.py` makes these measurements, and
-[docs/PERFORMANCE.md](PERFORMANCE.md) §26 re-measures the command line, CSV
-and NDJSON included.
+`scripts/memory_bench.py` makes these measurements.
 
 ### The pipeline and its threads
 

@@ -1,4 +1,4 @@
-"""Cross-checks against river (docs/TESTING.md section B).
+"""Cross-checks against river (docs/records/TESTING-LOG.md section B).
 
 river is an independent implementation of several of the same algorithms, so it
 catches errors a self-written oracle cannot: a numpy reference written by the
@@ -440,7 +440,7 @@ class TestEwCovAgainstRiver:
     def test_matches_river_even_on_a_large_offset(self):
         """`EwCov` now keeps centered co-moments, like river's Welford updates,
         so the two agree at offsets where the old raw-moment form lost the
-        variance entirely (see ENHANCEMENTS E11b and docs/TESTING.md T-E9)."""
+        variance entirely (see ENHANCEMENTS E11b and docs/records/TESTING-LOG.md T-E9)."""
         rng = np.random.default_rng(19)
         base = rng.standard_normal(4000)
         for offset in (0.0, 1e6, 1e9):

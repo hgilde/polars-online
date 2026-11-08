@@ -15,7 +15,7 @@
 //! It exists for the models that standardize their features and read nothing
 //! but the diagonal — `kalman` and `sgd` — which until schema 3 carried a full
 //! `EwCov` for the purpose and paid `k²` co-moment updates a row for `k`
-//! variances (docs/PERFORMANCE.md §13). The numbers are the same to the bit:
+//! variances (docs/records/PERFORMANCE-LOG.md §13). The numbers are the same to the bit:
 //! every diagonal entry is updated with exactly the arithmetic `EwCov` uses
 //! for it, in the same order, so a model moved from one to the other kept
 //! its outputs (`tests/model_contract.rs`, the goldens).

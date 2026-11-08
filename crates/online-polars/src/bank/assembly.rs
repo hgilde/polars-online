@@ -129,7 +129,7 @@ impl Shape {
 /// index indirection, its validity packed on the way (`F64Column::run`); the
 /// general path scatters through `rows`. Same values either way: a
 /// processed, finite value lands, anything else leaves the NaN prefill
-/// (docs/PERFORMANCE.md §13).
+/// (docs/records/PERFORMANCE-LOG.md §13).
 fn scatter(col: &mut F64Column, ch: &ChunkOut, all: bool, vals: &[f64]) {
     debug_assert_eq!(vals.len(), ch.rows.len());
     match ch.contiguous() {
@@ -226,7 +226,7 @@ impl<'a> Sink<'a> {
 
     /// Runs in, every field: each run's `coef`-like buffers are taken, the
     /// rest is read. One job per field from `PAR_MIN_ROWS` rows between them
-    /// (docs/PERFORMANCE.md P10): one spec with a grid of instances used to
+    /// (docs/records/PERFORMANCE-LOG.md P10): one spec with a grid of instances used to
     /// assemble on a single thread.
     pub(super) fn absorb(&mut self, chunks: &mut [Box<ChunkOut>]) {
         #[cfg(test)]

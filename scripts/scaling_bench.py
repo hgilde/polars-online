@@ -1,4 +1,4 @@
-"""Thread-scaling row for the CI benchmark summary (docs/PERFORMANCE.md P8).
+"""Thread-scaling row for the CI benchmark summary (docs/records/PERFORMANCE-LOG.md P8).
 
 Throughput alone hides the thing most likely to regress: a change that
 serializes the fan-out looks fine on one thread and costs 4x on ten. This
@@ -59,7 +59,7 @@ def main() -> None:
 
     # Up to every core the machine has: the last row is the one that shows
     # whether the fan-out still scales where it matters, and stopping at 8 on
-    # a 14-core box hides exactly that (docs/PERFORMANCE.md §8). On a 4-core
+    # a 14-core box hides exactly that (docs/records/PERFORMANCE-LOG.md §8). On a 4-core
     # CI runner this collapses back to 1/2/4.
     cpus = os.cpu_count() or 8
     counts = sorted({c for c in (1, 2, 4, 8, cpus) if 1 <= c <= cpus})

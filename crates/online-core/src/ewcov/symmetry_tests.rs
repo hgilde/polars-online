@@ -166,7 +166,7 @@ fn an_old_state_loads_as_its_lower_triangle_mirrored() {
 /// bit: `c[i][j]` was `((a*b)*d_i)*d_j` and `c[j][i]` `((a*b)*d_j)*d_i`,
 /// which round differently. E48 proposed mirroring one triangle onto the
 /// other after each row and called it bit-identical; it was neither
-/// that nor faster (docs/PERFORMANCE.md section 14: 49% to 107% slower,
+/// that nor faster (docs/records/PERFORMANCE-LOG.md section 14: 49% to 107% slower,
 /// the mirror store walking a new cache line per element; measured again
 /// for task 294, +20% at `k = 20`). The matrix is kept as its lower
 /// triangle instead ([`LowerTriangle`]): nothing is mirrored per row,

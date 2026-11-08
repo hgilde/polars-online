@@ -585,7 +585,7 @@ pub fn usable(v: f64) -> bool {
 /// [`usable`] over every value of a row. Not `Iterator::all`: its early
 /// exit is worth nothing on rows that are nearly always usable, and a plain
 /// fold over the compare vectorises where the exit does not
-/// (docs/PERFORMANCE.md §20).
+/// (docs/records/PERFORMANCE-LOG.md §20).
 #[inline]
 pub fn all_usable(row: &[f64]) -> bool {
     row.iter().fold(true, |ok, &v| ok & usable(v))

@@ -468,7 +468,7 @@ def test_a_run_that_does_not_reach_the_end_writes_nothing(tmp_path):
     # where 1.x drains it and writes. Both are correct behaviour for their
     # version, and the hazard is strictly smaller on 2.0, so this asserts the
     # one the installed polars has rather than pinning either
-    # (docs/RELEASE-READINESS.md, "Polars 2.0.0rc1, measured").
+    # (docs/records/RELEASE-HISTORY.md, "Polars 2.0.0rc1, measured").
     plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_size=500)
     with pytest.raises(pl.exceptions.InvalidOperationError):
         plan.with_columns(pl.col("g").cast(pl.Int64, strict=True)).collect()

@@ -1,6 +1,6 @@
 # Put this project's toolchain on PATH (Windows):  . .\scripts\env.ps1
 #
-# The PowerShell counterpart of scripts/env.sh (docs/TESTING.md T-W9). Dot-source
+# The PowerShell counterpart of scripts/env.sh (docs/records/TESTING-LOG.md T-W9). Dot-source
 # it -- running it as a script gets its own scope and the changes are discarded.
 #
 # rustup installs cargo to %USERPROFILE%\.cargo\bin and uv installs to

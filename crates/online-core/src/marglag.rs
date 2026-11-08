@@ -36,7 +36,7 @@
 //! docs/PLAN.md task 123). `n_serial` reads the two autocorrelations alone,
 //! so the cross terms are the lead/lag by-product: worth having at the
 //! first lag or two, and two of the three lagged moments at every lag kept,
-//! the cheaper part of each lag's work (docs/PERFORMANCE.md §23).
+//! the cheaper part of each lag's work (docs/records/PERFORMANCE-LOG.md §23).
 //!
 //! # The recursion, and why it is [`crate::EwLagCov`]'s
 //!
@@ -747,7 +747,7 @@ impl MarginalLags {
 
     /// [`Self::update_target`] with the cross terms at every lag: the loop
     /// as it was before `cross_lags` existed (E70). One loop for both cases
-    /// measured 1% slower on the default (docs/PERFORMANCE.md §23), so the
+    /// measured 1% slower on the default (docs/records/PERFORMANCE-LOG.md §23), so the
     /// default keeps its own, and `cross_lags_keep_the_default_cross_terms_at_their_lags`
     /// holds the two loops to the same bits with every lag named.
     fn update_every_lag(&mut self, t: usize, x: &[f64], yt: f64, mix: PairMix<'_>, k: f64) {
@@ -803,7 +803,7 @@ impl MarginalLags {
     /// [`Self::update_target`] under `cross_lags`: the cross terms only at
     /// the lags it names, each moment in the expression the loop above
     /// gives it. Never inlined, so that the default path's caller stays the
-    /// size it was (docs/PERFORMANCE.md §23).
+    /// size it was (docs/records/PERFORMANCE-LOG.md §23).
     #[inline(never)]
     fn update_some_lags(&mut self, t: usize, x: &[f64], yt: f64, mix: PairMix<'_>, k: f64) {
         let PairMix {

@@ -1,6 +1,6 @@
 name: Mutants
 
-# Mutation testing (docs/TESTING.md T-D4). cargo-mutants makes one small change
+# Mutation testing (docs/records/TESTING-LOG.md T-D4). cargo-mutants makes one small change
 # at a time -- an operator flipped, a body replaced by a constant -- rebuilds,
 # and reruns the Rust tests. A mutant no test catches is a place where a bug
 # would pass the whole suite.

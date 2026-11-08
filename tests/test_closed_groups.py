@@ -68,7 +68,7 @@ def test_a_closed_row_is_the_gram_read_at_the_same_point():
     assert np.array_equal(got["means"], g["means"])
     # The row packs the upper triangle; that half is bit-identical, and the
     # lower one is its mirror (the two differ in the last bit -- the products
-    # are added in the opposite order, docs/PERFORMANCE.md §14).
+    # are added in the opposite order, docs/records/PERFORMANCE-LOG.md §14).
     k = len(g["columns"])
     iu = np.triu_indices(k)
     assert np.array_equal(got["comoments"][iu], g["comoments"][iu])
@@ -608,7 +608,7 @@ def test_the_high_water_mark_and_the_queue_survive_a_save_and_load(tmp_path):
 
 def toml_config(tmp_path, **kw):
     """Paths written POSIX-style, as `run_online` writes them: a Windows path's
-    backslashes are escapes in a TOML basic string (docs/TESTING.md T-W3b)."""
+    backslashes are escapes in a TOML basic string (docs/records/TESTING-LOG.md T-W3b)."""
     lines = [
         f'input = "{(tmp_path / "in.parquet").as_posix()}"',
         f'output = "{(tmp_path / "out.parquet").as_posix()}"',

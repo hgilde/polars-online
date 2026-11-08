@@ -1,4 +1,4 @@
-//! Edge cases of the chunk plan (docs/PERFORMANCE.md P9-P11), on both sides
+//! Edge cases of the chunk plan (docs/records/PERFORMANCE-LOG.md P9-P11), on both sides
 //! of `PAR_MIN_ROWS`.
 //!
 //! The bank lays a chunk out group after group (P9), builds each output

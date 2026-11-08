@@ -1531,11 +1531,14 @@ pool and the groups it runs at once.
 one order.** The update is cut into pieces fixed by `k` alone: diagonal
 blocks of 256 columns, and tiles of 128 to 255 columns a side. Each piece
 is one sequential call on one thread, whatever the number of threads
-([PERFORMANCE §37](PERFORMANCE.md#37-one-wide-gram-on-several-threads-2026-10-08)).
+(`crates/online-core/examples/gram_threads_bench.rs` compares the moments
+to one thread's bits at every count; all of them were equal when it was
+measured on 2026-10-08).
 A fit's factorization and solves are cut by shape the same way, and its
 eigendecomposition runs at a fixed parallel degree of eight. So a
 coefficient's bits do not follow the size of the pool either
-([§38](PERFORMANCE.md#38-a-solves-bits-whatever-the-pool-2026-10-09)).
+(`crates/online-core/src/solve/pool_tests.rs` runs each call in pools of
+1, 3, 8 and 14 threads and compares the results to the bit).
 
 **`gram_threads` takes its threads from the pool the bank runs its
 groups on.** The bank's `threads` sizes that pool, or, without it,
@@ -1836,4 +1839,4 @@ Each claim above that is not measured here rests on one of these.
 | Wooldridge, J. M. (2010). *Econometric Analysis of Cross Section and Panel Data*, 2nd ed. MIT Press. | the within, or fixed-effects, estimator (chapter 10) |
 | Winkler, A. M., Ridgway, G. R., Webster, M. A., Smith, S. M. and Nichols, T. E. (2014). Permutation inference for the general linear model. *NeuroImage* 92, 381–397. | sign flipping as a permutation test, flipping whole blocks, and the maximum statistic over many tests |
 | Zou, H. and Hastie, T. (2005). Regularization and variable selection via the elastic net. *Journal of the Royal Statistical Society, Series B* 67(2), 301–320. | the elastic net |
-| [PERFORMANCE §37 and §38](PERFORMANCE.md#37-one-wide-gram-on-several-threads-2026-10-08) | `gram_threads`, and a solve's bits in any pool, as measured |
+| `crates/online-core/examples/gram_threads_bench.rs` and `crates/online-core/src/solve/pool_tests.rs` | `gram_threads`, and a solve's bits in any pool, as measured |

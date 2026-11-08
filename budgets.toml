@@ -1,5 +1,5 @@
-# Performance and memory budgets that only tighten (docs/PERFORMANCE.md,
-# "Budgets"; scripts/budgets.py).
+# Performance and memory budgets that only tighten (docs/TESTING.md,
+# "Budgets that only tighten"; scripts/budgets.py).
 #
 # Each budget is a fixed number every push is measured against -- never the
 # previous run -- so small regressions add up against one number instead of

@@ -136,10 +136,9 @@ The command line's `--output-layout flat` does the same for its files
 the query running a chunk at a time. One before the bank makes Polars hold
 several blocks of each parquet file per thread. A run over 12M rows
 peaked at 2.53 GB with the filter before the bank, against 0.78 GB with
-the same filter after it ([Filter after the
-bank](../PERFORMANCE.md#filter-after-the-bank) gives the figures, and [How
-it was measured](../PERFORMANCE.md#how-it-was-measured-and-why-not-rss) the
-method).
+the same filter after it, measured on 2026-09-02 as the most memory the
+process held ([How the numbers are
+made](../PERFORMANCE.md#how-the-numbers-are-made) gives the method).
 
 To keep a model from learning some rows while still predicting them, give
 them weight `0` in place of a filter ([Hold a row

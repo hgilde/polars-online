@@ -2075,7 +2075,7 @@ impl pulp::WithSimd for StandardizeLanes<'_> {
 /// Partial sums the dot product is accumulated in. A single running sum is
 /// a chain of dependent additions, three or four cycles each whatever the
 /// core could do in parallel; eight independent ones run at the adder's
-/// throughput instead, and were most of a wide step (docs/PERFORMANCE.md
+/// throughput instead, and were most of a wide step (docs/records/PERFORMANCE-LOG.md
 /// §20). The order is fixed by this constant and the code below, not by
 /// the hardware, so every platform sums the same bits.
 const DOT_LANES: usize = 8;
@@ -2145,7 +2145,7 @@ impl OnlineModel for Sgd {
         // The row the model sees. Without a scaler it is `x` itself, the
         // intercept's constant 1 folded into `dot` and the update below:
         // copying `[1, x]` in front of every row was a tenth of a wide step
-        // (docs/PERFORMANCE.md §20). With one, `[1, z]` is standardized
+        // (docs/records/PERFORMANCE-LOG.md §20). With one, `[1, z]` is standardized
         // against the moments with this row admitted -- read off the scaler
         // as it stands, the way `predict` reads them (E24, and
         // `SgdCfg::standardize` for the order); the raw `[1, x]` is kept

@@ -1,5 +1,5 @@
 """How the Python surfaces' cost grows with the specs on one stream and with
-the stream's length (docs/PERFORMANCE.md, "How cost grows").
+the stream's length (docs/PERFORMANCE.md, "How cost grows with size").
 
 The Rust cells (``crates/online-bench/tests/scaling.rs``) hold the bank, the
 runner and the models by their allocations and saved bytes as well as their

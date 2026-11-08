@@ -1,4 +1,4 @@
-"""Edge-case matrix (docs/TESTING.md section C).
+"""Edge-case matrix (docs/records/TESTING-LOG.md section C).
 
 Each test pins behavior that was previously unspecified, undocumented, or --
 for the first two classes -- outright wrong.

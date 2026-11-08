@@ -217,7 +217,7 @@ pub use window::{
 ///   `seqtest` (0.2.0) likewise.
 /// - 3: `kalman` and `sgd` standardize with an [`EwDiag`] (means and
 ///   variances, O(k) a row) instead of a full [`EwCov`] they only ever read
-///   the diagonal of (docs/PERFORMANCE.md §13). Schema-2 states of both are
+///   the diagonal of (docs/records/PERFORMANCE-LOG.md §13). Schema-2 states of both are
 ///   converted on load by taking that diagonal, which is the same numbers;
 ///   every other model is unchanged.
 /// - 4: the spec every bank file carries gained `embargo`

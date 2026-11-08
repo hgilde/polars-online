@@ -1,4 +1,4 @@
-"""The README's Parallelism figures (docs/PERFORMANCE.md §12, re-run in §28).
+"""The README's Parallelism figures (docs/records/PERFORMANCE-LOG.md §12, re-run in §28).
 
     uv run python scripts/parallel_bench.py [OUTDIR]
 

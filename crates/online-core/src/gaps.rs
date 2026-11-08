@@ -190,7 +190,7 @@ impl Cross {
         debug_assert_eq!(z.len(), k);
         // The low parts are sized with the means, so the loop is straight
         // arithmetic (task 132's own means cost a 10-target `ewridge` a
-        // quarter of its rows a second with checks inside; PERFORMANCE §26).
+        // quarter of its rows a second with checks inside; PERFORMANCE-LOG §26).
         // A row of weight 0 takes no step (`crate::comp::add` says why).
         if bj > 0.0 {
             for (((m, lo), ci), &zi) in mj.iter_mut().zip(mj_lo.iter_mut()).zip(c.iter_mut()).zip(z)

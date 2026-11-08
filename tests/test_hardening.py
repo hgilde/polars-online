@@ -1,4 +1,4 @@
-"""Post-refactor hardening (docs/PERFORMANCE.md P1-P8 changed the whole hot path).
+"""Post-refactor hardening (docs/records/PERFORMANCE-LOG.md P1-P8 changed the whole hot path).
 
 The rewrite moved every output through flat slot-major buffers written by
 parallel per-instance tasks. Stride bugs in that layout are invisible at the

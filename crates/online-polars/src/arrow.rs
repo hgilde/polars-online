@@ -51,7 +51,7 @@ pub enum ArrowCol {
     Str(Utf8ViewArray),
     /// A signed integer: a group key, kept as an integer so the bank can
     /// bucket on the value itself -- no cast, no hash, no collision to
-    /// document (docs/PERFORMANCE.md P11) -- or an integer clock, kept as
+    /// document (docs/records/PERFORMANCE-LOG.md P11) -- or an integer clock, kept as
     /// an integer so its steps are taken in integers (docs/PLAN.md task
     /// 200).
     I64(Int64Array),
@@ -358,7 +358,7 @@ pub struct ArrowChunk {
     /// Where each name's columns sit in `cols`, in `cols` order: one form,
     /// or two when one spec's feature is another's group key. A lookup is a
     /// hash, not a scan of every column: at 10,000 features the scans were
-    /// most of a call (docs/PERFORMANCE.md §24).
+    /// most of a call (docs/records/PERFORMANCE-LOG.md §24).
     index: PlHashMap<PlSmallStr, Vec<usize>>,
     /// `names` as a set, for [`Self::has`].
     name_set: PlHashSet<PlSmallStr>,
@@ -677,7 +677,7 @@ impl ArrowChunk {
 /// The values of a numeric column, null as NaN, without a copy where there is
 /// nothing to fill in.
 ///
-/// Plain `f64` with NaN for null, not `Option<f64>` (docs/PERFORMANCE.md P3):
+/// Plain `f64` with NaN for null, not `Option<f64>` (docs/records/PERFORMANCE-LOG.md P3):
 /// every consumer already collapses the two, since a feature or weight is
 /// taken only when finite and a target only when finite. The NaN is
 /// [`online_core::NULL`], whose payload tells it from a NaN the data holds:
@@ -746,7 +746,7 @@ enum Want {
 fn wanted(specs: &[Spec]) -> Vec<(PlSmallStr, Want)> {
     let mut out: Vec<(PlSmallStr, Want)> = Vec::new();
     // First-seen order in `out`, membership in `seen`: a scan of `out` per
-    // column was quadratic in the columns (docs/PERFORMANCE.md §24).
+    // column was quadratic in the columns (docs/records/PERFORMANCE-LOG.md §24).
     let mut seen: PlHashSet<(PlSmallStr, Want)> = PlHashSet::default();
     let mut push = |name: &str, want: Want| {
         let key: PlSmallStr = name.into();
@@ -1163,7 +1163,7 @@ pub fn chunk_from_frame_at(
         // life (`online_core::ClockValue`). Casting it to a number instead
         // would expose its *internal representation*, so the same 60
         // seconds would be 60_000 / 60_000_000 / 60_000_000_000 clock units
-        // for Datetime(ms/us/ns) (docs/TESTING.md T-E10). `check_clocks` has
+        // for Datetime(ms/us/ns) (docs/records/TESTING-LOG.md T-E10). `check_clocks` has
         // already refused a spec that gives this clock plain numbers.
         if want == Want::Clock && s.dtype().is_temporal() {
             let who = format!("spec {spec:?}");
@@ -1213,7 +1213,7 @@ pub fn chunk_from_frame_at(
 /// its roles in the order features, targets (each target's column, or its
 /// formula's columns), clock, weight, session, group.
 /// Built once, where a scan of every spec's lists per column was quadratic
-/// in the columns (docs/PERFORMANCE.md §24).
+/// in the columns (docs/records/PERFORMANCE-LOG.md §24).
 fn first_readers(specs: &[Spec]) -> PlHashMap<&str, (&str, &'static str)> {
     let mut out: PlHashMap<&str, (&str, &'static str)> = PlHashMap::default();
     for s in specs {

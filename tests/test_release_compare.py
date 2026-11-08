@@ -1,6 +1,7 @@
 """`scripts/compare_release.py` and its workload, `scripts/release_probe.py`:
 the release step that compares every output with the last release's, bit
-for bit (docs/RELEASE-READINESS.md, "Cutting a release")."""
+for bit (docs/contributing/cut-a-release.md, step 1; docs/RELEASE-READINESS.md,
+"Compare with the last release, bit for bit")."""
 
 from __future__ import annotations
 

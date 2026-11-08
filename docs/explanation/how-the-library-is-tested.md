@@ -83,9 +83,9 @@ release's refused, and a 1.x release's continued as the CHANGELOG says.
 [VALIDATION.md](../VALIDATION.md), where the defaults were chosen, is
 regenerated and compared, so the numbers behind the defaults cannot
 silently stop being true. And no data file may be tracked: the tests generate or download their own
-data. TESTING.md's [Beyond the eight
-classes](../TESTING.md#beyond-the-eight-classes) names each of these
-tests.
+data. TESTING.md's [What the README's guarantees are held
+to](../TESTING.md#what-the-readmes-guarantees-are-held-to) names each of
+these tests.
 
 ## Where the suite runs
 

@@ -413,7 +413,7 @@ class TestPythonVersions:
 
 
 class TestMutationTesting:
-    """mutants.yml (docs/TESTING.md T-D4): the changed lines on every push
+    """mutants.yml (docs/records/TESTING-LOG.md T-D4): the changed lines on every push
     and pull request, gating; all of online-core weekly, reporting."""
 
     MUT = ALL["mutants.yml"]

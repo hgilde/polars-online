@@ -58,7 +58,7 @@ impl Scratch {
     /// In b-space the sum reads `sum(a_i b_i) = s` with `a_i = 1 / scale_i`
     /// and the bounds are `lo_i scale_i`, `hi_i scale_i`. Once per
     /// projection: they used to be recomputed, a division each, at every
-    /// one of the O(k log k) reads (docs/PERFORMANCE.md §13).
+    /// one of the O(k log k) reads (docs/records/PERFORMANCE-LOG.md §13).
     fn fill(&mut self, c: &Constraint, scales: &[f64]) {
         let k = scales.len();
         self.a.resize(k, 0.0);
@@ -250,7 +250,7 @@ impl Constraint {
             // The caller's units: `a_i = 1` and the bounds as given. Its own
             // instantiation of the algorithm, so the multiplications by one
             // fold away rather than read a prepared `a_i` per coordinate --
-            // that read alone cost the unscaled simplex 9% (docs/PERFORMANCE.md
+            // that read alone cost the unscaled simplex 9% (docs/records/PERFORMANCE-LOG.md
             // §13).
             None => Self::project_with(
                 b,

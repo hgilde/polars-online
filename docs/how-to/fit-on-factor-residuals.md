@@ -204,8 +204,8 @@ block of the file ahead, the second ridge alone over
 `pl.scan_parquet(...).with_columns(...)` held 848 MB at 4,000,000 rows. The
 same bank in a loop over the file's chunks, computing the columns in each
 chunk, held
-279 MB ([PERFORMANCE
-§47](../PERFORMANCE.md#47-factor-ridges-feeding-a-windowed-forward-ridge-2026-11-06)).
+279 MB, measured on 2026-11-06 as the most memory the process held, by
+`scripts/factor_residuals_bench.py`.
 Add a computed column that the bank does not need after `fit_predict`.
 Compute one that it does need in a loop over the file's chunks, where
 `collect_batches` gives the file one chunk at a time. This code runs both
@@ -231,7 +231,6 @@ the loop's predictions are the query's: True
 covers,** so its memory grows with the rows in the window, in each group.
 To keep fewer, give the second ridge `snapshot_every`: a snapshot every 10
 clock units keeps a tenth of them, and the window then covers between
-`window_size` less 10 and `window_size`. [PERFORMANCE
-§47](../PERFORMANCE.md#47-factor-ridges-feeding-a-windowed-forward-ridge-2026-11-06)
+`window_size` less 10 and `window_size`. `scripts/factor_residuals_bench.py`
 measures the time a row and the memory of this pipeline in rows, groups
 and the window's length.

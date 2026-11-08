@@ -856,6 +856,9 @@ reference entry for a data finding ends in its remedy, since it is the
 long form of a message that must say what to do; each step of adding a
 model says what the layer it touches holds; the contributor reference
 on the test machines keeps the reasons their last bits differ; the
+versions reference gives the short reason beside each default changed in
+a minor release, since a reader upgrading needs it to decide whether to
+restore the old one; the
 glossary gives the
 reason for each contested word, since a writer needs it to choose a new
 one; and this guide keeps its pass (§6) and its rewrites (§8) beside its

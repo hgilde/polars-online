@@ -927,7 +927,7 @@ pub struct Kalman {
     #[serde(skip)]
     gbuf: Vec<f64>,
     /// This row's process-noise variances, kept between rows so a step
-    /// allocates nothing for them (docs/PERFORMANCE.md §13).
+    /// allocates nothing for them (docs/records/PERFORMANCE-LOG.md §13).
     #[serde(skip)]
     qbuf: Vec<f64>,
     /// `share_p`'s noises, sorted to be summed in ascending order.

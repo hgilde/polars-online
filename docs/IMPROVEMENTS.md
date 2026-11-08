@@ -11,7 +11,7 @@ are cited from the code by their letters.
 plugin in task 85. C1, C7, C8, P1, U4 and X1 name them as they stood when
 each was done. Items written before task 144 (2026-10-02) use the names of
 their day, and
-[PERFORMANCE.md's table of names that changed](PERFORMANCE.md#names-that-changed)
+[VERSIONS.md's table of names that changed](VERSIONS.md#names-that-changed)
 gives today's for each, such as `half_life` for `halflife`. Where an
 item's `n_eff` names a field a model writes, it is `weight_sum` today; a
 model's accessor keeps the name `n_eff` (CLAUDE.md rule 8).
@@ -353,7 +353,7 @@ that doubles up to the slice's size and drops it after each slice — and
 macOS's malloc serves blocks that size straight from `vm_allocate` /
 `vm_deallocate`, one map-lock round trip and a TLB shootdown per call,
 which convoy under contention. jemalloc, which py-polars carries and the
-extension routes through (`PolarsAllocator`, docs/PERFORMANCE.md §6),
+extension routes through (`PolarsAllocator`, docs/records/PERFORMANCE-LOG.md §6),
 keeps those pages and never makes the calls; the CLI has no allocator of
 its own and runs on the system one. Reusing the runner's own slice buffers
 across chunks was tried and changed nothing (1.4 / 42.6 / 54.3 s): the
@@ -375,7 +375,7 @@ than made:
    through a `-sys` crate (`mimalloc` is the one that builds on both
    targets), which is exactly what rule 12 says to raise first. It would
    also have closed the 15% bank gap between the CLI and `po.run` measured
-   in docs/PERFORMANCE.md §10, before task 83 removed `po.run`.
+   in docs/records/PERFORMANCE-LOG.md §10, before task 83 removed `po.run`.
 2. **Serialize NDJSON on one thread in the CLI** (`Ndjson` through polars'
    `BatchedWriter` as the other formats are): steady 4.1 s, no new link, and
    the CLI's NDJSON stays 4× slower than it was measured under jemalloc
@@ -390,7 +390,7 @@ are unaffected.
 
 ### P1 — `.over(group)` ran the groups one at a time — *done*
 
-docs/PERFORMANCE.md P5 measured the expression plugin at a fraction of the
+docs/records/PERFORMANCE-LOG.md P5 measured the expression plugin at a fraction of the
 bank's throughput on grouped data and concluded the gap was polars' own
 gather/scatter, out of reach from a plugin. That was wrong. `POLARS_MAX_THREADS=1`
 gave the same throughput as 14 threads, and polars-expr's source shows why:
@@ -416,7 +416,7 @@ the P5 target asked for. Every expression == bank test is unchanged.
 
 ### P2 — the per-row `Step.pred` allocation — *rejected*
 
-docs/PERFORMANCE.md P1 claims a `pred_buf` catches the `Vec` each `Step`
+docs/records/PERFORMANCE-LOG.md P1 claims a `pred_buf` catches the `Vec` each `Step`
 returns; no such buffer exists — every model allocates `pred` per row. Measured
 in a pure-core loop (`EwRidge`, k=5): a `vec![NAN; 1]` alloc+free is 14 ns
 against a 95 ns non-solve step (15%), or ~4% at the default solve cadence
@@ -424,12 +424,12 @@ against a 95 ns non-solve step (15%), or ~4% at the default solve cadence
 `OnlineModel` trait for every model to write into a caller buffer. Not worth
 it at 4%; the stale claim is corrected in PERFORMANCE.md and the code comment.
 
-### P3 — group-key extraction casts every key to a string — *rejected 2026-09-02, then done as PERFORMANCE P11 on 2026-09-04*
+### P3 — group-key extraction casts every key to a string — *rejected 2026-09-02, then done as PERFORMANCE-LOG P11 on 2026-09-04*
 
 `group_indices` hashes group values after a `String` cast. Measured on 2M
 rows / 1000 groups: int keys 167 ms, string keys 146 ms, categorical 176 ms,
 end to end. The cast is not where the time goes; nothing to do, it read
-then. PERFORMANCE P11 did it two days later: integer keys are bucketed by
+then. PERFORMANCE-LOG P11 did it two days later: integer keys are bucketed by
 value (`integer_groups` in `bank.rs`), and `group` went from 8.6 to 1.6 ms
  on the 64-group chunk.
 
@@ -437,7 +437,7 @@ value (`integer_groups` in `bank.rs`), and `group` went from 8.6 to 1.6 ms
 
 Not a code finding: a documentation one, found by re-running the command the
 README cites. Every `ewridge` case was 14–62% *faster* than the table claimed
-(the allocator fix, PERFORMANCE §6, landed after the table was written), and
+(the allocator fix, PERFORMANCE-LOG §6, landed after the table was written), and
 `rls` was **48% slower** — 3.13M rows/s published, 1.63M measured.
 
 `rls` is C5's bill, and it is now attributed rather than assumed:
@@ -449,12 +449,12 @@ does `k` Givens rotations with a square root each, and in exchange `rls` no
 longer dies of cancellation on one extreme row. The right trade, wrongly
 advertised.
 
-README table and prose refreshed, PERFORMANCE §8 records the comparison, and
+README table and prose refreshed, PERFORMANCE-LOG §8 records the comparison, and
 `scripts/scaling_bench.py` now runs up to every core the machine has — it
 stopped at 8, which on a 14-core box hides the row the script exists to show
 (1→14 threads is 6.6×).
 
-Then the bill was itemized (PERFORMANCE §8, 2026-09-02): half of the QR
+Then the bill was itemized (PERFORMANCE-LOG §8, 2026-09-02): half of the QR
 form's row was the back-substitution, not the rotations, because its sum ran
 in the one order that serialized every row on the coefficient just solved.
 Summing from the far end — one `.rev()`, a rounding-level change inside the

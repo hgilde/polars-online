@@ -1,5 +1,7 @@
 # Oracle coverage: which features and parameters an oracle or a known dataset holds
 
+*Status, 2026-11-08: a record, kept current by hand. The inventory of features and parameters that no third-party oracle or known dataset holds yet, with candidate sources for each; docs/TESTING.md describes the oracles the suite runs now.*
+
 *2026-11-01. First pass, written from the test suite at `4ce972b1`, by
 reading the tests and grepping them; nothing was run. The user asked
 (2026-11-01): "Find features or parameters that are not tested by an

@@ -45,14 +45,15 @@ dependencies = [
     # reads ahead of a slower consumer without limit: measured 2026-10-12,
     # draining a 1 GB parquet scan held 1,586 MB on 1.34.0 and 1,591 MB on
     # 1.36.1, against 329 MB on 1.37.0, so a source larger than memory was
-    # held whole. `docs/RELEASE-READINESS.md` has the matrix and the command
-    # to reproduce it.
+    # held whole. `docs/VERSIONS.md` has the measurement, and
+    # `docs/records/RELEASE-HISTORY.md` the matrix and the command to
+    # reproduce it.
     #
     # The ceiling was `<2` and was raised to `<3` for 0.5.1, deliberately and
     # on measurement rather than on 2.x keeping the interface: the whole
     # suite passes on 2.0.0rc1 with the same numbers as on 1.44, all three
     # interfaces work, and `LazyFrame.collect_batches` -- the floor -- is
-    # unchanged (`docs/RELEASE-READINESS.md`). It is still a bet on the rest
+    # unchanged (`docs/records/RELEASE-HISTORY.md`). It is still a bet on the rest
     # of 2.x, hedged two ways: `polars-canary.yml` runs the suite against the
     # latest polars weekly, and `release.yml` runs it again before every
     # upload, on the newest version this range admits, blocking. It was

@@ -507,8 +507,12 @@ at a smaller `L`, 192. Anywhere from 128 to 512 reads within 0.01 of the best,
 0.775, which is still short of the truth of 0.8.
 
 The lag inversion is here because its lagged co-moments are a state a bank
-already keeps, as `ew_cov(lags=...)`. What the lags do to `ew_cov`'s
-throughput is measured in [docs/PERFORMANCE.md](PERFORMANCE.md) §15.
+already keeps, as `ew_cov(lags=...)`. With `lags` 1 to 5 at 20 columns,
+`ew_cov` ran 1.15M rows a second against 2.12M without them, measured on
+2026-09-06: five more `k × k` outer products a row, and the ring of rows
+they need. [Rows a second for each
+model](PERFORMANCE.md#rows-a-second-for-each-model) has the current
+figure.
 
 ## 7. `deco`: an equicorrelation that moves
 

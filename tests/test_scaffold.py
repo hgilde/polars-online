@@ -18,7 +18,7 @@ def test_native_extension_loads() -> None:
 # The version the wheel is built and tested against. Cargo.toml pins rust
 # polars =0.55.2, the newest crate on crates.io (2026-10-08): py-polars 2.0
 # is a Python-side major, and the wheel's own copy never meets the user's
-# (docs/RELEASE-READINESS.md). `uv.lock` holds the dev environment to it.
+# (docs/explanation/polars-interfaces.md). `uv.lock` holds the dev environment to it.
 # Moved 1.44.1 -> 1.44.2 for 0.5.1: every golden file passed on it
 # unmodified, and `docs/VALIDATION.md`, regenerated on it, changed only in
 # its header and one timing. Moved 1.44.2 -> 2.0.0 on 2026-10-08 (review
@@ -26,8 +26,8 @@ def test_native_extension_loads() -> None:
 # of 2026-10-08): the goldens passed unmodified again, and VALIDATION.md
 # changed only in its header and one timing.
 BUILT_AGAINST = "2.0.0"
-# Measured floor -- see the note in pyproject.toml and the matrix in
-# docs/RELEASE-READINESS.md. `LazyFrame.collect_batches`, which
+# Measured floor -- see the note in pyproject.toml, docs/VERSIONS.md's
+# *The floor*, and the matrix in docs/records/RELEASE-HISTORY.md. `LazyFrame.collect_batches`, which
 # `lf.online.fit_predict` reads with, arrived in 1.34.0 and first waits for
 # a slower reader in 1.37.0 (before it, a 1 GB source was held whole).
 SUPPORTED_FLOOR = "1.37.0"

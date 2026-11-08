@@ -18,7 +18,7 @@
 //! `E[x²] − m²`, and that subtraction loses precision when the mean is large
 //! relative to the spread: a unit-variance feature around 1e8 has
 //! `var/E[x²] ≈ 1e-16`, so the variance was destroyed entirely. With this form
-//! the variance is accurate at any offset (see `docs/TESTING.md` T-E9 and the
+//! the variance is accurate at any offset (see `docs/records/TESTING-LOG.md` T-E9 and the
 //! river cross-check in `tests/test_river.py`). [`EwCov::raw`] reconstructs the
 //! raw moment as `C_ij + m_i m_j` for the callers that genuinely need it (the
 //! uncentered normal equations).
@@ -2442,7 +2442,7 @@ impl EwCovModel {
                 }
                 EwCovStat::Corr => {
                     // `k` square roots, not `k(k-1)`: at k = 20 the pairwise
-                    // `sqrt` was 80% of `ew_cov`'s row (docs/PERFORMANCE.md
+                    // `sqrt` was 80% of `ew_cov`'s row (docs/records/PERFORMANCE-LOG.md
                     // §13). Same product of the same two roots, so the
                     // correlations are bit-identical.
                     // Each pair written into its slot (a `push` per pair

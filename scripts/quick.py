@@ -7,14 +7,17 @@
 
 Reads the changed paths -- `git diff --name-only` against the base, the
 working tree's edits and untracked files included -- and maps each to the
-tests that cover it (`plan`). A Rust source change runs that crate's `cargo
-test` and rebuilds the extension before pytest, since pytest would otherwise
-test the old binary. Python test files run at the essentials tier unless
+tests that cover it (`plan`). A source change in a crate the extension
+links rebuilds the extension before pytest, since pytest would otherwise
+test the old binary, and a change in a crate with Rust tests runs that
+crate's `cargo test`. Python test files run at the essentials tier unless
 `--extended` is given.
 
-It never replaces the gate. `scripts/gate.sh` (the essentials) still runs
-before each commit and `scripts/gate.sh --extended` before each push: a
-change can break a test this map does not reach, and only those find it.
+It never replaces the test gate. Working alone, `scripts/gate.sh` (the
+essentials) runs before each commit; with several branches in flight, it
+runs once on each wave of two or more merged branches; and `scripts/gate.sh
+--extended` runs before each push: a change can break a test this map does
+not reach, and only those find it.
 
 How a path maps, first rule that applies:
 

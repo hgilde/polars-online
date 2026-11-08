@@ -1,6 +1,6 @@
 //! One output column under construction, as the bank assembles its
 //! struct columns: the values and their validity bits, handed on without a
-//! second copy (docs/PERFORMANCE.md §13).
+//! second copy (docs/records/PERFORMANCE-LOG.md §13).
 //!
 //! The buffers are Arrow's already -- a values `Vec` and a validity `Bitmap`
 //! are exactly what a primitive array is -- so every finisher builds an Arrow
@@ -25,7 +25,7 @@ use polars_arrow::datatypes::{ArrowDataType, DTYPE_ENUM_VALUES_NEW, IntegerType,
 /// `is_finite` over `values` in one pass at `finish`. Neither sets a bit per
 /// value as it lands: that read-modify-write was a third of assembling a
 /// 230-statistic `ew_cov`, and the separate pass re-read every value from
-/// memory (docs/PERFORMANCE.md §13). `n_eff` is the one column reported as it
+/// memory (docs/records/PERFORMANCE-LOG.md §13). `n_eff` is the one column reported as it
 /// is, finite or not, so it alone keeps a bit set per row (`set`).
 pub(crate) struct F64Column {
     values: Vec<f64>,

@@ -424,7 +424,7 @@ pub fn solve_spd(a: &[f64], b: &[f64], k: usize, m: usize) -> Option<(Vec<f64>, 
 /// rows -- `ew_class`'s classes that did not learn the row -- keeps this and
 /// pays the O(k³) factorization once instead of on every row; the solves it
 /// serves are the ones [`quad_forms_logdet`] does, so the numbers are the
-/// same to the bit (docs/PERFORMANCE.md §13). A caller whose matrix moves by
+/// same to the bit (docs/records/PERFORMANCE-LOG.md §13). A caller whose matrix moves by
 /// a scale and a rank-one step, or by a rescaling of its rows and columns,
 /// can move the factor with it in `O(k²)` ([`Self::updated`],
 /// [`Self::congruent`]); a factor so moved holds the moved matrix to

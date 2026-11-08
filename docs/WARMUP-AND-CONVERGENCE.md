@@ -25,7 +25,7 @@ The clock settings §4 and §6 name have since become one parameter,
 `restart_after_step_back`: `min_session_clock` gave way to
 `min_backwards_jump` in 0.9.0, and task 144 merged that with
 `on_clock_reset`
-([PERFORMANCE.md's table of names that changed](PERFORMANCE.md#names-that-changed)).
+([VERSIONS.md's table of names that changed](VERSIONS.md#names-that-changed)).
 
 ---
 

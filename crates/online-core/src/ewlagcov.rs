@@ -227,7 +227,7 @@ impl EwLagCov {
         // are the bits they were; what it saves is the `k * k` pair
         // subtractions per lag that task 101 put in the inner loop, which
         // also kept it from vectorising (0.11.1 ran `ew_cov(lags=[1..5])`
-        // at k = 20 at 0.53 of 0.10.0's rows a second; PERFORMANCE §26).
+        // at k = 20 at 0.53 of 0.10.0's rows a second; PERFORMANCE-LOG §26).
         let (now, then) = (&mut self.now.0, &mut self.then.0);
         now.clear();
         now.extend((0..k).map(|i| a * b * dev(i, x[i])));

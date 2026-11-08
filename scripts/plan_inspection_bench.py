@@ -1,4 +1,4 @@
-"""What inspecting a plan costs `fit(lf)` (docs/PERFORMANCE.md §21): the
+"""What inspecting a plan costs `fit(lf)` (docs/records/PERFORMANCE-LOG.md §21): the
 deprecated JSON path -- serialize, `json.loads` and the walk that looks for
 an order hazard -- and `explain`, the filter that now skips the JSON on a
 plan with no hazard, for four plans.

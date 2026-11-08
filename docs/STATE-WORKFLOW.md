@@ -391,7 +391,7 @@ query fails after the bank, polars now stops the bank instead of running it
 to the end of its input. It does so once the stream is long enough for the
 failure to arrive before the bank reaches that end, and the state is then
 not written. It was measured with chunks of 500 rows and a cast that fails
-after the bank ([docs/RELEASE-READINESS.md](RELEASE-READINESS.md#polars-200rc1-measured-2026-09-10),
+after the bank ([docs/records/RELEASE-HISTORY.md](records/RELEASE-HISTORY.md#polars-200rc1-measured-2026-09-10),
 *Polars 2.0.0rc1, measured*):
 
 | rows | chunks | 1.44.1 writes the state | 2.0.0rc1 writes the state |
@@ -689,7 +689,7 @@ unobservable before: `predict(path)`'s read time (R3), and `coef` on a
 which takes milliseconds: the state is O(specs × groups × p²). R3 holds the
 state bytes in the plan for its lifetime, the same order as one bank. R4
 does strictly less work for a `head(n)`. Nothing on the per-row path moves,
-so the 12M-row numbers in `docs/PERFORMANCE.md` §11 are unaffected.
+so the 12M-row numbers in `docs/records/PERFORMANCE-LOG.md` §11 are unaffected.
 
 **Stability.** The design depends on none of the version-specific facts. It
 is correct whether the source runs once or twice (R2), and whether polars

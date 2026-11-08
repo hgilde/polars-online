@@ -1,6 +1,6 @@
 """T-D2: property-based tests over adversarial streams.
 
-Section C of docs/TESTING.md lists edge cases someone thought of. This file
+Section C of docs/records/TESTING-LOG.md lists edge cases someone thought of. This file
 generates them instead: mixed nulls, duplicate and backwards clocks, constant
 and collinear features, weight extremes, tiny groups, unusual chunkings — and
 asserts the invariants that must hold for *every* model on *every* stream.

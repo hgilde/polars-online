@@ -1,5 +1,5 @@
 //! `Sgd::step` alone at a wide `k`, no Polars: the per-feature cost of the
-//! inner loop, which is what docs/PERFORMANCE.md §19 measured at 13–14 ns
+//! inner loop, which is what docs/records/PERFORMANCE-LOG.md §19 measured at 13–14 ns
 //! per feature per row through the bank against about 5 ns for sklearn's
 //! batched Cython loop.
 //!

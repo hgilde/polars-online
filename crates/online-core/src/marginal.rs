@@ -428,7 +428,7 @@ pub struct Marginal {
     /// the bins are and for the same reason: inline they add hundreds of
     /// bytes to every `Marginal`, which pushes the vectors the per-row loop
     /// reads further apart and costs a stream that uses neither feature
-    /// (docs/PERFORMANCE.md §17). `default` so
+    /// (docs/records/PERFORMANCE-LOG.md §17). `default` so
     /// a state written before E66 loads with none, but **not** skipped: only
     /// the last field may skip, and that is `win`. Two skipping fields in a
     /// row are ambiguous in the compact encoding, which writes a struct as an
@@ -1599,7 +1599,7 @@ impl Marginal {
     /// the compiler assume the callee could reallocate `mx`, `sxx` and
     /// `sxy`, so it reloads their base pointers every iteration and stops
     /// vectorizing. Measured: 54M rows/s with the branch inside, 74M with it
-    /// out, on a stream with no lags at all (docs/PERFORMANCE.md §17). The
+    /// out, on a stream with no lags at all (docs/records/PERFORMANCE-LOG.md §17). The
     /// arithmetic is unchanged -- `a` and `b` are recomputed from the same
     /// values with the same operations, so the moments stay bit-identical to
     /// `ew_cov(lags=)`, which `lagged_pair_moments_are_ew_covs_to_the_bit`
@@ -1774,7 +1774,7 @@ impl Marginal {
     /// microseconds, idle threads being woken for it, and at `p = 10,000` a
     /// row of the moments alone is about six. At one and nine targets, one
     /// fork-join per row ran at best 0.6 and 1.7 times as fast as no split;
-    /// one per 64 rows, 3.9 and 6.5 times (docs/PERFORMANCE.md §25).
+    /// one per 64 rows, 3.9 and 6.5 times (docs/records/PERFORMANCE-LOG.md §25).
     pub fn step_sharded(
         &mut self,
         x: &[f64],
@@ -2185,7 +2185,7 @@ impl Marginal {
             // The runs are read by a window's truncated pair alone, and a
             // window is fixed when the model is built: without one they were
             // kept for nothing, and at `p·T` slots that was half the model's
-            // time at width (docs/PERFORMANCE.md §24).
+            // time at width (docs/records/PERFORMANCE-LOG.md §24).
             if self.win.is_some() {
                 self.y_runs
                     .track_one(self.cfg.n_targets, t, yt, self.rows_t[t]);
@@ -2381,7 +2381,7 @@ fn pair_kernel_one(
 /// The most rows a batch holds, and the bytes of features it may hold:
 /// enough rows that a fork-join is a small part of a flush (one per 64 rows
 /// ran within 6% of one per 256 at nine targets, and 29% short of it at one,
-/// docs/PERFORMANCE.md §25), few enough that a group's batch stays small
+/// docs/records/PERFORMANCE-LOG.md §25), few enough that a group's batch stays small
 /// beside its model.
 const BATCH_ROWS: usize = 256;
 const BATCH_BYTES: usize = 8 << 20;
@@ -2397,7 +2397,7 @@ fn batch_rows(p: usize) -> usize {
 /// on an odd feature reads each of its slices a double off the 16-byte
 /// boundary a vector load of two doubles is aligned to. Even cuts took 9
 /// to 16% off a flush of 28 ranges of 10,000 features, each 357 or 358
-/// wide, whatever the targets, lags or bins (docs/PERFORMANCE.md §39).
+/// wide, whatever the targets, lags or bins (docs/records/PERFORMANCE-LOG.md §39).
 /// Where the cuts fall moves no number: each range steps its own pairs.
 fn shard_cuts(p: usize, count: usize) -> Vec<usize> {
     let even = p >= 3 * count;
@@ -2414,14 +2414,14 @@ fn shard_cuts(p: usize, count: usize) -> Vec<usize> {
 /// each part a spec adds costs beside them in units of that: a lagged
 /// moment (a lag's autocovariance, or one of a cross lag's two terms) and
 /// the bins' cell. Fitted to `marg_shard_bench` on an M4 Pro, within a
-/// fifth on the eleven shapes of docs/PERFORMANCE.md §25; only their order
+/// fifth on the eleven shapes of docs/records/PERFORMANCE-LOG.md §25; only their order
 /// of magnitude matters to what they decide.
 const PAIR_NS: f64 = 0.6;
 const LAG_UNITS: f64 = 0.4;
 const BIN_UNITS: f64 = 9.0;
 
 /// The pair work a shard of a flush must have for the fork-join to be a
-/// small part of it, in nanoseconds (docs/PERFORMANCE.md §25).
+/// small part of it, in nanoseconds (docs/records/PERFORMANCE-LOG.md §25).
 const SHARD_NS: f64 = 100_000.0;
 
 impl MarginalCfg {
@@ -2684,7 +2684,7 @@ impl<'a> MarginalShard<'a> {
     /// one target at a time through every held row, its lags, runs and pair
     /// moments in `step`'s order on each. A target's slice of the range then
     /// stays in cache through the batch, where row by row every target's
-    /// slice passed through the cache once a row (docs/PERFORMANCE.md §39).
+    /// slice passed through the cache once a row (docs/records/PERFORMANCE-LOG.md §39).
     /// The numbers are the same: a target's pairs read nothing that another
     /// target's pairs or the bins' cells write, so each pair still takes
     /// every row in order, and its lags still read its means before the row.
