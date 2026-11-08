@@ -1615,17 +1615,16 @@ half-life. Measured under `loss="squared"` on two features at
 `half_life=200`, one row a clock unit, after a change of regime that moved the intercept by 46 (the worst
 of 50 seeds, the largest coefficient gap to the decayed least squares):
 
-| `alpha` | at its steady state, before the break | 4 half-lives after | 12 half-lives after |
-|---|---|---|---|
-| 0.1, the default | 0.17 | 34.4 | 19.9 |
-| 0.3 | 0.24 | 18.4 | 0.90 |
-| 1.0 | 0.43 | 2.6 | not measured |
+| `alpha` | at its steady state, before the break | 4 half-lives after | 8 half-lives after | 12 half-lives after |
+|---|---|---|---|---|
+| 0.1, the default | 0.17 | 34.4 | 28.5 | 19.9 |
+| 0.3 | 0.24 | 18.4 | 2.7 | 0.86 |
+| 1.0 | 0.43 | 2.7 | 0.61 | 0.85 |
 
-At 8 half-lives after the break, the worst gap at `alpha=1` was 0.70,
-against 28.5 at the default. At the default the intercept closed at 0.011 a
-row, against
+At the default the intercept closed at 0.011 a row, against
 `2·alpha·√(1 − λ)` = 0.012. A larger `alpha` follows a break sooner and moves
-more from row to row at its steady state. Over the 24 half-lives after the
+more from row to row at its steady state: at `alpha=1` the gap stops
+shrinking by 8 half-lives, within twice its steady state's. Over the 24 half-lives after the
 noise quadrupled, the default came at most 0.23 from the decayed least
 squares, and `alpha=1` 1.17.
 
@@ -3369,7 +3368,7 @@ GARCH pairs (their Table 2):
 
 | `boundary_gamma` | a change soon after the history | stable streams flagged, at a nominal 0.05 |
 |---|---|---|
-| 0, the default | caught latest | 0.047 to 0.087 |
+| 0, the default | caught latest | 0.050 to 0.077 |
 | 0.25 | caught sooner | 0.047 to 0.087 |
 | 0.45 | caught soonest | 0.106 to 0.174 |
 

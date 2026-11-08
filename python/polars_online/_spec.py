@@ -2953,9 +2953,6 @@ def ftrl(
     - :func:`lasso`, an L1 penalty on the mean scale, solved on running
       sums.
     - :func:`sgd`, gradient steps under other losses.
-    - `ftrl in docs/MODELS.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/MODELS.md#ftrl--online-logistic-regression>`_:
-      the measurements of how fast the fit follows a break.
 
     .. rubric:: Notes
 
@@ -2979,9 +2976,43 @@ def ftrl(
     decay factor over one row's clock, however large the error. A break that moves
     a coefficient by ``D`` takes about ``D / (2 * alpha * sqrt(1 - f))``
     rows to follow. The large gradients just after it increase the sums that
-    divide every step for about a half-life. A larger ``alpha`` follows a
-    break sooner and moves more after. ``docs/MODELS.md`` has the
-    measurements.
+    divide every step for about a half-life. It was measured under
+    ``loss="squared"`` on two features at ``half_life = 200``, one row a
+    clock unit, after a change of regime that moved the intercept by 46.
+    The table gives the worst of 50 seeds, the largest coefficient gap to
+    the decayed least squares:
+
+    .. list-table::
+       :header-rows: 1
+
+       * - ``alpha``
+         - at its steady state, before the break
+         - 4 half-lives after
+         - 8 half-lives after
+         - 12 half-lives after
+       * - 0.1, the default
+         - 0.17
+         - 34.4
+         - 28.5
+         - 19.9
+       * - 0.3
+         - 0.24
+         - 18.4
+         - 2.7
+         - 0.86
+       * - 1.0
+         - 0.43
+         - 2.7
+         - 0.61
+         - 0.85
+
+    At the default the intercept closed at 0.011 a row, against
+    ``2 * alpha * sqrt(1 - f)`` = 0.012. So a larger ``alpha`` follows a
+    break sooner, and it moves more from row to row at its steady state:
+    at ``alpha = 1`` the gap stops shrinking by 8 half-lives, within twice
+    its steady state's. Over the 24 half-lives after the noise quadrupled, the
+    default came at most 0.23 from the decayed least squares, and
+    ``alpha = 1`` came 1.17 from it.
 
     **Rows the target is not learned from.** The model learns nothing
     about the target from some rows: a row where it is absent, a row of
@@ -4504,11 +4535,13 @@ def marginal(
     0, its first two rows, nothing is clipped, as :func:`huber` down-weights
     nothing before its scale exists. It was measured against statsmodels'
     batch M-location of each bin on 20,000 rows in 16 bins, with no decay
-    and spikes of 50 on 1%, 5% and 12% of the rows. It lands within 0.001,
-    0.002 and 0.03 of the target's scale, where the mean is off by 0.45,
-    1.5 and 3. It
-    keeps a fifth more per cell, 40 bytes in place of 32, and up to 9 KB per
-    target, and a row takes 0.75 to 0.9 times the mean's throughput.
+    and spikes of 50 on 1%, 5% and 12% of the rows, the worst of five
+    seeds. With the default refit of the first 500 rows it lands within
+    0.0002, 0.0012 and 0.003 of the target's scale, and in one pass with
+    no refit (``bin_refit_rows=0``) within 0.0008, 0.002 and 0.03, where
+    the mean is off by 0.45, 1.5 and 3. It keeps a fifth more per cell, 40
+    bytes in place of 32, and up to 9 KB per target, and a row takes 0.75
+    to 0.9 times the mean's throughput.
 
     **The refit of the first rows.** One pass weighs each row against the
     location and the scale before it, and over the first rows those are
@@ -4776,8 +4809,8 @@ def deco(
 
     .. code-block:: text
 
-        "ew":      W' = λ * W + w,  a = λ * W / W',  b = w / W'
-                   rho' = a * rho + b * u                     (rho = u at W = 0)
+        "ew":      W' = λ * W + w,  b = w / W'
+                   rho' = rho + b * (u - rho)                 (rho = u at W = 0)
         "linear":  rho' = (1 - alpha - beta) * rho_bar' + alpha * u + beta * rho
                    rho' = u                                    (on the first row)
                    rho' = rho                                  (at w = 0)

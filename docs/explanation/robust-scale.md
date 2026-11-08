@@ -276,20 +276,20 @@ already pulled, so the refit can itself be captured. Over 20,000 rows, a refit o
 than 0.25.
 
 **The refit brings `sgd(loss="huber")` near `RLM` too.** Its one pass
-starts from zero slopes, and over 2,000 rows it left 28 of 40 streams
-captured at 20% outliers (the worst by 3.6) and 4 at 10% (the worst by
-0.069). Over 20,000 rows at 20% it left 31, the worst by 1.6. With the
+starts from zero slopes, and over 2,000 rows it left 29 of 40 streams
+captured at 20% outliers (the worst by 3.9) and 3 at 10% (the worst by
+0.070). Over 20,000 rows at 20% it left 31, the worst by 1.6. With the
 refit, on the same stream, each cell counts over 40 seeds the streams
-more than 0.05 and more than 0.25 in slope from `RLM`. It gives the
-worst distance where it was recorded:
+more than 0.05 and more than 0.25 in slope from `RLM`, then the
+worst distance:
 
 | outliers | 20,000 rows, 500 (the default here) | 2,000 rows, 200 | 2,000 rows, 500 | 2,000 rows, 1,000 |
 |---|---|---|---|---|
-| 5% | 9 and 0 of 40; worst 0.091 | 5 and 0; 0.065 | 5 and 0; 0.065 | 5 and 0; 0.065 |
+| 5% | 8 and 0 of 40; worst 0.091 | 5 and 0; 0.065 | 5 and 0; 0.065 | 5 and 0; 0.065 |
 | 10% | 9 and 0; 0.11 | 2 and 0; 0.075 | 2 and 0; 0.075 | 2 and 0; 0.076 |
-| 12.5% | 11 and 0; 0.11 | 7 and 0; 0.098 | 7 and 0; 0.097 | 7 and 0; 0.098 |
-| 15% | 12 and 0; 0.13 | 10 and 0; 0.076 | 9 and 0; 0.078 | 10 and 0; 0.079 |
-| 20% | 23 and 0 | 16 and 4; 2.98 | 8 and 0; 0.14 | 8 and 0; 0.13 |
+| 12.5% | 11 and 0; 0.11 | 7 and 0; 0.098 | 7 and 0; 0.097 | 7 and 0; 0.097 |
+| 15% | 12 and 0; 0.13 | 10 and 0; 0.076 | 8 and 0; 0.078 | 11 and 0; 0.079 |
+| 20% | 24 and 0; 0.16 | 16 and 3; 2.99 | 8 and 0; 0.14 | 8 and 0; 0.13 |
 
 Apart from a 200-row refit at 20% outliers, which the outliers still
 capture, the streams more than 0.05 away after the refit are the
