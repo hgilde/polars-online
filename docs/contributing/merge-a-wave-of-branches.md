@@ -38,7 +38,7 @@ The steps run in the main checkout:
 2. **Merge the finished branches onto it in turn,** with `git merge
    <branch>` for each. Where a merge stops at a conflict confined to
    generated files, take either side with `git checkout --theirs
-   <files>`, then `git add <files>` and `git commit` to finish that
+   <files>` (or `--ours`), then `git add <files>` and `git commit` to finish that
    merge before the next.
 3. **After the last merge, regenerate the conflicted generated files
    once.** The state fixtures regenerate with
@@ -69,5 +69,6 @@ The steps run in the main checkout:
 9. **Give back each merged branch's worktree slot,** with `scripts/slot.sh
    give <n>` ([Use a worktree slot](use-a-worktree-slot.md), step 5).
 
-To check the result, run `git log --oneline -1 main`. It names the last
-merge of the wave.
+To check the result, run `git log --oneline main`. Its newest commits
+are the wave's merges, and the commit of any files regenerated in
+step 3.

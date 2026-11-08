@@ -402,7 +402,7 @@ Windows-only path spelling, and 25 each naming the newer Polars it needs.
 Most of the 25 check against a Polars function that has changed since,
 and the rest stream a database or a pyarrow reader through
 `pl.scan_arrow_c_stream`. The suite has also passed on 1.38.1, 1.44.1,
-1.44.2 (the pin until 2026-10-08) and 2.0.0-rc.1 with identical numbers.
+1.44.2 (the pin until 2026-10-08) and 2.0.0rc1 with identical numbers.
 `tests/test_scaffold.py` asserts the pin and the range.
 
 **The Rust `polars` inside the wheel is 0.55.2, and the command line uses

@@ -107,8 +107,8 @@ library against these numbers.
 
 ## The current figures
 
-**Each figure below is what a run cost on one machine on its date, under
-the conditions it states.**
+**A figure is what one run cost on one machine on its date, under the
+conditions it states.**
 [Where the time and memory
 go](explanation/where-the-time-and-memory-go.md) explains what sets each
 number.
@@ -567,7 +567,7 @@ largest buffer at the smaller.
 | `gbdt.history` | rows offered | 10,000 → 80,000 | O(1) | O(1) | a priority sample: a row is kept or not by its hash, the heap holds the sample | 0.53 · 0.83 · 1.00 · 1.00 |
 | `gbdt.sample` | sample size N | 1,000 → 8,000 | O(log n) | O(n) | a heap of N, log N; N rows kept | 1.90 · 1.01 · 8.00 · 7.30 |
 
-The surfaces and sizes the cells above do not measure, each with where it is
+The surfaces and sizes the table's cells do not measure, each with where it is
 held instead or why it needs no cell:
 
 | surface | the size | a row's work | state | held by, or why |

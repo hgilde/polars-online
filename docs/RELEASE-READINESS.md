@@ -32,12 +32,7 @@ reviewer, with self-review allowed: with a single reviewer, forbidding
 self-review would deadlock every release. The click is a button on the run
 page, and GitHub emails when one is waiting.
 
-**The job asks for approval only after every job it needs is green.** The
-legs that move a dependency leave out three pytest markers. `soak` marks
-the opt-in long runs over millions of rows. `pins` marks the tests that
-assert this repository's own Polars pin, which cannot pass once Polars has
-moved (`pyproject.toml`). `oracle_grid` marks the heavy grids checked
-against third-party oracles, which `oracles.yml` runs on every push.
+**The job asks for approval only after every job it needs is green:**
 
 | job in `release.yml` | what it checks or makes | holds back the upload |
 |---|---|---|
@@ -55,6 +50,13 @@ against third-party oracles, which `oracles.yml` runs on every push.
 | `publish to PyPI` | the upload | it is the gate |
 | `tag`, then `release` | the tag `v<version>` on the tested sha, annotated with the CHANGELOG's section, then the GitHub release page with the wheels, the sdist, the command-line binaries and `budgets-baseline.json`, its notes the CHANGELOG's section and the wheels' exact sizes | no: they run after the upload |
 | `verify` | `polars-online==<version>` installed from PyPI on Linux, macOS and Windows, its versions and schema checked and one fit run ([the last step](contributing/cut-a-release.md#steps)) | no: it reports on what was uploaded |
+
+**The legs that move a dependency leave out three pytest markers.** `soak`
+marks the opt-in long runs over millions of rows. `pins` marks the tests
+that assert this repository's own Polars pin, which cannot pass once
+Polars has moved (`pyproject.toml`). `oracle_grid` marks the heavy grids
+checked against third-party oracles, which `oracles.yml` runs on every
+push.
 
 **The `tag` and `release` jobs each try three times, with a growing pause,
 and a retry after an attempt that landed succeeds.** A push or a creation
@@ -232,7 +234,7 @@ carry no promise:
 | the `.online` namespace | `[frame namespaces]` |
 | the frames the bank returns: `groups()`, `summary()`, `describe()`, `coef()`, `last_row()`, `marginal()`, `audit()`, `check()`, `solve_failures()`, `gram()`'s keys, and `po.spec`'s `output_index()`, `coef_index()`, `coef_fields()` | `[frame columns]`, each column with its dtype |
 | the closed-groups frame's columns | `[closed_groups columns]`, each column with its dtype, in order |
-| the helper modules' functions, each with its signature | `[helper modules]`, every module the package's directory holds: today `corr`, `eval`, `gbdt`, `gram`, `ops`, `sim` and `stream` |
+| the helper modules' functions, each with its signature | `[helper modules]`, every public module of the package but `po.spec`, which has its own sections: today `corr`, `eval`, `gbdt`, `gram`, `ops`, `sim` and `stream` |
 | `po.stream.embargo`'s two columns, `_online_role` and `_online_role_weight` | `[helper modules]`, as the default of `embargo`'s `role`, the first column's name, which the second's extends; `tests/test_label_delay.py` reads both |
 | output field names and their dtypes | `[output field grammar]`, 29 spec shapes, one with every `emit_*` turned on |
 | the words each string-valued parameter takes, and `withheld_reason`'s | `[enum values]`, read from each parameter's refusal of a word it does not take |

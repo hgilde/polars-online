@@ -756,19 +756,13 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 [vocabulary."docs/DIAGNOSTICS.md"]
 "retired" = 12
 
-[vocabulary."docs/EXTENDING.md"]
-
 [vocabulary."docs/GRAM.md"]
 "british" = 23
 "retired" = 1
 
-[vocabulary."docs/PERFORMANCE.md"]
-
 [vocabulary."docs/REGIMES.md"]
 "british" = 2
 "retired" = 9
-
-[vocabulary."docs/RELEASE-READINESS.md"]
 
 [vocabulary."docs/RUNNER.md"]
 "british" = 1
@@ -776,31 +770,11 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 
 [vocabulary."docs/STATE-WORKFLOW.md"]
 
-[vocabulary."docs/TESTING.md"]
-
 [vocabulary."docs/VALIDATION.md"]
 "retired" = 1
 
 [vocabulary."docs/WINDOWS.md"]
 "retired" = 5
-
-[vocabulary."docs/contributing/add-an-output-or-a-parameter.md"]
-
-[vocabulary."docs/contributing/change-the-api.md"]
-
-[vocabulary."docs/contributing/clear-the-caches.md"]
-
-[vocabulary."docs/contributing/cut-a-release.md"]
-
-[vocabulary."docs/contributing/iterate-on-a-change.md"]
-
-[vocabulary."docs/contributing/move-the-polars-range.md"]
-
-[vocabulary."docs/contributing/repository-settings.md"]
-
-[vocabulary."docs/contributing/update-the-oracle-ledger.md"]
-
-[vocabulary."docs/contributing/use-a-worktree-slot.md"]
 
 [vocabulary."python/polars_online/_bank.py#messages"]
 
@@ -853,21 +827,13 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "about-the-document" = 1
 "is-a-lead" = 4
 
-[sentences."docs/EXTENDING.md"]
-
-[sentences."docs/GLOSSARY.md"]
-
 [sentences."docs/GRAM.md"]
 "45+" = 2
 "python-word" = 1
 
-[sentences."docs/PERFORMANCE.md"]
-
 [sentences."docs/REGIMES.md"]
 "45+" = 2
 "python-word" = 2
-
-[sentences."docs/RELEASE-READINESS.md"]
 
 [sentences."docs/RUNNER.md"]
 "45+" = 2
@@ -875,8 +841,6 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 
 [sentences."docs/STATE-WORKFLOW.md"]
 "contents-opener" = 1
-
-[sentences."docs/TESTING.md"]
 
 [sentences."docs/VALIDATION.md"]
 "45+" = 1
@@ -891,24 +855,6 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "is-a-lead" = 7
 "python-word" = 10
 
-[sentences."docs/contributing/add-an-output-or-a-parameter.md"]
-
-[sentences."docs/contributing/change-the-api.md"]
-
-[sentences."docs/contributing/clear-the-caches.md"]
-
-[sentences."docs/contributing/cut-a-release.md"]
-
-[sentences."docs/contributing/iterate-on-a-change.md"]
-
-[sentences."docs/contributing/move-the-polars-range.md"]
-
-[sentences."docs/contributing/repository-settings.md"]
-
-[sentences."docs/contributing/update-the-oracle-ledger.md"]
-
-[sentences."docs/contributing/use-a-worktree-slot.md"]
-
 [kinds."CONTRIBUTING.md"]
 "undeclared" = 1
 
@@ -918,27 +864,17 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 [kinds."docs/DIAGNOSTICS.md"]
 "undeclared" = 1
 
-[kinds."docs/EXTENDING.md"]
-
-[kinds."docs/GLOSSARY.md"]
-
 [kinds."docs/GRAM.md"]
 "undeclared" = 1
 
-[kinds."docs/PERFORMANCE.md"]
-
 [kinds."docs/REGIMES.md"]
 "undeclared" = 1
-
-[kinds."docs/RELEASE-READINESS.md"]
 
 [kinds."docs/RUNNER.md"]
 "undeclared" = 1
 
 [kinds."docs/STATE-WORKFLOW.md"]
 "undeclared" = 1
-
-[kinds."docs/TESTING.md"]
 
 [kinds."docs/VALIDATION.md"]
 "undeclared" = 1
@@ -948,21 +884,3 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 
 [kinds."docs/WRITING.md"]
 "undeclared" = 1
-
-[kinds."docs/contributing/add-an-output-or-a-parameter.md"]
-
-[kinds."docs/contributing/change-the-api.md"]
-
-[kinds."docs/contributing/clear-the-caches.md"]
-
-[kinds."docs/contributing/cut-a-release.md"]
-
-[kinds."docs/contributing/iterate-on-a-change.md"]
-
-[kinds."docs/contributing/move-the-polars-range.md"]
-
-[kinds."docs/contributing/repository-settings.md"]
-
-[kinds."docs/contributing/update-the-oracle-ledger.md"]
-
-[kinds."docs/contributing/use-a-worktree-slot.md"]

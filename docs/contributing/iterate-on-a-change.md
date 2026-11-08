@@ -8,12 +8,13 @@ before a push.
 **Run the tests for what you changed while you work, the essentials once
 on each wave of two or more merged branches, and every test before each
 push.** A task here is one change on its own branch. A wave is the set of
-finished branches merged together for one test gate; a wave of one branch
-skips the essentials and runs only the full suite before its push. Each
+finished branches merged together for one test gate. A wave of one
+branch skips the essentials and runs only the full suite before its
+push. Each
 level reaches what the one before it cannot, and costs more. The
 essentials and the extended tier are the suite's [two
 tiers](../TESTING.md#two-tiers). The times are the project's development
-Mac's, 14 cores shared with another user's jobs; the last two rows were
+Mac's, 14 cores shared with another user's jobs. The last two rows were
 measured on 2026-10-11 at the load each gives.
 
 | when | what runs | command | time |

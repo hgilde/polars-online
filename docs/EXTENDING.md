@@ -179,7 +179,7 @@ builder that takes `window_budget` is in that test's table.
 in its parametrization.
 
 **Override `target_n_eff_into` in a model that keeps a weight per
-target.** `ewridge`, `lasso`, `kalman`, `robust`, `holt`, `sgd`, `pa`,
+target.** `ewridge`, `lasso`, `kalman`, `huber`, `quantile`, `holt`, `sgd`, `pa`,
 `ftrl` and `rls` keep one. With `target_n_eff_into` overridden, each
 target's `min_weight` is checked against that target's own weight. The default leaves every target on the shared one, and
 `test_a_sparse_target_warms_up_on_its_own_weight` fails for a model that
@@ -435,8 +435,8 @@ entry it reads as a number.
 ### Step 7 — `src/stream.rs`
 
 **First make room in `stream.rs`.** It stands within a few hundred bytes
-of the cap, and the variant and arms below add a few hundred bytes for any
-model. Move a self-contained block of it into a submodule under
+of the cap, and the variant and arms this step adds take a few hundred
+bytes for any model. Move a self-contained block of it into a submodule under
 `src/stream/`, declared with `mod` as `model_cfgs.rs` and `last_row.rs`
 are, until `wc -c crates/online-polars/src/stream.rs` leaves room for the
 addition. `tests/test_repo_hygiene.py`'s `test_no_tracked_file_is_data_sized`

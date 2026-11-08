@@ -477,8 +477,8 @@ streams or downloaded datasets, is marked
 2026-10-25: "we do not want to run more very long tests in the gate as it's
 already long". The convergence grids took 22 minutes in four processes, more
 than the rest of `gate.sh --extended` together. No local run takes them: `addopts` and both tiers of `gate.sh` leave them
-out. `.github/workflows/oracles.yml` runs them on every push to `main`, one job a
-module or a model, in parallel (CI's minutes are free; its limits are 20
+out. `.github/workflows/oracles.yml` runs them on every push to `main`, in
+twelve shards in parallel, each taking every twelfth test in order (CI's minutes are free; its limits are 20
 jobs at once and six hours a job). Read its conclusion after each push with
 the other workflows'. `uv run pytest -m oracle_grid` runs them here, and
 `pytest -m oracle_grid tests/test_convergence.py -k quantile` one model's.
@@ -744,13 +744,13 @@ thirteen classes, counted on 2026-11-08:
 
 | class | what it asserts |
 |---|---|
-| `TestEveryJobIsBounded` | every job in every workflow has a timeout of at most two hours, and every workflow a concurrency group; superseded runs are canceled, and releases queue instead. The longer jobs are the mutation shards, on Linux: the changed lines' at 330 minutes on every push, the weekly pass's at 350 and only while public or by hand; and `ci.yml`'s test legs at 300 minutes while the repository is public, since Windows Server 2022's two-thread legs take 2.4 to 2.9 hours |
+| `TestEveryJobIsBounded` | every job in every workflow has a timeout of at most two hours, and every workflow a concurrency group; superseded runs are canceled, and releases queue instead. The longer jobs are the mutation shards, on Linux. The changed lines' run at 330 minutes on every push. The weekly pass's run at 350, and only while public or by hand. `ci.yml`'s test legs run at 300 minutes while the repository is public, since Windows Server 2022's two-thread legs take 2.4 to 2.9 hours |
 | `TestTheMatrixDefaultsToCheap` | lint stays on Linux and never builds the extension; the expensive runners are opt-in; the visibility test fails safe on a missing field; macOS is reachable only by a manual dispatch or the repository being public |
 | `TestWindowsIsTwoImagesAndEveryJobNamesItsMachine` | the test matrix runs Windows Server 2022 beside the newest wherever it runs Windows, and every job that can land on Windows prints its machine first, so a failure names it |
 | `TestStepOrderingThatHasAlreadyBrokenCI` | disk is freed before the cache is restored, rustflags are set before anything compiles, and the cache survives a failing job |
 | `TestDocOnlyPushesAreFree` | CI has no paths filter on a push or a pull request; the benchmark, which reports and never gates, skips doc-only pushes |
 | `TestPythonVersions` | every Python the package declares runs on Linux, and the floor and the newest on every OS; the release comparison reports once and never gates; the API reference is built and published once |
-| `TestMutationTesting` | the mutation run over changed lines gates every push and pull request, with one report, in as many shards as its mutants need: a first job lists them, with the scope, the diff and the pinned cargo-mutants the shards use, and takes a shard for every thirty, at most four-fifths of the slowest shard measured, each stopped at 300 minutes (three times the slowest shard measured, 98) with every run inside a memory scope whose cgroup the kernel holds to 12 GiB, so a runaway mutant is killed alone and cannot shut the runner down (a job proves it on every run), each mutant tested under cargo-nextest with the extended tier, and the report expects that many; each push's pass has a concurrency group of its own, so no later push cancels or replaces it, while a pull request's newer commit cancels its older; the weekly pass runs only while public or by hand, and reports its survivors; every run skips the doctests, stops a mutant at ten times the baseline, stops itself inside its job, and lists the mutants it was given, and its report fails on a run that tested fewer or a shard that sent nothing |
+| `TestMutationTesting` | the mutation run over changed lines gates every push and pull request, with one report, in as many shards as its mutants need. A first job lists the mutants, with the scope, the diff and the pinned cargo-mutants the shards use. It takes a shard for every thirty, at most four-fifths of the slowest shard measured. Each shard stops at 300 minutes, three times the slowest shard measured (98). Every run sits inside a memory scope whose cgroup the kernel holds to 12 GiB, so a runaway mutant is killed alone and cannot shut the runner down (a job proves it on every run). Each mutant is tested under cargo-nextest with the extended tier, and the report expects that many. Each push's pass has a concurrency group of its own, so no later push cancels or replaces it. A pull request's newer commit cancels its older. The weekly pass runs only while public or by hand, and reports its survivors. Every run skips the doctests, stops a mutant at ten times the baseline, stops itself inside its job, and lists the mutants it was given. Its report fails on a run that tested fewer, or on a shard that sent nothing |
 | `TestTheRustTestsLinkNoPython` | every workflow and the local test gate leave `online-py` out of `cargo test`, so no test binary links libpython |
 | `TestTheLinuxPrepIsOneAction` | the step that frees the disk and swaps in `lld` is one composite action, called after the checkout and on Linux alone |
 | `TestActionsArePinnedToCommits` | every external action is pinned to a commit, with the version it names in a comment |
@@ -1093,15 +1093,14 @@ round-off cases up to 7 times apart on two Linux runs (2026-10-26 and
 
 **The numbers are CI's, measured on Linux x86-64.** `[meta] platform`
 names the platform, and `check` judges every push there, so the whole 2%
-is room for drift on the platform that judges. The ledger was first
-written on a developer's Mac, and CI's first run against the same commit
-(2026-10-26, an M4 Pro against GitHub's x86-64 runners) measured how far
-the two platforms part. Of 1,495 cases, every statistical case but one
-agreed within 1.8%, and that one, a quantile regression's distance from
-statsmodels' `QuantReg` in its standard errors, by 2.9%. The round-off
+is room for drift on the platform that judges. The two platforms part
+by more than that. On one commit, measured 2026-10-26 on an M4 Pro and on
+GitHub's x86-64 runners, every statistical case but one of 1,495 agreed
+within 1.8%. That one, a quantile regression's distance from
+statsmodels' `QuantReg` in its standard errors, agreed within 2.9%. The round-off
 cases parted by up to 3.7 times: the regularized prior's fits, the NIST
-Grams and Wampler's polynomials. So the ledger was re-based on CI's
-`measured.json`, and every floor increased to cover both platforms. A run on
+Grams and Wampler's polynomials. So every number is CI's, and every floor
+covers both platforms. A run on
 another platform than the ledger's, such as `rerun` on a Mac, is held to
 `tolerance_elsewhere` (5%) past the ledger. It writes none of its numbers,
 since they are not the ones the ledger holds: a gain it sees is reported,
@@ -1234,7 +1233,7 @@ against the last. There are three kinds:
 |---|---|---|---|
 | `instructions` | the instructions one block of 1,000 rows executes, after 2,000 rows of warm-up, counted by Callgrind. The cases are the lists in `crates/online-bench/src/lib.rs`: a step of each of the 22 models at a standard width, and beside them the costlier options (`ewridge` at 200 features, `ewridge` at 50 features with 10 targets folded into a 64-row block's merge, the refit of the first rows of `huber`, `sgd`'s Huber loss and `quantile`, `huber`'s feature sets and `ridge_scale="sum"`, `sgd`'s Huber loss, `bocpd`'s full run, `ew_cov`'s lags, `marginal`'s Huber bins, and `corrchange`'s monitor and window); the clock's step on a float and on a nanosecond clock; `Bank::fit_predict` around `seqtest` and around `ewridge`, as one stream and as 1,000 groups of one row each, and around a window target that holds 1,000 rows back; five window cases through `WindowsRun::feed` (a mean, a sum and two quantiles, one within a window and one running, and a sum over 10,000 groups); and `Bank::fit_predict` of 8,192 rows of `ew_cov`'s 230 statistics on a pool of one thread | `.github/workflows/budgets.yml`, on Linux | 2% |
 | `memory` | the bytes per row of every output field of every model with every output it has switched on, over 20,000 rows, from `estimated_size()` | `tests/test_budgets_memory.py`, on every CI leg | 2% |
-| `rss` | the peak resident memory a standard run adds over its process's baseline, per platform, in MiB, for six runs: `ewridge` with ten targets over 200,000 rows; `ew_cov`'s 230 moments a row over 200,000; an eager `predict` of 1,000 features over 20,000 rows; a windowed `ewridge` (`window_size` 20,000) over 200,000; `bocpd` holding up to 200 runs over 50,000; and five million rows streamed from one parquet file to another. The streamed run has Polars reading one row group ahead on four threads, and the allocator giving freed pages back at once (`_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0`, `MIMALLOC_PURGE_DELAY=0`), so its peak is the live memory. A control reads the same rows whole before the plan, and must exceed the streamed run's budget | the same file, in the extended tier: held on CI at each OS's floor Python, on Windows on `windows-latest` alone, and reported everywhere else, since the interpreter alone moved macOS's peak 18-20% between 3.12 and 3.14, the machine moved the streaming run's 23%, and Windows Server 2022 and Server 2025 read the six runs up to 8% apart on one build, so the two images would each tighten the budget below the other | 30% over: two runs of one build on one CI runner read 14-18% apart; tightened at 7.5% under |
+| `rss` | the peak resident memory a standard run adds over its process's baseline, per platform, in MiB, for six runs: `ewridge` with ten targets over 200,000 rows; `ew_cov`'s 230 moments a row over 200,000; an eager `predict` of 1,000 features over 20,000 rows; a windowed `ewridge` (`window_size` 20,000) over 200,000; `bocpd` holding up to 200 runs over 50,000; and five million rows streamed from one parquet file to another. The streamed run has Polars reading one row group ahead on four threads, and the allocator giving freed pages back at once (`_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0`, `MIMALLOC_PURGE_DELAY=0`), so its peak is the live memory. A control reads the same rows whole before the plan, and must exceed the streamed run's budget | the same file, in the extended tier: held on CI at each OS's floor Python, on Windows on `windows-latest` alone, and reported everywhere else. The interpreter alone moved macOS's peak 18-20% between 3.12 and 3.14, and the machine moved the streaming run's 23%. Windows Server 2022 and Server 2025 read the six runs up to 8% apart on one build, so the two images would each tighten the budget below the other | 30% over: two runs of one build on one CI runner read 14-18% apart; tightened at 7.5% under |
 
 **An instruction count can gate where a timing cannot.** Two release builds
 of one source measured up to 19% apart in wall time, from where the linker
@@ -1321,7 +1320,7 @@ Each thin spot, why it is thin, and where it stands:
 | case-insensitive file names on Windows | no test covers it; file locking on a state's rewrite and long paths (`\\?\`) are tested | open since 2026-09-25 |
 | a network share path, `\\server\share\...` | out of a CI runner's reach | untested; drive letters, the `\\?\` extended-length form and paths with spaces pass on both Windows legs |
 | `windows.rs`, `windows_frame.rs`, `formula.rs`, `resolvers.rs` and `targets.rs`, the newest code in `crates/online-polars/src/` | outside the mutation scope, which is `online-core` and `span.rs`, as the rest of `online-polars` is; the first four postdate the coverage run of 2026-09-27 | held by the oracles and resume tests of [The window operators and formula targets](#the-window-operators-and-formula-targets), each test's docstring stating the case it holds |
-| the weekly mutation pass over all of `online-core` | the first to finish, on 2026-10-04, ran at a time limit that counted most survivors as timeouts, so its 11 survivors are a floor | the limit corrected on 2026-10-04, to ten times the baseline's test run; a pass at the new limit is the next count; [Mutation survivors](#mutation-survivors) |
+| the weekly mutation pass over all of `online-core` | a pass at too short a time limit counts most survivors as timeouts, so its count is a floor | the limit is ten times the baseline's test run; [Mutation survivors](#mutation-survivors) has the passes counted since |
 
 Two things are worth doing periodically rather than once:
 

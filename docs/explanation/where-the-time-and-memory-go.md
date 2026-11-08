@@ -15,8 +15,9 @@ description of a model) and each group, and takes its rows a
 thread counts and `chunk_size` change only the speed and the memory, never
 the numbers a bank returns, as [Chunk invariance and
 streaming](chunk-invariance-and-streaming.md) explains.
-[Measured costs](../PERFORMANCE.md) has the measurement behind every
-figure here, with its date and how it was made. To find the setting behind
+[Measured costs](../PERFORMANCE.md) has the measurement behind each
+figure here that a recipe on this page does not print, with its date and
+how it was made. To find the setting behind
 a symptom, see [What to change when a number
 surprises](#what-to-change-when-a-number-surprises). Every figure was measured on one Apple M4 Pro with 14 cores (10
 performance, 4 efficiency), so your own times will differ.
@@ -37,7 +38,7 @@ per pair, as `ew_cov` does, spends most of a wide row writing it.
 **Reading the file takes a small share of a run, and learning sets its
 pace.** This recipe times each part of one run of `ewridge` with 20
 features over a million generated rows: the read alone, learning with no
-output, learning and scoring, and scoring from a saved state without
+output, learning and predicting, and serving from a saved state without
 learning. The times are your machine's:
 
 ```python
@@ -69,18 +70,18 @@ query = pl.scan_parquet("rows.parquet")
 bank = po.ModelBank([spec])
 print(f"time to read the file:      {rows_a_second(lambda: query.collect()):.1f} million rows a second")
 print(f"time to learn, no output:   {rows_a_second(lambda: bank.fit(query)):.1f} million rows a second")
-print(f"time to learn and score:    {rows_a_second(lambda: query.online.fit_predict([spec]).collect()):.1f} million rows a second")
-print(f"time to score from a state: {rows_a_second(lambda: query.online.predict(bank).collect()):.1f} million rows a second")
+print(f"time to learn and predict:  {rows_a_second(lambda: query.online.fit_predict([spec]).collect()):.1f} million rows a second")
+print(f"time to serve from a state: {rows_a_second(lambda: query.online.predict(bank).collect()):.1f} million rows a second")
 ```
 
 ```text
 time to read the file:      39.4 million rows a second
 time to learn, no output:   2.9 million rows a second
-time to learn and score:    2.9 million rows a second
-time to score from a state: 6.5 million rows a second
+time to learn and predict:  2.9 million rows a second
+time to serve from a state: 6.5 million rows a second
 ```
 
-Scoring from a state skips learning, so it runs faster than learning, and
+Serving from a state skips learning, so it runs faster than learning, and
 more so for a wider model: 2.2 times at 20 features in this recipe's run.
 On a frame in memory, [`ewridge`'s
 `predict`](../PERFORMANCE.md#serving-against-learning)
@@ -225,7 +226,7 @@ here:
 |---|---|---|
 | a row slower than [its model's rows a second](../PERFORMANCE.md#rows-a-second-for-each-model) | the model's own learning step, `O(k²)` a row for a model that solves, and its solves on their schedule; below about 50 features, as much again in the bank's work around the row; and for a model with many fields, writing them | `solve_every` and `max_rows_between_solves`; `gram_block_rows` and `gram_threads` for a wide `ewridge`; only the `stats` you read for `ew_cov` |
 | a grid slower than one model | a ridge or feature-set grid shares one set of sums; each half-life of a grid keeps its own, run alongside the others | the number of half-lives |
-| small chunks slower than large ones | a fixed overhead per call: handing the frame across alone takes about 8 ms at 10,000 columns, and gathering the columns and assembling the output add to it | `chunk_size`, 100,000 by default on the query and the command line; the eager call takes the frame whole unless given one |
+| small chunks slower than large ones | a fixed overhead per call: handing the frame across alone takes about 8 ms at 10,000 columns ([Set the chunk size](../how-to/set-the-chunk-size.md)), and gathering the columns and assembling the output add to it | `chunk_size`, 100,000 by default on the query and the command line; the eager call takes the frame whole unless given one |
 | memory that grows with the file | Polars reading ahead in the parquet file, sized from its thread count, and the allocator keeping pages it has freed | `POLARS_ROW_GROUP_PREFETCH_SIZE`, `POLARS_MAX_THREADS` |
 | an eager `fit_predict` above its output | a spec of many groups keeps buffers of about its output again until its groups are done; a spec of one group or none holds its output and two sets of buffers more | a smaller frame, or the streaming path, whose peak is a chunk's |
 | memory that jumps with a filter | a filter before the bank makes Polars hold several blocks of each file per thread | a filter after the bank, or weight 0 on the rows to skip |
@@ -235,5 +236,5 @@ here:
 | a wide `marginal` | every pair of every target | `cross_lags`, `bins`, `feature_moments="shared"`, `shards` |
 | `bocpd` slowing as a stream runs | the run lengths it keeps | `max_run`, `prune_below` |
 | a window operator | one queue of rows for each set of operators that share it, the same work a row whatever the window's length; memory about one window of rows | operators with the same direction, half-life, window and `closed` share one queue of rows |
-| a model whose target is a window expression | the bank's own window core, at 1.5 to 1.6 times the column form's time and less memory | the column form, `with_windows(..., like=spec)` |
-| learning slower than scoring | `predict` skips learning | serve with `predict` where the model need not learn from the rows |
+| a model whose target is a window expression | the bank's own window core, at about 1.6 times the column form's time and less memory | the column form, `with_windows(..., like=spec)` |
+| learning slower than serving | `predict` skips learning | serve with `predict` where the model need not learn from the rows |

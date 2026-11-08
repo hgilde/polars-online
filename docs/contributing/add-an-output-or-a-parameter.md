@@ -100,7 +100,7 @@ shipped the schema the field joins:
 | the change | what it needs |
 |---|---|
 | a field with `#[serde(default)]`, added inside a schema no release has shipped | no bump: it joins that schema. The schema has shipped if the last release's `SCHEMA_VERSION` equals the current one: `git show v<last>:crates/online-core/src/lib.rs \| grep '^pub const SCHEMA_VERSION'` |
-| any other change to a layout a state file holds | a new schema, under hard rule 5: the steps below |
+| any other change to a layout a state file holds | a new schema, under hard rule 5, by the numbered steps that follow this table |
 | a new model's `ModelState` variant, appended | no bump; a fixture case and its frozen name, as [Add a model](../EXTENDING.md#step-3--srcmodelrs)'s step 3 says |
 
 **A layout change cannot land without its fixtures.** Every schema from

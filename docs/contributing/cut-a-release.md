@@ -66,15 +66,20 @@ Nothing leaves your checkout before step 13.
    `benchmark.py`'s 50 features never do, where a change can slow a wide
    fit and move no `benchmark.py` row. Fix a slowdown past the runs'
    scatter, or declare it in the CHANGELOG.
-3. **Record this build's throughput.** Run
-   `uv run python scripts/benchmark.py --markdown` three times or more, and
-   take the best run for each row. Paste the rows into [Rows a second for
-   each model](../PERFORMANCE.md#rows-a-second-for-each-model) in
-   `docs/PERFORMANCE.md`, and set its `runs` row's date, commit and load.
-   Add a dated section, headed with the date and naming the commit, to the
-   performance log, which `docs/README.md` lists among the records. A test
-   holds the table's date to no older than the previous release, and the
-   commit to the dated section.
+3. **Record this build's throughput:**
+   1. Run `uv run python scripts/benchmark.py --markdown` three times or
+      more, and take the best run for each row.
+   2. Paste the rows into [Rows a second for each
+      model](../PERFORMANCE.md#rows-a-second-for-each-model) in
+      `docs/PERFORMANCE.md`.
+   3. Set its `runs` row's date, commit and load, as
+      ``measured on YYYY-MM-DD at commit `<sha>` ``.
+   4. Add a dated section to the performance log, which `docs/README.md`
+      lists among the records. Its `###` heading ends in `(YYYY-MM-DD)`,
+      and its text names the commit in backticks.
+
+   A test holds the table's date to no older than the previous release,
+   and the commit to the dated section.
 4. **Sign off each instruction count that moved more than 10%.** The
    `Budgets` run of the last push reports each count's drift since the
    last release, read from that release's measurements. Add a
@@ -92,7 +97,7 @@ Nothing leaves your checkout before step 13.
 7. **Promote the CHANGELOG's `[Unreleased]` to `## [X.Y.Z] — <date>`,**
    with the date as `YYYY-MM-DD` and an em dash between. The tag's message
    and the GitHub release are that section.
-8. **For a minor release, update the example pin.** The pin under [This
+8. **For a minor or major release, update the example pin.** The pin under [This
    package's own versioning](../VERSIONS.md#this-packages-own-versioning)
    in `docs/VERSIONS.md` names the new minor, as `~=1.5.0` names the 1.5
    series.
@@ -118,17 +123,20 @@ Nothing leaves your checkout before step 13.
       `PARAMETER_INTRODUCED` or `INTRODUCED` names a newer version.
 11. **Run the suite on the floor of the Polars range, in a scratch copy of
     the checkout,** since `uv sync --upgrade-package` rewrites `uv.lock`.
-    Make the copy with `git worktree add <dir> HEAD`. It holds the last
-    commit, without the uncommitted edits of steps 1 to 10. In the shell
-    that runs there, set `UV_PYTHON=3.12`, the Python the release's leg
-    runs. Read the
-    floor with `python3 scripts/polars_floor.py`, then run
-    `uv sync --upgrade-package "polars==<floor>" --upgrade-package "polars-runtime-32==<floor>"`,
-    `uv run maturin develop --release -m crates/online-py/Cargo.toml` and
-    `uv run pytest -q -m "not soak and not pins and not oracle_grid"`, as
-    the release's `floor-polars` job does. It passes, or shows first what
-    the release would fail on. Remove the copy with `git worktree remove
-    <dir>`.
+    The copy runs what the release's `floor-polars` job runs:
+    1. Make the copy with `git worktree add <dir> HEAD`. It holds the last
+       commit, without the uncommitted edits of steps 1 to 10.
+    2. In a shell in `<dir>`, set `UV_PYTHON=3.12`, the Python the
+       release's leg runs.
+    3. Read the floor with `python3 scripts/polars_floor.py`.
+    4. Run `uv sync --upgrade-package "polars==<floor>" --upgrade-package
+       "polars-runtime-32==<floor>"`.
+    5. Run `uv run maturin develop --release -m
+       crates/online-py/Cargo.toml`.
+    6. Run `uv run pytest -q -m "not soak and not pins and not
+       oracle_grid"`. It passes, or shows first what the release would
+       fail on.
+    7. Remove the copy with `git worktree remove <dir>`.
 12. **Run the full suite,** with `bash scripts/gate.sh --extended`,
     unpiped, until its last line says `gate: PASS` with the extended tier.
 13. **Commit on `main` itself and push,** not on a branch. Wait for CI on
