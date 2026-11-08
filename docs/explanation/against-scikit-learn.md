@@ -72,11 +72,12 @@ MB, and updates its lower triangle on every row, or once a block under
 `gram_block_rows`. Measured on 2026-11-08 over 2,000 rows, at a load
 of 9 to 18, the update alone ran 185 rows a second, or 344 with
 `gram_block_rows=1024`. It was timed with a `min_weight` above the row
-count, so that no solve ran. A solve factors the whole matrix. Until
-the first solve its own cadence brings due, at row 1,000 here,
-`ewridge` also solves on the default schedule, each time its weight
-grows by about 1.4%. With those solves the same rows ran at 7 to 9 rows
-a second. With fewer rows
+count, so that no solve ran. A solve factors the whole matrix. With
+`solve_every=inf` and `max_rows_between_solves=1000`, which solve every
+1,000 rows and no more often, the same rows ran at 171 rows a second, or
+584 with `gram_block_rows=256` (2026-11-08, at a load of 16 to 21). A
+finite `solve_every` costs more here: until its first period passes, the
+model also solves each time its weight grows by about 1.4%. With fewer rows
 than coefficients, no fit was ready to predict any row. In the same run,
 `sgd` at a learning rate of `0.2 / k` ran 25,678 rows a second from
 0.89 MB, faster than `SGDRegressor`'s 19,180 in batches.

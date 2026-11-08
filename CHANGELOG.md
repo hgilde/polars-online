@@ -512,6 +512,18 @@ returns.
 
 ### Tests and documents
 
+- Four figures in the guides were measured again and dated, or corrected:
+  the wide-row speeds against scikit-learn (`ewridge`'s update alone, and
+  with solves every 1,000 rows); the Gaussian interval's coverage on a
+  regime-shift stream (90.0%, not 94-95%); the reason for the 0.80
+  calibration slope in *Check a two-stage fit*, now measured; and the
+  `po.gram.solve_subsets` timings. The `ewridge` docstring and the
+  solve-schedule how-to now say that an explicit cadence's first period
+  solves by weight share under `half_life=inf` and `lam` too, and give its
+  cost on a wide fit, with `solve_every=inf` beside
+  `max_rows_between_solves` for solves by the row cap alone.
+  `scripts/sklearn_comparison.py wide` no longer crashes when a contender
+  scores no row, and measures what its label says.
 - The documentation rewrite is finished. Every guide declares its kind and
   is held to the writing checks in the test gate, and the guides and records
   use American spelling. The command-line, saved-state, diagnostics,

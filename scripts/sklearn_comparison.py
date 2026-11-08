@@ -265,7 +265,9 @@ def wide():
             size = len(pickle.dumps(model)) + len(pickle.dumps(scaler))
             rows.append((name, n / dt, r2(pred, y, scored & np.isfinite(pred)), size))
 
-        ew = dict(ridge=1e-6, solve_every=1e9, max_rows_between_solves=1000)
+        # solve_every=inf: solves by the row cap alone. A finite solve_every
+        # also solves on the default schedule until its first period passes.
+        ew = dict(ridge=1e-6, solve_every=float("inf"), max_rows_between_solves=1000)
         no_solve = {**common, "min_weight": 1e9}
         for name, spec in (
             (
