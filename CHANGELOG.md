@@ -511,6 +511,26 @@ returns.
 
 ### Tests and documents
 
+- Six explanation pages under `docs/explanation/`: *Time and decay* (how a
+  model forgets along its clock, why a huge half-life is not infinity, how a
+  hard window differs), *Chunk invariance and streaming* (why any chunking
+  and any thread count give the same numbers, why memory stays bounded,
+  which query steps hold the stream in memory, why you set the row order),
+  *State and resuming* (what a saved state holds, why a resumed run matches
+  one that never stopped, why it loads on every OS and in later 1.x
+  versions, and the one gap), *Warm-up and readiness* (why a model
+  withholds its first predictions, what each gate measures, why `min_weight`
+  can be out of reach at one row rate and not another, how `kmeans` seeds),
+  *The robust scale* (how `huber`, `quantile` and `sgd(loss="huber")` keep a
+  median of their residuals, why each target's first rows are refit, what a
+  robust scale gives up when the level shifts) and *Grids, instances and
+  slots* (how one spec fits a grid in one pass, and why the best error over
+  a grid is optimistic). The README, MODELS.md, STATE-WORKFLOW.md and
+  CALIBRATION.md sections they draw from link them. Corrected on the way: a
+  clock parameter's span, not the numbers, is independent of row density; a
+  `Duration` clock's limit is about 292 years; CALIBRATION.md's figure for
+  one spec with a grid against one spec per value, re-measured on one
+  thread, is 13% to 28% less time, where it said 10% to 25%.
 - `docs/MODELS.md` is a reference page: each model's entry gives its
   summary, when to use it, its update and one recipe, and links its
   docstring for the parameters and refusals and `OUTPUTS.md` for the
