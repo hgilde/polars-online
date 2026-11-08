@@ -40,6 +40,9 @@ kept in [`records/`](records/), and its row links it there.
 | [explanation/time-and-decay.md](explanation/time-and-decay.md) | you set `half_life` and want to know how a model forgets along its clock, what `gap_cap` and a session do to the decay, why a huge half-life is not the same as none, and how a hard window forgets differently |
 | [explanation/chunk-invariance-and-streaming.md](explanation/chunk-invariance-and-streaming.md) | you want to know why the chunking never changes the numbers, why memory stays bounded, which query steps hold the stream in memory, and why the row order is yours to set |
 | [explanation/state-and-resuming.md](explanation/state-and-resuming.md) | you save a bank and load it later — what its state holds, why a resumed run matches one that never stopped, why the file loads on every operating system and in later versions, and the one gap |
+| [explanation/warm-up-and-readiness.md](explanation/warm-up-and-readiness.md) | you want to know why a model withholds its first predictions, what each readiness gate measures, why `min_weight` can be out of reach, and how a model that seeds itself from its first rows differs |
+| [explanation/robust-scale.md](explanation/robust-scale.md) | you fit `huber`, `quantile` or `sgd` with a Huber loss and want to know how the residuals' scale is kept, why each target's first rows are refit, and what a robust scale gives up when the level shifts |
+| [explanation/grids-and-instances.md](explanation/grids-and-instances.md) | you give a spec several values of a setting and want to know how one pass fits them all, what an instance and a slot are, and why the best error over a grid is optimistic |
 
 ## Records
 

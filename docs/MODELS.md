@@ -897,128 +897,11 @@ held less.
 
 #### How it works
 
-Huber's estimator is robust through two parts: a loss whose pull stops
-growing at a cut, and a scale for the cut that outliers cannot widen.
-
-**Huber's loss is quadratic for a small miss and linear for a large one.**
-With `u = e/σ` the residual `e` in units of a scale `σ`, and `δ` the cut
-`huber_delta`:
-
-```
-ρ(u) = u²/2           |u| ≤ δ
-     = δ|u| − δ²/2    |u| > δ
-ψ(u) = ρ'(u) = u inside the cut, ±δ beyond it
-```
-
-`ψ` is a row's pull on the fit, and it stops growing at the cut. Least
-squares has `ρ(u) = u²/2`, so one row that misses by 50 pulls as hard as
-10,000 rows that miss by 0.5. Writing `ψ(u) = w(u)·u` with
-`w(u) = min(1, δ/|u|)` turns the fit into weighted least squares, each row
-at the weight `w` of its own residual. A batch fit iterates: fit, compute
-the residuals, reweight, fit again. `huber` weighs each row once, by its
-residual against the fit before the row, and keeps only the weighted sums.
-It iterates only over each target's first rows, which it refits to
-convergence once (`huber_refit_rows=`).
-
-**While a target's refit waits, its MAD is read exactly, from the
-residuals its buffer holds** (`huber_refit_rows`, and `quantile_refit_rows`
-for the band a `quantile` fit draws in the MAD). Each row's weight relative
-to the others is fixed once the row is held, since every later decay
-applies to all of them. So the residuals sit in a tree ordered by size, at
-those weights, and a read is a walk down it, whose time grows with the
-logarithm of the rows held. From the refit on, the median is read from a
-quantile sketch kept per target.
-
-**With the refit on, a target in another unit gives the same scale and
-fit.** The sketch splits each octave into 64 buckets of equal width, and
-only a power of two maps their edges onto themselves. So a target in grams instead of
-kilograms regroups residuals across bucket edges, and the median moves by
-up to a bucket, 1.6%, where it should move by the factor. Over 50 streams
-of 1,500 rows with heavy-tailed noise and a half-life of 300 rows, that
-moved predictions by up to 0.4% of the target's spread, at scales of 1e±3
-and 1e±6. Keeping the residuals in units of a number that scales with them
-removes the effect, and the refit has one. Its sketch is built from the
-converged residuals in units of their median, an order statistic of them,
-which scales with them to a single residual's rounding. Before the refit
-the exact median needs no units. So with the refit on, a stream in another
-unit gives the same scale and fit to the rounding of the target's level.
-That was measured at levels up to `1e9`, with a first residual `1e-6` of
-the noise: within 178 `u·|y|max`, where `u` is the unit roundoff.
-
-No unit is taken from the residuals as they arrive, since the first can
-all be small beside the rest. A sketch anchored at the first residual
-would carry that residual's rounding at the target's level into every
-read, a bucket apart in the two units for the life of the sketch. So with
-the refit off, the sketch keeps its fixed buckets, and the scale in two
-units differs by up to a bucket. A quantile fit, whose band is drawn in
-the scale, differs by more: at a factor of 3, by 0.4% in its slope after
-500 rows and 3.8% at its first rows. A power of two moves nothing. A saved
-state keeps the rule it was saved under.
-
-**The sketch's memory is bounded, whatever the residuals.** A residual
-beyond its 16 octaves is folded into the outermost bucket on its side, its
-weight kept, so a wild residual of `1e200` takes no more memory than any
-other. Against `"rms"`, with 20 features and 10 targets over 100,000 to
-200,000 rows on an Apple M4 Pro under other load, the sketch adds 14 to
-17 ns per target per row to `huber`, and 20 to 32 to `sgd(loss="huber")`,
-whose step is cheaper.
-
-**The median holds where the root mean square gives way.** Measured on
-`y = 1000 + 2x + 0.5ε` over 20,000 rows with no decay, the other settings
-at their defaults. A share of the rows with `x` above 0 is 50 too high,
-and each cell is the median slope over five seeds:
-
-| wild rows | least squares | `"mad"` | `"rms"` | statsmodels `RLM`, MAD scale, iterated to convergence |
-|---|---|---|---|---|
-| none | 1.999 | 1.999 | 2.000 | 2.000 |
-| 1% | 2.415 | 2.008 | 2.057 | 2.008 |
-| 5% | 4.050 | 2.040 | 2.675 | 2.039 |
-| 12.5% | 6.975 | 2.124 | 4.882 | 2.124 |
-
-The root mean square fails twice. Its first residuals are the target's
-whole level, about 1,000 while the intercept is still near 0, and without
-decay they stay in it for good. And the wild rows inflate the scale that is
-meant to catch them. The median leaves the first residuals behind once the
-fit has the level. The small bias left at 1% and 5% is Huber's own: a wild
-row is still learned, at about `1.345 · 0.5 / 50 ≈ 0.013` of an ordinary
-row's weight, and hundreds of them add up.
-
-**Rebuilding `σ` from the converged fit's residuals is what keeps the
-refit.** A refit that kept the pulled fit's `σ` was pulled back within a
-few hundred rows. The refit moves only its own target's fit, and the solve
-schedule stays as it was.
-
-**The refit takes a target from the first poor fit to the batch fit.**
-Measured on the stream of the table of scales, over 40 seeds, as the
-streams whose final slope is more than 0.05 from statsmodels' `RLM`, then
-more than 0.25, and the worst distance:
-
-| wild rows | 20,000 rows, `huber_refit_rows=0` | 20,000 rows, 500 (the default) | 2,000 rows, 0 | 2,000 rows, 200 | 2,000 rows, 500 | 2,000 rows, 1,000 |
-|---|---|---|---|---|---|---|
-| 5% | 0 and 0 of 40; worst 0.014 | 0 and 0; 0.001 | 4 and 0; 0.17 | 0 and 0; 0.004 | 0 and 0; 0.003 | 0 and 0; 0.003 |
-| 10% | 6 and 0; 0.19 | 0 and 0; 0.004 | 12 and 6; 0.49 | 0 and 0; 0.008 | 0 and 0; 0.006 | 0 and 0; 0.005 |
-| 12.5% | 13 and 2; 0.43 | 0 and 0; 0.007 | 15 and 13; 0.97 | 0 and 0; 0.013 | 0 and 0; 0.009 | 0 and 0; 0.007 |
-| 15% | 15 and 12; 1.08 | 0 and 0; 0.012 | 20 and 18; 2.33 | 1 and 0; 0.054 | 0 and 0; 0.016 | 0 and 0; 0.019 |
-| 20% | 25 and 23; 4.30 | 4 and 0; 0.14 | 29 and 24; 6.68 | 18 and 5; 5.76 | 10 and 1; 0.32 | 3 and 0; 0.15 |
-
-A stream is captured when its final slope ends more than 0.05 from `RLM`.
-The median stream was within 0.002 of `RLM` at 12.5% either way, which is
-why five seeds did not show the captured ones. With a half-life of 5,000
-rows over 20,000 rows, the refit took the captured streams at 15% and 20%
-from 15 and 26 of 40 to 0 and 2. At 20% wild rows, 40% of those with `x`
-above 0, a refit of the first 200 rows can itself be captured, and one of
-500 rows now and then. A refit of the first 1,000 rows leaves 3 of 40 captured, none by more than 0.25.
-
-That is the edge of Huber's breakdown, not a fault to be fixed. The wild
-rows are 40% of the rows on their side of `x`, and the refit weighs each
-row by its residual from the one-pass fit they have already pulled. So
-over 40 streams of 20,000 rows at 20%, the default leaves 4 of `huber`'s
-fits captured, the worst slope 0.14 off. `sgd(loss="huber")`'s entry gives
-its own figures. At
-15% it leaves none, and at 20% `huber_refit_rows=1000` leaves fewer.
-Over 20,000 rows, 200 rows left the same 4 streams at 20% as 500 do, the
-worst by 0.18. Over 2,000 rows, the table's last four columns show the
-gain of the longer default.
+[The robust scale and the refit of the first
+rows](explanation/robust-scale.md) explains Huber's loss and why its
+scale must be robust. It measures the streams one pass leaves captured,
+the refit over 40 seeds, and what a robust scale gives up when the level
+shifts.
 
 **A refit runs once, and a row after it takes the time it did, within
 2%.** The default count grows with the features, 10 rows a feature past
@@ -1033,45 +916,6 @@ but 200 is where the slow refits of heavy one-sided outliers end. Over
 moved by a level, 50 passes ran out on 127 streams for `huber` and 200 on
 8, the slowest refit taking 428 passes. For `sgd(loss="huber")` they ran
 out on 149 and 9, all nine past 39%.
-
-Rows that only age a target (its value null, or its weight 0) are held as
-runs, one run for consecutive such rows at the same clock step. A target
-with more than 4 runs for each row of its count gives its refit up. Under
-a regular clock that never happens, since a gap of any length is one run.
-
-**The refit is of each target's first rows, since a refit of trailing rows
-would free no captured fit.** Reweighting passes over the trailing rows
-would leave the first rows' weights and `σ` as they are.
-
-**A robust scale slows the fit after a change of level.** In a series, a
-run of large residuals is either a burst of outliers or a new level, and no
-rule on one row tells them apart. The median treats every row after a
-level shift as an outlier until the median itself has moved, which holds
-the fit back. `huber_scale_half_life=` gives the scale a memory of its
-own, the spec's `half_life` by default. Shorter than the fit's, the scale
-follows a shift sooner, but a longer burst of outliers then widens the
-cut. Measured on `y = 2x + 0.5ε`, with `x` and `ε` standard normal (seed
-1, 14,000 rows), a fit half-life of 500 rows, a shift of +20 at row 10,000
-and no outliers, as the mean absolute error after the shift:
-
-| scale | rows 0-200 after the shift | rows 200-400 |
-|---|---|---|
-| least squares (`huber_delta=inf`) | 17.6 | 13.3 |
-| `"rms"` | 19.0 | 15.1 |
-| `"mad"`, the scale's half-life the fit's 500 rows | 19.9 | 19.5 |
-| `"mad"`, `huber_scale_half_life=100` | 19.2 | 14.6 |
-
-The fit's own half-life sets how long the fit takes to reach the new
-level, about 2,000 rows in every row of the table. The break tests of
-[DIAGNOSTICS.md](DIAGNOSTICS.md#has-it-broken) flag such a shift as it
-happens.
-
-**Huber's weights read the residual alone, so they do not protect against
-a wild feature.** A row whose features are far from the rest pulls the fit
-toward itself, so its residual is small and it keeps its full weight. Wild
-rows concentrated in one region of `x` act the same way once they are the
-majority there. At 30% of the rows (60% of those with `x` above 0) the
-median breaks too, and every estimator that reads only residuals does.
 
 #### See also
 
@@ -1197,26 +1041,10 @@ where least squares gives 2.89.
 
 #### How it works
 
-**The refit of each target's first rows brings the worst stream close to a
-fit of every row.** Measured over 50 streams of 8,000 rows of
-`y = 1 + 2x₀ − x₁ + 0.5·Laplace`, with no decay, as the worst stream's
-largest coefficient gap to statsmodels' `QuantReg` on the same rows:
-
-| the first 500 rows | `quantile_refit_rows=0` | 500 (the default) |
-|---|---|---|
-| clean | 0.0057 | 0.0052 |
-| a fifth wild, +50, where `x₀ > 0` | 0.038 | 0.0085 |
-| the first three 1e4 off | 0.22 | 0.0053 |
-| t(2) noise | 0.0078 | 0.0058 |
-| Cauchy noise | 0.0175 | 0.0058 |
-| a shift of 20 | 0.093 | 0.061 |
-
-A shift of every one of the first rows is no outlier among them. So the
-refit keeps them as the shifted fit's rows, and the one pass lets them go
-as before. A state saved from a stream at another level has already refit its first
-rows there, and the one pass lets those rows go as the stream continues,
-as it does any first rows. The refit's buffer,
-its count's default and `refit_budget` are
+[The refit of the first
+rows](explanation/robust-scale.md#the-refit-of-the-first-rows) measures
+`quantile`'s refit against statsmodels' `QuantReg` over 50 streams. The
+refit's buffer, its count's default and `refit_budget` are
 [`huber`'s](#huber--robust-regression).
 
 #### See also
@@ -1504,24 +1332,9 @@ at R² 0.978. Held in the caller's units, it is 2.02.
 
 **The refit of each target's first rows brings the Huber loss's one pass
 near statsmodels' `RLM`.** In one pass, the outliers capture the first
-steps: the docstring's Notes, under *The refit of the first rows*, give the
-one-pass figures. The stream is `y = 1000 + 2x + 0.5ε` with a row 50 too
-high on a share of the rows, all with `x` above 0, and no decay. Each cell
-gives, over 40 seeds, the streams more than 0.05 and more than 0.25 in
-slope from `RLM`, and the worst distance, at each `huber_refit_rows`:
-
-| outliers | 20,000 rows, 500 (the default here) | 2,000 rows, 200 | 2,000 rows, 500 | 2,000 rows, 1,000 |
-|---|---|---|---|---|
-| 5% | 9 and 0 of 40; worst 0.091 | 5 and 0; 0.065 | 5 and 0; 0.065 | 5 and 0; 0.065 |
-| 10% | 9 and 0; 0.11 | 2 and 0; 0.075 | 2 and 0; 0.075 | 2 and 0; 0.076 |
-| 12.5% | 11 and 0; 0.11 | 7 and 0; 0.098 | 7 and 0; 0.097 | 7 and 0; 0.098 |
-| 15% | 12 and 0; 0.13 | 10 and 0; 0.076 | 9 and 0; 0.078 | 10 and 0; 0.079 |
-| 20% | 23 and 0 | 16 and 4; 2.98 | 8 and 0; 0.14 | 8 and 0; 0.13 |
-
-Apart from a 200-row refit at 20% outliers, which the outliers still
-capture, the streams still more than 0.05 away after the refit are the
-constant learning rate's own wander, a median of about 0.03 at every share
-of outliers.
+steps. [The refit of the first
+rows](explanation/robust-scale.md#the-refit-of-the-first-rows) gives
+`sgd(loss="huber")`'s figures over 40 seeds beside `huber`'s.
 
 #### See also
 
@@ -3031,31 +2844,9 @@ centers*, give the measurements behind its limit below 0.5.
 #### How it works
 
 **Seeding waits for `warm_rows` rows, places the centers, and replays the
-rows.** `init="k-means++"` is the greedy variant scikit-learn uses. On five
-clusters in four dimensions, one such start run to its fixed point still
-lands in a partition 1.87 times as costly as the right one in 9 of 100
-seeds (28 of 100 for plain k-means++). So the default, `init="lloyd"`,
-takes ten starts, runs Lloyd's passes from each until no row changes center,
-and keeps the one of least inertia. On Fränti's benchmark sets, in 50
-orders each, no order of S1 or S2 misses a cluster. Ten passes from ten
-plain k-means++ starts missed one in 10 and 13 of the 50 orders. The
-A-sets' 20 to 50 clusters leave 10 to 25 of the 500 held rows a cluster,
-so 10, 30 and 44 of their 50 orders still miss a cluster and split another.
-Their median order ends 1.01 to 1.10 times the optimal inertia, where the
-plain starts ended 1.26 to 1.35 times it.
-
-**The seeding is paid once by each group's stream.** With the default 500
-rows, 8 centers and the default `init="lloyd"`, it took 56 ms at 400
-features on separated clusters, where a start reaches its fixed point in a
-few passes. It took 91 ms on
-overlapping ones, and 1.9 ms at 20 features (one thread, the load average
-about 110, 2026-10-25). At 400 features and 8 centers, `init="k-means++"`'s
-greedy draw, four candidates a center, places the centers in 2.8 ms. Its
-whole seeding, the placement and the replay of the 500 rows, takes 3.9 ms
-(medians over 200 and 40 runs in one native process, the load
-average under 15, 2026-10-31). Plain k-means++, one candidate, places the
-centers in 0.8 ms. A bank of many groups at many features pays it per group:
-10,000 groups at 400 features spend up to a quarter of an hour seeding.
+rows.** [Seeding](explanation/warm-up-and-readiness.md#seeding-a-model-that-places-its-starting-values)
+explains why the default takes the best of ten starts, measures it on
+Fränti's benchmark sets, and gives what it costs each group.
 
 #### See also
 
