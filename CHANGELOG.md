@@ -512,6 +512,28 @@ returns.
 
 ### Tests and documents
 
+- The contributor documents are rewritten as how-tos and references.
+  EXTENDING.md is *Add a model*, and eleven pages under `docs/contributing/`
+  cover iterating, merging a wave of branches, worktree slots, caches, the
+  oracle ledger and its grids, outputs and parameters, the API, releases,
+  the Polars range and the repository's settings. TESTING.md,
+  RELEASE-READINESS.md and PERFORMANCE.md are references. Their dated
+  measurements, findings and release history moved whole to three records,
+  with their section numbers and entry IDs kept.
+- The guide to wide fits (GRAM.md) and the window operators guide
+  (WINDOWS.md) are now explanations, and their recipes are task pages of
+  their own: fitting a ridge from a Gram, checking a fit is determined,
+  selecting columns stably over weeks, per-block coefficients, reading Grams
+  from saved files, storing a compact Gram, fitting hundreds of features,
+  Huber on a Gram, resuming a window run, choosing when `ewridge` solves,
+  starting from a prior fit, blending each session with the long run,
+  testing a detector on known truth, and checking a two-stage fit. New
+  explanations cover how the diagnostics work, how the data quality checks
+  work, and why series that tick at their own times lose their correlation.
+- Corrected on the way: a packed Gram is the full one bit for bit;
+  `fit(closed_groups=)` writes its file, and frees the closed groups, only
+  when the pass ends; a held refit row grew by 48 bytes, not 40, so the
+  `refit_budget` entry above now says 48.
 - **The README is now a landing page.** It says what polars-online is, how
   to install it, a first fit with its input and output, the example data
   the other pages read, what you can rely on, and a map from each task
