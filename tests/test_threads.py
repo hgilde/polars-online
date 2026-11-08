@@ -375,6 +375,50 @@ def test_a_count_that_is_not_one_is_refused_by_name_everywhere(tmp_path, value, 
         assert str(caught.value) == message, name
 
 
+@pytest.mark.parametrize("value", [10**6, np.int64(10**6), 10**30], ids=repr)
+def test_a_count_above_the_bound_is_refused_everywhere_before_a_pool(tmp_path, value):
+    """A ``threads`` above the most one pool may have is a ``ValueError`` on
+    every surface, raised before a pool is built: a million threads asked
+    for drove a 14-core machine's load into the hundreds (task 356). The
+    Rust side's registry test shows no pool of the size is held; here, the
+    calls return at once, which building any of them would not."""
+    spec = specs()[2]
+    df = stream().head(10)
+    bank = po.ModelBank([spec])
+    data = bank.save_bytes()
+    path = str(tmp_path / "bank.state")
+    bank.save(path)
+    bound = native.max_threads()
+    assert bound >= 1024
+    message = native.threads_too_many(repr(value))
+    assert message.startswith(
+        f"threads: {value!r} is more threads than one pool may have, which is at most {bound}."
+    )
+    calls = {
+        "ModelBank": lambda: po.ModelBank([spec], threads=value),
+        "ModelBank.load": lambda: po.ModelBank.load(data, threads=value),
+        "ModelBank.load_bytes": lambda: po.ModelBank.load_bytes(data, threads=value),
+        "fit_predict(DataFrame)": lambda: po.fit_predict(df, [spec], threads=value),
+        "fit_predict(LazyFrame)": lambda: po.fit_predict(df.lazy(), [spec], threads=value),
+        "predict(DataFrame)": lambda: po.predict(df, bank, threads=value),
+        "df.online.fit_predict": lambda: df.online.fit_predict([spec], threads=value),
+        "lf.online.fit_predict": lambda: df.lazy().online.fit_predict([spec], threads=value),
+        "lf.online.predict": lambda: df.lazy().online.predict(path, threads=value),
+        "thread_pool_size": lambda: po.thread_pool_size(threads=value),
+        "gram.lars_paths": lambda: po.gram.lars_paths([], threads=value),
+        "gram.solve_subsets": lambda: po.gram.solve_subsets([], [[0]], threads=value),
+        # The native side, reached without the Python check, says the same.
+        "native ModelBank": lambda: native.ModelBank(_json([spec]), value),
+        "native load_bytes": lambda: native.ModelBank.load_bytes(data, None, value),
+        "native thread_pool_size": lambda: native.thread_pool_size(value),
+    }
+    for name, call in calls.items():
+        with pytest.raises(ValueError) as caught:
+            call()
+        assert str(caught.value) == message, name
+    assert po.thread_pool_size(threads=bound) == bound
+
+
 @pytest.mark.parametrize("value", [np.int64(2), np.int32(2), np.uint8(2)], ids=repr)
 def test_a_numpy_integer_is_a_count_everywhere(tmp_path, value):
     """Anything Python reads as an integer (`__index__`) is a count, numpy's

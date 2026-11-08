@@ -4526,9 +4526,9 @@ def marginal(
       increasing, or that give no feature an edge (every feature one open
       bin, with no response curve and no cut; one feature without edges
       beside others is taken, and reports a single bin);
-    - ``bins``, ``bin_rule`` or ``bin_warm_rows`` beside ``bin_edges``, and
-      ``bins`` or ``bin_edges`` beside
-      ``window_size``;
+    - ``bins``, ``bin_rule`` or ``bin_warm_rows`` beside ``bin_edges``,
+      ``bin_rule`` or ``bin_warm_rows`` without ``bins``, and ``bins`` or
+      ``bin_edges`` beside ``window_size``;
     - ``bins`` below 2, or a ``bin_warm_rows`` below ``bins``;
     - an empty ``lags`` (leave ``lags`` out for none), ``serial_rule`` or
       ``cross_lags`` without ``lags``, ``lags`` or ``cross_lags`` that do not

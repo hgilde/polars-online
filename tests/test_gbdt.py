@@ -888,6 +888,13 @@ _BOTH = ("xgboost", "lightgbm")
         (
             _BOTH,
             "data",
+            dict(threads=10**6),
+            ValueError,
+            r"threads must be at most \d+, the most one pool may have, but it is 1000000",
+        ),
+        (
+            _BOTH,
+            "data",
             dict(threads=True),
             ValueError,
             "threads must be a whole number of at least 1, or None, but it is True",

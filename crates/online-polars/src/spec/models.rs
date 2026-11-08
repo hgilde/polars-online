@@ -841,6 +841,29 @@ impl Spec {
                         listed_and(&learning)
                     ));
                 }
+                // Learning the bins needs bins to learn: without `bins` (and
+                // without `bin_edges`, refused beside them above) these were
+                // taken and had no effect, where `bin_budget` and `bin_stat`
+                // without bins are refused (task 356).
+                if bins.is_none()
+                    && bin_edges.is_none()
+                    && (bin_rule.is_some() || bin_warm_rows.is_some())
+                {
+                    let learning: Vec<&str> = [
+                        ("bin_rule", bin_rule.is_some()),
+                        ("bin_warm_rows", bin_warm_rows.is_some()),
+                    ]
+                    .into_iter()
+                    .filter_map(|(k, given)| given.then_some(k))
+                    .collect();
+                    let named = listed_and(&learning);
+                    no.refuse(format!(
+                        "spec {:?}: {named} {} how to learn the bins, but bins is not set, so \
+                     there are none to learn. Set bins, or leave {named} out.",
+                        self.name,
+                        if learning.len() == 1 { "sets" } else { "set" },
+                    ));
+                }
                 if bin_budget.is_some() && bins.is_none() && bin_edges.is_none() {
                     no.refuse(format!(
                         "spec {:?}: bin_budget bounds the memory of the bins, but neither bins \

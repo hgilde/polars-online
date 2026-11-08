@@ -135,14 +135,54 @@ pub fn threads_refusal(shown: &str) -> String {
     )
 }
 
-/// `n` as a `threads` count: refused when 0.
+/// The fewest threads [`max_threads`] allows on any machine.
+pub const MAX_THREADS_FLOOR: usize = 1024;
+
+/// The most threads one pool may be given: 1024, or one per core where a
+/// machine has more cores than that.
+///
+/// The bank's work is arithmetic, so a pool runs no faster with more
+/// threads than the machine has cores: the extra ones only wait their
+/// turn. A count far above that is a slip, and an expensive one, because
+/// the pool starts every thread at once (a million asked for drove a
+/// 14-core machine's load into the hundreds before the system refused
+/// any). The bound is fixed at 1024 rather than at the core count so that
+/// a count chosen on one machine is still accepted on a smaller one, where
+/// it only runs oversubscribed. 1024 is above the logical cores of any
+/// common server, and well below both rayon's own limit for a pool (65535
+/// on 64-bit targets, above which it silently starts fewer) and the
+/// threads an operating system lets one process start (12288 on macOS).
+#[must_use]
+pub fn max_threads() -> usize {
+    MAX_THREADS_FLOOR.max(one_per_core())
+}
+
+/// The text that refuses a `threads` count above [`max_threads`], `shown`
+/// as the caller wrote it, so a count too large for a `usize` reads the same.
+#[must_use]
+pub fn threads_too_many(shown: &str) -> String {
+    let max = max_threads();
+    format!(
+        "threads: {shown} is more threads than one pool may have, which is at most {max}. Give \
+         at most the machine's {cores} cores, since more threads than cores run no faster, \
+         or leave threads out (None in Python) for the bank's default number of threads.",
+        cores = one_per_core()
+    )
+}
+
+/// `n` as a `threads` count: refused when 0 or above [`max_threads`],
+/// before any pool is built.
 ///
 /// # Errors
 ///
-/// `ComputeError` with [`threads_refusal`]'s text for 0.
+/// `ComputeError` with [`threads_refusal`]'s text for 0, and with
+/// [`threads_too_many`]'s above the bound.
 pub fn check_threads(n: usize) -> PolarsResult<usize> {
     if n == 0 {
         polars_bail!(ComputeError: "{}", threads_refusal("0"));
+    }
+    if n > max_threads() {
+        polars_bail!(ComputeError: "{}", threads_too_many(&n.to_string()));
     }
     Ok(n)
 }
@@ -296,6 +336,13 @@ fn threads_from_env(val: Option<&OsStr>) -> Result<usize, String> {
     let text = val.to_string_lossy();
     match text.trim().parse::<usize>() {
         Ok(0) => Ok(one_per_core()),
+        Ok(n) if n > max_threads() => Err(format!(
+            "environment variable {THREADS_VAR}: {text:?} asks for {n} threads, more than one \
+             pool may have, which is at most {max}. Set it to at most the machine's {cores} \
+             cores (0 is one thread per core), or unset it.",
+            max = max_threads(),
+            cores = one_per_core()
+        )),
         Ok(n) => Ok(n),
         Err(_) => Err(format!(
             "environment variable {THREADS_VAR}: {text:?} is not a number of threads. Set it \
@@ -365,6 +412,48 @@ mod tests {
         // And a pool that started is the pool.
         let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build();
         assert_eq!(spawned(1, None, pool).unwrap().current_num_threads(), 1);
+    }
+
+    /// A count above the bound is refused by the check every surface
+    /// runs, and by the variable's reader, without building a pool
+    /// (task 356: a million asked for drove the load into the hundreds).
+    /// The bound itself is accepted by the check, which builds nothing.
+    #[test]
+    fn a_count_above_the_bound_is_refused_and_builds_no_pool() {
+        let max = max_threads();
+        assert!(max >= MAX_THREADS_FLOOR && max >= one_per_core());
+        assert!(max <= rayon::max_num_threads(), "{max}");
+        assert_eq!(check_threads(max).unwrap(), max);
+        for n in [max + 1, 1_000_000, usize::MAX] {
+            let err = check_threads(n).unwrap_err().to_string();
+            assert!(
+                err.contains(&format!(
+                    "threads: {n} is more threads than one pool may have, which is at most {max}."
+                )),
+                "{err}"
+            );
+            assert!(
+                err.contains("or leave threads out (None in Python)"),
+                "{err}"
+            );
+            let err = thread_pool_size(Some(n)).unwrap_err().to_string();
+            assert!(err.contains(&threads_too_many(&n.to_string())), "{err}");
+        }
+        let err = Threads::new(Some(1_000_000)).unwrap_err().to_string();
+        assert!(err.contains(&threads_too_many("1000000")), "{err}");
+        assert!(!Threads::registry_holds(1_000_000));
+        let err = threads_from_env(Some(OsStr::new("1000000"))).unwrap_err();
+        assert!(
+            err.starts_with(&format!(
+                "environment variable {THREADS_VAR}: \"1000000\" asks for 1000000 threads, \
+                 more than one pool may have, which is at most {max}."
+            )),
+            "{err}"
+        );
+        assert_eq!(
+            threads_from_env(Some(OsStr::new(&max.to_string()))),
+            Ok(max)
+        );
     }
 
     #[test]

@@ -330,6 +330,29 @@ fn threads_from_the_flag_or_the_key_and_the_variable_only_without_them() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A `threads` above the bound one pool may have, from the key or the
+/// flag, is refused by the config's check, before the bank and its pool
+/// are opened, so a dry run refuses it too (task 356).
+#[test]
+fn a_threads_above_the_bound_is_refused_before_any_pool() {
+    let dir = fresh_dir("threads-bound");
+    let input = dir.join("in.parquet");
+    write_input(&input, 30);
+    for (extra, flag) in [
+        ("threads = 1000000", &[][..]),
+        ("", &["--threads", "1000000"][..]),
+    ] {
+        let cfg = job(&dir, text(&input), text(&dir.join("o.parquet")), extra);
+        let (code, _, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]).args(flag));
+        assert_eq!(code, Some(1), "{extra} {flag:?}: {err}");
+        assert!(
+            err.contains("threads: 1000000 is more threads than one pool may have"),
+            "{extra} {flag:?}: {err}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 // ---- Task 252: command-line paths no test reached. ----
 
 /// A config that does not parse and holds a backslash is told how a

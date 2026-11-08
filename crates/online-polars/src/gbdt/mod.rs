@@ -171,8 +171,16 @@ impl Layout {
 }
 
 /// A rayon pool of `threads` threads (all the machine's when 0), for the
-/// conversions a build runs beside the library.
+/// conversions a build runs beside the library. A count above
+/// [`crate::max_threads`] is refused before any thread starts, as the
+/// bank's `threads` is.
 pub fn conversion_pool(threads: usize) -> Result<rayon::ThreadPool, GbdtError> {
+    if threads > crate::max_threads() {
+        return Err(GbdtError::msg(format!(
+            "po.gbdt: {}",
+            crate::threads_too_many(&threads.to_string())
+        )));
+    }
     let mut b = rayon::ThreadPoolBuilder::new().thread_name(|i| format!("gbdt-{i}"));
     if threads > 0 {
         b = b.num_threads(threads);

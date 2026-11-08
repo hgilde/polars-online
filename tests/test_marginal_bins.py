@@ -275,6 +275,21 @@ def test_split_gain_t_uses_n_serial_when_it_has_one():
             dict(bin_budget=64.0, bins=None, bin_warm_rows=None),
             "bin_budget bounds the memory of the bins, but neither bins nor bin_edges is set",
         ),
+        # Learning the bins with no bins to learn had no effect (task 356).
+        (
+            dict(bins=None, bin_rule="fixed", bin_warm_rows=None),
+            'spec "m": bin_rule sets how to learn the bins, but bins is not set, so there are '
+            "none to learn. Set bins, or leave bin_rule out.",
+        ),
+        (
+            dict(bins=None, bin_warm_rows=50),
+            "bin_warm_rows sets how to learn the bins, but bins is not set",
+        ),
+        (
+            dict(bins=None, bin_rule="quantile", bin_warm_rows=50),
+            "bin_rule and bin_warm_rows set how to learn the bins, but bins is not set, so "
+            "there are none to learn. Set bins, or leave bin_rule and bin_warm_rows out.",
+        ),
         (dict(bins=8, bin_budget=0.0), "bin_budget must be above 0 MiB, but it is 0"),
         (dict(bins=8, bin_budget=-5.0), "bin_budget must be above 0 MiB, but it is -5"),
         # The budget holds given edges too (review 2026-09-26, F missing 8).

@@ -596,6 +596,12 @@ def _check_common(
             f"{who}: threads must be at least 1, or None, but it is {count}. Set threads to "
             f"1 or more, or to None for {library} default."
         )
+    if count is not None and count > _native.max_threads():
+        raise ValueError(
+            f"{who}: threads must be at most {_native.max_threads()}, the most one pool may "
+            f"have, but it is {count}. Set threads to at most the machine's cores, since more "
+            f"threads than cores run no faster, or to None for {library} default."
+        )
     if engine not in _ENGINES:
         raise ValueError(
             f'{who}: engine must be "auto", "native" or "python", but it is {engine!r}. Set '
@@ -733,7 +739,8 @@ def xgboost_matrix(
         ``ref`` built without one needs none.
     ``threads``
         Threads for XGBoost's construction and the conversions; all by
-        default.
+        default. At most 1024, or the machine's cores where it has more:
+        more threads than cores run no faster.
     ``seed``
         The sample's seed.
     ``engine``
@@ -752,7 +759,8 @@ def xgboost_matrix(
     ``ValueError``, each named, for:
 
     - ``max_bin`` below 2, ``threads`` or ``sample_rows`` not a positive
-      integer, or an ``engine`` not one of the three;
+      integer, a ``threads`` above its bound, or an ``engine`` not one of
+      the three;
     - a source that names no files, mixes Arrow IPC and Parquet, or names a
       file whose extension says neither;
     - a column missing, named twice, or of a type the libraries do not read
@@ -1158,7 +1166,8 @@ def lightgbm_dataset(
         LightGBM loaded takes an Arrow stream (4.7.0 on).
     ``threads``
         Threads for LightGBM's construction and the conversions; all by
-        default.
+        default. At most 1024, or the machine's cores where it has more:
+        more threads than cores run no faster.
     ``engine``
         ``"native"``, ``"python"``, or ``"auto"``: native, falling back to
         Python with a warning when the native engine cannot load LightGBM.
@@ -1174,9 +1183,9 @@ def lightgbm_dataset(
 
     ``ValueError``, each named, for:
 
-    - ``max_bin`` below 2, ``threads`` not a positive integer, an ``engine``
-      not one of the three, or an ``in_memory`` that is not ``True``,
-      ``False`` or ``"auto"``;
+    - ``max_bin`` below 2, ``threads`` not a positive integer or above its
+      bound, an ``engine`` not one of the three, or an ``in_memory`` that is
+      not ``True``, ``False`` or ``"auto"``;
     - a parameter in ``params`` that is this function's own argument;
     - a source that names no files, mixes Arrow IPC and Parquet, or names a
       file whose extension says neither;
