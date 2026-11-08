@@ -104,12 +104,7 @@ fn bits(v: &[f64]) -> Vec<u64> {
     v.iter().map(|x| x.to_bits()).collect()
 }
 
-fn pool(n: usize) -> rayon::ThreadPool {
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(n)
-        .build()
-        .expect("a test pool")
-}
+use crate::test_pool::pool;
 
 /// A fine cut, so that a matrix a debug build multiplies quickly is still
 /// many pieces of both kinds.
@@ -455,7 +450,13 @@ fn the_count_is_capped_at_the_pool_it_runs_on() {
         (1, 8, 1),
         (usize::MAX, 1, 1),
     ] {
-        let got = pool(size).install(|| Threads(asked).workers());
+        // A pool of exactly `size`, which runs no product, so not a
+        // `test_pool` (capped on Windows).
+        let exact = rayon::ThreadPoolBuilder::new()
+            .num_threads(size)
+            .build()
+            .expect("a test pool");
+        let got = exact.install(|| Threads(asked).workers());
         assert_eq!(got, want, "{asked} asked on a pool of {size}");
     }
 }

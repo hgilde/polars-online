@@ -5909,10 +5909,6 @@ fn gram_threads_reach_every_gram_the_slow_twins_too() {
 #[test]
 #[ignore = "extended: a 730-wide fit in a debug build"]
 fn gram_threads_moves_no_bit() {
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(8)
-        .build()
-        .unwrap();
     let k = 730;
     let bits = |v: &[f64]| v.iter().map(|u| u.to_bits()).collect::<Vec<_>>();
     let run = |threads: usize, block: usize| {
@@ -5945,17 +5941,16 @@ fn gram_threads_moves_no_bit() {
     };
     // In pools of different sizes too: the solve's bits no longer follow
     // the pool (task 231; until then the two counts ran in one pool).
-    let small = rayon::ThreadPoolBuilder::new()
-        .num_threads(3)
-        .build()
-        .unwrap();
+    // One pool at a time (`crate::test_pool`: on Windows x86-64 each
+    // multiplying thread commits a large buffer, and a pool has at most
+    // four threads there).
     for block in [16, 0] {
-        let one = small.install(|| run(1, block));
+        let one = crate::test_pool::pool(3).install(|| run(1, block));
         assert!(
             one.0.iter().any(|&p| !f64::from_bits(p).is_nan()),
             "nothing was predicted"
         );
-        let many = pool.install(|| run(8, block));
+        let many = crate::test_pool::pool(8).install(|| run(8, block));
         assert!(one == many, "block {block}: 8 threads moved a bit");
     }
 }
@@ -5969,15 +5964,6 @@ fn gram_threads_moves_no_bit() {
 #[ignore = "extended: fits up to 1,000 wide in four pools, in a debug build"]
 fn a_wide_fit_is_the_same_in_every_pool() {
     let bits = |v: &[f64]| v.iter().map(|u| u.to_bits()).collect::<Vec<_>>();
-    let pools: Vec<rayon::ThreadPool> = [1usize, 3, 8, 14]
-        .iter()
-        .map(|&n| {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(n)
-                .build()
-                .unwrap()
-        })
-        .collect();
     let mut moved = Vec::new();
     for k in [512usize, 730, 1000] {
         let run = || {
@@ -6000,10 +5986,12 @@ fn a_wide_fit_is_the_same_in_every_pool() {
             }
             out
         };
-        let one = pools[0].install(run);
+        // One pool at a time, at most four threads on Windows x86-64
+        // (`crate::test_pool`).
+        let one = crate::test_pool::pool(1).install(run);
         assert!(one.iter().any(|&p| !f64::from_bits(p).is_nan()));
-        for (p, n) in pools.iter().zip([1, 3, 8, 14]).skip(1) {
-            if p.install(run) != one {
+        for n in [3, 8, 14] {
+            if crate::test_pool::pool(n).install(run) != one {
                 moved.push(format!("k = {k}, pool of {n}"));
             }
         }

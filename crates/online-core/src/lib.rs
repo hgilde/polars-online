@@ -118,6 +118,10 @@ mod specification;
 mod spread;
 mod stats;
 mod tails;
+/// The thread pools of the tests that run one computation at several pool
+/// sizes, held within what a Windows runner can commit.
+#[cfg(test)]
+mod test_pool;
 mod warmup;
 mod window;
 mod window_moments;

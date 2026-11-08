@@ -68,10 +68,7 @@ impl Gram {
     /// [`syrk_lower_cut`] on a copy of `C`, inside a pool of `threads`.
     fn cut(&self, alpha: f64, threads: usize, cut: (usize, usize)) -> Vec<f64> {
         let mut c = self.c.clone();
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .expect("a test pool");
+        let pool = crate::test_pool::pool(threads);
         pool.install(|| {
             syrk_lower_cut(
                 MatMut::from_row_major_slice_mut(&mut c, self.k, self.k),
