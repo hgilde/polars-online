@@ -511,6 +511,16 @@ returns.
 
 ### Tests and documents
 
+- `docs/MODELS.md` is a reference page: each model's entry gives its
+  summary, when to use it, its update and one recipe, and links its
+  docstring for the parameters and refusals and `OUTPUTS.md` for the
+  fields. `huber` and `quantile` have entries of their own
+  (`MODELS.md#huber--robust-regression`, `#quantile--robust-regression`).
+  Several figures were corrected against the code, among them `micro`'s
+  `eps`, `sgd`'s and `huber`'s refit measurements and `bocpd`'s
+  `robust_beta`. `docs/OUTPUTS.md` now lists `huber`'s `huber_scale_<t>`,
+  and gives where `since_change`, `kmeans`' `dist_second`, `deco`'s fields,
+  `ew_class`'s fields and `coef` on an `ill_conditioned` row are null.
 - Every model builder's docstring, and those of `ModelBank` and its
   methods, the `lf.online`/`df.online` namespaces, the warning and error
   classes, `po.target`, `po.stream`, `po.ops`, `po.sim`, `po.eval`,
