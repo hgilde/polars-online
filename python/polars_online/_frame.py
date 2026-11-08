@@ -1,34 +1,36 @@
-"""The bank as a polars source: ``lf.online.fit_predict(specs)``.
+"""A model bank inside a Polars query: ``lf.online.fit_predict(specs)``.
 
-A ``LazyFrame`` in, a ``LazyFrame`` out. When the plan runs, its rows go
-through a bank that starts with nothing learned, one chunk at a time, so a
-query with the bank in it is O(chunk) in memory however long the stream is.
-The bank is registered as a polars source, the kind of node the engine pulls
-batches from, and what comes after it -- filters, selects, joins, writing the
-result to a file -- is polars' own. A filter after the bank never changes what
-the bank learns from. To keep rows from the bank, filter before it.
+A query in, a query out. When the query runs, its rows go through a bank
+that starts with nothing learned, one chunk at a time, so memory grows with
+a chunk and the bank's state, never with the length of the stream. The bank
+is a source of the query, the kind of step Polars reads chunks of rows from,
+and every step after it, such as a filter, a ``select``, a join or writing
+the result to a file, is Polars' own. A filter after the bank never changes
+what the bank learns from. To keep the bank from learning rows, give them
+weight 0 in the spec's ``weight`` column.
 
-The plan is pure: every execution starts from the same state (the specs'
-initial state, or ``load_state``, read when the plan is built), so collecting
-twice gives the same frame. ``save_state`` writes the state the execution ends
-in, after the last row the source fed the bank, atomically. Because the plan
-is pure that write is idempotent: polars runs a plan's source once per
-execution, and twice, concurrently, when one query uses the plan twice (a
-self-join, ``pl.concat``, ``pl.collect_all`` of two sinks), and every run ends
-in the same state.
+The query is pure: every run starts from the same state (the specs', or
+``load_state``'s, read when the query is built), so running it twice gives
+the same frame. ``save_state`` writes the state the run ends in, after the
+last row the query gave the bank, atomically. Because the query is pure,
+that write gives the same bytes every time. Polars runs a query's source
+once per run, and twice, at the same time, when one query uses it twice (a
+self-join, ``pl.concat``, or ``pl.collect_all`` of two queries), and every
+run ends in the same state.
 
-``df.online.fit_predict(specs)`` is the eager twin,
+``df.online.fit_predict(specs)`` does the same for a frame in memory, as
 ``ModelBank(specs).fit_predict(df)`` in one call. ``online.unnest(specs)``
-takes a bank's output apart: each spec's struct column becomes its fields as
-columns, with the ``coef`` list as one named column per coefficient
+turns each spec's output column into one column per field, with the
+``coef`` list as one named column per coefficient
 (:func:`polars_online.spec.coef_fields`). ``online.with_windows(*exprs, **named)``
-adds windowed means, sums and rates, looking back or ahead, as columns
-(:func:`polars_online.stream.with_windows`), so a query can add them and fit
-on them in one chain. Both namespaces are attached at import, which no type
-checker can see. So :func:`~polars_online.fit_predict`,
+adds exponentially weighted means, sums, rates, variances and quantiles,
+looking back or ahead, as columns
+(:func:`polars_online.stream.with_windows`), so a query can add them and
+fit on them in one chain. Both namespaces are attached when the package is
+imported, which no type checker can see. So :func:`~polars_online.fit_predict`,
 :func:`~polars_online.predict`, :func:`~polars_online.unnest` and
-:func:`polars_online.stream.with_windows` are the same calls with the frame
-as the first argument, visibly typed.
+:func:`polars_online.stream.with_windows` are the same calls with the query
+or the frame as the first argument, visibly typed.
 """
 
 from __future__ import annotations
@@ -283,25 +285,26 @@ def _spec_columns(specs: Iterable[dict[str, Any]]) -> set[str]:
 
 
 class OrderNotGuaranteedWarning(PolarsOnlineWarning, UserWarning):
-    """A plan handed to a bank has a row order polars does not guarantee.
+    """A warning that Polars may change the row order of a query a bank or a window run reads.
 
-    An online model learns in row order, so the order a plan delivers is part
-    of the model. :meth:`ModelBank.fit`, :meth:`ModelBank.fit_predict_batches`
-    and ``lf.online.fit_predict`` run a plan through polars' streaming engine.
-    There a ``join``, ``group_by``, ``unique`` or ``sort`` by several keys
-    without an order guarantee delivers a different stream than
-    ``lf.collect()`` gives. Measured on 200,000 rows: ``collect()`` kept the
-    input order and ``collect_batches()`` did not, so a plan checked by
-    collecting it learns something else when it is fed. The order may also
-    differ between runs.
+    An online model learns in row order, so the order a query delivers is
+    part of the model. :meth:`ModelBank.fit`,
+    :meth:`ModelBank.fit_predict_batches`, ``lf.online.fit_predict``,
+    ``lf.online.predict``, and :func:`polars_online.stream.with_windows` with
+    its namespace form ``lf.online.with_windows`` have Polars run a query a
+    chunk at a time. Each issues this warning when the query has a step
+    whose row order Polars may then change. Fix the step it names, or, for
+    a query whose order is fixed by other means, filter the warning out
+    with
+    ``warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning)``.
 
-    The warning names each such node and its fix:
+    The warning names each such step and its fix:
 
     .. list-table::
        :header-rows: 1
        :widths: 35 65
 
-       * - the node
+       * - the step
          - its fix
        * - a ``join``
          - ``maintain_order="left"``
@@ -311,160 +314,295 @@ class OrderNotGuaranteedWarning(PolarsOnlineWarning, UserWarning):
          - ``maintain_order=True``: without it, rows with equal keys come out
            in no particular order
        * - a ``unique``
-         - a ``sort`` after it: the streaming engine does not honour its
-           ``maintain_order``
+         - a ``sort`` after it, since Polars does not honor its
+           ``maintain_order`` when it runs a query a chunk at a time
        * - any of them
-         - a sort before the bank
+         - a sort before the bank or the window run
 
-    Best-effort by design. The plan's ``explain`` text is read first. Only
-    when it names a join, an aggregation, a ``unique`` or a sort is the plan
-    read through ``LazyFrame.serialize``, a format polars has deprecated, and
-    walked. A plan polars cannot serialize is let through in silence. Polars
-    1.44.2 serializes a plan that already holds a bank, its Python source
-    included, so a join stacked *above* a bank is reported there; a polars
-    that cannot serialize it says nothing about it. The inspection never
-    fails a run. For a plan whose order is fixed by other means,
-    ``warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning)``.
+    When Polars runs the query a chunk at a time, such a step without an
+    order guarantee delivers a different stream than ``lf.collect()``
+    gives, and the order may differ between runs (see Notes). So a query
+    checked by running it and reading its result learns something else when
+    a bank is fed from it.
 
-    **Not raised by** :meth:`ModelBank.fit` **when every spec is an
-    accumulator with no decay**: ``ewridge`` or ``rls`` at ``lam=1.0`` or
-    ``half_life=inf``, with no ``window_size``, no session and no drift
-    reset. Those sums commute, so the state after that fit is the same
-    whatever the order (to rounding: 6.7e-16 for ``ewridge`` and 1.4e-15 for
-    ``rls`` over 200 rows), and ``fit`` keeps only the state. Nothing else is
-    spared the warning, on purpose:
+    :meth:`ModelBank.fit` does not issue it when every spec keeps running
+    sums with no decay: ``ewridge`` or ``rls`` at ``lam=1.0`` or
+    ``half_life=inf``. Each such spec must also have none of the settings
+    that make a fit depend on the row order, such as a ``window_size``, a
+    session, a weight column, an embargo, a drift reset or a diagnostic
+    (the full list is in :meth:`ModelBank.fit`'s Notes). Those sums
+    commute, so the state after that fit is the same whatever the order,
+    to rounding, and ``fit`` keeps only the state. Every other
+    call and spec gets the warning:
 
-    - ``fit_predict_batches`` and the plan form over the same specs, whose
-      predictions are out-of-sample and so move with the order even where
-      the coefficients do not (by up to 0.087 for ``ewridge`` and 0.65 for
-      ``rls`` on the same rows);
-    - every other model, whose update does not commute: ``sgd``, ``pa``,
+    - ``fit_predict_batches`` and ``lf.online.fit_predict`` over the same
+      specs, whose predictions are out-of-sample and so move with the order
+      even where the coefficients do not;
+    - every other model, whose step at each row does not commute: ``sgd``, ``pa``,
       ``ftrl``, ``quantile`` and a reweighting ``huber`` all differ
       materially with no decay at all;
     - ``lasso``, which selects its penalty by an out-of-sample error.
 
-    So "no half-life" is not by itself a reason to expect order not to
-    matter. A spec option the check does not recognise counts as unsafe, so a
-    key added later cannot quietly become exempt.
+    So a spec with no half-life is not by itself one whose output ignores
+    the row order. A spec setting the check does not recognize counts as
+    unsafe, so a setting added to the library later cannot quietly become
+    exempt.
+
+    .. rubric:: Examples
+
+    This code reads ``ticks.parquet`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        import warnings
+
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        sides = pl.scan_parquet("ticks.parquet").select("t", "x0", "x1")
+        # A join with no maintain_order: Polars may deliver its rows in any order.
+        rows = pl.scan_parquet("ticks.parquet").select("t", "y").join(sides, on="t")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            rows.online.fit_predict([spec])
+        print([type(w.message).__name__ for w in caught])
+
+    .. code-block:: text
+
+        ['OrderNotGuaranteedWarning']
+
+    .. rubric:: See also
+
+    - `Put rows in clock order
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/put-rows-in-clock-order.md>`_,
+      how to give a bank each group's rows in order, and how to read this
+      warning.
+    - :class:`PolarsOnlineWarning`, the base class every warning of this
+      library shares.
+
+    .. rubric:: Notes
+
+    Measured on 200,000 rows, ``collect()`` kept the input order and
+    ``collect_batches()`` did not. Over 200 rows in two orders, the state an
+    order-free ``fit`` leaves differed by 6.7e-16 for ``ewridge`` and 1.4e-15
+    for ``rls``, and the predictions of ``fit_predict_batches`` by up to
+    0.087 for ``ewridge`` and 0.65 for ``rls``.
+
+    The check is best effort. The query's ``explain`` text is read first.
+    Only when it names a join, an aggregation, a ``unique`` or a sort is the
+    query read through ``LazyFrame.serialize``, a format Polars has
+    deprecated, and walked. A query Polars cannot serialize is let through
+    without a warning. Polars 1.44.2 serializes a query that already holds a
+    bank, its Python source included, so a join stacked after a bank is
+    reported there. A Polars that cannot serialize it says nothing about it.
+    The check never fails a run.
     """
 
 
 class ReadinessWarning(PolarsOnlineWarning, UserWarning):
-    """A model is not, or cannot become, ready in a way worth a word.
+    """A warning that a model is not ready, or may never become ready.
 
-    Raised once per (spec, group) by the learning calls --
-    :meth:`ModelBank.fit`, :meth:`ModelBank.fit_predict`,
-    :meth:`ModelBank.fit_predict_batches` and the plan form -- never by
-    ``predict``, for the four findings below, which
-    `docs/DIAGNOSTICS.md, Is it ready?
+    It points once at a state every row already carries in
+    ``withheld_reason``, ``settled_frac`` and ``support_coef``, so you can
+    act before reading the output. Where the finding is intended, filter it
+    out with ``warnings.simplefilter("ignore", polars_online.ReadinessWarning)``.
+    `Is it ready?
     <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`_
-    sets beside the gates that withhold a prediction. The message begins
-    with its spec and group, ``spec "m" group "g":``. Under
-    ``group_close="session"`` each session span is a stream of its own and
-    can raise the same finding again, so there it is raised once per span,
-    and the message names the span by its session value, quoted as the group
-    is: ``spec "m" group "g" session "a":``, or ``session null`` for a null
-    value. Two spans that say the same finding are then two texts, and
-    Python's default warning filter, which shows a text it has already
-    shown from the same line only once, shows both. The first three judge a
-    stream only once it is 95% settled (``settled_frac`` 0.95): before that, its
-    early rows still move what a notice would say, and a notice cannot be taken
-    back. A stream with no decay never settles, so it is never judged, and its
-    ``support_coef``, ``withheld_reason`` and :meth:`ModelBank.summary` carry
-    what it reads.
+    sets each finding beside the gates that withhold a prediction.
+
+    The learning calls issue it: :meth:`ModelBank.fit`,
+    :meth:`ModelBank.fit_predict`, :meth:`ModelBank.fit_predict_batches` and
+    ``lf.online.fit_predict``. ``predict`` never does. Apart from the two
+    findings about a horizon, it is issued once per spec and group. Its
+    message begins with the spec, and the group where the spec has one, as
+    ``spec "m" group "g":``. Under ``group_close="session"`` each session
+    span is a stream of its own, so the warning is issued once per span,
+    which the message names by its session value, as
+    ``spec "m" group "g" session "a":`` (``session null`` for a null value).
+    Two spans with the same finding then give two texts, and Python's
+    default filter, which shows a text once per line of code, shows both.
+
+    It reports five findings:
 
     - **A coefficient the ridge determined more than the data did**
-      (``support_coef < 0.5``), named, on a row the gates let through.
-      Before the stream is settled, the first rows' noisy feature variances
-      can read a share below 0.5 that the settled fit does not. The design
-      does not determine such a coefficient: a duplicated or constant
-      column, or a ridge as large as the feature's variance. Predictions are
-      unaffected in sample; the split among such columns is arbitrary and
-      moves the moment the collinearity breaks.
-    - **The noise gate has not been met**: the stream is settled, the gate
-      has withheld every row for a further half-life, and at the row rate so
-      far ``error_inflation`` stays above ``max_error_inflation``. So
-      predictions stay withheld unless the rows come faster. Not for
-      ``kalman``, whose gate reads each row's own value, which a row nearer
-      the design's centre reads lower. The message says how far, and the way
-      out: a half-life above the one it names, or a looser ratio. Where the
+      (``support_coef`` below 0.5), named, on a row the gates let through.
+      The features do not determine such a coefficient: a duplicated or
+      constant column, or a ridge as large as the feature's variance does
+      this. While the columns stay collinear, the predictions do not depend
+      on the split. The split among such
+      columns is arbitrary, and it moves the moment the collinearity breaks.
+    - **The ``max_error_inflation`` gate has not been met.** The gate has withheld every row
+      for a further half-life, and at the row rate so far ``error_inflation``
+      stays above ``max_error_inflation``, so predictions stay withheld
+      unless the rows come faster. The message says how far, and gives a
+      half-life above which the gate is met, or a looser ratio. Where the
       model has not fit at all, its ``weight_sum`` short of a row per
-      coefficient, the message gives where ``weight_sum`` tops out instead,
-      and no figure on a row of weight 0 or rows too uneven to project.
-    - **A** ``min_weight`` **has not been met**: the stream is settled, the
-      floor has withheld every row for a further half-life, and the weight a
-      target reads tops out below its ``min_weight``. At the rows' spacing
-      ``d`` and weight so far, the ceiling is
-      ``1 / (1 - 2 ** (-d / half_life))`` times that weight, which a clock
-      column keeps any spec from knowing in advance. The message names the ceiling
-      (``weight_sum_settled`` in :meth:`ModelBank.summary`), and the way out.
-      A target no row has given a value with a positive weight has no rate
-      to project from, so its message says that instead, with no ceiling.
-      A target whose own weight is below ``weight_sum`` has not been learned
-      from every row and has no ceiling of its own: its weight falls on each
-      row without it, toward 0 once the rows stop carrying it. Its message
-      says so, with no figure where rows that each carried it would meet the
-      floor, and otherwise with the ceiling of such rows. A message on a row
-      of weight 0, or on rows too uneven to project -- one row far heavier
-      than the rest, or a stream whose weight is still its first row's --
-      gives no figure.
-    - **A diagnostic has no horizon**: a spec with a ``clock``, an
-      ``embargo`` and no ``horizon_rows``, beside a diagnostic that reads
-      the target's horizon (``emit_calibration``, ``emit_breaks``,
-      ``emit_specification``, ``emit_robust_se``). ``embargo`` is in clock
-      units there, so the horizon is 0 and a target that looks ahead flags
-      the test on most rows. Said once per diagnostic when the bank is built,
-      on its first learning call, naming ``horizon_rows``.
+      coefficient, the message gives where ``weight_sum`` tops out instead.
+      A ``kalman`` never issues it, since its gate reads each row's own
+      value, which a row nearer the design's center reads lower.
+    - **A** ``min_weight`` **has not been met.** The floor has withheld
+      every row for a further half-life, and the weight a target reads tops
+      out below its ``min_weight``. The message names that ceiling
+      (``weight_sum_settled`` in :meth:`ModelBank.summary`), and the
+      ``min_weight`` or ``half_life`` that meets it. A target that no row
+      with a positive weight has given a value has no rate to project from,
+      so its message says that instead. A target whose own weight is below
+      ``weight_sum`` has not been learned from every row, and its weight
+      falls on each row without it. Its message says so, with the ceiling
+      the floor would have if every row carried the target, where that
+      ceiling is below the floor.
+    - **A diagnostic has no horizon.** A spec with a ``clock`` and an
+      ``embargo`` but no ``horizon_rows`` has a diagnostic that reads the
+      target's horizon (``emit_calibration``, ``emit_breaks``,
+      ``emit_specification`` or ``emit_robust_se``). There ``embargo`` is in
+      clock units, so the horizon is 0, and a target that looks ahead flags
+      the test on most rows. The message names ``horizon_rows``, once per
+      diagnostic, on the bank's first learning call.
+    - **The Newey-West lags were capped at 64.** Without a clock,
+      ``embargo`` is in rows and gives the horizon. A diagnostic that reads
+      the horizon takes twice the horizon in Newey-West lags, and at most 64
+      when they are read from ``embargo``. The
+      message gives the lags asked for, and names ``horizon_rows`` (to take
+      them all) and ``robust_se_lags``. It begins with the spec alone, and
+      comes on the bank's first learning call.
 
-    The noise-gate and ``min_weight`` notices wait a half-life during which
-    their gate withholds every row, on the clock the learned rows have
-    covered; a row the gate lets through starts the wait again. Their
-    ceiling is a projection from the rows so far, which rows that come
-    faster can beat, so neither says "for good". The wait is in the state
-    file: a bank saved and loaded inside it goes on waiting, and says its
-    notice on the row an unbroken stream would. Under ``embargo`` both
-    notices read how far the rows the model has learned from have settled,
-    the clock its weight has covered; the row's ``settled_frac`` counts the
-    held rows' clock too.
-
-    Every row already carries the state (``withheld_reason``, ``settled_frac``,
-    ``support_coef``); the warning is the once-only pointer to it. For a spec
-    where the finding is intended,
-    ``warnings.simplefilter("ignore", polars_online.ReadinessWarning)``.
-
-    Offline, :func:`polars_online.gram.lasso_path` raises it once per call
+    Offline, :func:`polars_online.gram.lasso_path` issues it once per call
     for the penalties whose coordinate descent ran out of its ``max_iter``
-    sweeps before it met its stopping rule, naming them: each such row is
-    where the descent stopped. The ``lasso`` model counts the same event in
+    sweeps before it met its stopping rule, naming them. Each such
+    penalty's row of the path is where its descent stopped. The ``lasso``
+    model counts the same event in
     :meth:`ModelBank.solve_failures`.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        import warnings
+
+        # 400 rows a step apart, with a half-life of 20 steps: the weight tops out near 29.
+        spec = po.spec.ewridge(
+            "ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=20.0,
+            gap_cap=5.0, min_weight=50.0,
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            po.ModelBank([spec]).fit_predict(df)
+        for w in caught:
+            print(type(w.message).__name__, str(w.message).split(" has not")[0])
+
+    .. code-block:: text
+
+        ReadinessWarning spec "ridge": min_weight = 50
+
+    .. rubric:: See also
+
+    - `Is it ready?
+      <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`_,
+      the gates and what each finding means for the output.
+    - :meth:`ModelBank.summary`, whose ``weight_sum_settled`` is the
+      ceiling the ``min_weight`` finding names.
+    - :class:`PolarsOnlineWarning`, the base class every warning of this
+      library shares.
+
+    .. rubric:: Notes
+
+    The first three findings judge a model only once its ``settled_frac``
+    reaches 0.95, the model within 5% of its steady state. Before then, its
+    early rows still move what the warning would say, and a warning cannot
+    be taken back: the first rows' noisy feature variances, for example,
+    can read a share of the data below 0.5 that later rows do not. Where
+    nothing decays, ``settled_frac`` is null, so the model is never judged,
+    and its ``support_coef``, ``withheld_reason`` and
+    :meth:`ModelBank.summary` carry what it reads.
+
+    The noise-gate and ``min_weight`` findings wait a half-life during which
+    their gate withholds every row, on the clock the learned rows have
+    covered. A row the gate lets through starts the wait again. The wait is
+    in the state file: a bank saved and loaded inside it goes on waiting,
+    and issues its warning on the row an unbroken stream would. Under
+    ``embargo`` both findings read the ``settled_frac`` of the rows the
+    model has learned from, on the clock its weight has covered. The row's
+    own ``settled_frac`` counts the held rows' clock too.
+
+    Both findings project a ceiling from the rows so far, and rows that come
+    faster can beat it, so neither says the gate is unmet for good. At the
+    rows' spacing ``d`` and weight so far, the ``min_weight`` ceiling is
+    ``1 / (1 - 2 ** (-d / half_life))`` times that weight. With a clock,
+    ``d`` is known only from the rows, so the ceiling cannot be read from the spec before
+    the rows arrive. A warning on a row of
+    weight 0, or on rows too uneven to project (one row far heavier than the
+    rest, or a stream whose weight is still its first row's), gives no
+    figure. A target the rows stopped carrying gets no figure where rows
+    that each carried it would meet the floor, since its weight falls
+    toward 0 once the rows stop carrying it.
     """
 
 
 class ConsumedSourceWarning(PolarsOnlineWarning, UserWarning):
-    """A plan that reads a single-use source fed a bank no rows at all.
+    """A warning that a query whose source is written in Python may give its rows only once.
 
-    An Arrow C stream is consumed once: the specification says a capsule "can
-    only be consumed once", and a producer hands its buffers away. So a
-    ``LazyFrame`` built by ``pl.scan_arrow_c_stream(...)`` -- over a DuckDB
-    relation, a ``pyarrow.RecordBatchReader``, anything exposing
-    ``__arrow_c_stream__`` -- works the first time it is collected and then
-    yields **nothing**, silently, with no error from polars. A bank fed the
-    same plan twice therefore learns from every row and then from none, and
-    the second run leaves a state that looks finished and is empty.
+    An Arrow C stream is consumed once: the Arrow specification says a
+    stream's capsule "can only be consumed once". A query built by
+    ``pl.scan_arrow_c_stream(...)`` over a DuckDB relation, a pyarrow
+    ``RecordBatchReader`` or anything else with ``__arrow_c_stream__`` gives
+    its rows the first time it runs, and then gives none, with no error from
+    Polars. A bank fed the same query twice learns from every row and then
+    from none, and the second run leaves a state that looks finished and is
+    empty. Build the query again for each run, calling
+    ``pl.scan_arrow_c_stream(con.sql(q))`` inside the loop, since the
+    producer makes a new stream each time.
 
-    This warns rather than raises, because a source may legitimately have no
-    rows -- an empty query is not a mistake. It is raised only for a plan
-    whose source is a Python scan *and* which yielded nothing, which is the
-    shape a consumed stream has. An in-memory frame's ``.lazy()`` and a
-    ``scan_parquet`` cannot trip it, and both are safely reusable.
-    :func:`polars_online.stream.embargo` warns earlier: its result is a plan
-    of Polars' own that reads its input twice and runs after the function
-    returns, so it warns as it builds the plan, whenever its input's source
-    is a Python scan.
+    It is a warning, not an error, because a source may have no rows: an
+    empty query is not a mistake. The calls that read a query
+    (:meth:`ModelBank.fit`, :meth:`ModelBank.fit_predict_batches`,
+    ``lf.online.fit_predict`` and ``lf.online.predict``) issue it only for a query whose source is
+    written in Python and which gave no rows, the shape a consumed stream
+    has. A frame's ``.lazy()`` and a ``pl.scan_parquet`` never issue it, and
+    both can be run again. :func:`polars_online.stream.with_windows`, and its namespace form
+    ``lf.online.with_windows``, issue it the same way, for a run that gave no
+    rows. :func:`polars_online.stream.embargo` issues it
+    earlier, while it builds its query, whenever its input's source is
+    written in Python: the query it returns is Polars' own, reads its input
+    twice, and runs after the function returns.
 
-    The fix is to rebuild the plan per run -- ``pl.scan_arrow_c_stream(con.sql(q))``
-    inside the loop rather than outside it -- since the producer will make a
-    fresh stream.
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        import warnings
+
+
+        class Once:  # a producer of one Arrow stream, as a database cursor's result is
+            def __init__(self, frame):
+                self.stream = frame.__arrow_c_stream__()
+
+            def __arrow_c_stream__(self, requested_schema=None):
+                return self.stream
+
+
+        rows = pl.scan_arrow_c_stream(Once(df))
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        bank = po.ModelBank([spec])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            bank.fit(rows)                       # learns all 400 rows
+            bank.fit(rows)                       # the stream is spent: no rows
+        print(bank.rows_fed, [type(w.message).__name__ for w in caught])
+
+    .. code-block:: text
+
+        400 ['ConsumedSourceWarning']
+
+    .. rubric:: See also
+
+    - :meth:`ModelBank.fit`, which reads a query a chunk at a time.
+    - :class:`PolarsOnlineWarning`, the base class every warning of this
+      library shares.
     """
 
 
@@ -1347,7 +1485,7 @@ def _unnest_lazy(
 
 @pl.api.register_lazyframe_namespace("online")
 class LazyFrameOnlineNamespace:
-    """A model bank over the plan's rows, as a plan that streams."""
+    """The ``online`` methods of a query, which run a model bank over its rows as the query runs."""
 
     def __init__(self, lf: pl.LazyFrame) -> None:
         self._lf = lf
@@ -1363,116 +1501,195 @@ class LazyFrameOnlineNamespace:
         chunk_size: int | None = None,
         threads: int | None = None,
     ) -> pl.LazyFrame:
-        """The plan's rows plus one struct column per spec, learning as it goes.
+        """Add each spec's output column to a query's rows, learning the rows as the query runs.
 
-        Executing the returned plan (``collect()``, ``collect_batches()``,
-        ``sink_parquet()`` and the rest) streams this plan's rows through a new
-        :class:`~polars_online.ModelBank` in ``chunk_size`` chunks, so memory is O(chunk + state)
-        whatever the length of the stream. ``chunk_size`` defaults to 100,000, and
-        chunking never changes the numbers, only ``coef``'s reporting cadence. Rows
-        must arrive in stream order, as for the bank. The struct columns are what
-        :meth:`~polars_online.ModelBank.fit_predict` writes: one per spec, named after it, with the
-        fields :mod:`polars_online.spec` describes under *What a spec writes*.
+        Use it for a stream too large to hold in memory, or to fit inside a
+        query that goes on to filter, join or write the result. For a frame
+        already in memory, use ``df.online.fit_predict``. To keep the bank
+        and feed it more chunks later, use
+        :meth:`~polars_online.ModelBank.fit_predict_batches`, and to learn
+        without keeping the output, :meth:`~polars_online.ModelBank.fit`.
+
+        .. rubric:: Parameters
+
+        ``specs``
+            The specs of a model bank that starts with nothing learned, as
+            :class:`~polars_online.ModelBank` takes them. Leave it out to
+            resume from ``load_state``. Given with ``load_state``, they are
+            checked against the specs the state was saved with.
+        ``load_state``
+            A bank to resume from: the path of a saved state, or a
+            :class:`~polars_online.ModelBank`. The file is read, or the bank
+            copied, when the query is built, so a bank given here never
+            moves, and each run of the query starts from the same state.
+        ``save_state``
+            The path to write the state the run ends in, after the last row
+            the query gave the bank. The write is atomic
+            (:meth:`~polars_online.ModelBank.save`): the file is the old
+            state or the new one, never half of either, so it may be
+            ``load_state``'s path. Nothing is written unless the query gives
+            its last row (see Notes). A rerun whose ``load_state`` this
+            query already wrote learns the same rows twice, and Notes say
+            how to name the states so that it does not.
+        ``closed_groups``
+            The path of a file to write the groups that closed during the
+            run to (:meth:`~polars_online.ModelBank.closed_groups`), in the
+            format its extension names. It needs a spec with
+            ``group_close``. The bank's queue of closed groups is emptied
+            after every chunk, so the bank's memory stays bounded. The file
+            is written once per run, under ``save_state``'s rules and before
+            it. A run in which no group closed writes an empty frame with
+            the schema. A CSV holds each list column, such as ``coef``, as
+            JSON text, the bytes the command line writes: read it back with
+            ``str.json_decode``.
+        ``chunk_size``
+            How many rows the bank learns at a time: 100,000 by default.
+            Memory grows with a chunk and the bank's state, never with the
+            length of the stream. A chunk's size never changes the numbers,
+            only which rows ``coef`` is written on: each group's last row in
+            each chunk.
+        ``threads``
+            How many threads the bank runs on, as
+            :class:`~polars_online.ModelBank` takes it. ``None``, the
+            default, shares the process's threads. A bank given as
+            ``load_state`` keeps its own count unless one is given here. The
+            output is the same at any count. The threads Polars reads the
+            input with are set by ``POLARS_MAX_THREADS``.
+
+        .. rubric:: Returns
+
+        A query holding the input's rows, in their order, with one output
+        column added per spec, named after the spec. Its fields are what
+        :meth:`~polars_online.ModelBank.fit_predict` writes, which
+        :mod:`polars_online.spec` describes under *What a spec writes*. The
+        rows must arrive in each group's clock order, as for the bank.
+
+        .. rubric:: Raises
+
+        While the query is built, as Polars reports its own schema errors:
+
+        ``ValueError``
+            When:
+
+            - neither ``specs`` nor ``load_state`` is given;
+            - ``chunk_size`` or ``threads`` is below 1;
+            - the bank refuses a spec;
+            - a column a spec reads shares the spec's name, with the
+              message of :meth:`~polars_online.ModelBank.fit_predict`;
+            - ``closed_groups``'s extension names no format, or no spec has
+              ``group_close``;
+            - ``load_state`` is not a state this build loads, or was saved
+              with specs other than ``specs``
+              (:meth:`~polars_online.ModelBank.load`).
+        :class:`~polars_online.ColumnNotFoundError`
+            A column a spec reads is not in the query. It is a
+            ``ValueError`` too.
+        :class:`~polars_online.WrongTypeError`
+            A column a spec reads is of a type its role cannot take, such as
+            a text feature, with the messages of
+            :meth:`~polars_online.ModelBank.fit_predict`, or a column is
+            ``UInt128``, which no frame can carry into the bank. It is both
+            a ``TypeError`` and a ``ValueError``.
+        ``TypeError``
+            ``threads`` is not an integer.
+        ``FileNotFoundError``
+            ``load_state`` is not there, or the directory of ``save_state``
+            or ``closed_groups`` is not.
+        ``IsADirectoryError``
+            ``save_state`` is a directory.
+        :class:`~polars_online.OrderNotGuaranteedWarning`
+            A warning, not an error: the query has a step whose row order
+            Polars does not guarantee when it runs a query a chunk at a
+            time, which the warning names.
+
+        While the query runs, an error the rows' values cause (a null clock,
+        a negative weight, a step back): under py-polars 1.x it arrives as
+        Polars' ``ComputeError`` carrying the bank's message, and under 2.0
+        as the bank's ``ValueError`` itself, since how a query wraps an
+        error is Polars' to change. A ``save_state`` that cannot be written
+        when the run ends is reported the same way, as the ``OSError`` that
+        names the path, wrapped under 1.x.
+
+        .. rubric:: Examples
+
+        This code reads ``lf`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
             spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             fitted = lf.online.fit_predict([spec], save_state="fit.state").collect()
-            # one column per field, coef as one column per coefficient
+            # Every field as a column of its own, coef as one column per coefficient.
             flat = lf.online.fit_predict([spec]).online.unnest([spec]).collect()
+            print(fitted.columns[-1], flat.select("^coef_.*$").columns)
 
-        Unnest a wide spec before ``sink_parquet()``. Polars' parquet writer
-        encodes a struct's fields at several times the cost of the same values
-        as plain columns. An ``ew_cov`` over 20 series writes 233 fields: 2,785
-        ns a row as the struct, 365 unnested, where the bank's own work is 550.
-        Over 50 series, 1,328 fields, the struct took 44,642 ns a row against
-        2,914, and the writer set the run's pace. So write
-        ``lf.online.fit_predict([spec]).online.unnest([spec]).sink_parquet(path)``.
-        ``sink_ipc()`` writes the struct at about the cost of flat columns.
+        .. code-block:: text
 
-        Filters, selections and ``head`` applied after are pushed into the source. A
-        filter never changes what the bank learns from. To keep rows from teaching
-        the model, give them weight 0 in the spec's ``weight`` column: a filter
-        before the bank makes Polars hold several blocks of each parquet file per
-        thread, where one after keeps the query running a chunk at a time. A
-        selection is read from the input, so a wide scan reads
-        only the columns the specs and the query need. ``head(n)`` feeds the bank the
-        first ``n`` rows and no more.
+            ridge ['coef_y_intercept', 'coef_y_x0', 'coef_y_x1']
 
-        ``specs`` are the bank's, or ``load_state`` is a bank to resume from: the
-        path of a saved one, or a :class:`~polars_online.ModelBank`, as
-        :meth:`predict`'s ``bank`` is (with ``specs``, they are checked against
-        it). The file is read, or the bank copied, when the plan is built, so the
-        plan carries that state: each execution starts from it afresh, a plan
-        collected twice gives the same frame, and a bank given here never moves.
-        ``save_state`` writes
-        the state the execution ends in, after the last row the source fed the bank,
-        to that path when it ends. The write is atomic (:meth:`~polars_online.ModelBank.save`), so
-        the file is the old state or the new one and never half of either, and
-        ``load_state`` and ``save_state`` may be the same path. Because the plan is
-        pure the write is the same whenever it happens: a plan used twice in one query
-        (a self-join, ``pl.concat``, ``pl.collect_all`` of two sinks) runs twice and
-        writes the same bytes twice. Nothing is written unless the source reaches the
-        last row: a run abandoned before then, or one the bank ended with an error,
-        leaves the file as it was. A node after the bank failing does not stop the
-        bank, so the state is written then. Where the output and the state must be
-        tied together, the ``polars-online`` CLI saves only after its output is committed.
-        A dated ``save_state`` per batch of data keeps a rerun from learning it twice.
+        .. rubric:: See also
 
-        ``threads`` is the bank's pool, as :class:`~polars_online.ModelBank`
-        takes it: ``None`` is the process's pool, an integer a pool of that
-        many threads. A bank given as ``load_state`` keeps its own count
-        unless one is given. The output is the same at any count. Polars'
-        own pool, which reads the input, is ``POLARS_MAX_THREADS``'s.
+        - ``df.online.fit_predict``, the same over a frame in memory.
+        - :meth:`~polars_online.ModelBank.fit_predict_batches`, the same
+          with a bank you keep.
+        - :meth:`predict`, which predicts and learns nothing.
+        - :meth:`unnest`, which turns each field into a column.
+        - :func:`polars_online.fit_predict`, this method as a function a
+          type checker can see.
 
-        The plan runs through polars' streaming engine, and an online model learns
-        in row order, so the order the engine delivers is part of the result. A
-        ``join``, ``group_by`` or ``unique`` without an order guarantee delivers a
-        different stream there than ``lf.collect()`` gives, and may differ between
-        runs. Give a join ``maintain_order="left"``, a ``group_by``
-        ``maintain_order=True``, and sort after a ``unique``, or sort before the
-        bank. A plan with such a node raises :class:`OrderNotGuaranteedWarning`
-        when it is built, naming the node.
+        .. rubric:: Notes
 
-        ``closed_groups`` writes the groups that finished during the run to a sidecar
-        file, in the format its extension names
-        (:meth:`~polars_online.ModelBank.closed_groups`). The queue is drained after
-        every chunk, so the bank stays bounded. The one file is written where
-        ``save_state`` is written and under the same rules: only when the source reaches
-        its last row, once per execution of the plan, and twice with the same bytes for
-        a plan used twice in one query. It needs a spec with ``group_close``. A run in
-        which nothing closed writes an empty frame with the schema. The file is written
-        before ``save_state``, and one that cannot be written still leaves the state
-        saved before its error is raised. A CSV holds each list column, such as
-        ``coef``, as JSON text, the bytes the command line writes; read it back with
-        ``str.json_decode``.
+        The query is pure: every run starts from the same state, the specs'
+        or ``load_state``'s, so running it twice gives the same frame. So
+        ``save_state``'s write gives the same bytes whenever it happens.
+        Polars runs a query's source once per run, and twice when one query
+        uses it twice (a self-join, ``pl.concat``, or ``pl.collect_all`` of
+        two queries that write files), and each run writes the same bytes.
+        Nothing is written unless the query gives its last row: a run
+        abandoned before then, or one the bank ended with an error, leaves
+        the file as it was. An error in a step after the bank does not stop
+        the bank, so the state is written then. Where the output and the
+        state must be written together or not at all, use the command line,
+        which saves the state only after its output is written. A
+        ``closed_groups`` file that cannot be written still leaves the state
+        saved before its error is raised.
 
-        What the schema decides is reported while the plan is built, as polars reports
-        its own schema errors:
+        To rerun a day's input without learning its rows twice, name the
+        state's path after the input the run learned, such as
+        ``state-2026-11-07`` for that day's files, and pass the previous
+        day's state as ``load_state``. A rerun then starts from the state
+        before that day.
 
-        - ``ValueError`` for neither ``specs`` nor ``load_state``, for
-          ``chunk_size`` below 1, and for a spec the bank refuses;
-        - ``TypeError`` for a ``threads`` that is not an integer, and
-          ``ValueError`` for one below 1;
-        - ``ValueError`` for a spec whose column the plan has not got, is not
-          numeric, or shares the spec's name (the checks of :class:`~polars_online.ModelBank`
-          and :meth:`~polars_online.ModelBank.fit_predict`, with the same messages), and for a
-          ``UInt128`` column, which no frame can carry into the bank;
-        - ``ValueError`` for a ``closed_groups`` whose extension names no
-          format, or beside specs none of which has ``group_close``;
-        - ``FileNotFoundError`` for a ``load_state`` that is not there, or a
-          ``save_state`` or ``closed_groups`` whose directory is not, and
-          ``IsADirectoryError`` for a ``save_state`` that is a directory;
-        - ``ValueError`` for a ``load_state`` that is not a bank this build
-          loads or whose specs are not ``specs`` (:meth:`~polars_online.ModelBank.load`).
+        Polars pushes a filter, a selection or a ``head`` applied after the
+        bank into it. A filter never changes what the bank learns from: to
+        keep the bank from learning rows, give them weight 0 in the spec's
+        ``weight`` column. A filter before the bank makes Polars hold several
+        blocks of each parquet file per thread, where one after the bank
+        keeps the query running a chunk at a time. A selection is read from
+        the input, so a wide file read as a query gives only the columns the
+        specs and the query need. ``head(n)`` feeds the bank the first ``n`` rows and no
+        more.
 
-        What only the values decide (a null clock, a negative weight, a clock
-        running backwards) is reported when the plan runs. It arrives as polars'
-        ``ComputeError`` carrying the bank's message under py-polars 1.x, and as
-        the bank's ``ValueError`` itself under 2.0, since how a plan wraps an
-        error is Polars' to change. A ``save_state`` that cannot be written when
-        the run ends is reported the same way, as the ``OSError`` with the path,
-        wrapped under 1.x.
+        Unnest a wide spec before writing the result with
+        ``sink_parquet()``. Polars' parquet writer encodes an output
+        column's fields at several times the cost of the same values as
+        plain columns. An ``ew_cov`` over 20 series writes 233 fields: 2,785
+        ns a row as one output column, 365 unnested, where the bank's own
+        work is 550. Over 50 series, 1,328 fields, the output column took
+        44,642 ns a row against 2,914, and the writer set the run's pace. So
+        write ``lf.online.fit_predict([spec]).online.unnest([spec]).sink_parquet(path)``.
+        ``sink_ipc()`` writes the output column at about the cost of plain
+        columns.
+
+        An online model learns in row order, so the order Polars delivers
+        the rows in is part of the result. Polars runs this query a chunk at
+        a time, where a ``join``, ``group_by``, ``unique`` or a sort by
+        several keys without an
+        order guarantee delivers a different stream than ``lf.collect()``
+        gives, and may differ between runs. Give a join
+        ``maintain_order="left"``, a ``group_by`` ``maintain_order=True``,
+        a sort by several keys ``maintain_order=True``, and sort after a
+        ``unique``, or sort before the bank.
         """
         return _fit_predict_lazy(
             self._lf, specs, load_state, save_state, chunk_size, closed_groups, threads
@@ -1486,100 +1703,197 @@ class LazyFrameOnlineNamespace:
         chunk_size: int | None = None,
         threads: int | None = None,
     ) -> pl.LazyFrame:
-        """The plan's rows scored against ``bank`` as it stands, learning nothing.
+        """Predict a query's rows from a bank as it stands, learning nothing.
 
-        Each row gets :meth:`~polars_online.ModelBank.predict`'s struct: what the bank would
-        report for it as the next row of its group's stream, from the current
-        state, which the plan never moves. ``bank`` is a :class:`~polars_online.ModelBank`,
-        scored as it stands each time the plan runs; ``predict`` leaves it
-        untouched, so sharing it with a plan is safe. Or it is a path to a
-        saved state, read when the plan is built. Build the plan again to
-        pick up a newer file. Target columns are optional, as for
-        :meth:`~polars_online.ModelBank.predict`. ``chunk_size`` is the read chunk, 100,000
-        rows by default; ``coef`` is filled on each chunk's last accepted row,
-        whatever ``coef_every`` and ``max_rows_between_coefs`` say.
-        ``threads`` scores on a pool of that many threads, as
-        :class:`~polars_online.ModelBank` takes it; a bank given with one is
-        scored as a copy, so its own pool stays its own. Without it a bank
-        scores on its own pool and a path on the process's.
+        Use it to serve a query's rows, such as a file of new rows read with
+        ``pl.scan_parquet``, from a bank that has learned. For a frame in memory, use
+        ``df.online.predict``, and to predict rows and then learn them, use
+        :meth:`fit_predict`.
+
+        .. rubric:: Parameters
+
+        ``bank``
+            The bank to predict from: a :class:`~polars_online.ModelBank`,
+            read as it stands each time the query runs, or the path of a
+            saved state, read once, when the query is built. Predicting
+            leaves a bank as it was, so a bank can be shared with the query.
+            To pick up a newer state file, build the query again.
+        ``chunk_size``
+            How many rows are predicted at a time: 100,000 by default.
+            ``coef`` is written on each group's last row in each chunk that
+            is not skipped, whatever ``coef_every`` and
+            ``max_rows_between_coefs`` say.
+        ``threads``
+            How many threads to predict on, as
+            :class:`~polars_online.ModelBank` takes it. A bank given with a
+            count is predicted from as a copy, so its own threads stay its
+            own. Without one, a bank predicts on its own threads, and a path
+            on the process's.
+
+        .. rubric:: Returns
+
+        A query holding the input's rows with one output column per spec:
+        what :meth:`~polars_online.ModelBank.predict` gives each row, as the
+        next row of its group's stream. Target columns are optional, as they
+        are for :meth:`~polars_online.ModelBank.predict`.
+
+        .. rubric:: Raises
+
+        While the query is built:
+
+        ``FileNotFoundError``
+            ``bank`` is a path that is not there.
+        ``ValueError``
+            When:
+
+            - the file is not a state this build loads
+              (:meth:`~polars_online.ModelBank.load`);
+            - ``bank`` is ``None``;
+            - ``chunk_size`` or ``threads`` is below 1.
+        :class:`~polars_online.ColumnNotFoundError`
+            A column the bank reads, other than a target, is not in the
+            query. It is a ``ValueError`` too.
+        :class:`~polars_online.WrongTypeError`
+            A column the bank reads is of a type its role cannot take, such
+            as a text feature, or a column is ``UInt128``, which no frame can
+            carry into the bank. It is both a ``TypeError`` and a
+            ``ValueError``.
+        ``TypeError``
+            ``bank`` is neither a bank nor a path, or ``threads`` is not an
+            integer.
+        :class:`~polars_online.OrderNotGuaranteedWarning`
+            A warning, not an error: the query has a step whose row order
+            Polars does not guarantee when it runs a query a chunk at a
+            time, which the warning names.
+
+        While the query runs, a value the bank refuses (a null clock, a
+        negative weight): under py-polars 1.x it arrives as Polars'
+        ``ComputeError`` carrying :meth:`~polars_online.ModelBank.predict`'s
+        message, and under 2.0 as its ``ValueError`` itself, since how a
+        query wraps an error is Polars' to change.
+
+        .. rubric:: Examples
+
+        This code reads ``lf`` and ``later`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
-            scored = lf.online.predict("bank.state").collect()    # the saved bank, unmoved
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = po.ModelBank([spec])
+            bank.fit(lf)                              # learn df's 400 rows
+            bank.save("trained.state")
+            scored = later.online.predict("trained.state").collect()   # the next 400, unlearned
+            print(scored["ridge"].struct.field("pred_y").count(), bank.rows_fed)
 
-        Reported while the plan is built:
+        .. code-block:: text
 
-        - ``FileNotFoundError`` for a path that is not there;
-        - ``ValueError`` for a file that is not a bank this build loads
-          (:meth:`~polars_online.ModelBank.load`);
-        - ``TypeError`` for a ``bank`` that is neither a bank nor a path, and
-          ``TypeError`` or ``ValueError`` for a ``threads``
-          :class:`~polars_online.ModelBank` refuses;
-        - ``ValueError`` for ``chunk_size`` below 1, for a column the
-          bank reads that the plan has not got or that is not numeric (a
-          missing target is fine), and for a ``UInt128`` column, which no
-          frame can carry into the bank.
+            400 400
 
-        A value the bank refuses (a null clock, a negative weight) is
-        reported when the plan runs: as polars' ``ComputeError`` carrying
-        :meth:`~polars_online.ModelBank.predict`'s message under py-polars 1.x, and as its
-        ``ValueError`` itself under 2.0, the wrapping being Polars' to
-        change.
+        .. rubric:: See also
+
+        - :meth:`~polars_online.ModelBank.predict`, which this runs over
+          each chunk, and the fields it gives.
+        - :meth:`fit_predict`, which learns each row after predicting it.
+        - :func:`polars_online.predict`, this method as a function a type
+          checker can see.
         """
         return _predict_lazy(self._lf, bank, chunk_size, threads)
 
     def unnest(
         self, specs: Specs | ModelBank | State, *, separator: str | None = None
     ) -> pl.LazyFrame:
-        """The plan with each spec's struct column taken apart into columns.
+        """Turn each spec's output column in a query into one column per field.
 
-        ``lf.unnest(names, separator=separator)`` with the ``coef`` lists taken
-        apart too. Every scalar field becomes a column of its own name
-        (``pred_y``, ``weight_sum@h500``). Each ``coef`` list becomes one column per
-        coefficient, named ``coef_{target}_{term}{combo}{instance}``
-        (``coef_y_intercept``, ``coef_y_x1__r0.5@h500``) as
-        :func:`polars_online.spec.coef_fields` lists them. ``support_coef``
-        -- one data share per coefficient, on the same rows -- goes the same
-        way, as ``support_coef_{target}_{term}...``. So do ``se_coef``, as
-        ``se_coef_{target}_{term}...``, and the robust ``se_coef_hc0`` and
-        ``se_coef_hac``, as ``se_coef_hc0_{target}_{term}...``. The columns
-        take the struct's place; the rest of the frame, and any spec column
-        not named, are left as they are. ``specs`` is the spec dicts, a
-        :class:`~polars_online.ModelBank` (its specs), or the path of a saved bank (which
-        carries them). So a scored plan, or a parquet the CLI wrote, comes
-        back flat:
+        Use it on a query whose output a bank wrote, from
+        :meth:`fit_predict` or from a parquet file the command line wrote,
+        to read its fields as plain columns or to write them to a file. For
+        a frame in memory, use ``df.online.unnest``. To read one field
+        without unnesting, use ``pl.col("ridge").struct.field("pred_y")``,
+        with the spec's name and the field's.
+
+        .. rubric:: Parameters
+
+        ``specs``
+            The specs whose output columns to unnest: the spec dicts, a
+            :class:`~polars_online.ModelBank` (its specs), or the path of a
+            saved state, which carries them. Each output column takes the
+            place of its spec's column. The rest of the query, and the
+            output column of a spec not named, are left as they are.
+        ``separator``
+            A text to name each column after its spec too, as
+            ``{spec}{separator}{name}``: ``separator="."`` gives
+            ``ridge.pred_y`` and ``ridge.coef_y_x1``, as Polars 2.0's
+            ``LazyFrame.unnest(separator=)`` names a struct's fields. Give
+            it whenever two specs write a field of the same name, as almost
+            any two do: most models write ``weight_sum``, ``settled_frac``
+            and ``withheld_reason``. ``None``, the default, names each column by its
+            field alone. The names are made here rather than by Polars' own
+            ``separator``, so it works on every Polars this library supports.
+
+        .. rubric:: Returns
+
+        A query with each output column replaced by its fields as columns:
+
+        - each scalar field under its own name, such as ``pred_y`` or
+          ``weight_sum@h500``;
+        - each ``coef`` list as one column per coefficient, named
+          ``coef_{target}_{term}{combo}{instance}``, such as
+          ``coef_y_intercept`` or ``coef_y_x1__r0.5@h500``, as
+          :func:`polars_online.spec.coef_fields` lists them;
+        - ``support_coef``, the share of each coefficient the data
+          determined, the same way, as ``support_coef_{target}_{term}...``;
+        - ``se_coef`` as ``se_coef_{target}_{term}...``, and the robust
+          ``se_coef_hc0`` and ``se_coef_hac`` as
+          ``se_coef_hc0_{target}_{term}...``.
+
+        .. rubric:: Raises
+
+        While the query is built:
+
+        ``ValueError``
+            When:
+
+            - a spec's output column is not in the query, is not a struct,
+              or lacks a field the spec writes;
+            - a spec is given twice, or is not valid;
+            - ``specs`` is the path of a file that is not a state this build
+              loads (:meth:`~polars_online.ModelBank.load`).
+        ``TypeError``
+            ``specs`` is none of the three.
+        ``FileNotFoundError``
+            ``specs`` is a path that is not there.
+        Polars' ``DuplicateError``
+            Two columns would get the same name, without a ``separator``.
+            The message names each shared field and the specs it comes from.
+
+        .. rubric:: Examples
+
+        This code reads ``lf`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
             spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             betas = (
                 lf.online.fit_predict([spec])
-                .online.unnest([spec])
-                .select("t", "^coef_.*$")
+                .online.unnest([spec], separator=".")
+                .select("t", "^ridge.coef_.*$")
                 .collect()
             )
+            print(betas.columns)
 
-        Reported while the plan is built:
+        .. code-block:: text
 
-        - ``ValueError`` for a spec whose column the plan has not got, is not
-          a struct, or lacks a field the spec produces, for a spec given twice
-          and for a spec that is not valid;
-        - ``TypeError`` for ``specs`` that are none of the three;
-        - ``FileNotFoundError`` and :meth:`~polars_online.ModelBank.load`'s ``ValueError``
-          for a path;
-        - Polars' ``DuplicateError`` for two columns the unnest would name
-          alike, naming each shared field and the specs it comes from.
+            ['t', 'ridge.coef_y_intercept', 'ridge.coef_y_x0', 'ridge.coef_y_x1']
 
-        ``separator`` names each column after its spec too, as Polars 2.0's
-        ``LazyFrame.unnest(separator=)`` does: ``{spec}{separator}{name}``, so
-        ``separator="."`` gives ``ridge.pred_y`` and ``ridge.coef_y_x1``. Two
-        specs that produce a field of the same name -- two fits of one target,
-        or two fits of one kind, which share ``weight_sum`` -- then unnest side
-        by side. Without it (``None``, the default) they would unnest to the
-        same column name, and the call raises Polars' ``DuplicateError``
-        naming the shared fields. The names are given here rather than by
-        Polars' own ``separator``, so it works on every Polars this library
-        supports.
+        .. rubric:: See also
+
+        - :func:`polars_online.spec.coef_fields`, each coefficient's column
+          name and where it sits in ``coef``.
+        - :func:`polars_online.spec.output_fields`, the fields a spec writes.
+        - :func:`polars_online.unnest`, this method as a function a type
+          checker can see.
         """
         return _unnest_lazy(self._lf, specs, separator)
 
@@ -1598,9 +1912,31 @@ class LazyFrameOnlineNamespace:
         save_state: State | None = None,
         **named: pl.Expr,
     ) -> pl.LazyFrame:
-        """The plan's rows plus one column per formula over the window operators,
-        as a plan that streams: :func:`polars_online.stream.with_windows` as a
-        method, so a query can add windowed means and fit on them in one chain.
+        """Add one column per window operator's expression to a query's rows, as the query runs.
+
+        It is :func:`polars_online.stream.with_windows` as a method, so a
+        query can add window operators' values and fit on them in one
+        chain. For a frame in memory, use ``df.online.with_windows``.
+
+        .. rubric:: Parameters
+
+        ``*exprs``, ``**named`` and every keyword
+            As :func:`polars_online.stream.with_windows` takes them, with the
+            query as its input.
+
+        .. rubric:: Returns
+
+        A query holding the input's rows with one column added per
+        expression, as :func:`polars_online.stream.with_windows` returns it.
+
+        .. rubric:: Raises
+
+        What :func:`polars_online.stream.with_windows` raises.
+
+        .. rubric:: Examples
+
+        This code reads ``trades.parquet`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
@@ -1612,9 +1948,17 @@ class LazyFrameOnlineNamespace:
                 )
                 .collect()
             )
+            print(fitted.columns[-1], fitted.height)
 
-        Every argument, and everything raised, is
-        :func:`~polars_online.stream.with_windows`'s.
+        .. code-block:: text
+
+            mid_5s 3000
+
+        .. rubric:: See also
+
+        - :func:`polars_online.stream.with_windows`, every parameter and
+          what it refuses.
+        - :mod:`polars_online.ops`, the window operators.
         """
         from polars_online.stream import with_windows
 
@@ -1637,7 +1981,7 @@ class LazyFrameOnlineNamespace:
 
 @pl.api.register_dataframe_namespace("online")
 class DataFrameOnlineNamespace:
-    """A model bank over the frame's rows, in one call."""
+    """The ``online`` methods of a frame, which run a model bank over its rows at once."""
 
     def __init__(self, df: pl.DataFrame) -> None:
         self._df = df
@@ -1652,39 +1996,87 @@ class DataFrameOnlineNamespace:
         chunk_size: int | None = None,
         threads: int | None = None,
     ) -> pl.DataFrame:
-        """``ModelBank(specs).fit_predict(df)`` in one call: the frame plus one struct
-        column per spec, from a bank that is then dropped.
+        """Add each spec's output column to a frame's rows, learning them, in one call.
 
-        ``save_state`` saves the bank before it is dropped (:meth:`~polars_online.ModelBank.save`),
-        and ``load_state`` starts it from a saved bank instead of the specs: a
-        path, or a :class:`~polars_online.ModelBank`, which is copied and does not
-        move. Keep a bank of your own to feed it more rows. ``closed_groups``
-        writes the groups that finished to a sidecar file in the format its
-        extension names, before ``save_state``
-        (:meth:`~polars_online.ModelBank.closed_groups`). A sidecar that cannot be
-        written still leaves the state saved before its error is raised. A CSV
-        holds each list column as JSON text, as the plan form writes it.
+        It is ``ModelBank(specs).fit_predict(df)`` in one call, from a bank
+        that is then dropped. Use it for a frame already in memory, when you
+        do not need the bank afterwards. To feed the same bank more rows
+        later, keep a :class:`~polars_online.ModelBank` of your own, and for
+        a query, use ``lf.online.fit_predict``.
 
-        ``chunk_size`` feeds the frame that many rows at a time, as the plan form
-        reads its input. The numbers are the same either way. Only ``coef``'s
-        reporting moves: it is written on each chunk's last row of each group.
-        Without it the frame is one chunk. ``threads`` is the bank's pool, as
-        :meth:`LazyFrameOnlineNamespace.fit_predict` takes it.
+        .. rubric:: Parameters
+
+        ``specs``
+            The specs of a bank that starts with nothing learned. Leave it
+            out to start from ``load_state``.
+        ``load_state``
+            What to start from in place of the specs: the path of a saved
+            state, or a :class:`~polars_online.ModelBank`, which is copied
+            and does not move.
+        ``save_state``
+            The path to save the bank to before it is dropped
+            (:meth:`~polars_online.ModelBank.save`).
+        ``closed_groups``
+            The path of a file to write the groups that closed to, in the
+            format its extension names, before ``save_state`` is written
+            (:meth:`~polars_online.ModelBank.closed_groups`). A CSV holds
+            each list column as JSON text, as ``lf.online.fit_predict``
+            writes it. A file that cannot be written still leaves the state
+            saved before its error is raised.
+        ``chunk_size``
+            How many rows the bank learns at a time, as
+            ``lf.online.fit_predict`` reads its input. ``None``, the
+            default, feeds the frame as one chunk. The numbers are the same
+            either way: only the rows ``coef`` is written on move, to each
+            chunk's last row of each group.
+        ``threads``
+            How many threads the bank runs on, as
+            :meth:`LazyFrameOnlineNamespace.fit_predict` takes it.
+
+        .. rubric:: Returns
+
+        The frame with one output column added per spec, as
+        :meth:`~polars_online.ModelBank.fit_predict` returns it.
+
+        .. rubric:: Raises
+
+        What :class:`~polars_online.ModelBank`,
+        :meth:`~polars_online.ModelBank.fit_predict`,
+        :meth:`~polars_online.ModelBank.load` and
+        :meth:`~polars_online.ModelBank.save` raise, and:
+
+        ``ValueError``
+            Neither ``specs`` nor ``load_state`` is given, ``chunk_size`` is
+            below 1, or ``closed_groups`` is a file that
+            :meth:`LazyFrameOnlineNamespace.fit_predict` refuses, checked
+            before the fit.
+        ``FileNotFoundError``
+            The directory of ``save_state`` or ``closed_groups`` is not
+            there, checked before the fit rather than after it.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
             spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-            out = df.online.fit_predict([spec])
+            out = df.online.fit_predict([spec], save_state="ridge.state")
+            print(out["ridge"].struct.field("pred_y").count(), "of", out.height, "rows predicted")
 
-        Raises what :class:`~polars_online.ModelBank`,
-        :meth:`~polars_online.ModelBank.fit_predict`,
-        :meth:`~polars_online.ModelBank.load` and :meth:`~polars_online.ModelBank.save`
-        raise, and ``ValueError`` for neither ``specs`` nor ``load_state`` and for
-        ``chunk_size`` below 1. A
-        ``save_state`` or ``closed_groups`` whose directory is not there is
-        ``FileNotFoundError`` before the fit, not after it, and a ``closed_groups`` that
-        :meth:`LazyFrameOnlineNamespace.fit_predict` refuses is refused here, also
-        before the fit.
+        .. code-block:: text
+
+            396 of 400 rows predicted
+
+        .. rubric:: See also
+
+        - :meth:`LazyFrameOnlineNamespace.fit_predict`, the same over a
+          query, run as the query runs.
+        - :meth:`~polars_online.ModelBank.fit_predict`, the same with a bank
+          you keep.
+        - :func:`polars_online.fit_predict`, this method as a function a
+          type checker can see.
         """
         _check_chunk_size(chunk_size, "fit_predict")
         save_path = _save_path(save_state, "df.online.fit_predict")
@@ -1714,19 +2106,64 @@ class DataFrameOnlineNamespace:
         chunk_size: int | None = None,
         threads: int | None = None,
     ) -> pl.DataFrame:
-        """:meth:`~polars_online.ModelBank.predict` over the frame: scored against
-        ``bank``, a :class:`~polars_online.ModelBank` or the path of a saved one, as it
-        stands, which does not move.
+        """Predict a frame's rows from a bank as it stands, learning nothing.
 
-        ``chunk_size`` scores the frame that many rows at a time, as the plan form
-        reads its input. The numbers are the same either way, and ``coef`` is
-        filled on each chunk's last accepted row, whatever ``coef_every`` and
-        ``max_rows_between_coefs`` say. Without it the frame is one
-        chunk. ``threads`` is as for :meth:`LazyFrameOnlineNamespace.predict`.
+        It is :meth:`~polars_online.ModelBank.predict` over the frame, from a
+        bank or a saved state. Use it to serve rows in memory
+        from a bank that has learned. For a query, use ``lf.online.predict``.
 
-        Raises what :meth:`~polars_online.ModelBank.load` (for a path) and
-        :meth:`~polars_online.ModelBank.predict` raise, ``TypeError`` for a ``bank``
-        that is neither, and ``ValueError`` for ``chunk_size`` below 1.
+        .. rubric:: Parameters
+
+        ``bank``
+            The bank to predict from: a :class:`~polars_online.ModelBank`,
+            which does not move, or the path of a saved state.
+        ``chunk_size``
+            How many rows are predicted at a time, as ``lf.online.predict``
+            reads its input. ``None``, the default, predicts the frame as one
+            chunk. The numbers are the same either way. ``coef`` is written
+            on each group's last row in each chunk that is not skipped,
+            whatever ``coef_every`` and ``max_rows_between_coefs`` say.
+        ``threads``
+            How many threads to predict on, as
+            :meth:`LazyFrameOnlineNamespace.predict` takes it.
+
+        .. rubric:: Returns
+
+        The frame with one output column added per spec, as
+        :meth:`~polars_online.ModelBank.predict` returns it.
+
+        .. rubric:: Raises
+
+        What :meth:`~polars_online.ModelBank.load` (for a path) and
+        :meth:`~polars_online.ModelBank.predict` raise, and:
+
+        ``TypeError``
+            ``bank`` is neither a bank nor a path.
+        ``ValueError``
+            ``chunk_size`` is below 1.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` and ``today`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
+
+        .. code-block:: python
+
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = po.ModelBank([spec])
+            bank.fit(df)                                  # learn df's 400 rows
+            scored = today.online.predict(bank)           # the next 400, unlearned
+            print(scored["ridge"].struct.field("pred_y").count(), bank.rows_fed)
+
+        .. code-block:: text
+
+            400 400
+
+        .. rubric:: See also
+
+        - :meth:`LazyFrameOnlineNamespace.predict`, the same over a query.
+        - :func:`polars_online.predict`, this method as a function a type
+          checker can see.
         """
         _check_chunk_size(chunk_size, "predict")
         threads = _check_threads(threads)
@@ -1740,13 +2177,51 @@ class DataFrameOnlineNamespace:
     def unnest(
         self, specs: Specs | ModelBank | State, *, separator: str | None = None
     ) -> pl.DataFrame:
-        """The frame with each spec's struct column taken apart into columns, as
-        :meth:`LazyFrameOnlineNamespace.unnest` does for a plan.
+        """Turn each spec's output column in a frame into one column per field.
 
-        Scalar fields under their own names, each ``coef`` list as one named column
-        per coefficient, and with a ``separator`` each named
-        ``{spec}{separator}{name}``, as Polars 2.0's ``DataFrame.unnest(separator=)``
-        names a struct's fields. Raises what the plan form does, on the call.
+        It is :meth:`LazyFrameOnlineNamespace.unnest` for a frame in memory,
+        run at once.
+
+        .. rubric:: Parameters
+
+        ``specs``, ``separator``
+            As :meth:`LazyFrameOnlineNamespace.unnest` takes them: the specs
+            whose output columns to unnest, and a text to name each column
+            after its spec too, as ``{spec}{separator}{name}``, as Polars
+            2.0's ``DataFrame.unnest(separator=)`` names a struct's fields.
+
+        .. rubric:: Returns
+
+        The frame with each output column replaced by its fields: each scalar
+        field under its own name, and each ``coef`` list as one named column
+        per coefficient, as :meth:`LazyFrameOnlineNamespace.unnest` lists
+        them.
+
+        .. rubric:: Raises
+
+        What :meth:`LazyFrameOnlineNamespace.unnest` raises, on the call.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
+
+        .. code-block:: python
+
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            flat = df.online.fit_predict([spec]).online.unnest([spec])
+            print(flat.select("^coef_.*$").columns)
+
+        .. code-block:: text
+
+            ['coef_y_intercept', 'coef_y_x0', 'coef_y_x1']
+
+        .. rubric:: See also
+
+        - :func:`polars_online.spec.coef_fields`, each coefficient's column
+          name and where it sits in ``coef``.
+        - :func:`polars_online.unnest`, this method as a function a type
+          checker can see.
         """
         return self._df.select(
             _unnest_exprs(self._df.schema, _specs_of(specs, "unnest"), separator)
@@ -1767,9 +2242,46 @@ class DataFrameOnlineNamespace:
         save_state: State | None = None,
         **named: pl.Expr,
     ) -> pl.DataFrame:
-        """The frame plus one column per formula over the window operators:
-        :func:`polars_online.stream.with_windows` as a method, as
-        :meth:`LazyFrameOnlineNamespace.with_windows` is for a plan.
+        """Add one column per window operator's expression to a frame's rows.
+
+        It is :func:`polars_online.stream.with_windows` as a method, as
+        :meth:`LazyFrameOnlineNamespace.with_windows` is for a query.
+
+        .. rubric:: Parameters
+
+        ``*exprs``, ``**named`` and every keyword
+            As :func:`polars_online.stream.with_windows` takes them, with the
+            frame as its input.
+
+        .. rubric:: Returns
+
+        The frame with one column added per expression.
+
+        .. rubric:: Raises
+
+        What :func:`polars_online.stream.with_windows` raises.
+
+        .. rubric:: Examples
+
+        This code reads ``trades`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
+
+        .. code-block:: python
+
+            out = trades.online.with_windows(
+                mid_5s=po.ewm_mean("mid", half_life="5s", window_size="1m"),
+                clock="ts", gap_cap="5m", group="symbol",
+            )
+            print(out.columns[-1], out.height)
+
+        .. code-block:: text
+
+            mid_5s 3000
+
+        .. rubric:: See also
+
+        - :func:`polars_online.stream.with_windows`, every parameter and
+          what it refuses.
         """
         from polars_online.stream import with_windows
 
@@ -1827,18 +2339,69 @@ def fit_predict(
     chunk_size: int | None = None,
     threads: int | None = None,
 ) -> pl.LazyFrame | pl.DataFrame:
-    """``frame.online.fit_predict(...)`` as a plain function, so that a type checker
-    can see it.
+    """Add each spec's output column to a query's or a frame's rows, learning them.
 
-    A ``LazyFrame`` gives a plan that streams the rows through a bank when it runs
-    (:meth:`~polars_online._frame.LazyFrameOnlineNamespace.fit_predict`); a ``DataFrame``
-    gives the frame with the bank's columns
-    (:meth:`~polars_online._frame.DataFrameOnlineNamespace.fit_predict`).
-    ``load_state`` starts the bank from a saved one or a copy of a bank, and ``save_state`` writes
-    where it ends up. ``chunk_size`` is how many rows the bank is fed at a time,
-    from a plan or a frame alike, and ``threads`` how many threads it runs
-    on (:class:`~polars_online.ModelBank`). ``TypeError`` for a ``frame``
-    that is neither; otherwise raises what the namespace method does.
+    It is ``frame.online.fit_predict(...)`` as a plain function, so that a
+    type checker can see it: the ``online`` namespaces are attached when
+    the package is imported, which a type checker does not follow. The
+    namespace methods take the same arguments.
+
+    .. rubric:: Parameters
+
+    ``frame``
+        A query or a frame. A query gives a query that learns the rows when
+        it runs (:meth:`~polars_online._frame.LazyFrameOnlineNamespace.fit_predict`).
+        A frame gives the frame with the bank's columns
+        (:meth:`~polars_online._frame.DataFrameOnlineNamespace.fit_predict`).
+    ``specs``
+        The specs of a bank that starts with nothing learned.
+    ``load_state``
+        What to start from in place of the specs: the path of a saved
+        state, or a :class:`ModelBank`, which is copied.
+    ``save_state``
+        The path to write the state the bank ends in.
+    ``closed_groups``
+        The path of a file to write the groups that closed to.
+    ``chunk_size``
+        How many rows the bank learns at a time, from a query or a frame
+        alike.
+    ``threads``
+        How many threads the bank runs on, as
+        :class:`~polars_online.ModelBank` takes it.
+
+    .. rubric:: Returns
+
+    A query for a query, and a frame for a frame, with one output column
+    added per spec.
+
+    .. rubric:: Raises
+
+    ``TypeError``
+        ``frame`` is neither a query nor a frame.
+
+    Otherwise, what the namespace method raises.
+
+    .. rubric:: Examples
+
+    This code reads ``lf`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        out = po.fit_predict(lf, [spec])     # a LazyFrame to a type checker too
+        print(out.collect()["ridge"].struct.field("pred_y").count())
+
+    .. code-block:: text
+
+        396
+
+    .. rubric:: See also
+
+    - :meth:`~polars_online._frame.LazyFrameOnlineNamespace.fit_predict`,
+      each parameter in full, for a query.
+    - :meth:`~polars_online._frame.DataFrameOnlineNamespace.fit_predict`,
+      the same for a frame.
     """
     if isinstance(frame, pl.LazyFrame):
         return _fit_predict_lazy(
@@ -1883,17 +2446,61 @@ def predict(
     chunk_size: int | None = None,
     threads: int | None = None,
 ) -> pl.LazyFrame | pl.DataFrame:
-    """``frame.online.predict(bank)`` as a plain function, so that a type checker can
-    see it.
+    """Predict a query's or a frame's rows from a bank as it stands, learning nothing.
 
-    Scores the rows against ``bank`` as it stands and learns nothing: a plan from
-    a ``LazyFrame`` (:meth:`~polars_online._frame.LazyFrameOnlineNamespace.predict`), a
-    frame from a ``DataFrame``
-    (:meth:`~polars_online._frame.DataFrameOnlineNamespace.predict`). ``chunk_size`` is how
-    many rows are scored at a time, from a plan or a frame alike, and
-    ``threads`` the pool, as the namespace method takes it. ``TypeError``
-    for a ``frame`` that is neither; otherwise raises what the namespace
-    method does.
+    It is ``frame.online.predict(bank)`` as a plain function, so that a type
+    checker can see it: the ``online`` namespaces are attached when the
+    package is imported, which a type checker does not follow.
+
+    .. rubric:: Parameters
+
+    ``frame``
+        A query, which gives a query
+        (:meth:`~polars_online._frame.LazyFrameOnlineNamespace.predict`), or
+        a frame, which gives a frame
+        (:meth:`~polars_online._frame.DataFrameOnlineNamespace.predict`).
+    ``bank``
+        A :class:`~polars_online.ModelBank`, or the path of a saved state.
+    ``chunk_size``
+        How many rows are predicted at a time, from a query or a frame
+        alike.
+    ``threads``
+        How many threads to predict on, as the namespace method takes it.
+
+    .. rubric:: Returns
+
+    A query for a query, and a frame for a frame, with one output column
+    added per spec.
+
+    .. rubric:: Raises
+
+    ``TypeError``
+        ``frame`` is neither a query nor a frame.
+
+    Otherwise, what the namespace method raises.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` and ``today`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        bank = po.ModelBank([spec])
+        bank.fit(df)
+        scored = po.predict(today, bank)     # a DataFrame to a type checker too
+        print(scored["ridge"].struct.field("pred_y").count())
+
+    .. code-block:: text
+
+        400
+
+    .. rubric:: See also
+
+    - :meth:`~polars_online._frame.LazyFrameOnlineNamespace.predict`, each
+      parameter in full.
+    - :meth:`~polars_online.ModelBank.predict`, the fields it gives.
     """
     if isinstance(frame, pl.LazyFrame):
         return _predict_lazy(frame, bank, chunk_size, threads)
@@ -1919,16 +2526,60 @@ def unnest(
     *,
     separator: str | None = None,
 ) -> pl.LazyFrame | pl.DataFrame:
-    """``frame.online.unnest(specs)`` as a plain function, so that a type checker can
-    see it.
+    """Turn each spec's output column in a query or a frame into one column per field.
 
-    Takes each spec's struct column apart into columns, the ``coef`` lists as one
-    named column per coefficient: a plan from a ``LazyFrame``
-    (:meth:`~polars_online._frame.LazyFrameOnlineNamespace.unnest`), a frame from a
-    ``DataFrame`` (:meth:`~polars_online._frame.DataFrameOnlineNamespace.unnest`).
-    ``separator`` is as for the namespace method: ``{spec}{separator}{name}``.
-    ``TypeError`` for a ``frame`` that is neither; otherwise raises what the
-    namespace method does.
+    It is ``frame.online.unnest(specs)`` as a plain function, so that a type
+    checker can see it: the ``online`` namespaces are attached when the
+    package is imported, which a type checker does not follow.
+
+    .. rubric:: Parameters
+
+    ``frame``
+        A query, which gives a query
+        (:meth:`~polars_online._frame.LazyFrameOnlineNamespace.unnest`), or a
+        frame, which gives a frame
+        (:meth:`~polars_online._frame.DataFrameOnlineNamespace.unnest`).
+    ``specs``
+        The specs whose output columns to unnest: the spec dicts, a bank, or
+        the path of a saved state.
+    ``separator``
+        A text to name each column after its spec too, as
+        ``{spec}{separator}{name}``, as for the namespace method.
+
+    .. rubric:: Returns
+
+    A query for a query, and a frame for a frame, with each output column
+    replaced by its fields, and each ``coef`` list by one named column per
+    coefficient.
+
+    .. rubric:: Raises
+
+    ``TypeError``
+        ``frame`` is neither a query nor a frame.
+
+    Otherwise, what the namespace method raises.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        flat = po.unnest(df.online.fit_predict([spec]), [spec], separator=".")
+        print(flat.select("^ridge.coef_.*$").columns)
+
+    .. code-block:: text
+
+        ['ridge.coef_y_intercept', 'ridge.coef_y_x0', 'ridge.coef_y_x1']
+
+    .. rubric:: See also
+
+    - :meth:`~polars_online._frame.LazyFrameOnlineNamespace.unnest`, the
+      columns it writes, in full.
+    - :func:`polars_online.spec.coef_fields`, each coefficient's column
+      name.
     """
     if isinstance(frame, pl.LazyFrame):
         return _unnest_lazy(frame, specs, separator)

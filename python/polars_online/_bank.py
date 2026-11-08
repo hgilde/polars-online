@@ -1,4 +1,4 @@
-"""The chunk-fed model bank: memory O(state), not O(data)."""
+"""The model bank, fed one chunk at a time, whose memory holds its models' state and one chunk."""
 
 from __future__ import annotations
 
@@ -196,25 +196,56 @@ def _check_threads(threads: object) -> int | None:
 
 
 def thread_pool_size(*, threads: int | None = None) -> int:
-    """How many threads the pool a ``threads`` argument names has.
+    """The number of threads a bank given this ``threads`` argument runs on.
 
-    ``threads=None`` is the process's pool, the one a bank given no
-    ``threads`` runs on. ``POLARS_ONLINE_MAX_THREADS`` sizes it when it is
-    first used (unset or ``0``: one thread per core), and it is never
-    resized; this builds it if nothing has yet. An integer ``n`` is a pool of
-    ``n`` threads, which this checks and does not build, so asking costs no
-    thread. Polars' own pool, ``POLARS_MAX_THREADS``, is separate, and
-    ``pl.thread_pool_size()`` reports that one.
+    Use it to see how many threads a bank will use before you build one, or
+    what ``POLARS_ONLINE_MAX_THREADS`` gives. Polars' own threads are
+    separate, set by ``POLARS_MAX_THREADS``, and ``pl.thread_pool_size()``
+    reports those.
+
+    .. rubric:: Parameters
+
+    ``threads``
+        The count a bank would be given, as :class:`ModelBank` takes it.
+        ``None``, the default, names the process's shared threads, which
+        every bank given no ``threads`` runs on. ``POLARS_ONLINE_MAX_THREADS``
+        sets their number when they are first used (unset or ``0``: one
+        thread per core), and the number never changes after that. This call
+        starts them if nothing has yet. An integer ``n`` names ``n`` threads,
+        which this call checks without starting them.
+
+    .. rubric:: Returns
+
+    ``int``: the number of threads.
+
+    .. rubric:: Raises
+
+    ``TypeError``
+        ``threads`` is not an integer, a bool included.
+    ``ValueError``
+        ``threads`` is below 1 or above ``2**63 - 1``, or ``threads`` is
+        ``None`` and ``POLARS_ONLINE_MAX_THREADS`` is set to anything but a
+        whole number, or to more threads than the system will start. A bank
+        refuses the
+        same values: a ``threads`` below 1 when it is made, and a bad
+        ``POLARS_ONLINE_MAX_THREADS`` at its first call that runs. A bank
+        also refuses an integer ``threads`` larger than the system will
+        start. This call starts no threads for an integer, so it does not
+        refuse such a count.
+
+    .. rubric:: Examples
 
     .. code-block:: python
 
-        po.thread_pool_size()            # the process's pool, one thread per core by default
-        po.thread_pool_size(threads=2)   # 2
+        print(po.thread_pool_size(threads=2))   # 2: checked, and no thread starts
 
-    ``ValueError`` when the variable is set to anything but a whole number
-    and ``threads`` is ``None``. A ``threads`` that is not an integer (a
-    bool included) is a ``TypeError``, and one below 1 a ``ValueError``,
-    as :class:`ModelBank` refuses them.
+    .. code-block:: text
+
+        2
+
+    .. rubric:: See also
+
+    - :class:`ModelBank`, whose ``threads`` argument this reads.
     """
     return int(_native.thread_pool_size(_check_threads(threads)))
 
@@ -222,52 +253,103 @@ def thread_pool_size(*, threads: int | None = None) -> int:
 class ModelBank:
     """A set of models fitted together over the same rows, fed one chunk at a time.
 
-    A bank holds one state per (spec, group). Feed it chunks in stream order and
-    it hands each chunk back with one struct column per spec, every prediction
-    made before the row it is for was learned from. Memory is the models' state
-    plus one chunk, however long the stream, and the numbers do not depend on how
-    the stream is chunked. What the bank has learned can be read back without the
-    rows (:meth:`coef`, :meth:`gram`, :meth:`marginal`, :meth:`last_row`,
-    :meth:`summary`, :meth:`describe`), saved to a file (:meth:`save`) and loaded
-    on any OS (:meth:`load`), and scored against without moving (:meth:`predict`).
+    Use a model bank when you feed the rows yourself, from frames you hold or a
+    query you hand it to read in chunks, and when you want to read, save or
+    serve what it has learned between chunks. To run the same bank inside a
+    Polars query, use ``lf.online.fit_predict(specs)``, and to run it outside
+    Python, from a file to a file, use the ``polars-online`` command line.
 
-    The same bank runs as a polars plan, ``lf.online.fit_predict(specs)``
-    (:mod:`polars_online._frame`), and as a file-to-file job, the ``polars-online``
-    command line. This class is the in-process form, for a plan you hand it to
-    chunk (:meth:`fit_predict_batches`, :meth:`fit`) or frames you already have.
+    .. rubric:: Parameters
+
+    ``specs``
+        A list of the specs the :mod:`polars_online.spec` builders make, at
+        least one, with distinct names. The bank keeps one model for each
+        spec and each group of the spec's ``group`` column, and adds one
+        output column per spec to each chunk it learns.
+    ``threads``
+        How many threads the bank's work runs on. ``None``, the default, is the
+        process's shared threads, whose number ``POLARS_ONLINE_MAX_THREADS``
+        sets when they are first used (unset or ``0``: one thread per core). An
+        integer ``n`` is ``n`` threads, which every bank given the same ``n``
+        shares and which end with the last of those banks, unless the process's
+        shared threads already number ``n``, in which case the bank runs on
+        those. The output and the saved state are the same to the bit at any
+        count (see Notes). The count is not saved with the state, so
+        :meth:`load` takes its own. A spec's ``gram_threads`` caps the threads
+        it uses to learn each row into its Gram, and ``marginal``'s ``shards``
+        splits its pair work across the bank's threads. Neither adds a thread.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        When:
+
+        - ``specs`` is empty, two specs share a name, or an item is not a
+          spec (the message names the field);
+        - a spec's settings are refused, as its builder would refuse them;
+        - ``threads`` is below 1 (``None``, not 0, gives the shared threads:
+          one per core unless ``POLARS_ONLINE_MAX_THREADS`` is set), above
+          ``2**63 - 1``, or names more threads than the system will start;
+        - from the bank's first call that runs, with ``threads=None``:
+          ``POLARS_ONLINE_MAX_THREADS`` is not a whole number, or names more
+          threads than the system will start.
+    :class:`~polars_online.WrongTypeError`
+        ``specs`` is one spec, a string or bytes, in place of a list of specs. It
+        is both a ``TypeError`` and a ``ValueError``.
+    ``TypeError``
+        ``specs`` is not iterable, or ``threads`` is not an integer, a bool
+        included.
+    ``RuntimeError``
+        From any method: the bank is in use on another thread (see Notes).
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
 
     .. code-block:: python
 
         spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
         bank = po.ModelBank([spec])
         for chunk in df.iter_slices(100):          # chunks in stream order
-            out = bank.fit_predict(chunk)          # the chunk plus a struct column per spec
-        betas = bank.coef()                        # what it has learned, without the rows
-        bank.save("bank.state")                    # resume later, on any OS
+            out = bank.fit_predict(chunk)          # the chunk, with the output column "ridge" added
+        coefs = bank.coef()                        # what it has learned, read without the rows
+        bank.save("bank.state")                    # a state file, to resume from on any OS
+        print(bank)
 
-    ``specs`` are the dicts the :mod:`polars_online.spec` builders make.
-    ``ValueError`` when there are none, when two share a name, or when a dict is
-    not a spec (the message names the field).
+    .. code-block:: text
 
-    ``threads`` is how many threads the bank's work runs on. ``None``, the
-    default, is the process's pool, sized by ``POLARS_ONLINE_MAX_THREADS``
-    when the first bank runs (unset or ``0``: one thread per core). An
-    integer ``n`` is a pool of ``n`` threads, which every bank given the same
-    ``n`` shares, and which goes away with the last of them. The output and
-    the saved state are the same to the bit at any count: each piece of
-    work is the same arithmetic whichever thread runs it, and the pieces are
-    cut by the data, not by the pool. The count is not saved with the state
-    (:meth:`load` takes its own). A spec's ``gram_threads`` and ``shards``
-    cap how much of the pool that spec's Gram work may use; they never add
-    threads to it. ``TypeError`` for a ``threads`` that is not an integer (a
-    bool included), and ``ValueError`` for one below 1: 0 is not "one per
-    core" here, ``None`` is.
+        ModelBank(['ridge'], groups=1, rows_fed=400)
 
-    A bank is one ordered stream, so it is not for two threads at once: a method
-    that finds the bank in use on another thread raises ``RuntimeError`` rather
-    than interleave with it (:meth:`fit_predict` releases the GIL while it works).
-    :meth:`predict` learns nothing, so any number of ``predict`` calls may
-    overlap. Only a ``fit_predict`` in flight refuses them, and they refuse it.
+    .. rubric:: See also
+
+    - :meth:`fit_predict`, :meth:`fit_predict_batches` and :meth:`fit`, which
+      learn rows.
+    - :meth:`predict`, which predicts rows from the state and learns nothing.
+    - :meth:`coef`, :meth:`gram`, :meth:`marginal`, :meth:`last_row`,
+      :meth:`summary` and :meth:`describe`, which read what the bank has
+      learned without the rows.
+    - :meth:`save` and :meth:`load`, which write and read the state file.
+    - ``lf.online.fit_predict``, the same bank inside a query.
+
+    .. rubric:: Notes
+
+    A bank feeds each chunk to its models in stream order. Every prediction
+    is made before the model learns the row it is for. Memory holds the
+    models' state and one chunk, however long the stream, and the numbers do
+    not depend on how the stream is cut into chunks.
+
+    The output and the state do not depend on ``threads``: each piece of work
+    is the same arithmetic whichever thread runs it, and the work is divided
+    by the data, not by the number of threads.
+
+    A bank is one ordered stream, so two threads cannot use it at once. A
+    method that finds the bank in use on another thread raises
+    ``RuntimeError``, so that two calls never interleave their rows. Without
+    the check they could, since :meth:`fit_predict` releases Python's global
+    interpreter lock while it works. :meth:`predict` learns nothing, so any
+    number of ``predict`` calls may run at once. Only a call that learns, in
+    flight, refuses them, and they refuse it.
     """
 
     def __init__(self, specs: Iterable[dict[str, Any]], *, threads: int | None = None) -> None:
@@ -299,27 +381,31 @@ class ModelBank:
 
     @property
     def specs(self) -> list[dict[str, Any]]:
-        """The specs this bank runs, filled in.
+        """The specs this bank runs, with every field filled in.
 
-        The dicts the builders made, with what a hand-written dict may leave out
-        filled in (``targets`` for a model with no target, ``drift_action``). A state
-        file carries them, so a bank loaded from one reports its specs without being
-        told what they are, every field included. That is what makes a state file
-        self-describing: with :meth:`groups`, :meth:`output_fields` and the
-        diagnostic tables, a caller who knows nothing about a file in advance can
-        walk it.
+        These are the dicts the builders made, with the fields a hand-written
+        dict may leave out filled in, such as ``targets`` for a model with no
+        target, and ``drift_action``. A state file carries them, so a bank
+        loaded from one reports its specs without being told what they are.
+        With :meth:`groups`, :attr:`output_fields` and the tables the bank's
+        readers return, a caller who knows nothing about a state file in
+        advance can find what it holds.
 
-        A copy, and read-only. The bank's behaviour comes from the Rust state built at
-        construction, not from this list, so a mutation here could only disagree with
-        it: a stale copy would mislabel coefficients. Assigning to ``bank.specs``
-        raises ``AttributeError``, and mutating what it returns changes nothing.
+        The list is a read-only copy. The bank runs from the state it built
+        when it was made, not from this list, so a change here could only
+        disagree with it, and a stale copy would put the wrong names on
+        coefficients. Assigning to ``bank.specs`` raises ``AttributeError``,
+        and changing what it returns changes nothing in the bank.
         """
         return copy.deepcopy(self._specs)
 
     @property
     def threads(self) -> int | None:
-        """The ``threads`` count the bank was made or loaded with: ``None`` for
-        the process's pool. A pickled or deep-copied bank keeps it."""
+        """The ``threads`` count the bank was made or loaded with.
+
+        ``None`` means the process's shared threads (:class:`ModelBank`). A
+        bank that is pickled or copied with ``copy.deepcopy`` keeps its count.
+        """
         return self._native.threads
 
     def __repr__(self) -> str:
@@ -329,45 +415,76 @@ class ModelBank:
 
     @property
     def rows_fed(self) -> int:
-        """Rows fed so far, over every chunk and group, each counted once however
-        many specs the bank holds.
+        """The rows fed to the bank so far, over every chunk and group.
 
-        Skipped rows count, as they do in :meth:`summary`'s ``rows_fed``, the same
-        count per (spec, group). So do the rows of groups since dropped
-        (:meth:`drop_groups`) or closed (``group_close``), which :meth:`summary`
-        no longer lists.
+        Each row counts once, however many specs the bank holds. Skipped rows
+        count, as they do in :meth:`summary`'s ``rows_fed``, which gives the
+        count for each spec and group. So do the rows of groups since dropped with
+        :meth:`drop_groups`, or closed under ``group_close``, which
+        :meth:`summary` no longer lists.
 
-        A property, as :attr:`specs` is, and as Polars' ``height`` is: a count
-        the bank keeps, read without work. Before 1.0 it was a method, and
-        ``bank.rows_fed()`` still answers, with a
-        :class:`~polars_online.PolarsOnlineDeprecationWarning`.
+        It is a property, as :attr:`specs` is, and as Polars' ``height`` is:
+        a count the bank keeps, read without work. Calling it, as
+        ``bank.rows_fed()``, is deprecated: it still returns the count, with
+        a :class:`~polars_online.PolarsOnlineDeprecationWarning`, until the
+        next major version refuses it.
         """
         return _CalledInt(self._native.rows_fed())
 
     rows_seen = renamed_method("ModelBank", "rows_seen", "rows_fed", read_as="bank.rows_fed")
 
     def groups(self, spec: str | int | None = None) -> pl.DataFrame:
-        """The groups the bank holds state for: one row per (spec, group).
+        """The groups the bank holds a model for, one row for each spec and group.
+
+        Use it to see which groups a bank has learned, such as a bank loaded
+        from a state file, and to find the groups that have gone quiet, whose
+        models stay in the bank until :meth:`drop_groups` removes them.
+
+        .. rubric:: Parameters
+
+        ``spec``
+            A spec's name or position, which narrows the table to that spec.
+            ``None``, the default, lists every spec.
+
+        .. rubric:: Returns
+
+        A ``DataFrame`` with one row for each spec and group, in the bank's
+        spec order, each spec's groups sorted by key: integer keys as
+        numbers, text keys as text, the null group first. Its columns:
 
         ``spec``, ``group``
-            The spec's name, and the group key as a string: ``""`` for a spec without
-            a ``group`` column, null for rows whose key was null. A zoned ``Datetime``
-            key is its instant, written as the UTC wall time.
+            The spec's name, and the group key as a string: ``""`` for a spec
+            without a ``group`` column, and null for the rows whose key was
+            null. A ``Datetime`` key with a time zone is written as its
+            instant's UTC wall time.
         ``rows_fed``
-            The rows routed to the group, skipped ones included, as :meth:`summary`
-            counts them.
+            The rows the bank routed to the group, skipped rows included, as
+            :meth:`summary` counts them.
         ``clock_last``
-            Its last clock value, in the clock column's own dtype, exactly: a
-            ``Datetime`` in its unit and zone, a ``Date``, a ``Duration``, an
-            integer clock in its own width, and a ``Float64`` for a float clock (the
-            dtype ``emit_clocks`` gives ``scored_clock``). Null before the first row,
-            or on a row-count clock, where the column is a ``Float64`` of nulls.
+            The group's last clock value, exactly, in the clock column's own
+            type: a ``Datetime`` in its unit and time zone, a ``Date``, a
+            ``Duration``, an integer clock in its own width, and a
+            ``Float64`` for a float clock (the type ``emit_clocks`` gives
+            ``scored_clock``). It is null before the group's first row, and on
+            a spec without a clock. The column is a ``Float64`` of nulls only
+            when no spec read has a clock.
 
-        Groups are sorted by key: integer keys as numbers, text keys as text, the
-        null group first.
+        .. rubric:: Raises
 
-        State lives until :meth:`drop_groups` removes it, so this is how a
-        long-running bank finds the groups that have gone quiet:
+        ``KeyError``
+            ``spec`` is a name the bank does not hold. The message lists the
+            names.
+        ``IndexError``
+            ``spec`` is a position the bank does not hold.
+        ``ValueError``
+            ``spec`` is ``None`` and the specs read clocks of different
+            types, which one ``clock_last`` column cannot hold. Read such a
+            bank one spec at a time.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
@@ -377,30 +494,95 @@ class ModelBank:
             )
             bank = po.ModelBank([spec])
             bank.fit_predict(df)
-            now = df["ts"].max()                   # clock_last is a Datetime, as ts is
-            month = pl.lit(now) - pl.duration(days=30)
-            stale = bank.groups().filter(pl.col("clock_last") < month)
-            bank.drop_groups(stale["group"])     # the groups quiet for 30 days
+            print(bank.groups())
+            # the groups with no row in the last 2 minutes of the stream
+            cutoff = pl.lit(df["ts"].max()) - pl.duration(minutes=2)
+            quiet = bank.groups().filter(pl.col("clock_last") < cutoff)
+            print(bank.drop_groups(quiet["group"]))
 
-        ``spec``, a name or a position, narrows the table to one spec: ``KeyError``
-        for a name the bank has not got (the message lists the names), ``IndexError``
-        for a position it has not got. One column holds one dtype, so a bank whose
-        specs read clocks of different dtypes is read one spec at a time:
-        ``ValueError`` names them otherwise.
+        .. code-block:: text
+
+            shape: (4, 4)
+            ┌───────┬───────┬──────────┬─────────────────────┐
+            │ spec  ┆ group ┆ rows_fed ┆ clock_last          │
+            │ ---   ┆ ---   ┆ ---      ┆ ---                 │
+            │ str   ┆ str   ┆ i64      ┆ datetime[μs]        │
+            ╞═══════╪═══════╪══════════╪═════════════════════╡
+            │ ridge ┆ b0    ┆ 100      ┆ 2024-01-02 16:06:00 │
+            │ ridge ┆ b1    ┆ 100      ┆ 2024-01-02 16:07:00 │
+            │ ridge ┆ b2    ┆ 100      ┆ 2024-01-02 16:08:00 │
+            │ ridge ┆ b3    ┆ 100      ┆ 2024-01-02 16:09:00 │
+            └───────┴───────┴──────────┴─────────────────────┘
+            1
+
+        .. rubric:: See also
+
+        - :meth:`drop_groups`, which removes groups' models.
+        - :meth:`summary`, which counts each group's rows by what happened
+          to them.
+        - :meth:`closed_groups`, for the groups ``group_close`` ends.
         """
         n = len(self._native.spec_names())
         picked = range(n) if spec is None else [self._spec_index(spec, "ModelBank.groups")]
         return self._native.groups(list(picked))
 
     def drop_groups(self, keys: Iterable[str | None], spec: str | int | None = None) -> int:
-        """Forget the state of these groups, in every spec or in one, and return how many
-        streams were dropped.
+        """Remove the models of these groups, in every spec or in one.
 
-        Keys are as :meth:`groups` reports them; a key the bank does not hold is not
-        an error, it drops nothing. A dropped group starts cold if it appears again,
-        exactly as a never-seen one would. Nothing else in the bank changes, and
-        :meth:`rows_fed` still counts the rows it was fed. ``spec`` is as for
-        :meth:`groups` (``KeyError`` / ``IndexError`` for one the bank has not got).
+        Use it to free the memory a long-running bank holds for groups that
+        have gone quiet, which :meth:`groups` finds. To have the bank end a
+        group's model itself, as its rows end, set the spec's
+        ``group_close``.
+
+        .. rubric:: Parameters
+
+        ``keys``
+            The group keys to drop, a list of keys and not one key, as
+            :meth:`groups` writes them in its ``group`` column: strings, with
+            ``None`` for the null group. A key the bank does not hold drops
+            nothing, and is not an error. A string given alone is read as its
+            characters, each a key.
+        ``spec``
+            A spec's name or position, which drops the groups from that spec
+            alone. ``None``, the default, drops them from every spec.
+
+        .. rubric:: Returns
+
+        ``int``: the number of models dropped, one for each spec and group.
+        A dropped group that appears again starts with nothing learned, as a
+        group the bank has never seen does. Nothing else in the bank changes,
+        and :attr:`rows_fed` still counts the dropped groups' rows.
+
+        .. rubric:: Raises
+
+        ``TypeError``
+            A key is neither a string nor ``None``.
+        ``KeyError``
+            ``spec`` is a name the bank does not hold.
+        ``IndexError``
+            ``spec`` is a position the bank does not hold.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
+
+        .. code-block:: python
+
+            spec = po.spec.ewridge(
+                "ridge", targets=["y"], features=["x0"], group="stock_id", half_life=50.0
+            )
+            bank = po.ModelBank([spec])
+            bank.fit_predict(df)
+            print(bank.drop_groups(["b0", "b9"]))   # b9 was never seen, so one model is dropped
+
+        .. code-block:: text
+
+            1
+
+        .. rubric:: See also
+
+        - :meth:`groups`, which lists the groups and their last clock values.
         """
         index = None if spec is None else self._spec_index(spec, "ModelBank.drop_groups")
         return self._native.drop_groups(list(keys), index)
@@ -412,16 +594,53 @@ class ModelBank:
     def skip_learned(self, frame: pl.LazyFrame) -> pl.LazyFrame: ...
 
     def skip_learned(self, frame: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
-        """The rows of ``frame`` the bank has not learned, for resuming a saved bank on
-        input that overlaps it.
+        """The rows of a frame or query that the bank has not learned.
 
-        A loaded bank resumes at the next row. Input that starts before the
-        save, such as a rerun of the day or a file that overlaps the last one,
-        steps each group's clock back to rows the state has already learned.
-        The bank refuses that chunk, unless ``restart_after_step_back`` reads
-        it as a new start. This method keeps a row whose clock is after its
-        group's last clock in every spec that reads a clock, and every row of
-        a group the bank has not seen, so that each row is learned once:
+        Use it to resume a saved bank on input that overlaps what the bank
+        learned before it was saved, such as a rerun of the day or a file
+        that overlaps the last one. A loaded bank goes on from the next row,
+        so the overlap steps each group's clock back, which :meth:`fit_predict`
+        refuses unless ``restart_after_step_back`` reads it as a new start.
+        Without a clock in any spec, pass the bank only the rows after the
+        last one it learned.
+
+        .. rubric:: Parameters
+
+        ``frame``
+            The input, a ``DataFrame`` or a ``LazyFrame``, holding each spec's
+            clock column and ``group`` column.
+
+        .. rubric:: Returns
+
+        ``frame``'s rows that the bank has not learned, of the same type, in
+        the same order: a ``LazyFrame`` stays lazy. A row is kept when, in
+        every spec that reads a clock, its clock is after its group's last
+        clock, its group is one that spec has not seen, or its clock is null.
+        A null clock is left for :meth:`fit_predict` to judge. A row at its
+        group's last clock counts as learned.
+
+        .. rubric:: Raises
+
+        ``ValueError``
+            When:
+
+            - no spec reads a clock, so there is no position on a clock to
+              resume from;
+            - a clock column is not a number, a ``Date``, a ``Datetime`` or a
+              ``Duration``;
+            - a clock is temporal in the frame and was numeric in the bank,
+              or the other way round.
+        :class:`~polars_online.ColumnNotFoundError`
+            A spec's clock or group column is not in the frame. It is both a
+            ``ValueError`` and Polars' ``ColumnNotFoundError``.
+        ``AttributeError``
+            ``frame`` is neither a ``DataFrame`` nor a ``LazyFrame``, such as
+            a dict.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
@@ -434,24 +653,26 @@ class ModelBank:
 
             bank = po.ModelBank.load("bank.state")
             rerun = df                        # the whole day again: its first 300 rows overlap
-            out = bank.fit_predict(bank.skip_learned(rerun))   # rows 300 to 399, once each
+            out = bank.fit_predict(bank.skip_learned(rerun))
+            print(f"{out.height} rows learned, from t = {out['t'][0]}")
 
-        A row at a group's last clock counts as learned, so a stream that
-        repeats a clock value, saved between two rows with that value, loses
-        the later ones. A row with a null clock is kept, for
-        :meth:`fit_predict` to judge. Row order is kept, and a ``LazyFrame``
-        stays lazy. The comparison is exact: a temporal clock is compared in
-        the integer nanoseconds the bank keeps, whatever its unit or time
-        zone, and an integer clock in integers.
+        .. code-block:: text
 
-        ``ValueError`` when:
+            100 rows learned, from t = 300.0
 
-        - no spec reads a clock (a row-count clock has no position to resume
-          from);
-        - a spec's clock or group column is not in the frame;
-        - a clock column is neither numeric nor temporal;
-        - a clock is temporal in the frame and was numeric in the bank, or
-          the other way round.
+        .. rubric:: See also
+
+        - :meth:`load`, which loads the saved bank.
+        - `Resume from a saved state
+          <https://github.com/hgilde/polars-online/blob/main/docs/how-to/resume-from-a-saved-state.md#resume-on-input-that-overlaps-the-state>`_.
+
+        .. rubric:: Notes
+
+        The comparison is exact. A temporal clock is compared in the integer
+        nanoseconds the bank keeps, whatever its unit or time zone, and an
+        integer clock in integers. Since a row at its group's last clock
+        counts as learned, a stream that repeats a clock value and was saved
+        between two rows with that value loses the later ones.
         """
         schema = frame.lazy().collect_schema()
         keep: pl.Expr | None = None
@@ -552,9 +773,10 @@ class ModelBank:
             A column of a type its role cannot take. It is both a
             ``TypeError`` and a ``ValueError``. When:
 
-            - a target, feature or weight column is neither numeric nor
-              Boolean, or a column is ``UInt128``, which polars-online
-              cannot read;
+            - a column of ``df`` is ``UInt128``, which polars-online cannot
+              read;
+            - a target column (other than ``ew_class``'s), a feature or a
+              weight column is neither numeric nor Boolean;
             - a clock is not a number, a Boolean, a ``Datetime``, a ``Date``
               or a ``Duration`` (a ``Time`` starts again at midnight), or is
               an ``Int128``;
@@ -563,8 +785,8 @@ class ModelBank:
             - a ``label_clock`` column's type does not match the clock's, a
               temporal one for a temporal clock and a numeric one for a
               numeric clock;
-            - a group, session or ``label_clock`` key column has a type with
-              no text form, such as a nested one;
+            - a group or session column, or an ``ew_class`` target, has a
+              type with no text form, such as a nested one;
             - under ``group_close="monotone"``, the group column is not an
               integer, String or Categorical type.
         ``ValueError``
@@ -593,7 +815,7 @@ class ModelBank:
             - under ``group_close="monotone"``, a group key is null or below
               the key before it;
             - a ``label_clock`` time is before its row's clock, or a group's
-              rows waiting for their label times would pass
+              rows waiting for their ``label_clock`` times would pass
               ``max_held_rows`` under ``held_overflow="refuse"``, the
               default;
             - a formula target's ``embargo`` is shorter than its longest
@@ -694,25 +916,30 @@ class ModelBank:
             warnings.warn(ReadinessWarning(notice), stacklevel=_user_stacklevel())
 
     def predict(self, df: pl.DataFrame) -> pl.DataFrame:
-        """Score a frame against the bank as it stands, learning nothing.
+        """Predict a frame's rows from the bank as it stands, learning nothing.
 
-        Every row gets the struct :meth:`fit_predict` would give it as the next row of
-        its group's stream, computed from the current state. The bank is left exactly
-        as it was, so the call is safe from any number of threads at once and row
-        order does not matter. This is the serving side of a trained bank: ``load``
-        once, ``predict`` per request, and ``fit_predict`` the rows later, in order,
-        once their targets arrive.
+        Use it to serve a bank that has learned: :meth:`load` it once, call ``predict``
+        for each request, and feed the same rows to :meth:`fit_predict` later,
+        in order, once their targets arrive. The bank is left exactly as it
+        was, so any number of threads may call ``predict`` at once, and row
+        order does not matter. For a query, use ``lf.online.predict``.
 
-        The frame needs each spec's feature and clock columns. Target columns are
-        optional: present, they give ``resid`` and the standardized residual; absent,
-        those are null. The session column is optional and feeds ``session_gap``. A
-        weight column is not read. A trend model (``holt``) extrapolates over the
-        clock distance from the row it last learned, capped by ``gap_cap``, and a
-        ``kalman`` with ``revert_half_life`` shrinks its coefficients over that
-        distance exactly as the next ``fit_predict`` row would. The other coefficient
-        models predict from their current coefficients regardless of the clock.
+        .. rubric:: Parameters
 
-        Per field and per kind of row:
+        ``df``
+            The rows to predict, as a ``DataFrame``. Each row is predicted as
+            the next row of its group's stream would be. ``df`` needs each
+            spec's feature, clock and ``group`` columns. A target column is
+            optional: present, it gives ``resid`` and the standardized
+            residual, and absent, they are null. The session column is
+            optional, and is read for ``session_gap`` and
+            ``group_close="session"``. A weight column is not read.
+
+        .. rubric:: Returns
+
+        ``df`` with each spec's output column added, with the fields
+        :meth:`fit_predict` gives, computed from the current state. Some
+        fields and rows differ from what ``fit_predict`` would give:
 
         .. list-table::
            :header-rows: 1
@@ -720,44 +947,80 @@ class ModelBank:
 
            * - the field or the row
              - what ``predict`` gives
-           * - ``weight_sum``, ``penalty_selected``, ``sigma``, the residual
+           * - ``weight_sum``, ``penalty_selected_<t>``, ``sigma``, the residual
                quantiles, the autocorrelation and the metrics
-             - the values the bank holds, frozen
+             - the values the bank holds, unchanged by the rows
            * - ``coef``
-             - filled on the last accepted row, since the same coefficients
-               score every row; ``coef_every`` and ``max_rows_between_coefs``
-               are not read
+             - filled on each group's last row that is not skipped, since the
+               same coefficients predict every row. ``coef_every`` and
+               ``max_rows_between_coefs`` are not read
            * - ``drift``
              - never fires
-           * - a row of a group the bank has never seen, or without usable
-               features
+           * - a row of a group the bank has never seen, or a row whose
+               features are null
              - null throughout, as a skipped row is in ``fit_predict``
-           * - under ``group_close = "session"``, a row from a session other
+           * - under ``group_close="session"``, a row from a session other
                than the group's current one
-             - the first row of a fresh stream, null with ``weight_sum`` 0,
-               because ``fit_predict`` would restart the stream there
-           * - a row that ``session_gap = "reset"`` would restart on
+             - the first row of a new stream, null with ``weight_sum`` 0,
+               since ``fit_predict`` would start the stream again there
+           * - a row on which ``session_gap="reset"`` would reset the model
              - the same
            * - a row before the group's last learned clock
-             - scored against the state as it stands, whatever
-               ``restart_after_step_back`` says: scoring learns nothing, so
-               it neither refuses the row nor starts over
+             - predicted from the state as it stands, whatever
+               ``restart_after_step_back`` says: predicting learns nothing,
+               so it neither refuses the row nor resets
 
-        Under an ``embargo``, ``predict`` releases nothing. A held row whose
-        delay has passed by the scored row's clock is still held, and learned
-        by the next ``fit_predict``. So every row is scored against the model
-        the last ``fit_predict`` left, its ``weight_sum`` and ``learned_clock``
-        included.
+        .. rubric:: Raises
+
+        What :meth:`fit_predict` raises for a frame's columns and their
+        types, such as a missing column or a bad clock value, with these
+        differences:
+
+        - it does not refuse what only learning would: a step back, a
+          negative weight, a ``window_budget`` overrun or held rows past
+          ``max_held_rows``;
+        - a missing target column is not an error;
+        - ``RuntimeError`` comes only when a call that learns is in flight on
+          another thread, since ``predict`` calls may run at once.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` and ``today`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
-            bank = po.ModelBank.load("bank.state")
-            scored = bank.predict(today)              # the same struct columns, the bank unmoved
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = po.ModelBank([spec])
+            bank.fit_predict(df)                        # learn df's rows
+            served = bank.predict(today.drop("y"))      # the next rows, their targets not yet known
+            pred = served["ridge"].struct.field("pred_y")
+            print(f"{pred.count()} of {served.height} rows predicted, {bank.rows_fed} rows learned")
 
-        Raises what :meth:`fit_predict` raises for the same frame (a missing or
-        non-numeric column, a bad clock value), except that a missing target is not an
-        error, and ``RuntimeError`` only when a ``fit_predict`` is in flight on
-        another thread.
+        .. code-block:: text
+
+            400 of 400 rows predicted, 400 rows learned
+
+        .. rubric:: See also
+
+        - :meth:`fit_predict`, which predicts each row and then learns it.
+        - :meth:`predict_arrow`, the same with the output as Arrow.
+        - ``lf.online.predict``, the same over a query.
+
+        .. rubric:: Notes
+
+        A trend model (``holt``) extrapolates over the clock distance from the
+        row it last learned, capped by ``gap_cap``. A ``kalman`` with
+        ``revert_half_life`` shrinks its coefficients over that distance
+        exactly as the next ``fit_predict`` row would. The other models that
+        predict from coefficients use their current coefficients whatever the
+        clock says.
+
+        Under an ``embargo``, ``predict`` releases nothing. A held row whose
+        delay has passed by the predicted row's clock stays held, and the next
+        ``fit_predict`` learns it. So every row is predicted from the model
+        the last ``fit_predict`` left, its ``weight_sum`` and
+        ``learned_clock`` included.
         """
         return self._predict_from(df, 0)
 
@@ -769,43 +1032,78 @@ class ModelBank:
         return df.with_columns([pl.Series(s) for s in outs])
 
     def fit_predict_arrow(self, df: pl.DataFrame) -> list[ArrowStruct]:
-        """:meth:`fit_predict`, with the output handed back as Arrow.
+        """Learn a frame's rows, and return each spec's output as an Arrow array.
 
-        One struct per spec, in spec order, each exposing ``__arrow_c_array__`` --
-        the Arrow PyCapsule interface. The values are :meth:`fit_predict`'s exactly,
-        field for field and null for null; what differs is the way out. A polars
-        ``Series`` crosses on py-polars' private ``_export``/``_import``, which is
-        why this package carries a polars floor and why that interface promises no
-        stability. The capsule interface is public and standardised, so a consumer
-        of it reads the struct directly: ``pl.Series``, and pyarrow's ``pa.array``
-        and ``pa.table``. duckdb reads the stream interface instead, so it takes the
-        struct through ``pl.Series(s)``.
+        Use it to hand a bank's output to a library other than Polars, or to
+        take the output through the public Arrow PyCapsule interface, without
+        Polars' private series boundary (see Notes). For a frame
+        back, use :meth:`fit_predict`, the same call with the output added to
+        the frame for you.
 
-        Use this to hand a bank's output to something that is not polars, or to
-        avoid a second copy of polars in the process. When you want a frame back,
-        :meth:`fit_predict` is the same call with the wrapping done for you.
+        .. warning::
+            The Arrow output (this method, :meth:`predict_arrow` and
+            :class:`~polars_online.ArrowStruct`) is **unstable**: it may change
+            in any release without that counting as a breaking change. Under
+            ``POLARS_ONLINE_WARN_UNSTABLE=1``, each call issues
+            :class:`~polars_online.UnstableWarning`.
 
-        Exporting hands the buffers to the consumer, so each struct can be read
-        once; reading one twice raises ``ValueError``. The struct's Arrow field
-        carries its spec's name, which is where the series below gets its name
-        from.
+        .. rubric:: Parameters
+
+        ``df``
+            The next rows of the stream, as one chunk, a Polars ``DataFrame``,
+            as :meth:`fit_predict` takes it. Only the output is Arrow.
+
+        .. rubric:: Returns
+
+        A list of :class:`~polars_online.ArrowStruct`, one per spec, in the
+        order of the bank's specs. Each holds the spec's output column as an
+        Arrow struct array, with :meth:`fit_predict`'s values exactly, field
+        for field and null for null, and is named after its spec. A consumer
+        reads it through the Arrow PyCapsule interface
+        (``__arrow_c_array__``): Polars' ``pl.Series``, and pyarrow's
+        ``pa.array`` and ``pa.table``. DuckDB reads Arrow streams instead, so
+        give it ``pl.Series(s)``. Each struct can be read once (see Notes).
+
+        .. rubric:: Raises
+
+        What :meth:`fit_predict` raises for the same frame.
+
+        :class:`~polars_online.UnstableWarning`
+            A warning, not an error: issued by each call under
+            ``POLARS_ONLINE_WARN_UNSTABLE=1``.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
             spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             bank = po.ModelBank([spec])
-            structs = bank.fit_predict_arrow(df)       # one per spec, Arrow not polars
+            structs = bank.fit_predict_arrow(df)            # one per spec, as Arrow
             out = df.with_columns([pl.Series(s) for s in structs])
+            print(out["ridge"].struct.field("pred_y").count())
 
-        The frame still goes *in* as a polars frame. Raises what
-        :meth:`fit_predict` raises for it.
+        .. code-block:: text
 
-        .. warning::
-            The Arrow output -- this method, :meth:`predict_arrow` and
-            :class:`~polars_online.ArrowStruct` -- is considered **unstable**:
-            it may change in any release without that counting as a breaking
-            change. Under ``POLARS_ONLINE_WARN_UNSTABLE=1`` each call raises
-            :class:`~polars_online.UnstableWarning`.
+            396
+
+        .. rubric:: See also
+
+        - :meth:`fit_predict`, the same with the output added to the frame.
+        - :meth:`predict_arrow`, which predicts and learns nothing.
+
+        .. rubric:: Notes
+
+        A Polars ``Series`` crosses from the extension to Python through
+        Polars' private ``_export`` and ``_import``, an interface with no
+        promise of stability, which is why :class:`ModelBank` needs Polars
+        1.28.1 or later. The Arrow PyCapsule interface is a public standard, so a
+        consumer of it reads the struct directly. Reading a struct hands its
+        buffers to the consumer, so a second read raises ``ValueError``. The
+        struct's Arrow field carries its spec's name, which ``pl.Series``
+        gives the series it builds.
         """
         warn_unstable("ModelBank.fit_predict_arrow and the ArrowStruct it returns")
         self._check_frame(df, "fit_predict_arrow")
@@ -814,27 +1112,61 @@ class ModelBank:
         return out
 
     def predict_arrow(self, df: pl.DataFrame) -> list[ArrowStruct]:
-        """:meth:`predict`, with the output handed back as Arrow.
+        """Predict a frame's rows without learning, and return each spec's output as an Arrow array.
 
-        To :meth:`predict` what :meth:`fit_predict_arrow` is to
-        :meth:`fit_predict`: the same scoring, the same values, and the bank left
-        exactly as it was. See :meth:`fit_predict_arrow` for what a struct is and
-        why it can be read only once.
+        Use it to serve a bank's predictions to a library other than Polars.
+        It is to :meth:`predict` what :meth:`fit_predict_arrow` is to
+        :meth:`fit_predict`: the same predictions, the same values, and the
+        bank left exactly as it was.
+
+        .. warning::
+            The Arrow output (:meth:`fit_predict_arrow`, this method and
+            :class:`~polars_online.ArrowStruct`) is **unstable**: it may change
+            in any release without that counting as a breaking change. Under
+            ``POLARS_ONLINE_WARN_UNSTABLE=1``, each call issues
+            :class:`~polars_online.UnstableWarning`.
+
+        .. rubric:: Parameters
+
+        ``df``
+            The rows to predict, as a Polars ``DataFrame``, as :meth:`predict`
+            takes it.
+
+        .. rubric:: Returns
+
+        A list of :class:`~polars_online.ArrowStruct`, one per spec, as
+        :meth:`fit_predict_arrow` returns, each readable once.
+
+        .. rubric:: Raises
+
+        What :meth:`predict` raises for the same frame.
+
+        :class:`~polars_online.UnstableWarning`
+            A warning, not an error: issued by each call under
+            ``POLARS_ONLINE_WARN_UNSTABLE=1``.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
             spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             bank = po.ModelBank([spec])
-            bank.fit_predict(df)
-            structs = bank.predict_arrow(df)           # the bank unmoved
-            scored = df.with_columns([pl.Series(s) for s in structs])
+            bank.fit_predict(df.head(300))
+            structs = bank.predict_arrow(df.tail(100))      # the bank is not changed
+            served = df.tail(100).with_columns([pl.Series(s) for s in structs])
+            print(served["ridge"].struct.field("pred_y").count(), bank.rows_fed)
 
-        .. warning::
-            The Arrow output -- :meth:`fit_predict_arrow`, this method and
-            :class:`~polars_online.ArrowStruct` -- is considered **unstable**:
-            it may change in any release without that counting as a breaking
-            change. Under ``POLARS_ONLINE_WARN_UNSTABLE=1`` each call raises
-            :class:`~polars_online.UnstableWarning`.
+        .. code-block:: text
+
+            100 300
+
+        .. rubric:: See also
+
+        - :meth:`predict`, the same with the output added to the frame.
+        - :meth:`fit_predict_arrow`, which learns the rows too.
         """
         warn_unstable("ModelBank.predict_arrow and the ArrowStruct it returns")
         self._check_frame(df, "predict_arrow")
@@ -877,48 +1209,113 @@ class ModelBank:
         closed_groups: str | os.PathLike[str] | None = None,
         chunk_size: int | None = None,
     ) -> Iterator[pl.DataFrame]:
-        """:meth:`fit_predict` over a plan or an iterator of chunks, lazily.
+        """Learn a stream one chunk at a time, and yield each chunk with each spec's output.
 
-        Give it a ``LazyFrame`` and it does the chunking: the plan is read
-        ``chunk_size`` rows at a time (100,000 by default) and each chunk is fed as
-        the generator reaches it, so memory is the state plus a chunk however long
-        the plan's input. A ``DataFrame`` is one chunk, or ``chunk_size`` slices of
-        it when that is given. An iterator of frames is fed as it comes, and
-        ``chunk_size`` does not re-chunk it. Whatever
-        ``fit_predict`` raises for a chunk, this raises there; the chunks before it
-        have been learned from. Its own arguments are checked when it is called,
-        before a row moves: ``ValueError`` for ``chunk_size`` below 1, and for a
-        ``closed_groups`` whose extension names no format or beside specs none of
-        which has ``group_close``; ``FileNotFoundError`` for a ``closed_groups``
-        whose directory is not there.
+        Use it for a stream too large to hold in memory, when you want the
+        output one chunk at a time, as a generator. For a frame in memory, use
+        :meth:`fit_predict`. To keep only the state, use :meth:`fit`, and to
+        run the bank as a step of a query, use ``lf.online.fit_predict``.
 
-        A plan runs through polars' streaming engine, and an online model learns
-        in row order, so the order the engine delivers is part of the result. A
-        ``join``, ``group_by`` or ``unique`` without an order guarantee delivers a
-        different stream there than ``lf.collect()`` gives, and may differ between
-        runs: give a join ``maintain_order="left"``, a ``group_by``
-        ``maintain_order=True``, and sort after a ``unique``, or sort before the
-        bank. A plan with such a node raises
-        :class:`polars_online.OrderNotGuaranteedWarning`, naming the node.
+        .. rubric:: Parameters
+
+        ``batches``
+            The stream: a ``LazyFrame``, a ``DataFrame`` or an iterator of
+            ``DataFrame`` chunks. A query is run ``chunk_size`` rows at a
+            time, and each chunk is learned when the generator reaches it. A
+            frame is one chunk, or slices of ``chunk_size`` rows when
+            ``chunk_size`` is given. An iterator's frames are learned as they
+            come.
+        ``closed_groups``
+            A path to which to write the closed groups' rows, in the format
+            its extension names (see Notes). It takes a spec that closes
+            groups, under ``group_close``. ``None``, the default, leaves the
+            closed groups in the bank, for :meth:`closed_groups` to read.
+        ``chunk_size``
+            How many rows of a query or a frame make one chunk. ``None``, the
+            default, reads a query 100,000 rows at a time and takes a frame
+            whole. It does not cut an iterator's frames.
+
+        .. rubric:: Returns
+
+        A generator of ``DataFrame`` chunks, each the chunk's rows with one
+        output column added for each spec, as :meth:`fit_predict` returns
+        them.
+
+        .. rubric:: Raises
+
+        When called, before a row is read:
+
+        ``ValueError``
+            ``chunk_size`` is below 1, or ``closed_groups`` names no format
+            by its extension, or names a file beside specs none of which sets
+            ``group_close``, or names a CSV file while the closed rows hold a
+            nested column that CSV cannot hold.
+        ``FileNotFoundError``
+            ``closed_groups`` names a file in a folder that does not exist.
+        :class:`~polars_online.OrderNotGuaranteedWarning`
+            A warning, not an error: issued when the query holds a step that
+            does not keep row order, naming the step (see Notes).
+
+        As the generator runs:
+
+        ``TypeError``
+            An iterator yields something other than a ``DataFrame``.
+        Any error :meth:`fit_predict` raises
+            For the chunk where it happens. The chunks before it have been
+            learned.
+        :class:`~polars_online.ConsumedSourceWarning`
+            A warning, not an error: the query gave no rows, and it reads a
+            source written in Python, which may give its rows only once.
+
+        .. rubric:: Examples
+
+        This code reads ``lf`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
             spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             bank = po.ModelBank([spec])
             for out in bank.fit_predict_batches(lf, chunk_size=100):
-                pass    # each `out` is a chunk plus the struct columns
+                print(out.height, out["ridge"].struct.field("pred_y").count())   # each chunk
 
-        ``closed_groups``, a path, drains the bank's closed groups after every chunk,
-        so the queue is empty whenever a chunk is handed on, and writes what it
-        drained to that file, in the format its extension names, when the chunks stop.
-        A bank's queue is bounded only by draining it: without this, or
-        :meth:`closed_groups` between chunks, every closed group waits in the bank,
-        and :meth:`save` writes them all. The file is written however the chunks stop
-        -- at their end, at a ``break``, or at an error -- because a drained row has
-        left the bank, and the file is then the only place it is. The file and the
-        bank's queue together always hold every group that closed. A CSV holds each
-        list column, such as ``coef``, as JSON text, the bytes the command line
-        writes; read it back with ``str.json_decode``.
+        .. code-block:: text
+
+            100 96
+            100 100
+            100 100
+            100 100
+
+        .. rubric:: See also
+
+        - :meth:`fit_predict`, the same over one frame.
+        - :meth:`fit`, which learns the same rows and keeps no output.
+        - :meth:`closed_groups`, which reads the closed groups between chunks.
+        - ``lf.online.fit_predict``, the bank as a step of a query.
+
+        .. rubric:: Notes
+
+        Memory holds the state and one chunk, however long the stream.
+
+        A model learns rows in their order, so the order in which Polars
+        delivers a query's rows is part of the result. A ``join``,
+        ``group_by`` or ``unique`` that does not keep order may deliver the
+        rows in another order than the query's whole result has, and in
+        another order from one run to the next. Give a join
+        ``maintain_order="left"``, a ``group_by`` ``maintain_order=True``,
+        and sort after a ``unique``, or sort before the bank.
+
+        Under ``closed_groups``, the bank's closed groups are read out after
+        every chunk, so none waits in the bank when a chunk is handed on,
+        and the rows read out are written to the file when the chunks stop.
+        Without it, or a call to :meth:`closed_groups` between chunks, every
+        closed group waits in the bank, and :meth:`save` writes them all. The
+        file is written however the chunks stop, at their end, at a
+        ``break`` or at an error, since a row read out of the bank is then in
+        no other place. The file and the bank together always hold every
+        group that closed. A CSV file holds each list column, such as
+        ``coef``, as JSON text, the bytes the command line writes. Read it
+        back with Polars' ``str.json_decode``.
         """
         return self._batches(batches, closed_groups, chunk_size, "fit_predict_batches")
 
@@ -1072,57 +1469,106 @@ class ModelBank:
         closed_groups: str | os.PathLike[str] | None = None,
         chunk_size: int | None = None,
     ) -> None:
-        """Learn from every row and keep nothing: the run whose product is the state.
+        """Learn every row of a query, a frame or an iterator of frames, and keep only the state.
 
-        **It goes on from the state the bank holds**, as scikit-learn's
-        ``partial_fit`` does, not as its ``fit``, which starts over. Two calls
-        over two days of rows leave the state one call over both would have,
-        and :meth:`fit_predict` after it goes on from there too. A bank that
-        starts with nothing learned is a new :class:`ModelBank`.
+        Use it when the product of a run is the state, such as a bank you
+        will save and serve, or coefficients you will read, and the
+        predictions on the way are not needed. It goes on from the state the
+        bank holds, as scikit-learn's ``partial_fit`` does, not as its
+        ``fit``, which starts over: for a bank that starts with nothing
+        learned, make a new :class:`ModelBank`. To keep the output too, use
+        :meth:`fit_predict_batches`.
 
-        :meth:`fit_predict_batches` with the output dropped as it comes, so no
-        chunk's result is ever held and no frame is assembled from them. An
-        accumulator-only spec emits ``weight_sum`` a row and nothing else,
-        which over a billion rows is gigabytes written so they can be deleted.
-        A fit whose product is its coefficients need not keep its predictions
-        either.
+        .. rubric:: Parameters
 
-        The plan runs through polars' streaming engine, whose row order for a
-        ``join``, ``group_by`` or ``unique`` without an order guarantee is not
-        the order ``lf.collect()`` gives. An online model learns in row order.
-        Give a join ``maintain_order="left"`` or sort before the bank. Such a
-        plan raises :class:`polars_online.OrderNotGuaranteedWarning` naming the
-        node (:meth:`fit_predict_batches` says more).
+        ``batches``
+            The stream: a ``LazyFrame``, a ``DataFrame`` or an iterator of
+            ``DataFrame`` chunks, as :meth:`fit_predict_batches` takes it.
+        ``closed_groups``
+            A path to which to write the closed groups' rows, as
+            :meth:`fit_predict_batches` takes it. ``None``, the default,
+            leaves them in the bank.
+        ``chunk_size``
+            How many rows of a query or a frame make one chunk, as
+            :meth:`fit_predict_batches` takes it. ``None``, the default, reads
+            a query 100,000 rows at a time and takes a frame whole.
 
-        **An order-free fit is spared the warning, in this method alone.** A
-        fit whose every spec is an accumulator with no decay -- ``ewridge`` or
-        ``rls`` at ``lam=1.0`` or ``half_life=inf``, with no ``window_size``,
-        no session and no drift reset -- reaches the same coefficients
-        whatever order the rows arrived in, because its sums commute. Measured
-        to rounding, not to the bit: 6.7e-16 for ``ewridge`` and 1.4e-15 for
-        ``rls`` over 200 rows. Since :meth:`fit` returns nothing and keeps
-        only the state, the order genuinely does not matter there, and no
-        warning is raised. The warning stays for :meth:`fit_predict_batches`
-        over the same specs, whose predictions are out-of-sample and so move
-        with the order (by up to 0.087 for ``ewridge`` on those same rows). It
-        stays for every model whose update does not commute: ``sgd``, ``pa``,
-        ``ftrl``, ``quantile`` and a reweighting ``huber`` differ materially
-        with no decay at all. And it stays for a model that selects by an
-        out-of-sample error, as ``lasso`` does its penalty.
+        .. rubric:: Raises
+
+        What :meth:`fit_predict_batches` raises, with two differences:
+
+        - :class:`~polars_online.OrderNotGuaranteedWarning` is not issued
+          when every spec reaches the same state in any row order (see
+          Notes);
+        - a spec whose ``embargo`` is shorter than its formula target's
+          longest look-ahead ``window_size`` is not refused: ``fit`` learns
+          each of its rows once the window the row's target reads has
+          closed, while :meth:`fit_predict`, which would give predictions
+          for them, refuses it.
+
+        .. rubric:: Examples
+
+        This code reads ``lf`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
             spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             bank = po.ModelBank([spec])
-            bank.fit(lf, chunk_size=100)
+            bank.fit(lf, chunk_size=100)        # learn every row, keep no output
             bank.save("bank.state")
+            print(bank.rows_fed)
 
-        The state this leaves is the state :meth:`fit_predict_batches` leaves
-        over the same rows, byte for byte. What it saves is the result, not
-        the work: each row is still predicted before it is learned from,
-        because that is what makes the fit out-of-sample. The output columns
-        are still built before they are dropped. It raises what
-        :meth:`fit_predict_batches` raises.
+        .. code-block:: text
+
+            400
+
+        .. rubric:: See also
+
+        - :meth:`fit_predict_batches`, the same run with its output yielded.
+        - :meth:`save`, which writes the state the run leaves.
+
+        .. rubric:: Notes
+
+        ``fit`` is :meth:`fit_predict_batches` with each chunk's output
+        dropped as it comes, so no output is held and no frame is assembled
+        from the chunks. Over a long stream that saves the memory the output
+        would take. A spec whose output on each row is ``weight_sum`` alone
+        still writes gigabytes over a billion rows. A fit whose product is
+        its coefficients has no use for its predictions. The state ``fit`` leaves is
+        the state :meth:`fit_predict_batches` leaves over the same rows, byte
+        for byte. Each row is still predicted before it is learned, and the
+        output columns are still built before they are dropped. Two calls
+        over two days of rows leave the state one call over both would.
+
+        **A fit whose specs reach the same state in any row order is not
+        warned about row order.** Such a spec is an ``ewridge`` or ``rls``
+        with no decay (``lam=1.0`` or ``half_life=float("inf")``) and none
+        of the settings that read the row order, which are:
+
+        - a hard window, a session, a weight, an embargo or ``label_clock``;
+        - a drift reset, a ``coef`` cadence or a formula target;
+        - ``gram_block_rows``, ``restart_after_step_back`` or ``group_close``;
+        - a ``ridge_scale`` other than ``"mean"``, or a ``target_gaps`` other
+          than ``"own_rows"``;
+        - ``conformal``, ``long_half_life``, ``session_shrink`` or
+          ``emit_averaged``;
+        - any diagnostic but ``emit_drift``, ``emit_clocks`` and
+          ``emit_error_inflation``;
+        - any other setting not known to keep the state free of the row
+          order.
+
+        Such a spec's running sums are the same whatever order the rows are
+        added in, to rounding. Measured
+        over 200 rows, the coefficients differed by at most 6.7e-16 for
+        ``ewridge`` and 1.4e-15 for ``rls``. The warning stays for
+        :meth:`fit_predict_batches` over the same specs, whose predictions are
+        out-of-sample and so move with the order: by up to 0.087 for
+        ``ewridge`` on those rows. It stays for every model whose fit
+        depends on the order it learns rows (``sgd``, ``pa``, ``ftrl``,
+        ``quantile`` and a reweighting ``huber`` differ materially with no decay at all), and
+        for a model that chooses by its out-of-sample error, as ``lasso``
+        chooses its penalty.
         """
         # A formula target's window need not fit the embargo here: the run
         # keeps the state alone, and each row is learned once its window
@@ -1135,64 +1581,132 @@ class ModelBank:
     def coef(
         self, spec: str | int | None = None, group: str | Iterable[str | None] | None = None
     ) -> pl.DataFrame:
-        """The coefficients behind every fit: one row per (spec, group, instance,
-        position).
+        """Return the coefficients of every fit the bank holds, one row per coefficient.
 
-        A bank loaded from a state file answers "what are the betas?" without a row of
-        data. Like :meth:`last_row`, :meth:`summary` and :meth:`describe`, it takes
-        every spec by default and leads with a ``spec`` column, so the frames of
-        several banks stack with a plain ``concat``. Sweeping this way skips a spec
-        that has no coefficients (an ``ew_cov``, which writes statistics, or a
-        ``seqtest``, which writes evidence), since the question was "the coefficients
-        in this bank" and those have none. Naming one of them still raises, because
-        then the question was about that spec. A bank with no coefficients at all
-        gives an empty frame.
+        Use it to read the coefficients from a bank, or from one loaded from a
+        state file, without a row of data. For the coefficients on each row of a
+        stream, read the ``coef`` field of :meth:`fit_predict`'s output, and for
+        the sums behind a fit, :meth:`gram`.
 
-        The values are the fit after the last row each stream learned from, which the
-        next row's ``pred`` is computed from: what the output's ``coef`` field shows on
-        that row where it is written there. The columns:
+        .. rubric:: Parameters
+
+        ``spec``
+            The spec to read, by name or by position. The default, ``None``,
+            reads every spec and skips each one that has no coefficients (see
+            Raises). A bank whose specs have no coefficients at all gives an
+            empty frame, with the same columns.
+        ``group``
+            The group to read: one group key, as :meth:`groups` reports it, or a
+            list of keys, with ``None`` in the list for the null group. The
+            default, ``None``, reads every group. A key the bank has never seen
+            gives no rows.
+
+        .. rubric:: Returns
+
+        A ``DataFrame`` with one row per (spec, group, instance, position), in
+        spec order, then in :meth:`groups`' order. It leads with ``spec``, as
+        :meth:`last_row`, :meth:`summary` and :meth:`describe` do. Every frame
+        it returns has the same columns, so the frames of several banks stack
+        with a plain ``pl.concat``. The values are the fit after the last row
+        each model learned, which the next row's
+        ``pred_<t>`` is computed from. That is the fit the output's ``coef`` field
+        shows on the rows where it is written. The columns:
 
         ``spec``, ``group``, ``instance``
-            The spec's name; the group key as :meth:`groups` reports it; the decay
-            instance's field suffix (``"@h500"``, or ``""`` for a single one).
+            The spec's name, the group key as :meth:`groups` reports it, and the
+            instance's field suffix (``"@h500"``, or ``""`` for a spec with one
+            instance). An instance is the part of a model that fits one
+            half-life of a grid.
         ``half_life``, ``lam``
-            The instance's decay, as :func:`polars_online.spec.output_index` gives it:
-            the half-life in clock units (``inf`` for no decay) or the ``lam``, the
-            other null.
+            The instance's decay, as :func:`polars_online.spec.output_index`
+            gives it: the half-life in clock units (``inf`` for no decay), or
+            the ``lam``. The other one is null.
         ``weight_sum``
-            The accumulated weight behind the fit, what the next row's ``weight_sum`` field
-            reports. The solve schedule decides when a stream first solves, not
-            ``min_weight``. ``pred`` waits for ``min_weight`` and ``coef`` does not,
-            so a fit with ``weight_sum`` below it is over fewer rows than the spec asks
-            for. A solve over fewer rows than terms is a jittered one, counted by
-            :meth:`solve_failures`.
-        ``position``, ``target``, ``ridge``, ``feature_set``, ``penalty``, ``term``
-            :func:`polars_online.spec.coef_index`'s columns: ``position`` indexes the
-            flat ``coef`` list, ``term`` is ``"intercept"``, a feature name, or
-            ``"level"`` / ``"trend"`` for ``holt``.
+            The accumulated weight behind the fit, which the next row's
+            ``weight_sum`` field reports.
+        ``position``, ``target``, ``ridge``, ``feature_set``, ``penalty``
+            :func:`polars_online.spec.coef_index`'s columns: ``position``
+            indexes the flat ``coef`` list, and the others name the
+            slot it belongs to.
         ``cluster``, ``state``, ``class``
-            ``coef_index``'s too, before ``term``: the ``kmeans`` centre, the
-            ``hmm`` state or the ``ew_class`` class a position belongs to, and
-            null for every other kind.
+            ``coef_index``'s columns too: the ``kmeans`` center, the ``hmm``
+            state or the ``ew_class`` class a position belongs to. Null for
+            every other model.
+        ``term``
+            ``"intercept"``, a feature's name, ``"level"`` or ``"trend"`` for
+            ``holt``, or ``"rho"`` for ``deco``.
         ``coef``
-            The value, in the features' original units; null until the stream's first
-            solve, as ``coef`` is on those rows.
+            The coefficient, in the features' original units. Null until the
+            model's first solve, and null wherever the model reports no
+            number, as the ``coef`` field is on those rows: a fit withheld as
+            too ill-conditioned to keep a digit, or an ``ew_class`` class no
+            row has carried yet.
+
+        .. rubric:: Raises
+
+        ``KeyError``
+            ``spec`` is a name the bank does not have.
+        ``IndexError``
+            ``spec`` is a position the bank does not have.
+        ``TypeError``
+            ``group`` is not a str, a list of them with ``None`` allowed, or
+            ``None``.
+        ``ValueError``
+            ``spec`` names a spec whose model has no coefficients to index:
+            ``ew_cov``, which gives statistics; ``seqtest``, which gives
+            evidence; ``micro``, whose number of clusters varies; and
+            ``marginal``, ``rcov``, ``corrchange``, ``bocpd`` and ``audit``.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
-            bank = po.ModelBank.load("bank.state")
-            betas = bank.coef()                       # every spec that has coefficients
-            just_one = bank.coef("ridge")             # or name one
-            one_ridge = betas.filter(pl.col("ridge") == 0.1)   # one (ridge, set) slot of a grid
-            wide = one_ridge.pivot("term", index=["group", "instance"], values="coef")
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = po.ModelBank([spec])
+            bank.fit(df)
+            coefs = bank.coef()                                 # one row per coefficient
+            for term, value in coefs.select("term", "coef").iter_rows():
+                print(f"{term}: {value:.2f}")                   # the truth: 1, 2 and -1
 
+        .. code-block:: text
 
-        ``spec`` and ``group`` are as for :meth:`gram`: ``KeyError`` / ``IndexError``
-        for a spec the bank has not got, and a group it has never seen gives an empty
-        frame with the same columns. Groups come in :meth:`groups`' order.
-        ``ValueError`` for a named ``ew_cov`` spec, which
-        writes statistics, not coefficients, and for a named ``seqtest`` spec, which
-        writes evidence.
+            intercept: 0.99
+            x0: 1.97
+            x1: -1.00
+
+        To read one slot of a grid, filter on its columns, such as
+        ``coefs.filter(pl.col("ridge") == 0.1)``. To lay the terms out as
+        columns, pivot the frame on every column that tells two fits apart:
+        ``pivot("term", index=["spec", "group", "instance", "target",
+        "ridge", "feature_set", "penalty", "cluster", "state", "class"],
+        values="coef")``.
+
+        .. rubric:: See also
+
+        - :func:`polars_online.spec.coef_index`, the layout of a spec's
+          ``coef`` list.
+        - :meth:`last_row`, the whole output of each model's last row.
+        - :meth:`gram`, the Gram a fit is solved from.
+        - :meth:`solve_failures`, the solves that needed help.
+
+        .. rubric:: Notes
+
+        ``coef`` can be filled before ``pred_<t>`` is. ``pred_<t>`` waits for
+        ``min_weight``, while ``coef`` reads each solve the model has run, and
+        a model's solve schedule can run one sooner. For example, an
+        ``ewridge`` with three coefficients, ``min_weight=10``, a half-life of
+        100 and the default schedule carries coefficients on its third row,
+        while its ``weight_sum`` reads near 2. :func:`polars_online.spec.ewridge`
+        gives its schedule (``solve_every``). A coefficient read while ``weight_sum`` is below
+        ``min_weight`` comes from fewer rows than the spec asks of a
+        prediction.
+
+        Sweeping every spec skips the ones with no coefficients, since the
+        question was about the coefficients in the bank. Naming one of them
+        still raises, since then the question was about that spec.
         """
         names = self._native.spec_names()
         keys = _group_keys(group, "ModelBank.coef")
@@ -1274,38 +1788,100 @@ class ModelBank:
     def last_row(
         self, spec: str | int | None = None, group: str | Iterable[str | None] | None = None
     ) -> pl.DataFrame:
-        """The output struct as it stood on the last row each stream learned from: one
-        row per (spec, group).
+        """Return each model's output on the last row it did not skip, one row per spec and group.
 
-        It is the row :meth:`fit_predict` reported for that row, field for
-        field, unnested after ``spec`` and ``group``: ``pred``, ``resid``,
-        ``sigma``, the metrics, the residual quantiles, ``weight_sum``, and
-        ``coef`` when the row carried it. A group's last accepted row in a chunk does by default;
-        under ``coef_every`` or ``max_rows_between_coefs`` only a row on the
-        cadence does. :meth:`coef` has the coefficients whichever row was last. It travels
-        with the state, so a bank loaded from a file says how each model was
-        doing without its output frame, and a directory of fits compares
-        without keeping the last row of every output:
+        Use it to see how each model was doing at the end of a stream, from the
+        bank or from one loaded from a state file, without keeping the output
+        frame. For the coefficients alone, whichever row was last, use
+        :meth:`coef`, and for what each model was fed, :meth:`summary`.
+
+        .. rubric:: Parameters
+
+        ``spec``
+            The spec to read, by name or by position. The default, ``None``,
+            reads every spec.
+        ``group``
+            The group to read: one group key, as :meth:`groups` reports it, or a
+            list of keys, with ``None`` in the list for the null group. The
+            default, ``None``, reads every group. A key the bank has never seen
+            gives no rows.
+
+        .. rubric:: Returns
+
+        A ``DataFrame`` with ``spec`` and ``group``, then the row
+        :meth:`fit_predict` reported for that row, field for field, unnested:
+        ``pred_<t>``, ``resid_<t>``, ``weight_sum``, ``settled_frac``,
+        ``withheld_reason``, the diagnostics' fields, and ``coef`` where the
+        row carried it. Rows come in
+        spec order, then in :meth:`groups`' order. Specs with different fields
+        are stacked into one frame, so a field a spec does not write is null
+        on its rows. The row is the last one the model predicted, whether or
+        not it learned from it: a row of weight 0 or with a null target
+        replaces it, and a skipped row does not. A group whose every row so
+        far was skipped is a row of nulls.
+
+        ``coef`` is on the row where the output carried it: by default each
+        group's last row in a chunk that was not skipped, and under ``coef_every`` or
+        ``max_rows_between_coefs`` only a row on that schedule. So it can be
+        null here where :meth:`coef` has the fit.
+
+        .. rubric:: Raises
+
+        ``KeyError``
+            ``spec`` is a name the bank does not have.
+        ``IndexError``
+            ``spec`` is a position the bank does not have.
+        ``TypeError``
+            ``group`` is not a str, a list of them with ``None`` allowed, or
+            ``None``.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
+            spec = po.spec.ewridge(
+                "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0, group="stock_id"
+            )
+            bank = po.ModelBank([spec])
+            bank.fit(df)
+            last = bank.last_row()                              # one row per (spec, group)
+            for group, pred in last.select("group", "pred_y").iter_rows():
+                print(f"{group}: {pred:.2f}")                   # each stock's last prediction
+
+        .. code-block:: text
+
+            b0: 4.72
+            b1: -0.11
+            b2: 2.92
+            b3: 1.80
+
+        To compare saved banks, stack their last rows, each marked with its
+        file:
+
+        .. code-block:: python
+
+            bank.save("bank.state")                             # one saved bank; list more
             files = ["bank.state"]
             table = pl.concat(
                 [po.ModelBank.load(f).last_row().with_columns(file=pl.lit(f)) for f in files],
                 how="diagonal_relaxed",
             )
 
-        ``spec``, a name or a position, narrows the table to one spec
-        (``KeyError`` / ``IndexError`` for one the bank has not got, as
-        :meth:`groups`). ``group`` narrows it to one group's key, or to a list
-        of keys with ``None`` among them for the null group (``group=None`` is
-        every group), and a key the bank has never seen gives nothing. Groups
-        come in :meth:`groups`' order. Specs with different fields
-        are stacked ``diagonal_relaxed``, so a field one spec has not got is
-        null on its rows. A group with no learned row yet (every row skipped
-        so far) is a row of nulls.
-        :meth:`predict` does not move it, and a chunk that ends in skipped
-        rows leaves the row before them.
+        .. rubric:: See also
+
+        - :meth:`coef`, the coefficients of each fit, one row per
+          coefficient.
+        - :meth:`summary`, what each model was fed.
+        - :meth:`fit_predict`, whose output fields this row repeats.
+
+        .. rubric:: Notes
+
+        The row travels with the state, so a bank loaded from a file gives the
+        row its saved bank would. :meth:`predict` does not move it, and a chunk
+        that ends in skipped rows leaves the row before them.
         """
         names = self._native.spec_names()
         picked = (
@@ -1329,114 +1905,186 @@ class ModelBank:
     def summary(
         self, spec: str | int | None = None, group: str | Iterable[str | None] | None = None
     ) -> pl.DataFrame:
-        """What each stream has been fed: one row per (spec, group).
+        """Return what each model has been fed, one row per spec and group.
 
-        Counts and ranges over every row routed to the group since its state
-        began, undecayed, so they say what the model was trained on rather
-        than what it still remembers. They are kept in the state file, so a
-        bank loaded from a file says it too. The columns:
+        Use it after a run to see how many rows each model learned, skipped or
+        reset on, and whether it is warmed up, from the bank or from one
+        loaded from a state file. For each input column's statistics use
+        :meth:`describe`, and for findings about the data, :meth:`check`.
+
+        .. rubric:: Parameters
+
+        ``spec``
+            The spec to read, by name or by position. The default, ``None``,
+            reads every spec.
+        ``group``
+            The group to read: one group key, as :meth:`groups` reports it, or a
+            list of keys, with ``None`` in the list for the null group. The
+            default, ``None``, reads every group. A key the bank has never seen
+            gives no rows.
+
+        .. rubric:: Returns
+
+        A ``DataFrame`` with one row per (spec, group), in spec order, then in
+        :meth:`groups`' order. The counts and ranges cover every row routed to
+        the group since its state began, undecayed, so they say what the model
+        learned from, not what it still remembers. Every count is an
+        ``Int64``. The columns:
 
         ``spec``, ``group``
             As :meth:`groups` reports them.
         ``rows_fed``
-            Rows routed to the group, skipped or not, as :meth:`groups` counts them.
+            The rows routed to the group, skipped or not, as :meth:`groups`
+            counts them.
         ``rows_processed``
-            Rows the models saw: every feature and the weight usable.
+            The rows the models saw: every feature and the weight usable.
         ``rows_skipped``
-            ``rows_fed - rows_processed``: a null, NaN, infinite or
-            out-of-bound feature or weight.
+            ``rows_fed - rows_processed``: the rows with a null, NaN, infinite
+            or out-of-bound feature or weight.
         ``rows_learned``
-            Processed rows with a positive weight and, for a model with
-            targets, at least one usable target -- a target that is a window
-            expression counted when the row is released with a value, once
-            its window has closed.
+            The processed rows with a positive weight and, for a model with
+            targets, at least one usable target. A formula target's row counts
+            when it is released with a value, once its window has closed.
         ``rows_zero_weight``
-            Processed rows with weight 0 (the clock moved; nothing learned).
+            The processed rows with weight 0: the clock moved, and nothing was
+            learned.
         ``weight_sum``
-            The sum of the processed rows' weights (1 per row without a
-            weight column).
+            The sum of the processed rows' weights, 1 for a row without a
+            weight column. It is undecayed, so it is not the output's
+            ``weight_sum`` field.
         ``clock_min``, ``clock_max``, ``clock_last``
-            The clock range fed and the last value, in the clock column's
-            own dtype, exactly, as :meth:`groups` gives ``clock_last``; null
-            on a row-count clock.
+            The range of the clock fed, and its last value, exactly, in the
+            clock column's own dtype, as :meth:`groups` gives ``clock_last``.
+            Null for a spec without a clock.
         ``session_changes``
-            Rows whose session differed from the previous row's.
+            The rows whose session differed from the row before.
         ``clock_backwards``
-            Rows whose clock fell below the previous row's within a session
-            (what ``restart_after_step_back`` decided about).
+            The rows whose clock fell below the row before within a session,
+            which ``restart_after_step_back`` decided about.
         ``resets``
-            Rows at which ``session_gap = "reset"`` or
-            ``restart_after_step_back`` restarted the stream.
+            The rows at which ``session_gap = "reset"`` or
+            ``restart_after_step_back`` reset the model.
         ``solve_failures``
-            The solves that needed jitter or kept the previous fit, what
+            The solves that needed jitter or kept the previous fit, which
             :meth:`solve_failures` reports.
         ``refit_given_up``
-            The targets of a ``huber`` or ``sgd(loss="huber")`` stream that
-            gave up the refit of their first rows to the spec's
-            ``refit_budget``; 0 on every other spec.
+            The targets whose refit of their first rows was given up, past the
+            spec's ``refit_budget`` or past the cap on how long its buffer of
+            rows ages. Four models refit their first rows and count it:
+            ``huber``, ``quantile``, ``sgd(loss="huber")``, and a ``marginal``
+            whose bins refit (``bin_refit_rows``). 0 on every other spec.
         ``labels_missing``, ``labels_dropped``
-            Under ``label_clock``, the rows learned from none of their labels:
-            those accepted with a null label time, and those held for their
-            label times and dropped, by ``held_overflow="drop_oldest"`` or by
-            a clock that restarted the stream; 0 on every other spec.
-        ``settled_frac``, ``error_inflation``
-            The warm-up readings of the stream's first instance after the
-            last row (`docs/DIAGNOSTICS.md, Is it ready?
-            <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`__).
-            ``settled_frac`` is how full the decay window is: the fraction
-            the next row's ``settled_frac`` reads, which under ``embargo``
-            counts the clock the held rows have covered too. It reads the
-            model's own decay, ``half_life``, as ``min_settled_frac`` and the
-            readiness notices do, not a second memory the model keeps beside
-            it, such as ``holt``'s trend: the diagnostics wait for the
-            longest of those instead (`docs/DIAGNOSTICS.md, One memory per
-            diagnostic
-            <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#one-memory-per-diagnostic-run-once-or-windowed>`__).
-            ``error_inflation`` is the largest noise-gate ratio over its
-            slots: ``ewridge``'s ``sqrt(1 + edf / n_kish)``, ``rls``'s
-            ``sqrt(1 + k_total / n_kish)`` and ``lasso``'s
-            ``sqrt(1 + df / n_kish)``. ``kalman``'s gate reads each row's own
-            value, so its reading is the gate's mean field over the design,
-            ``sqrt(1 + sum_i P_ii E[z_i^2] / R)``. Null where the model has
-            no such reading.
+            Under ``label_clock``, the rows whose targets were never learned.
+            ``labels_missing`` counts the rows not skipped whose
+            ``label_clock`` is null.
+            ``labels_dropped`` counts the rows held for their ``label_clock``
+            time and dropped, by ``held_overflow="drop_oldest"`` or by a clock
+            that reset the model. 0 on every other spec.
+        ``settled_frac``
+            How far the first instance (the part of the model that fits the
+            spec's first half-life) has come toward its steady state under
+            decay, after the last row: the fraction the next row's ``settled_frac`` field
+            reads. Under ``embargo`` it counts the clock the held rows have
+            covered too. Null where the model has no such reading.
         ``weight_sum_settled``
-            The weight the stream settles at, read from where it stands:
-            ``(W - w1 * (1 - s)) / s``. ``W`` is the accumulated weight a next
-            row would report as ``weight_sum``, ``w1`` a row's weight (1
-            without a weight column, the rows' mean with one), and ``s`` the
-            fraction the learned rows have settled. That is ``settled_frac``
-            but under ``embargo``, where the held rows' clock is left out:
-            ``W`` has neither decayed by nor accumulated them, and the
-            projection pairs a weight with the clock it has covered.
-            On a regular stream -- rows ``d`` apart, of one weight --
-            it is the ceiling ``1 / (1 - 2 ** (-d / half_life))`` times that
-            weight exactly, from the second row on. It says, before the stream
-            gets there, whether a ``min_weight`` can be met. Exactly 0 where
-            ``W - w1 * (1 - s)`` is within its own rounding: a stream whose
-            weight is still its first row's alone, which then reads a few
-            1e-16 above or below 0 by the platform's math library. The
-            rounding allowed is ``8 * 2**-53`` times the rows read times
-            ``W + w1``. Null after a single row, with no decay, and under
-            ``window_size``.
+            The weight the model's ``weight_sum`` tops out at, projected from
+            where it stands (see Notes). It says, before the model gets there,
+            whether a ``min_weight`` can be met. Null after a single row, with
+            no decay, and under ``window_size``.
+        ``error_inflation``
+            The largest ratio the ``max_error_inflation`` gate checks, over the
+            first instance's slots (see Notes). Null where the model has no
+            such gate.
         ``support_coef_min``, ``support_coef_min_feature``, ``n_coef``
             The smallest coefficient's data share, the feature it belongs to,
-            and the coefficients per target, likewise.
-
-        Every count is an ``Int64``, as in every frame and field of the library.
+            and the number of coefficients a target, read from the model's
+            first instance after the last row, as ``settled_frac`` and
+            ``error_inflation`` are.
 
         An ``audit`` (:func:`polars_online.spec.audit`) reads every row and
-        learns from none: its ``rows_processed`` is ``rows_fed`` and its
-        ``rows_skipped`` 0, and its ``rows_learned`` and ``n_coef`` are null.
-        What it counted is :meth:`audit`'s.
+        learns from none: its ``rows_processed`` is ``rows_fed``, its
+        ``rows_skipped`` is 0, and its ``rows_learned`` and ``n_coef`` are
+        null. What it counted is :meth:`audit`'s.
 
-        ``spec`` narrows to one spec (``KeyError`` / ``IndexError`` for one
-        the bank has not got), ``group`` to one group's key or a list of keys,
-        ``None`` among them for the null group (``group=None`` is every
-        group); a key never seen gives nothing. Groups come in
-        :meth:`groups`' order, and a bank whose specs read clocks of
-        different dtypes is read one spec at a time, as :meth:`groups` is.
-        :meth:`predict` moves none of it, and feeding the same rows in one
-        chunk or a thousand gives the same numbers to the bit.
+        .. rubric:: Raises
+
+        ``KeyError``
+            ``spec`` is a name the bank does not have.
+        ``IndexError``
+            ``spec`` is a position the bank does not have.
+        ``TypeError``
+            ``group`` is not a str, a list of them with ``None`` allowed, or
+            ``None``.
+        ``ValueError``
+            ``spec`` is ``None`` and two specs read clocks of different
+            dtypes, which one clock column cannot hold. Read them one spec at a
+            time, as for :meth:`groups`.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
+
+        .. code-block:: python
+
+            spec = po.spec.ewridge(
+                "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0,
+                clock="t", gap_cap=300.0,
+            )
+            bank = po.ModelBank([spec])
+            holes = pl.when(pl.col("t") % 10 == 0).then(None).otherwise(pl.col("x1"))
+            bank.fit(df.with_columns(x1=holes))                 # x1 null on every tenth row
+            row = bank.summary().row(0, named=True)             # one row: the spec has no groups
+            print(row["rows_fed"], row["rows_processed"], row["rows_skipped"], row["rows_learned"])
+
+        .. code-block:: text
+
+            400 360 40 360
+
+        .. rubric:: See also
+
+        - :meth:`describe`, each input column's statistics.
+        - :meth:`check`, findings about the data, read from this summary and
+          more.
+        - :meth:`solve_failures`, one of these columns alone.
+        - `Is it ready?
+          <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`__,
+          on ``settled_frac``, ``error_inflation`` and ``weight_sum_settled``.
+
+        .. rubric:: Notes
+
+        The counts are kept in the state file, so a bank loaded from a file
+        gives them too. :meth:`predict` moves none of them, and feeding the
+        same rows in one chunk or a thousand gives the same numbers to the
+        bit.
+
+        ``settled_frac`` reads the model's own decay, ``half_life``, as
+        ``min_settled_frac`` and the readiness warnings do. It does not read a
+        second memory the model keeps beside it, such as ``holt``'s trend: the
+        diagnostics wait for the longest of those instead (`One memory per
+        diagnostic
+        <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#one-memory-per-diagnostic-run-once-or-windowed>`__).
+
+        ``error_inflation`` is ``ewridge``'s ``sqrt(1 + edf / n_kish)``,
+        ``rls``'s ``sqrt(1 + k_total / n_kish)`` and ``lasso``'s
+        ``sqrt(1 + df / n_kish)``. ``kalman``'s gate reads each row's own
+        value, so its reading here is the gate's mean over the design,
+        ``sqrt(1 + sum_i P_ii E[z_i^2] / R)``.
+
+        ``weight_sum_settled`` is ``(W - w1 * (1 - s)) / s``. ``W`` is the
+        accumulated weight a next row would report as ``weight_sum``, ``w1`` a
+        row's weight (1 without a weight column, the rows' mean with one), and
+        ``s`` how far the learned rows have come toward their steady state.
+        ``s`` is ``settled_frac`` except under ``embargo``, where the held rows' clock
+        is left out: ``W`` has neither decayed by nor accumulated them, and the
+        projection pairs a weight with the clock it has covered. On a regular
+        stream, rows ``d`` apart of one weight, it is exactly the ceiling
+        ``1 / (1 - 2 ** (-d / half_life))`` times that weight, from the second
+        row on. It is exactly 0 where ``W - w1 * (1 - s)`` is within its own
+        rounding: a model whose weight is still its first row's alone, which
+        would otherwise read a few 1e-16 above or below 0, by the platform's
+        math library. The rounding allowed is ``8 * 2**-53`` times the rows
+        read times ``W + w1``.
         """
         n = len(self._native.spec_names())
         picked = range(n) if spec is None else [self._spec_index(spec, "ModelBank.summary")]
@@ -1445,28 +2093,89 @@ class ModelBank:
     def describe(
         self, spec: str | int | None = None, group: str | Iterable[str | None] | None = None
     ) -> pl.DataFrame:
-        """Per-column statistics of what each stream has been fed: one row per (spec,
-        group, input column), in spec order -- features, then targets, then the weight
-        column.
+        """Return statistics of each input column each model was fed, one row per column.
 
+        Use it to see the counts and moments of the features, targets and
+        weight each model was fed, from the bank or from one loaded from a
+        state file. For each model's row counts use :meth:`summary`, and for
+        findings about the data, :meth:`check`.
+
+        .. rubric:: Parameters
+
+        ``spec``
+            The spec to read, by name or by position. The default, ``None``,
+            reads every spec.
+        ``group``
+            The group to read: one group key, as :meth:`groups` reports it, or a
+            list of keys, with ``None`` in the list for the null group. The
+            default, ``None``, reads every group. A key the bank has never seen
+            gives no rows.
+
+        .. rubric:: Returns
+
+        A ``DataFrame`` with one row per (spec, group, input column), in spec
+        order, then in :meth:`groups`' order, and within each group the
+        features, then the targets, then the weight column. The columns:
+
+        ``spec``, ``group``
+            As :meth:`groups` reports them.
         ``column``, ``role``
             The column's name, and ``"feature"``, ``"target"`` or ``"weight"``.
         ``count``, ``unusable_count``
-            A partition of the rows fed: a value counts when finite and within the
-            input bound, as the models take it, and is unusable otherwise -- polars
-            nulls, NaN, infinities and magnitudes beyond the bound alike. Not
-            Polars' ``null_count``, which counts the nulls alone.
+            The rows fed, split in two. A value counts when it is finite and
+            within the input bound, as the models take it, and is unusable
+            otherwise: a Polars null, NaN, an infinity and a magnitude beyond
+            the bound alike. So ``unusable_count`` is not Polars'
+            ``null_count``, which counts the nulls alone.
         ``mean``, ``std``, ``min``, ``max``
-            Over the counted values, undecayed and in row order, so chunking cannot
-            move them; ``std`` is the sample one (``ddof=1``), null below two values.
+            Over the counted values of every row fed, skipped rows included,
+            undecayed and in row order, so chunking
+            cannot move them. ``std`` is the sample standard deviation
+            (``ddof=1``), null below two values.
 
-        An unsupervised model lists no targets, an ``ew_class`` label column has its
-        counts only, and a comparison's target is the difference of residuals it
-        tests, named as the spec names it. A window expression given as a target
-        counts the value each row is learned from, when the row is learned. That
-        value is a null until the row's window closes and its ``embargo`` passes,
-        and stays one for a row still held when the input ends. ``spec`` and ``group``
-        narrow the frame as in :meth:`summary`.
+        A model with no targets lists none. An ``ew_class`` label column has
+        its counts only. A ``seqtest`` that compares two specs (``a=`` and
+        ``b=``) lists as its target the value it tests on each row,
+        ``|resid_b| - |resid_a|``, named as the spec names it. A formula target counts the
+        value each row is learned from, when the row is learned: a null until
+        the row's window closes and its ``embargo`` passes, and a null for a
+        row still held when the input ends.
+
+        .. rubric:: Raises
+
+        ``KeyError``
+            ``spec`` is a name the bank does not have.
+        ``IndexError``
+            ``spec`` is a position the bank does not have.
+        ``TypeError``
+            ``group`` is not a str, a list of them with ``None`` allowed, or
+            ``None``.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
+
+        .. code-block:: python
+
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = po.ModelBank([spec])
+            bank.fit(df)
+            stats = bank.describe().select("column", "role", "count", "mean")
+            for column, role, count, mean in stats.iter_rows():
+                print(f"{column} ({role}): {count} values, mean {mean:.2f}")
+
+        .. code-block:: text
+
+            x0 (feature): 400 values, mean -0.04
+            x1 (feature): 400 values, mean -0.02
+            y (target): 400 values, mean 0.94
+
+        .. rubric:: See also
+
+        - :meth:`summary`, each model's row counts.
+        - :meth:`check`, which reads these statistics for its findings.
+        - :meth:`audit`, the fuller counts an ``audit`` spec keeps.
         """
         names = self._native.spec_names()
         picked = (
@@ -1487,191 +2196,265 @@ class ModelBank:
         dtype: Any = "float64",
         layout: Literal["full", "packed"] = "full",
     ) -> list[Gram]:
-        """The running sums behind a spec's fit, per group and instance, as numpy arrays.
+        """Return the Gram behind a spec's fit, per group and instance, as numpy arrays.
 
-        One dict per (group, decay instance), and per Gram where a spec reads more
-        than one. Under ``target_gaps = "own_rows"``, the default, targets that have
-        been missing on different rows are fitted from Grams of their own, one per set
-        of targets present on the same rows, and each dict names its ``targets``. Only
-        the models that keep a co-moment matrix report -- ``ewridge``, ``lasso`` and
-        ``ew_cov``; the others yield nothing (``rls`` and ``kalman`` track an inverse,
-        the gradient models keep no second moment). Each dict has:
+        Use it to do with a fit's Gram what the model does not: a custom
+        penalty, an information criterion, a condition number, standard errors,
+        or a fit pooled over groups, with the functions of
+        :mod:`polars_online.gram`. For the coefficients alone use :meth:`coef`,
+        and for the sums of a group that has closed, :meth:`closed_groups`.
+
+        .. rubric:: Parameters
+
+        ``spec``
+            The spec to read, by name or by position. Only ``ewridge``,
+            ``lasso`` and ``ew_cov`` report. Every other model gives an empty
+            list, which is not an error: ``huber`` and ``quantile`` keep a
+            reweighted Gram per target that is not exported, ``rls`` keeps a
+            Cholesky factor, ``kalman`` a covariance, and the gradient models
+            no second moment.
+        ``group``
+            The group to read: one group key, as :meth:`groups` reports it, or a
+            list of keys, with ``None`` in the list for the null group. The
+            default, ``None``, reads every group, in :meth:`groups`' order. A key
+            the bank has never seen gives an empty list.
+        ``dtype``
+            The dtype of ``comoments`` and ``lag_comoments``: ``"float64"``, the
+            default, or ``"float32"``, which halves their bytes (see Notes). A
+            numpy or Polars dtype of either is taken too. Every other array
+            stays float64.
+        ``layout``
+            ``"full"``, the default, for ``comoments`` as a ``(k, k)`` matrix,
+            or ``"packed"`` for its upper triangle with the diagonal, row by row,
+            a 1-D array of ``k * (k + 1) // 2``: about half the bytes (see
+            Notes). ``lag_comoments`` is never packed, since a lagged matrix is
+            not symmetric.
+
+        .. rubric:: Returns
+
+        A list of dicts, one per (group, instance), an instance being the
+        part of the model that fits one half-life, and one per Gram where a
+        spec reads several. Under ``target_gaps = "own_rows"``, the default,
+        targets missing on different rows are fitted from Grams of their own,
+        one per set of targets present on the same rows, and each dict names
+        its ``targets``. ``k`` is the number of columns, and the arrays are
+        exponentially weighted (EW) and decayed on the model's own clock. Each
+        dict has:
 
         ``group``, ``instance``
-            The group key as :meth:`groups` reports it (``""`` for a spec without a
-            ``group`` column, ``None`` for a null key) and the instance's field suffix
-            (``"@h500"``, or ``""`` for a single instance).
+            The group key as :meth:`groups` reports it (``""`` for a spec
+            without a ``group`` column, ``None`` for a null key), and the
+            instance's field suffix (``"@h500"``, or ``""`` for a single
+            instance).
         ``columns``, ``targets``
-            What the axes mean: the spec's features, with ``"intercept"`` first when
-            the spec has one (the ``term`` names of
-            :func:`polars_online.spec.coef_index`), and the target names the
-            per-target arrays are indexed by -- the spec's, or the ones this Gram's
-            rows belong to. ``targets`` is empty for ``ew_cov``, which learns from
-            none. They are what makes the mapping self-describing, so
-            :mod:`polars_online.gram` can take a column or a target by name.
+            What the axes mean. ``columns`` is the spec's features, with
+            ``"intercept"`` first when the spec has one: the ``term`` names of
+            :func:`polars_online.spec.coef_index`. ``targets`` is the target
+            names the per-target arrays are indexed by: the spec's, or the ones
+            this Gram's rows belong to. It is empty for ``ew_cov``, which
+            learns from none. The names make the dict self-describing, so
+            :mod:`polars_online.gram` takes a column or a target by name.
         ``weight_sum``
             The accumulated weight behind these moments.
         ``n_kish``
-            Kish's effective sample size, ``weight_sum**2 / sum(w**2)``: the number of
-            equally weighted rows these moments are worth, and what a standard error
-            computed from them divides by. ``weight_sum`` counts weight, not rows, so it is
-            not a sample size. ``(1 + lam**d) / (1 - lam**d)`` is the Kish size of
-            an exponentially weighted window of unit rows ``d`` clock units apart,
-            ``lam = 0.5 ** (1 / half_life)``. It is
-            scale-free: decay divides ``weight_sum`` and ``sum(w**2)`` by the same factor,
-            so it does not shrink when a stream goes quiet. It says how many rows
-            these moments average, not how old they are; ``weight_sum`` and
-            ``target_weights`` say that. ``None`` before the first row, and
-            under a window whose sum of squared weights the subtraction keeps
-            no digit of (within ``64 eps`` of the history's): a window of rows
-            far lighter than the history, where the ratio would be rounding.
+            Kish's effective sample size, ``weight_sum**2 / sum(w**2)``: the
+            number of equally weighted rows these moments are worth, which a
+            standard error divides by (see Notes). ``None`` before the first
+            row, and under a hard window where subtracting the rows that leave
+            keeps no digit of the sum of squared weights.
         ``means``
-            EW column means, shape ``(k,)``.
+            The EW column means, shape ``(k,)``.
         ``comoments``
-            Centred co-moments, shape ``(k, k)``: the EW analogue of a centred ``X'X /
-            n``. Centred is what makes it accurate at large offsets. Under
-            ``layout="packed"`` its upper triangle, shape ``(k * (k + 1) // 2,)``,
-            and under ``dtype="float32"`` in float32 (see below).
+            The centered co-moments, the EW analogue of a centered ``X'X / n``,
+            shape ``(k, k)``, or packed under ``layout="packed"``. Centering is
+            what keeps them accurate at a large offset.
         ``cross_moments``
-            Per-target uncentred cross-moments ``E[z*y]`` over the rows each target
-            was present on, shape ``(n_targets, k)``. Empty for ``ew_cov``.
+            Per target, the uncentered cross-moments ``E[z*y]``, with ``z`` a
+            row's columns and ``y`` the target, over the rows the target was
+            present on, shape ``(n_targets, k)``. Empty for
+            ``ew_cov``.
         ``means_by_target``
             Per target, the column means over the rows it was present on, shape
-            ``(n_targets, k)``: what its cross-moments are centred at and its
-            intercept is recovered from. ``means`` again, to rounding, for a target
-            present on every row the Gram learned (every target under ``target_gaps =
-            "own_rows"``), and under ``"pairwise"`` a target's own means where it has
-            gaps. :func:`polars_online.gram.solve` reads them. Empty for ``ew_cov``.
+            ``(n_targets, k)``: what its cross-moments are centered at, and its
+            intercept is recovered from. They equal ``means``, to rounding, for
+            a target present on every row the Gram learned, which every target
+            is under ``target_gaps = "own_rows"``. Under ``"pairwise"`` a
+            target with gaps has its own. :func:`polars_online.gram.solve` reads
+            them. Empty for ``ew_cov``.
         ``cross_centered``
-            Per target, the cross-moments centred at its column means and its own
-            mean, ``E[(z - m_t) * (y - ybar_t)]``, shape ``(n_targets, k)``: what the
-            model solves from, and what :func:`polars_online.gram.solve` reads. It
-            equals ``cross_moments[t] - means_by_target[t] * ybar_t`` in exact
-            arithmetic; formed in floating point, that difference keeps ``L**2 * eps``
-            of it at a level ``L``, so the model keeps the centred form itself. Empty
-            for ``ew_cov``.
+            Per target, the cross-moments centered at its column means and its
+            own mean, ``E[(z - m_t) * (y - ybar_t)]``, shape
+            ``(n_targets, k)``: what the model solves from, and what
+            :func:`polars_online.gram.solve` reads. Empty for ``ew_cov``.
         ``target_weights``
-            Per-target accumulated weight, shape ``(n_targets,)``. Differs from
-            ``weight_sum`` when targets have different null patterns.
+            Per target, the accumulated weight, shape ``(n_targets,)``. It
+            differs from ``weight_sum`` when targets have different null
+            patterns.
         ``target_means``, ``target_vars``
-            Per-target EW mean and centred variance of the target itself, shape
-            ``(n_targets,)``, in the same arithmetic as ``comoments``: a target's
-            variance here is the variance an ``ew_cov`` over that column would report,
-            to the bit. Empty for ``ew_cov``.
+            Per target, the EW mean and centered variance of the target itself,
+            shape ``(n_targets,)``, in the same arithmetic as ``comoments``: a
+            target's variance here is, to the bit, the one an ``ew_cov`` over
+            that column would report. Empty for ``ew_cov``.
         ``target_n_kish``
-            Per-target Kish effective sample size, ``target_weights**2 / sum(w**2)``
-            over that target's rows; ``nan`` for a target that has not seen a weighted
-            row, and under a window, as ``n_kish``, where the window's squared weights
-            keep no digit. Empty for ``ew_cov``.
+            Per target, Kish's effective sample size over that target's rows,
+            ``target_weights**2 / sum(w**2)``. ``nan`` for a target that has not
+            seen a weighted row, and under a hard window where the squared
+            weights keep no digit, as for ``n_kish``. Empty for ``ew_cov``.
         ``lags``, ``lag_comoments``
-            The lags an ``ew_cov(lags=[...])`` accumulates at, in the order given, and
-            their cross-moments as an ``(L, k, k)`` array: ``lag_comoments[l][a][b]``
-            is ``E_w[d_a(t) * d_b(t - lags[l])]``, both deviations against the mean
-            before the row. Both ``None`` for a spec without ``lags``. The matrix is
-            not symmetric for a lag above zero (``a`` leading ``b`` is not ``b``
-            leading ``a``), and lag 0 would be ``comoments`` exactly.
+            The lags an ``ew_cov(lags=[...])`` accumulates at, in the order
+            given, and their cross-moments as an ``(L, k, k)`` array, ``L`` the
+            number of lags. ``lag_comoments[l][a][b]`` is
+            ``E_w[d_a(t) * d_b(t - lags[l])]``, both deviations taken against
+            the mean before the row. The matrix is not symmetric for a lag
+            above 0, since ``a`` leading ``b`` is not ``b`` leading ``a``, and
+            at lag 0 it would be ``comoments`` exactly. Both are ``None`` for a
+            spec without ``lags``.
 
-        **A compact Gram.** ``comoments`` is the one array that grows as ``k²``: 800
-        MB a Gram in float64 at 10,000 columns. Two options shrink it, and every
-        function of :mod:`polars_online.gram` takes either, merging and solving in
-        float64 whatever it is given.
+        Values are in the features' original units. The intercept, when the
+        spec has one, is column 0: a constant 1, so it has zero variance in
+        ``comoments``. Under a ``window_size`` every array is the hard
+        window's, the target moments included, since the window's snapshots
+        carry them too. So :func:`polars_online.gram.solve` on it fits the
+        hard window as it stood after the last row.
 
-        ``dtype="float32"``
-            ``comoments`` and ``lag_comoments`` in float32, half the bytes. Each
-            entry is the float64 rounded to nearest, so it is within ``2**-24`` of it
-            relative, about 6e-8, and a solve read from it carries that error times
-            the system's condition number. The other arrays stay float64: they are
-            ``k`` long, and the means are what a merge's spread term is made of.
-            An entry float32 cannot hold to that precision is refused with a
-            ``ValueError`` naming its column. That is an entry past float32's
-            largest number, about 3.4e38, which would read ``inf``, or a nonzero
-            one below its smallest normal number, about 1.2e-38, which would
-            read 0 or keep fewer digits. A column spread 1e20 wide, or 1e-20, gets there, as
-            its variance squares the scale. Rescale it upstream, or read the
-            Gram in float64.
-        ``layout="packed"``
-            ``comoments`` as its upper triangle with the diagonal, row by row, a
-            1-D array of ``k * (k + 1) // 2``: about half the bytes. Entry ``(i,
-            j)`` with ``i <= j`` is at ``i * (2 * k - i + 1) // 2 + (j - i)``, the
-            order of ``numpy.triu_indices(k)``, and ``(j, i)`` is the same entry.
-            ``packed[np.triu_indices(k)]`` laid back into a ``k x k`` array and
-            mirrored gives the matrix, its upper triangle bit for bit. Its lower
-            triangle is that mirror, which can differ from the full layout's lower
-            triangle in the last bit: the accumulator updates ``C[i][j]`` and
-            ``C[j][i]`` with the same two products in either order. A closed row's
-            ``comoments`` is packed the same way.
+        .. rubric:: Raises
 
-        Both together are a quarter of the bytes. ``lag_comoments`` is never packed,
-        since a lagged matrix is not symmetric. The state itself stays float64 and
-        whole: these shape only what is handed back.
+        ``KeyError``
+            ``spec`` is a name the bank does not have.
+        ``IndexError``
+            ``spec`` is a position the bank does not have.
+        ``TypeError``
+            ``group`` is not a str, a list of them with ``None`` allowed, or
+            ``None``.
+        ``ValueError``
+            ``dtype`` is not float64 or float32, or ``layout`` is not
+            ``"full"`` or ``"packed"``. Under ``dtype="float32"``, an entry
+            float32 cannot hold to its precision, which the message names by
+            its column (see Notes).
+        ``ModuleNotFoundError``
+            numpy is not installed. It is not a dependency of this package, as
+            it is not of Polars: ``pip install polars-online[numpy]`` adds it.
 
-        The target moments are what makes the export a complete sufficient statistic:
-        with the cross-moments alone there is no residual variance, no R², no
-        information criterion and no standard error to be had from a saved Gram,
-        because every one of them needs ``Var[y]``.
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
             spec = po.spec.ewridge(
-                "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0,
-                ridge=0.1, standardize=True, group="stock_id",
+                "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0, ridge=1e-6
             )
             bank = po.ModelBank([spec])
-            bank.fit_predict(df)
-            g = bank.gram("ridge", group="b0")[0]     # one dict per (group, instance, Gram)
-            beta = po.gram.solve(g, target="y", ridge=0.1, standardize=True)   # the model's own fit
-            var_y = g["target_vars"][0]
-            r2 = 1 - (var_y - beta[1:] @ g["comoments"][1:, 1:] @ beta[1:]) / var_y
+            bank.fit(df)
+            g = bank.gram("ridge")[0]                           # one dict: one group, one instance
+            coef = po.gram.solve(g, target="y", ridge=1e-6)     # solved again from the Gram
+            print(g["columns"], coef.round(2))
+            print(bank.coef()["coef"].round(2).to_list())       # the model's own fit
+            var_y = g["target_vars"][0]                         # the target's moments give its R²
+            r2 = 1 - (var_y - coef[1:] @ g["comoments"][1:, 1:] @ coef[1:]) / var_y
+            print(f"R² {r2:.2f}")
 
-        Under a ``window_size`` everything here is the window's, the target moments
-        included, since the window's snapshots carry them too, so ``po.gram.solve``
-        on it fits the window as it stood after the last row.
+        .. code-block:: text
 
-        The two moment forms differ, and mixing them gives a silently wrong answer
-        rather than an error, so the bridging identities are worth stating. For a
-        target whose rows are the Gram's, which is every target under ``target_gaps =
-        "own_rows"``:
+            ['intercept', 'x0', 'x1'] [ 0.99  1.97 -1.  ]
+            [0.99, 1.97, -1.0]
+            R² 0.94
+
+        .. rubric:: See also
+
+        - :mod:`polars_online.gram`, the functions that pool, narrow and solve
+          these dicts.
+        - :meth:`closed_groups`, the same sums for each group that has closed.
+        - :meth:`coef`, the fit the model solved.
+        - `How a Gram stands in for the rows
+          <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md#how-a-gram-stands-in-for-the-rows>`__.
+
+        .. rubric:: Notes
+
+        **Why the Gram is exported.** The Gram is the expensive part of a
+        fit, and it is already exact, centered, decayed on the
+        model's own clock with its session and ``gap_cap`` handling, and
+        resumable. Without it, anything other than the model's own solve
+        (a custom penalty, an information criterion, ``cond(G)``, a scree
+        plot, forward stepwise, orthogonal matching pursuit, or a fit checked
+        by hand) would recompute ``X'X`` from the raw data in a second pass.
+        It comes from one pass over data that is never materialized, at
+        every point in the stream rather than one, and it holds the matrices
+        the deployed model solves against. It is not a speed claim: for one
+        Gram computed at once over materialized data, BLAS ``dgemm`` is blocked,
+        vectorized, and comfortably faster. The target moments make the
+        export a complete sufficient statistic. With the cross-moments alone
+        a saved Gram gives no residual variance, no R², no information
+        criterion and no standard error, since each of them needs ``Var[y]``.
+
+        **Kish's size.** ``weight_sum`` counts weight, not rows, so it is not
+        a sample size. ``(1 + lam**d) / (1 - lam**d)`` is the Kish size of an
+        EW window of unit rows ``d`` clock units apart, with
+        ``lam = 0.5 ** (1 / half_life)``. It is scale-free: decay scales
+        ``weight_sum**2`` and ``sum(w**2)`` by the same factor, so it does not
+        shrink when a stream goes quiet. It says how many rows these moments average, not how old
+        they are, which ``weight_sum`` and ``target_weights`` say. Under a
+        hard window it is ``None`` where the window's sum of squared weights is
+        no more than ``64 eps`` times the history's: a window of rows far lighter than
+        the history, where the ratio would be rounding.
+
+        **The centered cross-moments.** ``cross_centered[t]`` equals
+        ``cross_moments[t] - means_by_target[t] * ybar_t`` in exact
+        arithmetic. Formed in floating point at a level ``L``, that difference
+        carries a rounding error of about ``L**2 * eps``, so the model keeps
+        the centered form itself.
+
+        **The two moment forms.** Mixing the raw and the centered forms gives
+        a wrong answer, not an error, so the identities between them are
+        stated here, with ``coef[t]`` target ``t``'s coefficients, intercept
+        first. For a target present on every row the Gram holds, which is
+        every target under ``target_gaps = "own_rows"``:
 
         .. code-block:: text
 
             raw = comoments + outer(means, means)
-            raw @ beta[t] == cross_moments[t]                       (up to the ridge term)
+            raw @ coef[t] == cross_moments[t]                       (up to the ridge term)
 
-        and for every target, the centred form the model solves, with ``m =
-        means_by_target[t]`` and ``ybar = cross_moments[t][0]``:
+        and, for a spec with an intercept, every target's centered form the
+        model solves, up to the ridge term, with ``m = means_by_target[t]``
+        and ``ybar = cross_moments[t][0]``:
 
         .. code-block:: text
 
-            comoments[1:, 1:] @ beta[t][1:] == cross_centered[t][1:]
-            beta[t][0] == ybar - m[1:] @ beta[t][1:]
+            comoments[1:, 1:] @ coef[t][1:] == cross_centered[t][1:]
+            coef[t][0] == ybar - m[1:] @ coef[t][1:]
 
-        Values are in the features' original units. The intercept, when the spec has
-        one, is column 0: a constant 1, so it has zero variance in ``comoments`` and
-        ``raw[0] == means``.
+        With an intercept, ``raw[0] == means``.
 
-        Why this exists: the accumulators are the expensive part, and they are already
-        exact, centred, decayed on the model's own clock with session and
-        ``gap_cap`` handling, and resumable. Anyone wanting to do something other
-        than the model's solve with them (a custom penalty, an information criterion,
-        ``cond(G)``, a scree plot, forward stepwise, orthogonal matching pursuit, or a
-        fit checked by hand) would otherwise recompute ``X'X`` from raw data in a
-        second pass. These come from one pass over data that is never materialized, at
-        every point in the stream rather than one, and they are the same matrices the
-        deployed model solves against. It is not a speed claim: for a single batch
-        Gram over materialized data, BLAS ``dgemm`` is blocked, vectorized, and
-        comfortably faster.
+        **A compact Gram.** ``comoments``, and ``lag_comoments`` under
+        ``lags``, are the arrays that grow as ``k²``: ``comoments`` is 800 MB
+        a Gram in float64 at 10,000 columns. Together, the two options make
+        ``comoments`` a quarter of its bytes and ``lag_comoments`` half, since
+        it is never packed. Every function of
+        :mod:`polars_online.gram` takes either, merging and solving in float64
+        whatever it is given. The state itself stays float64 and whole: the
+        options shape only what is handed back.
 
-        ``spec`` is a spec name or position (``KeyError`` / ``IndexError`` for one the
-        bank has not got, as for :meth:`groups`). ``group`` narrows the list to one
-        group's key, or to a list of keys with ``None`` among them for the null group
-        (``group=None`` is every group), in :meth:`groups`' order. A group the bank
-        has never seen gives an empty list, as does a model
-        that keeps no co-moments; neither is an error. ``dtype`` is ``"float64"`` or
-        ``"float32"`` (or a numpy or polars dtype of either), ``layout`` ``"full"`` or
-        ``"packed"``; anything else is a ``ValueError``. Requires numpy, which is not a
-        dependency of this package (polars does not require it either): ``pip install
-        polars-online[numpy]`` adds it, and without it the call raises
-        ``ModuleNotFoundError`` saying so.
+        Under ``dtype="float32"`` each entry is the float64 rounded to
+        nearest, so it is within ``2**-24`` of it, relative, about 6e-8, and a
+        solve read from it carries that error times the system's condition
+        number. The other arrays stay float64: they are ``k`` long, and the
+        means are what a merge's spread term is made of. An entry is refused
+        when float32 cannot hold it to that precision: past float32's largest
+        number, about 3.4e38, which would read ``inf``, or nonzero and below
+        its smallest normal number, about 1.2e-38, which would read 0 or keep
+        fewer digits. A column spread 1e20 wide, or 1e-20, gets there, since
+        its variance squares the scale. Rescale it with Polars before the
+        bank, or read the Gram in float64.
+
+        Under ``layout="packed"`` entry ``(i, j)`` with ``i <= j`` is at
+        ``i * (2 * k - i + 1) // 2 + (j - i)``, the order of
+        ``numpy.triu_indices(k)``, and ``(j, i)`` is the same entry. Laid back
+        into a ``k x k`` array ``m`` by ``m[np.triu_indices(k)] = packed`` and
+        mirrored, it is the full layout's matrix, bit for bit, since the
+        model keeps the matrix symmetric. A closed row's ``comoments`` is
+        packed the same way.
         """
         try:
             import numpy as np
@@ -1763,101 +2546,129 @@ class ModelBank:
     def marginal(
         self, spec: str | int, group: str | Iterable[str | None] | None = None
     ) -> pl.DataFrame:
-        """The pairs a ``marginal`` spec keeps: one row per (group, instance, feature,
-        target).
+        """Return the feature and target pairs a ``marginal`` spec keeps, one row per pair.
 
-        Groups sorted, targets in spec order, features in spec order within each. The
-        pairs are read from the state, so a bank loaded from a file reports them as
-        the bank that saved it would, and feeding the rows in one chunk or a thousand
-        gives the same numbers to the bit. The columns:
+        Use it to rank features by how each one alone relates to a target, from
+        the bank or from one loaded from a state file. For a spec of another
+        model use :meth:`gram`, which gives an ``ew_cov``'s moments, and for
+        what an ``audit`` counted, :meth:`audit`.
+
+        .. rubric:: Parameters
+
+        ``spec``
+            The ``marginal`` spec to read, by name or by position.
+        ``group``
+            The group to read: one group key, as :meth:`groups` reports it, or a
+            list of keys, with ``None`` in the list for the null group. The
+            default, ``None``, reads every group. A key the bank has never seen
+            gives an empty frame.
+
+        .. rubric:: Returns
+
+        A ``DataFrame`` with one row per (group, instance, feature, target),
+        an instance being the part of the model that fits one half-life:
+        groups sorted, targets in the spec's order, and features in the spec's
+        order within each. Its moments are exponentially weighted (EW). The
+        columns:
 
         ``spec``, ``group``, ``instance``
             The spec's name, and the group and instance as :meth:`gram` reports
-            them (``""`` for a spec without a ``group`` column; ``""`` for a single
-            decay instance, else the field suffix such as ``"@h500"``).
+            them: ``""`` for a spec without a ``group`` column, and ``""`` for a
+            single instance, else the field suffix, such as ``"@h500"``.
         ``half_life``, ``lam``
             The instance's decay, as :meth:`coef` gives it.
         ``feature``, ``target``
-            The pair's feature column and the target's name (its column, unless
-            a ``po.target`` table gave one).
+            The pair's feature column, and the target's name: its column,
+            unless :func:`polars_online.target` gave it another name.
         ``weight_sum``
-            The target's accumulated weight ``W_t``: rows where the target was
-            present, weighted and decayed. Differs from the struct's ``weight_sum`` when
-            targets have different null patterns.
+            The target's accumulated weight ``W_t``: the rows where the target
+            was present, weighted and decayed. It differs from the output's
+            ``weight_sum`` when targets have different null patterns.
         ``n_kish``
-            ``W_t^2 / Q_t`` with ``Q_t`` the accumulated squared weight: the Kish
-            effective sample size, the number of equally weighted rows that carry the
-            same information. Null before the target's first row, and under a
-            window whose ``Q_t`` the subtraction keeps no digit of (within
-            ``64 eps`` of the history's).
+            ``W_t^2 / Q_t``, with ``Q_t`` the accumulated squared weight:
+            Kish's effective sample size, the number of equally weighted rows
+            that carry the same information. Null before the target's first
+            row, and under a hard window where subtracting the rows that leave
+            keeps no digit of ``Q_t`` (at most ``64 eps`` times the history's).
         ``mean_x``, ``var_x``, ``mean_y``, ``var_y``, ``cov``
-            The pair's EW moments, population form, over the decayed weights, so
-            ``var`` is never negative.
+            The pair's EW moments, in population form over the decayed
+            weights, so a variance is never negative.
         ``corr``, ``beta``, ``t_stat``
-            ``cov / sqrt(var_x var_y)``; ``cov / var_x``, the slope of the target on
-            that feature alone; and ``corr * sqrt((n_kish - 2) / (1 - corr^2))``, the
-            t-statistic of that correlation at the Kish sample size. Read ``t_stat`` as
-            a scale for comparing pairs, not a p-value: the rows are neither independent
-            nor Gaussian. Null until ``weight_sum`` reaches the target's ``min_weight``,
-            null while the stream is less settled than ``min_settled_frac``, and null
-            where undefined (a constant column, ``n_kish <= 2``). Both gates withhold
-            ``t_stat_serial``, the ``lag_corr_*`` columns, ``phi_x`` and ``phi_y``
-            and the split columns too; ``n_serial``, a count as ``n_kish`` is, stays.
+            ``cov / sqrt(var_x var_y)``; ``cov / var_x``, the slope of the
+            target on that feature alone; and
+            ``corr * sqrt((n_kish - 2) / (1 - corr^2))``, the t-statistic of
+            that correlation at Kish's size.
+            Read ``t_stat`` as a scale to compare pairs by, not as a p-value:
+            the rows are neither independent nor Gaussian. Each is null until
+            ``weight_sum`` reaches the target's ``min_weight``, null while the
+            instance's ``settled_frac`` is below ``min_settled_frac``, and null
+            where it is undefined (a constant column, ``n_kish <= 2``). Both gates
+            withhold ``t_stat_serial``, the ``lag_corr_*`` columns, ``phi_x``,
+            ``phi_y`` and the split columns too. ``n_serial``, a count as
+            ``n_kish`` is, stays.
 
         With ``lags``, four more list columns and four numbers:
 
         ``lag_corr_xx``, ``lag_corr_yy``
-            Each series' own autocorrelation at the configured lags. As in
-            ``ew_cov``, a lagged moment starts at 0 and takes its first product when
-            a learned row has one ``l`` rows back, so each of the four lag columns
-            reads 0.0, not null, at a lag ``l`` while a group has learned no more
-            than ``l`` rows and ``weight_sum`` has reached ``min_weight``. Below
-            ``min_weight`` each is null, as ``corr`` is.
+            Each series' own autocorrelation at the spec's lags (see Notes on
+            the first rows).
         ``lag_corr_xy``, ``lag_corr_yx``
-            The feature now against the target ``l`` rows back, and the target now
-            against the feature ``l`` rows back, at each of ``cross_lags`` (every lag
-            by default). For two series that describe the same moment, a feature
-            whose ``lag_corr_yx[0]`` exceeds its ``corr`` leads the target, and one
-            whose ``lag_corr_xy[0]`` does follows it. That reading does not hold
-            against a forward-looking target, one built from the rows after its own.
-            There the target ``l`` rows back is built partly from the feature's
-            newest ``l`` rows, so a feature built from the same news shows
-            ``lag_corr_xy`` above ``corr`` however it is sampled. Absent under
-            ``cross_lags=[]``.
+            The feature now against the target ``l`` rows back, and the target
+            now against the feature ``l`` rows back, at each of ``cross_lags``
+            (every lag by default). Absent under ``cross_lags=[]``. Notes say
+            how to read them for a lead or a lag.
         ``n_serial``, ``t_stat_serial``
             ``n_kish`` divided by Bartlett's serial-dependence factor, and the
             statistic against it. Null without ``serial_rule``.
         ``phi_x``, ``phi_y``
-            The per-row decays fitted under ``serial_rule = "geometric"``; null
-            otherwise, and null when fewer than two kept lags are positive. They
-            are fitted from the lag correlations, so both gates withhold them where
-            they withhold those.
+            The per-row decays fitted under ``serial_rule = "geometric"``. Null
+            otherwise, and null when fewer than two kept lags are positive.
+            They are fitted from the lag correlations, so both gates withhold
+            them where they withhold those.
 
-        With ``bins`` or ``bin_edges``, the nonlinear view. These columns are present
-        whenever the spec asked for bins, holding empty lists and nulls until the
-        edges are fixed:
+        With ``bins`` or ``bin_edges``, the nonlinear view. These columns are
+        present whenever the spec asked for bins, and hold empty lists and
+        nulls until the edges are fixed:
 
         ``bin_edges``
             The feature's interior edges, fixed once and never moved. Ragged: a
-            feature keeps only the bins it can support, so a binary feature has two
-            bins and a constant one has a single bin.
+            feature keeps only the bins it can support, so a binary feature has
+            two bins and a constant one has a single bin.
         ``bin_n``, ``bin_mean_y``, ``bin_var_y``
-            The target's weight, mean and variance inside each bin: the feature's
-            response curve. One more entry than ``bin_edges``, since the outer two
-            bins are open. A bin no row has landed in has ``bin_n = 0`` and null for
-            the two moments.
-            Under ``bin_stat="huber"`` the mean is Huber's M-location of the bin's
-            rows and the variance the mean square of their deviations from it
-            clipped at the cut; the weight is the rows' either way
+            The target's weight, mean and variance inside each bin: the
+            feature's response curve. Each has one more entry than
+            ``bin_edges``, since the outer two bins are open. A bin no row has
+            landed in has ``bin_n = 0`` and null for the two moments. Under
+            ``bin_stat="huber"`` the mean is Huber's M-location of the bin's
+            rows, and the variance the mean square of their deviations from
+            it, clipped at the cut. The weight is the rows' either way
             (:func:`polars_online.spec.marginal`).
         ``split_gain``, ``split_at``
-            The fraction of the target's variance removed by the best single cut of
-            the feature, and where that cut falls. Directly comparable with ``corr **
-            2``, so ``split_gain - corr ** 2`` is the nonlinear surplus.
+            The fraction of the target's variance removed by the best single
+            cut of the feature, and where that cut falls. It compares directly
+            with ``corr ** 2``, so ``split_gain - corr ** 2`` is the nonlinear
+            surplus.
         ``split_gain_t``
-            The ``t_stat`` a ``corr`` would need to match that gain, against ``n_serial``
-            where there is one. Optimistic, because the cut was chosen by maximising
-            over the candidates: a ranking, not a p-value.
+            The ``t_stat`` a ``corr`` would need to match that gain, against
+            ``n_serial`` where there is one. It is optimistic, since the cut
+            was chosen as the best of the candidates: a ranking, not a p-value.
+
+        .. rubric:: Raises
+
+        ``KeyError``
+            ``spec`` is a name the bank does not have.
+        ``IndexError``
+            ``spec`` is a position the bank does not have.
+        ``TypeError``
+            ``group`` is not a str, a list of them with ``None`` allowed, or
+            ``None``.
+        ``ValueError``
+            ``spec`` is not a ``marginal`` spec.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
@@ -1865,15 +2676,46 @@ class ModelBank:
                 "pairs", targets=["y"], features=["x0", "x1", "x2"], half_life=500.0
             )
             bank = po.ModelBank([pairs])
-            bank.fit_predict(df)
-            table = bank.marginal("pairs").sort("t_stat", descending=True)   # strongest first
+            bank.fit(df)
+            table = bank.marginal("pairs")
+            table = table.sort(pl.col("t_stat").abs(), descending=True)   # strongest first
+            for feature, corr, beta in table.select("feature", "corr", "beta").iter_rows():
+                print(f"{feature}: corr {corr:.2f}, beta {beta:.2f}")
 
-        ``group`` narrows the frame to one group's key, or to a list of keys with
-        ``None`` among them for the null group (``group=None`` is every group). A
-        group the bank has never seen gives an empty frame. A spec that is not a
-        ``marginal`` is refused (``ValueError``): an ``ew_cov``'s moments are read
-        with :meth:`gram`. ``spec`` is a name or position (``KeyError`` /
-        ``IndexError`` for one the bank has not got).
+        .. code-block:: text
+
+            x0: corr 0.86, beta 1.89
+            x1: corr -0.37, beta -0.81
+            x2: corr 0.04, beta 0.09
+
+        .. rubric:: See also
+
+        - :func:`polars_online.spec.marginal`, the spec, its lags and its
+          bins.
+        - :meth:`closed_groups`, the same columns for each group that has
+          closed, as ``pair_<column>``.
+        - :meth:`gram`, the moments of an ``ewridge``, ``lasso`` or
+          ``ew_cov``.
+
+        .. rubric:: Notes
+
+        The pairs are read from the state, so a bank loaded from a file
+        reports them as the bank that saved it would. Feeding the rows in one
+        chunk or a thousand gives the same numbers to the bit.
+
+        As in ``ew_cov``, a lagged moment starts at 0 and takes its first
+        product when a learned row has one ``l`` rows back. So each of the
+        four lag columns reads 0.0, not null, at a lag ``l`` while a group has
+        learned no more than ``l`` rows and ``weight_sum`` has reached
+        ``min_weight``. Below ``min_weight`` each is null, as ``corr`` is.
+
+        For two series that describe the same moment, a feature whose
+        ``lag_corr_yx[0]`` exceeds its ``corr`` leads the target, and one
+        whose ``lag_corr_xy[0]`` does follows it. That reading does not hold
+        against a forward-looking target, one built from the rows after its
+        own. There the target ``l`` rows back is built partly from the
+        feature's newest ``l`` rows, so a feature built from the same rows'
+        information shows ``lag_corr_xy`` above ``corr`` however it is sampled.
         """
         return self._native.marginal(
             self._spec_index(spec, "ModelBank.marginal"), _group_keys(group, "ModelBank.marginal")
@@ -1887,12 +2729,144 @@ class ModelBank:
         table: Literal["columns", "pairs", "clock"] = "columns",
         pooled: bool = False,
     ) -> pl.DataFrame:
-        """What an ``audit`` spec counted (:func:`polars_online.spec.audit`): one row
-        per column, per pair of columns, or per clock.
+        """Return what an ``audit`` spec counted, one row per column, pair of columns or clock.
 
-        The counts are read from the state, so a bank loaded from its file
-        reports what the bank that saved it would, and the stream's chunking
-        moves none of them. ``check`` reads these frames for its findings.
+        Use it to read the counts an ``audit`` keeps about the data itself:
+        sentinel values, frozen feeds, few distinct values, heavy tails,
+        duplicate columns and the clock's spacing. For the findings drawn from
+        them use :meth:`check`, and for the statistics every spec keeps,
+        :meth:`describe`.
+
+        .. rubric:: Parameters
+
+        ``spec``
+            The ``audit`` spec to read, by name or by position
+            (:func:`polars_online.spec.audit`). The default, ``None``, reads the
+            bank's one ``audit`` spec.
+        ``group``
+            The group to read: one group key, as :meth:`groups` reports it, or a
+            list of keys, with ``None`` in the list for the null group. The
+            default, ``None``, reads every group. A key the bank has never seen
+            gives no rows.
+        ``table``
+            Which table to return: ``"columns"``, the default, one row per
+            (group, column); ``"pairs"``, one row per (group, pair of columns),
+            for a spec built with ``pairs=True``; or ``"clock"``, one row per
+            group.
+        ``pooled``
+            ``True`` merges the groups the frame covers into one audit, as if
+            they were one stream, and drops the ``group`` column. The counts
+            merge exactly and the moments to rounding, and the counters past the cap
+            and the digests approximately, as
+            :func:`polars_online.spec.audit` says. The default, ``False``, gives
+            a row per group.
+
+        .. rubric:: Returns
+
+        A ``DataFrame`` led by ``spec``, as every reader of the bank's is, with
+        every count an ``Int64``. ``table="columns"`` has ``spec``, ``group``
+        and ``column``, then:
+
+        ``rows_fed``, ``null_count``, ``nan_count``
+            The rows read, then two kinds of value a model cannot learn from:
+            the nulls, as Polars' ``null_count`` counts them, and the NaNs.
+        ``pos_inf_count``, ``neg_inf_count``, ``beyond_bound_count``, ``count``
+            The other kinds, each counted apart (``beyond_bound_count`` is
+            finite but past ``1e100`` in magnitude), and ``count``, the usable
+            values. The six counts add up to ``rows_fed``.
+        ``mean``, ``std``, ``skew``, ``kurtosis``, ``min``, ``max``
+            Over the usable values: ``std`` with ``ddof = 1``, and ``skew`` and
+            the excess ``kurtosis`` as scipy's biased estimators. Null where
+            undefined: no usable value, one, or no spread.
+        ``median``, ``mad``, ``robust_z``
+            The median and the median absolute deviation, exact while
+            ``n_unique`` is not null and from a t-digest past the cap (about 1%
+            of the rows in rank), and the largest robust z,
+            ``max(max - median, median - min) / (1.4826 mad)``.
+        ``n_unique``
+            The distinct usable values, as Polars' ``n_unique`` counts them,
+            with ``-0`` read as ``0``. Null past the spec's ``distinct_cap``.
+        ``top_value``, ``top_count``, ``second_count``, ``count_error``
+            The most repeated value, its count and the next value's count.
+            They are exact while ``n_unique`` is, and past the cap each is at
+            most ``count_error`` short of the truth, where a value not held has
+            a count of at most ``count_error``.
+        ``longest_run``, ``equal_prev``, ``adjacent``, ``equal_by_chance``
+            ``longest_run`` is the longest run of one value on consecutive
+            rows. ``equal_prev`` counts the rows equal to the row before, out
+            of ``adjacent``, the rows whose row before was usable too.
+            ``equal_by_chance`` is ``sum p_v^2`` over the values' shares
+            ``p_v``: the share of ``adjacent`` rows that independent rows would
+            make equal, a lower bound past the cap.
+        ``min_change``, ``min_change_count``
+            The smallest nonzero change ``|x_t - x_(t-1)|`` between two
+            consecutive usable rows (null before there is one), and how many
+            changes sit at it. Two changes count as one size when they differ
+            by no more than the rounding of one step of a grid, ``8 eps`` of
+            the largest magnitude seen. :meth:`check`'s ``frozen`` weighs
+            ``min_change_count`` against ``equal_prev``, the changes at 0.
+        ``autocorr``, ``unit_root_t``
+            ``autocorr`` is the correlation of each usable row with the usable
+            row before it. ``unit_root_t`` is the Dickey-Fuller statistic of
+            that regression with a constant. It reads:
+
+            - above about -3 for a random walk;
+            - about ``-sqrt(n)`` for rows that do not persist;
+            - ``+inf`` for a fit with no residual and a slope of 1, such as a
+              row counter;
+            - ``-inf`` for a fit with no residual and a slope below 1.
+
+        ``table="pairs"`` has ``spec``, ``group``, ``column_a``, ``column_b``,
+        and, over the rows where both are usable, ``count``, ``corr`` and
+        ``equal``, the rows on which the two are equal.
+
+        ``table="clock"`` has no rows for a spec without a ``clock``. Its
+        columns:
+
+        ``spec``, ``group``
+            As :meth:`groups` reports them.
+        ``steps``
+            The number of steps between consecutive rows.
+        ``duplicates``
+            How many steps are 0.
+        ``gaps``
+            How many steps are at or past ``gap_cap`` (a clock requires
+            ``gap_cap``).
+        ``regular``
+            How many steps are neither.
+        ``step_mean``, ``step_std``, ``step_cv``
+            The regular steps' mean, population standard deviation and
+            coefficient of variation.
+        ``step_max``
+            The largest step of all.
+
+        On a temporal clock ``step_mean``, ``step_std`` and ``step_max`` are a
+        ``Duration`` in the clock column's unit (milliseconds for a ``Date``),
+        on a number clock numbers in its units, and a ``Float64`` before a
+        chunk has said which.
+
+        .. rubric:: Raises
+
+        ``KeyError``
+            ``spec`` is a name the bank does not have.
+        ``IndexError``
+            ``spec`` is a position the bank does not have.
+        ``TypeError``
+            ``group`` is not a str, a list of them with ``None`` allowed, or
+            ``None``.
+        ``ValueError``
+            When:
+
+            - ``spec`` is ``None`` and the bank holds no ``audit`` spec, or
+              several;
+            - ``spec`` is not an ``audit`` spec;
+            - ``table="pairs"`` reads a spec built without ``pairs=True``;
+            - ``table`` is not ``"columns"``, ``"pairs"`` or ``"clock"``.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
@@ -1900,94 +2874,43 @@ class ModelBank:
                 "audit", columns=["x0", "x1"], clock="t", gap_cap=300.0, pairs=True
             )
             bank = po.ModelBank([audit])
-            bank.fit_predict(df)
-            columns = bank.audit()                    # one row per (group, column)
-            pairs = bank.audit(table="pairs")         # one row per (group, pair of columns)
-            clock = bank.audit(table="clock")         # one row per group
-            everything = bank.audit(pooled=True)      # every group as one stream, no group column
+            holes = pl.when(pl.col("t") < 10).then(None).otherwise(pl.col("x1"))
+            bank.fit(df.with_columns(x1=holes))                 # x1 null on the first 10 rows
+            columns = bank.audit()                              # one row per (group, column)
+            pairs = bank.audit(table="pairs")                   # one row per (group, pair)
+            clock = bank.audit(table="clock")                   # one row per group
+            print(columns.select("column", "rows_fed", "null_count", "count").rows())
+            print(pairs.select("column_a", "column_b", "count").rows())
+            print(clock.select("steps", "regular", "gaps").rows())
 
-        Every table leads with ``spec``, as every reader of the bank does, and
-        counts in ``Int64``. ``table="columns"`` (the default) has ``spec``,
-        ``group`` and ``column``, then:
+        .. code-block:: text
 
-        ``rows_fed``, ``null_count``, ``nan_count``
-            The rows read, then two kinds of value a model cannot learn from:
-            the nulls, as Polars' ``null_count`` counts them, and the NaNs.
-        ``pos_inf_count``, ``neg_inf_count``, ``beyond_bound_count``, ``count``
-            The other kinds, each counted apart (``beyond_bound_count`` is finite but
-            past ``1e100`` in magnitude), and ``count``, the usable values. The
-            six counts add up to ``rows_fed``.
-        ``mean``, ``std``, ``skew``, ``kurtosis``, ``min``, ``max``
-            Over the usable values: ``std`` with ``ddof = 1``; ``skew`` and
-            the excess ``kurtosis`` scipy's biased estimators. Null where
-            undefined (no usable value, one, or no spread).
-        ``median``, ``mad``, ``robust_z``
-            The median and the median absolute deviation, exact while
-            ``n_unique`` is not null and from a t-digest past the cap
-            (about 1% of the rows in rank), and the largest robust z,
-            ``max(max - median, median - min) / (1.4826 mad)``.
-        ``n_unique``
-            The distinct usable values, as Polars' ``n_unique`` counts them,
-            ``-0`` read as ``0``; null past the spec's ``distinct_cap``.
-        ``top_value``, ``top_count``, ``second_count``, ``count_error``
-            The most repeated value, its count and the next value's: exact
-            while ``n_unique`` is, and each at most ``count_error`` short of
-            the truth past the cap, where a value not held has a count of at
-            most ``count_error``.
-        ``longest_run``, ``equal_prev``, ``adjacent``, ``equal_by_chance``
-            ``longest_run`` is the longest run of one value on consecutive
-            rows. ``equal_prev`` counts the rows equal to the row before, out
-            of ``adjacent``, the rows whose row before was usable too.
-            ``equal_by_chance`` is ``sum p_v^2`` over the values' shares, the
-            share of ``adjacent`` rows that independent rows would make equal
-            (a lower bound past the cap).
-        ``min_change``, ``min_change_count``
-            The smallest nonzero change ``|x_t - x_(t-1)|`` between two
-            consecutive usable rows (null before one), and how many changes
-            sit at it, to the rounding two changes of one step of a grid
-            differ by (``8 eps`` of the largest magnitude seen). Beside
-            ``equal_prev``, the changes at 0: ``check``'s ``frozen`` weighs
-            the two.
-        ``autocorr``, ``unit_root_t``
-            ``autocorr`` is the correlation of each usable row with the usable
-            row before it. ``unit_root_t`` is the Dickey-Fuller statistic of
-            that regression with a constant. It reads near 0 for a random
-            walk, about ``-sqrt(n)`` for rows that do not persist, and
-            ``+inf`` for a fit with no residual and a slope of 1, such as a
-            row counter (``-inf`` below 1).
+            [('x0', 400, 0, 400), ('x1', 400, 10, 390)]
+            [('x0', 'x1', 390)]
+            [(399, 399, 0)]
 
-        ``table="pairs"``, for a spec built with ``pairs=True``: ``spec``,
-        ``group``, ``column_a``, ``column_b``, and over the rows where both are usable,
-        ``count``, ``corr`` and ``equal``, the rows on which the two are
-        equal.
+        ``bank.audit(pooled=True)`` gives every group as one stream, with no
+        ``group`` column.
 
-        ``table="clock"``: ``spec``, ``group``, ``steps`` (between consecutive rows),
-        ``duplicates`` (steps of 0), ``gaps`` (steps at or past
-        ``gap_cap``, which a clock requires), ``regular`` (the rest), and
-        the regular steps' ``step_mean``, ``step_std`` (population) and
-        ``step_cv``, and ``step_max`` over every step. No rows for a spec
-        without a ``clock``. A step is the time that passed between the two
-        rows, uncapped: a model ages by at most ``gap_cap`` of it, and the
-        audit counts all of it (across a session change under a numeric
-        ``session_gap``, that gap). On a temporal clock ``step_mean``,
-        ``step_std`` and ``step_max`` are ``Duration`` in the clock column's
-        unit (milliseconds for a ``Date``), on a number clock numbers in its
-        units, and ``Float64`` before a chunk has said which. A step back is
-        refused, as for every spec; with ``restart_after_step_back`` each one
-        restarts the audit's steps instead (``0`` restarts at every one), and
-        :meth:`summary`'s ``clock_backwards`` and ``check``'s ``step_back``
-        count them.
+        .. rubric:: See also
 
-        ``pooled=True`` merges the groups the frame covers into one audit,
-        as if they were one stream, and drops ``group`` (``spec`` stays): the counts and
-        moments merge exactly, up to rounding, and the counters past the cap
-        and the digests approximately, as the spec's docstring says.
+        - :func:`polars_online.spec.audit`, the spec and what it keeps.
+        - :meth:`check`, the findings read from these tables.
+        - :meth:`describe`, the statistics every spec keeps.
 
-        ``spec`` is a name or a position, and may be left out when the bank
-        holds one audit (``ValueError`` when it holds none or several).
-        ``group`` narrows the frame as in :meth:`summary`. A spec that is
-        not an ``audit``, ``table="pairs"`` of one without pairs and an
-        unknown ``table`` are refused (``ValueError``).
+        .. rubric:: Notes
+
+        The counts are read from the state, so a bank loaded from its file
+        reports what the bank that saved it would, and the stream's chunking
+        moves none of them.
+
+        A clock step is the time that passed between the two rows, uncapped:
+        a model ages by at most ``gap_cap`` of it, and the audit counts all of
+        it (across a session change under a numeric ``session_gap``, that
+        gap). A step back is refused, as for every spec. With
+        ``restart_after_step_back`` each one resets the audit's steps
+        instead (``0`` resets at every one), and :meth:`summary`'s
+        ``clock_backwards`` and :meth:`check`'s ``step_back`` count them.
         """
         if spec is None:
             audits = [i for i, s in enumerate(self._specs) if s["model"]["type"] == "audit"]
@@ -2007,36 +2930,50 @@ class ModelBank:
         return self._native.audit(idx, _group_keys(group, "ModelBank.audit"), table, pooled)
 
     def closed_groups(self, spec: str | int | None = None, *, drop: bool = True) -> pl.DataFrame:
-        """The groups that have finished and not yet been read, oldest first, as one long
-        frame.
+        """Return the groups that have closed and not yet been read, oldest first, as one frame.
 
-        A spec with ``group_close`` emits a group's accumulators at the moment
-        the bank can prove no further row will join it, and then drops the
-        stream. That moment is a key smaller than the largest one fed so far
-        under ``"monotone"``, or a session that has ended under
-        ``"session"``. That is what keeps a bank over an unbounded key space
-        bounded: without it, every key ever seen stays in memory. The rows it
-        emits wait here until they are read, so the queue is bounded only by
-        reading it: drain it between chunks, or pass ``closed_groups=`` to
-        :meth:`fit_predict_batches`, which does.
+        Use it with a spec that sets ``group_close``, to read each group's sums
+        and fit once no further row can join it, and to keep a bank over an
+        unbounded number of keys bounded. To have each chunk's closed groups
+        read for you, pass ``closed_groups=`` to :meth:`fit_predict_batches`.
+        For the sums of a group still open, use :meth:`gram`.
 
-        One row per (group, decay instance), and per Gram where a spec reads
-        several (under ``target_gaps = "own_rows"`` targets that have been
-        missing on different rows are fitted from Grams of their own). The
-        common columns:
+        .. rubric:: Parameters
+
+        ``spec``
+            The spec whose closed groups to read, by name or by position. The
+            default, ``None``, reads every spec's.
+        ``drop``
+            ``True``, the default, removes what it returns from the queue of
+            closed groups not yet read, as a
+            loop that reads after each chunk wants. ``False`` reads the queue and
+            leaves it as it is.
+
+        .. rubric:: Returns
+
+        A ``DataFrame`` with one row per (group, instance), an instance being
+        the part of the model that fits one half-life, and one per Gram
+        where a spec reads several: under ``target_gaps = "own_rows"`` targets
+        missing on different rows are fitted from Grams of their own. The
+        columns every row has:
 
         ``spec``, ``group``, ``instance``, ``half_life``, ``lam``, ``session``
-            Which stream closed, the instance with its decay as :meth:`coef`
-            gives it. ``session`` is the value of the span that ended under
-            ``group_close = "session"``, and null under ``"monotone"``.
+            Which group closed, and its instance with the instance's decay, as
+            :meth:`coef` gives it. ``session`` is the value of the session that
+            ended under ``group_close = "session"``, and null under
+            ``"monotone"``.
         ``weight_sum``, ``n_kish``
-            As :meth:`gram` reports them, at the moment of the close.
+            As :meth:`gram` reports them, at the moment the group closed.
         ``rows_fed``, ``rows_learned``, ``clock_min``, ``clock_max``
-            The span's own :meth:`summary` counts, ``Int64`` as there, and clock
-            range, in the clock column's own dtype as there.
+            The span's own :meth:`summary` counts, ``Int64`` as there, and its
+            clock range, in the clock column's own dtype as there.
+        ``coef``
+            On a Gram's row, the coefficients of that Gram's ``targets``, and
+            on a kind that reports coefficients, its coefficients. Null on
+            the rows of a kind that reports none.
 
-        Then a block per kind, present when any spec of the bank closes
-        groups and is of that kind, null on the rows of other kinds:
+        Then, for each kind of model among the specs that close groups, a block
+        of columns, null on the rows of the other kinds:
 
         .. list-table::
            :header-rows: 1
@@ -2045,29 +2982,30 @@ class ModelBank:
            * - kind
              - columns
              - what they hold
-           * - a kind that keeps accumulators
+           * - a kind that keeps a Gram
              - ``columns``, ``means``, ``comoments``, ``targets``,
                ``target_means``, ``target_vars``, ``target_weights``,
                ``target_n_kish``, ``cross_moments``, ``means_by_target`` and
                ``cross_centered``
-             - packed: ``comoments`` is the upper triangle with the diagonal,
-               row by row (``k(k+1)/2`` numbers), and the per-target arrays
-               are row-major ``(n_targets, k)``.
-               :func:`polars_online.gram.from_row` expands them and hands
+             - :meth:`gram`'s arrays, packed: ``comoments`` is the upper
+               triangle with the diagonal, row by row (``k(k+1)/2`` numbers),
+               and the per-target arrays are row-major ``(n_targets, k)``.
+               :func:`polars_online.gram.from_row` expands them, and hands
                back exactly what :meth:`gram` would have returned for that
                group, so the exact solve on a closed group is
                ``po.gram.solve(po.gram.from_row(row))``
-           * - every kind that reports coefficients
-             - ``coef``
-             - on a Gram's row, the coefficients of that Gram's ``targets``
+           * - an ``ew_cov`` with ``lags``
+             - ``lags`` and ``lag_comoments``
+             - :meth:`gram`'s, the co-moments at each lag flattened lag by
+               lag, row-major: ``L*k*k`` numbers for ``L`` lags
            * - an ``ew_cov`` with ``pca``
              - ``eig_vals`` and ``eig_vecs``
-             - the vectors signed for continuity with the previous closed
-               row of the same (spec, instance): the previous group under
-               ``"monotone"``, the same group's previous close under
-               ``"session"``, never the previous chunk. So a sign flip
-               between two rows is a real rotation rather than an
-               eigensolver's arbitrary choice
+             - the vectors signed to continue those of the previous closed row
+               of the same (spec, instance): the previous group under
+               ``"monotone"``, and the same group's previous close under
+               ``"session"``, never the previous chunk. So a sign flip between
+               two rows is a real rotation, not an eigensolver's arbitrary
+               choice
            * - an ``rcov``
              - ``rcov``, ``rcorr``, ``rcov_n``, ``rcov_kind``,
                ``rcov_bandwidth_used``, ``rcov_omega2``, ``rcov_iv_sparse``,
@@ -2076,39 +3014,75 @@ class ModelBank:
            * - a ``marginal``
              - ``pair_*``
              - :meth:`marginal`'s frame turned on its side: ``pair_feature``
-               and ``pair_target`` naming the pairs, and every other
-               ``marginal`` column becoming ``pair_<column>`` with one entry
+               and ``pair_target`` name the pairs, and every other
+               ``marginal`` column becomes ``pair_<column>``, with one entry
                per pair in the same order
 
         A ``marginal`` column that is a list per pair there (the
-        ``lag_corr_*`` family with ``lags``; ``bin_edges``, ``bin_n``,
+        ``lag_corr_*`` columns with ``lags``, and ``bin_edges``, ``bin_n``,
         ``bin_mean_y`` and ``bin_var_y`` with ``bins``) is a list of lists
         here, present when any closing ``marginal`` asked for it. A nested
-        list has no CSV form, so a closed frame with them is for parquet or
-        the frame itself.
+        list has no CSV form, so write a closed frame with them to parquet, or
+        keep it as a frame.
+
+        .. rubric:: Raises
+
+        ``KeyError``
+            ``spec`` is a name the bank does not have.
+        ``IndexError``
+            ``spec`` is a position the bank does not have.
+        ``ValueError``
+            ``spec`` is ``None`` and the specs that close groups read clocks of
+            different dtypes, which one clock column cannot hold. The message
+            names them, and nothing is removed from the queue. Read them one
+            spec at a time, as for :meth:`groups`.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
             blocks = po.spec.ew_cov(
                 "cov", features=["x0", "x1"], lam=1.0, group="block", group_close="monotone"
             )
-            by_block = df.with_columns(block=pl.int_range(pl.len()) // 100)   # four blocks
-            bank = po.ModelBank([blocks])              # an ew_cov closing on "block"
-            bank.fit_predict(by_block)
-            closed = bank.closed_groups()              # one row per finished block
-            g = po.gram.from_row(closed.head(1))       # the block's moments, as gram() gives them
+            by_block = df.with_columns(block=pl.int_range(pl.len()) // 100)   # 4 blocks of 100 rows
+            bank = po.ModelBank([blocks])
+            bank.fit(by_block)
+            closed = bank.closed_groups()               # blocks 0 to 2: block 3 is still open
+            print(closed.select("group", "rows_fed").rows())
+            g = po.gram.from_row(closed.head(1))        # block 0's sums, as gram() gives them
+            print(g["comoments"].shape)
 
-        ``drop`` (the default) removes what it returns from the queue, which
-        is what a driver draining per chunk wants; ``drop=False`` peeks. The
-        streams are dropped when they close, never when this is called: a
-        bank's memory must not depend on the caller polling. What is
-        undrained is saved with the state, so a driver that saves between
-        chunks does not lose rows silently. ``spec`` narrows the frame to one
-        spec's rows (a name or a position; ``KeyError`` / ``IndexError`` for
-        one the bank has not got). A bank whose closing specs read clocks of
-        different dtypes is drained one spec at a time, as :meth:`groups` is
-        read: ``ValueError`` names them otherwise, and drains nothing.
-        :meth:`predict` never closes anything.
+        .. code-block:: text
+
+            [('0', 100), ('1', 100), ('2', 100)]
+            (2, 2)
+
+        .. rubric:: See also
+
+        - :meth:`fit_predict_batches`, whose ``closed_groups=`` reads the
+          queue after each chunk.
+        - :func:`polars_online.gram.from_row`, a closed row's sums as
+          :meth:`gram` gives them.
+        - `Closed groups in the README
+          <https://github.com/hgilde/polars-online#one-row-per-finished-group>`__,
+          a worked example.
+
+        .. rubric:: Notes
+
+        A spec with ``group_close`` gives a group's sums at the moment the
+        bank can prove no further row will join it, and then drops its
+        model. Under ``"monotone"`` that is at the end of the chunk in which a
+        larger key arrives, and
+        under ``"session"`` when the group's session ends. Without
+        ``group_close``, every key ever seen stays in memory. A closed group's
+        model is freed when the group closes, whether or not the queue is
+        read. Its rows (see Returns) stay in the queue until
+        they are read, so read it between chunks. What is unread is saved with
+        the state, so a loop that saves between chunks loses no row.
+        :meth:`predict` never closes a group.
         """
         idx = None if spec is None else self._spec_index(spec, "ModelBank.closed_groups")
         return self._native.closed_groups(idx, drop)
@@ -2116,47 +3090,57 @@ class ModelBank:
     def check(
         self, spec: str | int | None = None, group: str | Iterable[str | None] | None = None
     ) -> pl.DataFrame:
-        """Findings about the data each stream was fed: one row per problem found,
-        the worst first.
+        """Return findings about the data each model was fed, one row per problem, the worst first.
 
-        It reads only what the bank keeps anyway (:meth:`summary`,
-        :meth:`describe`, :meth:`solve_failures`, :meth:`last_row`, and
-        :meth:`gram`, :meth:`marginal` or :meth:`audit` where the spec has
-        one). So it adds no work to the run, a bank loaded from its file gives
-        the same findings as the bank that saved it, and the stream's chunking
-        moves none of them. Run it after a first pass, before trusting a fit:
+        Run it after a first pass over the data, before trusting a fit: it
+        names features null on many rows, constant or collinear features, leakage, a clock
+        that steps back, models that never warmed up, and more. To find what
+        no model keeps, such as sentinel values or a frozen feed, put an
+        :func:`polars_online.spec.audit` in the bank, and read its counts with
+        :meth:`audit`.
 
-        .. code-block:: python
+        .. rubric:: Parameters
 
-            bank = po.ModelBank.load("bank.state")
-            problems = bank.check()                       # nothing worse than info: carry on
-            problems.filter(pl.col("severity") != "info")
+        ``spec``
+            The spec to check, by name or by position. The default, ``None``,
+            checks every spec.
+        ``group``
+            The group to check: one group key, as :meth:`groups` reports it, or
+            a list of keys, with ``None`` in the list for the null group. The
+            default, ``None``, checks every group. A key the bank has never
+            seen gives no rows.
+
+        .. rubric:: Returns
+
+        A ``DataFrame`` with one row per finding, in severity order, then spec
+        order, then :meth:`groups`' order. A bank that has seen no rows gives
+        an empty frame. The columns:
 
         ``severity``
             ``error`` (the model cannot learn), ``warning`` (the fit is
-            unreliable) or ``info``; an ``Enum`` in that order, worst first.
+            unreliable) or ``info``: an ``Enum`` in that order, worst first.
         ``code``
-            Which check found it, a short name that stays the same across
-            releases. The table below lists them. A ``String``, not an ``Enum``
-            as ``severity`` is: a minor release may add a check, and an
-            ``Enum``'s categories are part of its dtype, so a new code would
+            Which check found it: a short name that stays the same across
+            releases, one of the codes listed under Returns. It is a ``String``, not an
+            ``Enum`` as ``severity`` is. A minor release may add a check, and
+            an ``Enum``'s categories are part of its dtype, so a new code would
             change the column's type under code that pins it.
         ``spec``, ``group``
-            The stream, as :meth:`summary` names it. ``group`` is null for
+            The spec and group, as :meth:`summary` names them. ``group`` is null for
             ``not_checked``, which is about the spec as a whole.
         ``column``
             The input column the finding is about, where there is one.
         ``value``, ``threshold``
-            The measured number and the line it crossed.
+            The measured number, and the line it crossed. Null for
+            ``withheld`` and ``not_checked``.
         ``message``
-            One sentence: what is wrong, and what to do about it. It ends
-            with a link to the code's section of `docs/DATA-QUALITY.md
+            What is wrong and, for most codes, what to do. It ends with
+            a link to the code's section of `docs/DATA-QUALITY.md
             <https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md>`_,
-            which shows what the problem does to each model and how to fix
-            it upstream with Polars, in a program that runs.
+            which shows what the problem does to each model and how to fix it
+            with Polars, before the bank, in a program that runs.
 
-        Rows come in severity order, then spec order, then :meth:`groups`'
-        order. The checks:
+        The codes every spec can find:
 
         .. list-table::
            :header-rows: 1
@@ -2167,14 +3151,14 @@ class ModelBank:
              - fires when
            * - ``nothing_learned``
              - error
-             - a stream was fed rows and learned from none; the column null
+             - a model was fed rows and learned from none; the column null
                most often is named
            * - ``missing``
              - warning
              - a feature or the weight column is null, NaN, infinite or past
                1e100 on 10% of the rows or more, each of them skipped; an
                error at 100%, and information for a target missing on half the
-               rows or more (sparse labels are a design, not a fault)
+               rows or more, since sparse targets are a design, not a fault
            * - ``few_learned``
              - warning
              - more than half the rows were skipped for a missing feature or
@@ -2186,13 +3170,12 @@ class ModelBank:
            * - ``level_over_spread``
              - warning, info
              - a feature's ``|mean| / std`` passes the limit of a model that
-               does not centre it (the second table); information past 1e6
-               for the models that do
+               does not center it (Notes); information past 1e6 for the models
+               that do
            * - ``scales_apart``
              - warning
              - the widest feature's spread over the narrowest's passes the
-               limit of a model that takes one step for every column (the
-               second table)
+               limit of a model that takes one step for every column (Notes)
            * - ``ridge_shrinks``
              - warning
              - ``ewridge``, ``huber`` or ``quantile`` without
@@ -2204,26 +3187,27 @@ class ModelBank:
              - the largest variance inflation factor, or the condition index
                of the design the model solves, over the features passes 30,
                from the Gram of an ``ewridge`` or ``lasso`` (information for
-               an ``ew_cov``). A model with an intercept centres, so its index
+               an ``ew_cov``). A model with an intercept centers, so its index
                is the features' correlation matrix's, ``sqrt(d_max / d_min)``;
-               one fitted through the origin reads Belsley's uncentred index
+               one fitted through the origin reads Belsley's uncentered index
                (:func:`polars_online.gram.condition`)
            * - ``leakage``
              - warning
              - a feature correlates with a target at 0.9999 or more, from
                the Gram or a ``marginal``: it contains the target, both are
-               one random walk, or the fit's R² is 0.9998 or more
+               one random walk, or the relation is nearly exact (a
+               correlation of 0.9999 is an R² of 0.9998 for that feature
+               alone)
            * - ``step_back``
              - warning
-             - the clock stepped back, a restart or a late row under
+             - the clock stepped back, a reset or a late row under
                ``restart_after_step_back``
            * - ``resets``
              - info
-             - a stream started over at a ``session_gap = "reset"`` or a step
-               back
+             - a model reset at a ``session_gap = "reset"`` or a step back
            * - ``few_rows``
              - warning
-             - a regression's stream learned from fewer rows than it has
+             - a regression learned from fewer rows than it has
                coefficients
            * - ``group_sizes``
              - info
@@ -2231,15 +3215,16 @@ class ModelBank:
                smallest or more
            * - ``never_settled``
              - warning
-             - a stream has seen less than one half-life of clock
+             - a model has seen less than one half-life of clock
                (``settled_frac`` below 0.5)
            * - ``below_min_weight``
              - warning
-             - the weight a stream settles at (``weight_sum_settled``) is
+             - the weight a model's ``weight_sum`` tops out at
+               (``weight_sum_settled``) is
                below the spec's ``min_weight``, so its predictions stay null
            * - ``withheld``
              - warning
-             - a stream's last row had its predictions withheld, with the
+             - a model's last row had its predictions withheld, with the
                reason
            * - ``low_support``
              - warning
@@ -2248,21 +3233,18 @@ class ModelBank:
                already found constant, collinear or shrunk by the ridge
            * - ``solve_failures``
              - warning, info
-             - a solve needed jitter or kept the previous fit; for ``lasso``
-               (information) a coordinate descent ran out of sweeps more than
-               10 times
+             - a model's :meth:`solve_failures` count is above 0
+               (warning); for ``lasso``, more than 10 (information)
            * - ``not_checked``
              - info
              - numpy is not installed, so ``collinear`` and ``leakage`` were
-               not checked on a spec with a Gram and a group to read it from
+               not checked on a spec with a Gram and a group to read it from;
+               said only of a spec with a group to check
 
-        An ``audit`` spec (:func:`polars_online.spec.audit`) has the counts
-        no other spec keeps, and its findings are about the data whatever a
-        model would make of it. It knows no roles, so a column's ``missing``
-        share is information (an error at every row), and ``constant`` a
-        warning. ``step_back`` and ``resets`` are read from its
-        :meth:`summary` as for any spec. Its own checks, read from
-        :meth:`audit`:
+        An ``audit`` knows no roles, so its column's ``missing`` share is
+        information (an error at every row), and its ``constant`` a warning.
+        ``step_back`` and ``resets`` are read from its :meth:`summary` as for
+        any spec. Its own codes, read from :meth:`audit`:
 
         .. list-table::
            :header-rows: 1
@@ -2274,10 +3256,10 @@ class ModelBank:
            * - ``sentinel``
              - warning, info
              - a column holds ``+inf``, ``-inf`` or a value past ``1e100``
-               (warning); holds NaN rather than null (information); or one
-               value is 1% of its usable rows or more, at least 5 times as
-               often as any other can be (warning), unless the column has 10
-               values or fewer or is frozen
+               (warning); holds NaN, not null (information); or one value is
+               1% of its usable rows or more, at least 5 times as often as any
+               other can be (warning), unless the column has 10 values or
+               fewer or is frozen
            * - ``frozen``
              - warning
              - the rows equal to the row before, less those the column's
@@ -2314,22 +3296,69 @@ class ModelBank:
              - info
              - the regular steps' coefficient of variation is 0.5 or more
 
+        .. rubric:: Raises
+
+        ``KeyError``
+            ``spec`` is a name the bank does not have.
+        ``IndexError``
+            ``spec`` is a position the bank does not have.
+        ``TypeError``
+            ``group`` is not a str, a list of them with ``None`` allowed, or
+            ``None``.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
+
+        .. code-block:: python
+
+            spec = po.spec.ewridge(
+                "ridge", targets=["y"], features=["x0", "x1", "x2"], half_life=100.0
+            )
+            bank = po.ModelBank([spec])
+            bank.fit(df.with_columns(x2=pl.lit(1.0)))           # x2 made constant
+            problems = bank.check()                             # the worst first
+            print(problems.select("severity", "code", "column").rows())
+
+        .. code-block:: text
+
+            [('warning', 'constant', 'x2')]
+
+        To keep only what needs action, drop the information:
+        ``problems.filter(pl.col("severity") != "info")``.
+
+        .. rubric:: See also
+
+        - `Data quality
+          <https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md>`__,
+          each problem, what it does to each model, and its fix.
+        - :meth:`summary`, :meth:`describe` and :meth:`audit`, the counts the
+          findings are read from.
+        - :func:`polars_online.spec.audit`, the spec that keeps what no model
+          keeps.
+
+        .. rubric:: Notes
+
+        ``check`` reads only what the bank keeps anyway: :meth:`summary`,
+        :meth:`describe`, :meth:`solve_failures`, :meth:`last_row`, and
+        :meth:`gram`, :meth:`marginal` or :meth:`audit` where the spec has
+        one. So it adds no work to the run, a bank loaded from its file gives
+        the same findings as the bank that saved it, and the input's chunking
+        moves none of them.
+
         **Every threshold was measured before it shipped**, for how often it
-        finds a planted problem and for how often it fires on clean data.
-        `Data quality <https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md#how-the-checks-work>`__
+        finds a planted problem and how often it fires on clean data. `How
+        the checks work
+        <https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md#how-the-checks-work>`__
         gives the clean streams, the planted problems and the numbers each
         line was set from.
 
-        ``level_over_spread`` and ``scales_apart`` read a limit per model:
-        the largest value at which its out-of-sample R² fell by no more than
-        0.05, at half-lives of 20, 200 and infinite. ``rls``'s level limit is
-        ``0.9 sqrt(W / delta_left)``, read from the summary. A level lowers
-        its accuracy only through the part of its prior ``delta I`` it still
-        holds, ``delta_left = delta (1 - settled_frac)`` (all of ``delta``
-        without decay), set against the weight its fit holds, ``W``
-        (``settled_frac * weight_sum_settled``, or ``weight_sum`` without
-        decay). So a decaying ``rls`` that has forgotten its prior is told
-        nothing, at any level:
+        ``level_over_spread`` and ``scales_apart`` read a limit for each
+        model: the largest value at which its out-of-sample R² fell by no more
+        than 0.05, at half-lives of 20, 200 and infinite (for ``rls``'s level
+        limit, at half-lives of 200, 2,000 and infinite, over 2,000 and
+        20,000 rows).
 
         .. list-table::
            :header-rows: 1
@@ -2353,34 +3382,36 @@ class ModelBank:
              - ``0.9 sqrt(W / delta_left)``
              - 30
 
-        The models that centre their features (``ewridge``, ``lasso``,
-        ``huber``, ``quantile``, and ``kalman``, ``sgd`` and ``pa`` at their
-        default ``standardize=True``) lost nothing at a level of 1e14 times
-        the spread. Nor did they at spreads 1e8 apart, except where a narrow
-        feature met an unstandardized ridge, which ``ridge_shrinks`` finds.
+        ``rls``'s level limit is read from the summary. A level lowers its
+        accuracy only through the part of its prior ``delta I`` it still
+        holds, ``delta_left = delta (1 - settled_frac)`` (all of ``delta``
+        without decay), set against the weight its fit holds, ``W``
+        (``settled_frac * weight_sum_settled``, or ``weight_sum`` without
+        decay). So a decaying ``rls`` that has forgotten its prior is told
+        nothing, at any level. The models that center their features
+        (``ewridge``, ``lasso``, ``huber``, ``quantile``, and ``kalman``,
+        ``sgd`` and ``pa`` at their default ``standardize=True``) lost nothing
+        at a level of 1e14 times the spread. Nor did they at spreads 1e8
+        apart, except where a narrow feature met an unstandardized ridge,
+        which ``ridge_shrinks`` finds.
 
         A level or a spread ratio counts only when it is five standard errors
-        from what a centred column, or two of equal spread, would show by
+        from what a centered column, or two of equal spread, would show by
         chance in that many rows. The Gram's checks wait for ten Kish rows a
         coefficient. Both guards keep a small group quiet.
 
         **What it cannot see.** :meth:`describe` keeps every row's moments
         undecayed, so a feature that drifted slowly can sit far above its
-        recent spread without showing as a level here. The Gram's checks
-        cover the three models that keep one, and ``leakage`` also reads a
-        ``marginal``. An ``audit`` measures what no model keeps: sentinel
-        values counted apart from nulls, a frozen feed, a column of few
-        distinct values, a level fed as a feature, heavy tails, duplicate
-        columns, and the clock's duplicate stamps, gaps and irregular spacing.
-        Without one in the bank, nothing is said about them. A group a spec closes
-        (``group_close``) leaves the bank with its stream, so nothing is said
-        about it either: the findings cover the groups still open. An
-        ``audit`` refuses ``group_close`` for that reason.
-
-        ``spec`` and ``group`` narrow the frame as in :meth:`summary`
-        (``KeyError`` / ``IndexError`` for a spec the bank has not got). A
-        bank that has seen no rows has nothing to say, and the frame is
-        empty: ``not_checked`` is said only of a spec with a group to check.
+        recent spread without showing as a level. The Gram's checks cover the
+        three models whose Gram the bank exports (:meth:`gram`), and
+        ``leakage`` also reads a ``marginal``. An ``audit`` measures what no
+        model keeps: sentinel values counted apart from nulls, a frozen feed, a
+        column of few distinct values, a level fed as a feature, heavy tails,
+        duplicate columns, and the clock's duplicate stamps, gaps and irregular
+        spacing. Without one in the bank, nothing is said about them. A group a
+        spec closes (``group_close``) leaves the bank with its model, so
+        nothing is said about it either: the findings cover the groups still
+        open. An ``audit`` refuses ``group_close`` for that reason.
         """
         from polars_online._check import check
 
@@ -2389,49 +3420,113 @@ class ModelBank:
     def solve_failures(
         self, spec: str | int | None = None, group: str | Iterable[str | None] | None = None
     ) -> pl.DataFrame:
-        """Jittered or failed matrix factorizations so far: one row per (spec, group).
+        """Return how many of each model's solves needed help, one row per spec and group.
 
-        A solve never returns NaN silently: a near-singular system is retried with
-        escalating diagonal jitter, and total failure keeps the previous coefficients.
-        Both cases are counted here, so a nonzero value means the inputs are
-        degenerate (constant or collinear features, or far too few observations for
-        the feature count), not that anything crashed. What each model counts:
+        Use it to find the models whose inputs are degenerate (constant or
+        collinear features, or far too few rows for the number of features),
+        or whose refit or seeding stopped at its pass cap. A
+        count above 0 means a solve needed help, not that anything crashed.
+        For every count of a model at once, use :meth:`summary`, which
+        carries this one as its ``solve_failures`` column.
+
+        .. rubric:: Parameters
+
+        ``spec``
+            The spec to read, by name or by position. The default, ``None``,
+            reads every spec.
+        ``group``
+            The group to read: one group key, as :meth:`groups` reports it, or a
+            list of keys, with ``None`` in the list for the null group. The
+            default, ``None``, reads every group. A key the bank has never seen
+            gives no rows.
+
+        .. rubric:: Returns
+
+        A ``DataFrame`` with ``spec``, ``group`` (as :meth:`groups` reports it)
+        and ``solve_failures``, an ``Int64``, in spec order, then in
+        :meth:`groups`' order. What each model counts:
 
         ``ewridge``, ``huber``, ``quantile``
             A solve that needed jitter, or failed at every jitter and kept the
             previous fit, the standardized solve included. ``huber`` and
             ``quantile`` also count each target whose refit of its first rows
-            took all 200 of its passes: the fit of the last pass stands.
+            took all 200 of its passes, where the fit of the last pass stands.
         ``sgd(loss="huber")``
-            Each target whose refit of its first rows took all 200 of its IRLS
-            passes. Past about 20% of outliers on one side the refit converges
-            slowly: over 3,000 streams, 50 passes ran out on 149 and 200 on 9.
+            Each target whose refit of its first rows took all 200 of its
+            passes.
+        ``marginal``
+            Each target whose bins' refit of their first rows took all 200 of
+            its passes, under ``bin_refit_rows``.
         ``lasso``
-            A coordinate descent that ran out of ``max_iter`` sweeps before every
-            coefficient moved less than ``tol``, one per target and path point.
+            A coordinate descent that ran out of ``max_iter`` sweeps before
+            every coefficient moved less than ``tol``, one per target and path
+            point.
+        ``kmeans``
+            Each run of a ``"lloyd"`` start that was still moving rows after
+            300 passes, and stopped there.
         ``ew_class``
             A row on which a class covariance could not be factorized.
         ``hmm``
-            A row whose state densities could not be evaluated; the filter is left
-            where it stands.
+            A row whose state densities could not be evaluated, where the
+            filter is left where it stands, and, as for ``kmeans``, each run
+            of a ``"lloyd"`` start of its seeding that was still moving rows
+            after 300 passes.
         ``bocpd``
-            A row whose predictive could not be evaluated: it reports nulls and leaves
-            the run-length posterior where it stands, and the count is what makes a
-            run of them visible.
+            A row whose predictive density could not be evaluated. It reports
+            nulls and leaves the run-length posterior where it stands, and the
+            count makes a run of them visible.
 
-        Every other model reports 0 because it counts nothing, not because nothing can
-        fail: ``rls`` and ``kalman`` track an inverse, and the gradient models keep no
-        second moment to factorize.
+        Every other model reports 0 because it counts nothing, not because
+        nothing can fail: ``rls`` keeps a Cholesky factor and ``kalman`` a
+        covariance, and the gradient models keep no second moment to
+        factorize.
 
-        The columns are ``spec``, ``group`` (as :meth:`groups` reports it) and
-        ``solve_failures``, an ``Int64``: the same count :meth:`summary` carries in
-        its column of that name, without the rest of the summary. ``spec`` and
-        ``group`` narrow the frame as in :meth:`summary`.
+        .. rubric:: Raises
+
+        ``KeyError``
+            ``spec`` is a name the bank does not have.
+        ``IndexError``
+            ``spec`` is a position the bank does not have.
+        ``TypeError``
+            ``group`` is not a str, a list of them with ``None`` allowed, or
+            ``None``.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
-            bank = po.ModelBank.load("bank.state")
-            failing = bank.solve_failures().filter(pl.col("solve_failures") > 0)
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = po.ModelBank([spec])
+            bank.fit(df)
+            print(bank.solve_failures().rows())                 # no solve needed help
+
+        .. code-block:: text
+
+            [('ridge', '', 0)]
+
+        To find the models that need a look, keep the rows above 0:
+        ``bank.solve_failures().filter(pl.col("solve_failures") > 0)``.
+
+        .. rubric:: See also
+
+        - :meth:`summary`, which carries this count beside the rest.
+        - :meth:`check`, whose ``solve_failures`` finding reads it.
+        - :meth:`coef`, the fits the solves gave.
+
+        .. rubric:: Notes
+
+        A solve never returns NaN silently. A near-singular system is tried
+        again with a larger diagonal jitter at each try, and a solve that
+        fails at every jitter keeps the previous coefficients. Both are
+        counted here.
+
+        Past about 20% of outliers on one side, a Huber refit converges
+        slowly. Over 3,000 simulated targets of 50 to 500 rows, with up to 45%
+        of the rows on one side moved by a level, 50 passes ran out on 149 of
+        them, and 200 passes on 9, all nine past 39%.
         """
         names = self._native.spec_names()
         picked = (
@@ -2455,13 +3550,15 @@ class ModelBank:
 
     @property
     def output_fields(self) -> dict[str, list[str]]:
-        """Spec name to the field names of its output struct, in order:
-        :func:`polars_online.spec.output_fields` for every spec in the bank.
+        """Each spec's name, mapped to the names of its output column's fields, in order.
 
-        The fields are fixed by the spec, so this is the output schema before any row
-        is fed. A property, as :attr:`specs` is. Before 1.0 it was a method, and
-        ``bank.output_fields()`` still answers, with a
-        :class:`~polars_online.PolarsOnlineDeprecationWarning`.
+        For each spec, the list is :func:`polars_online.spec.output_fields`
+        of that spec. The spec fixes its fields, so this is the output's
+        layout before any row is fed. It is a property, as :attr:`specs` is.
+        Calling it, as ``bank.output_fields()``, is deprecated: it still
+        returns the mapping, with a
+        :class:`~polars_online.PolarsOnlineDeprecationWarning`, until the
+        next major version refuses it.
         """
         return _CalledDict(
             zip(self._native.spec_names(), self._native.output_fields(), strict=True)
@@ -2469,37 +3566,84 @@ class ModelBank:
 
     @deprecated_keywords("ModelBank.save", {"path": "file"})
     def save(self, file: str | os.PathLike[str] | IO[bytes]) -> None:
-        """Write the state to a file: versioned msgpack, loadable on any supported OS.
+        """Write the bank's state to a file that :meth:`load` reads on any supported OS.
 
-        ``file`` is a path, or a file object opened for binary writing (an
-        ``open(..., "wb")`` or an ``io.BytesIO``), as Polars' ``write_*``
-        methods take either. :meth:`save_bytes` gives the same bytes.
-
-        A path is written to a temporary sibling and renamed into place, so an
-        interrupted save leaves the previous state where it was rather than truncating
-        it. The rename is preceded by a filesystem sync, so a power loss cannot replace
-        a good state file with an empty one. The sync takes about 4 ms on macOS, against
-        about 0.5 ms for serializing 500 groups. Save every chunk and the sync
-        dominates; save every hundredth and it disappears. A file object is handed
-        the bytes in one ``write``, after the state is serialized: whether the write
-        is atomic is up to whoever opened it.
-
-        Raises the ``OSError`` for what went wrong, with the path in the message:
-        ``FileNotFoundError`` for a directory that is not there, ``PermissionError``
-        for one that cannot be written. The file, if it existed, is untouched.
-        ``RuntimeError`` while a ``fit_predict`` is in flight on another thread, and
-        ``ValueError`` for a bank a refused chunk left broken (:meth:`fit_predict`).
-        ``TypeError`` for a ``file`` that is neither a path nor a binary file
-        object.
+        Use it to keep what a bank has learned, to resume it later or to
+        serve from it. For the bytes without a file, use :meth:`save_bytes`,
+        and to read a state outside this library, use :meth:`write_json`.
 
         .. warning::
-            A spec's formula target (:func:`polars_online.target` over a window
-            expression) is written into the file as a tree whose form is
-            considered **unstable**: it may change in any release without that
-            counting as a breaking change. Under
-            ``POLARS_ONLINE_WARN_UNSTABLE=1`` saving or loading a bank that
-            holds one raises :class:`~polars_online.UnstableWarning`. The rest of
-            the file is promised.
+            A spec's formula target (an expression in ``targets`` holding a
+            window operator of :mod:`polars_online.ops` that looks ahead) is
+            written into the file in a form that is
+            **unstable**: it may change in any release without that counting
+            as a breaking change. The rest of the file's form is kept from
+            release to release.
+
+        .. rubric:: Parameters
+
+        ``file``
+            A path, or a file object opened for binary writing, such as
+            ``open(..., "wb")`` or an ``io.BytesIO``, as Polars' ``write_*``
+            methods take either. A path is replaced safely: an interrupted
+            save leaves the file that was there before (see Notes). A file
+            object is handed the bytes in one ``write``, and whether that
+            write can be interrupted is up to whoever opened it.
+
+        .. rubric:: Raises
+
+        ``OSError``
+            The file cannot be written, with the path in the message:
+            ``FileNotFoundError`` for a folder that does not exist,
+            ``PermissionError`` for one that cannot be written. A file that
+            was there is left untouched.
+        ``TypeError``
+            ``file`` is neither a path nor a binary file object.
+        ``ValueError``
+            A refused chunk left the bank unable to go on
+            (:meth:`fit_predict`, Notes).
+        ``RuntimeError``
+            A call that learns is in flight on another thread.
+        :class:`~polars_online.UnstableWarning`
+            A warning, not an error, issued only under
+            ``POLARS_ONLINE_WARN_UNSTABLE=1``: a spec holds a formula target,
+            whose written form is unstable.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
+
+        .. code-block:: python
+
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = po.ModelBank([spec])
+            bank.fit_predict(df)
+            bank.save("bank.state")                       # a path, replaced safely
+            print(po.ModelBank.load("bank.state").rows_fed)
+
+        .. code-block:: text
+
+            400
+
+        .. rubric:: See also
+
+        - :meth:`load`, which reads the file back.
+        - :meth:`save_bytes` and :meth:`write_json`, the state as bytes and as
+          JSON.
+        - `Resume from a saved state
+          <https://github.com/hgilde/polars-online/blob/main/docs/how-to/resume-from-a-saved-state.md>`_.
+
+        .. rubric:: Notes
+
+        The state is versioned MessagePack. A path is written to a temporary
+        file beside it, synced to the disk, and renamed into place, so a
+        power loss cannot leave an empty file where a good state was. The
+        sync takes about 4 ms on macOS, against about 0.1 ms to write a state
+        of 396 KiB. In the same measurement, on a Mac, a whole save of 500
+        groups (encoding the state, writing it and renaming it) took 5.0 ms
+        with the sync and 0.5 ms without it. A save after every chunk is
+        dominated by the sync, and a save after every hundredth chunk is not.
         """
         if isinstance(file, (str, os.PathLike)):
             # One frame more than `save_bytes`: the keyword forwarding's.
@@ -2529,12 +3673,48 @@ class ModelBank:
             warn_unstable("a formula target's written form in a state file", stacklevel=stacklevel)
 
     def save_bytes(self) -> bytes:
-        """What :meth:`save` writes, as bytes, for a store that is not a file
-        (:meth:`load_bytes` reads them back).
+        """The bytes :meth:`save` writes, for a store that is not a file.
 
-        This is also what pickle and ``copy.deepcopy`` carry. ``RuntimeError`` while a
-        ``fit_predict`` is in flight on another thread. A formula target's written
-        form is unstable, as :meth:`save` says.
+        Use it to keep a state in a database or an object store, and read it
+        back with :meth:`load_bytes`. Pickle and ``copy.deepcopy`` carry a
+        bank as these bytes.
+
+        .. rubric:: Returns
+
+        ``bytes``: the state, as :meth:`save` writes it to a file.
+
+        .. rubric:: Raises
+
+        ``RuntimeError``
+            A call that learns is in flight on another thread.
+        ``ValueError``
+            A refused chunk left the bank unable to go on
+            (:meth:`fit_predict`, Notes).
+        :class:`~polars_online.UnstableWarning`
+            Under ``POLARS_ONLINE_WARN_UNSTABLE=1``, for a formula target, as
+            :meth:`save` says.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
+
+        .. code-block:: python
+
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = po.ModelBank([spec])
+            bank.fit_predict(df)
+            blob = bank.save_bytes()                     # to keep wherever bytes can be kept
+            print(po.ModelBank.load_bytes(blob).rows_fed)
+
+        .. code-block:: text
+
+            400
+
+        .. rubric:: See also
+
+        - :meth:`load_bytes`, which reads the bytes back.
+        - :meth:`save`, which writes them to a file.
         """
         self._warn_formula_form()
         return bytes(self._native.save_bytes())
@@ -2553,39 +3733,79 @@ class ModelBank:
         *,
         pretty: bool = True,
     ) -> str | None:
-        """The state as JSON: everything :meth:`save` writes, in a form that can be read
-        without this library.
+        """Write the bank's state as JSON, which can be read without this library.
 
-        Returned as a string when ``file`` is ``None``, as Polars'
-        ``DataFrame.write_json()`` returns its JSON. Otherwise written to
-        ``file``, a path or a file object, text or binary (UTF-8), and ``None``
-        is returned. A path is written plainly, not with :meth:`save`'s atomic
-        rename: this is an export of a state that lives elsewhere, so a
-        half-written one is mended by writing it again. ``pretty=False`` writes
-        it on one line.
+        Use it to look at a state, to compare two states, or to hand one to a
+        program that is not Python. It is an export, not a second form of
+        state file: :meth:`load` reads only what :meth:`save` writes.
 
-        An export, not a second state format: :meth:`load` reads msgpack and only
-        msgpack. Use it to look at a state, diff two of them, or hand one to something
-        that is not Python.
+        .. rubric:: Parameters
 
-        It carries every value, the ones JSON has no literal for included. A NaN or an
-        infinity is written as the string ``"nan"``, ``"inf"`` or ``"-inf"``, the
-        spelling a spec's ``half_life`` takes. Every export is read back, and its
-        msgpack must match the state's byte for byte. One that does not raises
-        ``ValueError`` naming the problem, instead of returning a file that is quietly
-        wrong. ``RuntimeError`` while a ``fit_predict`` is in flight on another
-        thread, as :meth:`save` does. A formula target's written form is
-        unstable, as :meth:`save` says, and the export carries the same tree.
+        ``file``
+            Where to write: a path, or a file object, text or binary (the
+            bytes are UTF-8). ``None``, the default, returns the text, as
+            Polars' ``DataFrame.write_json()`` does. A path is written
+            directly, without :meth:`save`'s safe replacement: an export of a
+            state kept elsewhere is mended by writing it again.
+        ``pretty``
+            Whether to indent the JSON over several lines. ``True`` by
+            default. ``False`` writes it on one line.
+
+        .. rubric:: Returns
+
+        The JSON text when ``file`` is ``None``, and otherwise ``None``. It
+        holds everything :meth:`save` writes, every value included: NaN and
+        the infinities, which JSON has no literal for, are written as the
+        strings ``"nan"``, ``"inf"`` and ``"-inf"``, the spellings a spec's
+        ``half_life`` takes.
+
+        .. rubric:: Raises
+
+        ``ValueError``
+            The export, read back, does not give the state's MessagePack
+            byte for byte (see Notes), or a refused chunk left the bank
+            unable to go on.
+        ``TypeError``
+            ``file`` is neither a path, a file object nor ``None``.
+        ``OSError``
+            A path cannot be written, such as ``FileNotFoundError`` for a
+            folder that does not exist.
+        ``RuntimeError``
+            A call that learns is in flight on another thread.
+        :class:`~polars_online.UnstableWarning`
+            Under ``POLARS_ONLINE_WARN_UNSTABLE=1``, for a formula target, as
+            :meth:`save` says. The export carries the same written form.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
+
+            import json
 
             spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             bank = po.ModelBank([spec])
             bank.fit_predict(df)
-            import json
-
             state = json.loads(bank.write_json())     # the state, as Python objects
             bank.write_json("bank.json")               # the same text, in a file
+            print(state["rows_fed"], [s["name"] for s in state["specs"]])
+
+        .. code-block:: text
+
+            400 ['ridge']
+
+        .. rubric:: See also
+
+        - :meth:`save`, which writes the state :meth:`load` reads.
+
+        .. rubric:: Notes
+
+        Every export is read back and converted to MessagePack, which must
+        match the state's byte for byte. One that does not raises
+        ``ValueError`` naming the problem, so the export is never a file that
+        is wrong without saying so.
         """
         self._warn_formula_form()
         text = str(self._native.save_json_string(pretty))
@@ -2614,15 +3834,21 @@ class ModelBank:
 
     @deprecated_alias("ModelBank.to_json", "ModelBank.write_json", ", which returns the same text")
     def to_json(self, *, pretty: bool = True) -> str:
-        """Renamed :meth:`write_json`: called without a file it returns the same
-        string. Each call raises a
-        :class:`~polars_online.PolarsOnlineDeprecationWarning`."""
+        """Return the state as JSON text: the old name of :meth:`write_json`.
+
+        Use :meth:`write_json` without a file, which returns the same text.
+        Each call issues a
+        :class:`~polars_online.PolarsOnlineDeprecationWarning`.
+        """
         return self.write_json(pretty=pretty)
 
     @deprecated_alias("ModelBank.save_json", "ModelBank.write_json", ", which takes the same path")
     def save_json(self, path: str | os.PathLike[str], *, pretty: bool = True) -> None:
-        """Renamed :meth:`write_json`, which takes the same path. Each call
-        raises a :class:`~polars_online.PolarsOnlineDeprecationWarning`."""
+        """Write the state as JSON to a path: the old name of :meth:`write_json`.
+
+        Use :meth:`write_json`, which takes the same path. Each call issues a
+        :class:`~polars_online.PolarsOnlineDeprecationWarning`.
+        """
         self.write_json(path, pretty=pretty)
 
     @classmethod
@@ -2634,54 +3860,103 @@ class ModelBank:
         *,
         threads: int | None = None,
     ) -> ModelBank:
-        """A bank from a state :meth:`save` wrote, on this or any other OS.
+        """Load a bank from a state file :meth:`save` wrote, on this OS or any other.
 
-        ``source`` is a path, the bytes (:meth:`save_bytes`), or a file object
-        opened for binary reading (an ``open(..., "rb")`` or an ``io.BytesIO``),
-        as Polars' ``read_*`` functions take any of the three.
+        Use it to resume a saved bank, or to serve predictions from it with
+        :meth:`predict`. The file carries the bank's specs, so you need not
+        give them. For bytes from a store that is not a file, this call takes
+        them as well, as :meth:`load_bytes` does.
 
-        The file carries the specs, so none need be given. Passing ``specs`` asserts
-        they are the file's, which is how a resuming job checks that the state it
-        found is the state of the bank it is about to run.
+        .. rubric:: Parameters
+
+        ``source``
+            A path, the bytes :meth:`save_bytes` gave, or a file object opened
+            for binary reading, such as ``open(..., "rb")`` or an
+            ``io.BytesIO``, as Polars' ``read_*`` functions take any of the
+            three.
+        ``specs``
+            The specs you expect the file to hold. Given, the load is refused
+            unless they are the file's, which is how a job that resumes
+            checks that the state it found belongs to the bank it is about to
+            run. ``None``, the default, takes the file's specs unchecked.
+        ``threads``
+            The loaded bank's ``threads``, as :class:`ModelBank` takes it.
+            The file carries no count, so a bank saved on eight threads and
+            loaded with none runs on the process's shared threads, with the
+            same numbers.
+
+        .. rubric:: Returns
+
+        A :class:`ModelBank` holding the saved state, which goes on from the
+        row after the last one it learned before the save.
+
+        .. rubric:: Raises
+
+        ``OSError``
+            The file cannot be read, such as ``FileNotFoundError`` for a path
+            that does not exist.
+        ``TypeError``
+            ``source`` is not a path, bytes or a file object, or the file
+            object gives text rather than bytes. ``threads`` is not an
+            integer.
+        ``ValueError``
+            The file can be read but is not a bank this build loads:
+
+            - it is not a bank's state file, or it is damaged in a way the
+              checks find (see Notes);
+            - a newer build wrote it, under a format or state version above
+              this build's;
+            - a build of 0.13.0 or earlier wrote it, below the oldest state
+              version this build loads, which is 1.0's
+              (:func:`polars_online.schema_version` gives the current one):
+              fit the bank again from its input;
+            - a state contradicts its own spec, such as an ``sgd`` state
+              without the scaler its ``standardize`` needs;
+            - ``specs`` are given and differ from the file's;
+            - ``threads`` is below 1, or names more threads than the system
+              will start.
+        :class:`~polars_online.UnstableWarning`
+            Under ``POLARS_ONLINE_WARN_UNSTABLE=1``, for a file holding a
+            formula target, as :meth:`save` says.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` and ``today`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
-            # refused if the file's specs differ from these
-            bank = po.ModelBank.load("bank.state", specs=[spec])
-            bank.fit_predict(today)                    # and the stream goes on
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            saved = po.ModelBank([spec])
+            saved.fit_predict(df)
+            saved.save("bank.state")
 
-        ``threads`` is the loaded bank's, as :class:`ModelBank` takes it. The
-        file does not carry a count, so a bank saved on eight threads and
-        loaded with none runs on the process's pool, and gives the same
-        numbers.
+            bank = po.ModelBank.load("bank.state", specs=[spec])   # refused if the specs differ
+            bank.fit_predict(today)                                # and the stream goes on
+            print(bank.rows_fed)
 
-        Raises ``FileNotFoundError`` (or the ``OSError`` for what went wrong) when the
-        file cannot be read, ``TypeError`` for a ``source`` that is none of the
-        three, and ``ValueError`` when it can be read but is not a bank this
-        build loads:
+        .. code-block:: text
 
-        - not a bank state file at all;
-        - written by a newer build (the file's format or state schema version is above
-          this build's);
-        - written under a state schema below this build's floor, which is 1.0's: a
-          state saved by 0.13.0 or earlier is refit rather than loaded
-          (:func:`polars_online.schema_version` is the current schema);
-        - a state that contradicts its own spec, such as an ``sgd`` state without the
-          scaler its ``standardize`` needs;
-        - ``specs`` that differ from the file's.
+            800
 
-        **The file carries no checksum.** What is checked is its envelope -- the
-        magic, the format and schema versions, the number of states -- and each
-        state's shape against its spec: every vector at the length its spec
-        gives it. A damaged payload that still decodes and passes those checks
-        loads: a flipped bit in a stored number is a slightly different state,
-        consistent with itself, and the model goes on from it. Keep a file where
-        it cannot be damaged, or carry a checksum beside it.
+        .. rubric:: See also
 
-        A formula target's written form is unstable, as :meth:`save` says, and
-        loading a file that holds one raises
-        :class:`~polars_online.UnstableWarning` under
-        ``POLARS_ONLINE_WARN_UNSTABLE=1``.
+        - :meth:`save`, which writes the state file.
+        - :meth:`skip_learned`, for input that overlaps what the state has
+          learned.
+        - `Resume from a saved state
+          <https://github.com/hgilde/polars-online/blob/main/docs/how-to/resume-from-a-saved-state.md>`_.
+
+        .. rubric:: Notes
+
+        **The file carries no checksum.** The load checks the file's envelope
+        (its magic number, its format and state versions, its number of
+        states) and each state's shape against its spec, every vector at the
+        length its spec gives it. A damaged file that still decodes and passes
+        those checks loads: a flipped bit in a stored number is a slightly
+        different state, consistent with itself, and the model goes on from
+        it. Keep a state file where it cannot be damaged, or keep a checksum
+        beside it.
         """
         threads = _check_threads(threads)
         if isinstance(source, (bytes, bytearray, memoryview)):
@@ -2714,9 +3989,56 @@ class ModelBank:
         *,
         threads: int | None = None,
     ) -> ModelBank:
-        """:meth:`load` from the bytes :meth:`save_bytes` gave, with the same ``specs``
-        check, ``threads`` and ``ValueError`` for bytes that are not a bank
-        this build loads. :meth:`load` takes the bytes too.
+        """Load a bank from the bytes :meth:`save_bytes` gave.
+
+        Use it for a state kept in a store that is not a file. :meth:`load`
+        takes bytes as well, with the same checks.
+
+        .. rubric:: Parameters
+
+        ``data``
+            The bytes :meth:`save_bytes` returned.
+        ``specs``
+            The specs you expect the bytes to hold, checked as :meth:`load`
+            checks them. ``None``, the default, takes their specs unchecked.
+        ``threads``
+            The loaded bank's ``threads``, as :class:`ModelBank` takes it.
+
+        .. rubric:: Returns
+
+        A :class:`ModelBank` holding the saved state.
+
+        .. rubric:: Raises
+
+        ``ValueError`` and ``TypeError``
+            As :meth:`load` raises them, for bytes that are not a bank this
+            build loads, and for a ``threads`` it refuses. ``TypeError`` also
+            when ``data`` is not ``bytes``.
+        :class:`~polars_online.UnstableWarning`
+            Under ``POLARS_ONLINE_WARN_UNSTABLE=1``, for bytes holding a
+            formula target, as :meth:`save` says.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
+
+        .. code-block:: python
+
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = po.ModelBank([spec])
+            bank.fit_predict(df)
+            again = po.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
+            print(again.rows_fed)
+
+        .. code-block:: text
+
+            400
+
+        .. rubric:: See also
+
+        - :meth:`save_bytes`, which gives the bytes.
+        - :meth:`load`, which reads a file too.
         """
         return cls._load_bytes(data, specs, stacklevel=4, threads=_check_threads(threads))
 

@@ -2,4 +2,12 @@
 ======================
 
 .. automodule:: polars_online.gbdt
-   :members: xgboost_matrix, lightgbm_dataset
+   :no-members:
+
+Training inputs
+---------------
+
+XGBoost's and LightGBM's training inputs, binned from a stream.
+
+.. entries:: gbdt
+

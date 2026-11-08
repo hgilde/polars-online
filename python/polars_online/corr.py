@@ -1,22 +1,22 @@
-"""Correlation matrices, read and repaired.
+"""Read, repair, summarize and score correlation matrices.
 
-:mod:`polars_online.gram`'s complement. Where that module solves and diagnoses
-a design matrix, this one takes a correlation matrix and does the arithmetic
-that comes after a pass:
+:mod:`polars_online.gram` solves and diagnoses the design a Gram holds.
+This module takes a correlation matrix, from a Gram or from anywhere else,
+and does the arithmetic that comes after a pass:
 
 .. list-table::
    :header-rows: 1
    :widths: 30 70
 
-   * - kind
+   * - what you want
      - the calls
    * - read one
      - :func:`polars_online.gram.correlation`, from a Gram, and
-       :func:`polars_online.gram.from_row` for a closed row
+       :func:`polars_online.gram.from_row` for a closed group's row
    * - repair it
      - :func:`nearest`, the nearest correlation matrix; :func:`shrink`,
-       towards a structured target
-   * - summarise it
+       toward a structured target
+   * - summarize it
      - :func:`equicorr`, :func:`equicorr_row` and :func:`equicorr_loglik`
        for one common correlation; :func:`block_means` and
        :func:`from_blocks` for blocks; :func:`spectral` and
@@ -32,29 +32,44 @@ that comes after a pass:
    * - undo the Epps attenuation
      - :func:`epps_invert`
 
-Every function is a pure function of arrays. Where the input is a matrix it
-may equally be a mapping from :meth:`~polars_online.ModelBank.gram` or a row
-from :meth:`~polars_online.ModelBank.closed_groups`, whose correlation matrix
-it reads as :func:`polars_online.gram.correlation` does.
+Every function is a pure function of its inputs: arrays or numbers, or a
+Gram or a closed group's row. Where it takes a correlation matrix, it also
+takes one of the Grams :meth:`~polars_online.ModelBank.gram` returns, or a row of
+:meth:`~polars_online.ModelBank.closed_groups`, and reads its correlation
+matrix as :func:`polars_online.gram.correlation` does. That matrix gives a
+Gram's ``intercept`` column a row and a column of ``nan``, which each
+function meets in its own way:
 
-The arithmetic is the papers', named in each docstring, and every function is
-held against a longhand check in ``tests/test_corr.py``: Higham's own
-published examples for :func:`nearest`, Ledoit and Wolf's formulae for
-:func:`shrink`, the closed forms for the rest. Where a library computes the
-same thing, ``tests/test_second_opinion.py`` holds it to that too:
-statsmodels' ``corr_nearest`` for :func:`nearest`, scikit-learn's
-``ledoit_wolf`` for :func:`shrink` towards the identity.
+- :func:`nearest` drops them;
+- :func:`equicorr` leaves them out of its mean, and :func:`block_means` out
+  of each block's, which is ``nan`` where every entry behind it is;
+- :func:`absorption` and :func:`spectral` raise numpy's ``LinAlgError``;
+- :func:`shrink` returns ``nan`` in the intercept's row and column (the
+  whole matrix toward ``target="identity"``), and its estimated intensity
+  comes back as 0, which shrinks nothing;
+- :func:`loss` gives ``nan``.
 
-Requires numpy, which is an optional extra of this package (``pip install
-polars-online[numpy]``), not a dependency, as it is not one of polars' either.
-Nothing here needs scipy or scikit-learn.
+So pass such a Gram through :func:`polars_online.gram.subset` first, naming
+its features.
+
+The arithmetic is the papers', named in each docstring, and every function
+is held against a longhand check in ``tests/test_corr.py``: Higham's own
+published examples for :func:`nearest`, Ledoit and Wolf's formulas for
+:func:`shrink`, and the closed forms for the rest. Where a library computes
+the same thing, ``tests/test_second_opinion.py`` holds the function to it
+too: statsmodels' ``corr_nearest`` for :func:`nearest`, and scikit-learn's
+``ledoit_wolf`` for :func:`shrink` toward the identity.
+
+The module needs numpy, an optional extra of this package (``pip install
+polars-online[numpy]``) and not a dependency, since it is not one of
+Polars' either. Nothing here needs scipy or scikit-learn.
 
 .. warning::
     This module is considered **unstable**: its functions' names, keywords
     and results may change in any release without that counting as a
-    breaking change. Under ``POLARS_ONLINE_WARN_UNSTABLE=1`` each call raises
-    :class:`polars_online.UnstableWarning`, once for a call however many of
-    the module's functions it runs.
+    breaking change. Under ``POLARS_ONLINE_WARN_UNSTABLE=1`` each call issues
+    :class:`polars_online.UnstableWarning`, once per call, even when that
+    call runs other functions of this module.
 """
 
 from __future__ import annotations
@@ -156,15 +171,79 @@ def matrix(obj: Any) -> Any:
 
 
 def to_z(rho: Any) -> Any:
-    """Fisher's ``z = atanh(rho)``, elementwise, with ``|rho|`` clipped at
-    :data:`Z_CLIP` so a degenerate ``±1`` is finite (``z`` about 7.25).
+    """Apply Fisher's transform, ``z = atanh(rho)``, to correlations elementwise.
+
+    Use it to move correlations to a scale on which their sampling error is
+    about normal, with variance ``1 / (n - 3)``, before you average,
+    difference or test them. :func:`from_z` maps back.
+
+    .. rubric:: Parameters
+
+    ``rho``
+        A correlation, or an array of them. ``|rho|`` is clipped at
+        :data:`Z_CLIP`, ``1 - 1e-6``, so a degenerate ``±1`` gives a finite
+        ``z`` of about 7.25, where ``atanh`` would give ``inf``.
+
+    .. rubric:: Returns
+
+    A float, or a float array of ``rho``'s shape.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        print(po.corr.to_z([0.0, 0.5, 1.0]).round(3))
+
+    .. code-block:: text
+
+        [0.    0.549 7.254]
+
+    .. rubric:: See also
+
+    - :func:`from_z`, the inverse.
+    - :func:`fisher_se`, the standard error of ``z``.
+
+    .. rubric:: Notes
+
+    Because of the clip, the round trip through :func:`from_z` is not quite
+    the identity at the ends: it gives back ``±Z_CLIP``, to rounding, for
+    ``±1``.
     """
     np = _np()
     return np.arctanh(np.clip(np.asarray(rho, dtype=float), -Z_CLIP, Z_CLIP))
 
 
 def from_z(z: Any) -> Any:
-    """``tanh(z)``, the inverse of :func:`to_z` away from the clip."""
+    """Map Fisher's ``z`` back to a correlation, ``tanh(z)``, elementwise.
+
+    Use it to return an average, a difference or a bound computed on the
+    ``z`` scale to the correlation scale. It is the inverse of :func:`to_z`
+    away from that function's clip.
+
+    .. rubric:: Parameters
+
+    ``z``
+        A value of ``z``, or an array of them.
+
+    .. rubric:: Returns
+
+    A float, or a float array of ``z``'s shape, each in ``[-1, 1]``.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        z = po.corr.to_z([0.2, 0.6])
+        print(po.corr.from_z(z.mean()).round(3))     # the mean correlation on the z scale
+
+    .. code-block:: text
+
+        0.42
+
+    .. rubric:: See also
+
+    - :func:`to_z`, the transform.
+    """
     np = _np()
     return np.tanh(np.asarray(z, dtype=float))
 
@@ -175,57 +254,104 @@ def from_z(z: Any) -> Any:
 def nearest(
     a: Any, w: Any = None, *, tol: float = 1e-8, max_iter: int = 100
 ) -> tuple[Any, float, int]:
-    """The nearest correlation matrix to ``a``, by Higham (2002).
+    """Find the nearest correlation matrix to a matrix, by Higham's alternating projections.
 
-    Alternating projections with Dykstra's correction, his Algorithm 3.3:
+    Use it to repair an "almost-correlation" matrix, one that is not
+    positive semidefinite, such as one assembled from estimates of each
+    pair made apart, while changing it as little as possible. To trade bias
+    for variance instead, use :func:`shrink`.
 
-    .. code-block:: text
+    .. rubric:: Parameters
 
-        dS_0 = 0,  Y_0 = A
-        R_k  = Y_{k-1} - dS_{k-1}          # Dykstra's correction
-        X_k  = P_S(R_k)                    # onto the PSD cone
-        dS_k = X_k - R_k
-        Y_k  = P_U(X_k)                    # onto the unit diagonal
+    ``a``
+        A square, finite matrix, symmetrized on the way in; or a Gram from
+        :meth:`~polars_online.ModelBank.gram`, or a row of
+        :meth:`~polars_online.ModelBank.closed_groups`. **A Gram is repaired
+        without its intercept column**, the constant a spec's
+        ``fit_intercept`` adds, since a constant has no correlation with
+        anything. It is read as :func:`polars_online.gram.correlation` reads
+        it, and :func:`polars_online.gram.vif` leaves the intercept out the
+        same way. A feature the stream found constant has
+        no correlation either, and is refused: pass the Gram without it, as
+        :func:`polars_online.gram.subset` returns it.
+    ``w``
+        The diagonal of a weight matrix ``W``, as a vector of one weight per
+        column (for a Gram, per column other than the intercept), each
+        finite and above 0. Default ``None``, every weight 1.
+    ``tol``
+        The stopping rule: the largest of the relative changes in ``X``, in
+        ``Y``, and between them falls below it (Notes). Default 1e-8.
+        ``tol`` sets the work, since convergence is linear.
+    ``max_iter``
+        The most iterations, at least 1. Default 100. It stops a run that
+        has not met ``tol``, and returns the last iterate with no warning:
+        ``iters < max_iter`` in the result shows that the run met ``tol``,
+        and ``iters == max_iter`` that it may have stopped at the limit.
+        At 0 the input would come back unprojected with a distance of 0,
+        which would say it was already a correlation matrix.
 
-    with ``P_U`` setting the diagonal to 1 and, for a diagonal weight ``w``,
-    ``P_S(A) = W^-1/2 (W^1/2 A W^1/2)_+ W^-1/2`` where ``(.)_+`` clips the
-    eigenvalues at zero. It stops on his test (4.1): the largest of the relative
-    changes in ``X``, in ``Y``, and between them, below ``tol``, each in the
-    infinity norm, the largest absolute row sum.
+    .. rubric:: Returns
 
-    Returns ``(X, dist, iters)``: the matrix, the weighted Frobenius distance
-    ``||W^1/2 (A - X) W^1/2||_F``, and the iterations taken. Convergence is
-    linear: the change fell by a factor of 2.4 an iteration on his 3 x 3
-    example and 2.7 on his 4 x 4, from ``tol=1e-4`` to ``1e-10``. So
-    ``tol`` sets the work, and ``max_iter`` only stops a run that would not
-    converge; reaching it returns the last iterate. The result has an exactly
-    unit diagonal and is PSD to ``tol``: the iteration converges to the
-    boundary of the cone, so the smallest eigenvalue can be a small negative
-    number of that order. Tighten ``tol`` if that matters; clipping it here
-    would break the diagonal again.
+    ``(X, dist, iters)``: the repaired matrix, the weighted Frobenius
+    distance ``||W^1/2 (A - X) W^1/2||_F``, and the iterations taken. For a
+    Gram, ``X`` has one row and one column for each of the Gram's columns
+    other than the intercept, in their order. ``X`` has an exactly unit diagonal
+    and is positive semidefinite to ``tol``: its smallest eigenvalue can be
+    a small negative number of that order (Notes).
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        An entry of ``a`` that is not finite; a Gram column, other than the
+        intercept, with no variance; ``a`` not square; ``w`` without one
+        weight per column, or with a weight that is not finite and above 0;
+        ``max_iter`` below 1.
+
+    .. rubric:: Examples
 
     .. code-block:: python
 
         almost = np.array([[1.0, 0.9, 0.7], [0.9, 1.0, 0.3], [0.7, 0.3, 1.0]])   # not PSD
         fixed, dist, iters = po.corr.nearest(almost)
+        print(fixed.round(3), round(dist, 4), iters)
 
-    ``a`` must be square and finite; it is symmetrised on the way in, since an
-    "almost-correlation" matrix from two different estimates of the same pair is
-    the case this exists for. ``w`` is the diagonal of ``W`` as a vector, all
-    finite and positive. ``max_iter`` must be at least 1: returning the input
-    unprojected, with a distance of 0, would say it was already a correlation
-    matrix. Each is ``ValueError``.
+    .. code-block:: text
 
-    **A Gram is repaired over its columns without the intercept.** Given one
-    of the Grams :meth:`~polars_online.ModelBank.gram` returns, or a row of
-    :meth:`~polars_online.ModelBank.closed_groups`, ``a`` is read as
-    :func:`polars_online.gram.correlation` reads it, less the ``intercept``
-    column a spec's ``fit_intercept`` adds, as :func:`polars_online.gram.vif`
-    leaves it out: a constant has no correlation with anything. So ``X`` is
-    ``k - 1`` square, in the order of the Gram's other columns, and ``w``
-    holds one weight for each of them. A feature the stream found constant
-    has no correlation either, and is refused (``ValueError``): pass the Gram
-    without it, as :func:`polars_online.gram.subset` returns it.
+        [[1.    0.895 0.697]
+         [0.895 1.    0.303]
+         [0.697 0.303 1.   ]] 0.0097 17
+
+    .. rubric:: See also
+
+    - :func:`shrink`, the other repair, toward a structured target.
+
+    .. rubric:: Notes
+
+    **The method is Higham's (2002) Algorithm 3.3**: alternating projections
+    with Dykstra's correction,
+
+    .. code-block:: text
+
+        dS_0 = 0,  Y_0 = A
+        R_k  = Y_{k-1} - dS_{k-1}          # Dykstra's correction
+        X_k  = P_S(R_k)                    # onto the positive semidefinite cone
+        dS_k = X_k - R_k
+        Y_k  = P_U(X_k)                    # onto the unit diagonal
+
+    with ``P_U`` setting the diagonal to 1 and, for the diagonal weight
+    ``W``, ``P_S(A) = W^-1/2 (W^1/2 A W^1/2)_+ W^-1/2``, where ``(.)_+``
+    clips the eigenvalues at 0. It stops on Higham's test (4.1): the
+    largest of the relative changes in ``X``, in ``Y``, and between them,
+    below ``tol``, each in the infinity norm, the largest absolute row sum.
+
+    **Convergence is linear**: the change fell by a factor of 2.4 an
+    iteration on Higham's 3 x 3 example and 2.7 on his 4 x 4, from
+    ``tol=1e-4`` to ``1e-10``.
+
+    **The result is positive semidefinite only to** ``tol``. The iteration
+    converges to the boundary of the cone, so the smallest eigenvalue can
+    be a small negative number of the order of ``tol``. Tighten ``tol`` if
+    that matters: clipping it here would break the unit diagonal again.
     """
     np = _np()
     is_gram = hasattr(a, "to_dicts") or (
@@ -345,25 +471,84 @@ def nearest(
 def shrink(
     r: Any, target: str = "constant", alpha: float | None = None, x: Any = None
 ) -> tuple[Any, float]:
-    """``(1 - a) R + a F``: Ledoit and Wolf (2004) shrinkage towards a structured
-    target.
+    """Shrink a correlation matrix toward a structured target, by Ledoit and Wolf.
 
-    ``target = "constant"`` (the default) is their constant-correlation target
-    ("Honey, I shrunk the sample covariance matrix"): ``f_ii = s_ii`` and
-    ``f_ij = rbar * sqrt(s_ii s_jj)`` with ``rbar`` the mean off-diagonal
-    correlation, which on a correlation matrix is the equicorrelation matrix at
-    ``rbar``. ``target = "identity"`` is their scaled identity ("A
-    well-conditioned estimator for large-dimensional covariance matrices"):
-    ``f = mu I`` with ``mu`` the mean of the diagonal, which on a correlation
-    matrix is the identity.
+    Use it to make a noisy sample correlation matrix better conditioned,
+    trading bias for variance: ``(1 - alpha) R + alpha F``. It repairs a
+    sample matrix from fewer rows than columns, which is singular, in one
+    step. To change the matrix as little as possible instead, use
+    :func:`nearest`.
 
-    ``alpha`` fixes the intensity. Left out, it is their optimal ``delta = max(0,
-    min(kappa / T, 1))`` with ``kappa = (pi - rho) / gamma``, which needs the
-    rows. For both targets:
+    .. rubric:: Parameters
+
+    ``r``
+        The matrix ``R``: a ``k x k`` correlation or covariance matrix, or a
+        Gram or a closed group's row, read as
+        :func:`polars_online.gram.correlation` reads it.
+    ``target``
+        The target ``F``. ``"constant"``, the default, is Ledoit and Wolf's
+        constant-correlation target ("Honey, I shrunk the sample covariance
+        matrix"): ``f_ii = r_ii`` and ``f_ij = rbar * sqrt(r_ii r_jj)``, with
+        ``r_ij`` the entries of ``R`` and ``rbar`` the mean off-diagonal
+        correlation. On a correlation matrix
+        it is the equicorrelation matrix at ``rbar``. ``"identity"`` is their
+        scaled identity ("A well-conditioned estimator for large-dimensional
+        covariance matrices"): ``f = mu I``, with ``mu`` the mean of the
+        diagonal. On a correlation matrix it is the identity.
+    ``alpha``
+        The intensity, from 0 (no shrinkage) to 1 (the target alone).
+        Default ``None``, Ledoit and Wolf's optimal intensity, which needs
+        ``x`` (Notes). One of ``alpha`` and ``x`` is required.
+    ``x``
+        The ``T x k`` sample the matrix came from, at least two rows, for
+        the optimal intensity: the rows standardized for a correlation
+        matrix, and as they are for a covariance matrix. **The sample has to be
+        the one the matrix is of** (Notes). Pass ``alpha`` yourself when the
+        two cannot be the same sample.
+
+    .. rubric:: Returns
+
+    ``(shrunk, alpha)``: the ``k x k`` shrunk matrix, and the intensity
+    used. The result is positive definite whenever the target is and
+    ``alpha`` is above 0.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        A ``target`` that is neither word; ``alpha`` outside ``[0, 1]``;
+        neither ``x`` nor ``alpha``; an ``x`` of the wrong shape or with
+        fewer than two rows; ``r`` an array that is not square.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        rng = np.random.default_rng(0)
+        x = rng.standard_normal((20, 30))                 # fewer rows than columns
+        r = np.corrcoef(x, rowvar=False)                  # singular
+        shrunk, alpha = po.corr.shrink(r, x=(x - x.mean(0)) / x.std(0))
+        print(round(alpha, 3), np.linalg.eigvalsh(shrunk).min() > 0)
 
     .. code-block:: text
 
-        pi_ij    = (1/T) sum_t ((y_it - ybar_i)(y_jt - ybar_j) - s_ij)**2
+        0.867 True
+
+    .. rubric:: See also
+
+    - :func:`nearest`, the repair that changes the matrix least.
+    - :func:`equicorr`, the ``rbar`` of the constant-correlation target.
+
+    .. rubric:: Notes
+
+    **The optimal intensity** is Ledoit and Wolf's (2004),
+    ``alpha = max(0, min(kappa / T, 1))``, with
+    ``kappa = (pi - rho) / gamma``. With ``x_it`` the value of column ``i``
+    in row ``t`` of ``x``, and ``xbar_i`` that column's mean, for both
+    targets:
+
+    .. code-block:: text
+
+        pi_ij    = (1/T) sum_t ((x_it - xbar_i)(x_jt - xbar_j) - s_ij)**2
         pi       = sum_ij pi_ij
         gamma    = sum_ij (f_ij - s_ij)**2
 
@@ -371,8 +556,8 @@ def shrink(
 
     .. code-block:: text
 
-        theta_ii,ij = (1/T) sum_t ((y_it - ybar_i)**2 - s_ii)
-                              * ((y_it - ybar_i)(y_jt - ybar_j) - s_ij)
+        theta_ii,ij = (1/T) sum_t ((x_it - xbar_i)**2 - s_ii)
+                              * ((x_it - xbar_i)(x_jt - xbar_j) - s_ij)
         rho      = sum_i pi_ii + sum_{i!=j} (rbar/2)
                      * (sqrt(s_jj/s_ii) theta_ii,ij + sqrt(s_ii/s_jj) theta_jj,ij)
 
@@ -382,30 +567,20 @@ def shrink(
 
         rho      = 0
 
-    which is ``sklearn.covariance.ledoit_wolf``'s intensity.
-
-    ``pi`` and ``theta`` are fourth-moment sums, so they cannot be recovered from
-    ``R`` and ``T``: pass ``x`` as the ``T x k`` sample the matrix came from (the
-    standardised rows), or pass ``alpha`` yourself. One of the two is required.
+    which is ``sklearn.covariance.ledoit_wolf``'s intensity. ``pi`` and
+    ``theta`` are sums of fourth moments, so they cannot be recovered from
+    ``R`` and ``T``: that is why the optimal intensity needs ``x``.
 
     **The sample has to be the one the matrix is of.** ``s_ij`` above is the
-    plain covariance of ``x``, and ``gamma`` compares the target with it. So an ``r``
-    that is some other estimate of the same pairs (a decayed one out of a bank,
-    say) makes ``kappa`` a comparison of two different matrices. The intensity
-    is still in ``[0, 1]`` and the result still a shrunk matrix, but it is not
-    the optimal intensity for the ``r`` handed in. Pass ``alpha`` yourself when
-    the two cannot be the same sample. ``x`` needs at least two rows.
+    plain covariance of ``x``, dividing by ``T``, and ``gamma`` compares the target with it.
+    So an ``r`` that is another estimate of the same pairs, such as a
+    decayed one out of a bank, makes ``kappa`` a comparison of two different
+    matrices. The intensity is still in ``[0, 1]`` and the result still a
+    shrunk matrix, but it is not the optimal intensity for the ``r`` passed.
 
-    Returns ``(shrunk, alpha)``. The result is positive definite whenever the
-    target is and ``alpha > 0``. So it repairs a sample correlation matrix from
-    fewer rows than columns, which is singular, in one step. :func:`nearest` is
-    the other repair, and they answer different questions: shrinkage trades
-    bias for variance, Higham's projection changes the matrix as little as
-    possible.
-
-    ``ValueError`` for a target that is neither, for ``alpha`` outside ``[0,
-    1]``, for neither ``x`` nor ``alpha``, and for an ``x`` of the wrong shape
-    or with fewer than two rows.
+    Shrinkage and :func:`nearest` answer different questions: shrinkage
+    trades bias for variance, and Higham's projection changes the matrix as
+    little as possible.
     """
     np = _np()
     s = _matrix(r, "po.corr.shrink")
@@ -487,8 +662,47 @@ def shrink(
 
 
 def equicorr(r: Any) -> float:
-    """The mean off-diagonal correlation: the one number a ``deco`` tracks. ``nan``
-    below two columns.
+    """Compute the mean off-diagonal correlation of a matrix.
+
+    Use it to summarize a correlation matrix by one common correlation,
+    the number a ``deco`` model tracks. For the same number from one
+    standardized row, use :func:`equicorr_row`. For a common correlation per
+    block, use :func:`block_means`.
+
+    .. rubric:: Parameters
+
+    ``r``
+        A ``k x k`` correlation matrix, or a Gram or a closed group's row,
+        read as :func:`polars_online.gram.correlation` reads it. ``nan``
+        entries, such as a constant column's, are left out of the mean.
+
+    .. rubric:: Returns
+
+    A float: the mean of the off-diagonal entries. It is ``nan`` below two
+    columns, and where every off-diagonal entry is ``nan``, with numpy's
+    ``RuntimeWarning``.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        ``r`` is an array that is not square.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        r = np.array([[1.0, 0.4, 0.2], [0.4, 1.0, 0.3], [0.2, 0.3, 1.0]])
+        print(round(po.corr.equicorr(r), 3))
+
+    .. code-block:: text
+
+        0.3
+
+    .. rubric:: See also
+
+    - :func:`equicorr_row` and :func:`equicorr_loglik`, the same model on one
+      row.
+    - :func:`block_means`, a mean correlation per block.
     """
     np = _np()
     m = _matrix(r, "po.corr.equicorr")
@@ -500,14 +714,43 @@ def equicorr(r: Any) -> float:
 
 
 def equicorr_row(row: Any) -> float:
-    """Engle and Kelly's Lemma 2.3 on one standardised row:
+    """Estimate the common correlation from one standardized row, by Engle and Kelly's closed form.
+
+    Use it to compute, offline, the per-row estimate a ``deco`` model reads:
+    Engle and Kelly's Lemma 2.3. For the mean correlation of a whole matrix,
+    use :func:`equicorr`.
+
+    .. rubric:: Parameters
+
+    ``row``
+        One row of ``n`` standardized values (each series less its mean,
+        over its standard deviation).
+
+    .. rubric:: Returns
+
+    A float:
 
     .. code-block:: text
 
-        u = (S1**2 - S2) / ((n - 1) * S2),  S1 = sum(r), S2 = sum(r*r)
+        u = (S1**2 - S2) / ((n - 1) * S2),    S1 = sum(x),  S2 = sum(x * x)
 
-    the same closed form ``deco`` computes per row, offline. ``nan`` below two
-    entries or at ``S2 = 0``.
+    with ``x`` the row. It is ``nan`` below two entries or at ``S2 = 0``.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        print(round(po.corr.equicorr_row([1.2, 0.8, 1.0, -0.2]), 3))
+
+    .. code-block:: text
+
+        0.504
+
+    .. rubric:: See also
+
+    - :func:`equicorr`, the mean correlation of a matrix.
+    - :func:`equicorr_loglik`, the row's log-density at a common
+      correlation.
     """
     np = _np()
     v = np.asarray(row, dtype=float).reshape(-1)
@@ -519,16 +762,51 @@ def equicorr_row(row: Any) -> float:
 
 
 def equicorr_loglik(row: Any, rho: float) -> float:
-    """The Gaussian log-density of a standardised row under an equicorrelation matrix
-    at ``rho``, in closed form:
+    """Compute the Gaussian log-density of a standardized row under a common correlation.
+
+    Use it to score, offline, a row against an equicorrelation matrix, the
+    ``loglik`` a ``deco`` model writes. To estimate the common correlation
+    from the row, use :func:`equicorr_row`.
+
+    .. rubric:: Parameters
+
+    ``row``
+        One row of ``n`` standardized values.
+    ``rho``
+        The common correlation, every off-diagonal entry of the matrix
+        ``R``. Inside ``(-1/(n-1), 1)`` ``R`` is positive definite.
+
+    .. rubric:: Returns
+
+    A float, in closed form with ``S1 = sum(x)`` and ``S2 = sum(x * x)`` over
+    the row ``x``:
 
     .. code-block:: text
 
-        det R  = (1 - rho)**(n-1) * (1 + (n-1) rho)
-        r'R^-1 r = (S2 - rho S1**2 / (1 + (n-1) rho)) / (1 - rho)
+        det R    = (1 - rho)**(n-1) * (1 + (n-1) rho)
+        x'R^-1 x = (S2 - rho S1**2 / (1 + (n-1) rho)) / (1 - rho)
+        loglik   = -0.5 * (n log(2 pi) + log det R + x'R^-1 x)
 
-    which is ``deco``'s ``loglik``, offline. ``nan`` outside ``(-1/(n-1), 1)``,
-    where ``R`` is not a correlation matrix.
+    It is ``nan`` below two entries, and outside ``(-1/(n-1), 1)``, where
+    ``R`` is not positive definite.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        row = [1.2, 0.8, 1.0, -0.2]
+        independent = po.corr.equicorr_loglik(row, 0.0)
+        common = po.corr.equicorr_loglik(row, 0.4)
+        print(round(independent, 3), round(common, 3))
+
+    .. code-block:: text
+
+        -5.236 -4.716
+
+    .. rubric:: See also
+
+    - :func:`equicorr_row`, the row's own estimate of the common
+      correlation.
     """
     np = _np()
     v = np.asarray(row, dtype=float).reshape(-1)
@@ -542,10 +820,50 @@ def equicorr_loglik(row: Any, rho: float) -> float:
 
 
 def absorption(r: Any, k: int) -> float:
-    """Kritzman, Li, Page and Rigobon's absorption ratio: the share of total variance
-    the top ``k`` eigenvectors explain, ``sum_{i<=k} lam_i / sum lam_i``. High
-    means the market is moving as one thing. ``ValueError`` for ``k`` outside
-    ``1..n``.
+    """Compute Kritzman, Li, Page and Rigobon's absorption ratio of a correlation matrix.
+
+    Use it to measure how much the series move as one: the share of the
+    total variance the top ``k`` eigenvectors explain. A high ratio means
+    the market is moving as one thing. To compare a fast and a slow ratio,
+    use :func:`absorption_shift`.
+
+    .. rubric:: Parameters
+
+    ``r``
+        An ``n x n`` correlation matrix, or a Gram or a closed group's
+        row, read as :func:`polars_online.gram.correlation` reads it.
+    ``k``
+        How many of the largest eigenvalues to sum, from 1 to ``n``.
+
+    .. rubric:: Returns
+
+    A float, ``sum_{i<=k} lam_i / sum_i lam_i`` over the eigenvalues
+    ``lam_i`` in decreasing order, or ``nan`` where they sum to 0.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        ``k`` outside ``1..n``, or ``r`` an array that is not square.
+    ``numpy.linalg.LinAlgError``
+        ``r`` holds ``nan`` entries where numpy's eigensolver does not
+        converge, as a Gram with an ``intercept`` column does (the module's
+        docstring says why).
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        r = np.array([[1.0, 0.8, 0.7], [0.8, 1.0, 0.75], [0.7, 0.75, 1.0]])
+        print(round(po.corr.absorption(r, 1), 3))
+
+    .. code-block:: text
+
+        0.834
+
+    .. rubric:: See also
+
+    - :func:`absorption_shift`, a fast ratio against a slow one.
+    - :func:`spectral`, the eigenpairs themselves.
     """
     np = _np()
     vals = np.linalg.eigvalsh(_matrix(r, "po.corr.absorption"))[::-1]
@@ -560,14 +878,51 @@ def absorption(r: Any, k: int) -> float:
 
 
 def absorption_shift(ar_fast: Any, ar_slow: Any, *, scale: float | None = None) -> Any:
-    """Kritzman, Li, Page and Rigobon's standardised absorption shift,
-    ``(fast - slow) / scale``, elementwise over two aligned series of
-    absorption ratios (:func:`absorption`).
+    """Compute Kritzman, Li, Page and Rigobon's standardized absorption shift.
 
-    ``scale`` defaults to the standard deviation of ``ar_slow`` over the sample;
-    the two windows are the caller's. ``ValueError`` for series that do not align.
-    It was ``shift`` before 1.0, a name Polars gives a lag; that name is
-    refused, and the error names this one.
+    Use it to flag a rise in how much the series move as one: a fast
+    absorption ratio against a slow one, in units of the slow one's spread.
+    Compute each ratio with :func:`absorption` over windows of your choice.
+
+    .. rubric:: Parameters
+
+    ``ar_fast``, ``ar_slow``
+        Two series of absorption ratios aligned row by row, the first over a
+        short window and the second over a long one.
+    ``scale``
+        The divisor. Default ``None``, the population standard deviation of
+        ``ar_slow`` over the sample (dividing by the number of rows).
+
+    .. rubric:: Returns
+
+    A float array, ``(ar_fast - ar_slow) / scale`` elementwise, or ``nan``
+    throughout where ``scale`` is not above 0.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        ``ar_fast`` and ``ar_slow`` of different shapes.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        fast = np.array([0.60, 0.62, 0.70, 0.80])
+        slow = np.array([0.60, 0.61, 0.63, 0.66])
+        print(po.corr.absorption_shift(fast, slow).round(2))
+
+    .. code-block:: text
+
+        [0.   0.44 3.06 6.11]
+
+    .. rubric:: See also
+
+    - :func:`absorption`, the ratio.
+
+    .. rubric:: Notes
+
+    The function's older name, ``shift``, is refused, and the error names
+    this one: Polars uses ``shift`` for a lag.
     """
     np = _np()
     fast = np.asarray(ar_fast, dtype=float)
@@ -588,11 +943,61 @@ shift = renamed_function("po.corr.shift", "po.corr.absorption_shift")
 
 
 def spectral(r: Any, k: int) -> tuple[Any, Any]:
-    """The top ``k`` eigenpairs of an ``n x n`` matrix, descending: ``(values,
-    vectors)`` with ``vectors`` row-major ``k x n``, each signed so its
-    largest-magnitude entry is positive. That is the rule ``ew_cov``'s ``pca``
-    uses on a first refresh, so the two agree up to that convention. A ``k``
-    above ``n`` gives all ``n``.
+    """Compute the top ``k`` eigenpairs of a matrix, largest first.
+
+    Use it to read a correlation matrix's leading factors, or to keep them
+    and rebuild the matrix with :func:`from_spectral`. For the share of the
+    variance they explain, use :func:`absorption`.
+
+    .. rubric:: Parameters
+
+    ``r``
+        An ``n x n`` symmetric matrix, or a Gram or a closed group's
+        row, read as :func:`polars_online.gram.correlation` reads it.
+    ``k``
+        How many eigenpairs to keep. A ``k`` above ``n`` keeps all ``n``. A
+        ``k`` of 0 keeps none, and a negative ``k`` is not refused: it keeps
+        all but the last ``-k``, as a Python slice does.
+
+    .. rubric:: Returns
+
+    ``(values, vectors)``: the ``k`` largest eigenvalues in decreasing
+    order, and their eigenvectors as the rows of a ``k x n`` array, each
+    signed so that its entry of largest magnitude is positive.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        ``r`` is an array that is not square.
+    ``numpy.linalg.LinAlgError``
+        ``r`` holds ``nan`` entries where numpy's eigensolver does not
+        converge, as a Gram with an ``intercept`` column does (the module's
+        docstring says why).
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        r = np.array([[1.0, 0.8, 0.7], [0.8, 1.0, 0.75], [0.7, 0.75, 1.0]])
+        values, vectors = po.corr.spectral(r, 1)
+        print(values.round(3), vectors.round(3))
+
+    .. code-block:: text
+
+        [2.501] [[0.578 0.59  0.564]]
+
+    .. rubric:: See also
+
+    - :func:`from_spectral`, the matrix rebuilt from the pairs.
+    - :func:`absorption`, the share of the variance the top ``k`` explain.
+
+    .. rubric:: Notes
+
+    The sign rule is the one ``ew_cov``'s ``pca`` uses on its first refresh.
+    Later refreshes keep each vector's sign continuous with the refresh
+    before, and ``pca`` reads the covariance, not the correlation, so its
+    vectors differ from these, beyond the sign, unless every variance is
+    equal.
     """
     np = _np()
     m = _matrix(r, "po.corr.spectral")
@@ -608,12 +1013,61 @@ def spectral(r: Any, k: int) -> tuple[Any, Any]:
 
 
 def from_spectral(vals: Any, vecs: Any, *, unit_diag: bool = True) -> Any:
-    """``V' diag(vals) V``, completed to a unit diagonal when ``unit_diag``.
+    """Rebuild a matrix from eigenpairs, completed to a unit diagonal.
 
-    The remainder ``1 - diag(V' L V)`` is non-negative, because the dropped
-    components are PSD, so adding it to the diagonal leaves a correlation matrix
-    rather than something that only looks like one. ``ValueError`` for values and
-    vectors of different counts.
+    Use it to turn the leading factors :func:`spectral` keeps into a
+    correlation matrix, such as a denoised one that keeps only the
+    eigenvalues above :func:`mp_edge`'s noise edge.
+
+    .. rubric:: Parameters
+
+    ``vals``
+        The eigenvalues, a vector of ``k``.
+    ``vecs``
+        The eigenvectors as the rows of a ``k x n`` array, as
+        :func:`spectral` returns them.
+    ``unit_diag``
+        ``True``, the default, adds ``1 - diag(V' diag(vals) V)``, with ``V``
+        the rows of ``vecs``, to the diagonal, so
+        the result is a correlation matrix. ``False`` returns
+        ``V' diag(vals) V`` as it is.
+
+    .. rubric:: Returns
+
+    An ``n x n`` float array, ``V' diag(vals) V`` with ``V`` the rows of
+    ``vecs``, its diagonal set to 1 under ``unit_diag``.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        ``vecs`` without one row per entry of ``vals``.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        r = np.array([[1.0, 0.8, 0.7], [0.8, 1.0, 0.75], [0.7, 0.75, 1.0]])
+        top = po.corr.from_spectral(*po.corr.spectral(r, 1))   # the one-factor matrix
+        print(top.round(3))
+
+    .. code-block:: text
+
+        [[1.    0.852 0.815]
+         [0.852 1.    0.832]
+         [0.815 0.832 1.   ]]
+
+    .. rubric:: See also
+
+    - :func:`spectral`, the eigenpairs.
+    - :func:`mp_edge`, the noise edge to keep eigenvalues above.
+
+    .. rubric:: Notes
+
+    The remainder ``1 - diag(V' diag(vals) V)`` is not negative when
+    ``vals`` are a correlation matrix's leading eigenvalues, because the
+    dropped components are positive semidefinite. So adding it to the
+    diagonal leaves a correlation matrix, not something that only looks
+    like one.
     """
     np = _np()
     lam = np.asarray(vals, dtype=float).reshape(-1)
@@ -632,13 +1086,61 @@ def from_spectral(vals: Any, vecs: Any, *, unit_diag: bool = True) -> Any:
 
 
 def block_means(r: Any, labels: Sequence[Any]) -> tuple[Any, Any]:
-    """The mean correlation within and between labelled blocks.
+    """Compute the mean correlation within and between labeled blocks of columns.
 
-    ``B[a, b]`` is the mean of ``R[i, j]`` over ``i`` in block ``a`` and ``j`` in
-    block ``b``, excluding the diagonal: a variable's correlation with itself is 1
-    and says nothing about the block. Returns ``(B, counts)`` with the number of
-    pairs behind each mean, in the order the labels first appear. ``ValueError``
-    for a label count that is not the column count.
+    Use it to summarize a correlation matrix by block, such as by sector,
+    and to test how far a block-equicorrelation matrix
+    (:func:`from_blocks`) describes it. For one common correlation over
+    every column, use :func:`equicorr`.
+
+    .. rubric:: Parameters
+
+    ``r``
+        A ``k x k`` correlation matrix, or a Gram or a closed group's
+        row, read as :func:`polars_online.gram.correlation` reads it.
+    ``labels``
+        One block label per column, of any type that compares equal.
+
+    .. rubric:: Returns
+
+    ``(B, counts)``, two arrays with one row and one column per block, in
+    the order the labels first name the blocks. ``B[a, b]`` is the mean of
+    ``r[i, j]`` over ``i`` in block ``a`` and ``j`` in block ``b``, leaving
+    out the diagonal: a column's correlation with itself is 1 and says
+    nothing about the block. ``counts[a, b]`` is the number of off-diagonal
+    entries of ``r`` in the two blocks, and ``B[a, b]`` is ``nan`` where it
+    is 0, as within a block of one column. ``nan`` entries of ``r`` are left
+    out of the means but still counted, so a count can be larger than the
+    number of entries behind its mean. Where every entry behind a mean is
+    ``nan``, ``B[a, b]`` is ``nan`` too, and numpy issues a
+    ``RuntimeWarning``.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        ``labels`` without one label per column, or ``r`` an array that is
+        not square.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        r = np.array([[1.0, 0.6, 0.1, 0.0],
+                      [0.6, 1.0, 0.2, 0.1],
+                      [0.1, 0.2, 1.0, 0.5],
+                      [0.0, 0.1, 0.5, 1.0]])
+        means, counts = po.corr.block_means(r, ["a", "a", "b", "b"])
+        print(means, counts.tolist())
+
+    .. code-block:: text
+
+        [[0.6 0.1]
+         [0.1 0.5]] [[2, 4], [4, 2]]
+
+    .. rubric:: See also
+
+    - :func:`from_blocks`, the matrix the block means describe.
+    - :func:`equicorr`, one mean over every column.
     """
     np = _np()
     m = _matrix(r, "po.corr.block_means")
@@ -670,12 +1172,50 @@ def block_means(r: Any, labels: Sequence[Any]) -> tuple[Any, Any]:
 
 
 def from_blocks(b: Any, labels: Sequence[Any]) -> Any:
-    """The block-equicorrelation matrix ``B`` describes: entry ``(i, j)`` is
-    ``B[block(i), block(j)]`` off the diagonal, and 1 on it.
+    """Build the block-equicorrelation matrix that a table of block correlations describes.
 
-    The inverse of :func:`block_means` up to the within-block averaging, which is
-    the test. ``ValueError`` for a ``B`` that is not square in the number of
-    blocks.
+    Use it to turn the block means :func:`block_means` returns, or a table
+    of your own, back into a full matrix: a structured target or a
+    forecast. It has a unit diagonal, but only some tables give a positive
+    semidefinite one. Repair one that is not with :func:`nearest`.
+
+    .. rubric:: Parameters
+
+    ``b``
+        The block correlations, one row and one column per block, in the
+        order ``labels`` first names the blocks. Give a symmetric table: an
+        asymmetric one is not refused, and gives an asymmetric result.
+    ``labels``
+        One block label per column of the result.
+
+    .. rubric:: Returns
+
+    A ``k x k`` float array, with ``k`` the number of labels. Entry
+    ``(i, j)`` is ``B[block(i), block(j)]`` off the diagonal, and 1 on it,
+    with ``B`` the table ``b``.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        ``b`` not square in the number of blocks the labels name.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        b = np.array([[0.6, 0.1], [0.1, 0.5]])
+        print(po.corr.from_blocks(b, ["a", "a", "b", "b"]))
+
+    .. code-block:: text
+
+        [[1.  0.6 0.1 0.1]
+         [0.6 1.  0.1 0.1]
+         [0.1 0.1 1.  0.5]
+         [0.1 0.1 0.5 1. ]]
+
+    .. rubric:: See also
+
+    - :func:`block_means`, its inverse up to the averaging within blocks.
     """
     np = _np()
     bm = np.asarray(b, dtype=float)
@@ -701,16 +1241,53 @@ def from_blocks(b: Any, labels: Sequence[Any]) -> Any:
 
 
 def mp_edge(n: int, m: int, sigma2: float = 1.0) -> tuple[float, float]:
-    """The Marchenko-Pastur edges for ``n`` observations of ``m`` series:
+    """Compute the Marchenko-Pastur edges for ``n`` observations of ``m`` series.
+
+    Use it to tell a correlation matrix's eigenvalues from noise:
+    eigenvalues between the edges are what pure noise produces, and only
+    those above the upper edge carry information (Laloux, Cizeau, Bouchaud
+    and Potters, 1999). For the density between the edges, use
+    :func:`mp_density`.
+
+    .. rubric:: Parameters
+
+    ``n``
+        The number of observations, above 0.
+    ``m``
+        The number of series, above 0.
+    ``sigma2``
+        The noise variance. Default 1, a correlation matrix's.
+
+    .. rubric:: Returns
+
+    ``(lam_minus, lam_plus)``, two floats:
 
     .. code-block:: text
 
         lam_pm = sigma2 * (1 +- 1/sqrt(Q))**2,    Q = n / m
 
-    (Laloux, Cizeau, Bouchaud and Potters 1999). Eigenvalues inside them are what
-    pure noise produces; only those above ``lam_+`` carry information. ``Q = 1``
-    gives ``(0, 4 sigma2)``. ``ValueError`` for ``n`` or ``m`` that is not
-    positive.
+    ``Q = 1`` gives ``(0, 4 sigma2)``.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        ``n`` or ``m`` not above 0.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        lo, hi = po.corr.mp_edge(n=400, m=100)
+        print(round(lo, 3), round(hi, 3))
+
+    .. code-block:: text
+
+        0.25 2.25
+
+    .. rubric:: See also
+
+    - :func:`mp_density`, the curve between the edges.
+    - :func:`spectral`, the eigenvalues to compare with them.
     """
     return _mp_edge(n, m, sigma2, "po.corr.mp_edge")
 
@@ -729,11 +1306,46 @@ def _mp_edge(n: int, m: int, sigma2: float, who: str) -> tuple[float, float]:
 
 
 def mp_density(lam: Any, n: int, m: int, sigma2: float = 1.0) -> Any:
-    """The Marchenko-Pastur density ``(Q / 2 pi sigma2) sqrt((lam_+ - lam) (lam -
-    lam_-)) / lam``, zero outside the edges: the curve to draw a spectrum against.
+    """Compute the Marchenko-Pastur density at given eigenvalues.
 
-    ``Q``, ``lam_+`` and ``lam_-`` are :func:`mp_edge`'s, and so is the
-    ``ValueError``.
+    Use it to draw a correlation matrix's spectrum against the curve pure
+    noise would give. For the edges alone, use :func:`mp_edge`.
+
+    .. rubric:: Parameters
+
+    ``lam``
+        An eigenvalue, or an array of them.
+    ``n``, ``m``, ``sigma2``
+        As for :func:`mp_edge`.
+
+    .. rubric:: Returns
+
+    A float array of ``lam``'s shape, 0 outside the edges:
+
+    .. code-block:: text
+
+        (Q / (2 pi sigma2)) * sqrt((lam_plus - lam) * (lam - lam_minus)) / lam
+
+    with ``Q``, ``lam_plus`` and ``lam_minus`` those of :func:`mp_edge`.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        As for :func:`mp_edge`.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        print(po.corr.mp_density([0.1, 1.0, 3.0], n=400, m=100).round(3))
+
+    .. code-block:: text
+
+        [0.    0.616 0.   ]
+
+    .. rubric:: See also
+
+    - :func:`mp_edge`, the edges.
     """
     np = _np()
     lo, hi = _mp_edge(n, m, sigma2, "po.corr.mp_density")
@@ -751,22 +1363,63 @@ def mp_density(lam: Any, n: int, m: int, sigma2: float = 1.0) -> Any:
 
 
 def signal_share(z_blocks: Any, n_kish_blocks: Any) -> Any:
-    """How much of the between-block movement in a correlation is not sampling noise.
+    """Estimate how much of a correlation's movement across blocks is not sampling noise.
 
-    Per pair over ``B`` blocks, with ``z_b`` the Fisher-z of that block's
-    correlation and ``n_b`` its sample size -- Kish's ``(Σw)² / Σw²``, as
-    ``gram()``'s ``n_kish`` reads it, or a plain block's row count. Not
-    ``weight_sum``, which is a weight, about half the Kish size in steady state:
+    Use it to judge whether a correlation measured in each block, such as
+    each week, really moves, or moves no more than its sampling error would
+    make it. A share of 0 means the correlation moved no more than noise
+    would.
+
+    .. rubric:: Parameters
+
+    ``z_blocks``
+        The Fisher ``z`` (:func:`to_z`) of each block's correlation: a
+        vector over ``B`` blocks for one pair, or a ``B x p`` array for
+        ``p`` pairs.
+    ``n_kish_blocks``
+        Each block's sample size, a vector of ``B``: Kish's effective sample
+        size ``(sum w)**2 / sum w**2``, as
+        :meth:`~polars_online.ModelBank.gram`'s ``n_kish`` reports it, or a
+        plain block's row count. Not ``weight_sum``, which is a weight,
+        about half the Kish size in a steady state.
+
+    .. rubric:: Returns
+
+    The share, per pair, with ``z_b`` and ``n_b`` block ``b``'s:
 
     .. code-block:: text
 
         clip(1 - mean_b(1 / (n_b - 3)) / var_b(z_b), 0, 1)
 
-    ``1 / (n - 3)`` is the sampling variance of ``z``, so the ratio is the share
-    of the observed variance the floor explains, and one minus it is what is left.
-    ``0`` means the correlation moved no more than noise would. A 1-D input (one
-    pair) returns a scalar. ``ValueError`` for block and sample-size counts that
-    differ.
+    A scalar for a 1-d ``z_blocks`` (one pair), else an array of ``p``. The
+    share is ``nan`` where a block's sample size is 3 or less, whose ``z``
+    has no such variance, and with fewer than two blocks.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        ``n_kish_blocks`` without one size per block.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        z = po.corr.to_z(np.array([0.10, 0.35, 0.05, 0.40]))   # one pair's weekly correlations
+        print(round(po.corr.signal_share(z, [200, 200, 200, 200]), 3))
+
+    .. code-block:: text
+
+        0.855
+
+    .. rubric:: See also
+
+    - :func:`fisher_se`, the sampling error of one correlation.
+
+    .. rubric:: Notes
+
+    ``1 / (n - 3)`` is the sampling variance of ``z``, so the ratio is the
+    share of the observed variance across blocks that sampling noise
+    explains, and one minus it is what is left.
     """
     np = _np()
     z = np.asarray(z_blocks, dtype=float)
@@ -793,26 +1446,74 @@ def signal_share(z_blocks: Any, n_kish_blocks: Any) -> Any:
 def loss(
     fcst: Any, real: Any, kind: str = "qlike", *, mu: Any = None, n: int | None = None
 ) -> float:
-    """How wrong a forecast correlation matrix was.
+    """Score a forecast correlation matrix against the realized one.
 
-    ``"qlike"`` is the Gaussian quasi-likelihood loss, shifted by the
-    forecast-free constant so that it is zero at ``fcst == real`` and positive
-    elsewhere:
+    Use it to compare forecasts of a correlation or covariance matrix, such
+    as two specs' ``ew_cov`` matrices against the matrix of the period that
+    followed: the lower the loss, the better the forecast. Three losses are
+    offered, each a proper scoring rule or a scaled error.
+
+    .. rubric:: Parameters
+
+    ``fcst``
+        The forecast ``F``: a ``k x k`` matrix, or a Gram or a closed
+        group's row, read as :func:`polars_online.gram.correlation` reads
+        it.
+    ``real``
+        The realized matrix ``R``, in the same form and of the same shape.
+    ``kind``
+        ``"qlike"``, the default: the Gaussian quasi-likelihood loss,
+        shifted by its forecast-free constant so that it is 0 at
+        ``fcst == real`` and above 0 elsewhere. ``"z_mse"``: the squared
+        Fisher-``z`` error in units of its own sampling variance, which needs
+        ``n``. ``"minvar"``: Engle and Colacito's minimum-variance loss, the
+        realized variance of the portfolio the forecast would have held.
+    ``mu``
+        For ``"minvar"``, the expected returns that set the portfolio.
+        Default ``None``, a vector of ones.
+    ``n``
+        For ``"z_mse"``, the sample size behind the correlations.
+
+    .. rubric:: Returns
+
+    A float, by ``kind``:
 
     .. code-block:: text
 
-        tr(F^-1 R) - log det(F^-1 R) - k
+        qlike   tr(F^-1 R) - log det(F^-1 R) - k
+        z_mse   sum_{i<j} (z_ij(F) - z_ij(R))**2 * (n - 3)
+        minvar  w' R w,    w = F^-1 mu / (mu' F^-1 mu)
 
-    ``"z_mse"`` is ``sum_{i<j} (z_ij(F) - z_ij(R))**2 * (n - 3)``, the squared
-    Fisher-z error in units of its own sampling standard error; ``n`` is required.
-    ``"minvar"`` is Engle and Colacito's minimum-variance loss ``w'Rw`` with ``w =
-    F^-1 mu / (mu' F^-1 mu)``, the realised variance of the portfolio the forecast
-    would have held; ``mu`` defaults to ones. It is minimised over ``F`` at ``F =
-    R``, which is what makes it a proper scoring rule for a covariance forecast.
-    ``nan`` where the loss is undefined (a forecast with no inverse, a
-    non-positive determinant, a zero denominator); ``ValueError`` for a kind
-    that is none of the three, for matrices of different shapes, and for
-    ``"z_mse"`` without ``n``.
+    It is ``nan`` where the loss is undefined: a forecast with no inverse, a
+    determinant of ``F^-1 R`` that is not above 0, or a zero denominator.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        A ``kind`` that is none of the three; matrices of different shapes;
+        ``"z_mse"`` without ``n``; an array that is not square.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        real = np.array([[1.0, 0.5], [0.5, 1.0]])
+        good = np.array([[1.0, 0.4], [0.4, 1.0]])
+        flat = np.eye(2)
+        print(round(po.corr.loss(good, real), 4), round(po.corr.loss(flat, real), 4))
+
+    .. code-block:: text
+
+        0.0181 0.2877
+
+    .. rubric:: See also
+
+    - :func:`to_z`, the transform ``"z_mse"`` reads.
+
+    .. rubric:: Notes
+
+    ``"minvar"`` is smallest over ``F`` at ``F = R``, which is what makes it
+    a proper scoring rule for a covariance forecast.
     """
     np = _np()
     f = _matrix(fcst, "po.corr.loss", "fcst")
@@ -869,28 +1570,74 @@ def loss(
 
 
 def epps_invert(gram_or_row: Any, *, L: int) -> Any:  # noqa: N803 - the paper's name
-    """The correlation at scale ``L`` rows, from lagged co-moments at scale 1.
+    """Compute the correlation over ``L`` rows from lagged co-moments, undoing the Epps attenuation.
 
-    Toth and Kertesz's equation 12: a correlation computed over fine intervals is
-    attenuated because the two series do not move at the same instants, and the
-    attenuation is undone by summing the lagged cross-covariances over the coarser
-    interval. The weights are triangular, on the numerator and on both
-    denominators:
+    Use it on a correlation measured over fine intervals, which is too low
+    because two series do not move at the same instants (the Epps effect).
+    Toth and Kertesz's equation 12 undoes it by summing the lagged
+    cross-covariances over a coarser interval of ``L`` rows.
+
+    .. rubric:: Parameters
+
+    ``gram_or_row``
+        A Gram from :meth:`~polars_online.ModelBank.gram`, or a closed
+        group's row, with ``lags`` and ``lag_comoments`` holding every lag
+        ``1 .. L-1``. Build it with ``po.spec.ew_cov(..., lags=list(range(1,
+        L)))``.
+    ``L``
+        The coarser interval, in rows, at least 1. ``L = 1`` gives the plain
+        correlation.
+
+    .. rubric:: Returns
+
+    The ``k x k`` correlation matrix at scale ``L``, with ``nan`` where a
+    column has no variance.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        ``L`` below 1, or a lag ``1 .. L-1`` missing from the input, which
+        the error names.
+
+    .. rubric:: Examples
+
+    This code reads ``trades`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        quotes = trades.filter(pl.col("price").is_null()).with_columns(
+            ret=pl.col("mid").diff().over("symbol")
+        )
+        pair = quotes.pivot(on="symbol", index="ts", values="ret").fill_null(0.0)
+        spec = po.spec.ew_cov("cov", features=["AAA", "BBB"], half_life=float("inf"), lags=[1, 2])
+        bank = po.ModelBank([spec])
+        bank.fit_predict(pair)
+        g = bank.gram("cov")[0]
+        print(round(float(po.corr.epps_invert(g, L=1)[0, 1]), 3),
+              round(float(po.corr.epps_invert(g, L=3)[0, 1]), 3))
+
+    .. code-block:: text
+
+        -0.001 0.418
+
+    .. rubric:: See also
+
+    - :func:`polars_online.gram.correlation`, the correlation at one row.
+
+    .. rubric:: Notes
+
+    The weights are triangular, on the numerator and on both denominators:
 
     .. code-block:: text
 
         rho_L[a, b] = sum_x (L - |x|) C_x[a, b]
                       / sqrt(sum_x (L - |x|) C_x[a, a] * sum_x (L - |x|) C_x[b, b])
 
-    over ``x = -(L-1) .. L-1`` with ``C_{-x}[a, b] = C_x[b, a]``, so the numerator
-    is ``L C_0[a, b] + sum_{l=1}^{L-1} (L - l) (C_l[a, b] + C_l[b, a])`` and each
-    auto term is ``L C_0[a, a] + 2 sum_l (L - l) C_l[a, a]``.
-
-    The input is a mapping from :meth:`~polars_online.ModelBank.gram` or a closed
-    row with ``lags`` and ``lag_comoments``, and must carry every lag ``1 ..
-    L-1``: build it with ``ew_cov(lags=list(range(1, L)))``. Returns the ``k x k``
-    matrix; ``L = 1`` is the plain correlation, which is the identity this reduces
-    to. ``ValueError`` for ``L`` below 1 and for a missing lag, naming it.
+    over ``x = -(L-1) .. L-1``, with ``C_x`` the co-moments at lag ``x`` and
+    ``C_{-x}[a, b] = C_x[b, a]``. So the numerator is ``L C_0[a, b] +
+    sum_{l=1}^{L-1} (L - l) (C_l[a, b] + C_l[b, a])``, and each variance term
+    is ``L C_0[a, a] + 2 sum_l (L - l) C_l[a, a]``.
     """
     np = _np()
     from polars_online import gram as _gram
@@ -931,21 +1678,70 @@ def epps_invert(gram_or_row: Any, *, L: int) -> Any:  # noqa: N803 - the paper's
 def fisher_se(
     n: float, rho: float | None = None, phi_a: float | None = None, phi_b: float | None = None
 ) -> float:
-    """The standard error of a correlation estimated from ``n`` observations.
+    """Compute the standard error of a correlation's Fisher ``z``, or of the correlation itself.
 
-    ``1 / sqrt(n - 3)`` is the standard error of Fisher's ``z``. With ``rho`` it
-    is the delta-method error of the correlation itself, ``(1 - rho**2) / sqrt(n -
-    3)``. With both ``phi`` it is inflated by ``sqrt((1 + phi_a phi_b) / (1 -
-    phi_a phi_b))`` for a pair of AR(1) series, from Bartlett's formula ``Var(r) ~
-    (1/n) sum_k rho_a(k) rho_b(k)`` and the geometric series ``1 + 2 sum_{k>=1}
-    (phi_a phi_b)**k``. Both of its assumptions matter: it holds under a zero true
-    cross-correlation and linear dependence, and it is not valid under ARCH-type
-    innovations, where the variance of a sample correlation depends on the fourth
-    moments and this understates it.
+    Use it to judge whether a correlation differs from another, or from 0,
+    by more than its sampling error, on Fisher's ``z`` scale or on the
+    correlation's own. Give the two series' AR(1) coefficients to widen it
+    for autocorrelated series.
 
-    ``nan`` at ``n <= 3``. One ``phi`` without the other is a ``ValueError``, the
-    inflation being a property of the pair, and so is ``phi_a * phi_b`` outside
-    ``(-1, 1)``.
+    .. rubric:: Parameters
+
+    ``n``
+        The number of observations the correlation is estimated from.
+    ``rho``
+        Default ``None``, the standard error of Fisher's ``z``. Given, the
+        delta-method error of the correlation ``rho`` itself. A ``rho``
+        outside ``[-1, 1]`` is not refused, and gives a negative error.
+    ``phi_a``, ``phi_b``
+        The two series' AR(1) coefficients, given together or not at all.
+        Given, the error is inflated for the pair's autocorrelation (Notes).
+
+    .. rubric:: Returns
+
+    A float:
+
+    .. code-block:: text
+
+        se = 1 / sqrt(n - 3)                                  # of z
+           * (1 - rho**2)                                     # with rho
+           * sqrt((1 + phi_a phi_b) / (1 - phi_a phi_b))      # with both phi
+
+    It is ``nan`` at ``n <= 3``.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        At ``n`` above 3: one ``phi`` without the other, since the
+        inflation is a property of the pair, or ``phi_a * phi_b`` outside
+        ``(-1, 1)``. At ``n <= 3`` the call returns ``nan`` before either
+        check.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        print(round(po.corr.fisher_se(103), 4), round(po.corr.fisher_se(103, rho=0.5), 4),
+              round(po.corr.fisher_se(103, phi_a=0.5, phi_b=0.5), 4))
+
+    .. code-block:: text
+
+        0.1 0.075 0.1291
+
+    .. rubric:: See also
+
+    - :func:`to_z`, the ``z`` this is the error of.
+    - :func:`signal_share`, the same sampling error against a correlation's
+      movement across blocks.
+
+    .. rubric:: Notes
+
+    The AR(1) inflation follows from Bartlett's formula, ``Var(r) ~ (1/n)
+    sum_k rho_a(k) rho_b(k)``, and the geometric series ``1 + 2 sum_{k>=1}
+    (phi_a phi_b)**k``. It holds under a true cross-correlation of 0 and
+    linear dependence. It is not valid under ARCH-type innovations, where
+    the variance of a sample correlation depends on the fourth moments and
+    this understates it.
     """
     if n <= 3:
         return float("nan")

@@ -1153,6 +1153,12 @@ def documented() -> list[Documented]:
             return
         if inspect.ismodule(obj):
             return
+        from polars_online._renamed import is_renamed
+
+        # A name kept only under its old spelling (a refusal stub or a
+        # forwarding): the API reference and the API snapshot leave it out.
+        if is_renamed(obj):
+            return
         seen.add(id(obj))
         if isinstance(obj, property):
             out.append(Documented(where, "property", obj.__doc__, *_source(obj.fget)))

@@ -27,12 +27,7 @@ import polars as pl
 from polars_online import _warnings
 from polars_online._duration import Duration, duration_text, infinity_as_number
 from polars_online._kwargs import CommonKwargs
-from polars_online._polars_online import (
-    spec_coef_fields,
-    spec_output_fields,
-    spec_output_index,
-    validate_spec,
-)
+from polars_online._polars_online import validate_spec
 from polars_online._renamed import removed_keywords, renamed_keywords
 from polars_online._spec_words import (
     _INF_OK,
@@ -754,21 +749,51 @@ __all__ = [
 
 
 class Target(TypedDict):
-    """A target written as a table: what :func:`polars_online.target` returns,
-    and a ``[[specs]]`` target table in the CLI's TOML. ``column`` is read as
-    it is; ``name`` is what its output fields carry, ``column`` when not
-    given."""
+    """A target column under a name of its own, written as a table.
+
+    It is what :func:`polars_online.target` returns, and a ``[[specs]]``
+    target table in the command line's TOML. ``column`` is the column the
+    model learns, read as it is. ``name`` is the name its output fields
+    carry, ``column``'s when it is not given.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        price: po.Target = {"column": "y", "name": "price"}   # as po.target("y", name="price")
+        print(price == po.target("y", name="price"))
+
+    .. code-block:: text
+
+        True
+    """
 
     column: str
     name: NotRequired[str]
 
 
 class FormulaTarget(TypedDict):
-    """A target that is a formula of the row's future:
-    what a window expression in ``targets`` becomes, and a ``[[specs]]`` target
-    table with ``name`` and ``formula`` in the CLI's TOML. ``formula`` is the
-    expression's compact tree (:mod:`polars_online.ops`), holding at least one
-    operator looking ahead."""
+    """A formula target, written as a table.
+
+    It is what an expression over the window operators that looks ahead
+    becomes in a spec's ``targets``, and a ``[[specs]]`` target table with
+    ``name`` and ``formula`` in the command line's TOML. ``name`` is the
+    expression's alias, which the output fields carry. ``formula`` is the
+    expression's compact tree (:mod:`polars_online.ops`), holding at least
+    one window operator that looks ahead (``reverse=True``).
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        ahead = po.ewm_mean("y", half_life=5.0, window_size=10.0, reverse=True).alias("y_ahead")
+        spec = po.spec.ewridge("m", targets=[ahead], features=["x0"], half_life=50.0)
+        print(list(spec["targets"][0]), spec["targets"][0]["name"])   # a FormulaTarget
+
+    .. code-block:: text
+
+        ['name', 'formula'] y_ahead
+    """
 
     name: str
     formula: list[Any]
@@ -883,31 +908,70 @@ def formula_target(who: str, expr: pl.Expr) -> Target | FormulaTarget:
 
 @removed_keywords("po.target", _RELATIVE_KEYS, _RELATIVE_REMOVED)
 def target(column: str, *, name: str | None = None) -> Target:
-    """A target column under a name of its own.
+    """Name a target column's output fields after a name of your own.
 
-    ``po.target("p", name="price")`` in a spec's ``targets`` has the model
-    learn the column ``p`` as it is, and name its output fields after
-    ``price``: ``pred_price`` and the rest. Polars' own spelling of a column
-    under another name, ``pl.col("p").alias("price")``, is read in
-    ``targets`` as this same target. A string target is the same as
-    ``po.target`` with no ``name``, and so is a ``name`` equal to the column.
-    A target's column used as a feature is refused, whatever its name.
+    Use it in a spec's ``targets`` when the column's own name is not the
+    name you want the fields to carry. For a target computed from its own
+    row's columns, make a column with Polars' ``with_columns`` in the query
+    before the bank, and for one computed from the rows after it, give a
+    formula target (:mod:`polars_online.ops`).
 
-    A target computed from its own row's columns, such as a price against the
-    mid, is a column: make it with Polars' ``with_columns`` in the query before
-    the bank, and name it in ``targets``. For a return, a log ratio
-    (``(pl.col("p") / pl.col("mid")).log()``) or a difference sits about zero,
-    where ``hit_rate`` takes its sign; a plain ratio sits about 1, where two
-    positive numbers always agree. ``relative_to`` and ``relative`` are
-    refused, with a message that says this. A target computed from the rows
-    after its own is a window expression looking ahead
-    (:mod:`polars_online.ops`), named by its alias.
+    .. rubric:: Parameters
 
-    In the CLI's TOML the same target is a table: ``targets = ["ret_5m", {
-    column = "p", name = "price" }]``.
+    ``column``
+        The column the model learns, read as it is. A target's column used
+        as a feature is refused, whatever its name.
+    ``name``
+        The name its output fields carry: ``po.target("p", name="price")``
+        writes ``pred_price`` and the rest. ``None``, the default, uses the
+        column's name, as a string target does, and so does a ``name``
+        equal to the column.
 
-    Raises ``TypeError`` for a ``column`` or a ``name`` that is not a str, and
-    ``ValueError`` for an empty one.
+    .. rubric:: Returns
+
+    A :class:`Target` table, ``{"column": column, "name": name}``, with
+    ``name`` left out when it is not given.
+
+    .. rubric:: Raises
+
+    ``TypeError``
+        ``column`` or ``name`` is not a str, or ``relative_to`` or
+        ``relative`` is given: relative targets were removed, and the
+        message says how to compute one as a column.
+    ``ValueError``
+        ``column`` or ``name`` is empty.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge(
+            "m", targets=[po.target("y", name="price")], features=["x0"], half_life=50.0
+        )
+        print(po.target("y", name="price"), po.spec.output_fields(spec)[:2])
+
+    .. code-block:: text
+
+        {'column': 'y', 'name': 'price'} ['pred_price', 'resid_price']
+
+    .. rubric:: See also
+
+    - :mod:`polars_online.ops`, the window operators a formula target is
+      built from.
+
+    .. rubric:: Notes
+
+    Polars' own spelling of a column under another name,
+    ``pl.col("p").alias("price")``, is read in ``targets`` as this same
+    target. In the command line's TOML the same target is a table:
+    ``targets = ["ret_5m", { column = "p", name = "price" }]``.
+
+    For a return, a log ratio (``(pl.col("p") / pl.col("mid")).log()``) or a
+    difference sits about zero, where ``hit_rate`` reads its sign. A plain
+    ratio sits about 1, where two positive numbers always agree in sign.
     """
     if not isinstance(column, str):
         raise TypeError(
@@ -1798,262 +1862,6 @@ def _clock_keys() -> frozenset[str]:
         for key, hint in typing.get_type_hints(getattr(fn, "__wrapped__", fn)).items()
         if _takes_duration(hint)
     )
-
-
-def output_fields(spec: dict[str, Any]) -> list[str]:
-    """The names of the struct fields a spec writes, in order.
-
-    The same list :meth:`polars_online.ModelBank.output_fields` gives for a whole
-    bank, for one spec and before any row is fed: the fields are fixed by the
-    spec. ``ValueError`` for a spec that is not valid, with the builders' message
-    (:mod:`polars_online.spec`); a dict that is not a spec at all is told what it
-    lacks (``invalid spec: missing field `name```).
-
-    .. code-block:: python
-
-        spec = po.spec.ewridge(
-            "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0, ridge=[1e-6, 0.1]
-        )
-        fields = po.spec.output_fields(spec)
-        # ['pred_y__r0.000001', 'resid_y__r0.000001', 'pred_y__r0.1', 'resid_y__r0.1',
-        #  'weight_sum', 'settled_frac', 'withheld_reason', 'coef', 'support_coef']
-
-    """
-    return spec_output_fields(_json(spec))
-
-
-def output_index(spec: dict[str, Any]) -> pl.DataFrame:
-    """Every struct field a spec writes, with the machine values its name encodes.
-
-    One row per field, in the struct's order:
-
-    ``field``
-        The name, as it appears in the struct.
-    ``kind``
-        What it is: ``pred``, ``resid``, ``sigma``, ``weight_sum``, ``coef``,
-        ``penalty_selected``, ``selected``, a statistic's stem, and so on.
-    ``target``
-        The target the field is about, or null.
-    ``instance``
-        The instance the field belongs to, by its suffix, as
-        :meth:`~polars_online.ModelBank.coef`, :meth:`~polars_online.ModelBank.gram`
-        and :meth:`~polars_online.ModelBank.closed_groups` name it: ``"@h500"``,
-        or ``""`` for a single instance. Null on a field that chooses across
-        the instances (``emit_selected``, ``emit_averaged``) and on the clocks,
-        which are the spec's own.
-    ``half_life``, ``lam``
-        The decay of the instance the field belongs to, filled for a single
-        instance as for a grid. ``half_life`` is the instance's half-life in
-        clock units, in seconds under a duration (``300.0`` for ``"5m"``),
-        ``inf`` for an infinite one, and null under ``lam``. ``lam`` is the
-        spec's ``lam``, and null under a half-life.
-    ``ridge``, ``feature_set``, ``penalty``
-        The grid combination: the ridge value, the feature set's name, the lasso
-        path point; null where the spec has no such grid.
-    ``quantile``
-        The level of a ``resid_quantiles`` or ``mahal_quantiles`` field.
-    ``lag``
-        The lag, in learned rows, of an ``ew_cov`` ``lag_corr`` field.
-    ``component``
-        The principal component of an ``ew_cov`` ``pc<j>_*`` field.
-    ``state``
-        The hidden state an ``hmm`` posterior is about (``filtered_state<s>``,
-        ``predicted_state<s>``).
-    ``class``
-        The class an ``ew_class`` posterior is about (``p_<class>``).
-    ``columns``
-        The columns the field is computed from:
-
-        - one for an ``ew_cov`` mean, variance or standard deviation, for a
-          feature-health field, and for ``bocpd``'s predictive mean of a
-          column (``pred_<column>``);
-        - the pair for a correlation or a covariance, ordered for ``lag_corr``;
-        - every feature for ``mahal``, the principal components and the other
-          fields of ``kmeans``, ``micro``, ``ew_class``, ``hmm``, ``bocpd`` and
-          ``corrchange``;
-        - a block or a pair of blocks for ``deco``.
-
-        Null where no column set describes the field, as for a prediction.
-    ``dtype``
-        The type the bank declares to polars before the first row is read:
-        ``f64``, ``bool``, ``list[f64]``, ``enum`` (an ``Enum`` of
-        its values in their order: ``withheld_reason``'s, an ``ew_class``
-        spec's ``classes`` for ``class``, a grid's slots for
-        ``selected_<t>``), ``i64`` (every integer: a count, a state, a row
-        index, an id or a cluster label), or ``clock`` (``scored_clock`` and
-        ``learned_clock``, in the clock column's own type).
-
-    **Every name follows one grammar, which is stable.** Read left to right, a
-    name is the kind (``pred``, ``abs_resid``, ``lag_corr``), then its
-    qualifier, then the target or the columns it is about, then the grid point
-    after ``__`` and the instance after ``@``. A qualifier is a number glued to
-    the letter that says what it is: ``q`` a quantile level, ``l`` a lag
-    (``abs_resid_q0.05_y``, ``mahal_q0.99``, ``lag_corr_l1_x0_x1``). The grid
-    point uses letters too, ``r`` a ridge and ``p`` a lasso penalty, and the
-    instance ``h``, a half-life. A thing the spec has several of is numbered
-    where it is named, glued to its word: ``pc0_var``, ``filtered_state0``,
-    ``coef_cluster0_x1``.
-
-    This table is how to reach a field without constructing its name. No two
-    rows hold the same values apart from ``field``, so a filter on the other
-    columns reaches each field alone:
-
-    .. code-block:: python
-
-        grid = po.spec.ewridge(
-            "m", targets=["y"], features=["x0", "x1"], half_life=[100.0, 500.0], ridge=[1e-6, 0.5]
-        )
-        out = po.ModelBank([grid]).fit_predict(df)    # a half-life grid by a ridge grid
-        idx = po.spec.output_index(grid)
-        name = idx.filter(
-            (pl.col("kind") == "pred")
-            & (pl.col("target") == "y")
-            & (pl.col("ridge") == 0.5)
-            & (pl.col("half_life") == 500.0)
-        )["field"].item()
-        column = out["m"].struct.field(name)
-
-    Produced by the Rust code that renders the names, so the table can never drift
-    from the strings. ``ValueError`` for a spec that is not valid, as for
-    :func:`output_fields`.
-    """
-    return spec_output_index(_json(spec))
-
-
-def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
-    """Every coefficient a spec reports, in ``coef`` list order, with the column it
-    becomes when the struct is unnested.
-
-    One row per (instance, target, grid combination, term):
-
-    ``field``
-        The ``coef`` list the coefficient sits in: ``coef``, or ``coef@h500`` per
-        half-life instance.
-    ``position``
-        Its index in that list.
-    ``name``
-        The column
-        :meth:`~polars_online._frame.LazyFrameOnlineNamespace.unnest` gives it:
-        ``coef_{target}_{term}{combo}{instance}``, so ``coef_y_x1__r0.5@h500``
-        sits beside ``pred_y__r0.5@h500``. The ``coef_`` prefix and the target
-        are there because a bare ``x1`` would collide with the feature column
-        of that name in the same frame. :func:`deco`'s are
-        ``coef_{slot}{instance}``, its slot ``rho`` or a block or pair of
-        blocks (``coef_tech``, ``coef_tech_banks``).
-    ``target``, ``instance``, ``half_life``, ``lam``, ``ridge``, ``feature_set``, ``penalty``
-        As :func:`output_index` reports them. ``target`` is :func:`ew_class`'s
-        label column, a :func:`deco` slot, and null for a :func:`kmeans`
-        centre and an :func:`hmm` state, which belong to no target.
-    ``cluster``, ``state``, ``class``
-        The :func:`kmeans` centre, the :func:`hmm` state or the
-        :func:`ew_class` class whose coordinates the slot holds; null for
-        every other kind.
-    ``term``
-        ``"intercept"``, a feature name, ``"level"`` / ``"trend"`` for
-        :func:`holt`, or ``"rho"`` for :func:`deco`.
-
-    Empty for the kinds that report no coefficients: ``ew_cov``, ``seqtest``,
-    ``marginal``, ``rcov``, ``corrchange``, ``bocpd`` and ``audit``, and for
-    ``micro``, whose ``coef`` has no fixed layout. To reach one coefficient in
-    the nested output without writing either name:
-
-    .. code-block:: python
-
-        grid = po.spec.ewridge(
-            "m", targets=["y"], features=["x0", "x1"], half_life=[100.0, 500.0], ridge=[1e-6, 0.5]
-        )
-        out = po.ModelBank([grid]).fit_predict(df)    # a half-life grid by a ridge grid
-        cf = po.spec.coef_fields(grid)
-        row = cf.filter(
-            (pl.col("target") == "y")
-            & (pl.col("term") == "x1")
-            & (pl.col("ridge") == 0.5)
-            & (pl.col("half_life") == 500.0)
-        ).row(0, named=True)
-        slope = out["m"].struct.field(row["field"]).list.get(row["position"])
-
-    Rendered by the Rust code that names the fields, from the slot order the
-    models lay the list out in. That order is the intercept first when the spec
-    has one, then every feature -- zero for a feature outside a feature set --
-    per (target, combination) slot, slots in the order the ``pred`` fields
-    declare them.
-    ``ValueError`` for a spec that is not valid, as for :func:`output_fields`.
-    """
-    return spec_coef_fields(_json(spec))
-
-
-#: :func:`coef_index`'s columns, of a :func:`coef_fields` frame.
-_INDEX_COLUMNS = (
-    "position",
-    "target",
-    "ridge",
-    "feature_set",
-    "penalty",
-    "cluster",
-    "state",
-    "class",
-    "term",
-)
-
-
-def _index_columns(fields: pl.DataFrame) -> pl.DataFrame:
-    """:func:`coef_index`'s columns of a :func:`coef_fields` frame: the one
-    place they are chosen, so a bank with no coefficients lays out the empty
-    frame :meth:`ModelBank.coef` gives with them too (review round 4, SF3)."""
-    return fields.select(_INDEX_COLUMNS)
-
-
-def _coef_index_schema() -> pl.Schema:
-    """The schema of every :func:`coef_index` frame, whatever the spec: the
-    empty layout of a spec with no coefficients."""
-    return _index_columns(
-        coef_fields(ew_cov("_", features=["_"], stats=["mean"], half_life=1.0))
-    ).schema
-
-
-def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
-    """The layout of each ``coef`` list, one row per position.
-
-    ``coef`` is flat: (target x grid combination) slots, each contributing its
-    terms in order. This maps ``position`` to ``target``, the combination's
-    ``ridge``, ``feature_set`` and ``penalty``, and ``term`` --
-    ``"intercept"``, a feature name, or ``"level"`` / ``"trend"`` for
-    :func:`holt`. For :func:`kmeans` the slots are the centres, so ``cluster``
-    reads ``0``, ``1``, ... and ``term`` is the feature whose coordinate the
-    position holds; for :func:`hmm` a state likewise, in ``state``, and for
-    :func:`ew_class` a class, in ``class``. For :func:`deco` a slot is
-    ``rho``, or a block or a pair of blocks, in ``target``, and ``term``
-    reads ``"rho"``.
-
-    .. code-block:: python
-
-        grid = po.spec.ewridge(
-            "m", targets=["y"], features=["x0", "x1"], half_life=[100.0, 500.0], ridge=[1e-6, 0.5]
-        )
-        out = po.ModelBank([grid]).fit_predict(df)    # a half-life grid by a ridge grid
-        ci = po.spec.coef_index(grid)
-        pos = ci.filter(
-            (pl.col("target") == "y") & (pl.col("ridge") == 0.5) & (pl.col("term") == "x1")
-        )["position"].item()
-        slope = out["m"].struct.field("coef@h100").list.get(pos)
-
-    Every instance's list has this layout; :func:`coef_fields` is the same
-    table per instance, with the field each list sits in and the column name
-    each entry unnests to. ``ValueError`` for a spec that is not valid, as for
-    :func:`output_fields`. Empty, with the same columns, for a spec with no
-    fixed layout to index, as :func:`coef_fields` is:
-
-    - ``ew_cov``, which has no coefficients;
-    - ``seqtest``, which reports evidence;
-    - ``micro``, whose ``coef`` has as many rows as there are established
-      summaries;
-    - ``marginal``, ``rcov``, ``corrchange``, ``bocpd`` and ``audit``, which
-      report none.
-    """
-    cf = coef_fields(spec)
-    if cf.is_empty():
-        return _index_columns(cf)
-    return _index_columns(cf.filter(pl.col("field") == cf["field"][0]))
 
 
 @_checked
@@ -5099,3 +4907,14 @@ UNSUPERVISED = frozenset(
 
 _NUMERIC_KEYS = _numeric_keys()
 _CLOCK_KEYS = _clock_keys()
+
+
+# The field helpers live beside this module, which they read (its _json),
+# and stay importable from here.
+from polars_online import _spec_fields  # noqa: E402
+
+output_fields = _spec_fields.output_fields
+output_index = _spec_fields.output_index
+coef_fields = _spec_fields.coef_fields
+coef_index = _spec_fields.coef_index
+_coef_index_schema = _spec_fields._coef_index_schema

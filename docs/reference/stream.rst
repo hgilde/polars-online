@@ -2,4 +2,14 @@
 ========================
 
 .. automodule:: polars_online.stream
-   :members:
+   :no-members:
+
+.. autodata:: polars_online.stream.ROLE
+
+Columns made before a bank
+--------------------------
+
+Windows over the clock as columns, targets whose values arrive late, and series that tick at their own times brought onto one clock.
+
+.. entries:: stream
+

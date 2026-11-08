@@ -2,4 +2,12 @@
 =====================
 
 .. automodule:: polars_online.sim
-   :members:
+   :no-members:
+
+Simulation
+----------
+
+A seeded simulator of correlation regimes.
+
+.. entries:: sim
+

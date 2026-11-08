@@ -1,40 +1,50 @@
-"""Streaming transforms of a plan: labels that arrive late, windows looking back
-or ahead, and series that tick at their own times.
+"""Streaming transforms of a query before a bank: targets known only after a
+delay, windows looking back or ahead, and series that tick at their own times.
 
-Everything here takes a ``LazyFrame`` or a ``DataFrame`` and gives back the same
-kind, in O(state) memory, before or beside a bank. Every function follows the
-same rules:
+Each function takes a ``LazyFrame`` or a ``DataFrame`` and gives back the same
+kind, holding a bounded state in memory rather than the stream, before or
+beside a bank. They share three rules:
 
-- **Frame first, the same kind back.** Chain with Polars' own
+- **Frame first, the same kind back.** Chain one with Polars' own ``pipe``, as
   ``lf.pipe(po.stream.embargo, clock="t", delay=5.0)``.
-- **One vocabulary, the specs'.** ``clock`` and ``group`` mean what they mean
-  on a spec, and a clock parameter takes a duration on a temporal clock. With
-  no ``clock``, one unit is one row.
+- **The clock settings mean what they mean on a spec.** ``clock`` and
+  ``group`` read their columns as a spec does, and a clock parameter takes a
+  duration on a temporal clock. ``session_gap`` is the one difference, as
+  :func:`with_windows` says. With no ``clock``, which only
+  :func:`with_windows` allows, one unit is one row.
 - **A stateful transform resumes** with ``load_state`` and ``save_state``, and
-  takes ``chunk_size`` as everywhere. :func:`embargo` is a pure Polars plan with
-  nothing to save, and takes neither.
+  takes ``chunk_size``, as a bank does. :func:`embargo` is a plain Polars query
+  with nothing to save, and takes neither.
 
-:func:`embargo` turns a frame into the doubled stream a forward-looking target
-needs. Every row appears twice: once as a prediction at its own clock with
-zero weight, and once as a lesson at ``clock + delay``, the two merged back
-into clock order. It is the recipe a spec's ``embargo`` runs natively,
-written out in polars. It is useful for seeing what the delay does, for a
-model that has no ``embargo``, and as the oracle the native path is tested
-against.
+.. list-table::
+   :header-rows: 1
+   :widths: 26 74
 
-:func:`with_windows` adds exponentially weighted means, sums and rates looking
-back or ahead, and variances looking back, each with an optional hard cutoff,
-described with :mod:`polars_online.ops`: any number of them in one pass, each
-row out once every window over it has closed.
+   * - function
+     - what it does
+   * - :func:`embargo`
+     - doubles a stream for a target known only ``delay`` after its row:
+       each row once as a prediction at its own clock with weight 0, and
+       once as a learn row at ``clock + delay``, merged back into clock order.
+       It is the delay a spec's ``embargo`` runs inside the bank, written out
+       in Polars, for seeing what the delay does, for a model with no
+       ``embargo``, and as an independent check of the bank's own
+       ``embargo``.
+   * - :func:`with_windows`
+     - adds formulas over the window operators of :mod:`polars_online.ops`
+       (exponentially weighted means, sums, rates and quantiles looking back
+       or ahead, and variances looking back, each with an optional hard
+       cutoff), any number in one pass, each row out once every window over
+       it has closed
+   * - :func:`refresh_time`
+     - puts series that tick at their own times on a common grid by
+       Barndorff-Nielsen, Hansen, Lunde & Shephard's refresh-time rule: a
+       grid point wherever every series has ticked at least once since the
+       last one
 
-:func:`refresh_time` puts asynchronous series on a common grid by
-Barndorff-Nielsen, Hansen, Lunde & Shephard's refresh-time rule: a grid point
-wherever every series has ticked at least once since the last one. The scan is
-a Rust operator, wrapped here as a lazy source.
-
-Everything here streams: ``merge_sorted`` on two sorted halves of the same
-frame, a chunk-fed operator for the grid. A stream too long to hold is still
-too long to hold, and this does not change that.
+Each streams: :func:`embargo` merges two sorted copies of the same input with
+Polars' ``merge_sorted``, and the other two run as an operator of the Rust core
+fed one chunk at a time, read as a lazy source.
 """
 
 from __future__ import annotations
@@ -122,17 +132,51 @@ def embargo(
     weight: str | None = None,
     role: str = ROLE,
 ) -> pl.LazyFrame | pl.DataFrame:
-    """The doubled stream for a target that is only known ``delay`` later.
+    """Double a stream so that each row's target is learned ``delay`` after its
+    row.
 
-    Why: a target that is a forward quantity over ``delay`` clock units is not
-    known at the row it sits on. A stream that learns it there has seen
-    ``delay`` of the future before predicting the rows in between, and every
-    "out-of-sample" number after that is contaminated. With an autocorrelated
-    feature, even a pure noise column will show a correlation with its target.
-    Zero-weight rows are legal and mean "advance the clock, learn nothing", so
-    the doubled stream says exactly what is wanted: predict here, learn later.
+    Use it when a target is a forward quantity, known only ``delay`` clock
+    units after its row, and you want the delay visible in the data: an
+    independent check of a spec's own ``embargo``, a demonstration, or a model
+    or engine with no ``embargo`` of its own.
+    Otherwise give the spec ``embargo=delay``, which does the same in the
+    stream with no second copy of each row, or a ``label_clock`` column when
+    each row's target becomes known at a time of its own (Notes).
 
-    Every row comes back twice, in clock order, in the kind of frame it came in:
+    .. rubric:: Parameters
+
+    ``lf``
+        The stream, a ``LazyFrame`` or a ``DataFrame``, already in ``clock``
+        order across all its rows, not only within each group. The two copies
+        are merged by the clock alone, so a frame sorted within its groups but
+        not across them comes back with a group's clock stepping back. Sort it
+        first with ``lf.sort(clock, maintain_order=True)``, or embargo each
+        group and concatenate.
+    ``clock``
+        The clock column: numeric, ``Datetime``, ``Date`` or ``Duration``.
+    ``delay``
+        The time from predicting a row to learning it, finite and above 0. It
+        is measured as a spec's clock parameters are: a number of the clock's
+        own units on a numeric clock, and a duration
+        (``pl.duration(minutes=5)``, a ``timedelta`` or ``"5m"``) on a temporal
+        one. A duration must be a whole number of the column's own steps, since
+        the learn copy's clock is the column plus the delay: a ``Date`` clock
+        takes whole days, where ``"12h"`` would be cut to nothing. On an
+        integer clock a whole ``delay``, ``5.0`` as well as ``5``, keeps the
+        clock's dtype.
+    ``weight``
+        An existing weight column, of any numeric dtype, to carry onto the
+        learn rows and set to 0 on the predict rows. It comes back as
+        ``Float64``, the number a bank reads it as. The default, ``None``, adds
+        a weight column named ``role + "_weight"``: 1 on learn rows and 0 on
+        predict rows. Pass that name to the spec's ``weight=``.
+    ``role``
+        The name of the column that says which copy a row is, ``"predict"`` or
+        ``"learn"``. Default ``"_online_role"`` (:data:`ROLE`).
+
+    .. rubric:: Returns
+
+    The kind of frame it was given, with every row twice, in clock order:
 
     .. list-table::
        :header-rows: 1
@@ -143,93 +187,132 @@ def embargo(
          - carrying
        * - a predict row
          - ``clock``
-         - its weight forced to 0, so the model scores it and learns nothing
-           from it
+         - its weight forced to 0, so the model predicts it and learns
+           nothing from it
        * - a learn row
          - ``clock + delay``
-         - the same features and target at full weight
+         - the same features and target at the row's own weight (1 without
+           ``weight``)
 
-    A ``role`` column says which is which (``"predict"`` / ``"learn"``), so the
-    output is filtered back down with ``out.filter(pl.col(role) == "predict")``.
-    ``weight`` names an existing weight column, of any numeric dtype, which
-    comes back as ``Float64``, the number the bank reads it as. Without it the
-    function adds one, named ``role + "_weight"``, that is 1 on learn rows and
-    0 on predict rows. Pass that name to the spec's ``weight=``.
+    The columns are the input's, then the weight column it adds (without
+    ``weight``), then ``role``. At the same clock value a learn row comes
+    before a predict row, since a target whose ``delay`` has just run out is
+    known at that instant, and a prediction made then may use it. A spec's
+    ``embargo`` releases in the same order, so the two can be compared row for
+    row. Keep the predictions with ``out.filter(pl.col(role) == "predict")``.
 
-    It reads its input twice, once for each copy, merging the two as they
-    stream. A source that can be read once only -- what
-    ``pl.scan_arrow_c_stream`` builds over a DuckDB relation or a pyarrow
-    reader -- gives the second read nothing, and half the stream would go
-    missing with no error. Whether a source is spent cannot be seen until
-    the plan runs. So an input whose source is a Python scan, which such a
-    stream is, is warned about with :class:`~polars_online.ConsumedSourceWarning`
-    as the plan is built. Write such an input to a file and scan that, or
-    collect it first.
+    .. rubric:: Raises
+
+    :class:`~polars_online.ColumnNotFoundError`
+        The frame has no ``clock`` or ``weight`` column of that name. It is
+        both a ``ValueError`` and Polars' ``ColumnNotFoundError``.
+    :class:`~polars_online.WrongTypeError`
+        The ``clock`` column is neither numeric nor temporal, is an integer
+        wider than 64 bits (``Int128``), which a bank refuses as a clock, or
+        is a ``Time``, since a time of day starts again at midnight. It is
+        both a ``TypeError`` and a ``ValueError``.
+    ``ValueError``
+        When:
+
+        - ``delay`` is not finite and above 0 (``0`` would be the undoubled
+          stream, and a negative delay a target learned before its row);
+        - ``delay`` is of the wrong kind for the clock, or is not a whole
+          number on an integer clock;
+        - ``delay`` is a duration that is not a whole number of the clock
+          column's steps, such as ``"12h"`` on a ``Date``;
+        - the frame already has a column named ``role``, or, without
+          ``weight``, one named ``role + "_weight"``.
+    ``TypeError``
+        ``delay`` is an expression that reads a column or does not give one
+        duration.
+    ``polars.exceptions.InvalidOperationError``
+        When the query runs, if an integer clock within ``delay`` of its dtype's
+        top cannot hold its learn copy. Polars names the column, where wrapping
+        the clock around would put the learn copy before the stream.
+    :class:`~polars_online.ConsumedSourceWarning`
+        A warning, not an error, issued as the query is built when the input
+        reads a source written in Python (Notes).
+
+    .. rubric:: Examples
 
     .. code-block:: python
 
-        doubled = po.stream.embargo(lf, clock="t", delay=5.0)  # adds two role columns
+        rows = pl.DataFrame({"t": [0.0, 1.0, 2.0]})
+        doubled = po.stream.embargo(rows, clock="t", delay=1.0)   # adds a weight and a role column
+        for row in doubled.rows():                                # (t, weight, role)
+            print(row)
+
+    .. code-block:: text
+
+        (0.0, 0.0, 'predict')
+        (1.0, 1.0, 'learn')
+        (1.0, 0.0, 'predict')
+        (2.0, 1.0, 'learn')
+        (2.0, 0.0, 'predict')
+        (3.0, 1.0, 'learn')
+
+    A bank fed the doubled stream learns each row's target 5 rows late, and the
+    predict rows carry its predictions. This code reads ``lf`` from the
+    README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        doubled = po.stream.embargo(lf, clock="t", delay=5.0)
         scored = doubled.online.fit_predict(
             [po.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", gap_cap=10.0,
                              half_life=50.0, weight="_online_role_weight")]
         ).filter(pl.col("_online_role") == "predict").collect()
+        pred = scored["m"].struct.field("pred_y")
+        print(scored.height, pred.count())         # predict rows, and those with a prediction
 
-    The frame must already be in ``clock`` order across all its rows, not only
-    within each group, which is all a stream needs. The two copies are merged
-    by the clock alone, so a frame sorted within its groups but not across
-    them comes back with a group's rows out of order. A bank then refuses it,
-    as it refuses every step back unless ``restart_after_step_back`` says it
-    is a new start. Sort by the clock before the embargo (``lf.sort(clock,
-    maintain_order=True)``), or embargo each group and concatenate. The result
-    is sorted by ``clock`` with learn rows before predict rows at the same
-    clock value: a label whose ``delay`` has just run out is known at that
-    instant, so a prediction made then may use it. A spec's ``embargo``
-    releases in the same order, which is what lets the two be compared row
-    for row. A spec's ``embargo=`` does the same thing in the stream with no
-    doubling and no filtering: no second copy of every row, and no frame
-    rewritten. Reach for this when a delay has to be visible in the data (an
-    oracle, a demonstration, or an engine that is not this one).
+    .. code-block:: text
 
-    When each label arrives at a time of its own, give the spec a
+        400 393
+
+    .. rubric:: See also
+
+    - The spec's ``embargo`` and ``label_clock`` (:mod:`polars_online.spec`),
+      which delay the learning inside the bank.
+    -
+      `Labels that arrive late
+      <https://github.com/hgilde/polars-online#labels-that-arrive-late>`_, the
+      README section.
+
+    .. rubric:: Notes
+
+    A target that is a forward quantity over ``delay`` clock units is not known
+    at the row it sits on. A stream that learns it there has seen ``delay`` of
+    the future before predicting the rows in between, and every out-of-sample
+    number after that is contaminated. With an autocorrelated feature, even a
+    pure-noise column shows a correlation with its target. A row of weight 0 is
+    legal and means "advance the clock, learn nothing", so the doubled stream
+    says what is wanted: predict here, learn later.
+
+    When each row's target becomes known at a time of its own, give the spec a
     ``label_clock`` column of those times rather than doubling by hand. A
-    doubled stream learns the same labels at the same clocks, so its
-    predict rows' predictions are the ones a ``label_clock`` bank serves,
-    but its learn rows form every residual diagnostic from a fresh
-    prediction, one the row was never shown: on New York's 2013 flights its
-    90% interval covered 88.0% of the delays it was shown while reporting
-    90.0%. ``label_clock`` scores each label against the prediction and
-    interval its row was served.
+    doubled stream learns the same targets at the same clocks, so its predict
+    rows' predictions are the ones a ``label_clock`` bank serves. But on each
+    learn row the bank predicts again before learning, and computes every
+    residual diagnostic from that second prediction, not the one the predict
+    row was given. On New York's 2013 flights its 90% interval covered 88.0%
+    of the delays it was shown while reporting 90.0%. ``label_clock`` scores
+    each target against the prediction and interval its row was served.
 
-    ``delay`` is measured the way a spec's clock parameters are: a number of
-    the clock's own units for a numeric clock, and a duration for a
-    ``Datetime``, ``Date`` or ``Duration`` one (``pl.duration(minutes=5)``,
-    ``timedelta`` or ``"5m"``). A duration must be a whole number of the
-    column's own steps, since the learn copy's clock is the column plus the
-    delay: a ``Date`` clock takes whole days, where ``"12h"`` would be cut to
-    nothing.
+    The function reads its input twice, once for each copy, merging the two as
+    they stream. A source that can be read once only, such as what
+    ``pl.scan_arrow_c_stream`` builds over a DuckDB relation or a pyarrow
+    reader, gives the second read nothing, and half the stream would go missing
+    with no error. Whether a source is spent cannot be seen until the query
+    runs. So where the query reads a source written in Python, as such a
+    stream does, the function issues a
+    :class:`~polars_online.ConsumedSourceWarning` as the query is built. Write
+    such an input to a file and read that file as a query, or pass it as a
+    frame.
 
-    On an integer clock a whole ``delay``, ``5.0`` as well as ``5``, keeps the
-    clock's dtype.
-
-    ``ValueError`` for:
-
-    - a ``delay`` that is not finite and positive (``0`` would be the
-      undoubled stream, and negative a label from the past);
-    - a ``delay`` of the wrong kind for the clock, or one that is not a whole
-      number on an integer clock;
-    - a ``clock`` or ``weight`` column the frame has not got;
-    - a frame that already has a column named ``role``, or, without
-      ``weight``, one named ``role + "_weight"``.
-
-    ``TypeError`` for a ``clock`` column that is neither numeric nor temporal,
-    as :func:`polars_online.eval.window_metrics` refuses it, for an integer
-    wider than 64 bits (``Int128``), which a bank refuses as a clock, and for
-    a ``Time`` clock, since a time of day starts again at midnight.
-
-    An integer clock within ``delay`` of its dtype's top cannot hold its
-    learn copy: Polars raises ``InvalidOperationError`` when the plan runs,
-    naming the column, rather than wrapping the clock around, which put the
-    learn copy before the stream.
+    A bank refuses a doubled stream in which a group's clock steps back, as it
+    refuses every step back unless ``restart_after_step_back`` says it is a new
+    start.
     """
     lazy = lf.lazy()
     schema = lazy.collect_schema()
@@ -411,57 +494,126 @@ def refresh_time(
     load_state: State | None = None,
     save_state: State | None = None,
 ) -> pl.LazyFrame | pl.DataFrame:
-    """Asynchronous series on a common grid, by refresh time.
+    """Put series that tick at their own times on a common grid of refresh times.
 
-    Series observed at their own times cannot be correlated directly: the
-    Epps effect attenuates a correlation computed over a fine grid, and
-    filling forward invents observations. Barndorff-Nielsen, Hansen, Lunde &
-    Shephard's rule places a grid point at the first instant by which every
-    series has ticked at least once since the previous point, and takes each
-    series' last value there:
+    Use it before a correlation or a covariance model, such as ``rcov`` or
+    ``ew_cov``, over series observed at their own times. A correlation over a
+    fine grid of such series is pulled toward 0 (the Epps effect), and filling
+    each series forward invents observations. For series already observed at
+    the same times, a wide frame needs no grid.
 
-    .. code-block:: text
+    .. rubric:: Parameters
 
-        tau_0     = max_i (first tick of series i)
-        tau_{j+1} = max_i (first tick of series i strictly after tau_j)
+    ``lf``
+        The ticks, a ``LazyFrame`` or a ``DataFrame``, in long form: one row
+        per tick, with a ``series`` column naming it, a ``clock`` and a
+        ``value``.
+        ``lf.unpivot(index=[clock], variable_name="series", value_name="value")``
+        makes the long form from a wide one. Rows must be in ``clock`` order
+        within each ``group``, as a stream must be.
+    ``series``
+        The column that names each tick's series.
+    ``names``
+        The series, at least two and each once, in the order of the output
+        columns. It is required, not discovered from the data, because a lazy
+        query declares its schema before a row is read, and the output columns
+        are named after the series. A row whose ``series`` is not in ``names``
+        is refused, naming it, since dropping it would hide a misspelling.
+    ``clock``
+        The clock column: numeric or temporal (a Boolean and a column of nulls
+        count as numbers). A temporal clock is compared exactly, in integer
+        nanoseconds.
+    ``value``
+        The column of the ticks' values, numeric (a Boolean and a column of
+        nulls count as numbers). A value that is null, NaN, infinite or past
+        1e100 in magnitude is missing, the rule every spec column follows: the
+        tick observed nothing, so it does not update its series.
+    ``group``
+        A column whose every value gets a grid of its own, such as a trading
+        day. Default ``None``: one grid.
+    ``pairs``
+        ``True`` runs an independent grid of two series for each unordered
+        pair, which keeps far more of the data when one series is slow. Default
+        ``False``: one grid of every series. With two ``names`` the one pair's
+        grid is the joint grid.
+    ``keep``
+        Columns to carry to the output, at their value on the tick that
+        completes each grid point. Default: none.
+    ``chunk_size``
+        The rows read at a time, at least 1. The default, ``None``, is the
+        library's default chunk size. It changes no output.
+    ``load_state``
+        The path of a state :func:`refresh_time` saved, to go on from. It is
+        read when the query is built. It must have been saved with the same
+        ``names`` and ``pairs``, on the same kind of clock (a temporal state
+        resumes on any unit). Default ``None``: start with no state loaded.
+    ``save_state``
+        The path of a file to save the state to once the input is fed. Default
+        ``None``: save nothing (Notes).
 
-    Nothing is interpolated, every value in the output was observed, and the
-    grid adapts to the slowest series rather than carrying a stale value
-    across an interval.
+    .. rubric:: Returns
 
-    The input is long: one row per tick, with a ``series`` column naming it,
-    a ``clock`` and a ``value``. A wide frame is already synchronised.
-    ``lf.unpivot(index=[clock], variable_name="series", value_name="value")``
-    is the line that makes the long form from the wide one. ``names`` is required and
-    gives the series in output order. It is not discovered from the data,
-    because a lazy plan has to declare its schema before a row is read, and
-    the output columns are named after the series. A row whose ``series`` is
-    not in ``names`` is an error naming it, since dropping it would hide a
-    misspelling.
-
-    Returns the kind of frame it was given, with one row per grid point:
+    The kind of frame it was given, with one row per grid point:
 
     ``time_refresh``
-        The completing tick's clock: the max over series of their last
-        update, their Definition 1.
+        The clock of the tick that completed the point: the latest, over the
+        series, of their last update (the paper's Definition 1).
     ``<s>_value``
         Each series' last value at that instant.
     ``n_obs_<s>``
-        Ticks of ``s`` since the previous point. The grid keeps the last of
+        The ticks of ``s`` since the previous point. The grid keeps the last of
         them, the series' value at the refresh time.
     ``retained_fraction``
-        ``m / sum(n_obs)``: how many of the interval's ticks the grid kept.
-        Look at it before trusting a correlation computed on the result.
+        ``m / sum(n_obs)``, with ``m`` the number of series: the share of the
+        interval's ticks the grid kept. Read it before trusting a correlation
+        computed on the result.
 
-    plus the ``group`` column first, in the dtype it came in as, and any
-    ``keep`` columns last, at their value on the completing tick.
-    ``pairs=True`` runs an independent two-series grid per unordered pair
-    instead, which keeps far more of the data when one series is slow. It
-    returns the long frame ``(group?, pair, time_refresh, a_value, b_value,
-    n_obs_a, n_obs_b, retained_fraction, keep...)``, with the ``group`` and
-    ``keep`` columns as above and ``pair = "a|b"`` in ``names`` order: ``a``
-    is the pair's series listed first in ``names``. Each group runs its own
-    pairs. With two ``names`` the one pair's grid is the joint grid.
+    The ``group`` column comes first, in the dtype it came in as, and the
+    ``keep`` columns last. Under ``pairs=True`` it is one long frame of the
+    columns ``group`` (with a group), ``pair``, ``time_refresh``, ``a_value``,
+    ``b_value``, ``n_obs_a``, ``n_obs_b``, ``retained_fraction`` and the
+    ``keep`` columns, with ``pair = "a|b"`` and ``a`` the pair's series listed
+    first in ``names``. Each group runs its own pairs.
+
+    .. rubric:: Raises
+
+    :class:`~polars_online.ColumnNotFoundError`
+        The frame has no ``series``, ``clock``, ``value``, ``group`` or
+        ``keep`` column of that name. It is both a ``ValueError`` and Polars'
+        ``ColumnNotFoundError``.
+    :class:`~polars_online.WrongTypeError`
+        The ``clock`` column is neither numeric nor temporal (a Boolean and a
+        column of nulls are numbers), is an ``Int128``, wider than the
+        ``Int64`` an integer clock is held in, or is a ``Time``, which starts
+        again at midnight; the ``value`` column is not numeric; or a column,
+        read or not, is ``UInt128``, which polars-online cannot read (the
+        message names a cast to make). It is both a ``TypeError`` and a
+        ``ValueError``.
+    ``ValueError``
+        When:
+
+        - ``names`` lists fewer than two series, or one twice;
+        - ``chunk_size`` is below 1;
+        - ``load_state`` is not such a state, or was saved with other ``names``
+          or ``pairs``, or on the other kind of clock (numeric or temporal), or
+          with a ``group`` where this call has none, or the reverse;
+        - when the query runs, a row's ``series`` is not in ``names``, or a
+          clock steps below the previous row's in its group, the row named, as
+          a spec refuses one with ``restart_after_step_back`` unset. A row
+          before its group's saved clock is refused the same way. Under
+          py-polars 1.x the error arrives inside Polars' ``ComputeError``,
+          since the grid runs as a Polars source, for a ``DataFrame`` too.
+          Under 2.0 it is the ``ValueError`` itself.
+    ``TypeError``
+        A keyword under its old name, such as ``chunk_rows``.
+    ``FileNotFoundError``
+        ``load_state`` is not there, or the folder of ``save_state`` is not.
+    ``IsADirectoryError``
+        ``save_state`` is a folder, on every system. A ``load_state`` that is
+        a folder raises it too on macOS and Linux, and ``PermissionError`` on
+        Windows, where opening a folder fails that way.
+
+    .. rubric:: Examples
 
     .. code-block:: python
 
@@ -473,74 +625,72 @@ def refresh_time(
         grid = po.stream.refresh_time(      # a DataFrame in, a DataFrame out
             ticks, series="symbol", names=["AAA", "BBB", "CCC"], clock="t", value="px"
         )
+        for row in grid.rows():             # each point: CCC's tick completes it
+            print(row)
         returns = grid.select(pl.col("^.*_value$").diff())   # what rcov and ew_cov take
 
-    The staleness caveat (their section 2.1): the output looks synchronous
-    and is not. A refresh vector is treated as observed at ``time_refresh``,
-    but each series' value is up to one of its own inter-tick intervals old.
-    ``n_obs_<s>`` counts the ticks of each series the point folded in, of
-    which it kept one: a large count is ticks the grid dropped, and the
-    series holding the grid up, the one whose tick completes each point,
-    sits near 1.
+    .. code-block:: text
 
-    Rows must be in ``clock`` order within each ``group``, as a stream must
-    be. A clock below the previous row's is refused naming the row, as a spec
-    refuses one with ``restart_after_step_back`` unset. The refusal is a
-    ``ValueError``, which py-polars 1.x hands on inside its ``ComputeError``
-    because the sampler runs as a polars source, for a ``DataFrame`` too. A temporal
-    clock is compared exactly, in integer nanoseconds. A ``value`` that is
-    missing -- null, NaN, infinite, or past 1e100 in magnitude, the rule every
-    spec column follows -- is a tick that observed nothing, so it does not
-    update the series. Feeding the input in one chunk or a thousand gives the
-    same grid, since a point is a property of the ticks up to it. Ties are
-    broken by row order: "strictly after ``tau_j``" is read against the row
-    sequence. So a tick carrying the same clock value as the one that just
-    closed a point, but later in the frame, belongs to the next interval.
-    That is what lets a point be emitted the moment its last series ticks,
-    which is what makes the result chunk-invariant. Sort the input by
-    ``clock`` and by the order you want within a clock value.
+        (1.6, 100.2, 20.0, 50.0, 2, 1, 1, 0.75)
+        (3.1, 100.4, 20.1, 49.9, 2, 1, 1, 0.75)
 
-    **It resumes.** ``save_state`` writes the sampler's state once the input
-    is fed: every group's grid, part-way through an interval or not, and its
-    last clock, whole or not at all. Under a slice of the output
-    (``.head(n)``), the input is read up to the tick that completed the last
-    point returned and no further. So the state saved is the state after
+    .. rubric:: See also
+
+    - ``po.spec.rcov`` and ``po.spec.ew_cov``, the models a grid's returns
+      feed.
+    - :func:`polars_online.corr.epps_invert`, which corrects a correlation for
+      the Epps effect instead.
+    -
+      `Series that tick at their own times
+      <https://github.com/hgilde/polars-online#series-that-tick-at-their-own-times>`_,
+      the README section.
+
+    .. rubric:: Notes
+
+    The grid is Barndorff-Nielsen, Hansen, Lunde & Shephard's refresh-time
+    rule. A grid point is the first instant by which every series has ticked at
+    least once since the previous point, and each series' last value there is
+    taken:
+
+    .. code-block:: text
+
+        tau_0     = max_i (first tick of series i)
+        tau_{j+1} = max_i (first tick of series i strictly after tau_j)
+
+    Nothing is interpolated, every value in the output was observed, and the
+    grid adapts to the slowest series rather than carry a stale value across an
+    interval.
+
+    The staleness caveat (their section 2.1): the output looks synchronous and
+    is not. A refresh vector is treated as observed at ``time_refresh``, but
+    each series' value is up to one of its own inter-tick intervals old.
+    ``n_obs_<s>`` counts the ticks of each series the point folded in, of which
+    it kept one. A large count is ticks the grid dropped, and the series
+    holding the grid up, the one whose tick completes each point, sits near 1.
+
+    Ties are broken by row order: "strictly after ``tau_j``" is read against
+    the row sequence. So a tick carrying the same clock value as the one that
+    just closed a point, but later in the frame, belongs to the next interval.
+    That lets a point be emitted the moment its last series ticks, which makes
+    the result chunk-invariant: feeding the input in one chunk or a thousand
+    gives the same grid, since a point is a property of the ticks up to it.
+    Sort the input by ``clock``, and by the order you want within a clock
+    value.
+
+    **It resumes.** ``save_state`` writes the grid's state once the input is
+    fed: every group's grid, part-way through an interval or not, and its last
+    clock. The state is written in full or not at all. Under a slice of the
+    output (``.head(n)``), the input is read up to the tick that completed the
+    last point returned and no further. So the state saved is the state after
     that tick, whatever the chunk size, as a bank's is after the rows a
     ``head(n)`` pulled. A run resumed on the input after that tick goes on
     with the next point. With ``pairs=True`` one tick can complete several
     pairs' points at once. If the slice ends among them, the state holds the
     tick's points the slice left out, and a run resumed on the input after
-    that tick returns them first: the slice and the resumed run together give
-    the one run's grid, wherever the slice ends. ``load_state`` is
-    read when the plan is built and goes on from there, so feeding a stream
-    in two runs gives the grid one run gives. It must have been saved with
-    the same ``names`` and ``pairs``, on the same kind of clock (a temporal
-    state resumes on any unit). A row before its group's saved clock is
-    refused like any other step back.
-
-    ``ValueError`` for:
-
-    - fewer than two ``names``, or a duplicate;
-    - a column the frame has not got;
-    - ``chunk_size`` below 1;
-    - a ``load_state`` that is not such a state, or was saved with other
-      ``names`` or ``pairs``.
-
-    :class:`~polars_online.WrongTypeError`, a ``TypeError`` and a
-    ``ValueError``, for a column of a type the call cannot read, as a spec
-    refuses it:
-
-    - a ``clock`` column that is neither numeric nor temporal (a boolean and
-      a column of nulls are numbers), an ``Int128``, wider than the
-      ``Int64`` an integer clock is held in, or a ``Time``, which starts
-      again at midnight;
-    - a ``value`` column that is not numeric (a boolean and a column of nulls
-      are);
-    - a ``UInt128`` column, read or not: the extension cannot take one in, so
-      the column is named with a cast to make.
-
-    ``FileNotFoundError`` for a ``load_state`` that is not there, or a
-    ``save_state`` whose directory is not.
+    that tick returns them first. The slice and the resumed run together give
+    the one run's grid, wherever the slice ends. ``load_state`` goes on from
+    where its run stopped, so feeding a stream in two runs gives the grid one
+    run gives.
     """
     lazy = lf.lazy()
     in_schema = lazy.collect_schema()
@@ -809,22 +959,161 @@ def with_windows(
     save_state: State | None = None,
     **named: pl.Expr,
 ) -> pl.LazyFrame | pl.DataFrame:
-    """Formulas over the window operators, computed over a stream in one
-    pass, looking back and ahead (:mod:`polars_online.ops`).
+    """Add columns of formulas over the window operators, computed over a stream
+    in one pass.
 
-    Reads like ``with_columns``: each expression adds a column named by its
-    keyword or its ``.alias()``, and the input's columns come through
-    unchanged, in order. The operators -- :func:`~polars_online.ops.ewm_mean`,
-    :func:`~polars_online.ops.ewm_sum`, :func:`~polars_online.ops.ewm_rate`
-    and :func:`~polars_online.ops.ewm_quantile`, each looking back or, under
-    ``reverse=True``, ahead,
-    :func:`~polars_online.ops.ewm_var`, :func:`~polars_online.ops.ewm_std`
-    and :func:`~polars_online.ops.increment` -- are stateful kernels computed
-    by the core, each distinct one once. The
-    formula around them is element-wise Polars, evaluated on each chunk
-    emitted. Over ``trades``, quotes with a ``mid`` and trades between them
-    with a ``side``, a ``quantity`` and a ``price``, a trailing mean of the
-    mid and forward VWAPs of all trades and of the buys:
+    Use it, as you would Polars' ``with_columns``, for features or targets
+    that look back or ahead over the stream's clock, built from the operators
+    of :mod:`polars_online.ops`, with one window of rows in memory, never the
+    whole stream. For a formula that reads only its own row, use Polars'
+    ``with_columns``. A spec also takes a formula over the operators as its
+    target, computed inside the bank.
+
+    .. rubric:: Parameters
+
+    ``lf``
+        The stream, a ``LazyFrame`` or a ``DataFrame``, in clock order across
+        groups, as one stream.
+    ``*exprs``
+        Formulas passed by position, each named by its ``.alias()``.
+    ``clock``
+        The clock column. The default, ``None``, counts one unit a row.
+    ``gap_cap``
+        The longest step of the clock between two rows of one stretch (the
+        rows between two clock breaks): a longer step is a clock break, which
+        ends every window open across it. Required with a
+        clock. A number of clock units, or a duration on a temporal clock: text
+        such as ``"5m"``, a ``timedelta``, or an expression that reads no
+        column, such as ``pl.duration(minutes=5)``.
+    ``restart_after_step_back``
+        By default a step back of the clock is refused. If it is set, a step
+        back larger than it resets every window, and one no larger is still
+        refused. In the units ``gap_cap`` takes. Needs ``clock``.
+    ``session``
+        A column whose change of value ends every window open across it.
+    ``session_gap``
+        ``"reset"``, to discard the windows a session change leaves open rather
+        than cut them. Needs ``session``. A number or a duration is deprecated
+        here, since no window reads it (Notes).
+    ``group``
+        A column whose every value has its own clock, sessions and windows. A
+        window looking ahead under ``group`` needs ``clock``.
+    ``like``
+        A spec to take the clock settings from, all six above, in place of
+        giving them. With them it takes the rule for the rows the spec learns
+        from: a window looking ahead over a row the spec would skip is null
+        (Notes). Default ``None``.
+    ``chunk_size``
+        The rows read at a time, at least 1. The default, ``None``, is the
+        library's default chunk size. It changes no output.
+    ``load_state``
+        The path of a state this call saved, to go on from. It is read when the
+        query is built. Default ``None``: start with no state loaded.
+    ``save_state``
+        The path of a file to save the state to once the input is fed, or the
+        slice of the output is. Default ``None``: save nothing (Notes).
+    ``**named``
+        Formulas by keyword, each named by its keyword. The six clock keywords
+        (``clock`` to ``group``) are the call's clock settings, not output
+        names: to add a column named
+        ``session``, name its expression with ``.alias("session")`` and pass it
+        by position.
+
+    A formula is element-wise Polars over the operators: columns, literals,
+    arithmetic, negation, comparisons, ``&`` and ``|``, ``log``, ``exp``,
+    ``abs``, ``sqrt``, ``pow``, ``clip``, ``fill_null``, ``is_null``,
+    ``is_not_null``, ``when/then/otherwise``, ``cast`` and ``alias``. Each
+    formula must hold at least one operator. A ``shift``, a cumulative or
+    rolling function, ``over`` or an aggregation would depend on the chunking,
+    and is refused by name when the query is built.
+
+    .. rubric:: Returns
+
+    The kind of frame it was given: the input's columns, unchanged and in
+    order, then a column for each formula. Rows leave in input order, each once
+    every window over it has resolved. A row whose window has not passed when
+    the input ends gives null, unless ``save_state`` keeps it for the next run.
+
+    .. rubric:: Raises
+
+    ``TypeError``
+        When the query is built: a value that is not an expression, an
+        expression given to ``clock``, ``session`` or ``group``, a ``gap_cap``,
+        ``restart_after_step_back`` or ``session_gap`` expression that is not
+        one duration reading no column, a keyword under its old name, or a
+        ``like`` that is not a spec.
+    :class:`~polars_online.RefusedValueError`
+        A clock keyword given beside ``like=``. It is both a ``ValueError`` and
+        a ``TypeError``.
+    :class:`~polars_online.WrongTypeError`
+        When the query is built, a window operator's input is not a number,
+        or an increment's is neither a number nor temporal; or a column, read
+        or not, is ``UInt128``, which polars-online cannot read (the message
+        names a cast to make). It is both a ``TypeError`` and a
+        ``ValueError``.
+    ``ValueError``
+        When the query is built:
+
+        - a formula, a clock policy or a column that cannot run, such as a
+          window looking ahead under ``group`` with no ``clock``, or
+          ``half_life=float("inf")`` with no ``window_size`` for a mean, a
+          variance or a standard deviation;
+        - a formula that holds no window operator, or a formula by position
+          that has no name of its own;
+        - a ``session_gap`` without ``session``, or a
+          ``restart_after_step_back`` without ``clock``, which would do
+          nothing;
+        - an output name that collides, or ``chunk_size`` below 1;
+        - a ``load_state`` that another call saved.
+
+        And when the query runs: a step back of the clock, naming the row, or a
+        state resumed on another input (Notes). Under py-polars 1.x these
+        arrive inside Polars' ``ComputeError``, since the rows come from a
+        Python source. Under 2.0 each is the ``ValueError`` itself.
+    ``FileNotFoundError``
+        ``load_state`` is not there, or the folder of ``save_state`` is not.
+    ``IsADirectoryError``
+        ``save_state`` is a folder, on every system. A ``load_state`` that is
+        a folder raises it too on macOS and Linux, and ``PermissionError`` on
+        Windows, where opening a folder fails that way.
+    :class:`~polars_online.PolarsOnlineDeprecationWarning`
+        A warning, not an error: a ``session_gap`` that is a number or a
+        duration, which no window reads.
+    :class:`~polars_online.UnstableWarning`
+        A warning, under ``POLARS_ONLINE_WARN_UNSTABLE=1``: a call with
+        ``load_state`` or ``save_state``, whose file format is unstable.
+    :class:`~polars_online.OrderNotGuaranteedWarning`
+        A warning: the query before this call does not keep its rows in order,
+        while a window is taken over rows in row order.
+    :class:`~polars_online.ConsumedSourceWarning`
+        A warning: a run that reads a source written in Python gave no rows,
+        the shape of a stream that gives its rows once and was spent by an
+        earlier run.
+
+    .. rubric:: Examples
+
+    .. code-block:: python
+
+        rows = pl.DataFrame({"t": [0.0, 1.0, 2.0, 5.0, 6.0], "x": [1.0, 2.0, 3.0, 4.0, 5.0]})
+        out = po.stream.with_windows(
+            rows,
+            trend=pl.col("x") - po.ewm_mean("x", half_life=1.0),   # x above its trailing mean
+            ahead=po.ewm_sum("x", half_life=float("inf"), window_size=1.0, reverse=True),
+            clock="t", gap_cap=2.0,                    # the gap from 2 to 5 is a clock break
+        )
+        print(out["trend"].round(4).to_list())   # 0 at row 3: the windows start over
+        print(out["ahead"].to_list())            # next unit's sum: null if cut, or open at the end
+
+    .. code-block:: text
+
+        [0.0, 0.5, 0.75, 0.0, 0.5]
+        [2.0, 3.0, None, None, None]
+
+    Over ``trades``, quotes with a ``mid`` and trades between them with a
+    ``side``, a ``quantity`` and a ``price``, a trailing mean of the mid and
+    forward VWAPs of all trades and of the buys. This code reads ``trades``
+    from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
 
     .. code-block:: python
 
@@ -840,171 +1129,125 @@ def with_windows(
                          / po.ewm_sum(buys.then("quantity"), **ahead),
             clock="ts", gap_cap="5m", group="symbol",
         )
+        print(out.height, out.columns[-3:], out["fwd_vwap"].count())
 
-    **The clock is a spec's**, in the same words:
+    .. code-block:: text
 
-    .. list-table::
-       :header-rows: 1
-       :widths: 32 68
+        3000 ['mid_trend', 'fwd_vwap', 'fwd_buy_vwap'] 2890
 
-       * - keyword
-         - what it does here
-       * - ``clock``
-         - the clock column; with none, one unit is one row
-       * - ``gap_cap``
-         - required with a clock; a longer gap is a break
-       * - ``restart_after_step_back``
-         - unset, a step back is refused; given, one larger than it starts
-           over, and one no larger is a late row, refused
-       * - ``session``
-         - a column; a change of its value ends every window open across it
-       * - ``session_gap``
-         - ``"reset"``, to discard the windows a session change leaves open
-           rather than cut them; needs ``session``. A number or a duration
-           is deprecated here: no window reads it
-       * - ``group``
-         - groups that each have their own clock, sessions and windows; a
-           window looking ahead under ``group`` needs ``clock``
+    .. rubric:: See also
 
-    ``gap_cap`` and ``restart_after_step_back`` each take a number of clock
-    units, or a duration as a spec's do: text such as ``"5m"``, a
-    ``timedelta``, or an expression that reads no column, such as
-    ``pl.duration(minutes=5)``.
+    - :mod:`polars_online.ops`, the operators, and the tables of ``closed`` and
+      ``partial``.
+    - ``lf.online.with_windows`` and ``df.online.with_windows``, the same call
+      on a frame's ``online`` namespace.
+    -
+      `Windows as columns
+      <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#windows-as-columns>`_,
+      `Windows as a model's inputs and target
+      <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#windows-as-a-models-inputs-and-target>`_
+      and `Saving and resuming a window run
+      <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#saving-and-resuming-a-window-run>`_,
+      the guide.
 
-    A window is measured on that policy clock, after the cap. A gap longer
-    than ``gap_cap`` or a session change ends every window open across it,
-    under each operator's ``partial``; a reset discards them: null, never
-    dropped. Only a window looking ahead is still open at a session change,
-    so ``session_gap="reset"`` changes those windows and nothing else. Since
-    every window ends at a session change, no window measures the clock's
-    step across one, and the number a spec takes there would change nothing:
-    a session needs no ``session_gap`` here, and a number or a duration
-    given for it raises a
-    :class:`~polars_online.PolarsOnlineDeprecationWarning`. A window looking
-    ahead under
-    ``closed="right"`` or ``"both"`` whose far edge is the last row before
-    either holds every row it covers, so it is whole, and gives its value
-    under any ``partial``. The rows must be in clock order across
-    groups, as one stream. The clock is also read in input order, under the
-    same policy, so a step back there is refused or, past
-    ``restart_after_step_back``, resets every group, and a gap there ends
-    every group's windows. With ``group`` a session is each group's, read on
-    its own clock, so a clock that starts over with a session is a step back
-    on the stream's; without ``group`` the stream is the one group. A group
-    silent past ``gap_cap`` is cut as the stream's clock passes the cap,
-    before its next row can say its session changed, so a
+    .. rubric:: Notes
+
+    The operators are stateful kernels the core computes, each distinct one
+    once. The formula around them is element-wise Polars, evaluated on each
+    chunk the call emits. The formula is kept as a compact tree of the
+    library's own, in the query and in a saved state, so a state saved under one
+    Polars version loads under another: Polars' own serialized form of an
+    expression changes between versions.
+
+    **The clock.** A window is measured on the clock with each step capped at
+    ``gap_cap``. A gap longer than ``gap_cap`` or a session change ends every
+    window open across it, under each operator's ``partial``. A reset discards
+    them: each gives null, and its row stays in the output. Only a window
+    looking ahead is still open at a session change, so
+    ``session_gap="reset"`` changes those windows and nothing else. Since
+    every window ends at a session change, no window measures the clock's step
+    across one, and the number a spec takes there would change nothing. So a
+    session needs no ``session_gap`` here. A window looking ahead under
+    ``closed="right"`` or ``"both"`` whose far edge is the last row before a
+    cut or a reset holds every row it covers, so it is whole, and gives its
+    value under any ``partial``.
+
+    The clock is also read in input order, under the same settings. So a step
+    back there is refused or, past ``restart_after_step_back``, resets every
+    group, and a gap there ends every group's windows. With ``group`` a session
+    is each group's, read on its own clock, so a clock that starts over with a
+    session is a step back on the stream's. Without ``group`` the stream is the
+    one group. A group silent past ``gap_cap`` is cut as the stream's clock
+    passes the cap, before its next row can say its session changed, so a
     ``session_gap="reset"`` there discards only what is still open.
-    ``like=spec`` takes all of this from a spec instead, and with it the
-    rule for the rows the spec learns from. A forward window over a row the
-    spec would skip (a feature or weight the spec cannot use: null, NaN,
-    infinite or past ``1e100`` in magnitude, each of which counts as null) is
-    null, as the model never learns its target. These keywords are the call's, not output names: an
-    expression passed as ``session=...`` is refused. Name it with
-    ``.alias()`` instead.
 
-    **A formula is element-wise.** Columns, literals, arithmetic, negation,
-    comparisons, ``&`` and ``|``, ``log``, ``exp``, ``abs``, ``sqrt``, ``pow``, ``clip``,
-    ``fill_null``, ``is_null``, ``is_not_null``, ``when/then/otherwise``,
-    ``cast`` and ``alias`` over the operators. A ``shift``, a cumulative or
-    rolling function, ``over`` or an aggregation would depend on the
-    chunking, and is refused by name while the plan is built. An operator's
-    input is the same kind of formula, ``increment`` included, not another
-    operator. The formula is kept as a compact tree of the library's own, in
-    the plan and in a saved state, so a state saved under one Polars version
-    loads under another: Polars' own serialized form of an expression
-    changes between versions.
+    Under ``like=spec``, a window looking ahead over a row the spec would skip
+    is null, as the model never learns its target. The spec skips a row whose
+    feature or weight it cannot use: null, NaN, infinite or past ``1e100`` in
+    magnitude, each of which counts as null.
 
-    **Rows leave in input order**, each once every window over it has
-    resolved. A backward window under ``closed="right"`` or ``"both"`` waits
-    for the next distinct stamp, and a look-ahead for its window to pass, so
-    the output trails the input by the longest window. A group that falls
-    silent holds every later row for at most ``gap_cap`` of the stream's
-    time: past that its next row is certain to open with a gap past the cap,
-    so its windows end then. Only a clock column has a cap, so a look-ahead
-    under ``group`` needs one, and is refused without it: each group's clock
-    would count only its own rows, and a silent group would hold every later
-    row to the end of the input. The rows a look-ahead holds are kept as the
-    input's own chunks, not copied, so the memory is one window of input
-    whatever its width. The kernels' own sums are one window of the rows
+    **The rows' order and memory.** A backward window under ``closed="right"``
+    or ``"both"`` waits for the next distinct stamp (a clock value), and a
+    look-ahead for its window to pass, so the output trails the input by the
+    longest window. A
+    group that falls silent holds every later row for at most ``gap_cap`` of
+    the stream's time. Past that its next row is certain to open with a gap
+    past the cap, so its windows end then. Only a clock column has a cap, so a
+    look-ahead under ``group`` needs one, and is refused without it: each
+    group's clock would count only its own rows, and a silent group would hold
+    every later row to the end of the input. The rows a look-ahead holds are
+    kept as the input's own chunks, not copied, so the memory is one window of
+    input whatever its width. The kernels' own sums are one window of the rows
     that count in them.
 
-    **It resumes.** ``save_state`` writes the kernels' sums and the rows
-    still waiting, which the next run, given ``load_state``, emits first:
-    feeding a stream in two runs gives what one run gives. Without it, a
-    row whose window has not passed when the input ends is emitted
-    unresolved, null. Any resumed run refuses by name an input whose first
-    row is at the last stamp the state read, unless that row starts a new
-    session. A file boundary inside a tied stamp cannot be told from an
-    input that repeats rows the state read, which would come out twice. So
-    cut a stream into files between stamps. Without a clock column there is
-    no stamp to compare, and a repeated row is not caught.
+    **It resumes.** ``save_state`` writes the kernels' sums and the rows still
+    waiting, which the next run, given ``load_state``, emits first. Feeding a
+    stream in two runs gives what one run gives. Any resumed run refuses by
+    name an input whose first row is at the last stamp the state read, unless
+    that row starts a new session. A file boundary inside a tied stamp cannot
+    be told from an input that repeats rows the state read, which would come
+    out twice. So cut a stream into files between stamps. Without a clock
+    column there is no stamp to compare, and a repeated row is not caught.
 
     .. warning::
         The state file's format is considered **unstable**: it may change in
-        any release without that counting as a breaking change, and a state
-        one release saved need not load in the next. So is the formula tree
-        it holds. Under ``POLARS_ONLINE_WARN_UNSTABLE=1``, a call with
-        ``load_state`` or ``save_state`` raises
+        any release without that counting as a breaking change, and a state one
+        release saved need not load in the next. So is the formula tree it
+        holds. Under ``POLARS_ONLINE_WARN_UNSTABLE=1``, a call with
+        ``load_state`` or ``save_state`` issues
         :class:`polars_online.UnstableWarning`.
 
-    Under a slice of the output (``.head(n)``) the input
-    is read only up to the row that resolved the *n*-th row, and the state
-    records how many rows of the input were consumed so far. A run resumed
-    with ``load_state`` on the *same input*, unsliced, skips those rows and
-    goes on, so any chain of sliced runs gives what one run gives, whatever
-    the chunk size. Such a state knows its input by its first row's clock
-    and session, and by the last rows it read: the rows it holds that are
-    the input's, or the last row alone where it holds none. An input whose
-    first row differs is the next file when the clock policy takes that
-    row as a step forward or a new start, which is a step back past
-    ``restart_after_step_back`` or a new session. The run then skips
-    nothing and first returns the rows the state held. Besides the input
+    Under a slice of the output (``.head(n)``) the input is read only up to the
+    row that resolved the *n*-th row, and the state records how many rows of
+    the input were consumed so far. A run resumed with ``load_state`` on the
+    *same input*, unsliced, skips those rows and goes on. So any chain of
+    sliced runs gives what one run gives, whatever the chunk size. Such a state
+    knows its input by its first row's clock and session, and by the last rows
+    it read: the rows it holds that are the input's, or the last row alone
+    where it holds none. An input whose first row differs is the next file when
+    the clock settings take that row as a step forward or a new start, which is
+    a step back past ``restart_after_step_back`` or a new session. The run then
+    skips nothing and first returns the rows the state held. Besides the input
     at the last stamp read, a state saved under a slice refuses by name:
 
-    - one that steps back where the policy refuses it: the same input
-      sliced by hand, or an overlapping file (a hand slice that starts
-      after the last clock read is taken as the next file);
-    - without a clock column, one that does not begin with a new session;
-    - one that starts as the saved input did but differs where the state
+    - an input that steps back where the clock settings refuse it: the same input
+      sliced by hand, or an overlapping file (a hand slice that starts after
+      the last clock read is taken as the next file);
+    - without a clock column, an input that does not begin with a new session;
+    - an input that starts as the saved input did but differs where the state
       was cut, and one shorter than the rows consumed.
 
-    A clock that starts over at the same stamp each day needs a session
-    column for the next day's file to differ from the saved input at its
-    first row. Without a clock column a row-count clock steps forward at
-    every row. So the next file is one that begins with a new session
-    (under ``group``, a new session of a group the state has read), and
-    not with the saved input's first session, which marks the saved input
-    itself. Without a session column either, there is no next file:
-    resume on the same input. An input whose rows match the state's where
-    it was cut is taken as the same input, so resume a stream whose rows
-    can repeat (a daily grid with the same values) on the same input only.
-    A state resumes only the call that saved it, on the same kind of clock.
-
-    Refused while the plan is built:
-
-    - ``ValueError`` for a formula, a clock policy or a column that cannot
-      run (a look-ahead under ``group`` with no ``clock`` among them), a
-      ``session_gap`` without ``session`` and a ``restart_after_step_back``
-      without ``clock``, which would do nothing, an output name that
-      collides, ``chunk_size`` below 1, and a ``load_state`` another call
-      saved;
-    - :class:`~polars_online.WrongTypeError`, a ``TypeError`` and a
-      ``ValueError``, for an input column of a type the call cannot read: a
-      window operator's input that is not a number, an increment's that is
-      neither a number nor temporal, and a ``UInt128`` column, read or not,
-      which the extension cannot take in, so the column is named with a
-      cast to make;
-    - ``TypeError`` for something that is not an expression, an expression
-      given to a clock keyword, a ``like`` that is not a spec, and a clock
-      keyword beside ``like=``;
-    - ``FileNotFoundError`` for a ``load_state`` that is not there, or a
-      ``save_state`` whose directory is not.
-
-    What the run refuses once the plan is running -- a step back, naming
-    the row, or a state resumed on another input -- surfaces as
-    ``polars.exceptions.ComputeError`` with the message inside under
-    py-polars 1.x, since the rows come from a Python source. Under 2.0 it
-    is the ``ValueError`` itself.
+    A clock that starts over at the same stamp each day needs a session column
+    for the next day's file to differ from the saved input at its first row.
+    Without a clock column a row-count clock steps forward at every row. So the
+    next file is one that begins with a new session (under ``group``, a new
+    session of a group the state has read), and not with the saved input's
+    first session, which marks the saved input itself. Without a session column
+    either, there is no next file: resume on the same input. An input whose
+    rows match the state's where it was cut is taken as the same input, so
+    resume a stream whose rows can repeat (a daily grid with the same values)
+    on the same input only. A state resumes only the call that saved it, on the
+    same kind of clock.
     """
     who = "with_windows"
     given = {

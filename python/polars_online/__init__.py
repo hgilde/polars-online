@@ -2,22 +2,24 @@
 
 One Rust core, run three ways, with the same numbers from each:
 
-1. inside a Polars query: ``lf.online.fit_predict(specs)`` is a
-   ``LazyFrame`` that streams its rows through a bank when it runs, and
+1. inside a Polars query: ``lf.online.fit_predict(specs)`` is a query
+   that feeds its rows through a bank when it runs, and
    ``df.online.fit_predict(specs)`` fits a frame already in memory;
-2. :class:`ModelBank`, a bank fed one chunk at a time, with memory O(state)
-   rather than O(data); hand it a ``LazyFrame`` and it does the chunking
+2. :class:`ModelBank`, a model bank fed one chunk at a time, whose memory
+   grows with the models' state and never with the number of rows that
+   have passed. Handed a query, it reads the query a chunk at a time
    (:meth:`ModelBank.fit_predict_batches`, :meth:`ModelBank.fit`);
-3. the ``polars-online`` command line: parquet, ipc, csv or ndjson in and out, with
-   the state saved and resumed between runs (`docs/RUNNER.md
+3. the ``polars-online`` command line: Parquet, Arrow IPC, CSV or NDJSON
+   in and out, with the state saved and resumed between runs (`docs/RUNNER.md
    <https://github.com/hgilde/polars-online/blob/main/docs/RUNNER.md>`_).
 
 A spec names a model and the columns it reads (:mod:`polars_online.spec`).
-Every way in takes a list of specs and writes one struct column per spec. A
+Every way in takes a list of specs and writes one output column per spec. A
 target is a column, a column under a name of its own (:func:`target`), or a
-window expression looking ahead. To fit a target computed from its own row's
-columns, such as a price against the mid, make the column with Polars'
-``with_columns`` in the query before the bank.
+formula target, an expression over the window operators that looks ahead.
+To fit a target computed from its own row's columns, such as a price
+against the mid, make the column with Polars' ``with_columns`` in the query
+before the bank.
 
 The modules around the bank:
 
@@ -30,21 +32,21 @@ The modules around the bank:
    * - :mod:`polars_online.eval`
      - scores a bank's output
    * - :mod:`polars_online.gram`
-     - solves and diagnoses the running sums a bank exports
+     - solves and diagnoses the Grams a bank exports
    * - :mod:`polars_online.stream`
-     - transforms a query: labels that arrive late, series that tick at
-       their own times, and windowed means, sums and rates looking back or
-       ahead
+     - transforms a query: targets whose values arrive late, series that tick at
+       their own times, and exponentially weighted means, sums, rates,
+       variances and quantiles looking back or ahead
    * - :mod:`polars_online.ops`
      - the window operators that :func:`polars_online.stream.with_windows`
-       computes
+       computes, and that a formula target is built from
    * - :mod:`polars_online.corr`
      - repairs and reads correlation matrices
    * - :mod:`polars_online.sim`
      - simulates streams whose truth is known
    * - :mod:`polars_online.gbdt`
      - builds XGBoost's and LightGBM's training inputs from files or a
-       ``LazyFrame``
+       query
 
 **Errors follow one contract throughout**, and each docstring says which
 part of it applies:
@@ -61,11 +63,12 @@ part of it applies:
    * - a value that is refused: a spec parameter, a config key, what a
        column holds
      - ``ValueError``, naming the spec and the parameter or column
-   * - a column a spec reads that the frame has not got
+   * - a column a spec reads that the frame does not have
      - :class:`ColumnNotFoundError`, naming the spec, the column's role and
        the column: Polars' ``ColumnNotFoundError`` and a ``ValueError``
        both, so either ``except`` catches it
-   * - a spec's output column that a scoring function's frame has not got
+   * - a spec's output column that a scoring function's frame does not
+       have
      - :class:`OutputColumnNotFoundError`, a :class:`ColumnNotFoundError`
    * - a wrong type
      - ``TypeError``; where the same refusal once raised ``ValueError``,
@@ -73,7 +76,7 @@ part of it applies:
    * - a value out of range, or a combination of settings refused, that
        once raised ``TypeError``
      - :class:`RefusedValueError`
-   * - a spec name or position a bank has not got
+   * - a spec name or position a bank does not have
      - ``KeyError`` or ``IndexError``
    * - a bank fed from two threads at once
      - ``RuntimeError``
@@ -93,9 +96,10 @@ The older parent is dropped at the next major version: catch ``TypeError``,
 
 Inside a running Polars query the same exception arrives wrapped in
 Polars' ``ComputeError`` under py-polars 1.x, carrying its message, and as
-itself under 2.0: how a query wraps an error is Polars' to change. A failed
-run never replaces an output or a state file. A refused chunk leaves a bank
-as it was, apart from the one case :meth:`ModelBank.fit_predict` names.
+itself under 2.0: how a query wraps an error is Polars' to change. A run
+the bank refuses, or one abandoned before its last row, never replaces a
+state file. A refused chunk leaves a bank
+as it was, apart from the two cases :meth:`ModelBank.fit_predict` names.
 """
 
 from polars_online import (

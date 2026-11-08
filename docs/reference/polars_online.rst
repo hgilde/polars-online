@@ -4,48 +4,29 @@
 .. automodule:: polars_online
    :no-members:
 
-.. autoclass:: polars_online.ModelBank
-   :members:
+The model bank
+--------------
 
-.. autoclass:: polars_online.ArrowStruct
-   :members:
+Run a model bank over a query, a frame or chunks you feed it, and turn the
+output column it adds into columns, or hand it over as Arrow. Give a target's
+output fields a name of your own, or write a target as a formula that looks
+ahead. Read the compiled extension's version, the version of the state files
+it writes, and the number of threads a bank runs on.
 
-.. autoclass:: polars_online.ColumnNotFoundError
+.. entries:: bank
 
-.. autoclass:: polars_online.OutputColumnNotFoundError
+Errors
+------
 
-.. autoclass:: polars_online.WrongTypeError
+This library's own errors, each also a subclass of the built-in or Polars
+class a handler may already catch.
 
-.. autoclass:: polars_online.RefusedValueError
+.. entries:: errors
 
-.. autoclass:: polars_online.PolarsOnlineWarning
+Warnings
+--------
 
-.. autoclass:: polars_online.OrderNotGuaranteedWarning
+``PolarsOnlineWarning``, and the warnings the library issues, each a subclass
+of it.
 
-.. autoclass:: polars_online.ConsumedSourceWarning
-
-.. autoclass:: polars_online.ReadinessWarning
-
-.. autoclass:: polars_online.PolarsOnlineDeprecationWarning
-
-.. autoclass:: polars_online.UnstableWarning
-
-
-.. autofunction:: polars_online.fit_predict
-
-.. autofunction:: polars_online.predict
-
-.. autofunction:: polars_online.unnest
-
-.. autofunction:: polars_online.target
-
-.. autoclass:: polars_online.Target
-
-.. autoclass:: polars_online.FormulaTarget
-
-
-.. autofunction:: polars_online.native_version
-
-.. autofunction:: polars_online.schema_version
-
-.. autofunction:: polars_online.thread_pool_size
+.. entries:: warnings
