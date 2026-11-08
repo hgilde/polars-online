@@ -158,6 +158,9 @@ FILES: list[str] = [
     "docs/how-to/read-a-sequential-test.md",
     "docs/how-to/keep-hmm-states-on-their-regimes.md",
     "docs/explanation/how-po-gbdt-builds-training-data.md",
+    "docs/tutorials/stream-from-parquet.md",
+    "docs/tutorials/local-fit-with-a-clock.md",
+    "docs/tutorials/fit-save-and-serve.md",
     *sorted(str(p.relative_to(REPO)) for p in REFERENCE.glob("*.rst")),
 ]
 

@@ -98,6 +98,10 @@ kept in [`records/`](records/), and its row links it there.
 | [explanation/robust-scale.md](explanation/robust-scale.md) | you fit `huber`, `quantile` or `sgd` with a Huber loss and want to know how the residuals' scale is kept, why each target's first rows are refit, and what a robust scale gives up when the level shifts |
 | [explanation/grids-and-instances.md](explanation/grids-and-instances.md) | you give a spec several values of a setting and want to know how one pass fits them all, what an instance and a slot are, and why the best error over a grid is optimistic |
 | [explanation/how-po-gbdt-builds-training-data.md](explanation/how-po-gbdt-builds-training-data.md) | you train trees with `po.gbdt` and want to know how it bins rows that do not fit in memory, how its bins compare with each library's own, when a margin beats a feature, and why the kind of file decides its memory |
+| **New pages: tutorials** | |
+| [tutorials/stream-from-parquet.md](tutorials/stream-from-parquet.md) | you are new to the library and want to fit a model over parquet files too large to hold, in a Polars query, and write its predictions to a file |
+| [tutorials/local-fit-with-a-clock.md](tutorials/local-fit-with-a-clock.md) | you are new to the library and want a regression that follows the recent rows along a clock, through a trading day and across the next day's open |
+| [tutorials/fit-save-and-serve.md](tutorials/fit-save-and-serve.md) | you are new to the library and want to fit a model, save it, load it in a new Python process and predict new rows from it |
 
 ## Records
 
