@@ -14,7 +14,9 @@ keyword from a missing one at the call.
 .. rubric:: The stream parameters
 
 Every builder takes these after its own parameters, with the meaning, units and
-refusals below. The README's *How a bank sees a stream* shows them at work.
+refusals below. `What every spec takes
+<https://github.com/hgilde/polars-online/blob/main/docs/MODELS.md#what-every-spec-takes>`_
+shows them at work.
 
 ``targets``, ``features``
     Column names. A target is what the model predicts. A feature is what it

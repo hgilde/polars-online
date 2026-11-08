@@ -386,13 +386,19 @@ def test_the_builder_list_covers_every_builder():
 
 
 def test_the_api_snapshot_pins_every_models_output_fields():
-    """Output field names are API -- the README's *Output field names*: "a
-    test holds every name, default and signature to a checked-in snapshot"
-    -- and the snapshot is where they are pinned, one `<model> minimal:`
-    block each. The quote is checked too: the one here before named a
-    sentence the README no longer had (README-ITERATIONS, E15)."""
-    readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
-    assert "a test holds every name, default and signature to a checked-in snapshot" in readme
+    """Output field names are API -- docs/VERSIONS.md's *What is stable*
+    lists them as stable and says `tests/test_api_surface.py` holds the
+    stable parts to a snapshot, and docs/how-to/find-an-output-field.md,
+    where the README's *Output field names* moved (task 338 stage 8), links
+    that promise -- and the snapshot is where they are pinned, one
+    `<model> minimal:` block each. The quotes are checked too: the one here
+    before named a sentence the README no longer had (README-ITERATIONS,
+    E15)."""
+    versions = " ".join((ROOT / "docs" / "VERSIONS.md").read_text(encoding="utf-8").split())
+    assert "the [output field names](how-to/find-an-output-field.md)" in versions
+    assert "`tests/test_api_surface.py` compares the stable parts with a snapshot" in versions
+    page = (ROOT / "docs" / "how-to" / "find-an-output-field.md").read_text(encoding="utf-8")
+    assert "](../VERSIONS.md#what-is-stable)" in page
     surface = test_api_surface.describe_api()
     pinned = set(re.findall(r"^  ([a-z_]+) minimal:$", surface, flags=re.MULTILINE))
     assert pinned == set(MINIMAL), "tests/test_api_surface.py pins no output fields for a model"

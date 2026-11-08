@@ -169,7 +169,7 @@ it on a bank that starts with nothing learned. Choose the fix by what caused the
 |---|---|
 | rows not in clock order | sort the rows by the clock ([step 1](#sort-the-rows-before-the-bank)) |
 | input that overlaps what a saved state has learned, such as a rerun of the day | drop the rows the state has learned with `bank.skip_learned(frame)`, or `--skip-learned` on the command line ([Resume from a saved state](resume-from-a-saved-state.md#resume-on-input-that-overlaps-the-state)) |
-| the start of a new session, such as the next trading day | set the spec's `session=` to the column whose value changes there, and `session_gap=` to the clock step to apply at the change, or `"reset"`: the clock may step back where a session starts ([Sessions, gaps and steps back](../../README.md#sessions-gaps-and-steps-back)) |
+| the start of a new session, such as the next trading day | set the spec's `session=` to the column whose value changes there, and `session_gap=` to the clock step to apply at the change, or `"reset"`: the clock may step back where a session starts ([Handle sessions, gaps and steps back](handle-sessions-gaps-and-steps-back.md)) |
 | a stream that starts over, such as a replayed day or a feed that started again | set `restart_after_step_back` below the step: the model resets at a step back larger than the setting, and the bank still refuses one no larger |
 
 This code feeds ten rows of `df` with the row at `t = 6` two rows late,

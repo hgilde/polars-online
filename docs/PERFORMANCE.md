@@ -13,6 +13,7 @@ each reads as of its date, with the names of its day.
 | section | read it when | subsections |
 |---|---|---|
 | [Reading this document](#reading-this-document) | you are new here: where the time and memory go now, the words this document uses, today's name for each old one, and how every number was measured | [the headline](#the-headline) · [words](#words-this-document-uses) · [names that changed](#names-that-changed) · [how the numbers are made](#how-the-numbers-are-made) · [budgets](#budgets-that-only-tighten) |
+| [The current figures](#the-current-figures) | you want a figure the guides quote: each model's rows a second, the speed at each thread count, a run's peak memory, or what a window operator costs | [each model](#rows-a-second-for-each-model) · [threads](#rows-a-second-at-each-thread-count) · [peak memory](#peak-memory-of-each-way-of-running-a-bank) · [window operators](#what-a-window-operator-costs) |
 | [How cost grows with size](#how-cost-grows-with-size) | you want how a row's work and a state grow with each size a surface has -- features, targets, groups, specs, a window, the rows already seen -- the test that holds each, and what it found | [how a cell is measured](#how-a-cell-is-measured) · [the table](#the-table) · [specs on one stream](#specs-on-one-stream) · [what the table found](#what-the-table-found) |
 | **[The first pass, and the bank's plumbing](#the-first-pass-and-the-banks-plumbing)** | | |
 | [1. The measured baseline](#1-the-measured-baseline) | you want the numbers from before any change, 2026-08-30 | |
@@ -146,13 +147,13 @@ time to score from a state: 6.5 million rows a second
 ```
 
 Learning sets the pace, and scoring from a state skips the update, so it
-runs more than twice as fast. What a row costs per model is in the
-README's [Throughput](../README.md#throughput) table, from §45.
+runs more than twice as fast. What a row costs per model is in [Rows a second for each
+model](#rows-a-second-for-each-model), from §46.
 Where a number is not what you expected, find what you see here:
 
 | what you see | where the time or memory goes | what moves it | § |
 |---|---|---|---|
-| a row slower than the README's throughput | the model's own update, `O(k²)` a row for a model that solves, and its solves on their schedule; below about 50 features, as much again in the bank's work around the row; and for a model with many fields, writing them | `solve_every` and `max_rows_between_solves`; `gram_block_rows` and `gram_threads` for a wide `ewridge`; only the `stats` you read for `ew_cov` | §18, §30, §37, §38, §44 |
+| a row slower than [its model's rows a second](#rows-a-second-for-each-model) | the model's own update, `O(k²)` a row for a model that solves, and its solves on their schedule; below about 50 features, as much again in the bank's work around the row; and for a model with many fields, writing them | `solve_every` and `max_rows_between_solves`; `gram_block_rows` and `gram_threads` for a wide `ewridge`; only the `stats` you read for `ew_cov` | §18, §30, §37, §38, §44 |
 | a grid slower than one model | a ridge or feature-set grid shares one set of sums; each half-life of a grid keeps its own, run alongside the others | the number of half-lives | §28, §44 |
 | small chunks slower than large ones | a fixed overhead per call: handing the frame across, gathering the columns and assembling the output, about 8 ms at 10,000 columns | `chunk_size`, 100,000 by default on the query and the command line (`chunk_rows` in the sections written before it was renamed); the eager call takes the frame whole unless given one | §12, §20 |
 | memory that grows with the file | Polars reading ahead in the parquet file, sized from its thread count, and the allocator keeping pages it has freed | `POLARS_ROW_GROUP_PREFETCH_SIZE`, `POLARS_MAX_THREADS` | §11 |
@@ -175,7 +176,7 @@ Besides the README's own words (bank, spec, chunk, state), these:
 |---|---|
 | golden number | a value the golden tests pin: `golden.rs` in `online-core`, and `tests/test_golden_pipeline.py` to 1e-12. A change in §3 that moved one was wrong by definition. Later sections accept a reordering of the arithmetic that moves a value within that tolerance (§8, §20) |
 | bit-identical, bit-exact | the same floating-point bits: §13 compares every float column as its `u64` bits, with its validity |
-| stream | one spec over one group's rows, in order, which is the bank's unit of parallel work (§15); the README's *Parallelism* calls it a task. A single stream is one spec over one group, or with no `group` at all |
+| stream | one spec over one group's rows, in order, which is the bank's unit of parallel work (§15); [Use more cores](how-to/use-more-cores.md) calls it a piece of work. A single stream is one spec over one group, or with no `group` at all |
 | instance | one model inside a spec's grid, such as one half-life of a five-half-life grid. A stream steps its instances over the same rows (§2, P2) |
 | slot | one value an instance writes for every row: a target's prediction, or one of `ew_cov`'s 230 statistics (§13) |
 | section | one part of a chunk's work, as `POLARS_ONLINE_TIMING=1` times it: `extract` (the columns), `group` (row indices per key), `process` (the models) and `assemble` (the output columns), in the order it prints them (§12) |
@@ -379,6 +380,218 @@ install gungraun-runner --version 0.20.0` (the version `Cargo.lock` holds)
 and then `cargo bench -p online-bench --bench instructions` prints the
 counts. Elsewhere, a Linux container with Valgrind installed runs the same
 two commands. The workflow keeps each run's counts as an artifact.
+
+## The current figures
+
+**Each table here names the date it was measured on and the section or
+guide that records its run, so read each figure as of its date.** Every
+release measures [Rows a second for each
+model](#rows-a-second-for-each-model) again, and the others were measured once,
+on the machine of [How the numbers are made](#how-the-numbers-are-made).
+[Where the time and memory
+go](explanation/where-the-time-and-memory-go.md) explains what sets each
+number.
+
+### Rows a second for each model
+
+Here are rows a second for every model at its usual settings, all under
+these conditions:
+
+| | |
+|---|---|
+| machine | an Apple M4 Pro, one process |
+| runs | four runs of `uv run python scripts/benchmark.py --markdown`, each the best of 3 over 200k rows, and the best of the four for each row; measured on 2026-11-03 at commit `0311852`, 1.4.0's build, beside a load average of 3.7 to 5.9 ([§46](#46-140-against-130-2026-11-03)) |
+| noise | the four runs of a row lay within 4.8% of one another (`deco`'s within 9.7%), and on busier days a run has moved by up to 11% from the last on this machine, so read a gap smaller than that as noise |
+| half-life | 1,000, in every row that gives none of its own |
+| `k`, `K` | the number of features; the number of clusters or hidden states |
+
+The [linear models](MODELS.md#linear-models):
+
+| model | settings | rows/sec | what sets its speed |
+|---|---|---:|---|
+| `ewridge` | k=5, 1 target, 1 half-life | 5,308,149 | |
+| `ewridge` | k=20, 1 target, 1 half-life | 3,339,800 | |
+| `ewridge` | k=50, 1 target, 1 half-life | 1,205,322 | |
+| `ewridge` | k=20, 10 targets | 1,552,590 | one set of feature sums for every target |
+| `ewridge` | k=20, 5 half-lives, 500 to 2,500 | 1,826,370 | one set of sums per half-life, run in parallel |
+| `ewridge` + `conformal` | k=20, 90% interval | 3,278,341 | nothing measurable: the interval reads the residual the model already has |
+| `rls` | k=20, 1 target | 1,706,253 | its square-root form, at 51% of `ewridge`'s speed: the form is what keeps one extreme row from destroying it by cancellation |
+| `kalman` | k=20, 1 target | 1,821,628 | |
+| `kalman` | k=20, `revert_half_life` | 1,582,737 | |
+| `lasso` | k=20, 1 target (3-point path) | 1,869,574 | |
+| `huber` | k=20, 1 target | 3,551,157 | |
+| `quantile` | k=20, the median | 1,730,774 | |
+| `sgd` | k=20, squared loss, `standardize=False` | 7,552,383 | the raw step; the default, `standardize=True`, scales each feature on the row first |
+| `sgd` | k=20, `coef_min=0`, `coef_sum=1`, `standardize=False` | 2,346,605 | a simplex constraint sorts `2k` breakpoints per row, which makes `sgd` 3.2 times slower |
+| `pa` | k=20, `standardize=False` | 8,502,016 | the raw step, as for `sgd` |
+| `ftrl` | k=20, 1 target | 5,038,836 | |
+| `holt` | level and trend of one column | 12,057,090 | |
+
+**List several targets on the same features in one spec's `targets`, where
+they share one set of feature sums:** 10 targets take 2.15 times as long as
+one.
+
+**A grid of half-lives keeps one set of sums per half-life, and runs them
+in parallel.** So the grid of five takes 1.45 times as long as its shortest
+half-life, 500, which runs alone at 2,647,560 rows a second. That is slower
+than at the half-life of 1,000 that every other row here uses, because a
+shorter half-life solves more often.
+
+The models of [moments and correlation](MODELS.md#moments-and-correlation):
+
+| model | settings | rows/sec | what sets its speed |
+|---|---|---:|---|
+| `ew_cov` | k=20: mean, std, corr (230 statistics) | 2,029,717 | |
+| `ew_cov` | k=20: mean, mahal, `mahal_q0.99` | 832,440 | the Mahalanobis distance factors a `k × k` matrix by Cholesky once per row |
+| `ew_cov` | k=20: mean, cov, lags 1–5 | 1,628,550 | |
+| `marginal` | 20 features against one target | 10,212,831 | `O(k)` pairs a row, and each row writes only `weight_sum`: the pairs are read from the state after the run |
+| `deco` | k=20, one equicorrelation | 5,043,924 | one number for the whole matrix of its `m` series, computed in `O(m)` a row with no `m × m` matrix to factor |
+| `deco` | k=20 in 4 blocks | 2,844,648 | |
+| `rcov` | 4 features, kernel, blocks of 1000 | 4,518,149 | it accumulates per row and computes its kernel only when the block closes |
+| `audit` | 20 columns, 256 counters each | 958,272 | each row updates every column's counts and measures, and writes only `weight_sum` |
+
+The models of [clustering and classification](MODELS.md#clustering-and-classification):
+
+| model | settings | rows/sec | what sets its speed |
+|---|---|---:|---|
+| `ew_class` | k=20, 3 classes, full covariance | 582,797 | a `k × k` matrix factored by Cholesky once per *learned* row |
+| `ew_class` | k=20, 3 classes, tied covariance | 601,016 | |
+| `ew_class` | k=20, 3 classes, diagonal | 2,545,255 | |
+| `kmeans` | 4 features, K=8 | 5,285,220 | a distance to each center |
+| `kmeans` | k=20, K=8 | 3,199,622 | a distance to each center |
+| `micro` | 4 features, `eps=1` | 7,883,016 | a distance to each center |
+
+The [sequential tests and regimes](MODELS.md#sequential-tests-and-regimes):
+
+| model | settings | rows/sec | what sets its speed |
+|---|---|---:|---|
+| `seqtest` | sign of one column | 14,804,580 | a handful of operations |
+| `corrchange` | 4 features, monitor, `window_rows=500` | 5,960,689 | |
+| `corrchange` | 4 features, window 100, permute every 500 | 493,752 | its permutation null |
+| `bocpd` | 4 features, diagonal, `max_run=200` | 704,535 | the number of runs it keeps |
+| `bocpd` | 4 features, full covariance, `max_run=200` | 1,158,813 | the number of runs it keeps |
+| `hmm` | 4 features, K=2 | 2,519,190 | a `k × k` covariance factorized per state per row, which is `ew_class`'s work with the classes hidden |
+| `hmm` | k=20, K=2 | 437,770 | |
+
+**`corrchange`'s window kind runs at a twelfth of its monitor kind's speed,
+because its permutation null redraws `n_perm` statistics every
+`permute_every_rows` rows.**
+To skip the redraws, give `crit` a number, which fixes the threshold.
+
+**`bocpd` slows with the number of run lengths it keeps, so a larger
+`prune_below` makes it faster.** It does `O(runs · d)` work a row for `d`
+features under `covariance_type="diag"`, and `O(runs · d³)` under `"full"`,
+which factors each run's `d × d` scale every row. `prune_below` drops
+every run holding less than that share of the probability mass, and
+`max_run`, 10,000 by default, caps how many runs it keeps. With neither bound the runs grow by one every row, and a stream
+takes `O(rows²)`. A changepoint collapses them to a few dozen, so `bocpd`
+runs faster on data that breaks. A stream that does not break spreads them
+over thousands of run lengths, and there `max_run` is the bound. On 20,000
+i.i.d. Gaussian rows with no `max_run`, measured on 2026-09-06
+([§15](#15-the-correlation-families-bocpds-prune_below-keeps-it-finite-and-rcovs-estimator-sets-its-cost-2026-09-06)):
+
+| `prune_below` | rows/sec |
+|---|---:|
+| `1e-8` | 204,000 |
+| `1e-6`, the default | 324,000 |
+| `1e-4` | 687,000 |
+
+### Rows a second at each thread count
+
+**A bank runs its pieces of work on several threads, and its speed grows
+with the threads while it has pieces enough to share among them.** Rows a
+second for k=20 over 64 groups, at each thread count, measured on
+2026-09-29 ([§31](#31-0130-against-0120-2026-09-29)):
+
+| threads | 1 | 2 | 4 | 8 | 14 |
+|---|---:|---:|---:|---:|---:|
+| rows/s | 0.98M | 1.89M | 3.44M | 5.98M | 7.08M |
+
+[Use more cores](how-to/use-more-cores.md) shows how to give a bank more
+work it can run at once, set its thread count, and search over factor sets
+in one pass.
+
+### Peak memory of each way of running a bank
+
+**As the rows grow, a run's peak memory grows only by the pages the
+allocator keeps, while the bank's own memory stays flat.**
+Measured on 2026-10-24 as the most memory the process ever held (macOS's
+peak footprint), with Polars 2.0.0 on 14 cores, in the run
+[RUNNER.md's Memory](RUNNER.md#memory) records. The file has 20 features over
+32 groups, parquet in and parquet out, and `ewridge` reads it with a clock,
+a weight and a group per row. The 12M rows are the 3M rows four times
+over, so the state is the same at both sizes. `scripts/memory_bench.py`
+makes the file and runs each case:
+
+| what you write | 3M rows | 12M rows | what it is |
+|---|---:|---:|---|
+| `lf.online.fit_predict([spec])` | 1.2 GB | 1.8 GB | the bank inside a query |
+| `for chunk in lf.collect_batches(): bank.fit_predict(chunk)` | 1.1 GB | 1.5 GB | your own loop |
+
+The bank does not grow from 3M to 12M rows: the growth is the memory
+allocator keeping pages it has freed. Told to return them at once, with
+`_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0`, the query holds
+0.86 GB at 3M rows and 0.95 GB at 12M. Of the rest, nearly all is Polars
+reading ahead in the parquet file. The command line's allocator reuses
+the pages it frees across all its threads, so it holds 0.75 GB at 3M rows,
+0.85 GB at 12M and 0.86 GB at 24M
+([RUNNER.md](RUNNER.md#memory)).
+
+**Polars' `rolling` over groups holds every row of its input, where a
+spec's `group=` keeps one set of running sums per group.** Peak memory of
+a rolling window, with `.over("group")` or `group_by=`, on 12M rows,
+measured on 2026-09-02 ([§11](#polars-own-windowed-operations-do-the-same-thing)):
+
+| a rolling window | peak memory |
+|---|---:|
+| with `.over("group")` | 6.5 GB |
+| with `group_by=` | 1.7 GB |
+| without groups | 0.25–0.28 GB |
+
+### What a window operator costs
+
+**A window operator, such as `po.ewm_mean`, does the same work on a row
+however long its window, and holds about one window of rows.** So a window
+adds little memory: within 0.04 GB of reading and writing the file alone,
+and a 4-minute window takes what a 1-minute one does. Measured on 16M rows
+arriving about two a second on the clock, parquet in and parquet out, one
+group, on 2026-10-03 ([§33](#33-window-operators-2026-10-03),
+and [§34](#34-a-window-expression-as-a-target-2026-10-03)
+for the window targets):
+
+| what runs | time | peak memory |
+|---|---:|---:|
+| reading and writing the file, and nothing else | 0.40 s | 1.03 GB |
+| a forward VWAP through `with_windows` | 2.43 s | 0.99 GB |
+| the same VWAP through Polars' `rolling` recipe | 19.52 s | 5.24 GB |
+| a model whose target is a window expression, which the bank resolves itself: the native form | 9.37 s | 1.09 GB |
+| the window written by `with_windows(..., like=spec)` and fed back as a plain target: the column form | 5.87 s | 1.23 GB |
+
+**An operator whose input is null on most rows costs about what a dense
+one does.** Every row joins its kernel's queue, valued or not. A mean's read
+looks for the operator's oldest valued row from where its last search
+stopped, not from the oldest row, so it passes each null row once rather
+than on every read. On 300k rows with a window of 2,000 rows, one value in
+5,000 takes 184 ns a row backward and 195 ahead, where through 1.2.0 a
+search from the oldest row took 1,264 and 1,734
+([§35](#35-two-costs-named-one-since-removed-2026-10-03)).
+
+**To have operators share one queue, give them the same direction, back or
+ahead, and the same `half_life`, `window_size` and `closed`.** Sixteen
+operators on one queue run in 57% of the time of sixteen with queues of
+their own.
+
+**Write a look-ahead target as a column for speed, or give its expression
+in `targets` for less memory.** For the column form, call
+`with_windows(..., like=spec)` in the query before the bank, and name the
+column it writes in the spec's `targets`, under the same `embargo`. Polars
+then runs the window and the bank at once, as two stages of one query. In
+the native form the bank resolves the windows itself, one after the other
+in the same pass as the model. With many groups, that adds a Polars
+query per group per chunk on the calling thread.
+[Make a target that looks
+ahead](how-to/make-a-target-that-looks-ahead.md#check-the-targets-the-model-learned) runs both
+forms.
 
 ## How cost grows with size
 

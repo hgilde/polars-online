@@ -125,9 +125,9 @@ learned. It also holds the rows of each closed group until
 `closed_groups()` reads them, so read them as the stream runs to keep the
 state bounded. A few models keep some rows by design, such as the
 first rows a [refit](../GLOSSARY.md#fitting-a-model) holds until it runs.
-The README's
-[Memory](../../README.md#memory) measures it at 10,000 rows and at
-1,000,000.
+[Where the memory
+goes](where-the-time-and-memory-go.md#where-the-memory-goes) measures it
+at 10,000 rows and at 1,000,000.
 
 ## Why a state loads on every operating system
 

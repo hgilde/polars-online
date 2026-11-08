@@ -34,8 +34,8 @@ the scale of the drift detector (`emit_drift`, which flags a shift in
 the residuals), and the ranking of grid points that `emit_selected` and
 `emit_averaged` read. `emit_selected` picks the [grid point](../GLOSSARY.md#grids) (one
 combination of the values a grid lists) with the lowest recent error. The gates'
-settings, defaults and fields are listed in the README's
-[Warm-up](../../README.md#warm-up) section.
+settings, defaults and fields are listed in MODELS.md's [Warm-up
+gates](../MODELS.md#warm-up-gates).
 
 ## Three questions, one gate each
 
@@ -112,8 +112,8 @@ plus one, the fewest rows a covariance of that many features needs. `ewridge` de
 withholds those same early rows by measuring how much estimation error
 widens a prediction ([The noise
 gate](#the-noise-gate-estimation-error-against-the-noise)). The default
-of every model is in the README's [Warm-up](../../README.md#warm-up)
-section.
+of every model is in MODELS.md's [Warm-up
+gates](../MODELS.md#warm-up-gates).
 
 ## Why `min_weight` is hard to set
 

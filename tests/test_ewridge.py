@@ -544,7 +544,7 @@ def _batch_local_linear(x, y, half_life, ridge, min_weight):
 
 @pytest.mark.parametrize(("half_life", "ridge"), [(0.25, 1e-9), (0.3, 1e-4), (1.0, 1e-2)])
 def test_a_feature_as_the_clock_is_a_local_linear_regression(half_life, ridge):
-    """The README's "A local fit along any feature": sorted by a feature and
+    """*Fit locally along a feature* (docs/how-to/): sorted by a feature and
     clocked on it, the decay is a kernel in that feature and the fit is a
     local linear regression -- LOESS with a one-sided exponential kernel,
     out of a state that does not grow. The oracle here is the batch fit that
@@ -586,7 +586,7 @@ def test_a_bandwidth_in_the_clock_column_follows_a_curve_a_line_cannot():
     backwards, because a row is scored before it is learned from, so a curve
     is followed with the lag that implies. A wider bandwidth is a flatter
     fit: at `half_life=1.0` the same stream gives 0.29, most of the way back
-    to the line. The README's *A local fit along any feature* cites these
+    to the line. *Fit locally along a feature* (docs/how-to/) cites these
     three figures, rounded to two places, and this test holds them there."""
     rng = np.random.default_rng(1)
     n = 1200

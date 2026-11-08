@@ -3079,8 +3079,8 @@ class ModelBank:
           queue after each chunk.
         - :func:`polars_online.gram.from_row`, a closed row's sums as
           :meth:`gram` gives them.
-        - `Closed groups in the README
-          <https://github.com/hgilde/polars-online#one-row-per-finished-group>`__,
+        - `Close groups and read each one's row
+          <https://github.com/hgilde/polars-online/blob/main/docs/how-to/close-groups.md>`__,
           a worked example.
 
         .. rubric:: Notes

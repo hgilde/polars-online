@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from doc_recipes import differences, fenced_blocks, shown_outputs, untimed
+from polars_version import needs_polars
 from test_production_hardening import _as_a_terminal_shows, _readme_namespace
 
 TIER = "essential"
@@ -40,6 +41,18 @@ def _rel(page: Path) -> str:
     return page.relative_to(REPO).as_posix()
 
 
+def _page_param(page: Path):
+    """One page as a test case. A page that streams a DuckDB, ADBC or
+    pyarrow source reads it with `pl.scan_arrow_c_stream`, and so needs the
+    py-polars the page names for it, as the README's blocks did."""
+    marks = []
+    if "scan_arrow_c_stream(" in page.read_text(encoding="utf-8"):
+        marks.append(
+            needs_polars("1.43.0", "pl.scan_arrow_c_stream, which py-polars added in 1.43.0")
+        )
+    return pytest.param(page, id=_rel(page), marks=marks)
+
+
 def test_the_pages_are_found():
     """The pages stage 1 of the rewrite writes, at least."""
     found = {_rel(p) for p in PAGES}
@@ -51,7 +64,7 @@ def test_the_pages_are_found():
         assert want in found, (want, found)
 
 
-@pytest.mark.parametrize("page", PAGES, ids=_rel)
+@pytest.mark.parametrize("page", [_page_param(p) for p in PAGES])
 def test_a_pages_python_runs_in_order_and_prints_what_it_shows(page, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # a block writes its files where it runs
     ns: dict[str, object] = {"__name__": "__recipe__", **_readme_namespace(tmp_path)}

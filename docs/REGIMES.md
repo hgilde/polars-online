@@ -12,7 +12,7 @@ misses.
 Five models make a claim about a stream: `deco`, `rcov`, `hmm`,
 `corrchange` and `bocpd`. This page measures all five. It also measures two
 remedies for [series that tick at their own
-times](../README.md#series-that-tick-at-their-own-times): refresh-time
+times](how-to/align-series-that-tick-at-their-own-times.md): refresh-time
 sampling, and the lagged co-moments of `ew_cov(lags=...)`. Each model's
 entry in [MODELS.md](MODELS.md) gives its update rule and a recipe that
 runs it on a planted answer.

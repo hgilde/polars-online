@@ -9,7 +9,8 @@ so a recipe and the prose that reads its output cannot drift from the library
 number within two units of its last printed digit. A line that reports a wall
 time is the machine's, so it is held to its words and its numbers are left
 free. Every function of ``po.gram`` is on the page, and the README, the
-document map and ``llms.txt`` link it.
+how-to that keeps a Gram per block, the document map and ``llms.txt`` link
+it.
 """
 
 from __future__ import annotations
@@ -98,10 +99,12 @@ def test_every_po_gram_function_is_on_the_page():
     assert not missing, f"po.gram functions the page does not name: {missing}"
 
 
-def test_the_readme_the_map_and_llms_txt_link_the_page():
+def test_the_readme_the_how_to_the_map_and_llms_txt_link_the_page():
+    """The README's section on fitting from one pass moved to a how-to
+    (task 338 stage 8), which leads to the page; the README keeps a link."""
     readme = (REPO / "README.md").read_text(encoding="utf-8")
-    start = readme.index("\n### Fitting many features from one pass")
-    section = readme[start : readme.index("\n### ", start + 1)]
-    assert "docs/GRAM.md" in section
+    assert "docs/GRAM.md" in readme
+    how_to = REPO / "docs" / "how-to" / "fit-weekly-grams-in-one-pass.md"
+    assert "](../GRAM.md)" in how_to.read_text(encoding="utf-8")
     assert "](GRAM.md)" in (REPO / "docs" / "README.md").read_text(encoding="utf-8")
     assert "docs/GRAM.md" in (REPO / "llms.txt").read_text(encoding="utf-8")

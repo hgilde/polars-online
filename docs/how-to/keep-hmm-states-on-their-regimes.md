@@ -39,8 +39,8 @@ each row against those before it.
 3. **Run the query, and read each row's `state`.** The states are numbered
    as they were seeded, so match them to your regimes on rows you know.
 
-This code makes the stream of the README's [Detecting changes and
-regimes](../../README.md#detecting-changes-and-regimes): two series whose
+This code makes the stream of [Detect changes and
+regimes](choose-a-model.md#detect-changes-and-regimes): two series whose
 returns take turns, 500 rows at a time, between a calm regime and one 2.7
 times as wide, made with `po.sim.regimes`. It fits the filter under the
 default prior and under a sticky one, and scores the rows after seeding:

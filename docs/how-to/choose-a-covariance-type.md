@@ -30,7 +30,7 @@ each covariance the model learns:
 |---|---|
 | `"full"`, the default (quadratic discriminant analysis) | in general |
 | `"tied"`, one covariance for every class (linear discriminant analysis) | the classes differ in location but not in spread. It has fewer parameters to learn |
-| `"diag"`, each class's variances alone (Gaussian naive Bayes) | speed matters most: at 20 features and three classes it runs about four times as fast as the other two ([Throughput](../../README.md#throughput)), and the gap grows with the number of features. It cannot see a correlation, so two classes with the same marginals and opposite correlations are one class to it |
+| `"diag"`, each class's variances alone (Gaussian naive Bayes) | speed matters most: at 20 features and three classes it runs about four times as fast as the other two ([Rows a second for each model](../PERFORMANCE.md#rows-a-second-for-each-model)), and the gap grows with the number of features. It cannot see a correlation, so two classes with the same marginals and opposite correlations are one class to it |
 
 1. **Start from the default, `"full"`.** It is the one shape that sees
    each class's correlation between features.

@@ -10,7 +10,7 @@
 A fix is not backported to an older release. From 1.0, upgrading to the
 latest minor release of your major version is the way to receive one,
 since a minor release breaks nothing the README calls stable
-([This package's own versioning](README.md#this-packages-own-versioning)).
+([This package's own versioning](docs/VERSIONS.md#this-packages-own-versioning)).
 
 ## Reporting a vulnerability
 

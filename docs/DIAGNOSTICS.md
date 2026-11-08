@@ -99,7 +99,7 @@ These are the words of the library that the page uses:
 
 | word | what it means here |
 |---|---|
-| spec | one model's description: the model, the columns it reads, and how it treats time. `po.spec.ewridge(...)` makes one, and [the README's model table](../README.md#models) lists every kind |
+| spec | one model's description: the model, the columns it reads, and how it treats time. `po.spec.ewridge(...)` makes one, and [the README's model table](MODELS.md#the-models-at-a-glance) lists every kind |
 | bank | `po.ModelBank`, a set of specs fitted together over the same rows |
 | slot | one prediction of one target, at one point of a grid such as a list of ridge values. A diagnostic writes one field per slot, suffixed with the target, as `cusum_y` |
 | out of sample | a row's prediction is made before the model learns from the row, so its residual `resid = y − pred` is one the model has not seen |
@@ -1159,8 +1159,8 @@ pass the spec dict in place of its name.
 give one, and three gates say what "enough" means.** A fourth, the
 seeding warm-up, holds back the models that seed themselves from their
 first rows. The gates hold back predictions only: the model learns from
-every row either way. [Warm-up](../README.md#warm-up) in the README
-states each gate, its default and the field it reads, and [Warm-up and
+every row either way. [Warm-up gates](MODELS.md#warm-up-gates), in
+MODELS.md, states each gate, its default and the field it reads, and [Warm-up and
 readiness](explanation/warm-up-and-readiness.md) explains what each
 measures. A withheld
 prediction's `withheld_reason` names the gate that held it:
@@ -1490,7 +1490,7 @@ truth_blocks: 8 rows; block, state, n_rows, corr
 
 | frame | what it holds |
 |---|---|
-| `rows` | what a consumer sees: an entity, the row's index `t`, a clock and a session, levels `x_1` .. `x_m`, and `activity`, null unless `activity=(mean, shape)` is given. For returns, `unpivot` the levels into the long input of [`refresh_time`](../README.md#series-that-tick-at-their-own-times), and apply `.diff()` to the grid it builds |
+| `rows` | what a consumer sees: an entity, the row's index `t`, a clock and a session, levels `x_1` .. `x_m`, and `activity`, null unless `activity=(mean, shape)` is given. For returns, `unpivot` the levels into the long input of [`refresh_time`](how-to/align-series-that-tick-at-their-own-times.md), and apply `.diff()` to the grid it builds |
 | `truth_rows` | per row `t`: the block, state, volatility multiplier and interpolation fraction |
 | `truth_blocks` | each block's true correlation matrix, as the upper triangle in a list |
 

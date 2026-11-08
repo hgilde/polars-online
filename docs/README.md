@@ -1,66 +1,97 @@
+<!-- kind: map -->
 # The documents, and which to read for what
 
-The [README](../README.md) is the user guide. The API reference, built from
-the docstrings, is at <https://hgilde.github.io/polars-online/>, and its
-Sphinx sources are in [`reference/`](reference/). Every other document under
-`docs/` is one of two kinds. A **guide** is what you read to do something. A
-**record** says how a decision was reached, and is kept because the code or
-another document cites it. A record that nothing outside `docs/` cites is
-kept in [`records/`](records/), and its row links it there.
+This page lists every document of polars-online by kind, for a reader
+deciding which to read. The [README](../README.md) is the landing page:
+what polars-online is, how to install it, a first fit, and a map from each
+task to its pages.
+[FEATURES.md](FEATURES.md) lists every feature, one line each. The API
+reference, built from the docstrings, is at
+<https://hgilde.github.io/polars-online/>, and its Sphinx sources are in
+[`reference/`](reference/). Every other document under `docs/` is one of
+two kinds. A **guide** is what you read to use or change the library. A
+**record** says how a decision was reached, and is kept because the code
+or another document cites it. A record that nothing outside `docs/` cites
+is kept in [`records/`](records/), and its row links it there.
 
 ## Guides
 
+Each guide for using the library is one of four kinds, and is grouped
+under its kind. A **tutorial** takes you from nothing to one working
+result, and a **how-to** solves one task. A **reference** page describes
+one thing completely, and an **explanation** gives the reasons and the
+mechanism.
+
 | document | read it when |
 |---|---|
-| **Using the library** | |
-| [MODELS.md](MODELS.md) | you are choosing a model, or want to know how one learns — each model's entry under its family: when to reach for it, its update rule, its parameters and what it is checked against |
-| [WINDOWS.md](WINDOWS.md) | you make features or targets from windows over the stream — the window operators of `po.ops` as columns before the bank and as a model's inputs and target, features in units of their spread, and saving and resuming a window run |
-| [RUNNER.md](RUNNER.md) | you run a bank as a job — the `polars-online` command line from a configuration file — with no live Python process driving it |
-| [STATE-WORKFLOW.md](STATE-WORKFLOW.md) | you save a bank from a query, serve from it, or resume it, or resume a window run — what each step guarantees and what a saved state carries, followed by the dated research the guarantees rest on |
-| [DIAGNOSTICS.md](DIAGNOSTICS.md) | you want to know whether a model is working — one section per question (is it scaled right, has it broken, can its t be trusted, what is it missing, are its tails heavy, which row moved it, are its features healthy, is another model better, is it ready, how wide is its error): each diagnostic's definition, threshold and false-alarm rate, cost and the theory, with a link to the how-to that runs it |
-| [CALIBRATION.md](CALIBRATION.md) | you are choosing a model's settings — a half-life, a ridge, a Kalman filter's drift speed, a learning rate, Holt's smoothing or a changepoint hazard — from the stream's own out-of-sample errors in one pass with `po.eval.grid_search`: the pattern, why the best error over the rows you report is optimistic, a recipe for each setting, and the settings it cannot choose |
-| [DATA-QUALITY.md](DATA-QUALITY.md) | `bank.check()` found a problem in your data, or you want to know what can go wrong before you fit — one section per finding: what it does to each model, the fix in Polars, the theory, and a recipe that runs |
-| [GRAM.md](GRAM.md) | you fit many features, or more rows than memory holds, from the Grams one pass leaves — a Gram per week, pooling weeks with or without their weekly levels, a ridge with its t, the lasso path by least angle regression and by coordinate descent, stability selection over halves of the weeks and its null by sign flips, per-week coefficients, reading Grams from saved files, compact exports, `gram_threads`, and Huber regression on one shared Gram (algorithm H, a Polars query each pass): the theory, and a recipe that runs for each |
-| [GBDT.md](GBDT.md) | you train XGBoost or LightGBM on files larger than memory — how to build each library's training object with `po.gbdt` from Arrow IPC, Parquet or a query, with categorical features, binning parameters, a Huber loss or an online model's prediction as the margin |
-| [OUTPUTS.md](OUTPUTS.md) | you want to know what a model writes into its column — each model's fields, generated from the code and checked against it, with where each optional output is shown, such as the diagnostics on [DIAGNOSTICS.md](DIAGNOSTICS.md) |
-| [REGIMES.md](REGIMES.md) | you are about to trust `hmm`, `corrchange`, `bocpd`, `deco` or `rcov`, or a remedy for series that tick at different times — what each finds on data whose truth is known, and what it misses |
-| [VALIDATION.md](VALIDATION.md) | you wonder where a default came from — generated by `scripts/validate.py` on public data; never edited by hand |
-| [PERFORMANCE.md](PERFORMANCE.md) | something is slower or bigger than you expected — where the time and memory go and the settings that move them, then every measurement, grouped by topic |
-| **Changing the library** | |
-| [EXTENDING.md](EXTENDING.md) | you are adding a model — every layer it touches, with the test that catches skipping each one |
-| [TESTING.md](TESTING.md) | you want to know what the suite proves, what it has found, and where it is thin |
-| [RELEASE-READINESS.md](RELEASE-READINESS.md) | you are cutting a release, or asking which Polars versions are promised and which are merely measured |
-| **Writing the documentation** | |
-| [WRITING.md](WRITING.md) | you are writing or rewriting any reader-facing doc — the rules the docs are held to, each drawn from a report in [PHRASING.md](records/PHRASING.md), with the README's rewrite of 2026-09-23 as the worked example. A pass over the README starts from [README-ITERATIONS.md](README-ITERATIONS.md), and a new report goes into PHRASING.md |
+| **Start here** | |
+| [FEATURES.md](FEATURES.md) | you want the whole list of what the library does, or a feature by its name — every model, function, method, shared parameter and command-line flag, one line each with a link to the page that shows it |
 | [GLOSSARY.md](GLOSSARY.md) | you meet a word a page uses without defining it, or you choose the word for a sentence, a docstring or a message — every concept's one word, what it means, the words it replaces and whether a message may use it, with the words kept out of user-facing text and the American spelling of each British one the docs held |
-| **New pages** | |
-| [how-to/put-rows-in-clock-order.md](how-to/put-rows-in-clock-order.md) | you fit a bank on a stream with a clock — how to give it each group's rows in clock order, read its warning about a query's row order, and fix a chunk it refused |
-| [how-to/resume-from-a-saved-state.md](how-to/resume-from-a-saved-state.md) | you have a saved state and want the bank to go on learning, from Python or the command line — including on input that overlaps what it learned |
-| **New pages: how-tos for running and preparing a bank, and for the regressions** | |
+| **Tutorials** | |
+| [tutorials/stream-from-parquet.md](tutorials/stream-from-parquet.md) | you are new to the library and want to fit a model over parquet files too large to hold, in a Polars query, and write its predictions to a file |
+| [tutorials/local-fit-with-a-clock.md](tutorials/local-fit-with-a-clock.md) | you are new to the library and want a regression that follows the recent rows along a clock, through a trading day and across the next day's open |
+| [tutorials/fit-save-and-serve.md](tutorials/fit-save-and-serve.md) | you are new to the library and want to fit a model, save it, load it in a new Python process and predict new rows from it |
+| **How-tos: running a bank** | |
+| [how-to/run-a-bank-in-a-query.md](how-to/run-a-bank-in-a-query.md) | you run a bank inside a Polars query — how to choose the chunk size, unnest a wide spec before writing, filter after the bank, catch a misnamed column, and call the functions a type checker sees |
+| [how-to/run-a-bank-in-a-python-loop.md](how-to/run-a-bank-in-a-python-loop.md) | you feed a bank from your own loop — how to read it between chunks, feed it from one thread, and drop groups that have gone quiet |
 | [how-to/run-a-bank-from-the-command-line.md](how-to/run-a-bank-from-the-command-line.md) | you want to run a bank as a scheduled job with the `polars-online` program and a TOML file, with no Python |
-| [how-to/serve-from-a-saved-state.md](how-to/serve-from-a-saved-state.md) | you have a saved state and want predictions for new rows without the bank learning from them |
+| [how-to/hand-the-output-to-arrow.md](how-to/hand-the-output-to-arrow.md) | you want a bank's output in a library that is not Polars, such as pyarrow or DuckDB — how to export it with `fit_predict_arrow` and read each struct once |
+| [how-to/feed-a-bank-from-a-database.md](how-to/feed-a-bank-from-a-database.md) | your rows live in DuckDB or behind an ADBC driver — how to fit a bank on a query's result, and the cursor traps to avoid |
+| [how-to/run-a-bank-in-pathway.md](how-to/run-a-bank-in-pathway.md) | you run a Pathway pipeline — how to wrap a bank in an operator that Pathway feeds and checkpoints |
+| [how-to/set-the-chunk-size.md](how-to/set-the-chunk-size.md) | you want a run faster or holding less memory — how to set how many rows a bank takes at a time, and check that the predictions did not move |
+| [how-to/use-more-cores.md](how-to/use-more-cores.md) | your bank runs on fewer cores than the machine has, and you want to give it more work it can run at once |
+| [how-to/bound-memory.md](how-to/bound-memory.md) | your run holds more memory than you can give it, and you want Polars' settings and the robust models' refit budget that bound it |
+| **How-tos: choosing a model and what it reads** | |
+| [how-to/choose-a-model.md](how-to/choose-a-model.md) | you are about to write a spec and do not know which model to name — how to choose the family by your question and the model by your data, and which of the four models that watch for change answers which question |
 | [how-to/fit-one-model-per-group.md](how-to/fit-one-model-per-group.md) | you want a separate model for each value of a column, such as one per stock, fitted in one pass |
+| [how-to/close-groups.md](how-to/close-groups.md) | your stream keeps bringing new group values — how to set `group_close`, read `closed_groups()`, and write closed rows to a file as the run goes |
+| [how-to/weight-rows.md](how-to/weight-rows.md) | you want some rows to count more than others — how to name a weight column, scale `min_weight` with it, and which models read a weight differently |
+| [how-to/hold-a-row-back.md](how-to/hold-a-row-back.md) | you want rows predicted but not learned — how to use a null target, weight 0 or `predict`, and what a null skips |
+| [how-to/fit-targets-that-go-missing-on-different-rows.md](how-to/fit-targets-that-go-missing-on-different-rows.md) | you fit several targets on the same features and they are null on different rows |
+| [how-to/fit-a-count-target.md](how-to/fit-a-count-target.md) | your target is a count, and you want a Poisson fit with `sgd` |
+| [how-to/bound-the-coefficients.md](how-to/bound-the-coefficients.md) | you need a regression's slopes held to bounds or to a fixed total, with `coef_min`, `coef_max` and `coef_sum` |
+| [how-to/follow-a-level-that-moves.md](how-to/follow-a-level-that-moves.md) | you fit `pa` or `sgd` on a target whose level moves, and want the fit to keep up |
+| **How-tos: time, order and late targets** | |
+| [how-to/handle-sessions-gaps-and-steps-back.md](how-to/handle-sessions-gaps-and-steps-back.md) | you fit a model with a clock on a stream with session boundaries, quiet spells or replays — how to choose what each does to the fit |
+| [how-to/put-rows-in-clock-order.md](how-to/put-rows-in-clock-order.md) | you fit a bank on a stream with a clock — how to give it each group's rows in clock order, read its warning about a query's row order, and fix a chunk it refused |
+| [how-to/forget-rows-past-a-window.md](how-to/forget-rows-past-a-window.md) | you want rows older than a set span to count for nothing, with `window_size` |
+| [how-to/fit-locally-along-a-feature.md](how-to/fit-locally-along-a-feature.md) | you want a fit of the rows near each value of a feature, such as a curve — how to sort by the feature and use it as the clock, with `half_life` as the bandwidth |
 | [how-to/learn-targets-known-late.md](how-to/learn-targets-known-late.md) | your target is known only some time after its row, and you want each row predicted where it sits and learned once its target is known |
+| **How-tos: features and targets** | |
 | [how-to/make-window-features.md](how-to/make-window-features.md) | you want features that look back over the stream, made as columns before the bank |
 | [how-to/make-a-target-that-looks-ahead.md](how-to/make-a-target-that-looks-ahead.md) | you want a target computed from the rows after each row, as a column or as a formula target the bank holds until its window closes |
 | [how-to/scale-a-feature-by-its-spread.md](how-to/scale-a-feature-by-its-spread.md) | you want a coefficient per current standard deviation of a feature, from its z-score against its own recent spread |
 | [how-to/weight-rows-by-a-robust-scale.md](how-to/weight-rows-by-a-robust-scale.md) | you want each row to count by a robust scale of its target, without reading targets not yet known |
+| [how-to/align-series-that-tick-at-their-own-times.md](how-to/align-series-that-tick-at-their-own-times.md) | you have series observed at instants of their own — how to put them on one refresh grid with `po.stream.refresh_time` and fit on its changes |
 | [how-to/fit-on-factor-residuals.md](how-to/fit-on-factor-residuals.md) | you fit factor ridges and want their out-of-sample residuals as features of a second ridge with a target that looks ahead |
-| [how-to/check-data-quality.md](how-to/check-data-quality.md) | you have fitted a bank and want to know what is wrong with the data, with `bank.check()` and an `audit` spec, and how to fix it |
-| [how-to/forget-rows-past-a-window.md](how-to/forget-rows-past-a-window.md) | you want rows older than a set span to count for nothing, with `window_size` |
-| [how-to/follow-a-level-that-moves.md](how-to/follow-a-level-that-moves.md) | you fit `pa` or `sgd` on a target whose level moves, and want the fit to keep up |
-| [how-to/fit-targets-that-go-missing-on-different-rows.md](how-to/fit-targets-that-go-missing-on-different-rows.md) | you fit several targets on the same features and they are null on different rows |
-| [how-to/bound-the-coefficients.md](how-to/bound-the-coefficients.md) | you need a regression's slopes held to bounds or to a fixed total, with `coef_min`, `coef_max` and `coef_sum` |
-| [how-to/fit-a-count-target.md](how-to/fit-a-count-target.md) | your target is a count, and you want a Poisson fit with `sgd` |
-| [how-to/choose-a-learning-rate.md](how-to/choose-a-learning-rate.md) | you fit `sgd`, `ftrl` or `pa` and want to choose the size of each step |
-| [how-to/choose-ftrl-penalties.md](how-to/choose-ftrl-penalties.md) | you fit `ftrl` and want to choose its penalties, which weigh more on a short half-life or a sparse stream |
-| [how-to/choose-a-kalman-drift-speed.md](how-to/choose-a-kalman-drift-speed.md) | you fit `kalman` and want to choose how fast its coefficients may drift, revert or extrapolate |
-| [how-to/choose-holts-smoothing.md](how-to/choose-holts-smoothing.md) | you fit `holt` and want to choose how fast its level and trend forget, or a flat prediction |
-| [how-to/choose-columns-on-the-lasso-path.md](how-to/choose-columns-on-the-lasso-path.md) | you fit `lasso` and want to choose its penalties, how they are ranked, and its sweeps |
-| [how-to/bound-memory.md](how-to/bound-memory.md) | your run holds more memory than you can give it, and you want Polars' settings and the robust models' refit budget that bound it |
-| [how-to/use-more-cores.md](how-to/use-more-cores.md) | your bank runs on fewer cores than the machine has, and you want to give it more work it can run at once |
+| **How-tos: saving, resuming and serving** | |
+| [how-to/save-a-state.md](how-to/save-a-state.md) | you want to keep what a bank learned in a file, from a bank object, a query or the command line — how to save it and load it back |
+| [how-to/resume-from-a-saved-state.md](how-to/resume-from-a-saved-state.md) | you have a saved state and want the bank to go on learning, from Python or the command line — including on input that overlaps what it learned |
+| [how-to/serve-from-a-saved-state.md](how-to/serve-from-a-saved-state.md) | you have a saved state and want predictions for new rows without the bank learning from them |
+| [how-to/read-a-state-without-this-library.md](how-to/read-a-state-without-this-library.md) | you want another program, in any language, to read a bank's state — how to export it as JSON and read back NaN and inf |
 | [how-to/reproduce-an-earlier-versions-fit.md](how-to/reproduce-an-earlier-versions-fit.md) | you need the numbers an earlier release gave, and want the settings that restore them |
-| **New pages: how-tos for diagnosing a model, choosing its settings, and the covariance, regime and clustering models** | |
+| **How-tos: reading a fit** | |
+| [how-to/inspect-a-bank.md](how-to/inspect-a-bank.md) | you want to know what a bank holds and what it was fed, live or from a state file — how to read `repr`, `groups()`, `coef()`, `summary()`, `describe()` and `last_row()`, and stack tables from several runs |
+| [how-to/find-an-output-field.md](how-to/find-an-output-field.md) | you read the output by field name — how to find a field's or a coefficient's name from the values it holds, with `po.spec.output_index` and `coef_fields` |
+| [how-to/read-the-coefficients.md](how-to/read-the-coefficients.md) | you want a regression's coefficients — at the end, row by row, from a saved output, or as a matrix, and for each block of a grid |
+| [how-to/fit-weekly-grams-in-one-pass.md](how-to/fit-weekly-grams-in-one-pass.md) | you want many least-squares fits over any weeks, hours or columns from one pass — how to keep a Gram per block and pool them |
+| [how-to/pool-grams.md](how-to/pool-grams.md) | you hold a Gram per block, such as one per week — how to pool any set into one Gram, aged to a common row, with or without the blocks' levels, and fit or score on it |
+| [how-to/repair-and-score-a-correlation-matrix.md](how-to/repair-and-score-a-correlation-matrix.md) | you have a correlation matrix, estimated or pieced together pair by pair — how to repair, shrink and score it, and choose among `po.corr`'s functions |
+| **How-tos: moments, correlations, clusters and regimes** | |
+| [how-to/flag-joint-outliers.md](how-to/flag-joint-outliers.md) | you watch several columns of a stream — how to flag the rows that are odd only in combination, with `ew_cov`'s `mahal` and a threshold from its own past distances |
+| [how-to/track-principal-components.md](how-to/track-principal-components.md) | you want the main direction several columns move in together — how to track its loadings, share and scores with `pca`, refreshed on a schedule |
+| [how-to/find-which-series-leads.md](how-to/find-which-series-leads.md) | you want to know whether one column moves before another, and by how many rows — how to read `ew_cov`'s lagged correlations in both directions |
+| [how-to/screen-features-against-a-target.md](how-to/screen-features-against-a-target.md) | you have many features and a few targets — how to rank every pair in one pass with `marginal`, correct the ranking for smooth rows, and find relations a correlation misses |
+| [how-to/track-the-average-correlation.md](how-to/track-the-average-correlation.md) | you watch many series — how to track one number that moves with their average correlation with `deco`, per block, and read its level from an `ew_cov` |
+| [how-to/estimate-a-blocks-covariance-from-ticks.md](how-to/estimate-a-blocks-covariance-from-ticks.md) | you have tick prices of several series — how to estimate each block's covariance robust to noise and to series not observed on every row with `rcov` |
+| [how-to/keep-kmeans-centers-on-the-data.md](how-to/keep-kmeans-centers-on-the-data.md) | you fit `kmeans` to clusters that come and go — how to keep `init` at its default and set `dead_frac` so a vanished cluster's center is re-placed |
+| [how-to/choose-micro-eps.md](how-to/choose-micro-eps.md) | you cluster with `micro` — how to choose `eps`, and read a value too small or too coarse from its outputs |
+| [how-to/choose-a-covariance-type.md](how-to/choose-a-covariance-type.md) | you class rows with `ew_class` — how to choose `covariance_type`, and give `window_size` when classes move and `embargo` when they arrive late |
+| [how-to/keep-hmm-states-on-their-regimes.md](how-to/keep-hmm-states-on-their-regimes.md) | you fit `hmm` to name regimes — how to give a sticky transition prior and keep an extreme row from capturing a state |
+| [how-to/read-a-sequential-test.md](how-to/read-a-sequential-test.md) | you run `seqtest` — how to reject the first time its evidence reaches ln 20, one- or two-sided, however often you look |
+| **How-tos: checking the data and the model** | |
+| [how-to/check-data-quality.md](how-to/check-data-quality.md) | you have fitted a bank and want to know what is wrong with the data, with `bank.check()` and an `audit` spec, and how to fix it |
+| [how-to/decide-when-a-model-is-ready.md](how-to/decide-when-a-model-is-ready.md) | you serve predictions from a model's first rows — how to read why a prediction is withheld, choose a readiness gate, and act on a readiness warning |
 | [how-to/check-the-scale.md](how-to/check-the-scale.md) | you want to know whether a model's predictions are the right size — how to read its calibration, rescale a prediction by it, and fix a fit that is too small or too large |
 | [how-to/detect-a-break.md](how-to/detect-a-break.md) | you want to know whether a model's relationship has broken, how, and when — how to run the break tests as the stream runs, tell an intercept, noise or slope break apart, date one, and watch the features with `corrchange` and `bocpd` |
 | [how-to/check-standard-errors.md](how-to/check-standard-errors.md) | you read a coefficient's t on a stream — how to compare its plain, HC0 and HAC standard errors and choose the one whose assumptions the residuals meet |
@@ -68,28 +99,36 @@ kept in [`records/`](records/), and its row links it there.
 | [how-to/measure-heavy-tails.md](how-to/measure-heavy-tails.md) | you set a threshold on a model's residuals — how to measure their tails over a stable stretch, set `drift_threshold` from the kurtosis, and choose a detector that holds its false-alarm rate |
 | [how-to/find-an-influential-row.md](how-to/find-an-influential-row.md) | your fit may have been moved by a few bad rows — how to rank rows by `influence`, flag them against a cutoff that scales with the fit, and decide whether to drop them |
 | [how-to/check-feature-health.md](how-to/check-feature-health.md) | your feature columns can go stale — how to watch each feature's spread and level and flag a frozen or moved feature before any coefficient shows it |
-| [how-to/choose-among-a-grid-online.md](how-to/choose-among-a-grid-online.md) | you fit a spec over a grid of settings — how to let it choose or average the grid's predictions as the stream runs, with `emit_selected` and `emit_averaged` |
 | [how-to/compare-two-models.md](how-to/compare-two-models.md) | you have two models on one stream — how to test whether one predicts better, with Diebold and Mariano's test, Clark and West's for nested models, and a `seqtest` read at any row |
 | [how-to/evaluate-an-output-frame.md](how-to/evaluate-an-output-frame.md) | you have a finished run's output — how to score it per spec, group or clock window with `po.eval`, and score an output too large to hold from per-chunk sums |
-| [how-to/decide-when-a-model-is-ready.md](how-to/decide-when-a-model-is-ready.md) | you serve predictions from a model's first rows — how to read why a prediction is withheld, choose a readiness gate, and act on a readiness warning |
 | [how-to/put-an-interval-on-a-prediction.md](how-to/put-an-interval-on-a-prediction.md) | you serve predictions — how to put a Gaussian or conformal interval on each one, and keep its coverage when targets arrive late |
-| [how-to/choose-settings-by-hand.md](how-to/choose-settings-by-hand.md) | you hold a bank's output for a grid and want to choose from it yourself — how to choose on one half with `po.eval.metrics` and report on the other |
+| **How-tos: choosing a model's settings** | |
+| [CALIBRATION.md](CALIBRATION.md) | you are choosing a model's settings — a half-life, a ridge, a Kalman filter's drift speed, a learning rate, Holt's smoothing or a changepoint hazard — from the stream's own out-of-sample errors in one pass with `po.eval.grid_search`: the pattern, why the best error over the rows you report is optimistic, a recipe for each setting, and the settings it cannot choose |
 | [how-to/choose-a-ridge-and-half-life.md](how-to/choose-a-ridge-and-half-life.md) | you fit `ewridge` and want to choose its `ridge`, alone or with its `half_life` — how to search them with `po.eval.grid_search`, and why a ridge carries across feature scales only under `standardize` |
+| [how-to/choose-a-kalman-drift-speed.md](how-to/choose-a-kalman-drift-speed.md) | you fit `kalman` and want to choose how fast its coefficients may drift, revert or extrapolate |
+| [how-to/choose-a-learning-rate.md](how-to/choose-a-learning-rate.md) | you fit `sgd`, `ftrl` or `pa` and want to choose the size of each step |
+| [how-to/choose-ftrl-penalties.md](how-to/choose-ftrl-penalties.md) | you fit `ftrl` and want to choose its penalties, which weigh more on a short half-life or a sparse stream |
+| [how-to/choose-holts-smoothing.md](how-to/choose-holts-smoothing.md) | you fit `holt` and want to choose how fast its level and trend forget, or a flat prediction |
+| [how-to/choose-columns-on-the-lasso-path.md](how-to/choose-columns-on-the-lasso-path.md) | you fit `lasso` and want to choose its penalties, how they are ranked, and its sweeps |
 | [how-to/choose-a-changepoint-hazard.md](how-to/choose-a-changepoint-hazard.md) | you fit `bocpd` and want to choose its `hazard`, priors and `robust_beta` — how to score each by its out-of-sample log-likelihood with `grid_search(scoring="loglik")` |
-| [how-to/pool-grams.md](how-to/pool-grams.md) | you hold a Gram per block, such as one per week — how to pool any set into one Gram, aged to a common row, with or without the blocks' levels, and fit or score on it |
-| [how-to/flag-joint-outliers.md](how-to/flag-joint-outliers.md) | you watch several columns of a stream — how to flag the rows that are odd only in combination, with `ew_cov`'s `mahal` and a threshold from its own past distances |
-| [how-to/track-principal-components.md](how-to/track-principal-components.md) | you want the main direction several columns move in together — how to track its loadings, share and scores with `pca`, refreshed on a schedule |
-| [how-to/find-which-series-leads.md](how-to/find-which-series-leads.md) | you want to know whether one column moves before another, and by how many rows — how to read `ew_cov`'s lagged correlations in both directions |
-| [how-to/screen-features-against-a-target.md](how-to/screen-features-against-a-target.md) | you have many features and a few targets — how to rank every pair in one pass with `marginal`, correct the ranking for smooth rows, and find relations a correlation misses |
-| [how-to/track-the-average-correlation.md](how-to/track-the-average-correlation.md) | you watch many series — how to track one number that moves with their average correlation with `deco`, per block, and read its level from an `ew_cov` |
-| [how-to/estimate-a-blocks-covariance-from-ticks.md](how-to/estimate-a-blocks-covariance-from-ticks.md) | you have tick prices of several series — how to estimate each block's covariance robust to noise and to series not observed on every row with `rcov` |
-| [how-to/align-series-that-tick-at-their-own-times.md](how-to/align-series-that-tick-at-their-own-times.md) | you have series observed at instants of their own — how to put them on one grid with `po.stream.refresh_time` and fit on its changes |
-| [how-to/keep-kmeans-centers-on-the-data.md](how-to/keep-kmeans-centers-on-the-data.md) | you fit `kmeans` to clusters that come and go — how to keep `init` at its default and set `dead_frac` so a vanished cluster's center is re-placed |
-| [how-to/choose-micro-eps.md](how-to/choose-micro-eps.md) | you cluster with `micro` — how to choose `eps`, and read a value too small or too coarse from its outputs |
-| [how-to/choose-a-covariance-type.md](how-to/choose-a-covariance-type.md) | you class rows with `ew_class` — how to choose `covariance_type`, and give `window_size` when classes move and `embargo` when they arrive late |
-| [how-to/read-a-sequential-test.md](how-to/read-a-sequential-test.md) | you run `seqtest` — how to reject the first time its evidence reaches ln 20, one- or two-sided, however often you look |
-| [how-to/keep-hmm-states-on-their-regimes.md](how-to/keep-hmm-states-on-their-regimes.md) | you fit `hmm` to name regimes — how to give a sticky transition prior and keep an extreme row from capturing a state |
-| **New pages: explanations** | |
+| [how-to/choose-among-a-grid-online.md](how-to/choose-among-a-grid-online.md) | you fit a spec over a grid of settings — how to let it choose or average the grid's predictions as the stream runs, with `emit_selected` and `emit_averaged` |
+| [how-to/choose-settings-by-hand.md](how-to/choose-settings-by-hand.md) | you hold a bank's output for a grid and want to choose from it yourself — how to choose on one half with `po.eval.metrics` and report on the other |
+| **How-tos: training trees** | |
+| [GBDT.md](GBDT.md) | you train XGBoost or LightGBM on files larger than memory — how to build each library's training object with `po.gbdt` from Arrow IPC, Parquet or a query, with categorical features, binning parameters, a Huber loss or an online model's prediction as the margin |
+| **Reference** | |
+| [MODELS.md](MODELS.md) | you are choosing a model, or want to know how one learns — each model's entry under its family: when to reach for it, its update rule, its parameters and what it is checked against |
+| [OUTPUTS.md](OUTPUTS.md) | you want to know what a model writes into its column — each model's fields, generated from the code and checked against it, with where each optional output is shown, such as the diagnostics on [DIAGNOSTICS.md](DIAGNOSTICS.md) |
+| [WINDOWS.md](WINDOWS.md) | you make features or targets from windows over the stream — the window operators of `po.ops` as columns before the bank and as a model's inputs and target, features in units of their spread, and saving and resuming a window run |
+| [GRAM.md](GRAM.md) | you fit many features, or more rows than memory holds, from the Grams one pass leaves — a Gram per week, pooling weeks with or without their weekly levels, a ridge with its t, the lasso path by least angle regression and by coordinate descent, stability selection over halves of the weeks and its null by sign flips, per-week coefficients, reading Grams from saved files, compact exports, `gram_threads`, and Huber regression on one shared Gram (algorithm H, a Polars query each pass): the theory, and a recipe that runs for each |
+| [RUNNER.md](RUNNER.md) | you run a bank as a job — the `polars-online` command line from a configuration file — with no live Python process driving it |
+| [STATE-WORKFLOW.md](STATE-WORKFLOW.md) | you save a bank from a query, serve from it, or resume it, or resume a window run — what each step guarantees and what a saved state carries, followed by the dated research the guarantees rest on |
+| [DIAGNOSTICS.md](DIAGNOSTICS.md) | you want to know whether a model is working — one section per question (is it scaled right, has it broken, can its t be trusted, what is it missing, are its tails heavy, which row moved it, are its features healthy, is another model better, is it ready, how wide is its error): each diagnostic's definition, threshold and false-alarm rate, cost and the theory, with a link to the how-to that runs it |
+| [DATA-QUALITY.md](DATA-QUALITY.md) | `bank.check()` found a problem in your data, or you want to know what can go wrong before you fit — one section per finding: what it does to each model, the fix in Polars, the theory, and a recipe that runs |
+| [REGIMES.md](REGIMES.md) | you are about to trust `hmm`, `corrchange`, `bocpd`, `deco` or `rcov`, or a remedy for series that tick at different times — what each finds on data whose truth is known, and what it misses |
+| [VALIDATION.md](VALIDATION.md) | you wonder where a default came from — generated by `scripts/validate.py` on public data; never edited by hand |
+| [PERFORMANCE.md](PERFORMANCE.md) | something is slower or bigger than you expected — where the time and memory go and the settings that move them, then every measurement, grouped by topic |
+| [VERSIONS.md](VERSIONS.md) | you pin polars-online in your requirements or upgrade it — what each kind of release may change, what is stable, which defaults changed in a minor release, how state files carry across releases, and which Polars versions it runs with |
+| **Explanations** | |
 | [explanation/out-of-sample.md](explanation/out-of-sample.md) | you want to know why each prediction and diagnostic is made before its row is learned, what that guarantees, and how a target that looks ahead is learned |
 | [explanation/time-and-decay.md](explanation/time-and-decay.md) | you set `half_life` and want to know how a model forgets along its clock, what `gap_cap` and a session do to the decay, why a huge half-life is not the same as none, and how a hard window forgets differently |
 | [explanation/chunk-invariance-and-streaming.md](explanation/chunk-invariance-and-streaming.md) | you want to know why the chunking never changes the numbers, why memory stays bounded, which query steps hold the stream in memory, and why the row order is yours to set |
@@ -97,11 +136,17 @@ kept in [`records/`](records/), and its row links it there.
 | [explanation/warm-up-and-readiness.md](explanation/warm-up-and-readiness.md) | you want to know why a model withholds its first predictions, what each readiness gate measures, why `min_weight` can be out of reach, and how a model that seeds itself from its first rows differs |
 | [explanation/robust-scale.md](explanation/robust-scale.md) | you fit `huber`, `quantile` or `sgd` with a Huber loss and want to know how the residuals' scale is kept, why each target's first rows are refit, and what a robust scale gives up when the level shifts |
 | [explanation/grids-and-instances.md](explanation/grids-and-instances.md) | you give a spec several values of a setting and want to know how one pass fits them all, what an instance and a slot are, and why the best error over a grid is optimistic |
+| [explanation/where-the-time-and-memory-go.md](explanation/where-the-time-and-memory-go.md) | you want to know what sets a bank's speed and its memory — the bank's own work against the models', why memory stays flat as the rows grow, and a state's size measured |
+| [explanation/against-scikit-learn.md](explanation/against-scikit-learn.md) | you would otherwise fit a streaming regression with scikit-learn's `SGDRegressor.partial_fit` — how exact solves differ from gradient steps, and where each one wins |
+| [explanation/polars-interfaces.md](explanation/polars-interfaces.md) | you upgrade Polars under polars-online and want to know the four ways the library crosses into Polars, which carry a promise, why the wheel carries its own Polars, and how a break shows |
+| [explanation/how-the-library-is-tested.md](explanation/how-the-library-is-tested.md) | you are deciding whether to trust the numbers — which test holds each guarantee, the invariants every model keeps, what the suite does to a bank on purpose, and where it runs |
 | [explanation/how-po-gbdt-builds-training-data.md](explanation/how-po-gbdt-builds-training-data.md) | you train trees with `po.gbdt` and want to know how it bins rows that do not fit in memory, how its bins compare with each library's own, when a margin beats a feature, and why the kind of file decides its memory |
-| **New pages: tutorials** | |
-| [tutorials/stream-from-parquet.md](tutorials/stream-from-parquet.md) | you are new to the library and want to fit a model over parquet files too large to hold, in a Polars query, and write its predictions to a file |
-| [tutorials/local-fit-with-a-clock.md](tutorials/local-fit-with-a-clock.md) | you are new to the library and want a regression that follows the recent rows along a clock, through a trading day and across the next day's open |
-| [tutorials/fit-save-and-serve.md](tutorials/fit-save-and-serve.md) | you are new to the library and want to fit a model, save it, load it in a new Python process and predict new rows from it |
+| **Changing the library** | |
+| [EXTENDING.md](EXTENDING.md) | you are adding a model — every layer it touches, with the test that catches skipping each one |
+| [TESTING.md](TESTING.md) | you want to know what the suite proves, what it has found, and where it is thin |
+| [RELEASE-READINESS.md](RELEASE-READINESS.md) | you are cutting a release, or asking which Polars versions are promised and which are merely measured |
+| **Writing the documentation** | |
+| [WRITING.md](WRITING.md) | you are writing or rewriting any reader-facing doc — the rules the docs are held to, each drawn from a report in [PHRASING.md](records/PHRASING.md), with the README's rewrite of 2026-09-23 as the worked example. A pass over the README starts from [README-ITERATIONS.md](README-ITERATIONS.md), and a new report goes into PHRASING.md |
 
 ## Records
 
@@ -112,13 +157,13 @@ out-of-date one, its row here says what became of it.
 | document | what it records |
 |---|---|
 | **The plan** | |
-| [PLAN.md](PLAN.md) | the design and the task list — the source of truth. §1–§10 are the original design. §11 is the task list, ticked as each task lands, and §11a holds the decisions taken while building. §11b–§11h hold one summary per follow-on document below, §12 the questions the design left open and their answers, §13 `window_size`, an EW accumulator with a hard cutoff, and §14 the nine review rounds of the window operators on 2026-10-03, each finding with the test that pins it. From §15 on, each section records one later review or decision, dated in its heading. The first three are the review of the 53 commits after v0.13.0 (§15), the whole-project review of 2026-10-05 (§16), and the parameters counted in rows where a clock would fit (§17) |
+| [PLAN.md](PLAN.md) | the design and the task list — the source of truth. §1–§10 are the original design. §11 is the task list, ticked as each task lands, and §11a holds the decisions taken while building. §11b–§11h hold one summary per follow-on document below, §12 the questions the design left open and their answers, §13 `window_size`, an exponentially weighted sum with a hard cutoff, and §14 the nine review rounds of the window operators on 2026-10-03, each finding with the test that pins it. From §15 on, each section records one later review or decision, dated in its heading. The first three are the review of the 53 commits after v0.13.0 (§15), the whole-project review of 2026-10-05 (§16), and the parameters counted in rows where a clock would fit (§17) |
 | [ENHANCEMENTS.md](ENHANCEMENTS.md) | every model and feature after the first seven (E1–E75): what was proposed, what was measured, what was built and what was declined |
 | **Designs, as built** | |
 | [ANSWERS-E54-E64.md](records/ANSWERS-E54-E64.md) | the formulae and constants for the correlation and regime models, read from the papers before they were built |
-| [MARGINAL-LAGS-AND-BINS.md](MARGINAL-LAGS-AND-BINS.md) | two extensions to `marginal`, E66 and E67: lagged pair moments for an honest sample size, and binned target moments for a single-split gain. Both shipped, as tasks 65 and 66, and were revised under task 67 |
+| [MARGINAL-LAGS-AND-BINS.md](MARGINAL-LAGS-AND-BINS.md) | two extensions to `marginal`, E66 and E67: lagged pair moments for a sample size that allows for serial correlation, and binned target moments for a single-split gain. Both shipped, as tasks 65 and 66, and were revised under task 67 |
 | [MARGINAL-AT-WIDTH.md](records/MARGINAL-AT-WIDTH.md) | five asks against `marginal`'s cost per row at 10⁴ features × 50 targets, E70–E74, from the same caller: the measured cost and its scaling with the target count, then cross-lag terms on request, binning once per row, feature moments shared across targets, sharding a wide spec across the pool, and running a chunk pair-major. Tasks 122, 123 and 126 built E71, E70 and E73 on 2026-09-25, and task 125 built E72 on 2026-09-29; task 127, E74, is open |
-| [WARMUP-AND-CONVERGENCE.md](WARMUP-AND-CONVERGENCE.md) | the settings that keep a model from being used before it has warmed up: the design as built for `ewridge` in 0.9.0, its evidence, what was tried and dropped, and §7, the questions the design left, some answered and the rest open in PLAN task 116 |
+| [WARMUP-AND-CONVERGENCE.md](WARMUP-AND-CONVERGENCE.md) | the settings that keep a model from being used before it is ready: the design as built for `ewridge` in 0.9.0, its evidence, what was tried and dropped, and §7, the questions the design left, some answered and the rest open in PLAN task 116 |
 | [HUBER.md](HUBER.md) | Huber regression from first principles, the analysis behind `huber_scale` and `huber_scale_half_life` as built in 1.3.0: the loss and its weights, the three scales and their measured breakdown, one pass against the converged fit, the regime trade-off a robust scale buys into, and what the API policy allows in 1.x; the numbers measured on 2026-10-23. §8 analyses five requests from a downstream project: what was built from them (`huber`'s `feature_sets` and `ridge_scale="sum"`, `marginal`'s Huber bins, `po.ewm_quantile`, GRAM.md's algorithm H, GBDT.md's objectives), and what was refused or left to the requester. Its §2 measured Proposal 2 at statsmodels' default scale cut, 2.5, not 1.345; GRAM.md has it at 1.345. §9 measures the streams one pass leaves captured, over 40 seeds, and the refit of the first rows built against them (`huber_refit_rows`) |
 | **Surveys and prototypes** | |
 | [BEYOND-O-STATE.md](records/BEYOND-O-STATE.md) | what relaxing the O(state) rule to O(window) would unlock — a survey; four of its six candidates were since built (conformal intervals, `ew_cov` lags, `embargo`, and `window_size`, from snapshots under a memory budget) |
@@ -131,7 +176,7 @@ out-of-date one, its row here says what became of it.
 | [ARROW-SOURCES.md](ARROW-SOURCES.md) | whether anything that produces Arrow chunks, DuckDB first, can feed a bank. Its status line, dated 2026-10-06, says tier 0, which works through Polars, has shipped, and the native import is parked (PLAN task 86). Its §4, corrected on 2026-09-22, finds no blocker to that import |
 | **Logs of the documentation** | |
 | [PHRASING.md](records/PHRASING.md) | every phrasing report, kept verbatim with its reading, begun for task 68's clarity pass: each rule in WRITING.md names the report it came from |
-| [README-ITERATIONS.md](README-ITERATIONS.md) | every pass over the README, with its prompt verbatim, its counts and its verdict, and every idea the reviews raised with its status |
+| [README-ITERATIONS.md](README-ITERATIONS.md) | every pass over the README, with its prompt verbatim, its counts and its verdict, and every idea the reviews brought up with its status |
 | [DOCS-REWRITE-MAP.md](records/DOCS-REWRITE-MAP.md) | the map of the documentation rewrite, written before any page of it: every section of the README and the guides with its kind and the page it moves to, the pages the rewrite produces, why the guides stay Markdown, and the first set of pieces it writes |
 | **Reviews, oldest first** | |
 | [SIMPLIFICATION.md](SIMPLIFICATION.md) | what complexity was removed after the performance work, and what was kept on purpose |

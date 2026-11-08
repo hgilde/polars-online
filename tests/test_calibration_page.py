@@ -47,9 +47,12 @@ def test_a_recipe_prints_what_the_page_shows(line, code, shown, tmp_path, monkey
 
 def test_the_readme_the_map_and_llms_txt_link_the_page():
     readme = (REPO / "README.md").read_text(encoding="utf-8")
-    start = readme.index("\n### Calibrating a model")
-    section = readme[start : readme.index("\n## ", start + 1)]
-    assert "docs/CALIBRATION.md" in section
-    assert "po.eval.grid_search" in section
+    where = readme.split("\n## Where to go next\n", 1)[1].split("\n## ", 1)[0]
+    # The README is a landing page: its map links the page, and the feature
+    # index links it from `grid_search`'s line (task 338 stage 8).
+    assert "](docs/CALIBRATION.md)" in where
+    features = (REPO / "docs" / "FEATURES.md").read_text(encoding="utf-8")
+    line = next(r for r in features.splitlines() if "`po.eval.grid_search`" in r)
+    assert "](CALIBRATION.md)" in line
     assert "](CALIBRATION.md)" in (REPO / "docs" / "README.md").read_text(encoding="utf-8")
     assert "docs/CALIBRATION.md" in (REPO / "llms.txt").read_text(encoding="utf-8")

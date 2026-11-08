@@ -75,9 +75,9 @@ def test_every_switch_runs_in_the_every_switch_recipe():
 
 def test_the_readme_the_map_and_llms_txt_link_the_page():
     readme = (REPO / "README.md").read_text(encoding="utf-8")
-    start = readme.index("\n### Checking that a model works\n")
-    section = readme[start : readme.index("\n## ", start + 1)]
-    assert "docs/DIAGNOSTICS.md" in section
+    where = readme.split("\n## Where to go next\n", 1)[1].split("\n## ", 1)[0]
+    # The README is a landing page, whose map links the page (task 338 stage 8).
+    assert "](docs/DIAGNOSTICS.md)" in where
     assert "](DIAGNOSTICS.md)" in (REPO / "docs" / "README.md").read_text(encoding="utf-8")
     assert "docs/DIAGNOSTICS.md" in (REPO / "llms.txt").read_text(encoding="utf-8")
     assert "DIAGNOSTICS.md" in (REPO / "docs" / "DATA-QUALITY.md").read_text(encoding="utf-8")

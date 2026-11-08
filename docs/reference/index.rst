@@ -16,9 +16,12 @@ predicted before it is learned from, and the numbers are the same whichever
 way the bank runs.
 
 Each module's page lists its functions and classes by family, and each
-function and class has a page of its own. The README is the guide: the
-models, which calls stream, the state-file workflow, and performance. Each
-model's update equations are in its builder's docstring.
+function and class has a page of its own. The guides, which the README's
+map leads to, show each call at work: the models, which calls stream, the
+state-file workflow, and performance. The `feature index
+<https://github.com/hgilde/polars-online/blob/main/docs/FEATURES.md>`_ lists
+every function and class with a line each. Each model's update equations
+are in its builder's docstring.
 
 .. list-table::
    :header-rows: 1

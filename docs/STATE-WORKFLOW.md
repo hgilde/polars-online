@@ -294,7 +294,7 @@ embargo shorter than the target's window. `ModelBank.fit` and `online
 --no-output` keep none, so they take any embargo. A bank file is refused by
 any build whose schema it does not meet; from 1.0 every later 1.x build
 loads it, and a 0.x file is refit rather than loaded ([Saving, loading and
-serving](../README.md#saving-loading-and-serving)). A file this build
+serving](explanation/state-and-resuming.md)). A file this build
 saved goes on as one run to the bit, as the recipes show. A windowed state
 saved by 1.2.0 or earlier loads, and its first read is the one it saved.
 Once a snapshot taken after the load is the window's edge, its windowed

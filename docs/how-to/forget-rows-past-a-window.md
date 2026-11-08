@@ -52,7 +52,7 @@ before the change should count for nothing.** Two cases call for one:
 2. **Choose `closed` for the row exactly `window_size` old,** as Polars'
    `rolling_*_by(closed=)` does. Under `"right"`, the default, that row
    has left, as it has in the [window
-   operators](../../README.md#making-features-and-targets-from-windows)
+   operators](make-window-features.md)
    and in `rolling_sum_by`.
    Under `"both"` it stays. Either way, a row's weight is:
 
@@ -189,5 +189,5 @@ the same within 1e-12: True
 The two agree to rounding: the cut is a subtraction, whose precision falls
 as the share of the weight it discards grows. Before you read the other
 numbers of a model under a hard window, read the README's [five things to
-know](../../README.md#a-hard-window) about them, such as `weight_sum`
+know](../MODELS.md#a-hard-window) about them, such as `weight_sum`
 being the weight inside the window.

@@ -31,8 +31,8 @@ from the row, so each row's residual is out-of-sample, and a setting is
 judged by its residuals on rows it had not yet seen.
 
 1. **Give the spec a list of the values to try.** The spec fits each
-   value as a grid point, from the same rows (the README's [Output field
-   names](../README.md#output-field-names) says how each is named).
+   value as a grid point, from the same rows ([Find an output field by
+   what it holds](how-to/find-an-output-field.md) says how each is named).
 2. **Pass the query and the spec to `po.eval.grid_search`.** It runs one
    bank over the query, reading the file once. It cuts the rows into
    `n_splits` test spans, 5 by default, and before each span chooses from

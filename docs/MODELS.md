@@ -4,9 +4,7 @@
 The reference entry of each of the twenty-two models a spec can name, by
 family, for a reader who knows which model they want to look up. A
 model's parameters, their defaults and its refusals are in its docstring,
-and the fields it writes in [OUTPUTS.md](OUTPUTS.md). The README's
-[Models](../README.md#models) has the table of all twenty-two, how each
-learns from a row, and which to choose for which question.
+and the fields it writes in [OUTPUTS.md](OUTPUTS.md).
 
 **The update rules share one notation.** A symbol in this table means the
 same thing in every entry its *used by* column names, and each entry defines its other
@@ -19,13 +17,420 @@ symbols beside its rule:
 | `λ` | the row's decay, `0.5 ** (Δclock / half_life)`, or `lam ** Δclock` when the spec gives `lam=`, with `Δclock` the clock's step since the last row the model did not skip, capped at `gap_cap` (or `session_gap` at a session change) ([Time and decay](explanation/time-and-decay.md)) | every model |
 | `S_j`, `η_j` | target `j`'s running means of `z zᵀ` and of `z·y_j`, which the least-squares fits solve from | `ewridge`, `huber`, `quantile` |
 | `e` | the row's residual: `y` less the prediction made before the row | `huber`, `quantile` |
-| `ω` | a ridge added to a covariance: `precision_prior`, fading as `ew_cov`'s prior does, so that a class or a state can be scored from its first row | `ew_class`, `hmm` |
+| `ω` | a ridge added to a covariance: `precision_prior`, fading as `ew_cov`'s prior does, so that a row's class or state can be predicted from the model's first row | `ew_class`, `hmm` |
 
 Without a clock column, each row is one unit of clock. A model keeps its
 running sums as means, decayed sums or centered second moments, and [The
 running sums that
 decay](explanation/time-and-decay.md#the-running-sums-that-decay) says
 which models keep each, and why.
+
+## The models at a glance
+
+The twenty-two models fall into four families, and each family answers one
+kind of question about a stream. Each name links its builder's reference
+page, which gives its keywords and their defaults, and *entry* links its
+entry on this page. [Choose a model](how-to/choose-a-model.md) says which
+to start with for which question.
+
+| model | learns by | what it is |
+|---|---|---|
+| **[Linear models](#linear-models)** | | predict a numeric target, from features or from its own past |
+| [`ewridge`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge) · [entry](#ewridge--exponentially-weighted-ridge-regression) | solve | exponentially weighted ridge regression; several ridge values and feature sets are solved from the same running sums at almost no extra work |
+| [`rls`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rls) · [entry](#rls--recursive-least-squares) | solve | recursive least squares, in the numerically safe square-root form |
+| [`lasso`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.lasso) · [entry](#lasso--lasso-path-its-penalty-chosen-as-it-runs) | solve | lasso and elastic-net path, with the penalty chosen as the stream runs |
+| [`kalman`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kalman) · [entry](#kalman--random-walk-β-dynamic-linear-model) | filter | a Kalman filter whose coefficients drift as random walks |
+| [`huber`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber) · [`quantile`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.quantile) · [entry](#huber--robust-regression) | reweight | robust and quantile regression |
+| [`sgd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.sgd) · [entry](#sgd--stochastic-gradient-descent) | step | stochastic gradient descent with squared, Huber, quantile, ε-insensitive, Poisson and logistic losses |
+| [`pa`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.pa) · [entry](#pa--passive-aggressive-regression) | step | passive-aggressive regression, with no learning rate to tune |
+| [`ftrl`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl) · [entry](#ftrl--online-logistic-regression) | step | FTRL-proximal regression, logistic by default, with an L1 penalty that zeroes coefficients |
+| [`holt`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.holt) · [entry](#holt--holts-linear-trend) | step | Holt's linear trend, the baseline that uses no features |
+| **[Moments and correlation](#moments-and-correlation)** | | track the running moments and correlations of the columns you name |
+| [`ew_cov`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_cov) · [entry](#ew_cov--exponentially-weighted-moments) | accumulate | running mean, variance, covariance, correlation, partial correlation, Mahalanobis distance and principal components |
+| [`marginal`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.marginal) · [entry](#marginal--every-pairs-moments-kept-in-the-state) | accumulate | every (feature, target) pair's running mean, variance, covariance, correlation, slope and t, for a wide set of columns, kept in the state and read back as a table; optionally at a set of lags, and with binned target moments for the relations a correlation cannot see |
+| [`deco`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.deco) · [entry](#deco--one-correlation-for-the-whole-matrix) | accumulate | one correlation for the whole matrix: Engle & Kelly's equicorrelation, or one per block and per pair of blocks |
+| [`rcov`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rcov) · [entry](#rcov--a-blocks-realized-covariance-robust-to-noise) | accumulate | a block's realized covariance, robust to microstructure noise: the Barndorff-Nielsen–Hansen–Lunde–Shephard kernel or Christensen–Kinnebrock–Podolskij pre-averaging, reported when a group closes |
+| [`audit`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.audit) · [entry](#audit--what-a-streams-columns-hold) | accumulate | what each column holds, counted in one pass: nulls, NaNs and infinities apart, repeated values, runs, persistence, tails and duplicated columns, and the clock's duplicate stamps and gaps, read back as a table and by `bank.check()` |
+| **[Clustering and classification](#clustering-and-classification)** | | put labels on rows |
+| [`kmeans`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kmeans) · [entry](#kmeans--exponentially-weighted-k-means) | step | exponentially weighted k-means: cluster labels assigned before the row is learned from, with a split–merge move that finds a cluster born after seeding |
+| [`micro`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.micro) · [entry](#micro--density-based-clustering-any-shape) | step | density-based clustering: DenStream micro-clusters linked into clusters of any shape and number, flagging the rows that belong to none |
+| [`ew_class`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_class) · [entry](#ew_class--gaussian-classification-on-ew_cov-moments) | accumulate | Gaussian classification, QDA, LDA or naive Bayes, with one set of running moments per class: a label column in, class probabilities out |
+| **[Sequential tests and regimes](#sequential-tests-and-regimes)** | | give evidence that something holds or has changed, and which regime the stream is in |
+| [`seqtest`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.seqtest) · [entry](#seqtest--a-sequential-test-of-a-sign-by-betting) | test | a sequential test of a sign by betting, giving evidence you can read at any row: on its own, of a column's sign; with `a` and `b`, of whether one spec of the bank predicts closer than another |
+| [`corrchange`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.corrchange) · [entry](#corrchange--has-the-correlation-structure-changed) | test | has the correlation structure changed: the Wied–Krämer–Dehling constancy test span by span, the Wied–Galeano detector row by row against a stable history, or the size of a change between two windows against a permutation null |
+| [`bocpd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.bocpd) · [entry](#bocpd--how-long-has-this-regime-lasted) | filter | how long this regime has lasted: Adams & MacKay's run-length posterior, so the answer is the regime's age and not a flag |
+| [`hmm`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.hmm) · [entry](#hmm--which-regime-are-we-in) | filter | a Gaussian hidden Markov model, filtered as the stream runs: `ew_class` without the labels, with a transition matrix that can be learned |
+
+**How a model learns from a row decides whether, with decay off, its
+answer depends on the row order:**
+
+| learns by | what the model does with a row | with decay off | order-dependent even so |
+|---|---|---|---|
+| **solve** | keeps running sums and computes its coefficients from them | converges to the batch answer, in any row order | `lasso`'s `penalty_selected`, ranked by out-of-sample error, though its path converges in any order |
+| **accumulate** | keeps running sums and reports them | converges to the batch answer, in any row order | a lag, in `ew_cov` or `marginal`, which counts learned rows; `rcov`'s block and `deco`'s per-row estimate; `audit`'s runs, smallest change, lag pairs and clock steps, and past `distinct_cap` the digest's `median`, `mad` and `robust_z` and the counters' `top_value`, `top_count`, `second_count` and `equal_by_chance`, each within its bound |
+| **reweight** | solves from running sums, but lets the fit before each row decide how that row enters them | depends on the row order | |
+| **step** | moves its coefficients a little on each row | depends on the row order | |
+| **filter** | carries a belief forward from row to row | depends on the row order | |
+| **test** | counts evidence as it goes | depends on the row order | |
+
+## What every spec takes
+
+Every spec, whichever model it names, takes the parameters that say how
+its model reads the stream, one chunk at a time. Most models take
+all of them, and a model that refuses one says so when the spec is built.
+With a `group`, every parameter applies within each group, the clock
+included. The [`polars_online.spec`](https://hgilde.github.io/polars-online/spec.html)
+reference gives each one's units and default.
+
+### Parameters
+
+| the question | the parameters | where it is described |
+|---|---|---|
+| which columns a model reads, and what its output column is called | the spec's name, `targets`, `features`, `fit_intercept` | [What a spec names](#what-a-spec-names) |
+| how far apart two rows are, and how fast the past fades | `clock`, `half_life`, `lam`, `gap_cap` | [The clock and its units](#the-clock-and-its-units), and [Time and decay](explanation/time-and-decay.md) for why |
+| what a session boundary, a gap and a step back do | `session`, `session_gap`, `gap_cap`, `restart_after_step_back` | [The clock's policy](#the-clocks-policy) |
+| what a fit becomes when nothing fades | `half_life=inf`, `lam=1.0` | [Without a decay](explanation/time-and-decay.md#without-a-decay) |
+| when an old row stops counting at all | `window_size` | [A hard window](#a-hard-window), and [Forget rows past a window](how-to/forget-rows-past-a-window.md) |
+| how to fit along a feature instead of time | `clock` | [Fit locally along a feature](how-to/fit-locally-along-a-feature.md) |
+| which row order a bank needs, and how it checks it | | [Put rows in clock order](how-to/put-rows-in-clock-order.md), and [why you set the order](explanation/chunk-invariance-and-streaming.md#why-you-set-the-row-order) |
+| which rows belong to which model | `group`, `group_close` | [Fit one model per group](how-to/fit-one-model-per-group.md) and [Close groups and read each one's row](how-to/close-groups.md) |
+| how much each row counts | `weight` | [Weight rows](how-to/weight-rows.md) |
+| when a model has seen enough to report | `min_weight`, `min_settled_frac`, `max_error_inflation` | [Warm-up gates](#warm-up-gates) |
+| when a target may be learned | `embargo`, `label_clock`, `max_held_rows`, `held_overflow` | [Learn targets known late](how-to/learn-targets-known-late.md) |
+| what a null does, and how to keep a model from learning a row | a null, a weight of 0, `predict` | [Hold a row back](how-to/hold-a-row-back.md) |
+| which coefficients and diagnostics each row writes | `coef_every`, `max_rows_between_coefs`, the `emit_*` switches and their half-lives | [OUTPUTS.md](OUTPUTS.md) and [DIAGNOSTICS.md](DIAGNOSTICS.md) |
+
+#### What a spec names
+
+A spec describes one model: which model it is, the columns it reads, and
+how it treats time. The name of the spec (the first parameter) is used to
+name the output column: `po.spec.ewridge("ridge", ...)` adds a column named
+`ridge`. Each row of that column is a record of the model's fields for the
+row, and the input's columns pass through untouched.
+This code uses `df` from [Example data](../README.md#example-data):
+
+```python
+ridge_spec = po.spec.ewridge(
+    "ridge",
+    targets=["y"],                 # at least one; the targets of one spec share the features' running sums
+    features=["x0", "x1", "x2"],   # numeric columns of any width, Decimal and Boolean included; read as 64-bit floats
+    fit_intercept=True,            # the default: the fit has a level of its own
+    clock="t", half_life=600.0, gap_cap=300.0,   # how it treats time: see The clock and its units
+)
+fitted = po.ModelBank([ridge_spec]).fit_predict(df)
+print(len(df.columns), "columns in, then", fitted.columns[len(df.columns):])
+print("each row of ridge holds", fitted["ridge"].struct.fields)
+```
+
+```text
+13 columns in, then ['ridge']
+each row of ridge holds ['pred_y', 'resid_y', 'weight_sum', 'settled_frac', 'withheld_reason', 'coef', 'support_coef']
+```
+
+A target can also be computed from the rows after each row, as a formula
+in the spec's `targets`: [Make a target that looks
+ahead](how-to/make-a-target-that-looks-ahead.md) shows how, and how to
+write a ratio target that sits about zero.
+
+#### The clock and its units
+
+**Write every clock parameter in the clock column's own kind of value,
+since a timestamp carries its unit and a number does not.**
+
+| the clock | a clock parameter is | for example |
+|---|---|---|
+| a `Datetime`, `Date` or `Duration` column: a *temporal* clock | a duration | `half_life=pl.duration(minutes=10)` |
+| a numeric column, such as seconds or cumulative traded volume | a number of the column's own units | `half_life=600.0` |
+| none | a number of rows | `half_life=100`: a row 100 rows back counts half as much as the latest |
+
+A duration is written three ways: `pl.duration(minutes=10)`,
+`timedelta(minutes=10)`, or Polars' duration text `"10m"`. `lam`, the
+weight kept per clock unit, may stand in for `half_life` on a numeric
+clock or with no clock.
+
+**Every clock parameter acts on the clock, so it means the same span of
+time however densely the rows arrive.** The clock parameters are
+`half_life`, `gap_cap`, `restart_after_step_back`, `session_gap`, `embargo`,
+`drift_threshold` and `coef_every`, and a model's `window_size`, its cadences
+(`snapshot_every`, `solve_every`, `pca_every`, `prune_every`) and its own
+half-lives. A few things still count rows, such as `warm_rows` and the
+caps named `max_rows_between_*`, and each model's docstring names its own.
+
+**Quantities measured on a temporal clock reach the output in seconds.**
+`holt`'s trend, for one, is per second. The clocks themselves keep the
+clock column's own type: `emit_clocks` ([Learn targets known
+late](how-to/learn-targets-known-late.md#check-that-it-worked)), and the clock columns of `summary()`,
+`groups()` and `closed_groups()`. The recipe [Two clocks, one
+rate](#two-clocks-one-rate) shows both.
+
+**A temporal clock is read in its own integer nanoseconds, and an integer
+clock as its integers**, so the step between two rows is exact. [Decay along
+the clock](explanation/time-and-decay.md#decay-along-the-clock)
+says why, and what range of dates a temporal clock covers.
+
+#### The clock's policy
+
+A stream from a market has session boundaries, gaps and steps back in its
+clock. The spec has a parameter for each, and together they are the
+clock's *policy*. [Handle sessions, gaps and steps
+back](how-to/handle-sessions-gaps-and-steps-back.md) shows each one's
+effect on a fit:
+
+| the stream has | the parameter | what it does |
+|---|---|---|
+| a **session** boundary, such as the start of a trading day, where the clock's jump is not elapsed time | `session`, a column whose value changes at a session boundary, and `session_gap`, required with it unless `group_close="session"` closes the group at the change instead ([Close groups and read each one's row](how-to/close-groups.md)) | applies a step you choose, `session_gap`, in place of the jump, capped at `gap_cap` like any step. `session_gap="reset"` starts the model over instead |
+| a **gap** in the clock, such as an hour with no rows | `gap_cap`, required with a clock, finite and above 0 | caps each step between two rows a model learns from, so a quiet hour ages the fit no more than `gap_cap` would. After a run of skipped rows, the next row's step is capped too, however long the run |
+| a clock that **steps back**, such as a replayed day | `restart_after_step_back` | resets the model at a step back larger than the setting, and refuses one no larger as a late row. Unset, the default, every step back is refused ([Put rows in clock order](how-to/put-rows-in-clock-order.md)) |
+
+**A stream has a *clock break* wherever `gap_cap` shortened a step, and
+wherever the session changes.** A model that keeps past rows by position,
+as a lag does, empties them at a clock break, where the previous row no
+longer stands for the moment just before.
+
+#### A hard window
+
+`window_size` makes every row older than a span count for nothing ([Forget
+rows past a window](how-to/forget-rows-past-a-window.md) shows how, and
+what each model keeps inside the window). Five things to know before
+reading the numbers of a model under a hard window:
+
+| | |
+|---|---|
+| the clock is the **decayed** one | a row's age adds up each step after `gap_cap` and any `session_gap` |
+| the edge is a **discontinuity** | a row aging out drops its whole weight at once, so the series has small steps that a plain exponential average does not |
+| it is a **subtraction** | precision falls with the fraction discarded: negligible at a window of three half-lives, worse as the window shortens toward the half-life |
+| `weight_sum` is the weight inside the window | so `min_weight` gates on a weight that stops rising once the window is full |
+| a long step **empties** the window | a step longer than `window_size`, after `gap_cap`, empties the window, and the model reports nulls from the row after it, never stale numbers. A cap shorter than the window never empties it |
+
+#### Warm-up gates
+
+A model should not report a number it is not yet informed enough to give.
+Every model with a decay shares two gates that say what "informed enough"
+means, and four linear models (`ewridge`, `rls`, `lasso` and `kalman`) add
+a third, on by default on `ewridge` alone.
+The gates hold back output only: the model learns from every row either
+way. [Warm-up and readiness](explanation/warm-up-and-readiness.md)
+explains what each gate measures, and why, and [Decide when a model is
+ready](how-to/decide-when-a-model-is-ready.md) shows how to choose one.
+
+| setting | default | withholds a prediction while | read from |
+|---|---|---|---|
+| `min_weight` | by model, as the table of defaults gives | `weight_sum` is below it | the weight behind the state |
+| `min_settled_frac` | `0`, off | the model has come less than this fraction of the way toward its steady state under decay | `settled_frac = 1 − 2^(−T / half_life)`, with `T` the decay time the model has seen: `0.5` at one half-life, `0.75` at two, whatever the row rate |
+| `max_error_inflation` | `sqrt(2)` on `ewridge`; off on `rls`, `kalman` and `lasso` | estimation error would inflate the prediction's error over the noise floor by more than this factor | `error_inflation = sqrt(1 + edf / n_kish)`: the effective degrees of freedom the fit used, over Kish's effective sample size behind it |
+
+**`weight_sum` means the same in every model, so one `min_weight` means
+the same for every spec in a bank.** It is the *weight behind the state*
+that produced a row's prediction: the weight as the previous row left it,
+before this row's decay and before the model learns the row, and `0` on a stream's first row
+([`weight_sum`: the weight behind a
+prediction](explanation/warm-up-and-readiness.md#weight_sum-the-weight-behind-a-prediction)).
+
+**Every prediction is null until the model's weight reaches `min_weight`, and so are most fields read from the fit ([OUTPUTS.md](OUTPUTS.md) lists which).** The readiness fields, such as `weight_sum` and `withheld_reason`, are filled. A
+regression model checks each target against that target's own weight, the
+weight of the rows it was present on, so an often-null target reports
+later than the others. For `rls`, which learns a row only when every target
+is present, that is the weight of the rows it learned from. The
+`weight_sum` field is the shared weight either way. To set one threshold
+per target, give `min_weight` a list. The default depends on the model:
+
+| default | models |
+|---|---|
+| one per unknown: the features, and the intercept when there is one | `lasso`, `kalman`, `huber`, `quantile`, `rls`, `sgd`, `pa`, `ftrl` |
+| the feature count plus one (1 for `holt`) | `ew_cov`, `ew_class`, `kmeans`, `micro`, `holt` |
+| 3 | `marginal`, `deco` |
+| 1 | `bocpd` |
+| 0, each having a gate of its own or nothing to gate | `ewridge`, `seqtest`, `rcov`, `hmm`, `corrchange`, `audit` |
+
+**`min_settled_frac` is off by default.** Set it when the half-life was
+chosen to average over regimes or seasons that a shorter history would not
+represent ([`settled_frac`: how near the steady
+state](explanation/warm-up-and-readiness.md#settled_frac-how-near-the-steady-state)
+gives the reason).
+
+**`max_error_inflation` follows the size of the fit:** add a feature, and
+the gate holds predictions back longer. Each model that has it reads its
+own estimation variance ([The noise
+gate](explanation/warm-up-and-readiness.md#the-noise-gate-estimation-error-against-the-noise)
+derives it). The others refuse the setting and say why:
+
+| model | `error_inflation` | |
+|---|---|---|
+| `ewridge` | `sqrt(1 + edf / n_kish)` | on by default at `sqrt(2)` |
+| `rls` | `sqrt(1 + k / n_kish)`, `k` the coefficients: its `edf` is at most `k` under the fading prior | off unless set |
+| `lasso` | `sqrt(1 + df / n_kish)` per penalty, `df` the active coefficients and the intercept | off unless set |
+| `kalman` | `sqrt(1 + z' P z / R)` for each row: the prediction's own variance, its coefficients' covariance carried through the row's clock gap, over the noise | off unless set; read per row, so a row far from the design is held back where others pass |
+
+**Each row says how ready its model was, and why a prediction is
+missing.** `withheld_reason` names the gate that held a row back, and the
+gates are checked in the order of its values, so the first that applies is
+the one named. The recipe [Three gates on one
+spec](#three-gates-on-one-spec) counts the rows each withholds. The
+readiness fields:
+
+| field | on | what it holds |
+|---|---|---|
+| `settled_frac` | every model that writes a row | how far the model has come toward its steady state under decay |
+| `withheld_reason` | every model that writes a row | why `pred_y` is null, or null when it is not: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation`, `below_warm_rows` (the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves from, and the rows before `kalman` has sized any of a target's coefficients, standardized with no intercept), `ill_conditioned` (an `ewridge` fit whose normal equations are too nearly singular to keep a digit) or `unstable_rate` (an `sgd` target whose learning rate is past its stability bound, so the fit diverges), in that order of precedence |
+| `error_inflation_y` | `ewridge`, `rls`, `kalman`, under `emit_error_inflation` | the row's own estimation variance over the noise: high on a row leaning on a direction the data never showed, at one triangular solve a row |
+| `support_coef` | `ewridge`, `huber`, `quantile`, beside `coef` | each coefficient's data share, `1 - ridge * (S^-1)_jj` on the system the solve inverts. A duplicated pair of features reads 0.5 each |
+| `se_coef` | `ewridge`, `rls`, `kalman`, under `emit_se_coef`, beside `coef` | each coefficient's standard error in its own units: `sigma` times the fit's own covariance, `kalman`'s posterior exactly. A report, not a gate; it errs large in warm-up and under a ridge |
+
+**`summary()` carries the same readings per group, and the calls that
+learn warn of a gate that will not open.** `summary()` adds
+`weight_sum_settled`, the weight `weight_sum` tops out at. Once
+`settled_frac` reaches 0.95, `fit`, `fit_predict`, `fit_predict_batches`
+and a query's `online.fit_predict` issue a `ReadinessWarning` that names,
+once, a coefficient more ridge than data. It also names a noise gate or a
+`min_weight` that has withheld every row for a further half-life, and that
+the rows, at their rate so far, would not meet. It gives the half-life or
+the ceiling that would change that, and promises nothing of rows that come
+faster. The command line closes a run with one line per spec whose groups
+ended withheld or with a coefficient more ridge than data.
+
+### What the bank refuses
+
+The bank checks every spec against the input's columns, and every clock
+parameter against the clock's kind, before it learns any row. A value that
+only a row can show, such as a negative weight or a null clock value, is
+refused when the chunk that holds it arrives. Each error names the spec or the column it concerns, and the remedy is its last sentence.
+
+| refused | because |
+|---|---|
+| a spec named like an input column | its output column would replace that column |
+| a text column in `targets` or `features` | a model reads numbers: convert it with Polars' `with_columns` in the query before the bank, `cast(pl.Float64)` for numbers stored as text and a comparison such as `pl.col("venue") == "X"` for a category ([Refused specs](#refused-specs)) |
+| a column the input does not have | it names the column, the spec that wanted it and the role it had there |
+| a plain number as a clock parameter on a `Datetime` clock | it would silently take the column's storage unit: `half_life=600` on a microsecond column would mean 600 microseconds |
+| a duration as a clock parameter on a numeric clock | it has nothing to measure it against |
+| a spec that mixes the two kinds | |
+| a duration finer than the clock can act on, such as `gap_cap="12h"` on a `Date` clock, which moves in days | |
+| `lam`, a decay per clock unit, on a temporal clock | it has no duration form, so a temporal clock takes `half_life` instead |
+| a negative weight | a weight of 0 is legal, and the model learns nothing from its row ([Weight rows](how-to/weight-rows.md)) |
+
+Only `0` and `inf`, which mean the same in every unit, may stay numbers
+where a clock parameter takes them.
+
+**Catch a refusal by the kind of problem: `TypeError` for a value of the
+wrong type, `ValueError` for a value out of range or a column the input
+lacks.** A column the input lacks raises `po.ColumnNotFoundError`, a
+subclass of Polars' own `ColumnNotFoundError` and of `ValueError`. A column
+or value of the wrong type, such as a text feature, raises
+`po.WrongTypeError`, a `TypeError`. A refused value raises `ValueError`, or
+`po.RefusedValueError`, a `ValueError`, where a `TypeError` was raised for
+it in an earlier release. Until the next major version, each of these two
+also keeps the other class as a parent, so a handler written for either
+still catches it.
+
+**A clock column the bank cannot read exactly is refused, by row or by
+name.** A `UInt64` value past the largest `Int64` is refused by row. An
+`Int128` or `UInt128` column is refused by name: cast it to `Int64` if its
+values fit, or after subtracting an origin. A `UInt128` column is refused
+wherever it is in the frame, since no frame carrying one can reach the
+bank. A later chunk whose clock is a float, or an integer of another width,
+is refused by name. A null, NaN or infinite clock value is refused by row.
+A feature may be null and its row skipped, but a clock value cannot: every
+later row's step is measured from it.
+
+### Examples
+
+Each recipe runs on the README's example data and prints what it shows.
+
+#### Refused specs
+
+This code prints two refusals, then fits the venue as a comparison. Its
+last line finds the truth planted in `y`: an intercept of 1, 2 on `x0`, −1
+on `x1`, and nothing on the venue.
+It reads `df` and `lf` from [Example data](../README.md#example-data):
+
+```python
+# Two specs the bank refuses, each refusal printed.
+for refused in [
+    po.spec.ewridge("x0", targets=["y"], features=["x1"], half_life=600.0),          # named like a column
+    po.spec.ewridge("by_venue", targets=["y"], features=["venue"], half_life=600.0),  # a text feature
+]:
+    try:
+        po.ModelBank([refused]).fit_predict(df)
+    except ValueError as err:
+        print(err)
+
+# The venue fitted as a comparison.
+by_venue = po.spec.ewridge("by_venue", targets=["y"], features=["x0", "x1", "is_x"], half_life=float("inf"))
+coded = lf.with_columns(is_x=pl.col("venue") == "X").online.fit_predict([by_venue]).collect()
+print("intercept, x0, x1, venue X:", [round(c, 2) for c in coded["by_venue"].struct.field("coef")[-1]])
+```
+
+```text
+duplicate: spec "x0": it has the same name as an input column, and its output column would replace that column. Rename the spec.
+spec "by_venue": feature column "venue" must be a number, but it is String. Cast it, such as with pl.col("venue").cast(pl.Float64).
+intercept, x0, x1, venue X: [1.02, 1.99, -1.01, -0.05]
+```
+
+#### Two clocks, one rate
+
+This code fits `holt`, a level and its trend, to `t`, a column that rises
+by one each minute, once on the numeric clock `t` and once on the
+`Datetime` clock `ts`. The two clocks mark the same rows, so the weights
+agree, and the trend is the same rate in two units. Its last lines show
+the bank refusing a plain number on the `Datetime` clock.
+It reads `df` from [Example data](../README.md#example-data):
+
+```python
+import textwrap
+
+# The same model on each clock, read on the last row.
+on_t = po.spec.holt("on_t", targets=["t"], clock="t", half_life=100.0, gap_cap=300.0)       # numbers: t counts minutes
+on_ts = po.spec.holt("on_ts", targets=["t"], clock="ts", half_life="100m", gap_cap="300m")  # durations: ts is a Datetime
+last = po.ModelBank([on_t, on_ts]).fit_predict(df).tail(1)
+for name, unit in [("on_t", "per unit of t, a minute"), ("on_ts", "per second")]:
+    fields = last[name].struct
+    print(f"{name}: weight_sum {fields.field('weight_sum')[0]:.2f}, trend {fields.field('coef')[0][1]:.6f} {unit}")
+
+# The same spec on ts with plain numbers: refused.
+try:
+    po.ModelBank([po.spec.holt("wrong", targets=["t"], clock="ts", half_life=100.0, gap_cap=300.0)]).fit_predict(df)
+except ValueError as err:   # a plain number on a Datetime clock
+    print(textwrap.fill(str(err), 100))
+```
+
+```text
+on_t: weight_sum 135.66, trend 1.000000 per unit of t, a minute
+on_ts: weight_sum 135.66, trend 0.016667 per second
+spec "wrong": clock column "ts" is Datetime("us"), a temporal clock, but half_life is a plain
+number. A number has no unit, so the unit the column is stored in, such as microseconds since 1970,
+would silently become its unit. Give half_life and the other clock parameters as durations, such as
+"10m" or pl.duration(minutes=10), or cast the clock to a number of the units you mean, such as with
+pl.col("ts").dt.epoch("s").cast(pl.Float64) (pl.col("ts").dt.total_seconds() for a Duration).
+```
+
+#### Three gates on one spec
+
+This code sets all three warm-up gates on one spec and counts the rows
+each withholds.
+It reads `df` from [Example data](../README.md#example-data):
+
+```python
+warm = po.spec.ewridge(
+    "warm", targets=["y"], features=["x0", "x1"], clock="t", half_life=100.0, gap_cap=300.0,
+    min_settled_frac=0.02,      # withhold until 2% of the way to the steady state under decay
+    min_weight=8.0,             # and until the weight behind the fit reaches 8
+    max_error_inflation=1.05,   # and while estimation error would add more than 5% over the noise floor
+)
+# How many rows each gate withheld, and the first row predicted.
+rows = po.ModelBank([warm]).fit_predict(df).unnest("warm")
+counts = rows.group_by("withheld_reason").len().sort("withheld_reason", nulls_last=True)
+for reason, n in counts.iter_rows():
+    print(f"{reason or 'predicted'}: {n} rows")
+first = rows.filter(pl.col("pred_y").is_not_null()).row(0, named=True)
+print(f"first prediction at t = {first['t']:g}: weight_sum {first['weight_sum']:.2f}, settled_frac {first['settled_frac']:.3f}")
+```
+
+```text
+below_min_settled_frac: 4 rows
+below_min_weight: 5 rows
+above_max_error_inflation: 21 rows
+predicted: 370 rows
+first prediction at t = 30: weight_sum 27.18, settled_frac 0.182
+```
 
 ## Linear models
 
@@ -40,7 +445,7 @@ Ten models predict a numeric target. Nine regress it on features, and
 | `window_size` | `ewridge`, `lasso` | [Forget rows past a window](how-to/forget-rows-past-a-window.md) |
 | `standardize` | `ewridge`, `huber` and `quantile`, off by default; `kalman`, `sgd` and `pa`, on by default. `lasso` always standardizes, and `ftrl` never does | [`ewridge`](#ewridge--exponentially-weighted-ridge-regression), [`kalman`](#kalman--random-walk-β-dynamic-linear-model) and [`ftrl`](#ftrl--online-logistic-regression) |
 | `coef_min`, `coef_max`, `coef_sum` | `sgd`, `pa` | [`sgd`](#sgd--stochastic-gradient-descent) |
-| `weight` | every model, though `rls`, `kalman`, `sgd`, `pa` and `ftrl` read it differently from a weighted mean | [Weights](../README.md#weights) |
+| `weight` | every model, though `rls`, `kalman`, `sgd`, `pa` and `ftrl` read it differently from a weighted mean | [Weights](how-to/weight-rows.md) |
 
 What `half_life` decays differs by model:
 
@@ -78,8 +483,8 @@ fit. Use [`sgd`](#sgd--stochastic-gradient-descent) or
 Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#ewridge). The
-parameters every spec takes are in [What a spec
-names](../README.md#what-a-spec-names).
+parameters every spec takes are in [What every spec
+takes](#what-every-spec-takes).
 
 #### The update
 
@@ -333,7 +738,7 @@ fit up, and [`huber`](#huber--robust-regression) with
 Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rls),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#rls). The parameters
-every spec takes are in [What a spec names](../README.md#what-a-spec-names).
+every spec takes are in [What every spec takes](#what-every-spec-takes).
 
 #### The update
 
@@ -341,7 +746,7 @@ every spec takes are in [What a spec names](../README.md#what-a-spec-names).
 from `A₀ = delta·I`, the classic RLS prior `P₀ = I/delta`.
 Because `A` is a sum, a row's weight is on the sum scale, and a heavier
 stream outweighs the starting prior sooner
-([Weights](../README.md#weights)). The model keeps the Cholesky factor of
+([Weights](how-to/weight-rows.md)). The model keeps the Cholesky factor of
 `A` and folds each row into it by Givens rotations (the square-root form):
 
 ```
@@ -435,7 +840,7 @@ fit of a 0/1 target.
 Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.lasso),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#lasso). The parameters
-every spec takes are in [What a spec names](../README.md#what-a-spec-names).
+every spec takes are in [What every spec takes](#what-every-spec-takes).
 
 #### The update
 
@@ -556,7 +961,7 @@ coefficients that hold still over a half-life, and
 Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kalman),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#kalman). The parameters
-every spec takes are in [What a spec names](../README.md#what-a-spec-names).
+every spec takes are in [What every spec takes](#what-every-spec-takes).
 Here `half_life` decays the noise estimate and the features'
 standardization, and `coef_half_life` sets how fast a coefficient may
 drift.
@@ -718,8 +1123,8 @@ Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#huber). It takes
 `ewridge`'s `ridge=` as a single number, and refuses a list. The
-parameters every spec takes are in [What a spec
-names](../README.md#what-a-spec-names).
+parameters every spec takes are in [What every spec
+takes](#what-every-spec-takes).
 
 #### The update
 
@@ -882,8 +1287,8 @@ Its parameters, their defaults and what each refuses are in its
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#quantile). It takes
 `ewridge`'s `ridge=` as a single number, and refuses a list. It takes no
 `feature_sets`, since its rows outside the band step the fit through one
-system per target. The parameters every spec takes are in [What a spec
-names](../README.md#what-a-spec-names).
+system per target. The parameters every spec takes are in [What every spec
+takes](#what-every-spec-takes).
 
 #### The update
 
@@ -1010,7 +1415,7 @@ steps with no learning rate to tune.
 Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.sgd),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#sgd). The parameters
-every spec takes are in [What a spec names](../README.md#what-a-spec-names).
+every spec takes are in [What every spec takes](#what-every-spec-takes).
 
 #### The update
 
@@ -1226,7 +1631,7 @@ fit on running sums.
 Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.pa),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#pa). The parameters
-every spec takes are in [What a spec names](../README.md#what-a-spec-names).
+every spec takes are in [What every spec takes](#what-every-spec-takes).
 
 #### The update
 
@@ -1343,7 +1748,7 @@ outweigh, and [`sgd`](#sgd--stochastic-gradient-descent) for other losses.
 Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#ftrl). The parameters
-every spec takes are in [What a spec names](../README.md#what-a-spec-names).
+every spec takes are in [What every spec takes](#what-every-spec-takes).
 
 #### The update
 
@@ -1447,7 +1852,7 @@ error?](DIAGNOSTICS.md#how-wide-is-its-error)), or let a
 Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.holt),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#holt). The parameters
-every spec takes are in [What a spec names](../README.md#what-a-spec-names),
+every spec takes are in [What every spec takes](#what-every-spec-takes),
 apart from `features`, which `holt` does not take.
 
 #### The update
@@ -1598,8 +2003,8 @@ covariance under microstructure noise.
 Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_cov),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#ew_cov). The
-parameters every spec takes are in [What a spec
-names](../README.md#what-a-spec-names).
+parameters every spec takes are in [What every spec
+takes](#what-every-spec-takes).
 
 #### The update
 
@@ -1737,8 +2142,8 @@ Each row writes only `weight_sum` ([OUTPUTS.md](OUTPUTS.md#marginal)), and
 `bank.marginal()` reads the pairs from the state as a table after the run.
 [Its
 docstring](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.marginal)
-defines each column. The parameters every spec takes are in [What a spec
-names](../README.md#what-a-spec-names).
+defines each column. The parameters every spec takes are in [What every spec
+takes](#what-every-spec-takes).
 
 #### The update
 
@@ -1967,7 +2372,7 @@ and one per pair of blocks.
 Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.deco),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#deco). The parameters
-every spec takes are in [What a spec names](../README.md#what-a-spec-names).
+every spec takes are in [What every spec takes](#what-every-spec-takes).
 
 #### The update
 
@@ -2082,8 +2487,8 @@ It requires `group`, naming the block column, and `group_close`, and
 refuses a `half_life` or `lam`, since a block's close ends its memory. Each
 row writes only `weight_sum` ([OUTPUTS.md](OUTPUTS.md#rcov)), and each
 block's estimate is that block's row of `bank.closed_groups()` when it
-closes. The parameters every spec takes are in [What a spec
-names](../README.md#what-a-spec-names).
+closes. The parameters every spec takes are in [What every spec
+takes](#what-every-spec-takes).
 
 #### The update
 
@@ -2214,8 +2619,8 @@ Each row writes only `weight_sum` ([OUTPUTS.md](OUTPUTS.md#audit)), and
 `bank.audit()` reads the counts from the state as a table after the run.
 [Its
 docstring](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.audit)
-defines each column. The parameters every spec takes are in [What a spec
-names](../README.md#what-a-spec-names).
+defines each column. The parameters every spec takes are in [What every spec
+takes](#what-every-spec-takes).
 
 #### The update
 
@@ -2329,8 +2734,8 @@ one before it.
 Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kmeans),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#kmeans). The
-parameters every spec takes are in [What a spec
-names](../README.md#what-a-spec-names).
+parameters every spec takes are in [What every spec
+takes](#what-every-spec-takes).
 
 #### The update
 
@@ -2440,7 +2845,7 @@ Its parameters, their defaults and what each refuses are in its
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#micro). [Choose
 `micro`'s `eps`](how-to/choose-micro-eps.md) says how to choose `eps`, and
 how a wrong value shows in the output. The parameters every spec takes are
-in [What a spec names](../README.md#what-a-spec-names).
+in [What every spec takes](#what-every-spec-takes).
 
 #### The update
 
@@ -2565,7 +2970,7 @@ Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_class),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#ew_class). It takes
 `label` in place of `targets`. The parameters every spec takes are in
-[What a spec names](../README.md#what-a-spec-names).
+[What every spec takes](#what-every-spec-takes).
 
 #### The update
 
@@ -2678,8 +3083,8 @@ for several specs' scores in one table.
 Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.seqtest),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#seqtest). The
-parameters every spec takes are in [What a spec
-names](../README.md#what-a-spec-names), apart from `weight`, `half_life`
+parameters every spec takes are in [What every spec
+takes](#what-every-spec-takes), apart from `weight`, `half_life`
 and `lam`, which it refuses. Each row counts as one trial, so to skip a
 row, null its target.
 
@@ -2774,8 +3179,8 @@ equicorrelation that moves.
 Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.corrchange),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#corrchange). The
-parameters every spec takes are in [What a spec
-names](../README.md#what-a-spec-names), apart from `half_life` and `lam`,
+parameters every spec takes are in [What every spec
+takes](#what-every-spec-takes), apart from `half_life` and `lam`,
 which it takes only under `scalar=True`.
 
 #### The update
@@ -2936,7 +3341,7 @@ break in its coefficients.
 Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.bocpd),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#bocpd). The parameters
-every spec takes are in [What a spec names](../README.md#what-a-spec-names),
+every spec takes are in [What every spec takes](#what-every-spec-takes),
 apart from `half_life` and `lam`, which it refuses: the run-length posterior
 does the forgetting, and `hazard`, the expected run length, sets how fast.
 
@@ -3048,7 +3453,7 @@ regime is a *hidden state*.
 Its parameters, their defaults and what each refuses are in its
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.hmm),
 and the fields it writes in [OUTPUTS.md](OUTPUTS.md#hmm). The parameters
-every spec takes are in [What a spec names](../README.md#what-a-spec-names).
+every spec takes are in [What every spec takes](#what-every-spec-takes).
 
 #### The update
 

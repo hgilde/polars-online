@@ -176,8 +176,10 @@ the rows the state has learned, so each row is learned once:
 **A bank whose specs all count rows, with no clock, has no position to
 compare, and `skip_learned` raises `ValueError` there.** If the input
 starts where the saved input did, drop the learned rows with
-`frame.slice(bank.rows_fed)`. Otherwise, cut the input to the rows after
-the last one the bank learned, in Polars, before you feed it.
+`frame.slice(bank.rows_fed)`. Otherwise, keep a column that numbers the
+rows, such as a row index written with the input, and drop the rows the
+bank learned with Polars' `filter` on it in the query before the bank. Or
+give the spec a clock, so that `skip_learned` can find them.
 
 1. **Load the state with `po.ModelBank.load`.**
 2. **Pass the input through `bank.skip_learned`.** It takes a frame or a

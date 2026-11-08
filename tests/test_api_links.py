@@ -1,6 +1,7 @@
 """Links into the API reference resolve to something that exists.
 
-The README and `llms.txt` point at https://hgilde.github.io/polars-online/,
+The README, `llms.txt`, the feature index and MODELS.md point at
+https://hgilde.github.io/polars-online/,
 which is Sphinx over the docstrings. A link there can rot two ways: the page
 can stop being built, or the anchor can name an object that has been renamed
 or removed. Both are silent -- the reader gets a page that scrolls to
@@ -20,7 +21,12 @@ TIER = "essential"
 
 ROOT = Path(__file__).resolve().parent.parent
 REFERENCE = ROOT / "docs" / "reference"
-SOURCES = [ROOT / "README.md", ROOT / "llms.txt"]
+SOURCES = [
+    ROOT / "README.md",
+    ROOT / "llms.txt",
+    ROOT / "docs" / "FEATURES.md",
+    ROOT / "docs" / "MODELS.md",
+]
 LINK = re.compile(r"https://hgilde\.github\.io/polars-online/([\w-]+)\.html(?:#([\w.\-]+))?")
 
 
@@ -65,8 +71,8 @@ def test_the_model_table_links_every_builder_to_its_page():
     """A new model is added to the table with a link, or this fails. The table
     is the index a reader picks a model from; a name with no link there is a
     model whose keywords cannot be found."""
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    table = readme.split("| model | learns by | what it is |", 1)[1].split("\n\n", 1)[0]
+    models = (ROOT / "docs" / "MODELS.md").read_text(encoding="utf-8")
+    table = models.split("| model | learns by | what it is |", 1)[1].split("\n\n", 1)[0]
     linked = set(
         re.findall(
             r"\[`([a-z_]+)`\]\(https://hgilde\.github\.io/[^)]*#polars_online\.spec\.([a-z_]+)\)",
@@ -84,7 +90,9 @@ def test_every_model_section_links_its_builder_and_its_source():
     """Each `### \\`model\\`` section of `docs/MODELS.md`, under its family's
     `##` heading, opens with the API line task 58 added."""
     models = (ROOT / "docs" / "MODELS.md").read_text(encoding="utf-8")
-    sections = re.split(r"\n### ", models)[1:]
+    # A model's heading names it in code; *What every spec takes* has `###`
+    # subsections of its own, which are no model's.
+    sections = [s for s in re.split(r"\n### ", models)[1:] if s.startswith("`")]
     assert len(sections) >= 21, "the model sections were not found"
     for section in sections:
         head, body = section.split("\n", 1)

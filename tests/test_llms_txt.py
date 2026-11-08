@@ -9,7 +9,9 @@ one name is spelled two ways.
 
 from __future__ import annotations
 
+import importlib.util
 import re
+import sys
 from pathlib import Path
 
 import polars_online as po
@@ -19,9 +21,18 @@ TIER = "essential"
 
 ROOT = Path(__file__).resolve().parent.parent
 LLMS = ROOT / "llms.txt"
+_spec = importlib.util.spec_from_file_location(
+    "doc_structure", ROOT / "scripts" / "doc_structure.py"
+)
+assert _spec and _spec.loader
+_structure = importlib.util.module_from_spec(_spec)
+# Registered first: a dataclass looks its module up while it is built.
+sys.modules["doc_structure"] = _structure
+_spec.loader.exec_module(_structure)
 CONF = ROOT / "docs" / "reference" / "conf.py"
 TEXT = LLMS.read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
+CHUNK_PAGE = (ROOT / "docs" / "how-to" / "set-the-chunk-size.md").read_text(encoding="utf-8")
 
 # The builders a caller writes, and the `type` strings a spec dict or TOML uses.
 BUILDERS = {n for n in dir(po.spec) if not n.startswith("_")} - {
@@ -63,8 +74,13 @@ def test_every_builder_is_its_spec_type():
 def test_every_repository_link_resolves():
     """Links into the repo are absolute (the file is served from two places),
     so nothing here can follow them -- but the path they end in is local."""
-    for path in re.findall(r"https://github\.com/hgilde/polars-online/blob/main/(\S+?)\)", TEXT):
+    for link in re.findall(r"https://github\.com/hgilde/polars-online/blob/main/(\S+?)\)", TEXT):
+        path, _, anchor = link.partition("#")
         assert (ROOT / path).exists(), f"llms.txt links to a missing file: {path}"
+        if anchor:
+            # An anchor is a heading of that file, as GitHub makes one.
+            text = (ROOT / path).read_text(encoding="utf-8")
+            assert anchor in _structure.read(text, path).anchors, f"llms.txt links to {link}"
 
 
 def test_every_readme_anchor_exists():
@@ -104,13 +120,15 @@ def test_it_names_every_field_whose_schedule_follows_the_chunking():
     rule = re.search(r"\*\*Chunk invariance is a guarantee\.\*\*(.*?)\n- \*\*", TEXT, re.S)
     assert rule, "llms.txt no longer states the chunk-invariance rule"
     runner = (ROOT / "docs" / "RUNNER.md").read_text(encoding="utf-8")
+    assert re.search(r"which rows carry[^.]*`support_coef`", CHUNK_PAGE), "the how-to lost the rule"
     chunk_size = runner.split("\n### Chunk size\n", 1)[1].split("\n## ", 1)[0]
     for text in (
         rule.group(1),
         (ROOT / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml").read_text(encoding="utf-8"),
         (ROOT / "examples" / "pathway_integration.py").read_text(encoding="utf-8"),
-        # And every sentence of the README's that says which rows carry them.
-        *re.findall(r"[^.]*which rows carry[^.]*\.", README),
+        # And every sentence of the README's, and of the how-to its *Chunk
+        # size* moved to (task 338), that says which rows carry them.
+        *re.findall(r"[^.]*which rows carry[^.]*\.", README + CHUNK_PAGE),
         chunk_size,
     ):
         assert "`coef`" in text and "`support_coef`" in text, text[:300]

@@ -980,6 +980,59 @@ one final full read, which found none.
 
 **Verdict:** pending.
 
+### I10, task 338 stage 8 (2026-11-08)
+
+**Prompt:** the stage brief, from the map: "The README as the landing
+page: what the library is, installing it, the first example (stage 1's *A
+first fit*, kept as the first tutorial), and the map to the four kinds of
+page." And the user's goal, 2026-11-06: "With the rewrite we may not need
+every guide to have a readme section. The goal is to have one place to
+discover the full list of features."
+
+**Scope:** the whole README. The map's README rows, copied as WRITING §2
+asks (the full table is in `docs/records/DOCS-REWRITE-MAP.md`, *README.md*);
+where each section went:
+
+| section | lands in |
+|---|---|
+| title, *Introduction*, *A first fit*, *The idea*, *Terminology*, *What you can rely on*, *Install*, *Example data* | stay: the landing page and the first tutorial; their links repointed to the pages below; *What you can rely on* gains a row for the stable API |
+| the contents table | a five-row contents table for the landing page |
+| *How a bank sees a stream*'s table, *What a spec names*, *Clock types and units*, the clock-policy table, *A hard window*'s caveats, *Warm-up*'s gates, defaults, fields and recipe | ← `docs/MODELS.md`, *What every spec takes* (Parameters, What the bank refuses, Examples) |
+| *Sessions, gaps and steps back*, with the restart table of *How a bank detects rows out of order* | ← `docs/how-to/handle-sessions-gaps-and-steps-back.md` |
+| *A local fit along any feature*, *Weights*, *Nulls, and three ways to hold a row back* | ← `how-to/fit-locally-along-a-feature.md`, `how-to/weight-rows.md`, `how-to/hold-a-row-back.md` |
+| *Running a bank*, *As a query*, *In a loop*, *Output as Arrow* | ← `how-to/run-a-bank-in-a-query.md`, `how-to/run-a-bank-in-a-python-loop.md`, `how-to/hand-the-output-to-arrow.md` (the query's path was in `tutorials/stream-from-parquet.md` already) |
+| *Save and load*, *Reading a state without this library* | ← `how-to/save-a-state.md`, `how-to/read-a-state-without-this-library.md` |
+| *What a bank holds*, *Output field names*, *Coefficients*, *Fitting many features from one pass*, *One row per finished group*, *Reading a correlation matrix* | ← `how-to/inspect-a-bank.md`, `how-to/find-an-output-field.md`, `how-to/read-the-coefficients.md`, `how-to/fit-weekly-grams-in-one-pass.md`, `how-to/close-groups.md`, `how-to/repair-and-score-a-correlation-matrix.md` |
+| *Models*' two tables | ← `docs/MODELS.md`, *The models at a glance*; the README keeps a table of the four families |
+| *Choosing a model*, *Detecting changes and regimes* | ← `how-to/choose-a-model.md` |
+| *Performance*, *Memory*, *Parallelism*'s lead | ← `explanation/where-the-time-and-memory-go.md`; *Throughput*, the thread and memory figures and *Window operators* ← `docs/PERFORMANCE.md`, *The current figures* |
+| *Chunk size*, *Against scikit-learn*, *Databases*, *Pathway* | ← `how-to/set-the-chunk-size.md`, `explanation/against-scikit-learn.md`, `how-to/feed-a-bank-from-a-database.md`, `how-to/run-a-bank-in-pathway.md` |
+| *Versioning and the Polars pin*, *Which interfaces carry a promise*, *Testing*, *Development* | ← `docs/VERSIONS.md`, `explanation/polars-interfaces.md`, `explanation/how-the-library-is-tested.md`, `CONTRIBUTING.md` (*Where the documents are*) |
+| the sections whose pages earlier stages wrote: *Making features and targets from windows*, *Series that tick at their own times*, *Running a bank as a job*, *Saving, loading and serving*'s opener, *Checking your data's quality*, *Checking that a model works*, *Calibrating a model*, *Training XGBoost and LightGBM* | removed; each page holds the text and a recipe of its own. The README's four showcase recipes for these (the trades windows, the three planted faults, the break on `df`, the four half-lives on `df`) are not kept: the pages show the same capability on data of their own |
+| *Scope and integrations*, *What this is not* | *What this is not*, a section of the landing page |
+| — | new: *Where to go next*, the map, linking `docs/FEATURES.md` first and then a row per reader task with its tutorial, how-tos, reference and explanation; `docs/FEATURES.md`, the feature index |
+
+**Ideas applied:** a landing page links, and does not teach beyond its
+first fit (WRITING §9); the one place to discover every feature is an index
+held complete by a test (`tests/test_feature_index.py`), which replaced the
+rule that every guide has a README section; each moved section was moved,
+not rewritten, into a page of its kind by a drafter, with its recipes, and
+accounted with `doc_review.py account`.
+
+**Counts** (`doc_review.py measure`): before, 3,584 lines, 14,369 prose
+words, 775 sentences, mean 18.5 words, 20 of 35 or more and 6 of 45 or
+more, 65 tables, 49 python blocks, 11 top-level sections; after, 485
+lines, 1,930 prose words, 104 sentences, mean 18.6, 4 of 35 or more and
+none of 45, 13 tables, 2 python blocks (the first fit and the example
+data), 5 top-level sections.
+
+**Reviews:** round 1 by five fresh readers (a cold reader from PyPI with
+three tasks, the feature index against the API, the rules and facts, and
+the moved pages in two halves), then scoped rounds 2 and 3, which circled,
+then a final full read in three parts, fixed without reopening.
+
+**Verdict:** pending; the user reviews the rewrite at its end.
+
 ## The ideas
 
 Every idea the reviews and the verdicts raised, grouped by kind. A status

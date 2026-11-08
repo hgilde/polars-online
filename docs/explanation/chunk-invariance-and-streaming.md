@@ -53,7 +53,7 @@ So smaller chunks report the coefficients on more rows, each the fit as it
 stood after that row. Under `coef_every` or
 `max_rows_between_coefs`, which place them on the clock or by a count of
 rows, they do not move with the chunking
-([Coefficients](../../README.md#coefficients)).
+([Read the coefficients](../how-to/read-the-coefficients.md#choose-which-rows-carry-coef)).
 
 This code runs the same spec over `df` as one chunk and as 400 chunks of
 one row, through `fit_predict_batches`, and compares the predictions and
@@ -103,17 +103,23 @@ holds has four parts:
 | the rows an embargo, a `label_clock` (each row's own time its target is known) or a formula target's window holds until they can be learned | the delay or the window, times the rows' rate | not the stream's length |
 | what Polars has read ahead of the bank | Polars' thread count | Polars' own settings ([Bound a run's memory](../how-to/bound-memory.md#cut-what-polars-reads-ahead)) |
 
-The README's [Memory](../../README.md#memory) measures a whole run's peak,
-says how the figures on this page were measured, and shows the state's
-size staying flat from 10,000 rows to 1,000,000.
+[Peak memory of each way of running a
+bank](../PERFORMANCE.md#peak-memory-of-each-way-of-running-a-bank)
+measures a whole run's peak and says how the figures on this page were
+measured. [Where the memory goes](where-the-time-and-memory-go.md#where-the-memory-goes)
+shows the state's size staying flat from 10,000 rows to 1,000,000.
 
 **Filter after the bank, not before it.** A `filter` before the bank makes
-Polars read several blocks of each parquet file ahead per thread: 3.1 GB
-at 12M rows, against 1.8 GB for the same filter after the bank. The two
+Polars read several blocks of each parquet file ahead per thread. A run
+over 12M rows peaked at 2.53 GB with the filter before the bank, against
+0.78 GB with the same filter after it ([Filter after the
+bank](../PERFORMANCE.md#filter-after-the-bank), measured on 2026-09-02). The two
 also mean different things: a filter after the bank changes only which
 rows come out, and one before it changes which rows the model learns
 from. To keep rows from being learned, give them weight 0 in place of a
-filter, as the README's [Weights](../../README.md#weights) shows. They are
+filter, as [Hold a row
+back](../how-to/hold-a-row-back.md#keep-a-model-from-learning-rows-in-a-query)
+shows. They are
 still predicted, and the clock still moves through them.
 
 **A column computed in the
