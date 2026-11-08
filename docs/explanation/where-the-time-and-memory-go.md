@@ -83,7 +83,7 @@ time to score from a state: 6.5 million rows a second
 Scoring from a state skips learning, so it runs faster than learning, and
 more so for a wider model: 2.2 times at 20 features in this recipe's run.
 On a frame in memory, [`ewridge`'s
-`predict`](../PERFORMANCE.md#a-query-against-the-eager-bank-and-serving-against-learning)
+`predict`](../PERFORMANCE.md#serving-against-learning)
 ran 1.85 times as fast as learning at 5 features and 2.82 times at 20.
 
 **A model's speed is set by the work it does on each row.** `ewridge`
@@ -230,7 +230,7 @@ here:
 | an eager `fit_predict` above its output | a spec of many groups keeps buffers of about its output again until its groups are done; a spec of one group or none holds its output and two sets of buffers more | a smaller frame, or the streaming path, whose peak is a chunk's |
 | memory that jumps with a filter | a filter before the bank makes Polars hold several blocks of each file per thread | a filter after the bank, or weight 0 on the rows to skip |
 | one core busy | one piece of work per spec and group per chunk; within one, the rows go one at a time | more groups or specs, `POLARS_ONLINE_MAX_THREADS`, `shards` for a wide `marginal`, and `gram_threads` for a wide `ewridge` or `ew_cov` |
-| a query slower than the eager bank at many groups | the query reads its input as the frames Polars hands it, and the same bank code then takes longer to group, run and assemble them: 236 ns a row against 140 at 10,000 groups ([the query against the eager bank](../PERFORMANCE.md#a-query-against-the-eager-bank-and-serving-against-learning)) | `ModelBank.fit_predict` on a frame that fits in memory; the query where it does not |
+| a query slower than the eager bank at many groups | the query reads its input as the frames Polars hands it, and the same bank code then takes longer to group, run and assemble them: 236 ns a row against 140 at 10,000 groups ([the query against the eager bank](../PERFORMANCE.md#a-query-against-the-eager-bank)) | `ModelBank.fit_predict` on a frame that fits in memory; the query where it does not |
 | a window's memory | its ring of snapshots, capped per ring | `snapshot_every`, `max_rows_between_snapshots`, `window_budget` |
 | a wide `marginal` | every pair of every target | `cross_lags`, `bins`, `feature_moments="shared"`, `shards` |
 | `bocpd` slowing as a stream runs | the run lengths it keeps | `max_run`, `prune_below` |

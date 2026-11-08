@@ -34,8 +34,9 @@ The steps follow a task from its start to its merge:
    (`scripts/slot.sh list` names them), and `git -C .claude/slots/<n>
    status --short` for its uncommitted files. Start the task elsewhere,
    or later, if the files it will touch are among them. `scripts/slot.sh
-   overlap` cannot answer this yet: it compares branches that have
-   commits, and the task has none.
+   overlap` cannot answer this: it lists only the files two taken
+   worktree slots share, or one shares with `main`, and the new task has
+   no worktree slot yet.
 2. **Take a worktree slot,** with `scripts/slot.sh take <branch> main`. It
    moves a free worktree slot onto a new branch cut from `main`, and
    prints its path.
@@ -103,8 +104,7 @@ too.
 
 ## Check what the worktree slots share
 
-**Check what the worktree slots share before merging or starting a
-task.** A file two branches both change costs the later one a merge of
+**Check what the worktree slots share before merging a branch.** A file two branches both change costs the later one a merge of
 `main`, often a conflict, and a second test gate. So does a file `main`
 changed since a branch's base. `scripts/slot.sh overlap` lists both cases
 for every taken worktree slot. It also checks each existing branch named

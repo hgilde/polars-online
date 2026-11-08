@@ -14,7 +14,7 @@ expected.
 | section | read it when | subsections |
 |---|---|---|
 | [How the numbers are made](#how-the-numbers-are-made) | you want how every figure was measured, and the commands that measure it again | |
-| [The current figures](#the-current-figures) | you want a figure the guides quote: each model's rows a second, the bank's work around a row, a query against the eager bank, the speed at each thread count, a run's peak memory, or what a window operator costs | [each model](#rows-a-second-for-each-model) · [the bank's work](#the-banks-work-around-a-row) · [the query and `predict`](#a-query-against-the-eager-bank-and-serving-against-learning) · [threads](#rows-a-second-at-each-thread-count) · [peak memory](#peak-memory-of-each-way-of-running-a-bank) · [window operators](#what-a-window-operator-costs) |
+| [The current figures](#the-current-figures) | you want a figure the guides quote: each model's rows a second, the bank's work around a row, a query against the eager bank, the speed at each thread count, a run's peak memory, or what a window operator costs | [each model](#rows-a-second-for-each-model) · [the bank's work](#the-banks-work-around-a-row) · [the query](#a-query-against-the-eager-bank) · [`predict`](#serving-against-learning) · [threads](#rows-a-second-at-each-thread-count) · [peak memory](#peak-memory-of-each-way-of-running-a-bank) · [window operators](#what-a-window-operator-costs) |
 | [How cost grows with size](#how-cost-grows-with-size) | you want how a row's work and a state grow with each size a surface has -- features, targets, groups, specs, a window, the rows already seen -- and the test that holds each | [how a cell is measured](#how-a-cell-is-measured) · [the table](#the-table) · [specs on one stream](#specs-on-one-stream) · [what the table holds](#what-the-table-holds) |
 
 ## How the numbers are made
@@ -22,7 +22,7 @@ expected.
 **Each figure here states the date it was measured on and how it was made,
 so read it as of its date.** Every release measures [Rows a second for each
 model](#rows-a-second-for-each-model) again. The other figures were
-measured once, and a change to the code they measure measures them again.
+measured once, on the date each gives.
 
 **A figure was measured on one machine unless it says otherwise:** an
 Apple M4 Pro with 10 performance and 4 efficiency cores, a release build
@@ -241,7 +241,7 @@ model](#rows-a-second-for-each-model). In ns a row:
 | `ewridge` | 500 | 94,226 | 111,804 | 1.2× |
 | `ew_cov`, 125,753 fields | 500 | 120,315 | 604,538 | 5.0× |
 
-### A query against the eager bank, and serving against learning
+### A query against the eager bank
 
 **A query runs slower than the eager bank on the same rows at many groups,
 because it reads its input as the frames Polars hands it.** On 1M rows of a
@@ -255,6 +255,8 @@ five-feature `ewridge` on all threads,
 | 10,000 | 236 | 140 |
 | 1,000 | 85 | 66 |
 | one group | 205 | 196 |
+
+### Serving against learning
 
 **`predict` skips learning, so it runs faster than `fit_predict`, and more
 so for a wider model.** On one frame of a million rows of one group,
@@ -339,8 +341,8 @@ peak RSS from `getrusage`, which counts the file's mapped pages too:
 **An operator whose input is null on most rows costs about what a dense
 one does.** Every row joins its operator's queue of rows, valued or not. A
 mean's read looks for the operator's oldest valued row from where its last
-search stopped, so each read passes only the null rows that arrived since
-the last, and each null row is passed once. On 300k rows with a window of 2,000 rows, one value in 5,000 takes
+search stopped. So each read passes only the null rows that arrived since
+the read before it, and each null row is passed once. On 300k rows with a window of 2,000 rows, one value in 5,000 takes
 184 ns a row backward and 195 ahead, the best of two runs at a load
 average of 3.3, measured on 2026-10-24.
 

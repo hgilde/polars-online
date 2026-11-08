@@ -59,7 +59,7 @@ package that names the real runtime module, which on 2026-08-31 was
 name by importing and then reading attributes, which is the only reason
 the lookup succeeds. And `PolarsAllocator` falls back to the system
 allocator without an error when the lookup fails, so a rename in Polars
-would silently cost the throughput above, up to 43%.
+would silently cost up to 43% of the throughput.
 `tests/test_scaffold.py` asserts the lookup's path for that reason.
 
 **Linking the user's Polars dynamically is not possible, because Rust has

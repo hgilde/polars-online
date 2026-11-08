@@ -13,7 +13,8 @@ what the state is, what the spec calls it, what the outputs are named and
 what the tests assert. What can be done is to make each omission fail. The
 steps run in the order the data flows, and each names the check that
 catches skipping it. Where a step says **no check**, nothing catches the
-omission: hold it yourself, in the model's own tests. Each step also says
+omission: hold it yourself, by a test of the model's own or, for a page
+of the docs, by reading it. Each step also says
 what the layer it touches holds, since you need that to write the step.
 
 **Put new code in the file each step names, which is often not the file
@@ -299,8 +300,8 @@ Pin the core arithmetic on the fixed 60-row stream:
 
 1. Write a `#[test] fn <kind>_golden()` that runs the model on the stream
    and calls `check("<kind>", &signature(&mut m, slot), GOLDEN_<NAME>)`, where
-   `<NAME>` is the case's name in upper snake case (`ewridge`'s is
-   `GOLDEN_EW_RIDGE`).
+   `<NAME>` follows the other `GOLDEN_*` constants in the file
+   (`ewridge`'s is `GOLDEN_EW_RIDGE`).
 2. Generate the constant:
 
    ```sh
@@ -849,10 +850,8 @@ these places:
 | `docs/TESTING.md` | the *Terms* table's `a model kind` row, "one of the 22 model types" | **no check** |
 | `docs/TESTING.md` | the `instructions` budget row, "the 22 models" | **no check** |
 | `docs/WRITING.md` | *Plan the map*, on the families | **no check** |
+| `docs/PERFORMANCE.md` | *The table*'s count, "76 over the 22 model kinds' rows", with the cells step 17 adds | **no check** |
 | `docs/how-to/choose-a-model.md` | the first sentence | **no check** |
-
-The grep also finds "the 22 model kinds" in `docs/PERFORMANCE.md`. Leave
-it: it counts the models of a dated measurement.
 
 **Add the model to `docs/how-to/choose-a-model.md`** too, where a reader
 picks a model by their task. **No check.**

@@ -99,10 +99,12 @@ keeps, not a forwarding one.
 
    The Python tables read a spec builder's keyword and a spec dict's key,
    `with_windows`' `like=` spec included, and the Rust tables a TOML key,
-   at any depth of a spec. A key whose old word maps to a different new
-   value, as `bocpd`'s `emission` became `covariance_type`, also needs a
-   case in `forward_model` (`_warnings.py`) and its Rust twin
-   `forward_deprecated_in_models` (`spec/names.rs`).
+   at any depth of a spec. A key whose old words each map to new words
+   and may set a second key, as `bocpd`'s `emission` became
+   `covariance_type` (its `"robust"` also sets `robust_beta`), is in none
+   of the tables. It is forwarded by a case of its own in `forward_model`
+   (`_warnings.py`) and its Rust twin `forward_deprecated_in_models`
+   (`spec/names.rs`).
 2. **For any other name, ship a forwarding of its own.** A keyword of
    another function, a word another function's parameter takes, a
    function, a command-line flag, an environment variable, an output field

@@ -44,7 +44,7 @@ The steps turn that test into a registered grid:
    nothing.
 5. **Commit the test, `oracles.toml` and `oracle_hashes.toml` together.**
 6. **After the push, apply CI's numbers,** as [Update the oracle
-   ledger](update-the-oracle-ledger.md#steps), steps 8 to 11, describes:
+   ledger](update-the-oracle-ledger.md#steps), steps 8 to 12, describes:
    read `oracles.yml`'s conclusion, download its `oracle-ledger-measured`
    artifact, run `uv run python scripts/oracles.py apply measured.json`, and
    commit `oracles.toml`. From then on, the ledger holds the grid's error.

@@ -677,8 +677,8 @@ already saturate the machine. So, on that machine:
 
 - **Two agents at most, three while the load is low.** A load under about
   20 leaves room for a third build, so a third starts only then, and none
-  starts above it. When the agents' work is mostly builds and tests rather
-  than reading and writing, run one at a time.
+  starts above it. One at a time is the default when the agents' work is
+  mostly builds and tests rather than reading and writing.
 - **Each agent exports `CARGO_BUILD_JOBS=6`.** It runs pytest at `-n 4` at
   most, and the test gate at `GATE_WORKERS=4`.
 - **A local `cargo mutants --in-diff` runs alone.** It takes the lock

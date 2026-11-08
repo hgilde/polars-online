@@ -57,9 +57,9 @@ The steps run from the checkout's root, in the order a task reaches them:
    `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
    --locked -- -D warnings`, `uv run ruff format --check .`, `uv run ruff
    check .`, `uv run mypy` and `uv run --group docs sphinx-build -W -q -E
-   docs/reference docs/_build/html`. Each passes with no finding.
-   `scripts/quick.sh` is itself a `uv run`, so `git status` also shows
-   whether steps 1 and 2 rewrote `uv.lock`.
+   docs/reference docs/_build/html`. `scripts/quick.sh` is itself a `uv
+   run`, so check with `git status` that steps 1 and 2 left `uv.lock`
+   unchanged. Each check passes with no finding.
 4. **Commit the task, and leave `main` unmerged.** The branch joins the
    next wave ([Merge a wave of branches](merge-a-wave-of-branches.md)).
 5. **Before every push, run `scripts/gate.sh --extended` on the exact

@@ -63,10 +63,12 @@ The steps take the change from the failed guard to a ledger CI agrees with:
    run download <run-id> -n oracle-ledger-measured`. The artifact holds
    `measured.json`.
 10. **Apply them,** with `uv run python scripts/oracles.py apply
-    measured.json`. `apply` never writes a higher number. A case past the
-    ledger on CI, as one written in step 4 from a Mac's value can be, takes
-    CI's value from `measured.json` by hand, as in steps 4 and 5.
-11. **Commit `oracles.toml` and push it.**
+    measured.json`. `apply` never writes a higher number.
+11. **If CI finds a case past the ledger, write CI's value by hand.** A
+    number written in step 4 from a Mac's run can be. Copy the case's
+    value from `measured.json` into its table, with a `[[raised]]` entry,
+    as in steps 4 and 5.
+12. **Commit `oracles.toml` and push it.**
 
 To check the result, run `uv run python scripts/oracles.py raises`. It
 fails on any number in the file's history that moved away from its ideal

@@ -379,8 +379,8 @@ be any version in the range:
 ### The floor and the ceiling
 
 **The floor is 1.37.0, because older py-polars reads a query faster than
-the bank takes its chunks, and holds what it has read.** Below it, a bank
-reading a file held the whole file in memory: 1.6 GB for a 1 GB file.
+the bank takes its chunks, and holds what it has read.** Below it, a
+query reading a file held the whole file in memory: 1.6 GB for a 1 GB file.
 `ModelBank` alone works from 1.28.1, the
 release that added the `PySeries._export` it calls.
 

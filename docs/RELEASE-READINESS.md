@@ -41,7 +41,7 @@ against third-party oracles, which `oracles.yml` runs on every push.
 
 | job in `release.yml` | what it checks or makes | holds back the upload |
 |---|---|---|
-| `version` | the version's checks, as [Cut a release](contributing/cut-a-release.md) step 10 lists them, and, publishing, that the run is on `main` | yes, and the wheels and the sdist are built only after it |
+| `version` | the version's checks, as [Cut a release](contributing/cut-a-release.md) step 10 lists them: on every run, that the version agrees across its places, has its CHANGELOG section and is the example pin's minor; publishing, also that nothing is under `[Unreleased]`, no introduced version is newer, the tag is new and the run is on `main` | yes, and the wheels and the sdist are built only after it |
 | `ci` | the whole of `ci.yml`, called: lint, and the Rust and Python suites on Linux, macOS and Windows | yes |
 | `budgets` | the whole of `budgets.yml`, called: every instruction count against its budget, and each case's drift since the last release against the sign-off | yes |
 | `baseline` | the run's instruction counts and each OS's floor-Python memory, merged into `budgets-baseline.json` for the release's assets; refused if a budgeted quantity is missing or two legs disagree ([The budgets baseline](#the-budgets-baseline)) | yes |

@@ -32,7 +32,7 @@ A release needs these before step 1:
 
 ## Steps
 
-Nothing leaves this machine before step 13.
+Nothing leaves your checkout before step 13.
 
 1. **Compare every output with the last release's,** with
    `uv run python scripts/compare_release.py`. It exits 0 when every
@@ -45,23 +45,24 @@ Nothing leaves this machine before step 13.
    checkout's `scripts/benchmark.py` and `scripts/wide_benchmark.py` under
    three builds in turn, with the machine's load logged: this build, the
    last release from PyPI, and the last release built here. A wheel built
-   on another machine reads a few percent apart on its own. Give each of
-   the last release's two an environment of its own, so this checkout's
+   on another machine reads a few percent apart on its own. Each of the
+   last release's two gets an environment of its own, so this checkout's
    build stays installed:
-   - From PyPI: `uv venv <scratch> --python 3.12`, then
-     `uv pip install --python <scratch> "polars-online[numpy]==<last>"`.
-     The scripts import NumPy, which the `numpy` extra brings.
-   - Built here: `git worktree add <tag-dir> v<last>`, then, inside it,
-     `uv sync` and
-     `uv run maturin develop --release -m crates/online-py/Cargo.toml`.
-     Its environment is `<tag-dir>/.venv`.
+   1. Install the release from PyPI: `uv venv <scratch> --python 3.12`,
+      then `uv pip install --python <scratch>
+      "polars-online[numpy]==<last>"`. The scripts import NumPy, which the
+      `numpy` extra brings.
+   2. Build the release here: `git worktree add <tag-dir> v<last>`, then,
+      inside it, `uv sync` and `uv run maturin develop --release -m
+      crates/online-py/Cargo.toml`. Its environment is `<tag-dir>/.venv`.
+   3. Run this build with `uv run python scripts/benchmark.py`, and each
+      of the others with its own interpreter, as `<env>/bin/python
+      scripts/benchmark.py` (`<env>\Scripts\python` on Windows). Run
+      `wide_benchmark.py` the same way.
+   4. Remove the two, with `git worktree remove <tag-dir>` and by deleting
+      `<scratch>`.
 
-   Run this build with `uv run python scripts/benchmark.py`, and each of
-   the others with its own interpreter, as
-   `<env>/bin/python scripts/benchmark.py` (`<env>\Scripts\python` on
-   Windows). Run `wide_benchmark.py` the same way. Remove the two with
-   `git worktree remove <tag-dir>` and by deleting `<scratch>`. The
-   wide benchmark reaches the solves and products that
+   The wide benchmark reaches the solves and products that
    `benchmark.py`'s 50 features never do, where a change can slow a wide
    fit and move no `benchmark.py` row. Fix a slowdown past the runs'
    scatter, or declare it in the CHANGELOG.
@@ -117,15 +118,17 @@ Nothing leaves this machine before step 13.
       `PARAMETER_INTRODUCED` or `INTRODUCED` names a newer version.
 11. **Run the suite on the floor of the Polars range, in a scratch copy of
     the checkout,** since `uv sync --upgrade-package` rewrites `uv.lock`.
-    Make the copy with `git worktree add <dir> HEAD`, which holds the last
-    commit without the edits of steps 4 to 10, and set `UV_PYTHON=3.12` in
-    it, the Python the release's leg runs. Read the
+    Make the copy with `git worktree add <dir> HEAD`. It holds the last
+    commit, without the uncommitted edits of steps 1 to 10. In the shell
+    that runs there, set `UV_PYTHON=3.12`, the Python the release's leg
+    runs. Read the
     floor with `python3 scripts/polars_floor.py`, then run
     `uv sync --upgrade-package "polars==<floor>" --upgrade-package "polars-runtime-32==<floor>"`,
     `uv run maturin develop --release -m crates/online-py/Cargo.toml` and
     `uv run pytest -q -m "not soak and not pins and not oracle_grid"`, as
     the release's `floor-polars` job does. It passes, or shows first what
-    the release would fail on.
+    the release would fail on. Remove the copy with `git worktree remove
+    <dir>`.
 12. **Run the full suite,** with `bash scripts/gate.sh --extended`,
     unpiped, until its last line says `gate: PASS` with the extended tier.
 13. **Commit on `main` itself and push,** not on a branch. Wait for CI on
@@ -181,11 +184,12 @@ the same reason the job's is refused.
    the tag.
 4. **Create the GitHub release** with
    `gh release create v<version> <files> --verify-tag --title v<version> --notes-file <notes>`.
-   The files are the run's wheels and sdist, each command-line binary
-   renamed `<name>-<target>`, keeping `.exe`, as the `release` job names
-   it, and `artifacts/budgets-baseline/budgets-baseline.json`. The notes
-   are `notes.md`, a blank line, and the run's
-   `artifacts/wheel-sizes/sizes.md`.
+   The files are the run's wheels and sdist, and
+   `artifacts/budgets-baseline/budgets-baseline.json`. They are also each
+   command-line binary, renamed `<name>-<target>` and keeping `.exe`, as
+   the `release` job names it. The `<target>` is the suffix of the
+   binary's directory, `artifacts/cli-<target>`. The notes are `notes.md`, a blank line, and the
+   run's `artifacts/wheel-sizes/sizes.md`.
 
 **A failed `verify` leg is re-run while PyPI's index lags.** A failure
 that is not the index is a release to fix with the next version, since
