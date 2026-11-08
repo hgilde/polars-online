@@ -53,7 +53,7 @@
 //! worth of evidence, which vanishes as the half-life grows.
 //!
 //! **Following a break** (docs/PLAN.md task 278, D-F). All three sums
-//! decay, so the step's divisor forgets on the half-life; what bounds the
+//! decay, so the step's divisor forgets on the half-life; what sets the
 //! pace is AdaGrad's normalised step. In steady state `n ≈ G²/(1 − lam)`
 //! and `d ≈ G/(2·alpha·sqrt(1 − lam))` for a coordinate's RMS gradient `G`,
 //! so once the sums hold the break's gradients a step `g/d` closes a
@@ -61,8 +61,8 @@
 //! error, and a break that moves it by `D` takes about
 //! `D/(2·alpha·sqrt(1 − lam))` rows. That is an estimate, not a bound: just
 //! after the break, before the sums grow, one step can reach about `alpha`
-//! (task 338 stage 6a measured 0.020 a row over the first 100 rows against
-//! 0.0118, and 0.37-1.54 times the estimate to close 90%). Measured 0.011 a
+//! (task 338 stage 6a measured 0.020 a row over the first 100 rows after a
+//! break of 20 at `alpha = 0.1`, `half_life = 200`, against 0.0118, and 0.37-1.54 times the estimate to close 90%). Measured 0.011 a
 //! row against 0.012 from 4 to 12 half-lives after a break at
 //! `alpha = 0.1`, `half_life = 200` (tests/test_convergence.py,
 //! `test_ftrl_follows_a_break_at_the_pace_of_its_steps`). A larger `alpha`

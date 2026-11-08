@@ -222,8 +222,8 @@ over it has its value.** A window that looks back, under the default
 `closed="right"`, has its value at the next row with a later clock value,
 and a window that looks ahead once its span has passed. So the output
 trails the input by one clock step for a window that looks back, and by
-the longest window for one that looks ahead. A group that falls silent holds back the rows after it for at most
-`gap_cap` of the stream's time. Only a clock column has a `gap_cap`, so a
+the longest look-ahead window for one that looks ahead. A group that falls
+silent holds back the rows after it for at most `gap_cap` of the stream's time. Only a clock column has a `gap_cap`, so a
 window that looks ahead under `group` needs `clock`, and `with_windows`
 raises `ValueError` without it. Each group's clock would count only its own
 rows, and a silent group's windows would hold back every later row until

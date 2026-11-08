@@ -1122,8 +1122,9 @@ REBREAK: dict[str, dict[str, tuple[float, float]]] = {
     # 278, D-F: all three sums already decay; AdaGrad's normalised step
     # closes a settled coefficient on a break at about 2 alpha sqrt(1 - lam)
     # a row, 0.0118 here, once the sums hold the break's gradients; just
-    # after the break a step can reach about alpha). A change of regime moves the intercept by 46, so it is
-    # still 19.9 off at 12 half-lives (seed 44); the pace itself is held in
+    # after the break a step can reach about alpha). A change of regime
+    # moves the intercept by 46, so it is still 19.9 off at 12 half-lives
+    # (seed 44); the pace itself is held in
     # test_ftrl_follows_a_break_at_the_pace_of_its_steps. A logistic fit's
     # gap after a slope break or a change of regime, 1.07 and 1.36 at 12, is
     # the fixed prior's steady-state ridge, (1 - lam)(beta/alpha + l2), on a
@@ -1208,7 +1209,7 @@ def test_reconvergence_after_a_break(key, kind):
 
 @pytest.mark.oracle_grid(reason="a grid of 50 seeds at three settings of ftrl")
 def test_ftrl_follows_a_break_at_the_pace_of_its_steps():
-    """Under a half-life ``ftrl``'s sums all decay, and what bounds how fast
+    """Under a half-life ``ftrl``'s sums all decay, and what sets how fast
     it follows a break is AdaGrad's normalised step: once its sums hold the
     break's gradients a coefficient closes at about ``2 alpha sqrt(1 - lam)``
     a row however large its error (an estimate, not a bound: just after the
