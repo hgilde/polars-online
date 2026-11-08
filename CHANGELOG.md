@@ -511,6 +511,30 @@ returns.
 
 ### Tests and documents
 
+- Fifty-two how-to pages under `docs/how-to/`, each one task with its
+  prerequisites, numbered steps, a recipe and a check. They cover running a
+  bank (serve from a saved state, run from the command line, fit one model
+  per group, learn targets known late, fit on factor residuals, bound
+  memory, use more cores, forget rows past a window, reproduce an earlier
+  version's fit), preparing a stream (window features, targets that look
+  ahead, scaling by a spread, robust weights, data quality), each question
+  of the diagnostics guide (the scale, breaks, standard errors, what a model
+  misses, heavy tails, influential rows, feature health, choosing among a
+  grid, comparing two models, evaluating an output frame, readiness,
+  intervals), and choosing each model's settings. The task sections of the
+  README, RUNNER.md, WINDOWS.md, DATA-QUALITY.md, DIAGNOSTICS.md and
+  MODELS.md moved there; CALIBRATION.md and GBDT.md are now how-tos, and
+  `po.gbdt`'s reasoning is an explanation page. Every old anchor a message
+  links still lands.
+- Facts corrected on the way: `ftrl`'s pace after a break is an estimate,
+  not a bound (one step can move a coefficient by about `alpha`); the
+  `refit_budget` that gives back 1.4.0's held groups is
+  `256·(features + 26)/(features + 20)`; `with_windows`' output trails a
+  window that looks back by one clock step; the calibration fields start
+  near 4.3 half-lives; LightGBM's in-memory Arrow route needs 4.7.0.
+  `po.spec.bocpd`'s `robust_beta` entry now says to make the z-score with
+  `lf.online.with_windows`, since `with_columns` cannot run the window
+  operators.
 - Docstring facts corrected: `sgd`'s logistic link is the logit;
   `deco`'s `"ew"` update is the mean form the code runs; `marginal`'s Huber
   figures give the refit's and the one pass's; `corrchange`'s
