@@ -275,6 +275,18 @@ returns.
 
 ### Fixed
 
+- A `threads` above 1024, or above the machine's core count where that is
+  larger, is now a `ValueError`, raised before any thread starts: in
+  `ModelBank`, `ModelBank.load`, `fit_predict` and `predict` (eager and
+  lazy), `thread_pool_size`, `po.gram`, `po.gbdt`, the command line's
+  `threads` and `--threads`, and `POLARS_ONLINE_MAX_THREADS`. A very large
+  count used to start building a pool of up to 65,535 threads and overload
+  the machine.
+- `po.spec.marginal` refuses `bin_rule` or `bin_warm_rows` given without
+  `bins`. They were accepted and had no effect.
+- `po.stream.with_windows` refuses a text clock column as
+  `po.WrongTypeError`, as every other path does. A String clock of digits
+  used to run, read through a cast to numbers.
 - `po.corr.nearest` repairs a Gram from `ModelBank.gram()`, or a row of
   `ModelBank.closed_groups()`, over its columns without the intercept, the
   way `po.gram.vif` reads it. It used to refuse every Gram with an
@@ -454,6 +466,28 @@ returns.
 
 ### Tests and documents
 
+- Every model builder's docstring, and those of `ModelBank` and its
+  methods, the `lf.online`/`df.online` namespaces, the warning and error
+  classes, `po.target`, `po.stream`, `po.ops`, `po.sim`, `po.eval`,
+  `po.gbdt`, `po.gram` and `po.corr`, follow one order: summary, when to use
+  it, Parameters, Returns, Raises, an example with its output, See also,
+  Notes. Raises sections list refusals they used to leave out, and stale
+  statements are corrected against the code (among them `lasso`'s field
+  suffix `__p<penalty>`, `marginal`'s moments equal to
+  `ew_cov(bias=True)`'s, `micro`'s `eps`, and which specs count
+  `refit_given_up`). `kmeans` and `micro` moved to `_spec_cluster.py`,
+  `ew_class` to `_spec_class.py` and the field helpers to `_spec_fields.py`;
+  every public name is unchanged.
+- The API reference gives every function and class a page of its own,
+  grouped by family on its module's page. Links to the old addresses (such
+  as `.../spec.html#polars_online.spec.ewridge`) still land.
+- The scaling tests judge a block's time by the process's CPU time where
+  the platform reads it, and by the wall clock on Windows. On a loaded
+  machine the wall clock stretches a long block more than a short one, so
+  the ratio of two sizes' times grew with the load: at a load of about 50 on
+  14 cores every run failed cells whose growth was right. Judged by CPU
+  time, ten runs at loads of 35-61 passed, and a cell made to do O(n) work
+  per row of history still fails idle and under load.
 - Tests: the flat window ring's layout (blocks never grown, about a
   sixteenth spare, the oldest snapshot decoded into its own vectors), its
   equality and debug form, and the window shadow's accessors are now held by
