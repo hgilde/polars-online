@@ -33,8 +33,8 @@ Polars does not promise. And it refuses a
 in at once, where a group's [clock](../GLOSSARY.md#time) [steps
 back](../GLOSSARY.md#time) within a [session](../GLOSSARY.md#time), unless
 `restart_after_step_back` is set below the step, which makes the model
-[reset](../GLOSSARY.md#time) there instead. [Row order
-and the two guarantees](../../README.md#row-order-and-the-two-guarantees)
+[reset](../GLOSSARY.md#time) there instead. [Why you set the row
+order](../explanation/chunk-invariance-and-streaming.md#why-you-set-the-row-order)
 explains why the order matters.
 
 Put the rows in clock order before the bank, in the query where there is
