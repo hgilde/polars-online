@@ -105,10 +105,10 @@ class WrongTypeError(TypeError, ValueError):
 
     The value may be a float where a whole number is needed, one spec where
     a list of them is, a text column where a number is, or a ``UInt128``
-    column, which polars-online cannot read. It is a ``TypeError``, the class for a value of the wrong type, and a
-    ``ValueError`` too, the class most of these refusals raised before. The
-    ``ValueError`` parent is dropped at the next major version, so catch
-    ``TypeError``.
+    column, which polars-online cannot read. It is a ``TypeError``, the
+    class for a value of the wrong type, and a ``ValueError`` too, the
+    class most of these refusals raised before. The ``ValueError`` parent
+    is dropped at the next major version, so catch ``TypeError``.
 
     .. rubric:: Examples
 
