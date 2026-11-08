@@ -43,6 +43,10 @@ toml.workspace = true
 # `scripts/budgets.py runner-version` reads from Cargo.lock.
 [target.'cfg(unix)'.dev-dependencies]
 gungraun = "=0.20.0"
+# `tests/scaling.rs` reads the process's CPU time beside the wall clock
+# (`clock_gettime(CLOCK_PROCESS_CPUTIME_ID)`); already linked, through
+# polars. Elsewhere the scaling tests judge the wall clock alone.
+libc = "0.2"
 
 [[bench]]
 name = "instructions"

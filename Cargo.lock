@@ -2066,6 +2066,7 @@ version = "1.4.0"
 dependencies = [
  "faer",
  "gungraun",
+ "libc",
  "online-polars",
  "polars",
  "rayon",

@@ -569,7 +569,15 @@ harness allocates on a new test's thread before the test's first line can
 mark it as the harness's. A growth the check is for adds one a row, at
 least 200 a block. Time is held
 within a factor of `step^0.5`, 2.8 at a step of 8, the least of three blocks
-taken in turn at the two sizes. On CI, Callgrind counts the instructions of
+taken in turn at the two sizes. It is the process's CPU time where the
+platform reads it, and the wall clock's on Windows. On a loaded machine a
+thread waits its turn for a core. That stretches a long block and may
+leave a short one whole, so the wall clock's ratio of two sizes grows with
+the load. At a load of about 50 on 14 cores, every run judged by the wall
+clock failed cells of the right growth, and measuring them again did not
+pass them. Judged by CPU time, no cell failed in thirteen runs at loads
+of 25-99; the highest read 0.89 of its bound. On CI,
+Callgrind counts the instructions of
 the cells in `[scaling.cells]` of `budgets.toml` at both sizes, and
 `scripts/budgets.py check` holds their ratio within one run to 10% past the
 declared growth. It counts under a stopped wall clock, so two runs of one
