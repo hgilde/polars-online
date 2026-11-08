@@ -277,9 +277,9 @@ def embargo(
     - The spec's ``embargo`` and ``label_clock`` (:mod:`polars_online.spec`),
       which delay the learning inside the bank.
     -
-      `Labels that arrive late
-      <https://github.com/hgilde/polars-online#labels-that-arrive-late>`_, the
-      README section.
+      `Learn targets known late
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/learn-targets-known-late.md>`_,
+      the how-to: each of the three ways, with a check that it worked.
 
     .. rubric:: Notes
 
@@ -1147,13 +1147,13 @@ def with_windows(
     - ``lf.online.with_windows`` and ``df.online.with_windows``, the same call
       on a frame's ``online`` namespace.
     -
-      `Windows as columns
-      <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#windows-as-columns>`_,
-      `Windows as a model's inputs and target
-      <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#windows-as-a-models-inputs-and-target>`_
+      `Make features that look back over the stream
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/make-window-features.md>`_,
+      `Make a target that looks ahead
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/make-a-target-that-looks-ahead.md>`_
       and `Saving and resuming a window run
       <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#saving-and-resuming-a-window-run>`_,
-      the guide.
+      the guides.
 
     .. rubric:: Notes
 

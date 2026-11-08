@@ -25,24 +25,21 @@ on a terminal, so the outputs shown leave it out.
 
 | section | what it covers |
 |---|---|
-| [Running it](#running-it) | [a first run](#a-first-run) · [saving, resuming and scoring](#saving-resuming-and-scoring) · [a run whose product is its state](#a-run-whose-product-is-its-state) · [closed groups to a sidecar file](#closed-groups-to-a-sidecar-file) · [exit status](#exit-status) |
+| [Running it](#running-it) | [a first run](#a-first-run) · [saving, resuming and scoring](#saving-resuming-and-scoring) · [closed groups to a sidecar file](#closed-groups-to-a-sidecar-file) · [exit status](#exit-status) |
 | [The configuration file](#the-configuration-file) | [flags and the TOML keys they override](#flags-and-the-toml-keys-they-override) · [input and output files](#input-and-output-files) · [specs in TOML](#specs-in-toml) · [clocks that are times](#clocks-that-are-times) |
 | [Memory, threads and chunk size](#memory-threads-and-chunk-size) | [memory](#memory) · [the pipeline and its threads](#the-pipeline-and-its-threads) · [chunk size](#chunk-size) |
 | [From Rust, and the Polars it needs](#from-rust-and-the-polars-it-needs) | [the same pipeline from Rust](#the-same-pipeline-from-rust) · [versioning](#versioning) |
 
 ## Running it
 
-Every run reads a configuration file, and flags on the command line
-override most of what it says
-([Flags and the TOML keys they override](#flags-and-the-toml-keys-they-override)).
+[Run a bank from the command line](how-to/run-a-bank-from-the-command-line.md) shows how to
+check a configuration and run it over a file, save the state for the next
+run, or keep only the state.
 
 ### A first run
 
-The runner is a bank packaged as one binary and one TOML file
-([examples/bank.toml](../examples/bank.toml) is a fuller one). The
-binaries are attached to each GitHub release. The configuration names the
-input, the output and the specs. Every example on this page runs against
-this one, saved as `job.toml`:
+Every example on this page runs against this configuration, saved as
+`job.toml` ([examples/bank.toml](../examples/bank.toml) is a fuller one):
 
 ```toml
 input = "ticks.parquet"      # read a chunk at a time; the extension names the format
@@ -60,79 +57,12 @@ min_weight = 5.0             # the floor, in weight_sum units, below which no pr
 type = "ewridge"
 ```
 
-**A target computed from its row's columns, such as a return against the
-mid, must be a column of the input file:** make it with Polars'
-`with_columns` before writing the file the run reads. A formula target in
-the configuration must look ahead, as in Python. The table form
-`{ column = "p", relative_to = "mid" }` is refused by name.
-
-**`--dry-run` checks the configuration and prints the output's columns
-without feeding the bank a row.** It reads the input's schema as the run's
-scan would, from a parquet footer or a CSV's first rows. It opens the bank
-as the run would, loading `--load-state`'s state, and runs it on no rows of
-that schema. So it refuses what the run would refuse at its first step. That
-is a state that is not there or was saved from other specs, a column a spec
-reads that the input or `keep_columns` lacks, and a window target's
-embargo short of its window. It names each spec's output fields as
-`<spec>.<field>`:
-
-```sh
-polars-online --config job.toml --dry-run
-```
-
-```text
-config OK: 1 spec(s)
-  ridge (ewridge):
-    ridge.pred_y
-    ridge.resid_y
-    ridge.weight_sum
-    ridge.settled_frac
-    ridge.withheld_reason
-    ridge.coef
-    ridge.support_coef
-input:  ticks.parquet (parquet)
-output: fitted.parquet (parquet)
-chunk_size: 100000
-```
-
-**A plain run fits the specs over the input and writes the output.** What
-depends on the rows themselves, such as a clock that steps back, only the
-run can find. On a terminal, a progress line above the summary counts the
-rows as each chunk is read, rewritten in place. It is drawn only when
-standard error is a terminal, so a log or a pipe never holds it, and
-`--quiet` turns it off:
-
-```sh
-polars-online --config job.toml
-```
-
-```text
-wrote 400 rows (1 chunk) to fitted.parquet
-```
-
 ### Saving, resuming and scoring
 
-**`--save-state` saves the bank when the run ends, and `--load-state` starts a
-run from a saved one.** One file can serve as both, so a run resumes from
-the state a previous run left and saves over it. Here `run.state` holds
-what the spec learned from `ticks.parquet`, and the run learns on through
-`today.parquet`, the 400 rows that follow:
-
-```sh
-polars-online --config job.toml --input today.parquet --load-state run.state --save-state run.state
-```
-
-```text
-wrote 400 rows (1 chunk) to fitted.parquet
-saved state to run.state
-```
-
-The state is saved last, after the output is committed, so a run that
-fails leaves the previous output in place and the state unwritten. The
-file is the one a query's `load_state` and `save_state` read and write on
-`lf.online.fit_predict`, and the one `ModelBank.save` writes. The bytes are
-the same whichever wrote them
-([Saving, loading and serving](../README.md#saving-loading-and-serving)).
+[Save the state for the next run](how-to/run-a-bank-from-the-command-line.md#save-the-state-for-the-next-run)
+shows how to save the bank when a run ends with `--save-state`, and
+[Resume from the command line](how-to/resume-from-a-saved-state.md#resume-from-the-command-line)
+how to start the next run from it with `--load-state`.
 
 **Input that overlaps the state is refused unless `--skip-learned` drops
 the overlap.** A rerun steps the clock back, and the run stops at the first
@@ -162,40 +92,12 @@ The second run keeps no row: it writes an output with no rows, and it
 saves the state it loaded, byte for byte. Without `--skip-learned` it would stop
 at its first row, whose clock is 399 behind the state's last.
 
-**`--predict` scores against the resumed state and learns nothing:**
+[Serve from the command line](how-to/serve-from-a-saved-state.md#serve-from-the-command-line)
+shows how to predict rows from a loaded state with `--predict`, learning
+nothing from them.
 
-```sh
-polars-online --config job.toml --load-state run.state --predict --input today.parquet
-```
-
-```text
-wrote 400 rows (1 chunk) to fitted.parquet
-```
-
-It drops the configuration's `save_state` and `closed_groups`, so one TOML
-file serves both the learning run and the scoring run. A `--save-state` or
-a `--closed-groups` given with it is refused, since the run has nothing
-new to save.
-
-### A run whose product is its state
-
-**`--no-output` writes no per-row output.** A run whose product is its state, such as a pass that leaves the
-running sums of a fit, has no use for it:
-
-```sh
-polars-online --config job.toml --no-output --save-state gram.state
-```
-
-```text
-processed 400 rows (1 chunk), no output
-saved state to gram.state
-```
-
-A run needs somewhere to put its work: an output file, a `save_state`, or
-a `closed_groups` file. Asked for none of the three, it is refused before
-it reads a row. A run with no output keeps no prediction, so it is the
-command line's `ModelBank.fit`, and a window target there takes any
-embargo, as `fit` does.
+[Keep only the state](how-to/run-a-bank-from-the-command-line.md#keep-only-the-state)
+shows how to run with `--no-output` when a run's product is its state.
 
 ### Closed groups to a sidecar file
 
@@ -378,7 +280,7 @@ resumes under the other.
 **The same file builds the same bank in Python.** `tomllib` reads each
 `[[specs]]` table as the dict a builder returns, and `po.ModelBank` takes
 the list as it comes. Here the bank is built from `job.toml`, in the
-directory where [A first run](#a-first-run) wrote `fitted.parquet`:
+directory where [a plain run](how-to/run-a-bank-from-the-command-line.md#run-a-bank-over-a-file) wrote `fitted.parquet`:
 
 ```python
 import tomllib
@@ -407,8 +309,8 @@ the same predictions, bit for bit: True
 
 A target that is a window expression looking ahead is a table with its
 name and its formula. The formula takes the form a spec and a saved state
-carry ([Windows as a model's inputs and
-target](WINDOWS.md#windows-as-a-models-inputs-and-target)):
+carry ([Make a target that looks
+ahead](how-to/make-a-target-that-looks-ahead.md)):
 
 ```toml
 [[specs]]
@@ -516,8 +418,8 @@ The bank's own work runs on the bank's thread pool: `--threads N`, or a
 threads, and without either it runs on the default pool, sized by
 `POLARS_ONLINE_MAX_THREADS` (one thread per core when that is unset). The
 count is not saved with the state, so a resumed run takes the one it is
-given, and the output is the same at any count. The README's
-[Parallelism](../README.md#parallelism) has the full account, including
+given, and the output is the same at any count. [Set the bank's thread
+count](how-to/use-more-cores.md#set-the-banks-thread-count) has the full account, including
 Polars' own pool and how the two interact.
 
 ### Chunk size

@@ -1791,8 +1791,8 @@ Output goes through a temporary sibling and a rename, as `save` does.
 on 2026-09-17. Its in-process successor is `ModelBank.fit(lf)`, which reads
 the same way as the bank loop measured beside it. The expression rows are
 the plugin, removed on 2026-09-17 for exactly the O(data) this section
-measured. Both stand as the record. The current guidance is the README's
-[Tuning memory with Polars' own settings](../README.md#tuning-memory-with-polars-own-settings).
+measured. Both stand as the record. The current guidance is
+[Bound a run's memory](how-to/bound-memory.md).
 
 The claim on the README's first line is that the bank and the runner run
 on data that does not fit in memory. The note in §10 that the plugin is

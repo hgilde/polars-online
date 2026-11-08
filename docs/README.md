@@ -43,6 +43,30 @@ kept in [`records/`](records/), and its row links it there.
 | [explanation/warm-up-and-readiness.md](explanation/warm-up-and-readiness.md) | you want to know why a model withholds its first predictions, what each readiness gate measures, why `min_weight` can be out of reach, and how a model that seeds itself from its first rows differs |
 | [explanation/robust-scale.md](explanation/robust-scale.md) | you fit `huber`, `quantile` or `sgd` with a Huber loss and want to know how the residuals' scale is kept, why each target's first rows are refit, and what a robust scale gives up when the level shifts |
 | [explanation/grids-and-instances.md](explanation/grids-and-instances.md) | you give a spec several values of a setting and want to know how one pass fits them all, what an instance and a slot are, and why the best error over a grid is optimistic |
+| **New pages: how-tos for running and preparing a bank, and for the regressions** | |
+| [how-to/run-a-bank-from-the-command-line.md](how-to/run-a-bank-from-the-command-line.md) | you want to run a bank as a scheduled job with the `polars-online` program and a TOML file, with no Python |
+| [how-to/serve-from-a-saved-state.md](how-to/serve-from-a-saved-state.md) | you have a saved state and want predictions for new rows without the bank learning from them |
+| [how-to/fit-one-model-per-group.md](how-to/fit-one-model-per-group.md) | you want a separate model for each value of a column, such as one per stock, fitted in one pass |
+| [how-to/learn-targets-known-late.md](how-to/learn-targets-known-late.md) | your target is known only some time after its row, and you want each row predicted where it sits and learned once its target is known |
+| [how-to/make-window-features.md](how-to/make-window-features.md) | you want features that look back over the stream, made as columns before the bank |
+| [how-to/make-a-target-that-looks-ahead.md](how-to/make-a-target-that-looks-ahead.md) | you want a target computed from the rows after each row, as a column or as a formula target the bank holds until its window closes |
+| [how-to/scale-a-feature-by-its-spread.md](how-to/scale-a-feature-by-its-spread.md) | you want a coefficient per current standard deviation of a feature, from its z-score against its own recent spread |
+| [how-to/weight-rows-by-a-robust-scale.md](how-to/weight-rows-by-a-robust-scale.md) | you want each row to count by a robust scale of its target, without reading targets not yet known |
+| [how-to/fit-on-factor-residuals.md](how-to/fit-on-factor-residuals.md) | you fit factor ridges and want their out-of-sample residuals as features of a second ridge with a target that looks ahead |
+| [how-to/check-data-quality.md](how-to/check-data-quality.md) | you have fitted a bank and want to know what is wrong with the data, with `bank.check()` and an `audit` spec, and how to fix it |
+| [how-to/forget-rows-past-a-window.md](how-to/forget-rows-past-a-window.md) | you want rows older than a set span to count for nothing, with `window_size` |
+| [how-to/follow-a-level-that-moves.md](how-to/follow-a-level-that-moves.md) | you fit `pa` or `sgd` on a target whose level moves, and want the fit to keep up |
+| [how-to/fit-targets-that-go-missing-on-different-rows.md](how-to/fit-targets-that-go-missing-on-different-rows.md) | you fit several targets on the same features and they are null on different rows |
+| [how-to/bound-the-coefficients.md](how-to/bound-the-coefficients.md) | you need a regression's slopes held to bounds or to a fixed total, with `coef_min`, `coef_max` and `coef_sum` |
+| [how-to/fit-a-count-target.md](how-to/fit-a-count-target.md) | your target is a count, and you want a Poisson fit with `sgd` |
+| [how-to/choose-a-learning-rate.md](how-to/choose-a-learning-rate.md) | you fit `sgd`, `ftrl` or `pa` and want to choose the size of each step |
+| [how-to/choose-ftrl-penalties.md](how-to/choose-ftrl-penalties.md) | you fit `ftrl` and want to choose its penalties, which weigh more on a short half-life or a sparse stream |
+| [how-to/choose-a-kalman-drift-speed.md](how-to/choose-a-kalman-drift-speed.md) | you fit `kalman` and want to choose how fast its coefficients may drift, revert or extrapolate |
+| [how-to/choose-holts-smoothing.md](how-to/choose-holts-smoothing.md) | you fit `holt` and want to choose how fast its level and trend forget, or a flat prediction |
+| [how-to/choose-columns-on-the-lasso-path.md](how-to/choose-columns-on-the-lasso-path.md) | you fit `lasso` and want to choose its penalties, how they are ranked, and its sweeps |
+| [how-to/bound-memory.md](how-to/bound-memory.md) | your run holds more memory than you can give it, and you want Polars' settings and the robust models' refit budget that bound it |
+| [how-to/use-more-cores.md](how-to/use-more-cores.md) | your bank runs on fewer cores than the machine has, and you want to give it more work it can run at once |
+| [how-to/reproduce-an-earlier-versions-fit.md](how-to/reproduce-an-earlier-versions-fit.md) | you need the numbers an earlier release gave, and want the settings that restore them |
 
 ## Records
 

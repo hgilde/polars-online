@@ -143,9 +143,8 @@ no ``weight=``. This code reads ``trades`` from the README's `Example data
 on it has a coefficient per standard deviation of the feature, as the
 spread stands on each row, where a model on ``x`` has one per unit. Where a
 target responds to a feature relative to its volatility, fit on the
-z-score. Every model reads it as a column. `Features in units of their
-spread
-<https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#features-in-units-of-their-spread>`_
+z-score. Every model reads it as a column. `Scale a feature by its spread
+<https://github.com/hgilde/polars-online/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_
 gives the measured gain. This code reads ``trades.parquet`` from the README's
 `Example data <https://github.com/hgilde/polars-online#example-data>`_:
 
@@ -554,8 +553,8 @@ def ewm_sum(
     - :func:`ewm_mean`, the mean weighted by time.
     - :func:`polars_online.stream.with_windows`, which computes the operators
       over a stream.
-    - `Windows as columns
-      <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#windows-as-columns>`_,
+    - `Make a weighted mean, such as a VWAP
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/make-window-features.md#make-a-weighted-mean-such-as-a-vwap>`_,
       the forward VWAP built from two sums.
 
     .. rubric:: Notes
@@ -1049,8 +1048,8 @@ def ewm_var(
     - :func:`ewm_mean`, the mean it is taken about.
     - :func:`polars_online.stream.with_windows`, which computes the operators
       over a stream.
-    - `Features in units of their spread
-      <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#features-in-units-of-their-spread>`_,
+    - `Scale a feature by its spread
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_,
       the guide.
 
     .. rubric:: Notes
@@ -1201,8 +1200,8 @@ def ewm_std(
     - :func:`ewm_mean`, the mean the spread is taken about.
     - :func:`polars_online.stream.with_windows`, which computes the operators
       over a stream.
-    - `Features in units of their spread
-      <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#features-in-units-of-their-spread>`_,
+    - `Scale a feature by its spread
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_,
       the guide's measured gain.
 
     .. rubric:: Notes

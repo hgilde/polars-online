@@ -483,9 +483,8 @@ them. Measured as the growth of peak memory:
 
 **So give the native engine Arrow IPC files where you can, because it reads
 them itself, with two batches ready ahead.** For a Parquet or query source,
-set Polars' prefetch and thread count as the README's [Tuning memory with
-Polars' own settings](../README.md#tuning-memory-with-polars-own-settings)
-says. py-polars 1.44.2 held as much as 2.0.0.
+set Polars' prefetch and thread count as [Bound a run's
+memory](how-to/bound-memory.md) says. py-polars 1.44.2 held as much as 2.0.0.
 
 **A frame from `collect_batches` arrives in several chunks, and joining
 them before the library is faster than handing the chunks over one by

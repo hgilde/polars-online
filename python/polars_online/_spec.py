@@ -2475,9 +2475,9 @@ def kalman(
         zeros, no ``revert_half_life`` and a fixed ``obs_var``, the filter is
         exactly Bayesian linear regression. For a coefficient per current standard deviation, which
         moves with the scale, z-score the column in the query before the bank
-        and give it with ``standardize = False``. `Features in units of their
+        and give it with ``standardize = False``. `Scale a feature by its
         spread
-        <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#features-in-units-of-their-spread>`_
+        <https://github.com/hgilde/polars-online/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_
         builds the column with :func:`polars_online.ewm_mean
         <polars_online.ops.ewm_mean>` and :func:`polars_online.ewm_std
         <polars_online.ops.ewm_std>`.
@@ -3053,8 +3053,8 @@ def ftrl(
     of ``crates/online-core/tests/held_values.rs``, with one of three features
     at ``L``, the squared loss's error is about ``0.018 * L``: 18.3 at 1,000 and
     at -1,000, and 1.8e6 at 1e8, against 0.75 at 0.5. Standardize or z-score
-    such a feature before the bank, as `Features in units of their spread
-    <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#features-in-units-of-their-spread>`_
+    such a feature before the bank, as `Scale a feature by its spread
+    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_
     shows. There is no ``standardize`` here because ``l1`` zeroes a coefficient
     in the feature's own units: a scale inside the model would move which
     coefficients it zeroes as the feature's spread moved.

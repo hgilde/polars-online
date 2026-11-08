@@ -162,6 +162,6 @@ least its window's length.** A column holds the target's value at the
 row, so the bank writes a residual there. Without an `embargo`, the model
 learns each row's value at the row, before the rows that value was
 computed from have arrived. Its predictions of the rows inside that window
-then draw on target values from after their own rows. [Relative and
-look-ahead targets](../../README.md#relative-and-look-ahead-targets) shows
+then draw on target values from after their own rows. [Make a target
+that looks ahead](../how-to/make-a-target-that-looks-ahead.md#check-the-targets-the-model-learned) shows
 both forms side by side.

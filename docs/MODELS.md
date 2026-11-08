@@ -37,7 +37,7 @@ Ten models predict a numeric target. Nine regress it on features, and
 | `ridge` | `ewridge`, where a list fits a grid; `huber` and `quantile`, as one number. `rls` refuses it and takes `delta` | [`ewridge`](#ewridge--exponentially-weighted-ridge-regression) and [`rls`](#rls--recursive-least-squares) |
 | `solve_every`, `max_rows_between_solves` | `ewridge`, `lasso`, `huber`, `quantile` | [`ewridge`](#ewridge--exponentially-weighted-ridge-regression) |
 | `target_gaps` | `ewridge`, `lasso` | [`ewridge`'s docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge) |
-| `window_size` | `ewridge`, `lasso` | [A hard window](../README.md#a-hard-window) |
+| `window_size` | `ewridge`, `lasso` | [Forget rows past a window](how-to/forget-rows-past-a-window.md) |
 | `standardize` | `ewridge`, `huber` and `quantile`, off by default; `kalman`, `sgd` and `pa`, on by default. `lasso` always standardizes, and `ftrl` never does | [`ewridge`](#ewridge--exponentially-weighted-ridge-regression), [`kalman`](#kalman--random-walk-β-dynamic-linear-model) and [`ftrl`](#ftrl--online-logistic-regression) |
 | `coef_min`, `coef_max`, `coef_sum` | `sgd`, `pa` | [`sgd`](#sgd--stochastic-gradient-descent) |
 | `weight` | every model, though `rls`, `kalman`, `sgd`, `pa` and `ftrl` read it differently from a weighted mean | [Weights](../README.md#weights) |
@@ -388,13 +388,6 @@ planted at the last row: [0.50, 2.00, -1.00]
 rls's coefficients at the last row: [0.52, 1.92, -0.99]
 ```
 
-#### Choosing its settings
-
-**The targets share one Cholesky factor of `A`, so a row with any target
-null is predicted for every target and learned for none.** When the
-targets go missing on different rows, give each its own `rls` spec.
-Otherwise one spec holds them all.
-
 #### See also
 
 When `rls`'s fit is not the one you need:
@@ -408,6 +401,10 @@ When `rls`'s fit is not the one you need:
   residual.
 - [`kalman`](#kalman--random-walk-β-dynamic-linear-model), for
   coefficients that drift as a random walk.
+- [Fit targets that go missing on different
+  rows](how-to/fit-targets-that-go-missing-on-different-rows.md), for
+  targets null on different rows, which share one factor here and so are
+  learned only where all are present.
 
 #### Notes
 
@@ -506,22 +503,6 @@ planted: x0 2.00, x1 -1.50, x2 1.00, the other 17 0
 coefficients left nonzero: 3 of 20: {'x0': 1.97, 'x1': -1.44, 'x2': 0.99}
 ```
 
-#### Choosing its settings
-
-**Scale `penalties` with the target.** The L1 threshold `l·l1_ratio` is in
-the target's units, so for a pure lasso, a target ten times larger needs
-penalties ten times larger to zero the same coefficients.
-
-**To rank the penalties on the weighted mean of every out-of-sample
-squared error so far, give `select_half_life=float("inf")`.** Under a hard
-window the mean covers the hard window's rows. By default the error forgets at
-the model's half-life.
-
-**If `bank.solve_failures()` counts a descent that ran out of its
-`max_iter` sweeps, give a larger `max_iter`.** Columns that nearly repeat
-each other slow the descent most. The docstring's Notes, under *The
-descent*, measure how many sweeps they take.
-
 #### How it works
 
 **The selection scores every prediction, the ones `min_weight` withholds
@@ -542,9 +523,12 @@ bank:
   offline on a Gram.
 - [`ftrl`](#ftrl--online-logistic-regression), a sparse fit of a 0/1
   target.
-- [A hard window](../README.md#a-hard-window), which cuts the sums and the
+- [Forget rows past a window](how-to/forget-rows-past-a-window.md), which cuts the sums and the
   selection's errors at the same row, so a feature constant inside the
   hard window gets a coefficient of exactly zero.
+- [Choose columns on the lasso path](how-to/choose-columns-on-the-lasso-path.md),
+  to scale `penalties` with the target, rank them on every error so far,
+  and give a descent more sweeps.
 
 #### Notes
 
@@ -652,45 +636,6 @@ Ten rows after the jump `kalman` has covered over a quarter of it, and 200 rows
 after, all of it. `ewridge` still averages the slope over its half-life of
 200 rows.
 
-#### Choosing its settings
-
-**For a drift rate per coefficient, give `coef_half_life` a list with the
-intercept's entry leading.** An entry of `inf` gives its coefficient no
-drift. To set the process noise outright, give `q=` in place of
-`coef_half_life`. Each `q_i` is added as `q_i·D²` in the coefficient's squared
-own units, and is measured against the noise estimate, the one place the
-estimate reaches the fit.
-
-**For a feature that is active only now and then, give its coefficient a
-finite `revert_half_life`.** The coefficient is then pulled toward zero on
-every row, while the rows that support it pull it back (an AR(1) prior).
-So the effect is forgotten between its bursts, and cannot persist through
-a run of null targets. For a feature that is always active, keep the
-default `inf`. The pull would hold a persistent effect below its true
-size, the more so the shorter the reversion half-life.
-
-**Under `standardize`, the default, the reversion pulls toward zero in the
-standardized coordinates:** "no effect" for a slope, and "the target
-averages zero" for the intercept. So unless the target averages zero, keep
-the intercept's entry at `inf`, as in `[float("inf"), 50.0, 50.0]`.
-
-**For a coefficient per current standard deviation, make the z-score with
-`po.ewm_mean` and `po.ewm_std` in the query's `.online.with_windows`
-([`po.stream.with_windows`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.with_windows)),
-chained in the query before the bank, and give that
-column with `standardize=False`,** as in [Features in units of their
-spread](WINDOWS.md#features-in-units-of-their-spread).
-Under `standardize`, the coefficients stay in the columns' own units
-however the standardization moves.
-
-**To let a far prediction approach the intercept, give a `gap_cap` that
-spans several of the slopes' reversion half-lives, and keep the
-intercept's `revert_half_life` at `inf`.** `predict` applies the reversion by
-the same `Φ` over the clock since the last learned row, capped by
-`gap_cap`, so a slope keeps at least `2^(−gap_cap/κ_i)` of its value.
-Under `standardize` the intercept is the target's level at the features'
-means.
-
 #### How it works
 
 **Under `coef_half_life`, the gain never reads the noise estimate.** A
@@ -732,6 +677,12 @@ When `kalman`'s fit is not the one you need, or to use it past the data:
 - [`bank.predict()`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.predict),
   which moves the coefficients by `Φ` over the clock since the last
   learned row.
+- [Choose a Kalman filter's drift speed](how-to/choose-a-kalman-drift-speed.md),
+  to set each coefficient's drift and reversion, and how far a prediction
+  past the data may move.
+- [Scale a feature by its spread](how-to/scale-a-feature-by-its-spread.md),
+  for a coefficient per current standard deviation, under
+  `standardize=False`.
 
 #### Notes
 
@@ -854,47 +805,6 @@ than an ordinary one. `huber_rms` draws its cut in a scale that the wild
 rows themselves widen, so it lets more of their pull through: a root mean
 square is not a robust scale.
 
-#### Choosing its settings
-
-The docstring defines every setting the advice names.
-
-**To come close to the numbers of a version before the refit existed
-(1.3.0 and earlier), give `huber_refit_rows=0`.** The MAD's sketch is then
-on the fixed buckets those versions used. For a version before
-`huber_scale` existed (1.2.0 and earlier), give `huber_scale="rms"` as
-well, which keeps no sketch. Under `huber_scale="rms"`, with the default
-`min_weight` on unit weights, `huber_refit_rows=0` gave 1.3.0's numbers to
-the bit on the stream it was tested on. `sgd`'s steps have changed since (its clip, AdaGrad's
-epsilon and its intercept read the target's own spread and level), so for
-`sgd(loss="huber")` the refit off is the one-pass fit of its current steps.
-A state saved by an earlier version continues to the bit.
-
-**`refit_budget` bounds the refit buffers of all a spec's groups together:
-320 MiB by default, or `inf` for no bound.** A learned row takes
-`(features + 10) · 8` bytes under the MAD: its features, target, weight
-and two decay factors, the residual the scale reads, and the residual's
-node in the tree it is read from. It takes `(features + 4) · 8` under
-`"rms"`. So one feature and 500 rows take about 44 KB a target under the
-MAD, and 20 KB under `"rms"`. A group
-shorter than `huber_refit_rows` never refits, and holds its rows to its
-end.
-
-Each group's reservation is saved with the bank. So which groups refit
-depends neither on the chunking, nor on the order the groups run in, nor
-on a save and load between them. In exchange, once the bound is reached no
-later group refits, though the first groups' buffers have long been freed.
-Measured on the same 150-row groups, fed from parquet, as the peak
-resident memory after the fit and the saved state (the median of three
-runs, which spread by up to 120 MiB):
-
-| groups | `huber_refit_rows=0`: peak; state | the default, 320 MiB: peak; state; targets given up | `refit_budget=inf`: peak; state |
-|---|---|---|---|
-| 5,000 | 572 MiB; 128 MiB | 691 MiB; 177 MiB; 8,178 of 10,000 | 1,199 MiB; 391 MiB |
-| 20,000 | 1,195 MiB; 512 MiB | 1,390 MiB; 563 MiB; 38,178 of 40,000 | 3,915 MiB; 1,565 MiB |
-
-A reservation is the most a buffer can hold, and these groups' buffers
-held less.
-
 #### How it works
 
 [The robust scale and the refit of the first
@@ -932,6 +842,11 @@ another side:
   `ridge_scale="sum"` and `huber_delta=inf`.
 - [GRAM.md](GRAM.md#huber-regression-on-a-gram), a Huber fit from one
   shared Gram, a query over the rows per pass.
+- [Bound a run's memory](how-to/bound-memory.md#bound-the-rows-a-refit-holds),
+  to bound the refit buffers of all a spec's groups with `refit_budget`.
+- [Reproduce an earlier version's fit](how-to/reproduce-an-earlier-versions-fit.md),
+  to come close to the numbers of a version before the refit, with
+  `huber_refit_rows=0`.
 
 #### Notes
 
@@ -1205,79 +1120,6 @@ fitted: {'intercept': 0.51, 'x0': 0.31, 'x1': -0.21}
 
 Each coefficient the fit found is within about 0.01 of the log-rate's.
 
-#### Choosing its settings
-
-The docstring defines every setting the advice names.
-
-**To set how many rows the coefficients remember, choose `learning_rate`.**
-Every row's step moves the coefficients and the half-life does not decay
-them, so under a constant rate they remember about
-`1 / (learning_rate · E[z²])` rows, whatever the clock between rows. Under
-`schedule="adagrad"`, `Gᵢ` decays on the clock, so the adapted rate opens
-up again after a long gap.
-
-**On a stream whose level can change, give `huber_scale_half_life` about a
-fifth of `half_life`, or shorter.** Under the default `"mad"`, `sgd`'s
-Huber loss follows a change of level far more slowly than under `"rms"`.
-Its gradient is clipped at `delta·s`, so while `s` is the noise's scale the
-intercept moves at most `learning_rate·delta·s` a row. A shift many times
-the noise waits until the median itself has crossed to the new level. For
-`huber`, the mean absolute error under the MAD scale (`"mad"`) 200-400 rows
-after the shift was 19.5, against 15.1 under `"rms"`
-([its entry](#huber--robust-regression) has the table). For `sgd` the error
-under `"mad"` is seven times the error under `"rms"`. On `huber`'s stream (`y = 2x + 0.5ε`, a fit half-life of 500
-rows, a shift of +20 at row 10,000, no outliers), the mean absolute error
-after the shift, and the rows after the shift until every 200-row average
-stays under 1.0:
-
-| `sgd` | rows 0-200 after the shift | rows 200-400 | rows after the shift until every 200-row average stays under 1.0 |
-|---|---|---|---|
-| `loss="squared"` | 8.67 | 1.17 | 418 |
-| `loss="huber"`, `"rms"` | 13.55 | 2.45 | 493 |
-| `loss="huber"`, `"mad"`, the scale's half-life the fit's 500 rows | 19.26 | 17.33 | 885 |
-| `loss="huber"`, `"mad"`, `huber_scale_half_life=100` | 15.81 | 2.99 | 510 |
-| `loss="huber"`, `"mad"`, `huber_scale_half_life=20` | 10.34 | 1.41 | 440 |
-
-Seeds 2 and 3 agree to within 0.06. A shorter memory widens the cut sooner
-in a long burst of outliers too.
-
-**Under `loss="poisson"`, keep `clip_gradient`, `1e3` by default,** because
-through the log link one large count would make the next gradient
-exponentially bigger. At ordinary scales it does not bind for the other
-losses. A Poisson fit takes counts, so a call that reads the target (one that
-learns, or `predict` on a chunk that holds it) refuses a chunk with a
-negative target and names the row, as scikit-learn's `PoissonRegressor`
-refuses one. A negative target taken as it stood would make `p − y` drive
-the prediction down to the link's floor, `e^−30`, and hold it there.
-
-**To bound the slopes, give `coef_min` and `coef_max` (one number, or one
-per feature, with `-inf` or `inf` for an open side) and `coef_sum` for
-their total:**
-
-| setting | what it expresses |
-|---|---|
-| `coef_min=0, coef_sum=1` | a long-only, fully invested portfolio |
-| `coef_min=0` alone | a sign the model must respect |
-| `coef_min` equal to `coef_max` | a slope pinned at a known value |
-
-This code uses `df` from [Example data](../README.md#example-data):
-
-```python
-portfolio = po.spec.sgd(
-    "portfolio", targets=["y"], features=["signal_a", "signal_b", "x0"], half_life=200.0,
-    loss="squared",              # any loss in the update's table
-    learning_rate=0.01,
-    schedule="constant",         # or "inv_scaling", or "adagrad"
-    clip_gradient=1e3,           # the default
-    coef_min=0.0,                # every slope at least 0 ...
-    coef_sum=1.0,                # ... and the slopes summing to 1
-    coef_every=1,
-)
-fit = po.ModelBank([portfolio]).fit_predict(df)
-last = fit["portfolio"].struct.field("coef").drop_nulls()[-1]
-assert min(last[1:]) >= 0.0 and abs(sum(last[1:]) - 1.0) < 1e-12   # the last row's slopes: at least 0, summing to 1
-```
-
 #### How it works
 
 **The stability check reads a sample of rows, so it is built to resist one
@@ -1347,6 +1189,15 @@ When `sgd`'s steps are not the fit you need:
   solved on running sums.
 - [`ftrl`](#ftrl--online-logistic-regression), a logistic or linear fit
   whose L1 penalty zeroes coefficients.
+- [Choose a learning rate](how-to/choose-a-learning-rate.md#choose-sgds-learning-rate),
+  to set how many rows the coefficients remember.
+- [Follow a level that moves](how-to/follow-a-level-that-moves.md#give-sgds-huber-scale-a-shorter-memory),
+  to give `huber_scale_half_life` a shorter memory where the level can
+  change.
+- [Fit a count target](how-to/fit-a-count-target.md), under
+  `loss="poisson"` and its `clip_gradient`.
+- [Bound the coefficients](how-to/bound-the-coefficients.md#bound-the-slopes-of-sgd),
+  to hold the slopes to `coef_min`, `coef_max` and `coef_sum`.
 
 #### Notes
 
@@ -1449,39 +1300,6 @@ The free fit finds the truth to within 0.02. The capped fit holds `x0`'s
 slope under 1.5, and its intercept and `x1`'s slope move from the truth as
 well, to 0.89 and −1.09.
 
-#### Choosing its settings
-
-The docstring defines every setting the advice names.
-
-**On a level that moves, give a larger `c` or difference the target.** The
-fit starts from zero coefficients, and a `pa1` cap of 1 moves the intercept
-about one unit a row. On a target falling from 1,000 to −1,000 at 0.5 a
-row, at a half-life of 200 and noise 0.3, the intercept met the level near
-row 670. With the level as a feature too, the default cap's steps, mapped
-into the caller's units through the scaler, swung the fit far past the
-level instead. With `c=10`, every row stayed within 3 of its target from
-row 467.
-A drift the intercept carries alone keeps a lag of about 2 at any `c`, half
-of it the tube's, since `s_y` holds the drift. Differencing the target and the moving features, `y − y.shift(1)`, takes
-the level out of the fit, and the level is the last row's `y` plus the
-predicted change. The docstring's Notes, under *On a level that moves, give a larger c or
-difference the target*, give each run's `pred − y` at rows 800 and 1,600.
-
-**Where outliers are possible, keep a `mode` that caps or damps the
-step:**
-
-| `mode` | the step |
-|---|---|
-| `"pa"` | moves the fit as far as one bad row demands |
-| `"pa1"`, the default | is capped at `c` |
-| `"pa2"` | is damped by `c` instead of capped |
-
-**When `coef_min`, `coef_max` or `coef_sum` bound the slopes, keep `c`
-small.** The projection that follows each step keeps the step from
-meeting the row's margin exactly, and a truth outside the allowed set is
-never reached, so the fit keeps stepping against the bounds. A small `c`
-keeps those steps small.
-
 #### See also
 
 When `pa`'s steps are not the fit you need:
@@ -1490,6 +1308,14 @@ When `pa`'s steps are not the fit you need:
   learning rate, under several losses, with the same scaler and bounds.
 - [`ewridge`](#ewridge--exponentially-weighted-ridge-regression), an exact
   fit on running sums.
+- [Follow a level that moves](how-to/follow-a-level-that-moves.md), to
+  give a larger `c` or difference the target on a level that moves.
+- [Choose a learning rate](how-to/choose-a-learning-rate.md#choose-pas-mode),
+  to keep a `mode` that caps or damps the step where outliers are
+  possible.
+- [Bound the coefficients](how-to/bound-the-coefficients.md#bound-the-slopes-of-pa-with-a-small-c),
+  to keep `c` small when `coef_min`, `coef_max` or `coef_sum` bound the
+  slopes.
 
 #### Notes
 
@@ -1584,57 +1410,6 @@ rows of the second half classed right, out-of-sample: 0.81
 The penalty kept exactly the five features that move the probability, and
 zeroed the other 45.
 
-#### Choosing its settings
-
-The docstring defines every setting the advice names.
-
-**`ftrl`'s penalties keep a fixed mass, while the evidence grows with the
-weights and the rows' density.** So a heavier or denser stream overcomes
-them sooner, and a shorter half-life shrinks the fit more. At the defaults,
-with unit weights and rows one clock unit apart, they act in steady state
-as a ridge of `(1 − λ)(beta/alpha + l2)` on the mean scale. Under
-`loss="squared"`, a constant target of 5 is then fitted at 4.65 at
-`half_life=100`, and at 4.96 at 1000. For a penalty that weight and density
-leave alone, use
-[`lasso`](#lasso--lasso-path-its-penalty-chosen-as-it-runs), whose penalty
-is on the mean scale. The ridge weighs most on a 0/1 target, whose
-log-odds the evidence pins only weakly: a probability's curvature is at
-most a quarter. On two features at `half_life=200`, with one row a clock
-unit, the defaults left the logistic fit at its steady state up to 0.41
-from the decayed maximum likelihood in some coefficient, the worst of 50
-seeds. `beta=0.1, l2=0` left it 0.17 from it.
-
-**Under a half-life, `ftrl` follows a break at the pace of its steps, not
-of its half-life.** Each coordinate steps by its gradient over the root of
-its recent squared gradients, so a coefficient at its steady state moves
-at most about `2·alpha·√(1 − λ)` a row, with `λ` the decay over one row's
-clock, however large the residual. A break that moves a coefficient by `D`
-takes about `D / (2·alpha·√(1 − λ))` rows to follow. The large gradients just
-after a break also increase the sums that divide every step, for about a
-half-life. Measured under `loss="squared"` on two features at
-`half_life=200`, one row a clock unit, after a change of regime that moved the intercept by 46 (the worst
-of 50 seeds, the largest coefficient gap to the decayed least squares):
-
-| `alpha` | at its steady state, before the break | 4 half-lives after | 8 half-lives after | 12 half-lives after |
-|---|---|---|---|---|
-| 0.1, the default | 0.17 | 34.4 | 28.5 | 19.9 |
-| 0.3 | 0.24 | 18.4 | 2.7 | 0.86 |
-| 1.0 | 0.43 | 2.7 | 0.61 | 0.85 |
-
-At the default the intercept closed at 0.011 a row, against
-`2·alpha·√(1 − λ)` = 0.012. A larger `alpha` follows a break sooner and moves
-more from row to row at its steady state: at `alpha=1` the gap stops
-shrinking by 8 half-lives, within twice its steady state's. Over the 24 half-lives after the
-noise quadrupled, the default came at most 0.23 from the decayed least
-squares, and `alpha=1` 1.17.
-
-**`ftrl` does not center a feature, so give it features near 0.**
-Standardize or z-score such a feature in the query before the bank, as
-[Features in units of their spread](WINDOWS.md#features-in-units-of-their-spread)
-shows. The docstring's Notes, under *Features at a level*, measure how far
-a feature's level carries a coefficient's error into the prediction, and
-say why the model has no `standardize`.
-
 #### See also
 
 When `ftrl`'s fit is not the one you need:
@@ -1643,6 +1418,12 @@ When `ftrl`'s fit is not the one you need:
   penalty on the mean scale, solved on running sums.
 - [`sgd`](#sgd--stochastic-gradient-descent), gradient steps under other
   losses.
+- [Choose `ftrl`'s penalties](how-to/choose-ftrl-penalties.md), to work
+  out how hard the penalties shrink the fit under a half-life.
+- [Choose a learning rate](how-to/choose-a-learning-rate.md#choose-ftrls-alpha),
+  to choose `alpha`, the pace at which it follows a break.
+- [Scale a feature by its spread](how-to/scale-a-feature-by-its-spread.md),
+  to give it features near 0, since it does not center them.
 
 #### Notes
 
@@ -1746,35 +1527,6 @@ with_x predicts closer at the 5% level from row 15
 The regression's error spread is about half of `holt`'s, and the test
 finds the evidence enough at row 15.
 
-#### Choosing its settings
-
-The docstring defines every setting the advice names.
-
-**The level forgets at the spec's `half_life`, as every model's decay
-does.** `level_half_life` is refused, with a message naming `half_life`. To
-make the trend the whole history's drift, give `trend_half_life=inf`: the
-slope then takes the line fit's gain, and is the weighted least-squares
-slope exactly when the level does not decay either (`half_life=inf`).
-Beside a finite level half-life the slope learns from residuals against a
-level that forgets, and lands near the line fit's slope: 0.2% to 1% of it
-off at a level half-life of 5 over 3,000 rows of a line in noise.
-
-**For a flat prediction, give `trend=False`:** simple exponential
-smoothing, whose level is the target's exponentially weighted mean. It
-holds the trend at zero, and refuses `trend_half_life`.
-
-**`holt` has no seasonal term, so for a seasonal baseline, group the spec
-on the phase.** Make the phase a column with Polars' `with_columns` in the
-query before the bank, and name it as the spec's `group`. The bank then
-fits one level and trend per hour.
-This code uses `lf` from [Example data](../README.md#example-data):
-
-```python
-seasonal = po.spec.holt("seasonal", targets=["y"], clock="ts", gap_cap="1h",
-                        half_life="2h", group="hour")         # one level and trend per hour of the day
-by_hour = lf.with_columns(hour=pl.col("ts").dt.hour()).online.fit_predict([seasonal]).collect()   # the phase, as a column
-```
-
 #### How it works
 
 **The line fit keeps the trend from being pinned to the first
@@ -1795,6 +1547,11 @@ When `holt` is not the baseline you need, or to test a model against it:
   regression on features to set against it.
 - [How wide is its error?](DIAGNOSTICS.md#how-wide-is-its-error), the
   `sigma` that compares the two.
+- [Choose Holt's smoothing](how-to/choose-holts-smoothing.md), to set
+  how fast the level and the trend forget, or a flat prediction.
+- [Group on a column made in the
+  query](how-to/fit-one-model-per-group.md#group-on-a-column-made-in-the-query),
+  for a seasonal baseline, one level and trend per phase.
 
 #### Notes
 
@@ -1952,8 +1709,8 @@ symmetric: a leading b is not b leading a.
 #### How it works
 
 **Under a `window_size`, Polars gives the same numbers on a frame in
-memory, but recomputes every window** ([A hard
-window](../README.md#a-hard-window)). Polars'
+memory, but recomputes every window** ([Forget rows past a
+window](how-to/forget-rows-past-a-window.md)). Polars'
 `df.rolling("t", period="3h").agg(...)`, with an exponential weight and `c`
 from the weights inside the window, agrees with the spec within 1e-12. Its
 work grows with `n` rows times the rows of a window, where the spec's grows
@@ -2171,13 +1928,8 @@ huber: middle bin 0.51 over 21 rows
 The mean takes the spike's twenty-first share, 47.6. The location moves by
 the cut over twenty, 0.51, and the count still takes the row.
 
-**Give a screen a `window_size` when a relation may flip sign**, because two
-regimes of opposite sign average to nothing over a long history. The hard
-window truncates every pair moment, so `corr`, `beta` and `t_stat` describe
-the rows inside it ([A hard window](../README.md#a-hard-window)). A hard
-window refuses `bins`, so bin the features in a second spec without one. To
-use `lags` under a hard window, give `window_lags=True`, whose docstring
-entry gives the memory its snapshots take.
+[Forget rows past a window](how-to/forget-rows-past-a-window.md) shows how
+to give a screen a `window_size` when a relation may flip sign.
 
 **With several targets present on every row, give `feature_moments="shared"`
 for speed.** Each feature then keeps one mean and variance, over every
@@ -2190,21 +1942,9 @@ come from every row. That is a different estimator, sound only where the
 absence says nothing about the feature, so otherwise keep the default. It
 takes `lags`, and refuses a `window_size`.
 
-**Give `shards="auto"` to spread one wide spec over the threads.** The bank
-runs groups and specs in parallel ([Parallelism](../README.md#parallelism)),
-so a wide `marginal` on one group is otherwise one thread's work.
-`shards=10` splits its pairs into ten ranges of features, each run on a
-thread of its own, a block of rows at a time. `"auto"` sizes the split to
-the width and the bank's threads. It leaves whole a narrow spec, and a spec
-under a hard window that snapshots every row, the default, whose block is a
-single row. The numbers are the same to the bit at any count, so a saved
-bank resumes under any count. On 14 threads ([PERFORMANCE
-§25](PERFORMANCE.md#25-a-wide-marginal-split-across-the-pool-2026-09-25)):
-
-| the spec | `"auto"` ran the bank |
-|---|---|
-| 10,000 features, nine targets, lags and bins | 4.9 times as fast |
-| the moments of one target alone | 1.2 times as fast, since the bank's own work on each row does not split |
+[Split one wide spec across
+threads](how-to/use-more-cores.md#split-one-wide-spec-across-threads)
+shows how to spread one wide spec over the threads with `shards`.
 
 #### How it works
 
@@ -2697,29 +2437,6 @@ Each finding's `message` says what to do, and links its section of
 [DATA-QUALITY.md](DATA-QUALITY.md), which shows what the problem does to
 each model and how to fix it with Polars.
 
-#### Choosing its settings
-
-**Give `pairs=True` to find a duplicated column.** The audit then keeps each
-pair of columns' correlation and the rows on which the two are equal, and
-`bank.check()` reads them for its `duplicate` finding.
-
-**Give `pooled=True` to `bank.audit()` to read every group as one stream.**
-Groups merge into one audit: the counts exactly, the moments to rounding,
-and the repeats past `distinct_cap` and the median within the bounds the
-docstring gives. This code uses `df` from [Example data](../README.md#example-data):
-
-```python
-audit = po.spec.audit("audit", columns=["x0", "x1", "x2", "y"], clock="t", gap_cap=300.0,
-                      pairs=True, group="stock_id")
-bank = po.ModelBank([audit])
-bank.fit_predict(df)                              # the output record holds weight_sum alone
-columns = bank.audit()                            # one row per (group, column)
-pairs = bank.audit(table="pairs")                 # one row per (group, pair of columns)
-clock = bank.audit(table="clock")                 # one row per group: duplicate stamps, gaps, the steps' spread
-everything = bank.audit(pooled=True)              # the four groups as one stream
-problems = bank.check()                           # sentinel, frozen, few_values, random_walk, heavy_tails, ...
-```
-
 #### See also
 
 To judge the counts, and to fix what they find:
@@ -2728,6 +2445,9 @@ To judge the counts, and to fix what they find:
   what the counts say is wrong.
 - [DATA-QUALITY.md](DATA-QUALITY.md), each finding, what it does to each
   model and how to fix it with Polars.
+- [Find duplicated columns, and read groups as one
+  stream](how-to/check-data-quality.md#find-duplicated-columns-and-read-groups-as-one-stream),
+  with `pairs=True` and `bank.audit(pooled=True)`.
 
 #### Notes
 
@@ -3083,13 +2803,12 @@ keeps.** The docstring gives each shape and the work it takes a row:
 | `"tied"` (LDA) | the classes differ in location but not in spread. It then gives more than 98% of rows the class `"full"` gives them in the tests, with fewer parameters to learn |
 | `"diag"` (Gaussian naive Bayes) | speed matters most, since it runs about four times as fast as the other two ([Throughput](../README.md#throughput)). It cannot see a correlation, so two classes with the same marginals and opposite correlations are one class to it |
 
-**Give `window_size` when the class means move,** because over a long
-history two regimes average together. Each class's moments then cover only
-the rows inside the hard window ([A hard window](../README.md#a-hard-window)).
+[Forget rows past a window](how-to/forget-rows-past-a-window.md) shows how
+to give `window_size` when the class means move.
 
-**When the classes arrive late, give `embargo` the delay,** and each row's
-class is learned once that much clock has passed ([Labels that arrive
-late](../README.md#labels-that-arrive-late)).
+[Give every row the same
+delay](how-to/learn-targets-known-late.md#give-every-row-the-same-delay)
+shows how to give `embargo` the delay when the classes arrive late.
 
 #### See also
 

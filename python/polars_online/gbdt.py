@@ -890,9 +890,8 @@ def xgboost_matrix(
     **Measured** as :mod:`polars_online.gbdt` describes, on 10 million rows
     of 50 features: the time before the first round, and the peak memory.
     Reading ahead, Polars holds 7.2 GB at the peak on the query route, and
-    the README's
-    `Tuning memory with Polars' own settings
-    <https://github.com/hgilde/polars-online#tuning-memory-with-polars-own-settings>`_
+    `Bound a run's memory
+    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`_
     cuts it.
 
     .. list-table::

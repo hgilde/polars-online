@@ -233,7 +233,7 @@ rows before it by the cap. Five models take a hard window: `ewridge`,
 `lasso`, `ew_cov`, `ew_class` and `marginal`, each described in the
 README's [model table](../../README.md#models). Inside it the weights still
 halve every `half_life`, and `half_life=float("inf")` makes them equal.
-The README's [A hard window](../../README.md#a-hard-window) gives its
+[Forget rows past a window](../how-to/forget-rows-past-a-window.md) gives its
 settings and what each model truncates.
 
 **A hard window forgets a break that a half-life still holds.** In `df`,
