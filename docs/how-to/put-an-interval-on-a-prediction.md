@@ -103,10 +103,14 @@ rows at the same width. On Student's t, the Gaussian interval covers 92.8%,
 more than asked, because `sigma` is inflated by the rare huge residuals,
 and it is wider than it needs to be for most rows. The quantile and the
 conformal interval cover 90.0% at a half-width of 1.36, against the
-Gaussian interval's 1.59. Three more streams of 200,000 rows had
-Student's t noise at 2.5 degrees of freedom, a scale mixture and a regime
-shift. On them the Gaussian interval covered 94% to 95%, and `conformal`
-stayed within 1 point of 90%.
+Gaussian interval's 1.59. Three more streams of 200,000 rows, with a
+half-life of 2,000 rows, were measured on 2026-11-08. On Student's t
+noise at 2.5 degrees of freedom the Gaussian interval covered 95.1%, and
+on a scale mixture 94.2%. The third stream's slope flips halfway and its
+noise triples at three quarters. On it the Gaussian interval covered
+90.0% overall, since its 91.5% while the slope is relearned and its
+88.3% after the noise triples cancel out. `conformal` covered 90.0% on
+all three.
 
 **Serve `lo` and `hi` from `conformal` when the coverage must hold, and
 `sigma` when a scale is enough.** `conformal` tracks a quantile of

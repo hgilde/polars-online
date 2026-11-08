@@ -69,11 +69,17 @@ against `SGDRegressor`'s 0.7277 at its best setting.
 exact solve, and `sgd` beats both.** At
 `k = 10,000`, `ewridge` keeps a `(k+1)²` matrix, 800 MB of a state of 860
 MB, and updates its lower triangle on every row, or once a block under
-`gram_block_rows`. Measured on 2026-09-08, before the update was cut to
-the lower triangle, it ran 53 rows a second, or 379 with
-`gram_block_rows=1024`. In the same run, `sgd` at a learning rate of
-`0.2 / k` ran 33,271 rows a second from 0.89 MB, faster than
-`SGDRegressor`'s 20,007 in batches.
+`gram_block_rows`. Measured on 2026-11-08 over 2,000 rows, at a load
+of 9 to 18, the update alone ran 185 rows a second, or 344 with
+`gram_block_rows=1024`. It was timed with a `min_weight` above the row
+count, so that no solve ran. A solve factors the whole matrix. Until
+the first solve its own cadence brings due, at row 1,000 here,
+`ewridge` also solves on the default schedule, each time its weight
+grows by about 1.4%. With those solves the same rows ran at 7 to 9 rows
+a second. With fewer rows
+than coefficients, no fit was ready to predict any row. In the same run,
+`sgd` at a learning rate of `0.2 / k` ran 25,678 rows a second from
+0.89 MB, faster than `SGDRegressor`'s 19,180 in batches.
 `scripts/sklearn_comparison.py` prints the full tables, with the grid
 each contender was swept over.
 

@@ -42,10 +42,11 @@ you mean to read.
 5. **Count the weeks whose sign matches the pooled fit's.**
 
 `po.gram.solve_subsets` reads the Grams once and fits every subset in one
-call. For 38 Grams and 100 subsets of 19, measured on an M4 Pro under a
-load of 12, it took 0.02 s at 200 columns and 3.0 s at 2,000, where a
-loop of `po.gram.merge`, `po.gram.solve` and `po.gram.coef_stats` took
-0.43 s and 76 s.
+call. It was measured on an M4 Pro on 2026-11-08 under a load near 10,
+for 38 Grams and 100 subsets of 19, each fit on every column. It took
+0.015 s at 200 columns and 3.3 s at 2,000, where a loop of
+`po.gram.merge`, `po.gram.solve` and `po.gram.coef_stats` took 0.51 s and
+80 s. Each is the best of three runs.
 
 This code makes the stream and runs step 1:
 
