@@ -511,6 +511,12 @@ returns.
 
 ### Tests and documents
 
+- Docstring facts corrected: `sgd`'s logistic link is the logit;
+  `deco`'s `"ew"` update is the mean form the code runs; `marginal`'s Huber
+  figures give the refit's and the one pass's; `corrchange`'s
+  `boundary_gamma` sizes are given per γ from Wied and Galeano's Table 2;
+  `ftrl`'s break table moved into its Notes and was re-measured, as was
+  `sgd`'s refit table, each cell that did not reproduce replaced.
 - Six explanation pages under `docs/explanation/`: *Time and decay* (how a
   model forgets along its clock, why a huge half-life is not infinity, how a
   hard window differs), *Chunk invariance and streaming* (why any chunking
