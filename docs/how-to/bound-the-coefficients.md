@@ -13,7 +13,8 @@ These steps need the library:
 - polars-online installed, and the README's
   [Example data](../../README.md#example-data) built. The first recipe
   reads `df`, 400 rows whose `signal_a` and `signal_b` are columns of
-  noise. The second builds its own data, with numpy.
+  noise, and whose `y` is `1 + 2·x0 − x1` plus noise. The second builds
+  its own data, with numpy.
 - A model that takes bounds: `sgd`, stochastic gradient descent, or `pa`,
   passive-aggressive regression. No other model takes `coef_min`,
   `coef_max` or `coef_sum`. Their docstrings,
@@ -26,7 +27,10 @@ These steps need the library:
 After each step, `sgd` replaces the slopes by the nearest point of the
 set the bounds allow, so the [coefficients](../GLOSSARY.md#fitting-a-model)
 it reports meet the bounds after every learned row. The intercept is
-always free.
+always free. The bounds hold under any of `sgd`'s losses and any of its
+three schedules, which
+[`sgd`'s entry](../MODELS.md#sgd--stochastic-gradient-descent) in
+MODELS.md lists.
 
 **To bound the slopes, give `coef_min` and `coef_max` (one number, or one
 per feature, with `-inf` or `inf` for an open side) and `coef_sum` for
@@ -42,8 +46,9 @@ their total:**
    list with one entry per feature.
 2. **Give `coef_sum` for the slopes' total,** where they must add up to a
    constant.
-3. **Run the query or the bank.** Each row's `coef` field holds the
-   bounded coefficients, the intercept first.
+3. **Fit with `bank.fit_predict(...)`, or with a query's
+   `online.fit_predict(...)`.** Each row's `coef` field holds the bounded
+   coefficients, the intercept first.
 
 This code uses `df` from [Example data](../../README.md#example-data):
 
@@ -56,16 +61,12 @@ portfolio = po.spec.sgd(
     clip_gradient=1e3,           # the default
     coef_min=0.0,                # every slope at least 0 ...
     coef_sum=1.0,                # ... and the slopes summing to 1
-    coef_every=1,
+    coef_every=0,
 )
 fit = po.ModelBank([portfolio]).fit_predict(df)
 last = fit["portfolio"].struct.field("coef").drop_nulls()[-1]
 assert min(last[1:]) >= 0.0 and abs(sum(last[1:]) - 1.0) < 1e-12   # the last row's slopes: at least 0, summing to 1
 ```
-
-The loss can be any of `sgd`'s, and the schedule any of its three, as
-[`sgd`'s entry](../MODELS.md#sgd--stochastic-gradient-descent) in
-MODELS.md lists them.
 
 ## Bound the slopes of `pa`, with a small `c`
 
@@ -97,7 +98,7 @@ n = 20_000
 a, b, e = rng.standard_normal((3, n))
 pl.DataFrame({"a": a, "b": b, "y": 0.9 * a + 0.6 * b + 0.3 * e}).write_parquet("weights.parquet")
 
-# pa with the slopes on the simplex, at the default c and at a small one, and sgd beside them.
+# pa with the slopes at least 0 and summing to 1, at the default c and at a small one, and sgd beside them.
 bounds = dict(targets=["y"], features=["a", "b"], half_life=float("inf"), coef_min=0.0, coef_sum=1.0, coef_every=0)
 specs = [po.spec.pa("pa_c1", **bounds), po.spec.pa("pa_c001", c=0.01, **bounds), po.spec.sgd("sgd", **bounds)]
 out = pl.scan_parquet("weights.parquet").online.fit_predict(specs).collect()

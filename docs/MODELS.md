@@ -2445,9 +2445,11 @@ To judge the counts, and to fix what they find:
   what the counts say is wrong.
 - [DATA-QUALITY.md](DATA-QUALITY.md), each finding, what it does to each
   model and how to fix it with Polars.
-- [Find duplicated columns, and read groups as one
-  stream](how-to/check-data-quality.md#find-duplicated-columns-and-read-groups-as-one-stream),
-  with `pairs=True` and `bank.audit(pooled=True)`.
+- [Find a duplicated
+  column](how-to/check-data-quality.md#find-a-duplicated-column), with
+  `pairs=True`, and [read every group as one
+  stream](how-to/check-data-quality.md#read-every-group-as-one-stream),
+  with `bank.audit(pooled=True)`.
 
 #### Notes
 

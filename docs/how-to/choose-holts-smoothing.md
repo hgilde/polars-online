@@ -9,12 +9,13 @@ prediction.
 
 ## Prerequisites
 
-These steps need the library and a stream with a clock:
+These steps need the library:
 
-- polars-online installed, with numpy for the recipe, which builds its own
-  data and saves it to a parquet file.
-- A [clock](../GLOSSARY.md#time) column, and the `gap_cap` a clock
-  requires. The recipe's clock `t` steps by 1 a row.
+- polars-online installed, with numpy for the recipes, which build their
+  own data and save it to a parquet file.
+- Optionally a [clock](../GLOSSARY.md#time) column, with the `gap_cap` a
+  clock requires. Without one, each row is one clock unit. The recipes'
+  clock `t` steps by 1 a row, the same as no clock.
 - The parameters of
   [`po.spec.holt`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.holt),
   which its docstring defines. Its entry in
@@ -28,13 +29,7 @@ plus the trend times the clock since the target was last seen. Each
 forgets at a [half-life](../GLOSSARY.md#time) of its own.
 
 **The level forgets at the spec's `half_life`, as every model's decay
-does.** `level_half_life` is refused, with a message naming `half_life`. To
-make the trend the whole history's drift, give `trend_half_life=inf`: the
-slope then takes the line fit's gain, and is the weighted least-squares
-slope exactly when the level does not decay either (`half_life=inf`).
-Beside a finite level half-life the slope learns from residuals against a
-level that forgets, and lands near the line fit's slope: 0.2% to 1% of it
-off at a level half-life of 5 over 3,000 rows of a line in noise.
+does.** `level_half_life` is refused, with a message naming `half_life`.
 
 1. **Give the level's memory as `half_life`,** in clock units. A short one
    follows a level that wanders, and a long one averages out more noise.
@@ -42,14 +37,18 @@ off at a level half-life of 5 over 3,000 rows of a line in noise.
    times the level's half-life, so the trend forgets four times more
    slowly than the level.
 3. **For the whole history's drift, give `trend_half_life=float("inf")`.**
-   With `half_life=float("inf")` as well, the trend is the weighted
-   least-squares slope of the target on the clock.
+   The slope then takes the line fit's gain. With `half_life=float("inf")`
+   as well, the trend is exactly the weighted least-squares slope of the
+   target on the clock. Beside a finite level half-life the slope learns
+   from residuals against a level that forgets, and lands near the line
+   fit's slope: 0.2% to 1% of it off at a level half-life of 5 over 3,000
+   rows of a line in noise.
 
 ## Make the prediction flat
 
 **For a flat prediction, give `trend=False`:** simple exponential
-smoothing, whose level is the target's exponentially weighted mean. It
-holds the trend at zero, and refuses `trend_half_life`.
+smoothing, whose level is the target's exponentially weighted mean, with
+the trend held at zero.
 
 1. **Give the spec `trend=False` and a `half_life`.** The level is then
    the weighted mean of the targets seen, each weighed by its weight times
@@ -108,14 +107,47 @@ level is Polars' `ewm_mean` with `adjust=True`, and the trend is 0.
 
 ## Choose the half-lives from the stream's own errors
 
-**Run one spec per trend half-life, each with a list of level
-half-lives.** `half_life` takes a list, a [grid](../GLOSSARY.md#grids)
-fitted in one pass, and `trend_half_life` takes one value. So
-`po.eval.grid_search` with `param_grid={"trend_half_life": [...]}` scores
-every pair on the rows each had not yet seen. [Holt's
-smoothing](../CALIBRATION.md#holts-smoothing) runs it on a trend that
-wanders, and gives each level half-life as the textbook's smoothing
-constant `α`.
+`half_life` takes a list, a [grid](../GLOSSARY.md#grids) fitted in one
+pass, and `trend_half_life` takes one value. So each trend half-life takes
+a spec of its own, each with a list of level half-lives.
+
+1. **Make a builder of the spec with `functools.partial`,** giving
+   `half_life` the list of level half-lives:
+   `functools.partial(po.spec.holt, targets=["y"], half_life=[5.0, 20.0, 80.0])`.
+2. **Score every pair with `po.eval.grid_search`,** giving it the builder
+   and `{"trend_half_life": [...]}`. It calls the builder once per trend
+   half-life, and scores every pair on the rows each had not yet seen.
+3. **Run the pair ranked 1 on the rows to come,** and report the `choice`
+   row's error, since the rows that made the choice did not score it.
+
+The recipe scores three level half-lives against three trend half-lives on
+the line of the first recipe, whose noise has variance 1. This code reads
+`line.parquet`, which the first recipe wrote:
+
+```python
+import functools
+
+# One spec per trend half-life, each with a grid of three level half-lives: 9 fits.
+holt = functools.partial(po.spec.holt, targets=["y"], clock="t", gap_cap=10.0, half_life=[5.0, 20.0, 80.0])
+table = po.eval.grid_search(pl.scan_parquet("line.parquet"), holt, {"trend_half_life": [100.0, 1_000.0, inf]})
+
+# The three best pairs, and what choosing from earlier rows earned.
+for trend, level, mse in table.filter(kind="candidate").sort("rank").head(3).select("trend_half_life", "half_life", "mse").iter_rows():
+    print(f"level half-life {level:>2g}, trend half-life {trend:>4g}: mse {mse:.4f}")
+print(f"chosen from earlier rows: mse {table.filter(kind='choice')['mse'].item():.4f} (the noise alone: 1.00)")
+```
+
+```text
+level half-life 80, trend half-life  inf: mse 1.0038
+level half-life 80, trend half-life 1000: mse 1.0040
+level half-life 80, trend half-life  100: mse 1.0066
+chosen from earlier rows: mse 1.0046 (the noise alone: 1.00)
+```
+
+On a line whose slope never changes, the longest memories rank first.
+[Holt's smoothing](../CALIBRATION.md#holts-smoothing) runs the same search
+on a trend that wanders, and gives each level half-life as the textbook's
+smoothing constant `α`.
 
 ## Check the result
 

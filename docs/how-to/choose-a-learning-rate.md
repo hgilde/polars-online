@@ -26,11 +26,9 @@ These steps need the library:
 
 **To set how many rows the coefficients remember, choose `learning_rate`.**
 Every row's step moves the coefficients and the half-life does not decay
-them, so under a constant rate they remember about
-`1 / (learning_rate · E[z²])` rows, whatever the clock between rows. Under
-`schedule="adagrad"`, `Gᵢ` decays on the clock, so the adapted rate opens
-up again after a long gap. Here `z` is the row the step is taken on, and
-`Gᵢ` is AdaGrad's running sum of coefficient `i`'s squared gradients.
+them. So under a constant rate they remember about
+`1 / (learning_rate · E[z²])` rows, whatever the clock between rows, where
+`z` is the row's features as the step sees them.
 
 1. **Decide how many rows the coefficients should remember.** Under
    `standardize`, the default, each feature is scaled to a standard
@@ -39,8 +37,11 @@ up again after a long gap. Here `z` is the row the step is taken on, and
    0.01, the default.
 2. **Give the spec that `learning_rate`.** Under the default
    `schedule="constant"` it stays the same on every row.
-3. **Give the spec a `half_life` as well.** It decays `weight_sum`, the
-   feature scaler and AdaGrad's sums, not the coefficients.
+3. **Give the spec a `half_life` as well.** It decays
+   [`weight_sum`](../GLOSSARY.md#warm-up-and-readiness), the feature
+   scaler and, under `schedule="adagrad"`, the running sums of squared
+   gradients that divide each step, not the coefficients. So under
+   `"adagrad"` the step opens up again after a long gap.
 
 The recipe plants a slope that jumps from 1 to 3, and counts the rows each
 rate takes to close 63% of the jump, `1 − 1/e` of it, beside
@@ -92,41 +93,38 @@ target (log-odds, under the logistic loss) per unit of the feature. Its
 default is 0.1.
 
 **Under a half-life, `ftrl` follows a break at the pace of its steps, not
-of its half-life.** Each coordinate steps by its gradient over the root of
-its recent squared gradients, so a coefficient at its steady state moves
-at most about `2·alpha·√(1 − λ)` a row, with `λ` the decay over one row's
-clock, however large the residual. A break that moves a coefficient by `D`
-takes about `D / (2·alpha·√(1 − λ))` rows to follow. The large gradients just
-after a break also increase the sums that divide every step, for about a
-half-life. Measured under `loss="squared"` on two features at
-`half_life=200`, one row a clock unit, after a change of regime that moved the intercept by 46 (the worst
-of 50 seeds, the largest coefficient gap to the decayed least squares):
-
-| `alpha` | at its steady state, before the break | 4 half-lives after | 8 half-lives after | 12 half-lives after |
-|---|---|---|---|---|
-| 0.1, the default | 0.17 | 34.4 | 28.5 | 19.9 |
-| 0.3 | 0.24 | 18.4 | 2.7 | 0.86 |
-| 1.0 | 0.43 | 2.7 | 0.61 | 0.85 |
-
-At the default the intercept closed at 0.011 a row, against
-`2·alpha·√(1 − λ)` = 0.012. A larger `alpha` follows a break sooner and moves
-more from row to row at its steady state: at `alpha=1` the gap stops
-shrinking by 8 half-lives, within twice its steady state's. Over the 24 half-lives after the
-noise quadrupled, the default came at most 0.23 from the decayed least
-squares, and `alpha=1` 1.17.
+of its half-life.** Each coefficient steps by its gradient over the root of
+its recent squared gradients. Once those sums hold a break's large
+gradients, a coefficient closes on the break at about `2·alpha·√(1 − f)` a
+row, however large the error. Here `f` is the decay factor over one row's
+clock, `0.5 ** (1 / half_life)` at one row a clock unit. Just after the
+break, before the sums have grown, a coefficient moves faster, by up to
+about `alpha` in one row. The
+[`ftrl` docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl)'s
+Notes, under *Breaks*, measure how far each `alpha` stays from the
+decayed least-squares fit after a break.
 
 1. **Estimate the largest break to follow, `D`, in the coefficient's
    units.**
-2. **Choose the rows you can wait to follow it.** At `half_life=200` and
-   one row a clock unit, `√(1 − λ)` is 0.059, so the default `alpha` follows
-   a break of 20 in about 1,700 rows.
-3. **Give `alpha` the value `D / (2 · rows · √(1 − λ))`,** and accept that
-   the coefficients move more from row to row at their steady state.
+2. **Choose the rows you can wait to follow it.**
+3. **Give `alpha` the value `D / (2 · rows · √(1 − f))` as a first
+   estimate.** At `half_life=200` and one row a clock unit, `√(1 − f)` is
+   0.059, so at the default `alpha` the estimate for a break of 20 is
+   1,700 rows.
+4. **Count the rows on a planted break, as the recipe does, and increase
+   `alpha` if they are too many.** The estimate is not a bound. Over
+   breaks of 2 and 20 in the intercept, at half-lives of 200 and 1,000
+   and `alpha` from 0.1 to 1, the rows to cover 90% of a break came to
+   0.37 to 1.54 times it.
+
+A larger `alpha` follows a break sooner, and moves the coefficients more
+from row to row at their steady state.
 
 The recipe plants a level that jumps by 20, and prints each `alpha`'s rows
-to cover 90% of the jump beside `D / (2·alpha·√(1 − λ))`. Beside them, it
-prints the intercept's standard deviation over the 2,000 rows before the
-jump, where the truth holds still at 0. This code builds its own data:
+to cover 90% of the jump beside the estimate for the whole jump,
+`D / (2·alpha·√(1 − f))`. Beside them, it prints the intercept's standard
+deviation over the 2,000 rows before the jump, where the truth holds still
+at 0. This code builds its own data:
 
 ```python
 # y = level + x plus noise, where the level jumps from 0 to 20 at row 4,000.
@@ -143,22 +141,23 @@ specs = [po.spec.ftrl(f"alpha_{a:g}", targets=["y"], features=["x"], loss="squar
 out = pl.scan_parquet("level.parquet").online.fit_predict(specs).collect()
 
 # Rows to cover 90% of the jump, beside the pace's estimate, and the spread at steady state.
-root = math.sqrt(1 - 0.5 ** (1 / 200))                 # the root of 1 less the decay over one row
+root = math.sqrt(1 - 0.5 ** (1 / 200))                 # √(1 − f), f the decay factor over one row
 for a in alphas:
     intercept = out[f"alpha_{a:g}"].struct.field("coef").list.get(0).to_numpy()
     rows = int(np.argmax(intercept[4_000:] >= 18.0))
-    print(f"alpha {a:<3g}: {rows:>4} rows to cover 90% of the jump (D / (2·alpha·√(1 − λ)) = {20 / (2 * a * root):.0f}), "
+    print(f"alpha {a:<3g}: {rows:>4} rows to cover 90% of the jump (D / (2·alpha·√(1 − f)) = {20 / (2 * a * root):.0f}), "
           f"steady-state spread {intercept[2_000:4_000].std():.3f}")
 ```
 
 ```text
-alpha 0.1: 1895 rows to cover 90% of the jump (D / (2·alpha·√(1 − λ)) = 1700), steady-state spread 0.037
-alpha 0.3:  716 rows to cover 90% of the jump (D / (2·alpha·√(1 − λ)) = 567), steady-state spread 0.060
-alpha 1  :  165 rows to cover 90% of the jump (D / (2·alpha·√(1 − λ)) = 170), steady-state spread 0.109
+alpha 0.1: 1895 rows to cover 90% of the jump (D / (2·alpha·√(1 − f)) = 1700), steady-state spread 0.037
+alpha 0.3:  716 rows to cover 90% of the jump (D / (2·alpha·√(1 − f)) = 567), steady-state spread 0.060
+alpha 1  :  165 rows to cover 90% of the jump (D / (2·alpha·√(1 − f)) = 170), steady-state spread 0.109
 ```
 
-Each `alpha` follows the jump in about the rows the pace sets, and the
-intercept's spread at its steady state grows with `alpha`. [Choose `ftrl`'s
+Each `alpha` covers 90% of the jump in about the rows the estimate gives
+for the whole of it: 1,895 against 1,700 at the default. The intercept's
+spread at its steady state grows with `alpha`. [Choose `ftrl`'s
 penalties](choose-ftrl-penalties.md) sets the penalties that shrink the
 same fit.
 
@@ -246,4 +245,4 @@ its steady state or jump at one bad row.
 **Compare the settings' out-of-sample errors on the same rows.** Run one
 spec per value in one bank, and score them with `po.eval.grid_search`, as
 [The learning rate](../CALIBRATION.md#the-learning-rate) does for `sgd`'s
-`learning_rate`, `pa`'s `c` and `ftrl`'s `alpha`.
+`learning_rate`, and the same way for `pa`'s `c` and `ftrl`'s `alpha`.

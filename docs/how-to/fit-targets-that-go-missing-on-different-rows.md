@@ -2,8 +2,8 @@
 # Fit targets that go missing on different rows
 
 This how-to is for anyone who fits several targets on the same features,
-where each target is null on rows of its own. It keeps each target's fit
-learning from every row its own target is present on. That takes one
+where each target is null on rows of its own. The steps keep each
+target's fit learning from every row on which that target is present. That takes one
 `rls` spec per target, or one `ewridge` spec, whose `target_gaps` decides
 which rows each target's fit reads.
 
@@ -27,24 +27,29 @@ These steps need the library:
 `rls`, recursive least squares, solves the ridge fit exactly on every row
 by folding the row into a kept factor of its running sums.
 
-**The targets share one Cholesky factor of `A`, so a row with any target
-null is predicted for every target and learned for none.** When the
+**The targets share one factor of the running sums, so a row with any
+target null is predicted for every target and learned for none.** When the
 targets go missing on different rows, give each its own `rls` spec.
-Otherwise one spec holds them all. `A` is the decayed sum of `w·z zᵀ` over
-the rows learned, `z` a row's features with the intercept's 1 in front.
+Otherwise one spec holds them all.
 
-1. **Check which rows each target is present on.** Where every target is
-   present on the same rows, keep them in one `rls` spec.
+1. **Check which rows each target is present on.** Compare the targets'
+   `is_null()` with Polars:
+   `pl.scan_parquet(...).select((pl.col("a").is_null() != pl.col("b").is_null()).sum()).collect()`
+   counts the rows where `a` and `b` differ. Where it is 0, keep them in
+   one `rls` spec.
 2. **Otherwise, build one `rls` spec per target,** each naming one target
    in `targets=` and the same features.
 3. **Give every spec to one bank.** The bank reads the stream once for all
    of them.
 
-## Or fit them all in one `ewridge` spec
+## Fit them all in one `ewridge` spec
 
 `ewridge`, exponentially weighted ridge regression, solves its fit from
-its running sums on a schedule. Its `target_gaps` decides which rows a
-target's fit is read from where the target is null on some:
+its running sums on a schedule. A null target is still predicted, and
+[`weight_sum`](../GLOSSARY.md#warm-up-and-readiness), the weight the model
+has accumulated, counts every row. `target_gaps` decides which rows a
+target's fit is read from where the target is null on some. `lasso` takes
+`target_gaps` too, with the same two values.
 
 | `target_gaps` | the feature covariance is taken over | what that gives |
 |---|---|---|
@@ -58,9 +63,6 @@ target's fit is read from where the target is null on some:
 3. **Give `target_gaps="pairwise"` where the gaps have nothing to do with
    the features,** to keep one matrix however many patterns of missing
    rows the targets make.
-
-Either way `weight_sum` counts every row, and a null target is still
-predicted. `lasso` takes `target_gaps` too, with the same two values.
 
 The recipe plants two targets on one feature `x`. Target `b` goes missing
 from row 3,000, and from there `a`'s slope on `x` steps from 2 to 3. It
@@ -97,21 +99,23 @@ bank.fit(pl.scan_parquet("two_targets.parquet"))
 # a's slope on x at the last row, beside the planted 3.
 slopes = bank.coef().filter(target="a", term="x")
 for spec, slope in slopes.select("spec", "coef").iter_rows():
-    print(f"{spec:>14}: a's slope {slope:.2f} (planted 3)")
+    print(f"{spec:>14}: a's slope {slope:.3f} (planted 3)")
 ```
 
 ```text
-      rls_both: a's slope 2.00 (planted 3)
-         rls_a: a's slope 3.00 (planted 3)
-ridge_own_rows: a's slope 2.99 (planted 3)
-ridge_pairwise: a's slope 2.98 (planted 3)
+      rls_both: a's slope 2.000 (planted 3)
+         rls_a: a's slope 2.978 (planted 3)
+ridge_own_rows: a's slope 2.979 (planted 3)
+ridge_pairwise: a's slope 2.979 (planted 3)
 ```
 
 The `rls` spec over both targets learned nothing from row 3,000 on, since
 every row there has `b` null, so it still reports the first half's slope.
-Its own spec, and either `ewridge` spec, follow `a` to its new slope. Here
-`b`'s gaps have nothing to do with `x`, so `"pairwise"` gives `a` the same
-fit as `"own_rows"`.
+Its own spec, and either `ewridge` spec, follow `a` to its new slope. They
+stand a little under 3 because, at a half-life of 500 rows, about 2% of
+the weight still sits on the rows before the step. `a` has no gaps, so
+`"pairwise"` and `"own_rows"` read its fit from the same rows, and give it
+the same slope.
 
 ## Check the result
 

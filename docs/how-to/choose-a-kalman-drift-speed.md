@@ -24,7 +24,7 @@ These steps need the library and a stream with a clock:
 
 `coef_half_life` is how fast a [coefficient](../GLOSSARY.md#fitting-a-model)
 may drift, as a [half-life](../GLOSSARY.md#time) in clock units on the
-standardized features. A short one follows a coefficient that moves, and
+features standardized by `standardize`, the default. A short one follows a coefficient that moves, and
 a long one averages more rows for a coefficient that holds still.
 
 **For a drift rate per coefficient, give `coef_half_life` a list with the
@@ -55,12 +55,15 @@ yet seen ranks the settings fairly, in one pass over the stream.
    chooses from earlier rows before each span it reports on. [Choosing
    with `po.eval.grid_search`](../CALIBRATION.md#choosing-with-poevalgrid_search)
    describes its keywords and the frame it returns.
-3. **Run the spec ranked 1.** The `choice` row's error is the one to report
-   for it, since the rows that made the choice did not score it.
+3. **Run the spec ranked 1 on the rows to come.** Read its name with
+   `table.filter(kind="candidate", rank=1)["spec"]`. The `choice` row's
+   error is the one to report for it, since the rows that made the choice
+   did not score it.
 
 The recipe plants a slope on `x0` that wanders, a fixed slope on `x1` and
-noise of variance 1. No fit can predict closer than that noise, so 1.00 is
-the floor each spec's error is printed beside. This code builds its own
+noise of variance 1. No fit can predict closer than that noise on average,
+so 1.00 is the floor each spec's error is printed beside. On a finite
+sample a spec can land a hair under it. This code builds its own
 data:
 
 ```python
@@ -124,8 +127,10 @@ the intercept's entry at `inf`, as in `[float("inf"), 50.0, 50.0]`.
 1. **Give `revert_half_life` a list, the intercept first.** Keep the
    intercept's entry at `inf`, and give the occasional feature's slope a
    reversion half-life in clock units, such as `[float("inf"), 200.0]`.
-2. **Run the query.** Between bursts the slope decays toward zero, so the
-   next burst starts from no effect rather than from the last burst's.
+2. **Run the specs in a query,** as
+   `pl.scan_parquet(...).online.fit_predict(specs)` does in the recipe.
+   Between bursts the slope decays toward zero, so the next burst starts
+   from no effect rather than from the last burst's.
 
 In the recipe, `x` is active for 100 rows in every 1,000, and each burst
 has its own slope, 2 or −2, drawn at random. So the last burst's slope
@@ -171,22 +176,29 @@ is as likely to be wrong in sign as right. The reverting slope starts each
 burst near zero, and reaches 1.92 of the planted 2 by the burst's end: the
 pull holds it a little below its true size.
 
-## Let a prediction far past the data approach the intercept
+## Let a prediction far past the data return to the target's level
 
-**To let a far prediction approach the intercept, give a `gap_cap` that
-spans several of the slopes' reversion half-lives, and keep the
-intercept's `revert_half_life` at `inf`.** `predict` applies the reversion by
-the same `Φ` over the clock since the last learned row, capped by
-`gap_cap`, so a slope keeps at least `2^(−gap_cap/κ_i)` of its value.
-Under `standardize` the intercept is the target's level at the features'
-means.
+**To let a far prediction return to the target's level, give a `gap_cap`
+that spans several of the slopes' reversion half-lives, and keep the
+intercept's `revert_half_life` at `inf`.** `predict` shrinks each slope by
+`2^(−d/κ)`, where `d` is the clock since the last learned row, capped by
+`gap_cap`, and `κ` is the slope's `revert_half_life`. So a slope keeps at
+least `2^(−gap_cap/κ)` of its value.
+
+Under `standardize` the reversion shrinks the standardized slopes. So a far
+prediction approaches the target's level at the features' means. That
+level equals `bank.coef()`'s intercept, which is in the features' original
+units, only where the features average 0.
 
 1. **Give the slopes a finite `revert_half_life`, and the intercept
    `inf`,** as in [Forget a feature that is active only now and
    then](#forget-a-feature-that-is-active-only-now-and-then).
 2. **Give `gap_cap` several of the slopes' reversion half-lives.** With a
    reversion half-life of 200 clock units, a `gap_cap` of 1,000 leaves a
-   slope `2^(−5)`, about 3%, of its value.
+   slope `2^(−5)`, about 3%, of its value. `gap_cap` also caps every clock
+   step the fit learns over, for the decay, the drift and the reversion
+   alike. So on a stream with steps longer than the old `gap_cap`, a larger
+   one changes the fit itself, not only the far predictions.
 3. **Predict the rows past the data with `bank.predict`.** It learns
    nothing, and moves each coefficient over the clock since the last
    learned row, capped by `gap_cap`.
@@ -195,7 +207,9 @@ The recipe fits the burst stream twice, with a `gap_cap` of 10 and of
 1,000, and predicts two rows 1,000 clock units past the last one, at
 `x = 0` and `x = 1`. Their difference is the slope the prediction reads,
 printed beside `2^(−gap_cap/κ)` times the slope at the last learned row.
-This code reads `bursts.parquet`, which the burst recipe wrote:
+The stream's clock steps by 1 a row, so `gap_cap` changes no step the fit
+learns over. This code reads `bursts.parquet`, which the burst recipe
+wrote:
 
 ```python
 # The reverting spec under a short and a long gap_cap, fitted on the same rows.
@@ -223,22 +237,48 @@ gap_cap   1000: slope read 0.0596, 2^(-gap_cap/200) x 1.9073 = 0.0596; predictio
 
 Under the short `gap_cap`, a prediction 1,000 clock units out still reads
 almost the whole slope. Under the long one, it reads 3% of it, and the
-prediction stands near the intercept.
+prediction stands near the target's level. `x` is 0 between its bursts and
+averages about 0 within them, so here that level is about `bank.coef()`'s
+intercept, which the recipe prints.
 
 ## Set the process noise outright
 
 **To set the process noise outright, give `q=` in place of
-`coef_half_life`.** Each `q_i` is added as `q_i·D²` in the coefficient's
-squared own units, and is measured against the noise estimate, the one
-place the estimate reaches the fit. `D` is the clock since the row that
-last observed the target. Give one value per coefficient, the intercept
-first, each finite and at least 0. The spec takes exactly one of `q` and
-`coef_half_life`:
+`coef_half_life`.** `q_i` is added to coefficient `i`'s variance as
+`q_i·D²`, where `D` is the clock since the row that last observed the
+target. Its units are the coefficient's units squared per clock unit
+squared, and under `standardize` a slope is in the target's units per
+standard deviation of its feature. `q` is measured against the noise
+estimate, the one place the estimate reaches the fit.
+
+1. **Give `q` one value per coefficient, the intercept first,** each
+   finite and at least 0. A 0 holds its coefficient still.
+2. **Leave out `coef_half_life`.** The spec takes exactly one of `q` and
+   `coef_half_life`.
+
+The recipe gives the first recipe's stream, whose `x0` slope walks by
+steps of standard deviation 0.02 a row, three values of `q` for that slope.
+Its variance per row is 0.0004, against noise of variance 1. This code
+reads `drift.parquet`, which the first recipe wrote:
 
 ```python
-by_q = po.spec.kalman("by_q", targets=["y"], features=["x"], clock="t", gap_cap=10.0, half_life=500.0,
-                      q=[0.0, 1e-3])                    # the intercept holds still, x's slope walks
+# x0's slope drifts and the rest holds still; one spec per value of x0's q.
+common = dict(targets=["y"], features=["x0", "x1"], clock="t", gap_cap=5.0, half_life=500.0)
+specs = [po.spec.kalman(f"q_{q:g}", q=[0.0, q, 0.0], **common) for q in (4e-5, 4e-4, 4e-3)]
+table = po.eval.grid_search(pl.scan_parquet("drift.parquet"), specs)
+for spec, mse, rank in table.filter(kind="candidate").select("spec", "mse", "rank").iter_rows():
+    print(f"{spec:>8}: mse {mse:.4f}, rank {rank}")
 ```
+
+```text
+ q_4e-05: mse 1.0085, rank 2
+q_0.0004: mse 0.9961, rank 1
+ q_0.004: mse 1.0122, rank 3
+```
+
+The planted variance predicts closest. It is close to the process noise
+that `coef_half_life=30` gives, `(ln 2 / 30)²` or about 0.0005 in units of
+the noise's variance, the speed that ranked 1 in the first recipe.
 
 ## Check the result
 

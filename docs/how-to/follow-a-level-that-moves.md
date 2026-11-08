@@ -7,8 +7,8 @@ the value it moves about, drifts or jumps, and wants the fit to keep up.
 `pa` and `sgd` learn by moving their coefficients a step at each row, so
 the fit reaches a new level only as fast as its steps carry it. To keep
 `pa` up, give it a larger cap on its step, or a target with the level
-taken out. To keep `sgd` up under its Huber loss, give the scale its steps
-are clipped in a shorter memory.
+taken out. To keep `sgd` up under its Huber loss, give the scale that
+clips its steps a shorter memory (`huber_scale_half_life`).
 
 ## Prerequisites
 
@@ -30,15 +30,20 @@ coefficients, and a `pa1` cap of 1, the default, moves the intercept about
 one unit a row. So on a target far from 0, or one that moves faster than that,
 the default fit lags behind.
 
-1. **Give the spec `c=10`, or larger.** On a target falling from 1,000 to
-   −1,000 at 0.5 a row, at a
-   [half-life](../GLOSSARY.md#time) of 200 rows and noise 0.3, the
-   default's intercept met the level near row 670. With the level as a
-   feature too, the default cap's steps, mapped into the caller's units
-   through the scaler, swung the fit far past the level instead. With
-   `c=10`, every row stayed within 3 of its target from row 467.
+1. **Give the spec `c=10`, or larger.**
 2. **Fit the spec as you would at the default `c`,** with `fit_predict`, or
    a query's `online.fit_predict`.
+
+On a target falling from 1,000 to −1,000 at 0.5 a row, at a
+[half-life](../GLOSSARY.md#time) of 200 rows and noise 0.3, three runs
+show the cap's effect. With the intercept alone fitting the level, the
+default's intercept met the level near row 670. With the level as a
+feature too, the default cap's steps swung the fit far past the level
+instead. Each step is taken on the standardized features
+(`standardize=True`, the default) and mapped back into the caller's
+units. With `c=10` and the level as a feature, every row stayed within 3
+of its target from row 467. The recipe in [Difference the target for
+`pa`](#difference-the-target-for-pa) runs the last two.
 
 **A drift the intercept carries alone keeps a lag of about 2 at any `c`.**
 Half of that lag comes from `pa`'s margin, `eps`, which is measured in
@@ -59,7 +64,8 @@ last row's target plus the predicted change.
    `targets=["dy"]`.
 3. **Read the level back with `with_columns` after the bank,** as the
    last row's `y` plus the predicted change:
-   `pl.col("y").shift(1) + pl.col("d").struct.field("pred_dy")`.
+   `pl.col("y").shift(1) + pl.col("d").struct.field("pred_dy")`, where `d`
+   is the spec's name, and so its output column.
 
 This code builds the falling target of [Give `pa` a larger
 `c`](#give-pa-a-larger-c), with the level itself as the feature `level`.
@@ -126,11 +132,12 @@ target*, give these runs and more.
 
 **On a stream whose level can change, give `huber_scale_half_life` about
 a fifth of `half_life`, or shorter.** Under `loss="huber"`, `sgd` clips
-each row's gradient at `delta·s`, where `s` is the scale of its residuals
+each row's gradient at `huber_delta·s`, where `huber_delta` is 1.345 by
+default and `s` is the scale of its residuals
 (the target less the prediction). Under the default `huber_scale="mad"`,
 `s` is a median, so `sgd`'s Huber loss follows a change of level far more
 slowly than under `"rms"`, a root mean square. While `s` is the noise's
-scale, the intercept moves at most `learning_rate·delta·s` a row. So a
+scale, the intercept moves at most `learning_rate·huber_delta·s` a row. So a
 shift many times the noise waits until the median itself has crossed to
 the new level. [A level shift: the trade-off a robust scale
 makes](../explanation/robust-scale.md#a-level-shift-the-trade-off-a-robust-scale-makes)
@@ -144,24 +151,14 @@ explains why a robust scale holds a fit back after a shift.
    of outliers. A shorter memory follows a shift sooner, but it also
    widens the cut sooner in a long burst of outliers.
 
-For `huber`, the mean absolute error under the MAD scale (`"mad"`) 200-400
-rows after the shift was 19.5, against 15.1 under `"rms"`. For `sgd` the
-error under `"mad"` is seven times the error under `"rms"`. The stream
-both were measured on is `y = 2x + 0.5ε`, with a fit half-life of 500
-rows, a shift of +20 at row 10,000 and no outliers. On it, `sgd` gives
-these mean absolute errors after the shift, and these counts of rows after
-the shift until every 200-row average stays under 1.0:
-
-| `sgd` | rows 0-200 after the shift | rows 200-400 | rows after the shift until every 200-row average stays under 1.0 |
-|---|---|---|---|
-| `loss="squared"` | 8.67 | 1.17 | 418 |
-| `loss="huber"`, `"rms"` | 13.55 | 2.45 | 493 |
-| `loss="huber"`, `"mad"`, the scale's half-life the fit's 500 rows | 19.26 | 17.33 | 885 |
-| `loss="huber"`, `"mad"`, `huber_scale_half_life=100` | 15.81 | 2.99 | 510 |
-| `loss="huber"`, `"mad"`, `huber_scale_half_life=20` | 10.34 | 1.41 | 440 |
-
-Seeds 2 and 3 agree to within 0.06. This code runs the table's five fits
-on its stream, seed 1, and prints both measures:
+The recipe measures `sgd` on `y = 2x + 0.5ε`, with a fit half-life of 500
+rows, a shift of +20 at row 10,000 and no outliers. It runs five fits: the
+squared loss, the Huber loss under `"rms"`, and the Huber loss under
+`"mad"` with the scale's half-life at the fit's 500 rows, at 100 and at
+20. For each it prints the mean absolute error over rows 0-200 and
+200-400 after the shift, and the rows after the shift until every 200-row
+average of the error stays under 1.0. Seeds 2 and 3 agree with seed 1,
+the one shown, to within 0.06. This code builds its own data:
 
 ```python
 import numpy as np
@@ -201,12 +198,17 @@ mad_100       15.81          2.99  510
 mad_20        10.34          1.41  440
 ```
 
+Under `"mad"` at the fit's half-life, the error over rows 200-400 is
+seven times the error under `"rms"`. A scale's half-life of 100, a fifth
+of the fit's, brings it near the `"rms"` fit's.
+
 ## Check the result
 
 **Measure the error after a known shift, at each setting, on rows where
 you know the level.** Plant a shift or a drift in rows of your own, or
 pick a stretch of your stream where the level is known to have moved. Then
-compare two measures, as the two recipes do: the mean absolute error over
-the rows after the move, and the row from which the error stays small.
+compare two measures, as the second recipe does: the mean absolute error
+over the rows after the move, and the row from which the error stays
+small.
 Both come from each spec's `pred_<target>` field less the target, row by
 row.

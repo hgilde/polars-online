@@ -7,7 +7,8 @@ run here in order, in the namespace the README's *Example data* builds (a
 page names that as a prerequisite and links it), as a reader runs them: a
 block reads what an earlier block of the page built. A block followed by a
 ```text block is held to it with ``tests/doc_recipes.py``'s
-``differences``. Each ```sh block followed by a ```text block runs through the
+``differences``, a line that starts with ``time`` held to its words alone
+(``untimed``). Each ```sh block followed by a ```text block runs through the
 built ``polars-online`` in a directory of its own, as the runner guide's do.
 
 A page is found by its directory, so a page a later stage adds is held from
@@ -25,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from doc_recipes import differences, fenced_blocks, shown_outputs
+from doc_recipes import differences, fenced_blocks, shown_outputs, untimed
 from test_production_hardening import _as_a_terminal_shows, _readme_namespace
 
 TIER = "essential"
@@ -65,8 +66,10 @@ def test_a_pages_python_runs_in_order_and_prints_what_it_shows(page, tmp_path, m
             exec(compile(textwrap.dedent(code), f"{_rel(page)}:{line}", "exec"), ns)
         after = blocks[j + 1] if j + 1 < len(blocks) else None
         if after is not None and after[0] == "text":
-            shown = textwrap.dedent(after[2])
-            problems += [f"{_rel(page)}:{line}:\n{p}" for p in differences(shown, buf.getvalue())]
+            # A line that reports a time is the machine's: its words are held, as the README's are.
+            shown = untimed(textwrap.dedent(after[2]))
+            printed = untimed(buf.getvalue())
+            problems += [f"{_rel(page)}:{line}:\n{p}" for p in differences(shown, printed)]
     assert not problems, "\n\n".join(problems)
 
 

@@ -15,12 +15,6 @@ models take it: `ewridge`, `lasso`, `ew_cov`, `ew_class` and `marginal`.
 how the model cuts its running sums exactly, and shows a hard window forget
 a change that a half-life still holds.
 
-```
-weight(age) = 0.5 ** (age / half_life)   if age < window_size   (closed="right", the default)
-                                         or age <= window_size  (closed="both")
-            = 0                          otherwise
-```
-
 ## Prerequisites
 
 These steps need the library and a spec of one of the five models:
@@ -40,23 +34,32 @@ These steps need the library and a spec of one of the five models:
 before the change should count for nothing.** Two cases call for one:
 
 - **Give a `marginal` screen a `window_size` when a relation may flip
-  sign**, because two regimes of opposite sign average to nothing over a
+  sign**, because two spans of opposite sign average to nothing over a
   long history. The hard window truncates every pair moment, so `corr`,
   `beta` and `t_stat` describe the rows inside it.
 - **Give an `ew_class` `window_size` when the class means move,** because
-  over a long history two regimes average together. Each class's moments
+  over a long history the spans before and after a move average
+  together. Each class's moments
   then cover only the rows inside the hard window.
 
 1. **Give `window_size` the span to keep, in clock units,** as
    `window_size=100.0` for the last 100 units of `t`. The model then keeps
-   a ring of snapshots of its running sums, one every row by default, to
-   cut them at the hard window's edge.
+   a ring of snapshots of its [running sums](../GLOSSARY.md#fitting-a-model),
+   one every row by default, to cut them at the hard window's edge.
 2. **Choose `closed` for the row exactly `window_size` old,** as Polars'
    `rolling_*_by(closed=)` does. Under `"right"`, the default, that row
    has left, as it has in the [window
    operators](../../README.md#making-features-and-targets-from-windows)
    and in `rolling_sum_by`.
-   Under `"both"` it stays. A model's window always holds the row it ends
+   Under `"both"` it stays. A row's weight is then:
+
+   ```
+   weight(age) = 0.5 ** (age / half_life)   if age < window_size   (closed="right", the default)
+                                            or age <= window_size  (closed="both")
+               = 0                          otherwise
+   ```
+
+   A model's window always holds the row it ends
    at, because the model reads its fit after it has learned that row. So
    `"left"` and `"none"` are refused, and so is `"both"` without a
    `window_size`.
@@ -70,9 +73,9 @@ before the change should count for nothing.** Two cases call for one:
    of times. `max_rows_between_snapshots` caps the rows between them, and
    whichever comes first takes a snapshot. Under `snapshot_every` the hard
    window in effect spans `[window_size − snapshot_every, window_size]`,
-   whatever the row rate, with `snapshot_every` the spacing in force: a
-   `window_budget` that thins the ring (drops every other snapshot)
-   doubles it.
+   whatever the row rate, with `snapshot_every` the spacing in force. A
+   `window_budget` that thins the ring doubles that spacing, as [Cap the
+   snapshots' memory](#cap-the-snapshots-memory) explains.
 
 This code screens `signal_a` and `signal_b` against `ret` over every row,
 and over a hard window of the last 100. It uses `ticks.parquet` from
@@ -98,13 +101,13 @@ whole  beta +0.10, t_stat +1.2, weight_sum 400 (planted beta -0.80)
 recent beta -0.78, t_stat -3.7, weight_sum 100 (planted beta -0.80)
 ```
 
-Over every row, the two regimes average to a coefficient near 0 that a
+Over every row, the spans before and after the break average to a coefficient near 0 that a
 screen would pass over. The hard window reads the new one.
 
 ## Know what each model keeps inside the window
 
-What the window truncates depends on the model, and each refuses some
-settings beside `window_size`:
+What the window truncates depends on the model, and some refuse settings
+beside `window_size`:
 
 | model | inside the window | refused beside `window_size` |
 |---|---|---|
@@ -112,12 +115,14 @@ settings beside `window_size`:
 | `lasso` | the same, and the error that selects the penalty. A feature that stays constant inside the window has no evidence there, and goes to exactly zero | |
 | `ew_cov` | every moment, and `mahal`, `partial_corr` and the principal components read from them | `lags`, `mahal_quantiles` |
 | `ew_class` | each class's moments, so the classifier follows class means that move | |
-| `marginal` | every pair's weight, means and second moments, so `corr`, `beta` and `t_stat` describe the window. Its lag correlations, under `window_lags=True`, are the window's rows' own, about the window's means, the first `l` rows paired with the rows before the window | `bins`, `feature_moments="shared"`, and `lags` unless `window_lags=True` |
+| `marginal` | every pair's weight, means and second moments, so `corr`, `beta` and `t_stat` describe the window. Its lag correlations, under `window_lags=True`, are the window's rows' own, about the window's means, the first `l` rows paired with the rows before the window | `bins` or `bin_edges`, `feature_moments="shared"`, and `lags` unless `window_lags=True` |
 
 **To bin a `marginal`'s features beside a hard window, bin them in a second
-spec without one,** since a hard window refuses `bins`. To use `lags`
-under a hard window, give `window_lags=True`, whose docstring entry gives
-the memory its snapshots take.
+spec without one,** since a hard window refuses `bins` and `bin_edges`.
+
+**To keep a `marginal`'s `lags` under a hard window, give
+`window_lags=True`,** whose docstring entry gives the memory its snapshots
+take. `ew_cov` refuses `lags` beside `window_size` outright.
 
 ## Cap the snapshots' memory
 
@@ -136,39 +141,45 @@ the rows between snapshots.
    | `{"thin": 64}` | the ring drops every other snapshot and doubles its spacing, on the clock or in rows, which, like `snapshot_every`, only ever shortens the window |
    | `{"refuse": float("inf")}` | nothing: no cap |
 
-2. **After a refusal you did not expect, rebuild the bank from its last
-   save with `po.ModelBank.load`.** A refusal comes before the bank learns
-   any of the chunk, except for two overruns found only as the rows go in.
-   One is under `drift_action="reset"`. The other is a snapshot that grows
-   within the chunk, as an `ewridge`'s or a `lasso`'s does when its targets
-   first go missing on different rows. After either, the bank refuses every
-   call that follows.
+2. **After a refusal, increase the cap or give `{"thin": ...}`, and feed
+   the chunk again.** A refusal comes before the bank learns any of the chunk,
+   so the bank goes on as it was. Two overruns are found only as the rows
+   go in. One is under `drift_action="reset"`. The other is a snapshot that
+   grows within the chunk, as an `ewridge`'s or a `lasso`'s does when its
+   targets first go missing on different rows. After either, the bank
+   refuses every call that follows, so rebuild it from its last save with
+   `po.ModelBank.load`.
 
 ## Check the result
 
 **Fit the same spec without `window_size` on the rows inside the window
-alone, and compare the two fits on the last row:** they agree. This code
-compares `ewridge`'s coefficients under a flat hard window of 100 units of
-`t` with the same spec fitted to the last 100 rows. It uses `ticks.parquet` from [Example
+alone, and compare the two fits on the last row:** they agree when the
+model takes a snapshot every row, the default, and no `window_budget`
+thins them. Choose the rows inside the window by the clock, with
+`pl.col("t") > last_t - window_size` under the default `closed="right"`.
+This code compares `ewridge`'s coefficients under a flat hard window of
+100 units of `t` with the same spec fitted to the rows of the last 100
+units. It uses `ticks.parquet` from [Example
 data](../../README.md#example-data):
 
 ```python
-# A flat hard window of the last 100 units of t, and the same spec on the last 100 rows alone.
+# A flat hard window of the last 100 units of t, and the same spec on those rows alone.
 common = dict(targets=["ret"], features=["signal_a"], clock="t", gap_cap=300.0,
               half_life=float("inf"), coef_every=0)          # the coefficients on every row
 windowed = po.spec.ewridge("windowed", window_size=100.0, **common)
 alone = po.spec.ewridge("alone", **common)
 in_window = pl.scan_parquet("ticks.parquet").online.fit_predict([windowed]).collect()
-last_rows = pl.scan_parquet("ticks.parquet").tail(100).online.fit_predict([alone]).collect()
+last_t = pl.scan_parquet("ticks.parquet").select(pl.col("t").max()).collect().item()
+last_rows = pl.scan_parquet("ticks.parquet").filter(pl.col("t") > last_t - 100.0).online.fit_predict([alone]).collect()
 # The last row's [intercept, signal_a] each way.
 a = in_window["windowed"].struct.field("coef")[-1]
 b = last_rows["alone"].struct.field("coef")[-1]
-print(f"hard window: {a[1]:+.4f}; the last 100 rows alone: {b[1]:+.4f}")
+print(f"hard window: {a[1]:+.4f}; the last 100 units' rows alone: {b[1]:+.4f}")
 print(f"the same within 1e-12: {(a - b).abs().max() < 1e-12}")
 ```
 
 ```text
-hard window: -0.7815; the last 100 rows alone: -0.7815
+hard window: -0.7815; the last 100 units' rows alone: -0.7815
 the same within 1e-12: True
 ```
 

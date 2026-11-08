@@ -4,8 +4,8 @@
 This how-to is for anyone who fits `lasso`, the sparse regression that
 gives some features a coefficient of exactly zero and picks its penalty
 as the stream runs. It sets the `penalties` to try, how the penalty in
-force is ranked (`select_half_life`), and how many sweeps each solve may
-take (`max_iter`).
+force is ranked (`select_half_life`), and how many sweeps each descent
+may take (`max_iter`).
 
 ## Prerequisites
 
@@ -19,23 +19,20 @@ These steps need the library:
   [MODELS.md](../MODELS.md#lasso--lasso-path-its-penalty-chosen-as-it-runs)
   gives its update equation.
 
+## Scale the penalties with the target
+
 `lasso` keeps the [running sums](../GLOSSARY.md#fitting-a-model) of
 `ewridge` and solves them, on a schedule, by coordinate descent at each
 penalty of `penalties`. Each penalty is a [grid
 point](../GLOSSARY.md#grids) with a prediction of its own, and
 `penalty_selected_<t>` names the one with the lowest exponentially
 weighted [out-of-sample](../GLOSSARY.md#fitting-a-model) squared error so
-far, as it stood before the row. To run the same path offline on a Gram,
-use `po.gram.lasso_path`, as [Choosing columns on the lasso
-path](../GRAM.md#choosing-columns-on-the-lasso-path) in GRAM.md shows.
+far, as it stood before the row.
 
-## Scale the penalties with the target
-
-**Scale `penalties` with the target.** The L1 threshold `l·l1_ratio` is in
-the target's units, so for a pure lasso, a target ten times larger needs
-penalties ten times larger to zero the same coefficients. Here `l` is one
-penalty of `penalties`, and `l1_ratio`, 1 by default, is the share of it
-that is L1.
+**Scale `penalties` with the target.** Each penalty `l` of `penalties`,
+times `l1_ratio`, the share of it that is L1 (1 by default), is an L1
+threshold in the target's units. So for a pure lasso, a target ten times
+larger needs penalties ten times larger to zero the same coefficients.
 
 1. **Choose the penalties in the target's units,** strictly decreasing,
    each finite and at least 0. Each solve runs one descent for each
@@ -109,7 +106,8 @@ the model's half-life.
 1. **Keep the default where the best penalty may change,** so the choice
    forgets at the pace the fit does.
 2. **Give `select_half_life=float("inf")` where it should not,** so every
-   error the stream has made counts toward the choice:
+   error the stream has made counts toward the choice. This line reuses
+   the first recipe's `penalties` and `common`:
 
 ```python
 steady = po.spec.lasso("steady", targets=["y"], penalties=penalties, select_half_life=float("inf"), **common)
@@ -118,8 +116,8 @@ steady = po.spec.lasso("steady", targets=["y"], penalties=penalties, select_half
 ## Give a larger `max_iter` when a descent runs out
 
 Within a solve, the descent stops after `max_iter` sweeps, 100 by default,
-or after a sweep that moved no coefficient by more than its tolerance,
-`tol`. A descent that runs out of sweeps first leaves that penalty's fit
+or after a sweep that moved no coefficient by more than `tol` (1e-10 by
+default) relative to the target's spread. A descent that runs out of sweeps first leaves that penalty's fit
 short of the lasso's solution.
 
 **If `bank.solve_failures()` counts a descent that ran out of its
@@ -133,8 +131,9 @@ descent*, measure how many sweeps they take.
    until the count is 0.
 
 The recipe makes `x1` nearly repeat `x0`, and counts the descents that ran
-out of sweeps at three values of `max_iter`. This code builds its own
-data:
+out of sweeps at three values of `max_iter`. This code continues from the
+first recipe, whose `x`, `rng`, `n`, `names`, `penalties` and `common` it
+reuses:
 
 ```python
 # The same target, with x1 now x0 plus a little noise, so the two nearly repeat each other.
@@ -163,9 +162,16 @@ At the default of 100 sweeps, thousands of descents stop short. At
 ## Check the result
 
 **Read `bank.solve_failures()`:** a count of 0 for the spec says every
-descent reached its tolerance. **Read the coefficients at the penalty in
-force:** filter `bank.coef()` by the `penalty` that the last row's
-`penalty_selected_<t>` names, and check that the features it keeps are
-the ones you expect to matter. [MODELS.md's
+descent reached its tolerance.
+
+**Read the coefficients at the penalty in force.** Fit with
+`bank.fit_predict`, and read the last row's `penalty_selected_<t>` from
+the spec's output column. Filter `bank.coef()` by that `penalty`, and
+check that the features it keeps are the ones you expect to matter.
+[MODELS.md's
 example](../MODELS.md#lasso--lasso-path-its-penalty-chosen-as-it-runs)
 reads them that way.
+
+To run the same path offline on a Gram, use `po.gram.lasso_path`, as
+[Choosing columns on the lasso
+path](../GRAM.md#choosing-columns-on-the-lasso-path) in GRAM.md shows.

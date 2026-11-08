@@ -12,7 +12,7 @@ work into pieces, one per [spec](../GLOSSARY.md#the-model-bank-and-what-it-reads
 and group, or one per spec without a `group`. It runs the pieces on its own
 threads, separate from Polars', largest first, so a few big groups do not
 leave cores idle at the end. So a bank with one spec, one group and one
-half-life is one thread's work per chunk, while Polars reads and writes in
+[half-life](../GLOSSARY.md#time) is one thread's work per chunk, while Polars reads and writes in
 parallel around it. All of it runs in one process, by design ([What this
 is not](../../README.md#what-this-is-not)). The thread count never changes
 the numbers, as [Why the thread count cannot change the
@@ -31,8 +31,8 @@ These steps need the library and a machine with several cores:
 
 ## Give the bank more pieces of work
 
-**To use more cores, give the bank more pieces of work: set `group=` on
-each spec, pass more specs, or both.**
+**To use more cores, give the bank more pieces of work: more groups, more
+specs, more half-lives, or a wide spec split across threads.**
 
 1. **Set `group=` on each spec** whose rows fall into groups, such as
    `group="stock_id"`. Each group is a piece of its own.
@@ -50,16 +50,16 @@ each spec, pass more specs, or both.**
 | specs, in the list the bank takes | one piece per spec | eight single-group specs, k=20 over 300k rows, run in 155 ms in one bank, against 641 ms one at a time |
 | half-lives, as a list given to `half_life=` | each half-life in a grid is its own set of running sums, and a piece's half-lives run in parallel on the bank's threads. Ridge and feature-set grids share one set of sums and are expanded at solve time, so they need no thread | |
 | `shards`, on a wide `marginal` | a piece that runs on several threads: `shards` splits its pairs across the bank's threads within a group ([`marginal`](../MODELS.md#marginal--every-pairs-moments-kept-in-the-state)) | |
-| `gram_threads`, on a wide `ewridge` or `ew_cov` | a piece that runs on several threads: the work on each row's `k × k` [Gram](../GLOSSARY.md#fitting-a-model), or a block's merge, is split across the bank's threads within a group, from 725 columns. A count caps the share of the threads. The default, `"auto"`, splits only when the groups running at once leave half the threads idle, since a split speeds a run up only on idle threads | one group at 2,000 features: 3.0× under `"auto"` on 14 threads; four groups at 800 features: 1.6×; 28 groups: even, where taking every thread was 9-11% slower ([`gram_threads`](../GRAM.md#one-wide-gram-on-several-threads)) |
+| `gram_threads`, on a wide `ewridge` or `ew_cov` | a piece that runs on several threads: the work on each row's `k × k` [Gram](../GLOSSARY.md#fitting-a-model), or a block's merge, is split across the bank's threads within a group, from 725 columns, or 256 under `gram_block_rows`. A count caps the share of the threads. The default, `"auto"`, splits only when the groups running at once leave half the threads idle, since a split speeds a run up only on idle threads | one group at 2,000 features: 3.0× under `"auto"` on 14 threads; four groups at 800 features: 1.6×; 28 groups: even, where taking every thread was 9-11% slower ([`gram_threads`](../GRAM.md#one-wide-gram-on-several-threads)) |
 | a Python thread that reads ahead | Python's global lock is released while a chunk is in the bank, so a Python reader thread can run ahead of `ModelBank.fit_predict` | |
 
 **Specs run side by side, and each gives the numbers it gives alone.**
 This code runs the comparison of the table's second row on a generated
 parquet file: eight `ewridge` specs of 20 features, one per half-life, in
-one bank and then one at a time. It prints the two times, which include
-reading the file and are your machine's: 0.42 s in one bank against
-1.56 s one at a time on the machine the table was measured on. It then
-prints whether the outputs are equal to the bit, which they are:
+one bank and then one at a time. It prints the two times, which are your
+machine's. They include reading the file, where the table times the bank
+alone, so they run longer than the table's. It then prints whether the
+outputs are equal to the bit, which they are:
 
 ```python
 import time
@@ -93,6 +93,11 @@ same = all(together[s["name"]].equals(a[s["name"]]) for s, a in zip(specs, alone
 print("the same output either way:", same)
 ```
 
+```text
+time: 0.42 s in one bank, 1.56 s one at a time
+the same output either way: True
+```
+
 ## Set the bank's thread count
 
 **Set the bank's thread count with `threads=`, on the bank or the call
@@ -111,8 +116,9 @@ namespaces' `fit_predict` and `predict` all take it. So do `po.gram`'s
    sizes it.
 
 The count is not saved with a state, and the output and the saved state
-are the same at any count. A count below 1, a float or a bool is refused,
-naming `threads`: 0 is not "one per core" here, `None` is.
+are the same at any count. A count below 1 or above 1024 (or the
+machine's core count, where that is larger), a float or a bool is
+refused, naming `threads`: 0 is not "one per core" here, `None` is.
 
 **Two environment variables size the default sets of threads, one for
 each:**
@@ -127,8 +133,9 @@ variable alone, before `import polars`: in the shell, as
 `POLARS_MAX_THREADS=8 python fit.py`, or with `os.environ` at the top of the
 script. `POLARS_ONLINE_MAX_THREADS` is read once, when the default threads
 are first used, and ignored after. `threads=` never reads it. A
-`POLARS_ONLINE_MAX_THREADS` that is not a whole number makes the first call
-that uses the default threads raise `ValueError`, naming the variable.
+`POLARS_ONLINE_MAX_THREADS` that is not a whole number, or is past the
+same bound as `threads`, makes the first call that uses the default
+threads raise `ValueError`, naming the variable.
 Giving both sets every core slows neither, because the bank's work never
 calls back into Polars' threads.
 
@@ -152,7 +159,7 @@ under any count. On 14 threads ([PERFORMANCE
 | the moments of one target alone | 1.2 times as fast, since the bank's own work on each row does not split |
 
 **A wide `ewridge` or `ew_cov` splits by `gram_threads`,** whose default,
-`"auto"`, already splits from 725 columns when the groups running at once
+`"auto"`, already splits from 725 columns, or 256 under `gram_block_rows`, when the groups running at once
 leave half the threads idle. [One wide Gram on several
 threads](../GRAM.md#one-wide-gram-on-several-threads) measures it.
 
@@ -162,8 +169,8 @@ threads](../GRAM.md#one-wide-gram-on-several-threads) measures it.
 list to one `lf.online.fit_predict` call.** Each spec runs as its own
 piece of work on each group, and the query reads the file once. Its output
 has one column per spec, which is what `po.eval.compare_specs` reads, and
-one state file, `grid.state`, holds them all. `df`'s target is built from
-`x0` and `x1`, so the set of those two scores best, and adding `x2`, which
+one state file, `grid.state`, holds them all. `y` in `ticks.parquet`
+(Example data's `df`) is built from `x0` and `x1`, so the set of those two scores best, and adding `x2`, which
 plays no part, scores a little lower. Each spec's [grid
 point](../GLOSSARY.md#grids) is chosen on the first half of the rows and
 scored on the second. The best point's R² over the rows that chose it

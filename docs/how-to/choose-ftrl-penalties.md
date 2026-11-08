@@ -8,12 +8,13 @@ shrink the fit under a half-life, and how to shrink it less.
 
 ## Prerequisites
 
-These steps need the library and a stream with a clock:
+These steps need the library:
 
 - polars-online installed, with numpy for the recipe, which builds its own
   data and saves it to a parquet file.
-- A [clock](../GLOSSARY.md#time) column, and the `gap_cap` a clock
-  requires. The recipe's clock `t` steps by 1 a row.
+- Optionally a [clock](../GLOSSARY.md#time) column, with the `gap_cap` a
+  clock requires. Without one, each row is one clock unit. The recipe's
+  clock `t` steps by 1 a row, the same as no clock.
 - The parameters of
   [`po.spec.ftrl`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl),
   which its docstring defines: `alpha`, the learning-rate scale (0.1 by
@@ -26,35 +27,33 @@ These steps need the library and a stream with a clock:
 
 **`ftrl`'s penalties keep a fixed mass, while the evidence grows with the
 weights and the rows' density.** So a heavier or denser stream overcomes
-them sooner, and a shorter half-life shrinks the fit more. At the defaults,
-with unit weights and rows one clock unit apart, they act in steady state
-as a ridge of `(1 − λ)(beta/alpha + l2)` on the mean scale. Under
-`loss="squared"`, a constant target of 5 is then fitted at 4.65 at
-`half_life=100`, and at 4.96 at 1000. For a penalty that weight and density
-leave alone, use
-[`lasso`](../MODELS.md#lasso--lasso-path-its-penalty-chosen-as-it-runs), whose penalty
-is on the mean scale. The ridge weighs most on a 0/1 target, whose
-log-odds the evidence pins only weakly: a probability's curvature is at
-most a quarter. On two features at `half_life=200`, with one row a clock
-unit, the defaults left the logistic fit at its steady state up to 0.41
-from the decayed maximum likelihood in some coefficient, the worst of 50
-seeds. `beta=0.1, l2=0` left it 0.17 from it.
+them sooner, and a shorter half-life shrinks the fit more. With unit
+weights and rows one clock unit apart, the penalties act in steady state as
+a ridge of `(1 − f)(beta/alpha + l2)` on the mean scale. Here `f` is the
+decay factor over one row's clock, `0.5 ** (1 / half_life)` for rows one
+clock unit apart.
 
-Here `λ` is the decay over one row's clock, `0.5 ** (1 / half_life)` for
-rows one clock unit apart.
-
-1. **Compute the ridge `(1 − λ)(beta/alpha + l2)`.** At the defaults,
+1. **Compute the ridge `(1 − f)(beta/alpha + l2)`.** At the defaults,
    `beta/alpha + l2` is 11, so at `half_life=100` the ridge is 0.076.
 2. **Read what it does to the intercept.** A ridge `r` on the mean scale
    shrinks the intercept, whose feature is the constant 1, by a factor
-   `1 / (1 + r)`, so a level of 5 becomes 4.65.
+   `1 / (1 + r)`. Under `loss="squared"`, a constant target of 5 is then
+   fitted at 4.65 at `half_life=100`, and at 4.96 at 1000.
 3. **To shrink less, lower `beta` and `l2`, or lengthen the half-life.**
    `beta=0.1, l2=0` makes `beta/alpha + l2` 1, an eleventh of the
-   default's. A longer half-life makes `1 − λ` smaller. Rows of a larger
+   default's. A longer half-life makes `1 − f` smaller. Rows of a larger
    weight, or more rows a clock unit, outweigh the same penalties sooner.
 4. **To keep `l1` zeroing the same coefficients whatever the weights and
-   the rows' density, use `lasso` instead.** Its penalty is on the mean
-   scale.
+   the rows' density, use
+   [`lasso`](../MODELS.md#lasso--lasso-path-its-penalty-chosen-as-it-runs)
+   instead.** Its penalty is on the mean scale.
+
+**The ridge weighs most on a 0/1 target,** whose log-odds the evidence
+pins only weakly: a probability's curvature is at most a quarter. On two
+features at `half_life=200`, with one row a clock unit, the defaults left
+the logistic fit at its steady state up to 0.41 from the decayed maximum
+likelihood in some coefficient, the worst of 50 seeds. `beta=0.1, l2=0`
+left it 0.17 from it.
 
 The recipe plants a constant target of 5 beside a feature `x` that is
 noise. It prints each spec's fitted intercept beside `5 / (1 + r)`, the
@@ -104,7 +103,7 @@ bring it within 1%.
 ## Check the result
 
 **Compare the fit with an unpenalized one on the same rows.** On a target
-whose level you know, as in the recipe, the fitted coefficient should
+whose level you know, as in the recipe, the fitted intercept should
 stand near `1 / (1 + r)` of it. On your own stream under
 `loss="squared"`, fit the same features with
 [`ewridge`](../MODELS.md#ewridge--exponentially-weighted-ridge-regression)

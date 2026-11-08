@@ -10,9 +10,11 @@ memory never grows with the number of rows that have passed. [Why memory
 stays
 bounded](../explanation/chunk-invariance-and-streaming.md#why-memory-stays-bounded)
 explains why, and the README's [Memory](../../README.md#memory) measures a
-whole run. What a run holds has four parts. Polars' own settings cut
-what it reads ahead of the bank, and `refit_budget` cuts the rows a robust
-regression holds for its refit.
+whole run. What a run holds has four parts: the
+[state](../GLOSSARY.md#saving-and-serving) the models keep, the chunks in
+flight, the rows a delay or a window holds, and what Polars reads ahead of
+the bank. Polars' own settings cut the last part, and `refit_budget` cuts
+the rows a robust regression holds in its state for its refit.
 
 ## Prerequisites
 
@@ -36,22 +38,21 @@ in the shell or with `os.environ` in Python.
 
 1. **Set `POLARS_ROW_GROUP_PREFETCH_SIZE` to `1`, the number of blocks
    Polars reads ahead.** It saves the most. Polars reads it each time a
-   query that scans the file starts to run, so set it at any point before
-   the call that runs the query, such as `sink_parquet` or
-   `bank.fit_predict_batches(lf)`.
-2. **Expect little from the byte cap,
-   `POLARS_ROW_GROUP_PREFETCH_KBYTES_BUDGET`.** It rarely binds, because it
-   counts *compressed* bytes, which take almost no memory for a
-   memory-mapped local file.
-3. **Run the query as before.** Nothing else in it changes.
+   query that reads the file starts to run. So set it at any point before
+   the call that runs the query, such as the one that writes its result to
+   a file or `bank.fit_predict_batches(lf)`.
+2. **Run the query as before.** Nothing else in it changes.
 
 ```python
 import os
 
-os.environ["POLARS_ROW_GROUP_PREFETCH_SIZE"] = "1"   # blocks (row groups) read ahead: read when a query starts to run
-os.environ["POLARS_ROW_GROUP_PREFETCH_KBYTES_BUDGET"] = "65536"   # a byte cap on the same read-ahead: read when a query starts to run
-os.environ["POLARS_MAX_THREADS"] = "4"               # the read-ahead is sized from this too: read at import polars
+os.environ["POLARS_ROW_GROUP_PREFETCH_SIZE"] = "1"   # blocks of the parquet file read ahead: read when a query starts to run
 ```
+
+The byte cap, `POLARS_ROW_GROUP_PREFETCH_KBYTES_BUDGET`, rarely binds,
+because it counts *compressed* bytes, which take almost no memory for a
+memory-mapped local file. The third variable, `POLARS_MAX_THREADS`, is the
+next section's.
 
 Measured as peak resident memory on 8M rows of 12 columns in 80 blocks,
 with the allocator's page retention off so that the figure is live data:
@@ -76,9 +77,10 @@ the bank's `threads` changes only the bank's speed.
    it when it is first imported: in the shell, as
    `POLARS_MAX_THREADS=4 python fit.py`, or with `os.environ` at the top of
    the script.
-2. **Give the bank its thread count with `threads=`** on the call that
-   runs it. [Use more cores](use-more-cores.md) lists the calls that take
-   it.
+2. **Leave the bank's `threads` unset,** which gives the bank one thread
+   per core whatever `POLARS_MAX_THREADS` says. [Use more
+   cores](use-more-cores.md) lists the calls that take `threads=`, to give
+   a count of your own.
 
 This code is a script of its own, run in a new process, since Polars reads
 `POLARS_MAX_THREADS` when it is first imported. It uses the file
@@ -95,7 +97,7 @@ import polars_online as po
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1", "x2"], clock="t",
                        half_life=600.0, gap_cap=300.0, group="stock_id")
 (pl.scan_parquet("ticks.parquet")                     # written in Example data
-   .online.fit_predict([spec], chunk_size=200_000, threads=14)   # the bank keeps every core
+   .online.fit_predict([spec], chunk_size=200_000)   # threads unset: the bank keeps every core
    .sink_parquet("fit.parquet"))
 ```
 
@@ -105,19 +107,20 @@ half-lives
 
 | Polars threads | bank threads | time | peak memory |
 |---:|---:|---:|---:|
-| 14 | 14 | 1.6 s | 0.86 GB |
-| 4 | 14 | 1.9 s | 0.58 GB |
+| 14 | 14 | 1.63 s | 0.86 GB |
+| 4 | 14 | 1.87 s | 0.58 GB |
 
 Keeping Polars at four threads holds 33% less memory, for 15% more time.
 
 ## Bound the rows a refit holds
 
 `huber`, a robust regression, refits each target's first rows to
-convergence once it has learned them: 500 rows by default, set by
-`huber_refit_rows`. Until then each target holds those rows, in each
+convergence once it has learned them: 500 rows by default, 10 a feature
+past 50 features, and off above 100, set by `huber_refit_rows`. Until then each target holds those rows, in each
 [group](../GLOSSARY.md#the-model-bank-and-what-it-reads), so a spec over
 many groups can hold many rows at once. `sgd(loss="huber")`, `quantile`
-and `marginal`'s Huber bins refit the same way and take the same bound.
+and `marginal`'s Huber bins refit the same way and take the same bound,
+each with a count of its own.
 [The refit of the first
 rows](../explanation/robust-scale.md#the-refit-of-the-first-rows) explains
 what the refit is for.
@@ -125,16 +128,18 @@ what the refit is for.
 1. **Give `refit_budget` the most memory, in MiB, the refit buffers of
    all the spec's groups may reserve together.** It is 320 MiB by default,
    or `inf` for no bound.
-2. **To hold no refit rows at all, give `huber_refit_rows=0`,** which
-   turns the refit off and leaves the fit made in one pass.
+2. **To hold no refit rows at all, give the model's count `0`,** which
+   turns the refit off and leaves the fit made in one pass:
+   `huber_refit_rows=0` for `huber` and `sgd(loss="huber")`,
+   `quantile_refit_rows=0` for `quantile`, and `bin_refit_rows=0` for
+   `marginal`'s Huber bins.
 3. **Read `bank.summary()`'s `refit_given_up`** after the run, which counts
    each group's targets that gave the refit up.
 
 **A learned row takes `(features + 10) · 8` bytes under the MAD scale, the
 default, and `(features + 4) · 8` under `huber_scale="rms"`.** Under the
 MAD, those bytes hold its features, target, weight and two decay factors,
-the residual the scale reads, and the residual's node in the tree it is
-read from. So one feature and 500 rows take about 44 KB a target under the
+and what the scale reads. So one feature and 500 rows take about 44 KB a target under the
 MAD, and 20 KB under `"rms"`. A group shorter than `huber_refit_rows`
 never refits, and holds its rows to its end.
 
@@ -151,9 +156,10 @@ Each group's reservation is saved with the bank. So which groups refit
 depends neither on the chunking, nor on the order the groups run in, nor
 on a save and load between them. In exchange, once the bound is reached no
 later group refits, though the first groups' buffers have long been freed.
-Measured on the same 150-row groups, fed from parquet, as the peak
-resident memory after the fit and the saved state (the median of three
-runs, which spread by up to 120 MiB):
+These figures are for `huber` over groups of 150 rows, with two targets
+and 20 features, fed from parquet. They give the peak resident memory
+after the fit, and the saved state's size, each the median of three runs,
+which spread by up to 120 MiB:
 
 | groups | `huber_refit_rows=0`: peak; state | the default, 320 MiB: peak; state; targets given up | `refit_budget=inf`: peak; state |
 |---|---|---|---|
@@ -181,7 +187,7 @@ rng = np.random.default_rng(4)
 x = rng.standard_normal(3_000)
 pl.DataFrame({"g": np.tile(np.arange(20), 150), "x": x, "y": 2 * x + rng.standard_normal(3_000)}).write_parquet("many.parquet")
 
-# 1. A bound of 1 MiB on the refit buffers of all 20 groups together.
+# Step 1: a bound of 1 MiB on the refit buffers of all 20 groups together.
 robust = po.spec.huber("robust", targets=["y"], features=["x"], half_life=float("inf"), group="g",
                        refit_budget=1.0)
 bank = po.ModelBank([robust])
@@ -189,7 +195,7 @@ with warnings.catch_warnings(record=True) as caught:
     warnings.simplefilter("always")
     bank.fit(pl.scan_parquet("many.parquet"))                      # learn, and keep no output
 print(textwrap.fill(str(caught[0].message).split(". ")[0] + ".", 100))   # the readiness warning's first sentence
-# 3. The groups that refit, against the bound's share of each group's reservation.
+# Step 3: the groups that refit, against the bound's share of each group's reservation.
 reserved = (1 + 26) * 8 * 500                                      # bytes a group reserves
 given_up = bank.summary()["refit_given_up"].sum()
 print(f"groups that refit: {20 - given_up} of 20; the bound holds {2**20 // reserved}")
@@ -204,13 +210,15 @@ groups that refit: 9 of 20; the bound holds 9
 
 ## Bound the other parts
 
-**The state and the chunks in flight have bounds of their own.** Each is
+**The groups, a window's snapshots, the rows a delay holds and the chunks
+in flight have bounds of their own.** Each is
 set where its topic lives:
 
 | what grows | the setting that bounds it | where it is set |
 |---|---|---|
 | the groups a bank keeps | `group_close`, or `bank.drop_groups(...)` | [Bound the memory of many groups](fit-one-model-per-group.md#bound-the-memory-of-many-groups) |
 | a hard window's snapshots | `window_budget` | [Cap the snapshots' memory](forget-rows-past-a-window.md#cap-the-snapshots-memory) |
+| the rows a delay holds | the `embargo` or the `label_clock` delay, times the rows' rate; `max_held_rows` caps the rows `label_clock` holds in each group | [Learn targets known late](learn-targets-known-late.md) |
 | the chunks in flight | `chunk_size` | the README's [Chunk size](../../README.md#chunk-size) |
 
 ## Check the result
@@ -220,7 +228,9 @@ in a new process,** since `POLARS_MAX_THREADS` is read when Polars is
 first imported. Measure the peak resident memory with the operating
 system's own tool, such as `/usr/bin/time -l python fit.py` on macOS or
 `/usr/bin/time -v python fit.py` on Linux. Polars' settings and the
-bank's `threads` leave the output as it was, so check that it is.
+bank's `threads` leave the output as it was, so write both runs' output
+to files and check that `pl.read_parquet(a).equals(pl.read_parquet(b))`
+is `True`.
 `refit_budget` and `huber_refit_rows=0` change the fit of each group that
 gives the refit up, so check `refit_given_up` instead.
 
