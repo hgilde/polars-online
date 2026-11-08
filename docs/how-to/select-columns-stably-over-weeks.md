@@ -230,10 +230,13 @@ percentile, 0.95, is the threshold this selection earns on these weeks.
 The six planted columns pass it, and the most chosen of the rest, `x4`,
 is at 0.49.
 
-In one call, the real run and the hundred null runs of the hundred
-halves, at 200 columns, took 0.08 s together. A Python loop of `merge`
-and `lars_paths` took about 0.08 s for each draw, about 8 s for the
-hundred, at a load average near 4 on 14 cores.
+The real run and the hundred null runs of the hundred halves, at 200
+columns, took 0.13 s together in the two calls above. A Python loop that
+merges each half's Grams within the weeks, with each week's target
+negated by its sign, and walks the paths with `lars_paths` chose the same
+columns. It took 0.17 s for each draw, 18 s for the real run and the
+hundred null runs. Each figure is the best of three runs on an M4 Pro on
+2026-11-08, on two threads, at a load average near 7 on 14 cores.
 
 ## Screen the columns again for each half and each null run
 
