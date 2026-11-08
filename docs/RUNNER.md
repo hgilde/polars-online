@@ -1,113 +1,77 @@
-# Running a bank as a job: the `polars-online` command line
+<!-- kind: reference -->
+# The `polars-online` command line
 
-A *model bank* is a set of models fitted together over the same rows
-([the README's introduction](../README.md#introduction) defines the words
-this guide uses). [Run a bank in a query](how-to/run-a-bank-in-a-query.md)
+This reference page is for anyone who runs a model bank as a job with the
+`polars-online` program: it gives every flag and TOML key, the files a run
+reads and writes, its exit status and its Rust entry points. A [model
+bank](GLOSSARY.md#the-model-bank-and-what-it-reads) is a set of models
+fitted together over the same rows. The [command
+line](GLOSSARY.md#saving-and-serving) runs one from an input file to an
+output file with no Python, for a scheduled job or a deployment. It takes
+the same specs as Python, reads and writes the same state file, and gives
+the same numbers. [Run a bank in a query](how-to/run-a-bank-in-a-query.md)
 and [Run a bank in a Python loop](how-to/run-a-bank-in-a-python-loop.md)
-drive the rows through a bank from a live Python process. A
-scheduled job, or a deployment with no Python at all, runs the same bank
-from an input file to an output file instead, with the standalone `polars-online`
-program and a configuration file. This part of the library is the
-*runner*. It takes the same specs as Python, reads and writes the same
-state file, and gives the same numbers.
+drive the rows through a bank from a live Python process instead.
 
-**Every shell example here is a recipe: the commands, then what they
-print.** Each runs against the configuration below, saved as
-`job.toml`: a smaller file than the README's `bank.toml`, with one feature
-and no groups, so that its output is short. Its directory holds the files the README's [Example
-data](../README.md#example-data) writes (`ticks.parquet` and
-`today.parquet`), and `run.state`, which the configuration's spec saved
-from `ticks.parquet`. It also holds `today.csv` and `feed.dat`, the same
-rows in two other formats. `tests/test_production_hardening.py` runs each command
-through the built `polars-online` and holds what it prints, standard output and
-standard error together, to what is shown. The progress line is drawn only
-on a terminal, so the outputs shown leave it out.
+**The shell examples run in a directory that holds the files they read.**
+Under each command, a block shows what it prints, standard output and
+standard error together, apart from the progress line, which is drawn only
+on a terminal. The files are these:
 
-| section | what it covers |
+| file | what it is |
 |---|---|
-| [Running it](#running-it) | [a first run](#a-first-run) · [saving, resuming and scoring](#saving-resuming-and-scoring) · [closed groups to a sidecar file](#closed-groups-to-a-sidecar-file) · [exit status](#exit-status) |
-| [The configuration file](#the-configuration-file) | [flags and the TOML keys they override](#flags-and-the-toml-keys-they-override) · [input and output files](#input-and-output-files) · [specs in TOML](#specs-in-toml) · [clocks that are times](#clocks-that-are-times) |
-| [Memory, threads and chunk size](#memory-threads-and-chunk-size) | [memory](#memory) · [the pipeline and its threads](#the-pipeline-and-its-threads) · [chunk size](#chunk-size) |
-| [From Rust, and the Polars it needs](#from-rust-and-the-polars-it-needs) | [the same pipeline from Rust](#the-same-pipeline-from-rust) · [versioning](#versioning) |
+| `job.toml` | the configuration [The configuration file](#the-configuration-file) shows: one spec with one feature and no groups, so that its output is short |
+| `blocks.toml` | the configuration [Closed groups to a sidecar file](#closed-groups-to-a-sidecar-file) shows: one `ew_cov` spec whose groups close |
+| `ticks.parquet`, `today.parquet` | the files the README's [Example data](../README.md#example-data) writes: 400 rows, and the 400 rows that follow them on the clock `t` |
+| `today.csv` | `today.parquet`'s rows as CSV, written with Polars' `pl.read_parquet("today.parquet").write_csv("today.csv")` |
+| `feed.dat` | `ticks.parquet`'s rows as Arrow IPC, written with Polars' `pl.read_parquet("ticks.parquet").write_ipc("feed.dat")`, under a name whose extension does not say its format |
+
+| section | what it holds |
+|---|---|
+| [Running it](#running-it) | where the steps of a run are, the [closed-groups file](#closed-groups-to-a-sidecar-file) and the [exit status](#exit-status) |
+| [The configuration file](#the-configuration-file) | every [flag and TOML key](#flags-and-the-toml-keys-they-override), the [input and output files](#input-and-output-files), [specs in TOML](#specs-in-toml) and [clocks that are times](#clocks-that-are-times) |
+| [Memory, threads and chunk size](#memory-threads-and-chunk-size) | what a run holds, its [threads](#threads) and its [chunk size](#chunk-size) |
+| [From Rust, and the Polars it needs](#from-rust-and-the-polars-it-needs) | the [Rust entry points](#the-same-pipeline-from-rust) and what [`--version`](#versioning) prints |
 
 ## Running it
 
-[Run a bank from the command line](how-to/run-a-bank-from-the-command-line.md) shows how to
-check a configuration and run it over a file, save the state for the next
-run, or keep only the state.
-
-### A first run
-
-Every example on this page runs against this configuration, saved as
-`job.toml` ([examples/bank.toml](../examples/bank.toml) is a fuller one):
-
-```toml
-input = "ticks.parquet"      # read a chunk at a time; the extension names the format
-output = "fitted.parquet"    # the input's columns, plus one column per spec
-
-[[specs]]                    # one table per spec
-name = "ridge"               # the name of the spec's output column
-targets = ["y"]              # or a table: { column = "p", name = "price" }, as po.target
-features = ["x0"]
-clock = "t"                  # the clock column, which lets a resumed run tell the rows it has learned
-half_life = 500.0            # in units of t
-gap_cap = 300.0              # the longest step of t that decays the fit
-min_weight = 5.0             # the floor, in weight_sum units, below which no prediction is made
-[specs.model]
-type = "ewridge"
-```
-
-### Saving, resuming and scoring
-
-[Save the state for the next run](how-to/run-a-bank-from-the-command-line.md#save-the-state-for-the-next-run)
-shows how to save the bank when a run ends with `--save-state`, and
-[Resume from the command line](how-to/resume-from-a-saved-state.md#resume-from-the-command-line)
-how to start the next run from it with `--load-state`.
-
-**Input that overlaps the state is refused unless `--skip-learned` drops
-the overlap.** A rerun steps the clock back, and the run stops at the first
-row it would learn twice. `--skip-learned` (the TOML key `skip_learned`)
-drops the rows the state has learned, as Python's
-`ModelBank.skip_learned` does. In every spec that reads a clock, it keeps
-a row whose clock is after its group's last learned one, a row of a group
-the state has not seen, and a row with a null clock. A row at its group's
-last clock counts as learned. It needs `--load-state`, and a spec that
-reads a clock, since with no clock there is nothing to compare, and the
-overlap would be learned twice. Here the second run feeds `today.parquet`
-again, which the first has just learned, and learns none of it twice:
-
-```sh
-polars-online --config job.toml --input today.parquet --load-state run.state --save-state run.state
-polars-online --config job.toml --input today.parquet --load-state run.state --save-state run.state --skip-learned
-```
-
-```text
-wrote 400 rows (1 chunk) to fitted.parquet
-saved state to run.state
-wrote 0 rows (0 chunks) to fitted.parquet
-saved state to run.state
-```
-
-The second run keeps no row: it writes an output with no rows, and it
-saves the state it loaded, byte for byte. Without `--skip-learned` it would stop
-at its first row, whose clock is 399 behind the state's last.
-
-[Serve from the command line](how-to/serve-from-a-saved-state.md#serve-from-the-command-line)
-shows how to predict rows from a loaded state with `--predict`, learning
-nothing from them.
-
-[Keep only the state](how-to/run-a-bank-from-the-command-line.md#keep-only-the-state)
-shows how to run with `--no-output` when a run's product is its state.
+[Run a bank from the command line](how-to/run-a-bank-from-the-command-line.md)
+gives the steps of a run: check the TOML file with `--dry-run`, run it,
+save the state for the next run with `--save-state`, and keep only the
+state with `--no-output`. [Resume from a saved
+state](how-to/resume-from-a-saved-state.md#resume-from-the-command-line)
+gives `--load-state`, and [Resume on input that overlaps the
+state](how-to/resume-from-a-saved-state.md#resume-on-input-that-overlaps-the-state)
+gives `--skip-learned`. [Serve from a saved
+state](how-to/serve-from-a-saved-state.md#serve-from-the-command-line)
+gives `--predict`.
 
 ### Closed groups to a sidecar file
 
-`group_close` emits a finished group's accumulators as one row and frees
-its state ([Close groups and read each one's row](how-to/close-groups.md)).
-A run writes those rows to a sidecar file as it goes. With no per-row
-output at all, that file is the whole product of an accumulate-only pass
-over a stream that does not fit in memory. Here `blocks.toml` holds one
-`ew_cov` spec of `x0` and `x1`, grouped by `stock_id`, whose groups close
-at each change of the `session` column (`group_close = "session"`):
+**`--closed-groups` (the TOML key `closed_groups`) writes each closed
+group's row to a file of its own.** `group_close` emits a [closed
+group](GLOSSARY.md#saving-and-serving)'s running sums as one row and frees
+its state ([Close groups and read each one's row](how-to/close-groups.md)
+gives the steps). With no per-row output at all, that file is the whole
+product of a pass that only learns, over a stream that does not fit in
+memory. Here the run reads `blocks.toml`, which holds one `ew_cov` spec of
+`x0` and `x1`, grouped by `stock_id`, whose groups close at each change of
+the `session` column:
+
+```toml
+input = "ticks.parquet"
+output = "fitted.parquet"    # not written: the command gives --no-output
+
+[[specs]]
+name = "cov"
+features = ["x0", "x1"]
+half_life = 500.0
+group = "stock_id"           # one model for each stock
+group_close = "session"      # a stock's group closes at each change of its session
+session = "session"
+[specs.model]
+type = "ew_cov"
+```
 
 ```sh
 polars-online --config blocks.toml --no-output --closed-groups blocks.parquet
@@ -122,12 +86,23 @@ The configuration needs a spec with `group_close`. Without one, the run is
 refused, and the message says to add `group_close = "monotone"` or
 `"session"` to the spec whose groups should be emitted.
 
-`closed_groups=` on `lf.online.fit_predict`, `ModelBank.fit_predict_batches`
-and `ModelBank.fit` writes the same file from Python. What has closed and
-not been read is saved with the state, so a loop that saves between chunks
-does not lose rows silently. The sidecar is published by a run that
-drained any row into it, even one that then failed, since a drained row
-has left the bank. The output is published only by a run that finishes.
+**The command line writes the closed rows as it goes, and publishes the
+file when the run ends.** It hands each chunk's closed rows to a writer of
+their own. A run that finishes publishes the file, and so does a run that
+fails after any group has closed, since a closed row has left the bank and
+the file is the only place it is. The output file is published only by a
+run that finishes.
+
+**From Python, `closed_groups=` writes the same rows once, when the pass
+ends.** `ModelBank.fit` and `ModelBank.fit_predict_batches` take each
+chunk's closed rows out of the bank and hold them in the process. They
+write the file when the chunks stop, even when the run stops early or
+fails. `lf.online.fit_predict` writes it only after the bank has been fed
+its last row, so a run that fails writes no file. Either way, memory grows
+with the number of groups that close, never with the rows. Without
+`closed_groups=`, a bank keeps its closed rows until `bank.closed_groups()`
+reads them, and saves them with the state, so a loop that saves between
+chunks loses none.
 
 ### Exit status
 
@@ -150,21 +125,41 @@ its own. It counts the groups whose last row was withheld, by
 A spec with neither has no line, as in every run on this page.
 Standard error carries the progress line on a terminal, the timings
 `POLARS_ONLINE_TIMING=1` asks for, and the error of a run that fails. It also
-carries the notices about a model's warm-up, led by `polars-online:` as an error
-is. So read a failure from the exit status: a line on standard error does
+carries the [readiness warnings](GLOSSARY.md#warm-up-and-readiness) about a
+model's warm-up, led by `polars-online:` as an error is. So read a failure from the exit status: a line on standard error does
 not mean the run failed.
 
-**The exit status and the files a run writes are the command line's
-contract, and what it prints is not.** The summary, the notices, the
-errors and the timing lines are text for a person, which a minor release
-may reword. So a script reads the exit status and the files, never the
-words.
+**Read a run's result from its exit status and the files it writes, never
+from what it prints.** The exit status and the files are the command
+line's contract. The summary, the
+warnings, the errors and the timing lines are text for a person, which a
+minor release may reword.
 
 ## The configuration file
 
 The TOML file names the input, the output, the run's settings and the
 specs. Every key but the specs and `keep_columns` has a flag that
-overrides it, though `--predict` can only switch scoring on.
+overrides it. `--predict` and `--skip-learned` can only turn their keys
+on, and `--no-output` can only clear `output`. Every example
+on this page but the closed-groups one, which reads `blocks.toml`, runs
+against this configuration, saved as `job.toml`
+([examples/bank.toml](../examples/bank.toml) is a fuller one):
+
+```toml
+input = "ticks.parquet"      # read a chunk at a time; the extension names the format
+output = "fitted.parquet"    # the input's columns, plus one column per spec
+
+[[specs]]                    # one table per spec
+name = "ridge"               # the name of the spec's output column
+targets = ["y"]              # or a table: { column = "p", name = "price" }, as po.target
+features = ["x0"]
+clock = "t"                  # the clock: how far apart two rows are, which half_life and gap_cap are measured in
+half_life = 500.0            # in units of t
+gap_cap = 300.0              # the longest step of t that decays the fit
+min_weight = 5.0             # the floor, in weight_sum units, below which no prediction is made
+[specs.model]
+type = "ewridge"
+```
 
 ### Flags and the TOML keys they override
 
@@ -175,19 +170,21 @@ A flag given on the command line wins over its key in the TOML file:
 | `--config` | | the TOML file to read; required. A relative path inside it is read from its directory |
 | `--input` | `input` | the file to read |
 | `--output` | `output` | the file to write; refused together with `--no-output` |
-| `--no-output` | `output` left out | write no per-row output |
+| `--no-output` | `output` left out | write no per-row output; needs `save_state` or `closed_groups`, and is refused with `--predict` |
 | `--input-format` | `input_format` | how to read the input: `parquet`, `ipc`, `csv` or `ndjson`. The extension decides when it is not given |
 | `--output-format` | `output_format` | how to write the output, from the same four |
-| `--output-layout` | `output_layout` | `struct` (the default) writes each spec as one struct column; `flat` writes each of its fields as a `<spec>.<field>` column, as a CSV always is. Under `flat`, `--dry-run` names the output as `(parquet, flat)` |
+| `--output-layout` | `output_layout` | `struct` (the default) writes each spec as one output column; `flat` writes each of its fields as a `<spec>.<field>` column, as a CSV always is. Under `flat`, `--dry-run` names the output as `(parquet, flat)` |
 | `--chunk-size` | `chunk_size` | rows per chunk; 100,000 by default |
-| `--threads` | `threads` | the threads the bank runs on, a whole number of at least 1; left out, the default pool, sized by `POLARS_ONLINE_MAX_THREADS`. The output is the same at any count |
+| `--threads` | `threads` | the threads the bank runs on, a whole number from 1 to 1,024, or to the machine's core count where that is larger; left out, the bank's default number of threads, which `POLARS_ONLINE_MAX_THREADS` sets. The output is the same at any count |
 | `--load-state` | `load_state` | start from a saved state |
-| `--skip-learned` | `skip_learned` | drop the input's rows the loaded state has learned; needs `--load-state` or `load_state`, and a spec that reads a clock |
+| `--skip-learned` | `skip_learned` | drop the input's rows the loaded state has learned, as `ModelBank.skip_learned` does; needs `--load-state` or `load_state`, and a spec that reads a clock. A run that keeps no row writes an output with no rows, and saves the state it loaded, byte for byte |
 | `--save-state` | `save_state` | save the state when the run ends, after the output is committed |
 | `--closed-groups` | `closed_groups` | write the groups that closed to a sidecar file; needs a spec with `group_close` |
-| `--predict` | `predict` | score against the resumed state and learn nothing; needs `--load-state` or `load_state`, drops the TOML's `save_state` and `closed_groups`, and refuses `--save-state` and `--closed-groups` |
+| `--predict` | `predict` | predict from the loaded state and learn nothing; needs `--load-state` or `load_state`, drops the TOML's `save_state` and `closed_groups`, and refuses `--save-state` and `--closed-groups` |
 | `--dry-run` | | check the configuration, the input's schema and the bank as the run would, and print the output schema, feeding the bank no row |
 | `-q`, `--quiet` | | suppress the progress line, which is drawn only when standard error is a terminal |
+| `-h`, `--help` | | print every flag, and run nothing |
+| `-V`, `--version` | | print the version, and run nothing: `-V` the package's version alone, `--version` three lines ([Versioning](#versioning)) |
 | | `keep_columns` | the input columns to keep; all of them when it is empty |
 | | `[[specs]]` | the specs, one table each |
 
@@ -242,19 +239,25 @@ names, such as a closed Gram's `columns`, read back with
 `str.json_decode(pl.List(pl.String))`. Any other nested field is refused,
 naming the column and the formats that carry it.
 
-**A wide spec writes faster to parquet flat.** Parquet, IPC and NDJSON keep
-each spec's output as one struct column by default. Polars' parquet writer
-encodes a struct's fields at several times the cost of the same values as
-plain columns. An `ew_cov` over 20 series has 233 fields. Over 300,000
-rows of parquet, the command line took 7,697 ns a row writing them as the
-struct, and 1,274 flat, against 676 with no output at all. That is the
-best of three runs on 14 cores, under a load of 22 to 24 from other work.
-`--output-layout flat` writes the `<spec>.<field>` columns a CSV gets, so
-the writer no longer sets the run's pace. A list field such as `coef`
-stays one list column. IPC writes the struct at about the cost of the flat
-columns, so `flat` buys little there: repeated at a load of 2.4 to 3.1, the
-same run took 991 ns a row as the struct and 1,026 flat, within the runs'
-noise, while the parquet figures held (7,104 and 1,181 at a load of 3).
+**A wide spec writes several times faster to parquet flat, and no faster
+to IPC.** Parquet, IPC and NDJSON keep each spec's output as one output
+column, a Polars struct, by default. Polars' parquet writer encodes a
+struct's fields at several times the cost of the same values as plain
+columns. `--output-layout flat` writes the `<spec>.<field>` columns a CSV
+gets, so the writer no longer sets the run's pace. A list field such as
+`coef` stays one list column. IPC writes the struct at about the cost of
+the flat columns. An `ew_cov` over 20 series has 233 fields. Over 300,000
+rows on 14 cores, the command line took these times a row, the first line
+the best of three runs:
+
+| output | as the struct | flat | the machine's load from other work |
+|---|---:|---:|---|
+| parquet | 7,697 ns | 1,274 ns | 22 to 24 |
+| parquet, repeated | 7,104 ns | 1,181 ns | 3 |
+| IPC | 991 ns | 1,026 ns | 2.4 to 3.1 |
+
+The same run with no output at all took 676 ns a row, at the load of 22
+to 24. The two IPC figures differ by less than the runs' noise.
 
 In TOML, a Windows path needs single quotes or forward slashes
 (`input = 'C:\data\in.parquet'`), since a backslash in a double-quoted
@@ -269,7 +272,7 @@ calls its columns `columns`. A table that says `label` or `columns` is
 refused, naming the key to use. A key under an old name is refused, naming
 the new one: `halflife` is `half_life`, for one. A key renamed when the
 parameters took the names they keep at 1.0 is still read, with a warning on
-stderr naming the new one, until the next major version: `kmeans`' `k` is
+standard error naming the new one, until the next major version: `kmeans`' `k` is
 `n_clusters`, for one. A spec for a model that learns from no target, such as `ew_cov`,
 `kmeans` or `micro`, may leave `targets` out. It is filled the way the
 Python builders fill it: with `features[0]`, or, for a `bocpd` spec with a
@@ -307,8 +310,8 @@ the same spec: True
 the same predictions, bit for bit: True
 ```
 
-A target that is a window expression looking ahead is a table with its
-name and its formula. The formula takes the form a spec and a saved state
+A [formula target](GLOSSARY.md#fitting-a-model), an expression that
+holds at least one window operator looking ahead, is a table with its name and its formula. The formula takes the form a spec and a saved state
 carry ([Make a target that looks
 ahead](how-to/make-a-target-that-looks-ahead.md)):
 
@@ -327,12 +330,12 @@ type = "ewridge"
 
 The formula is Polars' expression written as a tree: an operator, its
 input and its keywords. TOML has no null, so a null literal is written
-`["lit"]`. **This written form is labelled unstable**: it may change in any
+`["lit"]`. **This written form is labeled unstable**: it may change in any
 release without that counting as a breaking change, in the TOML file and
 in the state it is saved into. With `POLARS_ONLINE_WARN_UNSTABLE=1`, the
-command line says so on standard error. The window target itself, what it
+command line says so on standard error. The formula target itself, what it
 computes and when its rows are released, is promised. `group_close` is
-refused beside a window target, and so is `group` without `clock`.
+refused beside a formula target, and so is `group` without `clock`.
 
 ### Clocks that are times
 
@@ -360,65 +363,24 @@ units. Either mixture is refused, naming the column and the parameter
 
 ## Memory, threads and chunk size
 
-A run holds the bank's state, one chunk in each stage of its pipeline, and
-what Polars has read ahead of it.
+A run holds the bank's state, one chunk in each of its three stages
+(reading, learning and writing), and what Polars has read ahead of it.
+[Peak memory of the command
+line](PERFORMANCE.md#peak-memory-of-the-command-line) measures it at 3M,
+12M and 24M rows. [Where the time and memory
+go](explanation/where-the-time-and-memory-go.md#where-the-time-goes)
+explains how the three stages share a run's time.
 
-### Memory
+### Threads
 
-The figures are the peak footprint on one file, `ewridge` with 20
-features, parquet in and out: the same measurement as the table of
-[Peak memory of each way of running a bank](PERFORMANCE.md#peak-memory-of-each-way-of-running-a-bank), made on 2026-10-24 on macOS with
-Polars 2.0.0 on 14 cores. The 24M rows are the 3M rows eight times over,
-so the state is the same at every size.
-
-| what you run | 3M rows | 12M rows | 24M rows |
-|---|---:|---:|---:|
-| `polars-online --config` | 0.75 GB | 0.85 GB | 0.86 GB |
-| `polars-online --config`, with `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | 0.42 GB | 0.43 GB | 0.44 GB |
-
-It is bounded: the bank's memory does not grow with the rows, and the
-allocator reuses the pages it frees rather than hold more as the run goes
-on. Most of what is left is Polars reading ahead in the parquet file;
-`POLARS_ROW_GROUP_PREFETCH_SIZE=1` halves it.
-
-The bound comes from how the binary sets up its allocator. Off Windows it
-is jemalloc, set to one arena for every thread (`narenas:1`). jemalloc's
-default is four arenas a core. Each arena keeps the pages freed in it for
-ten seconds, for the threads on that arena alone. It gives them back only
-when one of those threads allocates again. The reader's, the bank's and
-the writer's buffers then strand pages in every arena, and the peak grows
-with the rows: 0.94, 1.36 and 1.48 GB at 3M, 12M and 24M rows. One arena
-costs no speed in these runs. Threads contending for it would show as CPU
-time, and the 12M-row run took 24.5 s of CPU either way.
-
-`_RJEM_MALLOC_CONF` overrides the binary's setting. With
-`_RJEM_MALLOC_CONF=dirty_decay_ms:0` freed pages go back to the system at
-once: 0.74, 0.76 and 0.78 GB, for about 18% more CPU time. The system
-allocator holds less still at the floor, 0.21-0.23 GB with the prefetch at
-1, but runs slower. On a million rows of a five-feature `ewridge`, best of
-five runs, it took 1.6 times as long with a thousand one-row groups a chunk
-and 1.2 times as long with one stream. On Windows the binary's allocator is
-mimalloc, and these figures were not measured there.
-
-`scripts/memory_bench.py` makes these measurements.
-
-### The pipeline and its threads
-
-The command line is a three-stage pipeline: a reader thread, the bank on
-the calling thread, and a writer thread, with one chunk in flight per
-stage. A `closed_groups` sidecar has a writer thread of its own.
-`POLARS_ONLINE_TIMING=1` prints how long the bank waited on each side. Parquet
-pages are encoded on Polars' pool, a column per task, in parallel, and
-NDJSON on the writer's own thread.
-
-The bank's own work runs on the bank's thread pool: `--threads N`, or a
-`threads` key in the TOML, which the flag overrides, gives it a pool of N
-threads, and without either it runs on the default pool, sized by
-`POLARS_ONLINE_MAX_THREADS` (one thread per core when that is unset). The
-count is not saved with the state, so a resumed run takes the one it is
-given, and the output is the same at any count. [Set the bank's thread
-count](how-to/use-more-cores.md#set-the-banks-thread-count) has the full account, including
-Polars' own pool and how the two interact.
+The bank's own work runs on threads of its own. `--threads N`, or a
+`threads` key in the TOML, which the flag overrides, gives it N threads.
+Without either, it runs on as many threads as `POLARS_ONLINE_MAX_THREADS`
+gives, one per core when that is unset. The count is not saved with the
+state, so a resumed run takes the one it is given, and the output is the
+same at any count. [Set the bank's thread
+count](how-to/use-more-cores.md#set-the-banks-thread-count) has the full
+account, including Polars' own threads and how the two interact.
 
 ### Chunk size
 
@@ -450,19 +412,24 @@ its own Rust Polars, so it needs no Python at all.
 
 From Rust, the same pipeline is `online_polars::run_config` for a
 `RunConfig`. `run_config_on` runs it for a `LazyFrame` or batches the
-caller already has. `run` takes a `Bank` the caller holds, an `Output`, a
-file, a callback or `Discard`, and `RunOptions`, whose `learn_only` is the
-`fit` mode a run with no output uses.
+caller already has. `run` takes a `Bank` the caller holds, an `Input` (a
+`LazyFrame`, or frames the caller produces), an `Output` (`File`,
+`Batches` for a callback of the caller's own, or `Discard`), `RunOptions`
+and a progress callback. `RunOptions`' `learn_only` is the `fit` mode a run
+with no output uses.
 
 ### Versioning
 
-The command line needs no Python: it carries its own Rust Polars, 0.55.2.
+The Rust Polars the command line carries is 0.55.2.
 `polars-online --version` prints three lines: the package's version, the
 state schema its saved states are written in, and the Rust Polars it
 carries. `-V` prints the first line alone.
-So the py-polars floor applies only to the Python calls this guide names.
-That floor is py-polars 1.37.0. `lf.online.fit_predict` and
-`ModelBank.fit_predict_batches` read with `LazyFrame.collect_batches`.
+
+The command line carries its own Rust Polars, so py-polars' version
+matters only to the Python calls that read a query, such as
+`lf.online.fit_predict` and `ModelBank.fit`. For those, the floor is
+py-polars 1.37.0. They read their input with `LazyFrame.collect_batches`,
+which gives a query's result one chunk at a time.
 py-polars added it in 1.34.0, but before 1.37.0 it ran ahead of a slower
 reader without limit, holding the input whole. [Versions and the Polars
 pin](VERSIONS.md) has the versions the suite passes on, and [Polars

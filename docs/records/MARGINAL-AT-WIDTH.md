@@ -144,7 +144,7 @@ row, fifty identical feature means, and 150 lag updates per pair where
    searches each feature's edges `T` times for the same answer.
 2. **The feature's lagged autocovariance.** `cxx[ℓ][t][j]` is the
    feature's own autocovariance, kept once per target because it is
-   centred on that target's `mx[t][j]`, and the cross terms `cxy` and
+   centered on that target's `mx[t][j]`, and the cross terms `cxy` and
    `cyx` — two of the three lag updates per pair — are never read past
    the first lag by this caller, and enter `n_serial` at no lag:
    Bartlett's factor is `1 + 2 Σ ρ_x(ℓ) ρ_y(ℓ)`, autocorrelations only.
@@ -181,7 +181,7 @@ po.spec.marginal("m", features=[...], targets=[...],
 - `cross_lags`: a strictly increasing list of lags ≥ 1, each also in
   `lags` (the ring is sized by `max(lags)`, and a cross term at a lag the
   ring does not hold has nothing to read). `None`, the default, keeps
-  today's behaviour — every lag in `lags` — so no caller changes; `[]`
+  today's behavior — every lag in `lags` — so no caller changes; `[]`
   keeps no cross term and the two columns are absent, as they are for a
   spec without `lags`.
 
@@ -315,9 +315,9 @@ target is present on; the pair keeps `sxy` alone.
 ### What it reports, and the one place it differs
 
 `cov` is exactly today's number under either setting. The pair's
-co-moment is centred on the target's own mean over the target's rows,
+co-moment is centered on the target's own mean over the target's rows,
 `Σ w (x − c)(y − m_y) = Σ w (x − m_x^{(y)})(y − m_y)` for any constant
-`c`, because `Σ w (y − m_y) = 0` over those rows — the feature's centring
+`c`, because `Σ w (y − m_y) = 0` over those rows — the feature's centering
 constant does not enter it. What can differ is `var_x`: over every learned
 row rather than over the target's rows. So `corr`, `beta`, `t` and
 `n_serial` (through `ρ_x(ℓ)`, likewise over every row) differ from
@@ -360,7 +360,7 @@ one learned row at a time by the same mean-form recursion. `"shared"`
 against `"per_target"` on a stream where every target is present on every
 learned row: bit for bit, since each shared accumulator performs exactly
 the operation sequence each of the `T` copies performed. A new spec
-parameter with a default that is today's behaviour: a saved state carries
+parameter with a default that is today's behavior: a saved state carries
 the mode; a state saved before it loads as `"per_target"`. Whether the
 `"shared"` layout is a new state variant or the same struct with `T = 1`
 feature blocks is the implementer's call; either way the bank file's

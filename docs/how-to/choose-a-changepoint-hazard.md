@@ -36,8 +36,8 @@ under *What is scored*, say so.
    `hazard="1h"`, the expected time between breaks. The docstring
    gives the rules at a gap and at a step of 0, under its `hazard` entry
    and under *A duration hazard* in its Notes.
-2. **Build one `bocpd` spec per hazard with `functools.partial`,** giving
-   it the keywords every spec shares. `hazard` takes one value a spec.
+2. **Build a `bocpd` spec builder with `functools.partial`,** giving it
+   the keywords every spec shares. `hazard` takes one value a spec.
 3. **Pass the query, the builder and a `param_grid` of hazards to
    `po.eval.grid_search`, with `scoring="loglik"`.** It returns a row per
    hazard with its `loglik` a row, highest best, and a row for the choice.

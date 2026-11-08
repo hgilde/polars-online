@@ -11,8 +11,8 @@ however often you look.
 These steps need the library and a stream:
 
 - polars-online installed, and numpy to make the example's data. The
-  second recipe reads `df` from the README's [Example
-  data](../../README.md#example-data).
+  second recipe reads `lf`, the query over `df`, from the README's
+  [Example data](../../README.md#example-data).
 - A stream saved as a file, or a frame in memory, with the column whose
   sign you test, named as a
   [target](../GLOSSARY.md#the-model-bank-and-what-it-reads) of a
@@ -29,13 +29,14 @@ nonnegative supermartingale. Ville's inequality then gives
 `P(E⁺ ever reaches 1/α) ≤ α`, however the rows depend on each other.
 
 1. **Build a `seqtest` spec with the column in `targets=`.**
-2. **Run the query.** Each row gains `log_e_pos_<t>`, the log of the
-   evidence that the sign tends positive, and `log_e_neg_<t>`, that it
-   tends negative.
-3. **Reject on the first row where `log_e_pos_<t> ≥ ln 20`.** That is the
+2. **Add the spec to the query with `online.fit_predict([sign])`.**
+3. **Run the query with `collect()`.** Each row gains `log_e_pos_<t>`,
+   the log of the evidence that the sign tends positive, and
+   `log_e_neg_<t>`, that it tends negative.
+4. **Reject on the first row where `log_e_pos_<t> ≥ ln 20`.** That is the
    5% level, however often you look. Read `log_e_neg_<t>` the same way for
    the other side.
-4. **For the two-sided question, average the two sides' wealth,
+5. **For the two-sided question, average the two sides' wealth,
    `(exp(log_e_pos_<t>) + exp(log_e_neg_<t>)) / 2`, and reject on the
    first row where it reaches 20.** The average is an e-value. Average the
    wealth, not its log.
@@ -61,7 +62,7 @@ pl.DataFrame({
     "fair": rng.normal(0.0, 1.0, n),                      # positive half the time
 }).write_parquet("signs.parquet")
 
-# 1 and 2. Test both columns' signs.
+# 1 to 3. Test both columns' signs.
 sign = po.spec.seqtest("sign", targets=["skewed", "fair"])
 out = pl.scan_parquet("signs.parquet").online.fit_predict([sign]).collect().unnest("sign").with_row_index("row")
 
@@ -71,7 +72,7 @@ def first(rows):
 
 
 for col in ("skewed", "fair"):
-    # 3. The first row at the 5% level, one-sided; 4. and two-sided, from the mean of the wealth.
+    # 4. The first row at the 5% level, one-sided; 5. and two-sided, from the mean of the wealth.
     two_sided = (pl.col(f"log_e_pos_{col}").exp() + pl.col(f"log_e_neg_{col}").exp()) / 2
     one = out.filter(pl.col(f"log_e_pos_{col}") >= math.log(20))["row"]
     two = out.filter(two_sided >= 20)["row"]

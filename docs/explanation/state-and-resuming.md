@@ -26,7 +26,7 @@ elsewhere:
 [Resume from a saved state](../how-to/resume-from-a-saved-state.md) gives
 the steps, from Python and from the [command
 line](../GLOSSARY.md#saving-and-serving) (the `polars-online` program), and
-[STATE-WORKFLOW.md](../STATE-WORKFLOW.md) says what each step guarantees.
+[Saved states](../STATE-WORKFLOW.md) says what each step guarantees.
 
 ## A save is a chunk's end
 
@@ -155,7 +155,8 @@ may differ by at most `1e-12 × (1 + |value|)`.
 version from 1.0's to its own, apart from two parts whose formats may
 change in a minor release.** So from 1.0, a state a 1.x build saved loads
 in every later 1.x build. The two parts outside that promise are the
-written form of a formula target (its expression) inside a bank's state,
+written form of a formula target (its expression, a column computation
+such as `pl.col("x") + 1`) inside a bank's state,
 and a
 [window run](../GLOSSARY.md#fitting-a-model)'s state ([Resume a window
 run](../how-to/resume-a-window-run.md)). A state

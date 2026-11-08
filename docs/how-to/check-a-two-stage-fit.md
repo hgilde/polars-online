@@ -185,4 +185,4 @@ kept three features that carry nothing.
 |---|---|---|
 | a calibration slope far from 1 under `half_life=float("inf")` | the run-once calibration still holds the early fits' rows | give `calibration_half_life`, such as `"4h"`; if the slope stays far from 1 past the warm-up, rescale ([Check the scale of a model's predictions](check-the-scale.md)) |
 | a t by `se_coef` far larger than by `se_coef_hac` | the target looks ahead, so its residuals overlap | read `se_coef_hac`, with `horizon_rows` the target's window in rows ([Check a coefficient's standard error](check-standard-errors.md)) |
-| `se_coef` and `se_coef_hac` null on the early rows | the model is not yet [ready](../GLOSSARY.md#warm-up-and-readiness), or the stream has not come 95% of the way to its steady state | read the last row that holds them, as the recipe does |
+| `se_coef` and `se_coef_hac` null on the early rows | the model is not yet [ready](../GLOSSARY.md#warm-up-and-readiness), here under its `min_weight`. Beside a fit that forgets, they also wait until the stream has come 95% of the way to its steady state | read the last row that holds them, as the recipe does |

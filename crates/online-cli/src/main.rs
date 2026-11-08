@@ -714,7 +714,8 @@ mod tests {
     /// The binary's jemalloc runs on one arena, read back from jemalloc
     /// itself, so a symbol it no longer reads (a renamed prefix, an
     /// unprefixed build) fails here rather than bring back a peak that grows
-    /// with the rows; and `docs/RUNNER.md` names the option this sets.
+    /// with the rows; and `docs/PERFORMANCE.md`, where the command line's
+    /// memory is measured, names the option this sets.
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn jemalloc_runs_on_one_arena_as_the_docs_say() {
@@ -756,10 +757,10 @@ mod tests {
             unsafe { std::ffi::CStr::from_ptr(c) }
         });
         assert_eq!(conf, Some(c"narenas:1"));
-        let runner = include_str!("../../../docs/RUNNER.md");
+        let performance = include_str!("../../../docs/PERFORMANCE.md");
         assert!(
-            runner.contains("`narenas:1`"),
-            "docs/RUNNER.md names `narenas:1`"
+            performance.contains("`narenas:1`"),
+            "docs/PERFORMANCE.md names `narenas:1`"
         );
     }
 

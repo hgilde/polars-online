@@ -4,15 +4,13 @@
 This page explains, for anyone who makes features or targets with the
 window operators of [`po.ops`](https://hgilde.github.io/polars-online/ops.html),
 which rows each operator's window holds and how it weighs them on a clock
-whose steps are uneven. It also explains why the formula around the
-operators reads each row alone, what a window gives at its edges, and how
-a quantile and a saved run are kept.
+whose steps are uneven.
 
 **A window operator returns a Polars expression (a column computation,
 such as `pl.col("x") + 1`) whose value on each row is computed over the rows near it on the [clock](GLOSSARY.md#time): those
 before it, or those after it.** A window that looks back makes a feature,
 such as the last minute's time-weighted mid. A window that looks ahead,
-under `reverse=True`, makes a target, such as the next minute's VWAP
+under `reverse=True` and with the `window_size` it then needs, makes a target, such as the next minute's VWAP
 (volume-weighted average price). Each operator updates running sums, or
 for a quantile a sketch, as each row arrives, where Polars' `rolling`
 gathers the window's rows again for every row ([What a window operator
@@ -47,8 +45,9 @@ temporal one. Each operator then reads the weighted rows its own way:
 
 `po.increment`, which is not a window operator, gives an operator an
 input: `x_t − x_{t−1}`, back to the last row with a value in the group and
-session. It is null on a session's first row and after a reset, and in
-seconds when `x` is a temporal column.
+session. It is null on the first row of each group and of each session, on a row
+whose input is null, and after a reset, and in seconds when `x` is a
+temporal column.
 
 [Check the result](how-to/make-window-features.md#check-the-result)
 compares `po.ewm_mean` and `po.ewm_sum` with Polars' `ewm_mean_by` and
@@ -154,8 +153,8 @@ ends at its row.
 
 **Without a `window_size`, a window holds every row since its stretch
 began.** A *stretch* is the rows between two clock breaks: it starts at the
-stream's first row, or at the first row after a gap longer than `gap_cap`,
-a session change or a reset. Those rows are weighed by their decay alone.
+stream's first row, or at the first row after a gap longer than `gap_cap`
+or a session change. A reset starts the window over in the same way. Those rows are weighed by their decay alone.
 An evenly weighted mean, variance or standard deviation
 (`half_life=float("inf")`) needs a `window_size`, and `with_windows`
 refuses one without it.
@@ -187,9 +186,8 @@ it by name, and chunking the stream cannot change its output:
 | refused by name when the query is built: write it with Polars' own `with_columns` | a formula with no operator |
 
 This code tries both refusals on `trades`, a stream of quotes with trades
-between them. Its `mid` is on every row, and `side`, `quantity` and
-`price` are null on a quote. This code uses `trades` from [Example
-data](../README.md#example-data):
+between them. Its `mid` is on every row, and `side`, `quantity` and `price`
+are null on a quote. It uses `trades` from [Example data](../README.md#example-data):
 
 ```python
 clock = dict(clock="ts", gap_cap="5m", group="symbol")
@@ -301,18 +299,19 @@ the whole sketch held over the rows newer than it. A row leaving puts those thre
 then exactly the one built from the rows that are left. A sketch kept per
 row, the textbook form of a two-stack queue, would cost the whole sketch a
 row: about 11 KB for a window of 1,000 rows, where this costs 24 bytes.
+A read walks the buckets an octave at a time, then the one octave's 64
+buckets, so a quantile costs about as much as its window's values span
+octaves.
 
 | the window | what it keeps | its sketches, on standard normal values | time a row, against the same window's `po.ewm_mean` |
 |---|---|---|---|
-| no `window_size` | one sketch of every row since the stretch began, decayed, folding the decay in every 64 half-lives and then dropping an end octave that holds under 1e-12 of the weight | 1,985 buckets, about 16 KB, at a half-life of 500 rows | 1.9 times |
+| no `window_size` | one sketch of every row since the stretch began, decayed, folding the decay in every 64 half-lives and then dropping an end octave that holds at most 1e-12 of the weight | 1,985 buckets, about 16 KB, at a half-life of 500 rows | 1.9 times |
 | a `window_size` | the window's rows, as every windowed operator keeps them, three numbers a row, and two sketches | 1,345 buckets for a window of 1,000 rows | 1.7 times |
 | `reverse=True` | as under a `window_size` | as under a `window_size` | 1.9 times `po.ewm_sum`'s |
 
 The times are the best of five runs over 2,000,000 rows of one group,
 interleaved, through `po.stream.with_windows`, measured on 2026-10-24 on a
-shared laptop at a load average of 8 to 12. A read
-walks the buckets an octave at a time, then the one octave's 64 buckets, so
-a quantile costs about as much as its window's values span octaves.
+shared laptop at a load average of 8 to 12.
 
 [Weight rows by a robust scale of the target](how-to/weight-rows-by-a-robust-scale.md)
 shows how to make a MAD scale with `po.ewm_quantile`, and weight each row

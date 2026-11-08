@@ -58,22 +58,22 @@ estimate is that block's row of `bank.closed_groups()`.
    of recent returns, a hint and not a limit, and sets `"preavg"`'s window.
    The kernel with a bandwidth set from the data refuses a spec without
    it, and so does `"preavg"` without `preavg_rows`.
-5. **Make a model bank of the specs with `po.ModelBank(specs)`, fit it
-   with `bank.fit(returns)`, and read each block's row of
-   `bank.closed_groups(name)`.** `rcov` and `rcorr` hold the upper
-   triangle of the matrix, row by row, as one flat list: for two series,
-   `[1, r, 1]` in `rcorr`, so `r` is its second entry. Beside them sit
-   `rcov_n`, `rcov_kind`, `rcov_bandwidth_used`, `rcov_omega2` and
-   `rcov_iv_sparse` (the noise variance and sparse integrated variance
-   behind the kernel's bandwidth), and `rcov_iq`, a realized-quarticity
-   proxy.
-6. **For a correlation read on its own under `"preavg"`, give
+5. **For a correlation read on its own under `"preavg"`, give
    `psd=False`.** It selects the balanced form, a shorter window of
    `k_n = floor(theta * sqrt(block_rows))` rows with the bias term
    subtracted, which was the more accurate on the streams Regimes §8
    measures. It is not
    always positive semi-definite, so keep the default, `psd=True`, where
    the matrix must be.
+6. **Make a model bank of the specs with `po.ModelBank(specs)`.**
+7. **Fit it with `bank.fit(returns)`.**
+8. **Read each block's row of `bank.closed_groups(name)`.** `rcov` and `rcorr` hold the upper
+   triangle of the matrix, row by row, as one flat list: for two series,
+   `[1, r, 1]` in `rcorr`, so `r` is its second entry. Beside them sit
+   `rcov_n`, `rcov_kind`, `rcov_bandwidth_used`, `rcov_omega2` and
+   `rcov_iv_sparse` (the noise variance and sparse integrated variance
+   behind the kernel's bandwidth), and `rcov_iq`, a realized-quarticity
+   proxy.
 
 This code makes 20 blocks of two prices whose returns correlate at 0.6,
 each tick measured with noise. The second series is observed on only
@@ -106,13 +106,13 @@ specs = [
                  group="block", group_close="monotone",       # 3. a block closes when the next starts
                  kind=kind,                                   # 1. the estimator
                  block_rows=rows,                             # 4. the block's expected length
-                 psd=psd)                                     # 6. False: the balanced pre-averaged form
+                 psd=psd)                                     # 5. False: the balanced pre-averaged form
     for name, kind, psd in [("plain", "plain", True), ("kernel", "kernel", True),
                             ("preavg", "preavg", True), ("balanced", "preavg", False)]
 ]
-bank = po.ModelBank(specs)
-bank.fit(returns)
-# 5. Each estimator's mean correlation over the blocks that closed.
+bank = po.ModelBank(specs)                                    # 6. the bank
+bank.fit(returns)                                             # 7. learn every block
+# 8. Each estimator's mean correlation over the blocks that closed.
 for name in ("plain", "kernel", "preavg", "balanced"):
     closed = bank.closed_groups(name)                          # one row per block that closed
     print(f"{name}: mean correlation {closed['rcorr'].list.get(1).mean():.2f} over {closed.height} blocks (truth 0.60)")

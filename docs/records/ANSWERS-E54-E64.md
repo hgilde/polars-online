@@ -39,7 +39,7 @@ the gradient of `ρ = σ_xy/(σ_xσ_y)` in `(σ_x², σ_y², σ_xy)`,
 `Ê = D₂ D̂₁ D₂′` maps the five raw moments to those three
 (`D₂` rows: `(1, 0, −2μ_x, 0, 0)`, `(0, 1, 0, −2μ_y, 0)`,
 `(0, 0, −μ_y, −μ_x, 1)`), `F̂ = D̂₃ Ê`, and `D̂₁ = Σ_t Σ_u k((t−u)/γ_T) V_t V_u′`
-with `V_t = U_t^{***}/√T` the centred moment vector (each entry minus its
+with `V_t = U_t^{***}/√T` the centered moment vector (each entry minus its
 sample mean over the span). So `D̂` is the delta-method long-run standard
 deviation of `ρ̂` and the statistic is `(j/√T)|ρ̂_j − ρ̂_T| / D̂`.
 
@@ -86,7 +86,7 @@ Alternative (1) at `T = 500` and `1000` is the pair §11a names.
 
 ### The sequential (monitoring) form
 
-**Not verified here.** The closed-sample statistic centres on `ρ̂_T`, the
+**Not verified here.** The closed-sample statistic centers on `ρ̂_T`, the
 full-sample correlation, and the Brownian-bridge quantiles are exact for
 that. The *monitoring* version — training span, then a detector against a
 boundary function — is Wied & Galeano, *Monitoring correlation change in a
@@ -182,7 +182,7 @@ spectrum lies inside the edges up to a finite-`n` margin.
 
 **Verified.** With `f^{A/B}(x)`, `f^{A/A}(x)`, `f^{B/B}(x)` the lagged
 cross- and auto-correlation decay functions at the short scale `Δt₀`
-(normalised so `f(0) = 1`) and `L = Δt/Δt₀`,
+(normalized so `f(0) = 1`) and `L = Δt/Δt₀`,
 
 ```
 ρ_Δt = [ Σ_{x=−(L−1)}^{L−1} (L − |x|) f^{A/B}(x) ]
@@ -246,7 +246,7 @@ choice the paper calls optimal (Theorem 4 (ii), rate `n^{−1/5}`), so §11a's
 **Verified (Barndorff-Nielsen, Hansen, Lunde & Shephard 2009, §2).**
 `H* = c* ξ^{4/5} n^{3/5}` with `c* = (k″(0)²/k^{0,0})^{1/5} =
 ((12)²/0.269)^{1/5} = 3.5134` for Parzen, `ξ² = ω²/√(T∫σ⁴)`; in practice
-`ξ̂² = ω̂²/IV̂` with `IV̂ = RV_sparse` (a subsampled 20-minute realised
+`ξ̂² = ω̂²/IV̂` with `IV̂ = RV_sparse` (a subsampled 20-minute realized
 variance, averaged over start offsets) and `ω̂² = mean over q offsets of
 RV_dense^{(i)}/(2n^{(i)})`, computed on every `q`-th observation with `q`
 chosen so successive observations are ≈ 2 minutes apart (their data:
@@ -281,7 +281,7 @@ independent Poisson arrivals the refresh sample size falls like `log d`
 `u_t = Σ_{i≠j} r_{i,t}r_{j,t} / ((n−1) Σ_i r²_{i,t})`, `ρ_{t+1} = ω + α u_t +
 β ρ_t`, `u_t ∈ (−1/(n−1), 1)` a.s. (Lemma 2.3). Two things §11a should
 know: (i) in the paper `ω` is a free parameter; writing it as `(1 − α −
-β)·ρ̄` (targeting) is a reparameterisation the paper applies to the
+β)·ρ̄` (targeting) is a reparameterization the paper applies to the
 DECO-DCC `Q` process (eq. 5), not to LDECO — harmless, but it is a choice,
 not the paper's; (ii) the paper notes `u_t` is a ratio and *downward
 biased*, so the LDECO recursion "can be stationary for α + β slightly in

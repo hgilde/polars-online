@@ -1,7 +1,7 @@
 """Peak memory of each way of running a bank over a parquet file, at 3M and
-12M rows, and the command line at 24M too: the figures the README's *Memory*
-table, its advice to filter after the bank, and ``docs/RUNNER.md``'s *Memory*
-cite.
+12M rows, and the command line at 24M too: the figures ``docs/PERFORMANCE.md``'s
+*Peak memory of each way of running a bank* and *Peak memory of the command
+line* give, and the advice to filter after the bank.
 
     uv run python scripts/memory_bench.py generate .cache/memory
     uv run python scripts/memory_bench.py all .cache/memory

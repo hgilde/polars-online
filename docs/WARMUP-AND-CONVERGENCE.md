@@ -126,7 +126,7 @@ Everything that makes `h` useful comes from `G⁻¹`: an unsupported
 direction makes it huge (the collinearity-break row), an outlying `x` reads
 large through it, the ridge is in it. `G₂` contributes only the
 *directional* difference between how recent and old rows shaped the
-design, because `λ²ⁱ` favours recent rows more than `λⁱ`. If the design's
+design, because `λ²ⁱ` favors recent rows more than `λⁱ`. If the design's
 covariance is constant across the memory window — the assumption every
 ridge-regression standard error makes — then `G₂ = (s₂/s₁)·G` exactly,
 with `s₁ = Σλⁱwᵢ = weight_sum` and `s₂ = Σλ²ⁱwᵢ²`, and `G₂` carries nothing.
@@ -243,7 +243,7 @@ Exact, threshold-free, per coefficient; `O(k²)` on the solve schedule
 given the `G⁻¹` already computed for `M`. Emitted with `coef` (same
 schedule, same shape), with `min(support_coef)` and its feature name in the
 summary. Same exclusions as `h`: intercept column out; `standardize` puts
-it in standardised coefficient space, where the per-coefficient meaning is
+it in standardized coefficient space, where the per-coefficient meaning is
 unchanged. Removes a setting.
 
 **Settled (2026-09-21): warn, and only where the fit is in use.** The
@@ -353,7 +353,7 @@ name no span:
   (or the weight's ceiling below the floor): read at 95% settled the ratio is
   still falling, and a gate a little above the limit there opened later,
   after a notice that it never would. Not for `kalman` (task 116): its gate
-  reads each row's own value, which a row nearer the design's centre reads
+  reads each row's own value, which a row nearer the design's center reads
   lower, and its `P` settles on `coef_half_life`'s clock, not the spec's
   decay, so neither a withheld row nor the Kish projection says the gate is
   shut for good (§7.11);
@@ -474,7 +474,7 @@ the three clauses. Something did.
 #### 4.1.1 The options, analysed (2026-09-21)
 
 **What the gate actually guards.** The Gram family is mean-form: the
-comoments are normalised by the weight sum, so under a stationary process
+comoments are normalized by the weight sum, so under a stationary process
 the fit is **unbiased from the first row**; only its variance is high, and
 the noise gate sees that exactly — `n_Kish` at row 9 is ≈ 9 whatever the
 half-life. Waiting for `settled_frac = 0.5` on a half-life-1000 model buys
@@ -512,7 +512,7 @@ sizes the representativeness bias — none is known.
 
 | item | default | why |
 |---|---|---|
-| row fields, summary columns, the two warnings | on | no behaviour change; the pain was invisibility |
+| row fields, summary columns, the two warnings | on | no behavior change; the pain was invisibility |
 | `max_error_inflation` | `√2` | today's one-per-unknown floor re-expressed in the unit of its purpose (§5.8); its failure mode is now named |
 | `full_rank_halflives` | dropped | a tolerance on a boolean; replaced by the exact `support_coef` (§2.2) |
 | `require_full_rank` | dropped | §6 |
@@ -576,12 +576,12 @@ what showed a boolean with a cut cannot be made honest under a ridge; the
 exact per-coefficient share replaced it, §2.2.)*
 
 - Tiny ridge: `edf/k` = 0.25, 0.50, 0.75 at rows 2–4 and **1.000 at 5 =
-  k+1** (centring costs a row; no-intercept solves the raw system and is
+  k+1** (centering costs a row; no-intercept solves the raw system and is
   full at k). So it reproduces today's default for free.
 - Duplicate column: pins at **0.750 from 4 rows to 400** (min eigenvalue
   ~1e-16). No count can see this.
 - **The ridge here is mean-form** (`spec.rs`: `a[i*kc+i] += ridge` on the
-  normalised Gram), so after full rank the statistic is a *constant* set by
+  normalized Gram), so after full rank the statistic is a *constant* set by
   variance and ridge; it is a rank test, not a graded sample-size signal.
   The classical, fading version exists only under `ridge_scale="sum"`, which is
   refused with `standardize` and grids.
@@ -592,13 +592,13 @@ exact per-coefficient share replaced it, §2.2.)*
   1e-8, **0.533/0.347 at 1, 0.186/0.157 at 5**). The raw Gram's numerical
   rank read 3 of 4 at every ridge. Cost: one k×k factorisation per solve —
   cheap, not free; at k in the thousands use pivots when ridge ≪ trace/k
-  (the standardised default) and report null otherwise.
+  (the standardized default) and report null otherwise.
 - The already-returned `log_det` is the **wrong** free quantity: unbounded,
   it reads 1.000 on the collinear case.
 - Pivot calibration differs: a duplicate reads 0.5, a constant 0 (the
   earlier copy's ridge leaks through elimination, pivot 2λ vs λ); mildly
   order-dependent (4th decimal). Moot with a high threshold.
-- **Exclude the intercept column**: in the centred Gram it has zero
+- **Exclude the intercept column**: in the centered Gram it has zero
   variance by construction and would never read as supported.
 
 ### 5.5 Rank under decay: lost slowly, regained in one row
@@ -790,9 +790,9 @@ output.
 
 ### Answered
 
-**7.7 Standardisation (the flicker)** -- answered by task 116 (G).
-`support_coef` and `h` live in the space the ridge acts in (standardised
-under `standardize`), and the standardiser's own noisy first rows made the
+**7.7 Standardization (the flicker)** -- answered by task 116 (G).
+`support_coef` and `h` live in the space the ridge acts in (standardized
+under `standardize`), and the standardizer's own noisy first rows made the
 flag flicker below 0.5 before it settled (§2.2's measurement); the warning
 now waits for a stream 95% settled, the rule the other notices keep, and
 the field and the summary carry what an unsettled or undecayed stream reads.
@@ -916,7 +916,7 @@ reads back as an `Enum` over exactly the three names. `ew_class`'s
 - **`settled_frac`** per decay instance (a half-life grid gives one per
   instance); null when decay is off (`half_life = inf` / `lam = 1`).
 - **`support_coef`** `= diag(G_raw·G⁻¹)` on the solve schedule, from the
-  same `G⁻¹` as `M`; intercept excluded, uncentred for no-intercept; null
+  same `G⁻¹` as `M`; intercept excluded, uncentered for no-intercept; null
   when the jittered solve had to add a diagonal shift (the nominal `λ` is
   then not the one in `G`).
 - **Chunk invariance (hard rule 3):** `settled_frac` (accumulated time),
@@ -939,7 +939,7 @@ reads back as an `Enum` over exactly the three names. `ew_class`'s
   `w²`, the same capped `d_clock` as the Gram) persisted beside `weight_sum`
   and reset with it; `h(x) = x'Σ̂⁻¹x / n_Kish` per row from the Cholesky
   factor of the last solve (chunk invariance: the factor is state already).
-  `Σ̂` is the mean-form normalised, ridged Gram, so no extra normalisation
+  `Σ̂` is the mean-form normalized, ridged Gram, so no extra normalization
   is needed. Scalar models: `h = 1/n_Kish`. `Σ̂` singular before `k` rows →
   `h = inf` (withheld). Under `window_size` the weights are a hard cutoff, so
   `s₂` is the same accumulator with the same cutoff. Confirmed since it was
@@ -986,7 +986,7 @@ readiness gate needs (§2.1). Output is +9.4 B/row per spec uncompressed
 by default (`settled_frac`, `withheld_reason`), +8 with the opt-in field; parquet compresses
 `settled_frac` and `withheld_reason` to little, `error_inflation` like any
 float. Precedent (`emit_drift`, the residual quantiles) is that
-diagnostic *fields* are opt-in while the behaviour they diagnose is not:
+diagnostic *fields* are opt-in while the behavior they diagnose is not:
 the gates can always run and the two floats be emitted on request.
 Decided: `settled_frac` and `withheld_reason` are on by default. Exact shortcut for large `k`: `h(x) ≤
 ‖x‖²·λ_max(M)` is `O(k)`, and when the bound clears the gate the exact

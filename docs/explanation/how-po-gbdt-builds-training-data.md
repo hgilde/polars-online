@@ -51,7 +51,7 @@ error.
 
 **The first round begins sooner than XGBoost's own route from Polars, and
 `lightgbm_dataset`'s in-memory route begins as soon as LightGBM's own, at
-a third of the memory.** On the 10 million rows of 50 features above, it began after 4.0 seconds for XGBoost,
+a third of the memory.** On the 10 million rows of 50 features the sample's cuts were scored on, it began after 4.0 seconds for XGBoost,
 against 8.7 for XGBoost's own iterator over Polars' chunks. LightGBM's
 own route, from a frame held in memory, began after 1.54 seconds at
 8.9 GB. `lightgbm_dataset`'s in-memory route began after 1.45 seconds at
@@ -61,7 +61,8 @@ Apple M4 Pro at a load average of 4.5 to 10, on 2026-10-10.
 
 ## How a build runs
 
-Each step of a build, for each library:
+**Both libraries read the same way, and differ in how they bin and hand
+the rows over:**
 
 | step | XGBoost | LightGBM |
 |---|---|---|
@@ -71,7 +72,7 @@ Each step of a build, for each library:
 | categoricals | a `pl.Enum`'s codes, feature type `c`, its levels planted in the `ref` | a `pl.Enum`'s codes in `categorical_feature`, and any integer or Boolean column named |
 | refusals | a null or non-finite label, weight or margin, a negative weight, a margin row whose number of values differs from the first row's or the `ref`'s, a `ref` with a margin and none here or none and one here, a `pl.Categorical`, a column of another type, a source whose passes give different rows, a `ref` built here on other features or on a `pl.Enum` of other categories, under `engine="native"`, a library version outside the range the native engine is built for (XGBoost from 2.1, the first whose C API takes Arrow columns, to before 4.0), where `engine="auto"` falls back to the Python engine with a `UserWarning` | the same, with `reference` for `ref`, with LightGBM from 4.0 to before 5.0, and more than 2³¹ − 1 rows; a `categorical=` that names a float column or a column not among the features, or that is one name and not a list; and `in_memory=True` under the native engine with a LightGBM before 4.7.0, from which `engine="auto"` does not fall back |
 
-### XGBoost places its cuts where they are planted
+### For XGBoost, a feature of few values gets a bin per value
 
 **A feature of at most `max_bin` distinct values gets a bin per value, with
 the values as its edges.** A `ref` column of `d <= max_bin` distinct values
@@ -236,12 +237,11 @@ of a training row never contains the target the trees are fitted to.
 ## Polars' read-ahead
 
 **Polars, when it runs a query, reads ahead of a slower reader by an
-amount set by its thread count and its prefetch of parquet blocks.** From py-polars 1.37.0,
+amount set by its thread count and by `POLARS_ROW_GROUP_PREFETCH_SIZE`,
+how many blocks of a parquet file it reads ahead.** From py-polars 1.37.0,
 the oldest this library supports, `collect_batches` fed directly by a
-scan waits for its reader. Drained in chunks of 65,536 rows with a 0.5 ms
-pause each, at `POLARS_MAX_THREADS=4`, a 1 GB Parquet source in blocks of
-100,000 rows peaked at 329 MB on 1.37.0 and 169 MB on 2.0.0, against
-1,586 MB on 1.34.0. A step such as `with_columns` or a `select` that
+file read as a query waits for its reader, as [Why the range is 1.37.0
+to 3](polars-interfaces.md#why-the-range-is-1370-to-3) measures. A step such as `with_columns` or a `select` that
 computes reads ahead by about ten frames a thread.
 
 `xgboost_matrix` over a 1.0 GB source, on py-polars 2.0.0 on 2026-10-10,
@@ -250,12 +250,12 @@ measured as the growth of peak memory:
 | source | reader | peak growth |
 |---|---|---:|
 | Arrow IPC | the native reader | 0.46 GB |
-| Parquet | `collect_batches`, prefetch 1 and 4 Polars threads | 0.74 GB |
+| Parquet | `collect_batches`, `POLARS_ROW_GROUP_PREFETCH_SIZE=1` and 4 Polars threads | 0.74 GB |
 
 **So the native engine reads Arrow IPC files with the least memory,
 because it reads them itself, with two chunks ready ahead.** For a
-Parquet or query source, Polars' prefetch and thread count bound what it
-holds, as [Bound a run's memory](../how-to/bound-memory.md) says.
+Parquet or query source, how far Polars reads ahead in the file and its
+thread count bound what it holds, as [Bound a run's memory](../how-to/bound-memory.md) says.
 
 **A frame from `collect_batches` arrives in several pieces, and joining
 them before the library is faster than handing the pieces over one by

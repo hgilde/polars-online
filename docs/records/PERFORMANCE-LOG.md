@@ -535,7 +535,7 @@ See P5 in §3.
 | rechunking the engine's two-piece batches on the reader thread | tried, and changed nothing | §10 |
 | a filter run inside the IO-plugin source | 0.81 GB against 2.54 at 12M rows, but a second `filter` whose only difference is memory | §11 |
 | fewer pipelines for the input query alone | 0.65 GB at 2 pipelines, 0.29 at 1, but 2.7 → 3.9 → 7.1 s | §11 |
-| a row-major `ChunkOut` | the run split gets the same cache behaviour without changing the reader in `assemble` | §13 |
+| a row-major `ChunkOut` | the run split gets the same cache behavior without changing the reader in `assemble` | §13 |
 | a fused single pass to pack `F64Column`'s validity | measured the same within noise, so the simpler code stays | §13 |
 | a zero-filled `pred` | NaN is the "never written" sentinel, and zero is a value | §13 |
 | a two-pass moment per chunk for the data summary | ruled out by chunk invariance: different bits under different chunkings | §13 |
@@ -677,7 +677,7 @@ The same experiment rejected three other changes:
 
 What remains is the rotation chain itself: `k` dependent
 `sqrt`-and-divide pairs per row. That is the QR form's structure, not a
-codegen artefact. A square-root-free (fast) Givens variant would shorten
+codegen artifact. A square-root-free (fast) Givens variant would shorten
 it, and is the obvious place to look if `rls` throughput ever becomes the
 constraint. It would add a rescaling step, whose stability would have to be
 argued as carefully as the square-root form's was.
@@ -1596,7 +1596,7 @@ sum to its totals.*
 
 It scales with schema width, and the **walk** dominates there (1.28 ms of
 2.13), not the serialization, so trimming the serializer would have been
-optimising the wrong half. The filter removes all of it: `explain` on that
+optimizing the wrong half. The filter removes all of it: `explain` on that
 200-column plan is 0.001 ms, because a plain frame's explain is one line
 whatever the width, while `serialize` dumps the whole schema.
 
@@ -2227,7 +2227,7 @@ says so.
 
 **A row-major `ChunkOut`** would make a row one contiguous store, and was
 the obvious alternative to the run split. The split gets the same cache
-behaviour without changing the reader in `assemble`, the `at(...)` layout
+behavior without changing the reader in `assemble`, the `at(...)` layout
 contract or the `scatter` fast path, so the layout stays.
 
 **The predict-only path** (`predict_chunk`, `score`) is not split into
@@ -2314,7 +2314,7 @@ bit-equality), so the goldens move either way.
 
 The mirror store `c[j*k + i]` walks a new cache line for every `j`, so the
 loop touches the whole matrix twice instead of once, defeats the
-prefetcher, and cannot vectorise. The flops halve and the traffic does
+prefetcher, and cannot vectorize. The flops halve and the traffic does
 not: +49% to +107% at every width where a triangle would be worth having.
 The proposal's "0.20 ns per element per row, both triangles" was measured; the
 conclusion drawn from it was not.
@@ -2339,7 +2339,7 @@ first row after a load.
 **At these widths the loop is bound by how it touches memory, not by how
 many multiplies it does.** That is the lesson §12 and §13 keep teaching. A
 change that halves the arithmetic and doubles the traffic is a
-pessimisation, and the only way to know which one a change is, is to run
+pessimization, and the only way to know which one a change is, is to run
 it.
 
 ### 18. The blocked Gram update (2026-09-08)
@@ -2348,11 +2348,11 @@ it.
 the `k×k` co-moment matrix up to date once per block with one matrix
 product, instead of the rank-1 update §14 tuned. The rank-1 loop touches
 the whole matrix every row, and is bound by memory. The product touches it
-once per block, and is bound by arithmetic. The merge centres the block's
+once per block, and is bound by arithmetic. The merge centers the block's
 rows on the block's own weighted mean before the product, at the cost of
-one more pass over the block. Centred on the running mean instead, a
+one more pass over the block. Centered on the running mean instead, a
 history that is nearly but not quite forgotten lost 49% of the block's
-variance to cancellation at an offset of `1e7`. Centred on the block, the
+variance to cancellation at an offset of `1e7`. Centered on the block, the
 error is `8.4e-10` of the variance, the data's own resolution there. The first merge, a hand-written triple loop,
 measured 1.0×, which no test of the answer could see. The product runs on
 one core because the bank runs each group on a pool of its own. This
@@ -2365,7 +2365,7 @@ to the same bits.
 `EwRidge::step` (prediction, cross-moments and the Gram) on one core. It
 has one target, an intercept and `halflife=5000`, on this machine, in rows
 per second. `faer`'s product is called with `Par::Seq`: the bank
-parallelises across groups, never inside a step.
+parallelizes across groups, never inside a step.
 
 | k | solve | per row | block 64 | block 256 |
 |---|---|---:|---:|---:|
@@ -2823,7 +2823,7 @@ takes buys no wall time. It was 27% of the bank's samples.
 
 #### The fold
 
-A blocked merge centres its rows on the block's own mean, `a = x − m_B`,
+A blocked merge centers its rows on the block's own mean, `a = x − m_B`,
 and multiplies them. Each target now keeps its value on each held row,
 and is merged from the same deviations. Over the rows the target learns
 from, with `u` each row's weight at the end of the block:
@@ -2841,7 +2841,7 @@ row by row, four rows at a time with each entry in a register, which is
 the same additions in the same order. It is not a call to the matrix
 product: the order in which that sums one column can follow the other
 columns beside it, and a target's sums would then move with its
-neighbours. Summed by rows, a target's bits are the same at every
+neighbors. Summed by rows, a target's bits are the same at every
 `gram_threads`, on every platform, and whatever targets share its block.
 Each entry is held to an exactly rounded oracle of its definition, within
 the rounding bound of a sum in any order.
@@ -3271,14 +3271,14 @@ million rows/second, against a Python loop over 500 estimators at 3,350.
 
 **This library's `sgd` also lost to sklearn's in the same table, and was
 fixed the same day.** `po.spec.sgd` diverged at the start of
-every group: the struck row. Its `scale_features` standardised a row
+every group: the struck row. Its `scale_features` standardized a row
 against the running moments from *before* that row. While those moments are two or five rows old, the variance
-estimate can be tiny by chance, and the standardised value huge. Then one
+estimate can be tiny by chance, and the standardized value huge. Then one
 LMS step with `eta · |z|² > 2` throws a coefficient far enough that the
 next hundred rows do not bring it back.
 
 sklearn's recipe is `scaler.partial_fit(x)` *then* `transform(x)`: the
-moments include the row they scale. That bounds a standardised value by
+moments include the row they scale. That bounds a standardized value by
 `√n_eff`, and it is not a leak. The features of the row being predicted
 are known at prediction time; the rule is about the target. A pure-numpy
 LMS switched between the two orders on this stream reproduces both:
@@ -3296,18 +3296,18 @@ one bank call, against a Python loop over 500 estimators and 500 scalers.
 | 0.01 | 0.4328 | 0.4501 |
 | 0.03 | 0.7182 | 0.7277 |
 
-**What is left between them is *where the prediction is standardised*,
+**What is left between them is *where the prediction is standardized*,
 checked by switching the replica.** In sklearn's loop the row is predicted
 against the moments from before it (`predict(scaler.transform(x))` comes
 before `scaler.partial_fit(x)`), and learned against the moments including
-it: two standardisations of every row. A replica doing that gives sklearn's
+it: two standardizations of every row. A replica doing that gives sklearn's
 0.4501 / 0.7119 / 0.9111 to four places. Here it is one `z` for both. A
-row is standardised the way every row the coefficients were learned from
+row is standardized the way every row the coefficients were learned from
 was, `predict` is bounded by `√n_eff` like the step, and the scaler is one
 pass over the row rather than two.
 
-The gap is an under-convergence artefact rather than a better estimate.
-The moments that include a row shrink its standardised value by about
+The gap is an under-convergence artifact rather than a better estimate.
+The moments that include a row shrink its standardized value by about
 `1/n`. A fit that has not yet grown into its coefficients scores a little
 higher when its predictions are inflated by that much. And it closes with
 the fit: 0.0044 by rows 100–200 at 0.01, and 0.0001 at 0.03.
@@ -3395,7 +3395,7 @@ compensated means: the same 0.11 and 1.06 MB as before it. At 0.11.1 the
 same banks save 0.12 and 1.15 MB, since the compensated means give the
 scaler's mean a low part per feature, 8 bytes each.*
 
-**An LMS step is stable only while `eta · |z|² < 2`, and a standardised row
+**An LMS step is stable only while `eta · |z|² < 2`, and a standardized row
 has `|z|² ≈ k`,** so the rate has to fall as `1/k`. Both libraries run at
 `learning_rate = 0.2 / k`. The first version of this table ran both at 0.01
 and timed two fits that had diverged (R² −6.8e8 for `sgd`, −5.8e26 for
@@ -3437,7 +3437,7 @@ table below is re-run from it.
 scaler fix.** The correlation with `SGDRegressor`'s predictions fell to 0.978 at
 `k = 1,000` and **0.521 at `k = 10,000`**, and the R² with it (0.0209
 against 0.0322). That was the short-history defect from the other side. The
-scaler standardised a row against moments from *before* it, and what makes
+scaler standardized a row against moments from *before* it, and what makes
 those moments immature is **few rows per feature**; a wide fit is that on
 every row. The scaled fit *is* sklearn's recipe, a scaler in front of the
 step. With the row inside the moments (re-run the day it landed, same
@@ -3578,7 +3578,7 @@ Four places, measured one at a time on an M4 Pro, with `POLARS_ONLINE_TIMING=1`
    reordered arithmetic is what their tolerance is for.
 4. *The accept walk.* `Iterator::all` over the row short-circuits, which
    keeps it scalar. A row is nearly always usable, and a fold over the
-   compare vectorises: 1–2 µs per row at `k = 10,000`.
+   compare vectorizes: 1–2 µs per row at `k = 10,000`.
 
 #### The result
 
@@ -3622,7 +3622,7 @@ in µs per row:
 
 The data summary is a Welford update of a 48-byte record per feature per
 row, measured by switching it off. It is now the largest item. Making it
-cheaper means laying the records out column-wise, so the update vectorises.
+cheaper means laying the records out column-wise, so the update vectorizes.
 That is a state layout change, either a `SCHEMA_VERSION` bump or a serde
 mirror of the wire form, for perhaps 4 µs of the 20. Not done. The cheap
 version, comparing before storing `min` and `max`, measured no change and
@@ -3638,10 +3638,10 @@ call carry 32 µs each of it. **Feed wide frames in tall chunks.**
 #### The scaler
 
 **And the scaler.** `scale_features=True` is 20 µs per row in the core,
-against 5 unscaled. The standardised row is `(x - mean) / sqrt(var)` per
+against 5 unscaled. The standardized row is `(x - mean) / sqrt(var)` per
 feature, one square root each, and the scaler's own moment update is a
 second pass over the row. That is the cost of the feature. The scaler fix of
-§19 changed which moments it uses, not how many. The row is standardised against the
+§19 changed which moments it uses, not how many. The row is standardized against the
 moments with itself admitted, read off the accumulator as one more Welford
 step per feature, without writing it back. `sgd_bench` measured 20.7 µs a
 row before it and 21.3 after, at `k = 10,000`, within the run-to-run spread
@@ -3815,13 +3815,13 @@ of three through `ModelBank.fit_predict`:
 | `ew_class` (`covariance="full"`) | 177.9 ms | 308.3 ms | 1.7x |
 
 The 2.2–2.8x is the shape of the mechanism: one snapshot pushed per
-learned row, and an `O(k²)` subtraction and re-centring at every read. What
+learned row, and an `O(k²)` subtraction and re-centering at every read. What
 that time gets is a hard cutoff, a guarantee an exponential weight cannot
 give at any halflife.
 
 **`ew_class` is the one with a structural penalty, and its 1.7x
 understates it.** Pure decay leaves a covariance unchanged: means and
-centred co-moments do not move under `lam`. That is exactly why the `full`
+centered co-moments do not move under `lam`. That is exactly why the `full`
 shape caches its Cholesky factor between rows, and only invalidates the
 class a row updated. A *truncated* covariance moves every row, because the
 decay carried to the boundary does, so every class's factor is stale every
@@ -4617,7 +4617,7 @@ between the two releases, and a benchmark of the moved cases ran on each:
 **Two were a deviation computed where it was not needed.** The compensated
 means put the pair's deviation, `(x − hi) − lo`, inside the lagged co-moments'
 innermost loop, so a past row's `k` deviations were taken `k` times each,
-for every lag, and the loop no longer vectorised. Each target's own means
+for every lag, and the loop no longer vectorized. Each target's own means
 checked their low parts' length once a feature, target by target. Each
 deviation is now taken once and each length checked once, in the same
 arithmetic and order. `scripts/compare_release.py --against 0.11.1` finds
@@ -4630,7 +4630,7 @@ decay factor, every row: the reference `scale_floor` reads, and it is on
 by default, at 0.1. That is kept.
 
 **`corrchange`'s monitor gained 23 %** from taking its long-run deviation
-on the span centred.
+on the span centered.
 
 #### Thread scaling
 
@@ -5025,8 +5025,8 @@ second at k=20:
 | `3c9fbf6`, §29's fix | 412k | |
 
 The corrections' step is spread over their commits: `d3312bc`, halfway, already
-loses 8% at k=50. Each commit is a correctness fix, above all the centred
-cross-moments and centred solve, so the step is their price rather than
+loses 8% at k=50. Each commit is a correctness fix, above all the centered
+cross-moments and centered solve, so the step is their price rather than
 one change to take back. Against `11e3ccb`, the last build before readiness,
 the stub is 9.5% down: the per-row readiness work, and a little since.
 The bookkeeping of §29's fix takes 8% more.
@@ -5039,7 +5039,7 @@ k=20, `EwRidge::solve` is 90% of a row. Of the solve:
 | part | share |
 |---|---:|
 | the Cholesky factorization | 34% |
-| the solve's own code: the centred system copied out of the Gram, then divided by its scales | 23% |
+| the solve's own code: the centered system copied out of the Gram, then divided by its scales | 23% |
 | the coefficients' two triangular solves, mostly faer's per-call matrices for one right-hand side | 13% |
 | the system copied into faer's matrix through a closure | 8% |
 | the finiteness check behind §29's bound | 5% |
@@ -5054,7 +5054,7 @@ Four changes, none of which moves a bit:
 
 | change | why the bits stay |
 |---|---|
-| unstandardized, the centred system is read straight from the Gram, with no copy of `C` and none of the `k²` divisions or products by 1 | a division or product by 1 returns its operand |
+| unstandardized, the centered system is read straight from the Gram, with no copy of `C` and none of the `k²` divisions or products by 1 | a division or product by 1 returns its operand |
 | standardized, only `C`'s diagonal is read for the scales and the kept columns, and each entry is divided as it is taken | the same entries, divided by the same scales |
 | `SpdFactor::solve`, `quad_forms` and `inverse_diagonal` solve in place on the right-hand side's own matrix | faer's `solve` is a zeroed copy of it, from the same allocator, solved in place |
 | `SpdFactor`'s `ln det` is taken on its first read | the same sum, when `bocpd`, `deco`, `ew_class` or `hmm` reads it; `ewridge` never does |
@@ -5473,7 +5473,7 @@ the runs' scatter almost everywhere else.** `corrchange`'s monitor runs
 10.3 times as fast and its window kind 2.4 times, `deco` 24-34%, `audit`
 25%, `kmeans` 18-19%, `seqtest` 11%, `pa` and the raw `sgd` 6-8%: a
 span closed in time linear in its rows, fewer allocations a row, one
-nearest-centre search a learned row, a hash table of distinct values, and
+nearest-center search a learned row, a hash table of distinct values, and
 a step into a buffer the bank keeps.
 
 **Six rows are slower, by 1 to 6%.**
@@ -5891,7 +5891,7 @@ memory.
   have it. Or it would run the groups' cores on the pool, which gains
   nothing on one group. Neither is built.
 - **Memory is below the column form's**: the native path never
-  materialises the target column, and holds a row's formula columns only
+  materializes the target column, and holds a row's formula columns only
   until its window closes (1.09 against 1.23 GB at 16M rows).
 
 ### 35. Two costs named, one since removed (2026-10-03)
@@ -6004,7 +6004,7 @@ with the rest:
 |---|---|---|---|---|
 | S1, fixed | `runner.specs_per_call` | allocations 10.5x for 8x the specs from 8 to 64, at calls of 16 rows, and 13.3x from 16 to 128 (376,098 to 5,008,296 over three blocks of 512 rows), time 10.3x; 407 allocations a call at 16 specs and 24,770 at 128 (61x for 8x) | O(specs) a call | `crates/online-polars/src/runner.rs`, `augment`: the bank's columns were appended to the chunk one spec at a time with `DataFrame::with_column`, which looks each name up through the frame's cached schema; the insert before it dropped that cache, so each spec's struct column rebuilt the schema of every column before it, copying their fields. Now `with_columns` joins them in one pass over the names, the same frame column for column (a name the chunk has is replaced where it stands, as before): 7.79x in allocations and 7.75x in time from 16 specs to 128 |
 | S2, fixed | `hmm.k`, `ew_class.k_diag` | saved state 13.6x for 8x the columns (`hmm`, 2 to 16), 33.2x (`ew_class`, 4 to 32); now 3.1x and 5.1x | O(k) under `covariance_type="diag"` | every state or class kept its full co-moment matrix and updated it, O(k²) a row, where the diagonal model reads only the k variances. Each now keeps the k variances alone (`EwCovDiag`, `crates/online-core/src/ewcov/diag.rs`), and a window's snapshots too. A variance's update reads no other entry of the matrix, so every output is the same to the bit. At 32 features a state file of 2 states is 2,408 bytes where it was 20,251, and a row takes 242 ns where it took 425 (`ew_class`, 3 classes: 3,295 bytes where 30,065, and 324 ns where 426; Apple M-series, release build, the least of five blocks of 20,000 rows) |
-| S3, fixed | `corrchange.window`, `corrchange.window_crit` | time 7.8x to 7.9x for 8x the window, with a fixed threshold too | O(1) a row in `window_rows` | `crates/online-core/src/corrchange.rs`, the `"window"` report in `step`: both windows' correlations were computed afresh from the ring on every row (`window_stat_by` over `2·window_rows` rows), O(window_rows·k²) a row. Now each window is merged from summaries of blocks of `⌈k/2⌉ + 3` rows -- a count, an anchor row, the mean's offset from it and the centred co-moments, combined by Chan, Golub and LeVeque's pairwise rule, which needs no subtraction of a row that leaves (`crates/online-core/src/window_moments.rs`): a chunk of blocks keeps its suffix sums and a running prefix sum, so a window's full blocks are one suffix and one prefix, and only the rows at its two ends are read. 0.94x and 0.96x in time from 100 to 800 rows (2.31 ms to 2.18 ms a block of 200 rows in a debug build, where the old code took 17.2 ms to 133.7 ms); natively (release, arm64, 200 draws, the default cadence), 6.6, 5.0 and 5.6 µs a row at windows of 100, 800 and 2,500 rows over four columns, where the old code at its cadence of 50 rows took 12.5, 72.0 and 296.9, and 27.8, 28.0 and 29.2 µs over twenty columns, where it took 61.5, 494.0 and 1,598.3. The summaries hold no more numbers than the ring: the state's heap is 1.8x the old one's at both sizes (23,858 and 179,762 bytes), and its saved bytes are the old ones, the summaries rebuilt from the ring on load. A window of fewer than four blocks is read whole, where the two passes cost no more. The permutation draws are a separate O(n_perm·window_rows·k²) at each redraw; unset, `permute_every_rows` is now `window_rows`, so their cost is O(n_perm·k²) a row too |
+| S3, fixed | `corrchange.window`, `corrchange.window_crit` | time 7.8x to 7.9x for 8x the window, with a fixed threshold too | O(1) a row in `window_rows` | `crates/online-core/src/corrchange.rs`, the `"window"` report in `step`: both windows' correlations were computed afresh from the ring on every row (`window_stat_by` over `2·window_rows` rows), O(window_rows·k²) a row. Now each window is merged from summaries of blocks of `⌈k/2⌉ + 3` rows -- a count, an anchor row, the mean's offset from it and the centered co-moments, combined by Chan, Golub and LeVeque's pairwise rule, which needs no subtraction of a row that leaves (`crates/online-core/src/window_moments.rs`): a chunk of blocks keeps its suffix sums and a running prefix sum, so a window's full blocks are one suffix and one prefix, and only the rows at its two ends are read. 0.94x and 0.96x in time from 100 to 800 rows (2.31 ms to 2.18 ms a block of 200 rows in a debug build, where the old code took 17.2 ms to 133.7 ms); natively (release, arm64, 200 draws, the default cadence), 6.6, 5.0 and 5.6 µs a row at windows of 100, 800 and 2,500 rows over four columns, where the old code at its cadence of 50 rows took 12.5, 72.0 and 296.9, and 27.8, 28.0 and 29.2 µs over twenty columns, where it took 61.5, 494.0 and 1,598.3. The summaries hold no more numbers than the ring: the state's heap is 1.8x the old one's at both sizes (23,858 and 179,762 bytes), and its saved bytes are the old ones, the summaries rebuilt from the ring on load. A window of fewer than four blocks is read whole, where the two passes cost no more. The permutation draws are a separate O(n_perm·window_rows·k²) at each redraw; unset, `permute_every_rows` is now `window_rows`, so their cost is O(n_perm·k²) a row too |
 
 A fourth defect was found after the table, by timing short calls, and is
 fixed: `Bank::fit_predict` walked every group a spec had ever seen, twice a

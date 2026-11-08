@@ -121,7 +121,7 @@ round 4, CD13):
 Lists rather than `_l<ℓ>` columns, because `marginal()` is a frame with one
 row per pair and its width must not depend on the spec (`ew_cov` emits
 per-row struct fields, where a field per lag is the grammar). The
-normalisation is `ew_cov`'s exactly — the lagged covariance over the two
+normalization is `ew_cov`'s exactly — the lagged covariance over the two
 contemporaneous standard deviations, in every orientation, and **not
 clamped** to `[−1, 1]`: a lagged correlation is not bounded by one in finite
 samples, clamping would hide that, and the serial correction guards itself.
@@ -153,7 +153,7 @@ C_ℓ' = a·C_ℓ + a·b·(v_t − m)(v_{t−ℓ} − m)     when row t−ℓ is
 C_ℓ' = a·C_ℓ                                  when it is not yet
 ```
 
-These are normalised moments, `E_w[·]`, and decay reaches them only through
+These are normalized moments, `E_w[·]`, and decay reaches them only through
 `a` on the rows that learn: `W` carries the ageing, and `E_w` of a history
 that has merely aged is the same number. The first version of `marglag.rs`
 *also* multiplied them by `λ` on a row where the target was absent — decay
@@ -238,7 +238,7 @@ the target is a threshold, a V, or a saturation has a small `corr` and a
 large *split gain*: the reduction in the target's variance from cutting the
 feature at its best threshold — the number a regression stump reports, and
 the first number a gradient-boosted tree looks at. Trees need rows; a
-stump needs only, per feature, the target's weight, mean and centred second
+stump needs only, per feature, the target's weight, mean and centered second
 moment inside each of a fixed set of bins of the feature's value. That is a
 histogram of target moments, `O(bins)` state per pair and `O(1)` update per
 pair per row (one bin lookup, one Welford step), so the whole wide input
@@ -333,7 +333,7 @@ Nothing per row. In `marginal()` and the closed-group row, per pair:
 |---|---|
 | `split_gain` | the fraction of the target's variance removed by the best single cut, `max_c (w_L·w_R/W²)·(ȳ_L − ȳ_R)²/var_y` over the `bins − 1` cuts. This is the best stump's `R²`, directly comparable with `corr²` for the same pair, so `split_gain − corr²` is the nonlinear surplus |
 | `split_at` | the edge that achieves it, in the feature's units |
-| `split_gain_t` | `√((n − 2)·g/(1 − g))`: the `t_stat` a `corr` would need to match that gain, against `n_serial` where `serial_rule` gives one and `n_kish` otherwise; `+inf` at a gain of one, as `t_stat` is at `corr = ±1`. **Optimistic**, because the cut was chosen by maximising over `bins − 1` candidates and the statistic does not know that — a ranking, not a p-value |
+| `split_gain_t` | `√((n − 2)·g/(1 − g))`: the `t_stat` a `corr` would need to match that gain, against `n_serial` where `serial_rule` gives one and `n_kish` otherwise; `+inf` at a gain of one, as `t_stat` is at `corr = ±1`. **Optimistic**, because the cut was chosen by maximizing over `bins − 1` candidates and the statistic does not know that — a ranking, not a p-value |
 | `bin_edges` | the fixed edges (list) |
 | `bin_n`, `bin_mean_y`, `bin_var_y` | the histogram: the response curve `E[y \| x ∈ bin]`, its weight and its dispersion. A bin no row has landed in is *present* with `bin_n = 0` and null moments — a `"fixed"` bin over a gap in the feature's support is empty, not absent, and the lists stay aligned with `bin_edges` |
 

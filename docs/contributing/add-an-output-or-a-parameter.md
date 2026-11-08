@@ -11,7 +11,7 @@ steps this page refers to by number.
 
 You need these before the first step:
 
-- A checkout that builds and passes the gate, as
+- A checkout that builds and passes the test gate, as
   [CONTRIBUTING.md](../../CONTRIBUTING.md) sets up.
 - The library's words, as the [glossary](../GLOSSARY.md) defines them: a
   spec, a [model bank](../GLOSSARY.md#the-model-bank-and-what-it-reads)
@@ -52,30 +52,15 @@ any of them:
 | **a new clock-policy parameter** | everything the common-parameter row names; a field on `ClockPolicy` and its read in `clock_cfg_of`, in `crates/online-polars/src/spec/clock.rs`, and on `ClockCfg` (`crates/online-core/src/clock.rs`) if the clock itself acts on it; a field on `WindowsConfig` in `crates/online-polars/src/windows_frame.rs`; both places that build a `ClockPolicy`, `Spec`'s in `spec.rs` and `WindowsRun`'s in `windows_frame.rs`; and `with_windows`' signatures beside the spec's | the API snapshot, which lists `with_windows`' signatures; nothing else lists the clock-policy keywords: **no check** |
 | **a new kind of input column**, beyond features, targets and the weight | `DataSummary::layout` and `feed_row` in `crates/online-polars/src/summary.rs` decide which columns `describe()` lists, and in what order; `Bank::describe`'s `keep` decides which get moments | `crates/online-polars/tests/summary.rs` pins the frame's column names, and compares every statistic to an oracle computed over the frame, so a column the summary does not know is a failing count there |
 | **a new `withheld_reason`**, a gate that withholds a row's predictions | first make room in `crates/online-polars/src/stream.rs`, which stands within a few hundred bytes of the source cap: move a block of it into a submodule, as [Add a model](../EXTENDING.md#step-7--srcstreamrs)'s step 7 says. Then its name at the end of `WITHHELD_REASONS` in `stream.rs`, with the array's length one more, and its `REASON_*` code after the last. Then its five spelled-out lists: the count "`withheld_reason`'s six" in `scripts/outputs_doc.py`'s description of the enum fields, the `withheld_reason` entry of `python/polars_online/spec.py`'s module docstring, the `withheld_reason` description in `scripts/outputs_doc.py` that lists the reasons (regenerate `docs/OUTPUTS.md`), the `withheld_reason` row of the readiness-fields table under `docs/MODELS.md`'s *Warm-up gates*, and `docs/DIAGNOSTICS.md`'s gate table | `test_portability`'s `REASON_DTYPE`, the dtype every model's field is held to, and `test_readiness`'s `REASONS`, against which each row's reason is read; the state fixtures, whose last rows keep the codes; the five lists in the docs have **no check** |
-| **a new parameter** on one model | the `Cfg` field and its validation in `new` (step 1), the `ModelKind` field with `#[serde(default)]` (step 6), the `build_one` default (step 7), the builder keyword (step 9), the snapshot (step 10); if `inf` means something for it, `_INF_OK` (step 9). A spec of `scripts/release_probe.py`'s `WORKLOAD` that sets it goes into `tests/test_released_state.py`'s `PARAMETER_INTRODUCED` under the next minor release, the first that will take the keyword | the inf-table test catches the Python half; the compiler catches the Rust half; a workload spec left out of `PARAMETER_INTRODUCED` fails the released-state test, where every release refuses the keyword; an entry under a version newer than the release being published stops `scripts/release_version.py --publish` |
+| **a new parameter** on one model | the `Cfg` field and its validation in `new` (step 1), the `ModelKind` field with `#[serde(default)]` (step 6), the `build_one` default (step 7), the builder keyword (step 9), the snapshot (step 10); if `inf` means something for it, `_INF_OK` (step 9); and, if a spec of the release workload sets it, the entry [Add a spec parameter](change-the-api.md#add-a-spec-parameter) describes | the inf-table test catches the Python half; the compiler catches the Rust half; the released-state test catches a missing entry |
 
 **Append a withheld reason at the end of the list.** The list is
 append-only, because a state's last row keeps the reason's code. Its order
 is the precedence when two gates withhold one row.
 
-**Rename a parameter through the deprecation tables.** After 1.0, a spec
-that names an old name is read as naming the new one, with a deprecation
-notice, until the next major version refuses it. Each table has a twin on
-each side, and `tests/test_deprecation.py` holds the twins equal:
-
-| the rename | Rust | Python |
-|---|---|---|
-| a key every spec takes | `DEPRECATED` in `crates/online-polars/src/spec.rs` | `_DEPRECATED` in `python/polars_online/_warnings.py` |
-| a key of one model | `DEPRECATED_IN` in `crates/online-polars/src/spec/names.rs` | `_DEPRECATED_IN` in `_warnings.py` |
-| a word of one model's parameter | `DEPRECATED_WORDS_IN` in `spec/names.rs` | `_DEPRECATED_WORDS_IN` in `_warnings.py` |
-
-A model's key has a table of its own because one old name went two ways
-(`kmeans`' `k` is `n_clusters`, `hmm`'s is `n_components`). It also keeps a
-name another model still takes from moving. A name renamed before 1.0 is
-refused, naming the new one: through `RENAMED` in `spec.rs`, which
-`name_renamed` reports, and `_RENAMED` in `_spec.py`. A model's own refused
-name is in `RENAMED_WHERE_EXPECTED` and `_RENAMED_IN`.
-`tests/test_renames.py` holds the refusals.
+**Rename a parameter as [Rename a stable
+name](change-the-api.md#rename-a-stable-name) says,** through the
+deprecation tables that forward an old name to the new one.
 
 **If a new output field gets its own `ChunkOut` buffer**, add it to
 `LastRow::take` and `LastRow::to_chunk` in
@@ -142,7 +127,7 @@ it.** `a_windows_state_version_moves_the_banks_schema_with_it`, in
 
 ## Check the result
 
-Run the state-fixture tests of both crates, then the gate. Each holds a
+Run the state-fixture tests of both crates, then the test gate. Each holds a
 different part of the change:
 
 | the check | what it fails on |

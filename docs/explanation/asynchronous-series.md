@@ -122,6 +122,6 @@ seeds.
 
 | source | for |
 |---|---|
-| Barndorff-Nielsen, O. E., Hansen, P. R., Lunde, A. and Shephard, N. (2011). *Journal of Econometrics* 162(2), 149–169. | the refresh-time rule |
+| Barndorff-Nielsen, O. E., Hansen, P. R., Lunde, A. and Shephard, N. (2011). Multivariate realised kernels: consistent positive semi-definite estimators of the covariation of equity prices with noise and non-synchronous trading. *Journal of Econometrics* 162(2), 149–169. | the refresh-time rule |
 | Epps, T. W. (1979). Comovements in stock prices in the very short run. *Journal of the American Statistical Association* 74(366), 291–298. | the fall of a correlation over short intervals |
 | Tóth, B. and Kertész, J. (2009). The Epps effect revisited. *Quantitative Finance* 9(7), 793–802. | the lagged co-moments that undo it, and their triangular weights |

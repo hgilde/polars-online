@@ -402,7 +402,18 @@ def test_each_check_reads_what_it_governs():
     guides = wc.guides()
     assert {"README.md", "docs/MODELS.md", "docs/GLOSSARY.md"} <= set(guides), guides
     # Every docstring is now in the shape, so that check finds nothing here;
-    # `test_a_planted_docstring_breaks_each_rule` shows it still reads.
+    # `test_a_planted_docstring_breaks_each_rule` shows it still reads. Since
+    # task 338's stage 10 no guide holds a sentence finding either, so a
+    # check shows it reads by its findings to read where it holds none.
     assert wc.files_read("docstrings") == sorted({d.path for d in documented})
     for check in wc.CHECKS:
-        assert wc.run(check) or check == "docstrings", check
+        if check == "kinds":
+            # Every guide declares its kind, so the check finds nothing here:
+            # `test_planted_kinds_are_found` shows it still reads, and every
+            # guide it reads opens with a declaration.
+            declared = [
+                wc.DECLARATION.match((wc.REPO / g).read_text(encoding="utf-8")) for g in guides
+            ]
+            assert all(declared), [g for g, m in zip(guides, declared, strict=True) if not m]
+            continue
+        assert wc.run(check) or wc.run(check, read=True) or check == "docstrings", check

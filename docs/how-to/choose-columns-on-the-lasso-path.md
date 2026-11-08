@@ -128,7 +128,9 @@ steady = po.spec.lasso("steady", targets=["y"], penalties=penalties, select_half
 
 Within a solve, the descent stops after `max_iter` sweeps, 100 by default,
 or after a sweep that moved no coefficient by more than `tol` (1e-10 by
-default) relative to the target's spread. A descent that runs out of sweeps first leaves that penalty's fit
+default) relative to the target's spread. Where the largest covariance
+of a standardized feature with the target is larger than that spread,
+`tol` is relative to it instead. A descent that runs out of sweeps first leaves that penalty's fit
 short of the lasso's solution.
 
 **If `bank.solve_failures()` counts a descent that ran out of its
@@ -181,7 +183,7 @@ path two ways, and each suits a different question:
 |---|---|---|
 | computes | each knot exactly, from the largest penalty down, by least angle regression | the solution at each penalty given, each started from the one before, by coordinate descent |
 | stops | after `max_iter` knots past its first, or at the first knot with at least `max_active` columns active | at the last penalty |
-| time | 4 ms for the whole path, 201 knots, at 200 columns. Its reference gives 0.2 ms for 40 knots at 200 columns, and 3 ms at 2,000 | 3 to 8 ms for 25 penalties at 200 columns |
+| time | 4 ms for the whole path, 201 knots, at 200 columns. [`po.gram.lars_path`'s docstring](https://hgilde.github.io/polars-online/gram.html#polars_online.gram.lars_path) gives 0.2 ms for 40 knots at 200 columns, and 3 ms at 2,000 | 3 to 8 ms for 25 penalties at 200 columns |
 | takes | `penalty_weights=`, a scale above 0 on each column's penalty | `penalty_weights=`, where a weight of 0 keeps a column in the fit at every penalty, and an elastic net (`l1_ratio` below 1) |
 | use it for | the first columns to enter: a selection, and [stability selection](select-columns-stably-over-weeks.md) | a penalty chosen by held-out error, an elastic net, a column that must stay in |
 

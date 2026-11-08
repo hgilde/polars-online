@@ -369,7 +369,7 @@ n_learned += 1;  if n_learned % grow_every == 0: checkpoint (6.3)
 `bring_up_to_date(L)` multiplies a node's sums (and histogram) by
 `exp(L − stamp)` and sets `stamp = L`. Decay is therefore exact and lazy:
 nothing is touched per row except the `M·(d+1)` nodes on the paths. The
-prototype vectorises this per segment; the per-row form is what Rust would
+prototype vectorizes this per segment; the per-row form is what Rust would
 run, and the two are the same arithmetic in a different association order.
 
 ### 6.3 Checkpoints

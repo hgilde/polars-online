@@ -31,10 +31,11 @@ One pass over the rows keeps the Grams, and each fit afterwards reads only
 them.
 
 1. **Make the block column in the query,** with Polars' `with_columns`
-   before the bank.
+   before the [model bank](../GLOSSARY.md#the-model-bank-and-what-it-reads).
 2. **Name it as the spec's `group`,** and the bank keeps a Gram for each
    block. Give `half_life=float("inf")`, so the Grams are least squares'
-   sums, and `solve_every=float("inf")`, so the pass solves nothing.
+   sums, and `solve_every=float("inf")`, so the pass solves only on each
+   target's first rows.
 3. **Run the pass with `bank.fit`,** which learns from every row and keeps
    no output.
 4. **Read the Grams with `bank.gram(name)`,** one dict of numpy arrays per
@@ -52,7 +53,7 @@ call. This code uses `lf` from [Example data](../../README.md#example-data):
 features = ["x0", "x1", "x2", "signal_a", "signal_b"]
 hours = po.spec.ewridge(
     "hours", targets=["y"], features=features, group="hour",   # a Gram per hour
-    half_life=float("inf"), solve_every=float("inf"),          # least squares' sums; the pass solves nothing
+    half_life=float("inf"), solve_every=float("inf"),          # least squares' sums; solved only on the first rows
 )
 bank = po.ModelBank([hours])
 bank.fit(lf.with_columns(hour=pl.col("ts").dt.truncate("1h")))   # the hour, made in the query
@@ -91,11 +92,11 @@ with the week as the block and these settings:
 |---|---|---|
 | `group` | `"week"`, the column made by `pl.col("ts").dt.truncate("1w")` | a state, and so a Gram, for each week |
 | `half_life` | `float("inf")` | every row weighs the same, so a block's Gram is least squares' and blocks pool as they are |
-| `solve_every` | `float("inf")`, never, on any clock | under an infinite half-life the model solves on every row unless told otherwise. The fits are made from the Grams, so the pass solves nothing |
+| `solve_every` | `float("inf")`, never, on any clock | under an infinite half-life the model solves on every row unless told otherwise. The fits are made from the Grams, so the pass solves only on each target's first rows |
 | `target_gaps` | `"pairwise"` | one Gram per block whatever rows each target is missing on, so every block has the same targets and they pool |
 | `gram_block_rows` | `256` | adds 256 rows to the matrix in one product, 5.1 to 6.6 times as fast as one row at a time from 256 to 2,000 features ([Fit hundreds of features](fit-hundreds-of-features.md#add-rows-to-the-gram-in-blocks)) |
 | `gram_threads` | left out, so `"auto"` | runs that product on the threads the bank's other groups leave idle ([Fit hundreds of features](fit-hundreds-of-features.md#run-the-grams-work-on-idle-threads)) |
-| `group_close` | not in the recipe; `"monotone"` when the weeks arrive in order | with it and `closed_groups=` on `fit`, the bank hands each week's Gram out once the next week starts, and the pass writes them all to a file when it ends ([Read Grams from saved files](read-grams-from-saved-files.md)) |
+| `group_close` | not in the recipe; `"monotone"` when the weeks arrive in order, with the week made an integer by `.dt.date().cast(pl.Int32)`, since a closed group's key must be an integer, text or categorical column | with it and `closed_groups=` on `fit`, the bank hands each week's Gram out once the next week starts, and the pass writes them all to a file when it ends ([Read Grams from saved files](read-grams-from-saved-files.md)) |
 
 1. **Make the week column in the query,** with
    `pl.col("ts").dt.truncate("1w")` in Polars' `with_columns` before the
@@ -247,8 +248,8 @@ hundreds of features](#keep-weekly-grams-of-hundreds-of-features) checks.
 | what you see | what it means | what to do |
 |---|---|---|
 | `po.gram.merge` refuses parts whose targets differ | under `target_gaps="own_rows"` a block holds a Gram per pattern of gaps | pool the Grams with the same `targets`, or give `target_gaps="pairwise"` where its condition holds |
-| the pass runs out of memory | the bank holds a `k²` Gram for every block it has seen | give `group_close="monotone"`, loop over `bank.fit_predict_batches(lf)` and write `bank.closed_groups()` to a file of its own after each chunk, so the process holds only the weeks of one chunk at a time ([Close groups and read each one's row](close-groups.md), [Read Grams from saved files](read-grams-from-saved-files.md)) |
-| `bank.coef()` differs from `po.gram.solve` on the Gram | `bank.coef()` is as of the last solve, and the pass solves nothing | solve the Gram with `po.gram.solve` |
+| the pass runs out of memory | the bank holds a `k²` Gram for every block it has seen | make the week an integer with `.dt.date().cast(pl.Int32)`, give `group_close="monotone"`, loop over `bank.fit_predict_batches(lf)` and write `bank.closed_groups()` to a file of its own after each chunk, so the process holds only the weeks of one chunk at a time ([Close groups and read each one's row](close-groups.md), [Read Grams from saved files](read-grams-from-saved-files.md)) |
+| `bank.coef()` differs from `po.gram.solve` on the Gram | `bank.coef()` is as of the solve on each target's first rows | solve the Gram with `po.gram.solve` |
 
 ## Go on from the Grams
 

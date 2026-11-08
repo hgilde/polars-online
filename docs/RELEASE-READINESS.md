@@ -26,8 +26,9 @@ baseline](#the-budgets-baseline)).
 
 **The one human step in a release is approving the PyPI upload, the one
 step that cannot be undone.** The upload is the `publish to PyPI` job,
-which declares the `Pypi` environment (`release.yml` spells it
-`environment: pypi`). That environment has the owner as a required
+which declares the `Pypi` environment, as the repository's settings name
+it. GitHub matches an environment's name regardless of case, and
+`release.yml` spells it `environment: pypi`. That environment has the owner as a required
 reviewer, with self-review allowed: with a single reviewer, forbidding
 self-review would deadlock every release. The click is a button on the run
 page, and GitHub emails when one is waiting.
@@ -56,7 +57,7 @@ marks the opt-in long runs over millions of rows. `pins` marks the tests
 that assert this repository's own Polars pin, which cannot pass once
 Polars has moved (`pyproject.toml`). `oracle_grid` marks the heavy grids
 checked against third-party oracles, which `oracles.yml` runs on every
-push.
+push to `main`.
 
 **The `tag` and `release` jobs each try three times, with a growing pause,
 and a retry after an attempt that landed succeeds.** A push or a creation
@@ -181,8 +182,9 @@ the cases VERSIONS lists and the specs whose numbers a CHANGELOG entry
 moved since that release, which the test names with the entry. It runs in
 the suite, and is skipped offline, since it downloads the releases.
 
-**The 1.x releases are read from PyPI, not listed by hand.** The four
-releases before 1.0 are named in the test. Every 1.x release is read from
+**The 1.x releases are read from PyPI, not listed by hand.** The test
+names the releases before 1.0 it holds, 0.10.0, 0.11.1, 0.12.0 and 0.13.0,
+each of which wrote a schema of its own. Every 1.x release is read from
 PyPI's JSON description of the package when the suite is collected, every
 final version not yanked, so a release is held from the moment it is
 uploaded, with no edit to the test. A spec that needs a parameter newer
@@ -397,7 +399,8 @@ cannot compare a build with itself. A spec the old release refuses is
 listed as not comparable, not as a difference. `--against 0.9.1` names
 another release, and `--report` prints without failing.
 
-**CI runs the same comparison on every push, report only,** so a change
+**CI runs the same comparison on every push to `main` and every pull
+request, report only,** so a change
 shows at the commit that made it. On 2026-11-03, 1.4.0's build against
 1.3.0 compared 1,283 fields of 72 specs, and each of the 637 that differed
 is declared in the CHANGELOG. The specs that set a keyword 1.3.0 does not

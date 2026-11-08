@@ -94,7 +94,7 @@ def test_every_field_gives_its_dtype_and_where_else_it_is_null():
         name: (text.split(f"\n## `{name}`\n", 1)[1].split("\n## ", 1)[0], _build(name))
         for name in MINIMAL
     }
-    shared = text.split("\n### Fields most models write\n", 1)[1].split("\n### ", 1)[0]
+    shared = text.split("\n## Fields most models write\n", 1)[1].split("\n## ", 1)[0]
     sections["the shared fields"] = (shared, _build("ewridge"))
     for name, (section, spec) in sections.items():
         header, rows = _table(section)

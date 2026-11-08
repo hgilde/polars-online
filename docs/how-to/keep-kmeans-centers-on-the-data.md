@@ -42,8 +42,8 @@ sit far from every center.
 3. **Build the spec with `po.spec.kmeans`,** giving `n_clusters`,
    `half_life` and `dead_frac`. Give `coef_every=0` too, to write every
    center on every row, as it stands after learning that row.
-4. **Run it with `pl.scan_parquet(...).online.fit_predict([km])`, and
-   unnest the output with `.online.unnest([km])`.** Each row then has
+4. **Run it with `pl.scan_parquet(...).online.fit_predict([km])`.**
+5. **Unnest the output with `.online.unnest([km])`.** Each row then has
    `cluster`, the index of the nearest center, read before the row is
    learned, and every center as `coef_cluster<j>_<feature>`.
 
@@ -77,7 +77,7 @@ for dead_frac in (0.0, 0.05, 0.25):                           # 0 turns the rule
     # 2 and 3. The rule, and every center on every row.
     km = po.spec.kmeans("km", features=["x", "y"], n_clusters=3, half_life=500.0,
                         dead_frac=dead_frac, coef_every=0)
-    # 4. Run, and unnest the centers into columns.
+    # 4 and 5. Run, and unnest the centers into columns.
     out = pl.scan_parquet("swap.parquet").online.fit_predict([km]).online.unnest([km]).collect()
     # The center nearest (0, 6) on the row before the cluster vanished, and the first row it sits within 0.5 of (6, 6).
     j = min(range(3), key=lambda j: out.slice(3_999, 1).select(distance(j, 0.0, 6.0)).item())
@@ -97,9 +97,12 @@ At 0.25 the rule re-places the center in one jump, at row 5,199. That is
 formula's 2, which counts from a center that learns no rows: this one had
 drifted toward the new rows, learning some of them. With the rule off, or at the default, the center
 drifts the whole way instead, and reaches the new cluster at row 6,091,
-before the default's 4.3 half-lives have passed. The Notes of `kmeans`'s
+before the default's 4.3 half-lives have passed. The new rows sit far
+from every center at first, but each check counts them in their nearest
+center's radius as if they sat at the cut. So that radius widens until
+the center learns them and moves toward them. The Notes of `kmeans`'s
 [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kmeans)
-say why, under *Far rows, split and merge*.
+give the rule, under *Far rows, split and merge*.
 
 ## Check that it worked
 

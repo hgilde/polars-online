@@ -41,8 +41,8 @@ end.
    session change the fit's means and co-moments become `1 − f` of this
    session's and `f` of the twin's. `0` is the same as no
    `session_shrink`, and `1` takes the long run's moments.
-4. **Give `max_rows_between_solves=1` for the new session's first rows to
-   read the blend at once.** The coefficients stay as last
+4. **For the new session's first rows to read the blend at once, give
+   `max_rows_between_solves=1`.** The coefficients stay as last
    [solved](../GLOSSARY.md#fitting-a-model) until the next solve the schedule brings due, which reads the blended moments.
    With a solve on every row, the solve on the session's first row reads
    the blend, and the next row is predicted from it.
@@ -60,6 +60,9 @@ from the eleventh session on:
 
 ```python
 import numpy as np
+import polars as pl
+
+import polars_online as po
 
 # 40 sessions of 300 rows. Each session's slope is drawn around a long-run slope of 2.
 rng = np.random.default_rng(5)

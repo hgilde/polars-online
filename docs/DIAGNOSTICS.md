@@ -1,3 +1,4 @@
+<!-- kind: reference -->
 # Is the model working?
 
 This reference page lists, for anyone who reads a model's output and
@@ -69,10 +70,11 @@ threshold on 77% of the rows after. It is the Wald distance between two
 fits of the same regression, one at the diagnostic's memory and one at four
 times it, and it grows when a coefficient moves. The two CUSUMs watch the
 residuals' mean and spread. After the flip they pass 3 on 1.8% and 2.8% of
-the rows, near the 0.3% they pass on a stream with no break. A
+the rows, well above the 0.3% they pass on a stream with no break, but far
+below `break_wald`'s 76.8%. A
 slope that flips on a feature centered at zero leaves the residuals' mean at
-zero, so the CUSUM barely sees it, and the spread grows too little here for
-the CUSUM of squares. The calibration
+zero, so the CUSUM barely sees it. The spread grows only while the fit
+catches up, so the CUSUM of squares fires early and briefly. The calibration
 stays quiet because the fit forgets: within a few half-lives it has learned
 the new slope, and its predictions are scaled right again. The running R²
 falls from 0.51 before the flip to 0.43 a hundred rows after, and is back
@@ -96,8 +98,9 @@ These are the words of the library that the page uses:
 
 | word | what it means here |
 |---|---|
-| spec | one model's description: the model, the columns it reads, and how it treats time. `po.spec.ewridge(...)` makes one, and [the README's model table](MODELS.md#the-models-at-a-glance) lists every kind |
-| bank | `po.ModelBank`, a set of specs fitted together over the same rows |
+| spec | one model's description: the model, the columns it reads, and how it treats time. `po.spec.ewridge(...)` makes one, and [MODELS.md's model table](MODELS.md#the-models-at-a-glance) lists every kind |
+| bank | `po.ModelBank`, a model bank: a set of models, one for each spec and group, fitted together over the same rows |
+| EW | exponentially weighted: each row's weight halves every half-life of the memory given |
 | slot | one prediction of one target, at one point of a grid such as a list of ridge values. A diagnostic writes one field per slot, suffixed with the target, as `cusum_y` |
 | out-of-sample | a row's prediction is made before the model learns from the row, so its residual `resid = y − pred` is one the model has not seen |
 | `half_life` | each row's weight halves every `half_life` of the clock column, or of the rows when there is no clock. `inf` forgets nothing |
@@ -162,14 +165,14 @@ and run once with no ridge each matches statsmodels' test on the same rows
 
 ### One memory per diagnostic: run once or windowed
 
-**Each diagnostic keeps one accumulator per slot, with a half-life of its
+**Each diagnostic keeps one set of running sums per slot, with a half-life of its
 own.** Its keyword is the switch's name with `_half_life`, as
 `calibration_half_life`. Left out, it is the fit's own memory, except for
 the calibration, whose memory is four times it. `inf` runs the diagnostic
 once over the whole stream.
 
-**The fit's own memory is its half-life, but for two fits that forget on
-another clock.** Under `window_size`, it is the half-life whose
+**The fit's own memory equals its half-life, apart from two fits whose
+memory another parameter sets.** Under `window_size`, it is the half-life whose
 exponential weights have the window's Kish size. A window of `W` rows is
 worth `W` rows, and weights `λ^i` are worth `(1 + λ)/(1 − λ)`. So `λ = (W −
 1)/(W + 1)`, and the half-life is `ln 2 / ln((W + 1)/(W − 1))` rows, about
@@ -177,7 +180,7 @@ worth `W` rows, and weights `λ^i` are worth `(1 + λ)/(1 − λ)`. So `λ = (W 
 half-life is `W ln 2 / 2` of them. A window beside a half-life takes the
 Kish size of the decayed weights cut at the window. `kalman` forgets its
 coefficients at `coef_half_life`, so its diagnostics read at that, the
-shortest finite one where it gives one per coefficient; the CUSUM's null
+shortest finite one where it gives one per coefficient. The CUSUM's null
 share alone reads the intercept's entry, since the intercept is what
 absorbs a level. Under `window_size` that share reads the window itself
 ([Has it broken?](#has-it-broken)).
@@ -235,7 +238,7 @@ row](explanation/how-diagnostics-work.md#reading-a-statistic-that-is-read-on-eve
 
 ### Every switch at once
 
-Every switch adds its fields to the spec's output struct, and one spec can
+Every switch adds its fields to the spec's output column, and one spec can
 carry them all. A switch's tuning keywords sit beside it, each at its
 default if it has one:
 
@@ -264,7 +267,7 @@ every = po.spec.ewridge(
     conformal_rate=0.05,          #   ... whose radius moves this fast
     emit_metrics=True,            # ic_y, r2_y, hit_rate_y: running accuracy
     emit_autocorr=True,           # autocorr_y: each residual against the one ...
-    resid_autocorr_lag=1,         #   ... this many scored rows back
+    resid_autocorr_lag=1,         #   ... this many predicted rows back
     emit_drift=True,              # drift_y: Page-Hinkley on |resid| ...
     drift_delta=0.5,              #   ... with this tolerance, in units of sigma ...
     drift_threshold=20.0,         #   ... and this threshold, in sigma times clock units
@@ -280,7 +283,7 @@ every = po.spec.ewridge(
     emit_error_inflation=True,    # error_inflation_y: ewridge, rls and kalman
     emit_se_coef=True,            # se_coef, beside coef: ewridge, rls and kalman
     emit_robust_se=True,          # se_coef_hc0, se_coef_hac, beside coef: ewridge and rls ...
-    robust_se_lags=10,            #   ... with Newey and West's lags to this many rows
+    robust_se_lags=10,            #   ... with Newey and West's lags to this many rows (default: twice the horizon)
     emit_clocks=True,             # scored_clock, learned_clock: every model takes it
 )
 # Fit, and list every field the switches added, six to a line.
@@ -311,7 +314,7 @@ with 20, in one chunk, the best of five runs, on 2026-10-09. The machine
 was shared, at a load average near 3.3, and the noise of a measurement is
 about ±10 ns. The fit alone and the two switches whose paths changed since,
 `emit_feature_health` and `emit_specification`, were timed again on
-2026-10-24 for 1.3.0 the same way, at a load of 1.9 to 3.4: the fit alone
+2026-10-24 for 1.3.0 the same way, at a load of 1.9 to 3.4. The fit alone
 took 191 ns a row at 5 features and 326 ns at 20.
 
 | switch | added per row, 5 features | 20 features | grows with | models |
@@ -367,7 +370,7 @@ under `horizon_rows=150`, consistent with `a = 0, b = 1` ([Check each
 stage with the diagnostics it asks
 for](how-to/check-a-two-stage-fit.md#check-each-stage-with-the-diagnostics-it-asks-for)).
 
-**A quantile fit's calibration is its coverage.** A prediction of the
+**Read a quantile fit's calibration as its coverage.** A prediction of the
 `q`-th quantile is calibrated when the target falls below it on a share
 `q` of rows. Mincer and Zarnowitz's regression asks whether it is the
 mean, and on a stable fit at `q = 0.9` it passed its 5% value on every
@@ -420,8 +423,8 @@ fixes it in advance as the horizon it will watch. On 1,000 streams of
 3,000 rows with an intercept break of half a noise sd at row 1,500, the
 CUSUM crossed on every one, 236 rows after the break on the median, and
 statsmodels' own crossed 241 rows after. On the same streams with no
-break, both crossed on 6.0% of them, within about one standard error, 0.75
-points, of the boundary's 5%. `scripts/diagnostics_rates.py run_once`
+break, both crossed on 6.0% of them, 1.3 standard errors (0.75 points
+each) above the boundary's 5%. `scripts/diagnostics_rates.py run_once`
 makes these streams and counts the crossings.
 
 **The CUSUM of squares is not Brown, Durbin and Evans' CUSUM of squares.**
@@ -453,8 +456,8 @@ those residuals at a memory `h` therefore cancels much of itself. In
 continuous time the sum's variance is `r = h_fit / (h_fit + h)` of the
 plain sum's, whatever the rows' rate: one half at equal memories, a
 standard deviation of 0.71. `h_fit` is the memory at which the fit absorbs
-a level, the fit's own, but for a `kalman` whose `coef_half_life` gives
-each coefficient its own: a level is absorbed by the intercept's
+a level, the fit's own, apart from a `kalman` whose `coef_half_life` gives
+each coefficient its own. There a level is absorbed by the intercept's
 coefficient alone, so `h_fit` is the intercept's entry, and `inf` there
 pins it, absorbs nothing, and leaves the plain sum. Read at the shortest
 entry instead, `[inf, 30, 30]` spread 1.40 on clean streams and `[30, 10,
@@ -523,12 +526,12 @@ its first row, read 15% there.
 `quantile` with an intercept absorbs its coverage the same way, and its
 indicators' CUSUM is divided by the same share. On the 30 clean streams
 of the spreads' table at `q = 0.5`, that CUSUM's spread read 1.03, 1.05 and 1.09 at
-memories of 50, 200 and 800; at `q = 0.9` it reads up to 1.25 at 800 once
+memories of 50, 200 and 800. At `q = 0.9` it reads up to 1.25 at 800 once
 filled. `huber`, `holt` and the gradient fits absorb at a pace of their
 own, so they keep the plain sum.
 
-**A window absorbs a level as a mean over its rows, so its share is the
-window's own.** Under `window_size` the fit's prediction is a mean of the
+**A window absorbs a level as a mean over its rows, so it absorbs a share
+of its own.** Under `window_size` the fit's prediction is a mean of the
 rows in the window, weighted by the decay inside it. A sum of its residuals
 cancels less than one beside an exponential of the same Kish size. With the
 fit's weights `g(y)` on the rows before it, the share is
@@ -574,7 +577,8 @@ with the break at 6,000, past its trend's readiness.
 
 A gradient fit absorbs a level at its learning rate, so the residuals the
 CUSUM sums carry little of the move. Beside `pa` it found no break at any
-memory, and beside `sgd` none to 88% of them by memory. `break_wald` reads the
+memory, and beside `sgd` it found 88%, 50% and 0% of them at memories of 50,
+200 and 800. `break_wald` reads the
 target and the features alone, so it finds a break beside every model
 with features alike. Beside `holt` its pair of fits has only the level to compare. On
 the clean streams `|cusum| > 3` held on at most 0.6% of rows beside any
@@ -583,9 +587,8 @@ model, and `break_wald` on at most 0.01%. `calibration_wald` past
 Beside `pa` it held on every clean row, whose predictions here were not
 calibrated.
 
-Beside a fit at a half-life of 200, each flag found its break at the
-rate and delay this paragraph's table gives.
-The breaks are on 200 streams of 3,000 rows, at row 1,500, made by
+Beside a fit at a half-life of 200, each flag found every break of its own
+kind, after the median delays the next table gives. The breaks are on 200 streams of 3,000 rows, at row 1,500, made by
 `scripts/diagnostics_rates.py breaks` in the three ways of [Detect a
 break](how-to/detect-a-break.md#test-a-fit-that-forgets-for-a-break)'s
 first recipe. The rows
@@ -620,14 +623,15 @@ is at most `n − k` for `k` coefficients, and `break_wald` waits for `2k`
 rows, whatever their weights. Read sooner, the rounding would decide the
 distance, and multiplying every weight by one constant could turn it on
 or off. A gap long enough to leave the old rows below the rounding of the
-new ones starts the wait over: that is where the history's share of the
-weight after the row, squared, is at most `2^-53`, so for a history of `W`
-rows at weight 1 a gap of `26.5 + log₂ W` half-lives before a row of
-weight 1. Without starting the wait over, the rows just after such a gap read their
-distance off a variance whose rank was theirs alone: multiplying every
-weight by one constant moved it by 8.6e-4 of itself after a gap's decay of
-`2^-60`, by more than itself at `2^-80`, and turned it on or off after
-one that took the history to 0. The slow fit's Gram alone
+new ones starts the wait over. That is where the history's share of the
+weight after the row, squared, is at most `2^-53`: for a history of `W`
+rows at weight 1, a gap of `26.5 + log₂ W` half-lives before a row of
+weight 1. Without starting the wait over, the rows just after such a gap
+read their distance off a variance whose rank was theirs alone.
+Multiplying every weight by one constant then moved it by 8.6e-4 of itself
+after a gap's decay of `2^-60`, and by more than itself at `2^-80`. After
+a gap that took the history to 0, the same multiplication turned the
+statistic on or off. The slow fit's Gram alone
 would serve both fits only while the design holds still. When a feature's
 spread fell tenfold with nothing broken, that shortcut passed 21.1 after
 the change on 85% of 100 streams, and the exact variance on none. On
@@ -707,8 +711,8 @@ horizon in rows. The memory is `robust_se_half_life`, the fit's by default.
 It costs 350 ns a row at 5 features and 10 lags, and only `ewridge` and
 `rls` take it, the least-squares fits.
 
-**The horizon is one number in rows, and every diagnostic that needs it
-reads it.** On a spec with no clock column it is `embargo`, rounded up,
+**Every diagnostic that needs the horizon reads the same number of
+rows.** On a spec with no clock column it is `embargo`, rounded up,
 since a row is a unit there. On a clock column `embargo` is in clock units,
 and the rows it spans are not known before the stream, so the spec gives
 `horizon_rows`, the rows the target looks ahead. It is a count of rows,
@@ -737,8 +741,9 @@ of each diagnostic that reads the horizon:
 | `calibration_wald` | 4 |
 | `cusum`, `cusum_sq` | 2 each |
 
-So an embargo of 5,000 rows would ask 40 MB a slot. 64 lags cover a
-horizon of 32 rows at twice it, and past that a `ReadinessWarning` says so.
+So an embargo of 5,000 rows, 10,000 lags, would ask about 21 MB a slot at
+10 features, 9.7 MB of it for each of `se_coef_hac` and `breusch_pagan`. The cap of 64
+lags covers a horizon of 32 rows at twice it, and past that a `ReadinessWarning` says so.
 A `horizon_rows` given by the spec takes twice its value in lags, whatever
 they cost. `robust_se_lags` sets `se_coef_hac`'s lags alone.
 
@@ -867,8 +872,8 @@ are more common there, and nothing has broken.
 streams of 25,000 rows at a half-life of 200, `y = 0.5 + x0 − x1` plus
 noise, `drift` flagged at these rates. `kurtosis` is read as its mean over each
 stream, averaged over the streams.
-`scripts/diagnostics_rates.py windowed` makes the streams and every figure
-in this section's tables:
+`scripts/diagnostics_rates.py windowed` makes the streams, and every figure
+of `drift`'s rates and of the CUSUM of squares' shares:
 
 | noise | mean `kurtosis` | flags per 100,000 rows at 20 | at 30 | at 50 | at 80 |
 |---|---:|---:|---:|---:|---:|
@@ -894,7 +899,7 @@ gives the bank's own `cusum_sq` back within 1e-11:
 
 On the same streams `|cusum| > 3` held on 0.28% to 0.70% of rows, and
 `break_wald > 21.1` on 0.11% or fewer, even with 3 degrees of freedom.
-What it gives up is power: under heavy tails a squared residual varies so
+What the CUSUM of squares gives up is power: under heavy tails a squared residual varies so
 much that a change of spread takes longer to stand out from it.
 
 **A windowed kurtosis is itself noisy under heavy tails.** The kurtosis of
@@ -989,28 +994,30 @@ after the run.
 | kind | switch or call | what it gives | how-to |
 |---|---|---|---|
 | running accuracy | `emit_metrics` | `ic_<t>`, the EW correlation of prediction with target; `r2_<t>`, the out-of-sample R² against the running mean; `hit_rate_<t>`, the share of rows whose sign the prediction got right | |
-| a choice as the stream runs | `emit_selected`, `emit_averaged` | the grid slot with the lowest EW error so far, and every slot's prediction weighted by its error | [Choose among a grid's settings as the stream runs](how-to/choose-among-a-grid-online.md) |
+| a choice as the stream runs | `emit_selected`, `emit_averaged` | the grid point with the lowest EW error so far, and every slot's prediction weighted by its error | [Choose among a grid's settings as the stream runs](how-to/choose-among-a-grid-online.md) |
 | a test of two models | `po.eval.diebold_mariano`, `po.eval.clark_west`, `po.eval.seqtest`, the `seqtest` model | a t statistic, or evidence that can be read at any row | [Compare two models](how-to/compare-two-models.md) |
 | metrics after the run | `po.eval.metrics`, `window_metrics`, `compare_specs`; `po.eval.sums` for an output too large to hold | R², IC, hit rate and MSE, per group or per window | [Evaluate an output frame](how-to/evaluate-an-output-frame.md) |
 
-**`hit_rate` asks whether prediction and outcome fall on the same side of
+**`hit_rate` asks whether prediction and target fall on the same side of
 zero.** A row where either is exactly zero is on neither side, and both
 `emit_metrics` and `po.eval.metrics` leave it out. So on a target that is
-always positive, such as a plain ratio, every row counts as a hit. Write a
+always positive, such as a plain ratio, every row whose prediction is
+positive too counts as a hit, and `hit_rate` sits near 1 and says
+nothing. Write a
 return about zero with Polars expressions ([Write a ratio target to sit
 about zero](how-to/make-a-target-that-looks-ahead.md#write-a-ratio-target-to-sit-about-zero)). An `sgd` fit with
 `loss="poisson"` has no side to be on, a positive rate against a count,
 and its `hit_rate` is null.
 
 On an `sgd` or `ftrl` fit with `loss="logistic"`, `pred` is a probability
-and `y` a 0/1 label, so the three metrics mean something else under the
+and `y` a 0/1 target, so the three metrics mean something else under the
 same names:
 
 | field | on a logistic `sgd` or `ftrl` fit |
 |---|---|
 | `hit_rate` | the accuracy at a 0.5 threshold |
 | `r2` | the Brier skill score against the running base rate |
-| `ic` | the point-biserial correlation between the probability and the label |
+| `ic` | the point-biserial correlation between the probability and the target |
 | a log loss | not streamed: `po.eval.metrics(..., binary=True)` computes one over a frame in memory |
 
 ### Choosing among a grid's settings
@@ -1059,6 +1066,10 @@ McCracken 2001). Clark and West add the term back:
 f  = resid_small² − resid_big² + (resid_big − resid_small)²
 cw = f̄ · n / sqrt(S)            one-sided: cw > 1.645 rejects at 5%
 ```
+
+Here `n` is the number of rows where both models have a residual, `f̄` the
+mean of `f` over them, and `S` Newey and West's long-run sum of squares of
+`f` about `f̄`, at the call's `lags`: its long-run variance times `n`.
 
 `po.eval.clark_west(out, big=, small=)` computes it. With `half_life`,
 each call gives its statistic on every row instead, exponentially
@@ -1179,11 +1190,11 @@ from each and reads its coverage.
 prediction or with weight 0 included, so it forgets across a gap as the
 clock says. Under a `window_size` it is the window's, as the fit is. It
 folds the residuals of the predictions a readiness gate withholds too. A
-gate withholds output only, so `sigma` -- and `zscore`, the drift
-detector's scale, the ranking of `emit_selected` and `emit_averaged`, and
-the conformal radius's start -- is the same whatever `min_weight`,
+gate withholds output only, so `sigma` is the same whatever `min_weight`,
 `min_settled_frac` or `max_error_inflation` says, and it can be a number
-on a row whose prediction is withheld. On `ewridge` it reads none below
+on a row whose prediction is withheld. So are `zscore`, the drift
+detector's scale, the ranking of `emit_selected` and `emit_averaged`, and
+the conformal radius's start. On `ewridge` it reads none below
 the model's own floor of a row per unknown, where the system has fewer
 rows than unknowns. Each of these costs under 25 ns a row, and the ten
 linear models take them.
@@ -1204,15 +1215,15 @@ of sample.
 **Under a `weight` column, each step is scaled by the row's weight over
 the mean weight**, so a heavy row's miss counts for more. The share of
 rows covered can then sit on either side of the number asked for. The step is
-taken once per scored row, so the radius moves faster in clock time where
+taken once per predicted row, so the radius moves faster in clock time where
 rows are denser. `conformal_rate` is 0.05 by default.
 
 **Under a long delay, set `conformal_rate="auto"`.** Under
-`embargo` or `label_clock` a row's label arrives after the row was shown
-its interval, and the row is scored against the radius it was shown. So
-the radius learns of a miss only when the label arrives, and every row
-served in the meantime was shown the same radius. With `n` rows waiting
-for their labels on average (the rows that arrive in a unit of clock,
+`embargo` or `label_clock` a row's target becomes known after the row was
+shown its interval, and the row is checked against the radius it was
+shown. So the radius learns of a miss only when the target becomes known,
+and every row served in the meantime was shown the same radius. With `n`
+rows waiting for their targets on average (the rows that arrive in a unit of clock,
 times the mean delay), the radius is a feedback loop whose news is `n` steps old.
 
 Each step moves the share of misses by about `conformal_rate · g`. Here `g`
@@ -1225,8 +1236,8 @@ average. So the step should be `0.05 / (1 + 0.1 · g · n)`, which is the
 default when nothing waits. For a 90% interval that is `0.05 / (1 + n /
 48)`.
 
-`"auto"` takes that step with `n` counted as the stream runs: at each
-label's arrival, the rows still waiting in its group, averaged over the
+`"auto"` takes that step with `n` counted as the stream runs: each time a
+target becomes known, the rows still waiting in its group, averaged over the
 model's half-life. With nothing waiting it is 0.05 to the bit. The mean
 is slow on purpose. A step that read the count at each instant would take
 its smallest steps when the waiting rows pile up, which is when the
@@ -1252,7 +1263,7 @@ minutes. The formula's 0.0022 covered 49.95% at 15.4.
 A smaller step also recovers more slowly from a radius that is wrong for
 another reason. That can be a start from the first residuals of a model
 that has learned little, or a jump in the noise. No step corrects the
-radius faster than the labels arrive. Where the noise moves within the
+radius faster than the targets become known. Where the noise moves within the
 delay, choose the rate on earlier months, as
 [CALIBRATION.md](CALIBRATION.md) chooses any setting.
 
@@ -1263,7 +1274,7 @@ noise, and sets `conformal_rate="auto"` under a delay.
 
 ## Sources
 
-Each claim above that is not measured here rests on one of these.
+Each claim on this page that is not measured here rests on one of these.
 
 | source | for |
 |---|---|
@@ -1271,6 +1282,7 @@ Each claim above that is not measured here rests on one of these.
 | Åström, K. J. and Wittenmark, B. (1995). *Adaptive Control*, 2nd ed. Addison-Wesley. | estimator windup under exponential forgetting |
 | Bartlett, M. S. (1935). Some aspects of the time-correlation problem in regard to tests of significance. *Journal of the Royal Statistical Society* 98(3), 536–543. | the count correction behind `marginal`'s `t_stat_serial` |
 | Belsley, D. A., Kuh, E. and Welsch, R. E. (1980). *Regression Diagnostics*. Wiley. | DFFITS, the basis of `influence` |
+| Box, G. E. P. and Pierce, D. A. (1970). Distribution of residual autocorrelations in autoregressive-integrated moving average time series models. *Journal of the American Statistical Association* 65(332), 1509–1526. | the windowed form of `ljung_box` |
 | Breusch, T. S. and Pagan, A. R. (1979). A simple test for heteroscedasticity and random coefficient variation. *Econometrica* 47(5), 1287–1294. | `breusch_pagan` |
 | Brown, R. L., Durbin, J. and Evans, J. M. (1975). Techniques for testing the constancy of regression relationships over time. *Journal of the Royal Statistical Society, Series B* 37(2), 149–192. | recursive residuals, the CUSUM and the CUSUM of squares, and their boundaries |
 | Chu, C.-S. J., Hornik, K. and Kuan, C.-M. (1995). MOSUM tests for parameter constancy. *Biometrika* 82(3), 603–617. | the moving-sum form of the CUSUM |

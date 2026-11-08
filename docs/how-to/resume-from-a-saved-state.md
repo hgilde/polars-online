@@ -26,9 +26,9 @@ Each way to resume needs a saved state and the rows that follow it:
   own section, [Resume on input that overlaps the
   state](#resume-on-input-that-overlaps-the-state).
 - For the command line: the `polars-online` program, whose binaries are
-  attached to each GitHub release, and the configuration file `job.toml`
-  that [docs/RUNNER.md](../RUNNER.md#a-first-run) runs its examples
-  against.
+  attached to each GitHub release, and the TOML file `job.toml` that [Run
+  a bank over a file](run-a-bank-from-the-command-line.md#run-a-bank-over-a-file)
+  has you write.
 
 ## Resume a bank object
 
@@ -259,8 +259,10 @@ A [saved state](../GLOSSARY.md#saving-and-serving) is everything a
 [model bank](../GLOSSARY.md#the-model-bank-and-what-it-reads) has learned,
 written to a file. A bank that resumes from a state this version of
 polars-online saved learns each new row as one unbroken run over the old
-rows and the new would have learned it. So it gives the same predictions,
-to the bit, as that run. A state saved by an earlier 1.x release loads
+rows and the new would have learned it. So it gives the same predictions
+as that run: to the bit on the operating system that saved it, and on
+another within `1e-12 × (1 + |value|)`. A state saved by an earlier 1.x
+release loads
 too. It continues to the bit, apart from the kinds of state the
 [CHANGELOG](../../CHANGELOG.md) declares, each with the tolerance it
 continues within or the row from which it differs.
@@ -275,7 +277,8 @@ object](#resume-a-bank-object) does, or the two states' bytes from
 recipe](#resume-on-input-that-overlaps-the-state) does. Other fields can
 differ where the two runs' chunks end at different rows: without
 `coef_every` or `max_rows_between_coefs`, `coef` is written only on each
-group's last accepted row in each chunk.
+group's last row in each chunk that is not
+[skipped](../GLOSSARY.md#the-model-bank-and-what-it-reads).
 
 **If the state does not load, `po.ModelBank.load` raises an error that
 names what is wrong with the file:**
@@ -286,7 +289,7 @@ names what is wrong with the file:**
 | is not a bank, or holds different specs from the `specs=` given | `ValueError` | check the path, and pass the specs the state was saved with |
 | holds a state that contradicts its own spec | `ValueError` | refit the bank from its input |
 | was written under a newer state schema or file format than this version reads | `ValueError` | upgrade polars-online to the version that wrote it, or a later one |
-| was saved by 0.13.0 or an earlier release | `ValueError`, naming the range of schemas this version reads | refit the bank from its input. `po.schema_version()` gives this version's schema |
+| was saved by 0.13.0 or an earlier release | `ValueError`, saying an older version of polars-online wrote it | refit the bank from its input. `po.schema_version()` gives this version's schema |
 
 This code makes three loads that fail. It uses `df` and `ticks.parquet`
 from [Example data](../../README.md#example-data):

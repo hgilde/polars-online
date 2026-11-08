@@ -193,7 +193,7 @@ RELEASE-READINESS's policy table: from 1.0, "a fix to numbers that were
 wrong against the model's stated definition" is a minor; "a default or a
 meaning changed" is a major. The plain RMS is the stated definition, in the
 docstring and in MODELS.md, with its weakness stated. So the scale cannot
-be replaced in 1.x; it can be added as an option with the present behaviour
+be replaced in 1.x; it can be added as an option with the present behavior
 as the default, recommended in the docs, and made the default at 2.0. The
 same holds for `sgd`'s cut. What *is* a fix within the policy: `sgd.rs`'s
 module doc sentence that does not hold (C-1's documentary half), and any
@@ -206,7 +206,7 @@ Built as PLAN task 271 (D1 withdrawn; C-1 reassigned from task 270 (a)).
 | # | item | test or measurement that holds it |
 |---|---|---|
 | P1 | **`huber_scale`** on `po.spec.huber` and `po.spec.sgd(loss="huber")`: `"rms"` (today's, the default) or `"mad"`: the exponentially weighted median of \|e\| over `Φ⁻¹(3/4)`, one `EwQuantile` at level 0.5 per target (`stats.rs`: within `tanh(1/128)` = 0.78% relative, so the cut is within 0.8% of the exact EW-MAD's), aged on the model's clock as `sig2` is. The scale above 0 rule unchanged. State: a new per-target field, `#[serde(default)]`; `SCHEMA_VERSION` 63 with the v62 sets kept and a loader per rule 5; the fixtures freeze both forms | the second opinion: `huber_scale="mad"` on §2's stream at level 1,000, no decay, against statsmodels `RLM(HuberT(1.345), scale_est=mad)` within the tolerance measured here (0.01 on the slope at 1% and 5%); the breakdown table at 1% and 5%; `sgd` huber's slope nearer the truth than squared loss's at level 1,000 (fails today: equal); state fixtures; chunk invariance |
-| P2 | **`huber_scale_half_life`**: the scale's own memory, default the model's `half_life` (today's behaviour under `"rms"`, so no number moves), a shorter one for a stream with regime changes (§4) | §4's shift test: with the scale's half-life at a fifth of the fit's, the post-shift error in rows 200-400 within 10% of least squares'; with the fit's, documented as slower |
+| P2 | **`huber_scale_half_life`**: the scale's own memory, default the model's `half_life` (today's behavior under `"rms"`, so no number moves), a shorter one for a stream with regime changes (§4) | §4's shift test: with the scale's half-life at a fifth of the fit's, the post-shift error in rows 200-400 within 10% of least squares'; with the fit's, documented as slower |
 | P3 | **`sgd`'s documentation**: the module doc's "narrows as they leave the mean" replaced by the mechanism and its condition (decay), and the `huber_delta` entries of `sgd` and `huber` state which scale each setting draws the cut in, with §2-§4's numbers | the docstring tests that pin the text, updated |
 | P4 | **MODELS.md's `huber` section rewritten from first principles**: §1-§4 of this record in the guide's voice (the loss, ψ, the weights; the three scales and their breakdown table; one pass against the converged fit with the table; the regime trade-off with the table; what Huber does not protect against), the example run under `huber_scale="mad"` beside today's, and the recommendation | `test_models_page` runs the examples; `test_no_plan_references` holds the guide to cite no record |
 | P5 | **The release comparison**: a `huber` and an `sgd` huber spec with `huber_scale="mad"` in `release_probe.py`'s workload (J-2's extension lands in task 270 (e); this adds the new path) | `test_this_build_runs_the_whole_workload` |

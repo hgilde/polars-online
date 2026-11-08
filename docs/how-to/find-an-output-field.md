@@ -86,8 +86,10 @@ such care.
 **Each name follows a grammar.** The kind and the target come first, then
 the grid point after `__`, then the instance (the part of the model that
 fits one half-life of a grid) after `@`. [Field
-names](../OUTPUTS.md#field-names) gives what each part stands for, with
-the forms `{combo}` and `{instance}` take:
+names](../OUTPUTS.md#field-names) gives what each part stands for. In
+the block below, `{target}` is its `<t>`,
+`{combo}` one of its `__` forms, such as `__r<ridge>`, and `{instance}`
+its `@h<half_life>`:
 
 ```
 pred_{target}{combo}{instance}

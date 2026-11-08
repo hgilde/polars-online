@@ -39,7 +39,8 @@ weighted least squares would need a Gram for each pass and each target.
    from there every residual is the target's level, and the first pass is
    lost.
 4. **In each pass, read the scale in a query of its own:** the
-   residuals' MAD, `s = median(|r|) / 0.6745`, for the current fit.
+   residuals' median absolute deviation about 0 (MAD),
+   `s = median(|r|) / 0.6745`, for the current fit.
 5. **Build the pseudo-response in a Polars expression:** the fit, plus
    each residual clipped at `c` scales, `y* = x'b + s·clip(r/s, −c, c)`,
    with `c = 1.345`.
@@ -158,7 +159,7 @@ Gram](../GRAM.md#huber-regression-on-a-gram) compares the two).
 
 | what you see | what it means | what to do |
 |---|---|---|
-| the slope moves by at most `c·s` a pass, and needs hundreds of passes | the scale was read elsewhere (the noise's, or `huber_scale_<t>`), so every row is clipped | read the scale from each pass's residuals, and start from least squares or the target's median |
+| the fit moves by at most `c·s` a pass, and its intercept needs about `level / (c·s)` passes from 0: 1,500 at a level of 1,000 and `s = 0.5` | the scale was read elsewhere (the noise's, or `huber_scale_<t>`), so every row is clipped | read the scale from each pass's residuals, and start from least squares or the target's median |
 | the slope runs away from the truth | the Huber weights went on the cross-moments alone, which shrinks a down-weighted row's target toward 0 ([Weighting only the targets' cross-moments is not weighted least squares](../GRAM.md#huber-regression-on-a-gram)) | build the pseudo-response, as `refit` does |
 | the fit breaks down with many outliers | the MAD holds until half the rows are outliers; a scale built from sums, such as Huber's Proposal 2, breaks sooner | keep the MAD, as the recipe does ([Huber regression on a Gram](../GRAM.md#huber-regression-on-a-gram) compares the two) |
 | the fit stops 3e-7 short of statsmodels' | the constant 0.6745 is rounded | use Φ⁻¹(3/4) to full precision |

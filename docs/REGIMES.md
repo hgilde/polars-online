@@ -1,13 +1,15 @@
+<!-- kind: reference -->
 # Regimes: what the detectors find, measured
 
-A regime detector makes a claim about a stream: that its correlation has
-changed, how long the current regime has lasted, or which state a row
-belongs to. A claim like that can only be checked on a stream whose answer
-is written down. [`po.sim.regimes`](how-to/test-a-detector-on-known-truth.md)
-generates one from a seed and returns the truth beside the rows. This page
-reports what the detectors find on such streams, and on Monte-Carlo draws
-whose null distribution is published: where each is right, and what it
-misses.
+This reference page is for anyone about to trust a regime or correlation
+model: it gives what each finds on streams whose truth is known, and on
+Monte-Carlo draws whose null distribution is published, where each is
+right, and what it misses. A regime detector makes a claim about a stream:
+that its correlation has changed, how long the current regime has lasted,
+or which state a row belongs to. A claim like that can only be checked on
+a stream whose answer is written down.
+[`po.sim.regimes`](how-to/test-a-detector-on-known-truth.md) generates one
+from a seed and returns the truth beside the rows.
 
 Five models make a claim about a stream: `deco`, `rcov`, `hmm`,
 `corrchange` and `bocpd`. This page measures all five. It also measures two
@@ -26,22 +28,21 @@ runs it on a planted answer.
 | [4. Where the heavy tails go: `D-hat`](#4-where-the-heavy-tails-go-d-hat) | how well the statistic's denominator is estimated | `corrchange`, `kind="monitor"` |
 | [5. Two changepoint detectors on the same break](#5-two-changepoint-detectors-on-the-same-break) | false alarms on a quiet stream, and the delay to a real break | `corrchange(kind="window")`, `bocpd` |
 | [6. The Epps effect, and the two ways out](#6-the-epps-effect-and-the-two-ways-out) | what asynchrony does to a correlation, and what recovers it | `po.stream.refresh_time`, `ew_cov(lags=...)` |
-| [7. `deco`: an equicorrelation that moves](#7-deco-an-equicorrelation-that-moves) | where `rho` settles, and how fast it follows a switch | `deco` |
+| [7. `deco`: an equicorrelation that moves](#7-deco-an-equicorrelation-that-moves) | where `rho` levels off, and how fast it follows a switch | `deco` |
 | [8. `rcov`: three estimators against each block's truth](#8-rcov-three-estimators-against-each-blocks-truth) | each estimator's error under noise and asynchrony | `rcov` |
 | [9. The sequential detector against its paper](#9-the-sequential-detector-against-its-paper) | how often a monitoring period ends in a flag when nothing changed | `corrchange`, `kind="sequential"` |
 | [10. Running them](#10-running-them) | how to reproduce every number, and how long it takes | |
 
 **Every number comes from `scripts/regime_experiments.py`, which
 generates its streams from seeds** ([10. Running them](#10-running-them)).
-Sections 1 and 5 to 7 were run on 2026-09-27. Sections 2 to 4 and 9 were
+Sections 1, 6 and 7 were run on 2026-09-27, and section 5 on 2026-10-26,
+after the window test's critical value moved to the standard permutation
+rule. Sections 2 to 4 and 9 were
 run on 2026-09-28, after the monitor's long-run variance moved to its
 paper's kernel weights, `1 − l/γ`. Section 8 was run on 2026-10-05, after the
 pre-averaging bias's θ was read from the window the run uses and its first
 pre-averaged term was formed as Christensen, Kinnebrock and Podolskij form
-it. That moved two of its cells at the third decimal. Sections 1 to 4 end
-with a dated note that keeps the figures they first reported, on
-2026-09-06. Sections 2 to 4 have more, which keep the figures from
-before the change of weights.
+it. That moved two of its cells at the third decimal.
 
 ## 0. The short version
 
@@ -93,8 +94,8 @@ to 0.18 against a nominal 0.05, as the paper warns
 
 **The two changepoint detectors are at opposite ends of one trade-off.** On
 the same streams, `corrchange(kind="window")` finds a correlation break in a
-median of 25 rows and flags 54 rows per 1000 quiet ones. `bocpd` takes 121
-rows and raises 0.53 alarms per 1000. Neither is better: they answer
+median of 30 rows and flags 45 rows per 1000 quiet ones. `bocpd` takes 121
+rows and gives 0.53 alarms per 1000. Neither is better: they answer
 different questions ([§5](#5-two-changepoint-detectors-on-the-same-break)).
 
 **Asynchrony leaves almost nothing of a correlation at the finest interval,
@@ -105,9 +106,9 @@ returns, 16 % of the 119991 at the finest interval. The lag inversion of
 Averaged over five seeds it levels off at 0.775 for lags from 256 to 512
 rows ([§6](#6-the-epps-effect-and-the-two-ways-out)).
 
-**`deco`'s level settles near two-thirds of the true equicorrelation, and
+**`deco`'s estimate levels off near two-thirds of the true equicorrelation, and
 moves at its half-life.** The row's estimate is biased low, as its paper
-warns, and the level is an EW mean of it
+warns, and the level is an exponentially weighted mean of it
 ([§7](#7-deco-an-equicorrelation-that-moves)).
 
 **Each of `rcov`'s estimators wins somewhere.** `plain` is the most
@@ -132,7 +133,7 @@ the streams switch.
 |---|---|
 | streams | 8 seeds of `po.sim.regimes`: two series, 10 blocks of 400 rows, 4000 rows each, differenced into 3999 returns |
 | states drawn | correlation 0.1 and 0.8, under the sticky transition matrix `[[0.99, 0.01], [0.02, 0.98]]` |
-| states realised | state 0, at correlation 0.1, in every block of every seed |
+| states realized | state 0, at correlation 0.1, in every block of every seed |
 | the filter | `k = 2`, `half_life = 4000`, and `precision_prior = 0.01` except in the last row |
 | seeded from the rows | `warm_rows = 500` and `transition_prior = 200` |
 | started from the truth | the true transition matrix, zero means, and covariances built from the true correlations and each seed's sample variances |
@@ -169,10 +170,6 @@ The learned transition matrix is not read back through the public API, so
 what is scored is the state path, which is what a caller reads. The
 matrix's decayed counts are in the state that `ModelBank.write_json()`
 exports, but no method returns the matrix.
-
-> **Measured 2026-09-06:** the seeded row read 0.559, or 56 % (worst seed
-> 0.507), with the learned state means at 0.65. The other three rows read
-> as they do now.
 
 ### Through a switch
 
@@ -250,26 +247,6 @@ nominal 0.05. `tests/test_corrchange.py` holds the test to that level on
 Gaussian pairs at `T = 500`, for `rho` of 0 and 0.5, and again at 0.5 with
 one column multiplied by 100. No test holds the size to WKD's own figure.
 
-> **Measured 2026-09-27, before the kernel moved to WKD's `1 − l/γ` (it
-> was Newey–West's `1 − l/(γ+1)`), at 20,000 replications a cell.** In
-> the table's row order, the shared-scale `t_5` read 0.040,
-> 0.031, 0.040, 0.035, 0.033 and 0.038; the independent `t_5` 0.042, 0.042,
-> 0.040, 0.041, 0.042 and 0.039; Gaussian pairs 0.045, 0.041, 0.046, 0.046,
-> 0.042 and 0.046. No cell moved by more than 0.001.
->
-> **Measured 2026-09-23, at 2000 replications a cell.** In the table's row
-> order, the shared-scale `t_5` read 0.045, 0.024, 0.043, 0.033, 0.035 and
-> 0.044; the independent `t_5` 0.046, 0.044, 0.041, 0.036, 0.041 and 0.041;
-> Gaussian pairs 0.046, 0.045, 0.052, 0.043, 0.034 and 0.048. The shared
-> scale's 0.024 at `T = 500` and `rho = 0`, 2.2 standard errors from WKD's
-> 0.035, reads 0.031 at ten times the draws.
-
-> **Measured 2026-09-06, before `D-hat`'s gradient was corrected on
-> 2026-09-19.** In the table's row order, the shared-scale `t_5` read 0.075, 0.025,
-> 0.076, 0.071, 0.040 and 0.081. The independent `t_5` read 0.028, 0.046,
-> 0.025, 0.018, 0.040 and 0.021. Gaussian pairs read 0.048, 0.045, 0.054,
-> 0.042, 0.034 and 0.051.
-
 ## 3. And is it the power its paper says?
 
 Power is the rate at which the test rejects when the correlation does
@@ -311,19 +288,6 @@ quantile, from 1.317 to 1.352, is below the asymptotic 1.3581. So the
 size-adjusted power is the higher of the two in every row but the last,
 where both are 0.995.
 
-> **Measured 2026-09-27, before the kernel moved to WKD's.** In the
-> table's row order, as power, size-adjusted and empirical 95 %: at `T = 500`, t5 read
-> 0.553, 0.582 and 1.321, t5_indep 0.585, 0.613 and 1.327, and normal 0.830,
-> 0.851 and 1.327. At `T = 1000`, t5 read 0.832, 0.844 and 1.324, t5_indep
-> 0.832, 0.857 and 1.307, and normal 0.994, 0.994 and 1.355.
->
-> **Measured 2026-09-06, before `D-hat`'s gradient was corrected on
-> 2026-09-19.** In the table's row order, as power, size-adjusted
-> and empirical 95 %: at `T = 500`, t5 read 0.525, 0.428 and 1.498,
-> t5_indep 0.400, 0.472 and 1.256, and normal 0.824, 0.837 and 1.335. At
-> `T = 1000`, t5 read 0.779, 0.733 and 1.452, t5_indep 0.648, 0.750 and
-> 1.195, and normal 0.994, 0.994 and 1.358.
-
 ## 4. Where the heavy tails go: `D-hat`
 
 The monitor's statistic, `Q`, is
@@ -363,25 +327,10 @@ shrink.** Its mean is 1.071 at `T = 500` and 1.185 at `T = 2000`, against
 its standard deviation grows from 0.255 to 0.353. The estimator's inputs
 are fourth moments, and a `t_5` has a fourth moment only just, at
 `nu > 4`. Those inputs' own variance is infinite, so there is no rate at
-which the estimate settles. The independent `t_5` is steadier: its
+which the estimate steadies. The independent `t_5` is steadier: its
 standard deviation falls from 0.111 to 0.072.
 
 The size in §2 and the power in §3 are close to WKD's tables even so.
-
-> **Measured 2026-09-27, before the kernel moved to WKD's.** In the
-> table's row order, as mean, median and sd, normal read 0.739, 0.742 and 0.060, then
-> 0.749, 0.751 and 0.033. The shared-scale t5 read 1.071, 1.020 and 0.257, then
-> 1.184, 1.097 and 0.353; the independent t5 0.811, 0.796 and 0.113, then
-> 0.828, 0.815 and 0.073.
->
-> **Measured 2026-09-06, before `D-hat`'s gradient was corrected on
-> 2026-09-19.** In the table's row order, as mean, median and sd:
-> normal read 0.739, 0.739 and 0.063, then 0.750, 0.750 and 0.034. The
-> shared-scale t5 read 1.050, 0.979 and 0.446, then 1.143, 1.032 and 0.464.
-> The independent t5 read 0.932, 0.877 and 0.216, then 0.953, 0.915 and
-> 0.156. The shared-scale `t_5` then read about 15 % low, with an sd 40 %
-> of its level, and a denominator 15 % too small inflates `Q` by about
-> 18 %.
 
 ## 5. Two changepoint detectors on the same break
 
@@ -415,12 +364,6 @@ slide by one row are almost the same windows, so its flags come in runs.
 That rate is nearer a fraction of rows above the quantile than a count of
 events.
 
-> **Measured before the window test's critical value moved to the standard
-> permutation rule on 2026-10-26** (with 100 shuffles at `alpha` 0.05, the
-> 95th smallest shuffle became the 96th, and the size 5.94% became 4.95%):
-> 53.67 false alarms per 1000 quiet rows, a median delay of 25 rows and 56
-> at worst.
-
 `bocpd` is a full joint model of the rows, and a correlation change is the
 one break its `p_change` cannot see: no single row is surprising, only the
 sequence is. Its run-length posterior has to accumulate that evidence,
@@ -435,20 +378,24 @@ and after a break the post-break run, once it reaches the cap. So the run
 in progress keeps its place, and the start it reports moves a row at a
 time. The capped run is then an exponentially weighted run, scaled by
 `1199 / 1200` each row, with a half-life of `ln 2 / ln(1200 / 1199)`, about
-830 rows. When they folded into the youngest run at the cap instead, every
-quiet stream raised an alarm a few rows past row 1200, where the run's
-reported start jumped to that younger run's. That took the rate to 1.00 per
-1000. The same alarm, at rows 1203 to 1207, was the first one after the
-break on three broken streams, and made the worst delay read 207. It was
-the cap firing on schedule, not the break being found: within 200 rows of
-the break both rules find it on 17 of 20 streams. Folding into the oldest
-run by rule gives every figure in this table too, since on these streams
-the oldest run is the one carrying the mass. Where nothing is pruned it is
-not: after a 3-sigma mean shift the post-break run reached the cap and its
-mass went onto the row-0 run's statistics, the old regime's mean at the
-cap's weight, and the reported start jumped a second time about `max_run`
-rows after the break (17 of 20 streams at `max_run=200`, none with the
-uncapped posterior on the same rows, and none now).
+830 rows.
+
+**Folding into any other run at the cap gives alarms of its own, which is
+why the rule follows the mass.** Folding into the youngest run at the cap
+gives every quiet stream an alarm a few rows past row 1200, where the
+run's reported start jumps to that younger run's. That takes the rate to
+1.00 per 1000. The same alarm, at rows 1203 to 1207, is the first one
+after the break on three broken streams, and makes the worst delay read
+207. It is the cap firing on schedule, not the break being found: within
+200 rows of the break both rules find it on 17 of 20 streams. Folding into
+the oldest run gives every figure in this table too, since on these
+streams the oldest run is the one carrying the mass. Where nothing is
+pruned, it is not. After a 3-sigma mean shift, the post-break run reaches
+the cap, and folding into the oldest run puts its mass onto the row-0
+run's statistics, the old regime's mean at the cap's weight. The reported
+start then jumps a second time about `max_run` rows after the break, on 17
+of 20 streams at `max_run=200`. Neither the uncapped posterior on the same
+rows nor the rule that follows the mass does so.
 
 ## 6. The Epps effect, and the two ways out
 
@@ -510,7 +457,7 @@ at a smaller `L`, 192. Anywhere from 128 to 512 reads within 0.01 of the best,
 The lag inversion is here because its lagged co-moments are a state a bank
 already keeps, as `ew_cov(lags=...)`. With `lags` 1 to 5 at 20 columns,
 `ew_cov` ran 1.15M rows a second against 2.12M without them, measured on
-2026-09-06: five more `k × k` outer products a row, and the ring of rows
+2026-09-06: five more 20 × 20 outer products a row, and the ring of rows
 they need. [Rows a second for each
 model](PERFORMANCE.md#rows-a-second-for-each-model) has the current
 figure.
@@ -518,7 +465,7 @@ figure.
 ## 7. `deco`: an equicorrelation that moves
 
 `deco` reduces a correlation matrix to one number, the average of its
-off-diagonal, and follows it with an EW mean of each row's own estimate,
+off-diagonal, and follows it with an exponentially weighted mean of each row's own estimate,
 `u`. The stream here has five series whose equicorrelation alternates
 between 0.2 and 0.6.
 
@@ -526,26 +473,26 @@ between 0.2 and 0.6.
 |---|---|
 | streams | 8 seeds of `po.sim.regimes`: m = 5, `states=[0.2, 0.6]`, `durations=[3, 3]`, 12 blocks of 400 rows, 4799 returns each, 24 switches in all |
 | the model | `po.spec.deco` with the default `dynamics="ew"`, at half-lives of 25, 100 and 400 rows |
-| settled | `rho` averaged over the last 200 rows of each stretch of one state |
-| rows to the midpoint | the rows after a switch until `rho` passes the midpoint of the two settled levels |
+| level | `rho` averaged over the last 200 rows of each stretch of one state |
+| rows to the midpoint | the rows after a switch until `rho` passes the midpoint of the two levels |
 
-| half-life | `rho` settled, true 0.2 | `rho` settled, true 0.6 | median rows to the midpoint | range | switches never crossed |
+| half-life | `rho`'s level, true 0.2 | `rho`'s level, true 0.6 | median rows to the midpoint | range | switches never crossed |
 |---|---|---|---|---|---|
 | 25 | 0.129 | 0.377 | 26 | 8–58 | 0 of 24 |
 | 100 | 0.130 | 0.381 | 100 | 66–172 | 0 of 24 |
 | 400 | 0.146 | 0.348 | 330 | 246–520 | 0 of 24 |
 
-**`rho` settles near two-thirds of the truth, because `u` does.** The
+**`rho` levels off near two-thirds of the truth, because `u` does.** The
 row's estimate `u` averages 0.130 where the truth is 0.2, and 0.379 where
 it is 0.6. The spec's docstring warns of this, after Engle and Kelly: `u`
-is a ratio, and its mean is not the ratio of the means. `rho` is an EW mean
+is a ratio, and its mean is not the ratio of the means. `rho` is an exponentially weighted mean
 of `u`, so it carries the same bias. Read `rho` as a signal that moves with
 the correlation, not as the correlation.
 
-**It moves at its half-life.** An EW mean reaches the midpoint of a step in
+**It moves at its half-life.** An exponentially weighted mean reaches the midpoint of a step in
 one half-life, and `rho` does: a median of 26 rows at a half-life of 25, and
 100 at a half-life of 100. At 400 the median is 330. A state lasts 1200
-rows, three of those half-lives, so `rho` has not settled when the next
+rows, three of those half-lives, so `rho` has not reached its level when the next
 switch comes. Its two levels, 0.146 and 0.348, are closer together than at
 the shorter half-lives, and it starts nearer their midpoint.
 
@@ -582,7 +529,7 @@ only the rows where both series have moved.
 against 0.042 for the kernel and 0.074 at best for pre-averaging. The
 other two trade variance for robustness that clean data does not need.
 
-**Noise takes a fifth of `plain`'s correlation, and almost nothing of the
+**Noise takes about a third of `plain`'s correlation, and almost nothing of the
 kernel's.** Noise adds variance to each series and nothing to their
 covariance, so `plain` reads 0.177 low on average. The kernel's error moves
 from 0.042 to 0.045. Pre-averaging does not move at all at this precision:
@@ -684,7 +631,7 @@ Each experiment is one command of the script, named for what it measures,
 and `all` runs every one:
 
 ```sh
-uv run python scripts/regime_experiments.py all              # every experiment, in the order of the table below
+uv run python scripts/regime_experiments.py all              # every experiment, in the order of the experiments table
 uv run python scripts/regime_experiments.py size power dhat  # any of them by name, in the order given
 ```
 
@@ -705,16 +652,15 @@ uv run python scripts/regime_experiments.py size power dhat  # any of them by na
 the size study's 20,000 draws a cell. That was measured on 2026-09-27, and
 on 2026-09-28 for `size`, `power`, `dhat` and `sequential`, on an Apple M4
 Pro (14 cores, 48 GB, macOS 15.7.3) with Python 3.12.13, Polars 1.44.2 and
-a release build. Earlier runs took 40.3 s on 2026-09-23, with 2000 draws a
-cell, and about 36 seconds on 2026-09-06, when this page was first
-written. Every figure the 2026-09-23 run gave that this one re-ran is
-unchanged.
+a release build. The times of `delay` and `rcov` come from those runs too,
+before their sections were run again.
 
 **Every stream is generated from a seed, so two runs of one build give the
 same numbers.** The seeds are derived with `zlib.crc32`, because Python
-randomises a string's `hash()` in each process. Nothing downloads and
-nothing is cached. A different build can move the numbers, and the dated
-notes in sections 1 to 4 record where one did.
+randomizes a string's `hash()` in each process. Nothing downloads and
+nothing is cached. A different build can move the numbers, and [the page's
+opening](#regimes-what-the-detectors-find-measured) gives the date of each
+section's run.
 
 **A test holds sections 1 and 5 to 9 to what their experiments print.**
 `tests/test_regimes_doc.py` runs those experiments, in the extended tier,

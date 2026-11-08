@@ -29,7 +29,9 @@ to Polars through the Arrow PyCapsule interface, so no pyarrow is needed.
 3. **Read its result with Polars' `pl.scan_arrow_c_stream`,** which reads
    it as a [query](../GLOSSARY.md#the-model-bank-and-what-it-reads) of
    Polars'.
-4. **Chain `.online.fit_predict(specs)` on that query,** and run it.
+4. **Chain `.online.fit_predict(specs)` on that query.**
+5. **Run the query with `collect()`,** which gives one frame with a
+   column for each spec.
 
 This code uses the file `ticks.parquet` from [Example
 data](../../README.md#example-data):
@@ -81,13 +83,14 @@ or connection springs a trap:
 | database | what springs the trap | what comes back | what says so |
 |---|---|---|---|
 | DuckDB | a second statement run on the same connection | the first query yields no rows | `ConsumedSourceWarning` |
-| ADBC | the cursor executed again before its first statement's result is read | the newer statement's result one batch short, in clock order, and the older one with that batch added out of order: on SQLite, 198,976 and 201,024 of 200,000 rows | nothing, for the newer statement; for the older one, a spec with a `clock` refuses the step back |
+| ADBC | the cursor executed again before its first statement's result is read | the newer statement's result one block of rows short, in clock order, and the older one with that block added out of order: on SQLite, 198,976 and 201,024 of 200,000 rows | nothing, for the newer statement; for the older one, a spec with a `clock` refuses the step back |
 
 ## Wait before closing an ADBC cursor
 
 **Do not close an ADBC cursor just after a read of its stream stopped
 early.** A read stops early on an error, such as a spec refusing a clock
-that steps back, or when the consumer stops. Closing the cursor at once
-then crashed the process with a segmentation fault, measured on SQLite,
-`adbc_driver_manager` 1.12.0 and polars 1.44.2 at 200,000 rows. A wait of
-3 s before the close, or no close before the process exits, avoided it.
+that steps back, or when the consumer stops. Wait about 3 s before closing
+the cursor, or leave it open until the process exits. Closing it at once
+crashed the process with a segmentation fault, measured on SQLite,
+`adbc_driver_manager` 1.12.0 and polars 1.44.2 at 200,000 rows. Either
+remedy avoided it.

@@ -38,22 +38,21 @@ The noise ceiling is the R² of the generating signal itself:
 | `po.spec.sgd` | 0.9826 | 0.9906 | 6,000,000 | every row before it |
 | `po.spec.ewridge` | **0.9831** | **0.9907** | 480,000 | every row before it |
 
-sklearn's fast form updates once per 1,000-row batch, so a prediction can
+scikit-learn's fast form updates once per 1,000-row batch, so a prediction can
 come up to 999 rows before its update, and on the drifting stream it
 scores 0.9820. Called on every row, `partial_fit` runs at 3,400 rows a
-second, which is Python's overhead on each row. sklearn has the ecosystem:
-pipelines, `GridSearchCV`, calibration, and far more use.
+second, which is Python's overhead on each row.
 
 ## What one fit can hold
 
 **The two differ in what one fit can hold:**
 
-| | sklearn | here |
+| | scikit-learn | here |
 |---|---|---|
 | a grid of six penalties | 3.8× the work: six estimators | 1.6× the work: one [Gram](../GLOSSARY.md#fitting-a-model), six solves |
 | several targets | one estimator each | one shared `X'X` |
 | one fit per group | a dict of estimators | `group=`, one state per group |
-| standardization | a `StandardScaler` fitted on the whole frame can leak | streaming, so it cannot leak |
+| standardization | a `StandardScaler` fitted on the whole frame can leak: its means and spreads include rows after the one predicted | streaming, so it cannot leak |
 | chunking | | chunk invariance is a test |
 | saved model | a pickle | a versioned file that loads on every OS |
 
@@ -63,15 +62,20 @@ pipelines, `GridSearchCV`, calibration, and far more use.
 exact solve is right as soon as its Gram, `X'X`, is full rank, about `k`
 rows in, where a first-order method needs about `1/eta` rows per
 direction, `eta` being its learning rate. On 500 groups of
-200 rows, `ewridge` scores an R² of 0.9693 on rows 25 to 50 against
-`SGDRegressor`'s 0.7277.
+200 rows at `k = 20`, `ewridge` scores an R² of 0.9693 on rows 25 to 50
+against `SGDRegressor`'s 0.7277 at its best setting.
 
 **On a very wide row a gradient step wins: batched `SGDRegressor` beats an
 exact solve, and `sgd` beats both.** At
 `k = 10,000`, `ewridge` keeps a `(k+1)²` matrix, 800 MB of a state of 860
-MB, and moves all of it on every row, so it runs 53 rows a second, or 379 with
-`gram_block_rows=1024`. There, `sgd` at a learning rate of `0.2 / k` runs
-33,271 rows a second from 0.89 MB, faster than `SGDRegressor`'s 20,007 in
-batches.
+MB, and updates its lower triangle on every row, or once a block under
+`gram_block_rows`. Measured on 2026-09-08, before the update was cut to
+the lower triangle, it ran 53 rows a second, or 379 with
+`gram_block_rows=1024`. In the same run, `sgd` at a learning rate of
+`0.2 / k` ran 33,271 rows a second from 0.89 MB, faster than
+`SGDRegressor`'s 20,007 in batches.
 `scripts/sklearn_comparison.py` prints the full tables, with the grid
 each contender was swept over.
+
+**scikit-learn wins on what surrounds a model:** pipelines,
+`GridSearchCV`, calibration, and a far larger body of users.

@@ -309,9 +309,9 @@ IO plugin runs under `collect()` and `sink_parquet()`.
 `LazyFrame.collect_batches`, the floor, has an identical signature in 1.44.1
 and 2.0.0rc1, `chunk_size` and `maintain_order` included.
 
-#### R6 narrows, as `docs/STATE-WORKFLOW.md` said it might
+#### R6 narrows, as `docs/records/STATE-WORKFLOW-RESEARCH.md` said it might
 
-**`docs/STATE-WORKFLOW.md` §4 states its rule R6, the one gap in the
+**`docs/records/STATE-WORKFLOW-RESEARCH.md` §4 states its rule R6, the one gap in the
 state workflow.** Polars drains a Python source before surfacing a
 later node's error. So a query that fails *after* the bank still writes
 `save_state` with the whole stream's state, while its own output is
@@ -331,7 +331,7 @@ So 2.0 propagates the cancellation to the source once the stream is long
 enough that the failure lands before the source is exhausted. A short
 stream is still drained.
 `tests/test_frame.py::test_a_run_that_does_not_reach_the_end_writes_nothing`
-asserted the 1.x behaviour at 40,000 rows, and was the first of the two
+asserted the 1.x behavior at 40,000 rows, and was the first of the two
 failures. The test was right about 1.x, and needed a version-aware
 assertion to hold on both.
 
@@ -396,8 +396,8 @@ plan it had before.
 **`is_pure` is not new: it is in 1.44.1 too.** On 2026-09-10 this library
 did not set it, although `_frame.py`'s module docstring documents exactly
 that property. It was worth deciding on its own merits. Purity is polars'
-licence to cache or skip a re-execution, and the rule R2 of
-`docs/STATE-WORKFLOW.md` measured how often the source runs. **Decided the
+license to cache or skip a re-execution, and the rule R2 of
+`docs/records/STATE-WORKFLOW-RESEARCH.md` measured how often the source runs. **Decided the
 same day** (`4c545af`): `_frame.py` declares the source pure
 exactly when a run has nothing to write, with no `save_state` and no
 `closed_groups` file.
@@ -511,7 +511,7 @@ co-moments on `ew_cov`. In API terms:
 |---|---|
 | **`SCHEMA_VERSION` 5** | `state_schema5.rs` froze it: a bank with an undrained closed row, an `ew_cov` with a partly filled lag ring, and one of each new model mid-stream. `state_schema4.rs` still loaded, continued to the bit and re-saved as 5, which was hard rule 5 discharged. Both fixtures have since gone, and the schema has moved on many times since: `po.schema_version()` gives today's ([What the API actually is](../VERSIONS.md#what-the-api-is)) |
 | **every new output field name** | pinned by `tests/api_surface.txt`, which then gained a `[helper modules]` section, and by `tests/test_golden_pipeline.py`, which fixes the numbers of a twenty-five-spec bank at three rows |
-| **three new defaults, each with its reason: one measured, one a cost, one a published rule** | `bocpd`'s `robust_beta = 0.1` (measured: above ~0.2 nothing is ever detected), `bocpd`'s `emission = "diag"`, and `rcov`'s automatic bandwidth. `bocpd`'s robust weighting passes the test of a 20-σ row, which restarts the plain run and does not move the robust one, and it trades detection for robustness above about 0.2. Its diagonal emission takes `O(runs·d)` work a row, against the full pair's `O(runs·d³)`, which factors each run's scale every row. `rcov`'s bandwidth follows the published rule of Barndorff-Nielsen, Hansen, Lunde and Shephard (2011), `H = ⌈c* ξ̂^{4/5} n^{3/5}⌉`, from a dense and a sparse realised variance. Changing one of them is a breaking change, by [the policy](../VERSIONS.md#what-each-kind-of-release-may-change) |
+| **three new defaults, each with its reason: one measured, one a cost, one a published rule** | `bocpd`'s `robust_beta = 0.1` (measured: above ~0.2 nothing is ever detected), `bocpd`'s `emission = "diag"`, and `rcov`'s automatic bandwidth. `bocpd`'s robust weighting passes the test of a 20-σ row, which restarts the plain run and does not move the robust one, and it trades detection for robustness above about 0.2. Its diagonal emission takes `O(runs·d)` work a row, against the full pair's `O(runs·d³)`, which factors each run's scale every row. `rcov`'s bandwidth follows the published rule of Barndorff-Nielsen, Hansen, Lunde and Shephard (2011), `H = ⌈c* ξ̂^{4/5} n^{3/5}⌉`, from a dense and a sparse realized variance. Changing one of them is a breaking change, by [the policy](../VERSIONS.md#what-each-kind-of-release-may-change) |
 | **no new Polars interface** | two of the three streaming paths of the time still carried no guarantee (CLAUDE.md rule 13): `ModelBank` and the IO plugin. The batch added no polars API dependency beyond `LazyFrame.collect_batches`, which is already the floor |
 | **the closed-group frame's *column* names** | pinned since 2026-09-24 (`spec`, `group`, `session`, `rcov`, `rcov_bandwidth_used`, …). They are as much API as an output field is, and until then only `test_closed_groups.py` read them by name. `tests/api_surface.txt` now records them in order, as `[closed_groups columns]`: the shared columns, and each kind's full list, with `ew_cov`'s PCA block and `marginal`'s lag and bin blocks switched on |
 
@@ -620,7 +620,7 @@ Two things were examined and deliberately left alone:
 | left alone | why |
 |---|---|
 | two full compiles per `test` job, finding 3 above | different profiles, and genuinely different artifacts, so only caching helps |
-| `release.yml` queues superseded runs rather than cancelling them | it is the one workflow where cancelling costs more than it saves: the run being cancelled may be midway through uploading wheels or publishing to PyPI |
+| `release.yml` queues superseded runs rather than canceling them | it is the one workflow where canceling costs more than it saves: the run being cancelled may be midway through uploading wheels or publishing to PyPI |
 
 **Watch out for `release.yml` (2026-08-31, while the repo was private).** It
 was tag-triggered then, and untouched by the policy above: three macOS jobs
@@ -698,7 +698,7 @@ to the settings of 2026-09-06. On 2026-09-06 the document's status read
 was taken on 2026-08-31, and the repository went public on 2026-09-02, when
 it was deleted and recreated public.
 
-Its R1–R6 are this document's own items. `docs/STATE-WORKFLOW.md` numbers
+Its R1–R6 are this document's own items. `docs/records/STATE-WORKFLOW-RESEARCH.md` numbers
 its rules R1–R7, and each of those is named with its document where this
 one cites it.
 
@@ -788,10 +788,10 @@ the `ModelBank` and the expression plugin, so nothing needs to reach
 crates.io. Revisit for `online-core` alone if it is ever wanted standalone.
 
 **That verification found a real packaging defect: the sdist shipped with
-no `LICENSE` at all.** Apache-2.0 requires the licence to accompany a
+no `LICENSE` at all.** Apache-2.0 requires the license to accompany a
 distribution, and packagers check for it. The fix is PEP 639 `license-files`
 under `[project]`; note that `[tool.maturin] license-files` is silently
-ignored. The licence now lands in the sdist, and in the wheel's
+ignored. The license now lands in the sdist, and in the wheel's
 `.dist-info/licenses/LICENSE`.
 
 #### R4 — Repository settings

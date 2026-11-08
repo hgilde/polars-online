@@ -167,7 +167,7 @@ Measured on 200,000 rows, no pyarrow: `collect()` under the default,
 `in-memory` and `streaming` engines, and `sink_parquet`, each equal an
 in-memory fit on every float field, and `collect_batches()` yields the output
 in 100,000-row batches. The input streams in every case, but `collect()`
-materialises the output, so a result larger than memory should be sunk or
+materializes the output, so a result larger than memory should be sunk or
 taken in batches. Collected a second time, the same plan gives 0 rows and
 raises `ConsumedSourceWarning`, so the spent-stream guard covers ADBC as it
 covers DuckDB.
@@ -283,8 +283,8 @@ pin all of this.
 section cited that as precedent for our own single-use export. **Measured on
 duckdb 1.5.5, it does not reproduce: both calls succeed.** The issue has been
 fixed since it was filed, so the precedent is gone, and citing it was reading a
-bug report as current behaviour. `tests/test_consumed_source.py` now pins the
-live behaviour, so if it changes again this section hears about it.
+bug report as current behavior. `tests/test_consumed_source.py` now pins the
+live behavior, so if it changes again this section hears about it.
 
 What remains true is the more useful fact, and it sits one level down: the
 *stream* a consumer captures is single-use even though the relation is not.
@@ -310,7 +310,7 @@ fresh relation:
 So **the capsule path is the only Arrow route out of DuckDB that carries no
 dependency**, which is why §1's recipe uses it and why this project can speak to
 DuckDB while refusing to depend on pyarrow. Note also that `fetch_arrow_table`,
-`fetch_arrow_reader` and `fetch_record_batch` are all **deprecated** in favour of
+`fetch_arrow_reader` and `fetch_record_batch` are all **deprecated** in favor of
 `to_arrow_table` / `to_arrow_reader` — and every one of them routes through
 pyarrow anyway, so the rename changes nothing for us.
 
@@ -335,7 +335,7 @@ Recorded because I got it wrong first: an earlier probe reused a single relation
 across every call and I concluded from it that "a relation's Arrow calls consume
 its result". The isolating experiment refuted that — successful calls are
 harmless, failed ones are destructive. Not pinned by a test, deliberately: the
-behaviour only appears when pyarrow is *absent*, so a test for it would assert a
+behavior only appears when pyarrow is *absent*, so a test for it would assert a
 fact about the environment rather than about this package.
 
 ### Sorting by the clock, then streaming
@@ -392,7 +392,7 @@ base, without DuckDB beside us any more:
 
 **Decision to take, not defer:** keep the single-use contract (it is what the
 spec says, and what prevents a double free), but document it as *ours* rather
-than as conformance with a neighbour, because the permissive behaviour is now
+than as conformance with a neighbor, because the permissive behavior is now
 what a user will have met everywhere else.
 
 ---
@@ -473,7 +473,7 @@ at a double free.
 ## 5. DuckDB's statistics and learning extensions, against this library
 
 This is the part that decides whether the expansion is worth building, because
-if DuckDB already does the modelling, the integration is pointless.
+if DuckDB already does the modeling, the integration is pointless.
 
 ### What DuckDB has
 
@@ -482,7 +482,7 @@ if DuckDB already does the modelling, the integration is pointless.
 `regr_sxy`, `regr_syy`, plus `corr` and `covar_pop`. `regr_slope` *is*
 `covar_pop(x,y)/var_pop(x)`.
 
-**Community extensions** (200+ in total; the modelling ones):
+**Community extensions** (200+ in total; the modeling ones):
 
 | extension | what it provides |
 |---|---|
@@ -716,7 +716,7 @@ Arrow gets embedded in an engine that wants one.
 
 **Materialize and Feldera (DBSP).** Both maintain incremental views, and both
 deliver change as *retraction*: an update arrives as a negative multiplicity
-cancelling an earlier row. An online model cannot un-learn a row. Its only
+canceling an earlier row. An online model cannot un-learn a row. Its only
 forgetting is decay, which is time-directed and applies to the whole state at
 once rather than being addressed to one row — and `support_coef`, `n_eff` and
 every co-moment would all have to be walked back for a retraction to mean

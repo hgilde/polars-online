@@ -4,7 +4,7 @@
 This how-to is for anyone about to write a
 [spec](../GLOSSARY.md#the-model-bank-and-what-it-reads) (the description
 of a model) who wants to know which of the twenty-two models to name in
-it, including which model that watches for change answers which
+it, and, for watching a stream for change, which model answers which
 question.
 
 ## Prerequisites
@@ -16,7 +16,7 @@ These steps need the library and a question to put to a stream:
   `df`, 400 rows a minute apart. In `df`, `y` is `1 + 2·x0 − x1` plus
   noise, and `ret`'s slope on `signal_a` is 0.8 on rows 0 to 199 and −0.8
   from row 200. Two examples make their own data.
-- numpy, for the clustering example's points.
+- numpy, for the clustering and regimes examples.
 - The question you want the stream to answer, such as *what will the
   target be?* or *has something changed?*
 
@@ -41,7 +41,7 @@ checked against. That page opens with the notation the update equations share.
 |---|---|---|---|
 | what will the target be? | [Linear models](../MODELS.md#linear-models) | `ewridge` | the coefficients drift (`kalman`); some targets are wild (`huber`, `quantile`); few features matter (`lasso`, `ftrl`); learning a row must take O(k) time for `k` features (`sgd`, `pa`); the target is a count (`sgd`) or 0/1 (`ftrl`); you want a baseline with no features (`holt`) |
 | how do these columns vary and move together? | [Moments and correlation](../MODELS.md#moments-and-correlation) | `ew_cov` | there are thousands of columns (`marginal`); one correlation must stand for a whole matrix (`deco`); the prices are noisy ticks (`rcov`); you want to know what the columns hold (`audit`) |
-| which group does this row belong to? | [Clustering and classification](../MODELS.md#clustering-and-classification) | `kmeans` | the clusters have any shape (`micro`); you have the labels to learn from (`ew_class`) |
+| which group does this row belong to? | [Clustering and classification](../MODELS.md#clustering-and-classification) | `kmeans` | the clusters have any shape (`micro`); each row's class is known, to learn from (`ew_class`, its `label=` column) |
 | has something held, or changed? | [Sequential tests and regimes](../MODELS.md#sequential-tests-and-regimes) | `seqtest` | the correlations may have changed (`corrchange`); you want the regime's age (`bocpd`) or which regime it is (`hmm`) |
 
 A spec's clock, grouping and warm-up mean the same whichever model it
@@ -128,8 +128,11 @@ centers found: [[0.0, -0.1], [0.0, 6.0], [6.0, 0.0]]
 ## Detect changes and regimes
 
 **Four models watch a stream for change, and each answers its own
-question.** Each answer is read before its row is learned from, as every
-prediction is, so it can drive a decision on that row.
+question.** `seqtest`'s log wealth, `bocpd`'s `run_mode` and `hmm`'s
+probabilities are read before their row is learned from, as every
+prediction is, so they can drive a decision on that row. `bocpd`'s
+`p_change` and `corrchange`'s statistic include the row's own values, so
+they flag a change at that row rather than ahead of it.
 [REGIMES.md](../REGIMES.md) measures what each finds on streams whose
 answer is known, and what it misses. Their update equations and parameters are
 under [Sequential tests and
@@ -150,9 +153,10 @@ scores each row on its own, so it barely moves when the spread grows 2.7
 times: no single row of the wider regime is surprising enough on its own.
 
 **Tell `hmm` that regimes last.** One return says little about which regime
-it came from. A sticky `transition` matrix, counted by `transition_prior`
-as 500 rows, lets the filter weigh each row against what the rows before
-it said. [Keep `hmm` states on their
+it came from. A sticky `transition` matrix lets the filter weigh each row
+against what the rows before it said. `transition_prior` gives the matrix
+its weight: each of its rows counts as `transition_prior × n_components`
+transitions, so `500.0` at two states counts as 1,000. [Keep `hmm` states on their
 regimes](keep-hmm-states-on-their-regimes.md) sets the two.
 
 This code makes two series whose returns take turns, 500 rows at a time,

@@ -5,9 +5,9 @@ This how-to is for anyone who fits a model on a stream and wants to know
 whether the relationship it fits has broken, how, and when. It tests a
 regression's residuals and coefficients for a
 [break](../GLOSSARY.md#fitting-a-model) as the stream runs, and dates a
-break with a test run once over the whole stream. Watching the features
-themselves is a separate task: `corrchange` for their correlations, and
-`bocpd` for the age of their regime.
+break with a test run once over the whole stream. For the features
+themselves, it watches their correlations with `corrchange` and dates
+their regime with `bocpd`.
 
 ## Prerequisites
 
@@ -64,7 +64,7 @@ n, at = 6_000, 3_000
 x0, x1, e = rng.standard_normal((3, n))
 after = np.arange(n) >= at
 streams = {
-    "mean": 1.0 * x0 + 0.5 * x1 + e + 0.5 * after,  # the intercept rises by half a noise sd
+    "mean": 1.0 * x0 + 0.5 * x1 + e + 0.5 * after,  # the intercept rises by half a noise standard deviation
     "variance": 1.0 * x0 + 0.5 * x1 + e * np.where(after, 2.0, 1.0),  # the noise doubles
     "slope": 1.0 * x0 + np.where(after, -0.5, 0.5) * x1 + e,  # x1's slope flips sign
 }
@@ -149,10 +149,10 @@ test, whose path crosses a boundary where the residuals' mean has moved.
    `±0.948 (sqrt(T) + 2r / sqrt(T))`,** where `T` is the length of the run
    being tested. A monitor fixes `T` in advance, as the horizon it will
    watch.
-4. **Take the first row past the boundary as the detection, and refit from
-   it.** A crossing comes after the break, by a delay that shrinks as the
-   break grows, so every row from the crossing on belongs to the new
-   regime.
+4. **Take the first row past the boundary as the detection.** A crossing
+   comes after the break, by a delay that shrinks as the break grows, so
+   every row from the crossing on belongs to the new regime.
+5. **Refit from that row.**
 
 This code runs the CUSUM once over a stream whose intercept rises at row
 2,000, and refits from where it crossed:
@@ -195,7 +195,7 @@ for row, value, bound in path.filter(pl.col("t").is_in([1_000.0, 2_000.0, 2_200.
     print(f"  row {row:>5.0f}: path {value:>6.1f}, boundary {bound:.1f}")
 
 
-# 4. Refit over all of a query's rows: the whole stream, or from the crossing on.
+# 5. Refit over all of a query's rows: the whole stream, or from the crossing on.
 def coef(query):
     """The coefficients of a fit over every row of the query."""
     bank = po.ModelBank([po.spec.ewridge("ols", targets=["y"], features=["x0", "x1"], half_life=float("inf"))])
@@ -237,14 +237,10 @@ Choose what to do by which flags fire:
 
 | what fires | what it means | what to do |
 |---|---|---|
-| `cusum`, alone or with `break_wald` | the level moved | refit from the crossing, as step 4 of [Date a break with a test run once](#date-a-break-with-a-test-run-once) does, or let a fit that forgets catch up |
+| `cusum`, alone or with `break_wald` | the level moved | refit from the crossing, as step 5 of [Date a break with a test run once](#date-a-break-with-a-test-run-once) does, or let a fit that forgets catch up |
 | `cusum_sq` alone | the noise changed and the coefficients did not | keep the fit. The residuals' spread (`sigma`, which `emit_sigma` writes), and every interval built on it, is wrong until it adapts |
 | `break_wald` with `cusum_sq`, without `cusum` | a slope moved, where `break_wald` fired first, or the noise grew, where `cusum_sq` fired first and `break_wald` many rows after (3,024 and 3,313 on the recipe's variance break) | for a slope, let the fit catch up, or refit from the flag. For the noise, keep the fit, as the row before says |
-| `drift` | the residuals' level rose | `drift_action="reset"` resets the model at a `drift` flag, which suits a level shift only |
-
-`drift`'s false alarms depend on the residuals' tails: set
-`drift_threshold` from them as [Measure heavy tails](measure-heavy-tails.md)
-does.
+| `drift` | the residuals' level rose | `drift_action="reset"` resets the model at a `drift` flag, which suits a level shift only. Its false alarms depend on the residuals' tails, so set `drift_threshold` from them as [Measure heavy tails](measure-heavy-tails.md) does |
 
 ## Watch the features' correlations with `corrchange`
 
@@ -332,26 +328,26 @@ change gives one flag.
 rows since the last break, so it says how long the current regime has lasted.
 [`bocpd` in
 MODELS.md](../MODELS.md#bocpd--how-long-has-this-regime-lasted) defines
-its update, and [Choose a changepoint
+its update equation, and [Choose a changepoint
 hazard](choose-a-changepoint-hazard.md) sets how often it expects a
+break.
+
+**Date a break from `run_mode`, since `p_change` moves on one row's
+evidence.** Under a number `hazard`, `p_change` is `P(r ≤ 1)` given the
+row, and under a duration the chance that the row began a run. A break
+that takes several rows to show barely lifts it: 0.02 at most in the 50 rows after the spread quadruples in the example in
+[`bocpd` in MODELS.md](../MODELS.md#bocpd--how-long-has-this-regime-lasted).
+[`po.spec.bocpd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.bocpd)'s
+Notes, under *Reading p_change and run_mode*, measure three kinds of
 break.
 
 1. **Build a `bocpd` spec on the columns, with a `hazard`.** Give
    `group=` for one model per series.
 2. **Run the query.** Each row gains `run_mode` and `p_change`.
-3. **Do not date a break from `p_change`.** Under a number `hazard` it is
-   `P(r ≤ 1)` given the row, and under a duration the chance that the row
-   began a run. Either way it moves on one row's evidence, so a break that
-   takes several rows to show barely lifts it: 0.02 at most in the 50 rows
-   after the spread quadruples in the example in [`bocpd` in
-   MODELS.md](../MODELS.md#bocpd--how-long-has-this-regime-lasted).
-   [`po.spec.bocpd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.bocpd)'s
-   Notes, under *Reading p_change and run_mode*, measure three kinds of
-   break.
-4. **Read the regime's age from `run_mode`, the most likely run length
-   before the row, and date its start as the row number less `run_mode`.**
-   With
-   a `group=`, count the group's own rows, with Polars'
+3. **Read the regime's age from `run_mode`,** the most likely run length
+   before the row.
+4. **Date the regime's start as the row number less `run_mode`.** With a
+   `group=`, count the group's own rows, with Polars'
    `pl.int_range(pl.len()).over(<group>)`, since `run_mode` counts the
    group's rows and not the stream's.
 
@@ -379,7 +375,7 @@ pl.concat(frames).sort("i", "stock").write_parquet("regimes.parquet")
 # 1 and 2. One bocpd per stock, a break expected every 500 of its rows, and the query run.
 runs = po.spec.bocpd("regime", features=["ret"], group="stock", hazard=500.0)
 out = pl.scan_parquet("regimes.parquet").online.fit_predict([runs]).online.unnest([runs]).collect()
-# 4. The row each current run began on, in the stock's own rows and in the stream's.
+# 3 and 4. The row each current run began on, in the stock's own rows and in the stream's.
 out = out.with_columns(
     began=pl.int_range(pl.len()).over("stock") - pl.col("run_mode"),
     began_in_stream=pl.int_range(pl.len()) - pl.col("run_mode"),

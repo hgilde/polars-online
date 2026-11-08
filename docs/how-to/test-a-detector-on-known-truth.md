@@ -136,7 +136,11 @@ false alarms: 0
 **Run the detector on a stream with no change, over several seeds, to
 measure its false alarms.** False alarms are rare and fall at random, so
 one stream's count says little. This code fits the same spec on ten streams that hold one
-correlation, 0.35, throughout:
+correlation, 0.35, throughout. It uses `watch` and `pl` from the
+code in [Score the detector against the
+truth](#score-the-detector-against-the-truth), and `po` from the code in
+[Simulate a stream whose truth is
+known](#simulate-a-stream-whose-truth-is-known):
 
 ```python
 # Ten streams of 6,000 rows with no change, and the flags on all of them.
@@ -157,7 +161,7 @@ flags on 60,000 rows with no change: 6
 |---|---|---|
 | a planted change missed | the detector's history (`window_rows`) or monitoring period (`monitor_rows`) does not cover the change, or the change is too small for them | for `corrchange`'s sequential kind, make `monitor_rows` long enough that a cycle crosses each change; give a larger change, or more rows a block, and read where it starts to find it |
 | a delay longer than you can act on | the history is long: a change is found once enough rows after it differ | shorten `window_rows`, and measure the false alarms again, since a shorter history flags more often on a quiet stream |
-| many flags on the stream with no change | the detector's level (`alpha`), or a part of the stream it assumes away | add `phi`, `noise` or `async_rates` one at a time to find which part moves the count; [Detect a break](detect-a-break.md#watch-the-features-correlations-with-corrchange) sets `corrchange`'s level and its runs of flags |
+| many flags on the stream with no change | the level `alpha` is too loose for this stream, or the stream has a part the detector assumes away | add `phi`, `noise` or `async_rates` one at a time to find which part moves the count; [Detect a break](detect-a-break.md#watch-the-features-correlations-with-corrchange) sets `corrchange`'s boundary and its runs of flags |
 
 [REGIMES.md](../REGIMES.md) gives what `hmm`, `corrchange`, `bocpd`,
 `deco` and `rcov` find on such streams, measured over many seeds, and what

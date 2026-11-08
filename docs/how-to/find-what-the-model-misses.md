@@ -140,18 +140,13 @@ to 8.0. Its `breusch_pagan` of 3.0, now on five features, is below
 stream's `ramsey_reset` falls to 1.1. The spread has no fix in the
 features.
 
-To read one lag as a correlation, turn on `emit_autocorr=True`. It writes
-`autocorr_<t>`, the correlation of each residual with the one
-`resid_autocorr_lag` predicted rows back (1 by default), near 0 with nothing
-missing.
-
 ## Fix what a test finds
 
 Choose the fix by the test that fires:
 
 | the test that fires | what the model misses | what to do |
 |---|---|---|
-| `ljung_box` | a lag in the residuals, or a half-life too long for a moving relationship | add the lag as a feature, made with Polars' `shift` in the query before the bank, or shorten the half-life |
+| `ljung_box` | a lag in the residuals, or a half-life too long for a moving relationship | add the lag as a feature, made with Polars' `shift` in the query before the bank, or shorten the half-life. To read one lag as a correlation, turn on `emit_autocorr=True`: `autocorr_<t>` correlates each residual with the one `resid_autocorr_lag` predicted rows back (1 by default), and reads near 0 with nothing missing |
 | `ramsey_reset` | a curvature | add a square, a product, or a transform of the feature that carries it, made with Polars' `with_columns` in the query before the bank |
 | `breusch_pagan` | a spread that moves with a feature | keep the fit, whose coefficients are still right. On `ewridge` or `rls`, turn on `emit_robust_se=True` and read `se_coef_hc0` in place of `se_coef` ([Check a coefficient's standard error](check-standard-errors.md)). For a more efficient fit, on any model, weight each row by the inverse of its expected variance, in a column the spec names as `weight=` |
 

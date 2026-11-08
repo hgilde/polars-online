@@ -39,7 +39,8 @@ models](../DIAGNOSTICS.md#comparing-two-models) defines both statistics.
    give at least `h − 1`.
 4. **For two nested models, call `po.eval.clark_west(out, big=, small=)`.**
    It returns a one-sided `p_value`: below 0.05, the larger model predicts
-   better at the 5% level.
+   better at the 5% level. Give it `lags=` as step 3 does, at least
+   `h − 1` for a target `h` rows ahead.
 5. **Pass `group=` to either call** for one test per
    [group](../GLOSSARY.md#the-model-bank-and-what-it-reads).
 
@@ -106,9 +107,8 @@ toward the smaller model swamps a small real gain. Clark and West's test
 finds it on 44%. Where the extra coefficient is 0, Clark and West's test
 rejects on 2%, within its 5% size.
 
-Two hundred streams made the same way from five more seeds (11 to 15)
-give
-the same picture. Where the extra coefficient is 0.05, Diebold and
+The same code run with each of the seeds 11 to 15 in place of 10, on 200
+streams each, gives the same picture. Where the extra coefficient is 0.05, Diebold and
 Mariano's test found the larger model better on 0% to 3% of the streams,
 and Clark and West's on 36% to 47%. Where it is 0, Clark and West's test
 rejected on 2% to 6%.
@@ -134,8 +134,7 @@ error rate. The evidence a `seqtest` keeps does not.
    reaches `ln 20`: that is the 5% level, however often you read it.
    `log_e_b_<t>` is the evidence that `b` came closer.
 
-For two specs' output already in a frame, `po.eval.seqtest(out, a=, b=)`
-computes the same evidence in Polars expressions. This code makes two
+This code makes two
 stocks: on `moves` the coefficient on `x0` wanders, and on `still` it
 stays at 1. A Kalman filter whose coefficients drift should come closer on
 `moves`, and a ridge on `still`. Both specs set `min_weight`, so the test
@@ -201,6 +200,9 @@ level for the ridge at `t = 25`, in the first rows the two models
 predict. By `t = 100` its evidence has fallen back to
 0.28, far below `ln 20`.
 
+For two specs' output already in a frame, `po.eval.seqtest(out, a=, b=)`
+computes the same evidence in Polars expressions.
+
 [`seqtest`](../MODELS.md#seqtest--a-sequential-test-of-a-sign-by-betting)
 states how its evidence grows, and why `ln 20` is the 5% level at any row.
 
@@ -211,7 +213,7 @@ A test of two models is only as good as the rows it reads:
 | what you see | what it means | what to do |
 |---|---|---|
 | Diebold and Mariano's test never finds a larger, nested model better | the test leans toward the smaller model | use `po.eval.clark_west` for nested models |
-| a significant `dm` on a target that looks ahead, which goes away at a larger `lags` | the overlapping targets correlate the residuals, and too few lags understate the standard error | set `lags` to at least `h − 1` for a target `h` rows ahead |
+| a significant `dm`, or a small Clark and West `p_value`, on a target that looks ahead, which goes away at a larger `lags` | the overlapping targets correlate the residuals, and too few lags understate the standard error | set `lags` to at least `h − 1` for a target `h` rows ahead |
 | a test that finds a difference on every one of many streams, or on none | the difference is large against the noise, or the streams are too short to see it | read the size of the difference too, as the two models' `mse` from `po.eval.compare_specs` |
 | a `seqtest` that passes the 5% level in the first rows and falls back | one model is still in its warm-up, and its first predictions are far off | set `min_weight` on both specs, so the test reads only rows both models are ready on |
 | `log_e_a_<t>` stays null or flat | one side's residual is null on the rows, as in a warm-up | check that both specs predict the rows |

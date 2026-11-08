@@ -274,7 +274,7 @@ under `group`, a window that looks ahead needs `clock`.
 operator's `partial` sets what a window cut short by a gap gives), and
 `save_state=`, which saves for the next run the rows still waiting for a
 window when the input ends.** Without `save_state=`, those rows come out
-with their open windows null. [docs/WINDOWS.md](../WINDOWS.md#the-edges-of-a-window-gaps-sessions-and-resets)
+with their open windows null. [The edges of a window](../WINDOWS.md#the-edges-of-a-window-gaps-sessions-and-resets)
 says what `partial` does to a window that a gap or a session change cuts
 short, and [Resume a window run](resume-a-window-run.md) shows how to go on
 from the saved state.

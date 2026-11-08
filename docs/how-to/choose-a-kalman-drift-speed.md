@@ -6,6 +6,7 @@ coefficients drift, and needs to set how fast each coefficient may move.
 It chooses `coef_half_life` per coefficient from the stream's own errors,
 makes a coefficient forget between bursts of its feature with
 `revert_half_life`, and sets how far a prediction past the data may move.
+It also sets the process noise outright, with `q=`.
 
 ## Prerequisites
 
@@ -199,7 +200,7 @@ unstandardized coordinates, only where the features average 0.
    reversion half-life of 200 clock units, a `gap_cap` of 1,000 leaves a
    slope `2^(−5)`, about 3%, of its value. `gap_cap` also caps every clock
    step the fit learns over, for the decay, the drift and the reversion
-   alike. So on a stream with steps longer than the old `gap_cap`, a larger
+   alike. So on a stream with steps longer than the `gap_cap` you had, a larger
    one changes the fit itself, not only the far predictions.
 3. **Predict the rows past the data with `bank.predict`.** It learns
    nothing, and moves each coefficient over the clock since the last

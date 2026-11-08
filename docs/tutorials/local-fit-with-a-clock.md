@@ -78,8 +78,8 @@ mostly from the last few tens of minutes, and it moves from row to row.
 longer than five minutes, such as a night, decays the rows the model has
 learned as a five-minute step would.
 
-`coef_every=0` writes the coefficients on every row, as they stand after
-the model learns that row.
+`coef_every=0` writes, on every row, the coefficients the model holds
+after that row, from its latest solve.
 
 Run the spec over both days in a query. The bank adds one [output
 column](../GLOSSARY.md#what-a-bank-writes), named after the spec, whose

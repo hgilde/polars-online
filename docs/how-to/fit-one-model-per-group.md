@@ -148,7 +148,10 @@ quiet](run-a-bank-in-a-python-loop.md#drop-the-groups-that-have-gone-quiet)).
 group](../GLOSSARY.md#saving-and-serving)'s running sums and frees its
 memory,** which keeps its memory bounded when new group
 values never stop appearing. `group_close="monotone"` closes a group once
-a higher key arrives, so it needs the keys in order, as a block number or a
-date is. `group_close="session"` closes a group once its `session` value
-changes. [Close groups and read each one's row](close-groups.md) shows what is
-written.
+a higher key arrives, so it needs the keys in order, as a block number
+is. A date column must be cast to an integer or text first ([Close groups
+and read each one's row](close-groups.md)). `group_close="session"` closes a group once its `session` value
+changes. Each closed group's row waits in the bank until it is read, so
+read the closed rows between chunks with `bank.closed_groups()`, or pass
+`closed_groups=` a file, so they do not pile up in the bank. [Close groups
+and read each one's row](close-groups.md) shows what is written.

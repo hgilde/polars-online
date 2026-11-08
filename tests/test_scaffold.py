@@ -72,14 +72,12 @@ def test_every_guide_that_states_the_floor_states_the_declared_one() -> None:
     floor as `collect_batches`, "added in 1.34.0", after the floor rose to
     1.37.0. Each guide that states the floor names its version, and every
     version so stated is the one `pyproject.toml` declares."""
-    from test_no_plan_references import FILES, GUIDE_PARTS
+    from test_no_plan_references import FILES
 
     repo = Path(__file__).resolve().parents[1]
     stated: dict[str, list[str]] = {}
-    for path in [*FILES, *GUIDE_PARTS]:
+    for path in FILES:
         text = (repo / path).read_text(encoding="utf-8")
-        if path in GUIDE_PARTS:
-            text = text[: text.index(GUIDE_PARTS[path])]
         found = _FLOOR_STATED.findall(" ".join(text.split()))
         if found:
             stated[path] = found

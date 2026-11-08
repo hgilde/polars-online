@@ -36,8 +36,10 @@ each row against those before it.
    prior counts as `transition_prior × n_components` transitions, so
    `500.0` at two states counts as 1,000. The matrix learned from the rows
    starts at the given one and moves from it as the counts grow.
-3. **Run the query, and read each row's `state`.** The states are numbered
-   as they were seeded, so match them to your regimes on rows you know.
+3. **Add the specs to the query with `online.fit_predict(specs)`.**
+4. **Run the query with `collect()`.**
+5. **Read each row's `state`.** The states are numbered as they were
+   seeded, so match them to your regimes on rows you know.
 
 This code makes the stream of [Detect changes and
 regimes](choose-a-model.md#detect-changes-and-regimes): two series whose
@@ -66,7 +68,7 @@ specs = [
     po.spec.hmm("default", **common),
     po.spec.hmm("sticky", **common, transition=[0.998, 0.002, 0.002, 0.998], transition_prior=500.0),
 ]
-# 3. The share of the rows after seeding each puts in its true regime.
+# 3 to 5. Add both specs, run, and read the share of the rows after seeding each puts in its true regime.
 out = returns.online.fit_predict(specs).collect().filter(pl.col("t") >= 500)
 for name in ("default", "sticky"):
     agree = (out[name].struct.field("state") == out["regime"]).mean()
@@ -93,8 +95,10 @@ forgets, so the model is left one state short.
    | give the states with `means` and `covs`, and freeze them with `learn=False` | you know the regimes in advance | the states no longer follow the stream |
    | give a larger `precision_prior` | you cannot clip the rows | keep it well below the data's variance: with the states held, a ridge of 1.0 on data of variance 1.0 halves every correlation |
 
-2. **Run the query, and count the rows each state holds** over a stretch
-   after the extreme row.
+2. **Add the spec to the query with `online.fit_predict([hidden])`.**
+3. **Run the query with `collect()`.**
+4. **Count the rows each state holds** over a stretch after the extreme
+   row.
 
 This code makes two overlapping blobs and a sticky chain that switches
 between them about once in 200 rows. It plants one row at (1000, 1000),
@@ -120,7 +124,7 @@ hidden = po.spec.hmm("hidden", features=["x", "y"], n_components=2, precision_pr
                      warm_rows=500, half_life=float("inf"))
 raw = pl.scan_parquet("states.parquet")
 clipped = raw.with_columns(pl.col("x", "y").clip(-5.0, 5.0))
-# 2. The last 3,000 rows: the share in their true state, and the rows each state holds.
+# 2 to 4. Add the spec, run, and read the last 3,000 rows: the share in their true state, and the rows each state holds.
 for name, query in (("raw", raw), ("clipped", clipped)):
     rows = query.online.fit_predict([hidden]).collect().unnest("hidden").tail(3_000)
     agree = (rows["state"] == rows["truth"]).mean()
@@ -147,7 +151,7 @@ regime you know, the share in their true state, as the recipes do.
 | few rows in their true regime, where a regime shows only over many rows, such as a spread that widens | one row says little about its regime, and the default prior does not say that regimes last | give a sticky `transition` and a `transition_prior` |
 | one state holds no rows over a long stretch | an extreme row captured it | clip the features before the bank, give the states with `learn=False`, or increase `precision_prior` |
 | every field but `weight_sum`, `settled_frac`, `withheld_reason` and `coef` null | the group has not yet had `warm_rows` rows to seed its states from | read the rows after seeding, or give the states with `means` and `covs` |
-| the states split the rows by direction, and never by regime | the regimes differ in their covariance alone, which the default seeding by k-means cannot see | give `means` and `covs` |
+| the states split the rows by direction, and never by regime, under the default prior | the regimes differ in their covariance alone, which the default seeding by k-means cannot see | give a sticky `transition` and a `transition_prior` first, as the first recipe does; give `means` and `covs` where that does not suffice |
 
 The fields are defined in [OUTPUTS.md](../OUTPUTS.md#hmm), and every
 parameter in `hmm`'s

@@ -1,3 +1,4 @@
+<!-- kind: reference -->
 # Data quality
 
 This reference page lists, for anyone who runs `bank.check()`, every
@@ -17,24 +18,26 @@ work](explanation/how-data-quality-checks-work.md) explains what a fit
 cannot tell you about its data, how the check reads it at no cost to the
 run, and why each finding harms a fit.
 
-These are the words of the library that the page uses:
+`check()`'s findings, and the entries that explain them, use these words
+of the library:
 
 | word | what it means here |
 |---|---|
-| spec | one model's description: the model, the columns it reads, and how it treats time. `po.spec.ewridge(...)` makes one; [the README's model table](MODELS.md#the-models-at-a-glance) lists every kind |
-| bank | `po.ModelBank`, a set of specs fitted together over the same rows; `bank.fit(lf)` learns from a query's rows, and `bank.fit_predict_batches(lf)` also returns each row's prediction, made before the row is learned |
+| spec | one model's description: the model, the columns it reads, and how it treats time. `po.spec.ewridge(...)` makes one; [the model table](MODELS.md#the-models-at-a-glance) lists every kind |
+| bank | `po.ModelBank`, a model bank: a set of models, one for each spec and group, fitted together over the same rows; `bank.fit(lf)` learns from a query's rows, and `bank.fit_predict_batches(lf)` also returns each row's prediction, made before the row is learned |
 | pass | one run of a bank over the stream |
 | audit | `po.spec.audit`, a spec that learns nothing and counts what its columns hold |
 | usable value | a number a model can learn from: not null, NaN or infinite, and no larger than `1e100` in magnitude |
 | group | a spec's `group` column splits the stream, and each value of it gets a fit of its own |
-| `half_life`, `gap_cap` | each row's weight halves every `half_life` of the clock column; `gap_cap` is the longest step between two rows that a model ages by |
+| `half_life`, `gap_cap` | each row's weight halves every `half_life` of the clock column; `gap_cap` is the longest step between two rows that a model decays by |
 | Gram | the matrix of running sums that `ewridge`, `lasso` and `ew_cov` keep, from which a fit is solved |
 | Kish rows | `weight_sum² / Σw²`: the number of equally weighted rows that a decayed set of rows is worth |
 | robust z | how far a value sits from the median, in units of the median absolute deviation times 1.4826 |
 
 | problem | the codes `check()` gives it |
 |---|---|
-| [Missing values](#missing-values) | [`missing`](#missing), [`few_learned`](#few_learned), [`nothing_learned`](#nothing_learned) |
+| [How the checks work](#how-the-checks-work) | [`not_checked`](#not_checked) |
+| [Null values](#null-values) | [`missing`](#missing), [`few_learned`](#few_learned), [`nothing_learned`](#nothing_learned) |
 | [Sentinel values](#sentinel-values) | [`sentinel`](#sentinel) |
 | [Constant and frozen features](#constant-and-frozen-features) | [`constant`](#constant), [`frozen`](#frozen), [`low_support`](#low_support), [`solve_failures`](#solve_failures) |
 | [A level far above its spread, and scales apart](#a-level-far-above-its-spread-and-scales-apart) | [`level_over_spread`](#level_over_spread), [`scales_apart`](#scales_apart), [`ridge_shrinks`](#ridge_shrinks) |
@@ -45,7 +48,6 @@ These are the words of the library that the page uses:
 | [Leakage](#leakage) | [`leakage`](#leakage) |
 | [The clock](#the-clock) | [`step_back`](#step_back), [`resets`](#resets), [`duplicate_stamps`](#duplicate_stamps), [`gaps`](#gaps), [`irregular_clock`](#irregular_clock) |
 | [Too little data for the fit](#too-little-data-for-the-fit) | [`few_rows`](#few_rows), [`group_sizes`](#group_sizes), [`never_settled`](#never_settled), [`below_min_weight`](#below_min_weight), [`withheld`](#withheld) |
-| [How the checks work](#how-the-checks-work) | [`not_checked`](#not_checked) |
 
 ## How the checks work
 
@@ -63,6 +65,12 @@ such as a target that never varies. A `warning` means the fit is
 unreliable. An `info` is worth knowing and often fine, such as a target
 present on a third of the rows by design.
 
+<a id="not_checked"></a>
+
+**`not_checked` (info) says that numpy is not installed.** The checks that
+read a Gram, `collinear` and `leakage`, need numpy, an optional extra.
+Install it with `pip install polars-online[numpy]`.
+
 **Every threshold was measured, both for how often it finds a planted
 problem and for how often it fires on clean data.** The streams are
 seeded, of 2,000 rows unless the table says otherwise, and each ran on ten
@@ -71,8 +79,8 @@ clean shapes, and no check gave an error or a warning in the 750 runs. An
 audit of every column ran on all twelve, and gave none either. The one
 clean shape on which an audit gives an `info` finding is the target missing on 60% of
 its rows. Each problem planted in the same streams was found on every
-seed, for every spec it harms, and for no other. Each problem's section
-below gives the numbers for its own codes, and `tests/test_check.py` runs
+seed, for every spec it harms, and for no other. Each problem's own section
+on this page gives the numbers for its own codes, and `tests/test_check.py` runs
 the sweep. The clean shapes:
 
 | clean shape | read by |
@@ -81,7 +89,7 @@ the sweep. The clean shapes:
 | ten features correlated at 0.8, with an R² of 0.99: correlated, not collinear | the fifteen specs and an audit |
 | five groups of 400 rows, an R² of 0.5, at a half-life of 50 | the fifteen specs and an audit |
 | forty groups of 50 rows at a half-life of 5, where the guards against chance keep a small group quiet | the fifteen specs and an audit |
-| a target present on 40% of the rows, as a sparse label is | the fifteen specs and an audit |
+| a target present on 40% of the rows, as a sparse target is | the fifteen specs and an audit |
 | columns persisting at 0.9 a row, and at 0.95 | an audit |
 | uniform values | an audit |
 | Poisson counts about 50 | an audit |
@@ -93,24 +101,14 @@ The docstring of
 [`ModelBank.check`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.check)
 lists every check with its threshold.
 
-<a id="not_checked"></a>
+**Read a number past a million in a recipe's output as a model that has
+blown up, whose digits depend on the platform's rounding.** Each recipe
+generates its data with the problem planted, saves it to parquet and reads
+it back with `pl.scan_parquet`, as a stream too large to hold would be
+read. Its output is shown under it, without the warnings it issues on
+standard error, such as a `ReadinessWarning`.
 
-**`not_checked` (info) says that numpy is not installed.** The checks that
-read a Gram, `collinear` and `leakage`, need numpy, an optional extra.
-Install it with `pip install polars-online[numpy]`.
-
-**Every recipe on this page is a complete program.** It generates its data
-with the problem planted, saves it to parquet and reads it back with
-`pl.scan_parquet`, as a stream too large to hold would be read. Its output
-is shown below it. `tests/test_data_quality.py` runs each recipe and holds
-its output to what is shown, so none goes stale. A number past a million
-in an output is a model that has blown up, and its digits depend on the
-platform's rounding. So the test holds such a number only to being past a
-million.
-Warnings that a recipe raises, such as a `ReadinessWarning`, go to the
-standard error stream and are not shown.
-
-## Missing values
+## Null values
 
 <a id="missing"></a>
 <a id="few_learned"></a>
@@ -128,10 +126,10 @@ a row is lost wherever any one of them is missing.
 | code | severity | fires when |
 |---|---|---|
 | `missing` | warning; error at 100% | a feature or the weight is missing on 10% of the rows fed or more |
-| `missing` | info | a target is missing on half the rows or more: a sparse label is a design, and a join gone wrong otherwise |
+| `missing` | info | a target is missing on half the rows or more: a sparse target is a design, and a join gone wrong otherwise |
 | `missing`, from an audit | info; error at 100% | a column is missing on 10% of its rows or more. An audit knows no roles, so it cannot tell a feature from a target |
 | `few_learned` | warning | fewer than half the rows fed were processed, the rest skipped for a missing feature or weight; the column missing most often is named |
-| `nothing_learned` | error | a stream was fed rows and learned from none |
+| `nothing_learned` | error | a model (one spec over one group) was fed rows and learned from none |
 
 **Leaving the gap alone is right whenever the gap does not depend on the
 target, and a fill from a running mean or the row before is not.** [When
@@ -226,7 +224,7 @@ wrong.
 those rows, unless the gaps depend on the target. When a column skips most
 rows and adds little, drop it from the spec, after checking that it is not
 correlated with the features that stay. When a target is missing by design
-(a label that exists on some rows), `missing` is `info` only. Use
+(a target known on some rows only), `missing` is `info` only. Use
 `target_gaps` on `ewridge` and `lasso` to choose how a target's own gaps
 are handled.
 
@@ -316,7 +314,7 @@ Left alone, `x1`'s slope is 0.000 where the data has 0.5, and the
 out-of-sample R² over the last 10,000 rows is 0.442. With `-999` made
 null, the rows that held it are skipped, the slope is 0.480, and R² is
 0.549 of the 0.556 the noise allows. The 5% of rows lost are lost at
-random, so the slopes stay unbiased ([Missing values](#missing-values)).
+random, so the slopes stay unbiased ([Null values](#null-values)).
 
 **What to do.** Make a sentinel null in the query before the bank, with
 `pl.when(pl.col("x1") == -999).then(None).otherwise(pl.col("x1"))`. Turn
@@ -382,7 +380,8 @@ were found:
 | 30 rows stuck in the middle | 5.1 |
 
 Twenty-five rows stuck were not found. Clean columns read 0.6 at most
-(values rounded to two decimals), and the six coarse-grid columns above
+(values rounded to two decimals), and the six coarse-grid columns of the clean shapes' table in
+[How the checks work](#how-the-checks-work)
 were silent, as they should be.
 
 [A frozen feature winds up
@@ -479,7 +478,7 @@ null, `rls` skips them, the clock still advances, and `gap_cap` caps the
 step after the stretch at 5 rows of decay. The slope stays at 0.481 and
 the error after the feed returns is 0.234, near the noise of 0.2. An
 `ewridge` on the frozen data, left alone, is as good: its ridge does not
-fade, and it centres each feature. It raises a `ReadinessWarning`, on
+fade, and it centers each feature. It raises a `ReadinessWarning`, on
 the standard error stream, that `x1`'s coefficient is half ridge, which is
 the `low_support` reading.
 
@@ -496,7 +495,7 @@ stream whose features can go quiet, use `ewridge`, which does not wind up.
 <a id="scales_apart"></a>
 <a id="ridge_shrinks"></a>
 
-**The models that do not centre a feature lose accuracy when its level is
+**The models that do not center a feature lose accuracy when its level is
 far from zero, and a ridge shrinks the coefficient of a feature in tiny
 units.** A
 price near 5,000 that moves by about 1 a row has a level 5,000 times its
@@ -508,9 +507,9 @@ passes a limit measured for it.
 
 | code | severity | fires when |
 |---|---|---|
-| `level_over_spread` | warning | a feature's `abs(mean) / std` passes the limit of a model that does not centre it (the table below) |
-| `level_over_spread` | info | the same ratio passes `1e6` for a model that centres its features, which loses nothing; arithmetic on the raw values elsewhere may |
-| `scales_apart` | warning | the widest feature's spread over the narrowest's passes the limit of a model that uses one step size for every column (the table below) |
+| `level_over_spread` | warning | a feature's `abs(mean) / std` passes the limit of a model that does not center it (the table of limits after this one) |
+| `level_over_spread` | info | the same ratio passes `1e6` for a model that centers its features, which loses nothing; arithmetic on the raw values elsewhere may |
+| `scales_apart` | warning | the widest feature's spread over the narrowest's passes the limit of a model that uses one step size for every column (the table of limits after this one) |
 | `ridge_shrinks` | warning | `ewridge`, `huber` or `quantile` without `standardize`: the smallest ridge is a quarter of a feature's variance or more, so it takes a fifth of that coefficient or more |
 
 Each limit is the largest value at which the model's out-of-sample R² fell
@@ -519,7 +518,7 @@ limit is not a constant, since its prior fades with its sums: it is
 `0.9·sqrt(W/delta_left)`, `W` the weight its fit holds and `delta_left`
 the part of its prior that has not decayed. A level or a
 spread ratio counts only when it is five standard errors from chance:
-from what a centred column, or two of equal spread, would show in that
+from what a centered column, or two of equal spread, would show in that
 many rows. That guard keeps a small group quiet. At a quarter of the variance, the
 ridge took 0.02 to 0.03 off the R², and at the whole variance 0.14.
 
@@ -531,7 +530,7 @@ ridge took 0.02 to 0.03 off the R², and at the whole variance 0.14.
 | `pa`, `standardize=False` | 3 | 2 |
 | `rls` | `0.9·sqrt(W/delta_left)` | 30 |
 
-The models that centre their features (`ewridge`, `lasso`, `huber`,
+The models that center their features (`ewridge`, `lasso`, `huber`,
 `quantile`, and `kalman`, `sgd` and `pa` at their default
 `standardize=True`) lost nothing at a level of `1e14` times the spread.
 Nor did they at spreads `1e8` apart, except where a narrow feature met a
@@ -629,10 +628,10 @@ ewridge  R² 0.578
 
 `check()` finds the price 4,960 sample spreads from zero and the two
 sample spreads 1,020 times apart (5,000 and 1,000 in the generator), for
-both uncentred models. For `ewridge`, which centres,
+both uncentered models. For `ewridge`, which centers,
 it finds only that its default ridge, `1e-6`, is as large as the return's
 variance. Left alone, `rls`'s R² over the last 10,000 rows is 0.005, and
-`sgd` diverges: its steps' gains say its learning rate is past its
+`sgd` diverges. Its steps' gains say its learning rate is past its
 stability bound, so every prediction is withheld as `unstable_rate`, and
 `check()` reports the stream's last row withheld (they read an R² of
 −2e9 before that gate). `rls`'s prior pins both slopes near zero: the price's,
@@ -686,13 +685,13 @@ explains why. A feature's variance inflation factor is `1/(1 − R²ⱼ)`,
 where `R²ⱼ` is the R² of that feature regressed on the others. Belsley's
 condition indexes are each the square root of the ratio of the scaled
 design's largest eigenvalue to one of the others. `check()` reads the design each model solves. A model with
-an intercept centres its features, so its design is their correlation
+an intercept centers its features, so its design is their correlation
 matrix. Two independent features that share a level are not collinear
-there: two at 5,000 and 3,000 read 1.0, where the uncentred index read
+there: two at 5,000 and 3,000 read 1.0, where the uncentered index read
 5,061. A model fitted through the origin (`fit_intercept=False`) solves
 the raw design, where those two are nearly proportional. So it reads
-Belsley's uncentred index, which `po.gram.condition` computes, since
-centring would hide a dependency on the constant. `po.gram.vif` computes
+Belsley's uncentered index, which `po.gram.condition` computes, since
+centering would hide a dependency on the constant. `po.gram.vif` computes
 the factors from a saved Gram.
 
 The recipe records one quantity twice, in dollars as `x0` and in cents as
@@ -905,7 +904,7 @@ def run(query):
     )
     for row in shown.iter_rows():
         print(*row)
-    # Re-solve the fit from its running sums, to read the slope's t.
+    # Solve the fit again from its running sums, to read the slope's t.
     g = bank.gram("ols")[0]  # the model's running sums
     coef = po.gram.solve(g, ridge=1e-9)  # [intercept, slope]
     stats = po.gram.coef_stats(g, coef)  # the slope's t, and the R², from the same sums
@@ -1033,16 +1032,16 @@ and use `conformal` for an interval. Increase `drift_threshold` until a
 stretch known to be stable stays unflagged. Clipping a feature at a known
 bound, with `pl.col("x").clip(lo, hi)` in the query before the bank, keeps
 one bad value from moving the fit. Clip a target only when the extremes
-are errors, since clipping real outcomes biases the fit toward the middle.
+are errors, since clipping real targets biases the fit toward the middle.
 
 ## Leakage
 
 **A feature that contains the target makes every out-of-sample number a
 fiction.** It can be the target itself, joined under another name. It can
 be a window computed over rows that the target looks ahead to. Or it can
-be a label learned before it would have been known (Kaufman, Rosset and
+be a target learned before it would have been known (Kaufman, Rosset and
 Perlich 2012). `check()` finds the first two when the feature is nearly
-the target. It cannot find the third, which is a matter of when a label is
+the target. It cannot find the third, which is a matter of when a target is
 learned, and the spec's `embargo` is its fix.
 
 | code | severity | fires when |
@@ -1110,7 +1109,7 @@ def run(feature, **embargo):
     print(f"{feature}, {'embargo 10' if embargo else 'no embargo'}: R² {r2:.3f}")
 
 
-# The leaking feature, the honest one, and the honest one under an embargo.
+# The leaking feature, the out-of-sample one, and the out-of-sample one under an embargo.
 run("past_bad")
 run("past")
 run("past", embargo=10.0)  # learn each row ten rows later, when its target is known
@@ -1128,13 +1127,14 @@ R² of 1.000 confirms it. With the feature fixed to look back, and
 no embargo, a stream with nothing to predict shows an R² of 0.061, which
 is leakage that no check can see. With `embargo=10.0`, the R² is −0.114:
 a model chasing noise at a half-life of 50 rows predicts worse than the
-stream's mean would, which is the honest answer for data with nothing in
+stream's mean would, which is the right answer for data with nothing in
 it.
 
 **What to do.** Build each feature from rows at or before its own row, and
 check every `shift(-k)` in the query. Give a spec whose target looks ahead
-an `embargo` as long as the look-ahead, or write the target as a window
-expression, which carries its own. An R² that is too good on data you
+an `embargo` as long as the look-ahead, or make it a
+[formula target](GLOSSARY.md#fitting-a-model), whose window the bank
+waits out, with an `embargo` of at least its `window_size`. An R² that is too good on data you
 expected to be hard is itself a finding.
 
 ## The clock
@@ -1146,18 +1146,18 @@ expected to be hard is itself a finding.
 <a id="irregular_clock"></a>
 
 **A model with a clock weighs each row by the time that has passed, so a
-clock that runs backwards, repeats or stalls changes what the model
+clock that steps back, repeats or stalls changes what the model
 learns.** Each row's weight halves every `half_life` of clock. Two rows
 with the same stamp weigh the same. A clock that steps back has no
-elapsed time to decay by, and a long gap would age the fit by all of it.
+elapsed time to decay by, and a long gap would decay the fit by all of it.
 The spec's clock policy decides each case, and `check()` reports what the
 policy met
 ([Handle sessions, gaps and steps back](how-to/handle-sessions-gaps-and-steps-back.md)).
 
 | code | severity | fires when |
 |---|---|---|
-| `step_back` | warning | the clock stepped back within a group, each a restart or a late row under `restart_after_step_back` |
-| `resets` | info | a stream started over, at a `session_gap="reset"` or a step back: each start forgets what came before |
+| `step_back` | warning | the clock stepped back within a group, each a reset or a late row under `restart_after_step_back` |
+| `resets` | info | a model started over, at a `session_gap="reset"` or a step back: each start forgets what came before |
 | `duplicate_stamps` | info | from an audit: a row shares the clock of the row before |
 | `gaps` | info | from an audit: a step between rows reaches `gap_cap` |
 | `irregular_clock` | info | from an audit: the coefficient of variation of the regular steps is 0.5 or more |
@@ -1168,13 +1168,13 @@ vary uniformly between 0.5 and 1.5 read 0.29.
 
 **What each clock event does.** With `restart_after_step_back` unset, the
 default, the bank refuses a chunk with any step back, before it learns any
-row of it. A step back larger than the setting restarts the model, which
+row of it. A step back larger than the setting resets the model, which
 forgets everything, and one no larger is refused as a late row. Equal
 stamps are zero apart: no decay passes between them, and a window holds
 them together. That is right for two trades in one millisecond, and wrong
 for a row the feed sent twice, which then counts double. A step that
-reaches `gap_cap` is capped, so a quiet hour ages the fit by no more than
-`gap_cap`. It is also a break, where a model that keeps past rows by
+reaches `gap_cap` is capped, so a quiet hour decays the fit by no more than
+`gap_cap`. It is also a clock break, where a model that keeps past rows by
 position, as a lag does, empties them. On an irregular clock, a half-life
 in clock units weighs rows by time, as it should. A lag or a window counted
 in rows means a different span of time on each row.
@@ -1185,7 +1185,7 @@ longest quiet spell, not `gap_cap`. On a `Datetime` clock the step columns
 are `Duration`s in the column's unit. An audit reads the stream's clock,
 so it refuses a step back as a model does. To count the steps back
 instead, give it `restart_after_step_back=0.0`: each step back then
-restarts its runs and its steps, keeps its counts, and shows in `step_back`
+resets its runs and its steps, keeps its counts, and shows in `step_back`
 and `resets`.
 
 The recipe makes trades at random times, stamped in whole milliseconds. The
@@ -1226,7 +1226,7 @@ try:
 except ValueError as err:
     print(str(err).split(". ")[0])
 
-# Told that any step back starts the stream over, the model restarts at each late row.
+# Told that any step back starts the stream over, the model resets at each late row.
 # (The audit is left out: it reads the same clock, and would refuse the stream too.)
 restarting = po.spec.ewridge(
     "ridge",
@@ -1265,8 +1265,8 @@ rows fed 10000, learned 10000
 
 Left alone, the bank refuses the stream at its first late row, and names
 the row. Told that any step back starts the stream over, the model
-restarts at each late row: `check()` finds the steps back and the
-restarts, each of which threw away everything learned. With the copies
+resets at each late row: `check()` finds the steps back and the
+resets, each of which threw away everything learned. With the copies
 dropped and the rows sorted by their clock, every row is learned once. The
 audit then finds 2.5% of the rows sharing a millisecond with the row
 before, which is two trades at once, and steps whose coefficient of
@@ -1278,8 +1278,8 @@ with `sort("t", maintain_order=True)`, and drop rows sent twice with
 `unique(maintain_order=True)`, or with `unique(subset=[...])` on the
 columns that identify a row. Set `restart_after_step_back` only when a step
 back truly starts the stream over, such as a replayed day, and give the
-stream a `session` column when its clock restarts at each session. Set
-`gap_cap` to the longest quiet stretch that should age the fit in full.
+stream a `session` column when its clock starts again at each session. Set
+`gap_cap` to the longest quiet stretch that should decay the fit in full.
 
 ## Too little data for the fit
 
@@ -1294,16 +1294,16 @@ decayed fit needs a half-life long enough to gather the weight
 `min_weight` asks for.** A bank fits each group on its own rows, so a
 group that trades twice cannot determine three coefficients. A half-life
 too short for the stream's row rate caps the weight a model can ever
-gather. A half-life far longer than the stream leaves the fit resting on a
-window that has not filled.
+gather. A half-life far longer than the stream leaves the fit far from
+its steady state (`settled_frac` low).
 
 | code | severity | fires when |
 |---|---|---|
 | `few_rows` | warning | a regression's group learned from fewer rows than its fit has coefficients for each target |
 | `group_sizes` | info | the largest group learned from 100 times the rows of the smallest or more |
-| `never_settled` | warning | a stream has seen less than one half-life of clock (`settled_frac` below 0.5) |
-| `below_min_weight` | warning | the weight a stream settles at, `weight_sum_settled`, is below the spec's `min_weight`, so its predictions stay null |
-| `withheld` | warning | a stream's last row had its predictions withheld, with the reason |
+| `never_settled` | warning | a model has seen less than one half-life of clock (`settled_frac` below 0.5) |
+| `below_min_weight` | warning | the weight a model levels off at, `weight_sum_settled`, is below the spec's `min_weight`, so its predictions stay null |
+| `withheld` | warning | a model's last row had its predictions withheld, with the reason |
 
 [Too little data leaves the fit to the
 ridge](explanation/how-data-quality-checks-work.md#too-little-data-leaves-the-fit-to-the-ridge)
@@ -1414,10 +1414,10 @@ sizes 2,500 times apart. Not one of the small stocks' rows is predicted.
 Pooled into one group, the small stocks share one fit, `check()` finds
 nothing, and 86% of their rows are predicted, the rest before the pool met
 `min_weight`. A
-half-life of 2 rows settles at a weight of 3.41, below the `min_weight` of
+half-life of 2 rows levels off at a weight of 3.41, below the `min_weight` of
 10 it was given, so its predictions stay null. A half-life of 100,000 rows
-over a stream of 20,072 has settled to 0.13 of its ceiling, so its fit
-still rests on a window that has not filled.
+over a stream of 20,072 has reached 0.13 of its ceiling, so its fit
+is still far from its steady state.
 
 **What to do.** Pool groups too small to fit, with `pl.when` in the query
 before the bank as the recipe does, or fit them with fewer features. Pick
@@ -1427,11 +1427,11 @@ history, or shorten the half-life.
 
 ## Sources
 
-Each claim above that is not measured here rests on one of these.
+Each claim on this page that is not measured here rests on one of these.
 
 | source | for |
 |---|---|
-| Belsley, D. A., Kuh, E. and Welsch, R. E. (1980). *Regression Diagnostics*. Wiley. | condition indexes and variance-decomposition proportions |
+| Belsley, D. A., Kuh, E. and Welsch, R. E. (1980). *Regression Diagnostics*. Wiley. | condition indexes |
 | Dickey, D. A. and Fuller, W. A. (1979). Distribution of the estimators for autoregressive time series with a unit root. *Journal of the American Statistical Association* 74(366), 427–431. | the unit-root statistic `random_walk` reads |
 | Granger, C. W. J. and Newbold, P. (1974). Spurious regressions in econometrics. *Journal of Econometrics* 2(2), 111–120. | a regression of one random walk on another |
 | Kaufman, S., Rosset, S. and Perlich, C. (2012). Leakage in data mining: formulation, detection, and avoidance. *ACM Transactions on Knowledge Discovery from Data* 6(4). | leakage |

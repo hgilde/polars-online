@@ -40,7 +40,7 @@ exponential weights at a half-life of `h` rows,
 `n_kish = (1 + lam) / (1 − lam)` with `lam = 0.5 ** (1 / h)`, about `2.885 h`. A
 half-life of 200 rows is worth
 about 577 independent rows. Windowed, the specification tests and Jarque
-and Bera's test passed their 5% values on 2% to 7% of the rows of clean
+and Bera's test exceeded their 5% critical values on 2% to 7% of the rows of clean
 streams, as they did run once.
 
 **A diagnostic's memory matches the fit's by default, because a statistic
@@ -53,8 +53,8 @@ the default is the half-life whose exponential weights have the window's
 Kish size. Beside `window_size=400` with no decay, `se_coef_hc0` read the
 spread of the slope fitted under that hard window over 200 streams, 0.0495 against 0.0498, where at
 the run-once memory it read a third of it. On 30 clean streams beside
-`window_size=100`, `ramsey_reset` passed its 5% value on 4.8% of rows,
-where run once it passed on 51%.
+`window_size=100`, `ramsey_reset` exceeded its 5% value on 4.8% of rows,
+where run once it exceeded on 51%.
 
 **A fit that forgets absorbs a miscalibration at its own pace, so a
 diagnostic at the fit's own memory sees only part of it.** A calibration
@@ -62,9 +62,9 @@ slope (the slope of the target regressed on the prediction) of 0.7 says the pred
 The fit drifts toward the truth as it learns. Over one half-life it has
 moved halfway, so the residuals a diagnostic at the same memory reads have
 had half the error taken out of them. That diagnostic is conservative.
-On a fit whose calibration slope was 0.7, the calibration test passed its
-5% value on 5% of rows at the model's memory. It passed on 42% at four
-times that memory, and on 89% run once. On calibrated fits it passed on
+On a fit whose calibration slope was 0.7, the calibration test exceeded its
+5% value on 5% of rows at the model's memory. It exceeded on 42% at four
+times that memory, and on 89% run once. On calibrated fits it exceeded on
 0.3% to 0.6% of rows at the model's memory and 0% to 0.3% at four times.
 That is why the calibration's memory defaults to four times the model's,
 and every other diagnostic's to the model's own.
@@ -84,7 +84,7 @@ every break within 100 rows. Run once over the whole stream, it found each
 A diagnostic folds a row into its statistic only once the model is
 [ready](../GLOSSARY.md#warm-up-and-readiness), and, beside a fit that
 forgets, only once the stream has come 95% of the way to its steady
-state on the longest memory the model keeps. [One memory per
+state on the longest finite memory the model keeps. [One memory per
 diagnostic](../DIAGNOSTICS.md#one-memory-per-diagnostic-run-once-or-windowed)
 gives the rule and the models that keep a second memory.
 
@@ -92,10 +92,10 @@ gives the rule and the models that keep a second memory.
 before the stream nears its steady state on that memory carries its
 warm-up bias, which reads as a break.** On 20 clean streams at a
 half-life of 200, with its diagnostics started once its level alone was
-ready, `holt`'s CUSUM had a spread of 2.7 and passed 3 on 28% of the 2,000
+ready, `holt`'s CUSUM had a spread of 2.7 and exceeded 3 on 28% of the 2,000
 rows after its diagnostics started. Started once its trend was ready, whose
 half-life is four times its level's by default, it had a spread of 0.74
-and passed on none.
+and exceeded on none.
 
 **The readiness warnings read the model's own half-life, so they can judge
 a stream long before its diagnostics start.** `settled_frac`,
@@ -117,7 +117,7 @@ on a target at 5,000 their first predictions are thousands of noise standard
 deviations off. Beside `rls` at a half-life of 50, residuals folded from the first
 prediction held Jarque and Bera's statistic past its 5% value on 81% of
 rows 1,000 to 2,000, 20 to 40 half-lives in. They held the calibration
-test past its own on 100%. Folded from readiness they passed on 4.9% and
+test past its own on 100%. Folded from readiness they exceeded on 4.9% and
 24%. What remains is the prior's bias itself, which fades only as the fit
 forgets it. At a half-life of 200, `rls`'s mean residual was still +2.1
 noise standard deviations over rows 400 to 1,000, and +0.16 over rows 1,000 to 2,000. The
@@ -126,15 +126,15 @@ its prior from the first rows. From row 1,000 on it read the same at a
 level as on a target at 0, each test past its 5% value on 0.1% to 8.9% of
 rows.
 
-**A fit that forgets nothing never reaches a steady state, so run once only the gates
-hold back the warm-up: give the model a `min_weight` of a few rows per
+**A fit that forgets nothing never reaches a steady state, so a run-once diagnostic has only the gates
+to hold back the warm-up: give the model a `min_weight` of a few rows per
 coefficient.** A fit with three rows for three coefficients predicts
 wildly, and run once those first residuals weigh in the statistic forever.
 On 40 clean streams of 6,000 rows, a run-once `ramsey_reset` beside an
-`ewridge` with `half_life=float("inf")` at its default `min_weight` of 0 passed its 5% value on
-26% of rows past row 2,000. At `min_weight=10` it passed on 2.6%. The
-calibration test passed on 19% of rows at 0 and 9.4% at 10. Beside a fit
-at a half-life of 200, a run-once `ramsey_reset` passed on 25.8% of rows
+`ewridge` with `half_life=float("inf")` at its default `min_weight` of 0 exceeded its 5% value on
+26% of rows past row 2,000. At `min_weight=10` it exceeded on 2.6%. The
+calibration test exceeded on 19% of rows at 0 and 9.4% at 10. Beside a fit
+at a half-life of 200, a run-once `ramsey_reset` exceeded on 25.8% of rows
 1,000 to 3,000 when it folded from the first prediction, and on 4.8% from
 readiness.
 
@@ -167,7 +167,7 @@ target. Read as a feature, it is known at its row, as a feature must be.
 attenuates the second stage's coefficient toward zero.** That residual is
 the quantity the second stage means to read plus the first stage's
 estimation error, and noise in a feature shrinks a least-squares slope.
-In the worked example a planted coefficient of −0.490 reads −0.450.
+In the two-stage example of that how-to, a planted coefficient of −0.490 reads −0.450.
 
 **The calibration says whether a second-stage coefficient needs
 rescaling.** It regresses the target on the prediction, as Mincer and
@@ -185,7 +185,7 @@ residuals are correlated. Against a feature that moves slowly, a t that
 treats them as independent is up to about `sqrt(h)` times too large, for
 a flat window of `h` rows, and a coefficient that carries nothing then
 looks significant. A target that weights its window exponentially, as in
-the worked example, overlaps less, and there the ratio is smaller.
+that how-to's example, overlaps less, and there the ratio is smaller.
 `se_coef_hac` (Newey and West 1987) allows for the overlap over the lags
 `horizon_rows` sets, and the calibration's Wald statistic takes the same
 variance ([Check a coefficient's standard

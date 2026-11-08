@@ -227,7 +227,7 @@ finite, ≥ 0 and *strictly* decreasing, `select_halflife`/`long_halflife`/
 `x <= 0` test became `!(x > 0)` so NaN fails it too. The Python encoder
 refuses any NaN by parameter name (`spec "m": lam must not be NaN`) instead
 of letting serde report a JSON column offset. `tests/test_spec_validation.py`
-is the table: every refused value, its message, and the legal neighbour that
+is the table: every refused value, its message, and the legal neighbor that
 still runs.
 
 ### C6 — an interrupted save destroys the last good state — *done*

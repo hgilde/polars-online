@@ -38,11 +38,12 @@ before each row as the threshold: it assumes no distribution.
 3. **Give `mahal_quantiles=[0.99]`.** Each row gains `mahal_q0.99`, the
    exponentially weighted 99th percentile of the distances before it, at
    the model's half-life. The row's own distance joins after it is read.
-4. **Add the spec to the query with `online.fit_predict([mv])`, unnest
-   its output column with Polars' `unnest("mv")`, and run it with
-   `collect()`.** Each row then has `mahal` and `mahal_q0.99` as
-   columns.
-5. **Keep the rows where `mahal > mahal_q0.99`.** About one row in a
+4. **Add the spec to the query with `online.fit_predict([mv])`.** The
+   rows gain the spec's output column, `mv`, which holds its fields.
+5. **Unnest `mv` with Polars' `unnest("mv")`.** Its fields become columns.
+6. **Run the query with `collect()`.** Each row then has `mahal` and
+   `mahal_q0.99` as columns.
+7. **Keep the rows where `mahal > mahal_q0.99`.** About one row in a
    hundred passes: the rows far from the mean once the correlations are
    allowed for.
 
@@ -72,8 +73,8 @@ mv = po.spec.ew_cov(
     precision_prior=1e-6,                # 2. needed by mahal; fades as rows arrive
     mahal_quantiles=[0.99],              # 3. adds mahal_q0.99
 )
-out = pl.scan_parquet("joint.parquet").with_row_index("row").online.fit_predict([mv]).unnest("mv").collect()   # 4. run, and unnest the fields
-flagged = out.filter(pl.col("mahal") > pl.col("mahal_q0.99"))   # 5. the rows far from the mean
+out = pl.scan_parquet("joint.parquet").with_row_index("row").online.fit_predict([mv]).unnest("mv").collect()   # 4 to 6. add the spec, unnest the fields, run
+flagged = out.filter(pl.col("mahal") > pl.col("mahal_q0.99"))   # 7. the rows far from the mean
 print(f"flagged {flagged.height} of {out.height} rows")
 # Each planted row: its columns in their own standard deviations, and its distance against the threshold.
 for r in out.filter(pl.col("row").is_in(planted)).iter_rows(named=True):
@@ -97,11 +98,13 @@ move together.
 
 ## Check that it worked
 
-**Count the rows flagged: near one in a hundred at `mahal_quantiles=[0.99]`.**
-The threshold is a quantile of the stream's own distances, so the share
-flagged holds whatever the columns' distribution. To tell a flagged row
-from the rest, print its columns in their own standard deviations beside
-its `mahal`, as the recipe does.
+**Plant a row whose columns are each in range but whose combination is
+odd, and confirm it is flagged, as the recipe does.** Print its columns
+in their own standard deviations beside its `mahal`. The count of rows
+flagged, near one in a hundred at `mahal_quantiles=[0.99]`, is only a
+sanity check. The threshold is a quantile of the stream's own distances,
+so that share holds whatever the columns' distribution, and holds even
+when the distance is wrong.
 
 | what you see | what it means | what to do |
 |---|---|---|

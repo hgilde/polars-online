@@ -35,7 +35,8 @@ feature is missing, so it never sees the row. An audit, the spec
 counts nulls, NaNs and infinities apart. It also counts repeated values,
 runs of one value, persistence like a random walk's, heavy tails,
 duplicated columns and the clock's stamps. Its memory does not grow with
-the rows: about 14 KiB a column. Run it alone before choosing a model, or
+the rows: about 14 KiB a column, and 72 bytes a pair of columns, in
+every group. Run it alone before choosing a model, or
 beside the models in the same pass. Without one in the bank, `check()`
 says nothing about sentinels, frozen feeds, few values, random walks,
 tails, duplicates or the clock's spacing.
@@ -77,7 +78,8 @@ variation, so on the filled rows the column is flat. Its slope shrinks
 toward zero, and a feature correlated with it absorbs the rest of its
 effect, which is the omitted-variable bias of the column the fill erased.
 On the same simulated regressions, a running-mean fill biased the slopes
-by 0.4 to 6 standard errors, where listwise deletion was unbiased. A
+by 0.4 to 6 standard errors, where listwise deletion was unbiased
+whenever the gap did not depend on `y`. A
 forward fill does the same, and adds the error of a stale value. Fill a
 value forward only when it truly holds until it changes, such as the last
 quote of an instrument. In that case the forward-filled value is the

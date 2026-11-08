@@ -36,8 +36,8 @@ each covariance the model learns:
    each class's correlation between features.
 2. **Fit `"tied"` or `"diag"` beside it, as other specs in the same bank,**
    each spec named after its shape.
-3. **Score each spec's `class` against the label on rows after the
-   [warm-up](../GLOSSARY.md#warm-up-and-readiness),** and keep the
+3. **Score each spec's `class` against the class column (`label=`) on
+   rows after the [warm-up](../GLOSSARY.md#warm-up-and-readiness),** and keep the
    cheapest shape that classifies as many rows right as `"full"`.
 
 This code makes two kinds of class. In the first, two classes share their
@@ -92,7 +92,9 @@ regimes average together, and the predicted classes go to chance.
    cover only the rows inside the [hard
    window](forget-rows-past-a-window.md), and a row is predicted against
    them. Without a clock, the units are rows.
-2. **Run the query, and score each stretch of rows after a move.**
+2. **Add both specs to the query with `online.fit_predict(specs)`.**
+3. **Run the query with `collect()`.**
+4. **Score each stretch of rows after a move.**
 
 This code makes two classes that trade places at row 3,000, and scores a
 spec that weighs every row against one that keeps the last 500:
@@ -113,8 +115,9 @@ pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1], "kind": np.array(["a", "b"])[label]}
 # 1. One spec over every row, and one over the last 500.
 common = dict(features=["x", "y"], label="kind", classes=["a", "b"], precision_prior=0.1, half_life=float("inf"))
 specs = [po.spec.ew_class("whole", **common), po.spec.ew_class("window", **common, window_size=500.0)]
+# 2 and 3. Add both specs, and run.
 out = pl.scan_parquet("swapped.parquet").online.fit_predict(specs).collect()
-# 2. The share of rows each classifies right, before the move, just after it, and from then on.
+# 4. The share of rows each classifies right, before the move, just after it, and from then on.
 for lo, hi in ((2_000, 3_000), (3_000, 3_500), (3_500, 6_000)):
     rows = out.slice(lo, hi - lo)
     right = {k: (rows[k].struct.field("class") == rows["kind"]).mean() for k in ("whole", "window")}
@@ -140,9 +143,10 @@ parameter on a regression.
 
 1. **Give `embargo=` the delay, in the clock's units,** such as `"5m"` on
    a temporal clock. Without a clock, the units are rows.
-2. **Run the query.** Each row is predicted when it arrives, and its class
-   is learned once that much clock has passed, so `class` stays null until
-   the first classes have been learned.
+2. **Add the spec to the query with `online.fit_predict([late])`.**
+3. **Run the query with `collect()`.** Each row is predicted when it
+   arrives, and its class is learned once that much clock has passed, so
+   `class` stays null until the first classes have been learned.
 
 This code reads `swapped.parquet`, which the recipe in [Give `window_size`
 when the classes move](#give-window_size-when-the-classes-move) wrote, with
@@ -152,7 +156,7 @@ that recipe's imports, and learns each row's class 50 rows after the row:
 # 1. Each class learned 50 rows after its row.
 late = po.spec.ew_class("late", features=["x", "y"], label="kind", classes=["a", "b"],
                         precision_prior=0.1, half_life=float("inf"), embargo=50)
-# 2. The first row with a class.
+# 2 and 3. Add the spec, run, and find the first row with a class.
 out = pl.scan_parquet("swapped.parquet").online.fit_predict([late]).collect().unnest("late").with_row_index("row")
 print(f"first row with a class: {out.filter(pl.col('class').is_not_null())['row'][0]}")
 ```
@@ -167,7 +171,7 @@ two rows later.
 
 ## Check that it worked
 
-Score each spec's `class` against the label on rows after the warm-up, as
+Score each spec's `class` against the class column (`label=`) on rows after the warm-up, as
 the recipes do. To see how sure the model is, read each class's
 probability, `p_<class>`.
 

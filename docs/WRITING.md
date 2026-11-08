@@ -1,3 +1,4 @@
+<!-- kind: reference -->
 # How the documentation is written
 
 The rules the reader-facing docs are held to: the README first, then the
@@ -51,7 +52,7 @@ one of them.
 | [8. Rewrites, as examples](#8-rewrites-as-examples) | what these rules produced, and a paragraph the user rewrote |
 | [9. Four kinds of page](#9-four-kinds-of-page) | a tutorial, a how-to, a reference or an explanation, never a mix |
 | [10. Reference entries and docstrings](#10-reference-entries-and-docstrings) | the same sections, in the same order, for every function and model |
-| [11. Errors and warnings](#11-errors-and-warnings) | the shape of every message the library prints or raises |
+| [11. Errors and warnings](#11-errors-and-warnings) | the shape of every error and warning the library raises, and of what it prints |
 | [12. One word for one thing](#12-one-word-for-one-thing) | the glossary, and the words kept out of messages |
 | [13. Checks that hold the rules](#13-checks-that-hold-the-rules) | what the test gate checks, so a rule outlives the pass that wrote it |
 
@@ -110,7 +111,7 @@ Three altitudes, each with its own job:
 |---|---|---|---|
 | **the introduction** (the top of the README) | make a reader who has never seen the library understand what it does and run one example | one paragraph per idea, the basic API example, the *consequence* of each design choice | mechanisms, measurements, per-model facts, deployment detail |
 | **the user guide** (the tutorials, how-tos, reference pages and explanations the README's map links) | let a reader who has decided to use it do so correctly, and understand why it works as it does | the concepts and the shared API, code with comments, the reasons and warnings code cannot carry, the mechanism a user needs to trust a number | how it is implemented in the code, and the record of how it was decided |
-| **the deep docs** (the records, the docstrings' Notes, the contributor pages, source comments) | answer the question the guide raised | mechanisms, measurements, design records, test citations | — |
+| **the deep docs** (the records, the docstrings' Notes, the contributor pages, source comments) | answer the question the guide left open | mechanisms, measurements, design records, test citations | — |
 
 **Depth has an address.** Detail removed from a higher altitude is moved,
 never deleted. It goes to the document that owns it, and a one-line
@@ -154,7 +155,7 @@ deciding whether to trust it. A catalog goes one level down, under
 families, rather than flat. The twenty-two models sit under four families, and
 each family opens with one line on what its members share.
 
-**The contents is a table.** One row per section, with its subsections
+**Draw the contents as a table.** One row per section, with its subsections
 linked beside it, shows the hierarchy at a glance. The README's old
 contents was one paragraph of sixteen links, all at the same level.
 
@@ -168,8 +169,8 @@ introduction that example as its job.
 contents that explains the subsections.** A reader decides from the opener
 whether the section answers their question. A table of the subsections
 opens the section when it explains a lot about them or adds information.
-*How a bank sees a stream* opens with the question each subsection answers
-and the parameters that answer it. Otherwise the opener is one to three
+*How a bank sees a stream* opens with the question each of its subsections
+answers and the parameters that answer it. Otherwise the opener is one to three
 sentences that say what the section offers: *here is a first model fit, and
 an introduction to the library*. What every subsection obeys is stated here
 too, before the first subsection rather than inside one: the rules both of
@@ -180,18 +181,18 @@ were. Four were top-level sections that went straight to a subheading:
 *Introduction*, *Performance*, *Scope and integrations*, and *Versions,
 testing and development*.
 
-**An opener never lists what follows in a sentence.** The subsections are
-already listed at the top, in the contents table, and the bold leads name
-the paragraphs. So a sentence that walks through them tells the reader
+**An opener never lists what follows in a sentence.** The contents table at
+the top already lists the subsections, and each paragraph's bold lead
+names its point. So a sentence that walks through them tells the reader
 nothing new. One was *The idea says how, Terminology defines the words this
 README uses, and What you can rely on lists what holds in every run*. The
-user found it "like a small table of contents for the section". Another was
-*The paragraphs below say what that pass guarantees, when row order
-matters, and how a bank is run, saved and checked*. For that one the user's
+user found it "like a small table of contents for the section". Another began
+`The paragraphs below say` and went on to what that pass guarantees, when
+row order matters, and how a bank is run, saved and checked. For that one the user's
 wording was *here are a few points to remember about fitting models with
 polars-online*. Its signs are a subsection's title, in italics or as a
-link, followed by *says*, *shows* or *lists*; *Below come*, *Below are* or
-*The paragraphs below say*; and *follow the example*. The test is to strip
+link, followed by *says*, *shows* or *lists*. The others are `Below come`,
+`Below are`, `The paragraphs below say` and `follow the example`. The test is to strip
 the names and topics of what follows from the opener: what remains must
 still say something about the content. Seventeen of the README's openers
 failed it on 2026-10-04.
@@ -209,19 +210,19 @@ introduces: more than one item means a split.
 
 **Important information comes first, and nothing important is tacked on at
 the end.** A section's last sentences are the ones a reader is least likely
-to reach. So a rule, a caveat, a default, a limit or an exception never
-closes a section as an afterthought. It moves into the paragraph whose
+to reach. So a rule, a caveat, a default, a limit or a case a rule leaves out
+never closes a section as an afterthought. It moves into the paragraph whose
 topic it is, or into the opener when the whole section depends on it. The
-signs are a last paragraph that opens with *Also*, *Note*, *One more*, *The
-exception is* or *Two limits remain*, and a lone sentence after the
+signs are a last paragraph that opens with `Also`, `Note`, `One more`,
+`The exception is` or `Two limits remain`, and a lone sentence after the
 example. *Output as Arrow* ended its longest paragraph with the rule that an
 export can be read only once, and with the second call it documents,
 `predict_arrow`.
 
-**A heading's text is its anchor.** A heading may move to any level
+**Treat a heading's text as its anchor.** A heading may move to any level
 without breaking a link to it. Change its wording only after finding every
 link to it; `llms.txt` and `docs/RUNNER.md` both link into the README. The
-model sections are the exception to moving freely.
+model sections may not move freely.
 `tests/test_api_links.py` and `tests/test_model_registry.py` find them by
 their level, as `docs/EXTENDING.md` step 15 says.
 
@@ -434,8 +435,8 @@ conditions hold".
 states the guarantee, such as *memory is proportional to the model's
 state, not to the data that has passed through it*. The numbers behind it
 (1.4 GB against 3.97 GB, 2e-13 against `lstsq`) go to the model's section,
-a table, or `docs/PERFORMANCE.md`. The
-exception is a number that makes a point prose cannot. The lag a one-sided
+a table, or `docs/PERFORMANCE.md`. A
+number that makes a point prose cannot stays in the prose. The lag a one-sided
 kernel implies is easier to believe as *0.08 against 0.39* than as an
 adjective.
 
@@ -493,13 +494,13 @@ given.
 
 ## 5. Sentences
 
-**One idea per sentence.** A sentence carrying a rule, its reason and its
-exception makes the reader hold all three to get any one.
+**One idea per sentence.** A sentence carrying a rule, its reason and the case
+it leaves out makes the reader hold all three to get any one.
 
 **A semicolon joins the halves of one idea, never two ideas.** *A spec
 names its model, the columns it reads and how it treats time; its first
-argument is the spec's own name, which its output column takes* joined what
-a spec describes to what its name is for. The user found that the second
+argument is the spec's own name …* joined what a spec describes to what
+its name is for. The user found that the second
 half "does not belong so closely joined to the first part". Two ideas take
 two sentences, and an idea on another topic goes to the paragraph that
 topic owns. The README of 2026-10-04 had 29 prose sentences with a
@@ -565,7 +566,7 @@ what, upstream of which step. *So difference upstream* becomes *so compute
 the returns with Polars' `diff()` in the query before the bank*. An
 ordering inside a list, as *the intercept first*, and a span with its
 reference, as *five minutes later*, are fine. A position in the document
-is not a reference: *from here on*, *below* and *above* say where the
+is not a reference: `from here on`, `below` and `above` say where the
 writer stands, which a reader who jumped to the section does not share.
 Name what they point at, such as *every example after the first fit*, or
 link to it.
@@ -592,12 +593,14 @@ lead that states what both share. The user's lead for this one was
 
 **Say what a parameter is used for, then show it.** Name the parameter by
 what it is, say in a plain verb what it does, and give an example. The
-user's own wording is the model: *the name of the spec (the first
-parameter) is used to name the output column, for example*
-`po.spec.ewridge("ridge", ...)` *adds a column named* `ridge`. The draft
-said *its first argument is the spec's own name, which its output column
-takes*. Its inverted clause, *which its output column takes*, makes the
-reader rebuild the sentence before reading it.
+user's own wording is the model, beside the draft it replaced:
+
+| the draft | the user's wording |
+|---|---|
+| *its first argument is the spec's own name, which its output column takes* | *the name of the spec (the first parameter) is used to name the output column, for example* `po.spec.ewridge("ridge", ...)` *adds a column named* `ridge` |
+
+The draft's last clause is turned around, so the reader rebuilds the
+sentence before reading it.
 
 The user rewrote one paragraph of *A first fit* to show the voice wanted,
 and §8 sets the two versions side by side. Four rules come from it.
@@ -624,7 +627,7 @@ read is the path the coefficients took, which coef_every=1 writes on every
 row, rather than the state they ended on* put a placeholder subject first,
 the setting in a relative clause, and a contrast last.
 
-**Rules the large style guides share.** The rules below come from the
+**Rules the large style guides share.** Six rules come from the
 public style guides most technical documentation follows: Google's
 developer documentation style guide, the Microsoft Writing Style Guide and
 the US government's plain-language guidelines. The user asked on
@@ -846,26 +849,26 @@ read all four. The split, and what belongs in each kind:
 | **reference** | knows what they want to look up | describe one thing completely | the same sections in the same order for every entry (§10) | a narrative, advice that belongs in a how-to |
 | **explanation** | wants to understand | give the reasons and the mechanism | prose with diagrams and derivations, led by the point | steps to follow, parameter lists |
 
-**A page is one kind.** Where a page needs another kind's content, it
+**Keep each page to one kind.** Where a page needs another kind's content, it
 links to the page that holds it. Three kinds of document sit outside the
 four: the README's landing page, the maps of the documents (`llms.txt`
 and `docs/README.md`), and the records, which are not rewritten beyond their spelling. A few
-pages hold a second kind on purpose: the README's opening is the first
-tutorial, since the first example is what a new reader opens it for; a
-reference entry for a data finding ends in its remedy, since it is the
-long form of a message that must say what to do; each step of adding a
-model says what the layer it touches holds; the contributor reference
-on the test machines keeps the reasons their last bits differ; the
-versions reference gives the short reason beside each default changed in
-a minor release, since a reader upgrading needs it to decide whether to
-restore the old one; the
-glossary gives the
-reason for each contested word, since a writer needs it to choose a new
-one; and this guide keeps its pass (§6) and its rewrites (§8) beside its
-rules, since every rule cites them. The page-kind check (§13)
-accepts these seven kinds: tutorial, how-to, reference, explanation,
-landing, map and record. A how-to that needs a concept links to
-its explanation, in one sentence, and goes on with the task.
+pages hold a second kind on purpose:
+
+| page | its second kind | why |
+|---|---|---|
+| the README | its opening is the first tutorial | the first example is what a new reader opens it for |
+| a reference entry for a data finding | it ends in its remedy | it is the long form of a message that must say what to do |
+| the steps of adding a model | each says what the layer it touches holds | |
+| the contributor reference on the test machines | the reasons their last bits differ | |
+| the versions reference | the short reason beside each default changed in a minor release | a reader upgrading needs it to decide whether to restore the old one |
+| the glossary | the reason for each contested word | a writer needs it to choose a new one |
+| this guide | its pass (§6) and its rewrites (§8), beside its rules | every rule cites them |
+
+The page-kind check (§13) accepts these seven kinds: tutorial, how-to,
+reference, explanation, landing, map and record. A how-to that needs a
+concept links to its explanation, in one sentence, and goes on with the
+task.
 
 **Every page is page one.** A reader who arrives from a search has not
 read the page before it. The first sentence says what the page is about
@@ -878,10 +881,10 @@ finds at step four that they needed a clock column has done three steps
 for nothing. The prerequisites are a short list under the opening
 sentence.
 
-**A step is one action and its result.** *Run the query. Each row of the
+**Give each step one action and its result.** *Run the query. Each row of the
 output has a `pred_y`* is one step. Two actions are two steps.
 
-**The common case comes first, and the rest is one link away.** A how-to
+**Put the common case first, and the rest one link away.** A how-to
 shows the default path. The options and edge cases follow it, or sit in
 the reference entry the how-to links to. This is the order Stripe's API
 documentation popularized, and the README already follows it for the
@@ -905,13 +908,13 @@ sections this library adds:
 | when to use it | the case it is for, and the function to use otherwise | at most three sentences: the case first, then each alternative by name |
 | Parameters | each parameter: what it is for, its units, its default and the reason for that default, what it interacts with, and what is refused | in the order of the signature; *for*, then units, then default |
 | Returns, or the output fields | each field: what it is, its units, when it is null | a model's fields link to OUTPUTS.md rather than repeat it |
-| Raises | each error a caller can meet, and its cause | the condition, not the message text |
+| Raises (its errors) | each error a caller can meet, and its cause | the condition, not the message text |
 | the update equation | the equations, which every model's docstring states | in a code block, with each symbol defined once |
 | Examples | one short example that runs, with its output | the doc tests run it |
 | See also | the related functions and the guide sections | one line each |
 | Notes | the mechanism, the precision, the measurements | last, so a reader who wants only the call never meets it |
 
-**The summary is one plain sentence.** It is the line the API reference's
+**Write the summary as one plain sentence.** It is the line the API reference's
 index shows, and the first thing `help()` prints. *Exponentially weighted
 ridge regression on running sums -- the workhorse* adds a nickname the
 reader cannot use. The reason to reach for the model first belongs in the
@@ -949,9 +952,9 @@ learned with `ModelBank.skip_learned`, or set `restart_after_step_back`.*
 **Report every problem, where finding them all is cheap.** A spec missing
 both `half_life` and `gap_cap` reported only the first. The reader fixed
 it, ran again, and met the second. A validator that collects every
-problem, then raises once with all of them, saves that loop.
+problem, then raises one error with all of them, saves that loop.
 
-**The exception type follows the problem.** `TypeError` for a value of
+**The error's class follows the problem.** `TypeError` for a value of
 the wrong kind, `ValueError` for a value out of range or a combination
 refused, and Polars' own exceptions for a column problem, such as
 `ColumnNotFoundError`, so a caller's existing handlers catch them.
@@ -982,7 +985,7 @@ names no group: `group ""` is a value the reader did not give.
 
 ## 12. One word for one thing
 
-**The glossary is the vocabulary.** Every concept the library has is named
+**Take every word from the glossary.** Every concept the library has is named
 once in the [glossary](GLOSSARY.md), with its definition, and every page, docstring and
 message uses that name. A word varied for style is read as a different
 thing. *Instance*, *slot* and *grid point* were used interchangeably

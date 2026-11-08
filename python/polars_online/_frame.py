@@ -1232,7 +1232,7 @@ def _source(
     # nothing to write -- which is every `predict` and every fit that keeps
     # its state in memory. When there is, polars runs the source twice,
     # concurrently, and `atomic.rs`' counter makes the two writers safe
-    # (docs/STATE-WORKFLOW.md R2).
+    # (docs/records/STATE-WORKFLOW-RESEARCH.md R2).
     #
     # We cannot dedupe those two runs ourselves. Polars hands the source
     # callable `(with_columns, predicate, n_rows, batch_size)` and nothing

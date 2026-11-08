@@ -25,10 +25,11 @@ of models over the same rows, one for each
 [group](../GLOSSARY.md#the-model-bank-and-what-it-reads). A model predicts
 each row from the rows before it, so rows in another order give different
 predictions and, for most models, a different fit. The bank checks the
-order it is given in two ways. It warns of a join, a `group_by`, a
-`unique` or a sort by several keys in a
-[query](../GLOSSARY.md#the-model-bank-and-what-it-reads), whose row order
-Polars does not promise. And it refuses a
+order it is given in two ways. It warns of a step in a
+[query](../GLOSSARY.md#the-model-bank-and-what-it-reads) whose row order
+Polars does not promise: a join or a `group_by` without `maintain_order`,
+a `unique`, or a sort by several keys without `maintain_order=True`. And
+it refuses a
 [chunk](../GLOSSARY.md#the-model-bank-and-what-it-reads), the rows it takes
 in at once, where a group's [clock](../GLOSSARY.md#time) [steps
 back](../GLOSSARY.md#time) within a [session](../GLOSSARY.md#time), unless

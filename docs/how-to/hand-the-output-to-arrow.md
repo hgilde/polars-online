@@ -8,16 +8,11 @@ PyCapsule interface.
 To hand a [model bank](../GLOSSARY.md#the-model-bank-and-what-it-reads)'s
 output to a consumer that is not Polars, call `bank.fit_predict_arrow(df)`
 or `bank.predict_arrow(df)` in place of `fit_predict` or `predict`. Each
-returns one `ArrowStruct` per spec, which holds that spec's output through
-the Arrow PyCapsule interface, an Arrow specification, so any reader of
-`__arrow_c_array__` takes it directly. Its values are `fit_predict`'s,
-field for field and null for null. The input still goes in as a Polars
-`DataFrame`. `fit_predict` itself hands its output over as a Polars
-`Series`, on py-polars' private methods, so this package measures a Polars
-range and promises none ([Which interfaces carry a
-promise](../explanation/polars-interfaces.md)). This export is unstable:
-its form may change in a minor release ([What is
-stable](../VERSIONS.md#what-is-stable)).
+returns one `ArrowStruct` per spec, which any reader of
+`__arrow_c_array__` takes directly, with `fit_predict`'s values field for
+field. This export is unstable: its form may change in a minor release
+([What is stable](../VERSIONS.md#what-is-stable), and [Which interfaces
+carry a promise](../explanation/polars-interfaces.md) for why).
 
 ## Prerequisites
 
@@ -33,7 +28,7 @@ These steps need the library and a frame to fit:
 
 ## Export the output as Arrow
 
-**Read each struct once.** Exporting hands its buffers to the consumer, so
+**Read each `ArrowStruct` once.** Exporting hands its buffers to the consumer, so
 a second read raises `ValueError`.
 
 1. **Fit the bank with `bank.fit_predict_arrow(df)`,** which returns a

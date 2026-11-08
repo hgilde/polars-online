@@ -52,7 +52,7 @@ To check the result, run `scripts/slot.sh list`. It lists every worktree
 slot and who holds it, and the one you gave back shows as free.
 
 ```
-scripts/slot.sh take task-252-core main   # prints the worktree slot's path
+scripts/slot.sh take my-change main       # prints the worktree slot's path
 scripts/slot.sh list                      # every worktree slot, and who holds it
 scripts/slot.sh give 1                    # after the branch is merged
 ```
@@ -74,7 +74,8 @@ against the same worktree slot from nothing.
 
 The `release` extension gains least. Thin LTO over one codegen unit
 relinks the whole extension whenever a workspace crate changes. Only the
-test gate builds it: once a wave, or once a commit when working alone. The
+test gate builds it: once a wave, or once a commit when working alone, and
+again before each push. The
 inner loop builds `dev-wheel`.
 
 ## What `take` and `give` refuse, and why
@@ -112,7 +113,7 @@ after it, such as one about to be merged:
 
 ```
 scripts/slot.sh overlap                   # the taken worktree slots against each other and main
-scripts/slot.sh overlap task-280-ledger   # the same, with an existing branch not in a worktree slot
+scripts/slot.sh overlap my-change         # the same, with an existing branch not in a worktree slot
 ```
 
 Run one after the other the branches that share a file that tooling

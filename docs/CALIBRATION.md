@@ -33,6 +33,10 @@ judged by its residuals on rows it had not yet seen.
 1. **Give the spec a list of the values to try.** The spec fits each
    value as a grid point, from the same rows ([Find an output field by
    what it holds](how-to/find-an-output-field.md) says how each is named).
+   A grid inside one spec takes 13% to 28% less time than one spec per
+   value, for five half-lives on one thread ([How a grid shares its
+   work](explanation/grids-and-instances.md#how-a-grid-shares-its-work)
+   gives the measurement and the reason).
 2. **Pass the query and the spec to `po.eval.grid_search`.** It runs one
    bank over the query, reading the file once. It cuts the rows into
    `n_splits` test spans, 5 by default, and before each span chooses from
@@ -125,11 +129,7 @@ grid), `sgd`'s `learning_rate`, `holt`'s `trend_half_life` and `bocpd`'s
    keywords every spec shares.
 2. **Give `po.eval.grid_search` the builder, and a `param_grid` of the
    values to try.** It builds one spec per grid point and fits them all in
-   one bank, which reads the file once. A grid inside one spec is the
-   faster of the two forms, by 13% to 28% for five half-lives on one thread
-   ([How a grid shares its
-   work](explanation/grids-and-instances.md#how-a-grid-shares-its-work)
-   gives the measurement and the reason).
+   one bank, which reads the file once.
 3. **Read the table as in [step 3 and step
    4](#choose-a-half-life-with-poevalgrid_search)** of the half-life
    search.
@@ -145,12 +145,18 @@ rows. A row's residual is known only once its target has played out, so
 without `gap` the choice before a span would read residuals whose
 targets were not yet known at the span's start.
 
-1. **Count the most rows any target looks ahead.** For a target defined
+1. **Make the target a column of the stream,** with `with_windows` or
+   `with_columns` in the query, as [Make the target a column before the
+   bank](how-to/make-a-target-that-looks-ahead.md#make-the-target-a-column-before-the-bank)
+   shows. `po.eval.grid_search` scores a spec's target against its column,
+   and a [formula target](GLOSSARY.md#fitting-a-model) has none, so a spec
+   that gives one is refused.
+2. **Count the most rows any target looks ahead.** For a target defined
    by rows, that is its count of rows. For a target defined by time, it
    is the most rows its window spans.
-2. **Pass that count as `gap=` to `po.eval.grid_search`.** It leaves those
+3. **Pass that count as `gap=` to `po.eval.grid_search`.** It leaves those
    rows out between the rows a choice reads and the span it is scored on.
-3. **Read the table as in [step 3 and step
+4. **Read the table as in [step 3 and step
    4](#choose-a-half-life-with-poevalgrid_search)** of the half-life
    search.
 
@@ -158,16 +164,19 @@ targets were not yet known at the span's start.
 
 Each recipe plants a truth, searches its setting with
 `po.eval.grid_search`, and prints the error of each value and of the
-choice:
+choice. `pa`'s `c` and `ftrl`'s `alpha` can be searched as `learning_rate`
+is, but [Choose a learning rate](how-to/choose-a-learning-rate.md) has no
+recipe that searches them, and sets each from what it means instead.
 
 | setting | model | searched as | how-to |
 |---|---|---|---|
 | `half_life` | every model that decays | a list in one spec | [Choose a half-life](#choose-a-half-life-with-poevalgrid_search) |
 | `ridge` | `ewridge` | a list in one spec | [Choose a ridge and a half-life](how-to/choose-a-ridge-and-half-life.md#choose-a-ridge) |
 | `ridge` and `half_life` | `ewridge` | both lists in one spec | [Choose a ridge and a half-life](how-to/choose-a-ridge-and-half-life.md#choose-the-ridge-and-the-half-life-together) |
-| `coef_half_life`, `revert_half_life` | `kalman` | one spec per value | [Choose a Kalman filter's drift speed](how-to/choose-a-kalman-drift-speed.md#choose-the-speeds-from-the-streams-own-errors) |
-| `learning_rate`; `c`; `alpha` | `sgd`; `pa`; `ftrl` | one spec per value | [Choose a learning rate](how-to/choose-a-learning-rate.md) |
-| `half_life` and `trend_half_life` | `holt` | a list in each of one spec per value | [Choose Holt's smoothing](how-to/choose-holts-smoothing.md#choose-the-half-lives-from-the-streams-own-errors) |
+| `coef_half_life` | `kalman` | one spec per value | [Choose a Kalman filter's drift speed](how-to/choose-a-kalman-drift-speed.md#choose-the-speeds-from-the-streams-own-errors) |
+| `q` | `kalman` | one spec per value | [Set the process noise outright](how-to/choose-a-kalman-drift-speed.md#set-the-process-noise-outright) |
+| `learning_rate` | `sgd` | one spec per value | [Choose a learning rate](how-to/choose-a-learning-rate.md#search-the-rate-from-the-streams-own-errors) |
+| `half_life` and `trend_half_life` | `holt` | one spec per `trend_half_life`, each with a list of `half_life` | [Choose Holt's smoothing](how-to/choose-holts-smoothing.md#choose-the-half-lives-from-the-streams-own-errors) |
 | `hazard` and the priors | `bocpd` | one spec per value, scored by `loglik` | [Choose a changepoint hazard](how-to/choose-a-changepoint-hazard.md) |
 | `n_clusters`, `n_components`, `huber_delta` | `kmeans`, `hmm`, the robust losses | not by this pattern | [What this cannot choose](#what-this-cannot-choose) |
 
@@ -188,5 +197,5 @@ then the number to report. What else you may see, and what to do:
 | what you see | what it means | what to do |
 |---|---|---|
 | the call raises `ValueError`, naming the rows it read and the grid point that predicted on the fewest of them | the first choice reads the rows before the first test span, `n // (n_splits + 1)` of them and up to `n_splits` more, less `gap`. A row counts only where every grid point predicts, so a warm-up (`min_weight`, `warm_rows`) longer than that leaves nothing to choose by | give fewer `n_splits`, which lengthen the first span, a smaller `gap`, a shorter warm-up, or more rows |
-| the choice's error is above the error of rank 1 | the rows before some spans chose another grid point, as the Kalman recipe's did | report the choice's error: it is the one earned on rows the choice had not seen |
+| the choice's error is above the error of rank 1 | the rows before some spans chose another grid point, as [the Holt recipe's](how-to/choose-holts-smoothing.md#choose-the-half-lives-from-the-streams-own-errors) did | report the choice's error: it is the one earned on rows the choice had not seen |
 | the error of the choice is the error of rank 1 | every span chose the same grid point, as the half-life recipe's did | report either |

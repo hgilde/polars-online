@@ -105,10 +105,11 @@ brings `n_kish` close to 1. For a model that keeps a [Gram](../GLOSSARY.md#fitti
 weighted means and co-moments of its columns), such as `ewridge`,
 `bank.gram()` reports `n_kish` beside `weight_sum`.
 
-**Every regression but `ewridge` defaults `min_weight` to one row per
-unknown: one for each feature, and one for the intercept when it has
-one.** `ew_cov`, `ew_class`, `kmeans` and `micro` default to the feature count
-plus one, the fewest rows a covariance of that many features needs. `ewridge` defaults to 0, because its noise gate, on by default,
+**Every linear model but `ewridge` and `holt` defaults `min_weight` to one
+row per unknown: one for each feature, and one for the intercept when it
+has one.** `ew_cov`, `ew_class`, `kmeans` and `micro` default to the feature count
+plus one, the fewest rows a covariance of that many features needs, and
+`holt`, which reads no features, to 1. `ewridge` defaults to 0, because its noise gate, on by default,
 withholds those same early rows by measuring how much estimation error
 widens a prediction ([The noise
 gate](#the-noise-gate-estimation-error-against-the-noise)). The default
@@ -145,7 +146,7 @@ for step in (1.0, 5.0):
 # One ridge under each gate, at a half-life of 50 clock units.
 common = dict(targets=["y"], features=["x"], clock="t", gap_cap=10.0, half_life=50.0)  # a clock needs a gap_cap
 specs = [
-    po.spec.ewridge("settled", min_settled_frac=0.5, **common),  # withhold until halfway to the steady state
+    po.spec.ewridge("halfway", min_settled_frac=0.5, **common),  # withhold until halfway to the steady state
     po.spec.ewridge("weighted", min_weight=30.0, **common),      # withhold until weight_sum reaches 30
 ]
 for step in (1.0, 5.0):
@@ -153,7 +154,7 @@ for step in (1.0, 5.0):
         warnings.simplefilter("always")
         out = pl.scan_parquet(f"every_{step:g}.parquet").online.fit_predict(specs).collect()
     # Each gate's first predicted row, with the weight behind it.
-    for spec in ("settled", "weighted"):
+    for spec in ("halfway", "weighted"):
         rows = out.select("t", pl.col(spec).struct.unnest()).filter(pl.col("pred_y").is_not_null())
         if rows.height == 0:
             print(f"a row every {step:g}, {spec}: never predicts")
@@ -167,9 +168,9 @@ for step in (1.0, 5.0):
 ```
 
 ```text
-a row every 1, settled: first predicts at t = 51, weight_sum 36.8
+a row every 1, halfway: first predicts at t = 51, weight_sum 36.8
 a row every 1, weighted: first predicts at t = 39, weight_sum 30.3
-a row every 5, settled: first predicts at t = 55, weight_sum 8.0
+a row every 5, halfway: first predicts at t = 55, weight_sum 8.0
 a row every 5, weighted: never predicts
   warning: Lower min_weight below 14.9, or increase half_life above 103, as https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready explains.
 ```

@@ -92,6 +92,10 @@ weight wanders over the last 5,000 rows, its standard deviation there.
 This code builds its own data:
 
 ```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
 # y = 0.9·a + 0.6·b plus noise: weights that sum to 1.5, outside a sum of 1.
 rng = np.random.default_rng(12)
 n = 20_000

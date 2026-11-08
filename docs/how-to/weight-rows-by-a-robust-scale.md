@@ -16,6 +16,8 @@ These steps need the library and a stream with a clock:
   `trades`, a stream of quotes with trades between them, and `df`, saved
   as `ticks.parquet`. `df`'s `ret` is `±0.8·signal_a` plus noise of
   spread 0.5 on rows 0-99 and 200-299 and 2.0 on the others.
+- numpy 2.0 or later, whose `np.quantile` takes `weights=`, for the
+  examples and the check.
 - A [clock](../GLOSSARY.md#time) column, and the
   [`gap_cap`](../GLOSSARY.md#time) a clock requires: the largest clock
   step a window or a model measures. A longer step ends every window open
@@ -32,7 +34,7 @@ values do not move: the median absolute deviation (MAD) of `x` about 0.**
 normal values the result estimates their standard deviation. It holds while
 up to half the weight is wild, where a single value of 1e6 is enough to set
 a standard deviation. `po.ewm_quantile` is the quantile of a window's values, each
-weighed by its age on the clock, as [docs/WINDOWS.md](../WINDOWS.md#quantiles-and-a-robust-scale)
+weighed by its age on the clock, as [Quantiles and a robust scale](../WINDOWS.md#quantiles-and-a-robust-scale)
 describes.
 
 1. **Center the value first.** The MAD about 0 is a scale only for a

@@ -13,7 +13,7 @@ coefficients in two places, and both are the fit *after* the model learns the ro
 | the bank, live or loaded from a [state file](../GLOSSARY.md#saving-and-serving) with no data at hand | the last row each [group](../GLOSSARY.md#the-model-bank-and-what-it-reads) learned from | `bank.coef()` |
 | the output, as columns that show the fit as it moved | its own row | the field `coef`, spread into columns by `.online.unnest` |
 
-A row's own `pred` came from the fit *before* that row
+A row's own `pred_<target>` came from the fit *before* that row
 ([Predictions made before learning](../explanation/out-of-sample.md)).
 
 ## Prerequisites
@@ -106,7 +106,7 @@ True
 Stock `b0`'s rows are every fourth, from `t` 0. Its path starts null: a
 fit needs a row per coefficient before any row is predicted from it, three
 here, so the model solves nothing on its first two rows, where nothing
-would read the solve. It starts on its third row, is near 2 by its
+would read the solve. It starts on its third row, is 2.24 by its
 eleventh, and ends on the 2.02 `bank.coef()` reports. Each stock's first
 two rows are the 8 of 400 that carry no `coef`.
 
@@ -114,7 +114,8 @@ two rows are the 8 of 400 that carry no `coef`.
 
 **`coef_every=0` writes `coef` on every row but a skipped one**, as a list
 of one float per term. Without a cadence the bank writes it on each
-group's last accepted row in a chunk, and on none for a group whose rows
+group's last row in a chunk that is not
+[skipped](../GLOSSARY.md#the-model-bank-and-what-it-reads), and on none for a group whose rows
 there were all skipped.
 
 1. **Give `coef_every` a number of clock units,** or a duration such as
@@ -141,7 +142,7 @@ two specs that fit one target unnest side by side.
 
 **Several targets, or a [grid](../GLOSSARY.md#grids), put several blocks
 in one `coef` list:** one per target and point of a grid of `ridge`
-values, `feature_sets` or a `penalties`. Each half-life of a `half_life`
+values, `feature_sets` or `penalties`. Each half-life of a `half_life`
 grid has a `coef` field of its own.
 
 1. **Spread the blocks into columns with `.online.unnest([spec])`.** Each

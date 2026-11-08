@@ -49,32 +49,26 @@ The library's words, as they are used for Grams:
 |---|---|
 | spec, bank | a spec is one model's description: the model, the columns it reads, and how it treats time. `po.ModelBank` fits a set of specs together over the same rows |
 | `ewridge`, `lasso`, `ew_cov` | the three models whose state holds a Gram: a ridge regression, a lasso, and the moments of columns with no target. [MODELS.md's model table](MODELS.md#the-models-at-a-glance) lists every model |
-| Gram | the sums a least-squares fit reads, as `bank.gram(spec)` returns them: one dict per group, whose keys the next table lists |
+| Gram | the sums a least-squares fit reads, as `bank.gram(spec)` returns them: one dict per group, whose keys the reference of `ModelBank.gram` lists |
 | column | one axis of a Gram: `"intercept"` first when the spec fits one, then the spec's features |
 | block | the rows of one value of a spec's `group` column, and the Gram the bank keeps for them. The examples here make a week a block |
 | pool | merge the Grams of disjoint rows into the Gram of all of them, with `po.gram.merge` |
 | clock, `gap_cap` | the column a spec's `half_life`, `gap_cap` and `solve_every` are measured on, as `clock="ts"`, or the row count for a spec without one. `gap_cap` is the longest step between two rows that the bank ages a Gram by, and a spec with a clock needs one |
 | `half_life` | each row's weight halves every `half_life` of the clock. `float("inf")` weighs every row alike, so a Gram holds plain least squares' sums |
-| `weight_sum`, `n_kish` | the weight behind a Gram, and `weight_sum² / Σw²`, the number of equally weighted rows that weight is worth. Both are the row count when every row weighs 1 |
+| `weight_sum`, `n_kish` | the weight behind a Gram, and `weight_sum² / Σw²`, the number of equally weighted rows that weight is worth. Both are the row count when every row weighs 1 and `half_life=float("inf")` |
 | active set, knot | on a lasso path, the columns whose coefficient is not 0, and a penalty at which that set changes |
-| half | 20 of the 40 weeks, drawn at random, and their pooled Gram |
+| half | half of the weeks (20 of the 40 in the examples), drawn at random together with the other 20 as a second half, and their pooled Gram |
 
-Each key of a Gram, and the symbol the formulas give it:
-
-| key | what it holds |
-|---|---|
-| `group` | the block's key, as text: here the week's Monday |
-| `instance` | the instance (the part of the model that fits one half-life): its suffix, such as `"@h500"`, or `""` for a spec with one half-life |
-| `columns`, `targets` | the names along each axis |
-| `weight_sum`, `n_kish` | the weight behind the Gram, `W`, and its Kish size |
-| `means` | the columns' weighted means, `m` |
-| `comoments` | the columns' centered co-moments, `C`, a `k × k` matrix |
-| `cross_moments` | per target, the uncentered moments `E[z y]`, with `z` the columns of a row of data: one row of the array per target. At the intercept, a constant 1, the moment is the target's mean `ȳ` |
-| `cross_centered` | per target, the same moments centered at the columns' means and the target's own mean: `c`, the vector a fit is solved from |
-| `means_by_target` | per target, the columns' means over the rows the target was present on |
-| `target_weights`, `target_means`, `target_vars`, `target_n_kish` | per target, its weight, its mean, its variance `V` and its Kish size |
-| `lags`, `lag_comoments` | for an `ew_cov(lags=[...])`, the lags and the co-moments of each column with every column that many rows back. `None` for any other spec |
-| `within_parts`, `target_within_parts` | only on a Gram from `po.gram.merge(..., within=True)`: the number of parts with weight, and per target the number with weight for it. The fits read them to leave the intercept out and to take a degree of freedom per part ([Pool within blocks to leave their levels out](how-to/pool-grams.md#pool-within-blocks-to-leave-their-levels-out)) |
+`bank.gram(spec)` returns each Gram as a dict of these sums. Its
+`weight_sum` is the weight `W` behind the Gram, `means` the columns'
+weighted means `m`, and `comoments` the columns' centered co-moments `C`,
+a `k × k` matrix. For each target, `cross_centered` holds the centered
+cross-moments `c` a fit is solved from, and `target_vars` its variance
+`V`. The reference of
+[`ModelBank.gram`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.gram)
+lists every key. `po.gram.merge(..., within=True)` adds two,
+`within_parts` and `target_within_parts`: the number of parts with weight,
+and per target the number with weight for it.
 
 ## How a Gram stands in for the rows
 
@@ -312,7 +306,7 @@ uncentered, as statsmodels reports an OLS fit with no constant.
 | it assumes | so |
 |---|---|
 | independent errors of one variance | correlated or heteroskedastic errors leave the standard errors too small. Standard errors robust to both need each row's residual: `emit_robust_se` on the stream ([Can its t be trusted?](DIAGNOSTICS.md#can-its-t-be-trusted)), or the spread of [per-block coefficients](#per-block-coefficients) |
-| one coefficient for all the pooled rows | a coefficient that changes from week to week reads as firm a t as a constant one: the pooled t of 20.3 for `x25`, whose coefficient is drawn again each week, beside the 20.3 of `x15` in [Keep weekly Grams of hundreds of features](how-to/fit-weekly-grams-in-one-pass.md#keep-weekly-grams-of-hundreds-of-features) |
+| one coefficient for all the pooled rows | a coefficient that changes from week to week reads as firm a t as a constant one: the pooled t of 20.3 for `x25`, whose coefficient is drawn again each week, beside the 20.3 of `x15`, on all 201 columns, in [Keep weekly Grams of hundreds of features](how-to/fit-weekly-grams-in-one-pass.md#keep-weekly-grams-of-hundreds-of-features) |
 | least squares' covariance, `sigma2 · C⁻¹ / n` | a ridge's standard errors are that covariance at the ridge's residual variance. They leave out the shrinkage and its bias, so a ridge's t compares its coefficients with one another, and is no test |
 | `n` independent rows | under a decay the rows weigh unequally and are not independent, and `n_kish` stands in for `n`. Read the t as a comparison there too |
 | one intercept for all the pooled rows | on a Gram pooled within parts each part had its own, so the intercept's standard error and t are `nan` |
@@ -529,7 +523,8 @@ West's (1987) long-run variance of their series in place of `sd(b_w)²`.
 201 columns poorly, so each week is fitted on a few columns chosen first.
 [Fit per-block coefficients](how-to/fit-per-block-coefficients.md) fits
 six chosen columns each week alone. There `x25`, whose coefficient is
-drawn again each week, has a pooled t of 26.2, as firm as `x15`'s 26.3,
+drawn again each week, has a pooled t of 26.2 on the six chosen columns,
+as firm as `x15`'s 26.3,
 and a t from the weeks of 4.1.
 
 ## A compact Gram
@@ -560,7 +555,8 @@ allowed 4.7e-7.
 
 **A packed Gram solves to the same bits as the full one,** because the
 model keeps only the lower triangle and reads the upper one as its
-mirror, so the matrix is symmetric by construction.
+mirror, so the matrix is symmetric by construction. The packed upper
+triangle is that lower triangle read through its mirror.
 
 ## One wide Gram on several threads
 
@@ -602,8 +598,9 @@ blocks fed a stream in time order often reads a chunk that holds one
 week's rows, and so has one group to run. There `"auto"` gives that group
 all the bank's threads.
 
-The table sets `"auto"` against `gram_threads=1`, on `ewridge` unless
-named. Each cell is the time of one thread over the time of `"auto"`: the
+Against `gram_threads=1`, on `ewridge` unless named, `"auto"` ran up to
+3.56 times as fast where it split a group across threads, and about as
+fast where it did not. In the table, each cell is the time of one thread over the time of `"auto"`: the
 median of 11 interleaved rounds of `fit_predict` by a bank that starts
 with nothing learned, in each of two runs. They were measured on an Apple
 M4 Pro of 14 cores (ten performance, four efficiency), at a load average
@@ -716,8 +713,8 @@ each row once in one pass over the stream, gives 2.0394 there.
 
 ## Sources
 
-Each claim of the explanations that is not measured rests on one of
-these.
+Each claim on this page that is not measured rests on one of these
+sources.
 
 | source | for |
 |---|---|
@@ -729,8 +726,8 @@ these.
 | Friedman, J., Hastie, T. and Tibshirani, R. (2010). Regularization paths for generalized linear models via coordinate descent. *Journal of Statistical Software* 33(1), 1–22. | coordinate descent for the lasso and the elastic net, warm-started along a path |
 | Frisch, R. and Waugh, F. V. (1933). Partial time regressions as compared with individual trends. *Econometrica* 1(4), 387–401. | a regression's slopes with a constant per block, from the rows less their block's means |
 | Higham, N. J. (2002). *Accuracy and Stability of Numerical Algorithms*, 2nd ed. SIAM. | the error a perturbation of a linear system's entries carries into its solution |
-| Huber, P. J. (1981). *Robust Statistics*. Wiley. | algorithm H, the pseudo-response iteration on a fixed matrix, and the scale of Proposal 2 |
 | Hoerl, A. E. and Kennard, R. W. (1970). Ridge regression: biased estimation for nonorthogonal problems. *Technometrics* 12(1), 55–67. | the ridge |
+| Huber, P. J. (1981). *Robust Statistics*. Wiley. | algorithm H, the pseudo-response iteration on a fixed matrix, and the scale of Proposal 2 |
 | IEEE (2019). *IEEE Standard for Floating-Point Arithmetic*, IEEE Std 754-2019. | float32's rounding and range |
 | Kish, L. (1965). *Survey Sampling*. Wiley. | the effective sample size of unequal weights |
 | Lovell, M. C. (1963). Seasonal adjustment of economic time series and multiple regression analysis. *Journal of the American Statistical Association* 58(304), 993–1010. | the general form of that theorem: the slopes with any set of columns partialled out first |
@@ -741,6 +738,6 @@ these.
 | Tibshirani, R. (1996). Regression shrinkage and selection via the lasso. *Journal of the Royal Statistical Society, Series B* 58(1), 267–288. | the lasso |
 | Welford, B. P. (1962). Note on a method for calculating corrected sums of squares and products. *Technometrics* 4(3), 419–420. | the centered update of each row |
 | West, D. H. D. (1979). Updating mean and variance estimates: an improved method. *Communications of the ACM* 22(9), 532–535. | the same update with weights |
-| Wooldridge, J. M. (2010). *Econometric Analysis of Cross Section and Panel Data*, 2nd ed. MIT Press. | the within, or fixed-effects, estimator (chapter 10) |
 | Winkler, A. M., Ridgway, G. R., Webster, M. A., Smith, S. M. and Nichols, T. E. (2014). Permutation inference for the general linear model. *NeuroImage* 92, 381–397. | sign flipping as a permutation test, flipping whole blocks, and the maximum statistic over many tests |
+| Wooldridge, J. M. (2010). *Econometric Analysis of Cross Section and Panel Data*, 2nd ed. MIT Press. | the within, or fixed-effects, estimator (chapter 10) |
 | Zou, H. and Hastie, T. (2005). Regularization and variable selection via the elastic net. *Journal of the Royal Statistical Society, Series B* 67(2), 301–320. | the elastic net |

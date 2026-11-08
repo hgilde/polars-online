@@ -48,7 +48,7 @@ bank.save("bank.state")
 - **Chunk invariance is a guarantee.** The same stream fed as one chunk or a thousand
   gives identical output, bit for bit, and a test enforces it. Apart from that,
   only which rows carry `coef`, and `support_coef` and `se_coef` on the same rows, can move, and only by default: they are
-  filled on each group's last accepted row in every chunk, so that schedule follows the
+  filled on each group's last row not skipped in every chunk, so that schedule follows the
   chunking. Under a cadence those rows do not move either: `coef_every` is a clock
   parameter, as `solve_every` is (`0` every row, `"5m"` a row once five minutes of the
   clock have passed), and `max_rows_between_coefs` writes one after that many rows.
@@ -103,7 +103,7 @@ Windows alike.
   library is, install, [a first fit](https://github.com/hgilde/polars-online#a-first-fit)
   with its input and output tables, the [example data](https://github.com/hgilde/polars-online#example-data)
   every other example reads, and [a map](https://github.com/hgilde/polars-online#where-to-go-next)
-  from each task to its tutorial, how-tos, reference and explanation
+  from each task to its pages of each kind
 - [Every feature](https://github.com/hgilde/polars-online/blob/main/docs/FEATURES.md): each model, function, method, shared parameter,
   command-line flag and environment variable, one line each with a link
 - [What every spec takes](https://github.com/hgilde/polars-online/blob/main/docs/MODELS.md#what-every-spec-takes): the parameters every
@@ -127,7 +127,8 @@ Windows alike.
 - [Stream transforms](https://hgilde.github.io/polars-online/stream.html)
 - [Window operators](https://hgilde.github.io/polars-online/ops.html): `po.ewm_mean`,
   `po.ewm_sum`, `po.ewm_rate`, `po.ewm_quantile` (each looking ahead under `reverse=True`),
-  `po.ewm_var`, `po.ewm_std`, `po.increment` -- Polars expressions over a stream's clock, run by
+  `po.ewm_var`, `po.ewm_std` -- Polars expressions over a stream's clock -- and
+  `po.increment`, a column's step from its last value, all run by
   `lf.online.with_windows(*exprs, **named, clock=...)` in one pass. A look-ahead one
   is also a spec's target, learned once its window has passed: `fit_predict`
   refuses an `embargo` shorter than its `window_size`
@@ -144,14 +145,15 @@ Windows alike.
 
 ## How-tos
 
-[Every document](https://github.com/hgilde/polars-online/blob/main/docs/README.md) lists all of them by task. The most used: run a bank
+[Every document](https://github.com/hgilde/polars-online/blob/main/docs/README.md) lists every how-to and explanation by task. The most used how-tos: run a bank
 [in a query](https://github.com/hgilde/polars-online/blob/main/docs/how-to/run-a-bank-in-a-query.md) or
 [from the command line](https://github.com/hgilde/polars-online/blob/main/docs/how-to/run-a-bank-from-the-command-line.md);
 [resume](https://github.com/hgilde/polars-online/blob/main/docs/how-to/resume-from-a-saved-state.md) or
 [serve](https://github.com/hgilde/polars-online/blob/main/docs/how-to/serve-from-a-saved-state.md) from a state;
 [a target that looks ahead](https://github.com/hgilde/polars-online/blob/main/docs/how-to/make-a-target-that-looks-ahead.md);
 [readiness](https://github.com/hgilde/polars-online/blob/main/docs/how-to/decide-when-a-model-is-ready.md);
-[settings from the stream's own errors](https://github.com/hgilde/polars-online/blob/main/docs/CALIBRATION.md).
+[settings from the stream's own errors](https://github.com/hgilde/polars-online/blob/main/docs/CALIBRATION.md);
+[trees on files larger than memory](https://github.com/hgilde/polars-online/blob/main/docs/GBDT.md).
 
 ## Reference
 
@@ -159,7 +161,7 @@ Windows alike.
 [RUNNER.md](https://github.com/hgilde/polars-online/blob/main/docs/RUNNER.md) (every TOML key and flag),
 [STATE-WORKFLOW.md](https://github.com/hgilde/polars-online/blob/main/docs/STATE-WORKFLOW.md), [DIAGNOSTICS.md](https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md),
 [DATA-QUALITY.md](https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md),
-[GBDT.md](https://github.com/hgilde/polars-online/blob/main/docs/GBDT.md), [PERFORMANCE.md](https://github.com/hgilde/polars-online/blob/main/docs/PERFORMANCE.md),
+[PERFORMANCE.md](https://github.com/hgilde/polars-online/blob/main/docs/PERFORMANCE.md),
 [VERSIONS.md](https://github.com/hgilde/polars-online/blob/main/docs/VERSIONS.md)
 
 ## Explanations
@@ -171,8 +173,7 @@ Windows alike.
 - [A bank's state and resuming it](https://github.com/hgilde/polars-online/blob/main/docs/explanation/state-and-resuming.md)
 - [How a window weighs its rows](https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md)
 - [How a Gram stands in for the rows](https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md)
-- [Against scikit-learn](https://github.com/hgilde/polars-online/blob/main/docs/explanation/against-scikit-learn.md): `SGDRegressor`
-  beside `sgd` and `ewridge`, and where each wins
+- [Against scikit-learn](https://github.com/hgilde/polars-online/blob/main/docs/explanation/against-scikit-learn.md)
 
 ## Optional
 

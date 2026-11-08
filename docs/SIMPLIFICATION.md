@@ -127,7 +127,7 @@ top of `assemble` disappears.
 
 **Problem.** `AnyModel` has five methods that are each an identical ten-arm
 match — `step`, `solve_failures`, `n_outputs`, `coefficients`, `state` — plus
-`restore`. That is ~73 `AnyModel::` mentions for six behaviours. Adding an
+`restore`. That is ~73 `AnyModel::` mentions for six behaviors. Adding an
 eleventh model means touching six matches, and the compiler only catches it
 because the enum is exhaustive.
 

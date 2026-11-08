@@ -135,10 +135,12 @@ b0 x2 (feature): 100 values, mean -0.09, std 0.99
 b0 y (target): 100 values, mean 0.88, std 2.12
 ```
 
-**`last_row()` matches `fit_predict` field for field:** `pred`, `sigma`,
+**`last_row()` matches `fit_predict` field for field:** `pred_<target>`, `sigma_<target>`,
 the metrics and the interval when the spec asks for them
 ([DIAGNOSTICS.md](../DIAGNOSTICS.md)), `weight_sum`, and `coef` when that
-row carried it. Until a group learns from a row, its record is all nulls.
+row carried it. Until a group has a row that is not
+[skipped](../GLOSSARY.md#the-model-bank-and-what-it-reads), its record is
+all nulls.
 
 **`summary()`'s counts and `describe()` cover every row fed to the group,
 without decay.** They say what the model learned from, and `predict`

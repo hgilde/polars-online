@@ -14,8 +14,9 @@ bank](../PERFORMANCE.md#peak-memory-of-each-way-of-running-a-bank)
 measures a whole run. What a run holds has four parts: the
 [state](../GLOSSARY.md#saving-and-serving) the models keep, the chunks in
 flight, the rows a delay or a window holds, and what Polars reads ahead of
-the bank. Polars' own settings cut the last part, and `refit_budget` cuts
-the rows a robust regression holds in its state for its refit.
+the bank. A step moved from before the bank to after it, and Polars' own
+settings, cut the last part. `refit_budget` cuts the rows a robust
+regression holds in its state for its refit.
 
 ## Prerequisites
 
@@ -28,6 +29,32 @@ These steps need the library and a run that reads a file:
   file as a [query](../GLOSSARY.md#the-model-bank-and-what-it-reads): a
   query's `online.fit_predict`, `bank.fit_predict_batches`, or a loop of
   your own over its chunks.
+
+## Put filters and computed columns after the bank
+
+**Put a `filter` or a `with_columns` after the bank, not between the file
+and the bank.** Polars passes rows from one step to the next in blocks. In
+front of a slow bank, a step that runs on every thread lets Polars hold
+several blocks of the file per thread. A run over 12M rows peaked at
+2.53 GB with a `filter` before the bank, against 0.78 GB with the same
+filter after it, measured on 2026-09-02. A bank behind a `with_columns`
+held 848 MB at 4M rows, against 279 MB with the column computed in a
+Python loop over the file's query alone. [Why memory stays
+bounded](../explanation/chunk-invariance-and-streaming.md#why-memory-stays-bounded)
+explains why.
+
+1. **Move a `filter` to after `.online.fit_predict(...)`,** where it
+   changes only which rows come out. To keep the bank from learning some
+   rows, give them weight `0` in place of a filter ([Hold a row
+   back](hold-a-row-back.md#keep-a-model-from-learning-rows-in-a-query)).
+   They are still predicted, and the clock still moves through them.
+2. **Move a `with_columns` whose columns the bank does not read to after
+   the bank.**
+3. **For a column the bank reads, run the bank in a Python loop over the
+   file's query alone.** Loop over `pl.scan_parquet(...).collect_batches()`,
+   add the column to each chunk with `chunk.with_columns(...)`, and pass
+   the chunk to `bank.fit_predict` ([Run a bank in a Python
+   loop](run-a-bank-in-a-python-loop.md)).
 
 ## Cut what Polars reads ahead
 
@@ -56,9 +83,10 @@ memory-mapped local file. The third variable, `POLARS_MAX_THREADS`, is the
 next section's.
 
 Measured as peak resident memory on 8M rows of 12 columns in 80 blocks,
-with the allocator's page retention off so that the figure is live data:
+with the memory allocator set to hand freed memory back at once, so the
+figure counts only memory in use:
 
-| what runs | default prefetch | `POLARS_ROW_GROUP_PREFETCH_SIZE=1` |
+| what runs | Polars' default read-ahead | `POLARS_ROW_GROUP_PREFETCH_SIZE=1` |
 |---|---:|---:|
 | `lf.online.fit_predict(...).sink_parquet(...)` | 1.63 GB | 1.12 GB |
 | `bank.fit_predict_batches(lf)` | 1.41 GB | 1.07 GB |
@@ -131,7 +159,7 @@ what the refit is for.
 1. **Give `refit_budget` the most memory, in MiB, the refit buffers of
    all the spec's groups may reserve together.** It is 320 MiB by default,
    or `inf` for no bound.
-2. **To hold no refit rows at all, give the model's count `0`,** which
+2. **Or, to hold no refit rows at all, give the model's count `0`,** which
    turns the refit off and leaves the fit made in one pass:
    `huber_refit_rows=0` for `huber` and `sgd(loss="huber")`,
    `quantile_refit_rows=0` for `quantile`, and `bin_refit_rows=0` for
@@ -214,8 +242,7 @@ groups that refit: 9 of 20; the bound holds 9
 ## Bound the other parts
 
 **The groups, a window's snapshots, the rows a delay holds and the chunks
-in flight have bounds of their own.** Each is
-set where its topic lives:
+in flight have bounds of their own.**
 
 | what grows | the setting that bounds it | where it is set |
 |---|---|---|

@@ -14,7 +14,8 @@ These steps need the library, numpy and a pass that leaves Grams:
 - polars-online installed with numpy, an optional extra, which
   `pip install "polars-online[numpy]"` adds. The recipe builds its own
   data.
-- A bank whose `ewridge`, `lasso` or `ew_cov` spec keeps a Gram per block
+- A [model bank](../GLOSSARY.md#the-model-bank-and-what-it-reads) whose `ewridge`, `lasso` or `ew_cov` spec keeps a
+  Gram per block
   (the rows of one value of the spec's `group` column, here a week),
   as [Keep weekly Grams of hundreds of
   features](fit-weekly-grams-in-one-pass.md#keep-weekly-grams-of-hundreds-of-features)

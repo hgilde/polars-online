@@ -134,11 +134,10 @@ doc_review = _doc_review()
 # --- the files ----------------------------------------------------------------
 
 #: Files that hold a guide and then a record: the guide is read up to the
-#: heading the record starts at (as ``tests/test_no_plan_references.py``'s
-#: ``GUIDE_PARTS`` reads it).
-GUIDE_PARTS: dict[str, str] = {
-    "docs/STATE-WORKFLOW.md": "\n## The research behind it, 2026-09-03\n",
-}
+#: heading the record starts at. None does now: the last, STATE-WORKFLOW's
+#: research, moved to ``docs/records/STATE-WORKFLOW-RESEARCH.md`` (task 338,
+#: stage 10).
+GUIDE_PARTS: dict[str, str] = {}
 
 #: The directories the rewrite writes new pages into, by kind.
 KIND_DIRS = ("docs/tutorials", "docs/how-to", "docs/explanation", "docs/contributing")
@@ -614,9 +613,14 @@ KEPT_OUT: dict[str, str] = {
     "golden number": r"\bgolden numbers?\b",
     "bit-exact": r"\bbit-exact\b",
     "stride": r"\bstrides?\b",
+    "worktree slot": r"\bworktree slots?\b",
 }
 #: The kept-out words no scan stands for, with the reason.
 KEPT_OUT_NOT_SCANNED: dict[str, str] = {
+    "wave": (
+        "kept out only for a set of branches merged together, a sense a scan cannot "
+        "tell from a wave in a signal or a sweep"
+    ),
     "task": "kept out only for the work the bank gives one thread, a sense a scan cannot tell",
     "pipeline": (
         "kept out only for the command line's reader, bank and writer threads, a sense "

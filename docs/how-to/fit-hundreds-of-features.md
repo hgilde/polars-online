@@ -79,7 +79,7 @@ week's rows, and so has one group to run.
    cores](use-more-cores.md#set-the-banks-thread-count) shows, or leave
    them at one per core.
 
-The split helps past 256 columns with `gram_block_rows`, and past 725
+The split helps past 256 columns with `gram_block_rows`, and from 725
 without: up to 256 columns a block's product is one piece, and below 725
 columns a row's work on the Gram stays on one thread. The output is the same to the bit at
 every thread count.

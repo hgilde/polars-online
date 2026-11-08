@@ -32,6 +32,12 @@ These steps need the library and a stream:
 
 Build the bank once, then hand it the stream a chunk at a time.
 
+**Feed a bank from one thread at a time, though `predict`, which learns
+nothing, may run from any number of threads at once.** A bank reads one
+ordered stream, so a call that finds it busy on another thread raises
+`RuntimeError`: wait for that call to return, or give each thread its own
+bank.
+
 1. **Build a bank from the specs with `po.ModelBank(specs)`.** It starts
    with nothing learned.
 2. **Feed it the stream a chunk at a time with
@@ -66,12 +72,6 @@ after 200 rows: b0's coefficient on x0 is 2.055
 after 300 rows: b0's coefficient on x0 is 2.087
 after 400 rows: b0's coefficient on x0 is 2.023
 ```
-
-**Feed a bank from one thread at a time, though `predict`, which learns
-nothing, may run from any number of threads at once.** A bank reads one
-ordered stream, so a call that finds it busy on another thread raises
-`RuntimeError`: wait for that call to return, or give each thread its own
-bank.
 
 ## Check the result
 

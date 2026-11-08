@@ -36,8 +36,11 @@ reads.
    so the recipe reads from row 1,000 at a half-life of 200. A windowed
    kurtosis is itself noisy under heavy
    tails, so read its mean over a long stretch, not one row.
-3. **Choose `drift_threshold` from that mean by the table:** 20 below 4,
-   30 below 10, 50 below 30, and 80 at 30 or more.
+3. **Choose `drift_threshold` from that mean by [the table of `drift` flags](../DIAGNOSTICS.md#are-its-tails-heavy):** 20 below 4,
+   30 below 10, 50 below 30, and 80 at 30 or more. These are for a
+   stream without a clock column, where a row is one unit. With a clock,
+   `drift_threshold` is required and is in `sigma` times clock units, so
+   multiply the table's value by the clock's usual step between rows.
 4. **Take `sigma_<t>`'s median over the stretch as its level.** A rise of
    `sigma` past twice that level reads a change of spread on heavy tails.
 5. **Fit the stream with `emit_drift=True` and the threshold chosen,** and
@@ -109,7 +112,7 @@ sigma past 2x        1270 flags before the break, first after it 126 rows in
 
 The stretch reads an excess kurtosis of 16.6, which calls for a
 `drift_threshold` of 50. At the default 20, `drift` flagged 11 of the
-200,000 stable rows, the table's rate of 5.6 per 100,000, and at 50 it
+200,000 stable rows, the rate of 5.6 per 100,000 in [the table of `drift` flags](../DIAGNOSTICS.md#are-its-tails-heavy), and at 50 it
 flagged one. Neither found the break: when the noise triples, `sigma`
 triples with it, and `drift` scores each residual against `sigma`. Its
 first flag after the break at 20 is a false alarm, 15,011 rows in. The
@@ -129,8 +132,8 @@ Choose by the excess kurtosis measured over the stable stretch:
 
 | the stretch's mean `kurtosis` | to flag a level shift | to flag a change of spread |
 |---|---|---|
-| under 4 | `drift` at its default `drift_threshold` of 20 | `\|cusum_sq\| > 3` |
-| 4 or more | `drift` at the threshold the table gives | `sigma` against its level over the stretch. `cusum_sq` holds its false-alarm rate there, but is slow to fire |
+| under 4 | `drift` with `drift_threshold` at 20, the default without a clock column | `\|cusum_sq\| > 3` |
+| 4 or more | `drift` at the threshold [the table of `drift` flags](../DIAGNOSTICS.md#are-its-tails-heavy) gives | `sigma` against its level over the stretch. `cusum_sq` keeps its false alarms near 1% of rows there (0.28% on Gaussian noise), where a Gaussian's variance in its place would give up to 31%, but it is slow to fire |
 
 Where single large residuals move the fit itself, fit a robust model,
 `huber` or `quantile`, which limits how far one row moves it.
@@ -140,11 +143,11 @@ Where single large residuals move the fit itself, fit a robust model,
 Count each detector's flags over a stretch known to be stable, as step 5
 does. They should be rare. At the threshold the recipe chose, 50,
 `drift` flagged one of its 200,000 stable rows, 0.5 per 100,000, near the
-table's 0.3 for Student's t with 3 degrees of freedom at 50.
+0.3 that [the table of `drift` flags](../DIAGNOSTICS.md#are-its-tails-heavy) gives for Student's t with 3 degrees of freedom at 50.
 
 | what you see | what it means | what to do |
 |---|---|---|
-| `drift` flags on stable rows | the threshold is below what the tails call for | measure the kurtosis again over a longer stretch, and increase `drift_threshold` by the table |
+| `drift` flags on stable rows | the threshold is below what the tails call for | measure the kurtosis again over a longer stretch, and increase `drift_threshold` by [the table of `drift` flags](../DIAGNOSTICS.md#are-its-tails-heavy) |
 | `kurtosis_<t>` jumps from row to row | a windowed kurtosis is noisy under heavy tails, and never steadies where the fourth moment is infinite | read its mean over the stretch, not a row's value |
 | `jarque_bera_<t>` past 5.99 on most rows | the residuals are not Gaussian | expect heavy tails, and set thresholds as this page does |
 | no detector finds a break you planted in the spread | `drift` scores against a `sigma` that grows with the noise | read `sigma` against its level |

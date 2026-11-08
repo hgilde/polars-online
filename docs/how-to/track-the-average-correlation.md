@@ -26,7 +26,7 @@ These steps need the library and the series:
 reports `rho`, the level that follows it. Use both as a number that moves
 with the correlation, and read an
 [`ew_cov`](../MODELS.md#ew_cov--exponentially-weighted-moments)'s `corr`
-for the correlation itself. Both read below the truth, since `u` is
+for the correlation itself. `u` and `rho` both read below the truth, since `u` is
 biased downward and `rho` averages it: about two-thirds of the truth at
 the higher correlations of the recipe.
 
@@ -40,12 +40,14 @@ the higher correlations of the recipe.
    groups,** such as sectors. Each feature goes in exactly one block, and a
    block needs at least two. `rho` becomes `rho_<A>` per block and
    `rho_<A>_<B>` per pair, and `u` likewise.
-3. **Add both specs to the query with `online.fit_predict([eq, pairs])`,
-   run it with `collect()`, and read `rho`,** the level as it stood before the
-   row, so it is safe as a feature for that same row.
-4. **For the correlation's size, run an `ew_cov` with `stats=["corr"]`
-   over the series of one block, such as the banks,** and average its `corr_*` fields
-   with Polars' `pl.mean_horizontal`, as the recipe does.
+3. **For the correlation's size, build an `ew_cov` with `stats=["corr"]`
+   over the series of one block, such as the banks.**
+4. **Add both specs to the query with
+   `online.fit_predict([eq, pairs])`.**
+5. **Run the query with `collect()`.** Each row gains `rho`, the level as
+   it stood before the row, so it is safe as a feature for that same row.
+6. **Average the `ew_cov`'s `corr_*` fields with Polars'
+   `pl.mean_horizontal`,** as the recipe does.
 
 This code makes two sectors of five series. Within the banks every pair
 correlates at 0.2 and then, from row 2,000, at 0.6. Within the miners
@@ -73,8 +75,8 @@ pl.DataFrame(cols).write_parquet("sectors.parquet")
 # deco over every series, beside an ew_cov over the banks.
 eq = po.spec.deco("eq", features=banks + miners, half_life=100.0,       # 1. every series
                   blocks={"banks": banks, "miners": miners})             # 2. one level per sector and per pair
-pairs = po.spec.ew_cov("pairs", features=banks, half_life=100.0, stats=["corr"])   # 4. the banks' every pair
-out = pl.scan_parquet("sectors.parquet").online.fit_predict([eq, pairs]).collect()  # 3. run both, rho read before each row
+pairs = po.spec.ew_cov("pairs", features=banks, half_life=100.0, stats=["corr"])   # 3. the banks' every pair
+out = pl.scan_parquet("sectors.parquet").online.fit_predict([eq, pairs]).collect()  # 4 and 5. add both, run; rho read before each row
 rho = out["eq"].struct.unnest()
 mean_corr = out["pairs"].struct.unnest().select(pl.mean_horizontal(pl.selectors.starts_with("corr_"))).to_series()
 for row in (1_999, 3_999):

@@ -41,9 +41,13 @@ defines them.
 2. **Add `"lag_corr"` to the spec's `stats`.** Each row gains
    `lag_corr_l<l>_<a>_<b>` for each lag and each ordered pair, the pairs of
    a column with itself included: `k²` fields a lag for `k` columns.
-3. **Add the spec to the query with `online.fit_predict([mv])`, run it
-   with `collect()`, and read each pair's correlations across the lags.**
-   The lag where `lag_corr_l<l>_<a>_<b>` peaks is how far `b` leads `a`.
+3. **Add the spec to the query with `online.fit_predict([mv])`.** The
+   rows gain the spec's output column, `mv`, which holds its fields.
+4. **Unnest `mv` with Polars' `unnest("mv")`.** Its fields become columns.
+5. **Run the query with `collect()`.** Each row then has the `lag_corr_*`
+   fields as columns.
+6. **Read each pair's correlations across the lags.** The lag where
+   `lag_corr_l<l>_<a>_<b>` peaks is how far `b` leads `a`.
    Read `lag_corr_l<l>_<b>_<a>` too: it peaks where `a` leads `b`.
 
 This code plants a series `follow` that repeats `lead` three rows later,
@@ -69,8 +73,8 @@ mv = po.spec.ew_cov(
     lags=[1, 2, 3, 4, 5],              # 1. the lags to try, in rows
     stats=["corr", "lag_corr"],        # 2. the correlation on the same row, and at each lag
 )
-last = pl.scan_parquet("leadlag.parquet").online.fit_predict([mv]).unnest("mv").collect().row(-1, named=True)
-# 3. Both directions at each lag.
+last = pl.scan_parquet("leadlag.parquet").online.fit_predict([mv]).unnest("mv").collect().row(-1, named=True)   # 3 to 5.
+# 6. Both directions at each lag.
 print(f"on the same row: {last['corr_lead_follow']:+.2f}")
 for lag in [1, 2, 3, 4, 5]:
     print(f"lag {lag}: follow with lead {lag} rows back {last[f'lag_corr_l{lag}_follow_lead']:+.2f}, "
@@ -101,7 +105,7 @@ other direction. Each column's correlation with its own past is in the
 |---|---|---|
 | `lag_corr_*` null on a group's first rows | the model is in its [warm-up](../GLOSSARY.md#warm-up-and-readiness), until `weight_sum` reaches `min_weight`, the number of features plus one by default | read the rows after it |
 | `lag_corr_l<l>_*` reads 0.0, not null, on early rows | the group has learned no more than `l` rows, so the lag has no product yet | read the rows after the longest lag |
-| `lag_corr_*` after a gap or a session change | a [clock break](../GLOSSARY.md#time), a step that `gap_cap` (the largest clock step the model decays by) shortened or a session change, emptied the model's record of past rows, since "`l` rows back" is not `l` rows ago there. The rows after it add no lagged product until `l` rows have been learned again | expected: read the lags once the rows after the break have filled them |
+| `lag_corr_*` drifting toward 0 for `l` rows after a gap or a session change | a [clock break](../GLOSSARY.md#time), a step that `gap_cap` (the largest clock step the model decays by) shortened or a session change, emptied the model's record of past rows, since "`l` rows back" is not `l` rows ago there. The rows after it add no lagged product until `l` rows have been learned again | expected: read the lags once the rows after the break have filled them |
 | a `ValueError` naming `lags` and `window_size` | lagged moments run over a history a [hard window](../GLOSSARY.md#fitting-a-model) does not cut | drop `window_size` |
 
 The fields, under `lags`, and every parameter are defined in `ew_cov`'s

@@ -37,7 +37,7 @@ weekly leak-check workflow runs them.
 
 ## Terminology
 
-**Each word below has one meaning on this page,** and the
+**Each word in this table has one meaning on this page,** and the
 [glossary](GLOSSARY.md) defines the library's own words, such as bank,
 spec and clock:
 
@@ -69,7 +69,7 @@ spec and clock:
 ## What the suite proves
 
 **The suite holds each model to a reference it cannot share a bug with, and
-the bank to the invariants it promises.** The design set out eight classes
+the bank to the invariants it promises.** The suite has eight classes
 of test, from agreement with an oracle to a benchmark. The window operators
 and resumed runs came after the classes, and are held the same way. Other
 tests hold the library at its edges, and hold the files the repository
@@ -177,7 +177,7 @@ in `tests/test_second_opinion.py`, Vowpal Wabbit among them.
 | `bocpd` | the `bayesian_changepoint_detection` package, at levels up to 1e8 (`TestBocpdAtALevel`) | 1e-9, and `run_mode` exactly |
 | `audit`'s column statistics | scipy's `skew` and `kurtosis`, statsmodels' `adfuller` with no lags and a constant, numpy's lag-1 `corrcoef`, `median` and median absolute deviation (`TestAuditIsScipyAndStatsmodels`) | 1e-8; the median and MAD exact from exact counts, and within ranks 49% to 51% (48% to 52% for the MAD) from the digest |
 | `kmeans`, `micro` | `tests/reference_cluster.py`, a transcription of the Rust held bit for bit: a regression check, which can share a mistake with the code | bit for bit |
-| `kmeans`, `micro`, independently | `TestDefinitions` in `tests/test_kmeans.py` and `tests/test_micro.py`, from the module docs: each checkpoint's centers, weights and radii recomputed from the raw rows assigned to them at their decayed weights; `kmeans`' far, merge and dead decisions and `micro`'s admission, row by row against the exported state; scikit-learn's `KMeans` on 100,000 rows without decay | 1e-9; the partition at ARI 0.99995 and the centers to 5.4e-4 |
+| `kmeans`, `micro`, independently | `TestDefinitions` in `tests/test_kmeans.py` and `tests/test_micro.py`, from the module docs: at each check, the centers, weights and radii recomputed from the raw rows assigned to them at their decayed weights; `kmeans`' far, merge and dead decisions and `micro`'s admission, row by row against the exported state; scikit-learn's `KMeans` on 100,000 rows without decay | 1e-9; the partition at ARI 0.99995 and the centers to 5.4e-4 |
 | `deco`, `hmm`, `corrchange`, `bocpd`, `rcov` | a longhand oracle written from each paper ([An oracle, not a golden number](#an-oracle-not-a-golden-number)) | 1e-12 to 1e-9: `deco`'s pair sum, `hmm`'s probabilities, `corrchange`'s statistic and `bocpd`'s posterior to 1e-12; `hmm`'s log-likelihood and `rcov`'s three estimators to 1e-9, relative |
 | a target with gaps | numpy's `lstsq` on the target's own rows, pandas' pairwise `cov`, and statsmodels' `WLS`, ridge and elastic net (`TestATargetWithGaps`) | 1e-10 to 1e-8; the elastic net 1e-7 |
 | `kalman`'s explicit `q`, `obs_var` with `p0`, a `coef_half_life` per coefficient with `inf` pinning, and no intercept under `standardize` | filterpy's `KalmanFilter`, the last on rows scaled by each feature's EW root mean square from numpy (`TestKalmanSettingsAreFilterpy`) | 1e-11 (1.0e-14 measured) |
@@ -188,7 +188,7 @@ in `tests/test_second_opinion.py`, Vowpal Wabbit among them.
 | `emit_drift` | river's `PageHinkley` at `half_life = inf` (`TestAZeroWeightRowIsNotSeen`) | flag for flag |
 | a prediction under `embargo` | river's progressive validation with `delay` (`TestLabelDelayFoldsWhatWasScored`) | 1e-12 |
 | `r2` and `coverage` under `embargo` | scikit-learn's `r2_score` over the matured rows; the share of matured rows inside their interval | 1e-9 |
-| `emit_metrics` and `emit_autocorr` | a row's own outcome moved across zero, which moves none of the row's own fields, to the bit; on a logistic fit, scikit-learn's `accuracy_score` and `brier_score_loss` and scipy's `pointbiserialr` (`TestStreamingMetrics`) | to the bit; 1e-9 |
+| `emit_metrics` and `emit_autocorr` | a row's own target moved across zero, which moves none of the row's own fields, to the bit; on a logistic fit, scikit-learn's `accuracy_score` and `brier_score_loss` and scipy's `pointbiserialr` (`TestStreamingMetrics`) | to the bit; 1e-9 |
 | `resid_quantiles`, `mahal_quantiles` | the EW quantile by its definition, within the sketch's `tanh(1/128)` (`tests/test_diagnostics.py`); numpy's `quantile` of the past `mahal` scores (`TestMahalQuantiles`) | 3% (1.4e-3 measured); 10% |
 | the `session_shrink` blend | numpy's `cov(aweights=)` of the rows at their blended weights (`TestSessionShrinkBlend`) | 1e-12 |
 | `conformal` | **definition only**: a longhand replay of the recursion over the bank's own `pred`, `resid` and `sigma`, and the telescoped coverage bound (`tests/test_conformal.py`); no library computes an adaptive conformal radius | bit for bit |
@@ -220,9 +220,8 @@ the window operators' tests. An oracle takes one of four forms:
 ### Libraries the package does not depend on
 
 **A test may use any library the package does not depend on, when the test
-needs it.** The user decided this on 2026-09-24: "packages that we do not
-want to depend on are fine if needed to test with other libraries". The
-package depends on polars alone,
+needs it.** A test's libraries are installed only where the tests run, so
+a user of the package never installs them. The package depends on polars alone,
 with numpy as an extra, and that does not change. What a test needs is a
 separate question, and three kinds of need have come up:
 
@@ -236,9 +235,7 @@ separate question, and three kinds of need have come up:
 thing checked.** An oracle written here can share a mistake with the code it
 checks, and a library's cannot. So before writing a longhand, look for a
 library that computes the same quantity. Write by hand only the definition,
-from the paper, such as the normal equations a fit must solve. The user set
-the rule on 2026-09-27, while a Gaussian elimination was being written by
-hand as a ridge oracle: "Is there no third party oracle library?"
+from the paper, such as the normal equations a fit must solve.
 
 | where the test is | library oracles | example |
 |---|---|---|
@@ -256,7 +253,7 @@ Four rules govern such a library:
 
 | rule | why | checked by |
 |---|---|---|
-| **1. Declare it in the dev group, by name, under an open license.** | A library that arrives through another package's dependencies breaks tests that never name it when that package goes, as pandas and scipy would if they came in only through statsmodels. A library under source-available or commercial terms is parked, not used (the user, 2026-09-25: "enable every unlicensed library in tests and park using licensed libraries") | `tests/test_dependency_policy.py`: every library a test imports is declared in the dev group, and every library of the dev and docs groups, and every Rust crate's dev-dependency, names an open license in its metadata; the test gate checks the lock with `uv lock --check` |
+| **1. Declare it in the dev group, by name, under an open license.** | A library that arrives through another package's dependencies breaks tests that never name it when that package goes, as pandas and scipy would if they came in only through statsmodels. A library under source-available or commercial terms is parked, not used, so that running the tests asks no contributor to accept terms beyond an open license | `tests/test_dependency_policy.py`: every library a test imports is declared in the dev group, and every library of the dev and docs groups, and every Rust crate's dev-dependency, names an open license in its metadata; the test gate checks the lock with `uv lock --check` |
 | **2. Import it plainly.** | The dev group is installed wherever the suite runs, so `pytest.importorskip` could only turn a broken environment into a skip. A missing library fails the test | the same file: no test calls `importorskip`, nor skips behind `except ImportError` |
 | **3. Keep it out of the package's reach when its presence changes other libraries.** | pyarrow is the case: pandas and duckdb take other paths when it is importable, and a use of it inside the package would pass the suite | `tests/conftest.py` makes it unimportable; `test_this_session_runs_without_pyarrow` and `test_child_interpreters_run_without_pyarrow_too` check that it is |
 | **4. Never add it to the package's own dependencies.** | Those stay `polars` | `tests/test_dependency_policy.py`: the package depends on polars alone, and its one extra on numpy alone |
@@ -285,7 +282,7 @@ see pyarrow.
 | hmmlearn | `hmm`'s filter at fixed parameters, row by row. It ships wheels up to CPython 3.13, so the 3.14 legs build its sdist, a small C++ extension | `TestHmmIsHmmlearns` |
 | padasip | `rls`, through its `FilterRLS`; pure Python | `TestRlsIsPadasips` |
 | filterpy | the `kalman` settings, through its `KalmanFilter` | `TestKalmanSettingsAreFilterpy` |
-| Pathway, parked | it would run the Pathway half of `examples/pathway_integration.py`, but it is under the Business Source License, which rule 1 parks | `test_pathway_is_not_a_dependency` keeps it out of `pyproject.toml` until the user decides |
+| Pathway, parked | it would run the Pathway half of `examples/pathway_integration.py`, but it is under the Business Source License, which rule 1 parks | `test_pathway_is_not_a_dependency` keeps it out of `pyproject.toml` until the maintainer decides |
 
 None of the libraries checked forgets as a half-life does (river, VW, and
 Keras's `Ftrl`), so `ftrl` under a finite half-life stays with `ftrl_ref`.
@@ -438,19 +435,18 @@ runs the essentials test gate, `scripts/gate.sh`, on each commit. Where
 several branches are in flight in worktree slots, each task runs
 `scripts/quick.sh` instead, and one essentials test gate runs on each wave
 of two or more merged branches ([Iterate on a
-change](contributing/iterate-on-a-change.md)). The user set the purpose on
-2026-10-08: "We will always run the full tests before a push, the idea of
-the essential tests is to improve the speed of iteration while developing
-many steps." A push never rides on the essentials, whatever they said.
+change](contributing/iterate-on-a-change.md)). The essentials exist to make
+iterating over many steps fast, not to stand in for the full suite. A push
+never rides on the essentials, whatever they said.
 
 | when | what runs | tier |
 |---|---|---|
 | each commit while a task is in progress, working alone | `./scripts/gate.sh` | the essentials |
 | each change inside a task, with other branches in flight | `./scripts/quick.sh`, then one `./scripts/gate.sh` on each wave of two or more merged branches | the tests mapped to the changed paths; then the essentials |
 | before every push, always | `./scripts/gate.sh --extended` | every test but the soak tests and the oracle grids |
-| every push and pull request | `ci.yml` on Linux, macOS and Windows | every test but the soak tests and the oracle grids, and the essentials nowhere |
-| every push and pull request | `mutants.yml`, its pass over the changed lines | every Rust test, the ignored ones included, against each mutant of the changed lines |
-| every push and pull request | `budgets.yml`, on Linux | the instruction counts, against `budgets.toml` ([Budgets that only tighten](#budgets-that-only-tighten)) |
+| every push to `main` and every pull request | `ci.yml` on Linux, macOS and Windows | every test but the soak tests and the oracle grids, and the essentials nowhere |
+| every push to `main` and every pull request | `mutants.yml`, its pass over the changed lines | every Rust test, the ignored ones included, against each mutant of the changed lines |
+| every push to `main` and every pull request | `budgets.yml`, on Linux | the instruction counts, against `budgets.toml` ([Budgets that only tighten](#budgets-that-only-tighten)) |
 | every push to `main`, weekly, and on dispatch | `oracles.yml`, sharded across parallel jobs on Linux | the oracle grids (`-m oracle_grid`), each case held to the oracle ledger ([The oracle ledger](#the-oracle-ledger)) |
 | before a release | `release.yml`, which runs `ci.yml` and `budgets.yml` | as those two |
 | on their schedules | `polars-canary.yml`; `mutants.yml`'s weekly pass | every test but the soak tests, the oracle grids and the `pins` tests; every Rust test, the ignored ones included, against each mutant of all of `online-core` |
@@ -473,9 +469,8 @@ stay opt-in.
 **The oracle grids run on CI, not in the test gate.** A grid that holds a model
 to a third-party oracle over 50 seeds or orders, with batch fits over long
 streams or downloaded datasets, is marked
-`@pytest.mark.oracle_grid(reason="...")`. The user set the rule on
-2026-10-25: "we do not want to run more very long tests in the gate as it's
-already long". The convergence grids took 22 minutes in four processes, more
+`@pytest.mark.oracle_grid(reason="...")`, so that the test gate, already
+long, grows no longer. The convergence grids took 22 minutes in four processes, more
 than the rest of `gate.sh --extended` together. No local run takes them: `addopts` and both tiers of `gate.sh` leave them
 out. `.github/workflows/oracles.yml` runs them on every push to `main`, in
 twelve shards in parallel, each taking every twelfth test in order (CI's minutes are free; its limits are 20
@@ -533,7 +528,7 @@ cores, pytest's essentials took 72 s against the full suite's 196 s, and
 first and last lines and prints each step's time, so a slow test that
 creeps into the essentials shows where they run. CI runs only the full tier,
 which every push runs anyway, so it spends no minutes timing the
-essentials (the user, 2026-10-08). Each test
+essentials. Each test
 that moved gives its reason in its mark.
 
 ### Iterating
@@ -696,7 +691,7 @@ already saturate the machine. So, on that machine:
 **A task works in a worktree slot, a git worktree kept between tasks with
 its own builds, so it rebuilds only what it changes.** [Use a worktree slot](contributing/use-a-worktree-slot.md) is
 the how-to: `scripts/slot.sh take`, `give`, `list` and `overlap`, and what
-a warm slot saves.
+a warm worktree slot saves.
 
 ### Caches and when to clear them
 
@@ -1024,9 +1019,9 @@ again. A change that moves a model's error against its oracle from 0.19 to
 passes it too. Each step looks harmless against the bound, and together
 they drift far. So `oracles.toml`, the ledger, holds each case's error as
 measured. Every run is held to those fixed numbers, never to the run
-before, as `budgets.toml` holds the speed. The user set the aim on
-2026-10-25: "a way not to drift from all the oracles and data sets for
-every parameter test", without more long tests in the test gate.
+before, as `budgets.toml` holds the speed. The aim is that no model drifts
+from its oracle or dataset, for any parameter a grid tests, without adding
+long tests to the test gate.
 
 | file | holds |
 |---|---|
@@ -1193,7 +1188,7 @@ precision another platform shares, since its errors are the last bits. It
 keeps every bit (`bits=52`), so a change the ledger would see moves its
 hash. Measured 2026-10-26 by changing `hmm`'s ridge and rebuilding: 1e-6
 larger moved the one `bits=52` group that fits `hmm` and no other hash,
-since the 24-bit group's states and means moved by less than its quantum. A ridge 1e-3 larger moved both `hmm` groups and none of the other nineteen.
+since the 24-bit group's states and means moved by less than its quantum. A ridge 1e-3 larger moved both `hmm` groups and none of the other nineteen of the 21 groups then.
 
 **The guard enforces where its hashes were written, off CI.** That is the
 system and the processor, such as `darwin-arm64`. Python's version is not
@@ -1223,8 +1218,8 @@ groups.
 
 ### Budgets that only tighten
 
-**Every push and pull request is held to a fixed number per hot path and
-per output field, kept in `budgets.toml` at the repository's root.** Each
+**Every push to `main` and every pull request is held to a fixed number per
+hot path and per output field, kept in `budgets.toml` at the repository's root.** Each
 measurement is compared with its budget, never with the previous run, so a
 run of small slowdowns adds up against one number instead of each passing
 against the last. There are three kinds:
@@ -1322,30 +1317,29 @@ Each thin spot, why it is thin, and where it stands:
 | `windows.rs`, `windows_frame.rs`, `formula.rs`, `resolvers.rs` and `targets.rs`, the newest code in `crates/online-polars/src/` | outside the mutation scope, which is `online-core` and `span.rs`, as the rest of `online-polars` is; the first four postdate the coverage run of 2026-09-27 | held by the oracles and resume tests of [The window operators and formula targets](#the-window-operators-and-formula-targets), each test's docstring stating the case it holds |
 | the weekly mutation pass over all of `online-core` | a pass at too short a time limit counts most survivors as timeouts, so its count is a floor | the limit is ten times the baseline's test run; [Mutation survivors](#mutation-survivors) has the passes counted since |
 
-Two things are worth doing periodically rather than once:
+Two runs are worth doing outside the test gate:
 
 | run | when | what to watch for |
 |---|---|---|
-| **`./scripts/mutants.sh`** | after a batch of feature work, or with `--in-diff` on a branch | a cluster of survivors in one function, which almost always means its only oracle lives in the Python suite. |
+| **`./scripts/mutants.sh --in-diff <(git diff main...)`** | on a fix to a survivor, over that fix's diff alone, holding `.claude/coord/mutants.lock`; the pass over all of `online-core` is `mutants.yml`'s weekly run ([Mutation survivors](#mutation-survivors)) | a cluster of survivors in one function, which almost always means its only oracle lives in the Python suite. |
 | **`./scripts/coverage.sh`** | periodically | reported and never gating |
 
 ### Measured coverage
 
 Measured with `./scripts/coverage.sh` on 2026-09-27: **96% of the Python
 package** (2,139 statements, 83 missed), and **93.9% region / 92.6% line**
-of the Rust workspace. The Rust figures were 75% and 73% on 2026-08-30. It
+of the Rust workspace. It
 is reported, never gating, and Rust's figure is not in CI. It sees
 `cargo test` alone, so it would read `online-py` at 0%, and it would add an
-instrumented build to every run. The mutation jobs, on every push and
-weekly, are the sharper measure of the same thing.
+instrumented build to every run. The mutation jobs, on every push to `main`,
+every pull request and weekly, are the sharper measure of the same thing.
 
 **The Rust figure understates reality.** `cargo llvm-cov` only sees what
 `cargo test` runs. `online-py` (0%) and much of `online-polars` are exercised
 by the pytest suite through the compiled extension, which is invisible to the
 Rust instrumentation. The thin spot it does reveal is
 `online-cli/src/main.rs`, argument plumbing covered instead by the command line's
-integration tests through `run_config`. `online-core/src/robust.rs`, the
-other thin spot on 2026-08-30 at 75%, is at 98%.
+integration tests through `run_config`. `online-core/src/robust.rs` is at 98%.
 
 ### Mutation survivors
 
@@ -1403,7 +1397,7 @@ the report lists them by kind rather than hiding them.
 Flipping `Ftrl::weight_of`'s `zz < 0.0` sign test to `<=` changes it only at
 `zz == 0`, which the `|zz| <= l1` guard before it has already returned on,
 so `scripts/mutants_equivalent.toml` records it with that reason.
-`SlotMetrics::update_with`'s `denom > 0` against `>=` is another: a scored
+`SlotMetrics::update_with`'s `denom > 0` against `>=` is another: a predicted
 row's `w > 0` keeps `denom` positive.
 
 **`lasso.rs`, `stats.rs` and `ewridge.rs`, the files that once held most
