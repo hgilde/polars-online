@@ -2568,6 +2568,25 @@ mod tests {
         );
     }
 
+    /// The warm-up's limit at its edge: rows that fill 256 MiB exactly are
+    /// accepted, and one more is refused (task 358). Each row is its vector
+    /// and its `p + 1` values; at 4 features a row of 64 bytes on a 64-bit
+    /// target makes the edge a whole number of rows.
+    #[test]
+    fn the_warm_up_is_held_to_its_limit_at_the_edge() {
+        let row = std::mem::size_of::<Vec<f64>>() + 5 * 8;
+        let budget = 256usize << 20;
+        assert_eq!(budget % row, 0, "a {row}-byte row");
+        let with = |warm_rows| KMeansCfg {
+            n_features: 4,
+            warm_rows,
+            ..cfg(3)
+        };
+        with(budget / row).validate().unwrap();
+        let e = with(budget / row + 1).validate().unwrap_err();
+        assert!(e.contains("over the 256 MiB limit"), "{e}");
+    }
+
     /// The dead rule runs at a split-merge check, and `split_merge = 0` runs
     /// none, so a `dead_frac` above 0 beside it did nothing: refused by
     /// name, as a parameter its mode does not read is elsewhere (review

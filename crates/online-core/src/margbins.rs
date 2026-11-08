@@ -2466,6 +2466,31 @@ mod tests {
         assert!(learned(2, 1_000).validate(30_000, 10).is_ok());
     }
 
+    /// A `bin_budget` that is not above 0 is refused once, by name: given
+    /// edges are not then also held to it, as if it were a limit (task 358).
+    #[test]
+    fn a_budget_refused_by_name_holds_given_edges_to_nothing() {
+        for bad in [0.0, -1.0] {
+            let given = BinCfg {
+                n_bins: 0,
+                edges: Some(vec![vec![0.0, 1.0]; 2]),
+                rule: BinRule::Quantile,
+                warm_rows: 0,
+                stat: BinStat::Mean,
+                refit_rows: 0,
+                budget_mib: Some(bad),
+                mad_anchor: false,
+            };
+            assert_eq!(
+                given.validate(2, 1).unwrap_err(),
+                format!(
+                    "marginal: bin_budget must be above 0 MiB, but it is {bad}. Set bin_budget \
+                     to a positive number of MiB, or to inf for no limit."
+                )
+            );
+        }
+    }
+
     /// `bin_budget` sets the limit: a larger one allows what the default
     /// refuses, a smaller one refuses what it allows, infinity is no bound,
     /// and a budget that is not a positive number is refused by name

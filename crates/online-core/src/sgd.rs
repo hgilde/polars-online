@@ -4048,6 +4048,38 @@ mod tests {
         assert!(err.contains("wrong shape"), "{err}");
     }
 
+    /// A state whose AdaGrad sums do not match its schedule is refused in
+    /// the words of the schedule it has: sums missing under AdaGrad, sums
+    /// present under another (task 358).
+    #[test]
+    fn adagrad_sums_that_do_not_match_the_schedule_are_refused_by_it() {
+        let set_g2 = |v: &mut rmpv::Value, to: rmpv::Value| {
+            let rmpv::Value::Map(entries) = v else {
+                panic!("a map")
+            };
+            entries
+                .iter_mut()
+                .find(|(k, _)| k.as_str() == Some("g2"))
+                .expect("g2")
+                .1 = to;
+        };
+        let mut c = cfg(2, SgdLoss::Squared);
+        c.schedule = LearningRate::AdaGrad;
+        let adagrad = Sgd::new(c).unwrap();
+        let err = reread(&adagrad, |v| set_g2(v, rmpv::Value::Array(vec![]))).unwrap_err();
+        assert!(
+            err.contains("do not match its setting schedule=\"adagrad\". Load"),
+            "{err}"
+        );
+        let constant = Sgd::new(cfg(2, SgdLoss::Squared)).unwrap();
+        let sums = rmpv::Value::Array(vec![rmpv::Value::Array(vec![rmpv::Value::F64(0.0); 3])]);
+        let err = reread(&constant, |v| set_g2(v, sums)).unwrap_err();
+        assert!(
+            err.contains("do not match its setting schedule, which is not \"adagrad\". Load"),
+            "{err}"
+        );
+    }
+
     /// Each shape check refuses on its own: a state one target short of its
     /// cfg, and one whose scaler is another width than the row, are each
     /// refused with every other part of the state in shape (task 158).

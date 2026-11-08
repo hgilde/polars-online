@@ -6245,3 +6245,61 @@ fn a_conditioned_design_is_solved_within_its_closed_form_bound() {
         "the sweep never reached a hard condition: {reached:e}"
     );
 }
+
+/// `window_size` refused below 0 and at infinity alike; `gram_block_rows`
+/// beside a cadence that solves every row names the default only under the
+/// decay that has it; and over its limit, `target_gaps="pairwise"` is
+/// offered only where more than one Gram holds a block (task 358).
+#[test]
+fn window_and_held_row_refusals_say_what_applies() {
+    for w in [-1.0, f64::INFINITY] {
+        let mut c = cfg(2, 1);
+        c.window = Some(w);
+        let e = c.validate().unwrap_err();
+        assert!(
+            e.contains(&format!(
+                "ewridge: window_size must be finite and above 0, but it is {w}."
+            )),
+            "{e}"
+        );
+    }
+    let every_row = |decay| {
+        let mut c = cfg(2, 1);
+        c.decay = decay;
+        c.gram_block_rows = 8;
+        c.max_rows_between_solves = 50;
+        c.validate().unwrap_err()
+    };
+    let said = |default: &str| {
+        format!(
+            "ewridge: gram_block_rows holds rows back until the next solve, but solve_every is \
+             0, which solves every row{default}. Set solve_every above 0, or leave \
+             gram_block_rows out."
+        )
+    };
+    assert_eq!(
+        every_row(Decay::Halflife(f64::INFINITY)),
+        said(", as the default under half_life=inf does")
+    );
+    assert_eq!(every_row(Decay::Halflife(10.0)), said(""));
+    assert_eq!(
+        every_row(Decay::Lam(0.99)),
+        said(", as the default under lam does")
+    );
+    let over = |m, gaps| {
+        let mut c = blocked_cfg(2, 1 << 40);
+        c.n_targets = m;
+        c.target_gaps = gaps;
+        c.validate().unwrap_err()
+    };
+    let hint = "target_gaps=\"pairwise\"";
+    for (m, gaps, offered) in [
+        (1, TargetGaps::OwnRows, false),
+        (2, TargetGaps::Pairwise, false),
+        (2, TargetGaps::OwnRows, true),
+    ] {
+        let e = over(m, gaps);
+        assert!(e.contains("over the 256 MiB limit"), "{e}");
+        assert_eq!(e.contains(hint), offered, "{m} targets: {e}");
+    }
+}

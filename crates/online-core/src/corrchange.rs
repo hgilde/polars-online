@@ -2103,6 +2103,38 @@ mod tests {
         .unwrap();
     }
 
+    /// An `alpha` outside `(0, 1)` is refused once, by the range check,
+    /// and not again as a share too small for the sequential quantile; one
+    /// pair under Bonferroni is tested at `alpha` itself, and is told so
+    /// (task 358). Checked without solving any critical value.
+    #[test]
+    fn an_alpha_out_of_range_is_refused_once_and_one_pair_takes_alpha_whole() {
+        let with = |d: usize, alpha: f64| CorrChangeCfg {
+            alpha,
+            ..seq_cfg(d, 50, 50, 0.0)
+        };
+        // 0 and below, and 1 where the pairs are so many that 1 over them
+        // is below 5e-11: 300,000 features give 44,999,850,000 pairs.
+        for (d, alpha) in [(3, 0.0), (3, -1.0), (300_000, 1.0)] {
+            let e = with(d, alpha).validate().unwrap_err();
+            assert_eq!(
+                e,
+                format!(
+                    "corrchange: alpha must be above 0 and below 1, but it is {alpha}. Set alpha \
+                     to the rate of false alarms to test at, such as 0.05."
+                ),
+                "{d} features at alpha {alpha}"
+            );
+        }
+        let e = with(2, 1e-12).validate().unwrap_err();
+        assert_eq!(
+            e,
+            "corrchange: kind=\"sequential\" tests each pair at alpha = 0.000000000001, below \
+             5e-11, where the critical value cannot be computed accurately. Set alpha to 5e-11 or \
+             more, or give crit."
+        );
+    }
+
     /// The Kolmogorov quantiles the paper's tables are read at.
     #[test]
     fn the_kolmogorov_quantiles_are_the_published_ones() {

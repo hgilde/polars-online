@@ -1113,6 +1113,39 @@ pub trait OnlineModel: Sized {
 mod tests {
     use super::*;
 
+    /// A list in a refusal reads as a reader writes one, and `coef_prior`'s
+    /// length refusal counts the features apart from the intercept, one
+    /// feature as "each feature" (task 358).
+    #[test]
+    fn a_refusal_lists_and_counts_as_a_reader_writes() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(listed(&s(&[])), "");
+        assert_eq!(listed(&s(&["a"])), "a");
+        assert_eq!(listed(&s(&["a", "b"])), "a and b");
+        assert_eq!(listed(&s(&["a", "b", "c"])), "a, b and c");
+        let wrong = |k_total, fit_intercept| {
+            check_coef_prior("rls", &[vec![0.0]], 1, k_total, fit_intercept).unwrap_err()
+        };
+        assert_eq!(
+            wrong(2, true),
+            "rls: coef_prior must hold one list of 2 coefficients for the target, the \
+             intercept and one for each feature, but it holds 1 list, of length 1. Give one \
+             list for each target, the intercept first, then the features in order."
+        );
+        assert_eq!(
+            wrong(4, true),
+            "rls: coef_prior must hold one list of 4 coefficients for the target, the \
+             intercept and one for each of the 3 features, but it holds 1 list, of length 1. \
+             Give one list for each target, the intercept first, then the features in order."
+        );
+        assert_eq!(
+            wrong(3, false),
+            "rls: coef_prior must hold one list of 3 coefficients for the target, one for each \
+             of the 3 features, but it holds 1 list, of length 1. Give one list for each \
+             target, the features in order."
+        );
+    }
+
     /// Each state names its own kind, so a `WrongModel` says which one it
     /// found: the bare accumulator answered "ew_cov", the name of the bank
     /// model it is not (review 2026-09-12, S4).

@@ -1308,6 +1308,69 @@ impl crate::OnlineModel for Rcov {
 mod tests {
     use super::*;
 
+    /// A count is printed whole below a million and to three figures from
+    /// it (task 358).
+    #[test]
+    fn a_count_is_whole_below_a_million() {
+        assert_eq!(count_text(5.0), "5");
+        assert_eq!(count_text(999_999.0), "999999");
+        assert_eq!(count_text(1e6), "1.00e6");
+        assert_eq!(count_text(1.5e7), "1.50e7");
+    }
+
+    /// The lagged covariances' limit, `(lags + 1)·k²` doubles: 31 lags of
+    /// 1,024 features fill 256 MiB exactly and are accepted, 32 are refused.
+    /// Over it, the remedy names the setting that sets the depth --
+    /// `max_bandwidth`, `bandwidth`, or either where the depth is automatic
+    /// -- with the most lags that fit, `⌊2²⁸ / 8k²⌋ − 1` (32 at 1,000
+    /// features); where not one lag fits, only fewer features (task 358).
+    #[test]
+    fn the_lagged_covariances_limit_names_the_setting_that_sets_the_depth() {
+        let with = |k, bandwidth, max_bandwidth| RcovCfg {
+            bandwidth,
+            max_bandwidth,
+            ..cfg(k, RcovKind::Kernel)
+        };
+        with(1024, Some(31), None).validate().unwrap();
+        let e = with(1024, Some(32), None).validate().unwrap_err();
+        assert!(e.contains("Set bandwidth to 31 or below"), "{e}");
+        for (bandwidth, max_bandwidth, remedy) in [
+            (
+                Some(40),
+                None,
+                "Set bandwidth to 32 or below, or use fewer features.",
+            ),
+            (
+                None,
+                Some(40),
+                "Set max_bandwidth to 32 or below, or use fewer features.",
+            ),
+            (
+                None,
+                None,
+                "Set bandwidth or max_bandwidth to 32 or below, or use fewer features.",
+            ),
+        ] {
+            let e = with(1000, bandwidth, max_bandwidth).validate().unwrap_err();
+            assert!(
+                e.starts_with("rcov: the lagged covariances the model keeps would take ")
+                    && e.ends_with(remedy),
+                "{bandwidth:?} {max_bandwidth:?}: {e}"
+            );
+        }
+        // 5,000 features: 8k² is 2e8 bytes, so the most lags that fit is 0.
+        for (bandwidth, max_bandwidth) in [(Some(1), None), (None, Some(1)), (None, None)] {
+            let e = with(5000, bandwidth, max_bandwidth).validate().unwrap_err();
+            assert!(
+                e.starts_with("rcov: the covariances the model keeps would take ")
+                    && e.ends_with(
+                        "MiB at 5000 features, over the 256 MiB limit. Use fewer features."
+                    ),
+                "{bandwidth:?} {max_bandwidth:?}: {e}"
+            );
+        }
+    }
+
     /// A state whose vectors are not the cfg's is refused, where it loaded
     /// and panicked on the first `step` (review 2026-09-18, B3).
     #[test]

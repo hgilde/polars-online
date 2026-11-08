@@ -5070,6 +5070,84 @@ mod tests {
         assert!(huge.validate().unwrap_err().contains("MiB"));
     }
 
+    /// The warm-up's limit at its edge: `warm_rows · (d + 4) · 8` bytes,
+    /// 4,194,304 rows of 4 features filling 256 MiB exactly, is accepted,
+    /// and one row more is refused with the size and the most rows that fit;
+    /// 2 rows, the least that gives a variance, are accepted (task 358).
+    #[test]
+    fn the_warm_up_is_held_to_its_limit_at_the_edge() {
+        let with = |warm_rows| BocpdCfg {
+            warm_rows: Some(warm_rows),
+            ..from_the_data(4, BocpdEmission::Diag)
+        };
+        with(2).validate().unwrap();
+        with(1 << 22).validate().unwrap();
+        assert_eq!(
+            with((1 << 22) + 1).validate().unwrap_err(),
+            "bocpd: the first 4194305 rows, which set the prior, would take 256.0001 MiB at 4 \
+             features, over the 256 MiB limit. Set warm_rows to 4194304 or below, or use fewer \
+             features."
+        );
+    }
+
+    /// `robust_beta` refused under each emission in that emission's words,
+    /// and a `covariance_prior` that is not positive definite in the words
+    /// of the covariance_type that reads it (task 358).
+    #[test]
+    fn each_refusal_of_the_emission_s_settings_is_in_its_own_words() {
+        let with = |emission, robust_beta| BocpdCfg {
+            emission,
+            robust_beta,
+            ..cfg(2)
+        };
+        let full_negative = "bocpd: robust_beta must be finite and at least 0, but it is -1. Set \
+                             robust_beta to 0, or leave it out: it applies only under \
+                             covariance_type=\"diag\".";
+        let diag_negative = "bocpd: robust_beta must be finite and at least 0, but it is -1. Set \
+                             robust_beta to 0 to weigh every row in full, or to a small positive \
+                             value such as 0.1.";
+        let e = with(BocpdEmission::Gaussian, -1.0).validate().unwrap_err();
+        assert!(
+            e.contains(full_negative) && !e.contains(diag_negative),
+            "{e}"
+        );
+        let e = with(BocpdEmission::Gaussian, f64::INFINITY)
+            .validate()
+            .unwrap_err();
+        assert!(
+            e.contains("but it is inf. Set robust_beta to 0, or leave it out"),
+            "{e}"
+        );
+        let e = with(BocpdEmission::Robust, -1.0).validate().unwrap_err();
+        assert!(
+            e.contains(diag_negative) && !e.contains(full_negative),
+            "{e}"
+        );
+        let e = with(BocpdEmission::Gaussian, 0.1).validate().unwrap_err();
+        assert!(
+            e.contains(
+                "bocpd: robust_beta applies only under covariance_type=\"diag\", but \
+                 covariance_type is \"full\"."
+            ),
+            "{e}"
+        );
+        // Symmetric, with eigenvalues 3 and -1.
+        let not_pd = |emission| BocpdCfg {
+            emission,
+            prior_scale: Some(vec![1.0, 2.0, 2.0, 1.0]),
+            prior_nu: Some(5.0),
+            ..cfg(2)
+        };
+        let full = "bocpd: covariance_prior must be positive definite, but it is not, and \
+                    without that the predicted distribution has no density.";
+        let diag = "bocpd: covariance_prior must be positive definite, but it is not: the \
+                    matrix is checked whole even under covariance_type=\"diag\"";
+        let e = not_pd(BocpdEmission::Gaussian).validate().unwrap_err();
+        assert!(e.contains(full) && !e.contains(diag), "{e}");
+        let e = not_pd(BocpdEmission::Diag).validate().unwrap_err();
+        assert!(e.contains(diag) && !e.contains(full), "{e}");
+    }
+
     /// `prior_nu`'s default is the smallest integer that gives the prior's
     /// variance a mean: `d + 2` for the inverse-Wishart of `gaussian`
     /// (`ν > d + 1`), and 3 for the per-feature normal-inverse-gamma of

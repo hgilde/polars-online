@@ -3401,3 +3401,24 @@ fn a_band_system_with_no_column_holds_no_factor_and_loads_back() {
         );
     }
 }
+
+/// A quantile refit among the first three rows a coefficient is refused,
+/// naming the least count, `3·k_total`; that count is accepted (task 358).
+#[test]
+fn a_quantile_refit_inside_the_warm_up_names_the_least_count() {
+    let with = |k, refit_rows| RobustCfg {
+        refit_rows,
+        ..cfg(k, 1, RobustLoss::Quantile { tau: 0.5 })
+    };
+    for (k, least) in [(2usize, 9u32), (4, 15)] {
+        let e = with(k, least - 1).validate().unwrap_err();
+        assert!(
+            e.contains(&format!(
+                "quantile: quantile_refit_rows must be 0 or at least {least}, three rows for \
+                 each coefficient"
+            )) && e.contains(&format!("Set quantile_refit_rows to {least} or more")),
+            "{k} features: {e}"
+        );
+        with(k, least).validate().unwrap();
+    }
+}
