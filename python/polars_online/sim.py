@@ -1,11 +1,10 @@
-"""A seeded simulator for correlation regimes.
+"""A seeded simulator of streams whose correlation changes by regime.
 
 The detectors in this library (``deco``, ``hmm``, ``corrchange``, ``bocpd``)
-are claims about streams whose correlation structure changes. A claim like
-that can only be measured against data whose truth is known. :func:`regimes`
-produces such data from one seed, and hands back the truth beside it. The
-truth has to include the awkward parts of real streams, and each is a
-parameter:
+make claims about streams whose correlation structure changes. Such a claim can
+only be measured against data whose truth is known. :func:`regimes` produces
+that data from one seed, and hands back the truth beside it. The truth has to
+include the awkward parts of real streams, and each is a parameter:
 
 .. list-table::
    :header-rows: 1
@@ -28,14 +27,14 @@ parameter:
 
 Everything is drawn from ``numpy.random.default_rng(seed)`` in one order, so
 two calls with the same seed give byte-identical frames under one numpy
-version: numpy's ``Generator`` makes no promise across versions. Requires
-numpy, an optional extra of this package (``pip install
-polars-online[numpy]``), and nothing else.
+version. numpy's ``Generator`` makes no promise across versions. The module
+needs numpy, an optional extra of this package
+(``pip install polars-online[numpy]``), and nothing else.
 
 .. warning::
     This module is considered **unstable**: its keywords, its frames and the
     draws behind them may change in any release without that counting as a
-    breaking change. Under ``POLARS_ONLINE_WARN_UNSTABLE=1`` each call raises
+    breaking change. Under ``POLARS_ONLINE_WARN_UNSTABLE=1`` each call issues
     :class:`polars_online.UnstableWarning`.
 """
 
@@ -190,74 +189,82 @@ def regimes(
     activity: tuple[float, float] | None = None,
     seed: int = 0,
 ) -> dict[str, pl.DataFrame]:
-    """A simulated stream of ``m`` series whose correlation changes by regime, with
+    """Simulate a stream of ``m`` series whose correlation changes by regime, with
     its truth.
 
-    The latent returns are ``eps_t ~ N(0, R_t)``, filtered to ``y_it = phi_i
-    y_i,t-1 + eps_it`` and scaled by ``exp(scale_state * s_t)``. The observed
-    series are their levels, the cumulative sums, plus noise. The documented truth
-    is the innovation correlation: an AR filter moves the return correlation of a
-    pair with unequal ``phi``, which is exactly what
-    :func:`polars_online.corr.fisher_se`'s inflation is about.
+    Use it to measure a detector of changing correlation, such as ``deco``,
+    ``hmm``, ``corrchange`` or ``bocpd``, against data whose regimes are known.
+    For a stream with a planted relation to a target, build the frame with
+    numpy, as the README's *Example data* does.
 
     .. rubric:: Parameters
 
     ``m``
         The number of series, at least 2.
     ``states``
-        ``K`` correlation matrices (``m x m``, unit diagonal, PSD) or ``K``
-        floats, each an equicorrelation.
+        The ``K`` regimes' correlations: ``K`` correlation matrices (``m x m``,
+        unit diagonal, positive semi-definite), or ``K`` floats, each an
+        equicorrelation, the one correlation of every pair.
     ``transition``
-        The ``K x K`` row-stochastic matrix that drives one state per block.
+        The ``K x K`` matrix of probabilities, each row summing to 1, that
+        draws the state of each block from the block before it.
     ``n_blocks``, ``rows_per_block``
-        The blocks and the rows in each.
+        The number of blocks, and the rows in each, each at least 1. A block
+        holds one state.
     ``durations``
-        One positive block count per state: the sojourn becomes deterministic, and
-        the next state is drawn from ``transition`` with its diagonal removed --
-        the recurring-state design, where each state lasts exactly as long as it
-        says.
+        One block count of at least 1 per state. Given, each state lasts
+        exactly that many blocks, and the next state is drawn from
+        ``transition`` with its diagonal removed: the recurring-state design.
+        Default ``None``: each block's state is drawn from ``transition``.
     ``design``, ``smooth_rows``
-        ``"step"`` switches at the block boundary; ``"smooth"`` interpolates the
-        correlation matrix linearly over ``smooth_rows`` rows centred on it:
-        row ``t`` follows ``(1 - mix) R_before + mix R_after``, the states of
-        the blocks before and after the boundary, on both sides of it. A convex
-        combination of two correlation matrices is one, so every matrix along the
-        way is valid.
+        ``"step"`` (the default) switches at the block boundary. ``"smooth"``
+        moves the correlation matrix linearly over ``smooth_rows`` rows
+        centered on the boundary: row ``t`` follows
+        ``(1 - mix) R_before + mix R_after``, the states of the blocks before
+        and after the boundary, on both sides of it. ``smooth_rows`` defaults
+        to 0, which switches at the boundary as ``"step"`` does.
     ``phi``
-        The AR(1) coefficient per series (a scalar for all), ``|phi| < 1``.
+        The coefficient of each series' AR(1) filter, one number for all or one
+        per series, each above -1 and below 1. Default 0: no filter.
     ``scale_state``
-        The returns' scale per state, as the exponent of its multiplier
-        ``exp(scale_state * s_t)``. A scalar makes the scale rise with the
-        state index; a list gives one exponent per state.
+        The returns' scale per state, as the exponent of its multiplier, with
+        ``s_t`` the row's state index. One number gives the multiplier
+        ``exp(scale_state * s_t)``, so a positive number makes the scale rise
+        with the state index. A
+        list gives one exponent per state, and the multiplier
+        ``exp(scale_state[s_t])``. Default 0: one scale.
     ``async_rates``
-        Expected observations per row, per series: a row where series ``i``
-        reported nothing carries ``null`` for ``x_i``. Last-observation sampling
-        is one ``forward_fill`` away, and ``unpivot`` over the non-null rows is
-        :func:`polars_online.stream.refresh_time`'s long input.
+        The expected reports per row of each series, each above 0, one per
+        series. A row where series ``i`` reported nothing carries null for
+        ``x_i``. Default ``None``: every series reports on every row.
     ``noise``
-        The standard deviation of the noise added to each observed level. Noise on
-        the level is what the literature models, and it makes the observed return
-        an MA(1) with a negative first autocorrelation, the microstructure effect
-        ``rcov`` exists to undo.
+        The standard deviation of the noise added to each observed level.
+        Default 0: none.
     ``cycle_profile``, ``cycle_rows``
-        ``cycle_rows`` multipliers in ``(0, 1]`` applied to the off-diagonal of
-        ``R_t`` at row ``t mod cycle_rows``, a mix towards the identity, so the
-        matrix stays PSD. ``cycle_rows`` defaults to ``rows_per_block``, and
-        ``session = t // cycle_rows``.
+        ``cycle_rows`` multipliers, each above 0 and at most 1, applied to the
+        off-diagonal of ``R_t`` at row ``t mod cycle_rows``: a mix toward the
+        identity, so the matrix stays positive semi-definite. ``cycle_rows``
+        defaults to ``rows_per_block``, and sets ``session = t // cycle_rows``.
+        Default ``None``: no cycle.
     ``activity``
-        ``(mean, shape)`` for a Gamma count per row, with the mean scaled by the
-        same scale multiplier; ``clock`` is then the cumulative activity, and the
-        row index otherwise.
+        ``(mean, shape)``, both above 0, for a Gamma-distributed activity per
+        row whose mean
+        is scaled by the row's scale multiplier. ``clock`` is then the
+        cumulative activity. Default ``None``: ``clock`` is the row index.
     ``seed``
-        Two calls with the same seed give byte-identical frames under one numpy
-        version; numpy's ``Generator`` makes no promise across versions.
+        The seed of ``numpy.random.default_rng``. Default 0.
 
-    Returns ``{"rows", "truth_rows", "truth_blocks"}``:
+    .. rubric:: Returns
+
+    A ``dict`` of three frames, ``"rows"``, ``"truth_rows"`` and
+    ``"truth_blocks"``:
 
     ``rows``
-        What a consumer sees: ``entity``, ``t``, ``clock``, ``session``, the
-        levels ``x_1 .. x_m`` (null where a series did not report), and
-        ``activity`` (null without ``activity``).
+        What a consumer sees: ``entity``, the constant ``"sim"``; ``t``, the
+        row index; ``clock``; ``session``, ``t // cycle_rows`` (the block
+        index unless ``cycle_rows`` is given); the levels ``x_1 .. x_m``
+        (null where a series did not report); and ``activity`` (null
+        without ``activity``).
     ``truth_rows``
         Per row: ``t``, ``block``, ``state``, ``scale_mult`` and ``mix``, the
         weight of the later block's state in the row's blend: 0 away from a
@@ -269,6 +276,31 @@ def regimes(
         the states' matrices, before ``cycle_profile`` mixes them toward the
         identity.
 
+    .. rubric:: Raises
+
+    ``ValueError``
+        When:
+
+        - ``m`` is below 2, or ``n_blocks`` or ``rows_per_block`` is below 1;
+        - a state is not a correlation matrix of ``m`` series, or an
+          equicorrelation is not above ``-1 / (m - 1)`` and below 1;
+        - ``transition`` is not ``K x K``, or a row is not probabilities that
+          sum to 1, or ``durations`` does not give one count of at least 1 per
+          state;
+        - ``design`` is neither ``"step"`` nor ``"smooth"``;
+        - a ``phi`` is not above -1 and below 1, or a ``phi`` or
+          ``scale_state`` list has the wrong length;
+        - ``cycle_rows`` is below 1, or ``cycle_profile`` has the wrong length
+          or a multiplier not above 0 and at most 1;
+        - ``activity`` is not two numbers above 0, or ``async_rates`` is not
+          ``m`` rates above 0.
+    ``ModuleNotFoundError``
+        numpy is not installed.
+    :class:`~polars_online.UnstableWarning`
+        A warning, under ``POLARS_ONLINE_WARN_UNSTABLE=1``, on each call.
+
+    .. rubric:: Examples
+
     .. code-block:: python
 
         sim = po.sim.regimes(
@@ -276,20 +308,44 @@ def regimes(
             n_blocks=4, rows_per_block=50, phi=0.3, seed=1,
         )
         rows, truth = sim["rows"], sim["truth_blocks"]
+        print(rows.height, truth["state"].to_list())               # a state per block
+        print([round(c[1], 2) for c in truth["corr"].to_list()])   # true corr(x_1, x_2)
 
-    Raises ``ValueError`` for:
+    .. code-block:: text
 
-    - fewer than two series, or ``n_blocks`` or ``rows_per_block`` below 1;
-    - a state that is not a correlation matrix;
-    - a ``transition`` that is not row-stochastic or not ``K x K``, and
-      ``durations`` that do not give one positive count per state;
-    - a ``design`` that is neither;
-    - a ``phi`` outside ``(-1, 1)``, or a ``phi`` or ``scale_state`` list of
-      the wrong length;
-    - a ``cycle_rows`` below 1, and a ``cycle_profile`` of the wrong length
-      or outside ``(0, 1]``;
-    - an ``activity`` that is not two positive numbers, and ``async_rates``
-      that are not ``m`` positive rates.
+        200 [0, 0, 1, 1]
+        [0.2, 0.2, 0.7, 0.7]
+
+    .. rubric:: See also
+
+    - ``po.spec.deco``, ``po.spec.hmm``, ``po.spec.corrchange`` and
+      ``po.spec.bocpd``, the detectors it is made to measure.
+    - :func:`polars_online.stream.refresh_time`, to put the series on a
+      refresh grid: under ``async_rates``, unpivot ``rows`` to long form and drop the
+      nulls to feed it.
+    - `Regimes: what the detectors find, measured
+      <https://github.com/hgilde/polars-online/blob/main/docs/REGIMES.md>`_.
+
+    .. rubric:: Notes
+
+    The latent returns are ``eps_t ~ N(0, R_t)``, filtered to
+    ``y_it = phi_i y_i,t-1 + eps_it`` and scaled by ``exp(scale_state * s_t)``
+    (``exp(scale_state[s_t])`` for a list).
+    The observed series are their levels, the cumulative sums, plus noise. The
+    truth it reports is the innovation correlation: an AR filter moves the
+    return correlation of a pair with unequal ``phi``, which is what
+    :func:`polars_online.corr.fisher_se`'s inflation is about.
+
+    A convex combination of two correlation matrices is one, so every matrix
+    along a ``"smooth"`` boundary is valid. Noise on the level is what the
+    literature models, and it makes the observed return an MA(1) with a
+    negative first autocorrelation, the microstructure effect ``rcov`` exists
+    to undo. Under ``async_rates``, last-observation sampling is one
+    ``forward_fill`` away.
+
+    Everything is drawn from ``numpy.random.default_rng(seed)`` in one order,
+    so two calls with the same seed give byte-identical frames under one numpy
+    version. numpy's ``Generator`` makes no promise across versions.
     """
     np = _np()
     if m < 2:

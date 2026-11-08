@@ -1,15 +1,17 @@
-"""The running sums a bank exports, read back: pool them, subset them, solve
-them, and put standard errors on a fit.
+"""Pool, narrow, solve and diagnose the Grams a bank exports.
 
-:meth:`~polars_online.ModelBank.gram` hands back the matrices the models solve
-against, from one pass over data that is never materialized. This module
-works on them afterwards, in five kinds of call:
+A Gram is the set of sums behind a least-squares fit: the weight of the
+rows, the columns' means and co-moments, and each target's moments.
+:meth:`~polars_online.ModelBank.gram` returns one for each group and each
+instance of a spec (the part of a model that fits one half-life), from one
+pass over data that is never held in memory.
+This module works on them after the pass, in five kinds of call:
 
 .. list-table::
    :header-rows: 1
    :widths: 24 76
 
-   * - kind
+   * - what you want
      - the calls
    * - shape a Gram
      - :func:`merge` pools shards into their union, or within each part;
@@ -26,32 +28,36 @@ works on them afterwards, in five kinds of call:
    * - diagnose the design
      - :func:`correlation`, :func:`vif` and :func:`condition`
 
-Every function takes the mapping ``gram()`` produces. It reads its
-``columns``, ``targets``, ``means``, ``comoments``, ``cross_moments``,
-``means_by_target``, ``cross_centered``, ``target_weights``, ``target_means``,
-``target_vars``, ``weight_sum``, ``n_kish`` and ``target_n_kish``.
-:func:`merge`, :func:`subset` and :func:`from_row` return a mapping of the
-same shape, so a closed group's row
-(:meth:`~polars_online.ModelBank.closed_groups`) is read the same way. The
-compact forms ``gram()`` hands back under ``dtype="float32"`` or
+Every function but :func:`from_row` takes the mappings ``gram()`` returns,
+one or a list, described by :class:`Gram`. Between them, the functions
+read its ``columns``, ``targets``, ``means``, ``comoments``,
+``lag_comoments``, ``cross_moments``, ``means_by_target``,
+``cross_centered``, ``target_weights``, ``target_means``, ``target_vars``,
+``weight_sum``, ``n_kish`` and ``target_n_kish``. :func:`merge`, :func:`subset` and
+:func:`from_row` return a mapping of the same shape, so a closed group's
+row (:meth:`~polars_online.ModelBank.closed_groups`) is read the same way.
+The compact forms ``gram()`` returns under ``dtype="float32"`` or
 ``layout="packed"`` are taken too, and read in float64. :func:`merge` with
-``within=True`` returns two keys more, ``within_parts`` and
+``within=True`` returns two more keys, ``within_parts`` and
 ``target_within_parts``, which every fit reads.
 
 The arithmetic is the models' own, so :func:`solve` on a spec's Gram
-reproduces that spec's coefficients, where it takes the spec's penalty, and
-:func:`lasso_path` reproduces the ``lasso`` model's path. It is not the same
-arithmetic to the last bit. The models factorize with ``faer``'s Cholesky.
-Here numpy runs LAPACK's symmetric eigendecomposition
-(``numpy.linalg.eigh``) in :func:`solve` and :func:`vif`, and an inverse
-(``numpy.linalg.inv``) in :func:`coef_stats`, which round differently in the
-last place or two. The tests hold the two to a relative tolerance, not to
-equality. :func:`lasso_path` and :func:`lars_path` run in Rust, and
-:func:`lars_paths` and :func:`solve_subsets` on the bank's thread pool, or on a
-pool of their ``threads``.
+reproduces that spec's coefficients where it takes the spec's penalty, and
+:func:`lasso_path` reproduces the ``lasso`` model's path. It does not agree
+to the last bit. The models factorize with ``faer``'s Cholesky. Here numpy
+runs LAPACK's symmetric eigendecomposition (``numpy.linalg.eigh``) in
+:func:`solve` and :func:`vif`, and an inverse (``numpy.linalg.inv``) in
+:func:`coef_stats`. Where the columns' scales differ, :func:`solve` takes
+an LU solve for each ridge above 0 (its Notes say when). Each of these
+rounds differently in the last place or two, so the tests hold the two to
+a relative tolerance, not to equality.
+The paths and :func:`solve_subsets` run in Rust. :func:`lars_paths` and
+:func:`solve_subsets` run on the process's threads, or on as many as their
+``threads`` gives.
 
-Requires numpy, which is an optional extra of this package (``pip install
-polars-online[numpy]``), not a dependency, as it is not one of polars' either.
+The module needs numpy, an optional extra of this package (``pip install
+polars-online[numpy]``) and not a dependency, since it is not one of
+Polars' either. Without it, every function raises ``ModuleNotFoundError``.
 Nothing here needs scipy or scikit-learn.
 
 `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__ is the guide:
@@ -101,12 +107,41 @@ INTERCEPT = "intercept"
 
 
 class Gram(TypedDict):
-    """The mapping :meth:`~polars_online.ModelBank.gram` returns, and every
-    function here takes: the running sums behind one fit, as numpy arrays.
+    """The mapping that :meth:`~polars_online.ModelBank.gram` returns and the functions here take.
 
+    It holds the Gram behind one fit as numpy arrays: the weight of the rows,
+    the columns' means and co-moments, and each target's moments. Use it as
+    the type of a Gram you pass between the functions of this module.
     :meth:`~polars_online.ModelBank.gram` says what each key holds and its
-    shape. :func:`merge`, :func:`subset` and :func:`from_row` return the same
-    keys, so a Gram from any of them goes on to any other function here. The
+    shape.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        g = bank.gram("ridge")[0]                  # the spec has no groups: one Gram
+        print(g["columns"], g["targets"], g["comoments"].shape)
+
+    .. code-block:: text
+
+        ['intercept', 'x0', 'x1'] ['y'] (3, 3)
+
+    .. rubric:: See also
+
+    - :meth:`~polars_online.ModelBank.gram`, which returns it and describes
+      each key.
+    - :func:`from_row`, which builds one from a closed group's row.
+
+    .. rubric:: Notes
+
+    :func:`merge`, :func:`subset` and :func:`from_row` return the same keys,
+    so a Gram from any of them goes on to any other function here. The
     arrays are typed ``Any`` because numpy is an optional extra of this
     package. ``within_parts`` and ``target_within_parts`` are present only on
     a Gram pooled within parts (``merge(within=True)``).
@@ -343,12 +378,111 @@ def _comoments(np: Any, g: Gram) -> Any:
 
 
 def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
-    """Pool the Grams of disjoint row sets into the Gram of their union, or,
-    with ``within=True``, within each part.
+    """Pool the Grams of disjoint sets of rows into the Gram of their union, or within each part.
 
-    Chan, Golub and LeVeque's update: the pooled co-moments are the weighted
-    average of the parts' plus the spread between their means. With weights
-    ``W_a``, ``W_b`` and mean gap ``d = m_b - m_a``:
+    Use it to combine Grams that share a weighting: one per shard of a pass,
+    one per group, one per worker, or one per week of a stream. To keep some
+    of a Gram's columns, use :func:`subset`. To merge many subsets and fit
+    each in one call, use :func:`solve_subsets`.
+
+    .. rubric:: Parameters
+
+    ``grams``
+        The parts, each as :meth:`~polars_online.ModelBank.gram` returns it,
+        all with the same ``columns`` and ``targets``. Merging one Gram
+        without ``within`` returns it unchanged. Parts in a compact form
+        (``ModelBank.gram(dtype="float32")`` or ``layout="packed"``) merge in
+        float64. Under ``target_gaps="own_rows"`` a spec may have a Gram per
+        set of targets: merge the entries with the same ``targets`` across
+        the shards.
+    ``within``
+        ``False``, the default, pools the parts into the Gram of their
+        union. ``True`` pools each part's moments about its own means and
+        leaves out the gaps between the parts' means: the Gram of the rows
+        demeaned part by part, whose fit has an intercept per part (the
+        within, or fixed-effects, estimator). Notes give the arithmetic of
+        both.
+
+    .. rubric:: Returns
+
+    A mapping of the same shape as each part (:class:`Gram`). When every
+    part is packed, the merge is packed too, entry for entry; otherwise it
+    is the whole matrix. Some keys come back ``None``:
+
+    - ``lags`` and ``lag_comoments``: a lagged cross-moment pairs a row with
+      the row ``l`` back within its own part, and no part holds the pairs
+      across a part boundary.
+    - ``group`` and ``instance``: a pooled Gram belongs to no one group or
+      instance (the part of a model that fits one half-life).
+    - ``n_kish``, where a part has none, such as a part under a hard window
+      whose sum of squared weights kept no digit
+      (:meth:`~polars_online.ModelBank.gram`): the sum behind it is not
+      there to add. A part that learned nothing is the one case apart: it
+      has no ``n_kish`` and adds nothing to the sum.
+    - the target moments, where a part has none, such as a mapping built by
+      hand without them.
+    - ``means_by_target`` and ``cross_centered``, where a part has none.
+      :func:`solve` then forms them from ``cross_moments``.
+
+    With ``within=True`` it has two keys more: ``within_parts`` counts the
+    parts with weight, and ``target_within_parts`` counts, per target, the
+    parts with weight for it. A part already pooled within adds its own
+    counts. Every fit reads them: :func:`solve`, :func:`lasso_path`,
+    :func:`lars_path` and :func:`solve_subsets` give the slopes and ``nan``
+    for the intercept, and :func:`coef_stats` takes one degree of freedom
+    per part in place of the intercept's one.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        When ``grams`` is empty, when the parts differ in ``columns`` or
+        ``targets``, or when, without ``within``, several parts include one
+        pooled within parts. Such a part's means are 0, so a union would add
+        the gap from 0 to the other parts' means, as if its rows had not
+        been demeaned. With ``within=True``, also when a part has no
+        ``cross_centered`` and neither an intercept column nor
+        ``target_means`` to center its cross-moments at.
+    ``KeyError``
+        When a part has no ``columns`` key, such as a mapping built by hand.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge(
+            "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0, group="stock_id"
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        parts = bank.gram("ridge")                      # one Gram per stock
+        pooled = po.gram.merge(parts)                   # the Gram of every stock's rows together
+        within = po.gram.merge(parts, within=True)      # each stock's level left out
+        print(len(parts), round(pooled["weight_sum"], 2), within["within_parts"])
+
+    .. code-block:: text
+
+        4 289.54 4
+
+    .. rubric:: See also
+
+    - :func:`solve_subsets`, which merges many subsets of the Grams and fits
+      each.
+    - :func:`subset`, which keeps some of a Gram's columns.
+    - *Pooling blocks*, *Aging a block before it is pooled* and *Pooling
+      within blocks* in `docs/GRAM.md
+      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      the theory and a recipe of each.
+
+    .. rubric:: Notes
+
+    **The union** follows Chan, Golub and LeVeque: the pooled
+    co-moments are the weighted average of the parts' plus the spread
+    between their means. With weights ``W_a`` and ``W_b``, means ``m_a`` and
+    ``m_b``, co-moments ``C_a`` and ``C_b``, squared-weight sums ``Q_a`` and
+    ``Q_b``, and the gap between the means ``d = m_b - m_a``:
 
     .. code-block:: text
 
@@ -357,38 +491,77 @@ def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
         C = (W_a * C_a + W_b * C_b) / W + (W_a * W_b / W**2) * outer(d, d)
         Q = Q_a + Q_b
 
-    Use it to pool accumulators that share a weighting: one per shard of a pass,
-    one per group being combined, one per worker.
+    Each target's ``means_by_target`` pools over its own rows, by its
+    ``target_weights``, and its ``cross_centered`` as the co-moments do, with
+    the gaps between the parts' column means and target means.
 
-    **Each part enters centred at its own means**, never as a raw sum that a
-    mean is subtracted from afterwards, so data far from zero keep their
-    digits. The parts are folded in one at a time, so the rounding grows with
-    their number. The rounding was measured on 100,000 rows of three columns
-    at a level of 1e4 standard deviations, against the exact union in
-    rational arithmetic. Merging 2 parts, each exact to float64, came within
-    2.4e-15 of the union's co-moments, relative to the spread, and merging
-    1,000 parts within 3.8e-14. Raw sums pooled and centred afterwards came
-    within 4.0e-08 and 2.5e-07. A bank's own accumulator over all the rows
-    came within 3.8e-14 too.
+    **Each part enters centered at its own means**, never as a raw sum that
+    a mean is subtracted from afterwards, so data far from zero keep their
+    digits. The parts are folded in one at a time, so the rounding grows
+    with their number. It was measured on 100,000 rows of three columns at a
+    level of 1e4 standard deviations, against the exact union in rational
+    arithmetic, relative to the spread:
 
-    To merge two halves of a decayed stream in time order, decay the earlier
-    half to the later half's last row before merging. Each half's weights are
-    relative to its own last row, so the earlier half is over-weighted by
-    exactly the decay between them. Multiply the earlier half's ``weight_sum``
-    and ``target_weights`` by ``0.5 ** (dt / half_life)``, with ``dt`` the clock
-    from its last row to the later half's last row, each step capped at
-    ``gap_cap`` as the bank caps it. Leave every other field as it is: the
-    means and co-moments are weighted means, and ``n_kish`` and
-    ``target_n_kish`` are scale-free, so the sums of squared weights the merge
-    recovers from them decay with the weights. Halves run under
-    ``half_life=float("inf")`` merge as they are.
+    .. list-table::
+       :header-rows: 1
+       :widths: 60 40
+
+       * - how the union was formed
+         - the co-moments' error
+       * - this merge of 2 parts, each exact to float64
+         - 2.4e-15
+       * - this merge of 1,000 parts
+         - 3.8e-14
+       * - raw sums of 2 parts, centered afterwards
+         - 4.0e-08
+       * - raw sums of 1,000 parts, centered afterwards
+         - 2.5e-07
+       * - one bank's own Gram, learned over all the rows
+         - 3.8e-14
+
+    **Pooling within parts.** For parts ``i`` with weights ``W_i``,
+    co-moments ``C_i``, and for each target its weights ``T_i``, centered
+    cross-moments ``c_i`` and variances ``V_i``:
+
+    .. code-block:: text
+
+        W = sum W_i          C = sum W_i C_i / W
+        T = sum T_i          c = sum T_i c_i / T          V = sum T_i V_i / T
+        n_kish = W**2 / sum(W_i**2 / n_kish_i),   target_n_kish likewise
+
+    folded in the parts' order as the union is, so where the parts' means
+    are equal the two forms give the same numbers. Each feature is less its
+    part's mean, over the target's rows for that target's moments, and each
+    target less its part's mean. So the result's ``means`` and
+    ``means_by_target`` are 0, the intercept's 1 aside, its
+    ``cross_moments`` are its ``cross_centered``, and its ``target_means``
+    are 0. Wooldridge (2010, chapter 10) calls a regression on it the
+    within, or fixed-effects, estimator. Its slopes say how the columns and
+    the target move together inside each part, and the parts' levels drop
+    out. A part with no weight for a target (``T_i = 0``) adds to ``C`` and
+    not to that target's moments.
+
+    **To merge two halves of a decayed stream in time order, decay the
+    earlier half to the later half's last row first.** Halves run under
+    ``half_life=float("inf")`` merge as they are. Under a finite half-life,
+    each half's weights are relative to its own last row, so the earlier
+    half is over-weighted by exactly the decay between them. Multiply the earlier half's
+    ``weight_sum`` and ``target_weights`` by ``0.5 ** (dt / half_life)``,
+    with ``dt`` the clock from its last row to the later half's last row,
+    each step capped at ``gap_cap`` as the bank caps it. Leave every other
+    key as it is. The means and co-moments are weighted means, and
+    ``n_kish`` and ``target_n_kish`` do not change when every weight is
+    scaled, so the sums of squared weights the merge recovers from them
+    decay with the weights. For example, this code reads ``df`` from the
+    README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
 
     .. code-block:: python
 
         halves = po.spec.ewridge("h", targets=["y"], features=["x0", "x1"],
                                  clock="t", gap_cap=10.0, half_life=100.0)
 
-        def gram_of(rows):                               # a fresh bank's Gram after these rows
+        def gram_of(rows):                               # the Gram of a new bank fed these rows
             fitted = po.ModelBank([halves])
             fitted.fit_predict(rows)
             return fitted.gram("h")[0]
@@ -399,97 +572,14 @@ def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
         decay = 0.5 ** (dt / 100.0)
         early = dict(early, weight_sum=early["weight_sum"] * decay,
                      target_weights=early["target_weights"] * decay)
-        pooled = po.gram.merge([early, late])            # the Gram of one bank over all 400 rows
-
-    Each target's ``means_by_target`` pools over its own rows, by its
-    ``target_weights``, and its ``cross_centered`` as the co-moments do, with the
-    gaps between the parts' column means and target means. A part without them
-    makes the merge report ``None`` there, and :func:`solve` then forms them from
-    ``cross_moments``. Under ``target_gaps = "own_rows"`` a spec may have a Gram
-    per set of targets: merge the entries of one Gram across the shards, the ones
-    with the same ``targets``.
-
-    Returns a mapping of the same shape. ``lags`` and ``lag_comoments`` come back
-    ``None``: a lagged cross-moment pairs a row with the row ``l`` back within its
-    own part, and the pairings across a part boundary are what no part holds.
-    ``group`` and ``instance`` come back ``None``, since a pooled accumulator
-    belongs to no one group or instance. A part with no ``n_kish``, such as a
-    window whose squared weights keep no digit
-    (:meth:`~polars_online.ModelBank.gram`), makes the merge report ``None``
-    for it, since the sum behind it is not there to add. A part that learned
-    nothing is the one case apart: it has no ``n_kish`` and adds nothing to
-    the sum. A part with no target moments, such as a mapping built by hand
-    without them, makes the merge report ``None`` for those.
-
-    .. code-block:: python
-
-        spec = po.spec.ewridge(
-            "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0, group="stock_id"
-        )
-        bank = po.ModelBank([spec])
-        bank.fit_predict(df)
-        parts = bank.gram("ridge")                      # one Gram per group
-        pooled = po.gram.merge(parts)                   # the Gram of every group's rows together
-
-    Parts in a compact form (``ModelBank.gram(dtype="float32")`` or
-    ``layout="packed"``) merge in float64. When every part is packed the merge
-    is packed too, entry for entry; otherwise it is the whole matrix.
-
-    Every part must have the same ``columns`` and ``targets`` (``ValueError``).
-    Merging one Gram returns it unchanged; merging none is a ``ValueError``.
-
-    .. rubric:: Pooling within parts
-
-    ``within=True`` pools each part's moments about its own means, averaged
-    by its weight, and leaves out the terms in the gaps between the parts'
-    means. For parts ``i`` with weights ``W_i``, co-moments ``C_i``, and for
-    each target its weights ``T_i``, centred cross-moments ``c_i`` and
-    variances ``V_i``:
+        aged = po.gram.merge([early, late])              # the Gram of one bank over all 400 rows
+        whole = gram_of(df)
+        print(np.allclose(aged["comoments"], whole["comoments"], rtol=1e-12, atol=1e-12),
+              round(float(aged["weight_sum"]), 6), round(float(whole["weight_sum"]), 6))
 
     .. code-block:: text
 
-        W = sum W_i          C = sum W_i C_i / W
-        T = sum T_i          c = sum T_i c_i / T          V = sum T_i V_i / T
-        n_kish = W**2 / sum(W_i**2 / n_kish_i),   target_n_kish likewise
-
-    folded in the parts' order as the union is, so where the parts' means
-    are equal the two forms are the same numbers. The result is the Gram of
-    the rows demeaned part by part. Each feature is less its part's mean,
-    over the target's rows for that target's moments, and each target less
-    its part's mean. So its ``means`` and ``means_by_target`` are 0, the
-    intercept's 1 aside, its ``cross_moments`` are its ``cross_centered``,
-    and its ``target_means`` are 0. A regression on it has an intercept per
-    part: Wooldridge (2010, chapter 10) calls it the within, or
-    fixed-effects, estimator. Its slopes say how the columns and the target
-    move together inside each part, and the parts' levels drop out. A part
-    with no weight for a target (``T_i = 0``) adds to ``C`` and not to that
-    target's moments.
-
-    It records what it is in two keys of its own. ``within_parts`` counts
-    the parts with weight, and ``target_within_parts`` counts, per target,
-    the parts with weight for it. A part already pooled within adds its own
-    counts. The fits read them. :func:`solve`, :func:`lasso_path`,
-    :func:`lars_path` and :func:`solve_subsets` give the slopes and ``nan``
-    for the intercept, since each part had one of its own and the pooled
-    Gram holds none of them. :func:`coef_stats` takes one degree of freedom
-    per part, in place of the intercept's one. A merge of several parts
-    without ``within`` refuses a part pooled within (``ValueError``). Its
-    means are 0, so a union would add the gap from 0 to the other parts'
-    means, as if its rows had not been demeaned.
-
-    .. code-block:: python
-
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
-                               half_life=float("inf"), group="stock_id")
-        bank = po.ModelBank([spec])
-        bank.fit_predict(df)
-        pooled = po.gram.merge(bank.gram("ridge"), within=True)  # each stock's levels left out
-        slopes = po.gram.solve(pooled)[1:]                       # its intercept is nan
-
-    See *Pooling blocks*, *Aging a block before it is pooled* and *Pooling
-    within blocks* in
-    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
-    for the theory and a recipe of each.
+        True 135.721952 135.721952
     """
     np = _np()
     parts = list(grams)
@@ -808,15 +898,48 @@ def _floats(np: Any, v: Any) -> Any:
 
 
 def from_row(row: Any) -> Gram:
-    """A closed group's row as the mapping :meth:`~polars_online.ModelBank.gram`
-    returns, so everything in this module works on it.
+    """Read a closed group's row as the Gram :meth:`~polars_online.ModelBank.gram` would return.
 
-    Takes a one-row frame from :meth:`~polars_online.ModelBank.closed_groups`, a
-    row of its ``iter_rows(named=True)``, or a mapping. The row's ``comoments`` is
-    the upper triangle with the diagonal, row by row, and its ``cross_moments``,
-    ``means_by_target`` and ``cross_centered`` are row-major ``(n_targets, k)``;
-    this expands all four. A closed group writes one row per Gram, so a row's
-    ``targets`` are that Gram's.
+    Use it on the rows :meth:`~polars_online.ModelBank.closed_groups` writes,
+    or on those rows read back from a file, so that every function in this
+    module works on them. For a group still open in the bank, use
+    :meth:`~polars_online.ModelBank.gram` itself.
+
+    .. rubric:: Parameters
+
+    ``row``
+        One closed group's row: a one-row frame of
+        :meth:`~polars_online.ModelBank.closed_groups`, a row of its
+        ``iter_rows(named=True)``, or a mapping. A closed group writes one
+        row per Gram, so a row's ``targets`` are the targets of that one
+        Gram. A row that names ``cross_centered`` by its old British spelling,
+        ``cross_centred``, is read with a warning (see Raises).
+
+    .. rubric:: Returns
+
+    A :class:`Gram`. The row's ``comoments`` is the upper triangle with the
+    diagonal, row by row, and its ``cross_moments``, ``means_by_target`` and
+    ``cross_centered`` are row-major ``(n_targets, k)``, with ``k`` the
+    number of columns. This function expands all four.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        When the row is of a model that keeps no Gram (its ``columns`` is
+        null), when a frame holds more or fewer than one row, or when
+        ``comoments`` does not hold ``k (k + 1) / 2`` entries.
+    ``TypeError``
+        When ``row`` is none of the three forms, or names both
+        ``cross_centered`` and ``cross_centred``.
+    :class:`~polars_online.PolarsOnlineDeprecationWarning`
+        A warning, not an error: issued when the row names
+        ``cross_centred``. That spelling is read until the next major
+        version.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
 
     .. code-block:: python
 
@@ -825,29 +948,32 @@ def from_row(row: Any) -> Gram:
         )
         bank = po.ModelBank([blocks])
         bank.fit_predict(df.with_columns(block=pl.int_range(pl.len()) // 100))
-        closed = bank.closed_groups()                 # one row per finished block
+        closed = bank.closed_groups()                 # one row per closed block
         for row in closed.iter_rows(named=True):
             g = po.gram.from_row(row)
             r = po.gram.correlation(g)
+            print(row["group"], round(float(r[0, 1]), 3))
 
-    The result is what ``gram()`` would have returned for that group bit for bit,
-    except the co-moment matrix's lower triangle, which is the upper one mirrored.
-    The two differ in the last bit or so and not more: the accumulator updates
-    ``C[i][j]`` and ``C[j][i]`` with the same two products in the opposite order,
-    which does not commute in IEEE arithmetic. Everything read off the matrix (a
-    solve, a correlation, a condition number) is unaffected at that scale, and the
-    packed half is what makes the closed row half the size.
+    .. code-block:: text
 
-    ``ValueError`` for a row of a kind that keeps no accumulators (its ``columns``
-    is null): there is no Gram to make. ``TypeError`` for something that is none
-    of the three forms. A row that names ``cross_centered`` by its earlier
-    spelling, ``cross_centred``, is read with a
-    :class:`~polars_online.PolarsOnlineDeprecationWarning` until the next
-    major version.
+        0 0.021
+        1 0.108
+        2 -0.053
 
-    See *Reading Grams from saved files* in
-    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
-    for the theory and a recipe that runs.
+    .. rubric:: See also
+
+    - :meth:`~polars_online.ModelBank.closed_groups`, which writes the rows.
+    - *Reading Grams from saved files* in `docs/GRAM.md
+      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      the theory and a recipe that runs.
+
+    .. rubric:: Notes
+
+    The result is what ``gram()`` would have returned for that group, bit
+    for bit. The model keeps one triangle of its co-moment matrix and reads
+    the other through its mirror, so the upper triangle the row holds loses
+    nothing, and keeping only that triangle makes the row about half the
+    size of the whole matrix.
     """
     np = _np()
     d = forward_deprecated(
@@ -927,28 +1053,80 @@ def _target_q(np: Any, g: Gram) -> Any:
 
 @deprecated_keywords("po.gram.subset", {"cols": "columns"})
 def subset(g: Gram, columns: Sequence[str | int]) -> Gram:
-    """The Gram of a subset of the columns, in the order given.
+    """Keep some of a Gram's columns, in the order given.
 
-    Exact, not approximate: a marginal set of moments is a sub-block of the joint
-    ones, so this is a selection rather than a recomputation, and a regression on
-    the subset is the regression the full accumulator implies. So forward
-    stepwise, an information criterion over feature sets, or an ``r``-column fit
-    read off a ``k``-column stream all come from one pass.
+    Use it to fit or diagnose a narrower design from a Gram that holds more
+    columns: forward stepwise selection, an information criterion over
+    feature sets, or an ``r``-column fit read off a ``k``-column stream, all
+    from one pass. To narrow one fit, :func:`solve`, :func:`lasso_path`,
+    :func:`lars_path` and :func:`coef_stats` take ``features`` instead.
 
-    ``columns`` are names or positions, as the Gram's own ``columns`` key
-    names them, and the intercept may be selected like any other column.
-    **Leave the intercept out, and every fit on the subset goes through the
-    origin**, as a spec with ``fit_intercept=False`` does:
-    :func:`solve` and the paths read the raw moments, ``E[z z']`` and
-    ``E[z y]``, and centre nothing. Keep it for a fit with an intercept.
-    Targets are untouched: they index a different axis. Returns a mapping of
-    the same shape, its ``comoments`` in float64 and packed if ``g``'s is.
-    ``KeyError`` for a name the Gram has not got, ``IndexError`` for a
-    position.
+    .. rubric:: Parameters
 
-    See *Every least-squares fit is a function of the Gram* in
-    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
-    for the theory and a recipe that runs.
+    ``g``
+        The Gram, as :meth:`~polars_online.ModelBank.gram` returns it.
+    ``columns``
+        The columns to keep, by name or by position, as the Gram's own
+        ``columns`` key names them. A negative position counts from the
+        end. The intercept may be kept like any other column. **Leave the
+        intercept out, and every fit on the subset goes through the
+        origin**, as a spec with ``fit_intercept=False`` does: :func:`solve`
+        and the paths then read the raw moments, ``E[z z']`` and ``E[z y]``,
+        and center nothing. Keep it for a fit with an intercept. The
+        keyword's older name, ``cols``, is still read, with a
+        :class:`~polars_online.PolarsOnlineDeprecationWarning`.
+
+    .. rubric:: Returns
+
+    A :class:`Gram` of the columns kept: its ``columns``, ``means``,
+    ``comoments``, ``cross_moments``, ``means_by_target``,
+    ``cross_centered`` and ``lag_comoments`` narrowed to them, its
+    ``comoments`` in float64, packed if ``g``'s is. The targets are
+    untouched, since they index a different axis.
+
+    .. rubric:: Raises
+
+    ``KeyError``
+        A name the Gram does not have.
+    ``IndexError``
+        A position outside the Gram's columns.
+    ``TypeError``
+        ``columns`` and its older name ``cols`` are given together.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge(
+            "ridge", targets=["y"], features=["x0", "x1", "x2"], half_life=100.0
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        g = bank.gram("ridge")[0]
+        narrow = po.gram.subset(g, ["intercept", "x0"])     # the fit on x0 alone
+        print(narrow["columns"], po.gram.solve(narrow).round(2))
+
+    .. code-block:: text
+
+        ['intercept', 'x0'] [1.03 1.81]
+
+    .. rubric:: See also
+
+    - :func:`solve`, whose ``features`` narrows one fit without a new Gram.
+    - *Every least-squares fit is a function of the Gram* in `docs/GRAM.md
+      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      the theory and a recipe that runs.
+
+    .. rubric:: Notes
+
+    The subset is exact. The moments of some of the columns are a
+    sub-block of the moments of all of them, so this selects that block,
+    and a regression on the subset is the regression the whole Gram implies
+    for those columns. A column named twice is kept twice, which makes the
+    subset's matrix singular.
     """
     np = _np()
     idx = _col_index(g, columns, "po.gram.subset")
@@ -979,18 +1157,62 @@ def subset(g: Gram, columns: Sequence[str | int]) -> Gram:
 
 
 def correlation(g: Gram) -> Any:
-    """The correlation matrix of the columns, from the centred co-moments.
+    """Compute the correlation matrix of a Gram's columns from their co-moments.
 
-    A ``k x k`` array, ``C_ij / sqrt(C_ii C_jj)`` from the co-moments ``C``.
-    ``nan`` in the row and column of a constant column, the intercept
+    Use it to read how a Gram's columns move together, or to pass a
+    correlation matrix on to :mod:`polars_online.corr`, whose functions read
+    a Gram this way themselves. To judge whether a fit on the columns is
+    determined, use :func:`vif` or :func:`condition`.
+
+    .. rubric:: Parameters
+
+    ``g``
+        The Gram, as :meth:`~polars_online.ModelBank.gram` returns it, in
+        any of its forms.
+
+    .. rubric:: Returns
+
+    A ``k x k`` float array, with ``k`` the number of columns:
+    ``C_ij / sqrt(C_ii C_jj)`` from the co-moments ``C``. Its entries are
+    ``nan`` in the row and the column of a constant column, the intercept
     included: a constant has no correlation with anything, and reporting 0
-    there would read as "independent". The diagonal is 1 where the variance
-    is positive, to rounding: ``C_ii / sqrt(C_ii)**2`` came within 2.2e-16 of
-    it on 200 random matrices.
+    there would read as "independent". The diagonal is 1, to rounding,
+    where the variance is above 0.
 
-    See *Is the fit determined?* in
-    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
-    for the theory and a recipe that runs.
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        spec = po.spec.ew_cov("cov", features=["x0", "x1", "x2"], half_life=100.0)
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        g = bank.gram("cov")[0]
+        print(g["columns"])
+        print(po.gram.correlation(g).round(2))
+
+    .. code-block:: text
+
+        ['x0', 'x1', 'x2']
+        [[ 1.    0.16  0.08]
+         [ 0.16  1.   -0.01]
+         [ 0.08 -0.01  1.  ]]
+
+    .. rubric:: See also
+
+    - :func:`vif` and :func:`condition`, which diagnose the same design.
+    - :mod:`polars_online.corr`, which repairs, summarizes and scores a
+      correlation matrix.
+    - *Is the fit determined?* in `docs/GRAM.md
+      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      the theory and a recipe that runs.
+
+    .. rubric:: Notes
+
+    The diagonal is ``C_ii / sqrt(C_ii)**2``, which came within 2.2e-16 of
+    1 on 200 random matrices.
     """
     np = _np()
     c = _comoments(np, g)
@@ -1012,65 +1234,70 @@ def solve(
     features: Sequence[str | int] | None = None,
     standardize: bool = False,
 ) -> Any:
-    """Ridge coefficients from the Gram, in the features' original units.
+    """Compute ridge coefficients from a Gram, in the features' original units.
 
-    The model's own algebra (``EwRidge::solve``), so the result is the fit that
-    spec would report on the same accumulator. Two penalties are not taken
-    here, and a spec with either reports a fit this does not reproduce:
-    ``ridge_scale = "sum"``, a decaying prior on the sum scale that reaches the
-    intercept, and ``coef_prior``, a target other than zero.
-
-    With an intercept in ``columns`` it is eliminated, and the slopes solve
-    the centred system:
-
-    .. code-block:: text
-
-        (C + ridge * I) b = c
-        b_0 = ybar - m . b
-
-    ``C`` is the features' centred ``comoments``. ``c = cross_centered[t]`` is
-    the target's cross-moments centred at its own column means ``m``
-    (``means_by_target``) and its mean ``ybar``, as the model holds them. That
-    is the raw normal equations with the intercept unpenalized, exactly, where
-    the target's rows are the Gram's, and it is what ``target_gaps =
-    "pairwise"`` solves where they are not. A mapping without
-    ``cross_centered`` forms ``cross_moments[t] - m * ybar`` instead, which at a
-    level ``L`` keeps ``L**2 * eps`` of it. Without an intercept nothing is
-    centred: ``(E[z z'] + ridge * I) b = E[z y]``, every slot penalized.
+    Use it to fit a ridge, or least squares at ``ridge=0``, on a Gram after
+    the pass: the spec's own fit, a grid of penalties, or a fit on some of
+    its columns. For the lasso or the elastic net, use :func:`lasso_path` or
+    :func:`lars_path`. To fit many merged subsets of Grams at once, use
+    :func:`solve_subsets`.
 
     .. rubric:: Parameters
 
+    ``g``
+        The Gram, as :meth:`~polars_online.ModelBank.gram` returns it, or as
+        :func:`merge`, :func:`subset` or :func:`from_row` return one.
     ``ridge``
-        The penalty, added to the co-moments, which are weighted means: a
-        spec's ``ridge`` under its default ``ridge_scale = "mean"``, in the
-        features' squared units unless ``standardize``. A sequence gives one
-        row of coefficients per value. Where the system's diagonal is even --
-        under ``standardize``, or columns of like scale -- a grid rides a
-        single eigendecomposition: with ``V d V'`` in hand every ridge is ``V
-        diag(1/(d + r)) V' b``, so a grid of fifty takes one factorization and
-        fifty matrix products. Where it is not, each ridge is solved on its
-        own (see *Accuracy* below).
+        The penalty, added to the co-moments, which are weighted means. It
+        is a spec's ``ridge`` under its default ``ridge_scale="mean"``, in
+        the features' squared units unless ``standardize``. A sequence gives
+        one row of coefficients per value. Default 0, least squares.
+        Refused unless finite and at least 0, as a spec's ``ridge`` is.
     ``target``
-        The target, by name or position among this Gram's ``targets``.
+        The target, by name or by position among the Gram's ``targets``.
+        Default 0, the first.
     ``features``
-        The regressors, narrowed: the fit on a :func:`subset` of these
-        columns and the intercept, returned over all the Gram's columns with
-        0 for a column left out. The intercept is refused here, since the
-        solve handles it itself.
+        The columns to fit on, by name or position: the fit on a
+        :func:`subset` of these columns and the intercept, returned over all
+        the Gram's columns with 0 for each column left out. Default
+        ``None``, every column. The intercept is refused here, since the
+        solve handles it itself, and so is a column named twice.
     ``standardize``
-        Scale either system to correlation form, add ``ridge`` there and unscale,
-        so ``ridge`` means the same thing whatever the features' units. A column
-        with zero variance (zero raw second moment, without an intercept) is
-        dropped with a coefficient of 0 rather than making the system singular.
-        Pass the ``standardize`` the spec used, or the numbers will not match its
-        ``coef()``.
+        ``True`` scales the system to correlation form, adds ``ridge`` there
+        and scales back, so ``ridge`` means the same thing whatever the
+        features' units. A column with no variance (no raw second moment,
+        without an intercept) is then dropped with a coefficient of 0,
+        where it would make the system singular. Pass the ``standardize``
+        the spec used, or the numbers will not match its ``coef()``.
+        Default ``False``.
 
-    Returns a vector over the Gram's columns, starting with the intercept when
-    there is one, in :func:`polars_online.spec.coef_index` order; with a sequence
-    of ridges, one row per value. On a Gram pooled within parts
+    .. rubric:: Returns
+
+    A float array over the Gram's columns, the intercept first when there
+    is one, in :func:`polars_online.spec.coef_index` order. With a sequence
+    of ridges, a 2-d array, one row per value. On a Gram pooled within parts
     (``merge(within=True)``) the slopes are the within estimator's and the
     intercept is ``nan``: each part had an intercept of its own, and the
     pooled Gram holds none of them.
+
+    .. rubric:: Raises
+
+    ``KeyError``
+        A target or column name the Gram does not have, or a target named
+        for a Gram with no targets.
+    ``IndexError``
+        A target or column position outside the Gram's, or any target
+        position, the default ``0`` included, on a Gram with no targets.
+    ``ValueError``
+        The intercept among ``features``, or a column named twice in them
+        (one column solved twice is a singular system, and only one of its
+        two coefficients could be reported); a ``ridge`` that is not finite
+        and at least 0.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
 
     .. code-block:: python
 
@@ -1081,35 +1308,69 @@ def solve(
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("ridge")[0]
-        beta = po.gram.solve(g, target="y", ridge=0.1, standardize=True)   # the spec's own fit
+        coef = po.gram.solve(g, target="y", ridge=0.1, standardize=True)   # the spec's own fit
         grid = po.gram.solve(g, target="y", ridge=[1e-6, 0.01, 0.1, 1.0])  # one row per ridge
+        print(coef.round(3), grid.shape)
 
-    ``KeyError`` / ``IndexError`` for a target or column the Gram has not got;
-    ``ValueError`` for the intercept among ``features`` or a column named twice in
-    them (one regressor solved twice is a singular system, and only one of its two
-    coefficients could be reported), and for a ``ridge`` that is not finite and at
-    least 0, as a spec's ``ridge`` must be.
+    .. code-block:: text
 
-    .. rubric:: Accuracy
+        [ 0.986  1.773 -0.884] (4, 3)
 
-    The solve is accurate to the condition of the system with each column
-    scaled by the root of its diagonal, as the model's Cholesky is, so the
+    .. rubric:: See also
+
+    - :func:`coef_stats`, the standard errors and ``t`` of the fit.
+    - :func:`lasso_path` and :func:`lars_path`, the lasso's fits.
+    - *A ridge and its t* in `docs/GRAM.md
+      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      the theory and a recipe that runs.
+
+    .. rubric:: Notes
+
+    **The arithmetic is the model's own**: the ``ewridge`` model's solve, so
+    the result is the fit that spec would report on the same Gram. Two penalties are not
+    taken here, and a spec with either reports a fit this does not
+    reproduce: ``ridge_scale="sum"``, a decaying prior on the sum scale that
+    reaches the intercept, and ``coef_prior``, a prior centered on values
+    other than 0.
+
+    With an intercept among the columns, it is eliminated, and the slopes
+    ``b`` solve the centered system:
+
+    .. code-block:: text
+
+        (C + ridge * I) b = c
+        b_0 = ybar - m . b
+
+    ``C`` is the features' centered ``comoments``. ``c = cross_centered[t]``
+    is target ``t``'s cross-moments centered at its own column means ``m``
+    (``means_by_target``) and its mean ``ybar``, as the model holds them.
+    That is the raw normal equations with the intercept unpenalized,
+    exactly, where the target was present on every row the Gram holds, and
+    it is what ``target_gaps="pairwise"`` solves where it was not. A
+    mapping without ``cross_centered`` forms ``cross_moments[t] - m * ybar`` instead, which
+    at a level ``L`` carries a rounding error of about ``L**2 * eps``, with
+    ``eps`` the float64
+    rounding unit. Without an intercept nothing is centered:
+    ``(E[z z'] + ridge * I) b = E[z y]``, and every column is penalized.
+
+    **A grid of ridges shares one eigendecomposition where the system's
+    diagonal is even**, under ``standardize`` or on columns of like scale.
+    With ``V d V'`` in hand, every ridge ``r`` is ``V diag(1/(d + r)) V' c``,
+    so a grid of fifty takes one factorization and fifty matrix products.
+
+    **The solve is accurate to the condition of the system with each column
+    scaled by the root of its diagonal**, as the model's Cholesky is. So the
     features' units do not enter: columns from ``1e-10`` to ``1e10`` are
-    solved as well as columns of unit scale. ``numpy.linalg.eigh`` is accurate
-    only relative to the largest eigenvalue, so the system is scaled that way
-    before it is decomposed, and the answer scaled back. A uniform ridge is
-    not uniform once the columns are scaled, so where the diagonal of ``C +
-    ridge * I`` spreads by more than a factor of 4, largest over smallest,
-    each ridge takes a solve of its own: an LU solve of the scaled system
-    for a ridge above 0, its eigendecomposition at 0. On columns from
-    ``1e-3`` to ``1e3`` in scale, a grid of fifty ridges took 1.4 ms at 50
-    columns and 8.4 ms at 200, three times the single decomposition's time,
-    and one ridge above 0 took less time than before (measured on an Apple
-    M4 Pro under load).
-
-    See *A ridge and its t* in
-    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
-    for the theory and a recipe that runs.
+    solved as well as columns of unit scale. ``numpy.linalg.eigh`` is
+    accurate only relative to the largest eigenvalue, so the system is
+    scaled that way before it is decomposed, and the answer scaled back. A
+    uniform ridge is not uniform once the columns are scaled. So where the
+    diagonal of ``C + ridge * I`` spreads by more than a factor of 4,
+    largest over smallest, each ridge takes a solve of its own: an LU solve
+    of the scaled system for a ridge above 0, its eigendecomposition at 0.
+    On columns from ``1e-3`` to ``1e3`` in scale, a grid of fifty ridges
+    took 1.4 ms at 50 columns and 8.4 ms at 200, three times the single
+    decomposition's time (measured on an Apple M4 Pro under load).
     """
     np = _np()
     ridges = np.atleast_1d(np.asarray(ridge, dtype=float))
@@ -1232,82 +1493,79 @@ def lasso_path(
     max_iter: int = 1000,
     tol: float = 1e-10,
 ) -> Any:
-    """The elastic-net path from the Gram, one row of coefficients per penalty.
+    """Compute the elastic-net path from a Gram, one row of coefficients per penalty.
 
-    The ``lasso`` model's coordinate descent (``Lasso::solve``), run offline on
-    the standardized (correlation-form) matrix, warm-started down the path in the
-    order given:
-
-    .. code-block:: text
-
-        b_i = soft(rho_i, l * l1_ratio * pw_i) / (C_ii + l * (1 - l1_ratio) * pw_i)
-        soft(v, t) = sign(v) * max(|v| - t, 0)
-
-    where ``rho_i`` is the standardized cross-correlation less the other columns'
-    contributions. Coefficients come back in original units with the intercept
-    recovered from the means, so a row is directly comparable to ``bank.coef()``.
-    With an intercept the system is centred at the target's own means, as the
-    model's descent reads it; through the origin nothing is centred and the raw
-    moments are used, as the model does.
-
-    The descent runs in Rust. On 40 penalties at 15 strongly correlated
-    columns it took 1.8 ms, where the same descent as a Python loop took 129
-    ms. Each sweep updates the coordinates in the loop's order, so a row
-    matches the loop's to rounding (``2e-15`` there), not to the bit: the sum
-    over the other columns runs in a different order. For the start of a
-    path, knot by knot and exactly, see :func:`lars_path`.
+    Use it to fit the lasso or the elastic net on a Gram over a grid of
+    penalties you choose, as the ``lasso`` model does over its stream. For
+    the start of the lasso path, knot by knot and exactly, use
+    :func:`lars_path`. For a ridge, use :func:`solve`.
 
     .. rubric:: Parameters
 
+    ``g``
+        The Gram, as :meth:`~polars_online.ModelBank.gram` returns it.
     ``penalties``
         The penalties ``l``, from large to small, as a path is meant to be
-        walked: the warm start makes that both faster and better conditioned.
-        They are a ``lasso`` spec's ``penalties``, and ``bank.coef()`` reports each as
-        ``penalty``. The keyword was ``lambdas`` before 1.0; that name is
-        refused, and the error names this one.
+        walked: each penalty's descent starts from the fit at the one before
+        it, which makes the walk faster and better conditioned. They are a
+        ``lasso`` spec's ``penalties``, and ``bank.coef()`` reports each as
+        ``penalty``. Each is refused unless finite and at least 0. The
+        keyword's older name, ``lambdas``, is refused, and the error names
+        this one.
     ``l1_ratio``
-        The share of the penalty that is L1; below 1 an elastic net. Default 1.
+        The share of the penalty that is L1. Default 1, the lasso; below 1,
+        an elastic net. Refused outside ``[0, 1]``.
     ``penalty_weights``
-        A scale on the penalty per feature, in ``features`` order (or ``columns``
-        order without the intercept): 0 leaves a column unpenalized, and a column
-        the stream found constant is dropped whatever is asked for. The
-        ``lasso`` model has no such parameter. Here the path is walked again
-        on every call, so each call may weight the columns its own way.
+        A scale on the penalty per feature, in ``features`` order (or in
+        ``columns`` order without the intercept): 0 leaves a column
+        unpenalized. A column with no variance in the Gram is dropped whatever
+        its weight. Default ``None``, every weight 1. The ``lasso`` model
+        takes no such parameter: here the path is walked again on every
+        call, so each call may weigh the columns its own way. Refused at the
+        wrong length, or with a weight that is not finite and at least 0.
     ``target``, ``features``
         As for :func:`solve`.
-    ``max_iter``, ``tol``
-        The descent's cap on sweeps and its stopping rule. A sweep ends the
-        descent when it moves no standardized coefficient by ``tol * s``
-        or more, or moves none at all. ``s`` is the target's spread, read
-        from the Gram's target moments: its standard deviation with an
-        intercept, its root mean square through the origin. The
-        standardized coefficients are in the target's units, so the rule
-        has none: the target scaled by a power of two, with the penalties,
-        gives the same path scaled, to the bit, stopped on the same sweep. ``s`` is
-        never below the largest standardized cross-moment ``|d_i|``, which
-        cannot exceed the target's spread, so a Gram without target
-        moments has a scale too. ``tol`` is the model's, 1e-10. On 15
-        features at seven penalties it cost the same as 1e-7 (0.07 ms) and
-        landed 3e-10 from the converged path where 1e-7 landed 4e-7.
-        ``max_iter`` is 1,000 where the model's is 100, since this path
-        starts each penalty from zero and the model starts each solve from
-        its last fit.
+    ``max_iter``
+        The most sweeps of the coordinate descent at each penalty. Default
+        1,000, where the model's is 100, since this path starts its first
+        penalty from zero and the model starts each solve from its last
+        fit. Refused below 1.
+    ``tol``
+        The stopping rule: a sweep ends the descent when it moves no
+        standardized coefficient by ``tol * s`` or more, or moves none at
+        all, with ``s`` the target's spread (Notes). Default 1e-10, the
+        model's. Refused unless finite and above 0.
 
-    Returns an array of shape ``(len(penalties), k)`` over the Gram's columns,
-    the intercept first when there is one. On a Gram pooled within parts
+    .. rubric:: Returns
+
+    A float array of shape ``(len(penalties), k)`` over the Gram's ``k``
+    columns, the intercept first when there is one, in the features'
+    original units with the intercept recovered from the means, so a row is
+    directly comparable to ``bank.coef()``. On a Gram pooled within parts
     (``merge(within=True)``) the intercept is ``nan``: such a Gram has an
     intercept per part and none of its own.
 
-    A penalty whose descent runs out of sweeps keeps its row where the
-    descent stopped, short of the rule, and a
-    :class:`~polars_online.ReadinessWarning` names each such penalty. A
-    cyclic descent contracts the error along two columns of correlation
-    ``rho`` by ``rho**2`` a sweep. Their correlation matrix's condition
-    number is ``kappa = (1 + rho) / (1 - rho)``, so ``rho**2 = ((kappa - 1)
-    / (kappa + 1))**2``, about ``1 - 4 / kappa``, and each e-fold of the
-    error takes about ``kappa / 4`` sweeps: many, on columns that nearly
-    repeat each other. Raise ``max_iter``, or take the knots exactly from
-    :func:`lars_path`.
+    .. rubric:: Raises
+
+    ``ValueError``
+        A number outside its range, by the rule a spec applies to the same
+        parameter (each listed under Parameters); ``penalty_weights`` of the
+        wrong length; the intercept or a column named twice among
+        ``features``, as for :func:`solve`.
+    ``KeyError``, ``IndexError``
+        As for :func:`solve`.
+    ``TypeError``
+        ``penalties``' older name, ``lambdas``, is given.
+    :class:`~polars_online.ReadinessWarning`
+        A warning, not an error: issued for each penalty whose descent runs
+        out of sweeps before it meets ``tol``. That row keeps the
+        coefficients where the descent stopped. Increase ``max_iter``, or
+        take the knots exactly from :func:`lars_path`.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
 
     .. code-block:: python
 
@@ -1315,24 +1573,64 @@ def lasso_path(
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("ridge")[0]
-        path = po.gram.lasso_path(g, [0.1, 0.01, 0.001], target="y")   # one row per penalty
+        path = po.gram.lasso_path(g, [1.0, 0.1, 0.001], target="y")   # one row per penalty
+        print(path.round(3) + 0.0)                                  # + 0.0 prints -0.0 as 0.0
 
-    ``ValueError`` for ``penalty_weights`` of the wrong length, for the
-    intercept or a column named twice among ``features`` (as for
-    :func:`solve`), and for a number outside its range, by the rule a spec
-    applies to the same parameter:
+    .. code-block:: text
 
-    - a penalty or a weight that is not finite and at least 0;
-    - an ``l1_ratio`` outside ``[0, 1]``;
-    - a ``max_iter`` below 1;
-    - a ``tol`` that is not finite and above 0.
+        [[ 0.966  0.784  0.   ]
+         [ 0.991  1.848 -0.885]
+         [ 0.992  1.968 -1.002]]
 
-    ``KeyError``, ``IndexError`` and the intercept among ``features`` as for
-    :func:`solve`.
+    .. rubric:: See also
 
-    See *Choosing columns on the lasso path* in
-    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
-    for the theory and a recipe that runs.
+    - :func:`lars_path`, the lasso path's knots, exactly.
+    - :func:`solve`, a ridge on the same Gram.
+    - *Choosing columns on the lasso path* in `docs/GRAM.md
+      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      the theory and a recipe that runs.
+
+    .. rubric:: Notes
+
+    **The descent is the model's own**: the ``lasso`` model's, run on the standardized
+    (correlation-form) matrix, each penalty starting from the fit at the
+    one before it:
+
+    .. code-block:: text
+
+        b_i = soft(rho_i, l * l1_ratio * pw_i) / (C_ii + l * (1 - l1_ratio) * pw_i)
+        soft(v, t) = sign(v) * max(|v| - t, 0)
+
+    where ``b_i`` is column ``i``'s standardized coefficient, ``rho_i`` its
+    standardized cross-correlation with the target less the other columns'
+    contributions, ``C_ii`` its standardized variance and ``pw_i`` its
+    penalty weight. With an intercept the system is centered at the
+    target's own means, as the model's descent reads it. Through the origin
+    nothing is centered and the raw moments are used, as the model does.
+
+    **The stopping rule has no units.** ``s`` is the target's spread, read
+    from the Gram's target moments: its standard deviation with an
+    intercept, its root mean square through the origin. The standardized
+    coefficients are in the target's units, so the target scaled by a power
+    of two, with the penalties, gives the same path scaled, to the bit,
+    stopped on the same sweep. ``s`` is never below the largest standardized
+    cross-moment ``|d_i|``, which cannot exceed the target's spread, so a
+    Gram without target moments has a scale too. On 15 features at seven
+    penalties, ``tol=1e-10`` cost the same as 1e-7 (0.07 ms) and landed
+    3e-10 from the converged path, where 1e-7 landed 4e-7.
+
+    **A descent on columns that nearly repeat each other takes many
+    sweeps.** A cyclic descent shrinks the error along two columns of
+    correlation ``rho`` by ``rho**2`` a sweep. Their correlation matrix's
+    condition number is ``kappa = (1 + rho) / (1 - rho)``, so ``rho**2 =
+    ((kappa - 1) / (kappa + 1))**2``, about ``1 - 4 / kappa``, and each
+    e-fold of the error takes about ``kappa / 4`` sweeps.
+
+    **The descent runs in Rust.** On 40 penalties at 15 strongly correlated
+    columns it took 1.8 ms, where the same descent as a Python loop took
+    129 ms. Each sweep moves the coordinates in the loop's order, so a row
+    matches the loop's to rounding (``2e-15`` there), not to the bit: the
+    sum over the other columns runs in a different order.
     """
     np = _np()
     # Each was taken as given: `max_iter=0` returned the intercept with every
@@ -1524,13 +1822,131 @@ def lars_path(
     penalty_weights: Sequence[float] | None = None,
     threads: int | None = None,
 ) -> dict[str, Any]:
-    """The lasso path from its start, knot by knot, by least angle regression.
+    """Compute the lasso path from its start, knot by knot, by least angle regression.
 
-    Efron, Hastie, Johnstone and Tibshirani's LARS (2004) with their lasso
-    modification, on the correlation form :func:`lasso_path` standardizes
-    the Gram to. ``R`` is the features' correlation matrix and ``d`` their
-    standardized cross-moments with the target, centred at the target's own
-    means where there is an intercept. The lasso minimizes
+    Use it to find which columns the lasso chooses first, and the exact
+    penalties at which each enters or leaves, without choosing a grid of
+    penalties. For a grid of penalties, a penalty weight of 0 or an elastic
+    net, use :func:`lasso_path`. For many Grams or targets in one call, use
+    :func:`lars_paths`.
+
+    .. rubric:: Parameters
+
+    ``g``
+        The Gram, as :meth:`~polars_online.ModelBank.gram` returns it.
+    ``target``, ``features``
+        As for :func:`solve`.
+    ``max_iter``
+        Stop after this many knots past the path's first, each knot one
+        penalty however many columns change at it. Default ``None``, no
+        limit. Refused unless a whole number of at least 1. The keyword's
+        older name, ``max_steps``, is still read, with a
+        :class:`~polars_online.PolarsOnlineDeprecationWarning`.
+    ``max_active``
+        Stop at the first knot with this many columns active or more (more
+        than ``max_active`` where columns tie there). Default ``None``, no
+        limit. Refused unless a whole number of at least 1. With neither
+        limit, the path runs to ``l = 0``. A selection reads only the start
+        of a path, and each step costs ``O(k |A|)`` operations (Notes), so
+        stop it early.
+    ``penalty_weights``
+        A scale ``w_j`` on the penalty per feature, as for
+        :func:`lasso_path`, but each finite and above 0. A weight of 0 would
+        keep a column in the fit at every penalty, and a path that starts
+        at ``l_max``, where every coefficient is 0, cannot hold such a
+        column. Use :func:`lasso_path` for that, and for an elastic net, whose
+        path is not piecewise linear. Default ``None``, every weight 1. Refused at the wrong length.
+    ``threads``
+        How many threads the path runs on, as :class:`~polars_online.ModelBank`
+        takes it: ``None``, the default, is the process's threads, and an
+        integer that many threads. One path is one thread's work, so it
+        matters only to :func:`lars_paths`. The numbers are the same at any
+        count. Refused unless an integer of at least 1, or ``None``.
+
+    .. rubric:: Returns
+
+    A dict:
+
+    ``penalties``
+        The penalty ``l`` at each knot, falling, in the units of
+        :func:`lasso_path` and of the ``lasso`` model.
+    ``coef``
+        Shape ``(n_knots, k)``: each knot's coefficients over the Gram's
+        ``k`` columns, in the features' original units with the intercept
+        recovered, as a row of :func:`lasso_path` gives them (the intercept
+        ``nan`` on a Gram pooled within parts).
+    ``active``
+        The active set below each knot, by name, in the order its columns
+        entered, those entering at one knot in ``features`` order. A column
+        entering at a knot is in that knot's set with its coefficient still
+        0, and grows from there. A column leaving at a knot is out of its
+        set. So the first knot's set holds the first columns to enter, one
+        unless several tie, and a knot's nonzero coefficients are the set
+        before it, less any column leaving at it. A tie that turns a slope
+        back as it reaches 0 is the one case apart: that column stays in
+        the set at 0.
+    ``stop``
+        Why the path stopped: ``"max_iter"``, ``"max_active"``, or
+        ``"end"``, where ``l`` reached 0 or no column can enter.
+
+    .. rubric:: Raises
+
+    :class:`~polars_online.WrongTypeError`
+        A limit that is not a whole number or ``None``. It is both a
+        ``TypeError`` and a ``ValueError``.
+    ``ValueError``
+        A limit below 1; ``penalty_weights`` of the wrong length, or not
+        finite and above 0; ``threads`` below 1; the intercept or a column
+        named twice among ``features``, as for :func:`solve`.
+    ``TypeError``
+        ``threads`` that is not an integer or ``None``, such as a bool or a
+        float; or ``max_iter`` and its older name ``max_steps`` given
+        together.
+    ``KeyError``, ``IndexError``
+        As for :func:`solve`.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge(
+            "ridge", targets=["y"], features=["x0", "x1", "x2"], half_life=100.0
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        g = bank.gram("ridge")[0]
+        path = po.gram.lars_path(g, target="y")
+        for l, active in zip(path["penalties"], path["active"]):
+            print(f"{l:.3f}", active)       # a knot's penalty, and the columns active below it
+        print(path["stop"])
+
+    .. code-block:: text
+
+        1.766 ['x0']
+        0.848 ['x0', 'x1']
+        0.016 ['x0', 'x1', 'x2']
+        0.000 ['x0', 'x1', 'x2']
+        end
+
+    .. rubric:: See also
+
+    - :func:`lars_paths`, the same for many Grams and targets at once.
+    - :func:`lasso_path`, the lasso at penalties you choose.
+    - *Choosing columns on the lasso path* in `docs/GRAM.md
+      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      the theory and a recipe that runs.
+
+    .. rubric:: Notes
+
+    **The path is Efron, Hastie, Johnstone and Tibshirani's LARS (2004)
+    with their lasso modification**, on the correlation form
+    :func:`lasso_path` standardizes the Gram to. ``R`` is the features'
+    correlation matrix and ``d`` their standardized cross-moments with the
+    target, centered at the target's own means where there is an intercept.
+    The lasso minimizes
 
     .. code-block:: text
 
@@ -1550,99 +1966,38 @@ def lars_path(
 
     The step ``gamma`` is the first at which a column outside ``A`` reaches
     the active correlation, an active slope reaches 0, or ``l`` reaches 0.
-    At ``l = 0`` the fit is least squares on ``A``. A knot's coefficients
-    are the lasso's exactly at its penalty, so ``lasso_path(g, [l])`` at a
-    knot's ``l`` gives the same row where its descent has converged. Its
-    ``tol`` bounds a sweep's largest move, not the distance from the
-    solution: at a condition number of 1e8 a descent at ``tol=1e-14``
-    stopped 0.48 from a knot in the intercept, at an objective above the
-    knot's.
+    At ``l = 0`` the fit is least squares on ``A``.
 
-    Columns that tie change at one knot. A knot is a penalty at which the
-    active set changes. Where several columns reach the active correlation
-    at once, as two with equal ``|d_j|`` do on an orthogonal design, they
-    are settled together at that one knot. A tie is read to within
-    rounding: steps within ``64 * eps * l_max`` of the smallest are one
-    knot, since ``l`` is computed to about that. The lasso decides which
-    tied columns enter. A tied column stays out when the direction that
-    includes it would move its slope against its sign, and it can enter
-    further down. scikit-learn 1.9.1's ``lars_path_gram`` takes tied
-    columns one at a time and ends off least squares: on an identity Gram
-    with ``d = [1, 1]``, at ``[2, 1]``, where least squares is ``[1, 1]``.
+    **A knot's coefficients are the lasso's exactly at its penalty**, so
+    ``lasso_path(g, [l])`` at a knot's ``l`` gives the same row where its
+    descent has converged. That descent's ``tol`` bounds a sweep's largest
+    move, not the distance from the solution: at a condition number of 1e8
+    a descent at ``tol=1e-14`` stopped 0.48 from a knot in the intercept, at
+    an objective above the knot's.
 
-    A selection reads only the start of a path, and a step takes
-    ``O(k |A|)`` operations, so stop it early. ``max_iter`` stops it after
-    that many knots past the path's first. ``max_active`` stops it at the
-    first knot with that many columns active or more, more than
-    ``max_active`` where columns tie there. A column
-    that is constant on the Gram's rows never enters. A column that would
-    enter collinear with the active set is set aside, since it adds no
-    direction: its pivot in the factor of ``R_AA`` is below ``1e-12`` of
-    its variance. It takes no step and makes no knot, so each knot but the
-    last at ``l = 0`` is one column or more entering or leaving. Measured
-    on an M4 Pro, the path's own arithmetic takes 9 microseconds whole at 15
-    columns, and the call from Python 0.04 ms. At 200 columns 40 knots take
+    **Columns that tie change at one knot.** Where several columns reach
+    the active correlation at once, as two with equal ``|d_j|`` do on an
+    orthogonal design, they are decided together at that one knot. A tie is
+    read to within rounding: steps within ``64 * eps * l_max`` of the
+    smallest are one knot, since ``l`` is computed to about that. The lasso
+    decides which tied columns enter. A tied column stays out when the
+    direction that includes it would move its slope against its sign, and
+    it can enter further down the path. scikit-learn 1.9.1's
+    ``lars_path_gram`` takes tied columns one at a time and ends off least
+    squares: on an identity Gram with ``d = [1, 1]``, at ``[2, 1]``, where
+    least squares is ``[1, 1]``.
+
+    **Some columns never enter.** A column that is constant on the Gram's
+    rows never enters. A column that would enter collinear with the active
+    set is set aside, since it adds no direction: its pivot in the factor
+    of ``R_AA`` is below ``1e-12`` of its variance. It takes no step and
+    makes no knot, so each knot but the last at ``l = 0`` is one column or
+    more entering or leaving.
+
+    **A path is fast.** A step takes ``O(k |A|)`` operations. Measured on
+    an M4 Pro, the path's own arithmetic takes 9 microseconds whole at 15
+    columns, and the call from Python 0.04 ms. At 200 columns, 40 knots take
     0.2 ms, and at 2,000 columns 3 ms.
-
-    .. rubric:: Parameters
-
-    ``target``, ``features``
-        As for :func:`solve`.
-    ``max_iter``, ``max_active``
-        Where to stop: after this many knots past the first, each its own
-        penalty however many columns change at it; and at the first knot
-        with this many columns active or more. ``None`` is no limit, and
-        the path runs to ``l = 0``.
-    ``penalty_weights``
-        A scale ``w_j`` on the penalty per feature, as for
-        :func:`lasso_path`, but each finite and above 0. A weight of 0
-        leaves a column unpenalized, in the fit at every penalty, which is
-        no point a path from ``l_max`` can start at. Use :func:`lasso_path`
-        for that, and for an elastic net, whose path is not piecewise
-        linear.
-    ``threads``
-        The pool the path runs on, as :class:`~polars_online.ModelBank`
-        takes it: ``None`` is the process's pool, an integer a pool of that
-        many threads. One path is one thread's work, so it matters only to
-        :func:`lars_paths`; the numbers are the same at any count.
-
-    Returns a dict:
-
-    ``penalties``
-        The penalty ``l`` at each knot, falling, in the units of
-        :func:`lasso_path` and of the ``lasso`` model.
-    ``coef``
-        Shape ``(n_knots, k)``: each knot's coefficients over the Gram's
-        columns, in the features' original units with the intercept
-        recovered, as a row of :func:`lasso_path` (the intercept ``nan`` on
-        a Gram pooled within parts).
-    ``active``
-        The active set below each knot, by name, in the order its columns
-        entered, those entering at one knot in ``features`` order. A column
-        entering at a knot is in that knot's set with its coefficient still
-        0, growing from there. A column leaving at a knot is out of its set.
-        So the first knot's set holds the first columns to enter, one unless
-        several tie, and a knot's nonzero coefficients are the set before
-        it, less any column leaving at it. A tie that turns a slope back as
-        it reaches 0 is the one case apart: that column stays in the set at
-        0.
-    ``stop``
-        ``"max_iter"``, ``"max_active"``, or ``"end"``: ``l`` reached 0,
-        or no column can enter.
-
-    .. code-block:: python
-
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        bank = po.ModelBank([spec])
-        bank.fit_predict(df)
-        g = bank.gram("ridge")[0]
-        path = po.gram.lars_path(g, target="y", max_active=1)
-        first = path["active"][-1]              # [the first column to enter, and any that tie it]
-
-    ``ValueError`` for a limit that is not a whole number of at least 1, and
-    for ``penalty_weights`` of the wrong length or not finite and above 0.
-    ``KeyError``, ``IndexError``, and the intercept or a column named twice
-    among ``features``, as for :func:`solve`.
     """
     return _lars_paths(
         [g],
@@ -1667,24 +2022,48 @@ def lars_paths(
     penalty_weights: Sequence[float] | None = None,
     threads: int | None = None,
 ) -> list[list[dict[str, Any]]]:
-    """:func:`lars_path` for many Grams and targets at once, on the bank's
-    thread pool.
+    """Compute :func:`lars_path` for many Grams and targets at once, on the process's threads.
 
-    Returns one list per Gram, with one path per target. The targets are
-    every target of each Gram when ``targets`` is ``None``, else those
-    named, by name or position, in each. Each Gram's correlation matrix is
-    formed once, and its targets' paths run beside each other on it. The
-    Grams run beside each other too, on a pool of ``threads`` threads, or
-    on the process's pool, which ``POLARS_ONLINE_MAX_THREADS`` sizes, when
-    ``threads`` is ``None`` (as :class:`~polars_online.ModelBank` takes it).
-    A path is the same arithmetic on one thread whatever the pool's size,
-    so its numbers are those of :func:`lars_path` to the bit. The
-    other parameters are those of :func:`lars_path`, applied to every path.
-    It merges nothing: each Gram is fitted as it is, a Gram pooled within
-    parts with its intercept ``nan``. To pool subsets and walk their paths
-    in one call, see :func:`solve_subsets`. Its ``jobs`` give each path
-    columns of its own, and on subsets of one Gram each, ``[[0], [1],
-    ...]``, a job's path is :func:`lars_path`'s on that Gram, to the bit.
+    Use it to walk the lasso path of every group's Gram, or of every target,
+    in one call. To pool subsets of the Grams first and walk each pooled
+    Gram's path, use :func:`solve_subsets`. For one path, :func:`lars_path`
+    is the same arithmetic.
+
+    .. rubric:: Parameters
+
+    ``grams``
+        The Grams, each as :meth:`~polars_online.ModelBank.gram` returns it,
+        all with the same ``columns``. Each is fitted as it is: nothing is
+        merged, and a Gram pooled within parts has its intercept ``nan``.
+    ``targets``
+        The targets to walk, by name or position, in each Gram. Default
+        ``None``, every target of each Gram.
+    ``features``, ``max_iter``, ``max_active``, ``penalty_weights``
+        As for :func:`lars_path`, applied to every path, ``max_iter``'s
+        older name ``max_steps`` included.
+    ``threads``
+        How many threads the Grams run on, beside each other: ``None``, the
+        default, is the process's threads, which
+        ``POLARS_ONLINE_MAX_THREADS`` sizes, and an integer that many
+        threads, as :class:`~polars_online.ModelBank` takes it. Refused
+        unless an integer of at least 1, or ``None``.
+
+    .. rubric:: Returns
+
+    One list per Gram, with one path per target, each the dict
+    :func:`lars_path` returns. An empty ``grams`` gives an empty list.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        Grams of different ``columns``, as for :func:`merge`.
+
+    Otherwise, it raises what :func:`lars_path` raises.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
 
     .. code-block:: python
 
@@ -1692,12 +2071,29 @@ def lars_paths(
                                half_life=100.0, group="stock_id")
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
-        paths = po.gram.lars_paths(bank.gram("ridge"), max_active=1)   # one list per group
-        firsts = [per_gram[0]["active"][-1] for per_gram in paths]
+        paths = po.gram.lars_paths(bank.gram("ridge"), max_active=1)   # one list per stock
+        # the first column to enter each stock's path
+        print([per_gram[0]["active"][-1] for per_gram in paths])
 
-    No Grams give an empty list. Every Gram must have the same ``columns``
-    (``ValueError``), as for :func:`merge`. Otherwise it raises as
-    :func:`lars_path` does.
+    .. code-block:: text
+
+        [['x0'], ['x0'], ['x0'], ['x0']]
+
+    .. rubric:: See also
+
+    - :func:`lars_path`, one path.
+    - :func:`solve_subsets`, whose ``jobs`` give each path columns of its
+      own, on pooled subsets of the Grams.
+
+    .. rubric:: Notes
+
+    Each Gram's column scaling is formed once, and its targets' paths run
+    beside each other on it, each reading only its active columns' rows of
+    the correlation matrix from the co-moments. A path is the same arithmetic on one
+    thread whatever the number of threads, so its numbers are those of
+    :func:`lars_path` to the bit. :func:`solve_subsets` with ``path`` and
+    one Gram a subset, ``[[0], [1], ...]``, gives each subset the path
+    :func:`lars_path` gives on that Gram, to the bit.
     """
     return _lars_paths(
         grams,
@@ -1785,25 +2181,192 @@ def solve_subsets(
 ) -> list[Any]:
     """Merge each subset of the Grams and fit it, for many subsets at once.
 
-    A subset is a list of positions in ``grams``. Its parts are pooled as
-    :func:`merge` pools them, ``within`` as there, and each target is fitted
-    on the pooled Gram. The fit is a ridge with its statistics, as
-    :func:`solve` and then :func:`coef_stats` give them, or with ``path`` the
-    lasso path, as :func:`lars_path` gives it. Two uses: the halves of a
-    stability selection, each a merge of about half the blocks; and each
-    block's own fit, its ``t`` saying how stable a coefficient is across
-    blocks.
+    Use it for many fits over pooled Grams in one call, such as each
+    block's own fit (the spread of a coefficient's ``t`` across the blocks
+    says how stable it is), the halves of a stability selection (each a
+    merge of about half the blocks), and their null runs under random signs.
+    For one merge and one fit, use :func:`merge` and then :func:`solve`,
+    :func:`coef_stats` or :func:`lars_path`. To walk paths on Grams without
+    merging them, use :func:`lars_paths`.
 
-    The Grams are read once, into memory of the call's own, and every
-    subset is merged and fitted there, on the bank's thread pool, without a
-    Python copy of a matrix per subset. For 38 Grams and 100 subsets of 19,
-    measured on an M4 Pro under a load of 12, it took 0.02 s at 200 columns
-    and 3.0 s at 2,000. The loop of :func:`merge`, :func:`solve` and
-    :func:`coef_stats` took 0.43 s and 76 s. The copy is the Grams' size
-    again for the call's length. A subset's merge is formed on the slots and
-    the intercept alone, and dropped when its fits are done. Its targets
-    share one factorization. The merge is :func:`merge`'s arithmetic entry
-    for entry, so it agrees with it to the bit. The fit then is
+    .. rubric:: Parameters
+
+    ``grams``
+        The Grams, each as :meth:`~polars_online.ModelBank.gram` returns
+        it, all with the same ``columns`` and ``targets``, and each with
+        ``means_by_target`` and ``cross_centered``.
+    ``subsets``
+        One list of positions in ``grams`` per fit, each naming a Gram at
+        most once, since a Gram twice in one merge counts its rows twice.
+        ``[[0], [1], ...]`` fits each Gram alone. A subset's parts are
+        pooled as :func:`merge` pools them.
+    ``targets``
+        The targets to fit, by name or position. Default ``None``, every
+        target. Refused beside ``jobs``, whose jobs name their own.
+    ``features``
+        As for :func:`solve`.
+    ``ridge``, ``standardize``
+        As for :func:`solve`. A sequence of ridges fits each value, and
+        gives ``coef``, ``se`` and ``t`` one row per value and
+        ``resid_var``, ``sigma2`` and ``r2`` one entry per value, with ``n``
+        once. Not read under ``path``, since a path is in correlation form.
+    ``path``
+        ``None``, the default, for a ridge fit with its statistics, as
+        :func:`solve` and then :func:`coef_stats` give them. Or a dict of
+        :func:`lars_path`'s ``max_iter``, ``max_active`` and
+        ``penalty_weights`` (``{}`` for none of them) for each target's lasso
+        path instead. The key's older name, ``max_steps``, is read as ``max_iter``,
+        with a :class:`~polars_online.PolarsOnlineDeprecationWarning`. Any
+        other key is refused.
+    ``within``
+        ``True`` pools each subset within its parts, as :func:`merge` with
+        ``within=True``: each fit's intercept is ``nan``, and a ridge fit's
+        degrees of freedom lose one per part. Default ``False``, the union.
+    ``target_signs``
+        ``None``, the default, or an array of shape ``(len(grams), draws)``,
+        each entry +1 or -1, only with ``within=True``. Column ``d`` is a
+        draw: a sign ``s_i`` for each Gram, which multiplies its targets'
+        centered cross-moments before each subset is pooled,
+        ``c = sum T_i s_i c_i / T``. That is what negating Gram ``i``'s
+        target rows gives, since its co-moments, its target weights and its
+        target variances do not move, so a draw needs no second merge of
+        the co-moments. Every subset is fitted once per draw, so a draw of
+        random signs is a null run of a selection: what it chooses where no
+        column's effect keeps its sign across the Grams. Under a union a
+        negated Gram's target mean moves the gaps between the parts' means
+        too, and the shortcut does not hold, so it is refused there.
+    ``threads``
+        How many threads the subsets are fitted on, beside each other:
+        ``None``, the default, is the process's threads, and an integer
+        that many threads, as :class:`~polars_online.ModelBank` takes it.
+        Each fit is one thread's arithmetic, so the numbers are the same at
+        any count. Refused unless an integer of at least 1, or ``None``.
+    ``jobs``
+        ``None``, the default, fits every subset, draw and target on
+        ``features``. Otherwise the fits to run, each on columns of its
+        own: a list of mappings, as ``pl.DataFrame.to_dicts()`` gives them,
+        or a Polars ``DataFrame`` of them, one row per job. A job's keys are
+
+        - ``"subset"``, a position in ``subsets``;
+        - ``"target"``, a name or position, as in ``targets``;
+        - ``"draw"``, a column of ``target_signs``, given with it and only
+          with it;
+        - ``"features"``, the job's columns, as ``features`` names them;
+          missing or ``None`` is ``features``, and so every feature when
+          that is ``None`` too;
+        - ``"penalty_weights"``, for a path only: one per column of the job.
+          Missing or ``None`` is ``path``'s, which must then have one per
+          column of the job too, or every weight 1.
+
+        A job's fit is that of its columns merged alone, to the bit (Notes).
+
+    .. rubric:: Returns
+
+    One list per subset, with one dict per target. A ridge fit's dict has
+    ``coef``, the coefficients over the Gram's columns, and
+    :func:`coef_stats`' ``resid_var``, ``sigma2``, ``r2``, ``n``, ``se``
+    and ``t``; under a sequence of ridges each number but ``n`` has one row
+    or entry per ridge. A path's dict is :func:`lars_path`'s. With
+    ``target_signs``, one such list per draw. With ``jobs``, one such dict per job, in their
+    order, over every column of the Grams: 0, or ``nan`` for ``se`` and
+    ``t``, at a column the job does not read.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        When:
+
+        - ``grams`` is empty, or the Grams differ in columns or targets;
+        - a subset is empty, or holds a position out of range or twice;
+        - without ``within``, a subset of several holds a Gram pooled within
+          parts (as :func:`merge`);
+        - ``target_signs`` is given without ``within``, has another shape, or
+          holds an entry other than +1 or -1;
+        - ``path`` has an unknown key, a limit below 1, or
+          ``penalty_weights`` of the wrong length or not finite and above 0,
+          as for :func:`lars_path`;
+        - with ``jobs``: ``targets`` is given; a job has a key it does not
+          take, lacks its ``subset`` or ``target``, has a ``subset`` or
+          ``draw`` out of range, a ``draw`` without ``target_signs`` or none
+          with them, ``features`` that are one name, hold the intercept or
+          name a column twice, or ``penalty_weights`` without ``path``, of
+          another length than its columns, or not finite and above 0;
+        - a Gram has no ``means_by_target`` or ``cross_centered``, which
+          :func:`merge` forms after pooling and this does not;
+        - for a ridge fit, ``ridge`` is not finite and at least 0, or a Gram
+          has no target moments (as :func:`coef_stats`);
+        - ``threads`` is below 1.
+    :class:`~polars_online.WrongTypeError`
+        ``jobs`` is neither a list nor a ``DataFrame``, a job is not a
+        mapping, or a limit in ``path`` is not a whole number. It is both a
+        ``TypeError`` and a ``ValueError``.
+    ``TypeError``
+        ``threads`` is not an integer or ``None``, or ``path`` gives both
+        ``max_iter`` and its older name ``max_steps``.
+    ``KeyError``, ``IndexError``
+        As for :func:`solve` and :func:`lars_path`: a job's column or target
+        the Grams do not have is a ``KeyError``, and its position out of
+        range an ``IndexError``, each naming the job.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
+                               half_life=float("inf"), group="stock_id")
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        blocks = bank.gram("ridge")                     # one Gram per stock
+        # A ridge fit in each block alone, and x0's t in each.
+        each = po.gram.solve_subsets(blocks, [[i] for i in range(len(blocks))], ridge=1e-6)
+        print([round(float(fits[0]["t"][1]), 1) for fits in each])
+
+    .. code-block:: text
+
+        [38.8, 36.1, 37.8, 41.2]
+
+    .. rubric:: See also
+
+    - :func:`merge`, :func:`solve`, :func:`coef_stats` and :func:`lars_path`,
+      one merge and one fit at a time.
+    - *Stability selection over halves of the weeks*, *Per-block
+      coefficients*, *Pooling within blocks*, *A null for the selection, by
+      sign flips* and *A screen of its own for each path* in `docs/GRAM.md
+      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      the theory and a recipe of each use.
+
+    .. rubric:: Notes
+
+    **A path over each pair of blocks, its null runs under random signs,
+    and a screen of its own for each job**, on the example's blocks:
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
+                               half_life=float("inf"), group="stock_id")
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        blocks = bank.gram("ridge")                     # one Gram per stock
+        halves = po.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1})
+        signs = np.random.default_rng(0).choice([-1.0, 1.0], size=(len(blocks), 20))
+        null = po.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1},
+                                     within=True, target_signs=signs)   # a list per draw
+        jobs = [{"subset": 0, "draw": 0, "target": "y", "features": ["x0"]},
+                {"subset": 1, "draw": 3, "target": "y", "features": ["x1", "x0"]}]
+        screened = po.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1},
+                                         within=True, target_signs=signs, jobs=jobs)
+        print([h[0]["active"][-1] for h in halves],          # each half's first column
+              len(null), len(null[0]),                       # 20 draws of 2 subsets
+              [j["active"][-1] for j in screened])           # each job's first column
+
+    .. code-block:: text
+
+        [['x0'], ['x0']] 20 2 [['x0'], ['x0']]
+
+    **The ridge fit** is
 
     .. code-block:: text
 
@@ -1814,167 +2377,59 @@ def solve_subsets(
         se        = sqrt(diag(inv(A)) * sigma2 / n),   t = b / se
         se_0      = sqrt((1 + m_t' inv(A) m_t) * sigma2 / n)
 
-    with ``p`` the slots with variance and the intercept, or under
-    ``within`` the slots with variance and the parts the target has rows
-    in: a column of none, such as a constant that ``standardize`` drops at
-    0, has no coefficient to estimate and spends no degree of freedom.
-    With an intercept ``A`` is the slots' centred co-moments, ``r_t`` the
-    centred cross-moments and ``S_yy`` the target's variance; without one
-    they are the raw moments and ``E[y**2]``, as :func:`coef_stats` reads
-    them, and there is no ``se_0``. Under ``within`` the intercept has none
-    either. Under ``standardize`` the system is solved in correlation form,
-    as :func:`solve` solves it. Both
-    systems are factorized by Cholesky, where :func:`solve` runs numpy's
-    symmetric eigendecomposition and :func:`coef_stats` its inverse, so the
-    two agree to rounding, the system's condition number times ``1e-16``:
-    measured within ``5e-13`` of each number's size at 2,000 columns. A
-    system whose factorization fails, such as a constant column under a
-    ridge of 0, gives ``nan`` here, where :func:`solve` divides by an
-    eigenvalue of 0 or of rounding size. A nearly singular one gives what
-    any solve of it gives, rounding noise. A column of no variance, such as
-    a constant that ``standardize`` drops at 0, has ``nan`` for its ``se``
-    and ``t``, and the other columns' are read from the inverse of the
-    columns kept, as a fit without it gives them.
+    with ``p`` the columns with variance and the intercept, or under
+    ``within`` the columns with variance and the parts the target has rows
+    in. A column of none, such as a constant that ``standardize`` drops at
+    0, has no coefficient to estimate and spends no degree of freedom. With
+    an intercept, ``A`` is the columns' centered co-moments, ``r_t`` the
+    target's centered cross-moments, ``m_t`` its column means, ``ybar_t``
+    its mean and ``S_yy`` its variance. Without one they are the raw
+    moments and ``E[y**2]``, as :func:`coef_stats` reads them, and there is
+    no ``se_0``. Under ``within`` the intercept has none either. Under
+    ``standardize`` the system is solved in correlation form, as
+    :func:`solve` solves it.
 
-    .. rubric:: Parameters
+    **The ridge fit's system and the inverse its errors read are both
+    factorized by Cholesky**, where :func:`solve` runs
+    numpy's symmetric eigendecomposition and :func:`coef_stats` its
+    inverse, so the two agree to rounding: the system's condition number
+    times ``1e-16``, measured within ``5e-13`` of each number's size at
+    2,000 columns. A system whose factorization fails, such as a constant
+    column under a ridge of 0, gives ``nan`` here, where :func:`solve`
+    divides by an eigenvalue of 0 or of rounding size. A nearly singular one
+    gives what any solve of it gives, rounding noise. A column of no
+    variance, such as a constant that ``standardize`` drops at 0, has
+    ``nan`` for its ``se`` and ``t``, and the other columns' are read from
+    the inverse of the columns kept, as a fit without it gives them.
 
-    ``grams``
-        The Grams, each as :meth:`~polars_online.ModelBank.gram` returns
-        it, all with the same ``columns`` and ``targets``.
-    ``subsets``
-        One list of positions in ``grams`` per fit, each naming a Gram at
-        most once: a Gram twice in one merge counts its rows twice. ``[[0],
-        [1], ...]`` fits each Gram alone.
-    ``targets``
-        The targets to fit, by name or position: every target when
-        ``None``.
-    ``features``
-        As for :func:`solve`.
-    ``ridge``, ``standardize``
-        As for :func:`solve`, one ridge.
-    ``path``
-        ``None`` for the ridge fit, or a dict of :func:`lars_path`'s
-        ``max_iter``, ``max_active`` and ``penalty_weights`` (``{}`` for
-        none of them) for each target's lasso path instead. ``ridge`` and
-        ``standardize`` are then not read: a path is in correlation form.
-    ``within``
-        Pool each subset within its parts, as :func:`merge` with
-        ``within=True``: each fit's intercept is ``nan``, and a ridge fit's
-        degrees of freedom lose one per part.
-    ``target_signs``
-        ``None``, or an array of shape ``(len(grams), draws)``, each entry
-        +1 or -1, and only with ``within=True``. Column ``d`` is a draw: a
-        sign ``s_i`` for each Gram, multiplying its targets' centred
-        cross-moments before each subset is pooled,
-        ``c = sum T_i s_i c_i / T``. That is what negating Gram ``i``'s
-        target rows gives, since its co-moments, its target weights and its
-        target variances do not move, so a draw needs no second merge of the
-        co-moments. Every subset is fitted once per draw, which makes a
-        draw of random signs a null run of a selection: what it chooses
-        where no column's effect keeps its sign across the Grams. Under a
-        union merge a negated Gram's target mean moves the gaps between the
-        parts' means too, and the shortcut does not hold, so it is refused
-        there.
-    ``threads``
-        The pool the subsets are fitted on, beside each other: ``None`` is
-        the process's pool, an integer a pool of that many threads, as
-        :class:`~polars_online.ModelBank` takes it. Each fit is one thread's
-        arithmetic, so the numbers are the same at any count.
-    ``jobs``
-        ``None`` for every subset, draw and target on ``features``, or the
-        fits to run, each on columns of its own: a list of mappings, as
-        ``pl.DataFrame.to_dicts()`` gives them, or a polars DataFrame of
-        them, one row per job. A job's keys are
+    **The Grams are read once**, into memory the call holds while it runs,
+    and every subset is merged and fitted there, on the process's threads,
+    without a Python copy of a matrix per subset. The copy is the Grams' size again
+    for the call's length. A subset's merge is formed on the columns its
+    fits read and the intercept alone, and dropped when its fits are done.
+    Its targets share one factorization. The merge is :func:`merge`'s
+    arithmetic entry for entry, so it agrees with it to the bit. For 38
+    Grams and 100 subsets of 19, measured on an M4 Pro under a load of 12,
+    it took 0.02 s at 200 columns and 3.0 s at 2,000, where the loop of
+    :func:`merge`, :func:`solve` and :func:`coef_stats` took 0.43 s and 76 s.
 
-        - ``"subset"``, a position in ``subsets``;
-        - ``"target"``, a name or position, as in ``targets``, which is
-          then not given;
-        - ``"draw"``, a column of ``target_signs``, given with it and only
-          with it;
-        - ``"features"``, the job's columns, as ``features`` names them;
-          missing or ``None`` is ``features``, and so every feature when
-          that is ``None`` too;
-        - ``"penalty_weights"``, for a path only: one per column of the
-          job. Missing or ``None`` is ``path``'s, which must then have one
-          per column of the job too, or every weight 1.
-
-        Each subset is merged once, on the intercept and every column its
-        jobs read, and each draw re-pools its cross-moments once per subset.
-        A job's fit is that of its columns merged alone, to the bit: a path
-        is :func:`lars_path` on ``subset(merge(parts, within=within),
-        ["intercept", *features])`` of the subset's Grams, each with its
-        targets' cross-moments times its sign in the draw, and a ridge fit
-        is this call's on ``[subsets[subset]]``, ``target_signs[:, [draw]]``,
-        ``features`` and ``targets=[target]``. Jobs that share a subset,
-        draw and columns share that design's factorization. The jobs run
-        beside each other on the pool, as the subsets do. A screen per
-        subset, per target and per draw, as complementary-pairs stability
-        selection runs, is then one call. Measured on an M4 Pro under a
-        load of 7, 100 subsets of 19 of 38 Grams, 11 draws and 10 targets,
-        each of the 11,000 jobs a path to 10 columns on 400 of 1,500
-        columns, took 11 ms a subset, where the loop of :func:`merge`,
-        :func:`subset` and :func:`lars_path` per job took 115 ms.
-
-    Returns one list per subset, with one dict per target. A ridge fit's
-    dict has ``coef``, the coefficients over the Gram's columns, and
-    :func:`coef_stats`' ``resid_var``, ``sigma2``, ``r2``, ``n``, ``se`` and
-    ``t``. A path's dict is :func:`lars_path`'s. With ``target_signs``, one
-    such list per draw. With ``jobs``, one such dict per job, in their
-    order, over every column of the Grams: 0, or ``nan`` for ``se`` and
-    ``t``, at a column the job does not read.
-
-    .. code-block:: python
-
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
-                               half_life=float("inf"), group="stock_id")
-        bank = po.ModelBank([spec])
-        bank.fit_predict(df)
-        blocks = bank.gram("ridge")                     # one Gram per group
-        # A ridge fit in each block alone.
-        each = po.gram.solve_subsets(blocks, [[i] for i in range(len(blocks))], ridge=1e-6)
-        t_x0 = [fits[0]["t"][1] for fits in each]       # x0's t in every block
-        # A path over each pair of blocks, and its null runs under random signs.
-        halves = po.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1})
-        signs = np.random.default_rng(0).choice([-1.0, 1.0], size=(len(blocks), 20))
-        null = po.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1},
-                                     within=True, target_signs=signs)   # a list per draw
-        # A screen of its own for each subset and draw: one path per job.
-        jobs = [{"subset": 0, "draw": 0, "target": "y", "features": ["x0"]},
-                {"subset": 1, "draw": 3, "target": "y", "features": ["x1", "x0"]}]
-        screened = po.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1},
-                                         within=True, target_signs=signs, jobs=jobs)
-
-    Raises ``ValueError`` for:
-
-    - no Grams, or Grams of different columns or targets;
-    - an empty subset, or a position out of range or named twice in one
-      subset;
-    - a Gram pooled within parts in a subset of several, without
-      ``within`` (as :func:`merge`);
-    - ``target_signs`` without ``within``, of another shape, or with an
-      entry other than +1 or -1;
-    - an unknown key in ``path``;
-    - with ``jobs``: ``targets`` given; a job that is not a mapping, with a
-      key it does not take, without its ``subset`` or ``target``, with a
-      ``subset`` or ``draw`` out of range, a ``draw`` without
-      ``target_signs`` or none with them, ``features`` that are one name,
-      hold the intercept or name a column twice, or ``penalty_weights``
-      without ``path``, of another length than its columns, or not finite
-      and above 0;
-    - a Gram without ``means_by_target`` or ``cross_centered``, which
-      :func:`merge` forms after pooling and this does not;
-    - for a ridge fit, a ``ridge`` that is not finite and at least 0, or a
-      Gram without target moments (as :func:`coef_stats`).
-
-    Otherwise it raises as :func:`solve` and :func:`lars_path` do: a job's
-    column or target the Grams have not got is a ``KeyError``, and its
-    position out of range an ``IndexError``, each naming the job.
-
-    See *Stability selection over halves of the weeks*, *Per-block coefficients*,
-    *Pooling within blocks*, *A null for the selection, by sign flips* and *A
-    screen of its own for each path* in
-    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
-    for the theory and a recipe of each use.
+    **Jobs.** Each subset is merged once, on the intercept and every column
+    its jobs read, and each draw pools its cross-moments again once per
+    subset. A job's fit is that of its columns merged alone, to the bit: a
+    path is :func:`lars_path` on ``subset(merge(parts, within=within),
+    ["intercept", *features])`` (without ``"intercept"`` on a Gram through
+    the origin) of the subset's Grams, each with its
+    targets' cross-moments times its sign in the draw. A ridge fit is this
+    call's on ``[subsets[subset]]``, ``target_signs[:, [draw]]``,
+    ``features`` and ``targets=[target]``. Jobs that share a subset, draw
+    and columns share that design's factorization, and the jobs run beside
+    each other on the threads, as the subsets do. A screen per subset, per
+    target and per draw, as complementary-pairs stability selection runs,
+    is then one call. It was measured on an M4 Pro under a load of 7, with
+    100 subsets of 19 of 38 Grams, 11 draws and 10 targets: 11,000 jobs,
+    each a path to 10 columns on 400 of 1,500 columns. The call took 11 ms
+    a subset, and the loop of :func:`merge`, :func:`subset` and
+    :func:`lars_path` per job took 115 ms.
     """
     np = _np()
     threads = _check_threads(threads)
@@ -2432,10 +2887,89 @@ def coef_stats(
     target: str | int = 0,
     features: Sequence[str | int] | None = None,
 ) -> dict[str, Any]:
-    """Residual variance, standard errors and t-statistics for a fit.
+    """Compute the residual variance, standard errors and t-statistics of a fit from a Gram.
 
-    With the target's variance ``Var[y]`` in the Gram, a saved state answers
-    "how good is this fit, and which coefficients are real" without the rows:
+    Use it to judge a fit read off a Gram, such as one :func:`solve`
+    returns: how good it is, and which coefficients are real, without the
+    rows. For many merged subsets of Grams at once, :func:`solve_subsets`
+    returns the same statistics beside each fit.
+
+    .. rubric:: Parameters
+
+    ``g``
+        The Gram, as :meth:`~polars_online.ModelBank.gram` returns it, with
+        its target moments (``target_vars`` and ``target_n_kish``).
+    ``coef``
+        The fit, one entry per Gram column, as :func:`solve` returns it.
+    ``target``
+        The target the fit predicts, by name or position. Default 0, the
+        first.
+    ``features``
+        The columns fitted, as for :func:`solve`. The other columns' entries
+        in ``coef`` are not read, and their ``se`` and ``t`` are ``nan``.
+        Default ``None``, every column.
+
+    .. rubric:: Returns
+
+    A dict:
+
+    ``resid_var``, ``sigma2``, ``r2``
+        The residual variance of the fit, its estimate corrected for the
+        degrees of freedom, and ``1 - resid_var / Var[y]``.
+    ``n``
+        Kish's effective sample size, which the correction and the errors
+        use (``target_n_kish``).
+    ``se``, ``t``
+        Arrays over the same columns as ``coef``, the intercept's included
+        (``nan`` on a Gram pooled within parts), and ``nan`` for a column
+        not fitted. A fitted column of no variance, such as a constant that
+        :func:`solve`'s ``standardize`` drops at 0, has ``nan`` too, and the others' are
+        read from the inverse of the columns with variance, as a fit without
+        it gives them. A ``coef`` that is ``nan``, such as :func:`solve`'s
+        on a constant column without ``standardize``, gives ``nan``
+        throughout.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        A ``coef`` without one entry per Gram column; a Gram without target
+        moments, such as a mapping built by hand without them
+        (:meth:`~polars_online.ModelBank.gram` reports both); the intercept
+        or a column named twice among ``features``, as for :func:`solve`.
+    ``KeyError``, ``IndexError``
+        As for :func:`solve`.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        g = bank.gram("ridge")[0]
+        coef = po.gram.solve(g, target="y")                 # least squares
+        stats = po.gram.coef_stats(g, coef, target="y")
+        print(stats["se"].round(3), stats["t"].round(1), round(stats["r2"], 3))
+
+    .. code-block:: text
+
+        [0.031 0.033 0.032] [ 31.5  60.6 -31.7] 0.943
+
+    .. rubric:: See also
+
+    - :func:`solve`, the fit.
+    - :func:`solve_subsets`, the fit and these statistics for many merged
+      subsets.
+    - *A ridge and its t* in `docs/GRAM.md
+      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      the theory and a recipe that runs.
+
+    .. rubric:: Notes
+
+    **The statistics** read the target's variance ``Var[y]`` from the Gram:
 
     .. code-block:: text
 
@@ -2446,90 +2980,45 @@ def coef_stats(
         t         = b / se
         r2        = 1 - resid_var / Var[y]
 
-    ``C`` is the features' centred co-moments, ``Cov[X, y]`` the target's
-    centred cross-moments (``cross_centered``) and ``m`` the column means over
-    the target's rows. ``k`` counts the features with variance and the
-    intercept: a column of none, such as a constant that ``standardize``
-    drops at 0, has no coefficient to estimate and spends no degree of
-    freedom. ``se_0``
-    is least squares' error of the intercept, ``ybar - m . b``: the mean and
-    the slopes are uncorrelated, so its variance is ``Var[ybar] + m' Var[b]
-    m``. On a Gram pooled within parts (``merge(within=True)``) ``k`` counts
-    the features with variance and one intercept per part the target has rows in
-    (``target_within_parts``), the intercept has no error (each part had its
-    own), and ``r2`` is the share of the variance inside the parts that the
-    fit explains.
+    ``b`` is the slopes, ``C`` the features' centered co-moments,
+    ``Cov[X, y]`` the target's centered cross-moments (``cross_centered``)
+    and ``m`` the column means over the target's rows. ``k`` counts the
+    features with variance and the intercept: a column of none, such as a
+    constant that ``standardize`` drops at 0, has no coefficient to
+    estimate and spends no degree of freedom. ``se_0`` is least squares'
+    error of the intercept, ``ybar - m . b``: the mean and the slopes are
+    uncorrelated, so its variance is ``Var[ybar] + m' Var[b] m``. On a Gram
+    pooled within parts (``merge(within=True)``), ``k`` counts the features
+    with variance and one intercept per part the target has rows in
+    (``target_within_parts``). The intercept then has no error, since each
+    part had its own. The fit's ``r2`` is the share of the variance inside
+    the parts that it explains.
 
-    **For a ridge fit, the standard errors are least squares' at the
-    ridge's residual variance.** ``inv(C)`` is the unpenalized matrix's, so
-    the errors take no account of the shrinkage, which makes a ridge's
-    coefficients less variable than least squares', nor of the bias it adds.
-    At a ridge near 0 they are least squares' own.
+    **For a ridge fit, the standard errors are those of least squares, at
+    the ridge fit's residual variance.** ``inv(C)`` is the inverse of the
+    unpenalized matrix, so the errors take no account of the shrinkage,
+    which makes a ridge's coefficients less variable than least squares',
+    nor of the bias it adds. At a ridge near 0 they are least squares' own.
 
-    **Without an intercept the statistics read the raw moments, as least
+    **Without an intercept, the statistics read the raw moments, as least
     squares through the origin does.** On a Gram without an intercept
     column, as a :func:`subset` without ``"intercept"`` gives, ``C`` is
     ``E[z z']``, the co-moments plus the outer product of the means,
     ``Cov[X, y]`` is ``E[z y]`` (``cross_moments``), and ``Var[y]`` is
     ``E[y**2]``. So ``resid_var`` is the residuals' mean square, ``se`` and
-    ``t`` are least squares' through the origin, and ``r2`` is uncentred,
-    ``1 - E[e**2] / E[y**2]``, as statsmodels reports a fit with no constant.
-    ``k`` counts the features alone, those not identically 0. On a Gram
-    pooled within parts the means are 0, the target's too, so the raw
-    moments are the centred ones and nothing moves.
+    ``t`` are least squares' through the origin, and ``r2`` is uncentered,
+    ``1 - E[e**2] / E[y**2]``, as statsmodels reports a fit with no
+    constant. ``k`` counts the features alone, those not identically 0. On
+    a Gram pooled within parts the means are 0, the target's too, so the
+    raw moments are the centered ones and nothing moves.
 
-    .. rubric:: Parameters
-
-    ``coef``
-        The fit, one entry per Gram column, as :func:`solve` returns it.
-    ``target``
-        The target it predicts, by name or position.
-    ``features``
-        The columns fitted, as for :func:`solve`: the others' entries in
-        ``coef`` are not read, and their ``se`` and ``t`` are ``nan``.
-
-    Returns a dict:
-
-    ``resid_var``, ``sigma2``, ``r2``
-        The residual variance of the fit, its degrees-of-freedom-corrected
-        estimate, and ``1 - resid_var / Var[y]``.
-    ``n``
-        The Kish size the correction and the errors use.
-    ``se``, ``t``
-        Arrays over the same slots as ``coef``, the intercept's included
-        (``nan`` on a Gram pooled within parts), and ``nan`` for a column
-        not fitted. A fitted column of no variance, such as a constant, has
-        ``nan`` too, and the others' are read from the inverse of the
-        columns with variance, as a fit without it gives them.
-
-    ``n`` is Kish's effective sample size, not ``weight_sum``: a weighted stream's
-    weight sum is not a count, and dividing by it would report standard errors too
-    small by the factor the weights are unequal by. The rows behind an
-    exponentially weighted fit are also neither independent nor identically
-    distributed, so read a ``t`` here as a scale for comparing coefficients, not
-    as a p-value.
-
-    .. code-block:: python
-
-        spec = po.spec.ewridge(
-            "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0,
-            ridge=0.1, standardize=True,
-        )
-        bank = po.ModelBank([spec])
-        bank.fit_predict(df)
-        g = bank.gram("ridge")[0]
-        beta = po.gram.solve(g, target="y", ridge=0.1, standardize=True)
-        stats = po.gram.coef_stats(g, beta, target="y")    # resid_var, sigma2, r2, n, se, t
-
-    ``ValueError`` for a ``coef`` without one entry per Gram column, and for
-    a Gram without target moments (``target_vars`` and ``target_n_kish``),
-    such as a mapping built by hand without them: :meth:`~polars_online.ModelBank.gram`
-    reports both. ``KeyError``, ``IndexError``, and the intercept or a column
-    named twice among ``features``, as for :func:`solve`.
-
-    See *A ridge and its t* in
-    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
-    for the theory and a recipe that runs.
+    **The sample size is Kish's effective sample size, not the weight.**
+    ``n`` is ``target_n_kish``, not ``weight_sum``: a weighted stream's
+    weight sum is not a count, and dividing by it would report standard
+    errors too small by the factor the weights are unequal by. The rows
+    behind an exponentially weighted fit are also neither independent nor
+    identically distributed, so read a ``t`` here as a scale for comparing
+    coefficients, not as a p-value.
     """
     np = _np()
     t = _target_index(g, target, "po.gram.coef_stats")
@@ -2623,46 +3112,94 @@ def coef_stats(
 
 
 def vif(g: Gram, *, features: Sequence[str | int] | None = None) -> Any:
-    """Variance inflation factors: ``1 / (1 - R2_j)`` for each column on the rest,
-    straight off the diagonal of the inverse correlation matrix.
+    """Compute each column's variance inflation factor from a Gram.
 
-    An array over ``features`` (the Gram's columns without the intercept by
-    default: a constant is perfectly explained by any other constant, so its VIF
-    is undefined). A column the stream found constant reports ``inf``. Above
-    about 10 the coefficient of a column is mostly noise. Fit it with a
-    ridge, on a subset, or as a feature set the spec fits beside the full
-    one (``ewridge``'s ``feature_sets``).
+    Use it to find the columns whose coefficients a fit cannot pin down,
+    because the other columns explain them. To see which columns share a
+    near-dependency, use :func:`condition`. To read the correlations
+    themselves, use :func:`correlation`.
 
-    The diagonal is read from the eigendecomposition ``R = V diag(d) V'`` as
+    .. rubric:: Parameters
+
+    ``g``
+        The Gram, as :meth:`~polars_online.ModelBank.gram` returns it.
+    ``features``
+        The columns to diagnose, by name or position. Default ``None``, the
+        Gram's columns without the intercept: a constant is explained
+        perfectly by any other constant, so its factor is undefined. The
+        intercept, or a column named twice, is refused.
+
+    .. rubric:: Returns
+
+    A float array over ``features``: ``1 / (1 - R2_j)`` for each column
+    ``j``, with ``R2_j`` the share of its variance the other columns
+    explain. A column the model found constant reports ``inf``. Above
+    about 10, a common rule of thumb, the column's coefficient has more than
+    ten times the variance it would have on uncorrelated columns. Fit such a
+    column with a ridge, on a subset, or as a feature set the spec fits
+    beside the full one (``ewridge``'s ``feature_sets``). Read anything past
+    1e10 as an exact dependency (Notes).
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        The intercept or a column named twice among ``features``.
+    ``KeyError``
+        A name the Gram does not have.
+    ``IndexError``
+        A position outside the Gram's columns.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge(
+            "ridge", targets=["y"], features=["x0", "x1", "x2"], half_life=100.0
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df.with_columns(x2=pl.col("x0") + 0.01 * pl.col("x2")))  # x2 nearly x0
+        print([f"{v:.0f}" for v in po.gram.vif(bank.gram("ridge")[0])])   # x0, x1, x2
+
+    .. code-block:: text
+
+        ['10432', '1', '10432']
+
+    .. rubric:: See also
+
+    - :func:`condition`, which says which columns share a near-dependency.
+    - *Is the fit determined?* in `docs/GRAM.md
+      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      the theory and a recipe that runs.
+
+    .. rubric:: Notes
+
+    **The factors are the diagonal of the inverse correlation matrix**,
+    read from its eigendecomposition ``R = V diag(d) V'`` as
     ``VIF_j = sum_i V_ji^2 / d_i``. An eigenvalue at or below numpy's rank
-    tolerance, ``d_max * k * eps``, is a dependency: a column with a weight
-    past ``sqrt(eps)`` in its direction reports ``inf``. A pseudo-inverse
-    would drop that direction instead, and it read an exact duplicate at
-    0.25, below the floor of 1 a VIF cannot go under.
+    tolerance, ``d_max * k * eps``, with ``k`` the number of columns and
+    ``eps`` the float64 rounding unit, is a dependency: a column with a
+    weight past ``sqrt(eps)`` in its direction reports ``inf``. A
+    pseudo-inverse would drop that direction instead, and it read an exact
+    duplicate at 0.25, below the floor of 1 a factor cannot go under.
 
-    So a column that is an exact linear combination of the others, where
-    ``R2_j`` is 1, reads ``inf`` or a number past 1e10, not always ``inf``.
-    Rounding in the accumulated moments can leave the dependency's
+    **A column that is an exact linear combination of the others reads**
+    ``inf`` **or a number past 1e10, not always** ``inf``. Its ``R2_j`` is
+    1, but rounding in the accumulated moments can leave the dependency's
     eigenvalue just above the tolerance, and the column then reads about
     1e14. On 5,000 rows, a copy times 100 plus 3 read 2.2e14 at ``lam =
     0.999`` and ``inf`` at ``lam = 1``. Three columns where the third is the
     sum of the first two read 1.2e14 to 2.4e14 at ``lam = 1`` and ``inf`` at
-    0.999. Read anything past 1e10 as a dependency.
+    0.999.
 
-    **A VIF near 1 does not say a column is in no dependency.** A column
+    **A factor near 1 does not say a column is in no dependency.** A column
     whose part in a dependency is tiny reads near 1, as if it stood apart.
     Take ``c = a + b`` with ``a`` spread a million times as wide as ``b``:
     ``b``'s weight in the dependency's direction, in correlation units, is
     5e-13, far below ``sqrt(eps)``. It read 1.0002 where ``a`` and ``c``
     read ``inf``.
-
-    ``ValueError`` for the intercept or a column named twice among
-    ``features``, ``KeyError`` for a name the Gram has not got and
-    ``IndexError`` for a position.
-
-    See *Is the fit determined?* in
-    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
-    for the theory and a recipe that runs.
     """
     np = _np()
     slots, _ = _feature_slots(g, features, "po.gram.vif")
@@ -2684,40 +3221,84 @@ def vif(g: Gram, *, features: Sequence[str | int] | None = None) -> Any:
 
 
 def condition(g: Gram, *, features: Sequence[str | int] | None = None) -> dict[str, Any]:
-    """Belsley's collinearity diagnostics for the accumulated design.
+    """Compute Belsley's collinearity diagnostics for the design a Gram holds.
 
-    ``features`` names the columns to diagnose, by name or position: every
-    column of the Gram by default, the intercept included. Returns a dict:
+    Use it to find which columns share a near-dependency, and how close to
+    singular the design is. :func:`vif` says only that a column is in a
+    dependency, and a single condition number only that there is one.
+
+    .. rubric:: Parameters
+
+    ``g``
+        The Gram, as :meth:`~polars_online.ModelBank.gram` returns it.
+    ``features``
+        The columns to diagnose, by name or position. Default ``None``,
+        every column of the Gram, the intercept included. A column named
+        twice is diagnosed twice, as an exact dependency: ``kappa`` is
+        ``inf``, or near 1e8 where rounding leaves the smallest singular
+        value above 0.
+
+    .. rubric:: Returns
+
+    A dict:
 
     ``columns``
         The columns diagnosed, in order.
     ``singular_values``
-        Of the column-scaled design, largest first.
+        The singular values of the column-scaled design, largest first.
     ``condition_indexes``
-        ``s_max / s_j`` for each.
+        ``s_max / s_j`` for each singular value ``s_j``.
     ``kappa``
-        The largest of them.
+        The largest condition index.
     ``proportions``
-        The variance-decomposition proportions: one row per component and one
-        column per column diagnosed, each column summing to 1.
+        The variance-decomposition proportions: one row per component and
+        one column per column diagnosed, each column summing to 1.
 
-    A component with a large condition index and a large share of two or more
-    columns' variance is a near-dependency between exactly those columns. So
-    the proportions say which columns are the problem, where a single
-    ``kappa`` says only that there is one, and a VIF only that a column is in
-    one. Belsley's rule of thumb is an index above 30 with
-    two proportions above 0.5. The design is scaled to unit column length
-    first, Belsley's prescription, but not centred: the intercept is part of
-    the collinearity when a column is nearly constant, and centring hides
-    that. ``singular_values`` are of that scaled raw matrix, so they are the
+    A component with a large condition index and a large share of two or
+    more columns' variance is a near-dependency between exactly those
+    columns. Belsley's rule of thumb is an index above 30 with two
+    proportions above 0.5.
+
+    .. rubric:: Raises
+
+    ``KeyError``
+        A name the Gram does not have.
+    ``IndexError``
+        A position outside the Gram's columns.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge(
+            "ridge", targets=["y"], features=["x0", "x1", "x2"], half_life=100.0
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df.with_columns(x2=pl.col("x0") + 0.01 * pl.col("x2")))  # x2 nearly x0
+        diag = po.gram.condition(bank.gram("ridge")[0])
+        print(round(diag["kappa"]), diag["proportions"][-1].round(2))  # the last component's
+
+    .. code-block:: text
+
+        208 [0. 1. 0. 1.]
+
+    .. rubric:: See also
+
+    - :func:`vif`, each column's variance inflation.
+    - *Is the fit determined?* in `docs/GRAM.md
+      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      the theory and a recipe that runs.
+
+    .. rubric:: Notes
+
+    The design is scaled to unit column length first, Belsley's
+    prescription, but not centered: the intercept is part of the
+    collinearity when a column is nearly constant, and centering hides that.
+    ``singular_values`` are of that scaled raw matrix, so they are the
     square roots of the eigenvalues of the scaled second-moment matrix.
-
-    ``KeyError`` for a name the Gram has not got, ``IndexError`` for a
-    position.
-
-    See *Is the fit determined?* in
-    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
-    for the theory and a recipe that runs.
     """
     np = _np()
     names = _columns(g, "po.gram.condition")

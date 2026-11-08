@@ -15,8 +15,8 @@
 
 [finished]
 messages = ["crates/online-cli/src/main.rs", "crates/online-core/src/audit.rs", "crates/online-core/src/bocpd.rs", "crates/online-core/src/clock.rs", "crates/online-core/src/cluster/kmeans.rs", "crates/online-core/src/cluster/micro.rs", "crates/online-core/src/conformal.rs", "crates/online-core/src/constraint.rs", "crates/online-core/src/corrchange.rs", "crates/online-core/src/deco.rs", "crates/online-core/src/ewclass.rs", "crates/online-core/src/ewcov.rs", "crates/online-core/src/ewcov/diag.rs", "crates/online-core/src/ewdiag.rs", "crates/online-core/src/ewlagcov.rs", "crates/online-core/src/ewridge.rs", "crates/online-core/src/ftrl.rs", "crates/online-core/src/gramfit/lars.rs", "crates/online-core/src/hmm.rs", "crates/online-core/src/holt.rs", "crates/online-core/src/kalman.rs", "crates/online-core/src/lasso.rs", "crates/online-core/src/margbins.rs", "crates/online-core/src/marginal.rs", "crates/online-core/src/marglag.rs", "crates/online-core/src/model.rs", "crates/online-core/src/pa.rs", "crates/online-core/src/rcov.rs", "crates/online-core/src/rls.rs", "crates/online-core/src/robust.rs", "crates/online-core/src/seqtest.rs", "crates/online-core/src/sgd.rs", "crates/online-core/src/solve.rs", "crates/online-core/src/stats.rs", "crates/online-core/src/warmup.rs", "crates/online-core/src/window.rs", "crates/online-polars/src/arrow.rs", "crates/online-polars/src/bank.rs", "crates/online-polars/src/bank/audit.rs", "crates/online-polars/src/bank/learned.rs", "crates/online-polars/src/bank/refusals.rs", "crates/online-polars/src/defaults.rs", "crates/online-polars/src/formula.rs", "crates/online-polars/src/gramfit.rs", "crates/online-polars/src/pool.rs", "crates/online-polars/src/refresh.rs", "crates/online-polars/src/refresh/held.rs", "crates/online-polars/src/resolvers.rs", "crates/online-polars/src/runner.rs", "crates/online-polars/src/spec.rs", "crates/online-polars/src/spec/checks.rs", "crates/online-polars/src/spec/clock.rs", "crates/online-polars/src/spec/label_clock.rs", "crates/online-polars/src/spec/limits.rs", "crates/online-polars/src/spec/models.rs", "crates/online-polars/src/spec/names.rs", "crates/online-polars/src/stream.rs", "crates/online-polars/src/stream/last_row.rs", "crates/online-polars/src/stream/model_cfgs.rs", "crates/online-polars/src/summary.rs", "crates/online-polars/src/timing.rs", "crates/online-polars/src/windows.rs", "crates/online-polars/src/windows_frame.rs", "crates/online-py/src/gbdt.rs", "crates/online-py/src/gramfit.rs", "crates/online-py/src/lib.rs", "python/polars_online/_bank.py", "python/polars_online/_duration.py", "python/polars_online/_formula.py", "python/polars_online/_frame.py", "python/polars_online/_renamed.py", "python/polars_online/_spec.py", "python/polars_online/_spec_audit.py", "python/polars_online/_spec_gradient.py", "python/polars_online/_spec_regimes.py", "python/polars_online/_warnings.py", "python/polars_online/corr.py", "python/polars_online/eval.py", "python/polars_online/gbdt.py", "python/polars_online/gram.py", "python/polars_online/ops.py", "python/polars_online/sim.py", "python/polars_online/stream.py"]
-docstrings = []
-vocabulary = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/resume-from-a-saved-state.md"]
+docstrings = ["crates/online-py/src/lib.rs", "python/polars_online/__init__.py", "python/polars_online/_bank.py", "python/polars_online/_errors.py", "python/polars_online/_frame.py", "python/polars_online/_spec_fields.py", "python/polars_online/_warnings.py", "python/polars_online/corr.py", "python/polars_online/eval.py", "python/polars_online/gbdt.py", "python/polars_online/gram.py", "python/polars_online/ops.py", "python/polars_online/sim.py", "python/polars_online/stream.py"]
+vocabulary = ["crates/online-py/src/lib.rs#docstrings", "docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/resume-from-a-saved-state.md", "python/polars_online/__init__.py#docstrings", "python/polars_online/_bank.py#docstrings", "python/polars_online/_errors.py#docstrings", "python/polars_online/_frame.py#docstrings", "python/polars_online/_spec_fields.py#docstrings", "python/polars_online/_warnings.py#docstrings", "python/polars_online/corr.py#docstrings", "python/polars_online/eval.py#docstrings", "python/polars_online/gbdt.py#docstrings", "python/polars_online/gram.py#docstrings", "python/polars_online/ops.py#docstrings", "python/polars_online/sim.py#docstrings", "python/polars_online/stream.py#docstrings"]
 sentences = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/resume-from-a-saved-state.md"]
 kinds = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/resume-from-a-saved-state.md"]
 
@@ -594,26 +594,10 @@ rule = "remedy"
 text = "polars-online: {FORMULA_UNSTABLE}"
 reason = "main's prefix in front of a message read where it is written"
 
-[docstrings."crates/online-py/src/lib.rs"]
-"missing" = 3
-
-[docstrings."python/polars_online/_bank.py"]
-"missing" = 75
-"summary" = 12
-
-[docstrings."python/polars_online/_errors.py"]
-"missing" = 1
-
-[docstrings."python/polars_online/_frame.py"]
-"missing" = 36
-
-[docstrings."python/polars_online/_renamed.py"]
-"missing" = 3
-
 [docstrings."python/polars_online/_spec.py"]
-"missing" = 29
+"missing" = 12
 "order" = 12
-"summary" = 5
+"summary" = 3
 "unknown-section" = 12
 "when" = 4
 
@@ -628,6 +612,8 @@ reason = "main's prefix in front of a message read where it is written"
 "summary" = 2
 "unknown-section" = 2
 "when" = 1
+
+[docstrings."python/polars_online/_spec_fields.py"]
 
 [docstrings."python/polars_online/_spec_gradient.py"]
 "missing" = 1
@@ -649,35 +635,6 @@ reason = "main's prefix in front of a message read where it is written"
 "missing" = 1
 "order" = 1
 "unknown-section" = 1
-
-[docstrings."python/polars_online/_warnings.py"]
-"missing" = 3
-
-[docstrings."python/polars_online/corr.py"]
-"missing" = 57
-"summary" = 6
-
-[docstrings."python/polars_online/eval.py"]
-"missing" = 33
-"summary" = 3
-
-[docstrings."python/polars_online/gbdt.py"]
-"unknown-section" = 2
-
-[docstrings."python/polars_online/gram.py"]
-"missing" = 32
-"unknown-section" = 2
-
-[docstrings."python/polars_online/ops.py"]
-"missing" = 21
-"summary" = 8
-
-[docstrings."python/polars_online/sim.py"]
-"missing" = 2
-
-[docstrings."python/polars_online/stream.py"]
-"missing" = 9
-"summary" = 1
 
 [vocabulary."CONTRIBUTING.md"]
 
@@ -815,8 +772,6 @@ reason = "main's prefix in front of a message read where it is written"
 
 [vocabulary."crates/online-py/src/gramfit.rs#messages"]
 
-[vocabulary."crates/online-py/src/lib.rs#docstrings"]
-
 [vocabulary."crates/online-py/src/lib.rs#messages"]
 
 [vocabulary."docs/CALIBRATION.md"]
@@ -883,31 +838,19 @@ reason = "main's prefix in front of a message read where it is written"
 [vocabulary."llms.txt"]
 "retired" = 3
 
-[vocabulary."python/polars_online/_bank.py#docstrings"]
-"british" = 19
-"retired" = 24
-
 [vocabulary."python/polars_online/_bank.py#messages"]
 
 [vocabulary."python/polars_online/_duration.py#messages"]
 
-[vocabulary."python/polars_online/_errors.py#docstrings"]
-
 [vocabulary."python/polars_online/_formula.py#messages"]
 
-[vocabulary."python/polars_online/_frame.py#docstrings"]
-"british" = 3
-"retired" = 15
-
 [vocabulary."python/polars_online/_frame.py#messages"]
-
-[vocabulary."python/polars_online/_renamed.py#docstrings"]
 
 [vocabulary."python/polars_online/_renamed.py#messages"]
 
 [vocabulary."python/polars_online/_spec.py#docstrings"]
-"british" = 68
-"retired" = 33
+"british" = 65
+"retired" = 27
 
 [vocabulary."python/polars_online/_spec.py#messages"]
 
@@ -919,6 +862,8 @@ reason = "main's prefix in front of a message read where it is written"
 [vocabulary."python/polars_online/_spec_changepoint.py#docstrings"]
 "british" = 13
 "retired" = 3
+
+[vocabulary."python/polars_online/_spec_fields.py#docstrings"]
 
 [vocabulary."python/polars_online/_spec_gradient.py#docstrings"]
 "british" = 3
@@ -939,44 +884,19 @@ reason = "main's prefix in front of a message read where it is written"
 [vocabulary."python/polars_online/_spec_trend.py#docstrings"]
 "retired" = 2
 
-[vocabulary."python/polars_online/_warnings.py#docstrings"]
-"retired" = 1
-
 [vocabulary."python/polars_online/_warnings.py#messages"]
-
-[vocabulary."python/polars_online/corr.py#docstrings"]
-"british" = 9
 
 [vocabulary."python/polars_online/corr.py#messages"]
 
-[vocabulary."python/polars_online/eval.py#docstrings"]
-"british" = 5
-"retired" = 9
-
 [vocabulary."python/polars_online/eval.py#messages"]
-
-[vocabulary."python/polars_online/gbdt.py#docstrings"]
 
 [vocabulary."python/polars_online/gbdt.py#messages"]
 
-[vocabulary."python/polars_online/gram.py#docstrings"]
-"british" = 21
-"retired" = 11
-
 [vocabulary."python/polars_online/gram.py#messages"]
-
-[vocabulary."python/polars_online/ops.py#docstrings"]
-"british" = 1
 
 [vocabulary."python/polars_online/ops.py#messages"]
 
-[vocabulary."python/polars_online/sim.py#docstrings"]
-"british" = 2
-
 [vocabulary."python/polars_online/sim.py#messages"]
-
-[vocabulary."python/polars_online/stream.py#docstrings"]
-"british" = 1
 
 [vocabulary."python/polars_online/stream.py#messages"]
 

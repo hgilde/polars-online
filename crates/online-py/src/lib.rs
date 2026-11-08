@@ -285,23 +285,51 @@ fn busy(what: &str) -> PyErr {
     ))
 }
 
-/// One spec's output struct, handed to Python over the Arrow PyCapsule
-/// interface instead of as a pyo3-polars ``PySeries``.
+/// One spec's output column, as an Arrow struct array a consumer reads once.
 ///
-/// A consumer -- ``pl.Series``, pyarrow's ``pa.array`` -- calls
-/// ``__arrow_c_array__`` and takes ownership of the two C structs it returns.
-/// duckdb reads only ``__arrow_c_stream__``, so it goes through ``pl.Series``.
-/// Exporting consumes the array, so a second call raises rather than hand
-/// out buffers that have already been given away.
+/// Use it to read a bank's output without Polars, from
+/// ``ModelBank.fit_predict_arrow`` and ``ModelBank.predict_arrow``, which
+/// return one per spec. For the output as Polars columns, use
+/// ``ModelBank.fit_predict`` and ``ModelBank.predict``.
 ///
 /// .. warning::
-///     The Arrow output is considered **unstable**: it may change in any
-///     release without that counting as a breaking change. Its input still
-///     arrives as a Polars frame, and the path that would take Arrow in as
-///     well is not built, so the pair is not yet in its final form
-///     (``docs/RELEASE-READINESS.md``, *Keeping the API stable*). Under
-///     ``POLARS_ONLINE_WARN_UNSTABLE=1`` the calls that return one raise
+///     The Arrow output is **unstable**: it may change in any release
+///     without that counting as a breaking change. Its input still arrives
+///     as a Polars frame, since the path that would take Arrow in is not
+///     built, so the pair is not yet in its final form. Under
+///     ``POLARS_ONLINE_WARN_UNSTABLE=1``, the calls that return one issue
 ///     ``polars_online.UnstableWarning``.
+///
+/// .. rubric:: Examples
+///
+/// This code reads ``df`` from the README's `Example data
+/// <https://github.com/hgilde/polars-online#example-data>`_:
+///
+/// .. code-block:: python
+///
+///     spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+///     bank = po.ModelBank([spec])
+///     (struct,) = bank.fit_predict_arrow(df)        # one ArrowStruct per spec
+///     column = pl.Series(struct.name, struct)        # read once, through __arrow_c_array__
+///     print(struct.name, column.len())
+///
+/// .. code-block:: text
+///
+///     ridge 400
+///
+/// .. rubric:: See also
+///
+/// - ``ModelBank.fit_predict_arrow`` and ``ModelBank.predict_arrow``, which
+///   return it.
+///
+/// .. rubric:: Notes
+///
+/// A consumer, such as ``pl.Series`` or pyarrow's ``pa.array``, calls
+/// ``__arrow_c_array__`` and takes ownership of the two C structures it
+/// returns. DuckDB reads only ``__arrow_c_stream__``, so give it
+/// ``pl.Series(struct)``. Reading the array hands its buffers to the
+/// consumer, so a second read raises ``ValueError`` rather than hand out
+/// buffers already given away.
 #[pyclass(name = "ArrowStruct", module = "polars_online._polars_online")]
 struct PyArrowStruct {
     name: String,
@@ -1169,8 +1197,25 @@ fn resolved_defaults(spec_json: &str) -> PyResult<String> {
     serde_json::to_string(&resolved).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
-/// The compiled extension's version, which matches ``polars_online.__version__``
-/// in a consistent install.
+/// The version of the compiled extension, which equals
+/// ``polars_online.__version__`` in a consistent install.
+///
+/// Use it to check that the Python package and its compiled part come from
+/// the same build, such as after a partial upgrade.
+///
+/// .. rubric:: Returns
+///
+/// ``str``: the version, such as ``"1.4.0"``.
+///
+/// .. rubric:: Examples
+///
+/// .. code-block:: python
+///
+///     print(po.native_version() == po.__version__)
+///
+/// .. code-block:: text
+///
+///     True
 #[pyfunction]
 fn native_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -1213,9 +1258,21 @@ fn spec_clock_fields() -> (
     )
 }
 
-/// The state-file schema version this build writes.
-/// :meth:`polars_online.ModelBank.load` refuses a file written under a higher
-/// one.
+/// The version of the state file's layout that this build writes.
+///
+/// Use it to tell whether this build can load a state file:
+/// :meth:`polars_online.ModelBank.load` refuses a file written under a
+/// higher version, and one below the oldest version this build loads.
+///
+/// .. rubric:: Returns
+///
+/// ``int``: the version, which rises with every change to the layout.
+///
+/// .. rubric:: Examples
+///
+/// .. code-block:: python
+///
+///     version = po.schema_version()     # the layout a saved state file has
 #[pyfunction]
 fn schema_version() -> u32 {
     online_core::SCHEMA_VERSION

@@ -1,12 +1,18 @@
-"""Scoring a bank's output: out-of-sample R², IC and hit rate per (spec, group,
-target), overall or in windows, the sums that give them one chunk at a time,
-tests of one spec's errors against another's, and a setting chosen from a
-stream's own errors.
+"""Scores of a bank's output, and tests of one spec's residuals against another's.
 
-Every call but :func:`grid_search` consumes the frame a
-:class:`~polars_online.ModelBank` returns: the original columns plus one
-struct column per spec. Four kinds of call read it, and :func:`grid_search`
-runs the bank over a query itself:
+The scores are out-of-sample R², IC (the correlation of the prediction with
+the target) and hit rate per spec, group and target,
+over a whole frame or in windows of the clock. :func:`sums` gives the same
+scores one chunk at a time, and :func:`grid_search` chooses a grid point from
+a stream's own residuals.
+
+Most calls read the frame a :class:`~polars_online.ModelBank` returns: the
+input's columns plus one output column per spec, whose value in each row is
+a record of the model's fields. :func:`merge_sums` and :func:`from_sums` read
+the frames :func:`sums` makes. :func:`seqtest` can also test the sign of
+plain numeric columns, and :func:`grid_search` runs a bank over a query
+itself. The calls
+fall into five kinds:
 
 .. list-table::
    :header-rows: 1
@@ -14,56 +20,67 @@ runs the bank over a query itself:
 
    * - kind
      - the calls
-     - what they hold
+     - what they hold in memory
    * - scores over a frame
      - :func:`metrics`, :func:`window_metrics`, :func:`compare_specs`
-     - the whole frame, collected
+     - the whole frame
    * - scores one chunk at a time
      - :func:`sums`, :func:`merge_sums`, :func:`from_sums`
      - ten numbers per key
    * - one spec against another
      - :func:`diebold_mariano`, :func:`clark_west`, :func:`seqtest`
-     - the whole frame, collected
+     - the whole frame
    * - the long form the scores read
      - :func:`unpack`
-     - the whole frame, collected
-   * - a setting chosen from a stream's own errors
+     - the whole frame
+   * - a grid point chosen from a stream's own residuals
      - :func:`grid_search`
-     - two sums per setting and span, the bank run over a query
+     - three numbers per slot for each run of rows between the places a
+       test span starts or its choice stops,
+       and the bank's state and one chunk
 
-The scores over a frame are polars aggregations, so they need the whole
-frame. For a stream too long to hold, a spec's ``emit_metrics`` keeps the same
-numbers beside the model, in memory the size of its state. Or reduce each
-chunk with :func:`sums`, add the chunks with :func:`merge_sums` and read the
-scores with :func:`from_sums`.
+The scores over a frame are Polars aggregations, so they need the whole
+frame. For a stream too long to hold, set a spec's ``emit_metrics``, which
+keeps exponentially weighted R², IC and hit rate beside the model, in memory
+the size of its state. Or
+reduce each chunk with :func:`sums`, add the chunks with :func:`merge_sums`
+and read the scores with :func:`from_sums`.
 
-**``spec`` is the spec's name or the spec dict itself.** The name is the
-struct column's. The dict names the column too, and says more: a target
-that is not a column under its own name -- a column renamed with
-:func:`polars_online.target`, or a window expression looking ahead -- is
-read through it (see :func:`unpack`), and so is whether a fit is a
-classifier, whose scores take other names (:func:`metrics`'s ``binary``).
+**Pass the spec itself as ``spec`` where a target is not a plain column.**
+``spec`` is the spec's name, which names its output column, or the spec
+dict, which names the column too. Only the dict can say where a target's
+values are when they are not in a column of the target's name: a column
+renamed with :func:`polars_online.target`, or a formula target (see
+:func:`unpack`). The dict also says whether a fit is a classifier, whose
+scores take other names (:func:`metrics`' ``binary``).
 
-Every call here but :func:`grid_search`, which runs a bank over a query
-itself, reads a whole ``DataFrame``: a ``LazyFrame`` is refused with a
-``TypeError`` that says to collect it. The scores start from
-:func:`unpack` and raise what it raises: ``KeyError`` for a spec the frame
-has no column of, ``TypeError`` for a column that is not a model's
-prediction struct, ``ValueError`` for a slot whose target column cannot be
-found. A ``group`` or ``clock`` column the frame has not got is polars'
-``ColumnNotFoundError``.
+Every call here but :func:`grid_search` reads a whole ``DataFrame``. Given a
+``LazyFrame``, it raises ``TypeError``: pass ``lf.collect()``, which runs the
+query and returns its result. The scores
+start from :func:`unpack` and raise what it raises. It raises a
+:class:`~polars_online.OutputColumnNotFoundError` (a ``KeyError`` too) for a
+spec whose output column the frame does not have, ``TypeError`` for a column
+that is not a spec's output or is the output of a model that predicts no
+target. A slot whose target column cannot be found raises a
+:class:`~polars_online.ColumnNotFoundError` when ``spec`` is the spec dict,
+and ``ValueError`` when it is the spec's name alone. A ``group`` or ``clock`` column the frame does
+not have raises Polars' ``ColumnNotFoundError``.
 
 ``group`` names one key column, as a spec's ``group`` does, or a list of
 them, and ``None``, the default, is no key. ``min_samples`` is the fewest
 rows a key is scored on, as Polars' ``min_samples`` is: a key with fewer
-keeps its row, its count ``n`` read and its scores null. Before 1.0 they
-were ``by`` and ``min_obs``, and :func:`window_metrics` was
-``rolling_metrics``. An old name is refused, and the error names the new
-one. ``spec_name``, which ``spec`` replaced, is read as ``spec`` with a
-:class:`~polars_online.PolarsOnlineDeprecationWarning`.
+rows keeps its row, with its count ``n`` filled and its scores null. The
+keywords ``by`` and ``min_obs`` and the function ``rolling_metrics`` are
+refused, and the error names the keyword or function that replaced each:
+``group``, ``min_samples`` and :func:`window_metrics`. :func:`window_metrics`
+refuses ``window_size`` the same way, naming ``every``. ``spec_name``
+(``spec_names`` in :func:`compare_specs`) is read as ``spec``, with a
+:class:`~polars_online.PolarsOnlineDeprecationWarning`. Given beside a spec
+passed by position, it raises ``TypeError``, and a spec name given beside
+a spec dict whose name differs raises ``ValueError``.
 
 `docs/DIAGNOSTICS.md <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md>`_
-says which question each call and each diagnostic switch answers, with its
+says which question each call and each diagnostic answers, with its
 threshold, its false-alarm rate as measured, and a recipe that runs.
 """
 
@@ -280,56 +297,98 @@ def unpack(
     *,
     targets: Sequence[str] | None = None,
 ) -> pl.DataFrame:
-    """A spec's output in long form: one row per (row, prediction slot).
+    """Turn a spec's output into long form, one row per input row and slot.
 
-    ``spec`` is the spec's name, which is its struct column's, or the spec
-    dict itself, which names the column too.
+    Use it to score or plot predictions with your own Polars code: each row
+    holds one prediction beside the value of the target it predicts. For the
+    standard scores, use :func:`metrics`, which reads this long form itself.
 
-    Returns the non-struct columns of ``df`` plus:
+    .. rubric:: Parameters
+
+    ``df``
+        A frame a bank returned: the input's columns and the spec's output
+        column. A ``LazyFrame`` is refused, since every call here reads the
+        whole frame: pass ``lf.collect()``, which runs the query and returns
+        its result.
+    ``spec``
+        The spec's name, which is its output column's, or the spec dict
+        itself, which names the column too. Pass the dict to read each
+        slot's target as the spec reads it, through
+        :func:`polars_online.spec.output_index` and the spec's ``targets``.
+        A plain target is read from its column, and a target renamed with
+        :func:`polars_online.target`'s ``name=`` from the column it renames.
+        A formula target is read from a column of its own name, which
+        :func:`polars_online.stream.with_windows` makes, since the bank
+        computes the formula as it learns and does not write it out.
+        Given the name alone, a slot is read against the column named
+        after it, the longest name that matches. That rule can attribute a
+        slot to the wrong target when a column of the frame is named as a
+        target followed by a slot's ``__`` or ``@`` suffix. A renamed target
+        (``po.target("p", name="price")`` writes ``pred_price``) names no
+        column. So only the dict can say what either read.
+    ``targets``
+        The columns the name-based rule may read as targets; every column
+        of ``df`` by default. Not read when ``spec`` is the dict.
+
+    .. rubric:: Returns
+
+    A ``DataFrame`` of ``df``'s columns that are not records, one row for
+    each row of ``df`` and slot, with four columns added:
 
     ``slot``
-        The struct field name (``pred_y__r0.5@h500``).
+        The name of the field the prediction is in, such as
+        ``pred_y__r0.5@h500``.
     ``target``
-        The target it predicts: the name its output fields carry, which for a
-        plain target is its column.
+        The target the slot predicts: the name its output fields carry,
+        which for a plain target is its column.
     ``pred``, ``y``
-        The prediction and the target's value.
+        The prediction and the target's value on the row.
 
-    Input columns named like these four (:data:`RESERVED`) are dropped rather than
-    duplicated: a target column called ``y`` would otherwise collide with the
-    ``y`` output.
+    An input column named like one of these four (:data:`RESERVED`) is
+    dropped, so a target column called ``y`` does not collide with the
+    ``y`` added.
 
-    Pass the spec dict to read each slot's target as the spec writes it,
-    through :func:`polars_online.spec.output_index` and the spec's
-    ``targets``. A plain target is its column, and so is a column renamed with
-    ``name=``. A formula target is read from a column of its own name, which
-    :func:`polars_online.stream.with_windows` makes: the bank resolves the
-    formula inside its stream and does not write it out.
+    .. rubric:: Raises
 
-    Given the name alone, a name-based rule is used: a slot is read against
-    the column named after it. That can misattribute a target whose name
-    embeds another's, and a renamed target (``po.target("p", name="price")``
-    writes ``pred_price``) names no column, so only the dict can say what it
-    read. ``targets`` narrows the columns that rule reads.
+    ``TypeError``
+        ``df`` is not a ``DataFrame``, such as a ``LazyFrame``; or the
+        spec's column is not a record, or holds no ``pred_*`` field, as an
+        ``ew_cov``, ``kmeans``, ``micro``, ``ew_class`` or ``seqtest`` model
+        writes; or ``spec`` is neither a name nor a spec dict.
+    :class:`~polars_online.OutputColumnNotFoundError`
+        ``df`` has no column of the spec's. It is both Polars'
+        ``ColumnNotFoundError`` and a ``KeyError``.
+    :class:`~polars_online.ColumnNotFoundError`
+        Given the spec dict, a slot's target column is not in ``df``, such
+        as a formula target's column not yet made. It is both Polars'
+        ``ColumnNotFoundError`` and a ``ValueError``.
+    ``ValueError``
+        Given the name alone, no column of ``df`` (or of ``targets``) is
+        named after a slot; or, given the dict, whatever
+        :func:`polars_online.spec.output_index` raises for it.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
 
     .. code-block:: python
 
         spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
         out = po.ModelBank([spec]).fit_predict(df)
-        long = po.eval.unpack(out, spec)          # slot, target, pred, y, and the input columns
+        long = po.eval.unpack(out, spec)                       # one row per row of out and slot
+        slot, target, pred, y = long.select("slot", "target", "pred", "y").row(399)
+        print(f"{slot} predicts {target}: {pred:.3f} on the last row, where y is {y:.3f}")
 
-    Raises:
+    .. code-block:: text
 
-    - ``TypeError`` for a ``LazyFrame``, which is told to collect: every call
-      here reads the whole frame;
-    - ``KeyError`` for a spec the frame has no column of;
-    - ``TypeError`` for a column that is not a struct, or a struct with no
-      ``pred_*`` fields (an ``ew_cov``, ``kmeans``, ``micro``, ``ew_class``
-      or ``seqtest`` output);
-    - ``ValueError`` when a slot's target column cannot be found (the frame
-      has not got it, or ``targets`` does not name it, or by the name-based
-      rule no column is named after the slot) and, given the dict, whatever
-      :func:`polars_online.spec.output_index` raises for it.
+        pred_y predicts y: 1.768 on the last row, where y is 1.479
+
+    .. rubric:: See also
+
+    - :func:`metrics`, the scores of this long form per slot, target and group.
+    - :func:`polars_online.spec.output_index`, each output field's slot,
+      target and grid point, read from the spec.
     """
     return _unpack(df, spec, targets=targets, who="po.eval.unpack")
 
@@ -575,76 +634,133 @@ def metrics(
     min_samples: int = 30,
     binary: bool | None = None,
 ) -> pl.DataFrame:
-    """Out-of-sample metrics per ``(slot, target, *group)``, over the whole frame.
+    """Score a spec's out-of-sample predictions over a whole frame.
 
-    ``spec`` is the spec's name or its dict, as :func:`unpack` takes it: give
-    the dict for a target that is not a plain column, and to have ``binary``
-    read from its loss. Rows where the prediction or the target is missing are
-    dropped, so warm-up and skipped rows never enter the numbers. Missing is
-    what the bank reads as missing: null, NaN, infinite, or past its input
-    bound of 1e100 in magnitude, a target the bank still predicts the row of.
-    ``group`` is one key column, or a list of them, and ``None`` for no key.
-    A key with fewer than ``min_samples`` rows left keeps its row, with ``n``
-    read and every metric null, as Polars' ``rolling_*`` and ``ewm_*`` give null
-    below their ``min_samples``. ``targets`` is :func:`unpack`'s. The columns:
+    Use it to read how well a spec predicted, per slot, target and group,
+    once its output is in memory. For scores in windows of the clock, use
+    :func:`window_metrics`; for several specs in one table,
+    :func:`compare_specs`; for a stream too long to hold, :func:`sums`, or
+    the spec's own ``emit_metrics``.
 
-    ``slot``, ``target``, and the ``group`` columns
-        The key.
+    .. rubric:: Parameters
+
+    ``df``
+        A frame a bank returned, holding the spec's output column. A
+        ``LazyFrame`` is refused: pass ``lf.collect()``, which runs the query
+        and returns its result.
+    ``spec``
+        The spec's name, or the spec dict itself, as :func:`unpack` reads
+        it. Pass the dict for a target that is not a plain column, and to
+        have ``binary`` read from the spec's loss.
+    ``group``
+        One key column, as a spec's ``group`` is, or a list of them, to
+        score each key apart. ``None``, the default, scores every row
+        together.
+    ``targets``
+        :func:`unpack`'s: the columns the name-based rule may read as
+        targets.
+    ``min_samples``
+        The fewest rows a key is scored on, 30 by default. A key with fewer
+        rows keeps its row, with ``n`` filled and every score null, as
+        Polars' ``rolling_*`` and ``ewm_*`` give null below their
+        ``min_samples``.
+    ``binary``
+        Score the slots as a classifier's: ``pred`` a probability and ``y``
+        a 0/1 target, the output of an ``sgd`` or ``ftrl`` fit with
+        ``loss="logistic"``. ``None``, the default, reads it from the spec
+        dict's loss, and is off given the name alone, since nothing here
+        reads the target's values to decide.
+
+    .. rubric:: Returns
+
+    A ``DataFrame`` with one row per ``slot``, ``target`` and ``group``
+    key, sorted by them, and these columns after the keys:
+
     ``n``
-        The rows counted.
+        The rows scored.
     ``r2``
-        Out-of-sample R² against the realized mean of the target; null where
-        the target never varied.
+        The out-of-sample R², against the target's mean over the rows
+        scored. Null where the target never varied.
     ``ic``
-        The correlation of prediction with target; null where either never
-        varied.
+        The correlation of the prediction with the target. Null where
+        either never varied.
     ``hit_rate``
-        The share of rows whose sign the prediction got right, rows with ``y ==
-        0`` or ``pred == 0`` excluded, since either says neither up nor down,
-        as the bank's ``emit_metrics`` takes them; null where every row is
-        excluded. A target that sits about 1, such as a plain ratio of two
-        prices, reads 1.0 whatever the fit, so a return is better a
-        difference or a log ratio. A Poisson ``sgd`` fit (``loss =
-        "poisson"``) has no sign to hit -- a rate is positive and a count
-        never negative -- and the bank nulls its ``hit_rate``: with the spec
-        dict naming one, null here too. Given the name alone, the loss cannot
-        be known, and the sign test reads its 1.0.
+        The share of rows whose sign the prediction got right, over the
+        rows where neither ``y`` nor ``pred`` is 0, as the bank's
+        ``emit_metrics`` counts them. Null where no row is counted. A
+        Poisson ``sgd`` fit (``loss="poisson"``) has no sign to hit, so the
+        bank nulls its ``hit_rate``, and so does this, given the spec dict.
     ``mse``, ``rmse``
-        The mean squared residual, and its square root, in the target's units.
+        The mean squared residual, and its square root, in the target's
+        units.
 
-    A metric that is undefined is null, as :func:`from_sums` gives it, rather
-    than an infinity or a NaN that reads as a number.
+    A score that is undefined is null, not an infinity or a NaN that reads
+    as a number. Under ``binary``, two columns
+    take other names with their meaning, and one is added:
 
-    **A logistic fit is scored as a classifier.** ``binary`` reads ``pred`` as a
-    probability and ``y`` as a 0/1 label, the output of a ``sgd`` or ``ftrl``
-    fit with ``loss = "logistic"``. By default it is read from the spec dict's
-    loss, and is off given the name alone, since nothing here reads the
-    target's values to decide. Under ``binary`` two columns change name with
-    their meaning, and one is added:
-
-    ``brier_skill`` (for ``r2``)
-        The same formula, which on a 0/1 target is the Brier skill score: the
-        share of the Brier score of always predicting the base rate that the
-        fit removes.
-    ``accuracy`` (for ``hit_rate``)
-        The share of rows on the right side of 0.5. Every row scores.
+    ``brier_skill``, in place of ``r2``
+        The same formula, which on a 0/1 target is the Brier skill score:
+        the share of the Brier score of always predicting the base rate
+        that the fit removes.
+    ``accuracy``, in place of ``hit_rate``
+        The share of rows on the right side of 0.5. Every row is counted.
     ``log_loss``
-        ``-(y*ln(p) + (1-y)*ln(1-p))`` averaged, with ``p`` clipped to
-        ``[1e-15, 1 - 1e-15]`` so a confident miss is a large number and not
-        an infinity.
+        The mean of ``-(y*ln(p) + (1-y)*ln(1-p))``, with ``p`` clipped to
+        ``[1e-15, 1 - 1e-15]``, so a confident miss is a large number and
+        not an infinity.
 
-    ``ic`` keeps its name: on a 0/1 target it is the point-biserial
-    correlation, the same formula. ``rmse`` is then the root of the Brier
-    score.
+    ``ic`` keeps its name under ``binary``: on a 0/1 target it is the
+    point-biserial correlation, the same formula. ``rmse`` is then the root
+    of the Brier score.
+
+    .. rubric:: Raises
+
+    Whatever :func:`unpack` raises for ``df`` and ``spec``, and Polars'
+    ``ColumnNotFoundError`` for a ``group`` column ``df`` does not have.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
 
     .. code-block:: python
 
         spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
         out = po.ModelBank([spec]).fit_predict(df)
-        scores = po.eval.metrics(out, spec, group="stock_id")   # n, r2, ic, hit_rate, mse, rmse
+        scores = po.eval.metrics(out, spec, group="stock_id")  # one row per slot, target and stock
+        for row in scores.select("stock_id", "n", "r2", "hit_rate").iter_rows():
+            print(f"{row[0]}: {row[1]} rows, r2 {row[2]:.3f}, hit rate {row[3]:.3f}")
 
-    Raises as :func:`unpack` does; a ``group`` column the frame has not got is
-    polars' ``ColumnNotFoundError``.
+    .. code-block:: text
+
+        b0: 99 rows, r2 0.939, hit rate 0.899
+        b1: 99 rows, r2 0.938, hit rate 0.939
+        b2: 99 rows, r2 0.947, hit rate 0.949
+        b3: 99 rows, r2 0.948, hit rate 0.929
+
+    .. rubric:: See also
+
+    - :func:`window_metrics`, the same scores in windows of the clock.
+    - :func:`compare_specs`, the same scores for several specs in one table.
+    - :func:`sums` and :func:`from_sums`, the same scores one chunk at a time.
+    - `Is the model working?
+      <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md>`_,
+      the diagnostics a spec writes beside its predictions.
+
+    .. rubric:: Notes
+
+    A row is scored only where both the prediction and the target are
+    values the bank would learn from: not null, NaN or infinite, and within
+    the bank's input bound of 1e100 in magnitude. So the rows of a warm-up,
+    whose predictions are withheld, and the rows a model skipped never
+    enter the scores. The bank still predicts a row whose target is
+    null, and that row is left out here too.
+
+    A target that sits about 1, such as a plain ratio of two prices, is
+    positive on every row, and so is its prediction, so ``hit_rate`` reads
+    1.0 whatever the fit. Score a return as a difference or a log ratio.
+    Given the name alone, the loss of a Poisson ``sgd`` fit cannot be
+    known, and the sign test reads 1.0.
     """
     spec_name, written = _spec_of("po.eval.metrics", spec)
     binary = _binary(binary, written)
@@ -736,60 +852,115 @@ def window_metrics(
     min_samples: int = 30,
     binary: bool | None = None,
 ) -> pl.DataFrame:
-    """:func:`metrics` in tumbling windows of ``every`` clock units.
+    """Score a spec's out-of-sample predictions in windows of the clock.
 
-    The windows do not overlap: each row falls in one. Polars' ``rolling``
-    windows overlap, which is why this is not ``rolling_metrics``, its name
-    before 1.0.
+    Use it to see how a spec's scores move over the stream, such as R² per
+    hour or per day. The windows do not overlap: each row falls in one, as
+    in Polars' ``group_by_dynamic``. For one score over the whole frame,
+    use :func:`metrics`.
 
-    The columns are :func:`metrics`'s, per window, plus ``window_start``, the
-    left edge of each window. ``spec``, ``binary``, ``group``,
-    ``min_samples`` and ``targets`` are :func:`metrics`'s: a window with fewer
-    than ``min_samples`` rows keeps its row, with ``n`` read and the metrics
-    null. ``window_start`` is of the clock's own dtype.
+    .. rubric:: Parameters
 
-    The windows are those of Polars' ``group_by_dynamic(clock, every=every,
-    closed="left", label="left")`` over each key (slot, target and
-    ``group``), so a window here is the window Polars would make of the same
-    rows:
+    ``df``
+        A frame a bank returned, holding the spec's output column and the
+        clock column. A ``LazyFrame`` is refused: pass ``lf.collect()``, which
+        runs the query and returns its result.
+    ``spec``
+        The spec's name, or the spec dict itself, as :func:`metrics` reads
+        it.
+    ``clock``
+        The column whose values place each row in a window: a number, a
+        ``Datetime``, a ``Date`` or a ``Duration``. The rows whose clock is
+        null are scored together, in a row of their own whose
+        ``window_start`` is null. A ``Time`` is refused, since it starts
+        again at midnight.
+    ``every``
+        The length of each window, in the clock's units. On a numeric clock
+        it is a number, finite and above 0, and a whole number on an
+        integer clock, so a window's edges are values of the column. On a
+        ``Datetime`` or ``Date`` clock it is a duration: text such as
+        ``"1h"`` or ``"1mo"``, a ``timedelta``, or a ``pl.duration``
+        expression. On a ``Duration`` clock it is a length of time with no
+        months, quarters or years. Notes say where each kind of window
+        starts.
+    ``group``, ``targets``, ``min_samples``, ``binary``
+        :func:`metrics`' own. A window with fewer than ``min_samples`` rows
+        keeps its row, with ``n`` filled and the scores null.
 
-    - On a numeric clock ``every`` is a number of its units, and a window
-      starts at ``floor(clock / every) * every``, as Polars' integer index
-      does (a float clock, which Polars does not window, is windowed the
-      same way). On an integer clock
-      ``every`` must be a whole number, so a window's edges are values of
-      the column.
-    - On a ``Datetime`` or ``Date`` clock ``every`` is a duration, read as
-      Polars reads one. Nanoseconds to hours (``"ns"`` ... ``"h"``) are
-      elapsed time: across a change of a time zone's offset a ``"5h"``
-      window still holds five hours, and ``"24h"`` is 24 of them. Days,
-      weeks, months, quarters and years (``"d"``, ``"w"``, ``"mo"``, ``"q"``,
-      ``"y"``) follow the wall calendar: ``"1d"`` runs from midnight to
-      midnight, 23 or 25 hours on the day of a change, and ``"1mo"`` is a
-      calendar month. A ``timedelta`` is read as Polars reads it, so its
-      whole days are calendar days; a ``pl.duration`` expression is the
-      length of time it evaluates to. A month has no fixed length, so a
-      spec's clock parameter refuses one, but a window takes it.
-    - On a ``Duration`` clock ``every`` is a length of time, with no
-      calendar, and a window starts at a whole number of ``every`` from 0.
+    .. rubric:: Returns
+
+    :func:`metrics`' columns for each window, with ``window_start``, the
+    window's left edge, after the keys. ``window_start`` has the clock's
+    own dtype. One row per ``slot``, ``target``, ``group`` key and window,
+    sorted by them.
+
+    .. rubric:: Raises
+
+    Whatever :func:`unpack` raises for ``df`` and ``spec``, and:
+
+    ``ValueError``
+        ``every`` is not finite and above 0, is of the wrong kind for the
+        clock, is not a whole number on an integer clock, or is a month, a
+        quarter or a year on a ``Duration`` clock; or the clock is a
+        ``Time``.
+    ``TypeError``
+        The ``clock`` column is neither numeric nor temporal.
+    Polars' ``ColumnNotFoundError``
+        ``df`` does not have the ``clock`` column or a ``group`` column.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
 
     .. code-block:: python
 
         spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
         out = po.ModelBank([spec]).fit_predict(df)
-        windows = po.eval.window_metrics(out, "ridge", clock="t", every=100.0)  # 100 units of t
-        # on a Datetime clock: every=pl.duration(hours=1), timedelta(hours=1) or "1h"
+        windows = po.eval.window_metrics(out, spec, clock="t", every=100.0)   # 100 units of t each
+        for start, n, r2 in windows.select("window_start", "n", "r2").iter_rows():
+            print(f"from t = {start:.0f}: {n} rows, r2 {r2:.3f}")
+        by_hour = po.eval.window_metrics(out, spec, clock="ts", every="1h")    # a Datetime clock
+        print(by_hour.height, "windows of an hour")
 
-    Raises as :func:`unpack` does, and:
+    .. code-block:: text
 
-    - ``ValueError`` for an ``every`` that is not finite and above 0, of the
-      wrong kind for the clock, not a whole number on an integer clock, or a
-      month, quarter or year on a ``Duration`` clock, and for a ``Time``
-      clock, which starts again at midnight;
-    - ``TypeError`` for a ``clock`` column that is neither numeric nor
-      temporal;
-    - polars' ``ColumnNotFoundError`` for a ``clock`` or ``group`` column the
-      frame has not got.
+        from t = 0: 96 rows, r2 0.940
+        from t = 100: 100 rows, r2 0.941
+        from t = 200: 100 rows, r2 0.956
+        from t = 300: 100 rows, r2 0.926
+        8 windows of an hour
+
+    .. rubric:: See also
+
+    - :func:`metrics`, the same scores over the whole frame.
+    - The ``emit_metrics`` switch of a spec, the same scores kept by the
+      model as it learns, exponentially weighted.
+
+    .. rubric:: Notes
+
+    The windows are those of Polars' ``group_by_dynamic(clock, every=every,
+    closed="left", label="left")`` over each key (slot, target and
+    ``group``), so a window here is the window Polars would make of the
+    same rows:
+
+    - On a numeric clock, a window starts at
+      ``floor(clock / every) * every``, as Polars' integer index does. A float clock, which Polars
+      does not window, is windowed the same way.
+    - On a ``Datetime`` or ``Date`` clock, ``every`` is read as Polars
+      reads a duration. Nanoseconds to hours (``"ns"`` to ``"h"``) are
+      elapsed time: across a change of a time zone's offset, a ``"5h"``
+      window still holds five hours, and ``"24h"`` holds 24 of them. Days,
+      weeks, months, quarters and years (``"d"``, ``"w"``, ``"mo"``,
+      ``"q"``, ``"y"``) follow the wall calendar: ``"1d"`` runs from
+      midnight to midnight, 23 or 25 hours on the day of a change, and
+      ``"1mo"`` is a calendar month. A ``timedelta`` is read as Polars
+      reads it, so its whole days are calendar days. A ``pl.duration``
+      expression is the length of time it evaluates to. A month has no
+      fixed length, so a spec's clock parameters refuse one, but a window
+      takes it.
+    - On a ``Duration`` clock, ``every`` is a length of time with no
+      calendar, and a window starts at a whole number of ``every`` from 0.
     """
     spec_name, written = _spec_of("po.eval.window_metrics", spec)
     dtype = df.schema.get(clock)
@@ -914,27 +1085,116 @@ def compare_specs(
     min_samples: int = 30,
     binary: bool | None = None,
 ) -> pl.DataFrame:
-    """:func:`metrics` for several specs in one table, with a ``spec`` column first.
+    """Score several specs' out-of-sample predictions in one table.
 
-    ``specs`` are the specs that wrote the columns, each its name or its
-    dict, read as :func:`metrics` reads its ``spec``. ``group`` and
-    ``min_samples`` are :func:`metrics`'s, applied to every spec alike.
-    ``binary`` is too, and by default is read from the dicts' losses: specs
-    that share a loss share a table, so a logistic fit and a regression one
-    are refused together, since their columns differ. Compare specs that
-    share a loss.
+    Use it to read side by side how well each of several specs predicted,
+    over a whole frame. To test whether one spec's residuals are smaller
+    than another's, use :func:`diebold_mariano`, :func:`clark_west` or
+    :func:`seqtest`; to choose among the grid points of one spec, use
+    :func:`grid_search`.
+
+    .. rubric:: Parameters
+
+    ``df``
+        A frame a bank returned, holding each spec's output column. A
+        ``LazyFrame`` is refused: pass ``lf.collect()``, which runs the query
+        and returns its result.
+    ``specs``
+        The specs that wrote the columns, each its name or its dict, read
+        as :func:`metrics` reads its ``spec``.
+    ``group``, ``targets``, ``min_samples``
+        :func:`metrics`' own, applied to every spec alike.
+    ``binary``
+        :func:`metrics`' own, applied to every spec alike. ``None``, the
+        default, reads it from the spec dicts' losses, and refuses specs
+        whose losses read it both ways, since a classifier's scores and a
+        regression's are different columns.
+
+    .. rubric:: Returns
+
+    :func:`metrics`' table for each spec, one under another, with a
+    ``spec`` column first holding the spec's name. No specs give an empty
+    frame.
+
+    .. rubric:: Raises
+
+    Whatever :func:`metrics` raises for each spec, and ``ValueError`` when
+    ``binary`` is ``None`` and some specs are fits with
+    ``loss="logistic"`` and others are not. Pass the two sets in two calls,
+    or set ``binary``.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
 
     .. code-block:: python
 
         ridge = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        kalman = po.spec.kalman(
-            "kalman", targets=["y"], features=["x0", "x1"], half_life=100.0, coef_half_life=50.0
-        )
-        out = po.ModelBank([ridge, kalman]).fit_predict(df)
-        table = po.eval.compare_specs(out, [ridge, kalman])   # which had the lower error
+        x0_only = po.spec.ewridge("x0_only", targets=["y"], features=["x0"], half_life=100.0)
+        out = po.ModelBank([ridge, x0_only]).fit_predict(df)
+        table = po.eval.compare_specs(out, [ridge, x0_only])   # one row per spec and slot
+        for name, n, r2, mse in table.select("spec", "n", "r2", "mse").iter_rows():
+            print(f"{name}: {n} rows, r2 {r2:.3f}, mse {mse:.3f}")
 
-    Raises as :func:`metrics` does for each, and ``ValueError`` for specs whose
-    losses read ``binary`` both ways; no specs give an empty frame.
+    .. code-block:: text
+
+        ridge: 396 rows, r2 0.944, mse 0.273
+        x0_only: 397 rows, r2 0.728, mse 1.330
+
+    .. rubric:: See also
+
+    - :func:`metrics`, the same scores for one spec.
+    - :func:`diebold_mariano` and :func:`clark_west`, tests of whether one
+      spec's squared error is lower than another's.
+    - :func:`seqtest`, evidence that one spec predicts closer, to read at
+      any row.
+    - `Comparing two models
+      <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#comparing-two-models>`_,
+      with a recipe that compares two models on 200 streams.
+
+    .. rubric:: Notes
+
+    Each spec is scored on its own rows, so two specs whose warm-ups differ
+    in length are scored on different rows, as the 396 and 397 rows in the
+    example are. Diebold and Mariano's test and Clark and West's read only
+    the rows where both specs have a residual.
+
+    **Diebold and Mariano's (1995) test asks whether two specs' squared
+    errors differ on average.** Its statistic is the mean of the loss
+    differential ``d = resid_b² − resid_a²`` over Newey and West's
+    standard error, and is about ``N(0, 1)`` when the two predict equally
+    well. :func:`diebold_mariano` computes it. Give its ``lags`` at least
+    ``h − 1`` for a target that looks ``h`` rows ahead, and 0 for one-step
+    predictions.
+
+    **Between two nested specs, Diebold and Mariano's test leans toward
+    the smaller one, and Clark and West's (2007) correction removes the
+    lean.** When the larger spec's extra coefficients are truly zero, it
+    still estimates them, and their noise adds ``(pred_small −
+    pred_big)²`` to its squared error on average. So under the null the
+    differential favors the smaller spec, and the test rarely finds the
+    larger one better even when it is (Clark and McCracken, 2001). Clark
+    and West add the term back:
+
+    .. code-block:: text
+
+        f  = resid_small² − resid_big² + (resid_big − resid_small)²
+        cw = f̄ · n / sqrt(S)            one-sided: cw > 1.645 rejects at 5%
+
+    Here ``f̄`` is the mean of ``f`` over the ``n`` rows, and ``S`` is
+    Newey and West's long-run variance of ``f`` times ``n``, as
+    :func:`diebold_mariano` gives it for ``d``. :func:`clark_west` computes
+    it. With ``half_life``, each of the two functions gives its statistic on
+    every row instead, exponentially weighted.
+
+    :func:`seqtest`, and the `seqtest
+    <https://github.com/hgilde/polars-online/blob/main/docs/MODELS.md#seqtest--a-sequential-test-of-a-sign-by-betting>`_
+    model a bank runs, give evidence
+    that one spec predicts closer, by betting on the sign of ``|resid_b| −
+    |resid_a|``. The evidence can be read at any row, as often as you like,
+    without increasing the false-alarm rate: reject at the 5% level the first
+    time ``log_e_a_<t>`` reaches ``ln 20``.
     """
     given = [_spec_of("po.eval.compare_specs", s) for s in specs]
     if binary is None:
@@ -1221,98 +1481,143 @@ def grid_search(
     chunk_size: int | None = None,
     threads: int | None = None,
 ) -> pl.DataFrame:
-    """Score every setting of a grid in one pass over a stream, and choose one
-    from earlier rows only.
+    """Score every grid point in one pass over a stream, and choose one from
+    the rows before each test span.
 
-    Each row's prediction is made before the row is learned from, so the
-    stream's own errors are out of sample, and every setting is scored on
-    the same rows. Choosing the setting whose error is lowest over those rows
-    and reporting that error is optimistic: each error is the setting's true
-    error plus noise, and the minimum picks the setting whose noise happened
-    to run lowest. So this also scores the *choice*. The rows are cut as
-    scikit-learn's ``TimeSeriesSplit(n_splits, gap=gap)`` cuts them: the
-    ``n`` rows into ``n_splits + 1`` spans, the last ``n_splits`` of
-    ``n // (n_splits + 1)`` rows each. Before each of those test spans the
-    setting with the best score over every row before it (``gap`` rows short
-    of it) is chosen, and scored on the span:
+    Use it to choose a spec's settings, such as its half-life, ridge or
+    learning rate, from the stream's own out-of-sample residuals, and to learn
+    what that choice is worth on rows it did not see. To compare a few
+    specs you have already run, use :func:`compare_specs`.
 
-    .. code-block:: text
+    .. rubric:: Parameters
 
-        size     = n // (n_splits + 1)
-        start_k  = n - (n_splits - k) * size                 k = 0 .. n_splits - 1
-        chosen_k = argbest over settings s of score(s, rows [0, start_k - gap))
-        honest   = score(chosen_k on rows [start_k, start_k + size), pooled over k)
+    ``source``
+        The stream: a ``LazyFrame`` or a ``DataFrame``. It is read once,
+        ``chunk_size`` rows at a time, through one bank of every spec. A
+        query is counted first, to place the spans: for a query that reads
+        parquet files, Polars reads the count from their footers, and any
+        other query runs once more without the bank.
+    ``specs``
+        A spec, a list of specs, or a spec builder called as
+        ``specs(name, **point)`` for each point of ``param_grid``, such as
+        ``functools.partial(po.spec.sgd, targets=["y"], features=["x"])``.
+        The name a builder is given is the point written out, such as
+        ``"learning_rate=0.01"``, and the spec it returns must take that
+        name.
+    ``param_grid``
+        A dict of each builder keyword's values to try, as scikit-learn's
+        ``ParameterGrid`` takes one: its keys sorted, the last varying
+        fastest, as ``{"learning_rate": [0.001, 0.01]}``. ``None``, the
+        default, when ``specs`` are built already. A key may not be one of
+        the result's own columns.
+    ``n_splits``
+        The number of test spans, 5 by default. The rows are cut as
+        scikit-learn's ``TimeSeriesSplit(n_splits, gap=gap)`` cuts them:
+        the ``n`` rows into ``n_splits + 1`` spans, the last ``n_splits`` of
+        ``n // (n_splits + 1)`` rows each. Fewer spans make the first span,
+        the rows the first choice is made from, longer.
+    ``gap``
+        The rows left out between the rows a choice is made from and the
+        span it is scored on, 0 by default. Give it the number of rows a
+        target looks ahead, so a choice never reads a row whose target was
+        not yet known when its span started.
+    ``scoring``
+        ``"mse"``, the default, the mean of ``(y - pred)**2``, lower
+        better; or ``"loglik"``, the mean log predictive density of a row,
+        higher better, read from the ``loglik`` field that ``bocpd``,
+        ``hmm`` and ``deco`` write.
+    ``chunk_size``
+        The rows read at a time, as
+        :meth:`~polars_online.ModelBank.fit_predict_batches` takes it.
+        ``None``, the default, reads a query 100,000 rows at a time and
+        takes a ``DataFrame`` whole, as that method does.
+    ``threads``
+        The bank's threads, as :class:`~polars_online.ModelBank` takes them.
+        ``None``, the default, runs on the threads banks share, one per core
+        unless ``POLARS_ONLINE_MAX_THREADS`` is set.
 
-    ``score`` is ``mse``, the mean of ``(y - pred)**2``, lowest best, or
-    ``loglik``, the mean log predictive density of a row, highest best.
-    Under ``scoring="loglik"`` the settings are scored on the ``loglik`` field
-    of ``bocpd``, ``hmm`` and ``deco``: the sum of a stream's pre-row log
-    densities is its log marginal likelihood (the prequential score), the
-    criterion that compares hazards, priors and state counts. ``gap`` keeps
-    the choice from rows whose outcome was not yet known at the span's start:
-    give it the rows a target looks ahead.
+    .. rubric:: Returns
 
-    **What is scored.** The candidates are every prediction a spec writes,
-    one per target and point of its own grid (``half_life``, ``ridge``,
-    ``feature_sets`` or ``penalties`` as lists), across all the specs. A row
-    counts for a target only where every candidate of that target has a
-    value and the target is present, so the settings are compared on the same
-    rows, and the rows each setting withholds while it warms up count for
-    none. Every row weighs alike. ``emit_selected``'s and ``emit_averaged``'s
-    predictions, where a spec writes them, are scored on the same rows and
-    never chosen.
-
-    ``specs`` is a spec, a list of specs, or a spec builder called as
-    ``specs(name, **point)`` for each point of ``param_grid``, a dict of each
-    keyword's values, as scikit-learn's ``ParameterGrid`` takes one: its keys
-    sorted, the last varying fastest. ``functools.partial(po.spec.sgd,
-    targets=["y"], features=["x"])`` with ``{"learning_rate": [...]}`` is one.
-    The name it is given is the point written out, ``"learning_rate=0.01"``.
-
-    ``source`` is a query or a frame; it is read once, ``chunk_size`` rows
-    at a time, through one bank of every spec, with ``threads`` as
-    :class:`~polars_online.ModelBank` takes them. Only the sums below are
-    kept, so memory is the bank's state and a chunk, however long the
-    stream. A query is counted first, to place the spans: for a parquet scan
-    Polars reads the count from the files' footers, and any other query runs
-    once more without the bank.
-
-    Returns one row per candidate and target, in grid order, each target's
-    ``emit_selected`` and ``emit_averaged`` predictions among them, then per
-    target one row for the choice:
+    A ``DataFrame`` that holds, for each target, one row per slot (one
+    target at one grid point of a spec's own grid, or a spec's
+    ``emit_selected`` or ``emit_averaged`` prediction) in grid order, then
+    the row of the choice:
 
     ``kind``
-        What the row is: ``"candidate"``, a setting to choose among;
+        What the row is: ``"candidate"``, a slot to choose among;
         ``"selected"`` or ``"averaged"``, a spec's ``emit_selected`` or
-        ``emit_averaged`` prediction, scored beside the candidates and never
+        ``emit_averaged`` prediction, scored beside the others and never
         chosen; ``"choice"``, what choosing from the rows before each span
-        earned. Read the choice as ``pl.col("kind") == "choice"``.
+        scored on that span. Select it with ``pl.col("kind") == "choice"``.
     ``spec``
         The spec's name. Null on the choice's row, which runs whichever
-        candidate each span chose, from any spec.
-    the keys of ``param_grid``, then ``half_life``, ``ridge``, ``feature_set``, ``penalty``
-        The candidate's settings: the grid's point, and each setting of the
-        specs' own grids that varies among the candidates. Null on the
-        choice's row.
+        slot each span chose, from any spec.
+    the keys of ``param_grid``, then ``half_life``, ``ridge``, ``feature_set`` and ``penalty``
+        The slot's grid point: the point of ``param_grid``, and each
+        setting of the specs' own grids that varies among the slots. Null
+        on the choice's row.
     ``slot``, ``target``
-        The field scored, null on the choice's row for the same reason as
-        ``spec``, and its target (null under ``loglik``).
+        The output field scored, and its target (null under
+        ``scoring="loglik"``). ``slot`` is null on the choice's row, and
+        ``target`` names the target the choice is for.
     ``n``
         The rows scored, over the test spans.
     ``mse`` or ``loglik``
         The score over those rows.
     ``rank``
-        1 for the best candidate over the test spans, ties sharing the lower
-        rank: the setting to run from here on. Its score is chosen on the rows
-        it reports, so it is the optimistic number. Null on every row but a
-        candidate's.
+        1 for the slot with the best score over the test spans, ties
+        sharing the lower rank: the grid point to run. Since it is chosen on
+        the rows it reports, its score is optimistic. Null on every row but
+        a ``"candidate"``.
     ``folds_chosen``
-        How many test spans the choice ran the candidate on. A tie goes to the
-        first in grid order. Null on every row but a candidate's.
+        How many test spans the choice ran the slot on. A tie goes to the
+        first in grid order. Null on every row but a ``"candidate"``.
 
-    The choice's row is the honest number: what choosing the best setting
-    from the rows before each span earned on that span. Its gap below the
-    rank-1 score is what choosing on the same rows would have overstated.
+    The choice's row is the out-of-sample score of choosing: what choosing
+    the best grid point from the rows before each span scored on that span.
+    How far it falls short of the rank-1 score is how much choosing on the
+    same rows would have overstated the score.
+
+    .. rubric:: Raises
+
+    ``TypeError``
+        ``source`` is not a ``LazyFrame`` or a ``DataFrame``; ``specs`` is
+        not a spec, a list of specs or a builder; ``param_grid`` is not a
+        dict; a key is not a str; or a value is not a list.
+    :class:`~polars_online.RefusedValueError`
+        ``param_grid`` is given beside specs already built, or is empty, or
+        one of its lists is empty. It is both a ``ValueError`` and a
+        ``TypeError``.
+    :class:`~polars_online.WrongTypeError`
+        ``n_splits`` or ``gap`` is not a whole number. It is both a
+        ``TypeError`` and a ``ValueError``.
+    :class:`~polars_online.ColumnNotFoundError`
+        A spec's target has no column in the stream. A formula target never
+        has one, since the bank computes it as it learns and does not write
+        it out, so such a spec cannot be scored here. It is both a
+        ``ValueError`` and Polars' ``ColumnNotFoundError``.
+    ``ValueError``
+        When:
+
+        - ``scoring`` is neither word;
+        - ``n_splits`` is below 1, or ``gap`` below 0;
+        - a builder returns a spec not named by its first argument;
+        - a ``param_grid`` key is one of the result's columns;
+        - a spec has nothing to score: no prediction of a target under
+          ``"mse"``, or no ``loglik`` under ``"loglik"``;
+        - a query gives a number of rows other than its count when run;
+        - the first choice has no row to read. The error names the rows and
+          the remedy. The stream is too short for its spans, ``gap`` is as
+          long as the first span, or no row of the first span has every
+          slot's prediction, as when a warm-up (``min_weight``,
+          ``warm_rows``) outlasts it.
+    Whatever the bank raises
+        For the specs or ``threads``, or for a chunk.
+
+    .. rubric:: Examples
+
+    This code reads ``ticks.parquet`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
 
     .. code-block:: python
 
@@ -1322,24 +1627,99 @@ def grid_search(
         table = po.eval.grid_search(
             pl.scan_parquet("ticks.parquet"), sgd, {"learning_rate": [0.001, 0.01, 0.1]}, n_splits=4
         )
-        best = table.filter(pl.col("rank") == 1)                 # the rate to run from here on
-        honest = table.filter(pl.col("kind") == "choice")        # what choosing so earned
+        points = table.filter(pl.col("kind") == "candidate")     # one row per grid point
+        for rate, mse, rank in points.select("learning_rate", "mse", "rank").iter_rows():
+            print(f"learning_rate={rate}: mse {mse:.3f}, rank {rank}")
+        choice = table.filter(pl.col("kind") == "choice")        # the score of choosing
+        print(f"choosing from earlier rows: mse {choice['mse'][0]:.3f}")
 
-    The sums are added a chunk at a time, so the scores are the same to
-    rounding whatever ``chunk_size`` is, and the choices the same unless two
-    settings tie to rounding. Raises ``TypeError`` for a ``param_grid``
-    beside specs already built, or one that is not a dict of non-empty
-    lists, and for a builder that does not name its spec by its first
-    argument (``ValueError``). ``ValueError`` for an unknown ``scoring``, an
-    ``n_splits`` below 1, a negative ``gap``, a spec with nothing to score, a
-    ``param_grid`` key that is one of the columns above, and a query whose
-    count differs from the rows it gives when run. ``ValueError`` too when
-    the first choice has no row to read, naming the rows and the remedy: a
-    stream too short for its spans, a ``gap`` as long as the first span, or
-    a first span on which no row has every candidate's prediction, as when a
-    setting's warm-up (``min_weight``, ``warm_rows``) outlasts it. Fewer
-    ``n_splits`` lengthen the first span. Whatever the bank raises for the
-    specs or a chunk, this raises.
+    .. code-block:: text
+
+        learning_rate=0.001: mse 3.136, rank 3
+        learning_rate=0.01: mse 0.386, rank 2
+        learning_rate=0.1: mse 0.304, rank 1
+        choosing from earlier rows: mse 0.304
+
+    .. rubric:: See also
+
+    - :func:`compare_specs`, the scores of specs already run, side by side.
+    - `Calibrating a model
+      <https://github.com/hgilde/polars-online/blob/main/docs/CALIBRATION.md>`_,
+      the pattern this follows, for every setting.
+
+    .. rubric:: Notes
+
+    **Why the choice is scored apart.** Each row's prediction is made
+    before the row is learned, so the stream's own residuals are
+    out-of-sample, and every grid point is scored on the same rows. But
+    choosing the grid point whose error is lowest over those rows, and
+    reporting that error, is optimistic: each error is the grid point's
+    true error plus noise, and the minimum picks the grid point whose noise
+    happened to run lowest. So the choice is scored too. Before each test
+    span, the slot with the best score over every row before it (``gap``
+    rows short of it) is chosen, and scored on the span:
+
+    .. code-block:: text
+
+        size     = n // (n_splits + 1)
+        start_k  = n - (n_splits - k) * size                 k = 0 .. n_splits - 1
+        chosen_k = argbest over candidate slots s of score(s, rows [0, start_k - gap))
+        choice   = score(chosen_k on rows [start_k, start_k + size), pooled over k)
+
+    **What is scored.** The slots are every prediction a spec writes, one
+    per target and grid point of its own grid (``half_life``, ``ridge``,
+    ``feature_sets`` or ``penalties`` as lists), across all the specs. A
+    row counts for a target only where every slot of that target has a
+    value and the target is present. So the grid points are compared on
+    the same rows, and the rows any slot withholds while it warms up count
+    for none. Every row weighs alike. Under ``scoring="loglik"``, the sum
+    of a stream's log densities, each read before its row is learned, is
+    its log marginal likelihood (the prequential score). It is the
+    criterion that compares ``bocpd``'s hazards and priors. For ``hmm``'s number of
+    states, see the table under *What this cannot choose*.
+
+    **Memory and rounding.** Only three numbers per slot are kept (its summed
+    score, the rows it is scored on and the rows it predicts) for each run
+    of rows between the places a test span starts or its choice stops, with
+    each target's count of rows.
+    So memory is the bank's state and one chunk, however long the stream.
+    These sums are added a chunk at a time, so the scores are the same to
+    rounding whatever ``chunk_size`` is, and the choices are the same
+    unless two grid points tie to rounding.
+
+    **What this cannot choose.** Three settings have no out-of-sample score
+    this function can choose them by. One model writes no score, one
+    writes a score that was measured not to find the setting, and for one
+    the squared error would push it toward the loss it exists to replace:
+
+    .. list-table::
+       :header-rows: 1
+       :widths: 18 52 30
+
+       * - setting
+         - why this does not choose it
+         - what to do
+       * - ``kmeans``' ``n_clusters``
+         - Its only score is ``dist``, the distance to the nearest center,
+           and that falls as clusters are added even on rows not yet
+           learned: on three planted clusters, its mean square on the
+           second half went 1.18, 0.45, 0.38, 0.32 and 0.26 at two to six
+           clusters. It writes no likelihood.
+         - Choose it by what the clusters are for, or from a Gram or a
+           sample with a criterion of your own.
+       * - ``hmm``'s ``n_components``
+         - ``hmm`` writes ``loglik``, but on a stream planted with three
+           Gaussian states of spread 1 at means −2, 0 and 2, four states
+           scored −1.60 a row on the second half and three scored −1.67, so
+           the score is not shown to find the number of states.
+         - Read ``n_components`` from what the states mean.
+       * - ``huber_delta``
+         - It is the cut, in units of the residuals' spread, past which a
+           row's residual counts linearly. The default 1.345 keeps 95% of
+           least squares' efficiency when the noise is normal, and choosing
+           it by squared error would push it toward least squares.
+         - Keep 1.345, or choose it by a robust loss of your own over
+           :func:`unpack`'s residuals.
     """
     from polars_online._bank import ModelBank
 
@@ -1548,19 +1928,85 @@ def seqtest(
     min_weight: float = 0.0,
     name: str = "seqtest",
 ) -> pl.DataFrame:
-    """:func:`polars_online.spec.seqtest` in polars expressions, over a frame in
-    memory: the same e-processes, the same fields, row for row.
+    """Test a sign sequentially by betting, over a frame in memory.
 
-    Column mode (no ``a`` and ``b``): ``targets`` name the columns whose sign
-    is tested. Compare mode: ``a`` and ``b`` name two output structs of
-    ``df`` (two specs the bank ran), and ``targets`` the residuals both
-    carry. ``t`` means ``resid_<t><a_suffix>`` of ``a`` against
-    ``resid_<t><b_suffix>`` of ``b``, every ``t`` they share when ``None``.
-    The sign tested is that of ``|resid_b| - |resid_a|``, positive when
-    ``a`` was closer.
+    Use it to gather evidence, row by row, that a column's sign leans one
+    way, or that one spec predicts closer than another, with evidence you
+    may read at any row. It computes what :func:`polars_online.spec.seqtest`
+    writes, field for field and row for row, with Polars expressions. For a
+    stream too long to hold, run the ``seqtest`` model in the bank, whose
+    memory is the size of its state.
 
-    Per target, with ``s`` the row's sign (+1, -1 or 0) and the counts
-    before the row:
+    .. rubric:: Parameters
+
+    ``df``
+        The frame: in column mode, one holding the columns tested; in
+        compare mode, one a bank returned, holding both specs' output
+        columns. A ``LazyFrame`` is refused: pass ``lf.collect()``, which runs
+        the query and returns its result.
+    ``targets``
+        In column mode, the columns whose sign is tested, which column mode
+        needs. In compare mode, the targets whose residuals are compared:
+        ``t`` means ``resid_<t><a_suffix>`` of ``a`` against
+        ``resid_<t><b_suffix>`` of ``b``. ``None``, the default, takes every
+        target the two share.
+    ``a``, ``b``
+        The names of two specs' output columns, for compare mode; give both
+        or neither. The sign tested is that of ``|resid_b| - |resid_a|``,
+        positive when ``a`` was closer.
+    ``a_suffix``, ``b_suffix``
+        The suffix of the residual field each side's slot carries, such as
+        ``"__r0.1"`` for one grid point of a grid; ``""`` by default.
+    ``group``
+        One key column, as a spec's ``group`` is, or a list of them, to run
+        one test per group in row order (``.over(group)``); ``None``, the
+        default, runs one.
+    ``min_weight``
+        The rows a group must have before a field other than ``weight_sum``
+        is filled; 0 by default.
+    ``name``
+        The name of the column added, ``"seqtest"`` by default.
+
+    .. rubric:: Returns
+
+    ``df`` with a record column ``name`` added, holding per target ``t``,
+    each read before the row, as the bank writes them:
+
+    ``log_e_pos_<t>``, ``log_e_neg_<t>``, ``n_pos_<t>``, ``n_neg_<t>``
+        In column mode: the log wealth of the bet that the sign is positive
+        and of the bet that it is negative, and the signs counted.
+    ``log_e_a_<t>``, ``log_e_b_<t>``, ``wins_a_<t>``, ``wins_b_<t>``
+        In compare mode: the same, for "``a`` was closer" and "``b`` was
+        closer".
+    ``weight_sum``
+        The rows before this one in its group. Every other field is null
+        until it reaches ``min_weight``.
+
+    .. rubric:: Raises
+
+    ``ValueError``
+        When:
+
+        - ``df`` already has a column ``name``, which the result would
+          replace;
+        - ``a`` is given without ``b``, or ``b`` without ``a``;
+        - column mode has no ``targets``;
+        - the two specs share no residual field;
+        - a target has no residual on one side (the error names the fields
+          that side has).
+    :class:`~polars_online.OutputColumnNotFoundError`
+        ``df`` has no column ``a`` or ``b``. It is both Polars'
+        ``ColumnNotFoundError`` and a ``KeyError``.
+    ``TypeError``
+        ``df`` is not a ``DataFrame``, or ``a`` or ``b`` names a column that
+        is not a record.
+    Polars' ``ColumnNotFoundError``
+        ``df`` does not have a column-mode target or a ``group`` column.
+
+    .. rubric:: Update equation
+
+    Per target, with ``s`` the row's sign (+1, -1 or 0), and ``n_pos`` and
+    ``n_neg`` the signs counted before the row:
 
     .. code-block:: text
 
@@ -1569,47 +2015,48 @@ def seqtest(
         log_e_pos += log1p(lam_pos * s)
         log_e_neg += log1p(-lam_neg * s)
 
-    Returns ``df`` with a struct column ``name`` holding, per target ``t``
-    and read before the row, as the bank writes them:
+    ``lam_pos`` and ``lam_neg`` are the shares of wealth each bet stakes on
+    the row, read from the signs before it.
 
-    ``log_e_pos_<t>``, ``log_e_neg_<t>``, ``n_pos_<t>``, ``n_neg_<t>``
-        In column mode: the two gamblers' log wealth and the signs counted.
-    ``log_e_a_<t>``, ``log_e_b_<t>``, ``wins_a_<t>``, ``wins_b_<t>``
-        In compare mode: the same, for "``a`` was closer" and "``b`` was
-        closer".
-    ``weight_sum``
-        The rows before this one in its group; every other field is null
-        until it reaches ``min_weight``.
+    .. rubric:: Examples
 
-    ``group`` runs one process per group, in row order (``.over(group)``):
-    one key column, as a spec's ``group`` is, or a list of them. A value of
-    zero bets nothing and counts nothing, and so does one the bank would not
-    learn from: null, NaN, infinite, or past its input bound of 1e100. What
-    the bank adds is the clock (``session``, ``restart_after_step_back``),
-    which a frame in memory has not got. The bank's struct is held to this
-    one to the last bit. The bank keeps memory the size of its state over a
-    stream, where this holds the whole frame.
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
 
     .. code-block:: python
 
         ridge = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        kalman = po.spec.kalman(
-            "kalman", targets=["y"], features=["x0", "x1"], half_life=100.0, coef_half_life=50.0
-        )
-        out = po.ModelBank([ridge, kalman]).fit_predict(df)
-        evidence = po.eval.seqtest(out, a="kalman", b="ridge", group="stock_id")
+        x0_only = po.spec.ewridge("x0_only", targets=["y"], features=["x0"], half_life=100.0)
+        out = po.ModelBank([ridge, x0_only]).fit_predict(df)
+        evidence = po.eval.seqtest(out, a="ridge", b="x0_only")
+        last = evidence["seqtest"].struct.unnest().row(-1, named=True)    # the last row's fields
+        print(f"ridge closer on {last['wins_a_y']:.0f} rows, x0_only on {last['wins_b_y']:.0f}")
+        log_e = last["log_e_a_y"]                                        # ridge's log evidence
+        print(f"log evidence for ridge {log_e:.1f}, past ln 20: {log_e > np.log(20)}")
 
-    Raises:
+    .. code-block:: text
 
-    - ``ValueError`` for a ``name`` the frame already has, whose column the
-      result would replace, for ``a`` without ``b`` (or the reverse), for
-      column mode without ``targets``, for two specs that share no residual field,
-      and for a target one side has no residual for (naming the fields it
-      does have);
-    - ``KeyError`` for a spec the frame has not got;
-    - ``TypeError`` for one that is not a struct;
-    - polars' ``ColumnNotFoundError`` for a column-mode target or a
-      ``group`` column the frame has not got.
+        ridge closer on 290 rows, x0_only on 105
+        log evidence for ridge 41.8, past ln 20: True
+
+    .. rubric:: See also
+
+    - :func:`polars_online.spec.seqtest`, the same test run by the bank.
+    - :func:`diebold_mariano` and :func:`clark_west`, tests of two specs'
+      squared errors over a whole frame.
+    - :func:`compare_specs`, whose Notes compare the three tests.
+
+    .. rubric:: Notes
+
+    The evidence can be read at any row. Each target has two bets, one on
+    each direction: reject a direction at the 5% level the first time its
+    bet's log wealth reaches ``ln 20``, about 3.0. Watching both bets at
+    once, to test either direction at 5%, needs ``ln 40``. A value of zero bets
+    nothing and counts nothing, and so does one the bank would not learn
+    from: null, NaN, infinite, or past its input bound of 1e100 in
+    magnitude. The bank's model adds what a frame in memory does not have,
+    the clock (``session``, ``restart_after_step_back``), and its output is
+    held to this function's to the last bit.
     """
     who = "po.eval.seqtest"
     _frame(who, df)
@@ -1729,62 +2176,108 @@ def sums(
     weight: str | None = None,
     binary: bool | None = None,
 ) -> pl.DataFrame:
-    """Reduce a chunk of output to the sufficient statistics of its metrics.
+    """Reduce one chunk of a bank's output to the sums its scores are read from.
 
-    :func:`metrics` needs the whole frame. This needs one chunk at a time: ten
-    numbers per ``(slot, target, *group)``, which :func:`merge_sums` adds together
-    and :func:`from_sums` turns back into the same numbers. A run that compares
-    fifty slots over a billion rows then keeps ten numbers per key instead of
-    writing the rows out to evaluate them later. The columns beside the keys are
-    :data:`SUM_FIELDS`:
+    Use it to score a stream too long to hold: reduce each chunk to ten
+    numbers per slot, target and group, add the chunks with
+    :func:`merge_sums`, and read :func:`metrics`' scores with
+    :func:`from_sums`. For a frame in memory, :func:`metrics` gives the
+    same scores in one call.
+
+    .. rubric:: Parameters
+
+    ``df``
+        One chunk a bank returned, holding the spec's output column. A
+        ``LazyFrame`` is refused: pass ``lf.collect()``, which runs the query
+        and returns its result.
+    ``spec``
+        The spec's name, or the spec dict itself, as :func:`unpack` reads
+        it.
+    ``group``, ``targets``
+        :func:`metrics`' own.
+    ``weight``
+        A column to weight the rows by; ``None``, the default, counts every
+        row 1, and then ``w`` equals ``n``. A row whose weight is null,
+        NaN, infinite, past the input bound of 1e100, or negative is
+        dropped: the bank skips the first four and refuses a negative one.
+        A row of weight 0 is kept, counted in ``n`` and not in ``w``.
+    ``binary``
+        :func:`metrics`' own: whether ``hits`` and ``signed`` count a
+        classifier's accuracy at 0.5 or the sign test. Keep the sums of the
+        two readings apart (see Returns).
+
+    .. rubric:: Returns
+
+    A ``DataFrame`` with one row per ``slot``, ``target`` and ``group`` key,
+    and these columns after the keys, :data:`SUM_FIELDS`:
 
     ``n``, ``w``
         The rows, and the weight behind them.
     ``mean_y``, ``mean_pred``
-        The weighted means.
+        The weighted means of the target and the prediction.
     ``m2_y``, ``m2_pred``, ``cov``
-        The centred second moments, and the centred cross-moment.
+        The weighted second moments about those means, and the weighted
+        cross-moment about them.
     ``sse``
-        The residual sum of squares.
+        The weighted sum of squared residuals.
     ``hits``, ``signed``
-        For the hit rate: ``hits`` counts sign agreements and ``signed`` the rows
-        with ``y != 0`` and ``pred != 0``, as :func:`metrics` takes them. Under
-        ``binary`` (:func:`metrics`'s reading, by default read from the spec
-        dict's loss), ``hits`` counts agreement at a 0.5 threshold and
-        ``signed`` every row, since every row scores. With the spec dict
-        naming a Poisson ``sgd`` fit, which has no sign to hit, both are 0,
-        and :func:`from_sums` gives the null the bank gives. **Keep chunks of
-        the two readings apart**: :func:`merge_sums` sums whatever is in
-        ``hits`` and ``signed`` without knowing which ``binary`` produced it,
-        and :func:`from_sums` is told by its own ``binary``.
+        For the hit rate: ``hits`` weighs the rows whose sign the
+        prediction got right, and ``signed`` the rows with ``y != 0`` and
+        ``pred != 0``, as :func:`metrics` counts them. Under ``binary``,
+        ``hits`` weighs the rows on the right side of 0.5, and ``signed``
+        every row. With the spec dict naming a Poisson ``sgd`` fit, which
+        has no sign to hit, both are 0, and :func:`from_sums` gives the
+        null the bank gives. :func:`merge_sums` adds ``hits`` and
+        ``signed`` without knowing which reading made them, so add only
+        sums made under one ``binary``.
 
-    Centred, not raw. The obvious form (keep ``sum(y)`` and ``sum(y**2)`` and
-    subtract) is one addition simpler and loses the variance entirely when the
-    mean is large relative to the spread. A unit-variance target around 1e8 has
-    ``var / E[y**2]`` of about 1e-16, and the subtraction has nothing left. The
-    centring adds a parallel-axis term to :func:`merge_sums`, a multiply, and
-    keeps the variance to rounding (its docstring has the measurement).
+    .. rubric:: Raises
 
-    Rows where the prediction or the target is missing are dropped, as
-    :func:`metrics` drops them: null, NaN, infinite or past the bank's input
-    bound.
+    Whatever :func:`unpack` raises for ``df`` and ``spec``, and Polars'
+    ``ColumnNotFoundError`` for a ``group`` or ``weight`` column ``df`` does
+    not have.
 
-    ``weight`` names a column to weight rows by. A row whose weight the bank
-    would not learn from -- null, NaN, infinite, past the input bound, or
-    negative -- is dropped too, and a zero weight is kept, counted in ``n``
-    and not in ``w``. Without ``weight`` every row counts 1 and ``w`` equals
-    ``n``. ``group`` is :func:`metrics`'s; ``spec``, ``targets`` and the
-    errors are :func:`unpack`'s.
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
 
     .. code-block:: python
 
         spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
         out = po.ModelBank([spec]).fit_predict(df)
-        part = po.eval.sums(out.head(200), spec, group="stock_id")   # ten numbers per key
-        rest = po.eval.sums(out.tail(200), spec, group="stock_id")
-        running = po.eval.merge_sums(part, rest)                     # any split, to rounding
-        scores = po.eval.from_sums(running, min_samples=10)          # r2, ic, hit_rate, mse, rmse
+        part = po.eval.sums(out.head(200), spec)         # ten numbers per slot and target
+        rest = po.eval.sums(out.tail(200), spec)
+        running = po.eval.merge_sums(part, rest)         # the two halves, added
+        scores = po.eval.from_sums(running)
+        whole = po.eval.metrics(out, spec)
+        print(f"r2 from sums {scores['r2'][0]:.6f}, from the frame {whole['r2'][0]:.6f}")
 
+    .. code-block:: text
+
+        r2 from sums 0.944014, from the frame 0.944014
+
+    .. rubric:: See also
+
+    - :func:`merge_sums`, which adds the sums of several chunks.
+    - :func:`from_sums`, which reads the scores from them.
+    - :func:`metrics`, the same scores over a frame in memory.
+
+    .. rubric:: Notes
+
+    A run that compares fifty slots over a billion rows keeps ten numbers
+    per key this way, instead of writing the rows out to score them later.
+    Rows where the prediction or the target is null are dropped, as
+    :func:`metrics` drops them: null, NaN, infinite or past the bank's input
+    bound.
+
+    **The moments are kept about the mean, not as raw sums.** The simpler
+    form keeps ``sum(y)`` and ``sum(y**2)`` and subtracts, and loses the
+    variance entirely when the mean is large against the spread. A target
+    of variance 1 about 1e8 has ``var / E[y**2]`` of about 1e-16, and the
+    subtraction has nothing left. Keeping the moments about the mean adds
+    one term to :func:`merge_sums`, a multiply, and keeps the variance to
+    rounding, as its Notes measure.
     """
     spec_name, written = _spec_of("po.eval.sums", spec)
     binary = _binary(binary, written)
@@ -1832,33 +2325,83 @@ def sums(
 
 
 def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
-    """Add the sufficient statistics of disjoint row sets.
+    """Add the sums of disjoint sets of rows, as if their rows were one chunk.
 
-    The same statistics whatever the split, to rounding: the means are pooled
-    by weight and the centred sums pick up the parallel-axis term for the
-    distance between each part's mean and the pooled one:
+    Use it to add the :func:`sums` of the chunks of a stream, in any number
+    and any split, before reading the scores with :func:`from_sums`.
+
+    .. rubric:: Parameters
+
+    ``first``, ``*rest``
+        Frames :func:`sums` returned, over disjoint sets of rows, each with
+        the same key columns. Merging one frame returns its sums again, to
+        rounding: the means are recomputed as ``sum(w * mean) / w``.
+
+    .. rubric:: Returns
+
+    A ``DataFrame`` with the same columns: the keys, then
+    :data:`SUM_FIELDS`, one row per key, sorted by the keys. A key present
+    in one frame and not another is carried through as it is.
+
+    .. rubric:: Raises
+
+    ``TypeError``
+        A frame is not a ``DataFrame``.
+    ``ValueError``
+        The frames' key columns differ.
+
+    .. rubric:: Update equation
+
+    The means are pooled by weight, and each moment about the mean picks up
+    the parallel-axis term for the distance between its frame's mean and
+    the pooled one. With ``g`` running over the frames, and ``mean`` and
+    ``m2`` standing for each of ``mean_y`` and ``m2_y``, and ``mean_pred``
+    and ``m2_pred``, in turn:
 
     .. code-block:: text
 
         w    = sum(w_g)
         mean = sum(w_g * mean_g) / w
         m2   = sum(m2_g + w_g * (mean_g - mean)**2)
-        cov  = sum(cov_g + w_g * (mean_y_g - mean_y) * (mean_p_g - mean_p))
+        cov  = sum(cov_g + w_g * (mean_y_g - mean_y) * (mean_pred_g - mean_pred))
 
-    That is the n-way form of Chan, Golub and LeVeque's merge. Every part
-    enters as one term of a sum, never as a difference of running totals, so
-    merging a thousand chunks loses about as much as merging two. Measured on
-    100,000 rows at a level of 1e4 standard deviations, against the exact
-    sums in rational arithmetic, over eight random streams: 2 chunks merged
-    within 6e-15 of the exact ``m2_y``, ``m2_pred`` and ``cov``, relative to
-    each, and 1,000 chunks within 9e-15. Most of that is each part's mean
-    rounded to a double at that level, before any merging. A difference of
-    running totals loses the level's square over the variance times the
-    rounding, about 1e-8 there.
+    ``n``, ``sse``, ``hits`` and ``signed`` are summed.
 
-    Returns a frame with the same columns. Keys present in one part and not
-    another are carried through as they are; merging one frame returns it
-    unchanged. ``ValueError`` for parts whose key columns differ.
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        out = po.ModelBank([spec]).fit_predict(df)
+        chunks = [po.eval.sums(out.slice(i, 100), spec) for i in range(0, 400, 100)]
+        merged = po.eval.merge_sums(*chunks)                  # four chunks of 100 rows, added
+        whole = po.eval.sums(out, spec)                       # the 400 rows as one chunk
+        print(f"m2_y {merged['m2_y'][0]:.6f} merged, {whole['m2_y'][0]:.6f} whole")
+
+    .. code-block:: text
+
+        m2_y 1932.454328 merged, 1932.454328 whole
+
+    .. rubric:: See also
+
+    - :func:`sums`, which makes the frames this adds.
+    - :func:`from_sums`, which reads the scores from the result.
+
+    .. rubric:: Notes
+
+    This is the n-way form of Chan, Golub and LeVeque's merge. Every frame
+    enters as one term of a sum, never as a difference of running totals,
+    so merging a thousand chunks loses about as much as merging two.
+    Measured on 100,000 rows at a level of 1e4 standard deviations, against
+    the exact sums in rational arithmetic, over eight random streams: 2
+    chunks merged within 6e-15 of the exact ``m2_y``, ``m2_pred`` and
+    ``cov``, relative to each, and 1,000 chunks within 9e-15. Most of that
+    is each frame's mean rounded to a double at that level, before any
+    merging. A difference of running totals loses the level's square over
+    the variance times the rounding, about 1e-8 there.
     """
     frames = [first, *rest]
     for f in frames:
@@ -1904,26 +2447,72 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
 
 @renamed_keywords("po.eval.from_sums", _MIN_SAMPLES)
 def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -> pl.DataFrame:
-    """The metrics :func:`metrics` reports, from :func:`sums` instead of rows.
+    """Read :func:`metrics`' scores from the sums :func:`sums` made.
 
-    Same columns and same numbers: ``n``, ``r2`` (out-of-sample against the
-    realized mean), ``ic`` (correlation of prediction with target), ``hit_rate``,
-    ``mse`` and ``rmse``. Sums built with :func:`sums`' ``weight`` give each
-    one weighted, ``mse`` as ``sse / w``. Which reading ``hit_rate`` is (sign
-    agreement, or accuracy at 0.5) was fixed when the sums were built
-    (:func:`sums`'s ``binary``), since this divides ``hits`` by ``signed``.
-    ``binary=True`` says the sums were built that way, and names the columns
-    as :func:`metrics` does under it: ``brier_skill`` for ``r2`` and
-    ``accuracy`` for ``hit_rate``. The sums do not record their reading, so
-    this cannot read it from them. There is no ``log_loss`` column, which
-    :func:`metrics` computes under ``binary`` over a frame in memory:
-    :data:`SUM_FIELDS` carries no sum for it. A key with fewer than
-    ``min_samples`` rows keeps its row, with ``n`` read and the metrics null,
-    as :func:`metrics` keeps it.
+    Use it last, after :func:`sums` has reduced each chunk of a stream and
+    :func:`merge_sums` has added them, to get the scores :func:`metrics`
+    would give over every row at once.
 
-    ``r2`` and ``ic`` are null where they are undefined: a key whose target or
-    prediction never varied has no correlation to report, and dividing by its zero
-    variance would give an infinity that reads as a number.
+    .. rubric:: Parameters
+
+    ``s``
+        A frame :func:`sums` or :func:`merge_sums` returned.
+    ``min_samples``
+        The fewest rows a key is scored on, 30 by default. A key with fewer
+        rows keeps its row, with ``n`` filled and the scores null, as
+        :func:`metrics` keeps it.
+    ``binary``
+        Say that the sums were made under :func:`sums`' ``binary``, and
+        name the columns as :func:`metrics` names them under it:
+        ``brier_skill`` for ``r2`` and ``accuracy`` (at 0.5) for
+        ``hit_rate``. ``False`` by default. The sums do not record their reading, so this
+        cannot read it from them: which reading ``hit_rate`` is was fixed
+        when the sums were made, since this divides ``hits`` by ``signed``.
+
+    .. rubric:: Returns
+
+    A ``DataFrame`` of the keys and :func:`metrics`' columns, with the same
+    numbers: ``n``, ``r2`` (out-of-sample, against the target's mean),
+    ``ic`` (the correlation of the prediction with the target),
+    ``hit_rate``, ``mse`` and ``rmse``. Sums made with :func:`sums`'
+    ``weight`` give each score weighted, ``mse`` as ``sse / w``. ``r2`` is
+    null where the target never varied, and ``ic`` where either the target
+    or the prediction never varied, where
+    dividing by the variance of 0 would give an infinity that reads as a
+    number. Sums whose ``w`` is 0, from rows that all weigh 0, give ``NaN``
+    for ``r2``, ``ic``, ``mse`` and ``rmse``. There is no ``log_loss`` column under ``binary``:
+    :data:`SUM_FIELDS` carries no sum for it, and :func:`metrics` computes
+    it only over a frame in memory.
+
+    .. rubric:: Raises
+
+    ``TypeError`` for an ``s`` that is not a ``DataFrame``.
+
+    .. rubric:: Examples
+
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        out = po.ModelBank([spec]).fit_predict(df)
+        s = po.eval.sums(out, spec, group="stock_id")          # ten numbers per stock
+        scores = po.eval.from_sums(s)
+        for stock, n, r2 in scores.select("stock_id", "n", "r2").iter_rows():
+            print(f"{stock}: {n} rows, r2 {r2:.3f}")
+
+    .. code-block:: text
+
+        b0: 99 rows, r2 0.939
+        b1: 99 rows, r2 0.938
+        b2: 99 rows, r2 0.947
+        b3: 99 rows, r2 0.948
+
+    .. rubric:: See also
+
+    - :func:`sums` and :func:`merge_sums`, which make the sums.
+    - :func:`metrics`, the same scores over a frame in memory.
     """
     _frame("po.eval.from_sums", s)
     keys = [c for c in s.columns if c not in SUM_FIELDS]
@@ -2153,45 +2742,91 @@ def diebold_mariano(
     min_samples: int = 30,
     name: str = "diebold_mariano",
 ) -> pl.DataFrame:
-    """Diebold and Mariano's (1995) test of equal squared error between two
-    specs' out-of-sample predictions, with Newey and West's variance.
+    """Test whether two specs' out-of-sample squared errors differ on average,
+    by Diebold and Mariano's test.
 
-    Per target ``t``, the loss differential is ``d = resid_b**2 -
-    resid_a**2``, positive when ``a`` was closer, over the rows where both
-    have a residual. The statistic is its mean ``d̄`` over Newey and West's
-    (1987) standard error, with Bartlett weights ``1 - l / (lags + 1)`` to
-    ``lags``:
+    Use it to ask whether one spec predicts better than another that is not
+    nested in it. It is Diebold and Mariano's (1995) test, with Newey and
+    West's (1987) variance. When one spec's features are a subset of the other's,
+    use :func:`clark_west`, since this test leans toward the smaller of two
+    nested specs. For evidence you may read at any row, use
+    :func:`seqtest`.
+
+    .. rubric:: Parameters
+
+    ``df``
+        A frame a bank returned, holding both specs' output columns. A
+        ``LazyFrame`` is refused: pass ``lf.collect()``, which runs the query
+        and returns its result.
+    ``a``, ``b``
+        The names of the two specs' output columns. The statistic is
+        positive when ``a`` was closer.
+    ``targets``, ``a_suffix``, ``b_suffix``
+        :func:`seqtest`'s, in compare mode: the targets whose residuals are
+        compared (every target the two share by default), and the suffix of
+        each side's residual field.
+    ``lags``
+        The lags of the Newey-West variance, 0 by default, for one-step
+        predictions, whose differentials are not correlated under the null.
+        For a target that looks ``h`` rows ahead, give at least ``h - 1``.
+    ``group``
+        :func:`seqtest`'s: the key columns to test each group apart.
+    ``half_life``
+        ``None``, the default, gives one statistic over every row. A number
+        of rows, finite and above 0, gives the statistic on every row
+        instead, exponentially weighted. Each row up to it counts
+        ``0.5 ** (age / half_life)``, where ``age`` is the number of rows
+        with a differential after it, up to this row, so the row itself has
+        age 0.
+    ``min_samples``
+        The fewest rows a key is tested on, 30 by default. Without
+        ``half_life``, a key with fewer rows keeps its row, with ``n``
+        filled and the other three columns null, as Polars gives null below
+        its ``min_samples``.
+    ``name``
+        With ``half_life``, the name of the record column added,
+        ``"diebold_mariano"`` by default.
+
+    .. rubric:: Returns
+
+    Without ``half_life``, a ``DataFrame`` with one row per ``group`` key
+    and target: ``n``, the rows read; ``mean``, the mean differential;
+    ``dm``, the statistic; and ``p_value``, its two-sided p-value. A
+    ``dm`` above 1.96 says ``a`` predicted better at the 5% level, and one
+    below -1.96 says ``b`` did.
+
+    With ``half_life``, ``df`` with a record column ``name`` added, holding
+    ``dm_<t>`` per target ``t``, null on a row where a side has no residual.
+    It can be read at any row.
+
+    .. rubric:: Raises
+
+    Whatever :func:`seqtest` raises for ``a``, ``b``, ``targets``, the
+    suffixes and ``group``. ``ValueError`` too, for ``lags`` below 0, for a
+    ``half_life`` that is not finite and above 0, and, with ``half_life``,
+    for a ``name`` that ``df`` already has as a column, which the result
+    would replace.
+
+    .. rubric:: Update equation
+
+    Per target ``t``, the loss differential on a row is ``d = resid_b² -
+    resid_a²``, over the ``n`` rows where both have a residual. With ``d̄``
+    its mean, and Bartlett weights ``1 - l / (lags + 1)`` on lags ``l`` up
+    to ``lags``:
 
     .. code-block:: text
 
-        S  = Σ (d - d̄)² + 2 Σ_{l ≤ lags} (1 - l/(lags+1)) Σ_t (d_t - d̄)(d_{t-l} - d̄)
+        S  = Σ (d - d̄)² + 2 Σ_{l ≤ lags} (1 - l/(lags+1)) Σ_i (d_i - d̄)(d_{i-l} - d̄)
         dm = d̄ · n / sqrt(S)                  ~ N(0, 1) with equal accuracy
 
-    ``lags`` is 0 for one-step predictions, whose differentials are not
-    correlated under the null; for a target looking ``h`` rows ahead give
-    at least ``h - 1``. **Between nested models, use** :func:`clark_west`.
-    When ``b`` is a restriction of ``a``, this test leans toward the smaller
-    one: the larger one's squared error carries the noise of estimating a
-    coefficient that is zero.
+    ``S`` is Newey and West's estimate of the differential's long-run
+    variance, times ``n``, and ``d_i`` is the differential on row
+    ``i``.
 
-    Without ``half_life``, it returns one row per (``group``, target): the
-    ``n`` rows read, the ``mean`` differential, ``dm`` and its two-sided
-    ``p_value``. A key with fewer than ``min_samples`` rows keeps its row,
-    with ``n`` read and the other three null, as Polars gives null below its
-    ``min_samples``.
+    .. rubric:: Examples
 
-    With ``half_life`` (in rows), it returns the statistic on every row
-    instead, each row before it at ``0.5 ** (age / half_life)``, one step per
-    row that has a differential, the row itself included. That is ``df`` with
-    a struct column ``name`` of ``dm_<t>``, null where a side has no
-    residual: the exponentially weighted form of the same test, read at every
-    row as :func:`seqtest` is.
-
-    ``a``, ``b``, ``targets``, the suffixes and ``group`` are
-    :func:`seqtest`'s, and raise as it raises. ``ValueError`` too for
-    ``lags`` below 0, for a ``half_life`` that is not finite and above 0,
-    and, with ``half_life``, for a ``name`` the frame already has, whose
-    column the result would replace.
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
 
     .. code-block:: python
 
@@ -2199,7 +2834,18 @@ def diebold_mariano(
         x1_only = po.spec.ewridge("x1_only", targets=["y"], features=["x1"], half_life=500.0)
         out = po.ModelBank([x0_only, x1_only]).fit_predict(df)
         test = po.eval.diebold_mariano(out, a="x0_only", b="x1_only")
-        # dm above 1.96: x0_only predicted y better, at 5%; below -1.96, x1_only did
+        n, dm, p = test.select("n", "dm", "p_value").row(0)
+        print(f"{n} rows, dm {dm:.2f}, p {p:.2g}")   # dm above 1.96: x0_only did better, at 5%
+
+    .. code-block:: text
+
+        397 rows, dm 8.62, p 6.7e-18
+
+    .. rubric:: See also
+
+    - :func:`clark_west`, the test for two nested specs.
+    - :func:`seqtest`, evidence to read at any row.
+    - :func:`compare_specs`, whose Notes say when to use each test.
     """
     _frame("po.eval.diebold_mariano", df)
     keys = _group_keys(group)
@@ -2238,13 +2884,54 @@ def clark_west(
     min_samples: int = 30,
     name: str = "clark_west",
 ) -> pl.DataFrame:
-    """Clark and West's (2007) test that a larger model nesting a smaller
-    one predicts better, with Newey and West's variance.
+    """Test whether a larger spec predicts better than a smaller one nested in
+    it, by Clark and West's test.
 
-    Diebold and Mariano's differential leans toward the smaller of two
-    nested models: under the null the larger one's extra coefficients are
-    zero but estimated, and their noise adds ``(p_small - p_big)²`` to its
-    squared error on average. Clark and West add it back:
+    Use it when one spec's features are a subset of the other's, such as a
+    spec with and without one more feature. It is Clark and West's (2007)
+    test, with Newey and West's variance. For two specs that are not
+    nested, use :func:`diebold_mariano`, and for evidence you may read at
+    any row, :func:`seqtest`.
+
+    .. rubric:: Parameters
+
+    ``df``
+        A frame a bank returned, holding both specs' output columns. A
+        ``LazyFrame`` is refused: pass ``lf.collect()``, which runs the query
+        and returns its result.
+    ``big``, ``small``
+        The names of the larger and the smaller spec's output columns, as
+        :func:`diebold_mariano`'s ``a`` and ``b``.
+    ``targets``
+        The targets whose residuals are compared; every target the two
+        share by default.
+    ``big_suffix``, ``small_suffix``
+        The suffix of each side's residual field, as
+        :func:`diebold_mariano`'s ``a_suffix`` and ``b_suffix``; ``""`` by
+        default.
+    ``lags``, ``group``, ``half_life``, ``min_samples``
+        :func:`diebold_mariano`'s own.
+    ``name``
+        With ``half_life``, the name of the record column added,
+        ``"clark_west"`` by default.
+
+    .. rubric:: Returns
+
+    Without ``half_life``, a ``DataFrame`` with one row per ``group`` key
+    and target: ``n``, the rows read; ``mean``, the mean of ``f`` (see
+    Update equation); ``cw``, the statistic; and ``p_value``, its one-sided p-value. With
+    ``half_life``, ``df`` with a record column ``name`` added, holding
+    ``cw_<t>`` per target ``t``, the exponentially weighted statistic on
+    every row, as :func:`diebold_mariano` gives it.
+
+    .. rubric:: Raises
+
+    Whatever :func:`diebold_mariano` raises, with ``big`` and ``small`` in
+    place of ``a`` and ``b``.
+
+    .. rubric:: Update equation
+
+    Per target, over the ``n`` rows where both have a residual:
 
     .. code-block:: text
 
@@ -2252,21 +2939,16 @@ def clark_west(
            = resid_small² - resid_big² + (resid_big - resid_small)²
         cw = f̄ · n / sqrt(S)          S as in diebold_mariano, of f
 
-    ``cw`` is about ``N(0, 1)`` under the null that the smaller model is the
-    truth, and the test is one-sided: ``cw > 1.645`` rejects it at 5%.
-    ``pred_small - pred_big`` is ``resid_big - resid_small``, so the two
-    residual fields are all it reads.
+    ``f̄`` is the mean of ``f``. ``cw`` is about ``N(0, 1)`` under the null
+    that the smaller spec is the truth, and the test is one-sided:
+    ``cw > 1.645`` rejects the null at 5%. ``pred_small - pred_big`` equals
+    ``resid_big - resid_small``, so the two residual fields are all the test
+    reads.
 
-    Without ``half_life``, it returns one row per (``group``, target) with
-    ``n``, the ``mean`` of ``f``, ``cw`` and its one-sided ``p_value``. With
-    ``half_life`` (in rows), it returns the per-row exponentially weighted
-    form, a struct ``name`` of ``cw_<t>``, as :func:`diebold_mariano`'s does.
+    .. rubric:: Examples
 
-    ``big`` and ``small`` name the two specs' output structs, and
-    ``big_suffix`` and ``small_suffix`` their residual fields' suffixes, as
-    :func:`diebold_mariano`'s ``a`` and ``b`` do. ``targets``, ``lags``,
-    ``group``, ``min_samples`` and ``name`` are :func:`diebold_mariano`'s,
-    and so are the errors.
+    This code reads ``df`` from the README's `Example data
+    <https://github.com/hgilde/polars-online#example-data>`_:
 
     .. code-block:: python
 
@@ -2274,7 +2956,24 @@ def clark_west(
         big = po.spec.ewridge("big", targets=["y"], features=["x0", "x1"], half_life=500.0)
         out = po.ModelBank([small, big]).fit_predict(df)
         test = po.eval.clark_west(out, big="big", small="small")
-        # cw above 1.645: x1 improves the forecast, at 5%
+        n, cw, p = test.select("n", "cw", "p_value").row(0)
+        print(f"{n} rows, cw {cw:.2f}, p {p:.2g}")   # cw above 1.645: x1 helps, at 5%
+
+    .. code-block:: text
+
+        396 rows, cw 12.24, p 9.3e-35
+
+    .. rubric:: See also
+
+    - :func:`diebold_mariano`, the test for two specs that are not nested.
+    - :func:`compare_specs`, whose Notes say when to use each test.
+
+    .. rubric:: Notes
+
+    Diebold and Mariano's differential leans toward the smaller of two
+    nested specs. Under the null, the larger spec's extra coefficients are
+    zero but estimated, and their noise adds ``(pred_small - pred_big)²``
+    to its squared error on average. Clark and West add that term back.
     """
     _frame("po.eval.clark_west", df)
     keys = _group_keys(group)

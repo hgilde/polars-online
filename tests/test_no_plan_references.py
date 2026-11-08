@@ -24,6 +24,7 @@ import importlib
 import inspect
 import re
 import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -195,7 +196,7 @@ def _members(cls: type) -> Iterator[tuple[str, object]]:
 
 def documented() -> Iterator[tuple[str, object]]:
     """Every object whose docstring the API reference renders, read from its
-    pages' directives, beside every public name ``tests/api_surface.txt``
+    pages' directives and its families, beside every public name ``tests/api_surface.txt``
     lists: the package's ``__all__`` and each helper module's."""
     seen: set[int] = set()
 
@@ -219,6 +220,13 @@ def documented() -> Iterator[tuple[str, object]]:
             names = [n for n in names if n] or list(getattr(obj, "__all__", ()))
             for name in names:
                 yield from visit(f"{target}.{name}", getattr(obj, name))
+    # Each placed object's page is generated at build time from the
+    # reference's families (docs/reference/families.py), not written as rst.
+    sys.path.insert(0, str(REFERENCE))
+    import families
+
+    for name in (n for f in families.FAMILIES for n in f.entries):
+        yield from visit(name, _resolve(name))
     modules = [po] + [importlib.import_module(f"polars_online.{m}") for m in _helper_modules()]
     for module in modules:
         yield from visit(module.__name__, module)

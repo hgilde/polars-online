@@ -101,9 +101,16 @@ def test_every_model_section_links_its_builder_and_its_source():
 
 def _documented() -> set[str]:
     """Every object a reference page documents, by its dotted path: each
-    ``auto*`` directive's target, and every name in the ``__all__`` of a
-    module documented with ``:members:``."""
-    found: set[str] = set()
+    object the families place on a page of its own (``families.py``, from
+    which the build writes those pages), each ``auto*`` directive's target on
+    a hand-written page, and every name in the ``__all__`` of a module
+    documented with ``:members:``."""
+    import sys
+
+    sys.path.insert(0, str(REFERENCE))
+    import families
+
+    found: set[str] = {n for f in families.FAMILIES for n in f.entries}
     directive = re.compile(r"^\.\. auto(\w+)::\s+([\w.]+)\n((?:[ \t]+:[^\n]*\n)*)", re.M)
     for page in REFERENCE.glob("*.rst"):
         text = page.read_text(encoding="utf-8") + "\n"
