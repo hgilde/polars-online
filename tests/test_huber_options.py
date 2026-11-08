@@ -509,14 +509,14 @@ class TestParameterRelations:
         assert h.drop(fits).equals(e.drop(fits), null_equal=True)
         read = e["weight_sum"] >= 4.0
         assert h.filter(read).equals(e.filter(read), null_equal=True)
-        # Below it the two part only where ``ewridge`` has no fit yet; a
-        # solve the row cap brings due is run, so at a cap of 1 they never do.
+        # Below it the two part only where ``ewridge`` has no fit yet: under
+        # the weight's schedule it runs no solve below the floor, the ones
+        # the row cap brings due included, so at a cap of 1 they part too.
         same = [h[f].eq_missing(e[f]) for f in fits]
         parted = e.filter(~(same[0] & same[1]))
         assert parted.select(pl.col(fits).is_null().all()).row(0) == (True, True)
         assert (parted["weight_sum"] < 4.0).all()
-        every_row = schedule.get("max_rows_between_solves") == 1
-        assert (parted.height == 0) == every_row
+        assert parted.height > 0
         # Learned rows past the refit's 500, and a finite cut that moves the
         # fit, so the refit could have run and the relation is not vacuous.
         assert int((df["w"] > 0).sum()) > 1000
