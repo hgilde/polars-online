@@ -70,6 +70,29 @@ returns.
 
 ### Changed
 
+- `po.eval.window_metrics` leaves a row whose clock is null out of every
+  window, as Polars leaves a null key out of a group. Before, such rows were
+  scored together in a row whose `window_start` was null.
+- `po.eval.from_sums` gives null `r2`, `ic`, `mse` and `rmse`, as it gives
+  `hit_rate`, for sums whose `w` is 0 (rows that all weigh 0). Before, these
+  were NaN.
+- `po.eval.merge_sums` returns the sums of a key found in only one part
+  exactly as they were, a single frame included, sorted by the keys. Before,
+  each mean was recomputed as `w * mean / w`, which moved about one mean in
+  ten by its last bit.
+- Every `po.corr` function that reads a Gram or a closed group's row now
+  reads it without the intercept column, as `nearest` already did, and
+  refuses a feature with no variance by name. Before, the intercept was a
+  row and column of NaN: `shrink` returned NaN rows and an estimated
+  intensity of 0, `spectral` and `absorption` raised numpy's `LinAlgError`,
+  and `loss` gave NaN. `shrink`'s `x` now has one column per feature.
+  `po.corr.matrix`, the deprecated name of `po.gram.correlation`, still
+  includes the intercept.
+- `po.corr.block_means` counts only the pairs behind each mean, so a NaN
+  entry no longer adds to a count.
+- `ModelBank.drop_groups("ab")` drops the group `"ab"`. A lone string is one
+  key, as Polars reads a lone name where it takes a list, not the keys `"a"`
+  and `"b"`.
 - A column of a type its role cannot take, refused by the extension, now
   raises `po.WrongTypeError` (a `TypeError` and a `ValueError`) where it
   raised `ValueError`: a text target, feature, weight or clock; an `Int128`
@@ -275,6 +298,28 @@ returns.
 
 ### Fixed
 
+- Refusals that came from Python or Polars without naming the parameter
+  now name the call and the parameter. A `chunk_size` that is not a whole
+  number (every surface that takes one), and `xgboost_matrix`'s `seed`,
+  `diebold_mariano`/`clark_west`'s `lags` and `po.stream.embargo`'s `delay`
+  of the wrong type, raise `po.WrongTypeError`. A `closed_groups` that is
+  not a path, and a `skip_learned` frame that is not a frame, raise
+  `TypeError` (the latter was `AttributeError`). A `seed` outside 0 to
+  2**64-1 raises `ValueError` (was `OverflowError`).
+- `ModelBank.skip_learned` raises `po.WrongTypeError`, not plain
+  `ValueError`, for a clock column that is not a clock type or has changed
+  between numeric and temporal.
+- `po.eval`'s scores raise `po.ColumnNotFoundError`, which is also a
+  `ValueError`, naming the role for a missing `group`, `clock` or `weight`
+  column, where Polars' plain `ColumnNotFoundError` came from inside the
+  query.
+- `po.gbdt.xgboost_matrix` and `lightgbm_dataset` raise `FileNotFoundError`
+  when called for a local Parquet glob that matches nothing, as for Arrow
+  IPC, where Polars' `ComputeError` came when the files were read.
+- `po.corr.spectral` refuses a `k` below 1. `po.corr.fisher_se` checks its
+  arguments before returning NaN at `n <= 3`, and refuses a `rho` outside
+  [-1, 1]. `po.corr.from_blocks` refuses a table that is not symmetric.
+  `po.gram.subset` and `po.gram.condition` refuse a column named twice.
 - A `threads` above 1024, or above the machine's core count where that is
   larger, is now a `ValueError`, raised before any thread starts: in
   `ModelBank`, `ModelBank.load`, `fit_predict` and `predict` (eager and
