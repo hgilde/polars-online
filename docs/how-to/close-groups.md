@@ -22,10 +22,10 @@ These steps need the library and a column whose values name the groups:
   [Example data](../../README.md#example-data) built. The examples read
   `df`, a frame of 400 rows with the features `x0` and `x1`.
 - A group column whose groups end in one of two ways: its key only ever
-  rises, as a block number or a date does, or a `session` column changes
-  where a group's span ends.
-- No `embargo` and no [formula target](../GLOSSARY.md#fitting-a-model) on the spec. `group_close` is refused
-  beside either, since both hold a group's rows past its end.
+  rises, as a block number or a date cast to an integer does, or a
+  `session` column changes where a group's span ends.
+- No `embargo`, `label_clock` or [formula target](../GLOSSARY.md#fitting-a-model) on the spec. `group_close`
+  is refused beside each, since each holds a group's rows past its end.
 
 ## Close each group as its rows end
 
@@ -34,7 +34,7 @@ closed:
 
 | `group_close` | a group is closed when | refused |
 |---|---|---|
-| `"monotone"` | its key is below the largest seen, since the key only ever rises | a null key, or a chunk whose keys are not in rising order, naming the row; a float or temporal key column, which Polars' `cast` turns into an integer in the query before the bank |
+| `"monotone"` | its key is below the largest seen, since the key only ever rises | a null key, or a chunk whose keys are not in rising order, naming the row; a float or temporal key column, which Polars' `cast` turns into an integer or text in the query before the bank |
 | `"session"` | its `session` value changes | a spec without a `session` column, or with `session_gap` |
 
 1. **Name the group column in `group=`, and set `group_close`** to
@@ -88,10 +88,16 @@ out.** Rows not yet read are saved with the state, so a loop that saves
 between chunks loses none. Read them as the stream runs to keep the state
 bounded.
 
-## Write the closed rows to a file as the run goes
+## Write the closed rows to a file
 
-A file of closed rows keeps them out of the bank's memory and the state
-as the run goes.
+With `closed_groups=`, the bank's queue is emptied after every chunk, so
+neither the bank nor its saved state holds the closed rows. From Python,
+the rows read out are kept by the process and written to the file once,
+when the chunks stop. So memory grows with the number of groups that
+close, never with the rows. `fit` and `fit_predict_batches` write the file
+even when the run stops early or fails, but `lf.online.fit_predict` writes
+it only after the last chunk, so a run that fails writes no file. The
+command line writes the rows as it goes.
 
 1. **Pass a path as `closed_groups=`** to `lf.online.fit_predict`,
    `fit_predict_batches` or `fit`, or `--closed-groups` to the command line

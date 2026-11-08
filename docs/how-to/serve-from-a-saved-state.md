@@ -8,7 +8,7 @@ or from the command line.
 To [serve](../GLOSSARY.md#saving-and-serving) is to predict rows from a
 [state](../GLOSSARY.md#saving-and-serving) without learning from them.
 Every row is predicted from the same state, which `predict` never moves.
-Since it skips learning each row, `ewridge` serves 1.8 times as fast as it
+Since it skips learning each row, `ewridge` serves 1.85 times as fast as it
 learns at 5 features, and 2.8 times at 20, on a frame of a million rows
 (measured on 2026-09-29).
 To go on learning from the new rows instead, follow [Resume from a saved
@@ -125,7 +125,8 @@ wrote 400 rows (1 chunk) to today-served.parquet
 
 **Row *i* of the output carries what `fit_predict` would have reported had
 it been the next row of its group's stream.** Its fields match
-`fit_predict`'s, field for field: `pred`, `weight_sum`, `sigma`, `zscore`,
+`fit_predict`'s, field for field: `pred_<target>`, `weight_sum`,
+`sigma_<target>`, `zscore_<target>`,
 the slot `emit_selected` chooses and the metrics
 ([docs/DIAGNOSTICS.md](../DIAGNOSTICS.md)).
 [OUTPUTS.md](../OUTPUTS.md) lists every field. Two fields differ. The
@@ -160,9 +161,10 @@ kinds of row in a way of its own:**
 
 | the row | `predict` |
 |---|---|
-| its target column | may be absent; `resid` is then null |
+| its target column | may be absent; `resid_<target>` is then null |
 | its weight column | is not read |
 | of a group the bank has never seen | is predicted as null |
+| whose features are null | is predicted as null, as `fit_predict` skips it |
 | before the last clock its group learned | is predicted against the state as it stands, with a clock step of 0: never refused, never a reset |
 | where `session_gap="reset"` or `group_close="session"` would reset its group | is predicted as null, with `weight_sum` 0 |
 | after rows an `embargo` still holds | sees the state as it stands, since `predict` releases nothing. A held row whose delay has passed by the served row's clock stays held until the next `fit_predict` learns it. So `weight_sum` and `learned_clock` are the state's on every row |

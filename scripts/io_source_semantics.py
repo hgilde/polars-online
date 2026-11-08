@@ -5,7 +5,7 @@ The plan form, ``lf.online.fit_predict(specs)``, is such a source
 a query -- ``save_state=`` -- rests on facts about the engine that are not
 documented: how often the source runs per query, whether two runs of it
 overlap, what it sees when a later node fails, and what happens to a run
-the caller abandons. ``docs/STATE-WORKFLOW.md`` records the answers; this
+the caller abandons. ``docs/records/STATE-WORKFLOW-RESEARCH.md`` records the answers; this
 prints them for the installed polars. Package-independent: no bank, a toy
 source of ``N`` rows in ``CH``-row chunks that logs its own life.
 

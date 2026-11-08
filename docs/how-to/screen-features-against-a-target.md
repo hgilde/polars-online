@@ -26,15 +26,17 @@ These steps need the library and the columns to screen:
 ## Rank the pairs
 
 Use `t_stat`, the correlation's t statistic, to rank the pairs, and never
-as a p-value, because the rows are neither independent nor Gaussian.
+as a p-value, for two reasons. The rows are neither independent nor
+Gaussian. And the top of a ranking is the best of many chances, which
+noise alone pushes past a threshold set for one test.
 
 1. **Build a `marginal` spec with the targets and every feature to
    screen.**
 2. **Make a [model bank](../GLOSSARY.md#the-model-bank-and-what-it-reads)
-   of the spec with `po.ModelBank([screen])`, and fit it with
-   `bank.fit`.** Each row writes only `weight_sum`, so
+   of the spec with `po.ModelBank([screen])`.**
+3. **Fit it with `bank.fit`.** Each row writes only `weight_sum`, so
    `fit` learns the stream and keeps only the state, where the pairs live.
-3. **Read the pairs with `bank.marginal(name)`, and sort them by
+4. **Read the pairs with `bank.marginal(name)`, and sort them by
    `|t_stat|`.** The table has one row per (feature, target) pair, with
    its moments, `corr`, `beta`, `t_stat` and `n_kish`, the effective number
    of rows behind them. [Its
@@ -59,9 +61,9 @@ pl.DataFrame(x, schema=features).with_columns(y=y).write_parquet("screen.parquet
 
 # Screen every pair, and rank them by |t_stat|.
 screen = po.spec.marginal("screen", targets=["y"], features=features, half_life=float("inf"))   # 1. every pair
-bank = po.ModelBank([screen])
-bank.fit(pl.scan_parquet("screen.parquet"))                                  # 2. learn, and keep only the state
-table = bank.marginal("screen").sort(pl.col("t_stat").abs(), descending=True)   # 3. rank the pairs
+bank = po.ModelBank([screen])                                                # 2. the bank
+bank.fit(pl.scan_parquet("screen.parquet"))                                  # 3. learn, and keep only the state
+table = bank.marginal("screen").sort(pl.col("t_stat").abs(), descending=True)   # 4. rank the pairs
 for r in table.head(5).iter_rows(named=True):
     print(f"{r['feature']}: corr {r['corr']:+.2f}, t_stat {r['t_stat']:+.1f}")
 ```
@@ -76,21 +78,20 @@ f81: corr -0.05, t_stat -2.9
 
 The three planted features lead, in the order of their coefficients. The
 best of the other 197 trails at a `t_stat` of −3.1, a value noise alone
-gives with that many chances. That is why `t_stat` ranks pairs and is no
-p-value. The V-shaped `f150` is not among the five, since its correlation
+gives with that many chances. The V-shaped `f150` is not among the five, since its correlation
 with the target is near zero: [Find the relations a correlation cannot
 see](#find-the-relations-a-correlation-cannot-see) finds it.
 
 ## Correct the count for rows that resemble their neighbors
 
-Use this when the features or the target are smooth, each row close to
-the one before it. `t_stat` is built on `n_kish`, the right count of rows
+Use this when both a feature and the target are smooth, each row close
+to the one before it. `t_stat` is built on `n_kish`, the right count of rows
 for unequal weights, which says nothing about rows that resemble their
 neighbors. So on a smooth stream it claims evidence that is not there.
 Over 1,000 pairs of *independent* AR(1) series with `φ = 0.9` and `0.8`,
-3,000 rows each, `|t_stat|` passed 1.96 on 45% of them. Corrected as
-the steps show, under `"geometric"`, `|t_stat_serial|` passed 1.96 on 5.4%
-of them, the 5% the threshold stands for.
+3,000 rows each, `|t_stat|` passed 1.96 on 45% of them. Corrected under
+`"geometric"` at the lags 1, 2, 3, 5, 8 and 13, `|t_stat_serial|` passed
+1.96 on 5.4% of them, the 5% the threshold stands for.
 
 1. **Give `lags`, a list of lags in rows that increases.** Each pair then
    keeps its moments at each lag.
@@ -167,7 +168,8 @@ a saturation, with `corr` at zero.
    mean and variance inside each of the feature's bins, its response
    curve, in `bin_edges`, `bin_n`, `bin_mean_y` and `bin_var_y`. The edges
    are learned from the first `bin_warm_rows` learned rows (1,000 by
-   default) and never move. Give `bin_edges` to set them yourself.
+   default) and never move. Or give `bin_edges` in place of `bins` to
+   set the edges yourself.
 2. **Read `split_gain` against `corr²`.** `split_gain` is a regression
    stump's R²: the share of the target's variance the best single cut of
    the curve removes. Its excess over `corr²` is the nonlinear surplus.
@@ -211,8 +213,8 @@ is not in the data.
 
 1. **Give `bin_stat="huber"`.** Each bin's location is then Huber's
    M-estimate of location, learned in one pass, as
-   [`huber`](../MODELS.md#huber--robust-regression) learns a regression
-   past its first rows. A row's weight is cut back by how far it lies from
+   [`huber`](../MODELS.md#huber--robust-regression) weighs a regression's
+   rows. A row's weight is cut back by how far it lies from
    the bin's location before it, at `bin_huber_delta` (default 1.345)
    times the target's robust scale.
 2. **Leave `bin_refit_rows` at its default.** Once that many rows are

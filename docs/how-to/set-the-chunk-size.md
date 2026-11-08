@@ -28,15 +28,18 @@ chunking cannot change the
 numbers](../explanation/chunk-invariance-and-streaming.md#why-the-chunking-cannot-change-the-numbers)
 explains why.
 
-1. **Pass the keyword `chunk_size`, 100,000 by default,** to the call that
-   runs the bank. `lf.online.fit_predict`, `lf.online.predict`,
-   `po.fit_predict`, `po.predict`, `ModelBank.fit_predict_batches`,
-   `ModelBank.fit`, `po.eval.grid_search`, `with_windows` and
-   `refresh_time` take it.
-2. **To cut a frame into chunks, pass it to `ModelBank.fit` or
-   `ModelBank.fit_predict_batches` with `chunk_size`.** Without
-   `chunk_size`, those two take a frame whole, and a frame passed to
-   `ModelBank.fit_predict` is one chunk, whatever its size.
+1. **On a query, pass the keyword `chunk_size` to the call that runs the
+   bank,** to change the chunk from its default of 100,000 rows.
+   `lf.online.fit_predict`, `lf.online.predict`, `po.fit_predict`,
+   `po.predict`, `ModelBank.fit_predict_batches`, `ModelBank.fit`,
+   `po.eval.grid_search`, `with_windows` and `refresh_time` take it.
+   `with_windows` and `refresh_time` read a frame 100,000 rows at a time
+   too.
+2. **To cut a frame into chunks, pass `chunk_size` with it to
+   `df.online.fit_predict`, `df.online.predict`, `po.fit_predict`,
+   `po.predict`, `ModelBank.fit` or `ModelBank.fit_predict_batches`.**
+   Without `chunk_size`, each of these takes a frame whole. A frame passed
+   to `ModelBank.fit_predict` is always one chunk, whatever its size.
 3. **To report the coefficients on rows of your choosing whatever the
    chunk size, set `coef_every` or `max_rows_between_coefs` on the spec.**
    [OUTPUTS.md](../OUTPUTS.md#fields-most-models-write) says which rows
@@ -83,8 +86,8 @@ rows carrying coef: 156 at 10 rows a chunk, 4 at 100,000
 **For a wide frame, use larger chunks, because each chunk carries a fixed
 overhead.** At 10,000 columns, handing a chunk across from Polars alone
 takes about 8 ms a call: 4 µs of every row at 2,000 rows a call, and 0.4 µs
-at 20,000 (measured on 2026-09-08). That time is pyo3-polars extracting
-the frame's columns, about 0.8 µs a column.
+at 20,000 (measured on 2026-09-08). That time is the bank reading the
+frame's columns, about 0.8 µs a column.
 
 ## Use smaller chunks for less memory
 

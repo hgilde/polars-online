@@ -43,8 +43,11 @@ The steps turn that test into a registered grid:
    cases' tables carry no numbers, and a case without numbers holds
    nothing.
 5. **Commit the test, `oracles.toml` and `oracle_hashes.toml` together.**
-6. **After the push, apply CI's numbers,** as [Update the oracle
-   ledger](update-the-oracle-ledger.md#steps), steps 8 to 12, describes:
+6. **Run `scripts/gate.sh --extended` on the commit, and push it.** The
+   full suite runs on the exact commit pushed ([Iterate on a
+   change](iterate-on-a-change.md), step 5).
+7. **After the push, apply CI's numbers,** as [Update the oracle
+   ledger](update-the-oracle-ledger.md#steps), steps 9 to 13, describes:
    read `oracles.yml`'s conclusion, download its `oracle-ledger-measured`
    artifact, run `uv run python scripts/oracles.py apply measured.json`, and
    commit `oracles.toml`. From then on, the ledger holds the grid's error.
@@ -52,6 +55,8 @@ The steps turn that test into a registered grid:
 This code registers a group and records one quantity:
 
 ```python
+import ledger
+
 ledger.guard("kmeans_blobs", lambda: [fit_kmeans(blobs(s)[0], 5) for s in SEEDS],
              oracles=["scikit-learn", "scipy"])
 ...

@@ -5,27 +5,14 @@ This how-to is for anyone who runs a model bank inside a Polars query and
 wants to choose the chunk size, write the output to a file, filter it, or
 catch a misnamed column early.
 
-A [model bank](../GLOSSARY.md#the-model-bank-and-what-it-reads) runs in one
-of three ways, and each gives the same numbers, whatever the chunking of
-the rows. From a bank object, the output can leave as Arrow, for a consumer
-that is not Polars:
-
-| way | the call | use it for | where |
-|---|---|---|---|
-| inside a Polars query | `lf.online.fit_predict(specs)` | ordinary Polars steps chained after the bank | this page |
-| in your own Python loop | `bank.fit_predict(chunk)` | reading the bank between chunks | [Run a bank in a Python loop](run-a-bank-in-a-python-loop.md) |
-| from a standalone command line, with no live Python at all | `polars-online` | a scheduled job, or a deployment with no Python | [Run a bank from the command line](run-a-bank-from-the-command-line.md) |
-| output as Arrow, from a bank object | `fit_predict_arrow`, `predict_arrow` | a consumer that is not Polars | [Hand the output to Arrow](hand-the-output-to-arrow.md) |
-
 [`lf.online.fit_predict(specs)`](https://hgilde.github.io/polars-online/namespaces.html#polars_online._frame.LazyFrameOnlineNamespace.fit_predict)
-adds a model bank to a Polars
-[query](../GLOSSARY.md#the-model-bank-and-what-it-reads), a `LazyFrame`,
-which runs only when you ask for its result. `df.online.fit_predict(specs)`
-does the same for a `DataFrame` in memory. When the query runs, it feeds
-its rows to a bank that starts with nothing learned, `chunk_size` rows at a
-time (100,000 by default). [Fit a model bank over parquet files in a
-query](../tutorials/stream-from-parquet.md) walks through a first such
-query from the start.
+adds a [model bank](../GLOSSARY.md#the-model-bank-and-what-it-reads) to a
+Polars [query](../GLOSSARY.md#the-model-bank-and-what-it-reads), which
+feeds the bank its rows `chunk_size` at a time (100,000 by default) when
+it runs. A bank can also run [in a Python
+loop](run-a-bank-in-a-python-loop.md) or [from the command
+line](run-a-bank-from-the-command-line.md), and [hand its output to
+Arrow](hand-the-output-to-arrow.md).
 
 ## Prerequisites
 
@@ -35,7 +22,7 @@ These steps need the library and a stream on disk:
   [Example data](../../README.md#example-data) built. The examples read the
   file `ticks.parquet` and the same rows split across `ticks/*.parquet`,
   400 rows on the clock `t`. In them four stocks, `b0` to `b3` in the
-  column `stock_id`, take turns row by row. `df`'s `y` is `1 + 2·x0 − x1`
+  column `stock_id`, take turns row by row. The rows' `y` is `1 + 2·x0 − x1`
   plus noise, so the fit of each stock finds those coefficients, and 0 for
   `x2`. They also read `lf`, a query over `ticks.parquet`, and `later`, a
   query over the 400 rows that follow it.
@@ -51,10 +38,14 @@ run it once.
 2. **Add the bank with `.online.fit_predict(specs, chunk_size=...)`.**
    The chunk size trades memory for overhead, and never changes the
    numbers ([Chunk invariance and
-   streaming](../explanation/chunk-invariance-and-streaming.md)). Memory is
-   the bank's state plus one chunk, however long the files ([Cut what
-   Polars reads ahead](bound-memory.md#cut-what-polars-reads-ahead) covers
-   a step before the bank that makes Polars read ahead).
+   streaming](../explanation/chunk-invariance-and-streaming.md)), and [Set
+   the chunk size](set-the-chunk-size.md) says how to choose it. The
+   bank's memory grows with its state and a few chunks, never with the
+   length of the files. A `filter` or a computed column before the bank
+   makes Polars read ahead, which [Put
+   filters and computed columns after the
+   bank](bound-memory.md#put-filters-and-computed-columns-after-the-bank)
+   avoids.
 3. **Chain any Polars steps after the bank,** such as a `filter` on the
    output, a `select` of the columns to keep, or a `head(5)`, which feeds
    the bank the first 5 rows and no more.
@@ -80,7 +71,7 @@ spec = po.spec.ewridge(                                   # a ridge regression o
     .online.fit_predict([spec], chunk_size=100_000)       # 2. a bank with nothing learned yet; every run starts from the same place
     .filter(pl.col("ridge").struct.field("weight_sum") > 50)   # 3. after the bank: filters what comes out, never what the bank learns from
     .select("t", "stock_id", "ridge")                     # Polars reads only these columns, and those the specs read, from the files
-    .sink_parquet("fitted.parquet")                       # 4. runs the query; memory is state + one chunk, however long the files
+    .sink_parquet("fitted.parquet")                       # 4. runs the query; the bank's memory grows with its state and a few chunks, never with the files
 )
 fitted = pl.read_parquet("fitted.parquet")
 print(f"{fitted.height} rows past the filter; the record's fields: {fitted['ridge'].struct.fields}")
@@ -113,7 +104,7 @@ rows once its fit has seen about 50 rows' worth.
 the data plants.** In the output of [Run the query to a
 file](#run-the-query-to-a-file), chunks of 100,000 and chunks of 1 differ
 by 0.0. Stock `b3`'s coefficients on its last row are near the intercept 1,
-the 2 on `x0` and the −1 on `x1` that `df` plants, and near 0 on `x2`.
+the 2 on `x0` and the −1 on `x1` that Example data plants, and near 0 on `x2`.
 
 ## Unnest a wide spec before writing it
 
@@ -148,7 +139,9 @@ back](hold-a-row-back.md#keep-a-model-from-learning-rows-in-a-query)).
 
 **`lf.online.fit_predict` checks each spec against the query's columns when
 it is called, so a missing or non-numeric column raises `ValueError` before
-any row is read.** The bank refuses what only the values reveal, such as a
+any row is read.** The error is `po.ColumnNotFoundError` for a missing
+column and `po.WrongTypeError` for a non-numeric one, and both are
+`ValueError`s. The bank refuses what only the values reveal, such as a
 null clock or a step back, while the query runs. That error arrives as
 `polars.exceptions.ComputeError` under py-polars 1.x, and as the bank's own
 `ValueError` under 2.0, since how a query wraps an error is Polars' to

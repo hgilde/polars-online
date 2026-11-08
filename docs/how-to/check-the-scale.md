@@ -35,12 +35,16 @@ threshold of its test.
    model's output gains `calibration_slope_<t>`,
    `calibration_intercept_<t>` and `calibration_wald_<t>` for each target
    `<t>`. Each is read before the row, so it is
-   [out-of-sample](../explanation/out-of-sample.md).
+   [out-of-sample](../explanation/out-of-sample.md). On a `quantile` fit,
+   or `sgd` under `loss="quantile"`, the row gains
+   `calibration_coverage_<t>` and `calibration_wald_<t>` instead: the
+   share of rows below the prediction, which should read the quantile `q`,
+   and its test. A quantile fit has no slope, so steps 3 and 4 do not apply
+   to it. Read its coverage against `q`, with the test that [Is it scaled
+   right?](../DIAGNOSTICS.md#is-it-scaled-right) gives.
 2. **Run the query, and read the rows from where the calibration
-   starts.** A diagnostic starts once the stream has come 95% of the way to its
-   steady state, about 4.3 of the fit's half-lives in (not of the
-   calibration's own memory). Its fields are null until then, and start at row 8,647 for a half-life of 2,000 rows. The recipe
-   reads from row 9,000, so every error it prints is over the same rows.
+   starts.** Its fields are null until the stream has come 95% of the way
+   to its steady state.
 3. **Read the slope's median, and the share of rows where
    `calibration_wald_<t>` passes 5.99.** A slope above 1 says the
    predictions are too small, and a slope below 1 says they are too large.
@@ -48,6 +52,11 @@ threshold of its test.
 4. **Rescale each prediction by the calibration read on its row:**
    `calibration_intercept_<t> + calibration_slope_<t> · pred_<t>`. It is
    still out-of-sample, so it can serve the row.
+
+A diagnostic starts about 4.3 of the fit's half-lives into the stream
+(not of the calibration's own memory): at row 8,647 for a half-life of
+2,000 rows. The recipe reads from row 9,000, so every error it prints is
+over the same rows.
 
 This code fits one stream three ways: with a ridge as large as the
 features' variance, with a half-life too short for 21 coefficients (twenty
@@ -112,11 +121,6 @@ every prediction. Rescaling recovers only a little, from 1.277 to 1.239,
 since most of that noise varies from row to row, and no single multiplier
 removes it. The steady fit's slope is 1.00, flagged on no row, and
 rescaling changes nothing.
-
-For a `quantile` fit, or `sgd` under `loss="quantile"`, the calibration
-is the share of rows below the prediction, `calibration_coverage_<t>`,
-which should read the quantile `q`. [Is it scaled
-right?](../DIAGNOSTICS.md#is-it-scaled-right) gives its test.
 
 ## Fix a fit that is the wrong size
 

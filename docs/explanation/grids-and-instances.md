@@ -185,8 +185,6 @@ its one target, and the two switches add two more. `po.eval.metrics` and
 `po.eval.grid_search` score each slot, and name it in their `slot`
 column.
 
-
-
 ## Why the best error over a grid is optimistic
 
 **The smallest of several errors measured on the same rows understates

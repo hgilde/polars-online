@@ -16,8 +16,9 @@ the rows whose Gram is kept apart (here a week):
   `pip install "polars-online[numpy]"` adds. The recipe builds its own
   data.
 - A timestamp to make each row's week from, in the query. The week must be
-  an integer, text or categorical column for the bank to close it, so the recipe
-  makes it the Monday's day number.
+  an integer, text or categorical column for the
+  [model bank](../GLOSSARY.md#the-model-bank-and-what-it-reads) to close it under
+  `group_close="monotone"`, so the recipe makes it the Monday's day number.
 - An `ewridge` spec that keeps a Gram per week, as [Keep weekly Grams of
   hundreds of
   features](fit-weekly-grams-in-one-pass.md#keep-weekly-grams-of-hundreds-of-features)
@@ -40,8 +41,8 @@ files back together with `pl.read_parquet` on a glob, such as
 
 1. **Make the week in the query as the Monday's day number,** with
    `pl.col("ts").dt.truncate("1w").dt.date().cast(pl.Int32)`. A
-   [group](../GLOSSARY.md#the-model-bank-and-what-it-reads) the bank
-   closes must be an integer, text or categorical column.
+   [group](../GLOSSARY.md#the-model-bank-and-what-it-reads) closed under
+   `group_close="monotone"` must be an integer, text or categorical column.
 2. **Give the spec `group="week"` and `group_close="monotone"`.**
 3. **Run the pass with `bank.fit(lf, closed_groups="blocks.parquet")`.**
    Each closed week's Gram becomes a row of that file, written when the
@@ -184,7 +185,7 @@ within 1e-10.
 
 | what you see | what it means | what to do |
 |---|---|---|
-| a `WrongTypeError` that the spec's `group_close` needs a group column it can order | the week is a datetime, and a closed group's key must be an integer, text or categorical column | make the week the Monday's day number, with `.dt.date().cast(pl.Int32)` |
+| a `WrongTypeError` that the spec's `group_close` needs a group column it can order | the week is a datetime, and a group closed under `group_close="monotone"` must be an integer, text or categorical column | make the week the Monday's day number, with `.dt.date().cast(pl.Int32)` |
 | one week fewer than the stream holds | the last week never closes, so it is in the state, not the file | read it from the saved state with `po.ModelBank.load(path).gram(name)` |
 | numpy's fit differs from `po.gram.solve` | the triangle is unpacked in another order, or not mirrored | fill `numpy.triu_indices(m)`, which runs row by row, and add the strict upper triangle's transpose |
-| the solve reads the wrong target's numbers | with several targets each list holds every target's rows, one after another | take the `k` entries of each target in turn |
+| the solve reads the wrong target's numbers | with several targets each list holds every target's rows, one after another | take `m = len(columns)` entries for each target in turn |

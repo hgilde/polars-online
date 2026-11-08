@@ -92,7 +92,10 @@ the rows before it, and `resid_y` is `y` less `pred_y`. `weight_sum` is
 the weight of the rows the prediction was made from: here, with every row
 weighted 1, their count. The `coef_y_*` columns are the regression's
 coefficients, written on the last row of each chunk and null on the
-others. [OUTPUTS.md](../OUTPUTS.md#ewridge) lists every field this spec
+others. The `support_coef_y_*` columns, on the same rows, give the share
+of each slope that comes from the data, not from the ridge penalty
+(`ridge=`), and are null for the intercept. `settled_frac` is null here because no row's weight
+decays. [OUTPUTS.md](../OUTPUTS.md#ewridge) lists every field this spec
 writes.
 
 ## 3. Run the query to a file

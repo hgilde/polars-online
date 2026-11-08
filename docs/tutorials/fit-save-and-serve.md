@@ -56,7 +56,9 @@ Fit a ridge regression over the past rows in a
 Polars steps that runs only when you ask for its result. With every row
 weighted the same, the saved state sums up all of the past rows. Besides
 saving the state, the query writes each past row's prediction to
-`past_fitted.parquet`, which the steps after it do not need:
+`past_fitted.parquet`, which the steps after it do not need. Running the
+query is what saves the state, and `sink_parquet` runs it without holding
+the predictions in memory, so it writes them to a file:
 
 ```python
 spec = po.spec.ewridge(

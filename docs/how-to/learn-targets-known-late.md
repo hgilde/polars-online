@@ -5,13 +5,10 @@ This how-to is for anyone whose target is known only some time after its
 row, such as the next five minutes' return. It shows how to predict each
 row where it sits and learn from it only once its target is known.
 
-A model that learns such a target at its own row sees that much of the
-future before it predicts the rows in between. Every out-of-sample number
-after that is contaminated, and with a feature correlated with its own
-past, even a pure-noise column starts to look predictive. [A target that
-looks ahead](../explanation/out-of-sample.md#a-target-that-looks-ahead)
-explains how the bank holds such a row back from learning. Three ways hold each row back until its target would have
-arrived:
+Learning a row before its target is known lets the future into every
+out-of-sample number after it ([A target that looks
+ahead](../explanation/out-of-sample.md#a-target-that-looks-ahead) explains
+why). Three ways hold each row back until its target would have arrived:
 
 | the delay | use | where |
 |---|---|---|
@@ -91,7 +88,7 @@ edges:**
 | the step a row is predicted over | the clock from the newest row learned to the row, the held rows' steps included, capped at `gap_cap` as one gap. A `holt` prediction reaches that far ahead, and `kalman`'s `error_inflation` adds that much drift. `predict` against a bank holding rows reads the same clock. Either way the prediction is the one a bank fed only the learned rows gives |
 | exactly at the delay | the row is learned. The time that passed is held exactly: in integer nanoseconds on a temporal clock, and by one subtraction of the two rows' values on a number clock, in integers on an integer clock. Rows 1 ms apart under `embargo="2s"` are each learned 2,000 rows on |
 | with no clock column | one unit is one row of the group, a skipped row included: `embargo=20` is twenty rows |
-| at a break | nothing is released early. A break's own effect, such as a lag ring's clearing or `session_shrink`'s blend, waits with the row after it, and runs when that row is learned. A reset drops the rows still waiting |
+| at a clock break | nothing is released early. A clock break's own effect, such as a lag ring's clearing or `session_shrink`'s blend, waits with the row after it, and runs when that row is learned. A reset drops the rows still waiting |
 | at the end of the stream | the rows still waiting are not learned, unless the state is saved and another run resumes from it |
 | in the state | the waiting rows are saved with it: one row's values for each row inside the delay, in each group |
 | row by row | `emit_clocks=True`, on any model, writes `scored_clock` and `learned_clock` |
@@ -99,7 +96,7 @@ edges:**
 ## Give each row its own target time
 
 **When targets arrive at times of their own, name a column of those
-times in the spec's `label_clock=`,** on the clock's own type. A flight's
+times in the spec's `label_clock=`,** of the same type as the clock. A flight's
 delay is known when it lands, so a spec of flights takes
 `label_clock="landed"`. `embargo="5m"` is the
 case where every such time is the clock plus five minutes. The two give
@@ -168,7 +165,7 @@ print(f"{given.height} intervals given, {covered:.3f} of them held the delay tha
 | a `label_clock` time before its row's clock | refused, naming the row: the column does not hold the times the targets are known |
 | how many rows wait | `max_held_rows` bounds them per group. Past it the chunk is refused, or with `held_overflow="drop_oldest"` the row that arrived first is dropped, counted in `labels_dropped` |
 | at a reset, and at the end of the stream | a reset drops the rows still waiting, counted in `labels_dropped`. Rows waiting at the end are not learned, unless the state is saved and another run resumes from it |
-| what it refuses | `embargo` beside it, a [formula target](../GLOSSARY.md#fitting-a-model), `group_close`, a `session` column and `drift_action="reset"`; and `holt`, `kalman`, `hmm` and `micro`, whose prediction reaches from the newest row learned, which `label_clock` moves to a `label_clock` time |
+| what it refuses | `embargo` beside it, a [formula target](../GLOSSARY.md#fitting-a-model), `group_close`, a `session` column and `drift_action="reset"` (resetting the model when it flags [drift](detect-a-break.md#act-on-a-break)); and `holt`, `kalman`, `hmm` and `micro`, whose prediction reaches from the newest row learned, which `label_clock` moves to a `label_clock` time |
 | cost | each held row goes into the waiting rows in `label_clock` order: 0.006 microseconds a row with about 100 waiting, 0.38 with about 800 (Apple M4 Pro) |
 
 **With hundreds of targets in flight, set `conformal_rate="auto"`.** Each

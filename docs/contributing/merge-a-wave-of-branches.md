@@ -47,10 +47,14 @@ The steps run in the main checkout:
    step 4), and the API snapshot with `UPDATE_API_SURFACE=1` ([Change the
    public API](change-the-api.md#steps), step 4). The golden values only
    print: `PRINT_GOLDEN=1 cargo test -p online-core --test golden --
-   --nocapture` prints Rust's, to paste over the block after `// ---
-   generated` in `crates/online-core/tests/golden.rs`, and `uv run python
+   --nocapture` prints Rust's as lines `GOLDEN <kind>: &[...];`. Copy each
+   printed list into the constant that the test's `check("<kind>", …)`
+   call passes, under the `// ---
+   generated` marker in `crates/online-core/tests/golden.rs`. `uv run python
    tests/test_golden_pipeline.py` prints Python's, to paste over `GOLDEN`
-   and `SWITCHED_GOLDEN` in that file. Commit the regenerated files.
+   and `SWITCHED_GOLDEN` in that file. A golden value that moved is a
+   regression until a branch's change explains it, so find out why before
+   you copy it. Commit the regenerated files.
 4. **Run one essentials test gate, `scripts/gate.sh`, on `integration`.**
    Its last line reads `gate: PASS` or `gate: FAIL`.
 5. **On PASS, fast-forward `main` to `integration`,** with `git switch
@@ -66,8 +70,9 @@ The steps run in the main checkout:
 8. **Before the push, run `scripts/gate.sh --extended` on `main`,** the
    exact commit pushed ([Iterate on a change](iterate-on-a-change.md),
    step 5).
-9. **Give back each merged branch's worktree slot,** with `scripts/slot.sh
-   give <n>` ([Use a worktree slot](use-a-worktree-slot.md), step 5).
+9. **Push `main`,** with `git push origin main`, once that run passes.
+10. **Give back each merged branch's worktree slot,** with `scripts/slot.sh
+    give <n>` ([Use a worktree slot](use-a-worktree-slot.md), step 5).
 
 To check the result, run `git log --oneline main`. Its newest commits
 are the wave's merges, and the commit of any files regenerated in

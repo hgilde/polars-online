@@ -73,7 +73,7 @@ Candès) is a one-line update on a running quantile of conformity scores:
   model that never saw the row — which is precisely the property this library
   guarantees by construction and tests for. Most implementations have to arrange
   data-splitting to get what we get for free.
-- **Output:** `pred_lo_<slot>` / `pred_hi_<slot>` and a running realised coverage.
+- **Output:** `pred_lo_<slot>` / `pred_hi_<slot>` and a running realized coverage.
 - **Effort:** small. It is a quantile tracker plus a scalar recursion.
 
 **This is the strongest item on the list** — smallest, most novel, most demanded, and
@@ -93,7 +93,7 @@ Everything here decays exponentially. A hard rectangular window — "the last N 
   cancellation and drifts to indefinite over long runs — the classic failure. A
   correct implementation needs either periodic recomputation on a schedule or a
   compensated/blocked scheme. This library already has the machinery to get that right
-  (centred Welford co-moments, the jittered-Cholesky fallback, `solve_failures`
+  (centered Welford co-moments, the jittered-Cholesky fallback, `solve_failures`
   reporting) and a test culture that would catch the drift. Most rolling
   implementations in the wild are quietly wrong at long horizons.
 - **Effort:** medium. The window bookkeeping is easy; the numerics deserve care and an

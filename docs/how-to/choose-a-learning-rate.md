@@ -87,11 +87,20 @@ each row's noise.
 ### Search the rate from the stream's own errors
 
 Every prediction is made before the model learns its row, so each rate's
-error on the rows it had not yet seen ranks the rates fairly. Build one
-spec per rate with `functools.partial`, and give `po.eval.grid_search` the
-builder and the rates to try; it fits them all in one bank, which reads
-the file once. The recipe plants a slope that wanders slowly. This code
-builds its own data:
+error on the rows it had not yet seen ranks the rates fairly.
+
+1. **Build a spec builder with `functools.partial`,** giving it the
+   keywords every rate's spec shares.
+2. **Give `po.eval.grid_search` the builder, and a `param_grid` of the
+   rates to try.** It builds one spec per rate and fits them all in one
+   bank, which reads the file once.
+3. **Run the rate ranked 1 on the rows to come.** Read it with
+   `table.filter(kind="candidate")`, where `rank` is 1.
+4. **Report the error of the choice, from `table.filter(kind="choice")`,**
+   since the rows that made the choice did not score it.
+
+The recipe plants a slope that wanders slowly. This code builds its own
+data:
 
 ```python
 import functools
@@ -127,8 +136,10 @@ learning_rate 0.1    (about   10 rows): mse 1.2047, rank 5
 chosen from earlier rows: mse 1.0262
 ```
 
-A memory of about 100 rows predicts best here, the same as a half-life
-of 100 in the first example on a coefficient wandering at the same speed.
+A memory of about 100 rows predicts best here, close to the half-life of
+100 (about 144 rows of weight) that [Choose a model's
+settings](../CALIBRATION.md#choose-a-half-life-with-poevalgrid_search)
+chooses on a coefficient wandering at the same speed.
 With a shorter memory each step chases the noise, and with a longer one
 the coefficient has moved on before the fit catches up.
 

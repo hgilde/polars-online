@@ -7,8 +7,9 @@ promise, and what a break on a new Polars looks like.
 
 **Treat a break on a new Polars as expected maintenance, because three of
 the four ways this library crosses into Polars carry no promise from
-Polars.** The two that stream data, `ModelBank` and the IO plugin behind
-`lf.online.fit_predict`, are among the three. So after you upgrade
+Polars.** The two that stream data, `ModelBank` and the IO plugin (Polars'
+hook, `register_io_source`, that lets a Python function act as a query's
+input) behind `lf.online.fit_predict`, are among the three. So after you upgrade
 Polars, check a `ModelBank` call first, then a `lf.online.fit_predict`
 query. The range of Polars the package
 accepts is measured by this project, run by run, as [Versions and the
@@ -84,7 +85,7 @@ Arrow's own documentation states for it:**
 |---|---|---|---|
 | pyo3-polars' extension types | `ModelBank` | none beyond the latest definitions working with the latest Polars: provided "for convenience" | a clean `AttributeError` before any data moves |
 | the IO plugin, `polars.io.plugins.register_io_source` | `lf.online.fit_predict`, `lf.online.predict`, and `with_windows` and `refresh_time` on a query | none: documented, but `@unstable` in py-polars (a warning only under `POLARS_WARN_UNSTABLE`), and its contract is partly unwritten | a wrong row count, not a crash |
-| an expression's serialized form, `expr.meta.serialize(format="json")` | the window formulas, read into this library's own tree | none: Polars calls it unstable across versions; its shapes were measured the same on 1.34.0 and 1.44.2 | an unknown node, refused by name when the formula is read |
+| an expression's serialized form, `expr.meta.serialize(format="json")` | the window formulas, read into this library's own tree | none: Polars calls it unstable across versions; its shapes were measured the same on 1.34.0 and 1.44.2 | an unknown node, refused when the formula is read |
 | the Arrow PyCapsule interface | [`fit_predict_arrow` and `predict_arrow`](../how-to/hand-the-output-to-arrow.md) | an Arrow specification, which py-polars and pyarrow consume. Only the output side uses it, and the frame still goes in as a Polars frame | a break of Arrow's rather than of Polars' |
 
 ## How a break shows
@@ -96,18 +97,18 @@ through the Arrow C Data Interface, with two private methods of py-polars,
 absence of `PySeries._export` is why `ModelBank` alone needs py-polars
 1.28.1 or later.
 
-**In the IO plugin, a break would show as a wrong row count, because the
-unwritten part of its contract is its pushdowns.** Polars pushes a
-projection, a predicate and a slice into a Python source, and does not
-re-apply any of them to what the source returns. So the source honors all
-three itself (`python/polars_online/_frame.py`, and `python/polars_online/stream.py` for
+**In the IO plugin, a break would show as a wrong row count, because part
+of its contract is unwritten.** Polars hands a Python source the columns
+the query needs, a filter and a row limit (from a `select`, a `filter` and
+a `head`), and does not apply them again to what the source returns. So
+the source applies all three itself (`python/polars_online/_frame.py`, and `python/polars_online/stream.py` for
 `with_windows` and `refresh_time`). `tests/test_frame.py` checks every
-pushdown against the frame the query returns, in both orders, and the weekly run
+one of the three against the frame the query returns, in both orders, and the weekly run
 on the newest Polars runs those tests.
 
 **The serialized form is read narrowly, because it is not stable.** Seven
 node kinds are read, when the formula is taken, under the caller's own
-Polars, and an unknown node is refused by name. Python and Rust then
+Polars, and an unknown node is refused. Python and Rust then
 rebuild the formula through Polars' public builders
 (`python/polars_online/_formula.py`).
 
@@ -132,13 +133,17 @@ process's baseline every 2 ms:
 | 1.37.1 | 328 MB |
 | 2.0.0 | 169 MB |
 
-**Every model is slower than reading the file, so on 1.34.0 to 1.36.1 the
-bank held its whole input.** `lf.online.fit_predict`, its result written to
+**Every model is slower than reading the file, so on 1.34.0 to 1.36.1
+Polars held the whole input ahead of the bank.** `lf.online.fit_predict`, its result written to
 a parquet file without holding it all in memory, peaked at 1,768 MB on
 1.34.0, 920 MB on 1.37.1 and 632 MB on 2.0.0 over the same file, and
 `po.gbdt`'s parquet build at 2.3 GB on 1.34.0 and 1.36.1. Below 1.37.0 the
 library could not keep the promise it is built on, running on data that
-does not fit in memory, so the floor is 1.37.0.
+does not fit in memory, so the floor is 1.37.0. Even from 1.37.0, a step
+such as `with_columns` between the file and the bank still lets Polars
+read ahead, as [Chunk invariance and
+streaming](chunk-invariance-and-streaming.md#why-memory-stays-bounded)
+explains.
 
 **`ModelBank` alone works from 1.28.1, the release that added the
 `PySeries._export` it calls.** One wheel was measured against 17 py-polars

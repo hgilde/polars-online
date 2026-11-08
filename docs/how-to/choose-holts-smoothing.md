@@ -150,8 +150,8 @@ On a line whose slope never changes, the longest memories rank first.
 
 On a trend that wanders, a shorter trend half-life ranks first. A row's
 textbook gain on the level is `α = 1 − 2^(−1/half_life)` once the weight
-has saturated, so a level half-life of 8 rows is an `α` of 0.083; the
-recipe prints each beside its half-life. This code builds its own data:
+has saturated, so a level half-life of 8 rows is an `α` of 0.083. The
+recipe prints each `α` beside its half-life. This code builds its own data:
 
 ```python
 import functools

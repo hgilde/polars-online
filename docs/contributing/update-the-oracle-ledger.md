@@ -55,20 +55,23 @@ The steps take the change from the failed guard to a ledger CI agrees with:
 6. **Rerun the groups,** as in step 1. This time the verdict passes and
    the groups' hashes are written.
 7. **Commit `oracles.toml` and `oracle_hashes.toml` with the change.**
-8. **After the push, read the conclusion of `oracles.yml`.** Its last job,
+8. **Run `scripts/gate.sh --extended` on the commit, and push it.** The
+   full suite runs on the exact commit pushed ([Iterate on a
+   change](iterate-on-a-change.md), step 5).
+9. **After the push, read the conclusion of `oracles.yml`.** Its last job,
    `the oracle ledger`, holds every case to the ledger on CI's platform,
    Linux x86-64.
-9. **If it asks to tighten, names a new case or a moved version, or
-   finds a case past the ledger, download CI's measurements,** with `gh
-   run download <run-id> -n oracle-ledger-measured`. The artifact holds
-   `measured.json`.
-10. **Apply them,** with `uv run python scripts/oracles.py apply
+10. **If it asks to tighten, names a new case or a moved version, or
+    finds a case past the ledger, download CI's measurements,** with `gh
+    run download <run-id> -n oracle-ledger-measured`. The artifact holds
+    `measured.json`.
+11. **Apply them,** with `uv run python scripts/oracles.py apply
     measured.json`. `apply` never writes a higher number.
-11. **If CI finds a case past the ledger, write CI's value by hand.** A
+12. **If CI finds a case past the ledger, write CI's value by hand.** A
     number written in step 4 from a Mac's run can be. Copy the case's
     value from `measured.json` into its table, with a `[[raised]]` entry,
     as in steps 4 and 5.
-12. **Commit `oracles.toml` and push it.**
+13. **Commit `oracles.toml` and push it.**
 
 To check the result, run `uv run python scripts/oracles.py raises`. It
 fails on any number in the file's history that moved away from its ideal
@@ -85,8 +88,10 @@ numbers.** The ledger holds CI's numbers, so a run on a Mac is held to
 `tolerance_elsewhere` (5%) past the ledger. A gain it sees is reported,
 not applied. A case new to the ledger gets its table without numbers,
 which `apply` on CI's next `measured.json` fills. The hash file holds one
-platform's hashes, and a `rerun` on another platform rewrites that
-platform. So it refuses unless every group is re-run, since the hashes it
+platform's hashes, and a `rerun` on a platform other than the one the
+hashes were written on (the hash file's `[meta] platform`, the development
+Mac's `darwin-arm64`) rewrites that platform. So there it refuses unless
+every group is re-run, since the hashes it
 kept would be the other platform's, and the guard, where they were
 written, would report a moved hash instead of failing on it.
 

@@ -14,7 +14,7 @@ expected.
 | section | read it when | subsections |
 |---|---|---|
 | [How the numbers are made](#how-the-numbers-are-made) | you want how every figure was measured, and the commands that measure it again | |
-| [The current figures](#the-current-figures) | you want a figure the guides quote: each model's rows a second, the bank's work around a row, a query against the eager bank, the speed at each thread count, a run's peak memory, or what a window operator costs | [each model](#rows-a-second-for-each-model) · [the bank's work](#the-banks-work-around-a-row) · [the query](#a-query-against-the-eager-bank) · [`predict`](#serving-against-learning) · [threads](#rows-a-second-at-each-thread-count) · [peak memory](#peak-memory-of-each-way-of-running-a-bank) · [window operators](#what-a-window-operator-costs) |
+| [The current figures](#the-current-figures) | you want a figure the guides quote: each model's rows a second, the bank's work around a row, a query against the eager bank, the speed at each thread count, a run's peak memory, or what a window operator costs | [each model](#rows-a-second-for-each-model) · [the bank's work](#the-banks-work-around-a-row) · [the query](#a-query-against-the-eager-bank) · [`predict`](#serving-against-learning) · [threads](#rows-a-second-at-each-thread-count) · [peak memory](#peak-memory-of-each-way-of-running-a-bank) · [the command line's memory](#peak-memory-of-the-command-line) · [Polars' rolling](#polars-rolling-windows-against-a-specs-groups) · [window operators](#what-a-window-operator-costs) |
 | [How cost grows with size](#how-cost-grows-with-size) | you want how a row's work and a state grow with each size a surface has -- features, targets, groups, specs, a window, the rows already seen -- and the test that holds each | [how a cell is measured](#how-a-cell-is-measured) · [the table](#the-table) · [specs on one stream](#specs-on-one-stream) · [what the table holds](#what-the-table-holds) |
 
 ## How the numbers are made
@@ -22,7 +22,9 @@ expected.
 **Each figure here states the date it was measured on and how it was made,
 so read it as of its date.** Every release measures [Rows a second for each
 model](#rows-a-second-for-each-model) again. The other figures were
-measured once, on the date each gives.
+measured once, on the date each gives. One has no command to measure it
+again: [The bank's work around a row](#the-banks-work-around-a-row) was
+timed by a Rust program the repository does not keep.
 
 **A figure was measured on one machine unless it says otherwise:** an
 Apple M4 Pro with 10 performance and 4 efficiency cores, a release build
@@ -188,8 +190,8 @@ The [sequential tests and regimes](MODELS.md#sequential-tests-and-regimes):
 | `seqtest` | sign of one column | 14,804,580 | a handful of operations |
 | `corrchange` | 4 features, monitor, `window_rows=500` | 5,960,689 | |
 | `corrchange` | 4 features, window 100, permute every 500 | 493,752 | its permutation null |
-| `bocpd` | 4 features, diagonal, `max_run=200` | 704,535 | the number of runs it keeps |
-| `bocpd` | 4 features, full covariance, `max_run=200` | 1,158,813 | the number of runs it keeps |
+| `bocpd` | 4 features, `covariance_type="diag"`, `degrees_of_freedom_prior` 3 (its default there), `max_run=200` | 704,535 | the number of runs it keeps |
+| `bocpd` | 4 features, `covariance_type="full"`, `degrees_of_freedom_prior=6.0` (its default there, `d + 2`), `max_run=200` | 1,158,813 | the number of runs it keeps |
 | `hmm` | 4 features, K=2 | 2,519,190 | a `k × k` covariance factorized per state per row, which is `ew_class`'s work with the classes hidden |
 | `hmm` | k=20, K=2 | 437,770 | |
 
@@ -287,8 +289,7 @@ in one pass.
 **As the rows grow, a run's peak memory grows only by the pages the
 allocator keeps, while the bank's own memory stays flat.**
 Measured on 2026-10-24 as the most memory the process ever held, with
-Polars 2.0.0 on 14 cores, in the run
-[RUNNER.md's Memory](RUNNER.md#memory) records. The file has 20 features over
+Polars 2.0.0 on 14 cores. The file has 20 features over
 32 groups, parquet in and parquet out, and `ewridge` reads it with a clock,
 a weight and a group per row. The 12M rows are the 3M rows four times
 over, so the state is the same at both sizes. `scripts/memory_bench.py`
@@ -303,10 +304,52 @@ The bank does not grow from 3M to 12M rows: the growth is the memory
 allocator keeping pages it has freed. Told to return them at once, with
 `_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0`, the query holds
 0.86 GB at 3M rows and 0.95 GB at 12M. Of the rest, nearly all is Polars
-reading ahead in the parquet file. The command line's allocator reuses
-the pages it frees across all its threads, so it holds 0.75 GB at 3M rows,
-0.85 GB at 12M and 0.86 GB at 24M
-([RUNNER.md](RUNNER.md#memory)).
+reading ahead in the parquet file. The command line holds less: see
+[Peak memory of the command line](#peak-memory-of-the-command-line).
+
+### Peak memory of the command line
+
+**The command line's peak memory stays bounded as the rows grow, 0.75 GB
+at 3M rows and 0.86 GB at 24M, because its allocator reuses the pages it
+frees across all its threads.** Measured on
+2026-10-24 as the most memory the process held, on one file, `ewridge`
+with 20 features, parquet in and parquet out. It is the run of [Peak
+memory of each way of running a
+bank](#peak-memory-of-each-way-of-running-a-bank), on macOS with Polars
+2.0.0 on 14 cores. The 24M rows are the 3M rows eight times over, so the
+state is the same at every size. `scripts/memory_bench.py` makes these
+measurements:
+
+| what you run | 3M rows | 12M rows | 24M rows |
+|---|---:|---:|---:|
+| `polars-online --config` | 0.75 GB | 0.85 GB | 0.86 GB |
+| `polars-online --config`, with `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | 0.42 GB | 0.43 GB | 0.44 GB |
+
+The bank's memory does not grow with the rows, and the allocator reuses
+the pages it frees rather than hold more as the run goes on. Most of what
+is left is Polars reading ahead in the parquet file, and
+`POLARS_ROW_GROUP_PREFETCH_SIZE=1` halves it.
+
+**The bound comes from how the binary sets up its allocator.** Off
+Windows it is jemalloc, set to one arena for every thread (`narenas:1`).
+jemalloc's default is four arenas a core. Each arena keeps the pages freed
+in it for ten seconds, for the threads on that arena alone. It gives them
+back only when one of those threads allocates again. The reader's, the
+bank's and the writer's buffers then strand pages in every arena, and the
+peak grows with the rows: 0.94, 1.36 and 1.48 GB at 3M, 12M and 24M rows.
+One arena adds no time in these runs. Threads contending for it would show
+as CPU time, and the 12M-row run took 24.5 s of CPU either way.
+
+**`_RJEM_MALLOC_CONF` overrides the binary's setting.** With
+`_RJEM_MALLOC_CONF=dirty_decay_ms:0` freed pages go back to the system at
+once: 0.74, 0.76 and 0.78 GB, for about 18% more CPU time. With
+`POLARS_ROW_GROUP_PREFETCH_SIZE=1`, the system allocator holds less still,
+0.21-0.23 GB, but runs slower. On a million rows of a five-feature `ewridge`, best of
+five runs, it took 1.6 times as long with a thousand one-row groups a
+chunk and 1.2 times as long with one group. On Windows the binary's
+allocator is mimalloc, and these figures were not measured there.
+
+### Polars' rolling windows against a spec's groups
 
 **Polars' `rolling` over groups holds every row of its input, where a
 spec's `group=` keeps one set of running sums per group.** Peak memory of
@@ -323,8 +366,9 @@ measured on 2026-09-02 as the most memory the process held:
 
 **A window operator, such as `po.ewm_mean`, does the same work on a row
 however long its window, and holds about one window of rows.** So a window
-adds little memory: within 0.04 GB of reading and writing the file alone,
-and a 4-minute window takes what a 1-minute one does. Measured on 16M rows
+adds little memory: through `with_windows`, within 0.04 GB of reading and
+writing the file alone.
+Measured on 16M rows
 arriving about two a second on the clock, parquet in and parquet out, one
 group, on 2026-10-03 at a load average of 5.0 to 6.0. `scripts/windows_bench.py`
 runs each case in a process of its own, and reads its peak memory as the
@@ -335,7 +379,7 @@ peak RSS from `getrusage`, which counts the file's mapped pages too:
 | reading and writing the file, and nothing else | 0.40 s | 1.03 GB |
 | a forward VWAP through `with_windows` | 2.43 s | 0.99 GB |
 | the same VWAP through Polars' `rolling` recipe | 19.52 s | 5.24 GB |
-| a model whose target is a window expression, which the bank resolves itself: the native form | 9.37 s | 1.09 GB |
+| a model with a formula target, which the bank resolves itself: the native form | 9.37 s | 1.09 GB |
 | the window written by `with_windows(..., like=spec)` and fed back as a plain target: the column form | 5.87 s | 1.23 GB |
 
 **An operator whose input is null on most rows costs about what a dense
@@ -409,7 +453,7 @@ factor of 2.8 that the counted one does not need. Callgrind runs on Linux
 alone, so it counts only the cells where a count sees what a timing cannot
 and that stay cheap under Valgrind, the list `BENCH_CELLS` in
 `crates/online-bench/src/scaling.rs` holds. They are three models' rows
-already seen, one width per family, `ew_cov.window`, the spec counts, the
+already seen, the widths of `ewridge`, `sgd`, `ew_cov` and `marginal`, `ew_cov.window`, the spec counts, the
 bank's, the window operators' and `refresh_time`'s cells whose growth must
 be 1, `windows.kernels`, and `bank.label_clock`. `scripts/budgets.py
 check` holds each to `[scaling.cells]` within the run, a measuring run
@@ -558,7 +602,7 @@ largest buffer at the smaller.
 | `windows.window_mean` (CI) | window W clock units | 1,250 → 10,000 | O(1) | O(n) | a row enters and leaves the queue once, O(1) amortized; W/step rows held | 0.90 · 1.00 · 7.74 · 6.92 |
 | `windows.window_var` | window W, ewm_var | 1,250 → 10,000 | O(1) | O(n) | as the mean | 0.89 · 1.00 · 7.78 · 7.17 |
 | `windows.window_quantile` | window W, ewm_quantile | 1,250 → 10,000 | O(log n) | O(n) | the window's sketch, log W | 1.08 · 0.93 · 6.33 · 6.68 |
-| `windows.forward` | window W ahead, rewm_mean | 1,250 → 10,000 | O(1) | O(n) | as the backward mean | 0.94 · 1.03 · 7.81 · 7.41 |
+| `windows.forward` | window W ahead, `ewm_mean(..., reverse=True)` | 1,250 → 10,000 | O(1) | O(n) | as the backward mean | 0.94 · 1.03 · 7.81 · 7.41 |
 | `windows.history` (CI) | rows already seen | 1,000 → 8,000 | O(1) | O(1) | running sums only | 1.01 · 1.00 · 1.00 · 1.00 |
 | `refresh.series` | series m | 2 → 16 | O(n) | O(n) | a tick updates its series; a point checks one counter | 0.83 · 0.40 · 3.22 · 1.42 |
 | `refresh.pairs` | series m, pairs | 8 → 64 | O(n) | O(n^2) | a tick updates its m−1 pairs; m² pairs held | 10.45 · 8.96 · 67.43 · 43.77 |
@@ -651,7 +695,7 @@ rows, which costs no more than merging its blocks. Its permutation draws are a s
 `O(n_perm · window_rows · k²)` at each redraw. Unset, `permute_every_rows`
 is `window_rows`, so the draws also cost `O(n_perm · k²)` a row.
 
-Three declarations are higher than the obvious guess, because the
+Four declarations are higher than the obvious guess, because the
 algorithm's own growth is:
 
 | cell | from | to | why |
@@ -659,3 +703,4 @@ algorithm's own growth is:
 | `rcov.k` | O(k) | O(k²) | each lag of the kernel adds a k×k outer product, as `rcov`'s documentation says |
 | `rcov.block_rows` | O(1) | O(n^(3/5)) | the automatic bandwidth's ring depth is `c·block_rows^(3/5)` lags, all read on a row |
 | `audit.history`, its saved state | O(1) | O(log rows) | a counter's msgpack encoding lengthens as its count grows, while its heap stays flat |
+| `bank.label_clock` | O(1) | O(n) in the delay D | each row is placed in `label_clock` order among the D/step held rows, by moving the shorter side of the buffer |

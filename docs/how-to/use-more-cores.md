@@ -4,22 +4,12 @@
 This how-to is for anyone whose model bank runs on fewer cores than the
 machine has, and who wants it to finish sooner by running on more.
 
-A [model bank](../GLOSSARY.md#the-model-bank-and-what-it-reads) learns
-each [group](../GLOSSARY.md#the-model-bank-and-what-it-reads)'s rows one at
-a time, because what it learns from each row depends on the row before. On every
-[chunk](../GLOSSARY.md#the-model-bank-and-what-it-reads) it splits its
-work into pieces, one per [spec](../GLOSSARY.md#the-model-bank-and-what-it-reads)
-and group, or one per spec without a `group`. It runs the pieces on its own
-threads, separate from Polars', largest first, so a few big groups do not
-leave cores idle at the end. So a bank with one spec, one group and one
-[half-life](../GLOSSARY.md#time) is one thread's work per chunk, unless
-that spec is wide enough to split ([Split one wide spec across
-threads](#split-one-wide-spec-across-threads)), while Polars reads and
-writes in parallel around it. All of it runs in one process, by design ([What this
-is not](../../README.md#what-this-is-not)). The thread count never changes
-the numbers, as [Why the thread count cannot change the
-numbers](../explanation/chunk-invariance-and-streaming.md#why-the-thread-count-cannot-change-the-numbers)
-explains.
+A [model bank](../GLOSSARY.md#the-model-bank-and-what-it-reads) runs
+one piece of work per [spec](../GLOSSARY.md#the-model-bank-and-what-it-reads)
+and [group](../GLOSSARY.md#the-model-bank-and-what-it-reads) on its own
+threads, so it uses more cores when you give it more pieces. [Where the
+time goes](../explanation/where-the-time-and-memory-go.md#where-the-time-goes)
+explains why, and why the thread count never changes the numbers.
 
 ## Prerequisites
 
@@ -48,8 +38,8 @@ specs, more half-lives, or a wide spec split across threads.**
 
 | what to add | how it runs in parallel | measured |
 |---|---|---|
-| groups, with a spec's `group=` | one piece per group | k=20 over 64 groups: 7.3× from 1 to 14 threads on a 14-core machine |
-| specs, in the list the bank takes | one piece per spec | eight single-group specs, k=20 over 300k rows, run in 155 ms in one bank, against 641 ms one at a time |
+| groups, with a spec's `group=` | one piece per group | 20 features over 64 groups: 7.3× from 1 to 14 threads on a 14-core machine |
+| specs, in the list the bank takes | one piece per spec | eight single-group specs, 20 features over 300,000 rows, run in 155 ms in one bank, against 641 ms one at a time |
 | half-lives, as a list given to `half_life=` | each half-life in a grid is its own set of running sums, and a piece's half-lives run in parallel on the bank's threads. Ridge and feature-set grids share one set of sums and are expanded at solve time, so they need no thread | |
 | `shards`, on a wide `marginal` | a piece that runs on several threads: `shards` splits its pairs across the bank's threads within a group ([`marginal`](../MODELS.md#marginal--every-pairs-moments-kept-in-the-state)) | |
 | `gram_threads`, on a wide `ewridge` or `ew_cov` | a piece that runs on several threads: the work on each row's `k × k` [Gram](../GLOSSARY.md#fitting-a-model), or a block's merge, is split across the bank's threads within a group, from 725 columns, or above 256 under `gram_block_rows`. A count caps the share of the threads. The default, `"auto"`, splits only when the groups running at once leave half the threads idle, since a split speeds a run up only on idle threads | one group at 2,000 features: 3.0× under `"auto"` on 14 threads; four groups at 800 features: 1.6×; 28 groups: even, where taking every thread was 9-11% slower ([`gram_threads`](../GRAM.md#one-wide-gram-on-several-threads)) |
@@ -144,44 +134,47 @@ calls back into Polars' threads.
 
 ## Split one wide spec across threads
 
-**Give `shards="auto"` to spread one wide `marginal` over the threads.**
-The bank runs groups and specs in parallel, so a wide `marginal`, a screen
-of every feature against every target, on one group is otherwise one
-thread's work. `shards=10` splits its pairs into ten ranges of features,
-each run on a thread of its own, a block of rows at a time. `"auto"` sizes
-the split to the width and the bank's threads. It leaves whole a narrow
-spec, and a spec under a [hard window](../GLOSSARY.md#fitting-a-model)
-that snapshots every row, the default, whose block is a single row. The
-numbers are the same to the bit at any count, so a saved bank resumes
+**Split one wide spec's work across the threads, since on one group it is
+otherwise one thread's work.**
+
+1. **For a wide `marginal`,** a screen of every feature against every
+   target, **give `shards="auto"`.** `shards=10` splits its pairs into ten
+   ranges of features, each run on a thread of its own, a block of rows at
+   a time. `"auto"` sizes the split to the width and the bank's threads.
+   It does not split a narrow spec, or a spec under a [hard
+   window](../GLOSSARY.md#fitting-a-model) that snapshots every row (the
+   default), since there a block is one row.
+2. **For a wide `ewridge` or `ew_cov`, leave `gram_threads` at its
+   default, `"auto"`,** or give it a count to cap its share of the
+   threads.
+
+The numbers are the same to the bit at any count, so a saved bank resumes
 under any count. On 14 threads, through `ModelBank.fit_predict` with one
-spec and one group, the best of three runs, measured on 2026-09-25:
+`marginal` spec and one group, the best of three runs, measured on
+2026-09-25:
 
 | the spec | `"auto"` ran the bank |
 |---|---|
 | 10,000 features, nine targets, lags and bins | 4.9 times as fast |
 | the moments of one target alone | 1.2 times as fast, since the bank's own work on each row does not split |
 
-**A wide `ewridge` or `ew_cov` splits by `gram_threads`,** whose default,
-`"auto"`, already splits from 725 columns, or above 256 under
-`gram_block_rows`, when the groups running at once
-leave half the threads idle. [One wide Gram on several
-threads](../GRAM.md#one-wide-gram-on-several-threads) measures it.
+[One wide Gram on several
+threads](../GRAM.md#one-wide-gram-on-several-threads) measures
+`gram_threads="auto"`.
 
 ## Search over factor sets in one pass
 
 **To search over factor sets, build one spec per set and pass the whole
 list to one `lf.online.fit_predict` call.** Each spec runs as its own
-piece of work on each group, and the query reads the file once. Its output
-has one column per spec, which is what `po.eval.compare_specs` reads, and
-one state file, `grid.state`, holds them all. `y` in `ticks.parquet`
-(Example data's `df`) is built from `x0` and `x1`, so the set of those two scores best, and adding `x2`, which
-plays no part, scores a little lower. Each spec's [grid
-point](../GLOSSARY.md#grids) is chosen on the first half of the rows and
-scored on the second. The best point's R² over the rows that chose it
-overstates what choosing it earns ([Calibrating a
-model](../CALIBRATION.md)). Here the second half scores
-higher all the same, since the first holds each fit's
-[warm-up](../GLOSSARY.md#warm-up-and-readiness).
+piece of work on each group, and the query reads the file once.
+
+1. **Build one spec per factor set,** each named after its set.
+2. **Pass the list to one `lf.online.fit_predict` call,** with
+   `save_state=` if you want the fits kept. Its output has one column per
+   spec, and one state file, `grid.state`, holds them all.
+3. **Score the specs with `po.eval.compare_specs`,** choosing each spec's
+   [grid point](../GLOSSARY.md#grids) on the first half of the rows and
+   scoring it on the second.
 
 This code is a script of its own, run in a new process, since Polars reads
 `POLARS_MAX_THREADS` when it is first imported. It uses the file
@@ -231,6 +224,14 @@ mkt-sz-val-std1 R² 0.913 where chosen, 0.935 after
 mkt-std0        R² 0.672 where chosen, 0.738 after
 mkt-std1        R² 0.672 where chosen, 0.738 after
 ```
+
+`y` in `ticks.parquet` (Example data's `df`) is built from `x0` and `x1`,
+so the set of those two scores best, and adding `x2`, which plays no part,
+scores a little lower. The best point's R² over the rows that chose it
+overstates what choosing it earns ([Calibrating a
+model](../CALIBRATION.md)). Here the second half scores higher all the
+same, since the first holds each fit's
+[warm-up](../GLOSSARY.md#warm-up-and-readiness).
 
 On 2.56M rows over 64 groups, the six specs make 6 × 64 pieces of work
 every chunk. There the same query takes 29.0 s at one thread and 4.3 s at

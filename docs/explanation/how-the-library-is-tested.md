@@ -21,7 +21,7 @@ holding:**
 
 | guarantee | held by |
 |---|---|
-| out-of-sample predictions | changing a row's own target never changes that row's prediction, for every model (`tests/test_properties.py`) |
+| out-of-sample predictions | changing a row's own target never changes that row's prediction, for every regression model (`tests/test_properties.py`); each model's prediction while learning equals the one it makes from the row's features alone, without its target (`crates/online-core/tests/model_contract.rs`) |
 | bounded memory | a 10-million-row run whose memory and state stay bounded (`tests/test_soak.py`, opt-in with `pytest -m soak`, weekly) |
 | any chunking | a stream fed in chunks of 1 to 13 rows gives one chunk's output, on generated streams for every regression model (`tests/test_properties.py`) and on a fixed stream for every model, which is also saved and loaded halfway (`tests/test_semantics_all_models.py`) |
 | any thread count | a bank run on 1 thread against 8 threads, its output compared bit for bit (`tests/test_portability.py`) |
@@ -32,8 +32,8 @@ holding:**
 
 **Every model is held to the same invariants, because a property that
 holds for one model and not another would make a bank's output depend on
-which models it runs.** The bank runs each model over one chunk, seven, a
-hundred and one row at a time, with a save and load in the middle. It runs
+which models it runs.** The bank runs each model over one chunk, seven
+chunks, a hundred chunks, and one row at a time, with a save and load in the middle. It runs
 each at 1 thread against 8, and the numbers must not move. A group's numbers must
 not depend on what else is in the bank. The command line must give the
 bank's output, and the Arrow output the Polars one, field for field.

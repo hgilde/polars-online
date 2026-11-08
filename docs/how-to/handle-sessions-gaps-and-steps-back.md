@@ -116,8 +116,8 @@ the clock's policy](#set-the-clocks-policy):
 ## Choose what a step back means
 
 **`restart_after_step_back` and the size of a step back decide what it
-means.** It has no default, since only the caller knows how late a row can
-be, and `0` resets the model at every step back:
+means.** It is unset by default, since only the caller knows how late a
+row can be, and `0` resets the model at every step back:
 
 | a step back | is read as | and the bank |
 |---|---|---|

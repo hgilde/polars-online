@@ -89,8 +89,8 @@ test for a break and the error metrics need no held-out set either.
 gives the consequence for the classical tests. `error_inflation` is the
 factor by which estimation error widens a row's prediction error beyond
 the noise. For least squares with no decay and no ridge, each residual
-divided by its `error_inflation` is Brown, Durbin and Evans' recursive
-residual, so their tests apply without fitting the model again.
+divided by its `error_inflation` is Brown, Durbin and Evans' (1975)
+recursive residual, so their tests apply without fitting the model again.
 
 ## What predicting before learning cannot guarantee
 
@@ -137,7 +137,7 @@ until the target is known.
 and the spec's `embargo`, a delay on the clock from the row, has passed.**
 A [formula target](../GLOSSARY.md#fitting-a-model) is a target given in
 the spec's `targets` as an expression (a column computation, such as
-`pl.col("x") * 2`) that holds a window operator looking ahead
+`pl.col("x") + 1`) that holds a window operator looking ahead
 (`reverse=True`). Once the row is released, the bank computes the target
 and learns the row.
 

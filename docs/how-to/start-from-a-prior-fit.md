@@ -55,6 +55,8 @@ however many rows arrive.
 2. **Give `ridge` the strength of the pull,** in the features' squared
    units.
 
+## Compare a prior that fades with one that lasts
+
 This code fits today's rows, whose slope is 2.2, three ways: with no
 prior, with yesterday's slope of 2.0 as a prior that fades, and with the
 same prior held for good. Each solves on every row, and `min_weight=0`
@@ -62,6 +64,9 @@ lets each predict from its first row:
 
 ```python
 import numpy as np
+import polars as pl
+
+import polars_online as po
 
 # Today's truth: y = 0.5 + 2.2 x plus noise. Yesterday's fit was 0.5 + 2.0 x.
 rng = np.random.default_rng(11)
@@ -99,8 +104,9 @@ lasting: slope after 3 rows 2.01, 50 rows 2.01, 2,000 rows 2.01; error over the 
 
 With no prior, the first rows' slope is noise: 2.47 after three rows. The
 prior that fades starts at yesterday's 2.0 and reaches today's slope as the
-rows outweigh it. The prior held for good keeps the slope at 2.01, where a
-ridge of 20 per row outweighs a slope that moved by 0.2.
+rows outweigh it. The prior held for good keeps the slope at 2.01: a ridge of
+20 on the mean scale outweighs the rows twenty to one, so the slope moves
+only 0.2/21 off the prior.
 
 ## Check the result
 

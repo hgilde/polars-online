@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 
-from test_no_plan_references import FILES, GUIDE_PARTS
+from test_no_plan_references import FILES
 
 TIER = "essential"
 
@@ -46,9 +46,8 @@ N = 10
 M = 8
 
 #: The Markdown files held: the README, CONTRIBUTING and every guide, as
-#: ``test_no_plan_references`` lists them, a guide that a record follows in
-#: its file read up to the record's heading.
-HELD = sorted(f for f in FILES if f.endswith(".md")) + sorted(GUIDE_PARTS)
+#: ``test_no_plan_references`` lists them.
+HELD = sorted(f for f in FILES if f.endswith(".md"))
 
 _FENCE = re.compile(r"^\s*```python\s*$")
 
@@ -95,10 +94,7 @@ def steps(code: str) -> tuple[int, int]:
 
 
 def _text(path: str) -> str:
-    text = (REPO / path).read_text(encoding="utf-8")
-    if path in GUIDE_PARTS:
-        text = text[: text.index(GUIDE_PARTS[path])]
-    return text
+    return (REPO / path).read_text(encoding="utf-8")
 
 
 # -------------------------------------------------------------- the counting

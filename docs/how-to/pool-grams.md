@@ -13,7 +13,8 @@ These steps need the library and a Gram per block:
 - polars-online installed with numpy, an optional extra, which
   `pip install "polars-online[numpy]"` adds. Each recipe generates its
   own data.
-- A Gram per block, from one pass over the stream: an `ewridge` spec with
+- A Gram per block, from one pass of a
+  [model bank](../GLOSSARY.md#the-model-bank-and-what-it-reads) over the stream: an `ewridge` spec with
   `group=` the block's column, such as a week made in the query with
   `pl.col("ts").dt.truncate("1w")`. Then `bank.gram(name)` gives one dict
   per block in the order of their keys, oldest first for a week column. [Keep weekly Grams of
@@ -219,8 +220,8 @@ week's mean target (`target_means`) on its features' means (`means`).
    that of the rows less their week's means, so a fit on it has an
    intercept for each week: the within, or fixed-effects, estimator.
 2. **Fit with `po.gram.solve`.** It returns `nan` for the intercept, since
-   each week had one and the pooled Gram holds none of them. Every other
-   fit does the same.
+   each week had one and the pooled Gram holds none of them. So does every other
+   `po.gram` fit on a Gram pooled within blocks.
 3. **Read the standard errors with `po.gram.coef_stats`.** It divides by
    `n − p − B`, with `p` the features and `B` the weeks the target has rows
    in, counted in the pooled Gram's `within_parts` and, per target, in
@@ -291,8 +292,8 @@ within weeks  -0.004  -0.3   0.046   6.5
 each week alone: slow's mean coefficient 0.006, its t from the weeks 0.2
 ```
 
-The weekly means of `slow` and `y` correlate at −0.10, inside the ±0.16
-that chance gives forty weeks. Pooled as a union, that correlation gives
+The weekly means of `slow` and `y` correlate at −0.10, within one
+standard error, 1/√40 ≈ 0.16, of 0. Pooled as a union, that correlation gives
 `slow` a coefficient of −0.025 and a t of −3.4. Pooled within weeks,
 `slow`'s t is −0.3. Each week alone agrees: the forty weekly coefficients
 average 0.006, with a t of 0.2 from their spread. `quick` moves `y` inside

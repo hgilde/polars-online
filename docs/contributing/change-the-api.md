@@ -8,7 +8,7 @@ diff and ship it in the right kind of release.
 **A change to the public API can break a user with no error at all.**
 A changed default silently changes users' numbers,
 which is worse than breaking their code. A renamed output field fails as a
-`StructFieldNotFound` in someone else's pipeline. So one snapshot test,
+`StructFieldNotFoundError` in someone else's pipeline. So one snapshot test,
 `tests/test_api_surface.py`, renders the entire public surface to text and
 compares it with a checked-in file, `tests/api_surface.txt`. Every change
 to it is a diff someone has to accept. A rename shows up as `- pred_y__r1e-06 / + pred_y__r0.000001` in the pull
@@ -77,11 +77,15 @@ CHANGELOG entry names the release kind the diff needs.
 `PolarsOnlineDeprecationWarning` that names the new spelling.**
 `polars_online.PolarsOnlineDeprecationWarning` is a `DeprecationWarning`.
 
-**The renames of 0.x up to 2026-10-07 stay refused,** by tables such as
-`_RENAMED` in `python/polars_online/_spec.py` and `RENAMED` in
-`crates/online-polars/src/spec.rs`, among others on both sides. Those of
-2026-10-11, the names 1.0 keeps, are forwarded by `_DEPRECATED_IN` and
-`_DEPRECATED_WORDS_IN` until 2.0. `renamed_function` in
+**The renames made up to 2026-10-07 stay refused, naming the new name,** by
+tables such as `_RENAMED` in `python/polars_online/_spec.py` and `RENAMED`
+in `crates/online-polars/src/spec.rs`, among others on both sides. A
+model's own refused name is in `_RENAMED_IN` and `RENAMED_WHERE_EXPECTED`,
+and `tests/test_renames.py` holds the refusals. The spec parameters
+renamed for 1.0 are forwarded by `_DEPRECATED_IN` and
+`_DEPRECATED_WORDS_IN` until 2.0, and the functions and keywords renamed
+then by forwardings of their own (step 2). The output fields and frame
+columns renamed then are not read under their old names. `renamed_function` in
 `python/polars_online/_renamed.py` is the refusing stub a pre-1.0 rename
 keeps, not a forwarding one.
 
@@ -96,6 +100,10 @@ keeps, not a forwarding one.
    | a key, in every model | `_DEPRECATED` | `DEPRECATED` |
    | a key, in one model | `_DEPRECATED_IN` | `DEPRECATED_IN` |
    | a word of one model's parameter | `_DEPRECATED_WORDS_IN` | `DEPRECATED_WORDS_IN` |
+
+   A model's key has a table of its own because one old name went two
+   ways (`kmeans`' `k` is `n_clusters`, `hmm`'s is `n_components`). It
+   also keeps a name another model still takes from moving.
 
    The Python tables read a spec builder's keyword and a spec dict's key,
    `with_windows`' `like=` spec included, and the Rust tables a TOML key,

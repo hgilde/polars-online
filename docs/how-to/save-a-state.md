@@ -49,10 +49,10 @@ state is read when the query is built and written whole or not at all.
    is written once the bank has been fed its last row.
 2. **Run the query,** here with `sink_parquet`, which runs it and writes
    the result to a file without holding it all in memory.
-3. **Serve from the file with `online.predict(path)`,** or continue from
-   it with `load_state=`, naming the same file in `save_state=` to save
-   again.
-4. **Load the file into a bank object with `po.ModelBank.load`,** or its
+3. **Serve from the file with `online.predict(path)`.**
+4. **Continue from the file with `load_state=`,** naming the same file in
+   `save_state=` to save again.
+5. **Load the file into a bank object with `po.ModelBank.load`,** or its
    bytes with `po.ModelBank.load_bytes`, which reads them as it reads a
    file.
 
@@ -63,8 +63,8 @@ uses `lf` and `later` from [Example data](../../README.md#example-data):
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
 lf.online.fit_predict([spec], save_state="bank.state").sink_parquet("fitted.parquet")             # 1 and 2: fit, then save at the last row
 served = later.online.predict("bank.state").collect()                                             # 3: serve from the file
-later.online.fit_predict(load_state="bank.state", save_state="bank.state").sink_parquet("more.parquet")  # 3: the next rows: continue, save again
-bank = po.ModelBank.load_bytes(po.ModelBank.load("bank.state").save_bytes(), specs=[spec])         # 4: bytes load as a file does
+later.online.fit_predict(load_state="bank.state", save_state="bank.state").sink_parquet("more.parquet")  # 4: the next rows: continue, save again
+bank = po.ModelBank.load_bytes(po.ModelBank.load("bank.state").save_bytes(), specs=[spec])         # 5: bytes load as a file does
 ```
 
 To load a saved state and go on learning, from Python or the command line,
@@ -115,6 +115,22 @@ output file, so a failed run never leaves a state without its output.
 [Run a bank from the command line](run-a-bank-from-the-command-line.md)
 gives the steps and their output.
 
+## Which builds load the file
+
+**From 1.0, a state a 1.x build saved loads in every later 1.x
+build.** A state saved by 0.13.0 or an earlier release does not load in
+the releases after it: refit the bank from its input. A [window
+run](../GLOSSARY.md#fitting-a-model), started with `with_windows`, keeps a
+state of its own ([Resume a window run](resume-a-window-run.md)). [Why a state loads
+in later
+versions](../explanation/state-and-resuming.md#why-a-state-loads-in-later-versions)
+gives the two parts of a state outside that promise, and the reasons.
+
+**To read a state from a program without this library, export it as
+JSON** with `bank.write_json()`, which holds everything `save` writes.
+[Read a state without this library](read-a-state-without-this-library.md)
+shows how.
+
 ## Check that it worked
 
 **Load the file with `po.ModelBank.load`, and read what the bank says it
@@ -137,19 +153,3 @@ for day in ["2024-01-02", "2024-01-03"]:
 The second file has learned both days' 800 rows, and the first file is
 unchanged by the second day's run. [Inspect a bank](inspect-a-bank.md) reads the
 rest of what a loaded bank holds.
-
-## Which builds load the file
-
-**From 1.0, a state a 1.x build saved loads in every later 1.x
-build.** A state saved by 0.13.0 or an earlier release does not load in
-the releases after it: refit the bank from its input. A [window
-run](../GLOSSARY.md#fitting-a-model), started with `with_windows`, keeps a
-state of its own ([Resume a window run](resume-a-window-run.md)). [Why a state loads
-in later
-versions](../explanation/state-and-resuming.md#why-a-state-loads-in-later-versions)
-gives the two parts of a state outside that promise, and the reasons.
-
-**To read a state from a program without this library, export it as
-JSON** with `bank.write_json()`, which holds everything `save` writes.
-[Read a state without this library](read-a-state-without-this-library.md)
-shows how.

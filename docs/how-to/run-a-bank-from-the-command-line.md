@@ -24,8 +24,7 @@ A run needs the program, a TOML file and an input file:
   release.
 - The README's [Example data](../../README.md#example-data) built, in the
   directory the commands run in. The examples read `ticks.parquet`, a
-  stream of 400 rows with a clock `t`, and `today.parquet`, the 400 rows
-  that follow it.
+  stream of 400 rows with a clock `t`.
 - An input file in Parquet, Arrow IPC, CSV or NDJSON, holding every column
   the specs read, the targets included.
 
@@ -37,16 +36,13 @@ needs.
 1. **If a target is computed from its row's columns, such as a return
    against the mid, make it a column of the input file.** Make it with
    Polars' `with_columns` before you write the file the run reads. A
-   target table that names `relative_to` (a reference column the target
-   was once taken against) is refused by name. A [formula target](../GLOSSARY.md#fitting-a-model) (a
-   target written as a window expression) in the TOML file must look
-   ahead, as in Python, and [Specs in TOML](../RUNNER.md#specs-in-toml)
+   [formula target](../GLOSSARY.md#fitting-a-model) (a target written as
+   a window expression) in the TOML file must look ahead, as in Python, and [Specs in TOML](../RUNNER.md#specs-in-toml)
    shows how to write one.
 2. **Write the TOML file,** with the input, the output and one `[[specs]]`
    table for each spec. Each `[[specs]]` table takes the keywords every
    spec shares, and its `[specs.model]` table names the model and takes
-   the model's own. Every example on this page runs against this one,
-   saved as `job.toml` beside `ticks.parquet`:
+   the model's own. Save this file as `job.toml` beside `ticks.parquet`:
 
    ```toml
    input = "ticks.parquet"      # read a chunk at a time; the extension names the format
@@ -56,7 +52,7 @@ needs.
    name = "ridge"               # the name of the spec's output column
    targets = ["y"]              # or a table: { column = "p", name = "price" }, as po.target
    features = ["x0"]
-   clock = "t"                  # the clock column, which lets a resumed run tell the rows it has learned
+   clock = "t"                  # the clock: how far apart two rows are, which half_life and gap_cap are measured in
    half_life = 500.0            # in units of t
    gap_cap = 300.0              # the longest step of t that decays the fit
    min_weight = 5.0             # the floor, in weight_sum units, below which no prediction is made
@@ -154,7 +150,13 @@ saved state to run.state
 
 **`--no-output` writes no per-row output.** A run whose product is its
 state, such as a pass that leaves the running sums of a fit, has no use for
-it:
+it. A run needs somewhere to put its work: an output file, a `save_state`,
+or a `closed_groups` file ([Closed groups to a sidecar
+file](../RUNNER.md#closed-groups-to-a-sidecar-file)). Asked for none of the
+three, it is refused before it reads a row. A run with no output keeps no
+prediction, so it is the command line's `ModelBank.fit`, and a formula
+target there takes any embargo, as `fit` does. Here the run saves the
+state and writes nothing else:
 
 ```sh
 polars-online --config job.toml --no-output --save-state gram.state
@@ -164,13 +166,6 @@ polars-online --config job.toml --no-output --save-state gram.state
 processed 400 rows (1 chunk), no output
 saved state to gram.state
 ```
-
-A run needs somewhere to put its work: an output file, a `save_state`, or
-a `closed_groups` file ([Closed groups to a sidecar
-file](../RUNNER.md#closed-groups-to-a-sidecar-file)). Asked for none of
-the three, it is refused before it reads a row. A run with no output keeps
-no prediction, so it is the command line's `ModelBank.fit`, and a formula
-target there takes any embargo, as `fit` does.
 
 ## Check that it worked
 
@@ -183,8 +178,10 @@ there too. [Exit status](../RUNNER.md#exit-status)
 gives each status.
 
 **Read the summary on standard output.** A run prints `wrote` with the
-rows and chunks it wrote, and `saved state to` with the file, as in the
-recipes on this page. After `wrote`, a run prints a line for each spec
+rows and chunks it wrote, and `saved state to` with the file, as the
+runs in [Run a bank over a file](#run-a-bank-over-a-file) and [Save the
+state for the next run](#save-the-state-for-the-next-run) print. After
+`wrote`, a run prints a line for each spec
 that ended with groups not ready, and nothing for the others. Such a line
 reads `spec "ridge": 2 groups whose last row was withheld (below_min_weight 2)`.
 A spec with groups that have a coefficient set more by the `ridge`

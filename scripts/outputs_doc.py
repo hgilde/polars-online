@@ -269,17 +269,30 @@ STATE_ONLY = {
 }
 
 INTRO = """\
-The fields each model writes into its output column, one section per model,
-for a reader who wants to know what a field holds, its type, and when it is
-null. Every spec adds one column to the output, named after the spec, and its
-value in each row is a record of these fields. `po.spec.output_fields(spec)` answers
-the same question at runtime, for the exact spec you built.
+This reference page lists the fields each model writes into its output column,
+one section per model, for a reader who wants to know what a field holds, its
+type, and when it is null. Every spec adds one column to the output, named after
+the spec, and its value in each row is a record of these fields. The tables are
+generated from the code, and a test fails when they differ from it.
+`po.spec.output_fields(spec)` answers the same question at runtime, for the
+exact spec you built.
 """
+
+#: Where the page comes from, for a contributor, as an HTML comment under the
+#: kind line: a reader of the rendered page does not see it.
+GENERATED = """\
+<!--
+scripts/outputs_doc.py writes this page from each model's plainest spec, the
+one tests/test_model_registry.py builds. tests/test_outputs_doc.py regenerates
+it and fails on any difference, so a new field cannot ship undocumented and a
+removed one cannot linger. Do not edit this page by hand: change the
+generator, then run `uv run python scripts/outputs_doc.py > docs/OUTPUTS.md`.
+-->"""
 
 #: The parts of a field's name, for the *Field names* table: the part, what it
 #: stands for, and how it reads in this page's own tables.
 NAME_PARTS: list[tuple[str, str, str]] = [
-    ("`<t>`", "a target: its column, its `name`, or a window target's alias", "`y`"),
+    ("`<t>`", "a target: its column, its `name`, or a formula target's alias", "`y`"),
     ("`<f>`", "a feature", "`x0`, `x1`"),
     ("`<a>`, `<b>`", "the two columns of a pair", "`x0`, `x1`"),
     ("`<j>`", "a state's index", "`0`, `1`"),
@@ -317,10 +330,9 @@ SHARED_FIELDS: list[tuple[str, str, str]] = [
         "`above_max_error_inflation`, `below_warm_rows`, `ill_conditioned` or `unstable_rate`. "
         "That order is their precedence, so the first that applies is the one named. "
         "`below_warm_rows` is the model's own warm-up, the rows `kmeans`, `hmm` and `bocpd` hold "
-        "to seed themselves from, and the rows after a target's first while `kalman` sizes its "
-        "prior (its second and third observed rows under the default `standardize` without "
-        "`obs_var`). `ill_conditioned` is an `ewridge` fit "
-        "whose normal equations are too nearly singular for a solve to keep a digit. "
+        "to seed themselves from, and, in a `kalman` fit standardized with no intercept, the "
+        "rows before any of a target's coefficients is sized. `ill_conditioned` is an `ewridge` "
+        "fit whose normal equations are too nearly singular for a solve to keep a digit. "
         "`unstable_rate` is an `sgd` target whose learning rate is past its stability bound: its "
         "recent steps' gains have a mean square above twice their mean, so each step grows its "
         "own row's residual and the fit diverges",
@@ -380,7 +392,7 @@ OPTIONAL: list[tuple[str, str]] = [
     (
         "`emit_clocks`, every model's",
         "[Learn targets known late](how-to/learn-targets-known-late.md#check-that-it-worked),"
-        " and the table below",
+        " and the table of its two fields after this one",
     ),
     (
         "`emit_huber_scale`, `huber`'s: `huber_scale_<t>`, the scale each row's cut is drawn in",
@@ -469,7 +481,7 @@ DTYPES: list[tuple[str, str]] = [
 ]
 
 
-#: The recipe in *Reading this page*: run here, so the page shows what it prints.
+#: The recipe in *The fields of your own spec*: run here, so the page shows what it prints.
 RECIPE = """\
 import polars_online as po
 
@@ -500,12 +512,7 @@ def call(name: str) -> str:
 
 
 READING = f"""\
-## Reading this page
-
-Each model's table lists the fields of its plainest spec, each with its
-dtype, what it holds, and the rows on which it is null.
-
-### The fields of your own spec
+## The fields of your own spec
 
 A spec of your own can carry a grid, several targets or another name, and
 each changes its fields' names. Ask the spec itself:
@@ -521,7 +528,7 @@ and two ridge values has four predictions of `y`, one per pair:
 {printed(RECIPE)}
 ```
 
-### Field names
+## Field names
 
 Each table lists the fields of the model's plainest spec, whose target is
 `y` and whose features are `x0`, and `x1` where the model needs two. Your
@@ -545,9 +552,9 @@ holds](how-to/find-an-output-field.md) builds a grid and reads its fields.
 
 {table(("in a name", "stands for", "in this page's tables"), NAME_PARTS)}
 
-EW, in a meaning below, is short for exponentially weighted.
+EW, in a *what it holds* cell, is short for exponentially weighted.
 
-### Field types
+## Field types
 
 A field's dtype is the type the bank declares to Polars before it reads a
 row, as `po.spec.output_index(spec)` lists it:
@@ -561,7 +568,7 @@ comparison between two frames never meets two widths. Only the clock values
 differ, in a field or in a frame such as `groups()`' `clock_last`: an
 integer clock keeps its own width.
 
-### When a field is null
+## When a field is null
 
 **Every field is null on a skipped row**: a row whose features or weight
 hold a null, or a value that counts as one (NaN, ±inf, or a magnitude above
@@ -575,13 +582,13 @@ whose outputs a gate held back, or whose fit cannot be trusted there.
 table's last column, *also null*, says where a field is null besides a
 skipped row, and *withheld* there means such a row.
 
-### Fields most models write
+## Fields most models write
 
-Four fields appear in nearly every table below, and are defined here once:
+Four fields appear in nearly every model's table, and are defined here once:
 
 {table(FIELD_HEAD, field_rows(SHARED_FIELDS, SHARED_SPEC))}
 
-### What is not listed
+## What is not listed
 
 The optional outputs are left out of the tables: the `emit_*` switches (all
 but `emit_clocks` and `huber`'s `emit_huber_scale`, whose fields are listed),
@@ -591,20 +598,9 @@ the docs set it:
 
 {table(("the switch", "where the docs show it"), OPTIONAL)}
 
-`huber`'s `emit_huber_scale` adds a field listed under `huber`'s table.
-`emit_clocks` is the one switch
-every model takes, and it adds two fields:
+`emit_clocks` is the one switch every model takes, and it adds two fields:
 
 {table(FIELD_HEAD, field_rows(CLOCK_FIELDS, CLOCK_SPEC))}
-
-### How this page is made
-
-`scripts/outputs_doc.py` writes this page from each model's plainest spec,
-the one `tests/test_model_registry.py` builds. `tests/test_outputs_doc.py`
-regenerates it and fails on any difference, so a new field cannot ship
-undocumented and a removed one cannot linger. Do not edit this page by
-hand: change the generator, then run
-`uv run python scripts/outputs_doc.py > docs/OUTPUTS.md`.
 """
 
 
@@ -660,6 +656,7 @@ def check_families() -> None:
 def main() -> None:
     check_families()
     print("<!-- kind: reference -->")
+    print(GENERATED)
     print("# What each model writes\n")
     print(INTRO)
     print("| family | models |")

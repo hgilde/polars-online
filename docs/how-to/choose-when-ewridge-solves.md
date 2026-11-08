@@ -72,6 +72,9 @@ the recipe counts a solve where the slope changes:
 
 ```python
 import numpy as np
+import polars as pl
+
+import polars_online as po
 
 # y = slope * x0 - x1 + 0.5 x2 plus noise, one row a clock unit; the slope on x0 jumps from 1 to 3 at row 10,000.
 rng = np.random.default_rng(7)
@@ -122,8 +125,13 @@ The row cap of 2,000 holds a fit for ten half-lives.
 Use this for a fit that weighs every row the same, or that sets its decay
 by `lam`. **Under both, the default solves on every row.**
 
-**Give a `solve_every` when the fit need not be current at every row.**
-The coefficients are then at most `solve_every` clock units out of date.
+1. **Give a `solve_every` when the fit need not be current at every
+   row.** The coefficients are then at most `solve_every` clock units out
+   of date.
+2. **Time it beside the default, each in a bank of its own,** over the
+   same rows.
+3. **Compare each fit's coefficients with the other's,** or with the
+   planted ones where you know them.
 
 This code times both schedules over 200,000 rows of 20 features on one of
 the bank's threads, and compares each fit with the planted slopes:
@@ -162,21 +170,19 @@ solve_every=1000: largest slope error 0.006
 ## Keep the solves a group's warm-up skips
 
 Use this when a group's weight stays below its floor, and you need its
-`coef` or its count of failed solves. **While a group's weight is more
-than about 1.4% below its floor, the schedule by weight skips each solve
-that nothing would read.** That schedule is the default under a finite
-half-life. The floor is the least of a row per unknown (`k + 1` for `k`
-features, `k` without an intercept) and `min_weight`. Below it every
-prediction is withheld. So a group whose weight never reaches the floor,
-such as one of two rows over two features, reports no `coef` on any row,
-and `bank.solve_failures()` counts only the solves run. The docstring's
-Notes, under *The solve schedule*, give the cases where such a solve still
-runs: under a [hard window](../GLOSSARY.md#fitting-a-model), and where a
-row cap brings it due.
+`coef` or its count of failed solves. **Under a finite half-life, the
+default schedule skips each solve that nothing would read while a group's
+weight is more than about 1.4% below its floor,** where every prediction
+is withheld. The
+docstring's Notes, under *The solve schedule*, give the floor and the
+cases where such a solve still runs.
 
-**To keep every solve, give `min_weight=0`,** which makes the floor 0 and
-withholds no prediction for its weight, **or `max_rows_between_solves=1`,**
-whose solves always run.
+1. **Read `bank.coef()` for the group.** A group whose weight never
+   reaches the floor, such as one of two rows over two features, reports
+   no `coef`, and `bank.solve_failures()` counts only the solves run.
+2. **If you need its solves, give `min_weight=0`,** which makes the floor
+   0 and withholds no prediction for its weight, **or
+   `max_rows_between_solves=1`,** whose solves always run.
 
 ## Check the result
 

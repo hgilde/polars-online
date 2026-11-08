@@ -619,7 +619,7 @@ change.
 | 2009 | · · `ew_cov` — exponentially weighted moments | 154 | mixed: reference, how-to, explanation | MODELS.md entry (by the rule for model entries) |
 | 2163 | · · `marginal` — every pair's moments, kept in the state | 392 | mixed: reference, how-to (five recipes), explanation (lags, bins, shards) | MODELS.md entry (by the rule for model entries); its cost at width to PERFORMANCE.md |
 | 2555 | · · `deco` — one correlation for the whole matrix | 102 | mixed: reference, how-to, explanation | MODELS.md entry (by the rule for model entries); its measured behavior to REGIMES.md |
-| 2657 | · · `rcov` — a block's realised covariance, robust to noise | 144 | mixed: reference, how-to, explanation | MODELS.md entry (by the rule for model entries); its measured behavior to REGIMES.md |
+| 2657 | · · `rcov` — a block's realized covariance, robust to noise | 144 | mixed: reference, how-to, explanation | MODELS.md entry (by the rule for model entries); its measured behavior to REGIMES.md |
 | 2801 | · · `audit` — what a stream's columns hold | 90 | mixed: reference, how-to | MODELS.md entry (by the rule for model entries); reading what it counted to how-to/check-data-quality.md |
 | 2891 | · Clustering and classification | 7 | reference (family opener) | MODELS.md: Clustering and classification opener |
 | 2898 | · · `kmeans` — exponentially weighted k-means | 140 | mixed: reference, how-to, explanation (seeding) | MODELS.md entry (by the rule for model entries); seeding to explanation/warm-up-and-readiness.md |

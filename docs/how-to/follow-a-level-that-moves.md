@@ -39,7 +39,7 @@ On a target falling from 1,000 to −1,000 at 0.5 a row, at a
 show the cap's effect. With the intercept alone fitting the level, the
 default's intercept met the level near row 670. With the level as a
 feature too, the default cap's steps swung the fit far past the level
-instead. Each step is taken on the standardized features
+instead, because each step is taken on the standardized features
 (`standardize=True`, the default) and mapped back into the caller's
 units. With `c=10` and the level as a feature, every row stayed within 3
 of its target from row 467. The recipe in [Difference the target for

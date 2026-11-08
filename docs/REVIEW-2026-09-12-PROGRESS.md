@@ -70,7 +70,7 @@ first two versions, which passed on the old code and so tested nothing;
 they were replaced. The full gate ran on every batch.
 
 **Tests that pinned a defect, and were changed with it.**
-`tests/reference.py`'s `kalman_ref` had copied C10's centring, and S9's
+`tests/reference.py`'s `kalman_ref` had copied C10's centering, and S9's
 skipped decay;
 `test_label_delay.py` asserted S28's disagreement with the doubled stream
 as the oracle's quirk, and later asserted an agreement on the diagnostics
@@ -95,7 +95,7 @@ C22's forgotten clock -- `holt`'s forecast across two unlearned rows as
 5. **C2:** a window's remainder below `1e-12` of the weight it was
    subtracted from is empty (`window::EMPTY_FRACTION`).
 6. **Schema 7**, for N1, C23 and C22, with loaders for schema 6 as hard
-   rule 5 asks: raw moments are split into centred ones as a file is read,
+   rule 5 asks: raw moments are split into centered ones as a file is read,
    which keeps the numbers the file carried and not the bits, and a
    schema-6 `holt` starts every target's clock since its last observation
    at 0 -- a file saved just after a null forgets that one gap.
@@ -168,22 +168,22 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | C5 | `label_delay` ignores a reset or session change on a skipped row | `numpy`: lag-1 pairs within sessions; fresh-bank equality | **fixed**, with C21, which needs it (the queue C21 keeps stays aligned with the waiting rows only if a reset on a skipped row clears them) — a skipped row's reset now clears the buffer, and its session change or capped gap releases it, as an accepted row's always did. No library oracle: the review's `numpy` count needs a closed group, and `group_close` refuses `label_delay`. The test is the definition: after a reset on a skipped row, `pred` and `n_eff` equal a fresh bank fed the new session alone (failed on the old build) |
 | C6 | `ridge_decay` + `session_shrink` restores `prior_scale` at every blend | our own `rls` only | **fixed** (batch 1) — the blend rebuilt the Gram from `EwCov::new`, so after a blend at `f = 0.3` `prior_scale` came back 1 against the mixture's 0.195 (failed on the old build). **A decision taken:** the prior mixes as the sum-scale weights do, `(1 − f)·ps_fast + f·ps_twin` -- the review's second option, since keeping the fast side's leaves `f = 1` short of the twin. At `f = 1` the blended fit is RLS's at the twin's halflife to `1e-9` (our own `rls` as the second opinion, as the review proposed). **The review's test could not show it** (raised): at `f = 0` the blend returns before it mixes anything |
 | C7 | a zero-weight row poisons the lasso's lambda selection (0/0) | a hand-rolled selection sum | **fixed** (batch 1) — a zero-weight row adds no error and ages the rest; bit-identical to before wherever the old form was not `0/0`. On the old build `sel_err` was NaN from row 1 and the selection stuck at the heaviest penalty. The contract (`model_contract.rs`) now puts a zero-weight row on every model's first prediction and checks that no prediction goes NaN; that passed on the old build for every model, `lasso` included, since the selection's symptom is a stuck argmin, not a NaN -- so the `lasso` test is where C7 is held |
-| C8 | lasso without an intercept solves a centred/uncentred hybrid | `numpy.linalg.lstsq` with no intercept, at zero penalty | **fixed** — without an intercept `standardized()` scales by the raw second moment and keeps the raw cross-moments; at zero penalty the fit is held to `numpy`'s no-intercept least squares at `1e-6` (coordinate descent's tolerance), with the intercept case as the control |
+| C8 | lasso without an intercept solves a centered/uncentered hybrid | `numpy.linalg.lstsq` with no intercept, at zero penalty | **fixed** — without an intercept `standardized()` scales by the raw second moment and keeps the raw cross-moments; at zero penalty the fit is held to `numpy`'s no-intercept least squares at `1e-6` (coordinate descent's tolerance), with the intercept case as the control |
 | C9 | `Lasso::predict` reports the unwindowed `n_eff` | `numpy`: `Σ lam^age` over the in-window rows | **fixed** — reports and gates the window's weight; failed `numpy` on the old build |
-| C10 | `kalman` centres without an intercept | `numpy.linalg.lstsq` with no intercept (statistical) + `coef·x == pred` | **fixed** — `scales_into`, `standardized` and the step's own standardization scale by `sqrt(E[x²])` and do not centre; the exact contract `dot(coef_(i−1), x_i) == pred_i` holds to `1e-9` (it missed by 16 on the old build: the hidden intercept), and with no process noise the coefficients sit at `numpy`'s no-intercept fit to `1e-2` after 5000 rows (statistical). The full gate then failed `tests/test_oracles.py::TestKalmanOracle::test_no_intercept`: the from-scratch oracle `tests/reference.py::kalman_ref` had copied the centring, so it pinned the defect -- the situation the review warns of for C16. The oracle now standardizes as the fixed core does |
-| C11 | `robust` centres without an intercept | `numpy.linalg.lstsq` with no intercept, `huber_delta` large | **fixed** — the standardized solve without an intercept is the raw system scaled by `sqrt(E[x²])`; `huber` at a delta no residual reaches is held to `numpy`'s no-intercept least squares at `1e-8` with `standardize` on (failed on the old build) and off (the control) |
+| C10 | `kalman` centers without an intercept | `numpy.linalg.lstsq` with no intercept (statistical) + `coef·x == pred` | **fixed** — `scales_into`, `standardized` and the step's own standardization scale by `sqrt(E[x²])` and do not center; the exact contract `dot(coef_(i−1), x_i) == pred_i` holds to `1e-9` (it missed by 16 on the old build: the hidden intercept), and with no process noise the coefficients sit at `numpy`'s no-intercept fit to `1e-2` after 5000 rows (statistical). The full gate then failed `tests/test_oracles.py::TestKalmanOracle::test_no_intercept`: the from-scratch oracle `tests/reference.py::kalman_ref` had copied the centering, so it pinned the defect -- the situation the review warns of for C16. The oracle now standardizes as the fixed core does |
+| C11 | `robust` centers without an intercept | `numpy.linalg.lstsq` with no intercept, `huber_delta` large | **fixed** — the standardized solve without an intercept is the raw system scaled by `sqrt(E[x²])`; `huber` at a delta no residual reaches is held to `numpy`'s no-intercept least squares at `1e-8` with `standardize` on (failed on the old build) and off (the control) |
 | C12 | `ew_class` `full` factorizes the live covariance under a `window` | `scipy.stats.multivariate_normal` on in-window class moments | **fixed** — `class_matrix` takes the accumulator the row is scored on; `full`, `diagonal` and `shared` are all held to `scipy` at `1e-9` (only `full` with a window failed on the old build) |
-| C13 | `sgd` centres without an intercept | `numpy.linalg.lstsq` with no intercept (statistical) + `coef·x == pred` | **fixed** — `standardized` and `scales` use the raw second moment and do not centre without an intercept. The review's exact `coef·x == pred` does not hold for `sgd` even with an intercept -- measured 8.7e-3 relative, since the step standardizes with the row admitted and `coef` is reported through the scaler after the row before (the review's own D5) -- so the test asserts that few-percent tier (6.7e3 on the old build), and the library check is statistical: the slopes settle at `numpy`'s no-intercept fit within `5e-2` after 20 000 rows |
+| C13 | `sgd` centers without an intercept | `numpy.linalg.lstsq` with no intercept (statistical) + `coef·x == pred` | **fixed** — `standardized` and `scales` use the raw second moment and do not center without an intercept. The review's exact `coef·x == pred` does not hold for `sgd` even with an intercept -- measured 8.7e-3 relative, since the step standardizes with the row admitted and `coef` is reported through the scaler after the row before (the review's own D5) -- so the test asserts that few-percent tier (6.7e3 on the old build), and the library check is statistical: the slopes settle at `numpy`'s no-intercept fit within `5e-2` after 20 000 rows |
 | C14 | `ew_cov` `mahal` and PCA read the live accumulator under a `window` | `scipy.spatial.distance.mahalanobis`, `numpy.linalg.eigh` | **fixed** — `mahal` and the PCA refresh read the view, and the refresh gate the window's weight; `mahal` and `pc0_var` held to `scipy`/`numpy` at `1e-9` (failed on the old build with a window, passed without) |
 | C15 | `ew_cov` `mahal_quantiles` slot arithmetic ignores `LagCorr` | `numpy.quantile` of the emitted `mahal` (statistical) | **fixed** — one `EwCovCfg::width`, read by `n_outputs` and by the slot search; the P² quantiles held to `numpy.quantile` of the emitted `mahal` column within 10% (failed beside `lagcorr` on the old build, passed with `mahal` alone) |
-| C16 | the `session_shrink` blends re-centre through the raw second moment | `numpy.cov` / `numpy.average` with the blended row weights, offset `1e8` | **fixed** — both blends (`EwRidge::blend_toward_long_run`, `TargetMoments::blend`) use the centred mixture `a·C_f + b·C_s + a·b·ΔΔᵀ`; `bank.gram()` after a blend is held to `numpy` with the blended weights `(1−f)·λ_h^age + f·λ_H^age` — means, co-moments, target mean and variance — at `1e8` (failed on the old build) and `0` (the control) |
-| C17 | `window::truncated` and `marginal::cut` re-centre through the raw second moment | `numpy.cov` / `numpy.average` on in-window rows, offset `1e8` | **fixed** — reproduced first (windowed `var`/`cov` off by 390% at `1e8`, the unwindowed accumulator within 2.6e-9); centred pooling identity in both, diagonal floored (closes V3); `TestWindowAtALargeOffset` failed 3 of 10 on the old build, the three at `1e8` with a window, and passes 10 of 10 now; two Rust offset tests with two-pass oracles |
+| C16 | the `session_shrink` blends re-center through the raw second moment | `numpy.cov` / `numpy.average` with the blended row weights, offset `1e8` | **fixed** — both blends (`EwRidge::blend_toward_long_run`, `TargetMoments::blend`) use the centered mixture `a·C_f + b·C_s + a·b·ΔΔᵀ`; `bank.gram()` after a blend is held to `numpy` with the blended weights `(1−f)·λ_h^age + f·λ_H^age` — means, co-moments, target mean and variance — at `1e8` (failed on the old build) and `0` (the control) |
+| C17 | `window::truncated` and `marginal::cut` re-center through the raw second moment | `numpy.cov` / `numpy.average` on in-window rows, offset `1e8` | **fixed** — reproduced first (windowed `var`/`cov` off by 390% at `1e8`, the unwindowed accumulator within 2.6e-9); centered pooling identity in both, diagonal floored (closes V3); `TestWindowAtALargeOffset` failed 3 of 10 on the old build, the three at `1e8` with a window, and passes 10 of 10 now; two Rust offset tests with two-pass oracles |
 | C18 | `marginal` allows `window` with `lags`; the lag ring is never truncated | `statsmodels` `acf` | **fixed** (batch 2) — `MarginalCfg::validate` refuses `window` with `lags`, as `ew_cov` does, and every door reaches the refusal (S25). The Rust validation test and the builder both took the pair on the old build. A lag ring with snapshots stays an enhancement (V12) |
 | C19 | `predict` scores across a session close `fit_predict` restarts at | `fit_predict` itself | **fixed** (batch 3a) — under `group_close = "session"` a new session's row is scored by a fresh stream, as `fit_predict` restarts at the change: one condition in `predict_chunk`, which already scored a `session_gap = "reset"` row that way. On the old build the new session was scored with the closed one's fit (`n_eff` 17.0 where a fresh stream has 0); now `predict` and `fit_predict` agree on its first row, null with `n_eff` 0 |
 | C20 | TOML `bocpd`/`hmm` read the hazard/exogenous column from `targets` | the builder | **fixed** (batch 2) — `fill_defaults` fills `targets` from a named `hazard_col` or `exog_tvtp`, and `validate` refuses a spec whose `targets` is not that column. On the old build a `bocpd` dict without `targets` read `features[0]` as the hazard: its `p_change` parted from the builder's spec at row 1 (`1.8e-9` against `0.165`), and both Rust tests failed |
 | C21 | under `label_delay`, residual diagnostics fold the replay-time residual | `river.evaluate.progressive_val_score(delay=...)` | **fixed** — the replay folds the prediction the row was *scored* with: each instance keeps a queue of score-time predictions in step with the waiting rows (pushed as a buffered row is scored, taken back at its replay, dropped with them on a reset), saved with the stream and skipped when empty. **A decision for the user:** that field rides on schema 6 without a bump, as task 38's rode on 3 -- no file without a delay moves, the frozen schema-6 fixture re-saves unchanged, and an older build reading a new file just folds as it always did; `lib.rs` records it. Library, exact: river's `iter_progressive_val_score(delay=10)` on a running-mean regressor gives every prediction the frame carries (`1e-12`), and `sigma[t]²` is the mean of the emitted residuals over the rows matured by row `t` (`1e-9`; 0.305 against 0.389 on the old build). A save and reload mid-delay continues identically. The two `embargo` comparisons in `test_label_delay.py` became one: the doubled stream matches on `pred`, `resid` and `n_eff` to the bit and parts, by design, on every residual diagnostic (V21); E47's row says which residual is folded |
 | C22 | `holt` does not advance the level across a null or zero-weight row | `statsmodels` `ExponentialSmoothing` | **fixed** — each target keeps its clock since its last observation: a null or zero-weight row adds its delta, and the next observed row extrapolates, and forms both rates, over the whole gap, so the row is transparent. Library, exact: `statsmodels`' `Holt` reproduces our recursion to `1e-12` on a stream with no gaps (T-S14, the control that pins the mapping), and its state-space `ExponentialSmoothing` with a `NaN` in the series agrees with ours to `1e-9` on every row up to the one after the gap, which forecasts `l + 2b` (T-S17; the trend gain there is `α·β`, as the review said). Through the bank, a null or zero-weight row every third row gives what the stream gives with those rows removed, to `1e-12`. The gap and transparency tests failed on the old build; the control passed. `golden.rs` and `test_golden_pipeline.py` are re-frozen for `holt`: both streams have null targets, and only rows after one moved |
-| C23 | `bocpd`'s `Run` forms every scatter by subtraction | `bayesian_changepoint_detection` | **fixed** — each run keeps a weighted Welford mean and centred scatter, and `Ψₙ = Ψ₀ + S + (κ₀n/κₙ)(x̄ − μ₀)(x̄ − μ₀)ᵀ` subtracts nothing. Library, exact: the package's run-length posterior gives our `p_change`, `run_mode` and `run_mean` at offsets 0, `1e6` and `1e8`, the prior centred with the data -- `p_change` to `3.5e-15`, `5e-11` and `3e-9`, where the old build failed at `1e6` and `1e8`. Rust: Algorithm 1 longhand at `1e8` with a two-pass oracle (the old build missed it by `0.011`), and `gaussian` at `d = 3` gives at `1e8` what it gives at the origin, with no solve failure. A schema-6 run converts as it is read (`RunWire`) |
+| C23 | `bocpd`'s `Run` forms every scatter by subtraction | `bayesian_changepoint_detection` | **fixed** — each run keeps a weighted Welford mean and centered scatter, and `Ψₙ = Ψ₀ + S + (κ₀n/κₙ)(x̄ − μ₀)(x̄ − μ₀)ᵀ` subtracts nothing. Library, exact: the package's run-length posterior gives our `p_change`, `run_mode` and `run_mean` at offsets 0, `1e6` and `1e8`, the prior centered with the data -- `p_change` to `3.5e-15`, `5e-11` and `3e-9`, where the old build failed at `1e6` and `1e8`. Rust: Algorithm 1 longhand at `1e8` with a two-pass oracle (the old build missed it by `0.011`), and `gaussian` at `d = 3` gives at `1e8` what it gives at the origin, with no solve failure. A schema-6 run converts as it is read (`RunWire`) |
 | C24 | `ftrl`'s halflife shrinks the coefficients | none exists (river only at `inf`, the control) | **fixed** (batch 4a), on the user's decision (river plus a repaired decay), and **short of the review's numbers** (raised). Under a halflife the proximal term is a decayed sum of its own; without one the weight is river's closed form, computed as river computes it, so T-R1 is unchanged and a Rust test holds it bit for bit. A constant 5 at `halflife = 100` settles at 4.65 where it settled at 2.25 -- the review asked for 5.0 ± 1e-3 -- because the penalties stay constants on the sums' scale, a mean-scale ridge of `(1 − λ)(β/α + l2)`. A gap still scales the coefficients by `λ^t(d + c)/(λ^t·d + c)`: 0.75 over 100 clock units where it was 0.70 (the review asked for 1). A logistic base rate of 0.9 at `halflife = 1000` reads 0.873 where it read 0.816 (the review asked for 0.90 ± 0.01). All three need the penalties scaled by the weight, which is not river's at `inf`. The Rust tests pin the longhand and the stated factor; both failed on the old build. T-A4's reference carries the sum, and gained the squared loss (D10) **The gap, 2026-09-29** (docs/PLAN.md task 115 (d), the user's decision): the penalties take a per-target scale `W/W*` that ages with the sums on rows that teach the target nothing, so a gap leaves the fit to the bit, where 100 clock units took it to 0.748; the steady state and `inf` are as they were. |
 
 ### S — two places that disagree
@@ -242,7 +242,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | V7 | **fixed** (batch 3a) — confirmed through a real save: a reloaded filter's `pred_var()` was `R` alone, 0.25 against the saved filter's 0.2545, since it read the last row's regressor, a scratch a save does not keep. `pred_var` takes the row now, as `predict` does; nothing above the core reads it. The first version of the test passed on the old build because it restored from `state()`, an in-memory clone that keeps the scratch; it was corrected to go through the bytes, and then failed as the review said |
 | V11 | **closed** (batch 3a), confirmed -- every row passes `usable` before a model steps, however its column is laid out in memory. A test (`test_hardening.py`) holds a column in two chunks with an infinity in the second; it passed on the old build, as the review expected |
 | V24 | **closed** -- it asks what sklearn's `PassiveAggressiveRegressor` computes, and sklearn was then not allowed in the tests. Since task 121 it is, so the comparison can be written; `pa` is held to river's `PARegressor` meanwhile (T-S18) |
-| V25 | **fixed** (batch 3a) for `hmm`, and **not a defect for `kmeans`** (raised). `hmm` replayed its warm-up at `lam = 1` with the raw weights, so its states began weighing 20.7 where `n_eff` was 11.7; its buffer now ages on every row, as `kmeans`' always did. The review presumed `kmeans` shared the replay; its test, that the centres weigh what `n_eff` does, passed on the old build |
+| V25 | **fixed** (batch 3a) for `hmm`, and **not a defect for `kmeans`** (raised). `hmm` replayed its warm-up at `lam = 1` with the raw weights, so its states began weighing 20.7 where `n_eff` was 11.7; its buffer now ages on every row, as `kmeans`' always did. The review presumed `kmeans` shared the replay; its test, that the centers weigh what `n_eff` does, passed on the old build |
 | V22 | **closed** with task 81: `MIN_SCHEMA_VERSION` 8 refuses every layout older than `Run::len`, and with `RunWire` gone the field no longer defaults when absent, so a file without it is refused rather than loaded at `len = 0` |
 
 ## Log
@@ -392,7 +392,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   and `reference.py`. Every test was written first. On the old build the
   seven Rust tests and six Python ones written to show a finding failed,
   each for its finding's reason, and three controls passed as they should:
-  river's weight at `inf`, a constant weight cancelling, and the review's
+  river's weight at `inf`, a constant weight canceling, and the review's
   exact check for S29 -- a row at weight 2 is that row twice at no clock --
   which the old build also met, both sides ignoring the weight (raised).
   Three things the decisions settle that may not have been pictured, all
@@ -496,8 +496,8 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   the slopes and the predictions they give, as N1's is; on the raw form
   -- the old path, which a mapping without the new field still takes --
   it fails at every level (slopes off by `5e-9`, `6e-5` and 0.93 at `1e4`,
-  `1e6` and `1e8`), and with the centred one it passes at every level. The
-  export gains the centred cross-moments the
+  `1e6` and `1e8`), and with the centered one it passes at every level. The
+  export gains the centered cross-moments the
   model holds; `merge` pools them as it pools the co-moments, with the gaps
   between the parts' column means and target means, taking each target's
   mean from the raw cross-moment at the intercept, which is exact; a
@@ -582,19 +582,19 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   target's mean, `E[(z − m_z)(y − ȳ)]`, and the offset of `z`'s mean over
   its rows from the all-row mean -- a number of its own, exactly 0 for a
   target present on every row (`Cross` in `ewridge.rs`) -- and both solves
-  with an intercept read the centred system, the plain one exactly
+  with an intercept read the centered system, the plain one exactly
   equivalent to what it solved before. Library, exact: `numpy.linalg.lstsq`
-  on rows centred at their weighted means, worst prediction error `7e-15`,
+  on rows centered at their weighted means, worst prediction error `7e-15`,
   `2.4e-11`, `1.4e-9` and `1.5e-7` at offsets 0, `1e4`, `1e6` and `1e8` --
   the data's own resolution -- where the old build gave `1.2e-7` at `1e4`
   and `9e-4` at `1e6`. Rust: a level costs the fit nothing, blocked and not;
   the offset is exactly 0 for a target present on every row. The raw
-  moments are still what `bank.gram()` exports (formed from the centred
+  moments are still what `bank.gram()` exports (formed from the centered
   ones), and `ridge_decay` and the solves through the origin still read
   the raw system, which has no intercept to eliminate.
 - **N2** (while fixing N1) -- **fixed** with task 81. `lasso` kept its
   per-target cross-moments raw in the same way and recovered its intercept
-  from them. It keeps `ewridge`'s centred ones now, which `target_gaps`
+  from them. It keeps `ewridge`'s centered ones now, which `target_gaps`
   needed anyway. Rust: `a_level_costs_the_path_nothing`, the N1 test at
   every path point; library: statsmodels' elastic net at a penalty.
 - **N3** (while fixing N1) -- **fixed** as docs/PLAN.md task 81, on the
@@ -604,21 +604,21 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   to a slope, `m_j` the feature's mean over the target's rows. The user
   asked for every option behind one parameter, then dropped that reading
   as adding nothing. `target_gaps="own_rows"`, the default, fits each
-  target on exactly its rows; `"pairwise"` keeps one Gram and centres each
+  target on exactly its rows; `"pairwise"` keeps one Gram and centers each
   target's cross-moments at its own means. Library: `numpy`'s `lstsq` and
   statsmodels' `WLS`, ridge and elastic net for `own_rows`; `pandas`'
   `DataFrame.cov` and `numpy.cov` for `pairwise`. Before the fix the
   default's fit was off by 1.17 at level 0 and by 49.2 at level 50.
 - **N4** (while fixing N1) -- **fixed**, half with task 81 and the rest in
   batch 4e. `po.gram.solve` solved the raw normal equations; with task 81
-  it solved the centred system with each target's own column means, but
+  it solved the centered system with each target's own column means, but
   formed its right-hand side from the raw cross-moments the export
   carried, `E[z·y] − m·ȳ`, which keeps `L²·ε` of it at a level `L`: at
   `1e4`, `1e6` and `1e8` its slopes were off by `5e-9`, `6e-5` and 0.93,
-  and its predictions by `2e-8`, `2.5e-4` and 3. The export carries the centred
+  and its predictions by `2e-8`, `2.5e-4` and 3. The export carries the centered
   cross-moments the model holds, `cross_centred`, through `bank.gram()`, a
   closed row and `merge`, and `solve`, `lasso_path` and `coef_stats` read
-  them. `numpy`'s `lstsq` on centred rows agrees at N1's tolerance at every
+  them. `numpy`'s `lstsq` on centered rows agrees at N1's tolerance at every
   level, and through a merge and a closed row.
 - **N6** (while testing S13) -- **fixed** in batch 1. `ewridge`, `robust`
   and `kalman` each keep `σ²`, the EW mean of the squared out-of-sample
@@ -638,7 +638,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   by the model either, and its clock delta is carried to the next.
 - **N5** (while building task 81) -- **fixed**.
   `po.gram.solve(standardize=True)` and `po.gram.lasso_path` without an
-  intercept scaled the centred co-moments against the raw cross-moments:
+  intercept scaled the centered co-moments against the raw cross-moments:
   the hybrid the models lost in C8, least squares only when every feature
   has mean zero. Both read raw moments there now. The tests compare with
   the models, a feature moved off zero (`test_gram_module.py`); the models'
@@ -666,7 +666,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   1, and it was unaffected (C11 and S27 hold it to numpy).
 
   The fix takes the tangent: one Newton step on the check loss smoothed by a
-  uniform kernel of half-width `h = quantile_eps·σ`, linearised at the fit
+  uniform kernel of half-width `h = quantile_eps·σ`, linearized at the fit
   the row was scored with -- the streaming case of the renewable estimator
   for smoothed quantile regression. A row inside the band is a least-squares
   row with target `y + 2h(τ − ½)`, a row outside adds `2h·ψ_τ(r)·z` to the

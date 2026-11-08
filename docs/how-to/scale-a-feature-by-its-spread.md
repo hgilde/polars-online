@@ -81,12 +81,13 @@ per standard deviation: z_x0 1.81 (truth 2 x 0.95 = 1.90), z_x1 -0.92 (truth -1 
 the same row.** In the recipe, the fitted responses sit within about a
 tenth of the truth, each read at the feature's spread on the last row.
 
-**The operators run over a stream in one pass, where Polars' own forms
-need the column in memory.** On a clock that steps by 1 a row, with
-`half_life` in rows, `po.ewm_std` is Polars' `ewm_std` with
-`adjust=False`, as the recipe's first line shows. On any other clock, the
-operators weigh each row by the time it covers ([docs/WINDOWS.md](../WINDOWS.md)
-lists the operators).
+**Compare the spread with Polars' own `ewm_std`.** On a clock that steps
+by 1 a row, with `half_life` in rows, `po.ewm_std` is Polars' `ewm_std`
+with `adjust=False`, as the recipe's first printed line shows. It gives
+those values over a stream in one pass, where Polars' form needs the
+column in memory. On any other clock, the operators weigh each row by the
+time it covers ([How a window operator weighs the rows near each
+row](../WINDOWS.md) lists the operators).
 
 ## Use z-scores with any model
 
@@ -109,7 +110,8 @@ level carries a coefficient's error into the prediction, and says why the
 model has no `standardize`.
 
 **On minute returns, every model lost less with z-scored features.**
-Section 6 of [docs/VALIDATION.md](../VALIDATION.md) fits four specs
+[Features as z-scores](../VALIDATION.md#6-features-as-z-scores-the-per-standard-deviation-recipe)
+fits four specs
 (`ewridge` at two solve cadences, `rls` and `kalman`) to BTCUSDT's next
 one and next five minutes of log returns, each at a half-life of 500
 minutes and with the features raw, then z-scored. Every R² is below 0,

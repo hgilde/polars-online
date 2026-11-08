@@ -1586,7 +1586,7 @@ def ewridge(
     of the mean diagonal, leaves ``||H^-1||_1`` near ``1e12``, past the
     limit from about 30 coefficients.
 
-    An upper bound from the factor settles most systems for a fraction of
+    An upper bound from the factor decides most systems for a fraction of
     one solve, and the rest take an estimate of ``||H^-1||_1`` by Hager and
     Higham's method (LAPACK's ``dlacn2``), about four solves, from the
     factor in ``O(k^2)``. The factorization and solve are backward stable,

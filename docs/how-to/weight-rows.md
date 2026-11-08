@@ -7,7 +7,7 @@ a fit, and wants to know what the weights do to `weight_sum` and to
 
 A [weight](../GLOSSARY.md#the-model-bank-and-what-it-reads) says how much a
 row counts in a fit. In a model that keeps running sums, a row of weight 2
-moves the fit as two rows of weight 1 do.
+moves the fit as two rows of weight 1 at the same clock value do.
 
 **A weight of 0 is legal, and a negative weight is refused.** A row of
 weight 0 is predicted and moves the clock, but the model learns nothing
@@ -82,8 +82,8 @@ no prediction, and makes `weight_sum` 10 times as large.
 
 ## Check how the model reads a weight
 
-**Nine models read a weight differently.** Every other model reads a
-weight as [Weight the rows](#weight-the-rows) step 2 says:
+**Ten models read a weight differently.** Every other model reads a
+weight as a count of rows, in its running sums:
 
 | model | a row's weight is |
 |---|---|
@@ -96,3 +96,4 @@ weight as [Weight the rows](#weight-the-rows) step 2 says:
 | `rcov` | 0 or 1, since a realized covariance is a sum over returns; any other weight is refused |
 | `seqtest` | refused, since every learned row is one trial: to skip a row, null its target |
 | `audit` | refused: it counts values, whatever their row weighs |
+| `corrchange` | reaches only `weight_sum` and the `scalar` standardizer: its statistic takes each row unweighted |

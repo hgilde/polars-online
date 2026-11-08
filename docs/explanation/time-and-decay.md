@@ -35,8 +35,7 @@ though it adds a hundred rows' weight. So `half_life`, `gap_cap`, an
 model's cadences, such as `solve_every`
 (how often a regression solves for its coefficients), are all in [clock
 units](../GLOSSARY.md#time). Only a few settings count rows, such as
-`warm_rows`, the rows some models wait for before they predict. The
-README's [Clock types and units](../MODELS.md#the-clock-and-its-units)
+`warm_rows`, the rows some models wait for before they predict. MODELS.md's [The clock and its units](../MODELS.md#the-clock-and-its-units)
 lists every clock parameter, and the value each kind of clock takes, such
 as a duration like `"10m"` for a clock of timestamps.
 
@@ -63,8 +62,8 @@ such a clock, such as `gap_cap=0.5`, is compared as the number it is.
 **A clock value a [model bank](../GLOSSARY.md#the-model-bank-and-what-it-reads)
 cannot read exactly is refused, never rounded,** since the step to every
 later row is measured from it. A feature may be null and its row skipped,
-but a clock value cannot be skipped. The README's [Clock types and
-units](../MODELS.md#the-clock-and-its-units) lists what is refused, by row
+but a clock value cannot be skipped. MODELS.md's [The clock and
+its units](../MODELS.md#the-clock-and-its-units) lists what is refused, by row
 or by name.
 
 ## The running sums that decay
@@ -113,6 +112,24 @@ for a long half-life. Under `half_life=50`, that is about 72.6. The field
 model has decayed over, is the share of that ceiling such a stream has
 reached: 0.5 after one half-life, 0.75 after two.
 [Warm-up gates](../MODELS.md#warm-up-gates) says how the readiness gates read it.
+
+### A feature as the clock
+
+**The clock need not hold times: a feature the rows are sorted by can be
+the clock, and the decay is then a kernel in that feature.** A row learned
+at the feature's value `x'` weighs `0.5 ** ((x − x') / half_life)` in the
+prediction at `x`, while no step between neighboring rows exceeds
+`gap_cap`. So `half_life` is a bandwidth in the feature's own units, and
+the fit at each row is a weighted fit on the rows before it in the
+feature's order. The rows must arrive in that order, since a clock that
+steps back is refused, so the query sorts them before the bank.
+
+**The kernel is one-sided, so the fit lags where the curve bends.** It
+weighs only the rows before each row, never those after it. A narrow
+bandwidth lags less, and a wide one smooths more of the noise. [Fit
+locally along a feature](../how-to/fit-locally-along-a-feature.md) sorts
+the rows by `x`, names `x` as the clock, and compares two bandwidths with
+one straight line through every row.
 
 ## Gaps, sessions and steps back
 
@@ -164,15 +181,14 @@ says how the bank checks the order.
 **With decay off (`half_life=float("inf")` or `lam=1.0`) and no hard
 window, the fit of a model that solves or accumulates converges to the
 batch fit over every row it has seen.** Such a model keeps running sums
-and computes its fit from them, and the README's [model
+and computes its fit from them, and MODELS.md's [model
 table](../MODELS.md#the-models-at-a-glance) gives each model's kind. Its running sums weigh each row by
 its weight alone, as a batch method weighs the rows it is given.
 
 **With decay off, row order does not change the fit of a model that
 solves or accumulates,** because the sums it keeps are the same in any
 order. A model that reweights, steps, filters or tests instead depends on
-the row order whether decay is on or off. Each model's kind is in the
-README's [model table](../MODELS.md#the-models-at-a-glance), with the outputs that
+the row order whether decay is on or off. Each model's kind is in MODELS.md's [model table](../MODELS.md#the-models-at-a-glance), with the outputs that
 depend on the order even so, such as a lag or `lasso`'s
 `penalty_selected`. The settings that read the rows in sequence, such as a
 hard window, a session, a weight or an embargo, are named in [Why you set the row
@@ -230,8 +246,7 @@ forgets a change in the process completely once the hard window has
 passed it. A row's age is measured on the clock the model decays by, each
 step after `gap_cap` and any `session_gap`, so a capped weekend ages the
 rows before it by the cap. Five models take a hard window: `ewridge`,
-`lasso`, `ew_cov`, `ew_class` and `marginal`, each described in the
-README's [model table](../MODELS.md#the-models-at-a-glance). Inside it the weights still
+`lasso`, `ew_cov`, `ew_class` and `marginal`, each described in MODELS.md's [model table](../MODELS.md#the-models-at-a-glance). Inside it the weights still
 halve every `half_life`, and `half_life=float("inf")` makes them equal.
 [Forget rows past a window](../how-to/forget-rows-past-a-window.md) gives its
 settings and what each model truncates.

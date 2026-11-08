@@ -142,14 +142,14 @@ largest difference between the two forms: 0.0
 
 ## Make the target a column before the bank
 
-**To have a residual on each row, make the target a column with `po.stream.with_windows` in the query before the
+**To have a residual on each row whose window has closed, make the target a column with `po.stream.with_windows` in the query before the
 bank, and give the spec an `embargo` of at least the window's length.**
 The expression is the column `po.stream.with_windows` makes from it, fed
-back to the bank, so both forms give the same predictions. They differ only
-where the `embargo` equals the window under the default `closed="right"`
+back to the bank, so both forms give the same predictions. Their
+predictions differ only where the `embargo` equals the window under the default `closed="right"`
 and a row falls exactly one window after another ([Check the targets the
-model learned](#check-the-targets-the-model-learned)). Only the
-residual tells them apart: a column holds the target's value at the row,
+model learned](#check-the-targets-the-model-learned)). Apart from that,
+the residual tells them apart: a column holds the target's value at the row,
 so the bank can compare it there, while the expression's value is not
 known until its window closes. A column made from a window that looks ahead
 needs the same `embargo` as the expression, or the model learns each row's
@@ -192,7 +192,7 @@ column = made.online.unnest([as_column]).collect()
 # The two forms side by side.
 same = (moves["pred_fwd_move"] == column["pred_fwd_move"]).sum()
 print(f"rows predicted: {moves['pred_fwd_move'].count()} by the expression, {column['pred_fwd_move'].count()} by the column, {same} equal")
-# The rows of the last five minutes have no target value yet in either form.
+# The expression form writes no residual, and the column form one on each row but the last five minutes'.
 print(f"residuals: {moves['resid_fwd_move'].count()} from the expression, {column['resid_fwd_move'].count()} from the column")
 ```
 

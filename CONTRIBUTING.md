@@ -1,30 +1,37 @@
+<!-- kind: how-to -->
 # Contributing
 
-Thanks for looking. This is a small, opinionated library, and the fastest
-way to get a change merged is to match the conventions it already has.
+This how-to is for anyone who wants to change polars-online: it sets up a
+checkout, runs the tests, and makes a change that matches the conventions
+the library already has. This is a small, opinionated library, and the
+fastest way to get a change merged is to match those conventions.
 
 ## Getting set up
 
-**Install [uv](https://docs.astral.sh/uv/) and a stable Rust toolchain
-([rustup](https://rustup.rs)). [cargo-nextest](https://nexte.st) is
-optional:** `cargo install cargo-nextest --locked` makes the gate's Rust
-tests about twice as fast, and the gate runs `cargo test` without it. In each new shell,
-run `source scripts/env.sh`, or `. .\scripts\env.ps1` in PowerShell, to
-put both on the `PATH`. VS Code's terminal gets them from
+A checkout needs two tools, and a third is optional:
+
+- [uv](https://docs.astral.sh/uv/), which manages the Python environment.
+- A stable Rust toolchain, installed with [rustup](https://rustup.rs).
+- Optionally, [cargo-nextest](https://nexte.st):
+  `cargo install cargo-nextest --locked` makes the test gate's Rust tests
+  about twice as fast, and the test gate runs `cargo test` without it.
+
+In each new shell, run `source scripts/env.sh`, or `. .\scripts\env.ps1` in
+PowerShell, to put `cargo` and `uv` on the `PATH`. VS Code's terminal gets them from
 `.vscode/settings.json`.
 
-**Run `cargo` through `uv run`, as the commands below do, because
-`online-py` builds against pyo3's `abi3-py312`.** That build needs a Python
-3.12 or newer interpreter, and `uv run` hands it the project's. The tests
-download or generate their own data and cache downloads under `.cache/`.
-Offline, the tests that need a download are skipped.
+**Run `cargo` through `uv run` because `online-py` builds against pyo3's
+`abi3-py312`.** That build needs a Python 3.12 or newer interpreter, and
+`uv run` hands it the project's. The tests download or generate their own
+data and cache downloads under `.cache/`. Offline, the tests that need a
+download are skipped.
 
 ```sh
-uv sync                                                # Python env (CPython 3.12 or newer)
 source scripts/env.sh                                  # PATH for cargo and uv; `. .\scripts\env.ps1` on Windows
-./scripts/quick.sh                                     # the tests for what the branch changed: inside a task
+uv sync                                                # Python env (CPython 3.12 or newer)
+./scripts/quick.sh                                     # the tests for what the branch changed, while a change is in progress
 ./scripts/gate.sh                                      # every check, the tests' essentials: each commit
-./scripts/gate.sh --extended                           # every check and every test: before every push
+./scripts/gate.sh --extended                           # every check, and every test but the soak tests and the oracle grids: before every push
 ./scripts/gate.sh --serial                             # either tier with every test in one process
 ./scripts/clear_caches.sh --dry-run                    # what the build caches hold; without --dry-run, clear them
 uv run cargo test --workspace --exclude online-py      # Rust tests; `-- --include-ignored` for all
@@ -38,26 +45,60 @@ uv run python scripts/windows_bench.py                 # the window operators ag
 uv run python scripts/sklearn_comparison.py            # the comparison with scikit-learn
 uv run python scripts/compare_release.py               # the release workload's outputs against the newest release's, bit for bit
 uv run pytest -m soak                                  # the opt-in 10M-row soak
+uv run pytest -m oracle_grid                           # the oracle grids, which CI runs on every push to main
 ./scripts/mutants.sh --in-diff <(git diff main...)     # mutation testing of the code a branch touches
 ```
 
-## The gate
+## Make a change and propose it
+
+A change goes from a branch to a pull request through both tiers of the
+test gate, the essentials before each commit and the extended tier before
+the push:
+
+1. **Create a branch from `main`** for one logical change.
+2. **Make the change, with its tests,** following
+   [Conventions](#conventions). A new model follows [Adding a
+   model](#adding-a-model), and a change to speed or memory follows
+   [Performance changes](#performance-changes).
+3. **Run `./scripts/quick.sh` while you work.** It runs the tests that
+   cover what the branch changed, and nothing else.
+4. **Update the docs the change moves, in the same commit.** The list of
+   them is under [Commits and pull requests](#commits-and-pull-requests).
+5. **Run `./scripts/gate.sh` before each commit, and commit only when it
+   passes.**
+6. **Run `./scripts/gate.sh --extended` before you push,** whatever the
+   essentials said.
+7. **Push the branch and open a pull request,** with the diff of
+   `tests/api_surface.txt` where the public API changed.
+
+## Check that it worked
+
+**The last line of `./scripts/gate.sh --extended` reads `gate: PASS (the
+extended tier: the full suite, the pre-push check)`.** A failure reads
+`gate: FAIL`, with the steps that failed, after their diagnostics. Then
+check that CI passes on the pull request: it runs the same tier on Linux,
+macOS and Windows.
+
+## The test gate
 
 **Run `./scripts/gate.sh` before every commit, and let it pass. Run
-`./scripts/gate.sh --extended` before every push, always.** The gate has two
-tiers of tests ([docs/TESTING.md, "Two tiers"](docs/TESTING.md#two-tiers)).
-By default it runs the essentials, which keep the many commits of a task in
-progress quick. With `--extended` it runs every test, as CI and a release
-do, and what reaches GitHub has passed everything locally. Both run these
-steps, in this order:
+`./scripts/gate.sh --extended` before every push, always.** The test gate
+has two tiers of tests ([docs/TESTING.md, "Two
+tiers"](docs/TESTING.md#two-tiers)). By default it runs the essentials,
+which keep the many commits of a change in progress quick. With
+`--extended` it runs every test but the soak tests and the oracle grids,
+as CI and a release do. `uv run pytest -m soak` runs the soak tests, and
+`uv run pytest -m oracle_grid` the oracle grids, which CI runs on every
+push to `main`. Both tiers run these steps, in this order:
 
-1. `cargo fmt --check`
-2. `cargo clippy -D warnings`
+1. `cargo fmt --all -- --check`
+2. `cargo clippy --workspace --all-targets --locked -- -D warnings`, which
+   lints the tests too
 3. the Rust tests of the workspace without online-py, since online-py has
    no Rust tests and would link libpython into every test binary. They run
    under `cargo nextest run`, with `cargo test --doc` for the doctests,
-   which nextest does not run; where nextest is not installed, under
-   `cargo test --workspace --exclude online-py`. `--extended` adds the tests
+   which nextest does not run. Where nextest is not installed, they run
+   under `cargo test --workspace --exclude online-py`. `--extended` adds the tests
    marked `#[ignore = "extended: ..."]` (`--run-ignored all`, or
    `-- --include-ignored` for `cargo test`)
 4. `uv lock --check`, before any `uv run` could rewrite a stale lock file
@@ -74,19 +115,23 @@ steps, in this order:
    tests marked `serial`, which read their own process's memory, run after
    the rest in one process
 10. a `sphinx-build -W` of the API reference, so a docstring that is not
-    valid RST fails the gate, not the docs deploy.
+    valid RST fails the test gate, not the docs deploy.
 
 **The tests run in parallel, in as many processes as the machine has
 cores free.** That is its core count less the last minute's load average,
-at least 2 and at most 8 (`scripts/workers.py`); `GATE_WORKERS=4` sets it.
-`--serial` runs every test in one process, as the gate did before; the same
-tests run either way, with the same results. [Iterate on a change](docs/contributing/iterate-on-a-change.md) has the
-measurements.
+at least 2 and at most 8, or half the cores on Windows, where the load
+cannot be read (`scripts/workers.py`). `GATE_WORKERS=4` sets it.
+`--serial` runs every test in one process. The same tests run either way,
+with the same results. [Iterate on a
+change](docs/contributing/iterate-on-a-change.md) has the measurements.
 
-Its first line names the tier, and its last line is `gate: PASS` or
-`gate: FAIL` with the tier beside it. The essentials' verdict says it is not
-the pre-push check. The gate exists because grepping test output for
-"FAILED" hides compile and lint errors.
+By default, at most two test gates run on one machine at once
+(`POLARS_ONLINE_GATES`). A third waits, and its
+first line is then `gate: waiting for a gate token`. A running test gate's
+first line names the tier, and its last line is `gate: PASS` or `gate:
+FAIL` with the tier beside it. The essentials' verdict says it is not the
+pre-push check. The test gate prints every step's diagnostics, because
+grepping test output for "FAILED" hides compile and lint errors.
 
 **Do not pipe it and then chain a commit.** `gate.sh | tail && git commit`
 commits even on failure, because a pipeline returns the exit status of
@@ -111,11 +156,11 @@ within 1e-12 on every platform.
 
 ## Conventions
 
-The code and the docs keep a few house rules, each checked by the gate
-where a check is possible:
+The code and the docs keep a few house rules, each checked by the test
+gate where a check is possible:
 
-- **Rust**: `cargo fmt`, `cargo clippy -D warnings`, small files, one model per
-  file. No `unsafe` in `online-core`. `f64` everywhere.
+- **Rust**: `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  small files, one model per file. No `unsafe` in `online-core`. `f64` everywhere.
 - **Python**: `ruff` (format + lint), `mypy` clean, type hints. The package
   depends on `polars` alone. A test may use any open-source library the
   package does not depend on, declared in the dev group and imported
@@ -144,13 +189,14 @@ know nothing about Polars, Python, or clocks-as-columns. Plumbing lives in
 - an entry in `crates/online-core/tests/model_contract.rs`, which checks the
   shared contract (`weight_sum` semantics, slot counts, state round-tripping) for
   every model at once;
-- wiring in `online-polars/src/spec.rs` and a `po.spec.<name>()` constructor.
+- wiring in `crates/online-polars/src/spec.rs` and a `po.spec.<name>()`
+  constructor.
 
 That is the shape of it. [`docs/EXTENDING.md`](docs/EXTENDING.md) is the full
 list of places a model touches, in order, with the test that fails when one is
 skipped. `tests/test_model_registry.py` holds the per-model test lists to
-the Rust registry (`ModelKind::KINDS`), so a half-wired model fails the gate
-rather than going unswept. It holds the release comparison's workload and
+the Rust registry (`ModelKind::KINDS`), so a half-wired model fails the test
+gate rather than going unswept. It holds the release comparison's workload and
 `_spec.UNSUPERVISED` as well.
 
 ## Performance changes
@@ -163,11 +209,12 @@ numbers, bit for bit, and the benchmark for the speed.
 
 **Every push and pull request is held to `budgets.toml`**, the instruction
 counts of the hot paths and the memory of every output field
-(`docs/TESTING.md`, "Budgets that only tighten"). A budget failure
+([docs/TESTING.md, "Budgets that only
+tighten"](docs/TESTING.md#budgets-that-only-tighten)). A budget failure
 says which of two things happened:
 
 - *over its budget*: the change made a case slower or larger. Find out why.
-  If the cost buys something worth having, raise the budget in the same
+  If the cost buys something worth having, increase the budget in the same
   change, with a `[[raised]]` entry that gives the reason and quotes a
   CHANGELOG *Performance* entry.
 - *tighten the budget to N*: the change made a case faster or smaller. Run
@@ -176,11 +223,11 @@ says which of two things happened:
 
 The instruction counts come from the `Budgets` workflow on Linux, whose
 artifact holds them as `measured.json`. The memory measurements come from
-pytest on every CI leg, written where `POLARS_ONLINE_BUDGETS_OUT` points;
-the peak resident memory (`rss-<platform>.json`) only on each OS's leg at
-the oldest supported Python, the one that holds its budget.
+pytest on every CI leg, written where `POLARS_ONLINE_BUDGETS_OUT` points.
+The peak resident memory (`rss-<platform>.json`) comes only from each
+OS's leg at the oldest supported Python, the one that holds its budget.
 
-**A proposal the measurement rejects is a good outcome.** Record the
+**Count a proposal the measurement rejects as a good outcome.** Record the
 measurement that rejected it in the commit message, so the next person who
 has the same idea finds the answer.
 
@@ -191,7 +238,7 @@ and the API snapshot the change moves:
 
 - One logical change per commit, with a message that says what was measured or
   what defect it prevents.
-- Open the message with a short name for the change; a maintainer's
+- Open the message with a short name for the change. A maintainer's
   commits open with the piece of work they belong to.
 - Update the relevant doc in the same commit: the README,
   `CHANGELOG.md`'s unreleased entry, `docs/TESTING.md`,
@@ -200,24 +247,21 @@ and the API snapshot the change moves:
   change to the public API shows as a diff of `tests/api_surface.txt`,
   which the pull request includes. [`docs/README.md`](docs/README.md) says
   which document holds what, the records included.
-- Keep section numbers where they are — the code and the README cite them.
+- Keep the section numbers of a document that numbers its sections, such
+  as `docs/REGIMES.md`. Code comments, tests and other documents cite them
+  ([Section numbers](docs/README.md#section-numbers)).
 
 ## Where the documents are
 
-Each document has one job, so a question about the library has one place to look:
-
-| to find | read |
-|---|---|
-| every document, and which to read for what | [docs/README.md](docs/README.md) |
-| a map for coding agents, at the repo root and on the docs site | [llms.txt](llms.txt) ([llmstxt.org](https://llmstxt.org)) |
-| the API reference, built from the docstrings and published from every green push to `main` | <https://hgilde.github.io/polars-online/> |
-| what each release changed | [CHANGELOG.md](CHANGELOG.md) |
-| how to cut a release | [docs/contributing/cut-a-release.md](docs/contributing/cut-a-release.md), and what a release is held to in [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md) |
-| how the Polars range moves | [docs/contributing/move-the-polars-range.md](docs/contributing/move-the-polars-range.md) |
-| the other contributor how-tos: iterating, worktree slots, caches, the oracle ledger, outputs and parameters, the API | the *Changing the library* group of [docs/README.md](docs/README.md) |
-| what the test suite proves, and how to run it | [docs/TESTING.md](docs/TESTING.md) |
-| how to add a model: every layer it touches, and the test that catches each one skipped | [docs/EXTENDING.md](docs/EXTENDING.md) |
-| the rules this documentation is written to | [docs/WRITING.md](docs/WRITING.md) |
+**[docs/README.md](docs/README.md) lists every document, and which to read
+for what.** Its *Changing the library* group holds the contributor
+how-tos and references: adding a model, iterating, worktree slots, caches,
+the oracle ledger, outputs and parameters, the API, releases and the
+Polars range. [WRITING.md](docs/WRITING.md) gives the rules this
+documentation is written to. [CHANGELOG.md](CHANGELOG.md) says what each
+release changed, [llms.txt](llms.txt) is the map for coding agents, and
+the API reference, built from the docstrings, is published from every
+green push to `main` at <https://hgilde.github.io/polars-online/>.
 
 ## Licensing of contributions
 

@@ -340,7 +340,7 @@ file stopped reproducing and its three tests failed on `ubuntu-latest`
 alone, where the same fixture had been green on all three OSes before.
 Reverting made it green again — checked directly, not inferred: with the
 revert, the pre-task-57 fixture's `bocpd` state matches this build bit for
-bit. A cosmetic normalisation is not worth a cross-OS reproducibility
+bit. A cosmetic normalization is not worth a cross-OS reproducibility
 regression, so the joint stays unnormalised and `prune`'s docstring says
 why. **Do not reintroduce it.**
 

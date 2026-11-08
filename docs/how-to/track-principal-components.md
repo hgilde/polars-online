@@ -42,9 +42,11 @@ scores from the last loadings.
 3. **Give `max_rows_between_pcas` to cap the rows between refreshes,**
    where a burst of rows can arrive within one `pca_every`. Whichever of the
    two comes first refreshes.
-4. **Add the spec to the query with `online.fit_predict([mv])`, unnest
-   its output column with `unnest("mv")`, and run it with `collect()`.** Each row has the `pc0_*` fields. The first refresh
-   makes each component's largest loading in magnitude positive, and each
+4. **Add the spec to the query with `online.fit_predict([mv])`.** The
+   rows gain the spec's output column, `mv`, which holds its fields.
+5. **Unnest `mv` with Polars' `unnest("mv")`.** Its fields become columns.
+6. **Run the query with `collect()`.** Each row then has the `pc0_*`
+   fields as columns. The first refresh makes each component's largest loading in magnitude positive, and each
    later refresh keeps a component within 90° of its previous loadings.
    So a component and its score never flip sign from one refresh to the next.
 
@@ -77,7 +79,7 @@ mv = po.spec.ew_cov(
     pca_every=50.0,              # 2. refreshed every 50 units of t
     max_rows_between_pcas=100,   # 3. and at least every 100 rows, should rows bunch on the clock
 )
-out = pl.scan_parquet("factor.parquet").online.fit_predict([mv]).unnest("mv").collect()   # 4. run, and unnest pc0_*
+out = pl.scan_parquet("factor.parquet").online.fit_predict([mv]).unnest("mv").collect()   # 4 to 6. add the spec, unnest pc0_*, run
 last = out.row(-1, named=True)
 print("planted loadings " + " ".join(f"{v:.2f}" for v in loading) + f", share {10 / 13:.2f}")
 print("found loadings   " + " ".join(f"{last[f'pc0_loading_{s}']:.2f}" for s in names) + f", share {last['pc0_share']:.2f}")
@@ -96,9 +98,11 @@ column adds along the loadings.
 
 ## Check that it worked
 
-**Compare the loadings across refreshes: they move slowly, and keep their
-sign.** A component read from the covariance of the last few half-lives
-changes as that covariance does, and no faster. The scores between two
+**On data with a planted factor, compare the loadings, the share and the
+scores with the truth, as the recipe does.** On your own data, compare
+the loadings across refreshes: a component read from the covariance of
+the last few half-lives changes as that covariance does, and no faster.
+Their sign checks nothing, since the refresh rule keeps it. The scores between two
 refreshes use the same loadings, so a row's score does not depend on how
 the rows were chunked.
 

@@ -5,16 +5,12 @@ This how-to is for anyone who wants a fit that describes the rows near
 each value of a feature, such as a curve in `x` that one straight line
 through every row cannot follow.
 
-Any model can be fitted locally along a feature. Sort the rows by that
-feature, and name it as the spec's [clock](../GLOSSARY.md#time): the
-[half-life](../GLOSSARY.md#time) is then a bandwidth in that feature's
-units. Each row is fitted on the rows before it in that order, each
-weighted by `0.5 ** (Δx / half_life)`, with `Δx` its distance from the row
-in that feature: an exponential kernel. The fit is a local regression from
-running sums that do not grow. It agrees to 1e-12 with a kernel-weighted
-least squares recomputed from scratch at every row. [Local
-fits](../explanation/time-and-decay.md#local-fits) explains why a clock
-can be any ordered column.
+A model that keeps running sums, such as `ewridge`, fits locally along a
+feature when the rows are sorted by that feature and the spec names it as
+its [clock](../GLOSSARY.md#time): the [half-life](../GLOSSARY.md#time) is
+then a bandwidth in the feature's units. [Time and
+decay](../explanation/time-and-decay.md#a-feature-as-the-clock) explains the decay along a clock,
+which here becomes a kernel in the feature.
 
 ## Prerequisites
 
@@ -32,11 +28,18 @@ Put the rows in the feature's order in the query, and give the spec that
 feature as its clock.
 
 1. **Sort the rows by the feature with Polars' `sort`, in the query before
-   the bank,** as `pl.scan_parquet("curve.parquet").sort("x")`.
+   the bank, with `maintain_order=True`,** as
+   `pl.scan_parquet("curve.parquet").sort("x", maintain_order=True)`. Rows
+   with equal values keep their order only under `maintain_order=True`, and
+   their order changes the predictions, since the second is predicted after
+   the first is learned. A feature has ties more often than a time does.
 2. **Name the feature as the spec's `clock`,** as `clock="x"`.
 3. **Set `half_life` to the bandwidth, in the feature's own units,** as
    `half_life=0.25`, and `gap_cap` to the widest gap a step should decay
-   by, as `gap_cap=1.0`.
+   by, as `gap_cap=1.0`. Each row is then fitted on the rows before it,
+   each weighted by `0.5 ** (Δx / half_life)`, with `Δx` its distance in
+   the feature, and a step wider than `gap_cap` decays as if it were
+   `gap_cap`.
 4. **Set `max_rows_between_solves=1` and `coef_every=0`,** so the model
    solves at every row and writes the line through each row's neighborhood
    on every row.
@@ -70,7 +73,7 @@ def local(bandwidth):
         coef_every=0,               # write the coefficients on every row: the line through the row's neighborhood
         min_weight=20.0,
     )
-    query = pl.scan_parquet("curve.parquet").sort("x")   # 1. sorted by the feature, in the query before the bank
+    query = pl.scan_parquet("curve.parquet").sort("x", maintain_order=True)   # 1. sorted by the feature, in the query before the bank
     return query.online.fit_predict([kernel]).online.unnest([kernel]).collect()   # 5. pred_y: the curve at each row's x
 
 # Two bandwidths, and the best straight line through every point.
@@ -107,3 +110,8 @@ at 0.29, is most of the way back to the line.
 
 **The clock column can stay out of `features`.** With other columns as
 features, the fit is a regression whose coefficients move along the clock.
+
+1. **List the other columns in `features`, and keep the feature as the
+   `clock`,** as `features=["z"], clock="x"`, with the rows still sorted by
+   `x` as in step 1 of [Fit a model locally along a
+   feature](#fit-a-model-locally-along-a-feature).

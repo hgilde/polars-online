@@ -14,7 +14,7 @@ symbols beside its rule:
 |---|---|---|
 | `z` | `[1, x]` when there is an intercept, and `x` when there is not | the linear models |
 | `w`, `W` | the row's weight, and the weight accumulated before the row | every model |
-| `λ` | the row's decay, `0.5 ** (Δclock / half_life)`, or `lam ** Δclock` when the spec gives `lam=`, with `Δclock` the clock's step since the last row the model did not skip, capped at `gap_cap` (or `session_gap` at a session change) ([Time and decay](explanation/time-and-decay.md)) | every model |
+| `λ` | the row's decay, `0.5 ** (Δclock / half_life)`, or `lam ** Δclock` when the spec gives `lam=`, with `Δclock` the clock's step since the last row the model did not skip, capped at `gap_cap` (or `session_gap` at a session change) ([Time and decay](explanation/time-and-decay.md)) | every model that decays |
 | `S_j`, `η_j` | target `j`'s running means of `z zᵀ` and of `z·y_j`, which the least-squares fits solve from | `ewridge`, `huber`, `quantile` |
 | `e` | the row's residual: `y` less the prediction made before the row | `huber`, `quantile` |
 | `ω` | a ridge added to a covariance: `precision_prior`, fading as `ew_cov`'s prior does, so that a row's class or state can be predicted from the model's first row | `ew_class`, `hmm` |
@@ -40,7 +40,8 @@ to start with for which question.
 | [`rls`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rls) · [entry](#rls--recursive-least-squares) | solve | recursive least squares, in the numerically safe square-root form |
 | [`lasso`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.lasso) · [entry](#lasso--lasso-path-its-penalty-chosen-as-it-runs) | solve | lasso and elastic-net path, with the penalty chosen as the stream runs |
 | [`kalman`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kalman) · [entry](#kalman--random-walk-β-dynamic-linear-model) | filter | a Kalman filter whose coefficients drift as random walks |
-| [`huber`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber) · [`quantile`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.quantile) · [entry](#huber--robust-regression) | reweight | robust and quantile regression |
+| [`huber`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber) · [entry](#huber--robust-regression) | reweight | Huber regression, which down-weights the rows a prediction misses by far |
+| [`quantile`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.quantile) · [entry](#quantile--robust-regression) | reweight | quantile regression, the fit that a share `tau` of the targets fall below |
 | [`sgd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.sgd) · [entry](#sgd--stochastic-gradient-descent) | step | stochastic gradient descent with squared, Huber, quantile, ε-insensitive, Poisson and logistic losses |
 | [`pa`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.pa) · [entry](#pa--passive-aggressive-regression) | step | passive-aggressive regression, with no learning rate to tune |
 | [`ftrl`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl) · [entry](#ftrl--online-logistic-regression) | step | FTRL-proximal regression, logistic by default, with an L1 penalty that zeroes coefficients |
@@ -90,7 +91,7 @@ reference gives each one's units and default.
 | how far apart two rows are, and how fast the past fades | `clock`, `half_life`, `lam`, `gap_cap` | [The clock and its units](#the-clock-and-its-units), and [Time and decay](explanation/time-and-decay.md) for why |
 | what a session boundary, a gap and a step back do | `session`, `session_gap`, `gap_cap`, `restart_after_step_back` | [The clock's policy](#the-clocks-policy) |
 | what a fit becomes when nothing fades | `half_life=inf`, `lam=1.0` | [Without a decay](explanation/time-and-decay.md#without-a-decay) |
-| when an old row stops counting at all | `window_size` | [A hard window](#a-hard-window), and [Forget rows past a window](how-to/forget-rows-past-a-window.md) |
+| when an old row stops counting at all | `window_size`, in `ewridge`, `lasso`, `ew_cov`, `marginal` and `ew_class` | [A hard window](#a-hard-window), and [Forget rows past a window](how-to/forget-rows-past-a-window.md) |
 | how to fit along a feature instead of time | `clock` | [Fit locally along a feature](how-to/fit-locally-along-a-feature.md) |
 | which row order a bank needs, and how it checks it | | [Put rows in clock order](how-to/put-rows-in-clock-order.md), and [why you set the order](explanation/chunk-invariance-and-streaming.md#why-you-set-the-row-order) |
 | which rows belong to which model | `group`, `group_close` | [Fit one model per group](how-to/fit-one-model-per-group.md) and [Close groups and read each one's row](how-to/close-groups.md) |
@@ -191,7 +192,8 @@ longer stands for the moment just before.
 
 `window_size` makes every row older than a span count for nothing ([Forget
 rows past a window](how-to/forget-rows-past-a-window.md) shows how, and
-what each model keeps inside the window). Five things to know before
+what each model keeps inside the window). `ewridge`, `lasso`, `ew_cov`,
+`marginal` and `ew_class` take it, and no other model does. Five things to know before
 reading the numbers of a model under a hard window:
 
 | | |
@@ -270,8 +272,8 @@ readiness fields:
 
 | field | on | what it holds |
 |---|---|---|
-| `settled_frac` | every model that writes a row | how far the model has come toward its steady state under decay |
-| `withheld_reason` | every model that writes a row | why `pred_y` is null, or null when it is not: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation`, `below_warm_rows` (the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves from, and the rows before `kalman` has sized any of a target's coefficients, standardized with no intercept), `ill_conditioned` (an `ewridge` fit whose normal equations are too nearly singular to keep a digit) or `unstable_rate` (an `sgd` target whose learning rate is past its stability bound, so the fit diverges), in that order of precedence |
+| `settled_frac` | every model but `marginal`, `rcov` and `audit` | how far the model has come toward its steady state under decay |
+| `withheld_reason` | every model but `marginal`, `rcov` and `audit` | why `pred_y` is null, or null when it is not: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation`, `below_warm_rows` (the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves from, and the rows before `kalman` has sized any of a target's coefficients, standardized with no intercept), `ill_conditioned` (an `ewridge` fit whose normal equations are too nearly singular to keep a digit) or `unstable_rate` (an `sgd` target whose learning rate is past its stability bound, so the fit diverges), in that order of precedence |
 | `error_inflation_y` | `ewridge`, `rls`, `kalman`, under `emit_error_inflation` | the row's own estimation variance over the noise: high on a row leaning on a direction the data never showed, at one triangular solve a row |
 | `support_coef` | `ewridge`, `huber`, `quantile`, beside `coef` | each coefficient's data share, `1 - ridge * (S^-1)_jj` on the system the solve inverts. A duplicated pair of features reads 0.5 each |
 | `se_coef` | `ewridge`, `rls`, `kalman`, under `emit_se_coef`, beside `coef` | each coefficient's standard error in its own units: `sigma` times the fit's own covariance, `kalman`'s posterior exactly. A report, not a gate; it errs large in warm-up and under a ridge |
@@ -350,7 +352,7 @@ for refused in [
 ]:
     try:
         po.ModelBank([refused]).fit_predict(df)
-    except ValueError as err:
+    except (TypeError, ValueError) as err:   # a text feature is a TypeError
         print(err)
 
 # The venue fitted as a comparison.
@@ -553,27 +555,23 @@ weighs the rows from the middle of the stream, where the slope was near 2.
 A ridge of 0.1 divides a slope by about `1 + 0.1/var(x)`, here 1.1, because
 the ridge is added to the feature's variance in the solve.
 
-#### Choosing its settings
-
-To fit a grid of `ridge` values and `feature_sets` from one Gram, see
-[Grids, instances and slots](explanation/grids-and-instances.md#how-a-grid-shares-its-work).
-
-To choose how often `ewridge` solves, with `solve_every` and
-`max_rows_between_solves`, see [Choose when `ewridge`
-solves](how-to/choose-when-ewridge-solves.md).
-
-To start from yesterday's fit, with `coef_prior` and `ridge_scale="sum"`,
-see [Start from a prior fit](how-to/start-from-a-prior-fit.md).
-
-To start each session from a blend with the long run, with
-`session_shrink` and `long_half_life`, see [Blend each session with the
-long run](how-to/blend-each-session-with-the-long-run.md).
-
-To fit hundreds of features fast, with `gram_block_rows` and
-`gram_threads`, see [Fit hundreds of
-features](how-to/fit-hundreds-of-features.md).
-
 #### See also
+
+The guides to its settings:
+
+- To fit a grid of `ridge` values and `feature_sets` from one Gram, see
+  [Grids, instances and slots](explanation/grids-and-instances.md#how-a-grid-shares-its-work).
+- To choose how often `ewridge` solves, with `solve_every` and
+  `max_rows_between_solves`, see [Choose when `ewridge`
+  solves](how-to/choose-when-ewridge-solves.md).
+- To start from yesterday's fit, with `coef_prior` and `ridge_scale="sum"`,
+  see [Start from a prior fit](how-to/start-from-a-prior-fit.md).
+- To start each session from a blend with the long run, with
+  `session_shrink` and `long_half_life`, see [Blend each session with the
+  long run](how-to/blend-each-session-with-the-long-run.md).
+- To fit hundreds of features fast, with `gram_block_rows` and
+  `gram_threads`, see [Fit hundreds of
+  features](how-to/fit-hundreds-of-features.md).
 
 When `ewridge`'s fit is not the one you need, or to use its sums outside a
 bank:
@@ -790,15 +788,6 @@ planted: x0 2.00, x1 -1.50, x2 1.00, the other 17 0
 coefficients left nonzero: 3 of 20: {'x0': 1.97, 'x1': -1.44, 'x2': 0.99}
 ```
 
-#### How it works
-
-**The selection scores every prediction, the ones `min_weight` withholds
-included.** If the gate held the selection back as well, the penalty
-chosen would move with `min_weight`. With six penalties on a stream with
-t(4) noise, such a selection differs after 3,000 rows from the choice at
-`min_weight=0` on 6 of 50 seeds at the default `min_weight`, and on 13 at
-a `min_weight` of 50.
-
 #### See also
 
 When `lasso`'s fit is not the one you need, or to run its descent outside a
@@ -818,6 +807,13 @@ bank:
   and give a descent more sweeps.
 
 #### Notes
+
+**The selection scores every prediction, the ones `min_weight` withholds
+included.** If the gate held the selection back as well, the penalty
+chosen would move with `min_weight`. With six penalties on a stream with
+t(4) noise, such a selection differs after 3,000 rows from the choice at
+`min_weight=0` on 6 of 50 seeds at the default `min_weight`, and on 13 at
+a `min_weight` of 50.
 
 **With no decay, a point of `lasso`'s path is statsmodels' elastic net on
 the same rows.** At a penalty of 0.1, with a third feature that is noise,
@@ -923,7 +919,26 @@ Ten rows after the jump `kalman` has covered over a quarter of it, and 200 rows
 after, all of it. `ewridge` still averages the slope over its half-life of
 200 rows.
 
-#### How it works
+#### See also
+
+When `kalman`'s fit is not the one you need, or to use it past the data:
+
+- [`ewridge`](#ewridge--exponentially-weighted-ridge-regression), for
+  coefficients that hold still over a half-life.
+- [`rls`](#rls--recursive-least-squares), the fit this filter gives with
+  no drift, a fixed noise, `standardize=False`, no `revert_half_life` and
+  `half_life=inf`, at `delta = 1/p0`.
+- [`bank.predict()`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.predict),
+  which moves the coefficients by `Φ` over the clock since the last
+  learned row.
+- [Choose a Kalman filter's drift speed](how-to/choose-a-kalman-drift-speed.md),
+  to set each coefficient's drift and reversion, and how far a prediction
+  past the data may move.
+- [Scale a feature by its spread](how-to/scale-a-feature-by-its-spread.md),
+  for a coefficient per current standard deviation, under
+  `standardize=False`.
+
+#### Notes
 
 **Under `coef_half_life`, the gain never reads the noise estimate.** A
 filter whose gain read it would weigh each row by the inverse of the noise
@@ -951,27 +966,6 @@ of the target's spread off the unshifted fit over rows 3,000 to 6,000.
 Under `coef_half_life` and without `obs_var`, neither the gain nor the
 prior reads the noise, so the warm-up does not depend on the target's
 units.
-
-#### See also
-
-When `kalman`'s fit is not the one you need, or to use it past the data:
-
-- [`ewridge`](#ewridge--exponentially-weighted-ridge-regression), for
-  coefficients that hold still over a half-life.
-- [`rls`](#rls--recursive-least-squares), the fit this filter gives with
-  no drift, a fixed noise, `standardize=False`, no `revert_half_life` and
-  `half_life=inf`, at `delta = 1/p0`.
-- [`bank.predict()`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.predict),
-  which moves the coefficients by `Φ` over the clock since the last
-  learned row.
-- [Choose a Kalman filter's drift speed](how-to/choose-a-kalman-drift-speed.md),
-  to set each coefficient's drift and reversion, and how far a prediction
-  past the data may move.
-- [Scale a feature by its spread](how-to/scale-a-feature-by-its-spread.md),
-  for a coefficient per current standard deviation, under
-  `standardize=False`.
-
-#### Notes
 
 **With `standardize=False`, `q` all zeros, no `revert_half_life` and a
 fixed `obs_var=`, the filter is exactly Bayesian linear regression,** the ridge with penalty
@@ -1092,28 +1086,6 @@ than an ordinary one. `huber_rms` draws its cut in a scale that the wild
 rows themselves widen, so it lets more of their pull through: a root mean
 square is not a robust scale.
 
-#### How it works
-
-[The robust scale and the refit of the first
-rows](explanation/robust-scale.md) explains Huber's loss and why its
-scale must be robust. It measures the streams one pass leaves captured,
-the refit over 40 seeds, and what a robust scale gives up when the level
-shifts.
-
-**A refit runs once, and a row after it takes the time it did, within
-2%.** The default count grows with the features, 10 rows a feature past
-50, so that the refit has rows enough for its coefficients. It stops at
-100 features, where a target's rows would pass 0.8 MB. A count given is
-taken at any width. A count given below the number of coefficients, such
-as 200 rows at 1,000 features, leaves the fit the ridge's, and the
-iteration runs to its cap of 200 passes: about 9 s once, which
-`solve_failures` counts. A cap of 50 passes would take about 2 s there,
-but 200 is where the slow refits of heavy one-sided outliers end. Over
-3,000 streams of 50 to 500 rows, with up to 45% of the rows on one side
-moved by a level, 50 passes ran out on 127 streams for `huber` and 200 on
-8, the slowest refit taking 428 passes. For `sgd(loss="huber")` they ran
-out on 149 and 9, all nine past 39%.
-
 #### See also
 
 When `huber`'s fit is not the one you need, or to see its loss from
@@ -1137,6 +1109,26 @@ another side:
   `huber_refit_rows=0`.
 
 #### Notes
+
+[The robust scale and the refit of the first
+rows](explanation/robust-scale.md) explains Huber's loss and why its
+scale must be robust. It measures the streams one pass leaves captured,
+the refit over 40 seeds, and what a robust scale gives up when the level
+shifts.
+
+**A refit runs once, and a row after it takes the time it did, within
+2%.** The default count grows with the features, 10 rows a feature past
+50, so that the refit has rows enough for its coefficients. It stops at
+100 features, where a target's rows would pass 0.8 MB. A count given is
+taken at any width. A count given below the number of coefficients, such
+as 200 rows at 1,000 features, leaves the fit the ridge's, and the
+iteration runs to its cap of 200 passes: about 9 s once, which
+`solve_failures` counts. A cap of 50 passes would take about 2 s there,
+but 200 is where the slow refits of heavy one-sided outliers end. Over
+3,000 streams of 50 to 500 rows, with up to 45% of the rows on one side
+moved by a level, 50 passes ran out on 127 streams for `huber` and 200 on
+8, the slowest refit taking 428 passes. For `sgd(loss="huber")` they ran
+out on 149 and 9, all nine past 39%.
 
 **`huber`'s one pass is held to a numpy reference of its own recursion
 within 1e-12 of `1 + |pred|` (measured at most 1.9e-15), and its refit to statsmodels' `RLM` on the same rows within
@@ -1242,14 +1234,6 @@ entry](#huber--robust-regression) runs `quantile(quantile=0.5)` beside
 `huber` and least squares: the median's slope is 2.03 against a true 2,
 where least squares gives 2.89.
 
-#### How it works
-
-[The refit of the first
-rows](explanation/robust-scale.md#the-refit-of-the-first-rows) measures
-`quantile`'s refit against statsmodels' `QuantReg` over 50 streams. The
-refit's buffer, its count's default and `refit_budget` are
-[`huber`'s](#huber--robust-regression).
-
 #### See also
 
 When `quantile`'s fit is not the one you need:
@@ -1262,6 +1246,12 @@ When `quantile`'s fit is not the one you need:
   step per row in O(k) time.
 
 #### Notes
+
+[The refit of the first
+rows](explanation/robust-scale.md#the-refit-of-the-first-rows) measures
+`quantile`'s refit against statsmodels' `QuantReg` over 50 streams. The
+refit's buffer, its count's default and `refit_budget` are
+[`huber`'s](#huber--robust-regression).
 
 **`quantile`'s one pass is held to a numpy reference of its own recursion
 within 1e-9 of `1 + |pred|`.** Against a batch fit of the same objective over a whole
@@ -1408,7 +1398,28 @@ fitted: {'intercept': 0.51, 'x0': 0.31, 'x1': -0.21}
 
 Each coefficient the fit found is within about 0.01 of the log-rate's.
 
-#### How it works
+#### See also
+
+When `sgd`'s steps are not the fit you need:
+
+- [`pa`](#pa--passive-aggressive-regression), steps with no learning rate,
+  with the same scaler and bounds.
+- [`huber`](#huber--robust-regression) and
+  [`quantile`](#quantile--robust-regression), the robust and quantile fits
+  solved on running sums.
+- [`ftrl`](#ftrl--online-logistic-regression), a logistic or linear fit
+  whose L1 penalty zeroes coefficients.
+- [Choose a learning rate](how-to/choose-a-learning-rate.md#choose-sgds-learning-rate),
+  to set how many rows the coefficients remember.
+- [Follow a level that moves](how-to/follow-a-level-that-moves.md#give-sgds-huber-scale-a-shorter-memory),
+  to give `huber_scale_half_life` a shorter memory where the level can
+  change.
+- [Fit a count target](how-to/fit-a-count-target.md), under
+  `loss="poisson"` and its `clip_gradient`.
+- [Bound the coefficients](how-to/bound-the-coefficients.md#bound-the-slopes-of-sgd),
+  to hold the slopes to `coef_min`, `coef_max` and `coef_sum`.
+
+#### Notes
 
 **The stability check reads a sample of rows, so it is built to resist one
 wide row and to rest while the rate is calm.** The docstring's Notes,
@@ -1465,29 +1476,6 @@ near statsmodels' `RLM`.** In one pass, the outliers capture the first
 steps. [The refit of the first
 rows](explanation/robust-scale.md#the-refit-of-the-first-rows) gives
 `sgd(loss="huber")`'s figures over 40 seeds beside `huber`'s.
-
-#### See also
-
-When `sgd`'s steps are not the fit you need:
-
-- [`pa`](#pa--passive-aggressive-regression), steps with no learning rate,
-  with the same scaler and bounds.
-- [`huber`](#huber--robust-regression) and
-  [`quantile`](#quantile--robust-regression), the robust and quantile fits
-  solved on running sums.
-- [`ftrl`](#ftrl--online-logistic-regression), a logistic or linear fit
-  whose L1 penalty zeroes coefficients.
-- [Choose a learning rate](how-to/choose-a-learning-rate.md#choose-sgds-learning-rate),
-  to set how many rows the coefficients remember.
-- [Follow a level that moves](how-to/follow-a-level-that-moves.md#give-sgds-huber-scale-a-shorter-memory),
-  to give `huber_scale_half_life` a shorter memory where the level can
-  change.
-- [Fit a count target](how-to/fit-a-count-target.md), under
-  `loss="poisson"` and its `clip_gradient`.
-- [Bound the coefficients](how-to/bound-the-coefficients.md#bound-the-slopes-of-sgd),
-  to hold the slopes to `coef_min`, `coef_max` and `coef_sum`.
-
-#### Notes
 
 **Under `loss="quantile"` and `schedule="inv_scaling"`, `sgd` converges to
 statsmodels' `QuantReg`.** At 100,000 rows, at the median and the 0.9
@@ -1815,16 +1803,6 @@ with_x predicts closer at the 5% level from row 15
 The regression's error spread is about half of `holt`'s, and the test
 finds the evidence enough at row 15.
 
-#### How it works
-
-**The line fit keeps the trend from being pinned to the first
-observation.** Gains of `1/n` on both level and trend, without the line
-fit, pinned the trend to the first observation. The level then carried
-that observation's noise times `ln n`: 11 off a flat series after 40,000
-rows without decay, and 6.3 after 10,000 rows at `half_life=10000`, the
-worst of 50 seeds at a noise of 0.5. The line fit's worst was 0.010 and
-0.026, the weighted least squares' own.
-
 #### See also
 
 When `holt` is not the baseline you need, or to test a model against it:
@@ -1842,6 +1820,14 @@ When `holt` is not the baseline you need, or to test a model against it:
   for a seasonal baseline, one level and trend per phase.
 
 #### Notes
+
+**The line fit keeps the trend from being pinned to the first
+observation.** Gains of `1/n` on both level and trend, without the line
+fit, pinned the trend to the first observation. The level then carried
+that observation's noise times `ln n`: 11 off a flat series after 40,000
+rows without decay, and 6.3 after 10,000 rows at `half_life=10000`, the
+worst of 50 seeds at a noise of 0.5. The line fit's worst was 0.010 and
+0.026, the weighted least squares' own.
 
 **Without decay, `holt` fits the weighted least-squares line,** whatever the weights
 and the clock: statsmodels' `WLS` on `(1, t)` agrees to 1e-15. Under a
@@ -1954,32 +1940,17 @@ One half-life after the jump, `corr` has gone half of the way to the new
 level, and after two it has gone about three quarters. A shorter half-life
 follows faster, and gives a noisier estimate.
 
-#### Choosing its settings
-
-To flag rows that are odd only in combination, with `mahal` and
-`mahal_quantiles`, see [Flag joint outliers](how-to/flag-joint-outliers.md).
-
-To track principal components on a schedule, with `pca`, `pca_every` and
-`max_rows_between_pcas`, see [Track principal
-components](how-to/track-principal-components.md).
-
-To find which column leads another, with `lags` and `"lag_corr"`, see
-[Find which series leads](how-to/find-which-series-leads.md).
-
-#### How it works
-
-**Under a `window_size`, Polars gives the same numbers on a frame in
-memory, but recomputes every window** ([Forget rows past a
-window](how-to/forget-rows-past-a-window.md)). Polars'
-`df.rolling("t", period="3h").agg(...)`, with an exponential weight and `c`
-from the weights inside the window, agrees with the spec within 1e-12. Its
-work grows with `n` rows times the rows of a window, where the spec's grows
-with `n`. Measured, the spec ran 24 times as fast at a 74-row
-window and 1,100 times at a 4,680-row one. So use the spec for a stream, a
-state to save, or speed. The docstring's Notes, under *Against Polars*,
-give how to weight the rows.
-
 #### See also
+
+The guides to its settings:
+
+- To flag rows that are odd only in combination, with `mahal` and
+  `mahal_quantiles`, see [Flag joint outliers](how-to/flag-joint-outliers.md).
+- To track principal components on a schedule, with `pca`, `pca_every` and
+  `max_rows_between_pcas`, see [Track principal
+  components](how-to/track-principal-components.md).
+- To find which column leads another, with `lags` and `"lag_corr"`, see
+  [Find which series leads](how-to/find-which-series-leads.md).
 
 To fit, classify or screen on the same moments:
 
@@ -2001,6 +1972,17 @@ either `bias`, they agree within 1e-12 on columns near zero. Under a hard
 window, the means and covariances agree within 1e-12 with numpy's weighted
 moments of the rows inside it, and `pc0_var` agrees with
 `numpy.linalg.eigh` of the same matrix within 1e-9 relative.
+
+**Under a `window_size`, Polars gives the same numbers on a frame in
+memory, but recomputes every window** ([Forget rows past a
+window](how-to/forget-rows-past-a-window.md)). Polars'
+`df.rolling("t", period="3h").agg(...)`, with an exponential weight and `c`
+from the weights inside the window, agrees with the spec within 1e-12. Its
+work grows with `n` rows times the rows of a window, where the spec's grows
+with `n`. Measured, the spec ran 24 times as fast at a 74-row
+window and 1,100 times at a 4,680-row one. So use the spec for a stream, a
+state to save, or speed. The docstring's Notes, under *Against Polars*,
+give how to weight the rows.
 
 ### `marginal` — every pair's moments, kept in the state
 
@@ -2027,6 +2009,22 @@ Each row writes only `weight_sum` ([OUTPUTS.md](OUTPUTS.md#marginal)), and
 docstring](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.marginal)
 defines each column. The parameters every spec takes are in [What every spec
 takes](#what-every-spec-takes).
+
+Five settings extend the pairs, each off by default, and the first two add
+columns to the table:
+
+| setting | what it adds |
+|---|---|
+| `lags`, with `serial_rule` | the pair's moments at each lag: a count that allows for rows that resemble their neighbors, and lead/lag correlations |
+| `bins` | the target's moments inside each bin of a feature: the relations a correlation cannot see |
+| `window_size` | the pairs over a recent stretch |
+| `feature_moments="shared"` | speed: one feature moment for every target, and the same table where every target is on every row |
+| `shards` | speed: one wide spec on every thread, and the same numbers at any count |
+
+When a group closes, `bank.closed_groups()` writes every pair as `pair_*`
+columns: a list over the pairs, such as `pair_split_gain`, or a list of
+lists for the columns that hold a list per pair, the `lag_corr_*` and
+`bin_*` columns, such as `pair_lag_corr_xx` and `pair_bin_n`.
 
 #### The update
 
@@ -2105,30 +2103,31 @@ best of the 495 others trails at a `t_stat` of −3.1. With 495 chances, a
 value that size is what noise alone gives, which is why `t_stat` ranks
 pairs and is no p-value.
 
-#### Choosing its settings
+#### See also
 
-Five settings extend the pairs, each off by default, and the first two add
-columns to the table:
+The guides to its settings:
 
-| setting | what it adds |
-|---|---|
-| `lags`, with `serial_rule` | the pair's moments at each lag: a count that allows for rows that resemble their neighbors, and lead/lag correlations |
-| `bins` | the target's moments inside each bin of a feature: the relations a correlation cannot see |
-| `window_size` | the pairs over a recent stretch |
-| `feature_moments="shared"` | speed: one feature moment for every target, and the same table where every target is on every row |
-| `shards` | speed: one wide spec on every thread, and the same numbers at any count |
+- To rank the pairs by `t_stat`, correct the ranking with `lags` and
+  `serial_rule`, and read `split_gain` and `bin_stat="huber"`'s bins, see
+  [Screen features against a target](how-to/screen-features-against-a-target.md).
+- [Forget rows past a window](how-to/forget-rows-past-a-window.md) shows how
+  to give a screen a `window_size` when a relation may flip sign.
+- [Split one wide spec across
+  threads](how-to/use-more-cores.md#split-one-wide-spec-across-threads)
+  shows how to spread one wide spec over the threads with `shards`.
 
-When a group closes, `bank.closed_groups()` writes every pair as `pair_*`
-columns: a list over the pairs, such as `pair_split_gain`, or a list of
-lists for the columns that hold a list per pair, the `lag_corr_*` and
-`bin_*` columns, such as `pair_lag_corr_xx` and `pair_bin_n`.
+To read the pairs, or to fit the features jointly:
 
-To rank the pairs by `t_stat`, correct the ranking with `lags` and
-`serial_rule`, and read `split_gain` and `bin_stat="huber"`'s bins, see
-[Screen features against a target](how-to/screen-features-against-a-target.md).
+- [`bank.marginal()`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.marginal),
+  the table of pairs and every column it holds.
+- [`ew_cov`](#ew_cov--exponentially-weighted-moments), the joint
+  covariance whose arithmetic each pair uses.
+- [`huber`](#huber--robust-regression), whose weighting `bin_stat="huber"`
+  gives each bin.
+- [`lasso`](#lasso--lasso-path-its-penalty-chosen-as-it-runs), to choose
+  the features of a joint fit.
 
-[Forget rows past a window](how-to/forget-rows-past-a-window.md) shows how
-to give a screen a `window_size` when a relation may flip sign.
+#### Notes
 
 **With several targets present on every row, give `feature_moments="shared"`
 for speed.** Each feature then keeps one mean and variance, over every
@@ -2141,12 +2140,6 @@ Where a target is absent on some rows, `var_x` and the center of `cov` then
 come from every row. That is a different estimator, sound only where the
 absence says nothing about the feature, so otherwise keep the default. It
 takes `lags`, and refuses a `window_size`.
-
-[Split one wide spec across
-threads](how-to/use-more-cores.md#split-one-wide-spec-across-threads)
-shows how to spread one wide spec over the threads with `shards`.
-
-#### How it works
 
 **Under `"huber"`, a bin's first row is judged against `m_t`, the target's
 own location, the only location there is,** and winsorized at `m_t ± c`. A
@@ -2210,21 +2203,6 @@ value, which truncates exactly, and read about the hard window's means when
 asked.** A correlation centered at the running mean instead carries the
 history's mean into the hard window. On a hard window whose rows had moved
 to another level, it read a lag correlation of 22, outside `[−1, 1]`.
-
-#### See also
-
-To read the pairs, or to fit the features jointly:
-
-- [`bank.marginal()`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.marginal),
-  the table of pairs and every column it holds.
-- [`ew_cov`](#ew_cov--exponentially-weighted-moments), the joint
-  covariance whose arithmetic each pair uses.
-- [`huber`](#huber--robust-regression), whose weighting `bin_stat="huber"`
-  gives each bin.
-- [`lasso`](#lasso--lasso-path-its-penalty-chosen-as-it-runs), to choose
-  the features of a joint fit.
-
-#### Notes
 
 **Each pair matches a two-column `ew_cov`.** Its means and variances equal those an
 `ew_cov(bias=True)` over the two columns reports, to the bit. Its `cov` and
@@ -2321,21 +2299,13 @@ row 3999: truth 0.6, deco's rho 0.40, the mean of ew_cov's corr 0.60
 `deco` takes O(m) a row where the `ew_cov` takes O(m²), and its `rho`
 reads low, at about two-thirds of the truth here.
 
-#### Choosing its settings
-
-To read `u` and `rho` as a signal, per block with `blocks`, and to leave a
-constant column out of `features`, see [Track the average
-correlation](how-to/track-the-average-correlation.md).
-
-#### How it works
-
-**`u` is biased downward, as Engle and Kelly note:** `E[u]` is about 0.20
-for a true 0.30 at six series. `rho`, an average of `u`, carries the same
-bias, and
-[docs/REGIMES.md §7](REGIMES.md#7-deco-an-equicorrelation-that-moves)
-measures it reading near two-thirds of the truth.
-
 #### See also
+
+The guides to its settings:
+
+- To read `u` and `rho` as a signal, per block with `blocks`, and to leave a
+  constant column out of `features`, see [Track the average
+  correlation](how-to/track-the-average-correlation.md).
 
 For each pair's correlation, or a test of a change in it:
 
@@ -2345,6 +2315,12 @@ For each pair's correlation, or a test of a change in it:
   for a change in the correlation structure.
 
 #### Notes
+
+**`u` is biased downward, as Engle and Kelly note:** `E[u]` is about 0.20
+for a true 0.30 at six series. `rho`, an average of `u`, carries the same
+bias, and
+[`deco`: an equicorrelation that moves](REGIMES.md#7-deco-an-equicorrelation-that-moves)
+measures it reading near two-thirds of the truth.
 
 **Under `"ew"`, `rho` is exactly what an `ew_cov(stats=["mean"])` on the
 `u` column, over the rows that have one, would report, to the bit, wherever both report.** The `"linear"` level at
@@ -2446,13 +2422,13 @@ kernel: mean correlation 0.59 over 19 blocks (truth 0.60)
 The last block never closes, because no later block arrives to close it
 under `group_close="monotone"`, so 19 of the 20 report.
 
-#### Choosing its settings
-
-To choose `kind` for the returns you have, and to read each block's estimate, see
-[Estimate a block's covariance from
-ticks](how-to/estimate-a-blocks-covariance-from-ticks.md).
-
 #### See also
+
+The guides to its settings:
+
+- To choose `kind` for the returns you have, and to read each block's estimate, see
+  [Estimate a block's covariance from
+  ticks](how-to/estimate-a-blocks-covariance-from-ticks.md).
 
 To put the prices on one grid before taking returns, or to read each block's estimate:
 
@@ -2471,16 +2447,16 @@ To put the prices on one grid before taking returns, or to read each block's est
 at close, to the bit.** It is the cross-check, and the reference the other
 two are measured against. The jittered kernel agrees with hfhd's `krvm` on
 the jittered prices within 1e-13 of the estimate's largest entry, over
-three features, cross terms included. The default `"preavg"`
-(`psd=True`) agrees with hfhd's `mrc(bias_correction=False)` within 1e-13
+three features, cross terms included. `"preavg"` in its default
+form, `psd=True`, agrees with hfhd's `mrc(bias_correction=False)` within 1e-13
 of the estimate's largest entry, after two mappings, with `block_rows` set to match. The test
 gives hfhd's prices a leading copy of the first, since hfhd's
 pre-averaging starts one return later. hfhd then counts `n + 1` returns,
 `n` the block's, so the test sets `block_rows` to `n + 1`, and both take
 the same `k_n`. The test
 then replaces hfhd's scale `(n + 1)/(n − k_n + 3)` with this library's
-`n/(n − k_n + 2)`. [docs/REGIMES.md
-§8](REGIMES.md#8-rcov-three-estimators-against-each-blocks-truth) measures
+`n/(n − k_n + 2)`. [`rcov`: three estimators against each block's
+truth](REGIMES.md#8-rcov-three-estimators-against-each-blocks-truth) measures
 each kind against each block's truth.
 
 ### `audit` — what a stream's columns hold
@@ -2679,19 +2655,12 @@ about 170 rows each. Once it appears, the split-merge move frees cluster 3
 and places it on the new cluster, and each of the four holds about a quarter
 of the rows.
 
-#### Choosing its settings
-
-To choose `init` and `dead_frac`, see [Keep `kmeans` centers on the
-data](how-to/keep-kmeans-centers-on-the-data.md).
-
-#### How it works
-
-**Seeding waits for `warm_rows` rows, places the centers, and replays the
-rows.** [Seeding](explanation/warm-up-and-readiness.md#seeding-a-model-that-places-its-starting-values)
-explains why the default takes the best of ten starts, measures it on
-Fränti's benchmark sets, and gives what it costs each group.
-
 #### See also
+
+The guides to its settings:
+
+- To choose `init` and `dead_frac`, see [Keep `kmeans` centers on the
+  data](how-to/keep-kmeans-centers-on-the-data.md).
 
 When the clusters are not round, not fixed in number, or labeled:
 
@@ -2703,6 +2672,11 @@ When the clusters are not round, not fixed in number, or labeled:
   Gaussian classes, one for each value of the column `label=` names.
 
 #### Notes
+
+**Seeding waits for `warm_rows` rows, places the centers, and replays the
+rows.** [Seeding](explanation/warm-up-and-readiness.md#seeding-a-model-that-places-its-starting-values)
+explains why the default takes the best of ten starts, measures it on
+Fränti's benchmark sets, and gives what it costs each group.
 
 **The default seeding places the centers scikit-learn's `KMeans` places.**
 `init="lloyd"` is held to scikit-learn's `KMeans(n_init=10)` centers on the
@@ -2804,12 +2778,6 @@ scattered rows: 61.1% flagged as noise
 A scattered row that lands on a ring, or close enough to join one of its
 summaries, takes the ring's label, so not every scattered row is flagged.
 
-#### How it works
-
-**A summary whose rows stop lingers `half_life · log2(n / (beta_mu · w̄))`
-of clock, with `n` the weight it had.** A cluster's label is the smallest id
-among its linked summaries, so it lasts as long as that summary does.
-
 #### See also
 
 When the number of clusters is known, or a row's cluster depends on the last:
@@ -2820,6 +2788,10 @@ When the number of clusters is known, or a row's cluster depends on the last:
   depends on the last.
 
 #### Notes
+
+**A summary whose rows stop lingers `half_life · log2(n / (beta_mu · w̄))`
+of clock, with `n` the weight it had.** A cluster's label is the smallest id
+among its linked summaries, so it lasts as long as that summary does.
 
 **It recovers shapes that `kmeans` cannot.** Measured at 20,000 rows and a
 half-life of 3,000, moons, rings and five Gaussians in twenty dimensions all
@@ -2916,13 +2888,13 @@ On the last 5,000 rows the model puts 85.7% of the rows in their true
 class, against 86.0% for the Bayes rule built from the true means and
 spreads.
 
-#### Choosing its settings
-
-To choose `covariance_type`, and `window_size` and `embargo` when the
-classes move or arrive late, see [Choose a covariance
-type](how-to/choose-a-covariance-type.md).
-
 #### See also
+
+The guides to its settings:
+
+- To choose `covariance_type`, and `window_size` and `embargo` when the
+  classes move or arrive late, see [Choose a covariance
+  type](how-to/choose-a-covariance-type.md).
 
 For the moments behind each class, or for classes no column names:
 
@@ -3022,15 +2994,15 @@ edge: the evidence first passes the 5% level at row 324
 none: the evidence first passes the 5% level never
 ```
 
-#### Choosing its settings
-
-To read its evidence and reject at a level that holds however often you
-look, see [Read a sequential test](how-to/read-a-sequential-test.md). To
-test which of two specs predicts closer, put both in the bank and name
-them in `a` and `b` ([Compare two
-models](how-to/compare-two-models.md#read-the-comparison-on-every-row)).
-
 #### See also
+
+The guides to its settings:
+
+- To read its evidence and reject at a level that holds however often you
+  look, see [Read a sequential test](how-to/read-a-sequential-test.md).
+- To test which of two specs predicts closer, put both in the bank and name
+  them in `a` and `b` ([Compare two
+  models](how-to/compare-two-models.md#read-the-comparison-on-every-row)).
 
 For the same test outside a bank, or a comparison of many specs at once:
 
@@ -3153,13 +3125,24 @@ The break falls in the second cycle's monitored rows, which start at row
 2,000, and the flag comes 85 rows after it. No row of the first cycle, or of
 the second cycle before the break, is flagged.
 
-#### Choosing its settings
+#### See also
 
-To catch an early change sooner with `boundary_gamma`, the `γ` of `w(b)`,
-and to count a run of the window kind's flags as one change, see [Detect a
-break](how-to/detect-a-break.md#watch-the-features-correlations-with-corrchange).
+The guides to its settings:
 
-#### How it works
+- To catch an early change sooner with `boundary_gamma`, the `γ` of `w(b)`,
+  and to count a run of the window kind's flags as one change, see [Detect a
+  break](how-to/detect-a-break.md#watch-the-features-correlations-with-corrchange).
+
+For the age of a regime, or a correlation that moves rather than breaks:
+
+- [`bocpd`](#bocpd--how-long-has-this-regime-lasted), a posterior over the
+  age of the current regime.
+- [`deco`](#deco--one-correlation-for-the-whole-matrix), an
+  equicorrelation that moves with the stream.
+- [REGIMES.md](REGIMES.md), the size and power of these tests,
+  measured against their papers.
+
+#### Notes
 
 **The sequential kind's critical value is solved, not simulated.** Where
 the paper simulates its quantile `q`, above `γ = 0`, this library solves it
@@ -3184,25 +3167,13 @@ whatever the window. Each value is held for `permute_every_rows` reports, so
 a report is compared with draws from windows up to
 `permute_every_rows − 1` rows older than its own.
 
-#### See also
-
-For the age of a regime, or a correlation that moves rather than breaks:
-
-- [`bocpd`](#bocpd--how-long-has-this-regime-lasted), a posterior over the
-  age of the current regime.
-- [`deco`](#deco--one-correlation-for-the-whole-matrix), an
-  equicorrelation that moves with the stream.
-- [docs/REGIMES.md](REGIMES.md), the size and power of these tests,
-  measured against their papers.
-
-#### Notes
-
 **The monitor's size and power are close to Wied, Krämer and Dehling's
-tables,** on the `t_5` design of their own paper ([docs/REGIMES.md
-§2–3](REGIMES.md#2-is-the-monitor-the-size-its-paper-says)). The sequential
+tables,** on the `t_5` design of their own paper ([Is the monitor the size
+its paper says?](REGIMES.md#2-is-the-monitor-the-size-its-paper-says) and
+[And is it the power its paper says?](REGIMES.md#3-and-is-it-the-power-its-paper-says)). The sequential
 detector's size is within two standard errors of Wied and Galeano's Table 2
-in every cell ([docs/REGIMES.md
-§9](REGIMES.md#9-the-sequential-detector-against-its-paper)). Its critical
+in every cell ([The sequential detector against its
+paper](REGIMES.md#9-the-sequential-detector-against-its-paper)). Its critical
 values are within 0.03 of their Table 1. Over 200 streams of independent
 rows, the window kind flagged 4.8% to 5.2% of non-overlapping spans at
 `alpha` 0.05, as the docstring's Notes give under *The window test*.
@@ -3287,14 +3258,14 @@ Nine rows after the break the posterior has accepted it, and dates it within
 a row of the truth. No single row of the wider regime is surprising enough
 to lift `p_change`, which is why the answer is read from `run_mode`.
 
-#### Choosing its settings
-
-To choose `hazard`, the priors and `robust_beta`, see [Choose a
-changepoint hazard](how-to/choose-a-changepoint-hazard.md). To read the
-regime's age from `run_mode` and use `p_change` only as an alarm, see
-[Detect a break](how-to/detect-a-break.md#date-a-regime-with-bocpd).
-
 #### See also
+
+The guides to its settings:
+
+- To choose `hazard`, the priors and `robust_beta`, see [Choose a
+  changepoint hazard](how-to/choose-a-changepoint-hazard.md).
+- To read the regime's age from `run_mode` and use `p_change` only as an
+  alarm, see [Detect a break](how-to/detect-a-break.md#date-a-regime-with-bocpd).
 
 For a test of a change in correlation, or a fixed set of regimes:
 
@@ -3302,7 +3273,7 @@ For a test of a change in correlation, or a fixed set of regimes:
   tests for a change in the correlations among the features.
 - [`hmm`](#hmm--which-regime-are-we-in), a fixed number of regimes the
   stream moves between.
-- [docs/REGIMES.md §5](REGIMES.md#5-two-changepoint-detectors-on-the-same-break),
+- [Two changepoint detectors on the same break](REGIMES.md#5-two-changepoint-detectors-on-the-same-break),
   `bocpd` beside `corrchange` on the same break.
 
 #### Notes
@@ -3409,13 +3380,13 @@ The nearest center reads each row alone. The filter carries what the rows
 before told it through the transition matrix it learns, so a row that lands
 nearer the other blob does not flip its state.
 
-#### Choosing its settings
-
-To give the transition matrix a sticky prior, and keep a single extreme
-row from capturing a state, see [Keep `hmm` states on their
-regimes](how-to/keep-hmm-states-on-their-regimes.md).
-
 #### See also
+
+The guides to its settings:
+
+- To give the transition matrix a sticky prior, and keep a single extreme
+  row from capturing a state, see [Keep `hmm` states on their
+  regimes](how-to/keep-hmm-states-on-their-regimes.md).
 
 For labeled classes, or for the age of a regime rather than its name:
 
@@ -3432,6 +3403,7 @@ For labeled classes, or for the age of a regime rather than its name:
 row's filtered posterior comes from hmmlearn's `GaussianHMM`, and each joint
 of consecutive states from scipy's Gaussian densities, with none of the
 model's arithmetic. Its seeding is held to scikit-learn's, as `kmeans`'
-is. [docs/REGIMES.md §1](REGIMES.md#1-does-hmm-recover-the-stream-that-made-it)
+is. [Does `hmm` recover the stream that made
+it?](REGIMES.md#1-does-hmm-recover-the-stream-that-made-it)
 measures how often it puts a row in the state that generated it, seeded from
 the rows and given the true covariances.

@@ -1309,7 +1309,11 @@ class TestReadmeExamples:
         assert not found, f"examples that call .lazy(): {found}"
 
     def test_there_are_shell_blocks_to_check(self):
-        assert len(SHELL_BLOCKS) >= 4, SHELL_BLOCKS
+        # Three since task 338's stage 10: the reference keeps the closed-groups
+        # sidecar, the input formats and the chunk size, and the steps of a run,
+        # saving, resuming and `--skip-learned` are the how-tos', whose shell
+        # recipes `tests/test_kind_pages.py` runs.
+        assert len(SHELL_BLOCKS) >= 3, SHELL_BLOCKS
 
     @pytest.mark.parametrize(
         ("path", "line", "code"),
@@ -1347,15 +1351,18 @@ class TestReadmeExamples:
         content (task 238)."""
         import tomllib
 
-        shown = [
-            code
-            for _, _, code in _doc_blocks("docs/RUNNER.md", "toml")
-            if 'input = "ticks.parquet"' in code
-        ]
-        assert len(shown) == 1, shown
         _readme_namespace(tmp_path)
-        written = (tmp_path / "job.toml").read_text(encoding="utf-8")
-        assert tomllib.loads(shown[0]) == tomllib.loads(written)
+        # `job.toml`, and since task 338's stage 10 `blocks.toml` too, which
+        # the closed-groups recipe reads: each shown once, as the fixture writes it.
+        for name, marker in (("job.toml", 'name = "ridge"'), ("blocks.toml", 'name = "cov"')):
+            shown = [
+                code
+                for _, _, code in _doc_blocks("docs/RUNNER.md", "toml")
+                if 'input = "ticks.parquet"' in code and marker in code
+            ]
+            assert len(shown) == 1, (name, shown)
+            written = (tmp_path / name).read_text(encoding="utf-8")
+            assert tomllib.loads(shown[0]) == tomllib.loads(written), name
         configs = {c for _, _, code in SHELL_BLOCKS for c in re.findall(r"--config (\S+)", code)}
         assert configs == {"job.toml", "blocks.toml"}, configs
 

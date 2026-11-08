@@ -19,8 +19,9 @@ says which runs find a break, and what each withholds.
 
 Each of the three moves needs these:
 
-- The run that found the break, or the reason to move the floor, read to
-  its failing test.
+- The run that found the break, read to its failing test; or the reason
+  to move the floor; or, for the ceiling, the canary's run on the new
+  major.
 - A checkout of `main`, and the steps of [Cut a release](cut-a-release.md)
   for shipping the change.
 

@@ -18,7 +18,7 @@ in files:
   LightGBM 4.0 to before 5.0, the default falls back to the slower Python
   engine.
 - The training rows as Arrow IPC files, Parquet files or a query, with a
-  numeric label, numeric features, and any categorical feature as a
+  numeric target, numeric features, and any categorical feature as a
   `pl.Enum`. Each recipe on this page writes its own files.
 - To train around an online model's prediction: the rows in clock order,
   and a spec for an online model of the target whose prediction follows
@@ -208,13 +208,13 @@ a pl.Categorical is refused: ValueError
 
 **Give a Huber loss as the train call's objective, and set its slope `δ`
 from the residuals of a first fit, not as a fixed number.** `δ` is in the
-label's units, so the defaults, 1.0 for XGBoost and 0.9 for LightGBM, fit
-only a label of the right scale ([Why a Huber loss's slope is set from
+target's units, so the defaults, 1.0 for XGBoost and 0.9 for LightGBM, fit
+only a target of the right scale ([Why a Huber loss's slope is set from
 the residuals](explanation/how-po-gbdt-builds-training-data.md#why-a-huber-losss-slope-is-set-from-the-residuals)).
 
 1. **Train a first fit with squared error,** such as a model trained for a
    few rounds.
-2. **Take its residuals,** the labels less its predictions.
+2. **Take its residuals,** the targets less its predictions.
 3. **Set `δ = 1.345 · MAD / 0.6745`,** where the MAD is the median absolute
    deviation of those residuals. On a stream, `po.ewm_quantile` gives the
    same scale as it moves ([Quantiles and a robust
@@ -223,7 +223,7 @@ the residuals](explanation/how-po-gbdt-builds-training-data.md#why-a-huber-losss
    `{"objective": "reg:pseudohubererror", "huber_slope": δ}`, or
    LightGBM's `{"objective": "huber", "alpha": δ}`.
 
-This code plants labels in the hundreds, 2% of them 5,000 too high, and
+This code plants targets in the hundreds, 2% of them 5,000 too high, and
 scores each objective against the planted truth on clean test rows:
 
 ```python
@@ -232,7 +232,7 @@ import polars as pl
 import polars_online as po
 import xgboost as xgb
 
-# Training rows whose labels are in hundreds, 2% of them wild; clean test rows.
+# Training rows whose targets are in hundreds, 2% of them wild; clean test rows.
 rng = np.random.default_rng(11)
 for name, n, wild in (("train", 20_000, 0.02), ("test", 5_000, 0.0)):
     x0, x1 = rng.standard_normal((2, n))
@@ -273,14 +273,14 @@ pseudo-Huber, slope 1.0:  RMSE 35.2
 pseudo-Huber, slope 64:   RMSE 9.2
 ```
 
-Squared error follows the wild labels, and the default slope of 1.0 is far
+Squared error follows the wild targets, and the default slope of 1.0 is far
 below residuals of 30. The slope from the MAD comes within 9.2 of the
 truth.
 
 ## Train trees around an online model's prediction
 
 **Give the trees an online model's prediction as the *margin*, the raw
-score each row's prediction starts from, and they fit what the online
+value each row's prediction starts from, and they fit what the online
 model leaves of the target.** The margin is `base_margin=` in
 `po.gbdt.xgboost_matrix` and `init_score=` in `po.gbdt.lightgbm_dataset`,
 each the name its library uses. A tree predicts within the range of the
@@ -289,7 +289,8 @@ of its reach, but a margin is added after the trees and carries the level
 with it. A model trained around a margin must be served with that margin
 added back, so this task has a training half and a serving half.
 
-1. **Run the online model over the rows with `lf.online.fit_predict`.**
+1. **Run the online model with `online.fit_predict` on a query over the
+   rows.**
 2. **Unpack its fields beside each row with `.online.unnest`.**
 3. **Keep only the rows that have a prediction,** since every row needs a
    margin.
@@ -345,11 +346,11 @@ online = po.spec.ewridge("online", targets=["y"], features=["x0", "x1"],
     # 4. The prediction again, as a feature.
     .select("t", "x0", "x1", "y", "pred_y", online_pred=pl.col("pred_y"))
     # 5. Written to a file.
-    .sink_parquet("scored.parquet")
+    .sink_parquet("predicted.parquet")
 )
 features = ["x0", "x1", "online_pred"]
-train = pl.scan_parquet("scored.parquet").filter(pl.col("t") < 1_200)
-test = pl.scan_parquet("scored.parquet").filter(pl.col("t") >= 1_600).collect()
+train = pl.scan_parquet("predicted.parquet").filter(pl.col("t") < 1_200)
+test = pl.scan_parquet("predicted.parquet").filter(pl.col("t") >= 1_600).collect()
 low, high = train.select(low=pl.col("pred_y").min(), high=pl.col("pred_y").max()).collect().row(0)
 print(f"online prediction: {low:.1f} to {high:.1f} on the training rows, "
       f"{test['pred_y'].min():.1f} to {test['pred_y'].max():.1f} on the test rows")
@@ -369,7 +370,7 @@ print(f"XGBoost:  test RMSE {rmse(served):.2f} served with the margin, {rmse(for
 # 6 and 8. LightGBM: the margin in the training input, then train.
 dataset = po.gbdt.lightgbm_dataset(train, label="y", features=features, init_score="pred_y")
 booster = lgb.train({"num_leaves": 15, "learning_rate": 0.1, "verbose": -1}, dataset, 200)
-# 9. Served as the trees' raw score plus each row's margin; 10. and without it.
+# 9. Served as the trees' raw value plus each row's margin; 10. and without it.
 served = booster.predict(X, raw_score=True) + margin
 forgot = booster.predict(X, raw_score=True)
 print(f"LightGBM: test RMSE {rmse(served):.2f} served with the margin, {rmse(forgot):.2f} without it")
@@ -385,11 +386,7 @@ LightGBM: test RMSE 0.37 served with the margin, 10.27 without it
 training row's, and the
 trees served with the margin come within 0.08 of the noise's spread of
 0.3.** The same trees served without it miss by the level they were never
-shown.
-
-Its trees learned only what the margin leaves, so a prediction without
-the margin lacks the level the margin carried: in the recipe the error
-grows from 0.38 to 7.02.
+shown: under XGBoost the error grows from 0.38 to 7.02.
 
 ## Check that it worked
 

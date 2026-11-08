@@ -40,14 +40,16 @@ parameter](contributing/add-an-output-or-a-parameter.md).
 
 You need these before the first step:
 
-- A checkout that builds and passes the gate, as
+- A checkout that builds and passes the test gate, as
   [CONTRIBUTING.md](../CONTRIBUTING.md) sets up.
 - The model's update equations, and an oracle for them: a third-party
   library that computes the same quantity where one exists, or else the
   recursion written out longhand, an equivalent model configured
   differently, or the optimality conditions.
-- The library's hard rules in `CLAUDE.md`, of which rules 5, 6, 8 and 9
-  bind every model.
+- The rules every model keeps, in the table of [step
+  1](#step-1--srcmodelrs), and the rules a state file's layout keeps, in
+  [what each change does to a saved
+  state](contributing/add-an-output-or-a-parameter.md#what-each-change-does-to-a-saved-state).
 
 Two commits show the change. List one's files with `git show --stat <commit>`, and read its diff with `git show <commit>`:
 
@@ -256,8 +258,7 @@ Export the model: `pub use <model>::{<Model>, <Model>Cfg};`.
 Add a `ModelState::<Model>(Box<...>)` variant, and its arm in `kind()`.
 The state is what `save` and `load` serialize, so the variant joins every
 state file's format. Appending a variant moves no existing layout, so it
-needs no `SCHEMA_VERSION` bump. Changing an existing layout does (hard rule
-5, and [what each change does to a saved
+needs no `SCHEMA_VERSION` bump. Changing an existing layout does ([what each change does to a saved
 state](contributing/add-an-output-or-a-parameter.md#what-each-change-does-to-a-saved-state)).
 
 **Add the variant's name to the frozen list, and a fixture case.** The
@@ -723,7 +724,7 @@ it came from. A model that cannot register yet goes into `PENDING` or
 seeds to the oracle ledger** ([TESTING.md, "The oracle
 ledger"](TESTING.md#the-oracle-ledger)), so its error only tightens:
 
-1. Mark the test `@pytest.mark.oracle_grid`.
+1. Mark the test `@pytest.mark.oracle_grid(reason="...")`.
 2. Register the group's inputs at module level with
    `ledger.guard(name, outputs, oracles=[...])`.
 3. Record each quantity the test bounds with `ledger.record(name, case,
@@ -886,9 +887,9 @@ before the model ships.
 **Check:** `every_kind_has_its_cells` fails for a kind in `KINDS` with no
 cell, and each cell fails past its declared growth.
 
-### Then the gate
+### Then the test gate
 
-Check the result by running the gate, unpiped. The registry tests fail
+Check the result by running the test gate, unpiped. The registry tests fail
 until every step is in, which is what they are for.
 
 1. Run the essentials, and commit once they pass:

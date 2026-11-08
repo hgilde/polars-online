@@ -11,8 +11,9 @@ that changed a default names the setting that gives back the numbers of
 the release before. To go on from a fit an earlier release saved, load
 its [state](../GLOSSARY.md#saving-and-serving) instead, as [Resume from a
 saved state](resume-from-a-saved-state.md) shows. A state saved by 1.0.0
-or later loads and continues as it was fitted. One saved by 0.13.0 or
-earlier is refused, so refit its rows under the settings on this page.
+or later loads, and continues as the CHANGELOG says for each change since:
+most to the bit. One saved by 0.13.0 or earlier is refused, so refit its
+rows under the settings on this page.
 
 ## Prerequisites
 
@@ -21,7 +22,7 @@ These steps need the earlier release's number and the spec it ran:
 - polars-online installed, and the README's
   [Example data](../../README.md#example-data) built. The example reads
   `ticks.parquet`, 400 rows that Example data writes.
-- The release whose numbers you want, such as 1.3.0, and the
+- The release whose numbers you want, such as 1.2.0, and the
   [spec](../GLOSSARY.md#the-model-bank-and-what-it-reads) you ran under it.
 
 ## Give the setting that undoes a change
@@ -37,7 +38,7 @@ names it as the way back, so start from the CHANGELOG.
 
    | to get the numbers of | for | give | what it gives back |
    |---|---|---|---|
-   | 1.4.0 | `huber`, `quantile` and `sgd(loss="huber")` | `refit_budget=256 * (features + 26) / (features + 20)`, in MiB; `refit_budget=256` under `huber_scale="rms"` | 1.4.0's groups that refit, which its default of 256 MiB held (see *The refit's budget*) |
+   | 1.4.0 | `huber`, `quantile` and `sgd(loss="huber")` | `refit_budget=256 * (features + 26) / (features + 20)`, in MiB; `refit_budget=256` under `huber_scale="rms"` | 1.4.0's groups that refit, which its default of 256 MiB held (see *The refit's budget* below) |
    | 1.4.0 | `corrchange(kind="window")` | `permute_every_rows=50` | 1.4.0's schedule of draws for the critical value: one every 50 rows, where the default is one every `window_rows`. The statistic itself still moves in its last bits, since it is now merged from blocks of rows |
    | 1.3.0 and earlier, before the refit existed | `huber` | `huber_refit_rows=0` | numbers close to those releases', with the median absolute deviation (MAD) read from fixed buckets, as those releases read it ([How a stream keeps a median](../explanation/robust-scale.md#how-a-stream-keeps-a-median)) |
    | 1.3.0 and earlier, before the refit existed | `quantile` | `quantile_refit_rows=0` | numbers close to those releases', from the fit made in one pass |
@@ -53,41 +54,37 @@ entry can move the same model's numbers again, with no setting to undo it,
 so step 1 reads every entry between the two releases. Under
 `huber_scale="rms"`, with the default `min_weight` on unit weights,
 `huber_refit_rows=0` gave 1.3.0's numbers to the bit on the stream it was
-tested on. Away from the default `min_weight` on unit weights, 1.4.0
-moved `huber`'s first rows under `min_weight`, with no setting to undo
-it.
+tested on. With another `min_weight` or other weights, `huber`'s first
+rows differ from 1.3.0's, with no setting to undo it.
 
-**The refit's budget gives back 1.4.0's groups, not every number.**
-`refit_budget` bounds the rows that the refits of all of a spec's groups
-hold, and 1.4.0's default was 256 MiB. Each group reserves the rows its
-refit can hold when it first appears. The group that would pass the bound
-keeps its one-pass fit, as does every new group after it. Under the MAD,
-each held row now also keeps its one-pass residual and what the exact
-median is read from. So a group reserves `(features + 26) · 8` bytes a
-target for each row of `huber_refit_rows` or `quantile_refit_rows`, where
-1.4.0 reserved `(features + 20) · 8`. At 256 MiB that covers about a fifth
-fewer groups than 1.4.0 did: at 5 features and 500 rows, 2,164 groups of
-one target against 2,684. A budget increased in the same ratio holds the same number
-of groups, and so the same groups, since they reserve in the order they
-first appear: at 5 features, `refit_budget=317.44` refits the first 2,684
-such groups. For a budget `B` given to 1.4.0, give
-`B · (features + 26) / (features + 20)`.
-Under `huber_scale="rms"` the reservation did not grow, so
-`refit_budget=256` is 1.4.0's. Either way the rows before each refit read
-the scale this release reads, with no setting to undo it.
+**The refit's budget gives back 1.4.0's groups, not every number.** The
+default `refit_budget` is now 320 MiB, which at 5 features and 500 rows
+refits 2,706 groups of one target, where 1.4.0's 256 MiB refit 2,684.
+The table's formula refits the same groups as 1.4.0 did, and for a
+budget `B` given to 1.4.0, give `B · (features + 26) / (features + 20)`.
+The rows before each refit still read this release's scale, with no setting to undo it.
+[Defaults changed in a minor
+release](../VERSIONS.md#defaults-changed-in-a-minor-release) says why
+each group now reserves more.
 
 For `marginal`'s Huber bins, whose reservation grew by a different share,
-scale 256 by the ratio of what a group reserves in each release. Each
-release's readiness warning names it in units of 1,024 bytes: "KB a group"
-under 1.4.0, "each group reserving … KiB" now. Both are rounded, so this
-comes close to 1.4.0's groups but is not exact. Each warning also names
-the first group that gave its refit up, so compare that group across the
-two runs.
+find the budget from the warning each of the two releases gives. A release warns
+only where the budget binds, so run on input with enough groups to reach
+it:
 
-**`sgd(loss="huber")` has no way back past 1.3.0.** `sgd`'s steps have changed
-since (its clip, AdaGrad's epsilon and its intercept read the target's own
-spread and level). So for `sgd(loss="huber")`, `huber_refit_rows=0` gives
-the one-pass fit of its current steps, which no earlier release gave.
+1. **Run the spec under 1.4.0, and read its readiness warning's "KB a
+   group".**
+2. **Run it under this release, and read its warning's "each group
+   reserving … KiB".**
+3. **Give `refit_budget` 256 times the second figure over the first.**
+   Both figures are rounded, so this comes close to 1.4.0's groups but is
+   not exact.
+4. **Compare the group each warning names as the first to give its refit
+   up,** across the two runs.
+
+**`sgd(loss="huber")` has no way back past 1.3.0.** `sgd`'s steps have
+changed since, so `huber_refit_rows=0` gives the one-pass fit of its
+current steps, which no earlier release gave.
 
 This code fits `huber` with both settings of 1.2.0's row, on
 `ticks.parquet` from [Example data](../../README.md#example-data), and

@@ -12,8 +12,7 @@ made, the trade-off. A link to a guide (the *Guides* table of
 Two lists hold it. ``PATTERNS`` is what may not be cited. ``FILES`` is the
 reader-facing files held to it beside every public docstring: the README,
 every guide, ``CONTRIBUTING.md`` and ``llms.txt``, which
-``test_every_guide_is_held`` keeps complete (``GUIDE_PARTS`` holds a guide
-that a record follows in its file). Source comments may keep their
+``test_every_guide_is_held`` keeps complete. Source comments may keep their
 citations: they are read by whoever changes the code, beside the plan.
 """
 
@@ -88,6 +87,7 @@ FILES: list[str] = [
     "docs/MODELS.md",
     "docs/WINDOWS.md",
     "docs/RUNNER.md",
+    "docs/STATE-WORKFLOW.md",
     "docs/GBDT.md",
     "docs/REGIMES.md",
     "docs/PERFORMANCE.md",
@@ -549,37 +549,24 @@ def test_the_command_lines_help_cites_nothing(online_cli):
     assert not found, "\n".join(found)
 
 
-#: Files that hold a guide and then a record: the guide is held, up to the
-#: heading the record starts at, and the record stays as written.
-GUIDE_PARTS: dict[str, str] = {
-    "docs/STATE-WORKFLOW.md": "\n## The research behind it, 2026-09-03\n",
-}
-
-
-@pytest.mark.parametrize("path", sorted(GUIDE_PARTS))
-def test_no_guide_part_cites_the_plan_a_task_a_review_or_a_record(path):
-    text = (REPO / path).read_text(encoding="utf-8")
-    assert GUIDE_PARTS[path] in text, f"{path}: the record's heading moved"
-    found = citations(text[: text.index(GUIDE_PARTS[path])])
-    assert not found, "\n".join(found)
-
-
 #: The labels a record gives its own points: rules `R1`, facts `F5`, checks
 #: `C8b`, and its numbered sections `§4`.
 RECORD_LABEL = re.compile(r"\b[RFC][0-9]+b?\b|§ ?[0-9]")
 
 
-@pytest.mark.parametrize("path", sorted(GUIDE_PARTS))
-def test_no_guide_part_cites_its_own_records_labels(path):
+def test_the_state_workflow_page_cites_no_label_of_its_research():
     """Task 238 (follow-up 4): STATE-WORKFLOW's guide cited its record's
     rules, facts and checks by label (`R1, R2, R4`, `F5`, `§5 C2`), which
     sends a reader into the record for what the guide should state. Each
-    point is stated where it is made, and the record below keeps its labels."""
+    point is stated where it is made. The record moved out of the page to
+    `docs/records/STATE-WORKFLOW-RESEARCH.md` (task 338, stage 10), which
+    keeps its labels, so the whole page is held now."""
+    path = "docs/STATE-WORKFLOW.md"
     text = (REPO / path).read_text(encoding="utf-8")
-    guide = text[: text.index(GUIDE_PARTS[path])]
+    assert "## The research behind it" not in text, f"{path}: the record is back on the page"
     found = [
-        f"{path}:{guide.count(chr(10), 0, m.start()) + 1}: {m.group(0)}"
-        for m in RECORD_LABEL.finditer(guide)
+        f"{path}:{text.count(chr(10), 0, m.start()) + 1}: {m.group(0)}"
+        for m in RECORD_LABEL.finditer(text)
     ]
     assert not found, "\n".join(found)
 
@@ -587,13 +574,12 @@ def test_no_guide_part_cites_its_own_records_labels(path):
 def test_every_guide_is_held():
     """The rule covers the README, every guide in the *Guides* table of
     `docs/README.md`, `CONTRIBUTING.md` and `llms.txt` (CLAUDE.md, Style),
-    so each is in ``FILES``, or in ``GUIDE_PARTS`` when a record follows
-    its guide in the same file. A guide added to the table is held from the
+    so each is in ``FILES``. A guide added to the table is held from the
     day it is listed, not when someone remembers to add it here."""
     index = (REPO / "docs" / "README.md").read_text(encoding="utf-8")
     table = index.split("\n## Guides\n", 1)[1].split("\n## ", 1)[0]
     guides = [f"docs/{name}" for name in re.findall(r"^\| \[[^\]]+\]\(([^)#]+)\)", table, re.M)]
     assert len(guides) >= 15, guides
-    held = set(FILES) | set(GUIDE_PARTS)
+    held = set(FILES)
     missing = [p for p in ["README.md", "CONTRIBUTING.md", "llms.txt", *guides] if p not in held]
     assert not missing, missing

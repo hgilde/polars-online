@@ -1,11 +1,20 @@
 <!-- kind: reference -->
+<!--
+scripts/outputs_doc.py writes this page from each model's plainest spec, the
+one tests/test_model_registry.py builds. tests/test_outputs_doc.py regenerates
+it and fails on any difference, so a new field cannot ship undocumented and a
+removed one cannot linger. Do not edit this page by hand: change the
+generator, then run `uv run python scripts/outputs_doc.py > docs/OUTPUTS.md`.
+-->
 # What each model writes
 
-The fields each model writes into its output column, one section per model,
-for a reader who wants to know what a field holds, its type, and when it is
-null. Every spec adds one column to the output, named after the spec, and its
-value in each row is a record of these fields. `po.spec.output_fields(spec)` answers
-the same question at runtime, for the exact spec you built.
+This reference page lists the fields each model writes into its output column,
+one section per model, for a reader who wants to know what a field holds, its
+type, and when it is null. Every spec adds one column to the output, named after
+the spec, and its value in each row is a record of these fields. The tables are
+generated from the code, and a test fails when they differ from it.
+`po.spec.output_fields(spec)` answers the same question at runtime, for the
+exact spec you built.
 
 | family | models |
 |---|---|
@@ -14,12 +23,7 @@ the same question at runtime, for the exact spec you built.
 | [Clustering and classification](MODELS.md#clustering-and-classification) | [`kmeans`](#kmeans) · [`micro`](#micro) · [`ew_class`](#ew_class) |
 | [Sequential tests and regimes](MODELS.md#sequential-tests-and-regimes) | [`seqtest`](#seqtest) · [`corrchange`](#corrchange) · [`bocpd`](#bocpd) · [`hmm`](#hmm) |
 
-## Reading this page
-
-Each model's table lists the fields of its plainest spec, each with its
-dtype, what it holds, and the rows on which it is null.
-
-### The fields of your own spec
+## The fields of your own spec
 
 A spec of your own can carry a grid, several targets or another name, and
 each changes its fields' names. Ask the spec itself:
@@ -49,7 +53,7 @@ pred_y__r0.000001@h500 y 1e-06 500.0
 pred_y__r0.5@h500 y 0.5 500.0
 ```
 
-### Field names
+## Field names
 
 Each table lists the fields of the model's plainest spec, whose target is
 `y` and whose features are `x0`, and `x1` where the model needs two. Your
@@ -73,7 +77,7 @@ holds](how-to/find-an-output-field.md) builds a grid and reads its fields.
 
 | in a name | stands for | in this page's tables |
 |---|---|---|
-| `<t>` | a target: its column, its `name`, or a window target's alias | `y` |
+| `<t>` | a target: its column, its `name`, or a formula target's alias | `y` |
 | `<f>` | a feature | `x0`, `x1` |
 | `<a>`, `<b>` | the two columns of a pair | `x0`, `x1` |
 | `<j>` | a state's index | `0`, `1` |
@@ -84,9 +88,9 @@ holds](how-to/find-an-output-field.md) builds a grid and reads its fields.
 | `__p<penalty>` | one value of `penalties` | `__p0.1`, `__p0` |
 | `@h<half_life>` | one half-life of a grid, at the end of every field's name: `weight_sum@h500`, or `weight_sum@h10m` for a duration | |
 
-EW, in a meaning below, is short for exponentially weighted.
+EW, in a *what it holds* cell, is short for exponentially weighted.
 
-### Field types
+## Field types
 
 A field's dtype is the type the bank declares to Polars before it reads a
 row, as `po.spec.output_index(spec)` lists it:
@@ -107,7 +111,7 @@ comparison between two frames never meets two widths. Only the clock values
 differ, in a field or in a frame such as `groups()`' `clock_last`: an
 integer clock keeps its own width.
 
-### When a field is null
+## When a field is null
 
 **Every field is null on a skipped row**: a row whose features or weight
 hold a null, or a value that counts as one (NaN, ±inf, or a magnitude above
@@ -121,18 +125,18 @@ whose outputs a gate held back, or whose fit cannot be trusted there.
 table's last column, *also null*, says where a field is null besides a
 skipped row, and *withheld* there means such a row.
 
-### Fields most models write
+## Fields most models write
 
-Four fields appear in nearly every table below, and are defined here once:
+Four fields appear in nearly every model's table, and are defined here once:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
 | `weight_sum` | `f64` | the accumulated weight before the model learns this row, and before the row's own decay | never |
 | `settled_frac` | `f64` | how far the model had come toward its steady state under decay before this row: `1 - 2^(-T/half_life)`, with `T` the decay time seen so far, so 0.5 at one half-life and 0.75 at two. `min_settled_frac` gates on it | where nothing decays |
-| `withheld_reason` | `enum` | why the row's predictions are null: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation`, `below_warm_rows`, `ill_conditioned` or `unstable_rate`. That order is their precedence, so the first that applies is the one named. `below_warm_rows` is the model's own warm-up, the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves from, and the rows after a target's first while `kalman` sizes its prior (its second and third observed rows under the default `standardize` without `obs_var`). `ill_conditioned` is an `ewridge` fit whose normal equations are too nearly singular for a solve to keep a digit. `unstable_rate` is an `sgd` target whose learning rate is past its stability bound: its recent steps' gains have a mean square above twice their mean, so each step grows its own row's residual and the fit diverges | where nothing was withheld |
+| `withheld_reason` | `enum` | why the row's predictions are null: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation`, `below_warm_rows`, `ill_conditioned` or `unstable_rate`. That order is their precedence, so the first that applies is the one named. `below_warm_rows` is the model's own warm-up, the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves from, and, in a `kalman` fit standardized with no intercept, the rows before any of a target's coefficients is sized. `ill_conditioned` is an `ewridge` fit whose normal equations are too nearly singular for a solve to keep a digit. `unstable_rate` is an `sgd` target whose learning rate is past its stability bound: its recent steps' gains have a mean square above twice their mean, so each step grows its own row's residual and the fit diverges | where nothing was withheld |
 | `coef` | `list[f64]` | the numbers behind the fit, as one flat list written after the row is learned: a regression's coefficients, or what a model that is not a regression keeps in their place, such as its centers or state means. Its builder's docstring lays the list out. A model that solves on a schedule (`solve_every`) shows its latest solve. The entries of a target or class with no fit yet are null: a target no solve has fit, a `holt` target not yet observed, an `ew_class` class not yet seen. `hmm` writes zeros, not nulls, on its seeding rows before the last. `ewridge` does not run a solve that comes due while its weight is too far below the floor for any row to read it before the next one, so there it shows the last fit solved. Under an `embargo`, learning the row waits for the delay, so `coef` is written after the rows this row releases, and is the fit the next row is predicted with only when the next row releases none | on every row but those `coef_every` or `max_rows_between_coefs` fills, which with neither are each group's last row not skipped in each chunk; on an `ill_conditioned` row; and before the model has anything to report, such as a first solve |
 
-### What is not listed
+## What is not listed
 
 The optional outputs are left out of the tables: the `emit_*` switches (all
 but `emit_clocks` and `huber`'s `emit_huber_scale`, whose fields are listed),
@@ -145,29 +149,18 @@ the docs set it:
 | the diagnostics: `emit_sigma`, `emit_zscore`, `emit_selected`, `emit_averaged`, `emit_drift`, `emit_metrics`, `emit_autocorr`, `resid_quantiles`, `conformal`, `emit_calibration`, `emit_breaks`, `emit_specification`, `emit_tails`, `emit_influence` (`ewridge`'s, `rls`'s and `kalman`'s), `emit_feature_health` (not `holt`'s, which has no features) | [Is the model working?](DIAGNOSTICS.md), for the models that predict a target. `emit_metrics`' `hit_rate_<t>` is null throughout on an `sgd` fit with `loss="poisson"`, whose rate and count have no sign to hit |
 | `emit_error_inflation` and `emit_se_coef`, `ewridge`'s, `rls`'s and `kalman`'s | [Warm-up gates](MODELS.md#warm-up-gates) |
 | `emit_robust_se`, `ewridge`'s and `rls`'s | [Can its t be trusted?](DIAGNOSTICS.md#can-its-t-be-trusted) |
-| `emit_clocks`, every model's | [Learn targets known late](how-to/learn-targets-known-late.md#check-that-it-worked), and the table below |
+| `emit_clocks`, every model's | [Learn targets known late](how-to/learn-targets-known-late.md#check-that-it-worked), and the table of its two fields after this one |
 | `emit_huber_scale`, `huber`'s: `huber_scale_<t>`, the scale each row's cut is drawn in | [`huber`'s table](#huber), and its [entry](MODELS.md#huber--robust-regression) |
 | `ew_cov`'s extra `stats`, its `lags` (`lag_corr_l<l>_<a>_<b>`), `pca` (`pc<j>_*`) and `mahal_quantiles` (`mahal_q<p>`) | its own [section](MODELS.md#ew_cov--exponentially-weighted-moments) and its [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_cov) |
 | `seqtest`'s `a` and `b`, which replace its four fields with `log_e_a_<t>`, `log_e_b_<t>`, `wins_a_<t>` and `wins_b_<t>` | its own [section](MODELS.md#seqtest--a-sequential-test-of-a-sign-by-betting) and its [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.seqtest) |
 | `deco`'s named blocks, which turn `u` and `rho` into one field per block and pair of blocks | its [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.deco) |
 
-`huber`'s `emit_huber_scale` adds a field listed under `huber`'s table.
-`emit_clocks` is the one switch
-every model takes, and it adds two fields:
+`emit_clocks` is the one switch every model takes, and it adds two fields:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
 | `scored_clock` | `clock` | the clock the row was predicted at, in the clock column's own type; with no clock, the row's index in its group | never |
 | `learned_clock` | `clock` | the clock of the newest row the model had learned from at a positive weight when this row was predicted, in the same type: under an `embargo`, at least the delay behind `scored_clock` | before the first row learned, and after a reset |
-
-### How this page is made
-
-`scripts/outputs_doc.py` writes this page from each model's plainest spec,
-the one `tests/test_model_registry.py` builds. `tests/test_outputs_doc.py`
-regenerates it and fails on any difference, so a new field cannot ship
-undocumented and a removed one cannot linger. Do not edit this page by
-hand: change the generator, then run
-`uv run python scripts/outputs_doc.py > docs/OUTPUTS.md`.
 
 
 ## `ewridge`

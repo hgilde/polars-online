@@ -32,7 +32,8 @@ gate measures.
    the gate that held the row, or a reason the fit cannot be trusted there,
    such as `ill_conditioned`. [Is it
    ready?](../DIAGNOSTICS.md#is-it-ready) lists every reason in its order
-   of precedence.
+   of precedence. The code in [Choose a gate](#choose-a-gate) counts each
+   gate's `withheld_reason` values.
 2. **Read `weight_sum` and `settled_frac` beside it,** the two numbers the
    `min_weight` and `min_settled_frac` gates compare.
 3. **For `max_error_inflation` on `ewridge`, `rls` or `kalman`, turn on
@@ -106,7 +107,7 @@ weighted  predicts from row 114 (below_min_weight on 114 rows); its mse before r
 ```
 
 The default gate holds back the first 12 rows, where 11 coefficients would
-otherwise be fitted on fewer rows than they number. Its predictions before
+otherwise be fitted on no more rows than they number. Its predictions before
 row 600 have an error of 1.12 against a noise floor of 1, because the
 earliest ones still carry much estimation error. The strict gate, at 5%
 over the floor, waits for 108 rows and its early error is 1.01. The other

@@ -356,7 +356,8 @@ def test_chunks_arrive_in_stream_order():
     assert math.isclose(n.max(), _bank_loop(df, 400)["ridge"].struct.field("weight_sum").max())
 
 
-# --- E35: the state out of a streamed plan -- `save_state=` (docs/STATE-WORKFLOW.md).
+# --- E35: the state out of a streamed plan -- `save_state=`
+# (docs/records/STATE-WORKFLOW-RESEARCH.md).
 
 
 def _bank_after(df: pl.DataFrame, **kw) -> bytes:
@@ -461,7 +462,7 @@ def test_a_run_that_does_not_reach_the_end_writes_nothing(tmp_path):
     # after the whole stream is written although the query failed. The CLI
     # saves only once its output is committed.
     #
-    # py-polars 2.0 narrows this, which docs/STATE-WORKFLOW.md said it might
+    # py-polars 2.0 narrows this, which docs/records/STATE-WORKFLOW-RESEARCH.md said it might
     # ("R6 narrows if polars ever stops it"): on a stream long enough that the
     # downstream error lands before the source is exhausted -- 40,000 rows in
     # 80 chunks here -- 2.0 stops the source and the state is never written,

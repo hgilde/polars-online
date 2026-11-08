@@ -31,8 +31,7 @@ more of a five-feature regression's row, and a sixth of a 50-feature
 ridge's. A model that writes many fields a row spends 2 to 4 ns on each.
 A five-feature `ewridge` row takes 107 ns in the model and 217 through the
 bank, and a 50-feature one 795 and 955 ([timed against the model's step
-alone](../PERFORMANCE.md#the-banks-work-around-a-row)). So a regression's row is the bank's bookkeeping as much as the model's at
-five features, and the model's from about 50. A model that writes a field
+alone](../PERFORMANCE.md#the-banks-work-around-a-row)). A model that writes a field
 per pair, as `ew_cov` does, spends most of a wide row writing it.
 
 **Reading the file takes a small share of a run, and learning sets its
@@ -134,9 +133,23 @@ five features, because they include reading the file. That table times
 around it, without the read.
 
 **A bank uses more cores when it has more pieces of work.** It learns each
-group's rows one at a time, and runs its pieces of work on its own
-threads. There is one piece per spec and group, more for a grid of
-half-lives, and more again for a wide spec split across threads. [Use more cores](../how-to/use-more-cores.md) shows how
+group's rows one at a time, because what it learns from each row depends
+on the row before. On every chunk it splits its work into pieces, one per
+spec and group, or one per spec without a `group`, with more for a grid of
+half-lives and more again for a wide spec split across threads. It runs
+the pieces on its own threads, separate from Polars', largest first, so a
+few big groups do not leave cores idle at the end. A bank with one spec,
+one group and one half-life is therefore one thread's work per chunk,
+while Polars reads and writes in parallel around it. Only a wide spec
+split across threads runs one group on several threads: an `ewridge` or
+`ew_cov` under `gram_threads` ([One wide Gram on several
+threads](../GRAM.md#one-wide-gram-on-several-threads)), or a `marginal`
+under `shards`. All of it runs in one
+process, by design ([What this is not](../../README.md#what-this-is-not)),
+and the thread count never changes the numbers ([Why the thread count
+cannot change the
+numbers](chunk-invariance-and-streaming.md#why-the-thread-count-cannot-change-the-numbers)).
+[Use more cores](../how-to/use-more-cores.md) shows how
 to give a bank more work it can run at once, set its thread count, and
 search over factor sets in one pass. [Rows a second at each thread
 count](../PERFORMANCE.md#rows-a-second-at-each-thread-count) measures the
@@ -146,13 +159,25 @@ speed at each thread count.
 chunks.** [Set the chunk size](../how-to/set-the-chunk-size.md) gives the
 figures, and how to set it.
 
+**The command line reads, learns and writes at once, so the slowest of the
+three sets a run's pace.** It runs as three stages, each with one chunk in
+flight: a reader thread, the bank on the calling thread, and a writer
+thread. A `closed_groups` file has a writer thread of its own.
+`POLARS_ONLINE_TIMING=1` prints how long the bank waited on each side.
+Polars encodes a parquet file's pages on its own threads, a column at a
+time in parallel, and an NDJSON file on the writer's own thread. A spec
+with many fields can make the writer the slowest stage. [Input and output
+files](../RUNNER.md#input-and-output-files) measures `--output-layout
+flat`, which writes such a spec faster to parquet.
+
 ## Where the memory goes
 
 **A bank's memory grows with the models' state and the rows a delay holds,
 and never with the number of rows that have passed.** Every way of
 running a bank works a chunk at a time. A run's memory has four
 parts: the state, the chunks in flight, the rows an embargo, a
-`label_clock` or a look-ahead target holds until they can be learned, and
+`label_clock` or a [formula
+target](../GLOSSARY.md#fitting-a-model) holds until they can be learned, and
 what Polars' reader has read ahead. A few chunks are in flight
 at once: three on the command line, and a few more in Python. [Why memory
 stays
@@ -160,7 +185,7 @@ bounded](chunk-invariance-and-streaming.md#why-memory-stays-bounded) says
 what bounds each part. [Bound a run's
 memory](../how-to/bound-memory.md) cuts each.
 
-**A run's peak grows a little with its length, but the bank does not.**
+**A run's peak grows with its length, but the bank does not.**
 The growth is the memory allocator keeping pages it has freed, and nearly
 all the rest of a run's peak is Polars reading ahead in the parquet file.
 [Peak memory of each way of running a
@@ -207,8 +232,8 @@ one group, after 1,000,000 rows: state 11 KB
 **For a statistic per group over a long stream, use a spec's `group=`,
 which keeps one set of running sums per group.** Polars' `rolling` over
 groups, with `.over("group")` or `group_by=`, holds every row of its input:
-6.5 GB on 12M rows with `.over("group")`, as [Peak memory of each way of
-running a bank](../PERFORMANCE.md#peak-memory-of-each-way-of-running-a-bank)
+6.5 GB on 12M rows with `.over("group")`, as [Polars' rolling windows
+against a spec's groups](../PERFORMANCE.md#polars-rolling-windows-against-a-specs-groups)
 measures.
 
 **A window operator, such as `po.ewm_mean`, holds the rows of its window,
@@ -226,15 +251,15 @@ here:
 |---|---|---|
 | a row slower than [its model's rows a second](../PERFORMANCE.md#rows-a-second-for-each-model) | the model's own learning step, `O(k²)` a row for a model that solves, and its solves on their schedule; below about 50 features, as much again in the bank's work around the row; and for a model with many fields, writing them | `solve_every` and `max_rows_between_solves`; `gram_block_rows` and `gram_threads` for a wide `ewridge`; only the `stats` you read for `ew_cov` |
 | a grid slower than one model | a ridge or feature-set grid shares one set of sums; each half-life of a grid keeps its own, run alongside the others | the number of half-lives |
-| small chunks slower than large ones | a fixed overhead per call: handing the frame across alone takes about 8 ms at 10,000 columns ([Set the chunk size](../how-to/set-the-chunk-size.md)), and gathering the columns and assembling the output add to it | `chunk_size`, 100,000 by default on the query and the command line; the eager call takes the frame whole unless given one |
+| small chunks slower than large ones | a fixed overhead per call: handing the frame across alone takes about 8 ms at 10,000 columns ([Set the chunk size](../how-to/set-the-chunk-size.md)), and gathering the columns and assembling the output add to it | `chunk_size`, 100,000 by default on the query and the command line; `df.online.fit_predict` takes the frame whole unless given one |
 | memory that grows with the file | Polars reading ahead in the parquet file, sized from its thread count, and the allocator keeping pages it has freed | `POLARS_ROW_GROUP_PREFETCH_SIZE`, `POLARS_MAX_THREADS` |
-| an eager `fit_predict` above its output | a spec of many groups keeps buffers of about its output again until its groups are done; a spec of one group or none holds its output and two sets of buffers more | a smaller frame, or the streaming path, whose peak is a chunk's |
+| `ModelBank.fit_predict` holding more than its output | a spec of many groups keeps buffers of about its output again until its groups are done; a spec of one group or none holds its output and two sets of buffers more | a smaller frame, or a query (`lf.online.fit_predict`), whose peak is a chunk's |
 | memory that jumps with a filter | a filter before the bank makes Polars hold several blocks of each file per thread | a filter after the bank, or weight 0 on the rows to skip |
 | one core busy | one piece of work per spec and group per chunk; within one, the rows go one at a time | more groups or specs, `POLARS_ONLINE_MAX_THREADS`, `shards` for a wide `marginal`, and `gram_threads` for a wide `ewridge` or `ew_cov` |
-| a query slower than the eager bank at many groups | the query reads its input as the frames Polars hands it, and the same bank code then takes longer to group, run and assemble them: 236 ns a row against 140 at 10,000 groups ([the query against the eager bank](../PERFORMANCE.md#a-query-against-the-eager-bank)) | `ModelBank.fit_predict` on a frame that fits in memory; the query where it does not |
+| a query slower than `ModelBank.fit_predict` at many groups | the query reads its input as the frames Polars hands it, and the same bank code then takes longer to group, run and assemble them: 236 ns a row against 140 at 10,000 groups ([the query against `ModelBank.fit_predict`](../PERFORMANCE.md#a-query-against-the-eager-bank)) | `ModelBank.fit_predict` on a frame that fits in memory; the query where it does not |
 | a window's memory | its ring of snapshots, capped per ring | `snapshot_every`, `max_rows_between_snapshots`, `window_budget` |
 | a wide `marginal` | every pair of every target | `cross_lags`, `bins`, `feature_moments="shared"`, `shards` |
 | `bocpd` slowing as a stream runs | the run lengths it keeps | `max_run`, `prune_below` |
 | a window operator | one queue of rows for each set of operators that share it, the same work a row whatever the window's length; memory about one window of rows | operators with the same direction, half-life, window and `closed` share one queue of rows |
-| a model whose target is a window expression | the bank's own window core, at about 1.6 times the column form's time and less memory | the column form, `with_windows(..., like=spec)` |
+| a model with a [formula target](../GLOSSARY.md#fitting-a-model) | the bank's own window core, at about 1.6 times the column form's time and less memory | the column form, `with_windows(..., like=spec)` |
 | learning slower than serving | `predict` skips learning | serve with `predict` where the model need not learn from the rows |

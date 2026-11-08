@@ -18,7 +18,9 @@ Clear the caches only once nothing still needs their builds:
 
 - The main checkout of the repository, where you run the script.
 - The push wave's branches merged and pushed, and their worktrees removed
-  with `git worktree remove`, so that no build you still need is cleared.
+  with `git worktree remove`.
+- No other worktree outside the worktree slots with a build you still
+  need, since step 2 clears every such worktree's `target/`.
 
 ## Steps
 

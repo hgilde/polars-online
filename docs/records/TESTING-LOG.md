@@ -141,7 +141,7 @@ its sets skipped on each. ... Among hundreds of tests a skip is easy to miss: th
 The twins found two of the five
 single-seed bounds narrower than the seeds' spread, and hold the measured
 spread. The third was a defect: `marginal`'s windowed lag correlations
-were centred at the running mean as it stood, 0.165 from `acf` over the 50
+were centered at the running mean as it stood, 0.165 from `acf` over the 50
 seeds, and are now held to their definition to rounding.
 
 #### The ledger's first CI run
@@ -231,7 +231,7 @@ behaves, then the files the repository promises.
 | [the examples](#examples-are-executed) | `tests/test_examples.py` | everything under `examples/` runs unmodified |
 | [memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31) | `tests/test_ffi_memory.py`, `scripts/leakcheck.sh` | no leak and no crash across the FFI |
 | the shared contract | `crates/online-core/tests/model_contract.rs` | every model's shape accessors, its `n_eff` against one recursion (hard rule 8), its prediction slots and its state round trip |
-| a stopped feature or target (2026-09-24) | `crates/online-core/tests/held_values.rs` | every model that centres a feature or target keeps what exact arithmetic gives for 150 half-lives after it stops, at levels from 0 to 1e12 and with no decay: the slope it learned, a spread that keeps decaying, and fits that do not depend on the level. It has 21 tests. Of the fourteen it had when written, twelve fail with each running mean held as one plain double, where the models now carry it as a pair of doubles, to twice a double's precision; the other two are contracts any design must keep: a row of weight 0 changes nothing, and a state saved part-way resumes to the bit |
+| a stopped feature or target (2026-09-24) | `crates/online-core/tests/held_values.rs` | every model that centers a feature or target keeps what exact arithmetic gives for 150 half-lives after it stops, at levels from 0 to 1e12 and with no decay: the slope it learned, a spread that keeps decaying, and fits that do not depend on the level. It has 21 tests. Of the fourteen it had when written, twelve fail with each running mean held as one plain double, where the models now carry it as a pair of doubles, to twice a double's precision; the other two are contracts any design must keep: a row of weight 0 changes nothing, and a state saved part-way resumes to the bit |
 | Arrow with pyarrow (2026-09-24) | `tests/test_pyarrow_interop.py` | pyarrow 25.0.1 reads the Arrow output through `pa.array`, `pa.chunked_array`, `pa.record_batch` and `pa.table` with `fit_predict`'s values and dtypes; a reader streams into a bank with the whole frame's numbers; the export validates in full, zero rows and an all-null field cross, two specs are two exports, and a requested schema other than the struct's own raises inside pyarrow 25.0.1's cast path (its bug, `array.pxi:321`) rather than coming back silently cast. pyarrow is a test-only dependency: `tests/conftest.py` makes it unimportable in the rest of the suite, and `tests/child.py` in the child interpreters the tests spawn, which so run as a user without it does |
 | a weight's scale (2026-10-02) | `tests/test_weight_scale.py` | every spec of the release probe's workload, at its weights and at a hundred times them with `min_weight` scaled alike: only the specs whose docs say a weight counts on the sum scale move |
 | row order (2026-09-17; its exemptions narrowed 2026-09-29) | `tests/test_order_hazards.py` | a query whose row order is unspecified is warned about before a bank reads it, with an `OrderNotGuaranteedWarning` naming the step and the fix; `test_what_is_not_order_free` holds the specs `ModelBank.fit` exempts from the warning to those whose state cannot depend on the order |
@@ -321,7 +321,7 @@ The soak (10M rows) was re-run after the refactor, and passes.
 and compares it to the committed copy, with timings normalized away. So the
 numbers the shipped defaults were chosen from cannot silently stop being
 true. It was re-run after the whole enhancement backlog, including the switch
-to centred co-moments in `EwCov`, and **every number is unchanged**. That is itself the
+to centered co-moments in `EwCov`, and **every number is unchanged**. That is itself the
 result: the numerics work did not move the measured optima. A second
 assertion checks the script still runs all five experiments, so the
 comparison cannot pass on a document that no longer justifies anything.
@@ -464,9 +464,9 @@ Each row names what found the defect, and where it is told in full or the test t
 | the lasso's `penalty_selected` under a `window_size` read errors outside it, four ways | the same oracles, then a Rust one | `tests/test_oracles_lasso_paths.py` |
 | `holt` reported `coef` as `[0, 0]` before a target's first observation | the same oracles | `tests/test_oracles_gradient_paths.py` |
 | a CLI test skipped on Windows for want of `online.exe`, and wrote Windows paths into a TOML basic string | reading the first Windows run's skips | `toml_config` in `tests/test_closed_groups.py`, which writes paths POSIX-style |
-| a feature or target that stops moving: its running mean stopped `1/(2b)` rounding steps short, and every variance and slope centred on it read that gap (a lasso slope of -4.7e3 at a level of 1e8) | measuring the windowed lasso's case of 2026-09-24 outside a window | `crates/online-core/tests/held_values.rs` ([a stopped feature or target](#beyond-the-eight-classes)) |
+| a feature or target that stops moving: its running mean stopped `1/(2b)` rounding steps short, and every variance and slope centered on it read that gap (a lasso slope of -4.7e3 at a level of 1e8) | measuring the windowed lasso's case of 2026-09-24 outside a window | `crates/online-core/tests/held_values.rs` ([a stopped feature or target](#beyond-the-eight-classes)) |
 | a windowed `marginal` pair kept the remainder a constant feature leaves inside a window, for a slot held over the window, and `beta` divided it by itself | the sweep of every running mean that followed | `marginal_reports_a_stopped_feature_as_it_is` in `crates/online-core/tests/held_values.rs` |
-| the clusters' metric weight `1 / var` grew without bound as a quiet feature's variance decayed, and a feature that stopped left a rounding artefact in it | the same sweep, then the prototype's streams | `kmeans_assigns_the_same_at_every_level` and `micro_assigns_the_same_at_every_level` in `crates/online-core/tests/held_values.rs` |
+| the clusters' metric weight `1 / var` grew without bound as a quiet feature's variance decayed, and a feature that stopped left a rounding artifact in it | the same sweep, then the prototype's streams | `kmeans_assigns_the_same_at_every_level` and `micro_assigns_the_same_at_every_level` in `crates/online-core/tests/held_values.rs` |
 | the window's held-feature rule compared the run's decayed weight with the window's to 1e-12, and the two drifted past it under a long window and a long half-life (1.6e-12 at a half-life of 1e6, fifty thousand rows of each) | a second reading of the windowed fixes on 2026-09-25; a simulation, then `a_long_window_under_a_long_halflife_still_reads_a_held_feature` on the old rule | that test, in `crates/online-core/src/window.rs` |
 | the lasso's windowed selection fell back on whole-history errors through an empty window | the same reading | `tests/test_oracles_lasso_paths.py` |
 | `corrchange`'s accurate `D̂` reached its true 0 on a collinear pair, and the numerator's rounding divided by it flagged every span of a derived column | a second reading of `corrchange`'s fix on 2026-09-25; `a_collinear_pair_has_no_verdict` | that test, in `crates/online-core/src/corrchange.rs` |
@@ -819,7 +819,7 @@ deleted in `509c6cf` and restored on 2026-09-23.
 `ew_cov` surface. The final test in that class quantified
 where the two diverged: at a 1e9 offset, river's Welford form was still exact
 while our raw-moment form had lost the variance entirely. That was the gap
-the switch to centred co-moments closed (`509c6cf`). `EwCov` keeps centered co-moments, and the final
+the switch to centered co-moments closed (`509c6cf`). `EwCov` keeps centered co-moments, and the final
 test is now `test_matches_river_even_on_a_large_offset`, which holds the two
 to agreement at such offsets.
 

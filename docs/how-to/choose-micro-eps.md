@@ -39,14 +39,15 @@ weight (default 3), and only established summaries form clusters.
 2. **Build the spec with `po.spec.micro`,** giving `features`,
    `half_life` and `eps`.
 3. **Run it on a stretch of the stream with
-   `pl.scan_parquet(...).online.fit_predict([mc])`, unnest the output
-   column, and read the last rows' `n_clusters`, `n_micro` and
-   `outlier`.** `n_clusters` is the live
-   clusters, `n_micro` the live summaries, and `outlier` whether no
-   established summary took the row.
-4. **If nearly every row is an `outlier`, increase `eps`.** No summary
+   `pl.scan_parquet(...).online.fit_predict([mc])`.** The rows gain the
+   spec's output column, `mc`, whose fields Polars' `unnest("mc")` spreads
+   into columns.
+4. **Read the last rows' `n_clusters`, `n_micro` and `outlier`.**
+   `n_clusters` is the live clusters, `n_micro` the live summaries, and
+   `outlier` whether no established summary took the row.
+5. **If nearly every row is an `outlier`, increase `eps`.** No summary
    reaches `beta_mu` before a prune drops it.
-5. **If `n_micro` is about the number of clusters you expect and
+6. **If `n_micro` is about the number of clusters you expect and
    `n_clusters` is lower, lower `eps`, or set `macro_link=2`.** Without
    `macro_link`, the link distance is derived from the summaries'
    spacing, so a few coarse summaries bridge each other. `macro_link=2` links only summaries that
@@ -68,7 +69,7 @@ centers = np.array([[0.0, 0.0], [5.0, 0.0], [0.0, 5.0]])
 xy = centers[rng.integers(0, 3, n)] + 0.3 * rng.standard_normal((n, 2))
 pl.DataFrame({"a": xy[:, 0], "b": xy[:, 1]}).write_parquet("blobs3.parquet")
 
-# 2 and 3. Build and fit each eps, and read the last rows' clusters, summaries and outliers.
+# 2 to 4. Build and fit each eps, and read the last rows' clusters, summaries and outliers.
 for eps, macro_link in ((0.002, None), (0.07, None), (0.3, None), (0.3, 2.0)):
     mc = po.spec.micro("mc", features=["a", "b"], half_life=1_000.0, eps=eps, macro_link=macro_link)
     late = pl.scan_parquet("blobs3.parquet").online.fit_predict([mc]).collect().unnest("mc").tail(1_000)

@@ -40,7 +40,8 @@ cutoff.
 4. **Rank the flagged rows by `|influence_<t>|`, and look at each.**
 
 This code plants three bad prints in 10,000 rows, each with `x0` six
-spreads out and `y` six noise sds off the line. It prints the five rows
+standard deviations out and `y` six noise standard deviations off the
+line. It prints the five rows
 that moved the fit most, beside the clean rows for scale:
 
 ```python
@@ -56,8 +57,8 @@ x0, x1, e = rng.standard_normal((3, n))
 y = 1.0 * x0 + 0.5 * x1 + e
 # The bad prints: a far-out x0 whose y sits far off the line.
 bad = [2_500, 6_000, 8_200]
-x0[bad] = 6.0  # six spreads out ...
-y[bad] = 1.0 * x0[bad] + 0.5 * x1[bad] - 6.0  # ... and six noise sds off the line
+x0[bad] = 6.0  # six standard deviations out ...
+y[bad] = 1.0 * x0[bad] + 0.5 * x1[bad] - 6.0  # ... and six noise standard deviations off the line
 pl.DataFrame({"x0": x0, "x1": x1, "y": y}).write_parquet("prints.parquet")
 prints = pl.scan_parquet("prints.parquet").with_row_index("row")
 

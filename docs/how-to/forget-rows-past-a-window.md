@@ -13,7 +13,10 @@ nothing, give the [spec](../GLOSSARY.md#the-model-bank-and-what-it-reads)
 models take it: `ewridge`, `lasso`, `ew_cov`, `ew_class` and `marginal`.
 [A hard window](../explanation/time-and-decay.md#a-hard-window) explains
 how the model cuts its running sums exactly, and shows a hard window forget
-a change that a half-life still holds.
+a change that a half-life still holds. Before you read a model's numbers
+under a hard window, read [five things to
+know](../MODELS.md#a-hard-window) about them, such as `weight_sum` being
+the weight inside the window.
 
 ## Prerequisites
 
@@ -147,7 +150,9 @@ the rows between snapshots.
 2. **After a refusal, increase the cap or give `{"thin": ...}`, and feed
    the chunk again.** A refusal comes before the bank learns any of the chunk,
    so the bank goes on as it was. Two overruns are found only as the rows
-   go in. One is under `drift_action="reset"`. The other is a snapshot that
+   go in. One is a spec under `drift_action="reset"`, which resets the
+   model when it flags drift ([Act on a break](detect-a-break.md#act-on-a-break)).
+   The other is a snapshot that
    grows within the chunk, as an `ewridge`'s or a `lasso`'s does when its
    targets first go missing on different rows. After either, the bank
    refuses every call that follows, so rebuild it from its last save with
@@ -173,6 +178,7 @@ windowed = po.spec.ewridge("windowed", window_size=100.0, **common)
 alone = po.spec.ewridge("alone", **common)
 in_window = pl.scan_parquet("ticks.parquet").online.fit_predict([windowed]).collect()
 last_t = pl.scan_parquet("ticks.parquet").select(pl.col("t").max()).collect().item()
+# A filter before the bank costs memory on a large file; here it chooses the rows to fit, on a small one.
 last_rows = pl.scan_parquet("ticks.parquet").filter(pl.col("t") > last_t - 100.0).online.fit_predict([alone]).collect()
 # The last row's [intercept, signal_a] each way.
 a = in_window["windowed"].struct.field("coef")[-1]
@@ -187,7 +193,4 @@ the same within 1e-12: True
 ```
 
 The two agree to rounding: the cut is a subtraction, whose precision falls
-as the share of the weight it discards grows. Before you read the other
-numbers of a model under a hard window, read the README's [five things to
-know](../MODELS.md#a-hard-window) about them, such as `weight_sum`
-being the weight inside the window.
+as the share of the weight it discards grows.

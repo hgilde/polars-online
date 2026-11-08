@@ -655,7 +655,7 @@ interval on the row as the stream runs, inside the bank.
 `LazyFrame.map_batches(..., streamable=True)`, into `sgd` through the IO
 plugin (`leaves_recipe.py`): equal to the eager run to the bit, 1.0250 on
 the planted magnitudes, 0.51 s for 300,000 rows. `standardize=False`: a
-centred one-hot column spreads every update over every coefficient.
+centered one-hot column spreads every update over every coefficient.
 
 ### 8.4 An online combination of the last K boosters
 
@@ -813,7 +813,7 @@ finding, and what changed:
 | 9 | v2's §6.1: the walk is wasted under `closed="left"`, cured by `gap_cap`, fixed by a second list; it does not gate the kind | taken as written (§9.1, §3.4); the fix is dispatched as its own task |
 | 10 | baselines untuned, CatBoost missing, no monthly retrain, statics barely fit, no recorded selection | taken: CatBoost `has_time=True`, a tuned native, a monthly retrain, the statics at 0.01 with patience 300, every setting chosen on August (§1, §3.2). The ranking held: every batch arm stays at 24.0–24.5 MAE |
 | 11 | no forest swap; placement and linking; leaf ids | taken: the swap cannot carry coefficients, and the two answers are stated (§6.4); the reader in `online-polars`; `cargo tree -i` shown, and xxh3-128 in place of SHA-256 (§6.4); leaves renumbered (§6.3) |
-| 12 | the planted cases favour each candidate | taken: a structural drift added (§6.2); the target statistic's planted case is labelled as its best case (§3.2) |
+| 12 | the planted cases favor each candidate | taken: a structural drift added (§6.2); the target statistic's planted case is labeled as its best case (§3.2) |
 | 13 | ranking ids need only be contiguous | taken (§7) |
 | 14 | missed candidates | `label_clock=` designed and ranked first; the last-K combination, input drift against the cuts, parity through a saved state and rolling split-conformal measured as recipes (§8) |
 | 15 | the eviction key and libm | taken: never persisted, rebuilt on load; cross-OS fixtures on a literal `lam`; one key table per feature (§3.5) |

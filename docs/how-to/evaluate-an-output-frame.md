@@ -19,7 +19,7 @@ These steps need the library and a bank's output:
 
 ## Score the output by spec, group and window
 
-`po.eval` reads each slot's
+`po.eval` reads each [slot](../GLOSSARY.md#grids)'s
 [out-of-sample](../explanation/out-of-sample.md) predictions beside its
 target, and gives R², IC (the correlation of prediction with target), hit
 rate (the share of rows whose sign the prediction got right) and MSE.
@@ -191,7 +191,9 @@ no column, so give the call the spec itself.
    one.
 
 This code fits a target renamed `ret`, whose column is still `y`. It
-scores it by the spec's name, which fails, and then by the spec itself:
+scores it by the spec's name, which fails, and then by the spec itself. It
+uses `stocks` from the code in [Score the output by spec, group and
+window](#score-the-output-by-spec-group-and-window):
 
 ```python
 # 1. A target renamed with po.target: its fields say "ret", but its column is y.
@@ -224,8 +226,7 @@ Check the scores against what the run should give:
 
 | what you see | what it means | what to do |
 |---|---|---|
-| a call says no column of the frame is named after a slot | a target was renamed with `po.target(..., name=)`, or a formula target's column is not in the frame | for a renamed target, pass the spec dict in place of its name, or a list of spec dicts to `compare_specs`; for a formula target, add its column as step 2 of [Score a target that is renamed or looks ahead](#score-a-target-that-is-renamed-or-looks-ahead) does |
-| a call says the frame has no column for a formula target | the bank does not write out a target that looks ahead | add the column with `po.stream.with_windows` before scoring |
+| a call says no column of the frame is named after a slot, or that the frame has no column for a formula target | a target was renamed with `po.target(..., name=)`, or the target is a formula target, which looks ahead, so the bank does not write it out | for a renamed target, pass the spec dict in place of its name, or a list of spec dicts to `compare_specs`; for a formula target, add its column with `po.stream.with_windows` before scoring, as step 2 of [Score a target that is renamed or looks ahead](#score-a-target-that-is-renamed-or-looks-ahead) does |
 | two specs scored on different numbers of rows | each spec is scored on its own rows, and their warm-ups differ in length | compare them with `po.eval.diebold_mariano`, which reads only the rows where both have a residual |
 | the first window's R² well below the rest | the window holds the fit's warm-up | read the windows after it, or set a gate ([Decide when a model is ready](decide-when-a-model-is-ready.md)) |
 | a `hit_rate` of 1.0 whatever the fit | the target sits about 1, as a plain ratio does, where two positive numbers always agree | write the target to sit about zero, as the ratio less 1 or its `.log()` |

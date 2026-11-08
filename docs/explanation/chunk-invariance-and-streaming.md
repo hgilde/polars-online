@@ -40,7 +40,7 @@ a [hard window](../GLOSSARY.md#fitting-a-model) takes. It covers the
 release of a row an [`embargo`](../GLOSSARY.md#time) (a delay before a row
 is learned) holds, and the close of the window a [formula
 target](../GLOSSARY.md#fitting-a-model) reads. So one chunk or a thousand
-gives bit-identical numbers. So does a save and resume between two
+gives the same numbers, to the bit. So does a save and resume between two
 chunks, since a saved state is what the bank carries across a chunk's end
 ([A bank's state and resuming it](state-and-resuming.md)).
 
@@ -98,7 +98,7 @@ holds has four parts:
 
 | part | grows with | what bounds it |
 |---|---|---|
-| the state | the models, their settings and the number of groups | not the stream's length. A hard window's snapshots and the bins of `marginal` grow with their settings, and each group's are capped, at 256 MiB by default |
+| the state | the models, their settings and the number of groups | not the stream's length. A hard window's ring of snapshots and the bins of `marginal` grow with their settings, and each is capped at 256 MiB by default: each ring, and each group's bins at each half-life |
 | the chunks the bank is working on | `chunk_size` | a few chunks at once |
 | the rows an embargo, a `label_clock` (each row's own time its target is known) or a formula target's window holds until they can be learned | the delay or the window, times the rows' rate | not the stream's length |
 | what Polars has read ahead of the bank | Polars' thread count | Polars' own settings ([Bound a run's memory](../how-to/bound-memory.md#cut-what-polars-reads-ahead)) |
@@ -112,8 +112,9 @@ shows the state's size staying flat from 10,000 rows to 1,000,000.
 **Filter after the bank, not before it.** A `filter` before the bank makes
 Polars read several blocks of each parquet file ahead per thread. A run
 over 12M rows peaked at 2.53 GB with the filter before the bank, against
-0.78 GB with the same filter after it, measured on 2026-09-02 as the
-[peak footprint](../PERFORMANCE.md#how-the-numbers-are-made). The two
+0.78 GB with the same filter after it, measured on 2026-09-02 as the most
+memory the process held ([how it was
+measured](../PERFORMANCE.md#how-the-numbers-are-made)). The two
 also mean different things: a filter after the bank changes only which
 rows come out, and one before it changes which rows the model learns
 from. To keep rows from being learned, give them weight 0 in place of a
