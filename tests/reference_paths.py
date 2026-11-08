@@ -640,11 +640,13 @@ def ewridge_paths_ref(
     (b); every row for ``inf``), when
     ``max_rows_between_solves`` rows have gone by, or when there has been
     none yet and ``weight_sum`` has reached the smallest ``min_weight`` -- by
-    default the coefficient count. A solve the weight brings due, and not the
-    row cap, is not run while the weight held is below ``1 - ln 2 / 50`` of
-    the least of the coefficient count and the smallest ``min_weight`` (and
-    a margin of ``2**-16``), outside a window: no row is scored from it
-    before the next comes due; the schedule moves on as after it.
+    default the coefficient count. Under a share of the weight, a solve the
+    weight or the row cap brings due is not run while the weight held is
+    below ``1 - ln 2 / 50`` of the least of the coefficient count and the
+    smallest ``min_weight`` (and a margin of ``2**-16``), outside a window:
+    no row is scored from it before the next comes due; the schedule moves
+    on as after it. A solve an explicit ``solve_every`` brings due, by its
+    clock or its row cap, runs.
 
     **The combinations** are every feature set (column indices; ``None`` is
     all of them) crossed with every ridge value, set-major. Each is solved by
@@ -812,16 +814,16 @@ def ewridge_paths_ref(
         due = teaches and (by_cadence or since_rows >= max_rows)
         if teaches and not due and fit is None:
             due = held >= floor
-        # A solve the weight brings due, not the row cap, while the weight
-        # is below ``1 - share`` of the least floor a read uses (and a margin
-        # of ``2**-16``) is not run: no row can read it before the next
-        # (task 311). The schedule moves on as after it.
+        # A solve a share of the weight runs, due by the weight or the row
+        # cap, while the weight is below ``1 - share`` of the least floor a
+        # read uses (and a margin of ``2**-16``) is not run: no row can read
+        # it before the next (tasks 311 and 364). The schedule moves on as
+        # after it. An explicit cadence's solves run.
         by_share = share if share is not None else (np.log(2.0) / 50.0 if in_first else None)
         unread = (
             by_share is not None
             and not explicit
             and window_size is None
-            and since_rows < max_rows
             and held < min(float(kt), floor) * (1.0 - by_share) * (1.0 - 2.0**-16)
         )
         if due:

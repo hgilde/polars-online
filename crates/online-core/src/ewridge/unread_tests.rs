@@ -152,13 +152,31 @@ fn cases() -> Vec<Case> {
     c.first_period = true;
     out.push(c);
 
-    // A row cap's solve runs, read or not: at a cap of 1 every one.
+    // Under a share, a solve the row cap brings due is passed as the
+    // share's is (item 8; task 364): at a cap of 1 every row is due.
     let mut c = case("share with a row cap of 1", base(6, 2));
     c.cfg.max_rows_between_solves = 1;
-    c.skips = false;
     out.push(c);
     let mut c = case("share with a row cap of 3", base(6, 2));
     c.cfg.max_rows_between_solves = 3;
+    out.push(c);
+    let mut c = case("share with a row cap of 3, blocked Gram", base(6, 2));
+    c.cfg.max_rows_between_solves = 3;
+    c.cfg.gram_block_rows = 2;
+    out.push(c);
+    // Under an explicit cadence the row cap's solves run, read or not: no
+    // share bounds the weight to the next due row (item 8).
+    let mut c = case("explicit cadence, a row cap alone", base(6, 2));
+    c.cfg.solve_share = None;
+    c.cfg.solve_every = f64::INFINITY;
+    c.cfg.max_rows_between_solves = 3;
+    c.skips = false;
+    out.push(c);
+    let mut c = case("explicit cadence, a row cap of 1", base(6, 2));
+    c.cfg.solve_share = None;
+    c.cfg.solve_every = 0.0;
+    c.cfg.max_rows_between_solves = 1;
+    c.skips = false;
     out.push(c);
 
     let mut c = case("blocked Gram", base(6, 2));
@@ -485,6 +503,90 @@ fn the_first_rows_solve_is_passed_strictly_below_the_threshold() {
         .collect();
     // Each first row is due (all of its weight is new): passed, or run.
     assert_eq!(outcomes, [(1, 0), (0, 1), (0, 1)]);
+}
+
+/// A solve the row cap brings due under a share is passed at the same
+/// threshold to the bit as the share's (item 8; task 364): at a row cap of
+/// 1 a first row is due by the cap as well as by the share, and one ulp
+/// below the threshold it is passed, where the row cap's solve once ran
+/// read or not.
+#[test]
+fn a_row_caps_solve_is_passed_at_the_shares_threshold() {
+    let mut cfg = base(4, 1);
+    cfg.max_rows_between_solves = 1;
+    let floor = EwRidge::new(cfg.clone()).unwrap().unread_floor();
+    let s = crate::DEFAULT_SOLVE_SHARE;
+    let edge = floor * (1.0 - s) * (1.0 - 1.0 / 65_536.0);
+    let below = f64::from_bits(edge.to_bits() - 1);
+    let outcomes: Vec<(u64, u64)> = [below, edge]
+        .iter()
+        .map(|&w| {
+            let mut m = EwRidge::new(cfg.clone()).unwrap();
+            m.set_min_weight_output_only(true);
+            let (u0, s0) = (UNREAD.with(|c| c.get()), SOLVED.with(|c| c.get()));
+            m.step(&[0.3, -0.1, 0.7, 0.2], &[Some(1.0)], 0.0, w);
+            (UNREAD.with(|c| c.get()) - u0, SOLVED.with(|c| c.get()) - s0)
+        })
+        .collect();
+    assert_eq!(outcomes, [(1, 0), (0, 1)]);
+    // And on every row after, each due by the cap: a stream of unit rows at
+    // a long half-life passes every solve while the weight is below the
+    // threshold and runs every one from there.
+    cfg.decay = Decay::Halflife(1e6);
+    let mut m = EwRidge::new(cfg).unwrap();
+    m.set_min_weight_output_only(true);
+    let mut seen = Vec::new();
+    for i in 0..12 {
+        let (u0, s0) = (UNREAD.with(|c| c.get()), SOLVED.with(|c| c.get()));
+        let x = [0.3 * i as f64, -0.1, 0.7 / (1.0 + i as f64), 0.2];
+        m.step(&x, &[Some(1.0)], 1.0, 1.0);
+        let (u, r) = (UNREAD.with(|c| c.get()) - u0, SOLVED.with(|c| c.get()) - s0);
+        assert_eq!(u + r, 1, "row {i}: every row is due at a cap of 1");
+        assert_eq!(u == 1, m.n_eff() < edge, "row {i} at {}", m.n_eff());
+        seen.push(u);
+    }
+    // Rows of weight 1 to 4 are below 5 (1 − s)(1 − 2⁻¹⁶); from the fifth on, run.
+    assert_eq!(seen, [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+}
+
+/// Why an explicit cadence's row cap still solves below the floor (item 8):
+/// with no share, the weight can cross the floor before the next row the
+/// cap brings due, and a row then reads the fit solved below it. At a cap
+/// of 3 over six features (a floor of 7), unit rows and no decay, the
+/// solve on the sixth row, of weight 6, serves the eighth and ninth rows.
+/// With the cap's solves below the floor passed (the third row's and the
+/// sixth's), the model's first solve falls on the seventh row, and those
+/// rows read its fit instead: a served number moves.
+#[test]
+fn an_explicit_row_caps_fit_below_the_floor_is_read() {
+    let mut cfg = base(6, 1);
+    cfg.decay = Decay::Halflife(f64::INFINITY);
+    cfg.solve_share = None;
+    cfg.solve_every = f64::INFINITY;
+    cfg.max_rows_between_solves = 3;
+    let mut m = EwRidge::new(cfg).unwrap();
+    m.set_min_weight_output_only(true);
+    let floor = m.unread_floor();
+    assert_eq!(floor, 7.0);
+    let mut s = 364u64;
+    // Each row: the weight before it, whether it read a fit, and the
+    // weight of the last solve run before it.
+    let (mut last_solve, mut reads) = (None, Vec::new());
+    for _ in 0..9 {
+        let x: Vec<f64> = (0..6).map(|_| lcg(&mut s)).collect();
+        let before = m.n_eff();
+        let s0 = SOLVED.with(|c| c.get());
+        let out = m.step(&x, &[Some(x[0] - x[3])], 1.0, 1.0);
+        if out.pred[0].is_finite() {
+            reads.push((before, last_solve));
+        }
+        if SOLVED.with(|c| c.get()) > s0 {
+            last_solve = Some(m.n_eff());
+        }
+    }
+    // Rows 8 and 9 read the fit solved at weight 6, below the floor; the
+    // row cap's next due row is the ninth's own, after its prediction.
+    assert_eq!(reads, [(7.0, Some(6.0)), (8.0, Some(6.0))]);
 }
 
 /// The floor is a row per unknown -- `k + 1` with an intercept, `k`

@@ -591,15 +591,24 @@ fn coef_is_the_output_s_last_coef_per_group() {
     let restored = Bank::load_bytes(&bank.save_bytes().unwrap(), None).unwrap();
     assert_eq!(restored.coef(0, None).unwrap(), rows);
 
-    // `coef` does not wait for `min_weight` (5 here): the spec solves every
-    // row, so after one row per group there is a fit, and `n_eff` is what
-    // says how little is behind it. The default schedule solves the first
-    // row too, all of its weight being new (docs/PLAN.md task 115 (b)), and
-    // so does a clock schedule, whose first period runs on the default one
-    // (task 278, "Default cadence first"); where the first period is not
-    // so, a state written before the rule, its first row had not solved and
-    // the row was `None`, as `coef` was.
-    let mut fresh = Bank::new(vec![spec_json("m", true)]).unwrap();
+    // `coef` does not wait for `min_weight` (5 here): a spec whose explicit
+    // cadence solves every row (`solve_every = 0`) runs every solve, so
+    // after one row per group there is a fit, and `n_eff` is what says how
+    // little is behind it. Under the default schedule a row cap of 1
+    // brings every row due too, but below the floor no row can read those
+    // solves, so none is run and there is no fit to report (task 364).
+    let every_row: Spec = serde_json::from_str(
+        &serde_json::to_string(&spec_json("m", true))
+            .unwrap()
+            .replace(r#""solve_every":null"#, r#""solve_every":0.0"#),
+    )
+    .unwrap();
+    assert!(
+        serde_json::to_string(&every_row)
+            .unwrap()
+            .contains(r#""solve_every":0.0"#)
+    );
+    let mut fresh = Bank::new(vec![every_row]).unwrap();
     fresh.fit_predict(&df.slice(0, 2)).unwrap();
     assert!(
         fresh
@@ -608,6 +617,10 @@ fn coef_is_the_output_s_last_coef_per_group() {
             .iter()
             .all(|r| r.coef.is_some() && r.n_eff < 5.0)
     );
+    let mut capped = Bank::new(vec![spec_json("m", true)]).unwrap();
+    capped.fit_predict(&df.slice(0, 2)).unwrap();
+    let capped = capped.coef(0, None).unwrap();
+    assert!(!capped.is_empty() && capped.iter().all(|r| r.coef.is_none() && r.n_eff < 3.0));
     let lazy: Spec = serde_json::from_str(
         &serde_json::to_string(&spec_json("m", true))
             .unwrap()
@@ -625,8 +638,8 @@ fn coef_is_the_output_s_last_coef_per_group() {
     // `(1 - ln 2 / 50)(1 - 2^-16)` of the floor (here a row per unknown, 3,
     // the least of it and `min_weight`, 5) is not run, since no row can
     // read it before the next comes due (task 311). So its first rows have
-    // no fit to report, where the row cap of 1 runs every solve: the same
-    // weight, and `coef` null.
+    // no fit to report, where the explicit cadence of every row runs every
+    // solve: the same weight, and `coef` null.
     let (lazy_two, fresh_two) = (lazy.coef(0, None).unwrap(), fresh.coef(0, None).unwrap());
     assert_eq!(lazy_two.len(), fresh_two.len());
     for (l, f) in lazy_two.iter().zip(&fresh_two) {

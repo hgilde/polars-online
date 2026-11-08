@@ -103,9 +103,22 @@
 //!    size of the whole history rather than the window's, which (3) does
 //!    not bound.
 //!
-//! A solve the row cap brings due runs, read or not: `max_rows_between_solves
-//! = 1` is how a caller asks for a fit current at every row, and `coef`
-//! reports it.
+//! 8. *The row cap* (docs/PLAN.md task 364; the user's word of 2026-11-08).
+//!    Under a weight share, a row the row cap brings due is a due row like
+//!    any other: (2) bounds `W` between any two due rows, whatever made
+//!    each due, since every due row restarts the schedule -- the row count
+//!    and the weight since -- solved or passed (5). So a solve the row cap
+//!    brings due below the margin is passed as the share's is. Under an
+//!    explicit cadence (no share), a row the row cap or the clock brings
+//!    due is `explicit`, and runs: no share bounds `W` between it and the
+//!    next due row, so the weight can cross the floor before then and a
+//!    row read the fit (at a row cap of 3 over six features, unit weights
+//!    and no decay, the fit solved on the sixth row, of weight 6 below the
+//!    floor of 7, serves the eighth and ninth rows; `unread_tests`'
+//!    `an_explicit_row_caps_fit_below_the_floor_is_read`). In the explicit
+//!    cadence's first period the row cap's solve is `explicit` too: it ends
+//!    the period, after which no share runs. A `window` stays out, for (7)'s
+//!    reason.
 //!
 //! The observable choice below the floor: `coef` is the last fit solved,
 //! null before the first, as the schedule's latest solve is everywhere
@@ -131,11 +144,13 @@ impl EwRidge {
             .fold(self.cfg.min_weight.min(k), f64::min)
     }
 
-    /// Whether the solve due on this row, not one its explicit cadence or
-    /// its row cap brings due, can have no reader before the next one comes
-    /// due (the module docs): a weight share runs the schedule -- `first`,
-    /// the explicit cadence's first period, runs the default one -- and the
-    /// weight after the row is below `(1 − s)(1 − 2⁻¹⁶)` of the floor.
+    /// Whether the solve due on this row, not one its explicit cadence
+    /// brings due, can have no reader before the next one comes due (the
+    /// module docs): a weight share runs the schedule -- `first`, the
+    /// explicit cadence's first period, runs the default one -- and the
+    /// weight after the row is below `(1 − s)(1 − 2⁻¹⁶)` of the floor. Under
+    /// a share, a solve the row cap brings due is passed by the same rule
+    /// (item 8).
     pub(super) fn solve_is_unread(&self, first: bool) -> bool {
         #[cfg(test)]
         if !SKIP_UNREAD.with(std::cell::Cell::get) {
@@ -146,13 +161,8 @@ impl EwRidge {
             None if first => crate::DEFAULT_SOLVE_SHARE,
             None => return false,
         };
-        // A row cap's solve runs: `max_rows_between_solves = 1` promises a
-        // fit current at every row, read or not.
         // A share is finite and above 0 (`EwRidgeCfg::validate`).
-        if share > MAX_SHARE
-            || self.win.is_some()
-            || self.rows_since_solve >= self.cfg.max_rows_between_solves
-        {
+        if share > MAX_SHARE || self.win.is_some() {
             return false;
         }
         self.n_eff() < self.unread_floor() * (1.0 - share) * (1.0 - MARGIN)

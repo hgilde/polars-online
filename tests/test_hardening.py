@@ -393,7 +393,10 @@ class TestParameterRanges:
         ("kw", "want"),
         [
             ({}, None),
-            ({"coef_every": 0}, 3000),
+            # Every row but the first: its weight, 1, is below the floor of 2
+            # (a row per unknown), where the row cap's solve is not run and
+            # there is no fit to write (task 364).
+            ({"coef_every": 0}, 2999),
             # The 997th, 1,994th and 2,991st accepted rows.
             ({"max_rows_between_coefs": 997}, 3),
             # The clock steps by 1 from 0: t = 997, 1,994 and 2,991.
