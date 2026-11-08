@@ -3341,3 +3341,77 @@ written, and one left empty by a record that overflowed it precedes the \
 block the record moved to), so one block remains either way (held by an \
 `assert_eq!(blocks.len(), 1)` in its place over every online-core and \
 online-polars test, extended included)"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChangeCfg::validate"
+mutation = "replace < with <="
+line_has = "} else if self.alpha >= floor && least < 1.0 {"
+why = """they differ only where `least = fl(5e-11 · npairs)` is 1 exactly, \
+which needs `npairs` within about 2e-6 of 2e10; `npairs` is 1 or \
+`d(d − 1)/2`, and no whole `d` gives 2e10 (`d ≈ 200000.5`), so no \
+configuration reaches the boundary (task 358)"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChangeCfg::validate"
+mutation = "replace < with <="
+line_has = "} else if least < 1.0 {"
+why = """as the branch above's: `least` is never 1 exactly, since no pair \
+count `d(d − 1)/2` is 2e10 (task 358)"""
+
+[[equivalent]]
+file = "crates/online-core/src/rcov.rs"
+function = "RcovCfg::validate"
+mutation = "replace > with >="
+line_has = "if ring > 0 && most >= 1.0 && some_max {"
+why = """`ring` is a count, so `ring >= 0` always holds, and `ring > 0` never \
+decides: over the limit, `(ring + 1)·8k² > 2²⁸` (both sides exact scalings \
+of the same double `k·k`), so `most = ⌊2²⁸/8k²⌋ − 1 ≤ ring − 1`, and \
+`most ≥ 1` already needs `ring ≥ 2` (task 358)"""
+
+[[equivalent]]
+file = "crates/online-core/src/rcov.rs"
+function = "RcovCfg::validate"
+mutation = "replace > with >="
+line_has = "} else if ring > 0 && most >= 1.0 && some_bandwidth {"
+why = """as the first branch's: `most ≥ 1` over the limit already needs \
+`ring ≥ 2`, so `ring > 0` never decides (task 358)"""
+
+[[equivalent]]
+file = "crates/online-core/src/rcov.rs"
+function = "RcovCfg::validate"
+mutation = "replace > with >="
+line_has = "} else if ring > 0 && most >= 1.0 {"
+why = """as the first branch's: `most ≥ 1` over the limit already needs \
+`ring ≥ 2`, so `ring > 0` never decides (task 358)"""
+
+[[equivalent]]
+file = "crates/online-core/src/model.rs"
+function = "schema_refusal"
+mutation = "replace > with >="
+line_has = "if found > current {"
+why = """`check_schema`, the one place a `SchemaVersion` is made, makes it \
+only for a version outside `MIN_SCHEMA_VERSION..=SCHEMA_VERSION`, with \
+`current = SCHEMA_VERSION`, so `found` is never `current` (task 358)"""
+
+[[equivalent]]
+file = "crates/online-core/src/conformal.rs"
+function = "Conformal::update_against"
+mutation = "replace > with >="
+line_has = "if held > 0 || self.held_mean != 0.0 {"
+why = """the guard skips the division only where `held = 0` and `n̄ = 0`, and \
+there the update is `0 + (0 − 0)/w_rows = 0` (`w_rows ≥ 1` just above), \
+the value kept: a skip of work, as its comment says. `n̄` is never `−0`: \
+it starts at `+0`, `+0 − +0` and a sum of two zeros of which one is \
+`+0` are `+0`, and a state file omits a zero `n̄`, which loads as `+0` \
+(task 358)"""
+
+[[equivalent]]
+file = "crates/online-core/src/conformal.rs"
+function = "Conformal::update_against"
+mutation = "replace > with >="
+line_has = "if self.held_mean > 0.0 {"
+why = """at `n̄ = 0` the mutant divides `η` by `1 + rate·g·0/c = 1` exactly, \
+since `rate` is finite (`Conformal::new` refuses any other) and \
+`g = 2φ(·) < 0.8`, so `rate·g·0` is a zero; `η/1 = η` (task 358)"""

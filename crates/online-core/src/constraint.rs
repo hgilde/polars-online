@@ -796,6 +796,24 @@ mod tests {
             "sgd: coef_sum must be one the bounds allow, from 0.6001 to 0.6004, but it is 1. \
              Set coef_sum inside that range, or widen coef_min and coef_max."
         );
+        // A range whose ends are three figures exactly prints them as they
+        // are, not a step inward (task 358).
+        assert_eq!(
+            boxed(&[1.0, 0.0], &[2.0, 0.0], Some(5.0))
+                .validate(k, "sgd")
+                .unwrap_err(),
+            "sgd: coef_sum must be one the bounds allow, from 1 to 2, but it is 5. Set \
+             coef_sum inside that range, or widen coef_min and coef_max."
+        );
+        // Ends that round inward to the same figure print as that figure:
+        // it lies inside the range.
+        assert_eq!(
+            boxed(&[0.59951, 0.0], &[0.60049, 0.0], Some(1.0))
+                .validate(k, "sgd")
+                .unwrap_err(),
+            "sgd: coef_sum must be one the bounds allow, from 0.6 to 0.6, but it is 1. Set \
+             coef_sum inside that range, or widen coef_min and coef_max."
+        );
         // Floors that sum to 0.6000000000000001 accept a sum of 0.6.
         boxed(&[0.1, 0.2, 0.3], &[0.1, 0.2, 0.3], Some(0.6))
             .validate(3, "sgd")

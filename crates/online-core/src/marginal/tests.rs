@@ -5332,3 +5332,24 @@ fn a_configuration_with_two_problems_reports_both() {
         "{e}"
     );
 }
+
+/// A negative `min_weight` is refused in the words of its form: the one
+/// value a single target's spec gives, or one value among several (task
+/// 358).
+#[test]
+fn a_negative_min_weight_is_refused_in_the_words_of_its_form() {
+    let mut one = cfg(2, 1);
+    one.min_weight = vec![-1.0];
+    assert_eq!(
+        one.validate().unwrap_err(),
+        "marginal: min_weight must be at least 0, but it is -1. Set min_weight to 0, or to a \
+         positive weight."
+    );
+    let mut two = cfg(2, 2);
+    two.min_weight = vec![0.0, -1.0];
+    assert_eq!(
+        two.validate().unwrap_err(),
+        "marginal: min_weight must be at least 0, but one of its values is -1. Set that value \
+         to 0, or to a positive weight."
+    );
+}

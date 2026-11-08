@@ -959,6 +959,32 @@ mod tests {
         }
     }
 
+    /// A feature past the last, named twice in one block, is refused each
+    /// time as past the last, not as listed twice: only a feature the
+    /// model has is counted against its block (task 358).
+    #[test]
+    fn a_feature_past_the_last_is_never_counted_as_listed_twice() {
+        let e = DecoCfg {
+            blocks: vec![vec![0, 1, 3, 3], vec![2, 2]],
+            ..cfg(3)
+        }
+        .validate()
+        .unwrap_err();
+        let past = "deco: block 0 names feature 3 (both counting from 0), but there are only 3 \
+                    features. Name features from 0 to 2.";
+        assert_eq!(e.lines().filter(|l| *l == past).count(), 2, "{e}");
+        assert_eq!(
+            e.lines()
+                .filter(|l| l.contains("more than once"))
+                .collect::<Vec<_>>(),
+            vec![
+                "deco: block 1 lists feature 2 (both counting from 0) more than once. List each \
+                 feature once."
+            ],
+            "{e}"
+        );
+    }
+
     /// A row with a feature that is not usable is a row of no weight, and
     /// reports nothing, by the rule every model keeps (`OnlineModel`, task
     /// 183): `u`, `rho` and `loglik` all NaN, and the state it leaves is the

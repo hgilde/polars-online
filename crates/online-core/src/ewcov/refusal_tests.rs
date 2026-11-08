@@ -82,3 +82,42 @@ fn a_refused_row_takes_no_slot_in_the_lag_ring() {
         }
     }
 }
+
+/// `mahal_quantiles` out of range are named as a list: one alone, two or
+/// more joined by commas and a last "and" (task 358).
+#[test]
+fn quantiles_out_of_range_are_named_as_a_list() {
+    let refusal = |q: Vec<f64>| {
+        EwCovCfg {
+            bias: false,
+            n_features: 2,
+            decay: crate::Decay::Halflife(20.0),
+            stats: vec![EwCovStat::Mean, EwCovStat::Mahal],
+            min_weight: 2.0,
+            precision_prior: Some(1e-6),
+            mahal_quantiles: q,
+            pca: 0,
+            pca_every: 0.0,
+            max_rows_between_pca: u32::MAX,
+            lags: Vec::new(),
+            window: None,
+            window_every: None,
+            max_rows_between_snapshots: None,
+        }
+        .validate()
+        .unwrap_err()
+    };
+    let tail = "Set each to a level above 0 and below 1, such as 0.99.";
+    for (q, listed) in [
+        (vec![0.5, 1.5], "1.5 is not"),
+        (vec![0.0, 2.0], "0 and 2 are not"),
+        (vec![0.0, 1.5, 0.5, 2.0], "0, 1.5 and 2 are not"),
+    ] {
+        assert_eq!(
+            refusal(q),
+            format!(
+                "ew_cov: mahal_quantiles must each be above 0 and below 1, but {listed}. {tail}"
+            )
+        );
+    }
+}

@@ -803,6 +803,13 @@ mod tests {
         assert_eq!(exp_neg(0.0), 1.0);
         assert_eq!(exp_neg(-1.0), 1.0);
         assert_eq!(exp_neg(1e4), 0.0);
+        // 708 itself is still a normal double, `2^-1021` scaled (task 358).
+        let (got, want) = (exp_neg(708.0), (-708.0f64).exp());
+        assert!(
+            want.is_normal() && (got - want).abs() <= 1e-15 * want,
+            "{got} {want}"
+        );
+        assert_eq!(exp_neg(708.0f64.next_up()), 0.0);
         assert!(exp_neg(f64::NAN).is_nan());
     }
 

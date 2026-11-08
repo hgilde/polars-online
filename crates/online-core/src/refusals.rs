@@ -141,6 +141,7 @@ mod tests {
         let mut r = Refusals::new();
         assert!(r.is_empty() && r.stop_here().is_ok());
         r.refuse("m: a is wrong. Set a.");
+        assert!(!r.is_empty());
         assert!(!r.take(Err("m: b is wrong. Set b.\nm: c is wrong. Set c.".into())));
         assert!(r.take(Ok(())));
         assert_eq!(r.problems().len(), 3);
