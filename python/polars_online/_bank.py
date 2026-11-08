@@ -830,8 +830,9 @@ class ModelBank:
               target that is not 0 or 1, as its builder's docstring says;
             - the bank refused an earlier chunk after learning part of it
               (see Notes);
-            - ``POLARS_ONLINE_MAX_THREADS`` is not a whole number, or names
-              more threads than the system will start, on a bank
+            - ``POLARS_ONLINE_MAX_THREADS`` is not a whole number, or is
+              above 1024 (or the machine's core count, where that is
+              larger), on a bank
               with ``threads=None``, at the first call that runs on the
               process's threads.
         ``RuntimeError``
