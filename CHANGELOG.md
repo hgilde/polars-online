@@ -511,6 +511,39 @@ returns.
 
 ### Tests and documents
 
+- **The README is now a landing page.** It says what polars-online is, how
+  to install it, a first fit with its input and output, the example data
+  the other pages read, what you can rely on, and a map from each task
+  (run a bank, choose a model, follow time, make features and targets,
+  save and serve, read a fit, track moments and regimes, check the data
+  and the model, choose settings, speed and memory, trees, upgrading) to
+  its tutorial, how-tos, reference and explanation. It went from about
+  3,600 lines to about 480.
+- **A feature index, `docs/FEATURES.md`,** lists every model, every public
+  function and method, the frame namespaces, the window operators, the
+  parameters every spec takes by family, the error and warning classes,
+  the environment variables and the command line's flags and keys, one
+  line each with a link to the page that shows it. The README's map links
+  it first, and a test fails when a public name has no line in it.
+- **The README's sections moved to pages of their kind:** twenty-two new
+  pages (sixteen how-tos, four explanations, `docs/VERSIONS.md`, and the
+  feature index), and a new section of `docs/MODELS.md`, *What every spec
+  takes*, which holds the parameters every spec shares (columns, the clock
+  and its units, the clock's policy, a hard window, the warm-up gates),
+  what the bank refuses, and their recipes. `docs/MODELS.md` also gained
+  *The models at a glance*, the table of all twenty-two models and how
+  each learns from a row. `docs/PERFORMANCE.md` gained *The current
+  figures* (rows a second per model and per thread count, peak memory, the
+  window operators' cost).
+- **`docs/README.md` lists every guide by its kind,** and the how-tos by
+  task. `llms.txt` was rebuilt from the new pages.
+- Facts corrected on the way: the defaults changed in a minor release are
+  seven, not four (`bin_refit_rows` and `hmm`'s `warm_rows` were missing);
+  which loaded states continue to the bit is stated by case; `summary()`
+  lists `refit_given_up`, `labels_missing` and `labels_dropped`;
+  `ModelBank.fit` and `fit_predict_batches` take a frame whole unless
+  given `chunk_size`; four linear models, not all, take the noise gate; a
+  row withheld by `min_weight` still carries its readiness fields.
 - Three tutorials under `docs/tutorials/`, each a path to run step by step,
   with its data made in the code and the answer planted in it recovered:
   *Fit a model bank over parquet files in a query* fits two million rows
