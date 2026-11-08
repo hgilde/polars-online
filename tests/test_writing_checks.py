@@ -401,5 +401,8 @@ def test_each_check_reads_what_it_governs():
     assert sum(d.kind == "model" for d in documented) >= 20
     guides = wc.guides()
     assert {"README.md", "docs/MODELS.md", "docs/GLOSSARY.md"} <= set(guides), guides
+    # Every docstring is now in the shape, so that check finds nothing here;
+    # `test_a_planted_docstring_breaks_each_rule` shows it still reads.
+    assert wc.files_read("docstrings") == sorted({d.path for d in documented})
     for check in wc.CHECKS:
-        assert wc.run(check), check
+        assert wc.run(check) or check == "docstrings", check
