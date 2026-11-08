@@ -105,6 +105,11 @@ def run_bank(spec, df):
 
 
 def r2(pred, y, ok):
+    """R^2 over the rows `ok` marks, or nan where none is scored: under
+    `k = 10,000` and 2,000 rows `ewridge` never has a row per coefficient,
+    so it withholds every prediction."""
+    if not ok.any():
+        return float("nan")
     err = y[ok] - pred[ok]
     return 1.0 - float(err @ err) / float(((y[ok] - y[ok].mean()) ** 2).sum())
 
@@ -261,6 +266,7 @@ def wide():
             rows.append((name, n / dt, r2(pred, y, scored & np.isfinite(pred)), size))
 
         ew = dict(ridge=1e-6, solve_every=1e9, max_rows_between_solves=1000)
+        no_solve = {**common, "min_weight": 1e9}
         for name, spec in (
             (
                 "po.spec.sgd, standardize=False",
@@ -278,6 +284,17 @@ def wide():
             (
                 "po.spec.ewridge, gram_block_rows=1024",
                 po.spec.ewridge("m", gram_block_rows=1024, **ew, **common),
+            ),
+            # The co-moment update alone: a `min_weight` above the row count
+            # runs no solve. Until the first solve the explicit cadence brings
+            # due (`max_rows_between_solves`, row 1,000), the default schedule
+            # solves too, each time the weight grows by ln 2 / 50, so the rows
+            # above include those solves: at k = 10,000 they are most of the
+            # time.
+            ("po.spec.ewridge, no solve", po.spec.ewridge("m", **ew, **no_solve)),
+            (
+                "po.spec.ewridge, no solve, block=1024",
+                po.spec.ewridge("m", gram_block_rows=1024, **ew, **no_solve),
             ),
         ):
             pred, dt, bank = run_bank(spec, df)

@@ -2442,9 +2442,10 @@ def solve_subsets(
     fits read and the intercept alone, and dropped when its fits are done.
     Its targets share one factorization. The merge is :func:`merge`'s
     arithmetic entry for entry, so it agrees with it to the bit. For 38
-    Grams and 100 subsets of 19, measured on an M4 Pro under a load of 12,
-    it took 0.02 s at 200 columns and 3.0 s at 2,000, where the loop of
-    :func:`merge`, :func:`solve` and :func:`coef_stats` took 0.43 s and 76 s.
+    Grams and 100 subsets of 19, measured on an M4 Pro on 2026-11-08 under
+    a load near 10, it took 0.015 s at 200 columns and 3.3 s at 2,000, where
+    the loop of :func:`merge`, :func:`solve` and :func:`coef_stats` took
+    0.51 s and 80 s.
 
     **Jobs.** Each subset is merged once, on the intercept and every column
     its jobs read, and each draw pools its cross-moments again once per
@@ -2458,11 +2459,12 @@ def solve_subsets(
     and columns share that design's factorization, and the jobs run beside
     each other on the threads, as the subsets do. A screen per subset, per
     target and per draw, as complementary-pairs stability selection runs,
-    is then one call. It was measured on an M4 Pro under a load of 7, with
-    100 subsets of 19 of 38 Grams, 11 draws and 10 targets: 11,000 jobs,
-    each a path to 10 columns on 400 of 1,500 columns. The call took 11 ms
-    a subset, and the loop of :func:`merge`, :func:`subset` and
-    :func:`lars_path` per job took 115 ms.
+    is then one call. It was measured on an M4 Pro on 2026-11-08 under a
+    load near 5, with 100 subsets of 19 of 38 Grams, 11 draws and 10
+    targets: 11,000 jobs, each a path to 10 columns on 400 of 1,500
+    columns. The call took 13 ms a subset. The loop took 700 ms a subset:
+    :func:`merge` of the subset's signed Grams for each draw, then
+    :func:`subset` and :func:`lars_path` for each job.
     """
     np = _np()
     threads = _check_threads(threads)

@@ -317,10 +317,13 @@ survive every half's screen and are chosen on every half. The null runs,
 each screened under its own signs, put the threshold at 0.95, where the
 selection without a screen put it. Only the six planted columns pass it.
 
-Measured on an M4 Pro at a load near 7, 100 halves of 19 of 38 Grams
-under 11 draws and 10 targets, each of the 11,000 paths on its own 400 of
-1,500 columns, took 11 ms a half. The loop of `merge`, `subset` and
-`lars_path` it replaces took 115 ms a half.
+The call was measured on an M4 Pro on 2026-11-08 at a load near 5, with
+100 halves of 19 of 38 Grams under 11 draws and 10 targets. Each of the
+11,000 paths ran to 10 columns on its own 400 of 1,500 columns, and the
+call took 13 ms a half. The loop it
+replaces took 700 ms a half: for each half and draw, `merge` of the
+half's Grams with their targets' signs, then `subset` and `lars_path` for
+each target. Each is the best of three runs.
 
 ## Check the result
 

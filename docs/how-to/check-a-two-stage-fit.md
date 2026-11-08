@@ -166,8 +166,19 @@ Each check reads one part of the answer:
 | calibration | `revert`'s slope 0.99 | the predictions `−0.450 · resid_A` are scaled right, so the coefficient needs no rescaling |
 | the Wald beside it | `revert`'s Wald, 1.1 | under `horizon_rows=150` it takes Newey and West's variance at 300 lags, so the overlap of the 150 rows that share each window does not inflate it |
 | Newey-West | t of −107.7 by `se_coef`, −15.8 by `se_coef_hac` | the coefficient is real either way, but the plain t is 6.8 times too large: each residual shares its 150-second window with 149 others |
-| `joint` | one stage, `A` and `x1` to `x3` together: `A`'s coefficient −0.444, calibration slope 0.80 | `A`'s coefficient matches `resid_A`'s, since `x1` to `x3` absorb the fair value. `joint` fits five coefficients, so its first fits learned from few rows; the run-once calibration still holds their rows, and the 0.80 is theirs as much as the fit's |
+| `joint` | one stage, `A` and `x1` to `x3` together: `A`'s coefficient −0.444, calibration slope 0.80 | `A`'s coefficient matches `resid_A`'s, since `x1` to `x3` absorb the fair value. `joint` fits five coefficients, and its first hours of predictions are scaled worse than `revert`'s. The run-once calibration still holds their rows, so the 0.80 is theirs as much as the fit's: from eight hours after its first prediction on, the same slope reads 0.99 |
 | `both` | `resid_A` beside `x1` to `x3`: their t are +6.8, −15.8 and +5.1 by `se_coef`, and +0.7, −1.7 and +0.5 by `se_coef_hac` | once `resid_A` is in, `x1` to `x3` add nothing that Newey and West's standard error believes. By `se_coef` alone, all three would look significant |
+
+**The early rows were measured, on 2026-11-08.** Each row's target was
+computed from the mid, and the target regressed on each stage-two
+prediction by least squares over each two-hour stretch of the stream.
+Over the first six hours, `joint`'s slope read 0.54, 0.57 and 0.75, where
+`revert`'s read 0.65, 0.92 and 1.10. From the sixth hour on, the two read
+within 0.14 of each other. Over every scored row, `joint`'s slope is
+0.80, the calibration's figure, and from eight hours after its first
+prediction on it is 0.99.
+A two-hour stretch is a noisy read: `revert`'s ranged from 0.65 to 1.41,
+so read the calibration over many hours.
 
 [Checking a fit stage by
 stage](../explanation/how-diagnostics-work.md#checking-a-fit-stage-by-stage)
