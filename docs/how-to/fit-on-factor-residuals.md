@@ -157,6 +157,10 @@ with `half_life=float("inf")`, that memory is a half-life of about
 `window_size / 2.885` clock units, so 95% takes about 1.5 hard windows. In
 this recipe the second ridge has `se_coef_hac` from about `t` 1,500 on.
 
+To check each stage with the diagnostics it asks for (calibration, and
+Newey and West's standard error), see [Check a two-stage
+fit](check-a-two-stage-fit.md).
+
 ## If `online.unnest` refuses the output
 
 **`.online.unnest` raises Polars' `DuplicateError` while the query is built
@@ -204,8 +208,7 @@ block of the file ahead, the second ridge alone over
 `pl.scan_parquet(...).with_columns(...)` held 848 MB at 4,000,000 rows. The
 same bank in a loop over the file's chunks, computing the columns in each
 chunk, held
-279 MB ([PERFORMANCE
-§47](../PERFORMANCE.md#47-factor-ridges-feeding-a-windowed-forward-ridge-2026-11-06)).
+279 MB, measured as the peak physical footprint on an Apple M4 Pro.
 Add a computed column that the bank does not need after `fit_predict`.
 Compute one that it does need in a loop over the file's chunks, where
 `collect_batches` gives the file one chunk at a time. This code runs both
@@ -231,7 +234,6 @@ the loop's predictions are the query's: True
 covers,** so its memory grows with the rows in the window, in each group.
 To keep fewer, give the second ridge `snapshot_every`: a snapshot every 10
 clock units keeps a tenth of them, and the window then covers between
-`window_size` less 10 and `window_size`. [PERFORMANCE
-§47](../PERFORMANCE.md#47-factor-ridges-feeding-a-windowed-forward-ridge-2026-11-06)
-measures the time a row and the memory of this pipeline in rows, groups
-and the window's length.
+`window_size` less 10 and `window_size`. Measured on an Apple M4 Pro,
+each snapshot added about 1.3 KB to the run's peak memory, so a two-hour
+window at one row a second, 7,200 snapshots, held about 9 MB a group.

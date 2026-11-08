@@ -215,6 +215,52 @@ clock column "ts" steps back by 24m45s118ms961us at row 1502
 3000
 ```
 
+## Window an operator's output
+
+Use this when a feature is a window over another window, such as the
+recent trend of a rate. An operator's input can be an element-wise formula,
+`po.increment` included, but not another operator, which `with_windows`
+refuses when it builds the query.
+
+1. **Make the inner operator a column in one `.online.with_windows`
+   call.**
+2. **Window that column in a second `.online.with_windows` call,** chained
+   after the first, with the same clock keywords.
+
+Here a rate of traded volume comes from a column of cumulative volume, as
+a feed prints it, and a trend of that rate from the second call. Each
+symbol trades about 1.56 units a second over the whole stream, and the
+rate, read per second, sits near that. This code uses `trades` and
+`trades.parquet` from [Example data](../../README.md#example-data):
+
+```python
+clock = dict(clock="ts", gap_cap="5m", group="symbol")
+volume = (
+    pl.scan_parquet("trades.parquet")
+    .with_columns(cum_volume=pl.col("quantity").cum_sum().over("symbol"))   # a running volume: null on the quotes
+    .online.with_windows(                                                    # 1. an operator over an increment
+        volume_rate=po.ewm_rate(po.increment("cum_volume"), half_life="30s", window_size="5m"),   # units traded per second
+        **clock,
+    )
+    .online.with_windows(                                                    # 2. a mean of that rate
+        rate_trend=po.ewm_mean("volume_rate", half_life="2m", window_size="10m"),
+        **clock,
+    )
+    .collect()
+)
+# The stream's own rate, beside each symbol's median rate and trend.
+seconds = (trades["ts"].max() - trades["ts"].min()).total_seconds()
+print(f"units traded a second by each symbol, over the stream: {trades['quantity'].sum() / seconds / 2:.2f}")
+for symbol, rate, trend in volume.group_by("symbol").agg(pl.col("volume_rate", "rate_trend").median()).sort("symbol").iter_rows():
+    print(f"{symbol}: volume_rate's median {rate:.2f}, rate_trend's median {trend:.2f}")
+```
+
+```text
+units traded a second by each symbol, over the stream: 1.56
+AAA: volume_rate's median 1.61, rate_trend's median 1.51
+BBB: volume_rate's median 1.59, rate_trend's median 1.52
+```
+
 ## Rows the output holds back or leaves out
 
 **`with_windows` returns the rows in input order, each once every window
@@ -233,6 +279,7 @@ the input ended.
 operator's `partial` sets what a window cut short by a gap gives), and
 `save_state=`, which saves for the next run the rows still waiting for a
 window when the input ends.** Without `save_state=`, those rows come out
-with their open windows null. [docs/WINDOWS.md](../WINDOWS.md) says what
-`partial` does to a window that a gap or a session change cuts short, and
-how to resume a window run from its saved state.
+with their open windows null. [docs/WINDOWS.md](../WINDOWS.md#the-edges-of-a-window-gaps-sessions-and-resets)
+says what `partial` does to a window that a gap or a session change cuts
+short, and [Resume a window run](resume-a-window-run.md) shows how to go on
+from the saved state.

@@ -1,9 +1,6 @@
 # Data quality
 
-A model fitted on a stream fits whatever it is given. It cannot tell you
-that a column is `-999` where it was not measured, or that a feed stopped
-and its last value was carried forward. Nor can it tell you that a feature
-is a price level where a change was meant. `bank.check()` reads what a bank
+`bank.check()` reads what a bank
 kept during a pass and lists what is wrong with the data, and an `audit`
 spec counts what no model keeps. For each problem, the fix is made with
 Polars, in the query before the bank.
@@ -14,7 +11,10 @@ from at all.
 
 [Check a stream's data quality](how-to/check-data-quality.md) shows how to
 run `bank.check()` beside an `audit` spec after a pass, read each finding,
-and fix what it found.
+and fix what it found. [How the data quality checks
+work](explanation/how-data-quality-checks-work.md) explains what a fit
+cannot tell you about its data, how the check reads it at no cost to the
+run, and why each finding harms a fit.
 
 These are the words of the library that the page uses:
 
@@ -48,25 +48,14 @@ These are the words of the library that the page uses:
 
 ## How the checks work
 
-**`check()` adds no work to the run, because it reads only what a bank
-keeps anyway.** That is `summary()`, `describe()`, `solve_failures()`,
-`last_row()`, the Gram (the matrix of running sums) of an `ewridge`,
-`lasso` or `ew_cov`, and a `marginal`'s pairs. So a bank loaded from a state file gives the same
-findings as the bank that saved it, and the chunking of the stream moves
-none of them. Call it after a first pass and before trusting a fit. A
-group closed under `group_close` has left the bank with its sums, so
-`check()` sees only the groups still open, and an audit refuses
-`group_close`.
-
-**An audit counts what a model does not keep.** A model skips a row whose
-feature is missing, so it never sees the row. An audit reads every row of
-its columns and counts nulls, NaNs and infinities apart. It also counts
-repeated values, runs of one value, persistence like a random walk's,
-heavy tails, duplicated columns and the clock's stamps. Its memory does not
-grow with the rows: about 14 KiB a column. Run it alone before choosing a
-model, or beside the models in the same pass, as the [three-fault example](#data-quality) does.
-Without one in the bank, `check()` says nothing about sentinels, frozen
-feeds, few values, random walks, tails, duplicates or the clock's spacing.
+**`check()` reads only what a bank keeps anyway, and an audit counts what
+no model keeps.** Without an audit in the bank, `check()` says nothing
+about sentinels, frozen feeds, few values, random walks, tails, duplicates
+or the clock's spacing. A group closed under `group_close` has left the
+bank, so `check()` sees only the groups still open, and an audit refuses
+`group_close`. [What the check
+reads](explanation/how-data-quality-checks-work.md#what-the-check-reads)
+explains why the check costs the run nothing.
 
 **Each finding has a severity.** An `error` means the model cannot learn,
 such as a target that never varies. A `warning` means the fit is
@@ -144,55 +133,10 @@ a row is lost wherever any one of them is missing.
 | `nothing_learned` | error | a stream was fed rows and learned from none |
 
 **Leaving the gap alone is right whenever the gap does not depend on the
-target.** Statisticians sort gaps by what they depend on (Rubin 1976).
-Gaps *missing completely at random* depend on nothing. Gaps *missing at
-random* depend only on values that are observed. Gaps *missing not at
-random* depend on the missing value itself. Skipping every row with a gap,
-which is called *listwise deletion*, is safe for a regression in a case
-those labels do not name. Its slopes are unbiased whenever the chance that
-a row has a gap does not depend on the target, given the features. That holds even when the gap depends on the missing feature's
-own value (Little 1992; Allison 2001). Its slopes are only noisier, since the
-fit sees fewer rows. When the gap does depend on the target, the slopes are biased,
-and no fill made from the features repairs it. An imputation that
-conditions on the target does, and the library has none (below). On
-simulated regressions with 30% of the rows missing and features
-correlated at 0.5, listwise deletion was biased by 4.5 standard errors of
-the full data's slope when the gap depended on `y`. It stayed within 0.2
-when the gap depended on another feature or on the feature itself.
-
-**Do not fill a gap with a running mean.** A filled value carries no
-variation, so on the filled rows the column is flat. Its slope shrinks
-toward zero, and a feature correlated with it absorbs the rest of its
-effect, which is the omitted-variable bias of the column the fill erased.
-On the same simulated regressions, a running-mean fill biased the slopes
-by 0.4 to 6 standard errors, where listwise deletion was unbiased.
-A forward fill does the same, and adds the error of a stale value. Fill a
-value forward only when it truly holds until it changes, such as the last
-quote of an instrument. In that case the forward-filled value is the
-observation itself.
-
-**A Gram over each pair's own rows would lose fewer rows, and it was
-measured and not built, because it is biased where listwise deletion is
-not.** It would
-keep, for each pair of columns, the sums over the rows where both are
-present, so a gap in one column would cost only that column's pairs.
-Measured against listwise deletion on the same simulated regressions, it
-was biased by 0.6 to 19
-standard errors whenever the gap depended on another feature, on the
-target or on the feature itself. At 30% missing and features correlated
-at 0.9, that was −4.6 when the gap depended on another feature, −5.8 when
-on the feature's own value, and −14.2 when on `y`. Listwise deletion was
-unbiased in the first two of those cases. The pairwise matrix is also not
-a covariance matrix of any one set of rows, so it need not be positive
-semi-definite. It was indefinite in 62% to 100% of wide, correlated cases
-(20 to 200 columns, correlation 0.9, 30% missing in every column). Every
-guard that kept it usable acted as a ridge and removed no bias. The
-readiness readings could not see it: `error_inflation` read 1.03 to 1.05
-against 13.5 realized. It took 3.6 to 6.1 times as long a row, and 1.5 to
-3.5 times the state. Its gain was real only when gaps were completely at
-random in a model so wide that listwise deletion kept no rows at all. An
-imputation by online expectation-maximization, the one method that
-measured unbiased when gaps depended on observed values, is not built.
+target, and a fill from a running mean or the row before is not.** [When
+skipping a row is
+safe](explanation/how-data-quality-checks-work.md#nulls-when-skipping-a-row-is-safe)
+explains why, and why a Gram over each pair's own rows is not built.
 
 The recipe plants gaps in `x1` on more than half the rows, in two ways:
 at random, and more often when `y` is high. It fits plain least squares
@@ -308,12 +252,9 @@ of ten, and one on 2% on one seed, or on ten at `distinct_cap=1024`.
 Poisson counts about 50, whose commonest value is 6% of the rows, read
 1.23 times the next value at most.
 
-**Why one value on 5% of the rows erases a slope.** A slope is the
-covariance of the feature with the target over the feature's variance.
-`-999` on 5% of the rows adds about `0.05 × 999² ≈ 50,000` to the
-variance of a column whose own variance is 1. It adds almost nothing to
-the covariance, because the target is unrelated to which rows hold the
-sentinel. So the slope falls by a factor of about 50,000.
+[A sentinel erases a
+slope](explanation/how-data-quality-checks-work.md#a-sentinel-erases-a-slope)
+explains why one value on 5% of the rows erases a slope.
 
 ```python
 import numpy as np
@@ -443,22 +384,9 @@ Twenty-five rows stuck were not found. Clean columns read 0.6 at most
 (values rounded to two decimals), and the six coarse-grid columns above
 were silent, as they should be.
 
-**Why `rls` winds up on a frozen feature.** `rls` keeps `A`, the decayed
-sum of each row's `z zᵀ` (`z` is the intercept's 1 and the features), and
-its prior `delta` decays with it. While a feature holds the value `c`,
-each new row adds information only along `(1, c)`, the direction of
-`intercept + c·slope`. The information that separates the slope from the
-intercept decays by the forgetting factor every row, and nothing renews it.
-Once it falls below a rounding step, rounding sets the slope, and the slope
-wanders. Control engineers call this *estimator windup* under exponential
-forgetting (Åström and Wittenmark 1995). Predictions stay right while the
-feature is held, because only `intercept + c·slope` is used. They fail the
-moment the feature moves again. A forgetting rule that keeps a floor under
-`A` (Kulhavý and Zarrop 1993) was measured for `rls`, and is not built. In
-`rls`'s uncentred coordinates the floor acted as a ridge whose pull grows
-with the square of the level. The
-[`rls` section](MODELS.md#rls--recursive-least-squares) of MODELS.md
-gives the measurements at other levels.
+[A frozen feature winds up
+`rls`](explanation/how-data-quality-checks-work.md#a-frozen-feature-winds-up-rls)
+explains why `rls` loses a slope on a frozen feature.
 
 The recipe stops `x1`'s feed at row 300 and brings it back at row 3,300.
 Its last value is carried forward in between, and the join that built the
@@ -586,7 +514,9 @@ passes a limit measured for it.
 
 Each limit is the largest value at which the model's out-of-sample R² fell
 by no more than 0.05, at half-lives of 20, 200 and infinite. `rls`'s level
-limit is not a constant, for a reason the next paragraphs give: it is
+limit is not a constant, since its prior fades with its sums
+([A level far above its
+spread](explanation/how-data-quality-checks-work.md#a-level-far-above-its-spread)): it is
 `0.9·sqrt(W/delta_left)`, `W` the weight its fit holds and `delta_left`
 the part of its prior that has not decayed. A level or a
 spread ratio counts only when it is five standard errors from chance:
@@ -608,34 +538,12 @@ The models that centre their features (`ewridge`, `lasso`, `huber`,
 Nor did they at spreads `1e8` apart, except where a narrow feature met a
 ridge that was not standardized, which `ridge_shrinks` finds.
 
-**Why a level loses precision.** A double keeps 53 bits, about 16 decimal
-digits. A value at level `L` with spread `s` spends `log10(L/s)` of them
-on the level, so it keeps about `16 − log10(L/s)` digits of its variation
-(Goldberg 1991). A sum-form variance, `Σx²/n − x̄²`, subtracts two numbers
-that agree in their first `2·log10(L/s)` digits, and loses those digits
-(Chan, Golub and LeVeque 1983). The models that centre keep their running
-means compensated, as a pair of doubles, and accumulate co-moments about
-them, so they lose nothing at a level. Subtracting any origin
-near the level does the same for a model that does not centre: precision
-depends on `|x − origin| / s`, whichever origin is chosen.
+[A level far above its
+spread](explanation/how-data-quality-checks-work.md#a-level-far-above-its-spread)
+explains why a level loses precision, why it breaks `rls`'s prior, and why
+a step size needs a scale.
 
-**Why a level breaks `rls`'s prior.** In uncentred coordinates, a feature
-at level `L` and the intercept's column of ones point almost the same way.
-The direction that separates the slope from the intercept carries
-information of only about `n·s²/L²` after `n` rows. `rls` starts from a
-prior `delta·I` in those same coordinates, `delta = 1` by default. Without
-a decay the prior never fades, and once `L/s` passes about `sqrt(n/delta)`
-it outweighs the data in that direction and pins the slope near zero.
-Measured at 20,000 rows and no decay, a level of 100 spreads kept an R² of
-0.42 against 0.51, and 1,000 spreads kept 0.015. With `delta=1e-6`, both
-read 0.51. Under a decay the prior fades with the sums, so the same levels
-left `rls`'s R² where `ewridge`'s was at half-lives of 20 and 200. A short
-stream at a long half-life is still in the prior's shadow. Over 2,000 rows
-at a half-life of 200, a thousandth of `delta` is left beside a weight of
-289, and a level of 10,000 spreads took 0.16 off the R² over the last
-tenth.
-
-So the check reads `r = (L/s)·sqrt(delta_left/W)` at the end of the
+For `rls`, the check reads `r = (L/s)·sqrt(delta_left/W)` at the end of the
 stream. `delta_left` is `delta·(1 − settled_frac)`, all of `delta` without
 decay, and `W` the weight the fit holds, `settled_frac` times
 `weight_sum_settled`, or `weight_sum` without decay. It is the weight and
@@ -650,17 +558,6 @@ rows. It stays at or below 0.05 up to 0.9, the limit:
 | 0.8 | 0.013 to 0.037 |
 | 1.8 to 2.2 | 0.10 to 0.11 |
 | past 5 | all of the feature's share |
-
-**Why a step size needs a scale.** `sgd`, `pa` and `ftrl` move the
-coefficients a step along the gradient on each row. Least mean squares
-converges only when the step is below `2/λmax`, where `λmax` is the
-largest eigenvalue of `E[z zᵀ]`, and its speed is set by the eigenvalue
-ratio `λmax/λmin` (Haykin 2002). A feature at level 5,000 makes `λmax` about
-25 million, so a step tuned for unit features diverges. Features whose
-standard deviations are 1,000 apart make that ratio about a million, so the narrow feature's
-coefficient barely moves. `kalman` and `rls` are second order and need no
-step, but a ridge in the features' squared units penalizes a narrow
-feature's coefficient more for the same effect.
 
 The recipe fits a price near 5,000 and a return written as a fraction with
 three models: `rls` with no decay, `sgd` with `standardize=False`, and
@@ -784,15 +681,12 @@ plus 3, and a copy plus noise of 0.03 of its spread (a correlation of
 0.9995) were found. A copy plus 0.05 was not. Clean columns correlated at
 0.94 at most.
 
-**Why.** A coefficient's variance is the residual variance over `n`
-times the feature's variance, multiplied by its *variance inflation factor*, `1/(1 − R²ⱼ)`.
-Here `R²ⱼ` is the R² of that feature regressed on the others. At a
-correlation of 0.999 with another feature, the factor is about 500, so the
-coefficient's standard error is 22 times what it would be alone.
-Belsley's condition indexes find a dependency among three or more columns
-that no single pair shows (Belsley, Kuh and Welsch 1980). Each is the
-square root of the ratio of the scaled design's largest eigenvalue to one
-of the others. `check()` reads the design each model solves. A model with
+[Collinear features leave the coefficients to
+chance](explanation/how-data-quality-checks-work.md#collinear-features-leave-the-coefficients-to-chance)
+explains why. A feature's variance inflation factor is `1/(1 − R²ⱼ)`,
+where `R²ⱼ` is the R² of that feature regressed on the others. Belsley's
+condition indexes are each the square root of the ratio of the scaled
+design's largest eigenvalue to one of the others. `check()` reads the design each model solves. A model with
 an intercept centres its features, so its design is their correlation
 matrix. Two independent features that share a level are not collinear
 there: two at 5,000 and 3,000 read 1.0, where the uncentred index read
@@ -977,19 +871,12 @@ that persists at 0.99 a row over 2,000 rows reads as a random walk on
 seven seeds of ten, and one at 0.98 on none. A row counter and a clock in
 epoch seconds, fed as columns, are fits with no residual, and read `+inf`.
 
-**Why.** The t-statistic assumes residuals that are independent from row
-to row. Regressing one random walk on another leaves residuals that are a
-random walk themselves, so the effective number of independent rows is a
-handful, not `n`. The statistic grows with `sqrt(n)` instead of settling,
-so a longer stream makes the false relation look more certain (Phillips
-1986). Differencing both series turns each into its independent changes,
-and the ordinary statistics hold again. The Dickey-Fuller statistic
-(Dickey and Fuller 1979) is the t-statistic of `ρ − 1` in a column's
-regression on its own previous value. A random walk has `ρ = 1` and reads
-near zero, and independent rows read about `−sqrt(n)`. Measured over 200
-pairs of independent random walks of 5,000 rows, 98.5% had a slope with
-`|t| > 1.96`, the median `|t|` was 33, and the median R² was 0.18. The
-same pairs differenced had `|t| > 1.96` in 2.5%.
+The Dickey-Fuller statistic (Dickey and Fuller 1979) is the t-statistic
+of `ρ − 1` in a column's regression on its own previous value. A random
+walk has `ρ = 1` and reads near zero, and independent rows read about
+`−sqrt(n)`. [Random walks make a relation out of
+drift](explanation/how-data-quality-checks-work.md#random-walks-make-a-relation-out-of-drift)
+explains why the false relation looks more certain the longer the stream.
 
 ```python
 import numpy as np
@@ -1073,25 +960,12 @@ of freedom, whose kurtosis is infinite, read a largest robust z of 10 to
 25 and an excess kurtosis of 6 to 43. One value at 30 standard deviations
 read a robust z of 29.
 
-**Why.** The influence of one row on a least-squares fit grows without
-bound with its residual: a residual twice as large moves the fit twice as
-far (Huber 1964). Huber's loss is squared near zero and linear past
-`huber_delta` residual scales (the exponentially weighted MAD by default,
-`huber_scale`), so a residual's influence is capped, and quantile
-regression caps it at a constant. `sigma` is an exponentially weighted
-root mean square, so one residual of `k` times the usual size inflates it
-for several half-lives, the more the larger `k` is. When the residuals have infinite variance, as
-Student's t with 2 degrees of freedom does, `sigma` never settles. A
-Gaussian interval then over-covers in calm stretches, since `sigma` is
-inflated by the last large row. `drift` fires on stable data whose tails
-are heavier than its threshold allows: on ten streams of 200,000 stable
-rows with Student's t noise of 3 degrees of freedom, `drift_threshold=20`
-flagged 7 to 14 rows in each, 11 on average
-([Are its tails heavy?](DIAGNOSTICS.md#are-its-tails-heavy) has the
-thresholds that flag fewer). A
-conformal interval tracks a quantile of `|resid|` directly, so its
-long-run coverage is the one asked for whatever the tails (Vovk, Gammerman and
-Shafer 2005).
+[Heavy tails move a squared
+loss](explanation/how-data-quality-checks-work.md#heavy-tails-move-a-squared-loss)
+explains why a few extreme rows move a least-squares fit, `sigma` and
+`drift`, and why a conformal interval keeps its coverage. [Are its tails
+heavy?](DIAGNOSTICS.md#are-its-tails-heavy) has the `drift` thresholds
+that flag fewer rows on heavy tails.
 
 ```python
 import numpy as np
@@ -1187,17 +1061,11 @@ against its own previous row once the stream is long. With no decay it
 passed on one seed of ten at 10,000 rows, five at 30,000 and nine at
 100,000.
 
-**Why a look-ahead target needs its embargo.** A target that looks `k`
-rows ahead, such as the mean return of the next ten rows, is known only
-`k` rows after its own row. A model that learns it at its own row learns
-returns from the rows it has yet to predict. Its coefficients then carry
-part of the very outcomes they are scored on, and a feature built from
-recent returns will seem to predict them. An `embargo` of `k` learns each
-row only once its label would have arrived (López de Prado 2018, ch. 7).
-A target written as a [window expression](how-to/make-a-target-that-looks-ahead.md)
-that looks ahead carries its own delay, and `fit_predict` refuses an
-embargo shorter than its window. A target made as a column, as here, does
-not, so the embargo is the caller's to set
+[A target that looks ahead leaks without its
+embargo](explanation/how-data-quality-checks-work.md#a-target-that-looks-ahead-leaks-without-its-embargo)
+explains why a target that looks `k` rows ahead needs an `embargo` of `k`.
+A target made as a column, as here, carries no delay of its own, so the
+embargo is the caller's to set
 ([Learn targets known late](how-to/learn-targets-known-late.md)).
 
 ```python
@@ -1438,13 +1306,10 @@ window that has not filled.
 | `below_min_weight` | warning | the weight a stream settles at, `weight_sum_settled`, is below the spec's `min_weight`, so its predictions stay null |
 | `withheld` | warning | a stream's last row had its predictions withheld, with the reason |
 
-**Why.** With `k` coefficients and fewer than `k` rows, the normal
-equations have no unique solution, and the ridge alone sets the fit. Under
-a decay, a stream whose rows come one clock unit apart can gather at most
-`1/(1 − 2^(−1/h))` of weight at half-life `h`. That is 3.4 at `h = 2`, so
-a `min_weight` of 10 is never met. After a time `T` on the clock, a stream
-has gathered `1 − 2^(−T/h)` of that ceiling, which is `settled_frac`. The
-[Warm-up gates](MODELS.md#warm-up-gates) lists the gates.
+[Too little data leaves the fit to the
+ridge](explanation/how-data-quality-checks-work.md#too-little-data-leaves-the-fit-to-the-ridge)
+explains why, and the weight a half-life can gather. The [Warm-up
+gates](MODELS.md#warm-up-gates) lists the gates.
 
 ```python
 import numpy as np

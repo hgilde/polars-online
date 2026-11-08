@@ -743,19 +743,17 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 [vocabulary."crates/online-py/src/lib.rs#messages"]
 
 [vocabulary."docs/DATA-QUALITY.md"]
-"british" = 16
-"retired" = 21
+"british" = 12
+"retired" = 18
 
 [vocabulary."docs/DIAGNOSTICS.md"]
-"retired" = 12
+"retired" = 7
 
 [vocabulary."docs/EXTENDING.md"]
 "british" = 4
 "retired" = 14
 
 [vocabulary."docs/GRAM.md"]
-"british" = 23
-"retired" = 1
 
 [vocabulary."docs/PERFORMANCE.md"]
 "british" = 40
@@ -783,7 +781,38 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "retired" = 1
 
 [vocabulary."docs/WINDOWS.md"]
-"retired" = 5
+
+[vocabulary."docs/explanation/asynchronous-series.md"]
+
+[vocabulary."docs/explanation/how-data-quality-checks-work.md"]
+
+[vocabulary."docs/explanation/how-diagnostics-work.md"]
+
+[vocabulary."docs/how-to/blend-each-session-with-the-long-run.md"]
+
+[vocabulary."docs/how-to/check-a-fit-is-determined.md"]
+
+[vocabulary."docs/how-to/choose-when-ewridge-solves.md"]
+
+[vocabulary."docs/how-to/fit-a-ridge-from-a-gram.md"]
+
+[vocabulary."docs/how-to/fit-huber-on-a-gram.md"]
+
+[vocabulary."docs/how-to/fit-hundreds-of-features.md"]
+
+[vocabulary."docs/how-to/fit-per-block-coefficients.md"]
+
+[vocabulary."docs/how-to/read-grams-from-saved-files.md"]
+
+[vocabulary."docs/how-to/resume-a-window-run.md"]
+
+[vocabulary."docs/how-to/select-columns-stably-over-weeks.md"]
+
+[vocabulary."docs/how-to/start-from-a-prior-fit.md"]
+
+[vocabulary."docs/how-to/store-a-compact-gram.md"]
+
+[vocabulary."docs/how-to/test-a-detector-on-known-truth.md"]
 
 [vocabulary."python/polars_online/_bank.py#messages"]
 
@@ -829,7 +858,7 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "python-word" = 1
 
 [sentences."docs/DATA-QUALITY.md"]
-"45+" = 2
+"45+" = 1
 
 [sentences."docs/DIAGNOSTICS.md"]
 "45+" = 5
@@ -846,8 +875,6 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 [sentences."docs/GLOSSARY.md"]
 
 [sentences."docs/GRAM.md"]
-"45+" = 2
-"python-word" = 1
 
 [sentences."docs/PERFORMANCE.md"]
 "45+" = 47
@@ -885,7 +912,6 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "45+" = 1
 
 [sentences."docs/WINDOWS.md"]
-"is-a-lead" = 1
 
 [sentences."docs/WRITING.md"]
 "45+" = 1
@@ -893,6 +919,38 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "inverted" = 3
 "is-a-lead" = 7
 "python-word" = 10
+
+[sentences."docs/explanation/asynchronous-series.md"]
+
+[sentences."docs/explanation/how-data-quality-checks-work.md"]
+
+[sentences."docs/explanation/how-diagnostics-work.md"]
+
+[sentences."docs/how-to/blend-each-session-with-the-long-run.md"]
+
+[sentences."docs/how-to/check-a-fit-is-determined.md"]
+
+[sentences."docs/how-to/choose-when-ewridge-solves.md"]
+
+[sentences."docs/how-to/fit-a-ridge-from-a-gram.md"]
+
+[sentences."docs/how-to/fit-huber-on-a-gram.md"]
+
+[sentences."docs/how-to/fit-hundreds-of-features.md"]
+
+[sentences."docs/how-to/fit-per-block-coefficients.md"]
+
+[sentences."docs/how-to/read-grams-from-saved-files.md"]
+
+[sentences."docs/how-to/resume-a-window-run.md"]
+
+[sentences."docs/how-to/select-columns-stably-over-weeks.md"]
+
+[sentences."docs/how-to/start-from-a-prior-fit.md"]
+
+[sentences."docs/how-to/store-a-compact-gram.md"]
+
+[sentences."docs/how-to/test-a-detector-on-known-truth.md"]
 
 [kinds."CONTRIBUTING.md"]
 "undeclared" = 1
@@ -910,7 +968,6 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "undeclared" = 1
 
 [kinds."docs/GRAM.md"]
-"undeclared" = 1
 
 [kinds."docs/PERFORMANCE.md"]
 "undeclared" = 1
@@ -934,7 +991,38 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "undeclared" = 1
 
 [kinds."docs/WINDOWS.md"]
-"undeclared" = 1
 
 [kinds."docs/WRITING.md"]
 "undeclared" = 1
+
+[kinds."docs/explanation/asynchronous-series.md"]
+
+[kinds."docs/explanation/how-data-quality-checks-work.md"]
+
+[kinds."docs/explanation/how-diagnostics-work.md"]
+
+[kinds."docs/how-to/blend-each-session-with-the-long-run.md"]
+
+[kinds."docs/how-to/check-a-fit-is-determined.md"]
+
+[kinds."docs/how-to/choose-when-ewridge-solves.md"]
+
+[kinds."docs/how-to/fit-a-ridge-from-a-gram.md"]
+
+[kinds."docs/how-to/fit-huber-on-a-gram.md"]
+
+[kinds."docs/how-to/fit-hundreds-of-features.md"]
+
+[kinds."docs/how-to/fit-per-block-coefficients.md"]
+
+[kinds."docs/how-to/read-grams-from-saved-files.md"]
+
+[kinds."docs/how-to/resume-a-window-run.md"]
+
+[kinds."docs/how-to/select-columns-stably-over-weeks.md"]
+
+[kinds."docs/how-to/start-from-a-prior-fit.md"]
+
+[kinds."docs/how-to/store-a-compact-gram.md"]
+
+[kinds."docs/how-to/test-a-detector-on-known-truth.md"]

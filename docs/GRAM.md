@@ -1,6 +1,11 @@
+<!-- kind: explanation -->
 # Wide fits from Grams
 
-A least-squares fit reads its rows only through a few running sums: the
+This page explains, for anyone who fits least squares from the Grams one
+pass over a stream leaves, why a Gram stands in for the rows and what
+each fit read from one assumes.
+
+A least-squares fit reads its rows only through a few sums: the
 weight of the rows, the columns' means and co-moments, and each target's
 mean, variance and cross-moments with the columns. Together they are the
 fit's *Gram*. `ewridge`, `lasso` and `ew_cov` keep one in their state, and
@@ -13,162 +18,69 @@ a lasso path, or count how often each column is chosen on halves of the
 weeks. The module `po.gram` does each of these.
 
 `bank.gram()` and `po.gram` need numpy, an optional extra, which
-`pip install polars-online[numpy]` adds. The reference of
+`pip install "polars-online[numpy]"` adds. The reference of
 [`ModelBank.gram`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.gram)
 states each array and the identities between them.
 
-Here is a stream of 40 weeks with 200 features, of which six matter. One
-pass leaves a Gram per week, and the fit pools all forty. The spec's
-settings make each week's Gram plain least squares' sums, and
-[Weekly blocks from one pass](#weekly-blocks-from-one-pass) explains each:
+Each task on a set of Grams has a call in `po.gram` or the bank, and a
+how-to that runs it:
 
-```python
-from datetime import datetime, timedelta
+| to | call | how-to |
+|---|---|---|
+| collect a Gram per week in one pass | `po.spec.ewridge(..., group="week")`, `bank.gram()` | [Keep a Gram per block in one pass](how-to/fit-weekly-grams-in-one-pass.md) |
+| pool any weeks, and score a fit on others | `po.gram.merge` | [Pool Grams](how-to/pool-grams.md#pool-blocks-and-score-a-fit-on-blocks-held-out) |
+| pool decayed weeks, each aged first | `po.gram.merge`, `bank.groups()` | [Pool Grams](how-to/pool-grams.md#age-decayed-blocks-before-you-pool-them) |
+| pool weeks and leave their levels out | `po.gram.merge(..., within=True)` | [Pool Grams](how-to/pool-grams.md#pool-within-blocks-to-leave-their-levels-out) |
+| fit a ridge and read its t | `po.gram.solve`, `po.gram.coef_stats` | [Fit a ridge from a Gram](how-to/fit-a-ridge-from-a-gram.md) |
+| know whether a fit is determined, and fit on some of the columns | `po.gram.condition`, `po.gram.vif`, `po.gram.correlation`, `po.gram.subset` | [Check that a fit is determined](how-to/check-a-fit-is-determined.md) |
+| choose columns | `po.gram.lars_path`, `po.gram.lasso_path` | [Choose columns on a Gram's lasso path](how-to/choose-columns-on-the-lasso-path.md#choose-columns-on-a-grams-lasso-path) |
+| choose columns that hold across the weeks | `po.gram.lars_paths`, `po.gram.solve_subsets(..., path=...)` | [Select columns that hold across the weeks](how-to/select-columns-stably-over-weeks.md) |
+| know how often a selection chooses a column with no effect of one sign | `po.gram.solve_subsets(..., within=True, target_signs=...)` | [Set the threshold from null runs, by sign flips](how-to/select-columns-stably-over-weeks.md#set-the-threshold-from-null-runs-by-sign-flips) |
+| screen the columns again for each half, target and null run | `po.gram.solve_subsets(..., jobs=...)` | [Screen the columns again for each half and each null run](how-to/select-columns-stably-over-weeks.md#screen-the-columns-again-for-each-half-and-each-null-run) |
+| see whether a coefficient holds from week to week | `po.gram.solve_subsets` | [Fit per-block coefficients](how-to/fit-per-block-coefficients.md) |
+| read Grams back from files | `po.gram.from_row`, `po.ModelBank.load`, or numpy alone | [Read Grams from saved files](how-to/read-grams-from-saved-files.md) |
+| halve or quarter a Gram's bytes | `bank.gram(dtype="float32", layout="packed")` | [Store a compact Gram](how-to/store-a-compact-gram.md) |
+| collect a Gram of hundreds of features fast, in blocks of rows and on several cores | `gram_block_rows`, `gram_threads` | [Fit hundreds of features](how-to/fit-hundreds-of-features.md) |
+| fit Huber's loss, reading the rows once a pass and the Gram once | `po.gram.solve`, a Polars query a pass | [Fit a Huber regression on a Gram](how-to/fit-huber-on-a-gram.md) |
 
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
-# two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
-# drawn again each week, 0.15 on average.
-rng = np.random.default_rng(7)
-n_weeks, per_week, k = 40, 504, 200
-n = n_weeks * per_week
-x = 0.7 * (rng.standard_normal((n, k)) + np.repeat(rng.standard_normal((n, k // 5)), 5, axis=1))
-b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
-y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
-y += rng.standard_normal(n)
-features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
-start = datetime(2025, 1, 6)  # a Monday
-ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
-pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
-
-# One pass over the file leaves a Gram per week. The week is a column made in the query.
-lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
-spec = po.spec.ewridge(
-    "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
-)
-bank = po.ModelBank([spec])
-bank.fit(lf)  # learns from every row, and keeps only the state
-blocks = bank.gram("blocks")  # one dict per week, oldest first
-
-# Pool the forty weeks, and fit with standard errors as if on the rows.
-pooled = po.gram.merge(blocks)  # the Gram of all 20,160 rows
-coef = po.gram.solve(pooled)  # least squares: the intercept, then x0 .. x199
-stats = po.gram.coef_stats(pooled, coef)  # its standard errors and t
-
-# What the pass kept, then each planted coefficient beside its estimate.
-columns = pooled["columns"]
-print(f"{len(blocks)} weekly Grams of {len(columns)} columns, pooled over {pooled['weight_sum']:,.0f} rows")
-print(f"{'column':>6} {'truth':>6} {'coef':>6} {'t':>6}")
-truth = {"x0": 0.5, "x5": 0.4, "x10": 0.3, "x15": 0.2, "x20": 0.1, "x25": b25.mean()}
-for name, b in truth.items():
-    i = columns.index(name)
-    print(f"{name:>6} {b:>6.3f} {coef[i]:>6.3f} {stats['t'][i]:>6.1f}")
-# The columns with no effect, and how many look as if they had one.
-rest = np.abs([stats["t"][columns.index(f)] for f in features if f not in truth])
-print(f"the other {len(rest)} columns: {(rest > 3).sum()} with |t| above 3, the largest {rest.max():.1f}")
-```
-
-```text
-40 weekly Grams of 201 columns, pooled over 20,160 rows
-column  truth   coef      t
-    x0  0.500  0.489   50.0
-    x5  0.400  0.389   39.6
-   x10  0.300  0.297   30.5
-   x15  0.200  0.196   20.3
-   x20  0.100  0.100   10.4
-   x25  0.186  0.196   20.3
-the other 194 columns: 1 with |t| above 3, the largest 3.1
-```
-
-The pooled Gram holds all 20,160 rows. Its least-squares fit finds each
-planted coefficient within about one standard error. Of the 194 columns
-with no effect, one has a t past 3, at 3.1, where chance alone expects
-about half a column. The coefficient of `x25` is drawn again each week
-around 0.15, and its forty weekly values average 0.186, the truth its
-line shows. The pooled fit sees only that average. Its t of 20.3 reads as
-firm as the t of `x15`, whose coefficient never moves.
-[Per-block coefficients](#per-block-coefficients) reads the weekly values
-from the same forty Grams.
-
-**Every recipe on this page is a complete program.** It generates its
-data with the answer planted, saves it to parquet and reads it back with
-`pl.scan_parquet`, as a stream too large to hold would be read. Most
-recipes start from the opening example's stream and its pass, and repeat
-the code that makes them, so each runs alone. The output is shown under
-each recipe. `tests/test_gram_page.py` runs every recipe and holds its
-output to what is shown, so none goes stale. A line that reports a wall
-time is this machine's, so the test checks its words and not its
-numbers. Warnings that a recipe raises go to the standard error stream
-and are not shown.
-
-These are the words of the library that the page uses:
+The library's words, as they are used for Grams:
 
 | word | what it means here |
 |---|---|
 | spec, bank | a spec is one model's description: the model, the columns it reads, and how it treats time. `po.ModelBank` fits a set of specs together over the same rows |
-| `ewridge`, `lasso`, `ew_cov` | the three models whose state holds a Gram: a ridge regression, a lasso, and the moments of columns with no target. [The README's model table](MODELS.md#the-models-at-a-glance) lists every model |
-| Gram | a fit's running sums, as `bank.gram(spec)` returns them: one dict per group, whose keys the next table lists |
+| `ewridge`, `lasso`, `ew_cov` | the three models whose state holds a Gram: a ridge regression, a lasso, and the moments of columns with no target. [MODELS.md's model table](MODELS.md#the-models-at-a-glance) lists every model |
+| Gram | the sums a least-squares fit reads, as `bank.gram(spec)` returns them: one dict per group, whose keys the next table lists |
 | column | one axis of a Gram: `"intercept"` first when the spec fits one, then the spec's features |
-| block | the rows of one value of a spec's `group` column, and the Gram the bank keeps for them. Most recipes here make a week a block |
+| block | the rows of one value of a spec's `group` column, and the Gram the bank keeps for them. The examples here make a week a block |
 | pool | merge the Grams of disjoint rows into the Gram of all of them, with `po.gram.merge` |
 | clock, `gap_cap` | the column a spec's `half_life`, `gap_cap` and `solve_every` are measured on, as `clock="ts"`, or the row count for a spec without one. `gap_cap` is the longest step between two rows that the bank ages a Gram by, and a spec with a clock needs one |
 | `half_life` | each row's weight halves every `half_life` of the clock. `float("inf")` weighs every row alike, so a Gram holds plain least squares' sums |
 | `weight_sum`, `n_kish` | the weight behind a Gram, and `weight_sum² / Σw²`, the number of equally weighted rows that weight is worth. Both are the row count when every row weighs 1 |
-| chunk | the rows a bank reads from a query at one time |
-| thread pool | the threads a bank runs its work on: the bank's `threads`, or, without it, `POLARS_ONLINE_MAX_THREADS` of them, one per core by default |
-| load average | the number of processes running or waiting to run, averaged over a minute. The recipes ran on 14 cores shared with other users' work |
 | active set, knot | on a lasso path, the columns whose coefficient is not 0, and a penalty at which that set changes |
 | half | 20 of the 40 weeks, drawn at random, and their pooled Gram |
 
-The keys of a Gram, in the names the formulas on this page give them:
+Each key of a Gram, and the symbol the formulas give it:
 
 | key | what it holds |
 |---|---|
 | `group` | the block's key, as text: here the week's Monday |
-| `instance` | the half-life's suffix of the output's field names, such as `"@h500"`, or `""` for a spec with one half-life |
+| `instance` | the instance (the part of the model that fits one half-life): its suffix, such as `"@h500"`, or `""` for a spec with one half-life |
 | `columns`, `targets` | the names along each axis |
 | `weight_sum`, `n_kish` | the weight behind the Gram, `W`, and its Kish size |
 | `means` | the columns' weighted means, `m` |
-| `comoments` | the columns' centred co-moments, `C`, a `k × k` matrix |
-| `cross_moments` | per target, the uncentred moments `E[z y]`, with `z` the columns of a row of data: one row of the array per target. At the intercept, a constant 1, the moment is the target's mean `ȳ` |
-| `cross_centered` | per target, the same moments centred at the columns' means and the target's own mean: `c`, the vector a fit is solved from |
+| `comoments` | the columns' centered co-moments, `C`, a `k × k` matrix |
+| `cross_moments` | per target, the uncentered moments `E[z y]`, with `z` the columns of a row of data: one row of the array per target. At the intercept, a constant 1, the moment is the target's mean `ȳ` |
+| `cross_centered` | per target, the same moments centered at the columns' means and the target's own mean: `c`, the vector a fit is solved from |
 | `means_by_target` | per target, the columns' means over the rows the target was present on |
 | `target_weights`, `target_means`, `target_vars`, `target_n_kish` | per target, its weight, its mean, its variance `V` and its Kish size |
 | `lags`, `lag_comoments` | for an `ew_cov(lags=[...])`, the lags and the co-moments of each column with every column that many rows back. `None` for any other spec |
 | `within_parts`, `target_within_parts` | only on a Gram from `po.gram.merge(..., within=True)`: the number of parts with weight, and per target the number with weight for it. The fits read them to leave the intercept out and to take a degree of freedom per part ([Pool within blocks to leave their levels out](how-to/pool-grams.md#pool-within-blocks-to-leave-their-levels-out)) |
 
-What you can do with a set of Grams, and the calls that do it:
-
-| to | call | section |
-|---|---|---|
-| collect a Gram per week in one pass | `po.spec.ewridge(..., group="week")`, `bank.gram()` | [Weekly blocks from one pass](#weekly-blocks-from-one-pass) |
-| fit on some of the columns | `po.gram.subset`, or `features=` on any fit | [Every least-squares fit is a function of the Gram](#every-least-squares-fit-is-a-function-of-the-gram) |
-| pool any weeks, and score a fit on others | `po.gram.merge` | [Pool Grams](how-to/pool-grams.md#pool-blocks-and-score-a-fit-on-blocks-held-out) |
-| pool decayed weeks, each aged first | `po.gram.merge`, `bank.groups()` | [Pool Grams](how-to/pool-grams.md#age-decayed-blocks-before-you-pool-them) |
-| pool weeks and leave their levels out | `po.gram.merge(..., within=True)` | [Pool Grams](how-to/pool-grams.md#pool-within-blocks-to-leave-their-levels-out) |
-| fit a ridge and read its t | `po.gram.solve`, `po.gram.coef_stats` | [A ridge and its t](#a-ridge-and-its-t) |
-| know whether a fit is determined | `po.gram.condition`, `po.gram.vif`, `po.gram.correlation` | [Is the fit determined?](#is-the-fit-determined) |
-| choose columns | `po.gram.lars_path`, `po.gram.lasso_path` | [Choosing columns on the lasso path](#choosing-columns-on-the-lasso-path) |
-| choose columns that hold across the weeks | `po.gram.lars_paths`, `po.gram.solve_subsets(..., path=...)` | [Stability selection over halves of the weeks](#stability-selection-over-halves-of-the-weeks) |
-| know how often a selection chooses a column with no effect of one sign | `po.gram.solve_subsets(..., within=True, target_signs=...)` | [A null for the selection, by sign flips](#a-null-for-the-selection-by-sign-flips) |
-| screen the columns again for each half, target and null run | `po.gram.solve_subsets(..., jobs=...)` | [A screen of its own for each path](#a-screen-of-its-own-for-each-path) |
-| see whether a coefficient holds from week to week | `po.gram.solve_subsets` | [Per-block coefficients](#per-block-coefficients) |
-| read Grams back from files | `po.gram.from_row`, `po.ModelBank.load`, or numpy alone | [Reading Grams from saved files](#reading-grams-from-saved-files) |
-| halve or quarter a Gram's bytes | `bank.gram(dtype="float32", layout="packed")` | [A compact Gram](#a-compact-gram) |
-| collect one wide Gram on several cores | `gram_threads` | [One wide Gram on several threads](#one-wide-gram-on-several-threads) |
-| fit Huber's loss, reading the rows once a pass and the Gram once | `po.gram.solve`, a Polars query a pass | [Huber regression on a Gram](#huber-regression-on-a-gram) |
-
 ## How a Gram stands in for the rows
 
 A fit can read a Gram in place of its rows for two reasons. Every
 least-squares fit on the Gram's columns is a function of the Gram, and
-the Gram's moments are centred, so they keep their digits however far a
+the Gram's moments are centered, so they keep their digits however far a
 column sits from zero. A Gram holds the rows its spec weighs, as of the
 last row it learned. Some questions need each row, and no Gram answers
 them.
@@ -177,8 +89,8 @@ them.
 
 **Every fit to a weighted sum of squared residuals reads its rows only
 through the Gram.** Take weights `w_i` that sum to `W`, the column means
-`m` and the centred co-moments `C = Σ w (x − m)(x − m)' / W`. For a target
-`y`, take its mean `ȳ`, its variance `V` and its centred cross-moments
+`m` and the centered co-moments `C = Σ w (x − m)(x − m)' / W`. For a target
+`y`, take its mean `ȳ`, its variance `V` and its centered cross-moments
 `c = Σ w (x − m)(y − ȳ) / W`. For any intercept `b_0` and slopes `b`, the
 mean squared residual is
 
@@ -200,7 +112,8 @@ rows and columns of `C` and their entries of each target's moments. A fit
 on the subset is the fit a pass over those columns alone would give on
 the same rows. Keep `"intercept"` among the columns, since a subset
 without it is fitted through the origin.
-[Is the fit determined?](#is-the-fit-determined) fits a subset. Every fit
+[Check that a fit is determined](how-to/check-a-fit-is-determined.md)
+fits a subset. Every fit
 in `po.gram` also takes `features=`, which fits the same columns with the
 intercept kept, and returns a coefficient for every column of the full
 Gram, 0 for each column left out.
@@ -213,7 +126,7 @@ target is present on every row of the Gram.
 [Pool Grams](how-to/pool-grams.md#pool-blocks-and-score-a-fit-on-blocks-held-out)
 scores a fit on the last ten weeks this way.
 
-**The moments are centred, so they keep their digits when a column's
+**The moments are centered, so they keep their digits when a column's
 level, its typical size, is far from zero.** A raw second moment of a
 column at a level `L` holds `L²` plus its variance. A variance read back
 from it as `E[x²] − m²` loses the digits that `L²` takes up. A double
@@ -221,7 +134,7 @@ carries about sixteen, and for a unit-variance column at 1e8 the
 difference keeps none of them. Each row's update adds the row's deviation from the running
 means to the co-moments, as Welford's (1962) recursion does, with weights
 as West (1979) gives them. Each target's cross-moments are kept
-centred at its own means, as `cross_centered`, for the same reason (Chan,
+centered at its own means, as `cross_centered`, for the same reason (Chan,
 Golub and LeVeque 1983).
 
 **`weight_sum` counts weight, and `n_kish` counts rows.** With
@@ -254,121 +167,11 @@ hold, needs the rows, or a model that ran over them:
 
 | question | why a Gram cannot answer it | where it is answered |
 |---|---|---|
-| a fit whose loss is not a sum of squares: robust, quantile or logistic | its minimum depends on each residual, so no sum of moments holds it | the robust and quantile regressions `huber` and `quantile`, and the online logistic regression `ftrl`, run over the stream; or, for Huber's loss, passes over the rows that share one Gram ([Huber regression on a Gram](#huber-regression-on-a-gram)) |
+| a fit whose loss is not a sum of squares: robust, quantile or logistic | its minimum depends on each residual, so no sum of moments holds it | the robust and quantile regressions `huber` and `quantile`, and the online logistic regression `ftrl`, run over the stream; or, for Huber's loss, passes over the rows that share one Gram ([Fit a Huber regression on a Gram](how-to/fit-huber-on-a-gram.md)) |
 | the residuals' tails, autocorrelation and spread, and which row moved the fit | each reads a row's own residual | the diagnostics a spec switches on, which judge each row's residual as the bank runs ([Is the model working?](DIAGNOSTICS.md)) |
-| standard errors robust to heteroskedasticity or autocorrelation | their middle term sums each row's `x x' e²`, or products of residuals rows apart | the spec's `emit_robust_se` on the stream ([Can its t be trusted?](DIAGNOSTICS.md#can-its-t-be-trusted)), or the spread of [per-block coefficients](#per-block-coefficients) |
+| standard errors robust to heteroskedasticity or autocorrelation | their middle term sums each row's `x x' e²`, or products of residuals rows apart | the spec's `emit_robust_se` on the stream ([Can its t be trusted?](DIAGNOSTICS.md#can-its-t-be-trusted)), or the spread of [per-block coefficients](how-to/fit-per-block-coefficients.md) |
 | a column the Gram does not hold: a square, a product or a lag | its moments with the other columns are sums the pass never took | make the column with Polars' `with_columns` in the query before the bank, and run the pass again |
 | a lagged co-moment across two pooled parts | a part holds only the pairs of its own rows | `ew_cov(lags=...)` over the whole stream. `po.gram.merge` returns `lags` as `None` |
-
-## Weekly blocks from one pass
-
-A block is the rows of one value of a spec's `group` column, and the bank
-keeps a Gram for each. So a column that names the week gives a Gram per
-week from one pass. Make the column with Polars' `dt.truncate("1w")`,
-chained in the query before the bank, and name it as the spec's `group`.
-The spec's other settings make each Gram plain least squares' sums,
-collected as fast as the bank can:
-
-| setting | value in the recipes | what it does |
-|---|---|---|
-| `group` | `"week"`, the column made by `pl.col("ts").dt.truncate("1w")` | a state, and so a Gram, for each week |
-| `half_life` | `float("inf")` | every row weighs the same, so a block's Gram is least squares' and blocks pool as they are |
-| `solve_every` | `float("inf")`, never, on any clock | under an infinite half-life the model solves on every row unless told otherwise. The fits are made from the Grams, so the pass solves nothing |
-| `target_gaps` | `"pairwise"` | one Gram per block whatever rows each target is missing on, so every block has the same targets and they pool |
-| `gram_block_rows` | `256` | adds 256 rows to the matrix in one product, 5.1 to 6.6 times as fast as one row at a time from 256 to 2,000 features ([`ewridge`](MODELS.md#ewridge--exponentially-weighted-ridge-regression)) |
-| `gram_threads` | left out, so `"auto"` | runs that product on the threads the bank's other groups leave idle ([One wide Gram on several threads](#one-wide-gram-on-several-threads)) |
-| `group_close` | left out | frees each week's Gram once the week has finished, and with `closed_groups=` on `fit` writes it to a file ([Reading Grams from saved files](#reading-grams-from-saved-files)) |
-
-**A block's Gram has `k²` entries, whatever its rows.** A week of 504
-rows at 201 columns has a co-moment matrix of 323,208 bytes, and so has a
-week of a million rows. At 10,000 columns a block is 800 MB in float64.
-These tools were built for 9.5 million rows read as 38 weekly blocks of
-10,000 columns, which is 30 GB of Grams. The bank holds the Gram of every group it has seen,
-so a pass needs about `8k²` bytes for each block it holds. With
-`group_close`, the bank writes each finished week out and holds one week
-at a time. [A compact Gram](#a-compact-gram) halves or quarters what
-`gram()` hands back.
-
-**Choose the block so that every question a fit will ask is a set of
-whole blocks.** Weeks let a fit pool any run of weeks, hold out the last
-ten, or set one week against another. Days would allow finer choices,
-with seven times as many Grams to hold.
-
-**Under the default `target_gaps="own_rows"`, a block can hold several
-Grams.** A target that is missing on rows where another is present gets a
-Gram of its own, one per pattern of gaps, each naming its `targets`, and
-`po.gram.merge` refuses parts whose targets differ. When every target is
-present on the same rows, or the rows a target misses do not depend on
-the features' values, give `target_gaps="pairwise"`, which keeps one Gram
-per block. Otherwise keep
-the default, and pool each set of targets' Grams across the weeks, those
-with the same `targets`. MODELS.md's
-[`ewridge`](MODELS.md#ewridge--exponentially-weighted-ridge-regression)
-section says what each mode fits.
-
-The recipe makes the stream, runs the pass, and checks the pooled Gram's
-fit against least squares on the rows, read into memory for the check:
-
-```python
-from datetime import datetime, timedelta
-
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
-# two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
-# drawn again each week, 0.15 on average.
-rng = np.random.default_rng(7)
-n_weeks, per_week, k = 40, 504, 200
-n = n_weeks * per_week
-x = 0.7 * (rng.standard_normal((n, k)) + np.repeat(rng.standard_normal((n, k // 5)), 5, axis=1))
-b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
-y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
-y += rng.standard_normal(n)
-features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
-start = datetime(2025, 1, 6)  # a Monday
-ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
-pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
-
-# One pass over the file leaves a Gram per week. The week is a column made in the query.
-lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
-spec = po.spec.ewridge(
-    "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
-)
-bank = po.ModelBank([spec])
-bank.fit(lf)  # learns from every row, and keeps only the state
-blocks = bank.gram("blocks")  # one dict per week, oldest first
-
-# What one week's block holds, and its size.
-first = blocks[0]
-print(f"{len(blocks)} blocks, the first for the week of {first['group'][:10]}")
-print(f"weight_sum {first['weight_sum']:.0f} and n_kish {first['n_kish']:.0f}: its rows, weighed alike")
-print(f"comoments {first['comoments'].shape}: {first['comoments'].nbytes:,} bytes a block")
-
-# The pooled Gram's least squares, against least squares on the rows read into memory.
-rows = pl.read_parquet("weeks.parquet")
-design = np.column_stack([np.ones(n), rows.select(features).to_numpy()])
-by_rows = np.linalg.lstsq(design, rows["y"].to_numpy(), rcond=None)[0]
-by_gram = po.gram.solve(po.gram.merge(blocks))
-print(f"the two fits agree within 1e-12: {np.abs(by_gram - by_rows).max() < 1e-12}")
-```
-
-```text
-40 blocks, the first for the week of 2025-01-06
-weight_sum 504 and n_kish 504: its rows, weighed alike
-comoments (201, 201): 323,208 bytes a block
-the two fits agree within 1e-12: True
-```
-
-Each block holds its week's 504 rows, weighed alike, so its `weight_sum`
-and `n_kish` are both the row count. Its co-moment matrix is 201 by 201,
-323,208 bytes. Pooled, the forty blocks give the least-squares fit that
-numpy's `lstsq` computes from all 20,160 rows, to within 1e-12 in every
-coefficient.
 
 ## Pooling blocks
 
@@ -395,7 +198,8 @@ Each target's moments pool the same way over the rows it was present on,
 by its `target_weights`. Every term is a weighted average of the parts'
 moments, or a product of the gap. None is a difference of two large
 cumulative sums, which is where pooling raw sums loses its digits. The
-forty weeks of [Weekly blocks from one pass](#weekly-blocks-from-one-pass)
+forty weeks of [Keep weekly Grams of hundreds of
+features](how-to/fit-weekly-grams-in-one-pass.md#keep-weekly-grams-of-hundreds-of-features)
 pooled to least squares on their rows within 1e-12.
 
 **A block's weights are relative to its own last row.** So under a finite
@@ -433,7 +237,9 @@ each week's own fit does, and the weekly levels drop out of it. Under
 `target_gaps="pairwise"`, a target missing on some rows pools its
 cross-moments over the rows it is present on, and the co-moments over
 every row of the week
-([Weekly blocks from one pass](#weekly-blocks-from-one-pass)). So its
+([Keep weekly Grams of hundreds of
+features](how-to/fit-weekly-grams-in-one-pass.md#keep-weekly-grams-of-hundreds-of-features)).
+So its
 slopes can differ from the fixed-effects regression on its rows
 alone, and a target present on every row gets that regression exactly.
 
@@ -451,7 +257,7 @@ to week, such as an exponentially weighted mean at a half-life near a
 week, and a target whose weekly level wanders apart from it. Their forty
 weekly means correlate by chance, at about ±1/√40 = ±0.16 for independent
 series. The union's co-moments hold that correlation, and its standard
-errors divide by the 20,160 rows, as if each row had confirmed it. It
+errors divide by every row, as if each row had confirmed it. It
 rests on forty weekly means. Pooled within weeks, that correlation drops
 out ([Pool within blocks to leave their levels
 out](how-to/pool-grams.md#pool-within-blocks-to-leave-their-levels-out)
@@ -463,24 +269,21 @@ measures it).
 call, and `po.gram.coef_stats` gives any fit its residual variance,
 standard errors and t. The ridge solves the same system the `ewridge`
 model solves. The t is least squares', with least squares' assumptions.
+[Fit a ridge from a Gram](how-to/fit-a-ridge-from-a-gram.md) chooses a
+ridge on weeks held out and reads its t.
 
-**The ridge solves the centred system, so the intercept is not
+**The ridge solves the centered system, so the intercept is not
 penalized.** The slopes solve `(C + λI) b = c`, and the intercept is
 `b_0 = ȳ − m'b` (Hoerl and Kennard 1970). With `standardize=True` the
 system is solved in correlation form, so one `λ` means the same whatever
-the columns' units. A grid of penalties rides one eigendecomposition:
+the columns' units. A grid of penalties shares one eigendecomposition:
 with `C = Q diag(e) Q'`, each penalty's slopes are
 `Q diag(1 / (e + λ)) Q' c`. That holds where `C`'s diagonal is even, as in
 correlation form. An eigendecomposition is accurate only relative to the
 largest eigenvalue, so on columns of unequal scale `solve` scales `C` by
 its diagonal first, as a Cholesky solve in effect does, and the features'
 units then cost no digits. A uniform `λ` is not uniform on the scaled
-matrix, so there each penalty takes a solve of its own. To
-reproduce the coefficients a spec reports
-in `bank.coef()`, pass its `ridge` and `standardize`. `solve` does not
-reproduce a spec's `ridge_scale="sum"` or `coef_prior`, a ridge on a
-decaying scale and a prior other than zero. Read those fits from
-`bank.coef()`.
+matrix, so there each penalty takes a solve of its own.
 
 **`coef_stats` computes least squares' standard errors from the Gram:**
 
@@ -493,118 +296,26 @@ t_j       = b_j / se_j
 ```
 
 With `half_life=float("inf")` and every row's weight 1, `n` is the row
-count, and these are the classical standard errors: the recipe gets the
-ones numpy computes from the rows, to within 1e-9. The intercept's is
+count, and these are the classical standard errors: the recipe of [Fit a
+ridge from a Gram](how-to/fit-a-ridge-from-a-gram.md) gets the ones numpy
+computes from the rows, to within 1e-9. The intercept's is
 least squares' too: `ȳ` and the slopes are uncorrelated, so the variance
 of `b_0 = ȳ − m'b` is `Var[ȳ] + m' Var[b] m`.
 
 **Without an intercept the statistics are a fit through the origin's,
 read from the raw moments.** There `C` is `E[z z']`, `c` is `E[z y]` and
 `V` is `E[y²]`. So `resid_var` is the residuals' mean square, and `r2` is
-uncentred, as statsmodels reports an OLS fit with no constant.
+uncentered, as statsmodels reports an OLS fit with no constant.
 
 **The t carries least squares' assumptions, whatever fit it is given:**
 
 | it assumes | so |
 |---|---|
 | independent errors of one variance | correlated or heteroskedastic errors leave the standard errors too small. Standard errors robust to both need each row's residual: `emit_robust_se` on the stream ([Can its t be trusted?](DIAGNOSTICS.md#can-its-t-be-trusted)), or the spread of [per-block coefficients](#per-block-coefficients) |
-| one coefficient for all the pooled rows | a coefficient that changes from week to week reads as firm a t as a constant one: the 20.3 of `x25` beside the 20.3 of `x15` in the opening example |
+| one coefficient for all the pooled rows | a coefficient that changes from week to week reads as firm a t as a constant one: the pooled t of 20.3 for `x25`, whose coefficient is drawn again each week, beside the 20.3 of `x15` in [Keep weekly Grams of hundreds of features](how-to/fit-weekly-grams-in-one-pass.md#keep-weekly-grams-of-hundreds-of-features) |
 | least squares' covariance, `sigma2 · C⁻¹ / n` | a ridge's standard errors are that covariance at the ridge's residual variance. They leave out the shrinkage and its bias, so a ridge's t compares its coefficients with one another, and is no test |
 | `n` independent rows | under a decay the rows weigh unequally and are not independent, and `n_kish` stands in for `n`. Read the t as a comparison there too |
 | one intercept for all the pooled rows | on a Gram pooled within parts each part had its own, so the intercept's standard error and t are `nan` |
-
-With two weeks of rows for 201 columns, a ridge helps. The recipe fits a
-grid of ridges on weeks 1 and 2, and scores each on the other 38 weeks
-with their pooled Gram. Then it reads the t of the least-squares fit and
-of the best ridge:
-
-```python
-from datetime import datetime, timedelta
-
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
-# two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
-# drawn again each week, 0.15 on average.
-rng = np.random.default_rng(7)
-n_weeks, per_week, k = 40, 504, 200
-n = n_weeks * per_week
-x = 0.7 * (rng.standard_normal((n, k)) + np.repeat(rng.standard_normal((n, k // 5)), 5, axis=1))
-b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
-y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
-y += rng.standard_normal(n)
-features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
-start = datetime(2025, 1, 6)  # a Monday
-ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
-pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
-
-# One pass over the file leaves a Gram per week. The week is a column made in the query.
-lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
-spec = po.spec.ewridge(
-    "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
-)
-bank = po.ModelBank([spec])
-bank.fit(lf)  # learns from every row, and keeps only the state
-blocks = bank.gram("blocks")  # one dict per week, oldest first
-
-
-# Score a fit on any set of weeks, without reading their rows.
-def mean_squared_error(g, coef):
-    """A fit's mean squared error over the rows behind g, from g's arrays alone."""
-    b0, b = coef[0], coef[1:]
-    gap = g["cross_moments"][0][0] - b0 - g["means"][1:] @ b
-    spread = g["target_vars"][0] - 2 * b @ g["cross_centered"][0][1:] + b @ g["comoments"][1:, 1:] @ b
-    return spread + gap**2
-
-
-# Pick the ridge by its error on the weeks held out.
-train, held_out = po.gram.merge(blocks[:2]), po.gram.merge(blocks[2:])  # fit on two weeks, judge on 38
-ridges = [0.0, 0.01, 0.03, 0.1, 0.3, 1.0]
-grid = po.gram.solve(train, ridge=ridges, standardize=True)  # a row per ridge, one eigendecomposition
-errors = [mean_squared_error(held_out, coef) for coef in grid]
-print("held-out error by ridge: " + ", ".join(f"{r} {e:.4f}" for r, e in zip(ridges, errors)))
-best = int(np.argmin(errors))
-
-# coef_stats on the least-squares fit and on the chosen ridge's, for the planted columns.
-plain, ridged = po.gram.coef_stats(train, grid[0]), po.gram.coef_stats(train, grid[best])
-print(f"{'column':>6} {'coef':>6} {'t':>5} {'ridge ' + str(ridges[best]):>12} {'t':>5}")
-for name in ["x0", "x5", "x10", "x15", "x20", "x25"]:
-    i = train["columns"].index(name)
-    print(f"{name:>6} {grid[0][i]:>6.3f} {plain['t'][i]:>5.1f} {grid[best][i]:>12.3f} {ridged['t'][i]:>5.1f}")
-
-# At ridge 0, coef_stats' standard errors are least squares' own, from the two weeks' rows.
-rows = pl.read_parquet("weeks.parquet").head(2 * per_week)
-design = np.column_stack([np.ones(rows.height), rows.select(features).to_numpy()])
-resid = rows["y"].to_numpy() - design @ grid[0]
-dof = rows.height - design.shape[1]
-se = np.sqrt(np.diag(np.linalg.inv(design.T @ design)) * (resid @ resid) / dof)
-print(f"coef_stats' standard errors equal the rows' within 1e-9: {np.allclose(plain['se'][1:], se[1:], rtol=1e-9)}")
-```
-
-```text
-held-out error by ridge: 0.0 1.3521, 0.01 1.3433, 0.03 1.3285, 0.1 1.2959, 0.3 1.2706, 1.0 1.3050
-column   coef     t    ridge 0.3     t
-    x0  0.487  10.0        0.320   6.4
-    x5  0.344   7.0        0.225   4.5
-   x10  0.204   4.2        0.139   2.8
-   x15  0.200   4.2        0.134   2.7
-   x20  0.138   3.0        0.078   1.6
-   x25  0.085   1.8        0.057   1.2
-coef_stats' standard errors equal the rows' within 1e-9: True
-```
-
-A ridge of 0.3, in correlation units, lowers the held-out error from
-1.3521 to 1.2706. It shrinks every coefficient toward 0, that of `x0`
-from 0.487 to 0.320, and each t falls with its coefficient, from 10.0 to
-6.4 for `x0`.
-The standard errors barely move: they are least squares', read at the
-ridge's slightly larger residual variance. At ridge 0 they are the ones
-numpy computes from the two weeks' rows.
 
 ## Is the fit determined?
 
@@ -612,7 +323,9 @@ When columns are nearly dependent, the rows fix only their combined
 effect, and the split among them moves with the noise. The fit then
 predicts well, and its coefficients mean nothing. `po.gram.vif` and
 `po.gram.condition` read this from a Gram, and `po.gram.correlation`
-gives the matrix behind them.
+gives the matrix behind them. [Check that a fit is
+determined](how-to/check-a-fit-is-determined.md) reads both on a Gram
+with a planted dependency, and refits without it.
 
 **A variance inflation factor says how far a column's variance is
 inflated by the other columns.** `VIF_j = 1 / (1 − R²_j)`, where `R²_j`
@@ -626,68 +339,13 @@ explains.
 
 **Belsley's condition indexes say which columns are involved.**
 `po.gram.condition` scales the design to unit column length, without
-centring it, and takes its singular values `s`. Each index is
+centering it, and takes its singular values `s`. Each index is
 `s_max / s_j`. The variance-decomposition proportions give each column's
 share of its coefficient's variance in each component. Belsley, Kuh and
 Welsch (1980) read an index above 30, with two or more columns' shares
 above 0.5 in its component, as a dependency among those columns. The
-design is left uncentred so that a dependency on the intercept shows,
+design is left uncentered so that a dependency on the intercept shows,
 such as a column whose level is far above its spread.
-
-The recipe has five independent features and a sixth, `x5`, that is
-`x1 + x2` plus a little noise of its own:
-
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# Five features, and a sixth that is nearly the sum of two of them: x5 = x1 + x2 + a little noise.
-rng = np.random.default_rng(11)
-n = 5_000
-x = rng.standard_normal((n, 5))
-x5 = x[:, 1] + x[:, 2] + 0.05 * rng.standard_normal(n)
-y = x @ [0.5, 0.4, 0.3, 0.2, 0.1] + rng.standard_normal(n)
-features = ["x0", "x1", "x2", "x3", "x4", "x5"]
-pl.DataFrame({**dict(zip(features, [*x.T, x5])), "y": y}).write_parquet("near.parquet")
-
-# One pass leaves one Gram of the six features.
-spec = po.spec.ewridge(
-    "fit", targets=["y"], features=features, half_life=float("inf"), solve_every=float("inf")
-)
-bank = po.ModelBank([spec])
-bank.fit(pl.scan_parquet("near.parquet"))
-g = bank.gram("fit")[0]
-
-# Belsley's indexes, each column's share of the last component, and the VIFs.
-cond = po.gram.condition(g)  # Belsley's diagnostics, with the intercept among the columns
-print("condition indexes: " + ", ".join(f"{v:.1f}" for v in cond["condition_indexes"]))
-last = cond["proportions"][-1]  # each column's share of its variance in the last component
-print("shares of the last: " + ", ".join(f"{c} {p:.2f}" for c, p in zip(cond["columns"], last)))
-print("VIF: " + ", ".join(f"{c} {v:.0f}" for c, v in zip(features, po.gram.vif(g))))
-# The t with x5 in the fit, and without it.
-for cols in (features, features[:5]):
-    part = po.gram.subset(g, ["intercept", *cols])  # without "intercept", a fit through the origin
-    t = po.gram.coef_stats(part, po.gram.solve(part))["t"]
-    print(f"t with {len(cols)} features: " + ", ".join(f"{c} {v:.1f}" for c, v in zip(cols, t[1:])))
-```
-
-```text
-condition indexes: 1.0, 1.4, 1.4, 1.4, 1.4, 1.5, 57.1
-shares of the last: intercept 0.00, x0 0.00, x1 1.00, x2 1.00, x3 0.00, x4 0.00, x5 1.00
-VIF: x0 1, x1 411, x2 399, x3 1, x4 1, x5 816
-t with 6 features: x0 35.7, x1 0.3, x2 0.0, x3 14.8, x4 8.2, x5 1.1
-t with 5 features: x0 35.7, x1 29.1, x2 22.2, x3 14.8, x4 8.2
-```
-
-One condition index, 57.1, stands far above the others, and its component
-holds all of the variance of `x1`, `x2` and `x5`: the dependency, and its
-three columns. Their VIFs are 399 to 816. With `x5` in the fit, the t of
-`x1` and `x2` falls from 29.1 and 22.2 to 0.3 and 0.0, while `x0`, `x3`
-and `x4` keep theirs. To read the coefficients, drop one of the three,
-combine them into one column in the query before the bank, or increase
-the ridge ([Data quality](DATA-QUALITY.md#collinear)).
 
 ## Choosing columns on the lasso path
 
@@ -699,7 +357,7 @@ the penalties given, by coordinate descent.
 
 **Both solve the lasso on the Gram's correlation form.** With `R` the
 features' correlation matrix and `d` their standardized cross-moments
-with the target, centred at its own means, the lasso minimizes
+with the target, centered at its own means, the lasso minimizes
 
 ```text
 f(b) = ½ b'R b − d'b + λ Σ_j w_j |b_j|
@@ -712,16 +370,16 @@ intercept recovered. The solution is piecewise linear in `λ`. A knot is a
 when their coefficients reach 0 (Efron, Hastie, Johnstone and Tibshirani
 2004).
 
-**Use least angle regression for the start of a path, and coordinate
-descent for a grid of penalties:**
-
-| | `lars_path`, and `lars_paths` for many Grams | `lasso_path` |
-|---|---|---|
-| computes | each knot exactly, from the largest penalty down | the solution at each penalty given, each started from the one before |
-| stops | after `max_iter` knots, or at the first knot with at least `max_active` columns active | at the last penalty |
-| time, measured at a load average near 12 | 4 ms for the whole path, 201 knots, at 200 columns. Its reference gives 0.2 ms for 40 knots at 200 columns, and 3 ms at 2,000 | 3 to 8 ms for 25 penalties at 200 columns |
-| takes | a weight `w_j` above 0 for each column | a weight of 0, which keeps a column in the fit at every penalty, and an elastic net (`l1_ratio` below 1), whose path is not piecewise linear (Zou and Hastie 2005) |
-| use it for | the first columns to enter: a selection, and [stability selection](#stability-selection-over-halves-of-the-weeks) | a penalty chosen by held-out error, an elastic net, a column that must stay in |
+**Least angle regression walks the path from its start, and coordinate
+descent solves a grid of penalties.** `lars_path` stops after `max_iter`
+knots past its first, or at the first knot with at least `max_active` columns active, so
+it suits a selection: the first columns to enter. `lasso_path` takes what
+a path of knots cannot: a weight `w_j` of 0, which keeps a column in the
+fit at every penalty, and an elastic net (`l1_ratio` below 1), whose path
+is not piecewise linear (Zou and Hastie 2005). [Choose columns on a
+Gram's lasso
+path](how-to/choose-columns-on-the-lasso-path.md#choose-columns-on-a-grams-lasso-path)
+compares the two, with their times, and walks a path on four weeks.
 
 **At a knot, LARS gives the lasso's coefficients exactly, and coordinate
 descent reaches them to its tolerance.** `lasso_path`'s `tol` bounds the
@@ -732,7 +390,8 @@ the target's units, so the rule has none: a target scaled by a power of
 two, with the penalties, gives the same path scaled, to the bit. On a poorly
 conditioned Gram the rule says little about the distance from the
 solution: at a condition number of 1e8, a descent at `tol=1e-14` stopped
-with its intercept 0.48 from the knot's (`lars_path`'s reference). The
+with its intercept 0.48 from the knot's ([`lars_path`'s
+reference](https://hgilde.github.io/polars-online/gram.html#polars_online.gram.lars_path)). The
 descent follows Friedman, Hastie and Tibshirani (2010).
 
 **A penalty whose descent runs out of sweeps is named in a warning.** Its
@@ -741,99 +400,8 @@ penalty. A cyclic descent shrinks the error along two columns of
 correlation `ρ` by `ρ²` a sweep. Their correlation matrix's condition number
 is `κ = (1 + ρ)/(1 − ρ)`, so `ρ² = ((κ − 1)/(κ + 1))²`, about `1 − 4/κ`, and
 each e-fold of the error takes about `κ/4` sweeps. On columns that nearly
-repeat each other that is many: raise `max_iter`, or take the knots from
+repeat each other that is many: give a larger `max_iter`, or take the knots from
 `lars_path`.
-
-The recipe walks the path on weeks 1 to 4 to its eighth active column,
-and checks coordinate descent at its knots. Then it chooses a penalty
-from a grid of 25 by the error on the other 36 weeks:
-
-```python
-from datetime import datetime, timedelta
-
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
-# two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
-# drawn again each week, 0.15 on average.
-rng = np.random.default_rng(7)
-n_weeks, per_week, k = 40, 504, 200
-n = n_weeks * per_week
-x = 0.7 * (rng.standard_normal((n, k)) + np.repeat(rng.standard_normal((n, k // 5)), 5, axis=1))
-b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
-y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
-y += rng.standard_normal(n)
-features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
-start = datetime(2025, 1, 6)  # a Monday
-ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
-pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
-
-# One pass over the file leaves a Gram per week. The week is a column made in the query.
-lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
-spec = po.spec.ewridge(
-    "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
-)
-bank = po.ModelBank([spec])
-bank.fit(lf)  # learns from every row, and keeps only the state
-blocks = bank.gram("blocks")  # one dict per week, oldest first
-
-
-# Score a fit on any set of weeks, without reading their rows.
-def mean_squared_error(g, coef):
-    """A fit's mean squared error over the rows behind g, from g's arrays alone."""
-    b0, b = coef[0], coef[1:]
-    gap = g["cross_moments"][0][0] - b0 - g["means"][1:] @ b
-    spread = g["target_vars"][0] - 2 * b @ g["cross_centered"][0][1:] + b @ g["comoments"][1:, 1:] @ b
-    return spread + gap**2
-
-
-train, held_out = po.gram.merge(blocks[:4]), po.gram.merge(blocks[4:])  # fit on four weeks, judge on 36
-
-# LARS: the path from its start, knot by knot, to the first knot with at least eight columns active.
-path = po.gram.lars_path(train, max_active=8)
-active = []
-for penalty, now in zip(path["penalties"], path["active"]):
-    change = [f"+{c}" for c in now if c not in active] + [f"-{c}" for c in active if c not in now]
-    print(f"knot at penalty {penalty:.4f}: {' '.join(change)}")
-    active = now
-cd = po.gram.lasso_path(train, path["penalties"], tol=1e-12)  # coordinate descent at the knots
-print(f"coordinate descent at the knots, against LARS: within 1e-9: {np.abs(cd - path['coef']).max() < 1e-9}")
-
-# Coordinate descent on 25 penalties, from the first knot's down a thousandfold, scored on the 36 weeks.
-grid = np.geomspace(path["penalties"][0], path["penalties"][0] / 1_000, 25)
-fits = po.gram.lasso_path(train, grid)
-errors = [mean_squared_error(held_out, coef) for coef in fits]
-best = int(np.argmin(errors))
-print(f"the best penalty, {grid[best]:.4f}: {np.count_nonzero(fits[best][1:])} columns, held-out error {errors[best]:.4f}")
-print(f"least squares on the same four weeks: held-out error {mean_squared_error(held_out, po.gram.solve(train)):.4f}")
-```
-
-```text
-knot at penalty 0.4918: +x0
-knot at penalty 0.3408: +x5
-knot at penalty 0.3172: +x25
-knot at penalty 0.2741: +x10
-knot at penalty 0.1933: +x15
-knot at penalty 0.0784: +x20
-knot at penalty 0.0752: +x117
-knot at penalty 0.0720: +x4
-coordinate descent at the knots, against LARS: within 1e-9: True
-the best penalty, 0.0369: 18 columns, held-out error 1.1328
-least squares on the same four weeks: held-out error 1.2265
-```
-
-The six planted columns enter first. `x25` is third, since its
-coefficient averages 0.32 over these four weeks, where it averages 0.186
-over all forty. Then come `x117`, a column with no effect, and
-`x4`, which shares `x0`'s family factor. Coordinate descent at each knot
-gives LARS's coefficients within 1e-9. On the grid, a penalty of 0.0369
-keeps 18 columns and has a held-out error of 1.1328, where least squares
-on the same four weeks has 1.2265.
 
 ## Stability selection over halves of the weeks
 
@@ -865,129 +433,35 @@ chosen exchangeably, and the choice does no worse than guessing at
 random. Shah and Samworth (2013) proved a bound of the same form with no
 exchangeability, when each half is drawn beside its complement. Theirs
 counts the columns whose chance of being chosen on a half is at most
-`q / p`. The recipe draws its halves that way. At `q = 8`, `p = 200` and
-`π_thr = 0.75`, the bound is 0.64.
+`q / p`. [Select columns that hold across the
+weeks](how-to/select-columns-stably-over-weeks.md) draws its halves that
+way. At `q = 8`, `p = 200` and `π_thr = 0.75`, the bound is 0.64.
 
-**Draw the halves from whole weeks.** The theorem's halves are halves of
+**The halves are drawn from whole weeks.** The theorem's halves are halves of
 independent observations, and the rows of a stream are rarely
-independent of their neighbours. A half of the weeks keeps each week's
+independent of their neighbors. A half of the weeks keeps each week's
 rows on one side, so the weeks become the units being sampled, and the
 assumption becomes that the weeks are alike. A run of weeks in another
 regime from the rest breaks it.
 
 **Stability selection bounds false selections, and says nothing about
-whether a chosen coefficient holds.** `x25` has a coefficient that is a
-different number each week around a nonzero average, and every half
+whether a chosen coefficient holds.** [Select columns that hold across
+the weeks](how-to/select-columns-stably-over-weeks.md) runs the selection
+on a hundred halves of forty weeks. There `x25` has a coefficient that is
+a different number each week around a nonzero average, and every half
 chooses it. [Per-block coefficients](#per-block-coefficients) is the
 reading for that.
 
-**`po.gram.solve_subsets(..., path=...)` gives the same paths in one
-call.** It reads the Grams once into memory the call holds, then merges
-each half and walks its path there, on the bank's thread pool, without a
-Python copy of a matrix per half. Its ridge form, on 38 Grams and 100
-subsets at 2,000 columns, took 3.0 s where a loop of `merge`, `solve` and
-`coef_stats` took 76 s.
-
-```python
-import time
-from datetime import datetime, timedelta
-
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
-# two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
-# drawn again each week, 0.15 on average.
-rng = np.random.default_rng(7)
-n_weeks, per_week, k = 40, 504, 200
-n = n_weeks * per_week
-x = 0.7 * (rng.standard_normal((n, k)) + np.repeat(rng.standard_normal((n, k // 5)), 5, axis=1))
-b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
-y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
-y += rng.standard_normal(n)
-features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
-start = datetime(2025, 1, 6)  # a Monday
-ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
-pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
-
-# One pass over the file leaves a Gram per week. The week is a column made in the query.
-lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
-spec = po.spec.ewridge(
-    "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
-)
-bank = po.ModelBank([spec])
-bank.fit(lf)  # learns from every row, and keeps only the state
-blocks = bank.gram("blocks")  # one dict per week, oldest first
-
-# The halves the selection runs on.
-halves = []  # 50 random splits of the 40 weeks: 100 halves of 20, each beside its complement
-splitter = np.random.default_rng(1)
-for _ in range(50):
-    order = splitter.permutation(n_weeks)
-    halves += [sorted(order[:20]), sorted(order[20:])]
-
-# Merge each half and walk its lasso path, timed.
-t0 = time.perf_counter()
-merged = [po.gram.merge([blocks[i] for i in half]) for half in halves]
-paths = po.gram.lars_paths(merged, max_active=8)  # a list per half, a path per target
-seconds = time.perf_counter() - t0
-
-# Count how often the halves chose each column.
-chosen, sizes = np.zeros(k), []  # how many halves chose each column, and how many each half chose
-for (path,) in paths:
-    ever = set().union(*path["active"])  # active at any knot, up to the stop
-    sizes.append(len(ever))
-    chosen[[features.index(c) for c in ever]] += 1
-freq = dict(zip(features, chosen / len(halves)))
-
-# The planted columns, the most chosen of the rest, and the stable set's bound.
-planted = ["x0", "x5", "x10", "x15", "x20", "x25"]
-print("planted: " + ", ".join(f"{c} {freq[c]:.2f}" for c in planted))
-rest = sorted((f for f in features if f not in planted), key=lambda f: -freq[f])
-print("the most chosen of the rest: " + ", ".join(f"{c} {freq[c]:.2f}" for c in rest[:4]))
-q, threshold = np.mean(sizes), 0.75
-print(f"chosen on at least {threshold:.0%} of the halves: {' '.join(f for f in features if freq[f] >= threshold)}")
-print(f"{q:.1f} columns a half, so at most {q**2 / ((2 * threshold - 1) * k):.2f} false selections expected")
-
-# The same paths from solve_subsets in one call, timed beside the loop.
-t0 = time.perf_counter()
-same = po.gram.solve_subsets(blocks, halves, path={"max_active": 8})  # the same paths, in one call
-agree = all(a[0]["active"] == b[0]["active"] for a, b in zip(same, paths))
-print(f"solve_subsets chooses the same: {agree}")
-print(f"time: {seconds:.2f} s by merge and lars_paths, {time.perf_counter() - t0:.2f} s by solve_subsets")
-```
-
-```text
-planted: x0 1.00, x5 1.00, x10 1.00, x15 1.00, x20 1.00, x25 1.00
-the most chosen of the rest: x4 0.45, x11 0.25, x86 0.20, x14 0.17
-chosen on at least 75% of the halves: x0 x5 x10 x15 x20 x25
-8.0 columns a half, so at most 0.64 false selections expected
-solve_subsets chooses the same: True
-time: 0.19 s by merge and lars_paths, 0.01 s by solve_subsets
-```
-
-Every planted column is chosen on every half, and the stable set at 75%
-is exactly those six. The most chosen of the rest is `x4`, on 45% of the
-halves, a member of `x0`'s family that the lasso sometimes takes in its
-place. Each half chose 8.0 columns, so over draws of the halves the
-stable set holds at most 0.64 columns with no effect on average, and
-this draw's holds none. `solve_subsets`
-chooses the same columns on every half. It took 0.01 s, where the merges
-and `lars_paths` took 0.19 s, at a load average near 14 on 14 cores.
-
 ### A null for the selection, by sign flips
 
-**Negate each week's target at random and run the selection again, to see
-what it chooses where no effect keeps its sign across the weeks.**
-Stability selection's bound, in Shah and Samworth's form, counts only the
-columns with no effect whose chance of being chosen on a half is at most
-`q / p`. A path that always stops at eight columns, among columns that
-share families, can choose some of them more often than that. A null run measures the selection instead. Draw a sign for each
-week, negate that week's target, and rerun every half. A column whose
+**A null run negates each week's target at random and runs the selection
+again, to see what it chooses where no effect keeps its sign across the
+weeks.** Stability selection's bound, in Shah and Samworth's form, counts
+only the columns with no effect whose chance of being chosen on a half is
+at most `q / p`. A path that always stops at eight columns, among columns
+that share families, can choose some of them more often than that. A null
+run measures the selection instead. It draws a sign for each week,
+negates that week's target, and reruns every half. A column whose
 effect keeps its sign across the weeks loses that in a null run. The run
 keeps everything else: each week's columns, their correlations, and the
 size of each week's effects. Over many draws, the largest selection
@@ -998,104 +472,23 @@ maximum statistic of a permutation test by sign flips (Winkler et al.
 
 **Pooled within weeks, a negated target changes only the cross-moments,
 so a null run needs no new merge of the co-moments.** Negating a week's
-target negates its centred cross-moments `c_i`. Its co-moments, its target
+target negates its centered cross-moments `c_i`. Its co-moments, its target
 weight and its variance stay as they were. So a draw of signs `s_i` gives
 `c = Σ T_i · s_i · c_i / T`, and nothing else in the pooled Gram moves.
 `po.gram.solve_subsets(..., within=True, target_signs=signs)` takes the
 signs as an array of weeks by draws, and returns one run of every subset
 per draw. Pooled as a union, a negated week's target mean would also move
 the gaps between the weeks' means, so `target_signs` is refused without
-`within=True`. A hundred null runs of the recipe's hundred halves, at 200
-columns, took 0.08 s with the real run. A Python loop of `merge` and
-`lars_paths` took about 0.08 s a draw, at a load average near 4 on 14
-cores.
-
-```python
-from datetime import datetime, timedelta
-
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
-# two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
-# drawn again each week, 0.15 on average.
-rng = np.random.default_rng(7)
-n_weeks, per_week, k = 40, 504, 200
-n = n_weeks * per_week
-x = 0.7 * (rng.standard_normal((n, k)) + np.repeat(rng.standard_normal((n, k // 5)), 5, axis=1))
-b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
-y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
-y += rng.standard_normal(n)
-features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
-start = datetime(2025, 1, 6)  # a Monday
-ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
-pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
-
-# One pass over the file leaves a Gram per week. The week is a column made in the query.
-lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
-spec = po.spec.ewridge(
-    "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
-)
-bank = po.ModelBank([spec])
-bank.fit(lf)  # learns from every row, and keeps only the state
-blocks = bank.gram("blocks")  # one dict per week, oldest first
-
-# The same hundred halves of the weeks.
-halves = []  # 50 random splits of the 40 weeks: 100 halves of 20, each beside its complement
-splitter = np.random.default_rng(1)
-for _ in range(50):
-    order = splitter.permutation(n_weeks)
-    halves += [sorted(order[:20]), sorted(order[20:])]
-
-
-# Selection frequencies, read alike from the real run and from each null run.
-def frequencies(run):
-    """The share of the halves that chose each column: active at any knot of its path."""
-    chosen = np.zeros(k)
-    for (path,) in run:
-        chosen[[features.index(c) for c in set().union(*path["active"])]] += 1
-    return chosen / len(run)
-
-
-# The selection on the real target, and on 100 draws of a sign for each week.
-signs = np.random.default_rng(2).choice([-1.0, 1.0], size=(n_weeks, 100))  # a sign per week, 100 draws
-real = po.gram.solve_subsets(blocks, halves, path={"max_active": 8}, within=True)
-null = po.gram.solve_subsets(blocks, halves, path={"max_active": 8}, within=True, target_signs=signs)
-
-# Each column's frequency, and a threshold from the null runs' most chosen column.
-freq = dict(zip(features, frequencies(real)))
-null_max = np.array([frequencies(run).max() for run in null])  # each null run's most chosen column
-threshold = np.quantile(null_max, 0.95)
-# The planted columns, the most chosen of the rest, and what clears the threshold.
-planted = ["x0", "x5", "x10", "x15", "x20", "x25"]
-print("planted: " + ", ".join(f"{c} {freq[c]:.2f}" for c in planted))
-rest = sorted((f for f in features if f not in planted), key=lambda f: -freq[f])
-print("the most chosen of the rest: " + ", ".join(f"{c} {freq[c]:.2f}" for c in rest[:4]))
-print(f"the most chosen column of a null run: {np.median(null_max):.2f} of the halves at the median draw, {threshold:.2f} at the 95th percentile")
-print(f"chosen on more halves than {threshold:.2f}: {' '.join(f for f in features if freq[f] > threshold)}")
-```
-
-```text
-planted: x0 1.00, x5 1.00, x10 1.00, x15 1.00, x20 1.00, x25 1.00
-the most chosen of the rest: x4 0.49, x11 0.25, x86 0.20, x14 0.16
-the most chosen column of a null run: 0.81 of the halves at the median draw, 0.95 at the 95th percentile
-chosen on more halves than 0.95: x0 x5 x10 x15 x20 x25
-```
-
-With each week's sign drawn at random, the most chosen column of a null
-run is still chosen on 0.81 of the halves at the median draw. Each half
-chooses eight columns whatever the signs, and a column with a large
-effect in some weeks keeps being chosen when its sign changes from week
-to week. The threshold of 0.75 that
-[Stability selection over halves of the weeks](#stability-selection-over-halves-of-the-weeks)
-used passes such a column in 73 of the 100 null runs. The null runs'
-95th percentile, 0.95, is the threshold this selection earns on these
-weeks. The six planted columns pass it, and the most chosen of the rest,
-`x4`, is at 0.49.
+`within=True`. [Set the threshold from null runs, by sign
+flips](how-to/select-columns-stably-over-weeks.md#set-the-threshold-from-null-runs-by-sign-flips)
+runs a hundred null runs. With each week's sign drawn at random, the most
+chosen column of a null run there is still chosen on 0.81 of the halves at
+the median draw. Each half chooses eight columns whatever the signs, and
+a column with a large effect in some weeks keeps being chosen when its
+sign changes from week to week. So the threshold of 0.75 that the
+selection without null runs used passes such a column in 76 of the 100
+null runs. The null runs' 95th percentile, 0.95, is the threshold the
+selection earns on those weeks.
 
 ### A screen of its own for each path
 
@@ -1106,111 +499,16 @@ selection, so a half's screen reads that half's rows. A null run screens
 under its own signs too, since a screen read from the real target would
 carry the target's signs into the run that is meant to have none.
 
-**`jobs=` gives each path columns of its own in one call.** A job is a
-mapping of `"subset"`, `"target"`, `"draw"` and `"features"`, and the call
-returns a path per job, in order. Each half is still merged once, on every
-column its jobs read, and each draw re-pools that half's cross-moments
-once. A job's path is the one `po.gram.lars_path` gives on
-`po.gram.subset(merge, ["intercept", *features])` of its half under its
-draw's signs, to the bit. Measured on an M4 Pro at a load near 7, 100
-halves of 19 of 38 Grams under 11 draws and 10 targets, each of the 11,000
-paths on its own 400 of 1,500 columns, took 11 ms a half. The loop of `merge`,
-`subset` and `lars_path` it replaces took 115 ms a half.
-
-The screen below is each column's correlation with the target, pooled
-within the half's weeks from their own moments. It reads a vector per week
-and merges no matrix.
-
-```python
-from datetime import datetime, timedelta
-
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
-# two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
-# drawn again each week, 0.15 on average.
-rng = np.random.default_rng(7)
-n_weeks, per_week, k = 40, 504, 200
-n = n_weeks * per_week
-x = 0.7 * (rng.standard_normal((n, k)) + np.repeat(rng.standard_normal((n, k // 5)), 5, axis=1))
-b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
-y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
-y += rng.standard_normal(n)
-features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
-start = datetime(2025, 1, 6)  # a Monday
-ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
-pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
-
-# One pass over the file leaves a Gram per week. The week is a column made in the query.
-lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
-spec = po.spec.ewridge(
-    "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
-)
-bank = po.ModelBank([spec])
-bank.fit(lf)  # learns from every row, and keeps only the state
-blocks = bank.gram("blocks")  # one dict per week, oldest first
-
-# The same hundred halves of the weeks, and 20 draws of a sign per week after the real target's.
-halves = []  # 50 random splits of the 40 weeks: 100 halves of 20, each beside its complement
-splitter = np.random.default_rng(1)
-for _ in range(50):
-    order = splitter.permutation(n_weeks)
-    halves += [sorted(order[:20]), sorted(order[20:])]
-signs = np.random.default_rng(2).choice([-1.0, 1.0], size=(n_weeks, 21))
-signs[:, 0] = 1.0  # draw 0 is the real target: every sign +1
-
-# Each half's screen under each draw: its 40 columns most correlated with the target, read from
-# the weeks' own moments as the merge within the weeks pools them, so no matrix is merged for it.
-w = np.array([b["target_weights"][0] for b in blocks])  # each week's weight
-c = np.stack([b["cross_centered"][0][1:] for b in blocks])  # its cross-moments, past the intercept
-v = np.stack([np.diag(b["comoments"])[1:] for b in blocks])  # and its columns' variances
-# A job per half and draw: the half's correlations under the draw's signs, and the top 40.
-jobs = []
-for s, half in enumerate(halves):
-    for d in range(signs.shape[1]):
-        cov = (w[half] * signs[half, d]) @ c[half] / w[half].sum()
-        var = w[half] @ v[half] / w[half].sum()
-        screen = np.argsort(-np.abs(cov) / np.sqrt(var))[:40]
-        jobs.append({"subset": s, "draw": d, "target": "y", "features": [features[j] for j in screen]})
-
-# Every half's path under every draw on its own screen, in one call: a path per job, in order.
-runs = po.gram.solve_subsets(
-    blocks, halves, path={"max_active": 8}, within=True, target_signs=signs, jobs=jobs
-)
-
-# How often each draw's halves chose each column, and a threshold from the null draws.
-chosen = np.zeros((signs.shape[1], k))
-for job, path in zip(jobs, runs):
-    chosen[job["draw"], [features.index(c) for c in set().union(*path["active"])]] += 1
-freq = chosen / len(halves)
-null_max = freq[1:].max(axis=1)  # each null draw's most chosen column
-threshold = np.quantile(null_max, 0.95)
-real = dict(zip(features, freq[0]))
-# How many screens the jobs ran on, the planted columns, and what clears the threshold.
-planted = ["x0", "x5", "x10", "x15", "x20", "x25"]
-screens = {frozenset(job["features"]) for job in jobs}
-print(f"{len(jobs)} paths, each on 40 of the {k} columns, {len(screens)} screens among them")
-print("planted: " + ", ".join(f"{c} {real[c]:.2f}" for c in planted))
-print(f"the most chosen column of a null run: {np.median(null_max):.2f} of the halves at the median draw, {threshold:.2f} at the 95th percentile")
-print(f"chosen on more halves than {threshold:.2f}: {' '.join(f for f in features if real[f] > threshold)}")
-```
-
-```text
-2100 paths, each on 40 of the 200 columns, 2100 screens among them
-planted: x0 1.00, x5 1.00, x10 1.00, x15 1.00, x20 1.00, x25 1.00
-the most chosen column of a null run: 0.81 of the halves at the median draw, 0.95 at the 95th percentile
-chosen on more halves than 0.95: x0 x5 x10 x15 x20 x25
-```
-
-Each of the 2,100 paths ran on a screen of its own. The planted columns
-survive every half's screen and are chosen on every half. The null runs,
-each screened under its own signs, put the threshold at 0.95, where the
-selection without a screen put it. Only the six planted columns pass it.
+**A screen pooled within the weeks reads a vector per week, so a screen
+for every half and draw merges no matrix.** A column's correlation with
+the target, pooled within a half's weeks, needs only each week's weight,
+its cross-moments under the draw's signs and its columns' variances. So
+`po.gram.solve_subsets(..., jobs=...)` takes each path's own columns, and
+still merges each half once, on every column its jobs read, and re-pools
+its cross-moments once a draw. [Screen the columns again for each half
+and each null
+run](how-to/select-columns-stably-over-weeks.md#screen-the-columns-again-for-each-half-and-each-null-run)
+runs 2,100 paths, each on a screen of its own.
 
 ## Per-block coefficients
 
@@ -1227,196 +525,22 @@ of the errors within a week. It assumes the weekly coefficients are
 independent of one another. When they drift slowly, take Newey and
 West's (1987) long-run variance of their series in place of `sd(b_w)²`.
 
-**Fit each week on the columns already chosen.** A week of 504 rows fits
-201 columns poorly, so pass the chosen columns as `features=`.
-`po.gram.solve_subsets(blocks, [[0], [1], ...])` fits each block alone in
-one call, each with its own standard errors and t.
-
-```python
-from datetime import datetime, timedelta
-
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
-# two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
-# drawn again each week, 0.15 on average.
-rng = np.random.default_rng(7)
-n_weeks, per_week, k = 40, 504, 200
-n = n_weeks * per_week
-x = 0.7 * (rng.standard_normal((n, k)) + np.repeat(rng.standard_normal((n, k // 5)), 5, axis=1))
-b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
-y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
-y += rng.standard_normal(n)
-features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
-start = datetime(2025, 1, 6)  # a Monday
-ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
-pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
-
-# One pass over the file leaves a Gram per week. The week is a column made in the query.
-lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
-spec = po.spec.ewridge(
-    "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
-)
-bank = po.ModelBank([spec])
-bank.fit(lf)  # learns from every row, and keeps only the state
-blocks = bank.gram("blocks")  # one dict per week, oldest first
-
-# The six chosen columns, fit each week alone and pooled over all forty.
-chosen = ["x0", "x5", "x10", "x15", "x20", "x25"]
-each = po.gram.solve_subsets(blocks, [[i] for i in range(n_weeks)], features=chosen)  # each week alone
-pooled = po.gram.merge(blocks)
-coef = po.gram.solve(pooled, features=chosen)
-t = po.gram.coef_stats(pooled, coef, features=chosen)["t"]
-
-# The pooled fit beside the weekly ones, column by column.
-columns = pooled["columns"]
-print(f"{'column':>6} {'pooled':>7} {'t':>5} {'weekly mean':>12} {'sd':>6} {'t':>5} {'same sign':>10}")
-for name in chosen:
-    i = columns.index(name)
-    # The column's forty weekly coefficients, read as a sample.
-    weekly = np.array([fits[0]["coef"][i] for fits in each])
-    sd = weekly.std(ddof=1)
-    t_weeks = weekly.mean() / (sd / np.sqrt(n_weeks))  # Fama and MacBeth's t
-    sign = np.mean(np.sign(weekly) == np.sign(coef[i]))
-    print(f"{name:>6} {coef[i]:>7.3f} {t[i]:>5.1f} {weekly.mean():>12.3f} {sd:>6.3f} {t_weeks:>5.1f} {sign:>10.0%}")
-```
-
-```text
-column  pooled     t  weekly mean     sd     t  same sign
-    x0   0.496  65.8        0.494  0.049  63.7       100%
-    x5   0.390  51.7        0.392  0.041  60.5       100%
-   x10   0.307  40.9        0.308  0.040  48.9       100%
-   x15   0.196  26.3        0.193  0.038  32.2       100%
-   x20   0.092  12.4        0.096  0.051  11.9        98%
-   x25   0.196  26.2        0.195  0.303   4.1        75%
-```
-
-The pooled fit here is on the six chosen columns, so its t are larger
-than the opening example's, which fitted all 200. `x0` to `x20` hold:
-their weekly means match the pooled coefficients, and
-the t from their spread, 11.9 to 63.7, stands beside the pooled t, 12.4
-to 65.8. `x25`'s pooled t is 26.2, as firm as `x15`'s 26.3. But its
-weekly coefficients spread by 0.303, and its t from the weeks is 4.1. In
-a quarter of the weeks its sign is the opposite of the pooled fit's.
-
-## Reading Grams from saved files
-
-A pass can leave its Grams in two files: the bank's state, which
-`po.ModelBank.load` reads back, and the parquet file that `closed_groups=`
-writes, a row per finished block. Reading either needs no rows and runs
-no model. `po.gram` works on what they hold, and so does numpy alone.
-
-**`group_close="monotone"` closes each week once the next begins, and
-frees it.** With `closed_groups=` on `fit`, the bank writes each closed
-week's Gram to that file as a row. The bank then holds one week at a
-time. Its key must be
-an integer or a text column, so make the week the Monday's day number,
-with `dt.date().cast(pl.Int32)` in the query. The last week never closes,
-since no row shows it has finished, so it stays in the state, where
-`bank.gram()` reads it.
-[Close groups and read each one's row](how-to/close-groups.md) has the
-rules.
-
-**A closed row holds the numbers `bank.gram()` would have returned for
-that week, bit for bit, laid out flat.** Its `comoments` is the upper
-triangle, row by row, and each per-target array is one list, the
-targets' rows one after another. With one target, as here, the first
-`k` entries are that target's. `po.gram.from_row` turns the row back
-into the dict `gram()` returns. numpy reads it as it stands: lay
-`comoments` into the upper triangle with `numpy.triu_indices`, mirror it,
-and solve.
-
-**A state can be exported as JSON for a program in another language,**
-with `bank.write_json(path)` ([Read a state without this library](how-to/read-a-state-without-this-library.md)).
-The forty open weeks' state was 19 MB as `bank.save` wrote it, and 106 MB
-as JSON.
-
-```python
-from datetime import datetime, timedelta
-
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
-# two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
-# drawn again each week, 0.15 on average.
-rng = np.random.default_rng(7)
-n_weeks, per_week, k = 40, 504, 200
-n = n_weeks * per_week
-x = 0.7 * (rng.standard_normal((n, k)) + np.repeat(rng.standard_normal((n, k // 5)), 5, axis=1))
-b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
-y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
-y += rng.standard_normal(n)
-features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
-start = datetime(2025, 1, 6)  # a Monday
-ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
-pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
-
-# One pass that writes each finished week's Gram to a file, and saves the last, open week.
-lf = pl.scan_parquet("weeks.parquet").with_columns(
-    week=pl.col("ts").dt.truncate("1w").dt.date().cast(pl.Int32)  # the Monday, as days since 1970
-)
-spec = po.spec.ewridge(
-    "blocks", targets=["y"], features=features, group="week", group_close="monotone",
-    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
-)
-bank = po.ModelBank([spec])
-bank.fit(lf, closed_groups="blocks.parquet")  # a row per week, written once the next week begins
-bank.save("blocks.state")  # the state holds the last week, which no later row closed
-
-# Later, in a program that runs no model: the Grams from the two files.
-closed = pl.read_parquet("blocks.parquet")
-blocks = [po.gram.from_row(row) for row in closed.iter_rows(named=True)]
-blocks += po.ModelBank.load("blocks.state").gram("blocks")
-print(f"{closed.height} weeks from blocks.parquet and {len(blocks) - closed.height} from blocks.state")
-coef = po.gram.solve(po.gram.merge(blocks))
-print("x0, x5 and x10 from the 40 weeks: " + ", ".join(f"{coef[i]:.3f}" for i in (1, 6, 11)))
-
-# numpy alone, on the first week's row: unpack the triangle, and solve the centred system.
-row = closed.row(0, named=True)
-m = len(row["columns"])  # the intercept and the 200 features
-cov = np.zeros((m, m))
-cov[np.triu_indices(m)] = row["comoments"]  # the upper triangle, row by row
-cov += np.triu(cov, 1).T
-# The slopes from the centred system, and the intercept from the means.
-slopes = np.linalg.solve(cov[1:, 1:], np.asarray(row["cross_centered"])[1:])
-intercept = row["cross_moments"][0] - np.asarray(row["means_by_target"])[1:] @ slopes
-same = np.allclose(np.r_[intercept, slopes], po.gram.solve(blocks[0]), rtol=0, atol=1e-10)
-print(f"numpy alone and po.gram agree on the first week within 1e-10: {same}")
-```
-
-```text
-39 weeks from blocks.parquet and 1 from blocks.state
-x0, x5 and x10 from the 40 weeks: 0.489, 0.389, 0.297
-numpy alone and po.gram agree on the first week within 1e-10: True
-```
-
-The file holds 39 weeks, and the state the fortieth. Pooled, they give
-the opening example's coefficients. numpy's own solve of the first
-week's row agrees with `po.gram.solve` within 1e-10. In the row,
-`cross_moments` at the intercept is the target's mean, and
-`means_by_target` the column means its cross-moments are centred at.
+**A week fits only the columns already chosen.** A week of 504 rows fits
+201 columns poorly, so each week is fitted on a few columns chosen first.
+[Fit per-block coefficients](how-to/fit-per-block-coefficients.md) fits
+six chosen columns each week alone. There `x25`, whose coefficient is
+drawn again each week, has a pooled t of 26.2, as firm as `x15`'s 26.3,
+and a t from the weeks of 4.1.
 
 ## A compact Gram
 
 `comoments` is the one array of a Gram that grows as `k²`: 800 MB a block
-in float64 at 10,000 columns. `bank.gram()` can return it in float32, or
-as its upper triangle, each about half the bytes, and both together a
-quarter. `po.gram` reads every form in float64. The state itself stays
-float64 and whole, and the forms shape only what `gram()` returns.
-
-| `bank.gram(...)` | what it loses | what it keeps |
-|---|---|---|
-| `dtype="float32"` | each entry is rounded to nearest, within a relative `2⁻²⁴`, about 6e-8, of its float64 value. An entry past float32's largest number, about 3.4e38, or nonzero below its smallest normal number, about 1.2e-38, is refused with a `ValueError` naming its column. A column spread 1e20 wide, or 1e-20, gets there, since its variance squares the spread | every other array, in float64: the means, from which `merge` forms its spread term, and each target's moments |
-| `layout="packed"` | the lower triangle, which reads back as the upper one mirrored. A Gram updated a row at a time adds the same two products to `C[i][j]` and `C[j][i]` in either order, so its two triangles can differ in the last bit | every other entry, bit for bit. With `gram_block_rows`, no entry of the recipe's Grams differed, so packing lost nothing |
+in float64 at 10,000 columns. `bank.gram()` can return it in float32
+(`dtype="float32"`), which rounds each entry to within a relative `2⁻²⁴`,
+about 6e-8, or as its upper triangle (`layout="packed"`), which drops the
+lower one. Each takes about half the bytes, and both together a quarter.
+The state itself stays float64 and whole. To choose a form and check what
+it cost a fit, see [Store a compact Gram](how-to/store-a-compact-gram.md).
 
 **A float32 Gram is enough when `κ` times 6e-8 is below the precision
 the fit needs.** A system whose entries carry a relative error `δ` gives
@@ -1425,99 +549,22 @@ Here `κ` is the condition number of the matrix solved, its largest
 eigenvalue over its smallest. For a Gram that matrix is the features'
 correlation matrix, which a standardized solve works on:
 `np.linalg.cond(po.gram.correlation(g)[1:, 1:])`. Belsley's indexes of
-[Is the fit determined?](#is-the-fit-determined) are of the uncentred
+[Is the fit determined?](#is-the-fit-determined) are of the uncentered
 design. The square of the largest is the condition number of that
 design's second moments, so they flag the same trouble on another scale. Rounding moves a solve by about `κδ`
 at most, and usually by far less, since the errors of many entries
 offset one another.
 
 **A packed Gram loses the last bits of a lower triangle that a row-by-row
-update wrote.** Measured on the recipe's stream without
-`gram_block_rows`, 73% of the off-diagonal entries differed between the
-two triangles, and a solve from the packed form moved by 2e-15 of the
-largest coefficient.
-
-The recipe solves the forty weeks from each form, and then asks for a
-float32 Gram of a column spread 1e20 wide:
-
-```python
-from datetime import datetime, timedelta
-
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
-# two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
-# drawn again each week, 0.15 on average.
-rng = np.random.default_rng(7)
-n_weeks, per_week, k = 40, 504, 200
-n = n_weeks * per_week
-x = 0.7 * (rng.standard_normal((n, k)) + np.repeat(rng.standard_normal((n, k // 5)), 5, axis=1))
-b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
-y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
-y += rng.standard_normal(n)
-features = [f"x{j}" for j in range(k)]
-# Stamp each row, from a Monday, and save the table for the scan to read.
-start = datetime(2025, 1, 6)  # a Monday
-ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
-pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
-
-# One pass over the file leaves a Gram per week. The week is a column made in the query.
-lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
-spec = po.spec.ewridge(
-    "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
-)
-bank = po.ModelBank([spec])
-bank.fit(lf)  # learns from every row, and keeps only the state
-blocks = bank.gram("blocks")  # one dict per week, oldest first
-
-# The float64 fit as the reference, and the condition number that bounds the loss.
-pooled = po.gram.merge(blocks)
-reference = po.gram.solve(pooled)
-r = po.gram.correlation(pooled)  # row and column 0, the constant intercept's, are nan
-kappa = np.linalg.cond(r[1:, 1:])  # of the features' correlation matrix
-print(f"condition number {kappa:.1f}; float32's rounding times it, {kappa * 2**-24:.1e}")
-# Each dtype and layout: its bytes a week, and how far the fit moves.
-for dtype in ("float64", "float32"):
-    for layout in ("full", "packed"):
-        parts = bank.gram("blocks", dtype=dtype, layout=layout)
-        coef = po.gram.solve(po.gram.merge(parts))  # merged and solved in float64
-        moved = np.abs(coef - reference).max() / np.abs(reference).max()
-        size = parts[0]["comoments"].nbytes
-        print(f"{dtype} {layout:>6}: {size:>7,} bytes a week; the fit moved by {moved:.0e} of its largest coefficient")
-
-# A column spread 1e20 wide has a variance that float32 cannot hold.
-pl.DataFrame({"a": 1e20 * rng.standard_normal(1_000), "y": rng.standard_normal(1_000)}).write_parquet("huge.parquet")
-huge = po.spec.ewridge(
-    "huge", targets=["y"], features=["a"], half_life=float("inf"), solve_every=float("inf")
-)
-bank = po.ModelBank([huge])
-bank.fit(pl.scan_parquet("huge.parquet"))
-# Asking for it in float32 is refused, with the column named.
-try:
-    bank.gram("huge", dtype="float32")
-except ValueError as e:
-    print(e)
-```
-
-```text
-condition number 7.8; float32's rounding times it, 4.7e-07
-float64   full: 323,208 bytes a week; the fit moved by 0e+00 of its largest coefficient
-float64 packed: 162,408 bytes a week; the fit moved by 0e+00 of its largest coefficient
-float32   full: 161,604 bytes a week; the fit moved by 7e-09 of its largest coefficient
-float32 packed:  81,204 bytes a week; the fit moved by 7e-09 of its largest coefficient
-ModelBank.gram(dtype="float32"): the co-moment of "a" with itself is 1.03e40, larger in size than float32's largest number, 3.40e38, where it reads inf. Change the scale of "a" before the bank learns the rows, or leave dtype at its default, "float64".
-```
-
-The packed float64 form solves to the same bits as the full one. In
-float32 the fit moves by 7e-9 of its largest coefficient, far inside the
-4.7e-7 its condition number of 7.8 allows. Both together are a quarter of the
-bytes, 81,204 a week. The column spread 1e20 wide has a variance of
-1.029e40, past float32's range, and `gram()` refuses to round it to
-`inf`.
+update wrote.** Such an update adds the same two products to `C[i][j]`
+and `C[j][i]` in either order, so its two triangles can differ in the
+last bit. Measured on the stream of [Store a compact
+Gram](how-to/store-a-compact-gram.md) without `gram_block_rows`, 73% of
+the off-diagonal entries differed between the two triangles, and a solve
+from the packed form moved by 2e-15 of the largest coefficient. With
+`gram_block_rows` no entry differed, and in float32 the fit moved by
+7e-9 of its largest coefficient, where its condition number of 7.8
+allowed 4.7e-7.
 
 ## One wide Gram on several threads
 
@@ -1525,39 +572,47 @@ Updating a Gram takes `O(k²)` time a row, and at a few thousand columns
 that update is the whole pass. `gram_threads=n`, on `ewridge` and
 `ew_cov`, runs it on up to `n` threads, and the Gram comes out the same
 to the bit at every `n`. The default, `"auto"`, picks `n` from the bank's
-pool and the groups it runs at once.
+threads and the groups it runs at once. To set it, with `gram_block_rows`,
+for a fit over hundreds of features, see [Fit hundreds of
+features](how-to/fit-hundreds-of-features.md).
 
 **The bits do not move, because each entry is summed by one thread in
 one order.** The update is cut into pieces fixed by `k` alone: diagonal
 blocks of 256 columns, and tiles of 128 to 255 columns a side. Each piece
-is one sequential call on one thread, whatever the number of threads
-([PERFORMANCE §37](PERFORMANCE.md#37-one-wide-gram-on-several-threads-2026-10-08)).
-A fit's factorization and solves are cut by shape the same way, and its
+is one sequential call on one thread, whatever the number of threads. A
+fit's factorization and solves are cut by shape the same way, and its
 eigendecomposition runs at a fixed parallel degree of eight. So a
-coefficient's bits do not follow the size of the pool either
-([§38](PERFORMANCE.md#38-a-solves-bits-whatever-the-pool-2026-10-09)).
+coefficient's bits do not follow the number of the bank's threads either.
+Tests hold both: the Gram's pieces against one call at widths 1 to 520,
+and each solve in sets of 1, 3, 8 and 14 threads.
 
-**`gram_threads` takes its threads from the pool the bank runs its
-groups on.** The bank's `threads` sizes that pool, or, without it,
+**`gram_threads` takes its threads from the bank's own, the threads it
+runs its groups on.** The bank's `threads` sizes them, or, without it,
 `POLARS_ONLINE_MAX_THREADS`, one thread per core by default. A count caps
-how much of the pool one spec's update may use. A bank whose groups
-already keep every core busy gains nothing from a split, and loses the
-cost of handing each row's pieces out. So `"auto"` splits only where the
-pool has idle threads. On each chunk the bank counts the tasks it runs side
-by side, one per spec and group, `T`, on a pool of `P` threads. When
-`2T ≤ P`, each task's update may use `2P / T` threads, rounded down and at
-most `P`. Otherwise it uses one. Twice the even share lets a thread whose
-group is done take pieces of another's. The rule reads the two counts and
-nothing else, so a run splits the same way whatever the timing. Run on a
-separate pool of eight threads instead of the bank's, the threads took 28%
-longer (§37). A bank of weekly blocks fed a stream in time order often
-reads a chunk that holds one week's rows, and so has one group to run.
-There `"auto"` gives that group the whole pool.
+how many of them one spec's update may use. A bank whose groups already
+keep every core busy gains nothing from a split, and loses the cost of
+handing each row's pieces out. So `"auto"` splits only where the bank has
+idle threads. On each
+[chunk](GLOSSARY.md#the-model-bank-and-what-it-reads) the bank counts the
+pieces of work it runs side by side, one per spec and group, `T`, on `P`
+threads. When `2T ≤ P`, each piece's update may use `2P / T` threads,
+rounded down and at most `P`. Otherwise it uses one. Twice the even share
+lets a thread whose group is done take pieces of another's. The rule reads
+the two counts and nothing else, so a run splits the same way whatever the
+timing. With fourteen groups of 1,000 columns, eight threads of a separate
+set took 28% longer than eight of the bank's own, since they added eight
+threads to a machine whose cores were already busy. A bank of weekly
+blocks fed a stream in time order often reads a chunk that holds one
+week's rows, and so has one group to run. There `"auto"` gives that group
+all the bank's threads.
 
-Measured on 14 cores (ten fast, four slow), `"auto"` against
-`gram_threads=1` on `ewridge` unless named: the time of one thread over the
-time of `"auto"`, the median of 11 interleaved rounds of a fresh bank's
-`fit_predict`, in each of two runs, at a load average of 7 to 12:
+The table sets `"auto"` against `gram_threads=1`, on `ewridge` unless
+named. Each cell is the time of one thread over the time of `"auto"`: the
+median of 11 interleaved rounds of `fit_predict` by a bank that starts
+with nothing learned, in each of two runs. They were measured on an Apple
+M4 Pro of 14 cores (ten performance, four efficiency), at a load average
+of 7 to 12 (the number of processes running or waiting to run, averaged
+over a minute):
 
 | bank | `T` | `"auto"` splits into | `1` / `"auto"`, two runs |
 |---|---|---|---|
@@ -1573,67 +628,18 @@ time of `"auto"`, the median of 11 interleaved rounds of a fresh bank's
 | 64 groups, 20 features, 1.6 million rows | 64 | 1 | 1.05, 0.99 |
 
 Where `"auto"` splits into one thread it runs what `gram_threads=1` runs,
-so those rows measure the noise, a few percent either way. Before the
-rule, `"auto"` took the whole pool at any `T`, and 28 groups at 800
-features ran 0.89 times as fast as one thread on `ewridge` and 0.91 on
-`ew_cov`. At eight to 13 groups every count from 2 to 14 was even or up to
-10% slower, which is why the rule stops splitting at `2T > P` rather than
-at `T ≥ P`.
+so those rows measure the noise, a few percent either way. Taking all the
+bank's threads at any `T` instead, 28 groups at 800 features ran 0.89
+times as fast as one thread on `ewridge` and 0.91 on `ew_cov`. At eight to
+13 groups every count from 2 to 14 was even or up to 10% slower, which is
+why the rule stops splitting at `2T > P` rather than at `T ≥ P`.
 
-**It helps past 256 columns with `gram_block_rows`, and past 725
+**A split helps past 256 columns with `gram_block_rows`, and past 725
 without.** Up to 256 columns, a block's product is one piece. Without a
-block, a row's update is bound by memory, and below 725 columns it stays
-on one thread. On eight threads at 2,000 columns, a block's product ran
-6.1 times as fast, and a whole bank 3.9 times, since the rest of a row's
-work, `O(k)`, stays on one thread (§37). Without a block, the gain was 2
-to 3 times.
-
-The recipe learns 5,120 rows of 2,000 columns on one thread and on
-eight:
-
-```python
-import time
-
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# 5,120 rows of 2,000 features in float32; y is the sum of the first ten, plus noise.
-rng = np.random.default_rng(3)
-n, k = 5_120, 2_000
-x = rng.standard_normal((n, k), dtype=np.float32)
-y = x[:, :10].sum(axis=1) + rng.standard_normal(n, dtype=np.float32)
-features = [f"x{j}" for j in range(k)]
-pl.DataFrame({**dict(zip(features, x.T)), "y": y}).write_parquet("wide.parquet")
-
-# Learn the same stream on one thread and on eight, keeping each Gram and time.
-grams, seconds = {}, {}
-for threads in (1, 8):
-    spec = po.spec.ewridge(
-        "wide", targets=["y"], features=features, half_life=float("inf"), solve_every=float("inf"),
-        gram_block_rows=256, gram_threads=threads,
-    )
-    bank = po.ModelBank([spec])
-    t0 = time.perf_counter()
-    bank.fit(pl.scan_parquet("wide.parquet"))
-    seconds[threads] = time.perf_counter() - t0
-    grams[threads] = bank.gram("wide")[0]["comoments"]
-
-# The two Grams compared bit for bit, and the speed-up.
-print(f"the Gram on 1 thread and on 8, bit for bit: {grams[1].tobytes() == grams[8].tobytes()}")
-print(f"time to learn: {seconds[1]:.2f} s on 1 thread, {seconds[8]:.2f} s on 8, {seconds[1] / seconds[8]:.1f} times as fast")
-```
-
-```text
-the Gram on 1 thread and on 8, bit for bit: True
-time to learn: 0.73 s on 1 thread, 0.33 s on 8, 2.2 times as fast
-```
-
-The Gram is the same to the bit. Eight threads learned 2.2 times as
-fast, on a machine whose other work kept its load average near 14 on 14
-cores. The time includes reading the file and each row's `O(k)` work,
-which stay on one thread.
+block, a row's update is bound by memory, and handing it out costs
+microseconds a row, so below 725 columns it stays on one thread. A whole
+bank gains less than its Gram's update, since the rest of a row's work,
+`O(k)`, stays on one thread.
 
 ## Huber regression on a Gram
 
@@ -1641,15 +647,16 @@ A Huber fit down-weights the rows that miss by far, so its weights depend
 on each row's residual, and no single Gram holds it: it reads the rows
 again, once a pass. It does not need a Gram for each pass or for each
 target. Huber's algorithm H (1981) reuses one Gram, that of the rows at
-their own weights, in every pass.
+their own weights, in every pass. To run it over a file, see [Fit a Huber
+regression on a Gram](how-to/fit-huber-on-a-gram.md).
 
 **Weighting only the targets' cross-moments is not weighted least
 squares.** Giving each row its Huber weight `w_i` in `x·y` and not in
 `x·x'` solves `b = (X'X)⁻¹ X'W y`. A row it down-weights is not pulled
 toward the fit: its target is shrunk toward 0, by the whole level of a
-target that has one. On the recipe's
-stream below, a target at 1,000 with a slope of 2, that iteration reaches
-a slope of −59.4 after 30 passes. Weighted least squares weights `x·x'`
+target that has one. On the stream of [Fit a Huber regression on a
+Gram](how-to/fit-huber-on-a-gram.md), a target at 1,000 with a slope of 2,
+that iteration reaches a slope of −59.4 after 30 passes. Weighted least squares weights `x·x'`
 too, so it needs a Gram per target in every pass.
 
 **Algorithm H moves the target instead of the weights.** With the fit `b`,
@@ -1664,14 +671,14 @@ which is the target where the residual is inside the cut, and the fit
 plus or minus `c·s` beyond it. Its least-squares fit, on the rows at
 their own weights, is the next `b`. That fit's matrix is the Gram of the
 rows, which no pass changes, so it is factored once. A pass reads only
-`y*`'s mean and its centred cross-moments with the columns, in one query
+`y*`'s mean and its centered cross-moments with the columns, in one query
 over the rows. At a fixed point the fit of `y*` is `b`, so
 `Σ x ψ(r / s) = 0`, which is Huber's estimating equation. Each target has
 its own `y*`, and all of them share the one Gram.
 
-**Start from a fit that has the target's level.** The recipe starts once
-from least squares, which the Gram gives, and once from the target's
-median alone, an intercept and no slopes. From `b = 0` every residual is
+**Start from a fit that has the target's level,** such as least squares,
+which the Gram gives, or the target's median alone, an intercept and no
+slopes. From `b = 0` every residual is
 the level. A scale read again from those residuals is the level's too, so
 nothing is clipped and the first pass is least squares, a pass lost. A
 scale taken from elsewhere, the noise's or a `huber` spec's
@@ -1679,9 +686,9 @@ scale taken from elsewhere, the noise's or a `huber` spec's
 fit by at most `c·s`: from 0 at `s = 0.5`, a level of 1,000 takes about
 1,500 passes.
 
-**Read the scale again in each pass.** The recipe takes the MAD,
-`median(|r|) / 0.6745`, which is the noise's standard deviation when the
-errors are normal and holds until half the rows are outliers. A median
+**Read the scale again in each pass.** The MAD,
+`median(|r|) / 0.6745`, is the noise's standard deviation when the
+errors are normal, and holds until half the rows are outliers. A median
 is a query of its own over the rows, and two blocks' medians do not
 combine into their union's. Huber's Proposal 2 is a scale built from
 sums, which do combine: the `s` that solves `mean(ψ(r/s)²) = E[ψ(Z)²]`,
@@ -1690,7 +697,7 @@ the MAD up to a fifth of the rows wild, and breaks sooner. The stream is
 `y = 1000 + 2x + 0.5ε` over 20,000 rows, with +50 on a share of the rows
 with `x` above 0. Each fit is statsmodels' `RLM` with `HuberT(1.345)`,
 iterated to a tolerance of 1e-10, with `scale.mad` for the MAD and
-`HuberScale(d=1.345)` for Proposal 2, at the cut the recipe uses. Measured
+`HuberScale(d=1.345)` for Proposal 2, at the cut `c = 1.345`. Measured
 on 2026-10-24 with statsmodels 0.15.0, as the median slope over seeds 0 to
 9 (the truth is 2):
 
@@ -1703,113 +710,18 @@ on 2026-10-24 with statsmodels 0.15.0, as the median slope over seeds 0 to
 At statsmodels' default cut for the scale, `HuberScale()`'s `d = 2.5`,
 Proposal 2 breaks before 20%: 8.556 there.
 
-```python
-import numpy as np
-import polars as pl
-
-import polars_online as po
-
-# y = 1000 + 2x plus noise, and 50 added to a tenth of the rows with x above 0: 5% of all rows.
-rng = np.random.default_rng(3)
-n = 20_000
-x = rng.standard_normal(n)
-y = 1000.0 + 2.0 * x + 0.5 * rng.standard_normal(n)
-y[(rng.random(n) < 0.10) & (x > 0)] += 50.0
-pl.DataFrame({"x": x, "y": y}).write_parquet("level.parquet")
-
-# One pass leaves the Gram. Its matrix is the same in every pass below, so it is factored once.
-features = ["x"]
-spec = po.spec.ewridge(
-    "g", targets=["y"], features=features, half_life=float("inf"), solve_every=float("inf")
-)
-bank = po.ModelBank([spec])
-bank.fit(pl.scan_parquet("level.parquet"))
-g = bank.gram("g")[0]
-means = np.asarray(g["means"])[1:]  # the features' means; slot 0 is the intercept's
-factor = np.linalg.cholesky(np.asarray(g["comoments"])[1:, 1:])  # of the centred co-moments
-
-
-# One pass of either iteration below.
-def refit(coef: np.ndarray, response, c: float = 1.345) -> np.ndarray:
-    """One pass: a response built from this fit's residuals, its mean and centred
-    cross-moments read in one query over the file, and its least squares on the Gram."""
-    # This fit's residuals, this pass's scale, and the response built from them.
-    fit = coef[0] + sum(b * pl.col(f) for b, f in zip(coef[1:], features))
-    r = pl.col("y") - fit
-    s = r.abs().median() / 0.6745  # the MAD of this pass's residuals
-    target = response(fit, r, s, c)
-    # The response's mean and centred cross-moments, in one query over the file.
-    moments = (
-        pl.scan_parquet("level.parquet")
-        .select(
-            mean=target.mean(),
-            **{f: ((pl.col(f) - m) * target).mean() for f, m in zip(features, means)},
-        )
-        .collect()
-    )
-    # Its least squares against the one factor; the intercept from the means.
-    cross = np.asarray(moments.select(features).row(0))
-    slopes = np.linalg.solve(factor.T, np.linalg.solve(factor, cross))
-    return np.r_[moments["mean"][0] - means @ slopes, slopes]
-
-
-# The two responses: algorithm H's pseudo-response, and the Huber weights on x·y alone.
-def pseudo_response(fit, r, s, c):
-    return fit + s * (r / s).clip(-c, c)  # each residual clipped at c scales: algorithm H
-
-
-def weighted_target(fit, r, s, c):
-    return pl.min_horizontal(1.0, c * s / r.abs()) * pl.col("y")  # Huber weights on x·y alone
-
-
-# Least squares from the Gram, then the passes from it and from the target's median alone.
-least_squares = po.gram.solve(g)
-median = pl.scan_parquet("level.parquet").select(pl.col("y").median()).collect().item()
-print(f"least squares: slope {least_squares[1]:.4f}")
-# Ten passes of algorithm H from each start.
-for name, coef in [("least squares", least_squares), ("the median", np.r_[median, 0.0])]:
-    slopes = []
-    for k in range(1, 11):
-        coef = refit(coef, pseudo_response)
-        if k in (1, 2, 5, 10):
-            slopes.append(f"{coef[1]:.4f}")
-    print(f"from {name}: slope after 1, 2, 5, 10 passes {', '.join(slopes)}; intercept {coef[0]:.3f}")
-# The Huber weights on x·y alone, from least squares, for 30 passes.
-coef = least_squares
-for _ in range(30):
-    coef = refit(coef, weighted_target)
-print(f"the weights on x·y alone, after 30 passes: slope {coef[1]:.1f}")
-```
-
-```text
-least squares: slope 4.0626
-from least squares: slope after 1, 2, 5, 10 passes 2.6203, 2.1988, 2.0415, 2.0393; intercept 1000.049
-from the median: slope after 1, 2, 5, 10 passes 1.7377, 1.9865, 2.0388, 2.0393; intercept 1000.049
-the weights on x·y alone, after 30 passes: slope -59.4
-```
-
-From least squares the slope is 2.620 after one pass, 2.199 after two,
-2.042 after five and 2.0393 after ten; from the median, 1.738, 1.987,
-2.039 and 2.0393. statsmodels' `RLM` with `HuberT(1.345)` and
-`scale_est="mad"`, the recipe's scale (the median of `|r|` about 0, over
-the normal quartile), iterated to a tolerance of 1e-12 on the same rows,
-gives a slope of 2.0392520 and the same intercept, 1000.049. The passes
-are within 1.2e-6 of it after ten and 3e-7 from twenty on, and the 3e-7
-is the constant: with Φ⁻¹(3/4) to full precision in place of 0.6745 they
-reach statsmodels' fit to 1e-12. Weighted
-least squares, a new Gram in each pass, reaches 2.0393 in five passes, and
-algorithm H in ten, each a query over the rows and a solve against the
-one factor. A `huber` spec instead weighs each row once, by its residual
-against the fit before the row, in one pass over the stream, after
-refitting each target's first 500 rows to convergence: 2.0394 on this
-stream. One pass without that refit (`huber_refit_rows=0`) gives 2.046,
-and on some streams far more, since outliers can capture the first fits
-([MODELS.md](MODELS.md#huber--robust-regression) measures how
-often).
+**Algorithm H converges to statsmodels' Huber fit, in more passes than
+weighted least squares.** On the stream of [Fit a Huber regression on a
+Gram](how-to/fit-huber-on-a-gram.md), with 5% of the rows wild, its slope
+reaches 2.0393 in ten passes from least squares or from the median, the
+slope of statsmodels' `RLM` at the same scale. Weighted least squares, a
+new Gram in each pass, reaches it in five. A `huber` spec, which weighs
+each row once in one pass over the stream, gives 2.0394 there.
 
 ## Sources
 
-Each claim above that is not measured here rests on one of these.
+Each claim of the explanations that is not measured rests on one of
+these.
 
 | source | for |
 |---|---|
@@ -1831,9 +743,8 @@ Each claim above that is not measured here rests on one of these.
 | Newey, W. K. and West, K. D. (1987). A simple, positive semi-definite, heteroskedasticity and autocorrelation consistent covariance matrix. *Econometrica* 55(3), 703–708. | the variance of a series of weekly coefficients that drift |
 | Shah, R. D. and Samworth, R. J. (2013). Variable selection with error control: another look at stability selection. *Journal of the Royal Statistical Society, Series B* 75(1), 55–80. | halves drawn beside their complements, and the bound without exchangeability |
 | Tibshirani, R. (1996). Regression shrinkage and selection via the lasso. *Journal of the Royal Statistical Society, Series B* 58(1), 267–288. | the lasso |
-| Welford, B. P. (1962). Note on a method for calculating corrected sums of squares and products. *Technometrics* 4(3), 419–420. | the centred update of each row |
+| Welford, B. P. (1962). Note on a method for calculating corrected sums of squares and products. *Technometrics* 4(3), 419–420. | the centered update of each row |
 | West, D. H. D. (1979). Updating mean and variance estimates: an improved method. *Communications of the ACM* 22(9), 532–535. | the same update with weights |
 | Wooldridge, J. M. (2010). *Econometric Analysis of Cross Section and Panel Data*, 2nd ed. MIT Press. | the within, or fixed-effects, estimator (chapter 10) |
 | Winkler, A. M., Ridgway, G. R., Webster, M. A., Smith, S. M. and Nichols, T. E. (2014). Permutation inference for the general linear model. *NeuroImage* 92, 381–397. | sign flipping as a permutation test, flipping whole blocks, and the maximum statistic over many tests |
 | Zou, H. and Hastie, T. (2005). Regularization and variable selection via the elastic net. *Journal of the Royal Statistical Society, Series B* 67(2), 301–320. | the elastic net |
-| [PERFORMANCE §37 and §38](PERFORMANCE.md#37-one-wide-gram-on-several-threads-2026-10-08) | `gram_threads`, and a solve's bits in any pool, as measured |

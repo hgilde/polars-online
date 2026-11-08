@@ -1151,8 +1151,8 @@ def with_windows(
       <https://github.com/hgilde/polars-online/blob/main/docs/how-to/make-window-features.md>`_,
       `Make a target that looks ahead
       <https://github.com/hgilde/polars-online/blob/main/docs/how-to/make-a-target-that-looks-ahead.md>`_
-      and `Saving and resuming a window run
-      <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#saving-and-resuming-a-window-run>`_,
+      and `Resume a window run
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/resume-a-window-run.md>`_,
       the guides.
 
     .. rubric:: Notes

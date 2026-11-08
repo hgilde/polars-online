@@ -61,7 +61,8 @@ Polars' either. Without it, every function raises ``ModuleNotFoundError``.
 Nothing here needs scipy or scikit-learn.
 
 `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__ is the guide:
-each function on weekly blocks from one pass, the theory behind it, and a recipe that runs.
+the theory behind each function, and a table from each task on weekly blocks from one pass to
+the how-to whose recipe runs it.
 """
 
 from __future__ import annotations
@@ -978,9 +979,9 @@ def from_row(row: Any) -> Gram:
     .. rubric:: See also
 
     - :meth:`~polars_online.ModelBank.closed_groups`, which writes the rows.
-    - *Reading Grams from saved files* in `docs/GRAM.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
-      the theory and a recipe that runs.
+    - `Read Grams from saved files
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/read-grams-from-saved-files.md>`__,
+      a recipe that runs, with numpy alone too.
 
     .. rubric:: Notes
 
@@ -1225,7 +1226,9 @@ def correlation(g: Gram) -> Any:
       correlation matrix.
     - *Is the fit determined?* in `docs/GRAM.md
       <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
-      the theory and a recipe that runs.
+      the theory, and `Check that a fit is determined
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/check-a-fit-is-determined.md>`__,
+      a recipe that runs.
 
     .. rubric:: Notes
 
@@ -1340,7 +1343,9 @@ def solve(
     - :func:`lasso_path` and :func:`lars_path`, the lasso's fits.
     - *A ridge and its t* in `docs/GRAM.md
       <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
-      the theory and a recipe that runs.
+      the theory, and `Fit a ridge from a Gram
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/fit-a-ridge-from-a-gram.md>`__,
+      a recipe that runs.
 
     .. rubric:: Notes
 
@@ -1606,7 +1611,9 @@ def lasso_path(
     - :func:`solve`, a ridge on the same Gram.
     - *Choosing columns on the lasso path* in `docs/GRAM.md
       <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
-      the theory and a recipe that runs.
+      the theory, and `Choose columns on the lasso path
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/choose-columns-on-the-lasso-path.md#choose-columns-on-a-grams-lasso-path>`__,
+      a recipe that runs.
 
     .. rubric:: Notes
 
@@ -1955,7 +1962,9 @@ def lars_path(
     - :func:`lasso_path`, the lasso at penalties you choose.
     - *Choosing columns on the lasso path* in `docs/GRAM.md
       <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
-      the theory and a recipe that runs.
+      the theory, and `Choose columns on the lasso path
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/choose-columns-on-the-lasso-path.md#choose-columns-on-a-grams-lasso-path>`__,
+      a recipe that runs.
 
     .. rubric:: Notes
 
@@ -2354,7 +2363,11 @@ def solve_subsets(
       coefficients*, *A null for the selection, by sign flips* and *A
       screen of its own for each path* in `docs/GRAM.md
       <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
-      the theory and a recipe of each use.
+      the theory, and `Select columns that hold across the weeks
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/select-columns-stably-over-weeks.md>`__
+      and `Fit per-block coefficients
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/fit-per-block-coefficients.md>`__,
+      a recipe of each use.
     - *Pool within blocks to leave their levels out* in `Pool Grams
       <https://github.com/hgilde/polars-online/blob/main/docs/how-to/pool-grams.md>`__.
 
@@ -2985,7 +2998,9 @@ def coef_stats(
       subsets.
     - *A ridge and its t* in `docs/GRAM.md
       <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
-      the theory and a recipe that runs.
+      the theory, and `Fit a ridge from a Gram
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/fit-a-ridge-from-a-gram.md>`__,
+      a recipe that runs.
 
     .. rubric:: Notes
 
@@ -3192,7 +3207,9 @@ def vif(g: Gram, *, features: Sequence[str | int] | None = None) -> Any:
     - :func:`condition`, which says which columns share a near-dependency.
     - *Is the fit determined?* in `docs/GRAM.md
       <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
-      the theory and a recipe that runs.
+      the theory, and `Check that a fit is determined
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/check-a-fit-is-determined.md>`__,
+      a recipe that runs.
 
     .. rubric:: Notes
 
@@ -3310,7 +3327,9 @@ def condition(g: Gram, *, features: Sequence[str | int] | None = None) -> dict[s
     - :func:`vif`, each column's variance inflation.
     - *Is the fit determined?* in `docs/GRAM.md
       <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
-      the theory and a recipe that runs.
+      the theory, and `Check that a fit is determined
+      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/check-a-fit-is-determined.md>`__,
+      a recipe that runs.
 
     .. rubric:: Notes
 

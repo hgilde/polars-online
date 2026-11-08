@@ -5,9 +5,9 @@ This how-to is for anyone with series observed at instants of their own,
 such as the trades of several stocks, who wants to fit a correlation, a
 covariance or a regression across them. It puts the series on one grid
 with `po.stream.refresh_time`, then fits the models on the grid's
-changes. [The Epps effect, and the two ways
-out](../REGIMES.md#6-the-epps-effect-and-the-two-ways-out) says why a fine
-common grid fails and what the refresh grid recovers.
+changes. [Series that tick at their own
+times](../explanation/asynchronous-series.md) explains why a fine common
+grid fails and what the refresh grid recovers.
 
 ## Prerequisites
 
@@ -24,8 +24,8 @@ These steps need the library and the ticks:
 
 ## Put the series on one grid
 
-The grid has a point at each *refresh time*: the first instant by which
-**every** series has ticked at least once since the previous point.
+The grid has a row at each *refresh time*: the first instant by which
+**every** series has ticked at least once since the previous refresh time.
 Nothing is interpolated.
 
 1. **Call `po.stream.refresh_time` with the ticks, naming the `series`
@@ -34,9 +34,9 @@ Nothing is interpolated.
    is refused by name. Give `group`, such as a trading day, for a grid of
    each group's own.
 2. **Read the grid: one row per refresh time.** `time_refresh` is the clock
-   of the tick that completed the point, and `<s>_value` each series' last
+   of the tick that completed the refresh time, and `<s>_value` each series' last
    observed value there. `n_obs_<s>` counts that series' ticks since the
-   previous point, of which the grid kept the last.
+   previous refresh time, of which the grid kept the last.
 3. **Read `retained_fraction` before trusting a correlation,** the share
    of the ticks since the previous refresh time that the grid kept.
 
@@ -55,7 +55,7 @@ ticks = pl.DataFrame({
 grid = po.stream.refresh_time(ticks, series="symbol", names=["AAA", "BBB", "CCC"],   # 1.
                               clock="t", value="px")
 print(grid.columns)                                                                  # 2.
-for row in grid.rows():                                                              # 2. and 3.: one row per point
+for row in grid.rows():                                                              # 2. and 3.: one row per refresh time
     print(row)
 ```
 
@@ -68,7 +68,7 @@ for row in grid.rows():                                                         
 The first refresh time is 1.6, when CCC ticks for the first time. AAA's
 value there is 100.2, from its tick at 1.3, and its tick at 0.4 is
 dropped. After 1.6, BBB ticks at 2.2 and AAA twice, so CCC's tick at 3.1
-completes the second point. The output looks synchronous and is not: each
+completes the second refresh time. The output looks synchronous and is not: each
 value is up to one of its own series' intervals between ticks old.
 
 ## Fit models on the grid
@@ -76,14 +76,14 @@ value is up to one of its own series' intervals between ticks old.
 A model reads the grid as it reads any stream, with the grid's clock as
 its own.
 
-1. **Compute each series' change between points with Polars' `diff()`,**
+1. **Compute each series' change between refresh times with Polars' `diff()`,**
    in a `select` on the grid.
 2. **Give each spec the grid's clock, `time_refresh`,** with a `gap_cap`,
    the largest clock step the model decays by. The recipe's refresh times
    fall about two clock units apart, and it gives 10.0.
 3. **Chain `online.fit_predict(specs)` after the grid.** Given a query,
    `refresh_time` returns one, so the grid and the models run in one pass.
-   The first point has no change, so the models skip it.
+   The first refresh time has no change, so the models skip it.
 
 This code plants a correlation: three prices share one move and add one of
 their own, as large, so their changes correlate at 0.5. Each is observed
@@ -121,7 +121,7 @@ specs = [
                     clock="time_refresh", gap_cap=10.0, half_life=float("inf")),
 ]
 out = returns.online.fit_predict(specs).collect()         # 3. the grid and the models in one pass
-# The correlations and the coefficients on the last point.
+# The correlations and the coefficients on the last refresh time.
 last = out.row(-1, named=True)
 print(f"{out.height} refresh times from {pl.read_parquet('own_times.parquet').height} ticks")
 print("on the refresh grid: corr " + ", ".join(f"{last['comove'][f'corr_{a}_{b}']:.2f}" for a, b in [("AAA", "BBB"), ("AAA", "CCC"), ("BBB", "CCC")])
@@ -130,7 +130,7 @@ print("on the refresh grid: corr " + ", ".join(f"{last['comove'][f'corr_{a}_{b}'
 # The same ticks on a grid every 0.1 clock units, for comparison.
 ticks_by_series = pl.read_parquet("own_times.parquet").partition_by("symbol", as_dict=True)
 fine = pl.DataFrame({"t": np.arange(0.0, 2_000.0, 0.1)})
-for s in names:                                          # each series' last price at each point of the fine grid
+for s in names:                                          # each series' last price at each row of the fine grid
     fine = fine.join_asof(ticks_by_series[(s,)].select("t", pl.col("px").alias(s)), on="t")
 moves = fine.select(pl.col(names).diff()).drop_nulls()
 print(f"on a grid every 0.1: corr {moves.corr()['AAA'][1]:.2f}, {moves.corr()['AAA'][2]:.2f}, {moves.corr()['BBB'][2]:.2f}")
@@ -142,16 +142,16 @@ on the refresh grid: corr 0.34, 0.32, 0.36; AAA on BBB 0.27, on CCC 0.23
 on a grid every 0.1: corr 0.01, 0.02, 0.02
 ```
 
-The fine grid finds almost no correlation: the Epps effect. The refresh
-grid finds about two thirds of the planted 0.5. What it misses comes from
-each value's age at a refresh time, which is up to one of its own series'
-intervals between ticks.
+The fine grid finds almost no correlation ([Why the correlation
+falls](../explanation/asynchronous-series.md#why-the-correlation-falls)),
+and the refresh grid finds about two thirds of the planted 0.5 ([The two
+ways out](../explanation/asynchronous-series.md#the-two-ways-out)).
 
 ## Check that it worked
 
 **Read `retained_fraction` and each `n_obs_<s>`.** The grid runs at the
 pace of the slowest series, so a fast series loses most of its ticks. The
-series holding the grid up, whose tick completes each point, keeps an
+series holding the grid up, whose tick completes each refresh time, keeps an
 `n_obs` near 1.
 
 | what you see | what it means | what to do |

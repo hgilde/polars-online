@@ -3,7 +3,7 @@
 A regime detector makes a claim about a stream: that its correlation has
 changed, how long the current regime has lasted, or which state a row
 belongs to. A claim like that can only be checked on a stream whose answer
-is written down. [`po.sim.regimes`](DIAGNOSTICS.md#data-whose-truth-is-known)
+is written down. [`po.sim.regimes`](how-to/test-a-detector-on-known-truth.md)
 generates one from a seed and returns the truth beside the rows. This page
 reports what the detectors find on such streams, and on Monte-Carlo draws
 whose null distribution is published: where each is right, and what it
@@ -454,11 +454,13 @@ uncapped posterior on the same rows, and none now).
 
 The Epps effect is the fall of a measured correlation toward zero as its
 returns are taken over shorter intervals, when the series tick at their
-own times. The stream here has two series with a true correlation of 0.8,
-over 120,000 rows, each observed at an expected rate of 0.25 per row
-(`async_rates`). Previous-tick sampling carries each series' last value
-forward and takes returns every so many rows. At the finest interval that
-is the naive thing to do, and it reads 0.095:
+own times. [Series that tick at their own
+times](explanation/asynchronous-series.md) explains why it happens and
+how each remedy undoes it. The stream here has two series with a true
+correlation of 0.8, over 120,000 rows, each observed at an expected rate
+of 0.25 per row (`async_rates`). Previous-tick sampling carries each
+series' last value forward and takes returns every so many rows. At the
+finest interval it reads 0.095:
 
 | sampling interval | returns | correlation |
 |-------------------|---------|-------------|
@@ -498,17 +500,19 @@ more from the next seeds, so its noise is printed beside it:
 | 768  | 0.760  | 0.771           | 0.026           |
 | 1024 | 0.756  | 0.769           | 0.029           |
 
-**`L` is the same trade-off the sampling interval is, and the sweep
-passes its best point.** Too small, and the cross-covariance at longer
-lags is left out; too large, and the sum takes in noise. The mean over five
+**The sweep passes the best point of `L`'s trade-off** ([The two ways
+out](explanation/asynchronous-series.md#the-two-ways-out)). The mean over five
 seeds levels off at 0.775 from `L` = 256 to 512 and falls after, while its
 spread across seeds grows from 0.001 at 128 to 0.029 at 1024. Seed 7 peaks
 at a smaller `L`, 192. Anywhere from 128 to 512 reads within 0.01 of the best,
 0.775, which is still short of the truth of 0.8.
 
 The lag inversion is here because its lagged co-moments are a state a bank
-already keeps, as `ew_cov(lags=...)`. What the lags do to `ew_cov`'s
-throughput is measured in [docs/PERFORMANCE.md](PERFORMANCE.md) §15.
+already keeps, as `ew_cov(lags=...)`. The lags cost speed: `ew_cov` with
+`lags = 1..5` learned 1.15
+million rows a second, against 2.12 million for the same spec without
+them, since each lag adds a `k × k` outer product a row and the ring of
+rows it needs.
 
 ## 7. `deco`: an equicorrelation that moves
 

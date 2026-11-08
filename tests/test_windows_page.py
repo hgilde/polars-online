@@ -1,4 +1,4 @@
-"""``docs/WINDOWS.md``: the window operators' guide, held to the code.
+"""``docs/WINDOWS.md``: how a window operator weighs its rows, held to the code.
 
 Every python block on the page is a recipe: a complete program whose printed
 output the ```text block under it shows. Each reads only what the README's
@@ -28,11 +28,14 @@ RECIPES = recipes(PAGE)
 
 
 def test_the_page_has_its_recipes():
-    """One for each claim the page shows working: the keywords, `closed`, the
-    refused formulas, two calls, `partial` and resuming. The operators against
-    Polars, a VWAP, clock order, a window target, z-scores and a robust scale
-    moved to the how-tos, whose recipes `tests/test_kind_pages.py` runs."""
-    assert len(RECIPES) >= 6, len(RECIPES)
+    """One for each mechanism the page shows working: the time-weighted mean,
+    `closed`, the refused formulas and `partial`. The page is an explanation
+    (task 338 stage 9b): the keywords went to the operators' docstrings, two
+    calls to how-to/make-window-features.md and resuming to
+    how-to/resume-a-window-run.md, beside the operators against Polars, a
+    VWAP, clock order, a window target, z-scores and a robust scale, all
+    in the how-tos, whose recipes `tests/test_kind_pages.py` runs."""
+    assert len(RECIPES) >= 4, len(RECIPES)
 
 
 @pytest.mark.parametrize(

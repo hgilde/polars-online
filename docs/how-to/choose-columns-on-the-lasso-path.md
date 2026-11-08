@@ -1,23 +1,34 @@
 <!-- kind: how-to -->
 # Choose columns on the lasso path
 
-This how-to is for anyone who fits `lasso`, the sparse regression that
-gives some features a coefficient of exactly zero and picks its penalty
-as the stream runs. It sets the `penalties` to try, how the penalty in
-force is ranked (`select_half_life`), and how many sweeps each descent
-may take (`max_iter`).
+This how-to is for anyone who chooses columns with the lasso, the sparse
+regression that gives some features a coefficient of exactly zero, either
+as the stream runs or afterwards from the Grams one pass leaves. On the
+stream, the `lasso` model picks its penalty as it runs: you set the
+`penalties` to try, how the penalty in force is ranked
+(`select_half_life`), and how many sweeps each descent may take
+(`max_iter`). From a [Gram](../GLOSSARY.md#fitting-a-model), you walk the
+path knot by knot with `po.gram.lars_path` (a knot is a penalty at which
+the set of columns with a coefficient other than 0 changes), and choose a
+penalty by its error on weeks held out with `po.gram.lasso_path`.
 
 ## Prerequisites
 
 These steps need the library:
 
-- polars-online installed, with numpy for the recipes. Each recipe builds
-  its own data and saves it to a parquet file.
-- The parameters of
+- polars-online installed with numpy, an optional extra, which
+  `pip install "polars-online[numpy]"` adds. Each recipe builds its own
+  data and saves it to a parquet file.
+- For the model, the parameters of
   [`po.spec.lasso`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.lasso),
   which its docstring defines. Its entry in
   [MODELS.md](../MODELS.md#lasso--lasso-path-its-penalty-chosen-as-it-runs)
   gives its update equation.
+- For a Gram, a Gram per block from one pass, as [Keep a Gram per block
+  in one pass](fit-weekly-grams-in-one-pass.md) makes them. [Choosing
+  columns on the lasso
+  path](../GRAM.md#choosing-columns-on-the-lasso-path) explains the
+  problem both paths solve, their knots, and how each stops.
 
 ## Scale the penalties with the target
 
@@ -159,6 +170,132 @@ max_iter_10000: 0 descents ran out of sweeps
 At the default of 100 sweeps, thousands of descents stop short. At
 10,000, every descent reaches its tolerance.
 
+## Choose columns on a Gram's lasso path
+
+Use this to choose columns after the pass, from the Grams it left, on any
+set of weeks. A knot is a penalty at which the set of active columns,
+those whose coefficient is not 0, changes. `po.gram` follows the lasso
+path two ways, and each suits a different question:
+
+| | `po.gram.lars_path`, and `po.gram.lars_paths` for many Grams | `po.gram.lasso_path` |
+|---|---|---|
+| computes | each knot exactly, from the largest penalty down, by least angle regression | the solution at each penalty given, each started from the one before, by coordinate descent |
+| stops | after `max_iter` knots past its first, or at the first knot with at least `max_active` columns active | at the last penalty |
+| time | 4 ms for the whole path, 201 knots, at 200 columns. Its reference gives 0.2 ms for 40 knots at 200 columns, and 3 ms at 2,000 | 3 to 8 ms for 25 penalties at 200 columns |
+| takes | `penalty_weights=`, a scale above 0 on each column's penalty | `penalty_weights=`, where a weight of 0 keeps a column in the fit at every penalty, and an elastic net (`l1_ratio` below 1) |
+| use it for | the first columns to enter: a selection, and [stability selection](select-columns-stably-over-weeks.md) | a penalty chosen by held-out error, an elastic net, a column that must stay in |
+
+The times were measured on 14 cores at a load average near 12, the number
+of processes running or waiting to run, averaged over a minute.
+
+1. **Pool the weeks to fit on, and the weeks held out, with
+   `po.gram.merge`.**
+2. **Walk the path from its start with `po.gram.lars_path(train,
+   max_active=8)`.** It returns the `penalties` at each knot, the `active`
+   columns there, and the `coef` at each knot, the intercept first.
+3. **Read the order in which the columns enter.** The first to enter are
+   the ones the lasso chooses.
+4. **Run `po.gram.lasso_path(train, grid)` on a grid of penalties,** from
+   the first knot's down a thousandfold.
+5. **Score each row of the grid on the held-out Gram.**
+6. **Keep the penalty with the lowest held-out error.**
+
+The recipe walks the path on weeks 1 to 4 to its eighth active column,
+and checks coordinate descent at its knots. Then it chooses a penalty
+from a grid of 25 by the error on the other 36 weeks. This code builds
+its own data, 40 weeks of 200 features in families of five, of which six
+matter:
+
+```python
+from datetime import datetime, timedelta
+
+import numpy as np
+import polars as pl
+
+import polars_online as po
+
+# 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
+# two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
+# drawn again each week, 0.15 on average.
+rng = np.random.default_rng(7)
+n_weeks, per_week, k = 40, 504, 200
+n = n_weeks * per_week
+x = 0.7 * (rng.standard_normal((n, k)) + np.repeat(rng.standard_normal((n, k // 5)), 5, axis=1))
+b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
+y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
+y += rng.standard_normal(n)
+features = [f"x{j}" for j in range(k)]
+# Stamp each row, from a Monday, and save the table for the scan to read.
+start = datetime(2025, 1, 6)  # a Monday
+ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
+pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
+
+# One pass over the file leaves a Gram per week. The week is a column made in the query.
+lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
+spec = po.spec.ewridge(
+    "blocks", targets=["y"], features=features, group="week",
+    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
+)
+bank = po.ModelBank([spec])
+bank.fit(lf)  # learns from every row, and keeps only the state
+blocks = bank.gram("blocks")  # one dict per week, oldest first
+
+
+# The score of step 4: a fit's mean squared error on any set of weeks, without reading their rows.
+def mean_squared_error(g, coef):
+    """A fit's mean squared error over the rows behind g, from g's arrays alone."""
+    b0, b = coef[0], coef[1:]
+    gap = g["cross_moments"][0][0] - b0 - g["means"][1:] @ b
+    spread = g["target_vars"][0] - 2 * b @ g["cross_centered"][0][1:] + b @ g["comoments"][1:, 1:] @ b
+    return spread + gap**2
+
+
+# 1. Fit on four weeks, judge on the other 36.
+train, held_out = po.gram.merge(blocks[:4]), po.gram.merge(blocks[4:])
+print(f"x25's coefficient: {b25[:4].mean():.2f} on average over these four weeks, {b25.mean():.3f} over all forty")
+
+# 2 and 3. LARS: the path from its start, knot by knot, to the first knot with at least eight columns active.
+path = po.gram.lars_path(train, max_active=8)
+active = []
+for penalty, now in zip(path["penalties"], path["active"]):
+    change = [f"+{c}" for c in now if c not in active] + [f"-{c}" for c in active if c not in now]
+    print(f"knot at penalty {penalty:.4f}: {' '.join(change)}")
+    active = now
+cd = po.gram.lasso_path(train, path["penalties"], tol=1e-12)  # coordinate descent at the knots
+print(f"coordinate descent at the knots, against LARS: within 1e-9: {np.abs(cd - path['coef']).max() < 1e-9}")
+
+# 4 to 6. Coordinate descent on 25 penalties, from the first knot's down a thousandfold, scored on the 36 weeks.
+grid = np.geomspace(path["penalties"][0], path["penalties"][0] / 1_000, 25)
+fits = po.gram.lasso_path(train, grid)
+errors = [mean_squared_error(held_out, coef) for coef in fits]
+best = int(np.argmin(errors))
+print(f"the best penalty, {grid[best]:.4f}: {np.count_nonzero(fits[best][1:])} columns, held-out error {errors[best]:.4f}")
+print(f"least squares on the same four weeks: held-out error {mean_squared_error(held_out, po.gram.solve(train)):.4f}")
+```
+
+```text
+x25's coefficient: 0.32 on average over these four weeks, 0.186 over all forty
+knot at penalty 0.4918: +x0
+knot at penalty 0.3408: +x5
+knot at penalty 0.3172: +x25
+knot at penalty 0.2741: +x10
+knot at penalty 0.1933: +x15
+knot at penalty 0.0784: +x20
+knot at penalty 0.0752: +x117
+knot at penalty 0.0720: +x4
+coordinate descent at the knots, against LARS: within 1e-9: True
+the best penalty, 0.0369: 18 columns, held-out error 1.1328
+least squares on the same four weeks: held-out error 1.2265
+```
+
+The six planted columns enter first. `x25` is third, since its
+coefficient averages 0.32 over these four weeks, where it averages 0.186
+over all forty. Then come `x117`, a column with no effect, and `x4`,
+which shares `x0`'s family factor. Coordinate descent at each knot gives
+LARS's coefficients within 1e-9. On the grid, a penalty of 0.0369 keeps
+18 columns and has a held-out error of 1.1328, where least squares on the
+same four weeks has 1.2265.
+
 ## Check the result
 
 **Read `bank.solve_failures()`:** a count of 0 for the spec says every
@@ -172,6 +309,11 @@ check that the features it keeps are the ones you expect to matter.
 example](../MODELS.md#lasso--lasso-path-its-penalty-chosen-as-it-runs)
 reads them that way.
 
-To run the same path offline on a Gram, use `po.gram.lasso_path`, as
-[Choosing columns on the lasso
-path](../GRAM.md#choosing-columns-on-the-lasso-path) in GRAM.md shows.
+**On a Gram, check coordinate descent against `po.gram.lars_path` at the
+knots,** as the recipe of [Choose columns on a Gram's lasso
+path](#choose-columns-on-a-grams-lasso-path) does: at a knot, least angle
+regression gives the lasso's coefficients exactly, and coordinate descent
+reaches them to its tolerance. If a `ReadinessWarning` names a penalty
+whose descent ran out of sweeps, that penalty's row is where the descent
+stopped: give `po.gram.lasso_path` a larger `max_iter`, or take the knots
+from `po.gram.lars_path`.

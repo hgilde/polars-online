@@ -30,7 +30,7 @@ from doc_recipes import differences, fenced_blocks, shown_outputs, untimed
 from polars_version import needs_polars
 from test_production_hardening import _as_a_terminal_shows, _readme_namespace
 
-TIER = "essential"
+TIER = "mixed"
 
 REPO = Path(__file__).resolve().parents[1]
 KINDS = ("how-to", "explanation", "tutorials")
@@ -46,9 +46,16 @@ def _page_param(page: Path):
     pyarrow source reads it with `pl.scan_arrow_c_stream`, and so needs the
     py-polars the page names for it, as the README's blocks did."""
     marks = []
-    if "scan_arrow_c_stream(" in page.read_text(encoding="utf-8"):
+    text = page.read_text(encoding="utf-8")
+    if "scan_arrow_c_stream(" in text:
         marks.append(
             needs_polars("1.43.0", "pl.scan_arrow_c_stream, which py-polars added in 1.43.0")
+        )
+    if "gram_threads=threads" in text:
+        marks.append(
+            pytest.mark.extended(
+                reason="threads: a 1,000-column Gram learned by row, in blocks, and on 8 threads"
+            )
         )
     return pytest.param(page, id=_rel(page), marks=marks)
 

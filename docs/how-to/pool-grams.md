@@ -14,9 +14,10 @@ These steps need the library and a Gram per block:
 - A Gram per block, from one pass over the stream: an `ewridge` spec with
   `group=` the block's column, such as a week made in the query with
   `pl.col("ts").dt.truncate("1w")`. Then `bank.gram(name)` gives one dict
-  per block in the order of their keys, oldest first for a week column. [Weekly blocks from one
-  pass](../GRAM.md#weekly-blocks-from-one-pass) explains what each block
-  holds.
+  per block in the order of their keys, oldest first for a week column. [Keep weekly Grams of
+  hundreds of
+  features](fit-weekly-grams-in-one-pass.md#keep-weekly-grams-of-hundreds-of-features)
+  shows what each block holds.
 - The blocks' rows must be disjoint. A row in two blocks counts twice, and
   `po.gram.merge` cannot tell.
 
@@ -210,7 +211,7 @@ and keep the union to ask how their levels move together.** Pooled as one
 union, a chance correlation of the weekly means reads as a correlation of
 the rows, and its standard errors divide by every row, as if each row had
 confirmed it. The second question has forty observations, one a week, and
-[Per-block coefficients](../GRAM.md#per-block-coefficients) or the weekly
+[Per-block coefficients](fit-per-block-coefficients.md) or the weekly
 means answer it with forty.
 
 1. **Pool with `po.gram.merge(blocks, within=True)`.** The pooled Gram is
@@ -308,4 +309,4 @@ see, and what to do:
 | `po.gram.solve_subsets` refuses a subset | the subset names one Gram twice, so its rows would count twice | name each block once |
 | a union of parts refuses a Gram | one part was pooled with `within=True`: its means are 0, and the union would add the gap from 0 to the others' means | pool the blocks themselves as a union, not a Gram already pooled within |
 | the intercept is `nan` | the Gram was pooled within blocks, which holds no intercept | read the slopes, or pool as a union for an intercept |
-| a coefficient's t falls far when you pool within blocks | it rested on a correlation of the blocks' levels | ask the levels' question with one observation a block, as [Per-block coefficients](../GRAM.md#per-block-coefficients) does |
+| a coefficient's t falls far when you pool within blocks | it rested on a correlation of the blocks' levels | ask the levels' question with one observation a block, as [Fit per-block coefficients](fit-per-block-coefficients.md) does |
