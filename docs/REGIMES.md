@@ -48,7 +48,7 @@ before the change of weights.
 **Seeded from the rows, `hmm` splits zero-mean rows by direction.** Its
 default seeding is k-means over the rows, and two zero-mean states differ
 in nothing k-means can see. On streams that hold a single regime, the
-filter puts 57 % of the rows in the true state, counting the 500 it reports
+filter puts 55 % of the rows in the true state, counting the 500 it reports
 nothing on before seeding. Given the covariances to start from, it puts
 98 % there. On streams that switch, it holds each new state within a
 median of 12 rows, where seeded from the rows it follows no switch at all

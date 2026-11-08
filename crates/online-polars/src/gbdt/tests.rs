@@ -957,3 +957,17 @@ mod ipc {
         assert!(e.to_string().contains("a category list per feature"), "{e}");
     }
 }
+
+/// A conversion pool above the bank's bound is refused before any thread
+/// starts (task 356).
+#[test]
+fn a_conversion_pool_above_the_bound_is_refused() {
+    let Err(err) = conversion_pool(1_000_000) else {
+        panic!("a million threads was accepted");
+    };
+    assert!(
+        err.to_string()
+            .contains("po.gbdt: threads: 1000000 is more threads than one pool may have"),
+        "{err}"
+    );
+}

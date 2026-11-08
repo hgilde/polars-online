@@ -180,8 +180,10 @@ def _check_threads(threads: object) -> int | None:
     """``threads`` checked where it is given, before anything is built: ``None``
     or an integer of 1 or more -- anything ``operator.index`` reads as one,
     numpy's integers included (task 269, D-6). A bool, a float or another
-    type is a ``TypeError``, and 0 or a negative integer a ``ValueError``,
-    each with the message the native side raises for the same value."""
+    type is a ``TypeError``, and 0, a negative integer or a count above the
+    bound one pool may have a ``ValueError``, each with the message the
+    native side raises for the same value, and each before any pool is
+    built."""
     if threads is None:
         return None
     if isinstance(threads, bool):
@@ -192,6 +194,8 @@ def _check_threads(threads: object) -> int | None:
         raise TypeError(_threads_refusal(repr(threads))) from None
     if count < 1:
         raise ValueError(_threads_refusal(repr(threads)))
+    if count > _native.max_threads():
+        raise ValueError(_native.threads_too_many(repr(threads)))
     return count
 
 
@@ -223,15 +227,14 @@ def thread_pool_size(*, threads: int | None = None) -> int:
     ``TypeError``
         ``threads`` is not an integer, a bool included.
     ``ValueError``
-        ``threads`` is below 1 or above ``2**63 - 1``, or ``threads`` is
-        ``None`` and ``POLARS_ONLINE_MAX_THREADS`` is set to anything but a
-        whole number, or to more threads than the system will start. A bank
-        refuses the
-        same values: a ``threads`` below 1 when it is made, and a bad
-        ``POLARS_ONLINE_MAX_THREADS`` at its first call that runs. A bank
-        also refuses an integer ``threads`` larger than the system will
-        start. This call starts no threads for an integer, so it does not
-        refuse such a count.
+        ``threads`` is below 1, or above 1024 (or the machine's core count,
+        where that is larger); or ``threads`` is ``None`` and
+        ``POLARS_ONLINE_MAX_THREADS`` is set to anything but a whole number,
+        or to a count past the same bound. More threads than cores run no
+        faster, and a pool starts all of its threads at once. A bank refuses
+        the same values: a ``threads`` when it is made, and a bad
+        ``POLARS_ONLINE_MAX_THREADS`` at its first call that runs. Both are
+        checked before any thread starts.
 
     .. rubric:: Examples
 
@@ -288,11 +291,12 @@ class ModelBank:
           spec (the message names the field);
         - a spec's settings are refused, as its builder would refuse them;
         - ``threads`` is below 1 (``None``, not 0, gives the shared threads:
-          one per core unless ``POLARS_ONLINE_MAX_THREADS`` is set), above
-          ``2**63 - 1``, or names more threads than the system will start;
+          one per core unless ``POLARS_ONLINE_MAX_THREADS`` is set), or above
+          1024 (or the machine's core count, where that is larger), refused
+          before any thread starts;
         - from the bank's first call that runs, with ``threads=None``:
-          ``POLARS_ONLINE_MAX_THREADS`` is not a whole number, or names more
-          threads than the system will start.
+          ``POLARS_ONLINE_MAX_THREADS`` is not a whole number, or is past
+          the same bound.
     :class:`~polars_online.WrongTypeError`
         ``specs`` is one spec, a string or bytes, in place of a list of specs. It
         is both a ``TypeError`` and a ``ValueError``.
@@ -3913,8 +3917,8 @@ class ModelBank:
             - a state contradicts its own spec, such as an ``sgd`` state
               without the scaler its ``standardize`` needs;
             - ``specs`` are given and differ from the file's;
-            - ``threads`` is below 1, or names more threads than the system
-              will start.
+            - ``threads`` is below 1, or above 1024 (or the machine's core
+              count, where that is larger).
         :class:`~polars_online.UnstableWarning`
             Under ``POLARS_ONLINE_WARN_UNSTABLE=1``, for a file holding a
             formula target, as :meth:`save` says.

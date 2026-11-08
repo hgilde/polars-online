@@ -142,6 +142,21 @@ fn zero_threads_is_refused_and_the_bank_keeps_its_pool() {
     assert_eq!(bank.threads().asked(), None);
 }
 
+/// A `threads` above the bound one pool may have is refused before a pool
+/// is built, and the bank keeps the pool it had (task 356).
+#[test]
+fn a_threads_above_the_bound_is_refused_and_the_bank_keeps_its_pool() {
+    let mut bank = Bank::new(vec![spec("m")]).unwrap();
+    bank.set_threads(Some(3)).unwrap();
+    let err = bank.set_threads(Some(1_000_000)).unwrap_err().to_string();
+    assert!(
+        err.contains("threads: 1000000 is more threads than one pool may have"),
+        "{err}"
+    );
+    assert!(!Threads::registry_holds(1_000_000));
+    assert_eq!(bank.threads().asked(), Some(3));
+}
+
 // ---- `"auto"`'s share of the pool (task 253, part 2) ----
 
 /// Per probed spec name, the `gram_threads` each task's streams were set to.

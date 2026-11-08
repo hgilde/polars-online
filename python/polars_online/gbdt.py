@@ -600,6 +600,12 @@ def _check_common(
             f"{who}: threads must be at least 1, or None, but it is {count}. Set threads to "
             f"1 or more, or to None for {library} default."
         )
+    if count is not None and count > _native.max_threads():
+        raise ValueError(
+            f"{who}: threads must be at most {_native.max_threads()}, the most one pool may "
+            f"have, but it is {count}. Set threads to at most the machine's cores, since more "
+            f"threads than cores run no faster, or to None for {library} default."
+        )
     if engine not in _ENGINES:
         raise ValueError(
             f'{who}: engine must be "auto", "native" or "python", but it is {engine!r}. Set '
@@ -743,7 +749,9 @@ def xgboost_matrix(
         without one needs none.
     ``threads``
         The threads for XGBoost's construction and the conversions.
-        ``None``, the default, is XGBoost's default, every core.
+        ``None``, the default, is XGBoost's default, every core. At most
+        1024, or the machine's cores where it has more: more threads than
+        cores run no faster.
     ``seed``
         The seed of the sample, 0 by default: the same seed and rows give
         the same cuts.
@@ -780,8 +788,8 @@ def xgboost_matrix(
     ``ValueError``
         When, each named in the message:
 
-        - ``max_bin`` below 2, ``threads`` or ``sample_rows`` below 1, or an
-          ``engine`` not one of the three;
+        - ``max_bin`` below 2, ``threads`` or ``sample_rows`` below 1, a
+          ``threads`` above its bound, or an ``engine`` not one of the three;
         - a source that names no files, mixes Arrow IPC and Parquet, or names a
           file whose extension says neither;
         - a column named twice, or as both a feature and the label, weight or
@@ -1219,7 +1227,9 @@ def lightgbm_dataset(
         engine, the LightGBM loaded takes an Arrow stream (4.7.0 on).
     ``threads``
         The threads for LightGBM's construction and the conversions.
-        ``None``, the default, is LightGBM's default, every core.
+        ``None``, the default, is LightGBM's default, every core. At most
+        1024, or the machine's cores where it has more: more threads than
+        cores run no faster.
     ``engine``
         ``"native"``, ``"python"``, or ``"auto"``, the default: the native
         engine, falling back to the Python engine with a warning when the
@@ -1253,7 +1263,7 @@ def lightgbm_dataset(
     ``ValueError``
         When, each named in the message:
 
-        - ``max_bin`` below 2, ``threads`` below 1, an ``engine`` not one of
+        - ``max_bin`` below 2, ``threads`` below 1 or above its bound, an ``engine`` not one of
           the three, or an ``in_memory`` that is not ``True``, ``False`` or
           ``"auto"``;
         - a parameter in ``params`` that is this function's own argument;

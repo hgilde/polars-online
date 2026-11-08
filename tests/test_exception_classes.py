@@ -194,6 +194,15 @@ RUST_SITES: list[tuple[str, Callable[[], Any]]] = [
         ),
     ),
     (
+        # A text clock of digits ran, read through a cast to numbers (task 356).
+        "with_windows, a text clock",
+        _windows(
+            _df().with_columns(t=pl.col("t").cast(pl.String)),
+            po.ewm_mean("x0", half_life=5.0),
+            **_CLOCKED,
+        ),
+    ),
+    (
         "with_windows, an Int128 clock",
         _windows(
             _df().with_columns(t=pl.col("t").cast(pl.Int128)),
@@ -248,6 +257,11 @@ _SAME_INPUT: dict[str, list[Callable[[], Any]]] = {
         _embargo_text_clock,
         _refresh(pl.String, pl.Float64),
         _window_metrics(_df().with_columns(t=pl.col("t").cast(pl.String)), 10.0),
+        _windows(
+            _df().with_columns(t=pl.col("t").cast(pl.String)),
+            po.ewm_mean("x0", half_life=5.0),
+            **_CLOCKED,
+        ),
     ],
     "an Int128 clock": [
         _bank(_df().with_columns(t=pl.col("t").cast(pl.Int128)), **_CLOCKED),
@@ -275,6 +289,19 @@ def test_python_and_rust_paths_refusing_the_same_clock_raise_one_class(input_: s
         with pytest.raises(po.WrongTypeError) as caught:
             call()
         assert type(caught.value) is po.WrongTypeError, caught.value
+
+
+def test_a_text_clock_of_digits_is_refused_by_with_windows() -> None:
+    """A String clock of digits ("0.0", "1.0", ...) ran under with_windows,
+    read through a cast that turned the text into numbers, where every other
+    path refuses a text clock by its type (task 356)."""
+    df = _df().with_columns(t=pl.col("t").cast(pl.String))
+    with pytest.raises(po.WrongTypeError) as caught:
+        po.stream.with_windows(df, f=po.ewm_mean("x0", half_life=5.0), clock="t", gap_cap=5.0)
+    assert str(caught.value) == (
+        'with_windows: clock column "t" must be a number or temporal, but it is String. '
+        'Cast it, such as with pl.col("t").cast(pl.Float64), or to a Datetime.'
+    )
 
 
 def test_the_like_clash_names_the_function_in_full() -> None:

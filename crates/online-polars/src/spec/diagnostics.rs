@@ -342,6 +342,11 @@ impl Spec {
         } = &self.model
         {
             let hs = list.to_vec();
+            // The first entry is the intercept's only where there is one:
+            // under `fit_intercept = false` it is the first slope's. That
+            // spec never reads this, since only a fit with an intercept
+            // takes the absorber ([`crate::checks::CheckCfg::of`]); without
+            // one its CUSUM keeps the plain sum, and a test pins it there.
             if hs.len() > 1 {
                 return (hs[0], f64::INFINITY);
             }

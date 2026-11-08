@@ -834,6 +834,22 @@ impl WindowsRun {
                 .into());
             }
         }
+        // A clock of text was read through a cast that turns digits into
+        // numbers and anything else into nulls, where every other surface
+        // refuses it by its type (task 356).
+        if let Some(c) = &config.clock {
+            let dtype = dtype_of(input, c);
+            if !(dtype.is_numeric()
+                || dtype.is_temporal()
+                || matches!(dtype, DataType::Boolean | DataType::Null))
+            {
+                return Err(Refused::wrong_type(format!(
+                    "{WHO}: clock column {c:?} must be a number or temporal, but it is {}. Cast \
+                     it, such as with pl.col({c:?}).cast(pl.Float64), or to a Datetime.",
+                    crate::arrow::dtype_name(dtype)
+                )));
+            }
+        }
         // A key that does nothing is refused, as a spec refuses it (task 278,
         // D3): each was accepted here and changed nothing.
         if config.session_gap.is_some() && config.session.is_none() {

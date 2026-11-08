@@ -1330,7 +1330,9 @@ fn thread_pool_size(threads: Option<&Bound<'_, PyAny>>) -> PyResult<usize> {
 /// 269, D-6). A bool, a float or any other type is a `TypeError`, and 0 or
 /// a negative integer a `ValueError`, each with
 /// `online_polars::threads_refusal`'s text, which
-/// `polars_online._bank._check_threads` raises too.
+/// `polars_online._bank._check_threads` raises too; a count above
+/// `online_polars::max_threads` is a `ValueError` with
+/// `online_polars::threads_too_many`'s, before any pool is built.
 pub(crate) fn threads_arg(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option<usize>> {
     let Some(obj) = obj.filter(|o| !o.is_none()) else {
         return Ok(None);
@@ -1351,13 +1353,37 @@ pub(crate) fn threads_arg(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option<usi
         .and_then(|f| f.call1((obj,)))
         .map_err(|_| refused())?;
     match index.extract::<i64>() {
-        Ok(n) if n >= 1 => usize::try_from(n)
-            .map(Some)
-            .map_err(|_| PyValueError::new_err(online_polars::threads_refusal(&shown()))),
-        _ => Err(PyValueError::new_err(online_polars::threads_refusal(
+        Ok(n) if n >= 1 => match usize::try_from(n) {
+            Ok(n) if n <= online_polars::max_threads() => Ok(Some(n)),
+            _ => Err(PyValueError::new_err(online_polars::threads_too_many(
+                &shown(),
+            ))),
+        },
+        Ok(_) => Err(PyValueError::new_err(online_polars::threads_refusal(
+            &shown(),
+        ))),
+        // An integer too large for i64 is a count above the bound, refused
+        // as one, before any pool is built.
+        Err(_) if index.gt(0).unwrap_or(false) => Err(PyValueError::new_err(
+            online_polars::threads_too_many(&shown()),
+        )),
+        Err(_) => Err(PyValueError::new_err(online_polars::threads_refusal(
             &shown(),
         ))),
     }
+}
+
+/// The most threads one pool may have (`online_polars::max_threads`).
+#[pyfunction]
+fn max_threads() -> usize {
+    online_polars::max_threads()
+}
+
+/// The text that refuses a `threads` above [`max_threads`], `shown` as the
+/// caller wrote it, which `polars_online._bank._check_threads` raises.
+#[pyfunction]
+fn threads_too_many(shown: &str) -> String {
+    online_polars::threads_too_many(shown)
 }
 
 /// The pool a `threads` argument names ([`threads_arg`]).
@@ -1389,6 +1415,8 @@ fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(native_version, m)?)?;
     m.add_function(wrap_pyfunction!(schema_version, m)?)?;
     m.add_function(wrap_pyfunction!(thread_pool_size, m)?)?;
+    m.add_function(wrap_pyfunction!(max_threads, m)?)?;
+    m.add_function(wrap_pyfunction!(threads_too_many, m)?)?;
     m.add_function(wrap_pyfunction!(model_kinds, m)?)?;
     m.add_function(wrap_pyfunction!(validate_spec, m)?)?;
     m.add_function(wrap_pyfunction!(parse_duration, m)?)?;

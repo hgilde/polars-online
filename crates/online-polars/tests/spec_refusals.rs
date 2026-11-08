@@ -1096,3 +1096,36 @@ fn a_duration_beside_lam_is_told_the_way_out_that_works() {
         "{e}"
     );
 }
+
+/// `marginal`'s `bin_rule` and `bin_warm_rows` say how to learn the bins,
+/// so without `bins` they had no effect and were taken; they are refused as
+/// `bin_budget` and `bin_stat` without bins are, and taken beside `bins`
+/// (task 356).
+#[test]
+fn marginal_learning_the_bins_without_bins_is_refused() {
+    refused(
+        &sup(r#"{"type": "marginal", "bin_rule": "fixed"}"#, ""),
+        &[
+            "bin_rule sets how to learn the bins, but bins is not set, so there are none to \
+           learn. Set bins, or leave bin_rule out.",
+        ],
+    );
+    refused(
+        &sup(r#"{"type": "marginal", "bin_warm_rows": 50}"#, ""),
+        &["bin_warm_rows sets how to learn the bins, but bins is not set"],
+    );
+    refused(
+        &sup(
+            r#"{"type": "marginal", "bin_rule": "quantile", "bin_warm_rows": 50}"#,
+            "",
+        ),
+        &[
+            "bin_rule and bin_warm_rows set how to learn the bins, but bins is not set, so \
+           there are none to learn. Set bins, or leave bin_rule and bin_warm_rows out.",
+        ],
+    );
+    accepted(&sup(
+        r#"{"type": "marginal", "bins": 4, "bin_rule": "fixed", "bin_warm_rows": 50}"#,
+        "",
+    ));
+}

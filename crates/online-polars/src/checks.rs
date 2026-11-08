@@ -650,3 +650,33 @@ impl Checks {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kalman(fit_intercept: bool, halves: &str) -> Spec {
+        serde_json::from_str(&format!(
+            r#"{{"name": "m", "targets": ["y"], "features": ["a", "b"],
+                "fit_intercept": {fit_intercept},
+                "model": {{"type": "kalman", "coef_half_life": {halves}}}}}"#
+        ))
+        .unwrap()
+    }
+
+    /// A `kalman` whose `coef_half_life` list gives each coefficient its
+    /// own absorbs a level at the intercept's entry, the list's first.
+    /// Without an intercept the first entry is a slope's, and no absorber
+    /// is taken: the CUSUM keeps the plain sum, whatever the list says, so
+    /// the slope's half-life never reads as the intercept's (task 356).
+    #[test]
+    fn a_kalman_without_an_intercept_takes_no_level_absorber() {
+        let h = Decay::Halflife(20.0);
+        let with = CheckCfg::of(&kalman(true, "[30.0, 10.0, 10.0]"), h);
+        assert_eq!(with.cusum_absorber, Some((f64::INFINITY, 30.0)));
+        for halves in ["[5.0, 10.0]", "[\"inf\", 10.0]", "7.0"] {
+            let without = CheckCfg::of(&kalman(false, halves), h);
+            assert_eq!(without.cusum_absorber, None, "{halves}");
+        }
+    }
+}
