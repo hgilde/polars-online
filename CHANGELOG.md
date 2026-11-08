@@ -512,6 +512,17 @@ returns.
 
 ### Tests and documents
 
+- The documentation rewrite is finished. Every guide declares its kind and
+  is held to the writing checks in the test gate, and the guides and records
+  use American spelling. The command-line, saved-state, diagnostics,
+  data-quality and regimes pages were finished: their how-to and tutorial
+  sections are links to the pages that hold them. A final cold read of every
+  guide corrected, among other things: `group_close="monotone"` refuses a
+  Datetime key; `clark_west` takes `lags=`; `drift_threshold`'s table holds
+  only without a clock column; which change detectors read their own row;
+  and how `fit(closed_groups=)` holds closed groups until the pass ends.
+  `scripts/validate.py` computes VALIDATION.md's verdicts from its own
+  table.
 - The contributor documents are rewritten as how-tos and references.
   EXTENDING.md is *Add a model*, and eleven pages under `docs/contributing/`
   cover iterating, merging a wave of branches, worktree slots, caches, the
