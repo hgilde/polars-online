@@ -2,14 +2,16 @@
 
 A saved state is everything a bank has learned, written to a file and
 loaded back: to inspect it, to score new rows against it, or to learn on
-from it. This guide says what each step guarantees, and what a saved bank
+from it. [A bank's state and resuming it](explanation/state-and-resuming.md)
+explains what a state holds, and why a resumed run matches one that never
+stopped. This guide says what each step guarantees, and what a saved bank
 carries. A run of `po.stream.with_windows` keeps a state of its own, under
 rules of its own, in the last subsection of the workflow. The research
 that decided the design follows as a dated record.
 
 | section | subsections |
 |---|---|
-| [The workflow in four steps](#the-workflow-in-four-steps) | [each step, and what it guarantees](#each-step-and-what-it-guarantees) · [fit, and keep the state](#fit-and-keep-the-state) · [the one gap](#the-one-gap-a-failure-after-the-bank) · [resuming on input that overlaps the state](#resuming-on-input-that-overlaps-the-state) · [what a saved bank carries](#what-a-saved-bank-carries) · [a window run's state](#a-window-runs-state) · [the rules, and the evidence for each](#the-rules-and-the-evidence-for-each) |
+| [The workflow in four steps](#the-workflow-in-four-steps) | [each step, and what it guarantees](#each-step-and-what-it-guarantees) · [fit, and keep the state](#fit-and-keep-the-state) · [resuming on input that overlaps the state](#resuming-on-input-that-overlaps-the-state) · [what a saved bank carries](#what-a-saved-bank-carries) · [a window run's state](#a-window-runs-state) · [the rules, and the evidence for each](#the-rules-and-the-evidence-for-each) |
 | [The research behind it, 2026-09-03](#the-research-behind-it-2026-09-03) | [0. the ask](#0-the-ask-and-the-answer-in-one-paragraph) · [1. what existed before](#1-what-existed-before-the-decision-per-step-and-surface) · [2. how polars runs a source](#2-how-polars-executes-a-python-io-source--measured) · [3. the candidates](#3-the-candidates) · [4. the proposal](#4-the-proposal-a-made-exact) · [5. the prototype's checks](#5-the-prototypes-checks-real-bank-3-groups--1000-rows-chunks-of-250) · [6. usability, performance, stability](#6-usability-performance-stability--checked-not-assumed) · [7. decisions](#7-decisions-taken-2026-09-03) · [8. where it landed](#8-where-it-landed) · [9. reproduce](#9-reproduce) |
 
 ## The workflow in four steps
@@ -117,7 +119,7 @@ later rows from the same state, since it learns nothing.
 last row.** The write is atomic: a reader sees the old file or the new
 one. A run the caller abandons, or one ended by an error inside the bank,
 leaves the file as it was. An error in a step of the query after the bank
-still writes it, which is [the one gap](#the-one-gap-a-failure-after-the-bank).
+still writes it, which is [the one gap](explanation/state-and-resuming.md#the-one-gap-a-failure-after-the-bank).
 The command line does the same from a `save_state` in the TOML, and saves
 only after its output is committed.
 
@@ -158,34 +160,6 @@ after building the query, the file exists: False
 two runs, the same bytes: True
 under head(100), the state has been fed 100 rows
 ```
-
-### The one gap: a failure after the bank
-
-**A query that fails after the bank can still write the state.** Polars
-1.x runs the bank to the end of its input before it reports an error from
-a step after it, so the bank reaches its last row and writes. A full
-disk under `sink_parquet`, or a bad cast, then leaves `save_state` written
-with the whole stream's state, while the query's own output is missing.
-With `load_state=p, save_state=p`, a rerun of the same input then steps
-every group's clock back, which a spec with a clock column refuses
-(`restart_after_step_back` unset). Feeding it through
-[`skip_learned`](#resuming-on-input-that-overlaps-the-state) learns nothing
-twice, and so writes no output for those rows either.
-
-**Where the state must land only with the output, use the command line.**
-It saves the state only after its writer has committed the output.
-
-**Otherwise, write a dated `save_state` per batch of data**, such as
-`ridge-2026-01.state`. That keeps a rerun from consuming the state it
-needs, and the files keep an audit trail.
-
-On py-polars 2.0 the gap narrows: a long enough stream is stopped rather
-than run to its end, and the state is not written. It was measured with chunks
-of 500 rows and a cast that fails after the bank. Polars 1.44.1 wrote the
-state at 4,000 rows and at 40,000, and 2.0.0rc1 at 4,000 only (the
-record's opening, under [The research behind
-it](#the-research-behind-it-2026-09-03), has the measurement). How Polars stops a failing query is Polars' to change, so
-neither outcome is promised.
 
 ### Resuming on input that overlaps the state
 
@@ -383,7 +357,7 @@ holds the checks:
 | `load_state` and `predict(path)` are read when the query is built, so a query run twice gives the same result | the two runs above overlap, so a state read at run time could be read while the other run writes it | a query built against a state file, run again after the file was overwritten, gave the same frame |
 | the bank is fed exactly the rows the query pulled | a `head(n)` reaches the source as a row count, and the source stops there; a `sort().head(n)` does not, so the bank reads every row | `head(613)` wrote the state of a bank fed the first 613 rows, byte for byte, and `sort().head(5)` the whole stream's |
 | `predict` refuses `save_state`, as `polars-online --predict` does, since it learns nothing | | `predict(save_state=...)` is refused |
-| a failure after the bank still writes the state on py-polars 1.x, and on 2.0 only for a stream short enough to finish first: [the one gap](#the-one-gap-a-failure-after-the-bank) | Polars runs a source to the end of its input before it reports the error of a step after it | a cast that failed after the bank left the file, byte-identical to the whole stream's state |
+| a failure after the bank still writes the state on py-polars 1.x, and on 2.0 only for a stream short enough to finish first: [the one gap](explanation/state-and-resuming.md#the-one-gap-a-failure-after-the-bank) | Polars runs a source to the end of its input before it reports the error of a step after it | a cast that failed after the bank left the file, byte-identical to the whole stream's state |
 | building a query writes nothing | building or inspecting a query, by `collect_schema()` or `explain()`, runs no source | a source's run count stayed at 0 |
 
 [The research behind it](#the-research-behind-it-2026-09-03) has each

@@ -97,10 +97,12 @@ commits even on failure, because a pipeline returns the exit status of
 **A change that breaks either of the library's two guarantees is wrong by
 definition.** Every row is predicted before its own target is learned, and
 a stream gives the same numbers in one chunk or a thousand, with or
-without a save and resume in the middle. The README's [Row order and the
-two guarantees](README.md#row-order-and-the-two-guarantees) states both,
-and says which rows carry `coef`, and `support_coef` and the standard
-errors beside it, the only fields whose rows move with the chunking.
+without a save and resume in the middle. [Why every prediction is
+out-of-sample](docs/explanation/out-of-sample.md) and [Chunk invariance and
+streaming](docs/explanation/chunk-invariance-and-streaming.md) explain
+each, and the second says which rows carry `coef`, and `support_coef` and
+the standard errors beside it, the only fields whose rows move with the
+chunking.
 
 **If a change moves a golden number, that is the finding, so understand
 why before regenerating it.** `crates/online-core/tests/golden.rs` and

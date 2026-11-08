@@ -17,7 +17,7 @@ or from a command line of their own.
 | section | what it covers |
 |---|---|
 | [Introduction](#introduction) | [a first fit](#a-first-fit) · [the idea](#the-idea) · [terminology](#terminology) · [what you can rely on](#what-you-can-rely-on) · [install](#install) · [example data](#example-data) |
-| [How a bank sees a stream](#how-a-bank-sees-a-stream) | [what a spec names](#what-a-spec-names) · [time and decay](#time-and-decay) · [convergence without a decay](#convergence-without-a-decay) · [a hard window](#a-hard-window) · [a local fit along any feature](#a-local-fit-along-any-feature) · [row order](#row-order-and-the-two-guarantees) · [groups](#groups) · [weights](#weights) · [warm-up](#warm-up) · [labels that arrive late](#labels-that-arrive-late) · [nulls](#nulls-and-three-ways-to-hold-a-row-back) |
+| [How a bank sees a stream](#how-a-bank-sees-a-stream) | [what a spec names](#what-a-spec-names) · [time and decay](#time-and-decay) · [a hard window](#a-hard-window) · [a local fit along any feature](#a-local-fit-along-any-feature) · [row order](#row-order-and-the-two-guarantees) · [groups](#groups) · [weights](#weights) · [warm-up](#warm-up) · [labels that arrive late](#labels-that-arrive-late) · [nulls](#nulls-and-three-ways-to-hold-a-row-back) |
 | [Preparing a stream](#preparing-a-stream) | [making features and targets from windows](#making-features-and-targets-from-windows) · [windows as columns](docs/WINDOWS.md#windows-as-columns) · [windows as a model's inputs and target](docs/WINDOWS.md#windows-as-a-models-inputs-and-target) · [features in units of their spread](docs/WINDOWS.md#features-in-units-of-their-spread) · [saving and resuming a window run](docs/WINDOWS.md#saving-and-resuming-a-window-run) · [series that tick at their own times](#series-that-tick-at-their-own-times) |
 | [Running a bank](#running-a-bank) | [as a query](#as-a-query-lfonlinefit_predict) · [in a loop](#in-a-loop-modelbank) · [as a job, without Python](#running-a-bank-as-a-job-without-python) · [output as Arrow](#output-as-arrow) |
 | [Saving, loading and serving](#saving-loading-and-serving) | [save and load](#save-and-load) · [serving without learning](#serving-without-learning) · [a state without this library](#reading-a-state-without-this-library) |
@@ -183,7 +183,7 @@ timestamps `ts`), `gap_cap="5m"` (required with a clock: a gap longer than
 five minutes decays as five), and `half_life="10m"`. Each row's weight then halves every ten
 minutes of `ts`. The fit is now local: it describes the recent past, and
 it moves from row to row, so its final state is a poor summary of the day
-([Time and decay](#time-and-decay)). `coef_every=0` writes, on every row,
+([Local fits](docs/explanation/time-and-decay.md#local-fits)). `coef_every=0` writes, on every row,
 the betas the model holds after that row, from its latest solve. Each hour
 from 10:30, stock A's beta on `signal_a` climbs with the true one, which is
 0.29, 0.38, 0.48, 0.57, 0.66 and 0.75 at those times:
@@ -237,8 +237,9 @@ place of `.collect()`.
 **Row order matters when a model forgets.** With a *decay*, older rows count
 less, so sort the rows by time with Polars' `sort`, in the query before the
 bank, unless they arrive sorted. Without a decay, the models that solve or
-accumulate give the same answer in any order ([Convergence without a
-decay](#convergence-without-a-decay) names them).
+accumulate give the same answer in any order ([Without a
+decay](docs/explanation/time-and-decay.md#without-a-decay) says why, and
+[the model table](#models) gives each model's kind).
 
 **Features and targets can be windows over the stream, written as Polars
 expressions.** A feature can look back, such as the last minute's
@@ -275,9 +276,9 @@ These hold for every spec, however a bank is run:
 
 | | |
 |---|---|
-| **honest predictions** | every row is predicted before its own outcome is learned ([Row order and the two guarantees](#row-order-and-the-two-guarantees)), and a target that looks ahead is learned only once its window has closed ([Windows as a model's inputs and target](docs/WINDOWS.md#windows-as-a-models-inputs-and-target)) |
+| **honest predictions** | every row is predicted before its own outcome is learned ([Why every prediction is out-of-sample](docs/explanation/out-of-sample.md)), and a target that looks ahead is learned only once its window has closed ([Windows as a model's inputs and target](docs/WINDOWS.md#windows-as-a-models-inputs-and-target)) |
 | **bounded memory** | memory grows with the models' state and the rows a delay or a window holds, and never with the number of rows that have passed ([Memory](#memory)) |
-| **any chunking** | one chunk or a thousand, with or without a save and resume in the middle, gives the same numbers, to the last bit. Only which rows carry the coefficients can change: `coef`, and `support_coef` and the standard errors beside it ([Row order and the two guarantees](#row-order-and-the-two-guarantees)) |
+| **any chunking** | one chunk or a thousand, with or without a save and resume in the middle, gives the same numbers, to the last bit. Only which rows carry the coefficients can change: `coef`, and `support_coef` and the standard errors beside it ([Chunk invariance and streaming](docs/explanation/chunk-invariance-and-streaming.md)) |
 | **any thread count** | the thread count, set with a bank's `threads=` (or `POLARS_ONLINE_MAX_THREADS` for the default pool), changes only the speed. Each spec and group is one task on the bank's thread pool: with 64 groups, 14 threads process 7.3× the rows per second of one ([Parallelism](#parallelism)) |
 | **unusable values** | in a feature, target or weight, NaN, ±inf and any magnitude above `1e100` count as null, so a sentinel value never reaches a model. A null skips an update but never stops the clock ([Nulls, and three ways to hold a row back](#nulls-and-three-ways-to-hold-a-row-back)) |
 | **zero weights** | a row of weight 0 is scored and moves the clock, but teaches the model nothing ([Weights](#weights)) |
@@ -393,10 +394,10 @@ applies within each group, the clock included.
 |---|---|---|
 | which columns a model reads, and what its output column is called | the spec's name, `targets`, `features`, `fit_intercept` | [What a spec names](#what-a-spec-names) |
 | how far apart two rows are, and how fast the past fades | `clock`, `half_life`, `gap_cap`, `session`, `session_gap`, `restart_after_step_back` | [Time and decay](#time-and-decay) |
-| what a fit becomes when nothing fades | `half_life=inf`, `lam=1.0` | [Convergence without a decay](#convergence-without-a-decay) |
+| what a fit becomes when nothing fades | `half_life=inf`, `lam=1.0` | [Without a decay](docs/explanation/time-and-decay.md#without-a-decay) |
 | when an old row stops counting at all | `window_size` | [A hard window](#a-hard-window) |
 | how to fit along a feature instead of time | `clock` | [A local fit along any feature](#a-local-fit-along-any-feature) |
-| which row order a bank needs, and how it checks it | | [Row order and the two guarantees](#row-order-and-the-two-guarantees) |
+| which row order a bank needs, and how it checks it | | [Row order and the two guarantees](#row-order-and-the-two-guarantees), and [why you set the order](docs/explanation/chunk-invariance-and-streaming.md#why-you-set-the-row-order) |
 | which rows belong to which model | `group`, `group_close` | [Groups](#groups) |
 | how much each row counts | `weight` | [Weights](#weights) |
 | when a model has seen enough to report | `min_weight`, `min_settled_frac`, `max_error_inflation` | [Warm-up](#warm-up) |
@@ -600,19 +601,10 @@ only names a target's output fields apart from its column.
 
 A model forgets old rows by its *decay*: each row's weight halves every
 `half_life` along a *clock*, a column that says how far apart two rows
-are. At each row, the model multiplies the weight of everything it has
-learned by `λ = 0.5 ** (Δclock / half_life)`, where `Δclock` is the
-clock's step from the previous row. To fit one model per half-life, give
-`half_life` a list.
-
-**A finite half-life makes the fit of a model that keeps running sums,
-such as `ewridge`, local, so its final state describes mostly the recent
-end of the stream.** Under `half_life="10m"`, the fit weighs the last few
-tens of minutes on the clock most. Saving the final state of such a fit
-may then be of limited value as a summary of the whole stream. In a
-regression such as `ewridge`, `coef_every=0` writes its coefficients on
-every row instead, a time series of what it found, as step 4 of [A first
-fit](#a-first-fit) shows.
+are. To fit one model per half-life, give `half_life` a list. [Time and
+decay](docs/explanation/time-and-decay.md) explains how a model forgets,
+why a finite half-life makes the fit local, and why a huge half-life is
+not the same as none.
 
 #### Clock types and units
 
@@ -628,13 +620,13 @@ since a timestamp carries its unit and a number does not.**
 A duration is written three ways: `pl.duration(minutes=10)`,
 `timedelta(minutes=10)`, or Polars' duration text `"10m"`.
 
-**Every clock parameter acts on the clock, so a model's numbers do not
-change with how densely the rows arrive.** The clock parameters are
+**Every clock parameter acts on the clock, so it means the same span of
+time however densely the rows arrive.** The clock parameters are
 `half_life`, `gap_cap`, `restart_after_step_back`, `session_gap`, `embargo`,
 `drift_threshold` and `coef_every`, and a model's `window_size`, its cadences
 (`snapshot_every`, `solve_every`, `pca_every`, `prune_every`) and its own
-half-lives. A few things still count rows, and each model's entry in
-[docs/MODELS.md](docs/MODELS.md) names them.
+half-lives. A few things still count rows, such as `warm_rows` and the
+caps named `max_rows_between_*`, and each model's docstring names its own.
 
 **Quantities measured on a temporal clock reach the output in seconds.**
 `holt`'s trend, for one, is per second. The clocks themselves keep the
@@ -688,22 +680,10 @@ stay numbers where a parameter takes them:
 | a duration finer than the clock can act on, such as `gap_cap="12h"` | a `Date` clock, which moves in days | |
 | `lam`, a decay per clock unit | a temporal clock | it has no duration form, so a temporal clock takes `half_life` instead |
 
-**A temporal clock is read in its own integer nanoseconds**, so it must lie
-between the years 1677 and 2262, the range nanoseconds in a 64-bit integer
-cover. The same instants stored in milliseconds, microseconds or
-nanoseconds give the same numbers, and a time zone changes nothing. A model
-reads only the gap between consecutive rows, taken in integer nanoseconds
-before it becomes seconds, so a nanosecond timestamp keeps its nanoseconds
-whatever the stream's age.
-
-**An integer clock is read as its integers**: any column from `Int8` to
-`Int64` or `UInt8` to `UInt64`. The step between two rows is taken in
-integers before it becomes a double. Every decision on the clock is taken on
-the integers too: a step back, a gap past `gap_cap`, a cadence, a window's
-edge and an embargo's release. So an `Int64` column of epoch nanoseconds
-keeps its nanoseconds, where a double near 1.8e18 resolves 256 of them. Its
-clock parameters stay numbers, and a fractional one such as `gap_cap=0.5` is
-compared as the number it is.
+**A temporal clock is read in its own integer nanoseconds, and an integer
+clock as its integers**, so the step between two rows is exact. [Decay along
+the clock](docs/explanation/time-and-decay.md#decay-along-the-clock)
+says why, and what range of dates a temporal clock covers.
 
 **A clock column the bank cannot read exactly is refused, by row or by
 name.** A `UInt64` value past the largest `Int64` is refused by row. An
@@ -780,62 +760,15 @@ row      capped    uncapped  one_minute       reset
 202       39.72        1.98       43.37        1.98
 ```
 
-### Convergence without a decay
-
-With decay off (`half_life=inf` or `lam=1.0`), a model that *solves* or
-*accumulates* converges to the batch fit it defines over every row it has
-seen. A model that *reweights*, *steps*, *filters* or *tests* depends on
-the row order whether or not decay is on. Each model's kind is in [the
-model table](#models), with the few settings that read the rows in
-sequence even so.
-
-**Row order does not change the fit of a model that solves or accumulates,
-apart from those settings,** since both keep running sums. With no clock
-column, rows fed forwards, backwards or shuffled give the same
-coefficients, to rounding. With a clock column, the bank refuses a row out
-of clock order ([How a bank detects rows out of
-order](#how-a-bank-detects-rows-out-of-order)).
-
-**For no forgetting, give `half_life=float("inf")`: a huge finite
-half-life still forgets, a little.** Under `half_life=1e12`, `settled_frac`
-stays near zero until the stream has run for about 10¹² clock units, so a
-`min_settled_frac` gate ([Warm-up](#warm-up)) stays closed.
-
-This code fits `ewridge` with no decay to `df`'s rows in their order,
-reversed and shuffled, and solves the same least squares with numpy. The
-last line reads `settled_frac` on the last row under `half_life=1e12`.
-It reads `df` from [Example data](#example-data):
-
-```python
-# Plain least squares in three orders, then numpy's.
-batch = po.spec.ewridge("batch", targets=["y"], features=["x0", "x1", "x2"],
-                        half_life=float("inf"),   # no clock, no decay
-                        ridge=0.0)                 # plain least squares, in place of the default ridge of 1e-6
-for order, rows in [("in order", df), ("reversed", df.reverse()), ("shuffled", df.sample(fraction=1.0, shuffle=True, seed=1))]:
-    coef = po.ModelBank([batch]).fit_predict(rows)["batch"].struct.field("coef")[-1]   # the fit after the last row
-    print(f"{order:<9}", " ".join(f"{c:9.6f}" for c in coef))
-design = np.column_stack([np.ones(df.height), df["x0"], df["x1"], df["x2"]])
-print(f"{'numpy':<9}", " ".join(f"{c:9.6f}" for c in np.linalg.lstsq(design, df["y"], rcond=None)[0]))
-
-# A huge finite half-life, which is not inf.
-huge = po.spec.ewridge("huge", targets=["y"], features=["x0"], clock="t", half_life=1e12, gap_cap=300.0)
-print(f"settled_frac after 399 units of t under half_life=1e12: {po.ModelBank([huge]).fit_predict(df)['huge'].struct.field('settled_frac')[-1]:.1e}")
-```
-
-```text
-in order   0.992088  1.994121 -1.007945 -0.026134
-reversed   0.992088  1.994121 -1.007945 -0.026134
-shuffled   0.992088  1.994121 -1.007945 -0.026134
-numpy      0.992088  1.994121 -1.007945 -0.026134
-settled_frac after 399 units of t under half_life=1e12: 2.8e-10
-```
-
 ### A hard window
 
 A half-life never forgets entirely: three half-lives back still carries
 12.5% of the weight. To make every row `w` clock units old or older count
 for exactly nothing, give `window_size=w`. Five models take it: `ewridge`,
-`lasso`, `ew_cov`, `ew_class` and `marginal`.
+`lasso`, `ew_cov`, `ew_class` and `marginal`. [A hard
+window](docs/explanation/time-and-decay.md#a-hard-window) explains how the
+model cuts its running sums exactly, and shows a hard window forget a
+change that a half-life still holds.
 
 ```
 weight(age) = 0.5 ** (age / half_life)   if age < window_size   (closed="right", the default)
@@ -855,77 +788,16 @@ row. So `"left"` and `"none"` are refused, and so is `"both"` without a
 newest row counts most.** For a flat rolling fit with equal weights, give
 `half_life=float("inf")` with the `window_size`.
 
-**A window forgets a break that a half-life still holds.** In `df`, the
-beta of `ret` on `signal_a` flips from 0.8 to −0.8 at row 200 (counting
-from 0). This code follows it with a half-life of 100 rows, and with a flat
-window of 100 rows. A hundred rows after the break, the window holds only
-rows after it and reads the new beta, while the half-life still gives the
-old rows half their weight.
-It reads `df` from [Example data](#example-data):
-
-```python
-common = dict(targets=["ret"], features=["signal_a"], clock="t", gap_cap=300.0, coef_every=0)   # the beta on every row
-decayed = po.spec.ewridge("decayed", half_life=100.0, **common)                              # a half-life of 100 rows
-windowed = po.spec.ewridge("windowed", half_life=float("inf"), window_size=100.0, **common)  # the last 100 rows, equally weighted
-fitted = po.ModelBank([decayed, windowed]).fit_predict(df)
-print("row  decayed  windowed")
-for row in [199, 250, 300, 399]:
-    beta = [fitted[name].struct.field("coef")[row][1] for name in ("decayed", "windowed")]   # [intercept, signal_a]
-    print(f"{row:<4} {beta[0]:7.2f}  {beta[1]:8.2f}")
-```
-
-```text
-row  decayed  windowed
-199     0.77      0.83
-250     0.29      0.01
-300     0.00     -0.78
-399    -0.39     -0.78
-```
-
-**The cut is exact.** At time `t`, the rows learned at or before a time `u`
-contribute `0.5 ** ((t − u) / half_life)` times the running sum as it stood
-at `u`. Subtracting that leaves exactly the rest. The model keeps a ring
-of snapshots for this, one every row by default. The edge is the oldest
-snapshot inside the window, so a coarse spacing discards a little more
-than asked, never less.
-
 **`snapshot_every` spaces the snapshots on the clock, as `solve_every`
-spaces a regression's solves.** It takes a number of clock units, or a
+spaces a regression's solves.** The model keeps a ring of snapshots of its
+running sums to cut them at the hard window's edge, one every row by
+default. `snapshot_every` takes a number of clock units, or a
 duration such as `"1m"` on a temporal clock. `max_rows_between_snapshots`
 caps the rows between them, and whichever comes first takes a snapshot.
-Under `snapshot_every` the effective window is in
+Under `snapshot_every` the hard window in effect spans
 `[window_size − snapshot_every, window_size]`, whatever the row rate, with
-`snapshot_every` the spacing in force: a thinning `window_budget` doubles it.
-
-**`weight_sum` is the weight inside the window.** This code fits `ew_cov`
-over a window of 150 units of `t` with a half-life of 50, and a snapshot
-every 10 units. The weight a row a unit apart adds settles at
-`1 / (1 − 0.5 ** (1 / 50))`, about 72.6, without a window. A window keeps
-the share of it younger than its effective edge, `1 − 0.5 ** (edge / 50)`,
-with the edge between 140 and 150 units back.
-It reads `df` from [Example data](#example-data):
-
-```python
-# The same model with a window and without.
-cut = po.spec.ew_cov(
-    "cut", features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=50.0,
-    window_size=150.0,             # a row this many clock units old or older contributes exactly nothing
-    snapshot_every=10,             # a snapshot every 10 units of t
-    window_budget={"refuse": 64},  # at most 64 MiB of snapshots per ring
-)
-whole = po.spec.ew_cov("whole", features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=50.0)
-# Each weight_sum on the last row, against the ceiling and the window's share of it.
-last = po.ModelBank([cut, whole]).fit_predict(df).tail(1)
-ceiling = 1 / (1 - 0.5 ** (1 / 50))
-print(f"without a window: weight_sum {last['whole'].struct.field('weight_sum')[0]:.2f}, the ceiling {ceiling:.2f}")
-print(f"inside the window: weight_sum {last['cut'].struct.field('weight_sum')[0]:.2f}, "
-      f"between {ceiling * (1 - 0.5 ** (140 / 50)):.2f} and {ceiling * (1 - 0.5 ** (150 / 50)):.2f}")
-```
-
-```text
-without a window: weight_sum 72.35, the ceiling 72.64
-inside the window: weight_sum 63.43, between 62.21 and 63.56
-```
+`snapshot_every` the spacing in force: a `window_budget` that thins the
+ring (drops every other snapshot) doubles it.
 
 Five things to know before reading a windowed model's numbers:
 
@@ -1038,103 +910,36 @@ features, the fit is a regression whose coefficients move along the clock.
 
 ### Row order and the two guarantees
 
-Two guarantees hold for every run, and both rest on a fixed row order,
-which the caller supplies.
+Two guarantees hold for every run, for the order the rows are given in,
+which you set.
 
 **Every prediction and diagnostic is out-of-sample.** Each row is
 predicted before the model learns from it. [Why every prediction is
-out-of-sample](docs/explanation/out-of-sample.md) gives the reasons, and
-what it guarantees.
+out-of-sample](docs/explanation/out-of-sample.md) explains what that
+guarantees.
 
 **The numbers do not depend on the chunking.** One chunk or a thousand,
 with or without a save and resume in the middle, gives bit-identical
-numbers. Only which rows carry `coef`, and `support_coef` and the standard
-errors of `emit_se_coef` beside it, can differ, and only by default. The bank then writes them on each group's last
-accepted row in every chunk, so smaller chunks report them more often.
-Under `coef_every` or `max_rows_between_coefs` they do not move
-([Coefficients](#coefficients)).
-
-This code checks both on `df`. It predicts row 300 with a bank that has
-learned only rows 0 to 299, and compares that with the same row of one
-run over every row. It then runs the stream again one row per chunk,
-through `fit_predict_batches` ([In a loop](#in-a-loop-modelbank)).
-It reads `df` from [Example data](#example-data):
-
-```python
-# One run over every row.
-honest = po.spec.ewridge("honest", targets=["y"], features=["x0", "x1"], clock="t", half_life=100.0, gap_cap=300.0)
-one_run = po.ModelBank([honest]).fit_predict(df)["honest"].struct.field("pred_y")
-
-# Row 300 from a bank that learned only the rows before it.
-first_300 = po.ModelBank([honest])
-first_300.fit_predict(df.head(300))                           # learns rows 0 to 299
-alone = first_300.predict(df.slice(300, 1))["honest"].struct.field("pred_y")[0]
-print(f"row 300: {one_run[300]:.6f} in one run, {alone:.6f} from rows 0 to 299 alone")
-
-# The same stream, one row per chunk.
-by_row = pl.concat(po.ModelBank([honest]).fit_predict_batches(df, chunk_size=1))   # 400 chunks of one row
-print(f"one chunk against 400: {(one_run - by_row['honest'].struct.field('pred_y')).abs().max()} largest difference")
-```
-
-```text
-row 300: 2.142699 in one run, 2.142699 from rows 0 to 299 alone
-one chunk against 400: 0.0 largest difference
-```
-
-**A model learns in row order, so a query whose row order Polars does not
-guarantee can give a different model each time it runs.** Run a chunk at a
-time, as a bank runs it, a `join`, a `group_by` or a `unique` can deliver
-rows in another order than `lf.collect()` gives. Give each such step its
-guarantee in the query:
-
-| a query step that may reorder rows | give it |
-|---|---|
-| `join` | `maintain_order="left"` |
-| `group_by` | `maintain_order=True` |
-| `unique` | a sort after it |
-| anything else | a sort before the bank |
+numbers, since a chunk's end is not a step any model takes. Only which
+rows carry `coef`, and `support_coef` and the standard errors beside it,
+can differ ([Coefficients](#coefficients)). [Chunk invariance and
+streaming](docs/explanation/chunk-invariance-and-streaming.md) explains
+why, and why the order the rows are given in is yours to set.
 
 #### How a bank detects rows out of order
 
-A bank checks the order it is given in three places, warning about the
-query and refusing a chunk that runs backwards before learning any of it.
-
-| check | what it reads | when it finds disorder |
-|---|---|---|
-| the query | the query handed to the bank: a `join`, `group_by` or `unique` whose order Polars does not guarantee, unless a `sort` follows it, and a sort by several keys without `maintain_order=True` | raises `OrderNotGuaranteedWarning`, naming the step and its fix. The run goes on |
-| the clock | each group's clock, row by row, for every spec with a `clock` | refuses the chunk on a backwards step the settings below do not allow |
-| the group keys | with `group_close="monotone"`, the keys in the column's own order, an integer column as numbers and any other as text | refuses the chunk on a key below the one before it, since a closed group cannot reopen |
+A bank checks the order it is given in three places: the query, each
+group's clock, and the group keys under `group_close="monotone"`. It warns
+about the query, and refuses a chunk whose group keys fall, or whose clock
+steps back where `restart_after_step_back` does not make it a reset,
+before learning any of it. [Why you set the row
+order](docs/explanation/chunk-invariance-and-streaming.md#why-you-set-the-row-order)
+says what each check reads and what it finds.
 
 **To put a stream in clock order, and to fix a chunk the bank refused,
 follow [Put rows in clock order](docs/how-to/put-rows-in-clock-order.md).**
 It shows the query check's warning, the error a step back raises, and
 the ways out.
-
-**The query check is best-effort.** It reads the query's `explain()` text,
-and walks the query's steps only when that names a join, an aggregation, a
-`unique` or a `sort`. A step followed by a `sort` counts as ordered, unless
-that sort is by several keys without `maintain_order=True`. Such a sort
-leaves rows with equal keys in no particular order. Sorted by two keys on
-Polars 1.44.2 and again on 2.0.0, 2,109 of 10,000 rows came out in another
-order than a stable sort's; sorted by one key, none did. A join with
-`maintain_order="left"` is followed on its left side only. A query Polars cannot serialize passes without a warning,
-and the check never fails a run. For a query whose order you know, silence
-the warning with
-`warnings.simplefilter("ignore", po.OrderNotGuaranteedWarning)`.
-
-**`ModelBank.fit` does not warn when its state cannot depend on the row
-order.** That is when every spec is an `ewridge` or `rls` with decay off
-and none of the settings that read the order. Those include a window, a
-session, a weight, an embargo, a drift reset, a `coef` cadence, a window
-expression as a target, and any diagnostic but `emit_drift`, `emit_clocks`
-and `emit_error_inflation`. Such sums reach the same state in any order, to
-rounding, and `fit` keeps only the state.
-
-**The clock is checked group by group,** so groups may interleave freely:
-only the rows of one group need to be in clock order. Equal clock values
-are zero apart. A row with a null feature is skipped, but its clock is
-still checked. A row that `predict` scores is never refused ([Serving
-without learning](#serving-without-learning)).
 
 **`restart_after_step_back` and the size of a step back decide what it
 means.** It has no default, since only the caller knows how late a row can
@@ -1276,8 +1081,9 @@ the same for every spec in a bank.** It is the *weight behind the state*
 that produced a row's prediction: the weight as the previous row left it,
 before this row's decay and its update, and `0` on a stream's first row. It
 runs one behind the row count while nothing is forgotten. For rows of
-weight 1 a step `Δclock` apart, it settles at `1 / (1 − λ)`, with `λ` from
-[Time and decay](#time-and-decay). It is a weight and not a sample size: at
+weight 1 a step `Δclock` apart, it settles at `1 / (1 − λ)`, with `λ` the decay
+factor `0.5 ** (Δclock / half_life)` ([Time and
+decay](docs/explanation/time-and-decay.md)). It is a weight and not a sample size: at
 a half-life of 600 with rows 0.1 apart it settles near 8,657. For the
 sample size, read Kish's `n_kish` from `gram()`.
 
@@ -1858,7 +1664,7 @@ a file without holding the result in memory, or `collect_batches()` for one
 chunk at a time.
 
 **The chunk size trades memory for overhead, and never changes the
-numbers** ([Row order and the two guarantees](#row-order-and-the-two-guarantees)).
+numbers** ([Chunk invariance and streaming](docs/explanation/chunk-invariance-and-streaming.md)).
 Memory is the bank's state plus one chunk, however long the files. Here the
 query runs the same spec over `ticks/*.parquet` in one chunk, and over
 `ticks.parquet` one row at a time, and the two agree to the bit.
@@ -2164,7 +1970,9 @@ to one file, and load it back to keep learning or to score new rows
 without learning. Or export it as JSON.
 [docs/STATE-WORKFLOW.md](docs/STATE-WORKFLOW.md) says what each step of
 the workflow guarantees and what a saved bank carries, each with a
-recipe. The three uses:
+recipe, and [A bank's state and resuming
+it](docs/explanation/state-and-resuming.md) explains why a resumed run
+matches one that never stopped. The three uses:
 
 | use | the call | what holds |
 |---|---|---|
@@ -2215,40 +2023,16 @@ run](docs/WINDOWS.md#saving-and-resuming-a-window-run)).
 ### Save and load
 
 Each way of running a bank saves and loads the same file, written whole or
-not at all, and the same to the byte whichever way wrote it. Each writes
-the file at its own moment:
+not at all, and the same to the byte whichever way wrote it. A bank object
+uses `bank.save` and `po.ModelBank.load`, a query `save_state=` and
+`load_state=`, and the command line `--save-state` and `--load-state`.
+[One state file, however the bank is
+run](docs/explanation/state-and-resuming.md#one-state-file-however-the-bank-is-run)
+says when each writes the file, and shows a bank and a query write the
+same bytes.
 
-| run by | saves with | loads with | the file is written |
-|---|---|---|---|
-| a bank object | `bank.save(path)` | `po.ModelBank.load` | when `bank.save` is called |
-| a query | `save_state=` | `load_state=` | when the run reaches its last row, with the same bytes a `ModelBank` would write |
-| the command line | `--save-state` | `--load-state` | only after its output is committed |
-
-This code uses `df` and `ticks.parquet` from [Example data](#example-data):
-
-```python
-from pathlib import Path
-
-# The same state, saved from a bank and from a query.
-spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
-bank = po.ModelBank([spec])
-bank.fit_predict(df)
-bank.save("from_bank.state")                             # from a bank object
-(pl.scan_parquet("ticks.parquet")                        # the same rows, from a query
-   .online.fit_predict([spec], save_state="from_query.state")
-   .sink_parquet("fitted.parquet"))
-print(f"the same bytes: {Path('from_bank.state').read_bytes() == Path('from_query.state').read_bytes()}")
-blob = bank.save_bytes()                                 # the same file as bytes, for a checkpoint that is not a file
-print(f"as bytes too: {blob == Path('from_bank.state').read_bytes()}")
-```
-
-```text
-the same bytes: True
-as bytes too: True
-```
-
-A query loads and saves with `load_state=` and `save_state=`, and the
-two may name one file. This code uses `lf` and `later` from [Example data](#example-data):
+On a query, `load_state=` and `save_state=` may name one file, because the
+state is read when the query is built and written whole or not at all. This code uses `lf` and `later` from [Example data](#example-data):
 
 ```python
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
@@ -2267,7 +2051,8 @@ and the errors a load raises.
 bank, leaves the `save_state` file as it was.** An error in a step after
 the bank, such as a full disk under `sink_parquet`, does not stop the bank
 on Polars 1.x. The state is then written although the output is missing
-([docs/STATE-WORKFLOW.md](docs/STATE-WORKFLOW.md#the-one-gap-a-failure-after-the-bank)
+([The one
+gap](docs/explanation/state-and-resuming.md#the-one-gap-a-failure-after-the-bank)
 has the measurements). To write the state only with the output, use the
 command line, which saves it after committing the output. In a query, give
 each batch of data its own dated `save_state` file, so a rerun loads the
@@ -4046,7 +3831,7 @@ evenly spaced rows.
 order, so reading, joining and ordering the rows is the job of Polars or of
 another tool before the bank.** A bank can take its rows from a database
 through Polars, or run as an operator inside a stream processor. [Chunk
-invariance](#row-order-and-the-two-guarantees) means another engine's
+invariance](docs/explanation/chunk-invariance-and-streaming.md) means another engine's
 batching cannot change the numbers. For a model this library does not fit,
 such as gradient-boosted trees, `po.gbdt` builds XGBoost's and LightGBM's
 training objects from files too large to hold.
@@ -4074,6 +3859,10 @@ sums, rates and quantiles over a window of the clock. It deliberately does
 | windows beyond those, such as a tumbling or sliding aggregation of any function, and asof or interval joins | Polars' `group_by_dynamic`, `rolling`, `join_asof` or `join_where` in the query before the bank, or a streaming framework such as [Pathway](https://pathway.com) |
 | watermarks or a late-arrival policy | rows put in clock order before the bank, by Polars' `sort` or by a stream processor |
 | distributed execution | one process, with a thread pool across (spec × group) ([Parallelism](#parallelism)) |
+
+[What streams, and what does
+not](docs/explanation/chunk-invariance-and-streaming.md#what-streams-and-what-does-not)
+says which query steps hold the stream in memory.
 
 ### Databases: DuckDB and ADBC
 

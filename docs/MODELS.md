@@ -16,19 +16,16 @@ symbols beside its rule:
 |---|---|---|
 | `z` | `[1, x]` when there is an intercept, and `x` when there is not | the linear models |
 | `w`, `W` | the row's weight, and the weight accumulated before the row | every model |
-| `λ` | the row's decay, `0.5 ** (Δclock / half_life)`, or `lam ** Δclock` when the spec gives `lam=`, with `Δclock` the clock's step since the last row the model did not skip, capped at `gap_cap` (or `session_gap` at a session change) ([Time and decay](../README.md#time-and-decay)) | every model |
+| `λ` | the row's decay, `0.5 ** (Δclock / half_life)`, or `lam ** Δclock` when the spec gives `lam=`, with `Δclock` the clock's step since the last row the model did not skip, capped at `gap_cap` (or `session_gap` at a session change) ([Time and decay](explanation/time-and-decay.md)) | every model |
 | `S_j`, `η_j` | target `j`'s running means of `z zᵀ` and of `z·y_j`, which the least-squares fits solve from | `ewridge`, `huber`, `quantile` |
 | `e` | the row's residual: `y` less the prediction made before the row | `huber`, `quantile` |
 | `ω` | a ridge added to a covariance: `precision_prior`, fading as `ew_cov`'s prior does, so that a class or a state can be scored from its first row | `ew_class`, `hmm` |
 
 Without a clock column, each row is one unit of clock. A model keeps its
-running sums in three kinds:
-
-| running sum | where | why |
-|---|---|---|
-| an exponentially weighted **mean** | most models | it stays bounded over a stream of any length |
-| a decayed **sum** | `rls`'s matrix, and the gradient sums of `ftrl` and of `sgd`'s adagrad | |
-| a **centered** second moment, by a weighted Welford update | wherever a model keeps second moments as means | a variance is right even when a feature sits far from zero |
+running sums as means, decayed sums or centered second moments, and [The
+running sums that
+decay](explanation/time-and-decay.md#the-running-sums-that-decay) says
+which models keep each, and why.
 
 ## Linear models
 

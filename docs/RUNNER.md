@@ -454,7 +454,7 @@ TOML has no duration type, so the text is the whole spelling. It is the
 same text a Python spec keeps for `pl.duration(minutes=10)` or
 `timedelta(minutes=10)`. A numeric clock takes plain numbers of its own
 units. Either mixture is refused, naming the column and the parameter
-([Time and decay](../README.md#time-and-decay)).
+([Clock types and units](../README.md#clock-types-and-units)).
 
 ## Memory, threads and chunk size
 

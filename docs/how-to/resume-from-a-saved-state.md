@@ -15,8 +15,10 @@ Each way to resume needs a saved state and the rows that follow it:
   the clock `t`. `lf` and `later` are the same rows, saved as
   `ticks.parquet` and `today.parquet` and read back as queries.
 - A [saved state](../GLOSSARY.md#saving-and-serving): a file written by `bank.save`, by a query's
-  `save_state=`, or by the command line's `--save-state`. The README's
-  [Save and load](../../README.md#save-and-load) shows all three.
+  `save_state=`, or by the command line's `--save-state`. [One state file,
+  however the bank is
+  run](../explanation/state-and-resuming.md#one-state-file-however-the-bank-is-run)
+  shows them.
 - The rows that follow the state's last row: for each
   [group](../GLOSSARY.md#the-model-bank-and-what-it-reads), rows whose
   [clock](../GLOSSARY.md#time) is after the last clock value the state
@@ -95,7 +97,7 @@ its output is missing.** A run you abandon partway, such as one whose
 chunks you stop reading, or one that fails inside the bank, leaves the
 `save_state` file as it was. But a failure in a step after the bank, such
 as a full disk under `sink_parquet`, can write the state ([The one
-gap](../STATE-WORKFLOW.md#the-one-gap-a-failure-after-the-bank)). One
+gap](../explanation/state-and-resuming.md#the-one-gap-a-failure-after-the-bank)). One
 shared file is safe only where nothing after the bank can fail. Otherwise,
 give each run a dated state file of its own, named in `save_state=`, such
 as `bank-2024-01-03.state`. To rerun a failed run, pass the state file of

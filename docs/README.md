@@ -37,6 +37,9 @@ kept in [`records/`](records/), and its row links it there.
 | [how-to/put-rows-in-clock-order.md](how-to/put-rows-in-clock-order.md) | you fit a bank on a stream with a clock — how to give it each group's rows in clock order, read its warning about a query's row order, and fix a chunk it refused |
 | [how-to/resume-from-a-saved-state.md](how-to/resume-from-a-saved-state.md) | you have a saved state and want the bank to go on learning, from Python or the command line — including on input that overlaps what it learned |
 | [explanation/out-of-sample.md](explanation/out-of-sample.md) | you want to know why each prediction and diagnostic is made before its row is learned, what that guarantees, and how a target that looks ahead is learned |
+| [explanation/time-and-decay.md](explanation/time-and-decay.md) | you set `half_life` and want to know how a model forgets along its clock, what `gap_cap` and a session do to the decay, why a huge half-life is not the same as none, and how a hard window forgets differently |
+| [explanation/chunk-invariance-and-streaming.md](explanation/chunk-invariance-and-streaming.md) | you want to know why the chunking never changes the numbers, why memory stays bounded, which query steps hold the stream in memory, and why the row order is yours to set |
+| [explanation/state-and-resuming.md](explanation/state-and-resuming.md) | you save a bank and load it later — what its state holds, why a resumed run matches one that never stopped, why the file loads on every operating system and in later versions, and the one gap |
 
 ## Records
 
