@@ -16,6 +16,11 @@ for a quantile a sketch, as each row arrives, where Polars' `rolling`
 gathers the window's rows again for every row ([What a window operator
 costs](PERFORMANCE.md#what-a-window-operator-costs) has the timings).
 
+**Given a `window_size`, `po.ewm_mean` gives a *bounded EWMA*:** an
+exponentially weighted moving average whose history has a maximum age. Its
+weights decay along the clock as any EWMA's do, but rows farther than
+`window_size` from the row drop out instead of fading forever.
+
 [Make features that look back over the
 stream](how-to/make-window-features.md) adds windows as columns before the
 bank with `po.stream.with_windows`, and [Make a target that looks

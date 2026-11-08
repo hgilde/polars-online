@@ -46,10 +46,9 @@ bank.save("bank.state")
   state as it stands *before* the model learns that row's target. Never fit a row
   and then predict it: the `pred` the library returns is already out-of-sample.
 - **Chunk invariance is a guarantee.** The same stream fed as one chunk or a thousand
-  gives identical output, bit for bit, and a test enforces it. Apart from that,
-  only which rows carry `coef`, and `support_coef` and `se_coef` on the same rows, can move, and only by default: they are
-  filled on each group's last row not skipped in every chunk, so that schedule follows the
-  chunking. Under a cadence those rows do not move either: `coef_every` is a clock
+  gives identical output, bit for bit, and a test enforces it. Only which rows carry
+  `coef` (and `support_coef` and `se_coef` beside it) can move, by default: they sit on
+  each group's last row not skipped in every chunk, so they follow the chunking. Under a cadence those rows do not move either: `coef_every` is a clock
   parameter, as `solve_every` is (`0` every row, `"5m"` a row once five minutes of the
   clock have passed), and `max_rows_between_coefs` writes one after that many rows.
 - **Decay runs on the clock, not on row count.** A `Datetime`, `Date` or `Duration`
@@ -76,7 +75,7 @@ bank.save("bank.state")
 - **Make a target from its row's columns as a column** before the bank,
   `lf.with_columns(ret=(pl.col("p") / pl.col("mid")).log())`, and name it in
   `targets`: a log ratio sits about zero, where `hit_rate` takes its sign. `po.target`
-  only names a target's output fields; it takes no `relative_to=`.
+  only names a target's output fields.
 - **Every spec adds one column**, named after the spec, each row a record of
   named fields. `weight_sum` is in every one.
   The linear models add `pred_<target>`, `resid_<target>` and `coef`, and diagnostics
@@ -100,12 +99,14 @@ Windows alike.
 ## Start here
 
 - [README](https://github.com/hgilde/polars-online#readme): the landing page -- what the
-  library is, install, [a first fit](https://github.com/hgilde/polars-online#a-first-fit)
-  with its input and output tables, the [example data](https://github.com/hgilde/polars-online#example-data)
+  library is, install, [a first fit](https://github.com/hgilde/polars-online#a-first-fit),
+  the [example data](https://github.com/hgilde/polars-online#example-data)
   every other example reads, and [a map](https://github.com/hgilde/polars-online#where-to-go-next)
-  from each task to its pages of each kind
-- [Every feature](https://github.com/hgilde/polars-online/blob/main/docs/FEATURES.md): each model, function, method, shared parameter,
-  command-line flag and environment variable, one line each with a link
+  from each task to its pages
+- [Every feature](https://github.com/hgilde/polars-online/blob/main/docs/FEATURES.md): each model, function, method, shared
+  parameter, flag and environment variable, a line each, linked
+- [Five tasks](https://github.com/hgilde/polars-online/blob/main/docs/HIGHLIGHTS.md): model
+  selection, a deployed signal, trees, monitoring, ticks
 - [What every spec takes](https://github.com/hgilde/polars-online/blob/main/docs/MODELS.md#what-every-spec-takes): the parameters every
   model shares -- columns, clock and units, the clock's policy, a hard window, the warm-up
   gates -- and what the bank refuses
