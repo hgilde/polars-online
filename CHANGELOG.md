@@ -464,6 +464,23 @@ returns.
   move as one block of words, and the co-moment triangle's side is no
   longer found by a square root on every snapshot. Outputs and saved states
   are unchanged to the bit.
+- A windowed model's ring holds its snapshots as runs of doubles, the
+  co-moment triangle is kept packed in the model, and a windowed model keeps
+  its view of the window between rows and writes over it, rather than
+  rebuilding it: a windowed `ew_class` or `ew_cov` row now allocates nothing
+  beyond its snapshot (23 and 11 allocations a row before, at four
+  features). A windowed `ew_class` row takes 45% less time at 4 features and
+  15% less at 30 on x86-64 (35% and 10% on arm64); a windowed `ew_cov` row
+  50% less at 4 features and 24% less at 30; windowed `ewridge`, `lasso` and
+  `marginal` 4-22% less. `ew_class` with `covariance_type="tied"` keeps its
+  pooled matrix and factor between rows, windowed or not. `lasso` runs its
+  coordinate descent out of line with no bounds check per term, and an
+  unwindowed `ew_cov` reads the co-moments in the order they are stored, so
+  neither is slower than before. The rank-one update of the packed triangle
+  above 12 features takes about 3.7% more instructions in a 50-feature,
+  10-target `ewridge` Gram than the square matrix did, with no change in its
+  time past the runs' scatter. Outputs and saved states are unchanged to the
+  bit.
 - A bank's per-call cost no longer includes building a table of every
   spec's column reads, which existed only to name the spec and role when a
   column's cast fails; that name is now found only when a cast fails. Calls
