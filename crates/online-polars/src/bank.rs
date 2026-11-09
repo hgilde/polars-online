@@ -4326,7 +4326,11 @@ impl Bank {
                 )
                 .map_err(|refusal| backwards_clock(&specs[*si], refusal, chunk.row_base()))?;
             // Under `label_clock`, a label time before its row, or a buffer
-            // past its bound (task 341).
+            // past its bound (task 341). Asked only of a spec with one: the
+            // call is ten arguments a group (task 375, P32).
+            if specs[*si].label_clock.is_none() {
+                return Ok(());
+            }
             stream
                 .check_labels(
                     &specs[*si],

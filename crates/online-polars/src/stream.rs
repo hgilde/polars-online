@@ -2513,6 +2513,7 @@ pub use chunk_out::ChunkOut;
 mod last_row;
 pub use last_row::LastRow;
 
+mod conformal_rows;
 mod notified;
 mod pre_row_sigma;
 mod unmet_floor;
@@ -3475,18 +3476,17 @@ impl Stream {
         // detection restarts the models under an `embargo`.
         let mut front_cuts: Vec<Option<f64>> = Vec::new();
         let keep_cuts = self.embargo.is_some() && self.resets_on_drift(spec);
-        let mut learned = self.persisted.label_learned.take();
-        let (mut missing, mut dropped) =
-            (self.persisted.labels_missing, self.persisted.labels_dropped);
+        // The label run borrows its state in place: a spec without
+        // `label_clock` moves nothing out and back (task 375, P32).
         let mut places: Vec<(u32, u32)> = Vec::new();
         let mut labels = LabelRun::of(
             spec,
             cfg,
             self.exact_caps,
             label,
-            &mut learned,
-            &mut missing,
-            &mut dropped,
+            &mut self.persisted.label_learned,
+            &mut self.persisted.labels_missing,
+            &mut self.persisted.labels_dropped,
             &mut places,
         );
         let released = Self::apply_label_delay(
@@ -3501,9 +3501,6 @@ impl Stream {
             keep_cuts.then_some(&mut front_cuts),
             labels.as_mut(),
         );
-        self.persisted.label_learned = learned;
-        self.persisted.labels_missing = missing;
-        self.persisted.labels_dropped = dropped;
 
         // A released row whose formula target resolved with a value, and
         // whose plain targets gave none at its row, is learned from now
@@ -5085,15 +5082,10 @@ fn run_instance(
             let mut record = step.pred.clone();
             if let Some(cs) = inst.conformal.as_deref() {
                 let ring = inst.resid_win.as_ref().map(SpreadRef::get);
-                let spread = (&inst.resid_w[..], &inst.resid_var[..]);
-                record.extend(cs.iter().enumerate().map(|(slot, c)| {
-                    let sig = if inst.residuals {
-                        pre_row_sigma(ring, inst.decay, spread, slot)
-                    } else {
-                        f64::NAN
-                    };
-                    c.radius(sig).unwrap_or(f64::NAN)
-                }));
+                let spread = inst
+                    .residuals
+                    .then_some((&inst.resid_w[..], &inst.resid_var[..]));
+                conformal_rows::shown_radii(&mut record, cs, ring, inst.decay, spread);
             }
             if has_row_infl {
                 record.extend_from_slice(&sc.row_infl);
@@ -5172,6 +5164,9 @@ fn run_instance(
             // `sigma` as the row finds it, beside each residual.
             let ring = inst.resid_win.as_ref().map(SpreadRef::get);
             for (slot, &rv) in sc.r.iter().enumerate() {
+                if inst.resid_w[slot] <= 0.0 {
+                    continue;
+                }
                 let sd = pre_row_sigma(ring, inst.decay, (inst.resid_w, inst.resid_var), slot);
                 sc.sig[slot] = sd;
                 if rv.is_finite() && sd > 0.0 {
@@ -5361,27 +5356,22 @@ fn run_instance(
         // row's `sigma` field shows.
         // Under `conformal_rate = "auto"` the step reads the rows waiting,
         // the released one's record already off the front (task 342b).
-        let held = if inst.spec.conformal_rate_auto() {
-            inst.score_pred.len()
-        } else {
-            0
-        };
         if let Some(cs) = inst.conformal.as_deref_mut() {
-            for (slot, c) in cs.iter_mut().enumerate() {
-                if emit {
-                    let at = slot * n_rows + ri;
-                    let p = step.pred[slot];
-                    let sig = sc.sig.get(slot).copied().unwrap_or(f64::NAN);
-                    let q = c.radius(sig).unwrap_or(f64::NAN);
-                    inst.o_conformal[at] = p - q;
-                    inst.o_conformal[block + at] = p + q;
-                    inst.o_conformal[2 * block + at] = c.coverage().unwrap_or(f64::NAN);
-                }
-                if learn {
-                    let shown = shown_radius.as_ref().map(|q| q[slot]);
-                    c.update_against(sc.r[slot], sc.sig[slot], lam, w, shown, held);
-                }
-            }
+            let held = if inst.spec.conformal_rate_auto() {
+                inst.score_pred.len()
+            } else {
+                0
+            };
+            conformal_rows::step_conformal(
+                cs,
+                inst.o_conformal,
+                conformal_rows::At { ri, n_rows, block },
+                (&step.pred, &sc.r, &sc.sig),
+                (emit, learn),
+                shown_radius.as_deref(),
+                (lam, w),
+                held,
+            );
         }
 
         // Task 221's diagnostics, each at its own memory: read before the
