@@ -31,10 +31,6 @@ Each task builds its own data, so the tasks need only:
   builds their training objects, is unstable: its keywords may change in
   any release. It runs fastest with XGBoost 2.1 to before 4.0 and LightGBM
   4.0 to before 5.0, and falls back to a slower engine outside them.
-- For [Build a forward-looking signal and deploy
-  it](#build-a-forward-looking-signal-and-deploy-it), the `polars-online`
-  command-line program on your `PATH`. Its binaries are attached to each
-  [GitHub release](https://github.com/hgilde/polars-online/releases).
 
 ## Automate a round of model selection
 
@@ -221,8 +217,8 @@ sessions between the days, and the loop holds one chunk at a time.
 ## Build a forward-looking signal and deploy it
 
 This task builds a signal that predicts the next five minutes of a price
-from the last five, fits it robustly, and runs it on the command line as a
-job that resumes where Python stopped:
+from the last five, fits it robustly, saves it partway, and resumes it
+where it stopped in a fresh Python process, as another machine would:
 
 - **A target from a bounded EWMA that looks forward, and a feature from
   one that looks back.** An EWMA is an exponentially weighted moving
@@ -237,20 +233,17 @@ job that resumes where Python stopped:
   predicting a row and learning from it: the model learns each row only
   once its five minutes are known, so it never learns from the future.
 - **A robust regression**, `huber`, beside a ridge, on a price that jumps.
-- **One spec in Python and on the command line**: the same TOML file
-  builds the bank in both.
-- **An exact resume**: the command line loads the state Python saved,
-  drops the rows that state has read, and goes on as one unbroken run
-  would.
+- **An exact resume**: a fresh Python process loads the state the first
+  run saved, drops the rows that state has read, and goes on as one
+  unbroken run would.
 
 The recipe plants a price whose moves follow each trade's signed size,
 `flow`: the mid price (`mid`) moves 0.5 per unit of flow right after the
-trade. So each
-row's forward mean holds that move, and the coefficient on `flow` is 0.5.
-The mid's other steps are a random walk, so how far it sits from its
-bounded EWMA over the last five minutes (the feature `stretch`) predicts
-nothing, and its coefficient is 0. One trade in a
-thousand is followed by a jump of 50.
+trade. So each row's forward mean holds that move, and the coefficient on
+`flow` is 0.5. The mid's other steps are a random walk, so how far it sits
+from its bounded EWMA over the last five minutes (the feature `stretch`)
+predicts nothing, and its coefficient is 0. One trade in a thousand is
+followed by a jump of 50.
 
 1. **Make up three days of trades, one parquet file per day.**
 2. **Add the feature and the target as columns with
@@ -259,24 +252,24 @@ thousand is followed by a jump of 50.
    `reverse=True` makes it look at the next five.
 3. **Write the columns to a file with `sink_parquet`,** which runs the
    query and writes the result without holding it all in memory.
-4. **Write the job as a TOML file:** two specs, `robust` (a `huber` model)
-   and `ridge` (an `ewridge` model), each with `embargo = "5m"`.
-   `coef_every = 0` writes each fit's coefficients on every row.
-5. **Build the bank from the TOML file in Python,** with `tomllib`.
-6. **Fit the rows up to noon on the second day.**
-7. **Save the state** (everything the bank has learned, and the rows it
+4. **Give the bank two specs,** `robust` (a `huber` model) and `ridge` (an
+   `ewridge` model), each with `embargo="5m"`. `coef_every=0` writes each
+   fit's coefficients on every row.
+5. **Fit the rows up to noon on the second day.**
+6. **Save the state** (everything the bank has learned, and the rows it
    holds for their embargo) with `bank.save`.
-8. **Run the command line on the whole file, from the state.**
-   `--load-state` loads it, `--skip-learned` drops the rows the state has
-   read (learned, or held for their embargo), and `--save-state` saves the
-   state when the run ends.
-9. **Compare the command line's predictions with one unbroken run in
-   Python,** and each spec's coefficient on `flow` with the planted 0.5.
+7. **In a fresh Python process, load the state, and drop the rows it has
+   read** (learned, or held for their embargo) with `bank.skip_learned`.
+8. **Resume from the state on the rows that remain,** with the query's
+   `online.fit_predict(load_state=..., save_state=...)`, which saves the
+   state again when the run ends, and write the predictions with
+   `sink_parquet`.
+9. **Compare the resumed run with one unbroken run,** and each spec's
+   coefficient on `flow` with the planted 0.5.
 
 ```python
 from datetime import date, datetime, timedelta
 from pathlib import Path
-import tomllib
 
 import numpy as np
 import polars as pl
@@ -307,72 +300,37 @@ windows = pl.scan_parquet("trades/*.parquet").online.with_windows(
 # 3. Written to a file, one chunk at a time.
 windows.sink_parquet("features.parquet")
 
-# 4. The job: a robust regression and a ridge, each learning a row once its five minutes are known.
-Path("job.toml").write_text("""
-input = "features.parquet"
-output = "served.parquet"
-
-[[specs]]
-name = "robust"
-targets = ["fwd"]
-features = ["flow", "stretch"]
-clock = "ts"
-half_life = "2h"
-gap_cap = "5m"
-embargo = "5m"
-coef_every = 0
-[specs.model]
-type = "huber"
-
-[[specs]]
-name = "ridge"
-targets = ["fwd"]
-features = ["flow", "stretch"]
-clock = "ts"
-half_life = "2h"
-gap_cap = "5m"
-embargo = "5m"
-coef_every = 0
-[specs.model]
-type = "ewridge"
-""")
-
-# 5. The same file builds the bank in Python.
-with open("job.toml", "rb") as f:
-    bank = po.ModelBank(tomllib.load(f)["specs"])
-# 6 and 7. Fit up to noon on the second day, and save the state.
+# 4. A robust regression and a ridge, each learning a row once its five minutes are known.
+common = dict(targets=["fwd"], features=["flow", "stretch"], clock="ts", half_life="2h", gap_cap="5m",
+              embargo="5m",       # a row is learned once its five minutes are known
+              coef_every=0)       # each fit's coefficients on every row
+bank = po.ModelBank([po.spec.huber("robust", **common), po.spec.ewridge("ridge", **common)])
+# 5 and 6. Fit up to noon on the second day, and save the state.
 bank.fit(pl.scan_parquet("features.parquet").filter(pl.col("ts") < datetime(2024, 1, 3, 12)))
 bank.save("signal.state")
 ```
 
-Step 8 runs the command line on the whole file, from the saved state:
-
-```sh
-polars-online --config job.toml --load-state signal.state --skip-learned --save-state signal.state
-```
-
-```text
-wrote 6458 rows (1 chunk) to served.parquet
-saved state to signal.state
-```
-
-Step 9 compares the run with one that never stopped, and reads the
-coefficients:
+Steps 7 to 9 run in a fresh Python process, as they would on another
+machine that has the state file and the input:
 
 ```python
-import tomllib
-
 import polars as pl
 import polars_online as po
 
-# 9. One unbroken run in Python, from the same file, against the command line's resumed run.
-with open("job.toml", "rb") as f:
-    whole = po.ModelBank(tomllib.load(f)["specs"])
-fitted = whole.fit_predict(pl.read_parquet("features.parquet"))
+# 7. Load the state, and keep only the rows it has not read.
+bank = po.ModelBank.load("signal.state")
+kept = bank.skip_learned(pl.scan_parquet("features.parquet"))   # still a query
+# 8. The rest of the rows through the state, which is saved again at the end.
+kept.online.fit_predict(load_state="signal.state", save_state="signal.state").sink_parquet("served.parquet")
 served = pl.read_parquet("served.parquet")
+print(f"resumed on {served.height:,} rows, after {pl.read_parquet('features.parquet').height - served.height:,} the state had read")
+
+# 9. One unbroken run over every row, with the same specs, against the resumed one.
+whole = po.ModelBank(bank.specs)
+fitted = whole.fit_predict(pl.read_parquet("features.parquet"))
 same = all(fitted[s].tail(served.height).struct.field("pred_fwd").equals(served[s].struct.field("pred_fwd"))
            for s in ("robust", "ridge"))
-print(f"resumed on the command line, the same predictions to the bit: {same}")
+print(f"the same predictions to the bit: {same}")
 print(f"and the same state, byte for byte: {po.ModelBank.load('signal.state').save_bytes() == whole.save_bytes()}")
 # Each fit's coefficient on flow over the last two days, against the planted 0.5.
 for s in ("robust", "ridge"):
@@ -383,15 +341,16 @@ for s in ("robust", "ridge"):
 ```
 
 ```text
-resumed on the command line, the same predictions to the bit: True
+resumed on 6,458 rows, after 5,542 the state had read
+the same predictions to the bit: True
 and the same state, byte for byte: True
 robust: coefficient on flow 0.483 at the end, 0.019 from 0.5 on average (root mean square); on stretch 0.012
 ridge: coefficient on flow 0.537 at the end, 0.109 from 0.5 on average (root mean square); on stretch 0.012
 ```
 
-**The resumed job writes what a run that never stopped writes.** The
-command line read the state Python saved at noon, dropped the 5,542 rows
-the state had already read, and wrote the predictions and the state an
+**The resumed run writes what a run that never stopped writes.** The
+fresh process read the state saved at noon, dropped the 5,542 rows the
+state had already read, and wrote the predictions and the state an
 unbroken run writes, to the bit. A state file loads on macOS, Windows and
 Linux alike. Resumed on another operating system, its predictions match
 within `1e-12 × (1 + |value|)`, since the platforms' math libraries can
@@ -413,8 +372,8 @@ EWMA is written by hand, as a weighted aggregation inside `rolling`. The
 river library evaluates a model on targets that arrive late
 (`progressive_val_score`'s `delay=`), but its exponentially weighted
 statistics have no window of time. Here the bounded EWMAs, forward and
-back, the embargo, the robust fit, the command line and the resume work
-together on one stream, from files to files.
+back, the embargo, the robust fit and the resume work together on one
+stream, from files to files.
 
 ## Train gradient-boosted trees on files larger than memory
 
@@ -781,8 +740,7 @@ the library, one line each, see [the feature index](FEATURES.md).
 | model selection made out-of-sample | the grid point whose exponentially weighted out-of-sample error is lowest so far, chosen on each row from the rows before it | [model selection](#automate-a-round-of-model-selection), step 4 | [Choose among a grid's settings as the stream runs](how-to/choose-among-a-grid-online.md) |
 | scores of an output too large to hold | sums per slot that add up across chunks, files and machines | [model selection](#automate-a-round-of-model-selection), step 6 | [Score an output too large to hold](how-to/evaluate-an-output-frame.md#score-an-output-too-large-to-hold) |
 | robust regression | a fit that down-weights the rows it misses by far, such as jumps | [deploy a signal](#build-a-forward-looking-signal-and-deploy-it), step 4 | [The robust scale](explanation/robust-scale.md) |
-| one spec in Python and on the command line | the same TOML file builds the same bank in both, with the same numbers | [deploy a signal](#build-a-forward-looking-signal-and-deploy-it), steps 4, 5 and 8 | [Run a bank from the command line](how-to/run-a-bank-from-the-command-line.md) |
-| an exact resume | a saved state goes on as one unbroken run would, dropping the rows it has read | [deploy a signal](#build-a-forward-looking-signal-and-deploy-it), steps 7 to 9 | [Resume from a saved state](how-to/resume-from-a-saved-state.md) |
+| an exact resume | a saved state goes on in a fresh process as one unbroken run would, dropping the rows it has read | [deploy a signal](#build-a-forward-looking-signal-and-deploy-it), steps 6 to 9 | [Resume from a saved state](how-to/resume-from-a-saved-state.md) |
 | a tree fit in passes over files larger than memory | XGBoost's and LightGBM's training objects, binned from files or a query a chunk at a time | [trees](#train-gradient-boosted-trees-on-files-larger-than-memory), steps 5 to 8 | [Train XGBoost or LightGBM on files larger than memory](GBDT.md) |
 | an online model as the trees' margin | trees that learn what an out-of-sample online prediction leaves, and follow its level | [trees](#train-gradient-boosted-trees-on-files-larger-than-memory), steps 2 and 9 | [Train trees around an online model's prediction](GBDT.md#train-trees-around-an-online-models-prediction) |
 | intervals when targets arrive late | a conformal interval whose step adapts to the targets still waiting | [monitor a model](#monitor-a-live-model), steps 5 and 8 | [Put an interval on a prediction](how-to/put-an-interval-on-a-prediction.md) |

@@ -2,25 +2,22 @@
 
 Each task on the page makes up its own data with a planted answer, writes
 it to parquet files and scans them, and prints what the library found
-beside the answer (docs/WRITING.md §3, "A capability is shown by a
-recipe"). So the page's blocks run here in order, in one directory, as a
-reader runs them: a python block in one namespace, and a ```sh block
-through the built ``polars-online`` on the files the blocks before it
-wrote. A block followed by a ```text block is held to it with
-``tests/doc_recipes.py``'s ``differences``. The README's section on the
-page links it (PLAN task 365).
+(docs/WRITING.md §3, "A capability is shown by a recipe"). So the page's
+python blocks run here in order, in one namespace and one directory, as a
+reader runs them, and a block followed by a ```text block is held to it
+with ``tests/doc_recipes.py``'s ``differences``. The page highlights the
+Python API alone (the user, 2026-11-08: "we are not highlighting the
+command line tool only the python api"), which a test holds too. The
+README's section on the page links it (PLAN task 365).
 """
 
 from __future__ import annotations
 
 import contextlib
 import io
-import os
-import subprocess
 from pathlib import Path
 
 from doc_recipes import differences, fenced_blocks
-from test_production_hardening import _as_a_terminal_shows
 
 TIER = "essential"
 
@@ -28,43 +25,35 @@ REPO = Path(__file__).resolve().parents[1]
 PAGE = REPO / "docs" / "HIGHLIGHTS.md"
 
 
-def test_every_block_runs_in_order_and_prints_what_the_page_shows(
-    tmp_path, monkeypatch, online_cli
-):
+def test_every_block_runs_in_order_and_prints_what_the_page_shows(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # the blocks write their files where they run
-    monkeypatch.setenv("PATH", f"{online_cli.parent}{os.pathsep}{os.environ['PATH']}")
     ns: dict[str, object] = {"__name__": "__recipe__"}
     blocks = fenced_blocks(PAGE)
     problems: list[str] = []
     ran = 0
     for j, (kind, line, code) in enumerate(blocks):
-        if kind == "python":
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                exec(compile(code, f"HIGHLIGHTS.md:{line}", "exec"), ns)
-            printed = buf.getvalue()
-        elif kind == "sh":
-            printed = ""
-            for command in (c for c in code.splitlines() if c.strip()):
-                res = subprocess.run(
-                    command,
-                    shell=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    check=False,
-                )
-                out = res.stdout.decode("utf-8")
-                assert res.returncode == 0, f"HIGHLIGHTS.md:{line}: {command}\n{out}"
-                printed += out
-            printed = _as_a_terminal_shows(printed)
-        else:
+        if kind != "python":
             continue
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            exec(compile(code, f"HIGHLIGHTS.md:{line}", "exec"), ns)
         ran += 1
         after = blocks[j + 1] if j + 1 < len(blocks) else None
         if after is not None and after[0] == "text":
-            problems += [f"HIGHLIGHTS.md:{line}:\n{p}" for p in differences(after[2], printed)]
-    assert ran >= 7, ran  # five tasks, one of them in three blocks
+            problems += [
+                f"HIGHLIGHTS.md:{line}:\n{p}" for p in differences(after[2], buf.getvalue())
+            ]
+    assert ran >= 6, ran  # five tasks, one of them in two blocks
     assert not problems, "\n\n".join(problems)
+
+
+def test_the_page_shows_the_python_api_alone():
+    """No shell block, and no run of the ``polars-online`` program."""
+    blocks = fenced_blocks(PAGE)
+    assert {kind for kind, _, _ in blocks} <= {"python", "text"}, {k for k, _, _ in blocks}
+    text = PAGE.read_text(encoding="utf-8")
+    for word in ("polars-online --", "command line", "command-line", "TOML"):
+        assert word not in text, word
 
 
 def test_every_capability_row_links_a_step_and_a_guide():

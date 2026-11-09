@@ -395,7 +395,7 @@ found, to read against that answer:
 | task | what it does |
 |---|---|
 | automate a round of model selection | builds factors from first-stage residuals, fits every combination of them at half-lives in time and in traded volume, and chooses among them on each trade from the trades before it. In the same pass over the files, one for each day, holding one chunk at a time so the files may be larger than memory, it finds where the coefficients broke and where the factors' regime changed |
-| build a forward-looking signal and deploy it | predicts the next five minutes from the last five, learns each row once its five minutes are known, fits through price jumps with a robust regression, and resumes on the command line from Python's saved state, to the bit |
+| build a forward-looking signal and deploy it | predicts the next five minutes from the last five, learns each row once its five minutes are known, fits through price jumps with a robust regression, and resumes in a fresh Python process from the saved state, to the bit |
 | train gradient-boosted trees on files larger than memory | trains XGBoost and LightGBM from parquet files around an online model's prediction, so the trees follow a level that drifts past every training row |
 | monitor a live model | keeps 90% intervals on predictions whose targets arrive about 300 rows late, flags a slope that flips, and finds each planted change in the features' correlation |
 | measure correlations and fit curves on tick data | measures correlations between series that trade at their own times, and fits a curve locally along trade size |
@@ -405,11 +405,11 @@ capability the tasks use, with the step that shows it.** The tasks use
 [bounded EWMAs](docs/GLOSSARY.md#fitting-a-model) (exponentially weighted
 moving averages whose rows drop out past a window) forward and back,
 `embargo`, two-stage regressions, and many column combinations and specs
-in one pass. They also use change detection, selection made
-out-of-sample, scores that merge, robust fits, the command line, exact
-resume, trees around an online model, and intervals when targets arrive
-late. On tick data, they align series that trade at their own times, and
-fit locally along any clock: time, traded volume or trade size.
+in one pass. They also use change detection, selection made out-of-sample,
+scores that merge, robust fits, exact resume, trees around an online
+model, and intervals when targets arrive late. On tick data, they align
+series that trade at their own times, and fit locally along any clock:
+time, traded volume or trade size.
 
 ## Where to go next
 
