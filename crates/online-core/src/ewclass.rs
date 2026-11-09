@@ -649,8 +649,9 @@ impl EwClass {
     fn class_matrix(&self, cov: &EwCov, m: &mut Vec<f64>) {
         let k = self.cfg.n_features;
         m.clear();
+        m.resize(k * k, 0.0);
         // The lower triangle is what the factorization reads (`SpdFactor::of`).
-        m.extend_from_slice(cov.comoments().lower());
+        cov.comoments().lower_into(m);
         let ridge = self.cfg.precision_prior * cov.precision_scale();
         for i in 0..k {
             m[i * k + i] += ridge;
@@ -760,10 +761,11 @@ impl EwClass {
                     // by slot, the loop checked both bounds on every
                     // product and ran a slot at a time, about a tenth of
                     // a 20-feature row's time on arm64 (task 314).
-                    let cl = classes[c].comoments().lower();
+                    let cl = classes[c].comoments().packed();
                     for i in 0..k {
+                        let at = crate::ewcov::row_at(i);
                         let run = i * k..i * k + i + 1;
-                        for (mij, cij) in m[run.clone()].iter_mut().zip(&cl[run]) {
+                        for (mij, cij) in m[run].iter_mut().zip(&cl[at..=at + i]) {
                             *mij += pi * cij;
                         }
                     }

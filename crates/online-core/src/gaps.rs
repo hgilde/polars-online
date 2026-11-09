@@ -573,11 +573,12 @@ impl Grams {
             let delta: Vec<f64> = (0..k).map(|i| fast.mean(i) - slow.mean(i)).collect();
             // The lower triangle alone, which is all an `EwCov` keeps
             // (`LowerTriangle`): its upper one is not read.
-            let (cf, cs) = (fast.comoments().lower(), slow.comoments().lower());
-            let mut c = vec![0.0; k * k];
+            let (cf, cs) = (fast.comoments().packed(), slow.comoments().packed());
+            let mut c = vec![0.0; cf.len()];
             for i in 0..k {
+                let at = crate::ewcov::row_at(i);
                 for j in 0..=i {
-                    let ij = i * k + j;
+                    let ij = at + j;
                     c[ij] = af * cf[ij] + as_ * cs[ij] + af * as_ * delta[i] * delta[j];
                 }
             }
@@ -587,7 +588,7 @@ impl Grams {
             // `EwCov::new`, the blend once put the prior back at full strength
             // on every session boundary; review 2026-09-12, C6.)
             let mut blended = fast.clone();
-            blended.set_moments(&mean, &c, wf, fast.q_sum());
+            blended.set_moments_packed(&mean, &c, wf, fast.q_sum());
             self.grams[g] = blended;
         }
         moved

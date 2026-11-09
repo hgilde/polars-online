@@ -1744,7 +1744,7 @@ impl EwRidge {
                 s.as_ref().and_then(|s| {
                     let kk = s.z.len();
                     (s.a.len() == kk * kk)
-                        .then(|| work.factor(s.a.lower(), kk))
+                        .then(|| work.factor(&s.a.to_full(), kk))
                         .flatten()
                 })
             })

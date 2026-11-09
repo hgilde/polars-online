@@ -712,7 +712,8 @@ impl Hmm {
     fn matrix_of(cfg: &HmmCfg, cov: &EwCov, m: &mut Vec<f64>) {
         let d = cfg.n_features;
         m.clear();
-        m.extend_from_slice(cov.comoments().lower());
+        m.resize(d * d, 0.0);
+        cov.comoments().lower_into(m);
         let r = cfg.precision_prior * cov.precision_scale();
         for i in 0..d {
             m[i * d + i] += r;
@@ -780,10 +781,11 @@ impl Hmm {
                         1.0 / k as f64
                     };
                     // The lower triangle, which the factorization reads.
-                    let cl = self.states[s].comoments().lower();
+                    let cl = self.states[s].comoments().packed();
                     for i in 0..d {
+                        let at = crate::ewcov::row_at(i);
                         for j in 0..=i {
-                            m[i * d + j] += pi * cl[i * d + j];
+                            m[i * d + j] += pi * cl[at + j];
                         }
                     }
                     for i in 0..d {

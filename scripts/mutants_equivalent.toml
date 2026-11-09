@@ -1912,18 +1912,6 @@ expression in the same order: the same bits, on one thread \
 (`an_accumulator_has_the_same_bits_at_every_thread_count`; task 307)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov/par.rs"
-function = "rows"
-mutation = "replace / with %"
-line_has = "let n_rows = c.len() / k;"
-why = """`n_rows` sets only the band, the rows one item of `spread` takes: \
-`c.len() % k` is 0, so each band is one row, still spread over the \
-threads (`rows_run_in_bands_on_several_threads_from_the_floor`), and \
-each row is `f(i, row)` with its own index (`b · band + r`), the same \
-expression whichever thread runs it; `replace / with *`, one band of \
-every row on one thread, is caught"""
-
-[[equivalent]]
 file = "crates/online-core/src/gramfit/ridge.rs"
 function = "ridge_fits"
 mutation = "replace > with >="
@@ -3300,7 +3288,7 @@ size again on its next learned row"""
 
 [[equivalent]]
 file = "crates/online-core/src/window/flat.rs"
-function = "<impl Pack for Stamp>::unpack"
+function = "i128_of"
 mutation = "replace | with ^"
 line_has = "(u128::from(lo) | (u128::from(hi) << 64)) as i128"
 why = """`u128::from(lo)` holds bits 0-63 and `u128::from(hi) << 64` bits \
@@ -3322,7 +3310,7 @@ nothing is written or kept differently either way"""
 file = "crates/online-core/src/window/flat.rs"
 function = "Ring<S>::push_offer"
 mutation = "replace > with >="
-line_has = "if block.len() > cap {"
+line_has = "let rec = (block.len() > cap).then(|| {"
 why = """at `block.len() == cap` the record fitted: `split_off(at)` leaves the \
 block its buffer, `shrink_to(cap)` is a no-op at that capacity, and `put` \
 finds exactly the record's room in the same block (`room` asks `>= n`) and \

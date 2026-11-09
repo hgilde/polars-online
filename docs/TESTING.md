@@ -1347,8 +1347,8 @@ integration tests through `run_config`. `online-core/src/robust.rs` is at 98%.
 2026-09-24.** `mutants.yml` runs `cargo mutants` over the changed lines of
 `online-core` and `online-polars/src/span.rs`, on every push to `main` and
 every pull request. It fails on a survivor that
-`scripts/mutants_equivalent.toml` does not list. That file holds 352
-entries (2026-11-07), each an equivalent mutant -- a few
+`scripts/mutants_equivalent.toml` does not list. That file holds 351
+entries (2026-11-09), each an equivalent mutant -- a few
 name two that share a line -- with the reason no input can tell it from
 the original. The weekly pass over all of `online-core`, 11,138 mutants on
 2026-10-03, reports its survivors without failing on them.

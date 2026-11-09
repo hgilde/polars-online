@@ -291,6 +291,9 @@ impl Pack for Bytes {
     fn unpack(from: &mut Unpacker<'_>) -> Self {
         Bytes(from.dim())
     }
+
+    /// The same bytes: they are the shape.
+    fn refill(&mut self, _: &mut Unpacker<'_>) {}
 }
 
 /// A window's ring without its snapshots: each one's bytes where the ring
@@ -387,6 +390,12 @@ impl WindowShadow {
 /// Bytes in a slice of floats, for a [`Footprint`].
 pub(crate) fn floats(v: &[f64]) -> usize {
     std::mem::size_of_val(v)
+}
+
+/// The bytes the budget counts of a co-moment matrix: its whole `k²`
+/// entries, as it always has, though only the lower triangle is kept.
+pub(crate) fn matrix(c: &crate::LowerTriangle) -> usize {
+    c.len() * std::mem::size_of::<f64>()
 }
 
 /// Every value under a key named `key`, anywhere in a state's JSON, handed
@@ -1254,9 +1263,7 @@ pub struct MomentsOf<'a> {
 
 impl Offer<Moments> for MomentsOf<'_> {
     fn bytes(&self) -> usize {
-        3 * std::mem::size_of::<f64>()
-            + floats(self.cov.means())
-            + floats(self.cov.comoments().lower())
+        3 * std::mem::size_of::<f64>() + floats(self.cov.means()) + matrix(self.cov.comoments())
     }
 
     fn write(&self, out: &mut Packer) {
@@ -1265,7 +1272,7 @@ impl Offer<Moments> for MomentsOf<'_> {
         (cov.n_eff() * lam).pack(out);
         out.dim(cov.means().len());
         out.f64s(cov.means());
-        cov.comoments().pack_side(cov.means().len(), out);
+        cov.comoments().pack(out);
         Some(cov.rows_learned()).pack(out);
         cov.q_sum().map(|q| q * lam * lam).pack(out);
     }
@@ -1279,7 +1286,7 @@ impl Footprint for Moments {
     fn footprint(&self) -> usize {
         // The weight, the row count and the second weight sum, and the two
         // vectors.
-        3 * std::mem::size_of::<f64>() + floats(&self.m) + floats(self.c.lower())
+        3 * std::mem::size_of::<f64>() + floats(&self.m) + matrix(&self.c)
     }
 }
 
@@ -1361,19 +1368,20 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
     let mut mean: Vec<f64> = (0..k).map(|i| cov.mean(i) - ratio * d[i]).collect();
     // The lower triangles alone: both matrices keep no other
     // ([`crate::LowerTriangle`]), and `set_moments` reads no other.
-    let (c_now, c_old) = (cov.comoments().lower(), old.c.lower());
-    let mut cen = vec![0.0; k * k];
+    let (c_now, c_old) = (cov.comoments().packed(), old.c.packed());
+    let mut cen = vec![0.0; c_now.len()];
     let mut unresolved = vec![false; k];
     for i in 0..k {
+        let at = crate::ewcov::row_at(i);
         for j in 0..=i {
-            let ij = i * k + j;
+            let ij = at + j;
             cen[ij] = g * c_now[ij] - ratio * c_old[ij] - ratio * g * d[i] * d[j];
         }
         // What is left to lose is a difference of positives; a variance it
         // takes a hair below zero is zero (review V3), and one that is not a
         // number stays one: `max(0.0)` read a NaN as no spread (review
         // round 4, CB7; task 182's rule).
-        let ii = i * k + i;
+        let ii = at + i;
         cen[ii] = crate::solve::clamp_rounding(cen[ii]);
         // And a variance no larger than the subtraction's rounding carries
         // no digit of the window's spread (the doc comment has the bound and
@@ -1390,10 +1398,7 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
         unresolved[i] = cen[ii] <= rounding_floor(terms + level);
     }
     for i in (0..k).filter(|&i| unresolved[i]) {
-        for j in 0..k {
-            cen[i * k + j] = 0.0;
-            cen[j * k + i] = 0.0;
-        }
+        no_spread(&mut cen, k, i);
     }
     // A feature that held one value over every row inside the window has no
     // spread there, and the subtraction cannot say so: it leaves a remainder
@@ -1404,13 +1409,10 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
     // the window's, equal in exact arithmetic, drifted past a tolerance of
     // 1e-12 under a long window and a long half-life: review 2026-09-25.)
     if let Some(rows) = old.rows {
-        for i in 0..k {
+        for (i, m) in mean.iter_mut().enumerate() {
             if let Some(value) = cov.held_from(i, rows + 1) {
-                mean[i] = value;
-                for j in 0..k {
-                    cen[i * k + j] = 0.0;
-                    cen[j * k + i] = 0.0;
-                }
+                *m = value;
+                no_spread(&mut cen, k, i);
             }
         }
     }
@@ -1432,8 +1434,16 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
         _ => None,
     };
     let mut out = cov.clone();
-    out.set_moments(&mean, &cen, w, q);
+    out.set_moments_packed(&mean, &cen, w, q);
     Some(out)
+}
+
+/// Feature `i`'s row and column of the packed lower triangle `c`, over `k`
+/// features, set to 0: no spread, and no co-moment with any other.
+fn no_spread(c: &mut [f64], k: usize, i: usize) {
+    for j in 0..k {
+        c[crate::ewcov::row_at(i.max(j)) + i.min(j)] = 0.0;
+    }
 }
 
 /// An [`EwCovDiag`]'s data, decayed to the clock of the row it precedes: a
@@ -1660,6 +1670,11 @@ mod tests {
 
         fn unpack(from: &mut Unpacker<'_>) -> Self {
             Held(f64::unpack(from), crate::TargetMoments::unpack(from))
+        }
+
+        fn refill(&mut self, from: &mut Unpacker<'_>) {
+            self.0.refill(from);
+            self.1.refill(from);
         }
     }
 
@@ -2078,9 +2093,9 @@ mod tests {
                         let (w_now, w_old) = (cov.n_eff(), f * old.w);
                         let w = w_now - w_old;
                         let (ratio, g) = (w_old / w, w_now / w);
-                        let (c, c_old) = (cov.comoments().lower(), old.c.lower());
+                        let (c, c_old) = (cov.comoments().packed(), old.c.packed());
                         for i in 0..2 {
-                            let ii = i * 2 + i;
+                            let ii = crate::ewcov::row_at(i) + i;
                             let d = old.m[i] - cov.mean(i);
                             let cen = crate::solve::clamp_rounding(
                                 g * c[ii] - ratio * c_old[ii] - ratio * g * d * d,
@@ -2611,6 +2626,7 @@ mod tests {
             fn unpack(_: &mut Unpacker<'_>) -> Self {
                 Big
             }
+            fn refill(&mut self, _: &mut Unpacker<'_>) {}
         }
         let mut seed = 5u64;
         let mut lcg = move || {
@@ -3334,7 +3350,7 @@ mod tests {
                 let (w, q) = (cov.n_eff(), cov.q_sum());
                 cov.set_moments(&m, &c, w, q);
             } else {
-                old.c.lower_mut()[0] = f64::NAN;
+                old.c.packed_mut()[0] = f64::NAN;
             }
             let cut = truncated(&cov, &old, 1.0).expect("the window holds weight");
             assert!(cut.var(0).is_nan(), "{broken}: {}", cut.var(0));

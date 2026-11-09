@@ -51,8 +51,8 @@ pub(crate) struct HeldSteps {
 }
 
 impl HeldSteps {
-    /// Copy the lower triangle of `c`, `k × k`, into the padded copy, every
-    /// other entry 0, shaping the buffers for `k` first.
+    /// Copy the packed lower triangle `c` over `k` features into the padded
+    /// copy, every other entry 0, shaping the buffers for `k` first.
     fn open(&mut self, c: &[f64], k: usize) {
         if self.k != k || self.buf.is_empty() {
             let ks = k.div_ceil(4) * 4;
@@ -64,7 +64,8 @@ impl HeldSteps {
         let (cp, ..) = self.parts();
         cp.fill(0.0);
         for i in 0..k {
-            cp[i * ks..=i * ks + i].copy_from_slice(&c[i * k..=i * k + i]);
+            let at = super::row_at(i);
+            cp[i * ks..=i * ks + i].copy_from_slice(&c[at..=at + i]);
         }
         self.rows = 0;
         self.open = true;
@@ -201,7 +202,7 @@ impl HeldSteps {
     }
 
     /// Take every held step and write the lower triangle back into `c`,
-    /// `k × k`; nothing when no step is held.
+    /// packed ([`super::LowerTriangle`]); nothing when no step is held.
     pub(crate) fn merge_into(&mut self, c: &mut [f64], k: usize) {
         if !self.open {
             return;
@@ -210,7 +211,8 @@ impl HeldSteps {
         let ks = self.ks;
         let (cp, ..) = self.parts();
         for i in 0..k {
-            c[i * k..=i * k + i].copy_from_slice(&cp[i * ks..=i * ks + i]);
+            let at = super::row_at(i);
+            c[at..=at + i].copy_from_slice(&cp[i * ks..=i * ks + i]);
         }
         self.open = false;
     }
@@ -463,9 +465,10 @@ mod tests {
                         take(&mut h);
                         let ks = h.ks;
                         let (cp, ..) = h.parts();
-                        let lower = c.c.lower_mut();
+                        let lower = c.c.packed_mut();
                         for i in 0..k {
-                            lower[i * k..=i * k + i].copy_from_slice(&cp[i * ks..=i * ks + i]);
+                            let at = crate::ewcov::row_at(i);
+                            lower[at..=at + i].copy_from_slice(&cp[i * ks..=i * ks + i]);
                         }
                     }
                     assert_eq!(bits(&each), bits(&c), "k {k}, n {n}");
