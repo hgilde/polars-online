@@ -291,3 +291,115 @@ fn refresh_time_marks_its_wrong_types() {
         r#"po.stream.refresh_time: clock column "t" is a time of day"#,
     );
 }
+
+/// A bank's refusal of `df`, through the polars adapter and the bank alike.
+fn refusal_of(specs: &[&str], df: &DataFrame) -> String {
+    let specs: Vec<Spec> = specs
+        .iter()
+        .map(|t| serde_json::from_str(t).unwrap_or_else(|e| panic!("{t}: {e}")))
+        .collect();
+    let adapter = chunk_from_frame(df, &specs).expect_err("the adapter took the frame");
+    let e = Bank::new(specs)
+        .unwrap()
+        .fit_predict(df)
+        .expect_err("the bank took the frame");
+    assert_eq!(adapter.to_string(), e.to_string());
+    e.to_string()
+}
+
+/// A failed cast names the spec and the role that read the column, found
+/// only once the cast has failed (task 369): the first spec in bank order
+/// that reads the column in the form that failed, and the first of its roles
+/// in that form. One case per role, and the cases where the first reader of
+/// the column in any form is not the one named.
+#[test]
+fn a_failed_cast_names_the_spec_and_the_role_that_read_the_column() {
+    let list = |c: &str| concat_list([col("x0")]).unwrap().alias(c);
+    let ew = |name: &str, extra: &str| {
+        format!(
+            r#"{{"name": "{name}", "model": {{"type": "ewridge"}}, "half_life": 10.0,
+                "targets": ["y"], "features": ["x0"]{extra}}}"#
+        )
+    };
+    let class = |name: &str, extra: &str| {
+        format!(
+            r#"{{"name": "{name}", "model": {{"type": "ew_class", "classes": ["u", "v"],
+                "precision_prior": 1.0}}, "half_life": 10.0,
+                "targets": ["lab"], "features": ["x0"]{extra}}}"#
+        )
+    };
+    let mut seen = Vec::new();
+    let mut says = |specs: &[&str], df: &DataFrame, wanted: &str| {
+        let e = refusal_of(specs, df);
+        assert!(e.contains(wanted), "{e}");
+        seen.push(e);
+    };
+    // A label: ew_class reads its target as text.
+    let df = with(base(), vec![list("lab")]);
+    says(
+        &[&class("c", "")],
+        &df,
+        r#"spec "c": label column "lab" is List(Float64), which cannot be read as text"#,
+    );
+    // A session.
+    let df = with(base(), vec![list("s")]);
+    says(
+        &[&ew("m", r#", "session": "s", "session_gap": "reset""#)],
+        &df,
+        r#"spec "m": session column "s" is List(Float64), which cannot be read as text"#,
+    );
+    // A column one spec reads as a group key, which takes text, and a later
+    // one as a feature: the number cast that fails names the later spec.
+    let df = with(base(), vec![lit("a").alias("g")]);
+    says(
+        &[
+            &ew("a", r#", "group": "g""#),
+            &ew("b", "").replace(r#"["x0"]"#, r#"["x0", "g"]"#),
+        ],
+        &df,
+        r#"spec "b": feature column "g" must be a number, but it is String"#,
+    );
+    // One spec reading a column as a target and its weight: the first role.
+    let df = with(base(), vec![lit("a").alias("w")]);
+    says(
+        &[&ew("m", r#", "weight": "w""#).replace(r#"["y"]"#, r#"["y", "w"]"#)],
+        &df,
+        r#"spec "m": target column "w" must be a number, but it is String"#,
+    );
+    // A weight read by a later spec than the first reader of the column, a
+    // label: the number cast names the weight.
+    let df = with(base(), vec![lit("u").alias("lab")]);
+    says(
+        &[&class("c", ""), &ew("m", r#", "weight": "lab""#)],
+        &df,
+        r#"spec "m": weight column "lab" must be a number, but it is String"#,
+    );
+    // A label clock read by a later spec: a temporal column out of the
+    // range of nanoseconds names the spec that reads it.
+    let far =
+        || lit(10_000_000_000_000_000i64).cast(DataType::Datetime(TimeUnit::Milliseconds, None));
+    let df = with(base(), vec![seconds().alias("t"), far().alias("lc")]);
+    let timed = r#", "clock": "t", "half_life": "10s", "gap_cap": "5s""#;
+    let plain = format!(
+        r#"{{"name": "a", "model": {{"type": "ewridge"}}, "targets": ["y"],
+            "features": ["x0"]{timed}}}"#
+    );
+    let labelled = plain
+        .replace(r#""a""#, r#""b""#)
+        .replace(timed, &format!(r#"{timed}, "label_clock": "lc""#));
+    says(
+        &[&plain, &labelled],
+        &df,
+        r#"spec "b": column "lc" holds an instant at row 0"#,
+    );
+    // A clock.
+    let df = with(base(), vec![far().alias("t")]);
+    says(
+        &[&plain],
+        &df,
+        r#"spec "a": column "t" holds an instant at row 0"#,
+    );
+    if let Ok(out) = std::env::var("PRINT_CAST_REFUSALS") {
+        std::fs::write(out, seen.join("\n")).unwrap();
+    }
+}

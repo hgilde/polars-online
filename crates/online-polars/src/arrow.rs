@@ -797,48 +797,83 @@ fn wanted(specs: &[Spec]) -> Vec<(PlSmallStr, Want)> {
     out
 }
 
-/// Each column's first reader in each form [`wanted`] reads it in: the spec
-/// and the role a failed cast names, so a column one spec reads as a group
-/// key and another as a feature is named, when its number cast fails, by
-/// the spec that reads it as a number.
-fn want_readers(specs: &[Spec]) -> PlHashMap<(&str, Want), (&str, &'static str)> {
-    let mut out: PlHashMap<(&str, Want), (&str, &'static str)> = PlHashMap::default();
-    for s in specs {
-        let name = s.name.as_str();
-        let (target_want, target_role) = match &s.model {
-            ModelKind::EwClass { .. } => (Want::Text, "label"),
-            _ => (Want::Number, "target"),
-        };
-        let mut reads: Vec<(&str, Want, &'static str)> = s
-            .features
-            .iter()
-            .map(|f| (f.as_str(), Want::Feature, "feature"))
-            .collect();
-        if s.model.compares().is_none() {
-            for t in s.targets.defs() {
-                if let Some(tree) = &t.formula {
-                    for c in tree.columns_ref() {
-                        reads.push((c, Want::Value, "formula target"));
-                    }
-                    continue;
+/// The reads one spec makes, each column in the form [`wanted`] reads it
+/// and the role an error names, in the order features, targets (each
+/// target's column, or its formula's columns), clock, label clock, weight,
+/// session, group.
+fn spec_reads(s: &Spec) -> Vec<(&str, Want, &'static str)> {
+    let (target_want, target_role) = match &s.model {
+        ModelKind::EwClass { .. } => (Want::Text, "label"),
+        _ => (Want::Number, "target"),
+    };
+    let mut reads: Vec<(&str, Want, &'static str)> = s
+        .features
+        .iter()
+        .map(|f| (f.as_str(), Want::Feature, "feature"))
+        .collect();
+    if s.model.compares().is_none() {
+        for t in s.targets.defs() {
+            if let Some(tree) = &t.formula {
+                for c in tree.columns_ref() {
+                    reads.push((c, Want::Value, "formula target"));
                 }
-                reads.push((t.column.as_str(), target_want, target_role));
+                continue;
             }
-        }
-        reads.extend(s.clock.as_deref().map(|c| (c, Want::Clock, "clock")));
-        reads.extend(
-            s.label_clock
-                .as_ref()
-                .map(|l| (l.column(), Want::Clock, "label_clock")),
-        );
-        reads.extend(s.weight.as_deref().map(|c| (c, Want::Number, "weight")));
-        reads.extend(s.session.as_deref().map(|c| (c, Want::Text, "session")));
-        reads.extend(s.group.as_deref().map(|c| (c, Want::Key, "group")));
-        for (column, want, role) in reads {
-            out.entry((column, want)).or_insert((name, role));
+            reads.push((t.column.as_str(), target_want, target_role));
         }
     }
-    out
+    reads.extend(s.clock.as_deref().map(|c| (c, Want::Clock, "clock")));
+    reads.extend(
+        s.label_clock
+            .as_ref()
+            .map(|l| (l.column(), Want::Clock, "label_clock")),
+    );
+    reads.extend(s.weight.as_deref().map(|c| (c, Want::Number, "weight")));
+    reads.extend(s.session.as_deref().map(|c| (c, Want::Text, "session")));
+    reads.extend(s.group.as_deref().map(|c| (c, Want::Key, "group")));
+    reads
+}
+
+/// A column's first reader in one form [`wanted`] reads it in: the spec
+/// and the role a failed cast names, so a column one spec reads as a group
+/// key and another as a feature is named, when its number cast fails, by
+/// the spec that reads it as a number. The first spec in bank order, and
+/// the first of its reads in [`spec_reads`]' order.
+///
+/// A scan of the specs, run only when an error is raised ([`Reader`]): a
+/// map of every read, built on every call for the one error that may never
+/// come, cost every chunk its hashing and allocation (task 369).
+fn want_reader<'a>(specs: &'a [Spec], column: &str, want: Want) -> Option<(&'a str, &'static str)> {
+    specs.iter().find_map(|s| {
+        spec_reads(s)
+            .into_iter()
+            .find(|&(c, w, _)| c == column && w == want)
+            .map(|(_, _, role)| (s.name.as_str(), role))
+    })
+}
+
+/// The spec and role a read is named by in the errors its cast raises,
+/// found only when one is raised: [`want_reader`], else [`first_reader`].
+#[derive(Clone, Copy)]
+struct Reader<'a> {
+    specs: &'a [Spec],
+    column: &'a str,
+    want: Want,
+}
+
+impl<'a> Reader<'a> {
+    fn get(&self) -> (&'a str, &'static str) {
+        want_reader(self.specs, self.column, self.want)
+            .or_else(|| first_reader(self.specs, self.column))
+            .unwrap_or(("", "column"))
+    }
+}
+
+/// `spec "m"`, the where of a temporal clock's errors ([`nanos_array`]).
+impl std::fmt::Display for Reader<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "spec {:?}", self.get().0)
+    }
 }
 
 /// The form [`cast_to`] produces for a role on a dtype, known before the cast:
@@ -865,17 +900,12 @@ fn value_is_number(dtype: &DataType) -> bool {
 }
 
 /// One `Series` as the Arrow array of a given form.
-fn cast_to(
-    s: &Series,
-    want: Want,
-    spec_name: &str,
-    role: &str,
-    name: &str,
-) -> PolarsResult<ArrowCol> {
+fn cast_to(s: &Series, want: Want, reader: Reader<'_>, name: &str) -> PolarsResult<ArrowCol> {
     match want {
         Want::Number => {
             let dtype = s.dtype();
             if !(dtype.is_numeric() || matches!(dtype, DataType::Boolean | DataType::Null)) {
+                let (spec_name, role) = reader.get();
                 polars_bail!(InvalidOperation:
                     "spec {:?}: {} column {:?} must be a number, but it is {}. Cast it, such \
                      as with pl.col({:?}).cast(pl.Float64).",
@@ -893,16 +923,17 @@ fn cast_to(
         }
         Want::Feature => match NumArray::of(s)? {
             Some(a) => Ok(ArrowCol::Num(a)),
-            None => cast_to(s, Want::Number, spec_name, role, name),
+            None => cast_to(s, Want::Number, reader, name),
         },
-        Want::Text => Ok(ArrowCol::Str(text_array(s, spec_name, role, name)?)),
+        Want::Text => Ok(ArrowCol::Str(text_array(s, reader, name)?)),
         // A temporal clock is read in nanoseconds before a cast is asked
         // for (`chunk_from_frame_at`).
-        Want::Clock if fits_64(s.dtype()) => cast_to(s, Want::Key, spec_name, role, name),
-        Want::Clock => cast_to(s, Want::Number, spec_name, role, name),
+        Want::Clock if fits_64(s.dtype()) => cast_to(s, Want::Key, reader, name),
+        Want::Clock => cast_to(s, Want::Number, reader, name),
         Want::Value => {
             let dtype = s.dtype();
             if dtype.is_temporal() {
+                let (spec_name, role) = reader.get();
                 polars_bail!(InvalidOperation:
                     "spec {:?}: {} column {:?} is {}, but a formula target reads numbers, \
                      booleans and text, and a temporal column can only be a clock. Cast it to a number, such \
@@ -912,7 +943,7 @@ fn cast_to(
                 );
             }
             if value_is_number(dtype) {
-                return cast_to(s, Want::Number, spec_name, role, name);
+                return cast_to(s, Want::Number, reader, name);
             }
             if *dtype == DataType::Boolean {
                 let r = s.rechunk();
@@ -924,7 +955,7 @@ fn cast_to(
                         .unwrap_or_else(|| BooleanArray::new_empty(ArrowDataType::Boolean)),
                 ));
             }
-            Ok(ArrowCol::Str(text_array(s, spec_name, role, name)?))
+            Ok(ArrowCol::Str(text_array(s, reader, name)?))
         }
         Want::Key => {
             // An integer wider than 64 bits is its text, as a Decimal is: a
@@ -951,7 +982,7 @@ fn cast_to(
                     )
                 });
             }
-            Ok(ArrowCol::Str(text_array(s, spec_name, role, name)?))
+            Ok(ArrowCol::Str(text_array(s, reader, name)?))
         }
     }
 }
@@ -1050,8 +1081,9 @@ pub(crate) fn key_text(s: &Series) -> PolarsResult<Series> {
 /// A key or a label as text ([`key_text`]). Any dtype with a string form is
 /// a key (ints, dates, zoned Datetimes and categoricals included); a nested
 /// one is refused by name.
-fn text_array(s: &Series, spec_name: &str, role: &str, name: &str) -> PolarsResult<Utf8ViewArray> {
+fn text_array(s: &Series, reader: Reader<'_>, name: &str) -> PolarsResult<Utf8ViewArray> {
     let cast = key_text(s).map_err(|e| {
+        let (spec_name, role) = reader.get();
         polars_err!(InvalidOperation:
             "spec {:?}: {} column {:?} is {}, which cannot be read as text ({}). Give a column \
              with one value per row, such as String or an integer; join a list's items into \
@@ -1106,8 +1138,6 @@ pub fn chunk_from_frame_at(
         }
     }
     check_clocks(df, specs)?;
-    let readers = first_readers(specs);
-    let by_want = want_readers(specs);
     let mut cols: Vec<(PlSmallStr, ArrowCol)> = Vec::new();
     let mut clock_dtypes: Vec<(PlSmallStr, DataType)> = Vec::new();
     let mut integer_text: Vec<PlSmallStr> = Vec::new();
@@ -1150,12 +1180,13 @@ pub fn chunk_from_frame_at(
         let Some(col) = df.column(name.as_str()).ok() else {
             continue;
         };
-        // The spec and role of this read, for the errors its cast raises.
-        let (spec, role) = by_want
-            .get(&(name.as_str(), asked))
-            .or_else(|| readers.get(name.as_str()))
-            .copied()
-            .unwrap_or(("", "column"));
+        // The spec and role of this read, for the errors its cast raises,
+        // looked up only when one is.
+        let reader = Reader {
+            specs,
+            column: name.as_str(),
+            want: asked,
+        };
         let s = col.as_materialized_series();
         // A temporal clock is read in its own nanoseconds whatever the
         // column's unit, so the gap between two rows is taken in integers
@@ -1166,8 +1197,7 @@ pub fn chunk_from_frame_at(
         // for Datetime(ms/us/ns) (docs/records/TESTING-LOG.md T-E10). `check_clocks` has
         // already refused a spec that gives this clock plain numbers.
         if want == Want::Clock && s.dtype().is_temporal() {
-            let who = format!("spec {spec:?}");
-            let col = ArrowCol::Nanos(nanos_array(s, row_base, NanosRole::Clock, &who)?);
+            let col = ArrowCol::Nanos(nanos_array(s, row_base, NanosRole::Clock, &reader)?);
             clock_dtypes.push((name.clone(), s.dtype().clone()));
             have.insert((name.clone(), col.form()));
             cols.push((name.clone(), col));
@@ -1197,7 +1227,7 @@ pub fn chunk_from_frame_at(
         if have.contains(&(name.clone(), form_of(want, s.dtype()))) {
             continue;
         }
-        let col = cast_to(s, want, spec, role, name.as_str())?;
+        let col = cast_to(s, want, reader, name.as_str())?;
         have.insert((name.clone(), col.form()));
         cols.push((name.clone(), col));
     }
@@ -1208,21 +1238,19 @@ pub fn chunk_from_frame_at(
         .with_key_dtypes(key_dtypes))
 }
 
-/// Each column's first reader, for the errors a cast can raise: the first
+/// A column's first reader, for the errors a cast can raise: the first
 /// spec, in bank order, that reads the column in any role, and the first of
 /// its roles in the order features, targets (each target's column, or its
-/// formula's columns), clock, weight, session, group.
-/// Built once, where a scan of every spec's lists per column was quadratic
-/// in the columns (docs/records/PERFORMANCE-LOG.md §24).
-fn first_readers(specs: &[Spec]) -> PlHashMap<&str, (&str, &'static str)> {
-    let mut out: PlHashMap<&str, (&str, &'static str)> = PlHashMap::default();
+/// formula's columns), clock, weight, session, group. A scan of the specs,
+/// run only when an error is raised ([`Reader`]).
+fn first_reader<'a>(specs: &'a [Spec], column: &str) -> Option<(&'a str, &'static str)> {
     for s in specs {
         let name = s.name.as_str();
         let target_role = match &s.model {
             ModelKind::EwClass { .. } => "label",
             _ => "target",
         };
-        let roles = s
+        let mut roles = s
             .features
             .iter()
             .map(|c| (c.as_str(), "feature"))
@@ -1245,11 +1273,11 @@ fn first_readers(specs: &[Spec]) -> PlHashMap<&str, (&str, &'static str)> {
             .chain(s.weight.as_deref().map(|c| (c, "weight")))
             .chain(s.session.as_deref().map(|c| (c, "session")))
             .chain(s.group.as_deref().map(|c| (c, "group")));
-        for (column, role) in roles {
-            out.entry(column).or_insert((name, role));
+        if let Some((_, role)) = roles.find(|&(c, _)| c == column) {
+            return Some((name, role));
         }
     }
-    out
+    None
 }
 
 /// Each clock column against the specs that read it (docs/PLAN.md task 88).
@@ -1467,7 +1495,11 @@ impl NanosRole {
 /// `Time`, read as an increment's input only, nanoseconds since midnight, so
 /// a step across midnight is negative, as Polars' `diff` on a `Time` gives
 /// it. A `Time` clock is refused: it starts again every midnight.
-fn nanos_per_unit(s: &Series, role: NanosRole, who: &str) -> PolarsResult<i64> {
+fn nanos_per_unit<W: std::fmt::Display + ?Sized>(
+    s: &Series,
+    role: NanosRole,
+    who: &W,
+) -> PolarsResult<i64> {
     let dtype = s.dtype();
     Ok(match dtype {
         DataType::Datetime(TimeUnit::Milliseconds, _)
@@ -1499,11 +1531,11 @@ fn nanos_per_unit(s: &Series, role: NanosRole, who: &str) -> PolarsResult<i64> {
 /// nanoseconds in an `i64` hold, and such a value is refused by row. A
 /// nanosecond column is taken as it is, without a pass over it. `role` is
 /// what the column is read for ([`NanosRole`]).
-pub(crate) fn nanos_array(
+pub(crate) fn nanos_array<W: std::fmt::Display + ?Sized>(
     s: &Series,
     row_base: usize,
     role: NanosRole,
-    who: &str,
+    who: &W,
 ) -> PolarsResult<Int64Array> {
     let per = nanos_per_unit(s, role, who)?;
     let phys = s.to_physical_repr();
@@ -1548,7 +1580,7 @@ pub(crate) fn nanos_array(
         .unwrap_or_else(|| Int64Array::new_empty(ArrowDataType::Int64)))
 }
 
-/// The scans [`first_readers`] replaced, kept as its oracle.
+/// The scans [`first_reader`] replaced, kept as its oracle.
 #[cfg(test)]
 fn reads(s: &Spec, name: &str) -> bool {
     s.features.iter().any(|f| f == name)
@@ -1685,7 +1717,7 @@ mod tests {
         }
     }
 
-    /// `first_readers` names, for every column, the spec and the role the
+    /// `first_reader` names, for every column, the spec and the role the
     /// two scans it replaced named: the first spec in bank order that reads
     /// the column, and the first of that spec's roles. Specs that share
     /// columns across roles, a label, and a column no spec reads.
@@ -1714,7 +1746,7 @@ mod tests {
                     "features": ["w"]}"#,
             ),
         ];
-        let readers = first_readers(&specs);
+        let reader = |name: &str| first_reader(&specs, name);
         let columns = [
             "x0", "x1", "y", "g", "t", "w", "lab", "s", "k", "q", "r", "t2", "absent",
         ];
@@ -1724,23 +1756,23 @@ mod tests {
                 .find(|s| reads(s, name))
                 .map_or("", |s| s.name.as_str());
             let want = (want_spec, role_of(&specs, name));
-            let got = readers.get(name).copied().unwrap_or(("", "column"));
+            let got = reader(name).unwrap_or(("", "column"));
             assert_eq!(got, want, "column {name}");
         }
         assert_eq!(
-            readers.get("g"),
-            Some(&("a", "target")),
+            reader("g"),
+            Some(("a", "target")),
             "a target before a group"
         );
-        assert_eq!(readers.get("lab"), Some(&("b", "label")));
-        assert_eq!(readers.get("k"), Some(&("c", "group")));
-        assert_eq!(readers.get("q"), Some(&("d", "target")));
-        assert!(!readers.contains_key("r") && !readers.contains_key("t2"));
+        assert_eq!(reader("lab"), Some(("b", "label")));
+        assert_eq!(reader("k"), Some(("c", "group")));
+        assert_eq!(reader("q"), Some(("d", "target")));
+        assert!(reader("r").is_none() && reader("t2").is_none());
         assert_eq!(
-            readers.get("x1"),
-            Some(&("a", "feature")),
+            reader("x1"),
+            Some(("a", "feature")),
             "an earlier reader wins"
         );
-        assert!(!readers.contains_key("absent"));
+        assert!(reader("absent").is_none());
     }
 }
