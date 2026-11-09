@@ -793,3 +793,17 @@ why = """a matrix of order 64 or less goes to the blocked loop, whose block \
 block and steps by 0 for ever. Every suite factorizes an order-1 matrix; \
 above order 64 the mutant calls faer's own sequential factorization, the \
 same bits on aarch64"""
+
+[[tolerated]]
+file = "crates/online-core/src/conformal.rs"
+function = "ln_basic"
+mutation = "replace > with >="
+line_has = "if f > std::f64::consts::SQRT_2 {"
+kind = "rounding"
+why = """the two part only where the mantissa read is exactly the double \
+nearest `√2`, which the original keeps as `f` with `k` and the mutant \
+halves to `f/2` with `k + 1`: the same `ln x` in exact arithmetic, by two \
+series of `|s| = 0.17157`. At every such `x`, `2^e·fl(√2)` for each \
+exponent, the two differ by at most 3 ulps, the original within 2 ulps of \
+the platform's `ln` and the mutant within 1, both inside the 4 that \
+`ln_basic_is_the_logarithm` allows (task 373)"""

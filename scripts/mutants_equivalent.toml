@@ -3415,3 +3415,23 @@ line_has = "if self.held_mean > 0.0 {"
 why = """at `n̄ = 0` the mutant divides `η` by `1 + rate·g·0/c = 1` exactly, \
 since `rate` is finite (`Conformal::new` refuses any other) and \
 `g = 2φ(·) < 0.8`, so `rate·g·0` is a zero; `η/1 = η` (task 358)"""
+
+[[equivalent]]
+file = "crates/online-core/src/conformal.rs"
+function = "ln_basic"
+mutation = "replace < with <="
+line_has = "let (x, k0) = if x < f64::MIN_POSITIVE {"
+why = """the two part only at `x = 2^-1022`, the smallest normal, which the \
+mutant scales by `2^54` exactly to `2^-968` and reads with `k0 = −54`: \
+exponent `−968 − 54 = −1022` and mantissa 0, the `k` and `f = 1` the \
+original reads from `x` itself, so every later line computes the same \
+bits (task 373)"""
+
+[[equivalent]]
+file = "crates/online-core/src/conformal.rs"
+function = "ln_basic"
+mutation = "replace | with ^"
+line_has = "let mut f = f64::from_bits((bits & ((1u64 << 52) - 1)) | (1023u64 << 52));"
+why = """the mask leaves the mantissa's 52 low bits and `1023 << 52` sets only \
+bits 52 to 61, so the two operands share no set bit and their `^` is their \
+`|` (task 373)"""
