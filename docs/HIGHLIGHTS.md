@@ -1,16 +1,13 @@
 <!-- kind: how-to -->
 # What you can do with polars-online
 
-This page is for anyone with one of five tasks, from a round of model
-selection to correlations and curves on tick data, who wants to see
-polars-online do it end to end. Each task runs on data it makes up with a
-known answer, and prints what the library found, to read against that
-answer.
+Each task runs on data it makes up with a known answer, and prints what
+the library found, to read against that answer.
 
 | task | what it shows |
 |---|---|
-| [Automate a round of model selection](#automate-a-round-of-model-selection) | every combination of factors built from first-stage residuals, fitted at once at [half-lives](GLOSSARY.md#time) in time and in traded volume, with the best chosen [out-of-sample](GLOSSARY.md#fitting-a-model) on each trade, and breaks and a regime change found in the same pass |
-| [Build a forward-looking signal and deploy it](#build-a-forward-looking-signal-and-deploy-it) | a target over the next five minutes and a feature over the last five, learned under an [embargo](GLOSSARY.md#time), fitted robustly through jumps, and resumed in a fresh process with the same predictions to the bit |
+| [Automate a round of model selection](#automate-a-round-of-model-selection) | every combination of three factors, fitted at once at [half-lives](GLOSSARY.md#time) in time and in traded volume, with the best chosen [out-of-sample](GLOSSARY.md#fitting-a-model) on each trade, and breaks and a regime change found in the same pass |
+| [Build a forward-looking signal and deploy it](#build-a-forward-looking-signal-and-deploy-it) | a target over the next five minutes, a feature over the last five and the out-of-sample residual a first-stage ridge leaves of a factor, learned under an [embargo](GLOSSARY.md#time), fitted robustly through jumps, and resumed in a fresh process with the same predictions to the bit |
 | [Train gradient-boosted trees on files larger than memory](#train-gradient-boosted-trees-on-files-larger-than-memory) | XGBoost and LightGBM trained from parquet files around an online model's prediction, which follows a level that drifts beyond every training row's |
 | [Monitor a live model](#monitor-a-live-model) | 90% intervals that keep their coverage on targets that arrive late, and a test for a broken slope and a detector of the features' correlation, both checked against planted changes |
 | [Measure correlations and fit curves on tick data](#measure-correlations-and-fit-curves-on-tick-data) | correlations from series that trade at their own times, and a curve fitted locally along trade size |
@@ -42,17 +39,14 @@ Each task builds its own data, so the tasks need only:
 
 ## Automate a round of model selection
 
-A round of model selection builds factors, fits every combination of them
-under a few settings, picks the best, and asks whether what it picked
-holds. This task does the whole round in one pass:
+A round of model selection fits every combination of the factors under a
+few settings, picks the best, and asks whether what it picked holds. This
+task does the whole round in one pass:
 
 - **Local fits on half-lives**, where each row's weight halves every
   [half-life](GLOSSARY.md#time) on a [clock](GLOSSARY.md#time): two
   half-lives measured in time (30 minutes and 2 hours) and two measured in
   traded volume (200,000 and 800,000 shares).
-- **Factors from a two-stage regression**: a first-stage ridge per factor,
-  whose out-of-sample residual (the factor's own move) becomes a feature
-  of the second stage.
 - **Every combination of factors and specs in one pass**: the seven
   non-empty sets of three factors, at two half-lives on each of the two
   clocks, 28 [grid points](GLOSSARY.md#grids) (combinations of settings)
@@ -68,39 +62,33 @@ holds. This task does the whole round in one pass:
   [slot](GLOSSARY.md#grids) (each prediction a spec writes) scored from
   **sums merged chunk by chunk**, so no output is held.
 
-The recipe plants each answer it looks for. Three factors each add a move
-of their own to the sum of their inputs. The return loads 0.5 on factor
-0's move throughout, and on factor 1's from 0 to 0.6 at the open of
-2024-01-04. Factor 2 plays no part. The factors' moves triple in size at
-noon on 2024-01-03.
+The recipe plants each answer it looks for. The return loads 0.5 on factor
+`f0` throughout, and on `f1` from 0 to 0.6 at the open of 2024-01-04.
+Factor `f2` plays no part. The factors triple in size at noon on
+2024-01-03.
 
 1. **Make up four days of trades, one parquet file per day,** each day a
-   [session](GLOSSARY.md#time) (the column `day`), with the cumulative
-   volume of the day beside the timestamps.
-2. **Fit a first-stage ridge per factor.** `session="day"` with
-   `session_gap="1m"` ages each fit by one minute at a new day, in place of
-   the night.
-3. **Take each ridge's residual as a column.**
-   `pl.col("fac0").struct.field("resid_d0")` reads the field `resid_d0` of
-   the spec `fac0`'s output column.
-4. **Give the grid to two specs, one for each clock.** A dict of named
+   [session](GLOSSARY.md#time) (the column `day`), with three factors and
+   the cumulative volume of the day beside the timestamps.
+2. **Give the grid to two specs, one for each clock.** A dict of named
    column lists in `feature_sets`, beside a list of half-lives in
    `half_life`, makes a [grid](GLOSSARY.md#grids): every combination is
    fitted from the same rows. `emit_selected=True` adds the grid point
-   chosen on each row. The volume spec's clock is the day's cumulative
-   volume, so its half-life and its `gap_cap` (the longest step a fit
-   ages by) are in shares, and `session_gap` is the step it takes at a new
-   day, where the volume starts again from zero.
-5. **Add the watchers:** a ridge on every factor with `emit_breaks=True`,
+   chosen on each row. On the time clock, `session="day"` with
+   `session_gap="1m"` ages each fit by one minute at a new day, in place of
+   the night. The volume spec's clock is the day's cumulative volume, so
+   its half-life and its `gap_cap` (the longest step a fit ages by) are in
+   shares, and `session_gap` is the step it takes at a new day, where the
+   volume starts again from zero.
+3. **Add the watchers:** a ridge on every factor with `emit_breaks=True`,
    whose `break_wald_ret` tests whether the coefficients have moved, and a
    `bocpd` spec, which tracks how long the factors' current regime has
    lasted.
-6. **Run both stages over the files in a loop, a chunk at a time.** Each
-   chunk goes through the first stage, gains the residual columns and goes
-   through the second. `po.eval.sums` reduces each chunk's output to a
-   few sums per slot, and `po.eval.merge_sums` adds them up, so the
-   loop holds one chunk at a time.
-7. **Print what the pass found:** the grid point chosen most each day, the
+4. **Run the bank over the files in a loop, a chunk at a time.**
+   `po.eval.sums` reduces each chunk's output to a few sums per slot, and
+   `po.eval.merge_sums` adds them up, so the loop holds one chunk at a
+   time.
+5. **Print what the pass found:** the grid point chosen most each day, the
    break test's flags each day, where the regime started over, and each
    spec's best grid point beside its selection made as it ran.
 
@@ -123,39 +111,31 @@ for k in range(4):
     ts = [datetime(2024, 1, 2 + k, 9, 30) + timedelta(seconds=float(s))
           for s in np.cumsum(rng.exponential(23_400 / n, n))]
     volume = np.round(rng.lognormal(6.0, 0.8, n))
-    # The factors' inputs and moves, and the return on the moves.
-    x = rng.standard_normal((3, 3, n))                             # each factor's three inputs
+    # The three factors, and the return on them.
     calm = (k == 0) | ((k == 1) & (np.array(ts) < datetime(2024, 1, 3, 12)))
-    e = rng.standard_normal((3, n)) * np.where(calm, 1.0, 3.0)     # each factor's own move
-    ret = 0.5 * e[0] + (0.6 if k >= 2 else 0.0) * e[1] + rng.standard_normal(n)
+    f = rng.standard_normal((3, n)) * np.where(calm, 1.0, 3.0)     # three times as large from noon on 2024-01-03
+    ret = 0.5 * f[0] + (0.6 if k >= 2 else 0.0) * f[1] + rng.standard_normal(n)
     pl.DataFrame({"ts": ts, "day": day, "volume": volume, "cum_volume": np.cumsum(volume), "ret": ret}
-                 | {f"d{f}": x[f].sum(axis=0) + e[f] for f in range(3)}
-                 | {f"x{f}_{j}": x[f, j] for f in range(3) for j in range(3)}).write_parquet(f"days/{day}.parquet")
+                 | {f"f{i}": f[i] for i in range(3)}).write_parquet(f"days/{day}.parquet")
 
-# 2. The first stage: a ridge per factor, on the clock ts, with a session a day.
+# 2. The grid: every set of the factors, at two half-lives in time and two in traded volume.
+factors = ["f0", "f1", "f2"]
+every_set = {"+".join(s): list(s) for k in (1, 2, 3) for s in combinations(factors, k)}
+grid = dict(targets=["ret"], features=factors, feature_sets=every_set, emit_selected=True)
 on_time = dict(clock="ts", gap_cap="5m", session="day", session_gap="1m")   # a new day ages a fit by one minute
-factors = [po.spec.ewridge(f"fac{f}", targets=[f"d{f}"], features=[f"x{f}_{j}" for j in range(3)],
-                           half_life="1h", **on_time) for f in range(3)]
-# 3. Each ridge's out-of-sample residual, the factor's own move, as the columns resid_d0 to resid_d2.
-residuals = [pl.col(f"fac{f}").struct.field(f"resid_d{f}") for f in range(3)]
-
-# 4. The grid points: every set of the residuals, at two half-lives in time and two in traded volume.
-moves = ["resid_d0", "resid_d1", "resid_d2"]
-every_set = {"+".join(c[-2:] for c in s): list(s) for k in (1, 2, 3) for s in combinations(moves, k)}
-grid = dict(targets=["ret"], features=moves, feature_sets=every_set, emit_selected=True)
 by_time = po.spec.ewridge("by_time", half_life=["30m", "2h"], **on_time, **grid)
 by_volume = po.spec.ewridge("by_volume", clock="cum_volume", half_life=[200_000.0, 800_000.0],   # in shares
                             gap_cap=20_000.0, session="day", session_gap=1_000.0, **grid)
 
-# 5. The watchers: a test for a break in the coefficients, and the age of the factors' regime.
-breaks = po.spec.ewridge("breaks", targets=["ret"], features=moves, half_life="30m", emit_breaks=True, **on_time)
-regime = po.spec.bocpd("regime", features=moves, hazard=20_000.0)   # a prior of one change in 20,000 rows
+# 3. The watchers: a test for a break in the coefficients, and the age of the factors' regime.
+breaks = po.spec.ewridge("breaks", targets=["ret"], features=factors, half_life="30m", emit_breaks=True, **on_time)
+regime = po.spec.bocpd("regime", features=factors, hazard=20_000.0)   # a prior of one change in 20,000 rows
 
-# 6. One pass over the files, a chunk at a time, keeping only sums and counts.
-first, second = po.ModelBank(factors), po.ModelBank([by_time, by_volume, breaks, regime])
+# 4. One pass over the files, a chunk at a time, keeping only sums and counts.
+bank = po.ModelBank([by_time, by_volume, breaks, regime])
 scores, chosen, flags, changes, last_run = {}, [], [], [], 0
 for chunk in pl.scan_parquet("days/*.parquet").collect_batches(chunk_size=2_000):
-    out = second.fit_predict(first.fit_predict(chunk).with_columns(residuals))
+    out = bank.fit_predict(chunk)
     for spec in ("by_time", "by_volume"):                          # each slot's errors, as sums that add up
         part = po.eval.sums(out, spec)
         scores[spec] = po.eval.merge_sums(scores[spec], part) if spec in scores else part
@@ -168,7 +148,7 @@ for chunk in pl.scan_parquet("days/*.parquet").collect_batches(chunk_size=2_000)
     changes += out.filter(run < run.shift(1, fill_value=last_run))["ts"].to_list()   # where it starts over
     last_run = run[-1]
 
-# 7. What the pass found, day by day, and every slot's score.
+# 5. What the pass found, day by day, and every slot's score.
 picks = pl.concat(chosen).group_by("day", "selected_ret").agg(pl.sum("len")).sort("day", "len", descending=[False, True])
 found = pl.concat(flags).group_by("day").agg(pl.sum("break_wald_ret"), pl.min("ts"))
 for (day, slot, held), (n_flagged, first_flag) in zip(picks.group_by("day", maintain_order=True).first().iter_rows(),
@@ -185,23 +165,23 @@ for spec in ("by_time", "by_volume"):
 ```
 
 ```text
-2024-01-02: selected d0@h30m on 2,938 trades; the break test flagged none
-2024-01-03: selected d0@h2h on 2,546 trades; the break test flagged none
-2024-01-04: selected d0+d1@h30m on 3,413 trades; the break test flagged 4,960 trades from 09:32:42
-2024-01-05: selected d0+d1@h30m on 3,863 trades; the break test flagged 791 trades from 09:30:02
-the factors' regime started over at 2024-01-03 12:00:23
-by_time: 15 slots over 19,990 trades; best pred_ret__d0+d1@h30m at mse 1.074, the selection made as it ran 1.111
-by_volume: 15 slots over 19,990 trades; best pred_ret__d0+d1@h200000 at mse 1.070, the selection made as it ran 1.106
+2024-01-02: selected f0@h2h on 2,762 trades; the break test flagged none
+2024-01-03: selected f0@h2h on 1,778 trades; the break test flagged none
+2024-01-04: selected f0+f1@h30m on 4,132 trades; the break test flagged 4,963 trades from 09:33:18
+2024-01-05: selected f0+f1@h30m on 4,922 trades; the break test flagged 473 trades from 09:30:00
+the factors' regime started over at 2024-01-03 12:00:10
+by_time: 15 slots over 19,995 trades; best pred_ret__f0+f1@h30m at mse 1.023, the selection made as it ran 1.061
+by_volume: 15 slots over 19,995 trades; best pred_ret__f0+f1@h200000 at mse 1.022, the selection made as it ran 1.057
 ```
 
 **The pass found each planted change.** On the first two days the time
-clock's selection chose factor 0 alone most often, and from 2024-01-04
-factors 0 and 1, the day factor 1's coefficient rose to 0.6. Factor 2 was
-never the most chosen. The break test flagged nothing on the first two
-days. It flagged the coefficient's move from 09:32:42 on 2024-01-04, under
-three minutes after the open, on 4,960 of that day's trades and 791 of the
-next day's. The regime detector started a new regime 23 seconds after noon
-on 2024-01-03, where the factors' moves tripled, and at no other trade.
+clock's selection chose `f0` alone most often, and from 2024-01-04 `f0`
+and `f1`, the day the coefficient on `f1` rose to 0.6. `f2` was never the
+most chosen. The break test flagged nothing on the first two days. It
+flagged the coefficient's move from 09:33:18 on 2024-01-04, a little over
+three minutes after the open, on 4,963 of that day's trades and 473 of the
+next day's. The regime detector started a new regime 10 seconds after
+noon on 2024-01-03, where the factors tripled, and at no other trade.
 
 **Report the error of the selection made as the stream ran, though it is
 worse than the best grid point's.** The best grid point is known only once
@@ -217,16 +197,17 @@ gives here is the combination.** scikit-learn refits each feature subset on
 data held in memory (`SequentialFeatureSelector`), statsmodels tests for a
 break on an array in memory (`breaks_cusumolsresid`, and `RecursiveLS`'s
 CUSUM), and river chooses among online models by their error
-(`GreedyRegressor`). Here the factors, the 28 grid points, the selection,
-the break test and the regime detector all run in the same read of the
-files. Each is out-of-sample, on clocks of time and of volume with
-sessions between the days, and the loop holds one chunk at a time.
+(`GreedyRegressor`). Here the 28 grid points, the selection, the break
+test and the regime detector all run in the same read of the files. Each
+is out-of-sample, on clocks of time and of volume with sessions between
+the days, and the loop holds one chunk at a time.
 
 ## Build a forward-looking signal and deploy it
 
 This task builds a signal that predicts the next five minutes of a price
-from the last five, fits it robustly, saves it partway, and resumes it
-where it stopped in a fresh Python process, as another machine would:
+from the last five and from a factor's own move, and fits it robustly. It
+saves the fit partway, and resumes it where it stopped in a fresh Python
+process, as another machine would:
 
 - **A target from a bounded EWMA that looks forward, and a feature from
   one that looks back.** An EWMA is an exponentially weighted moving
@@ -240,40 +221,54 @@ where it stopped in a fresh Python process, as another machine would:
 - **An [embargo](GLOSSARY.md#time)**, the delay on the clock between
   predicting a row and learning from it: the model learns each row only
   once its five minutes are known, so it never learns from the future.
+- **A factor from a two-stage regression**: a first-stage ridge fits the
+  factor on its inputs. Its out-of-sample residual (the factor's own move,
+  which its inputs do not explain) is computed in the same query as the
+  windows and written beside them, as a feature of the second stage.
 - **A robust regression**, `huber`, beside a ridge, on a price that jumps.
 - **An exact resume**: a fresh Python process loads the state the first
   run saved, drops the rows that state has read, and goes on as one
   unbroken run would.
 
 The recipe plants a price whose moves follow each trade's signed size,
-`flow`: the mid price (`mid`) moves 0.5 per unit of flow right after the
-trade. So each row's forward mean holds that move, and the coefficient on
-`flow` is 0.5. The mid's other steps are a random walk, so how far it sits
-from its bounded EWMA over the last five minutes (the feature `stretch`)
-predicts nothing, and its coefficient is 0. One trade in a thousand is
-followed by a jump of 50.
+`flow`, and a factor's own move, `e`: right after each trade the mid price
+(`mid`) moves 0.5 per unit of flow and 0.3 per unit of `e`. So each row's
+forward mean holds that move, and the coefficients on `flow` and on the
+factor's residual are 0.5 and 0.3. The factor, `d`, is the sum of its three
+inputs plus `e`. The mid's other steps are a random walk, so how far it
+sits from its bounded EWMA over the last five minutes (the feature
+`stretch`) predicts nothing, and its coefficient is 0. One trade in a
+thousand is followed by a jump of 50.
 
 1. **Make up three days of trades, one parquet file per day.**
 2. **Add the feature and the target as columns with
    `.online.with_windows`.** `po.ewm_mean("mid", half_life="1m",
    window_size="5m")` is the bounded EWMA of the last five minutes, and
    `reverse=True` makes it look at the next five.
-3. **Write the columns to a file with `sink_parquet`,** which runs the
+3. **Fit the first-stage ridge of the factor on its inputs,** with
+   `.online.fit_predict` chained after `.online.with_windows` in the query
+   of step 2.
+4. **Take its residual as a column,** `resid_d`, with
+   `pl.col("factor").struct.field("resid_d")`, which reads the field
+   `resid_d` of the spec `factor`'s output column, and drop that output
+   column.
+5. **Write the columns to a file with `sink_parquet`,** which runs the
    query and writes the result without holding it all in memory.
-4. **Give the bank two specs,** `robust` (a `huber` model) and `ridge` (an
-   `ewridge` model), each with `embargo="5m"`. `coef_every=0` writes each
-   fit's coefficients on every row.
-5. **Fit the rows up to noon on the second day.**
-6. **Save the state** (everything the bank has learned, and the rows it
+6. **Give the bank two specs,** `robust` (a `huber` model) and `ridge` (an
+   `ewridge` model), on `flow`, `stretch` and `resid_d`, each with
+   `embargo="5m"`. `coef_every=0` writes each fit's coefficients on every
+   row.
+7. **Fit the rows up to noon on the second day.**
+8. **Save the state** (everything the bank has learned, and the rows it
    holds for their embargo) with `bank.save`.
-7. **In a fresh Python process, load the state, and drop the rows it has
+9. **In a fresh Python process, load the state, and drop the rows it has
    read** (learned, or held for their embargo) with `bank.skip_learned`.
-8. **Resume from the state on the rows that remain,** with the query's
-   `online.fit_predict(load_state=..., save_state=...)`, which saves the
-   state again when the run ends, and write the predictions with
-   `sink_parquet`.
-9. **Compare the resumed run with one unbroken run,** and each spec's
-   coefficient on `flow` with the planted 0.5.
+10. **Resume from the state on the rows that remain,** with the query's
+    `online.fit_predict(load_state=..., save_state=...)`, which saves the
+    state again when the run ends, and write the predictions with
+    `sink_parquet`.
+11. **Compare the resumed run with one unbroken run,** and each spec's
+    coefficients with the planted ones.
 
 ```python
 from datetime import date, datetime, timedelta
@@ -288,15 +283,19 @@ rng = np.random.default_rng(2)
 Path("trades").mkdir(exist_ok=True)
 n = 4_000                                                          # trades a day
 for k in range(3):
-    # A day of trades at uneven times, and the mid's move after each one.
+    # A day of trades at uneven times, each with its signed size and the factor's inputs and own move.
     day = date(2024, 1, 2 + k)
     ts = [datetime(2024, 1, 2 + k, 9, 30) + timedelta(seconds=float(s))
           for s in np.cumsum(rng.exponential(23_400 / n, n))]
     flow = rng.standard_normal(n)                                  # each trade's signed size
+    x = rng.standard_normal((3, n))                                # the factor's three inputs
+    e = rng.standard_normal(n)                                     # the factor's own move
+    # The mid's move after each trade.
     jumps = np.where(rng.random(n) < 0.001, rng.choice([-50.0, 50.0], n), 0.0)
-    step = 0.5 * flow + 0.1 * rng.standard_normal(n) + jumps       # the mid's move after each trade
+    step = 0.5 * flow + 0.3 * e + 0.1 * rng.standard_normal(n) + jumps
     mid = 100.0 + np.concatenate([[0.0], np.cumsum(step)[:-1]])    # each trade sees the mid before its move
-    pl.DataFrame({"ts": ts, "day": day, "flow": flow, "mid": mid}).write_parquet(f"trades/{day}.parquet")
+    pl.DataFrame({"ts": ts, "day": day, "flow": flow, "mid": mid, "d": x.sum(axis=0) + e}
+                 | {f"x{j}": x[j] for j in range(3)}).write_parquet(f"trades/{day}.parquet")
 
 # 2. The feature and the target, bounded EWMAs over five minutes, back and ahead.
 recent = dict(half_life="1m", window_size="5m")
@@ -305,59 +304,62 @@ windows = pl.scan_parquet("trades/*.parquet").online.with_windows(
     fwd=po.ewm_mean("mid", **recent, reverse=True) - pl.col("mid"),       # the next five minutes against the mid
     clock="ts", gap_cap="5m",
 )
-# 3. Written to a file, one chunk at a time.
-windows.sink_parquet("features.parquet")
+# 3. The first stage: a ridge of the factor on its inputs, in the same query.
+factor = po.spec.ewridge("factor", targets=["d"], features=["x0", "x1", "x2"], clock="ts", gap_cap="5m", half_life="1h")
+staged = windows.online.fit_predict([factor])
+# 4 and 5. Its out-of-sample residual as a column, and the columns written to a file, a chunk at a time.
+staged.with_columns(pl.col("factor").struct.field("resid_d")).drop("factor").sink_parquet("features.parquet")
 
-# 4. A robust regression and a ridge, each learning a row once its five minutes are known.
-common = dict(targets=["fwd"], features=["flow", "stretch"], clock="ts", half_life="2h", gap_cap="5m",
+# 6. A robust regression and a ridge, each learning a row once its five minutes are known.
+common = dict(targets=["fwd"], features=["flow", "stretch", "resid_d"], clock="ts", half_life="2h", gap_cap="5m",
               embargo="5m",       # a row is learned once its five minutes are known
               coef_every=0)       # each fit's coefficients on every row
 bank = po.ModelBank([po.spec.huber("robust", **common), po.spec.ewridge("ridge", **common)])
-# 5 and 6. Fit up to noon on the second day, and save the state.
+# 7 and 8. Fit up to noon on the second day, and save the state.
 bank.fit(pl.scan_parquet("features.parquet").filter(pl.col("ts") < datetime(2024, 1, 3, 12)))
 bank.save("signal.state")
 ```
 
-Steps 7 to 9 run in a fresh Python process, as they would on another
+Steps 9 to 11 run in a fresh Python process, as they would on another
 machine that has the state file and the input:
 
 ```python
 import polars as pl
 import polars_online as po
 
-# 7. Load the state, and keep only the rows it has not read.
+# 9. Load the state, and keep only the rows it has not read.
 bank = po.ModelBank.load("signal.state")
 kept = bank.skip_learned(pl.scan_parquet("features.parquet"))   # still a query
-# 8. The rest of the rows through the state, which is saved again at the end.
+# 10. The rest of the rows through the state, which is saved again at the end.
 kept.online.fit_predict(load_state="signal.state", save_state="signal.state").sink_parquet("served.parquet")
 served = pl.read_parquet("served.parquet")
 print(f"resumed on {served.height:,} rows, after {pl.read_parquet('features.parquet').height - served.height:,} the state had read")
 
-# 9. One unbroken run over every row, with the same specs, against the resumed one.
+# 11. One unbroken run over every row, with the same specs, against the resumed one.
 whole = po.ModelBank(bank.specs)
 fitted = whole.fit_predict(pl.read_parquet("features.parquet"))
 same = all(fitted[s].tail(served.height).struct.field("pred_fwd").equals(served[s].struct.field("pred_fwd"))
            for s in ("robust", "ridge"))
 print(f"the same predictions to the bit: {same}")
 print(f"and the same state, byte for byte: {po.ModelBank.load('signal.state').save_bytes() == whole.save_bytes()}")
-# Each fit's coefficient on flow over the last two days, against the planted 0.5.
+# Each fit's coefficients averaged over the last two days, against the planted 0.5, 0.3 and 0.
 for s in ("robust", "ridge"):
-    coef = fitted[s].struct.field("coef")                          # [intercept, flow, stretch] on every row
-    on_flow = coef.list.get(1).tail(8_000)
-    print(f"{s}: coefficient on flow {on_flow[-1]:.3f} at the end, {((on_flow - 0.5) ** 2).mean() ** 0.5:.3f} from 0.5 "
-          f"on average (root mean square); on stretch {coef.list.get(2)[-1]:.3f}")
+    coef = fitted[s].struct.field("coef").tail(8_000)             # [intercept, flow, stretch, resid_d] on every row
+    on_flow, on_stretch, on_resid = (coef.list.get(i) for i in (1, 2, 3))
+    print(f"{s}: on flow {on_flow.mean():.3f}, {((on_flow - 0.5) ** 2).mean() ** 0.5:.3f} from 0.5 "
+          f"(root mean square); on resid_d {on_resid.mean():.3f}; on stretch {on_stretch.mean():.3f}")
 ```
 
 ```text
-resumed on 6,458 rows, after 5,542 the state had read
+resumed on 6,494 rows, after 5,506 the state had read
 the same predictions to the bit: True
 and the same state, byte for byte: True
-robust: coefficient on flow 0.483 at the end, 0.019 from 0.5 on average (root mean square); on stretch 0.012
-ridge: coefficient on flow 0.537 at the end, 0.109 from 0.5 on average (root mean square); on stretch 0.012
+robust: on flow 0.506, 0.023 from 0.5 (root mean square); on resid_d 0.305; on stretch -0.016
+ridge: on flow 0.521, 0.079 from 0.5 (root mean square); on resid_d 0.325; on stretch -0.029
 ```
 
 **The resumed run writes what a run that never stopped writes.** The
-fresh process read the state saved at noon, dropped the 5,542 rows the
+fresh process read the state saved at noon, dropped the 5,506 rows the
 state had already read, and wrote the predictions and the state an
 unbroken run writes, to the bit. A state file loads on macOS, Windows and
 Linux alike. Resumed on another operating system, its predictions match
@@ -365,11 +367,14 @@ within `1e-12 × (1 + |value|)`, since the platforms' math libraries can
 round the last bit differently ([Resume from a saved
 state](how-to/resume-from-a-saved-state.md#check-that-it-worked)).
 
-**The robust fit stays near 0.5 through the jumps, and the ridge does
-not.** A jump of 50 lands in the five-minute window of some fifty rows'
-targets. The ridge weighs each of those rows by its squared error, so
-every jump pulls its coefficient away, while `huber` down-weights the rows
-it misses by far.
+**The robust fit stays near the planted coefficients through the jumps,
+and the ridge strays further.** Averaged over the last two days, `huber`
+reads 0.506 on `flow` and 0.305 on the factor's residual, against the
+planted 0.5 and 0.3, and its coefficient on `flow` is 0.023 from 0.5 on a
+typical row, against the ridge's 0.079. A jump of 50 lands in the
+five-minute window of some fifty rows' targets. The ridge weighs each of
+those rows by its squared error, so every jump pulls its coefficients
+away, while `huber` down-weights the rows it misses by far.
 
 **Each part has a counterpart elsewhere. What one stream gives here is the
 combination.** Polars and pandas each bound an EWMA by a count of rows
@@ -380,8 +385,8 @@ EWMA is written by hand, as a weighted aggregation inside `rolling`. The
 river library evaluates a model on targets that arrive late
 (`progressive_val_score`'s `delay=`), but its exponentially weighted
 statistics have no window of time. Here the bounded EWMAs, forward and
-back, the embargo, the robust fit and the resume work together on one
-stream, from files to files.
+back, the embargo, the factor's out-of-sample residual, the robust fit and
+the resume work together on one stream, from files to files.
 
 ## Train gradient-boosted trees on files larger than memory
 
@@ -595,10 +600,11 @@ flags no change explains: 0
 ```
 
 **Both intervals cover 90% of the targets, and the adaptive one is
-narrower, 1.59 against 2.51.** About 300 rows wait for their targets at any time. At the
-default step, the interval's radius learns of each miss 300 rows late,
-overshoots and undershoots, and is wider on average. `"auto"` takes
-smaller steps the more rows wait. [Keep the coverage when targets arrive
+narrower, 1.59 against 2.51.** About 300 rows wait for their targets at
+any time. At the default step, the interval's radius learns of each miss
+300 rows late, overshoots and undershoots, and is wider on average.
+`"auto"` takes smaller steps the more rows wait. [Keep the coverage when
+targets arrive
 late](how-to/put-an-interval-on-a-prediction.md#keep-the-coverage-when-targets-arrive-late)
 measures the step on more streams.
 
@@ -738,15 +744,15 @@ the library, one line each, see [the feature index](FEATURES.md).
 |---|---|---|---|
 | a target from a bounded EWMA that looks forward | the exponentially weighted mean of the rows after each row, up to a maximum distance on the clock, less the row's value | [deploy a signal](#build-a-forward-looking-signal-and-deploy-it), step 2 | [Make a target that looks ahead](how-to/make-a-target-that-looks-ahead.md) |
 | a feature from a bounded EWMA that looks back | how far a value sits from its recent weighted mean, with rows older than the window dropped | [deploy a signal](#build-a-forward-looking-signal-and-deploy-it), step 2 | [Make features that look back over the stream](how-to/make-window-features.md) |
-| `embargo` | each row predicted at its own clock value and learned only once its target is known, so no model learns from the future | [deploy a signal](#build-a-forward-looking-signal-and-deploy-it), step 4 | [Learn targets known late](how-to/learn-targets-known-late.md) |
-| a half-life in time or in traded volume | a local fit that forgets on any sorted clock, with sessions and gaps measured in its units | [model selection](#automate-a-round-of-model-selection), steps 2 and 4 | [Handle sessions, gaps and steps back](how-to/handle-sessions-gaps-and-steps-back.md) |
-| a two-stage regression | each first-stage fit's out-of-sample residual as a feature of the second stage, in one pass | [model selection](#automate-a-round-of-model-selection), steps 2, 3 and 6 | [Fit on factor residuals](how-to/fit-on-factor-residuals.md) |
-| many combinations of columns, with multiple specs | every feature set at every half-life, in several specs, from one read of the rows | [model selection](#automate-a-round-of-model-selection), step 4 | [Grids, instances and slots](explanation/grids-and-instances.md) |
-| one pass that detects changes of coefficients, selection and regimes | a break test, the grid point chosen on each row and a regime's age, beside the fits they watch | [model selection](#automate-a-round-of-model-selection), steps 4 to 7 | [Detect a break](how-to/detect-a-break.md) |
-| model selection made out-of-sample | the grid point whose exponentially weighted out-of-sample error is lowest so far, chosen on each row from the rows before it | [model selection](#automate-a-round-of-model-selection), step 4 | [Choose among a grid's settings as the stream runs](how-to/choose-among-a-grid-online.md) |
-| scores of an output too large to hold | sums per slot that add up across chunks, files and machines | [model selection](#automate-a-round-of-model-selection), step 6 | [Score an output too large to hold](how-to/evaluate-an-output-frame.md#score-an-output-too-large-to-hold) |
-| robust regression | a fit that down-weights the rows it misses by far, such as jumps | [deploy a signal](#build-a-forward-looking-signal-and-deploy-it), step 4 | [The robust scale](explanation/robust-scale.md) |
-| an exact resume | a saved state goes on in a fresh process as one unbroken run would, dropping the rows it has read | [deploy a signal](#build-a-forward-looking-signal-and-deploy-it), steps 6 to 9 | [Resume from a saved state](how-to/resume-from-a-saved-state.md) |
+| `embargo` | each row predicted at its own clock value and learned only once its target is known, so no model learns from the future | [deploy a signal](#build-a-forward-looking-signal-and-deploy-it), step 6 | [Learn targets known late](how-to/learn-targets-known-late.md) |
+| a two-stage regression | each first-stage fit's out-of-sample residual as a feature of the second stage | [deploy a signal](#build-a-forward-looking-signal-and-deploy-it), steps 3 to 6 | [Fit on factor residuals](how-to/fit-on-factor-residuals.md) |
+| a half-life in time or in traded volume | a local fit that forgets on any sorted clock, with sessions and gaps measured in its units | [model selection](#automate-a-round-of-model-selection), step 2 | [Handle sessions, gaps and steps back](how-to/handle-sessions-gaps-and-steps-back.md) |
+| many combinations of columns, with multiple specs | every feature set at every half-life, in several specs, from one read of the rows | [model selection](#automate-a-round-of-model-selection), step 2 | [Grids, instances and slots](explanation/grids-and-instances.md) |
+| one pass that detects changes of coefficients, selection and regimes | a break test, the grid point chosen on each row and a regime's age, beside the fits they watch | [model selection](#automate-a-round-of-model-selection), steps 2 to 5 | [Detect a break](how-to/detect-a-break.md) |
+| model selection made out-of-sample | the grid point whose exponentially weighted out-of-sample error is lowest so far, chosen on each row from the rows before it | [model selection](#automate-a-round-of-model-selection), step 2 | [Choose among a grid's settings as the stream runs](how-to/choose-among-a-grid-online.md) |
+| scores of an output too large to hold | sums per slot that add up across chunks, files and machines | [model selection](#automate-a-round-of-model-selection), step 4 | [Score an output too large to hold](how-to/evaluate-an-output-frame.md#score-an-output-too-large-to-hold) |
+| robust regression | a fit that down-weights the rows it misses by far, such as jumps | [deploy a signal](#build-a-forward-looking-signal-and-deploy-it), step 6 | [The robust scale](explanation/robust-scale.md) |
+| an exact resume | a saved state goes on in a fresh process as one unbroken run would, dropping the rows it has read | [deploy a signal](#build-a-forward-looking-signal-and-deploy-it), steps 8 to 11 | [Resume from a saved state](how-to/resume-from-a-saved-state.md) |
 | a tree fit in passes over files larger than memory | XGBoost's and LightGBM's training objects, binned from files or a query a chunk at a time | [trees](#train-gradient-boosted-trees-on-files-larger-than-memory), steps 5 to 8 | [Train XGBoost or LightGBM on files larger than memory](GBDT.md) |
 | an online model as the trees' margin | trees that learn what an out-of-sample online prediction leaves, and follow its level | [trees](#train-gradient-boosted-trees-on-files-larger-than-memory), steps 2 and 9 | [Train trees around an online model's prediction](GBDT.md#train-trees-around-an-online-models-prediction) |
 | intervals when targets arrive late | a conformal interval whose step adapts to the targets still waiting | [monitor a model](#monitor-a-live-model), steps 5 and 8 | [Put an interval on a prediction](how-to/put-an-interval-on-a-prediction.md) |
