@@ -233,6 +233,18 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    re-saves after those rows is not the old build's. A given
    `solve_every`'s clock and row cap still run every solve they bring due.
    No frozen fixture reaches it.
+   A thirteenth, the user's (2026-11-09, task 368): a conformal tracker
+   now keeps a multiplier `m` of the residual spread, the interval being
+   `pred ± m·σ`, where a state of schema 66 or earlier holds the radius
+   `q`. Such a state loads with `q` kept, re-saves it, and shows it to the
+   bit on its next row; that row, if it reads an error scale, converts it
+   to `m = q / σ` and steps `m`, so from there its intervals and coverage
+   go on under the multiplier, not to the old build's, and the state it
+   re-saves is not the old build's. Every other field continues to the
+   bit. No frozen fixture holds a conformal tracker;
+   `a_conformal_radius_of_schema_66_is_shown_then_converted` holds the form,
+   written from a current bank, and `tests/test_released_state.py` each
+   release's file (`CONVERTED`: each group's first row to the bit).
 6. No `unsafe` in `online-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
 8. **`n_eff` -- the models' accessor, emitted as `weight_sum` -- means the same thing in

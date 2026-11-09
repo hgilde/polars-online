@@ -70,6 +70,34 @@ returns.
 
 ### Changed
 
+- **A conformal interval is now `pred ± m · sigma`: the tracker keeps a
+  multiplier of the residual spread rather than the radius itself.** `m`
+  steps by `conformal_rate · (miss − α)` and starts at the Gaussian
+  `Φ⁻¹(1 − α/2)` (1.645 at 90%) on the first row with a residual, so the
+  interval narrows with `sigma` as the model learns, instead of stepping
+  down from a width set by a barely trained model's first residuals. Under
+  `label_clock` with labels 50 to 300 rows late, the radius started at five
+  times its steady width and took about 7,000 rows to come down; the
+  multiplier's interval covered 90.6% from row 1,000. Over 100 generated
+  and flights streams at 90% (36 each at 50% and 99%), under `"auto"` the
+  interval held its coverage within 0.005 and its width within 10% of the
+  best fixed rate on 97, 36 and 34 streams, against 88, 36 and 27 before.
+  Every conformal stream's `lo`, `hi` and `coverage` move. At the default
+  0.05 with no delay the long-run coverage is the same and the start is
+  shorter (over the first 10% of rows, mean half-width 1.84 against 2.91).
+  Under a fixed rate the guarantee now holds the share of rows missed,
+  weighted by `w/w̄`, to `α`; before, that share was weighted by `sigma`.
+- **`conformal_rate="auto"` waits for its first interval until the targets
+  it has seen outnumber the rows waiting for theirs.** With nothing waiting
+  it starts on the first row, and is the fixed 0.05 to the bit.
+- The inverse normal behind the start and `"auto"`'s gain reads its
+  logarithm in basic arithmetic, so a coverage above 95.15% gives the same
+  bits on every platform.
+- A conformal tracker saved by 1.4.0 or earlier holds a radius. It loads,
+  shows that radius on its next row, converts it there to a multiplier of
+  that row's `sigma`, and goes on under the multiplier: its `lo`, `hi` and
+  `coverage` from that row on are this release's; every other field goes
+  on as before.
 - `ewridge` under its default schedule (a finite half-life and no
   `solve_every`) no longer runs a solve that `max_rows_between_solves`
   brings due while its weight is more than about 1.4% below the floor, as
