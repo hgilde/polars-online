@@ -150,6 +150,30 @@ impl LowerTriangle {
         self.0.copy_from_slice(full);
     }
 
+    /// [`crate::Pack::pack`] of a matrix its owner knows to be `k × k`,
+    /// such as an accumulator over `k` slots: the side is checked by one
+    /// product, not found by a square root on every snapshot.
+    #[inline]
+    pub(crate) fn pack_side(&self, k: usize, out: &mut crate::Packer) {
+        if k.checked_mul(k) == Some(self.0.len()) {
+            self.pack_lower(k, out);
+        } else {
+            crate::Pack::pack(self, out);
+        }
+    }
+
+    /// The lower triangle of the `k × k` storage, row by row, after `k`.
+    #[inline]
+    fn pack_lower(&self, k: usize, out: &mut crate::Packer) {
+        out.dim(0);
+        out.dim(k);
+        // Each row's lower part by its index range: rows taken by
+        // `chunks_exact` cost fewer instructions and more time at k = 30.
+        for i in 0..k {
+            out.f64s(&self.0[i * k..=i * k + i]);
+        }
+    }
+
     /// The matrix with one stored number dropped: a damaged state's shape,
     /// for the tests that refuse one.
     #[cfg(test)]
@@ -203,13 +227,7 @@ impl crate::Pack for LowerTriangle {
     /// A storage that is no square, a damaged state's, is written whole.
     fn pack(&self, out: &mut crate::Packer) {
         match self.side() {
-            Some(k) => {
-                out.dim(0);
-                out.dim(k);
-                for i in 0..k {
-                    out.f64s(&self.0[i * k..=i * k + i]);
-                }
-            }
+            Some(k) => self.pack_lower(k, out),
             None => {
                 out.dim(1);
                 out.dim(self.0.len());
@@ -238,10 +256,12 @@ impl crate::Pack for LowerTriangle {
             v.resize(n * n, 0.0);
         }
         let mut words = from.words(n * (n + 1) / 2);
-        for i in 0..n {
-            let (row, rest) = words.split_at(i + 1);
+        // Over the storage's rows, with no index range to check at each
+        // (`max(1)`: a side of 0 has no rows).
+        for (i, row) in v.chunks_exact_mut(n.max(1)).enumerate() {
+            let (w, rest) = words.split_at(i + 1);
             words = rest;
-            for (x, w) in v[i * n..=i * n + i].iter_mut().zip(row) {
+            for (x, w) in row[..=i].iter_mut().zip(w) {
                 *x = f64::from_bits(*w);
             }
         }
