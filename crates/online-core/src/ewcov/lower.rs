@@ -110,15 +110,16 @@ impl LowerTriangle {
         &mut self.v
     }
 
-    /// The diagonal, `(i, i)` for each `i` in turn, each row's start carried
-    /// to the next rather than found again ([`Self::get`] finds it).
+    /// The diagonal, `(i, i)` for each `i` in turn: each row split off the
+    /// packed rows in turn, and its last entry read, rather than its place
+    /// found again ([`Self::get`] finds it).
     #[inline]
     pub(crate) fn diagonal(&self) -> impl Iterator<Item = f64> + '_ {
-        let mut at = 0;
-        (0..self.k).map(move |i| {
-            let v = self.v[at + i];
-            at += i + 1;
-            v
+        let mut rows = self.v.as_slice();
+        (0..self.k).map_while(move |i| {
+            let (row, rest) = rows.split_at_checked(i + 1)?;
+            rows = rest;
+            row.last().copied()
         })
     }
 
@@ -188,70 +189,94 @@ impl LowerTriangle {
 
     /// The strict upper triangle, row by row -- pair `(i, j)`, `j > i`, in
     /// the order `(0, 1), (0, 2), .., (1, 2), ..` -- each entry `v` written as
-    /// `f(i, j, v)` into `dst`, which holds `k(k-1)/2`. Pair `(i, j)` is the lower entry
-    /// `(j, i)`, so an output row is a column of the lower triangle; the
-    /// columns are read four at a time, so each row of the storage is read
-    /// in runs of four and each of the four output rows is written in
-    /// order. A column read alone, one entry a row apart at a time, cost 3.8
-    /// instructions a pair more than the contiguous row it replaced.
+    /// `f(v, w[i], w[j])` into `dst`, which holds `k(k-1)/2`; `w` holds `k`
+    /// numbers, which only `f` reads. Pair `(i, j)` is the lower entry
+    /// `(j, i)`, so an output row is a column of the lower triangle.
+    ///
+    /// The triangle is read in the order it is stored, four lower rows at a
+    /// time: rows `j ..= j + 3` side by side, along `i < j`, give pairs
+    /// `(i, j ..= j + 3)`, four neighbours in output row `i`, written as one
+    /// run; the run's place moves down the output column by a count, `k − i
+    /// − 2` more each step, so no place is found by a multiply and no read
+    /// is strided. The pairs among the four rows themselves, six, follow.
+    /// The rows the fours leave over are read first, one at a time. The same `f` of the same
+    /// numbers into the same slots; only the order of the writes, to
+    /// distinct slots, differs. `w`'s entries reach `f` with the rows they
+    /// go with, not indexed a pair at a time.
+    ///
+    /// The packed rows first cost `ew_cov`'s bench block 706k more
+    /// instructions than the square rows on x86 read column by column, four
+    /// at a time, each run's place found again by `row_at`, and 378k with
+    /// the places carried (tasks 371 and 374). Walked one stored row at a
+    /// time, each pair written to its own place, every write checked, it
+    /// cost 24% more a row at 20 features on arm64.
     pub(crate) fn upper_rows_map(
         &self,
         k: usize,
-        mut dst: &mut [f64],
-        f: impl Fn(usize, usize, f64) -> f64,
+        dst: &mut [f64],
+        w: &[f64],
+        f: impl Fn(f64, f64, f64) -> f64,
     ) {
         let c = &self.v;
-        let at = |i: usize, j: usize| row_at(i) + j;
-        let mut i = 0;
-        while i + 4 <= k {
-            let (r0, rest) = std::mem::take(&mut dst).split_at_mut(k - 1 - i);
-            let (r1, rest) = rest.split_at_mut(k - 2 - i);
-            let (r2, rest) = rest.split_at_mut(k - 3 - i);
-            let (r3, rest) = rest.split_at_mut(k - 4 - i);
-            dst = rest;
-            // The corner, rows `i + 1 ..= i + 3`, where the four columns
-            // have not all begun.
-            r0[0] = f(i, i + 1, c[at(i + 1, i)]);
-            r0[1] = f(i, i + 2, c[at(i + 2, i)]);
-            r1[0] = f(i + 1, i + 2, c[at(i + 2, i + 1)]);
-            r0[2] = f(i, i + 3, c[at(i + 3, i)]);
-            r1[1] = f(i + 1, i + 3, c[at(i + 3, i + 1)]);
-            r2[0] = f(i + 2, i + 3, c[at(i + 3, i + 2)]);
-            let outs = r0[3..]
-                .iter_mut()
-                .zip(r1[2..].iter_mut())
-                .zip(r2[1..].iter_mut())
-                .zip(r3.iter_mut());
-            // Row `j`'s entry `(j, i)`, carried from row to row (`+ j + 1`)
-            // rather than found again: `row_at(j)` on every row of the
-            // column block was the most of the 706k more instructions the
-            // packed rows first cost `ew_cov`'s block on x86 (task 374).
-            // Each row split off whole instead, so that the run needed no
-            // check of its own, read 2.5% more instructions a row at 20
-            // features on arm64, by how the correlations' loop compiled.
-            let mut ji = at(i + 4, i);
-            for (j, (((o0, o1), o2), o3)) in (i + 4..).zip(outs) {
-                let q: &[f64; 4] = c[ji..]
-                    .first_chunk()
-                    .expect("four columns of a row below them");
-                *o0 = f(i, j, q[0]);
-                *o1 = f(i + 1, j, q[1]);
-                *o2 = f(i + 2, j, q[2]);
-                *o3 = f(i + 3, j, q[3]);
-                ji += j + 1;
+        let w = &w[..k];
+        // Row `j` of the packed rows starts at `start`, `j + 1` long. The
+        // rows the fours leave over, one at a time, are the first, the
+        // shortest: at 20 features, rows 1 to 3 rather than 17 to 19.
+        let (mut j, mut start) = (1, row_at(1));
+        let single = 1 + k.saturating_sub(1) % 4;
+        while j < single {
+            let row = &c[start..start + j];
+            let wj = w[j];
+            let (mut at, mut step) = (j - 1, k - 2);
+            for (&a, &wi) in row.iter().zip(&w[..j]) {
+                dst[at] = f(a, wi, wj);
+                at += step;
+                // Past the row's last pair at `k = j + 1`, never read.
+                step = step.wrapping_sub(1);
             }
-            i += 4;
+            start += j + 1;
+            j += 1;
         }
-        while i + 1 < k {
-            let (row, rest) = std::mem::take(&mut dst).split_at_mut(k - 1 - i);
-            dst = rest;
-            let mut ji = at(i + 1, i);
-            for (j, o) in (i + 1..).zip(row.iter_mut()) {
-                *o = f(i, j, c[ji]);
-                ji += j + 1;
+        while j + 4 <= k {
+            let rows = &c[start..];
+            let (r0, rows) = rows.split_at(j + 1);
+            let (r1, rows) = rows.split_at(j + 2);
+            let (r2, rows) = rows.split_at(j + 3);
+            let r3 = &rows[..j + 4];
+            let [w0, w1, w2, w3] = *w[j..].first_chunk::<4>().expect("four rows of the block");
+            // `(i, j)` at `j − 1` for `i = 0`, then `k − i − 2` on.
+            let (mut at, mut step) = (j - 1, k - 2);
+            let cols = r0[..j]
+                .iter()
+                .zip(&r1[..j])
+                .zip(&r2[..j])
+                .zip(&r3[..j])
+                .zip(&w[..j]);
+            for ((((&a0, &a1), &a2), &a3), &wi) in cols {
+                let run: &mut [f64; 4] = dst[at..]
+                    .first_chunk_mut()
+                    .expect("four pairs of an output row");
+                run[0] = f(a0, wi, w0);
+                run[1] = f(a1, wi, w1);
+                run[2] = f(a2, wi, w2);
+                run[3] = f(a3, wi, w3);
+                at += step;
+                step -= 1;
             }
-            i += 1;
+            // `at` is now where output row `j` starts, less one.
+            let o0 = at + 1;
+            let o1 = o0 + (k - j - 1);
+            let o2 = o1 + (k - j - 2);
+            dst[o0] = f(r1[j], w0, w1);
+            dst[o0 + 1] = f(r2[j], w0, w2);
+            dst[o0 + 2] = f(r3[j], w0, w3);
+            dst[o1] = f(r2[j + 1], w1, w2);
+            dst[o1 + 1] = f(r3[j + 1], w1, w3);
+            dst[o2] = f(r3[j + 2], w2, w3);
+            start += 4 * j + 10;
+            j += 4;
         }
+        debug_assert!(j >= k, "every row read");
     }
 
     /// Take a whole row-major matrix of the same size: its lower triangle
@@ -436,7 +461,7 @@ mod tests {
     /// four-column blocks and the columns left over meet: `0` to `9`.
     #[test]
     fn the_upper_rows_are_the_mirrored_pairs_in_order() {
-        for k in 0..10usize {
+        for k in 0..14usize {
             let full: Vec<f64> = (0..k * k).map(|v| v as f64 + 0.25).collect();
             let mut m = LowerTriangle::zeros(k);
             m.copy_from(&full);
@@ -445,8 +470,9 @@ mod tests {
                 .map(|(i, j)| 3.0 * full[j * k + i])
                 .collect();
             let mut got = vec![f64::NAN; want.len()];
-            m.upper_rows_map(k, &mut got, |i, j, v| {
-                assert!(i < j && j < k);
+            let w: Vec<f64> = (0..k).map(|i| i as f64).collect();
+            m.upper_rows_map(k, &mut got, &w, |v, wi, wj| {
+                assert!(wi < wj && wj < k as f64);
                 3.0 * v
             });
             assert_eq!(got, want, "k = {k}");

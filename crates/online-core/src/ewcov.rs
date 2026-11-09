@@ -108,16 +108,22 @@ fn rank_one_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
 /// so the loop is compiled on its own rather than inside `update` beside the
 /// threaded branch, where it ran 21% slower than 0.13.0's identical loop at
 /// `k = 20` (task 250).
+///
+/// Each row is split off the rows left, `i + 1` long, and run beside
+/// `d[..=i]`, of its own length: found by its place, a row and `d` whole
+/// were two lengths for the loop to reconcile on every row, and each
+/// row's place two bounds to check (task 374: 60 instructions a row more
+/// than a square's rows at 20 features on arm64, with no statistic read).
 #[inline(never)]
 fn rank_one_lower_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
-    let mut at = 0;
+    let mut rows = &mut c[..row_at(k)];
     for (i, &di) in d[..k].iter().enumerate() {
         let ab_di = a * b * di;
-        let row = &mut c[at..=at + i];
-        for (cj, &dj) in row.iter_mut().zip(d.iter()) {
+        let (row, rest) = std::mem::take(&mut rows).split_at_mut(i + 1);
+        rows = rest;
+        for (cj, &dj) in row.iter_mut().zip(&d[..=i]) {
             *cj = a * *cj + ab_di * dj;
         }
-        at += i + 1;
     }
 }
 
@@ -2594,7 +2600,9 @@ impl EwCovModel {
                 EwCovStat::Cov => {
                     // Pair `(i, j)`, `j > i`, is the lower entry `(j, i)`.
                     let dst = slots(&mut rest, k * (k - 1) / 2);
-                    cov.comoments().upper_rows_map(k, dst, |_, _, v| scale * v);
+                    // `w` any `k` numbers: this `f` reads none.
+                    cov.comoments()
+                        .upper_rows_map(k, dst, cov.means(), |v, _, _| scale * v);
                 }
                 EwCovStat::Corr => {
                     // `k` square roots, not `k(k-1)`: at k = 20 the pairwise
@@ -2609,9 +2617,8 @@ impl EwCovModel {
                     std.clear();
                     std.extend(cov.vars().map(f64::sqrt));
                     let dst = slots(&mut rest, k * (k - 1) / 2);
-                    let sd = &*std;
-                    cov.comoments().upper_rows_map(k, dst, |i, j, cij| {
-                        let d = sd[i] * sd[j];
+                    cov.comoments().upper_rows_map(k, dst, std, |cij, si, sj| {
+                        let d = si * sj;
                         if d > 0.0 {
                             (cij / d).clamp(-1.0, 1.0)
                         } else {

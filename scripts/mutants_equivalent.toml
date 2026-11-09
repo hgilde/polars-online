@@ -105,7 +105,7 @@ that feature's own update, which the descent skips; the coefficient stays 0"""
 
 [[equivalent]]
 file = "crates/online-core/src/lasso.rs"
-function = "Lasso::solve"
+function = "cd_sweep"
 mutation = "replace > with >="
 line_has = "let newb = if rho > l1 {"
 why = """they differ only at `rho == l1`, where the mutant's `(rho - l1) / \
@@ -113,7 +113,7 @@ denom` is +0 divided by a positive denominator: the 0 the original gives"""
 
 [[equivalent]]
 file = "crates/online-core/src/lasso.rs"
-function = "Lasso::solve"
+function = "cd_sweep"
 mutation = "replace < with <="
 line_has = "} else if rho < -l1 {"
 why = """they differ only at `rho == -l1`, where the mutant's `(rho + l1) / \
@@ -148,7 +148,7 @@ why = """both mutants are inside the second argument, which \
 
 [[equivalent]]
 file = "crates/online-core/src/lasso.rs"
-function = "Lasso::solve"
+function = "Lasso::solve_in"
 mutation = "replace > with >="
 line_has = "if s[i] > 0.0 && p.is_finite() {"
 why = """it adds the features with no scale, whose warm start is then \

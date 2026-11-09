@@ -1024,46 +1024,16 @@ impl Lasso {
                     // Coordinate descent, warm-started along the path.
                     let l1 = lam * self.cfg.l1_ratio;
                     let l2 = lam * (1.0 - self.cfg.l1_ratio);
-                    let mut converged = false;
-                    for _ in 0..self.cfg.max_iter {
-                        let mut max_delta: f64 = 0.0;
-                        for i in 0..k {
-                            if s[i] <= 0.0 {
-                                b[i] = 0.0;
-                                continue;
-                            }
-                            // `rho = d_i − Σ_{j≠i} c_ij b_j`, the terms in
-                            // the order `j` runs, as two runs either side of
-                            // `i`: the same subtractions in the same order,
-                            // so the same bits, with no bound checked or
-                            // branch taken per term. The loop the descent
-                            // spends its time in: one instruction more per
-                            // term, a block placement, was 3% of
-                            // `lasso_k20`'s count (task 275 (b)).
-                            let mut rho = d[jj][i];
-                            let row = &c[i * k..(i + 1) * k];
-                            for (cij, bj) in row[..i].iter().zip(&b[..i]) {
-                                rho -= cij * bj;
-                            }
-                            for (cij, bj) in row[i + 1..].iter().zip(&b[i + 1..]) {
-                                rho -= cij * bj;
-                            }
-                            let denom = c[i * k + i] + l2;
-                            let newb = if rho > l1 {
-                                (rho - l1) / denom
-                            } else if rho < -l1 {
-                                (rho + l1) / denom
-                            } else {
-                                0.0
-                            };
-                            max_delta = max_delta.max((newb - b[i]).abs());
-                            b[i] = newb;
-                        }
-                        if crate::gramfit::settled(max_delta, limit) {
-                            converged = true;
-                            break;
-                        }
-                    }
+                    let converged = descend(
+                        &c,
+                        k,
+                        &d[jj],
+                        &s,
+                        (l1, l2),
+                        &mut b,
+                        self.cfg.max_iter,
+                        limit,
+                    );
                     // Out of sweeps before `tol`: the fit is where the
                     // descent stopped, and it is counted (review 2026-09-12,
                     // S11: nothing wrote `solve_failures`).
@@ -1090,6 +1060,85 @@ impl Lasso {
         self.rows_since_solve = 0;
         self.weight_since_solve = 0.0;
     }
+}
+
+/// Coordinate descent at one point of the path: sweeps of [`cd_sweep`]
+/// until the largest move settles below `limit` (`gramfit::settled`) or
+/// `max_iter` sweeps have run; whether it settled. Out of line, so the
+/// sweep compiles on its own rather than inside the solve: there its run
+/// over a row lost its fusion and kept its bounds checks when the solve's
+/// body moved (2.5% more instructions in `lasso_k20` on x86, task 374).
+/// A call per sweep rather than per path point cost `lasso` 16% more
+/// instructions a row at four features on arm64.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn descend(
+    c: &[f64],
+    k: usize,
+    d: &[f64],
+    s: &[f64],
+    (l1, l2): (f64, f64),
+    b: &mut [f64],
+    max_iter: u32,
+    limit: f64,
+) -> bool {
+    for _ in 0..max_iter {
+        if crate::gramfit::settled(cd_sweep(c, k, d, s, l1, l2, b), limit) {
+            return true;
+        }
+    }
+    false
+}
+
+/// One sweep of coordinate descent over the `k` standardized coefficients
+/// `b`, in order, against the correlation matrix `c` (row-major `k × k`),
+/// the cross-correlations `d` and the penalties `l1`, `l2`; a feature of
+/// scale `s_i = 0` is held at 0. Returns the largest move. Each coefficient
+/// is the soft-thresholded `rho = d_i − Σ_{j≠i} c_ij b_j` over
+/// `c_ii + l2`, the terms in the order `j` runs, as two runs either side of
+/// `i`: the same subtractions in the same order, so the same bits, with no
+/// bound checked or branch taken per term. The loop the descent spends its
+/// time in: one instruction more per term, a block placement, was 3% of
+/// `lasso_k20`'s count (task 275 (b)). Its rows are `c`'s chunks of `k`.
+#[inline(always)]
+fn cd_sweep(c: &[f64], k: usize, d: &[f64], s: &[f64], l1: f64, l2: f64, b: &mut [f64]) -> f64 {
+    let mut max_delta: f64 = 0.0;
+    if k == 0 {
+        return max_delta;
+    }
+    let rows = c.chunks_exact(k).zip(d).zip(s);
+    for (i, ((row, &di), &si)) in rows.take(k).enumerate() {
+        // The row and the coefficients split either side of `i`, each
+        // split checked once, so no term below is.
+        let (left, right) = row.split_at(i);
+        let (bl, br) = b.split_at_mut(i);
+        let (Some((&cii, right)), Some((bi, br))) = (right.split_first(), br.split_first_mut())
+        else {
+            break;
+        };
+        if si <= 0.0 {
+            *bi = 0.0;
+            continue;
+        }
+        let mut rho = di;
+        for (cij, bj) in left.iter().zip(bl.iter()) {
+            rho -= cij * bj;
+        }
+        for (cij, bj) in right.iter().zip(br.iter()) {
+            rho -= cij * bj;
+        }
+        let denom = cii + l2;
+        let newb = if rho > l1 {
+            (rho - l1) / denom
+        } else if rho < -l1 {
+            (rho + l1) / denom
+        } else {
+            0.0
+        };
+        max_delta = max_delta.max((newb - *bi).abs());
+        *bi = newb;
+    }
+    max_delta
 }
 
 impl OnlineModel for Lasso {
