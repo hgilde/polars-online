@@ -7,7 +7,7 @@ the library found, to read against that answer.
 | task | what it shows |
 |---|---|
 | [Automate a round of model selection](#automate-a-round-of-model-selection) | exponentially weighted ridge regressions over many combinations of factors, targets and [half-lives](GLOSSARY.md#time) in time and in traded volume, in one pass in bounded memory, so the files may be larger than memory, that writes each fit's [out-of-sample](GLOSSARY.md#fitting-a-model) residuals and coefficients, the combination chosen as best on each trade, and markers where the factors' regime changed, to read how stable each model is |
-| [Build a forward-looking signal and resume it](#build-a-forward-looking-signal-and-resume-it) | a target over the next five minutes, a feature over the last five and the out-of-sample residual a first-stage ridge leaves of a factor, learned under an [embargo](GLOSSARY.md#time), fitted robustly through jumps, and resumed in a fresh process with the same predictions to the bit |
+| [Build a forward-looking signal and resume it](#build-a-forward-looking-signal-and-resume-it) | a target built as the data streams, a bounded EWMA of the mid over the next five minutes minus the mid, a feature of the mid minus its EWMA over the last five, and a first-stage ridge's out-of-sample residual as a feature of the second stage, learned under an [embargo](GLOSSARY.md#time) so no prediction has learned from a target still being formed, fitted robustly through jumps, and saved partway and resumed in a fresh process exactly where it left off |
 | [Train gradient-boosted trees on files larger than memory](#train-gradient-boosted-trees-on-files-larger-than-memory) | XGBoost and LightGBM trained from parquet files around an online model's prediction, which follows a level that drifts beyond every training row's |
 | [Monitor a live model](#monitor-a-live-model) | 90% intervals that keep their coverage on targets that arrive late, and a test for a broken slope and a detector of the features' correlation, both checked against planted changes |
 | [Measure correlations and fit curves on tick data](#measure-correlations-and-fit-curves-on-tick-data) | correlations from series that trade at their own times, and a curve fitted locally along trade size |
@@ -233,10 +233,17 @@ files.
 
 ## Build a forward-looking signal and resume it
 
-This task builds a signal that predicts the next five minutes of a price
-from the last five and from a factor's own move, and fits it robustly. It
-saves the fit partway, and resumes it where it stopped in a fresh Python
-process, as another machine would:
+Build a target and features as the data streams, and fit a forecast on
+them. The target is a bounded EWMA of the mid over the next five minutes,
+minus the current mid; a feature is the mid minus its bounded EWMA over the
+last five. A first-stage ridge fits a factor on its inputs, and its
+out-of-sample residual becomes a feature of a second stage, which
+forecasts the target. The second stage learns under an embargo: a
+prediction at time T has learned only from rows whose five minutes had
+closed by T, never from a target still being formed, such as the one at
+T − 1. A robust regression handles the price's jumps. The fit is saved
+partway through the data and resumed in a fresh Python process, where
+prediction and training go on exactly as they left off:
 
 - **A target from a bounded EWMA that looks forward, and a feature from
   one that looks back.** An EWMA is an exponentially weighted moving
