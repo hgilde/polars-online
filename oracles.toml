@@ -257,92 +257,92 @@ dataset = ""
 
 [case."conformal.coverage_rates.gaussian_coverage_error_at_0p005"]
 ideal = 0.0
-worst = 0.00491908
-p95 = 0.00462902
+worst = 0.00018204
+p95 = 0.000168037
 n = 50
 
 [case."conformal.coverage_rates.gaussian_coverage_error_at_0p02"]
 ideal = 0.0
-worst = 0.00110824
-p95 = 0.00101822
+worst = 9.20202e-05
+p95 = 8.2018e-05
 n = 50
 
 [case."conformal.coverage_rates.gaussian_coverage_error_at_0p05"]
 ideal = 0.0
-worst = 0.000358079
-p95 = 0.00031807
+worst = 5.20114e-05
+p95 = 4.20092e-05
 n = 50
 
 [case."conformal.coverage_rates.gaussian_coverage_error_at_0p2"]
 ideal = 0.0
-worst = 0.000102022
-p95 = 7.20158e-05
+worst = 2.20048e-05
+p95 = 1.8004e-05
 n = 50
 
 [case."conformal.coverage_rates.gaussian_coverage_error_at_1"]
 ideal = 0.0
-worst = 6.20136e-05
-p95 = 6.20136e-05
+worst = 1.20026e-05
+p95 = 1.20026e-05
 n = 50
 
 [case."conformal.coverage_rates.misses_after_the_shift_at_0p005"]
 ideal = 0.0
-worst = 0.502
-p95 = 0.494
+worst = 0.426
+p95 = 0.406
 n = 50
 
 [case."conformal.coverage_rates.misses_after_the_shift_at_0p02"]
 ideal = 0.0
-worst = 0.342
-p95 = 0.324
+worst = 0.274
+p95 = 0.27
 n = 50
 
 [case."conformal.coverage_rates.misses_after_the_shift_at_0p05"]
 ideal = 0.0
-worst = 0.224
-p95 = 0.22
+worst = 0.186
+p95 = 0.186
 n = 50
 
 [case."conformal.coverage_rates.misses_after_the_shift_at_0p2"]
 ideal = 0.0
-worst = 0.142
-p95 = 0.14
+worst = 0.126
+p95 = 0.124
 n = 50
 
 [case."conformal.coverage_rates.misses_after_the_shift_at_1"]
 ideal = 0.0
 worst = 0.11
-p95 = 0.11
+p95 = 0.106
 n = 50
 
 [case."conformal.coverage_rates.shifting_coverage_error_at_0p005"]
 ideal = 0.0
-worst = 0.00537318
-p95 = 0.00504311
+worst = 0.00018204
+p95 = 0.000168037
 n = 50
 
 [case."conformal.coverage_rates.shifting_coverage_error_at_0p02"]
 ideal = 0.0
-worst = 0.00231251
-p95 = 0.00220248
+worst = 9.20202e-05
+p95 = 8.2018e-05
 n = 50
 
 [case."conformal.coverage_rates.shifting_coverage_error_at_0p05"]
 ideal = 0.0
-worst = 0.00129228
-p95 = 0.00121227
+worst = 5.20114e-05
+p95 = 4.20092e-05
 n = 50
 
 [case."conformal.coverage_rates.shifting_coverage_error_at_0p2"]
 ideal = 0.0
-worst = 0.000482106
-p95 = 0.000472104
+worst = 2.20048e-05
+p95 = 1.8004e-05
 n = 50
 
 [case."conformal.coverage_rates.shifting_coverage_error_at_1"]
 ideal = 0.0
-worst = 0.000172038
-p95 = 0.000162036
+worst = 1.20026e-05
+p95 = 1.20026e-05
 n = 50
 
 [case."corrchange.n_perm.crit_error_at_20"]
