@@ -709,15 +709,11 @@ impl Hmm {
 
     /// The state matrix of the state whose accumulator is `cov`, written
     /// over `m`: its ridge is [`Self::ridge`]'s.
+    /// Its lower triangle alone, which the factorization reads, into `m`
+    /// kept at `d²` ([`crate::LowerTriangle::ridged_lower_into`]).
     fn matrix_of(cfg: &HmmCfg, cov: &EwCov, m: &mut Vec<f64>) {
-        let d = cfg.n_features;
-        m.clear();
-        m.resize(d * d, 0.0);
-        cov.comoments().lower_into(m);
         let r = cfg.precision_prior * cov.precision_scale();
-        for i in 0..d {
-            m[i * d + i] += r;
-        }
+        cov.comoments().ridged_lower_into(m, r);
     }
 
     /// `ln fₗ` per state, or `None` when a factorization failed or a density

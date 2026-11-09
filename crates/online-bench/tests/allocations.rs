@@ -637,3 +637,122 @@ fn the_freeze_reserves_the_rows_it_replays() {
     eprintln!("the freeze row: {whole} allocations at a count of {warm}, {short} at 50");
     assert_eq!(short, whole, "the hold grew past its reservation");
 }
+
+/// Allocations a row of a windowed model of `k` features stepped into one
+/// kept `Step`, as the bank steps it, over [`ROWS`] rows after [`WARM`],
+/// which fill its window of 200 clock units (a row a unit) ten times: `y` is
+/// the class of `x0`'s sign where `label`, and `x0` plus noise otherwise.
+fn windowed_per_row(model: Value, k: usize, label: bool) -> f64 {
+    let ew_cov = model["type"] == "ew_cov";
+    let mut spec = json!({"name": "m", "model": model, "features": names("x", k),
+        "clock": "t", "gap_cap": 10.0, "half_life": 1e6});
+    if !ew_cov {
+        spec["targets"] = json!(names(if label { "lab" } else { "y" }, 1));
+    }
+    let mut model = self::model(spec);
+    let mut s = 11u64;
+    let rows: Vec<(Vec<f64>, Vec<Option<f64>>)> = (0..WARM + ROWS)
+        .map(|_| {
+            let x: Vec<f64> = (0..k).map(|_| draw(&mut s)).collect();
+            let y = if label {
+                f64::from(u8::from(x[0] > 0.0))
+            } else {
+                x[0] + 0.1 * draw(&mut s)
+            };
+            (x, vec![Some(y)])
+        })
+        .collect();
+    let mut kept = online_polars::online_core::Step::default();
+    for (x, y) in &rows[..WARM] {
+        model.step_into(x, y, 1.0, 1.0, &mut kept);
+    }
+    let before = calls();
+    for (x, y) in &rows[WARM..] {
+        model.step_into(x, y, 1.0, 1.0, &mut kept);
+        std::hint::black_box(&kept);
+    }
+    (calls() - before) as f64 / ROWS as f64
+}
+
+/// A windowed model reads its window, `A(t) − f·A(u)`, on every row it
+/// scores or solves, and formed it afresh each time (task 374): each
+/// accumulator cloned, and its deviations, means, co-moments and
+/// unresolved variances made and dropped, 11 allocations an accumulator;
+/// `ewridge` and `lasso` their cross-moments and target moments besides,
+/// on every solve. The view is kept between rows now and written over in
+/// place; what is left is the ring's (a snapshot every 12 rows here, 0.083
+/// a row, which `marginal`, whose window is no view, shows alone) and,
+/// for `ewridge` and `lasso`, what a solve allocates of its own. `ew_class`
+/// under `tied` formed its pooled matrix, its classes, their deviations and
+/// a factor and its forms on every row, windowed or not: kept too. Each:
+/// the bound in a release build and in a debug one, where the ring checks
+/// every snapshot a view writes against the snapshot it forms, which
+/// allocates that snapshot (`window/flat.rs`), and the count before, in a
+/// release build.
+#[test]
+fn a_windowed_row_reads_its_window_in_kept_buffers() {
+    let w = 200.0;
+    let class = |shape: &str| {
+        json!({"type": "ew_class", "classes": ["0", "1"], "precision_prior": 0.1,
+               "covariance_type": shape, "window_size": w})
+    };
+    for (what, model, label, bound, before) in [
+        (
+            "ew_class full",
+            class("full"),
+            true,
+            (0.084, 15.084),
+            23.084,
+        ),
+        (
+            "ew_class diag",
+            class("diag"),
+            true,
+            (0.083, 14.083),
+            19.083,
+        ),
+        (
+            "ew_class tied",
+            class("tied"),
+            true,
+            (0.084, 15.084),
+            30.084,
+        ),
+        (
+            "ew_cov",
+            json!({"type": "ew_cov", "stats": ["mean", "corr"], "window_size": w}),
+            false,
+            (0.083, 10.083),
+            11.083,
+        ),
+        (
+            "ewridge",
+            json!({"type": "ewridge", "window_size": w}),
+            false,
+            (9.432, 42.432),
+            19.786,
+        ),
+        (
+            "lasso",
+            json!({"type": "lasso", "penalties": [0.1, 0.0], "window_size": w}),
+            false,
+            (9.092, 43.092),
+            18.778,
+        ),
+        (
+            "marginal",
+            json!({"type": "marginal", "window_size": w}),
+            false,
+            (0.083, 17.083),
+            0.083,
+        ),
+    ] {
+        let got = windowed_per_row(model, 4, label);
+        let bound = if cfg!(debug_assertions) {
+            bound.1
+        } else {
+            bound.0
+        };
+        check(&format!("windowed {what}, 4 features"), got, bound, before);
+    }
+}

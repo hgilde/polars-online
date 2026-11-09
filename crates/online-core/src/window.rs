@@ -1354,6 +1354,168 @@ impl Footprint for Moments {
 /// windowed `lasso` to `inf`. Read as none, every level reads what level 0
 /// does, to the bit, and the 120 ordinary fits do not move.
 pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
+    let mut work = TruncWork::default();
+    let (w, q) = truncated_parts(cov, old, f, &mut work)?;
+    let mut out = cov.clone();
+    out.set_moments_packed(&work.mean, &work.cen, w, q);
+    Some(out)
+}
+
+/// The buffers [`truncated_into`] and [`truncated_diag_into`] form a
+/// window's moments in, kept by their owner between rows: the means'
+/// difference, the window's means and co-moments, and which variances the
+/// subtraction cannot resolve. Scratch, not state: each is written in full
+/// before it is read.
+#[derive(Debug, Clone, Default)]
+pub struct TruncWork {
+    d: Vec<f64>,
+    mean: Vec<f64>,
+    cen: Vec<f64>,
+    unresolved: Vec<bool>,
+}
+
+impl PartialEq for TruncWork {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+/// `buf` holding `n` numbers, whatever they are: its length set only where
+/// it differs, so a buffer kept at its length is not written.
+fn sized<T: Copy + Default>(buf: &mut Vec<T>, n: usize) -> &mut [T] {
+    if buf.len() != n {
+        buf.clear();
+        buf.resize(n, T::default());
+    }
+    buf
+}
+
+/// [`truncated`] into `out`, with nothing allocated once `out` and `work`
+/// have their sizes: `out` is left as `cov.clone()` with the window's
+/// moments set, to the bit and field for field, and `true` returned; or,
+/// where `truncated` is `None`, `out` is not touched and `false` returned.
+/// What a model that reads its window on every row keeps its view in: the
+/// clone and the four vectors made and dropped a row were 11 allocations of
+/// a windowed `ew_cov`'s 11, and 22 of a windowed two-class `ew_class`'s 23,
+/// at four features.
+pub fn truncated_into(
+    cov: &EwCov,
+    old: &Moments,
+    f: f64,
+    out: &mut EwCov,
+    work: &mut TruncWork,
+) -> bool {
+    match truncated_parts(cov, old, f, work) {
+        Some((w, q)) => {
+            out.set_window_of(cov, &work.mean, &work.cen, w, q);
+            true
+        }
+        None => false,
+    }
+}
+
+/// A model's scratch kept between rows or solves, such as a window's view
+/// it writes over each time, boxed and made on first use: a model that
+/// never reads one holds a null pointer, and taking it out to lend it while
+/// the model is borrowed moves the pointer, not the scratch (moved whole,
+/// an `ew_cov` row copied the view in and out of the model: 18% more
+/// instructions a row at four features on arm64, with no window to read).
+/// Not state, so it is never
+/// serialized (`#[serde(skip)]` beside it), a copy is empty, any two
+/// compare equal, and it shows nothing of itself in `Debug`.
+pub(crate) struct Kept<T>(Option<Box<T>>);
+
+impl<T> Default for Kept<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T: Default> Kept<T> {
+    /// The scratch, made the first time.
+    pub(crate) fn get(&mut self) -> &mut T {
+        self.0.get_or_insert_with(Box::default)
+    }
+
+    /// The scratch taken out, leaving none, to be handed back by
+    /// [`Self::put`]: empty before its first use.
+    pub(crate) fn take(&mut self) -> Kept<T> {
+        Kept(self.0.take())
+    }
+
+    /// Hand back what [`Self::take`] took.
+    pub(crate) fn put(&mut self, kept: Kept<T>) {
+        self.0 = kept.0;
+    }
+}
+
+impl<T> Clone for Kept<T> {
+    fn clone(&self) -> Self {
+        Self(None)
+    }
+}
+
+impl<T> PartialEq for Kept<T> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl<T> std::fmt::Debug for Kept<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Kept")
+    }
+}
+
+/// One accumulator's window, kept by a reader that reads it on every row
+/// (in a [`Kept`]) and written over there ([`truncated_into`]): the view and
+/// the buffers it is formed in.
+#[derive(Default)]
+pub(crate) struct KeptView {
+    cov: Option<EwCov>,
+    work: TruncWork,
+}
+
+impl KeptView {
+    /// `cov` with everything before the snapshot `old` subtracted (`f` the
+    /// decay since it), [`truncated`]'s to the bit; or, where that holds no
+    /// weight, `cov` emptied with Kish's sum `q_empty` ([`emptied_into`]).
+    pub(crate) fn of(
+        &mut self,
+        cov: &EwCov,
+        old: &Moments,
+        f: f64,
+        q_empty: Option<f64>,
+    ) -> &EwCov {
+        let out = self.cov.get_or_insert_with(|| cov.clone());
+        if !truncated_into(cov, old, f, out, &mut self.work) {
+            emptied_into(cov, q_empty, out, &mut self.work);
+        }
+        out
+    }
+}
+
+/// `out` as `cov` holding nothing -- no weight, zero means and co-moments,
+/// `q` the Kish sum -- with nothing allocated once `out` has its size: what
+/// a reader whose window holds no row reads, `cov.clone()` with
+/// `set_moments` of zeros, field for field. `work` lends its buffers to the
+/// zeros.
+pub fn emptied_into(cov: &EwCov, q: Option<f64>, out: &mut EwCov, work: &mut TruncWork) {
+    let k = cov.k();
+    sized(&mut work.mean, k).fill(0.0);
+    sized(&mut work.cen, crate::ewcov::row_at(k)).fill(0.0);
+    out.set_window_of(cov, &work.mean, &work.cen, 0.0, q);
+}
+
+/// [`truncated`]'s arithmetic into `work.mean` and `work.cen` (the window's
+/// means and packed co-moments), returning its weight and Kish sum; `None`
+/// where the window holds no weight.
+fn truncated_parts(
+    cov: &EwCov,
+    old: &Moments,
+    f: f64,
+    work: &mut TruncWork,
+) -> Option<(f64, Option<f64>)> {
     let k = cov.k();
     let w_now = cov.n_eff();
     let w_old = f * old.w;
@@ -1364,13 +1526,26 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
     // `ratio = W_u / W_R` and `g = W / W_R`, so `C_R = g·C - ratio·C_u -
     // ratio·g·d dᵀ` with `d = m_u - m`.
     let (ratio, g) = (w_old / w, w_now / w);
-    let d: Vec<f64> = (0..k).map(|i| old.m[i] - cov.mean(i)).collect();
-    let mut mean: Vec<f64> = (0..k).map(|i| cov.mean(i) - ratio * d[i]).collect();
+    let TruncWork {
+        d,
+        mean,
+        cen,
+        unresolved,
+    } = work;
+    let d = sized(d, k);
+    for (i, di) in d.iter_mut().enumerate() {
+        *di = old.m[i] - cov.mean(i);
+    }
+    let mean = sized(mean, k);
+    for (i, mi) in mean.iter_mut().enumerate() {
+        *mi = cov.mean(i) - ratio * d[i];
+    }
     // The lower triangles alone: both matrices keep no other
-    // ([`crate::LowerTriangle`]), and `set_moments` reads no other.
+    // ([`crate::LowerTriangle`]), and `set_moments` reads no other. Every
+    // entry of `cen` is written below.
     let (c_now, c_old) = (cov.comoments().packed(), old.c.packed());
-    let mut cen = vec![0.0; c_now.len()];
-    let mut unresolved = vec![false; k];
+    let cen = sized(cen, c_now.len());
+    let unresolved = sized(unresolved, k);
     for i in 0..k {
         let at = crate::ewcov::row_at(i);
         for j in 0..=i {
@@ -1398,7 +1573,7 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
         unresolved[i] = cen[ii] <= rounding_floor(terms + level);
     }
     for i in (0..k).filter(|&i| unresolved[i]) {
-        no_spread(&mut cen, k, i);
+        no_spread(cen, k, i);
     }
     // A feature that held one value over every row inside the window has no
     // spread there, and the subtraction cannot say so: it leaves a remainder
@@ -1412,7 +1587,7 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
         for (i, m) in mean.iter_mut().enumerate() {
             if let Some(value) = cov.held_from(i, rows + 1) {
                 *m = value;
-                no_spread(&mut cen, k, i);
+                no_spread(cen, k, i);
             }
         }
     }
@@ -1433,9 +1608,7 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
         }
         _ => None,
     };
-    let mut out = cov.clone();
-    out.set_moments_packed(&mean, &cen, w, q);
-    Some(out)
+    Some((w, q))
 }
 
 /// Feature `i`'s row and column of the packed lower triangle `c`, over `k`
@@ -1542,6 +1715,51 @@ impl Footprint for DiagMoments {
 /// value -- so this is that function's diagonal to the bit
 /// (`window::tests`' `the_diagonal_window_is_the_full_ones_diagonal`).
 pub fn truncated_diag(cov: &EwCovDiag, old: &DiagMoments, f: f64) -> Option<EwCovDiag> {
+    let mut work = TruncWork::default();
+    let (w, q) = truncated_diag_parts(cov, old, f, &mut work)?;
+    let mut out = cov.clone();
+    out.set_moments(&work.mean, &work.cen, w, q);
+    Some(out)
+}
+
+/// [`truncated_diag`] into `out`, as [`truncated_into`] is [`truncated`]'s.
+pub fn truncated_diag_into(
+    cov: &EwCovDiag,
+    old: &DiagMoments,
+    f: f64,
+    out: &mut EwCovDiag,
+    work: &mut TruncWork,
+) -> bool {
+    match truncated_diag_parts(cov, old, f, work) {
+        Some((w, q)) => {
+            out.set_window_of(cov, &work.mean, &work.cen, w, q);
+            true
+        }
+        None => false,
+    }
+}
+
+/// [`emptied_into`] for a diagonal accumulator.
+pub fn emptied_diag_into(
+    cov: &EwCovDiag,
+    q: Option<f64>,
+    out: &mut EwCovDiag,
+    work: &mut TruncWork,
+) {
+    let k = cov.k();
+    sized(&mut work.mean, k).fill(0.0);
+    sized(&mut work.cen, k).fill(0.0);
+    out.set_window_of(cov, &work.mean, &work.cen, 0.0, q);
+}
+
+/// [`truncated_diag`]'s arithmetic into `work.mean` and `work.cen` (the
+/// window's means and variances), as [`truncated_parts`].
+fn truncated_diag_parts(
+    cov: &EwCovDiag,
+    old: &DiagMoments,
+    f: f64,
+    work: &mut TruncWork,
+) -> Option<(f64, Option<f64>)> {
     let k = cov.k();
     let w_now = cov.n_eff();
     let w_old = f * old.w;
@@ -1550,10 +1768,18 @@ pub fn truncated_diag(cov: &EwCovDiag, old: &DiagMoments, f: f64) -> Option<EwCo
         return None;
     }
     let (ratio, g) = (w_old / w, w_now / w);
-    let d: Vec<f64> = (0..k).map(|i| old.m[i] - cov.mean(i)).collect();
-    let mut mean: Vec<f64> = (0..k).map(|i| cov.mean(i) - ratio * d[i]).collect();
+    let TruncWork { d, mean, cen, .. } = work;
+    let d = sized(d, k);
+    for (i, di) in d.iter_mut().enumerate() {
+        *di = old.m[i] - cov.mean(i);
+    }
+    let mean = sized(mean, k);
+    for (i, mi) in mean.iter_mut().enumerate() {
+        *mi = cov.mean(i) - ratio * d[i];
+    }
     let (c_now, c_old) = (cov.comoments(), &old.v);
-    let mut cen = vec![0.0; k];
+    // Every entry is written below.
+    let cen = sized(cen, k);
     for i in 0..k {
         let c = g * c_now[i] - ratio * c_old[i] - ratio * g * d[i] * d[i];
         let c = crate::solve::clamp_rounding(c);
@@ -1584,9 +1810,7 @@ pub fn truncated_diag(cov: &EwCovDiag, old: &DiagMoments, f: f64) -> Option<EwCo
         }
         _ => None,
     };
-    let mut out = cov.clone();
-    out.set_moments(&mean, &cen, w, q);
-    Some(out)
+    Some((w, q))
 }
 
 /// The rounding a window's subtraction leaves in a variance formed from
@@ -3599,5 +3823,100 @@ mod tests {
             }
         }
         assert!(checked.0 > 1000 && checked.1 > 0, "{checked:?}");
+    }
+
+    /// A window written over a kept accumulator ([`truncated_into`],
+    /// [`emptied_into`], their diagonal twins) is the one made afresh
+    /// ([`truncated`], or the clone emptied by `set_moments`), compared
+    /// whole and by its bytes, row after row and snapshot after snapshot,
+    /// the kept one never made again: with runs and without, with a prior
+    /// and without, blocked and not, through windows that hold nothing
+    /// (rows of weight 0 after a long gap) and a held feature, and from a
+    /// kept one of another shape, which is made afresh.
+    #[test]
+    fn a_window_written_in_place_is_the_one_made_afresh() {
+        let k = 4;
+        let bytes = |v: &EwCov| rmp_serde::to_vec_named(v).unwrap();
+        let dbytes = |v: &EwCovDiag| rmp_serde::to_vec_named(v).unwrap();
+        for (prior, runs, block) in [
+            (true, true, 0),
+            (false, true, 0),
+            (true, false, 0),
+            (true, true, 3),
+        ] {
+            let cov = if prior {
+                EwCov::with_precision_prior(k, 0.5).unwrap()
+            } else {
+                EwCov::new(k)
+            };
+            let mut cov = if runs { cov } else { cov.without_runs() };
+            cov.set_block_rows(block);
+            let mut diag = EwCovDiag::with_precision_prior(k, 0.5).unwrap();
+            let mut snaps: Vec<(Moments, DiagMoments)> = Vec::new();
+            let mut st = 7u64;
+            let mut next = || {
+                st = st
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (st >> 11) as f64 / (1u64 << 53) as f64
+            };
+            // Kept from row to row; the first is of another shape.
+            let mut kept = EwCov::new(k + 1);
+            let mut kept_diag = EwCovDiag::with_precision_prior(k + 1, 0.5).unwrap();
+            let mut work = TruncWork::default();
+            let mut seen = (0, 0);
+            for row in 0..150 {
+                let lam = match row % 40 {
+                    39 => 1e-30,
+                    r if r % 9 == 0 => 0.6,
+                    _ => 0.95,
+                };
+                snaps.push((Moments::of(&cov, lam), DiagMoments::of(&diag, lam)));
+                if snaps.len() > 12 {
+                    snaps.remove(0);
+                }
+                let x = [1e9 + next(), 3.25, next() - 0.5, 4.0 * next()];
+                let w = match row % 40 {
+                    39 | 0..=3 => 0.0,
+                    r if r % 5 == 1 => 1e-7,
+                    _ => next() + 0.1,
+                };
+                cov.update(&x, lam, w);
+                diag.update(&x, lam, w);
+                // A blocked accumulator is read flushed, as `ewridge`
+                // flushes before a solve reads its window; its block size
+                // is a field the view keeps.
+                cov.flush();
+                for (age, (full, part)) in snaps.iter().enumerate() {
+                    let f = 0.95f64.powi((snaps.len() - age) as i32);
+                    let what = format!(
+                        "prior {prior}, runs {runs}, block {block}, row {row}, snapshot {age}"
+                    );
+                    let fresh = truncated(&cov, full, f).unwrap_or_else(|| {
+                        let mut e = cov.clone();
+                        e.set_moments(&[0.0; 4], &[0.0; 16], 0.0, full.q.map(|_| 0.0));
+                        e
+                    });
+                    if !truncated_into(&cov, full, f, &mut kept, &mut work) {
+                        seen.1 += 1;
+                        emptied_into(&cov, full.q.map(|_| 0.0), &mut kept, &mut work);
+                    }
+                    seen.0 += 1;
+                    assert_eq!(kept, fresh, "{what}");
+                    assert_eq!(bytes(&kept), bytes(&fresh), "{what}");
+                    let fresh = truncated_diag(&diag, part, f).unwrap_or_else(|| {
+                        let mut e = diag.clone();
+                        e.set_moments(&[0.0; 4], &[0.0; 4], 0.0, None);
+                        e
+                    });
+                    if !truncated_diag_into(&diag, part, f, &mut kept_diag, &mut work) {
+                        emptied_diag_into(&diag, None, &mut kept_diag, &mut work);
+                    }
+                    assert_eq!(kept_diag, fresh, "{what}");
+                    assert_eq!(dbytes(&kept_diag), dbytes(&fresh), "{what}");
+                }
+            }
+            assert!(seen.0 > 1500 && seen.1 > 20, "{seen:?}");
+        }
     }
 }

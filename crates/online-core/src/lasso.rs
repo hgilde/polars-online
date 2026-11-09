@@ -358,6 +358,10 @@ pub struct Lasso {
     win: Option<Windowed>,
     #[serde(skip)]
     zbuf: Vec<f64>,
+    /// The window's view a solve reads, kept between solves and written
+    /// over ([`Lasso::view_into`]). Not state.
+    #[serde(skip)]
+    view: crate::window::Kept<LassoView>,
 }
 
 /// One Gram's statistics in correlation form (`Lasso::standardized`): the
@@ -367,6 +371,7 @@ type Standardized = (Vec<f64>, Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>);
 
 /// The accumulators a windowed path is fitted from, truncated to the window.
 /// The selection reads its errors per target ([`Lasso::window_sel_err`]).
+#[derive(Default)]
 struct LassoView {
     acc: AccView,
 }
@@ -495,6 +500,7 @@ impl Lasso {
             first_period_by_share: false,
             win,
             zbuf: vec![0.0; k_total],
+            view: crate::window::Kept::default(),
             cfg,
         })
     }
@@ -646,10 +652,21 @@ impl Lasso {
     /// state, and a target with no row inside it keeps weight 0 while the
     /// others stay windowed (review 2026-09-12, C2).
     fn view(&self) -> Option<LassoView> {
-        let win = self.win.as_ref()?;
-        let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
-        let acc = self.acc.window(&old.acc, f)?;
-        Some(LassoView { acc })
+        let mut view = LassoView::default();
+        self.view_into(&mut view).then_some(view)
+    }
+
+    /// [`Self::view`] into `view`, written over in place once it has its
+    /// shape ([`crate::gaps::Acc::window_into`]): `false`, and `view` not to
+    /// be read, where that is `None`.
+    fn view_into(&self, view: &mut LassoView) -> bool {
+        let Some(win) = self.win.as_ref() else {
+            return false;
+        };
+        let Some((f, old)) = win.snaps.cut(win.clock, self.cfg.decay, 0) else {
+            return false;
+        };
+        self.acc.window_into(&old.acc, f, &mut view.acc)
     }
 
     /// The selection errors [`Self::view`] carried, every target's, until the
@@ -917,6 +934,15 @@ impl Lasso {
     }
 
     fn solve(&mut self) {
+        // The view is kept between solves and written over; taken out while
+        // the solve borrows the model.
+        let mut view = self.view.take();
+        self.solve_in(&mut view);
+        self.view.put(view);
+    }
+
+    /// [`Self::solve`], reading the window's view into `kept`.
+    fn solve_in(&mut self, kept: &mut crate::window::Kept<LassoView>) {
         let k = self.cfg.n_features;
         let k_total = self.cfg.k_total();
         let off = usize::from(self.cfg.fit_intercept);
@@ -924,8 +950,14 @@ impl Lasso {
         // accumulators: no row older than the window is in a Gram, the
         // right-hand side, or the selection error. The selection error is
         // read where the path point is chosen, in `step`.
-        let view = self.view();
-        let (grams, cross, wj, tm) = match view.as_ref() {
+        let view = match self.win {
+            Some(_) => {
+                let view = kept.get();
+                self.view_into(view).then_some(&*view)
+            }
+            None => None,
+        };
+        let (grams, cross, wj, tm) = match view {
             Some(v) => (
                 v.acc.grams.as_slice(),
                 &v.acc.cross,

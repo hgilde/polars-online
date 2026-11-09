@@ -78,12 +78,13 @@ ignores it (it tests the variance alone since the review of 2026-09-12); \
 
 [[equivalent]]
 file = "crates/online-core/src/ewridge.rs"
-function = "EwRidge::view"
+function = "EwRidge::view_into"
 mutation = "replace > with >="
-line_has = "let sig2 = if acc.cross.w > 0.0 {"
-why = """the cross weight is 0 only in an empty view, where the window's \
-residual weight is 0 too and `truncated_mean` returns `None`, which the \
-branch maps to the same 0 the other branch gives"""
+line_has = "if acc.cross.w > 0.0 {"
+why = """the cross weight is 0 only in an empty view, where every target's \
+window weight is 0 too, so each target's residual variance takes the \
+branch's 0 before `truncated_scalar` is read: the same 0 the other branch \
+gives"""
 
 [[equivalent]]
 file = "crates/online-core/src/lasso.rs"
@@ -539,7 +540,7 @@ maximum returns the same nulls"""
 file = "crates/online-core/src/ewclass.rs"
 function = "EwClass::score"
 mutation = "replace > with >="
-line_has = "let seen: Vec<usize> = (0..nc).filter(|&c| weights[c] > 0.0).collect();"
+line_has = "seen.extend((0..nc).filter(|&c| weights[c] > 0.0));"
 why = """a class of weight 0 joins the pool at `π = 0`, adding exact zeros to \
 the matrix (its co-moments and ridge are finite), and its own score is \
 `ln 0 − … = −∞`, as the class left out has"""

@@ -307,11 +307,55 @@ impl EwCovDiag {
         debug_assert_eq!(mean.len(), self.k);
         debug_assert_eq!(variances.len(), self.k);
         self.m.copy_from_slice(mean);
-        self.m_lo = vec![0.0; self.k];
+        self.m_lo.clear();
+        self.m_lo.resize(self.k, 0.0);
         self.v.copy_from_slice(variances);
         self.w_sum = w_sum;
         self.q_sum = q_sum;
         self.runs.forget();
+    }
+
+    /// `self` made `src.clone()` with [`Self::set_moments`] applied, field
+    /// for field, writing over what `self` holds: [`EwCov`]'s
+    /// `set_window_of`, for a diagonal accumulator. Where `self` is not of
+    /// `src`'s shape it is the clone.
+    pub(crate) fn set_window_of(
+        &mut self,
+        src: &EwCovDiag,
+        mean: &[f64],
+        variances: &[f64],
+        w_sum: f64,
+        q_sum: Option<f64>,
+    ) {
+        if !self.has_shape(src.k) {
+            *self = src.clone();
+            self.set_moments(mean, variances, w_sum, q_sum);
+            return;
+        }
+        // Every field named, as `EwCov::set_window_of` names them.
+        let EwCovDiag {
+            k: _,
+            w_sum: _,
+            q_sum: _,
+            prior_scale,
+            m: _,
+            v: _,
+            precision_prior,
+            precision_scale,
+            runs,
+            rows_learned,
+            m_lo: _,
+        } = src;
+        self.prior_scale = *prior_scale;
+        self.precision_prior = *precision_prior;
+        self.precision_scale = *precision_scale;
+        self.rows_learned = *rows_learned;
+        self.runs.forget_as(runs);
+        self.m.copy_from_slice(mean);
+        self.m_lo.fill(0.0);
+        self.v.copy_from_slice(variances);
+        self.w_sum = w_sum;
+        self.q_sum = q_sum;
     }
 }
 

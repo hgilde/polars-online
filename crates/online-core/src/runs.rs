@@ -121,6 +121,13 @@ impl Runs {
         self.start.clear();
     }
 
+    /// [`Self::forget`], kept or off as `like` is: what a copy of `like`
+    /// holds once forgotten, with nothing allocated.
+    pub fn forget_as(&mut self, like: &Runs) {
+        self.forget();
+        self.off = like.off;
+    }
+
     /// The value slot `i` of `k` has held on every learned row from the
     /// `row`-th on: `Some` when its run started at or before that row,
     /// `None` where it moved since, has no learned row yet, or the runs are

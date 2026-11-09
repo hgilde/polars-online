@@ -745,6 +745,17 @@ impl EwCov {
         crate::solve::clamp_rounding(self.cov(i, i))
     }
 
+    /// Every [`Self::var`], `0..k` in turn, read down the diagonal of the
+    /// packed rows without finding each row again.
+    #[inline]
+    pub(crate) fn vars(&self) -> impl Iterator<Item = f64> + '_ {
+        debug_assert!(
+            !self.has_pending(),
+            "EwCov: read the moments with a block still pending; call `flush()` first"
+        );
+        self.c.diagonal().map(crate::solve::clamp_rounding)
+    }
+
     /// The row's mixing factors `(a, b)` and the new weight, or `None` when
     /// the shipped update would return without changing anything: a negative
     /// weight, or no weight at all in the history and none on the row.
@@ -1286,7 +1297,8 @@ impl EwCov {
         debug_assert_eq!(mean.len(), self.k);
         debug_assert_eq!(centered.len(), self.k * self.k);
         self.m.copy_from_slice(mean);
-        self.m_lo = vec![0.0; self.k];
+        self.m_lo.clear();
+        self.m_lo.resize(self.k, 0.0);
         self.c.copy_from(centered);
         self.merged.forget();
         self.w_sum = w_sum;
@@ -1312,12 +1324,73 @@ impl EwCov {
         debug_assert_eq!(mean.len(), self.k);
         debug_assert_eq!(lower.len(), row_at(self.k));
         self.m.copy_from_slice(mean);
-        self.m_lo = vec![0.0; self.k];
+        self.m_lo.clear();
+        self.m_lo.resize(self.k, 0.0);
         self.c.copy_from_packed(lower);
         self.merged.forget();
         self.w_sum = w_sum;
         self.q_sum = q_sum;
         self.runs.forget();
+    }
+
+    /// `self` made `src.clone()` with [`Self::set_moments_packed`]`(mean,
+    /// lower, w_sum, q_sum)` applied, field for field, writing over what
+    /// `self` holds rather than allocating: what a window's view is kept in
+    /// between rows ([`crate::window::truncated_into`]). Where `self` is not
+    /// of `src`'s shape, or `src` holds a block (whose flush the clone
+    /// would run), it is the clone.
+    pub(crate) fn set_window_of(
+        &mut self,
+        src: &EwCov,
+        mean: &[f64],
+        lower: &[f64],
+        w_sum: f64,
+        q_sum: Option<f64>,
+    ) {
+        let held = src.has_pending() || !src.pending.x.is_empty() || !src.pending.w.is_empty();
+        if held || !self.has_shape(src.k) || self.c.packed().len() != row_at(src.k) {
+            *self = src.clone();
+            self.set_moments_packed(mean, lower, w_sum, q_sum);
+            return;
+        }
+        // Every field named, so a field added to `EwCov` is a compile error
+        // here until it is copied (or said not to need it).
+        let EwCov {
+            k: _,
+            w_sum: _,
+            q_sum: _,
+            prior_scale,
+            m: _,
+            c: _,
+            precision_prior,
+            dev: _,
+            square: _,
+            merged: _,
+            precision_scale,
+            threads,
+            runs,
+            rows_learned,
+            m_lo: _,
+            pending,
+        } = src;
+        self.prior_scale = *prior_scale;
+        self.precision_prior = *precision_prior;
+        self.precision_scale = *precision_scale;
+        self.threads = *threads;
+        self.rows_learned = *rows_learned;
+        // `set_moments_packed` forgets the runs and keeps whether they are
+        // kept at all; a clone's held block is none, `src` holding none.
+        self.runs.forget_as(runs);
+        self.pending.clear_rows();
+        self.pending.block_rows = pending.block_rows;
+        self.pending.w_open = pending.w_open;
+        // `set_moments_packed`'s, the flush having nothing to merge.
+        self.m.copy_from_slice(mean);
+        self.m_lo.fill(0.0);
+        self.c.copy_from_packed(lower);
+        self.merged.forget();
+        self.w_sum = w_sum;
+        self.q_sum = q_sum;
     }
 
     /// Age the accumulator without adding data (pure decay: means unchanged,
@@ -1501,14 +1574,42 @@ impl TargetMoments {
     /// row inside the window, has no target-side twin: the targets keep no
     /// runs. A `Q_R` within `64 ε` of `Q` keeps no digit and is 0, so no
     /// Kish size is read from it (review 2026-10-05, CE6b).
+    #[cfg(test)]
     pub(crate) fn truncated(&self, old: &Self, f: f64, per: &[Option<(f64, f64)>]) -> Self {
-        let n = self.mean.len();
         let mut out = Self {
-            mean: vec![f64::NAN; n],
-            var: vec![f64::NAN; n],
-            q: vec![0.0; n],
-            mean_lo: vec![0.0; n],
+            mean: Vec::new(),
+            var: Vec::new(),
+            q: Vec::new(),
+            mean_lo: Vec::new(),
         };
+        self.truncated_into(old, f, per, &mut out);
+        out
+    }
+
+    /// `out` as a window that holds none of `n` targets' rows reads them:
+    /// each mean and variance NaN, each Kish sum and low part 0, written
+    /// over in place.
+    pub(crate) fn empty_into(out: &mut Self, n: usize) {
+        for (v, x) in [
+            (&mut out.mean, f64::NAN),
+            (&mut out.var, f64::NAN),
+            (&mut out.q, 0.0),
+            (&mut out.mean_lo, 0.0),
+        ] {
+            v.clear();
+            v.resize(n, x);
+        }
+    }
+
+    /// [`Self::truncated`] into `out`, written over in place.
+    pub(crate) fn truncated_into(
+        &self,
+        old: &Self,
+        f: f64,
+        per: &[Option<(f64, f64)>],
+        out: &mut Self,
+    ) {
+        Self::empty_into(out, self.mean.len());
         for (t, p) in per.iter().enumerate() {
             let Some((ratio, g)) = *p else { continue };
             let (lo, lo_old) = (self.mean_lo[t], old.mean_lo[t]);
@@ -1535,7 +1636,6 @@ impl TargetMoments {
                 0.0
             };
         }
-        out
     }
 
     /// A row where this target is null: time passes for its weight, and
@@ -2035,6 +2135,13 @@ pub struct EwCovModel {
     /// written nowhere, so neither encoding changes.
     #[serde(skip)]
     std: Scratch,
+    /// The window's moments a row's statistics are read from, kept and
+    /// written over from row to row ([`crate::window::KeptView`]): formed
+    /// afresh, the accumulator's copy and the subtraction's four vectors
+    /// were all 11 of a windowed row's allocations at four features. Not
+    /// state, as `std`.
+    #[serde(skip)]
+    view: crate::window::Kept<crate::window::KeptView>,
 }
 
 /// What a window needs beyond the accumulator: where the clock has got to,
@@ -2109,6 +2216,7 @@ impl EwCovModel {
                 None => None,
             },
             std: Scratch::default(),
+            view: crate::window::Kept::default(),
         })
     }
 
@@ -2160,6 +2268,25 @@ impl EwCovModel {
                 Cow::Owned(out)
             }
         }
+    }
+
+    /// [`Self::view`], written over the view `kept` holds rather than made
+    /// afresh: the same numbers, field for field, borrowed from `kept` where
+    /// `view` owns them.
+    fn view_kept<'a>(
+        &'a self,
+        kept: &'a mut crate::window::Kept<crate::window::KeptView>,
+    ) -> &'a EwCov {
+        let Some(win) = self.win.as_ref() else {
+            return &self.cov;
+        };
+        let Some((f, old)) = win.snaps.cut(win.clock, self.cfg.decay, 0) else {
+            return &self.cov;
+        };
+        if old.w == 0.0 {
+            return &self.cov;
+        }
+        kept.get().of(&self.cov, old, f, old.q.map(|_| 0.0))
     }
 
     /// The components currently in force, if a refresh has happened.
@@ -2256,12 +2383,9 @@ impl EwCovModel {
             .map(|(i, &xi)| cov.deviation(i, xi))
             .collect();
         // The lower triangle, which `solve_spd` reads.
-        let mut m = vec![0.0; k * k];
-        cov.comoments().lower_into(&mut m);
-        let ridge = cov.precision_prior * cov.precision_scale;
-        for i in 0..k {
-            m[i * k + i] += ridge;
-        }
+        let mut m = Vec::new();
+        cov.comoments()
+            .ridged_lower_into(&mut m, cov.precision_prior * cov.precision_scale);
         match crate::solve::solve_spd(&m, &delta, k, 1) {
             Some((sol, _)) => {
                 let d2 = delta.iter().zip(&sol).map(|(d, s)| d * s).sum::<f64>() / scale;
@@ -2458,13 +2582,13 @@ impl EwCovModel {
                     }
                 }
                 EwCovStat::Var => {
-                    for (i, o) in slots(&mut rest, k).iter_mut().enumerate() {
-                        *o = scale * cov.var(i);
+                    for (o, v) in slots(&mut rest, k).iter_mut().zip(cov.vars()) {
+                        *o = scale * v;
                     }
                 }
                 EwCovStat::Std => {
-                    for (i, o) in slots(&mut rest, k).iter_mut().enumerate() {
-                        *o = (scale * cov.var(i)).sqrt();
+                    for (o, v) in slots(&mut rest, k).iter_mut().zip(cov.vars()) {
+                        *o = (scale * v).sqrt();
                     }
                 }
                 EwCovStat::Cov => {
@@ -2483,7 +2607,7 @@ impl EwCovModel {
                     // `(j, i)`, as `Cov`. The same quotient of the same
                     // numbers, in the same order.
                     std.clear();
-                    std.extend((0..k).map(|i| cov.var(i).sqrt()));
+                    std.extend(cov.vars().map(f64::sqrt));
                     let dst = slots(&mut rest, k * (k - 1) / 2);
                     let sd = &*std;
                     cov.comoments().upper_rows_map(k, dst, |i, j, cij| {
@@ -2523,7 +2647,7 @@ impl EwCovModel {
                     // correlation it is not bounded by 1 in finite samples,
                     // and clamping would hide that.
                     std.clear();
-                    std.extend((0..k).map(|i| cov.var(i).sqrt()));
+                    std.extend(cov.vars().map(f64::sqrt));
                     let dst = slots(&mut rest, self.cfg.lags.len() * k * k);
                     match &self.lag {
                         Some(lag) => {
@@ -2592,7 +2716,15 @@ impl EwCovModel {
 
     /// [`crate::OnlineModel::predict`], into the caller's buffer: what
     /// `step` reports, read before the row (task 270, M-4).
-    fn predict_into(&self, x: &[f64], d_clock: f64, out: &mut crate::Step, std: &mut Vec<f64>) {
+    /// `kept` holds the window's view between rows ([`Self::view_kept`]).
+    fn predict_into(
+        &self,
+        x: &[f64],
+        d_clock: f64,
+        out: &mut crate::Step,
+        std: &mut Vec<f64>,
+        kept: &mut crate::window::Kept<crate::window::KeptView>,
+    ) {
         if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
             *out = refused;
             return;
@@ -2609,7 +2741,7 @@ impl EwCovModel {
         if self.cfg.n_outputs() == 0 {
             out.pred.clear();
         } else if n_eff >= self.cfg.min_weight {
-            self.read_into(&self.view(), x, &mut out.pred, std);
+            self.read_into(self.view_kept(kept), x, &mut out.pred, std);
         } else {
             out.pred.clear();
             out.pred.resize(self.cfg.n_outputs(), f64::NAN);
@@ -2692,8 +2824,10 @@ impl crate::OnlineModel for EwCovModel {
         // Statistics are read before this row is folded in, so an `ew_cov`
         // column is usable as a feature for the same row without leaking it.
         let mut std = std::mem::take(&mut self.std.0);
-        self.predict_into(x, d_clock, out, &mut std);
+        let mut kept = self.view.take();
+        self.predict_into(x, d_clock, out, &mut std, &mut kept);
         self.std.0 = std;
+        self.view.put(kept);
         let lam = self.cfg.decay.factor(d_clock);
         if let Some(q) = self.mahal_q.as_mut() {
             // The row's own out-of-sample score joins the history it will be
@@ -2767,7 +2901,13 @@ impl crate::OnlineModel for EwCovModel {
 
     fn predict(&self, x: &[f64], d_clock: f64) -> crate::Step {
         let mut out = crate::Step::default();
-        self.predict_into(x, d_clock, &mut out, &mut Vec::new());
+        self.predict_into(
+            x,
+            d_clock,
+            &mut out,
+            &mut Vec::new(),
+            &mut crate::window::Kept::default(),
+        );
         out
     }
 

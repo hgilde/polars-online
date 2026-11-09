@@ -110,6 +110,18 @@ impl LowerTriangle {
         &mut self.v
     }
 
+    /// The diagonal, `(i, i)` for each `i` in turn, each row's start carried
+    /// to the next rather than found again ([`Self::get`] finds it).
+    #[inline]
+    pub(crate) fn diagonal(&self) -> impl Iterator<Item = f64> + '_ {
+        let mut at = 0;
+        (0..self.k).map(move |i| {
+            let v = self.v[at + i];
+            at += i + 1;
+            v
+        })
+    }
+
     /// The whole matrix, row-major, its upper triangle mirrored from the
     /// lower: for a reader that takes a full symmetric matrix.
     pub fn to_full(&self) -> Vec<f64> {
@@ -144,6 +156,33 @@ impl LowerTriangle {
             let (row, rest) = rows.split_at(i + 1);
             rows = rest;
             dst[..=i].copy_from_slice(row);
+        }
+    }
+
+    /// `C + ridge·I` into the row-major `k × k` `m`, its lower triangle
+    /// alone, for a factorization that reads the lower triangle and the
+    /// diagonal and nothing else (`SpdFactor::of`, `solve_spd`). `m` is
+    /// sized only where its length is not `k²`, so a kept one is not zeroed
+    /// again: its strict upper triangle holds whatever it held -- zeros, if
+    /// it was sized here -- and is not written. The rows are copied as they
+    /// lie, one after the next. Zeroed whole on every call, as
+    /// [`Self::lower_into`]'s callers did, the `k²` fill was 3.2M of the
+    /// 9.2% more instructions the packed triangle first cost `ew_class`'s
+    /// block on x86 (task 374).
+    pub(crate) fn ridged_lower_into(&self, m: &mut Vec<f64>, ridge: f64) {
+        let k = self.k;
+        if m.len() != k * k {
+            m.clear();
+            m.resize(k * k, 0.0);
+        }
+        let mut rows = self.v.as_slice();
+        for (i, dst) in m.chunks_exact_mut(k.max(1)).take(k).enumerate() {
+            let (row, rest) = rows.split_at(i + 1);
+            rows = rest;
+            for (d, &c) in dst.iter_mut().zip(row) {
+                *d = c;
+            }
+            dst[i] += ridge;
         }
     }
 
@@ -183,20 +222,33 @@ impl LowerTriangle {
                 .zip(r1[2..].iter_mut())
                 .zip(r2[1..].iter_mut())
                 .zip(r3.iter_mut());
+            // Row `j`'s entry `(j, i)`, carried from row to row (`+ j + 1`)
+            // rather than found again: `row_at(j)` on every row of the
+            // column block was the most of the 706k more instructions the
+            // packed rows first cost `ew_cov`'s block on x86 (task 374).
+            // Each row split off whole instead, so that the run needed no
+            // check of its own, read 2.5% more instructions a row at 20
+            // features on arm64, by how the correlations' loop compiled.
+            let mut ji = at(i + 4, i);
             for (j, (((o0, o1), o2), o3)) in (i + 4..).zip(outs) {
-                let q = &c[at(j, i)..at(j, i) + 4];
+                let q: &[f64; 4] = c[ji..]
+                    .first_chunk()
+                    .expect("four columns of a row below them");
                 *o0 = f(i, j, q[0]);
                 *o1 = f(i + 1, j, q[1]);
                 *o2 = f(i + 2, j, q[2]);
                 *o3 = f(i + 3, j, q[3]);
+                ji += j + 1;
             }
             i += 4;
         }
         while i + 1 < k {
             let (row, rest) = std::mem::take(&mut dst).split_at_mut(k - 1 - i);
             dst = rest;
+            let mut ji = at(i + 1, i);
             for (j, o) in (i + 1..).zip(row.iter_mut()) {
-                *o = f(i, j, c[at(j, i)]);
+                *o = f(i, j, c[ji]);
+                ji += j + 1;
             }
             i += 1;
         }
