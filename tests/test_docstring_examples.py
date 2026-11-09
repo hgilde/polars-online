@@ -20,6 +20,7 @@ import pytest
 
 import polars_online as po
 from doc_recipes import differences
+from polars_version import block_marks
 from test_production_hardening import _readme_namespace
 
 TIER = "essential"
@@ -75,7 +76,7 @@ def _documented() -> list[tuple[str, object]]:
 
 
 RECIPES = [
-    pytest.param(code, shown, id=where)
+    pytest.param(code, shown, id=where, marks=block_marks(code, output=True))
     for where, obj in _documented()
     for (lang, code), (after, shown) in zip(
         _blocks(inspect.getdoc(obj) or ""), _blocks(inspect.getdoc(obj) or "")[1:], strict=False

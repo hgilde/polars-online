@@ -574,7 +574,9 @@ class ConsumedSourceWarning(PolarsOnlineWarning, UserWarning):
     from none, and the second run leaves a state that looks finished and is
     empty. Build the query again for each run, calling
     ``pl.scan_arrow_c_stream(con.sql(q))`` inside the loop, since the
-    producer makes a new stream each time.
+    producer makes a new stream each time. Polars added
+    ``pl.scan_arrow_c_stream`` in py-polars 1.43.0, so the example needs
+    that version or later.
 
     It is a warning, not an error, because a source may have no rows: an
     empty query is not a mistake. The calls that read a query

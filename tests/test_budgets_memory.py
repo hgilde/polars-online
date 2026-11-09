@@ -43,6 +43,7 @@ import pytest
 
 import child
 import polars_online as po
+from polars_version import needs_polars
 
 TIER = "mixed"
 REPO = Path(__file__).resolve().parent.parent
@@ -672,6 +673,25 @@ CHAIN_ROWS = (1_000_000, 4_000_000)
 #: runs out before its frames in flight fill.
 CHAIN_GROWTH_MIB = 250.0
 
+#: The child reads resident memory, and py-polars 1.x memory-maps the
+#: parquet file it scans: the file's pages it has read count in the resident
+#: set, though they are clean and the system drops them under pressure, so
+#: the peak grows by the file's size. Measured on 2026-11-09 (macOS, the
+#: test's settings, one wheel, load 3-7): 413 / 627 / 895 MiB at 1M / 2M /
+#: 4M rows on 1.37.0, 414 / 642 / 878 on 1.44.2, 326 / 416 / 413 on 2.0.0,
+#: and the most memory the process held at once 316 / 408 / 406 on 1.37.0
+#: against 318 / 408 / 405 on 2.0.0. A bare scan of the 4M-row file, read
+#: as fast as it comes, peaks at 540 MiB resident and 59 held on 1.37.0
+#: (likewise 1.40.1, 1.42.1 and 1.44.2), and at 59 resident and 55 held on
+#: 2.0.0 (60 and 56 on 2.1.0), where the file is not mapped. The frames Polars keeps in flight
+#: are the same on both: 48 of a source's frames on four threads ahead of a
+#: slow reader behind a `with_columns`.
+NEEDS_UNMAPPED_SCAN = needs_polars(
+    "2.0.0",
+    "py-polars 1.x memory-maps the parquet file it scans, so the resident peak grows by the "
+    "file's size",
+)
+
 
 def _chain_input(path: Path, rows: int) -> None:
     """The factor pipeline's columns, one instrument, a row a second:
@@ -692,6 +712,7 @@ def _chain_input(path: Path, rows: int) -> None:
 
 @pytest.mark.extended(reason="memory: two child interpreters, up to four million rows each")
 @pytest.mark.serial
+@NEEDS_UNMAPPED_SCAN
 def test_two_fit_predicts_in_series_hold_memory_flat_in_the_streams_length(tmp_path):
     """Chained through a `with_columns`, the first stage's source runs ahead
     of the second by as many frames as Polars keeps in flight before a node

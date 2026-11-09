@@ -860,6 +860,20 @@ returns.
 - A test regenerates every current saved-state fixture and compares it to
   the committed file, naming any that a fresh build would write
   differently, so a fixture can no longer go stale unnoticed (task 330).
+- The test suite passes on the oldest Polars the package supports,
+  py-polars 1.37.0. Four docstring examples call Polars where 1.37.0 has
+  no such call or gives another result: `po.ewm_sum`'s compares with
+  Polars' `ewm_sum_by` and `ConsumedSourceWarning`'s reads
+  `pl.scan_arrow_c_stream`, both added in py-polars 1.43.0, and
+  `po.ewm_var`'s and `po.ewm_std`'s compare with Polars' `ewm_var` and
+  `ewm_std`, which give a window of one value 0 rather than null before
+  1.44. Each docstring now says so, and their tests skip on an older
+  Polars, naming the version. The test that holds two `fit_predict` calls
+  in series to a flat peak skips before py-polars 2.0: it reads resident
+  memory, and py-polars 1.x memory-maps the parquet file it scans, so the
+  pages of the file it has read count there. The most memory the process
+  held was the same on 1.37.0 and 2.0.0, 316 and 406 MiB at 1M and 4M rows
+  against 318 and 405 (task 376).
 
 ## [1.4.0] — 2026-11-03
 

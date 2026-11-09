@@ -38,12 +38,17 @@ machines, and the threads of several specs from a build without LTO.
 set size (RSS), unless a figure says otherwise.** It is the number
 `/usr/bin/time -l` prints as "peak memory footprint", which
 `scripts/memory_bench.py` reads, so that script runs on macOS only. RSS is the wrong ruler
-for a bank's memory. Polars memory-maps a local parquet file, and the
+for a bank's memory. Polars has memory-mapped a local parquet file, in
+py-polars 1.x and in the command line's build of 2026-09-02, and the
 file's clean pages count in RSS, though the system drops them under
-pressure at no cost. On 2026-09-02 the command line's RSS grew from 1.37 to
-2.26 GB from 3M to 6M rows, while the most memory it held stayed at
-0.75 GB. The window operators' table reads RSS, so compare its rows with
-one another, not with the figures read the other way.
+pressure at no cost. On 2026-09-02 the command line's RSS grew from 1.37
+to 2.26 GB from 3M to 6M rows, while the most memory it held stayed at
+0.75 GB. On 2026-11-09 a scan of a 481 MiB file, read as fast as it came
+on four threads, peaked at 540 MiB of RSS on py-polars 1.37.0 and 523 on
+1.44.2. The most memory it held was 59 and 40 MiB. py-polars 2.0.0 does
+not map the file, and the same scan peaked at 59 MiB of RSS. The window
+operators' table reads RSS, so compare its rows with one another, not
+with the figures read the other way.
 
 The raw numbers regenerate with these commands, each run from the
 repository root:

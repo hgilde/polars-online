@@ -38,7 +38,7 @@ import pytest
 import polars_online as po
 from doc_recipes import TIMED, differences, shown_outputs, untimed
 from doc_recipes import run as run_recipe
-from polars_version import needs_polars
+from polars_version import block_marks
 from test_ffi_memory import run_isolated
 
 TIER = "essential"
@@ -642,14 +642,11 @@ def _pointer_line(heading: str) -> int:
 
 
 def _block_param(path: str, line: int, code: str):
-    """One block as a test case. A block that streams a DuckDB, ADBC or
-    pyarrow source reads it with `pl.scan_arrow_c_stream`, and so needs the
-    py-polars the README names for it."""
-    marks = []
-    if "scan_arrow_c_stream" in code:
-        marks.append(
-            needs_polars("1.43.0", "pl.scan_arrow_c_stream, which py-polars added in 1.43.0")
-        )
+    """One block as a test case. A block that calls Polars where the floor
+    of the range has no such call, such as `pl.scan_arrow_c_stream` to
+    stream a DuckDB, ADBC or pyarrow source, needs the py-polars that has
+    it, which the README names."""
+    marks = block_marks(code, output=False)
     return pytest.param(path, line, code, id=f"{path}:L{line}", marks=marks)
 
 
@@ -1375,9 +1372,7 @@ class TestReadmeExamples:
         assert len(DOCSTRING_BLOCKS) >= 10, DOCSTRING_BLOCKS
 
     @pytest.mark.parametrize(
-        ("path", "line", "code"),
-        DOCSTRING_BLOCKS,
-        ids=[f"{p}:L{ln}" for p, ln, _ in DOCSTRING_BLOCKS],
+        ("path", "line", "code"), [_block_param(*block) for block in DOCSTRING_BLOCKS]
     )
     def test_a_docstring_block_runs(self, path, line, code, tmp_path, monkeypatch):
         """The API reference's examples, run in the README's namespace. That

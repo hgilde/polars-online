@@ -566,6 +566,8 @@ def ewm_sum(
     ``window_size`` later. On distinct stamps it is Polars' ``ewm_sum_by``,
     each value counted once at its own time. At a repeated stamp every row
     carries the stamp's total, where ``ewm_sum_by``'s is a running sum.
+    Polars added ``ewm_sum_by`` in py-polars 1.43.0, so the example's
+    comparison with it needs that version or later.
     """
     return _window(
         "ewm_sum",
@@ -1068,6 +1070,9 @@ def ewm_var(
     row weighs ``(1 - alpha) ** (n - 1)``, with ``alpha = 1 - lam``, as
     ``adjust=False`` weighs it. A window that holds one value gives null under
     the default ``bias=False`` and 0 exactly, at any level, under ``bias=True``.
+    Polars' ``ewm_var`` gives that row null too from py-polars 1.44, and 0
+    before it, so on an older Polars the example's first value from Polars
+    reads ``0.0``.
     """
     return operator(
         "ewm_var",
@@ -1207,7 +1212,9 @@ def ewm_std(
     .. rubric:: Notes
 
     It is the square root of :func:`ewm_var`, as Polars' ``ewm_std`` is the
-    root of its ``ewm_var``.
+    root of its ``ewm_var``. Before py-polars 1.44, Polars gives a window of
+    one value 0 rather than null, so the example's first value from Polars
+    reads ``0.0`` there.
     """
     return operator(
         "ewm_std",
