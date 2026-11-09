@@ -300,7 +300,38 @@ DECLARED: dict[tuple[str, str], str] = {
             "sgd_huber_refit",
         )
     },
+    # Task 368 (the next release's Changed, and rule 5's exception the
+    # user allowed on 2026-11-09): the conformal tracker keeps a multiplier
+    # of the residual spread, `m`, where it kept the radius. A file of a
+    # release holds the radius, which this build shows as saved on the next
+    # row and converts to `m = q / sigma` there, so the interval and its
+    # coverage go on under the multiplier from that row (`CONVERTED`); every
+    # other field goes on as the release did.
+    **{
+        (name, "1.4.0"): "the next release, Changed: the conformal interval keeps a "
+        "multiplier of the residual spread"
+        for name in (
+            "ridge_diag",
+            "full_ewridge",
+            "full_rls",
+            "full_lasso",
+            "full_kalman",
+            "full_huber",
+            "full_quantile",
+            "full_ftrl",
+            "full_sgd",
+            "full_pa",
+            "full_holt",
+        )
+    },
 }
+
+#: The fields of the conformal interval, which a release's file goes on in
+#: under this build's multiplier (`DECLARED`'s task 368 entry): each group's
+#: first row of the second half is shown the radius the file saved, as the
+#: release shows it, and is held to the release's to the bit; from the next
+#: row each is the multiplier's, which no release computes.
+CONVERTED = ("lo_", "hi_", "coverage_")
 
 #: The releases from 1.0, whose files load and go on; and this build, whose
 #: own files ran the harness before 1.0.0 was released and run beside them.
@@ -709,13 +740,17 @@ def _differences(
     young: dict[str, float] | None = None,
     against: str = "the release's",
     counted: dict[str, int] | None = None,
+    converted: np.ndarray | None = None,
 ) -> list[str]:
     """Where ``got`` parts from ``want``, field by field: the first row, both
     values, how many rows and the largest gap relative to ``1 + |v|``. Every
     field ``want`` reports is compared; floats to the bit, or within
     ``within``; a field starting with a prefix of ``young`` to the bit but
     on rows where it is the release's sum read at a younger share than the
-    prefix's filled one (`YOUNG`), which ``counted["young"]`` counts."""
+    prefix's filled one (`YOUNG`), which ``counted["young"]`` counts; and,
+    where ``converted`` gives the rows held, a field starting with a prefix
+    of `CONVERTED` held on those rows alone, the rows it parts on elsewhere
+    counted in ``counted["converted"]``."""
     got, want = _plain(got), _plain(want)
     if got.height != want.height:
         return [f"{got.height} rows against {against} {want.height}"]
@@ -745,6 +780,12 @@ def _differences(
                 if field.startswith(UPPER_READ[0]):
                     tol = max(tol, UPPER_READ[1])
                 bad = ~exact & ~(gap <= tol)
+                if converted is not None and field.startswith(CONVERTED):
+                    if counted is not None:
+                        counted["converted"] = counted.get("converted", 0) + int(
+                            (bad & ~converted).sum()
+                        )
+                    bad &= converted
         else:
             gap, bad = None, ~(u.eq_missing(v).to_numpy())
         if bad.any():
@@ -816,13 +857,21 @@ def test_a_moved_spec_goes_on_as_its_release_did(resumed):
     work = {name: reads for name, _, _, reads in probe.WORKLOAD}
     second = probe.stream().slice(probe.HALF)
     wrong: dict[str, list[str]] = {}
-    used: dict[str, int] = {"young": 0, "reset": 0}
+    used: dict[str, int] = {"young": 0, "reset": 0, "conformal": 0, "converted": 0}
     for name in names:
         specs = [built[r] for r in work[name]] + [built[name]]
         bank = po.ModelBank.load(states / f"{name}.state", specs=specs)
         got = {"rows": bank.fit_predict(second).select(name), **probe.tables(bank, name)}
         young = (YOUNG if name in ABSORBS else YOUNG_SQ) if name.startswith("full_") else None
         rule = dict(within=_within(name, version), young=young)
+        if (name, "1.4.0") in DECLARED and DECLARED[(name, "1.4.0")].endswith("residual spread"):
+            # Each group's first row of the second half, where the saved
+            # radius is shown.
+            groups = second["g"].to_numpy()
+            first = np.zeros(len(groups), dtype=bool)
+            first[np.unique(groups, return_index=True)[1]] = True
+            rule["converted"] = first
+            used["conformal"] += 1
         for table in sorted(p.name.split(".")[-2] for p in out.glob(f"{name}.*.parquet")):
             want = pl.read_parquet(out / f"{name}.{table}.parquet")
             if table not in got:
@@ -838,7 +887,8 @@ def test_a_moved_spec_goes_on_as_its_release_did(resumed):
                     mine.filter(pl.Series(after)), fresh, against="a fresh bank's"
                 )
                 mine, want = mine.filter(pl.Series(~after)), want.filter(pl.Series(~after))
-            wrong[f"{name}.{table}"] = _differences(mine, want, counted=used, **rule)
+            held = rule if table == "rows" else {k: v for k, v in rule.items() if k != "converted"}
+            wrong[f"{name}.{table}"] = _differences(mine, want, counted=used, **held)
         # The rows were compared: the release wrote them, all of them.
         assert pl.read_parquet(out / f"{name}.rows.parquet").height == second.height, name
     # The exceptions were used: the comparisons they excuse ran, and moved.
@@ -846,6 +896,8 @@ def test_a_moved_spec_goes_on_as_its_release_did(resumed):
     # release's files read them as this build does and use no exception.
     young_moved = _version(version) <= _version("1.3.0")
     assert used["reset"] == len(set(RESETS) & set(names)), used
+    # Every release's file holds a radius, and its interval moved.
+    assert used["conformal"] > 0 and used["converted"] > 0, used
     assert bool(used["young"]) == young_moved, used
     wrong = {k: v for k, v in wrong.items() if v}
     assert not wrong, "\n".join(f"{k}: {line}" for k, v in sorted(wrong.items()) for line in v)

@@ -7,7 +7,7 @@
 platform = "darwin-arm64"
 
 [hashes]
-"conformal.coverage_rates" = "313014f0135578867a1121387504222363ae4fd248dccf12aa3b843e8819b40e"
+"conformal.coverage_rates" = "94e4f16cb3455f0b4df1f7d29a274b46832f3f14ecb73f0c56e1200274a51b80"
 "convergence.ewridge" = "7f5bcca3c46398553ad2e3f527ac091876f016077d7f859cf15bfcd656a89847"
 "convergence.ftrl_logistic" = "21f1fa9e0577fe8291757aa0168df9eabee022b9f420309199696b822ccf1e44"
 "convergence.ftrl_squared" = "84ebc42e5ff3ff7adac4928f47587bb5ac1e8b29883596a7eda95d986ce391ab"

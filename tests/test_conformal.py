@@ -1,20 +1,22 @@
 """E36: adaptive conformal intervals -- `lo_<slot>`, `hi_<slot>` and
 `coverage_<slot>` from `conformal=<coverage>`.
 
-The interval is `pred ± q` with `q` a tracked quantile of the conformity
-score `|resid|`:
+The interval is `pred ± q`, `q = m·sigma`, with `m` a tracked quantile of
+the conformity score in units of the model's error, `|resid| / sigma`:
 
-    err = 1{|resid| > q}
-    q  <- max(0, q + rate·sigma·(w/w̄)·(err − α)),      α = 1 − coverage
+    err = 1{|resid| > m·sigma}
+    m  <- max(0, m + rate·(w/w̄)·(err − α)),      α = 1 − coverage
 
 read before the row, so the interval a row gets never saw that row (its
-own score moves `q` afterwards). `w̄` is the EW mean weight of the scored
-rows, this one included (docs/PLAN.md task 147), so a constant multiple of
-every weight moves nothing. `sigma` is the slot's EW residual standard
-deviation before the row, which makes `conformal_rate` unit-free; the
-radius starts at the Gaussian one, `sigma · Φ⁻¹(1 − α/2)`, on the first row
-that has both, and tracks from there. `coverage` is the EW fraction of
-scored rows whose interval held the target.
+own score moves `m` afterwards). `w̄` is the EW mean weight of the rows
+with a residual and a weight, this one included (docs/PLAN.md task 147), so
+a constant multiple of every weight moves nothing. `sigma` is the slot's EW
+residual standard deviation before the row, so `conformal_rate` is
+unit-free and the radius moves with the model's error between steps. `m`
+starts at the Gaussian one, `Φ⁻¹(1 − α/2)`, on the first row with a
+residual and a weight (docs/PLAN.md task 368), and a row is shown an
+interval once `sigma` exists. `coverage` is the EW fraction of scored rows
+whose interval held the target.
 
 Three things are established here:
 
@@ -22,9 +24,9 @@ Three things are established here:
    own `pred`, `resid` and `sigma` reproduces `lo`, `hi` and `coverage` bit
    for bit, for every regression model, with a grid, nulls in features and
    targets, zero and varying weights, an irregular clock and groups.
-2. **The guarantee, at scale.** Telescoping the recursion gives, for scores
-   in `[0, B]`, steps `η_t` and unit weights (with weights, the sum is
-   `(w/w̄)`-weighted),
+2. **The guarantee, at scale.** Telescoping the recursion gives, for scaled
+   scores `|resid|/sigma` in `[0, B]`, steps `η_t` and unit weights (with
+   weights, the sum is `(w/w̄)`-weighted),
 
        Σ η_t (err_t − α) ≤ B + max η        (and ≥ −(B + max η) unless
                                              the clamp at zero ever bit)
@@ -44,6 +46,7 @@ Three things are established here:
 from __future__ import annotations
 
 import math
+import struct
 
 import numpy as np
 import polars as pl
@@ -87,9 +90,40 @@ _D = (
 )
 
 
+def ln_basic(x: float) -> float:
+    """`ln x` as `online_core::ln_basic` computes it, in basic arithmetic:
+    `x = 2^k f`, `f` in `[√½, √2)` read from the bits, `ln f = 2 atanh(s)`
+    by its odd series, `k ln 2` added in two parts. Held to `math.log`
+    separately (`test_ln_basic_is_the_logarithm`)."""
+    if x != x or x < 0.0:
+        return math.nan
+    if x == 0.0:
+        return -math.inf
+    if math.isinf(x):
+        return math.inf
+    k0 = 0
+    if x < 2.2250738585072014e-308:
+        x, k0 = x * 2.0**54, -54
+    bits = struct.unpack("<Q", struct.pack("<d", x))[0]
+    k = ((bits >> 52) & 0x7FF) - 1023 + k0
+    f = struct.unpack("<d", struct.pack("<Q", (bits & ((1 << 52) - 1)) | (1023 << 52)))[0]
+    if f > 1.4142135623730951:
+        f *= 0.5
+        k += 1
+    s = (f - 1.0) / (f + 1.0)
+    s2 = s * s
+    term = total = s
+    for i in range(1, 16):
+        term *= s2
+        total += term / float(2 * i + 1)
+    kf = float(k)
+    return (kf * 0.6931471803691238 + 2.0 * total) + kf * 1.9082149292705877e-10
+
+
 def norm_ppf(p: float) -> float:
     """Acklam's inverse normal, the operations in the order
-    `online_core::norm_ppf` performs them, so the warm start is bit-exact."""
+    `online_core::norm_ppf` performs them, its tails' logarithm `ln_basic`,
+    so the start is bit-exact."""
     a, b, c, d = _A, _B, _C, _D
 
     def tail(q):
@@ -98,7 +132,7 @@ def norm_ppf(p: float) -> float:
         )
 
     if p < 0.02425:
-        return tail(math.sqrt(-2.0 * math.log(p)))
+        return tail(math.sqrt(-2.0 * ln_basic(p)))
     if p <= 1.0 - 0.02425:
         q = p - 0.5
         r = q * q
@@ -107,48 +141,68 @@ def norm_ppf(p: float) -> float:
             * q
             / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0)
         )
-    return -tail(math.sqrt(-2.0 * math.log(1.0 - p)))
+    return -tail(math.sqrt(-2.0 * ln_basic(1.0 - p)))
+
+
+def test_ln_basic_is_the_logarithm():
+    """The oracle's `ln_basic` against `math.log`, within a few ulps, over
+    the normals and subnormals: the start's `Φ⁻¹(1 − α/2)` reads it in its
+    tails, as the bank's does."""
+    rng = np.random.default_rng(0)
+    worst = 0.0
+    for e in range(-1074, 1024, 3):
+        x = float((1.0 + rng.random()) * 2.0**e)
+        if not (math.isfinite(x) and x > 0.0):
+            continue
+        want = math.log(x)
+        worst = max(worst, abs(ln_basic(x) - want) / max(math.ulp(want), 5e-324))
+    assert worst <= 4.0, worst
+    assert ln_basic(1.0) == 0.0
 
 
 def replay(pred, resid, sigma, lam, w, accepted, *, coverage, rate=0.05):
     """`lo`, `hi`, `coverage` for one slot from the bank's own `pred`,
     `resid` and `sigma` (NaN for null), the per-row decay factor and weight,
     and which rows the stream accepted at all. A row's step reads its weight
-    against the EW mean weight of the scored rows, its own included
-    (docs/PLAN.md task 147)."""
+    against the EW mean weight of the rows with a residual and a weight, its
+    own included (docs/PLAN.md task 147)."""
     alpha = 1.0 - coverage
     n = len(pred)
     lo, hi, cov_out = (np.full(n, np.nan) for _ in range(3))
-    q, cov, cov_w = math.nan, 0.0, 0.0
+    m, cov, cov_w = math.nan, 0.0, 0.0
     w_mean, w_rows = 0.0, 0.0
     for i in range(n):
         if not accepted[i]:
             continue
-        p = pred[i]
+        p, s = pred[i], sigma[i]
+        usable = math.isfinite(s) and s > 0.0
+        q = m * s if math.isfinite(m) and usable else math.nan
         if math.isfinite(q):
             lo[i], hi[i] = p - q, p + q
         if cov_w > 0.0:
             cov_out[i] = cov
-        r, s, lam_i, w_i = resid[i], sigma[i], lam[i], w[i]
+        r, lam_i, w_i = resid[i], lam[i], w[i]
         if not math.isfinite(r) or w_i <= 0.0:
             cov_w *= lam_i
             w_rows *= lam_i
             continue
         w_rows = lam_i * w_rows + 1.0
         w_mean += (w_i - w_mean) / w_rows
-        usable = math.isfinite(s) and s > 0.0
+        if not math.isfinite(m):
+            # The start: the first row with a residual and a weight, unscored.
+            m = norm_ppf(1.0 - 0.5 * alpha)
+            cov_w *= lam_i
+            continue
         if not math.isfinite(q):
-            if usable:
-                q = s * norm_ppf(1.0 - 0.5 * alpha)
+            # No error scale: no interval shown, no evidence.
             cov_w *= lam_i
             continue
         miss = abs(r) > q
         cw = lam_i * cov_w + w_i
         cov = (lam_i * cov_w * cov + w_i * (0.0 if miss else 1.0)) / cw
         cov_w = cw
-        eta = rate * s if usable else 0.0
         rel = w_i / w_mean if w_mean > 0.0 else 1.0
-        q = max(q + eta * rel * ((1.0 if miss else 0.0) - alpha), 0.0)
+        m = max(m + rate * rel * ((1.0 if miss else 0.0) - alpha), 0.0)
     return lo, hi, cov_out
 
 
@@ -401,9 +455,11 @@ def _fit_large(df, coverage=0.9, rate=0.05, half_life=2000.0):
 class TestTheGuaranteeAtScale:
     @pytest.mark.parametrize("kind", ["gaussian", "fat_tailed", "heteroskedastic", "shifting"])
     def test_the_telescoped_bound_holds_exactly(self, kind):
-        """`Σ η_t (err_t − α) ≤ B + max η`, and the same from below unless the
-        clamp at zero ever bit: a theorem about the recursion, so it is asserted
-        as a hard inequality on the bank's own outputs."""
+        """`Σ η (err_t − α) ≤ B + η`, and the same from below unless the
+        clamp at zero ever bit, for the constant step `η = rate` of the
+        multiplier and `B` the largest scaled score `|resid| / sigma`: a
+        theorem about the recursion, so it is asserted as a hard inequality on
+        the bank's own outputs."""
         df = _stream(kind)
         out = _fit_large(df)
         y = df["y"].to_numpy()
@@ -412,10 +468,10 @@ class TestTheGuaranteeAtScale:
         q = (hi[m] - lo[m]) / 2
         assert (q > 0).all(), "the clamp at zero bit; the lower bound needs restating"
         err = (y[m] < lo[m]) | (y[m] > hi[m])
-        eta = 0.05 * sigma[m]
-        b = np.abs(resid[m]).max()
+        eta = 0.05
+        b = (np.abs(resid[m]) / sigma[m]).max()
         total = float(np.sum(eta * (err - 0.1)))
-        bound = b + eta.max()
+        bound = b + eta
         assert abs(total) <= bound, f"{kind}: {total} vs {bound}"
 
     @pytest.mark.parametrize("kind", ["gaussian", "fat_tailed", "heteroskedastic", "shifting"])

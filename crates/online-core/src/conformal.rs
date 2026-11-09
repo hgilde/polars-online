@@ -2,59 +2,72 @@
 //! conformity score `|resid|`, with a long-run coverage guarantee that needs
 //! no distributional assumption and survives a shift in the residuals.
 //!
-//! One scalar recursion per slot. With target coverage `1 − α`, score
-//! `s_t = |resid_t|` and step `η_t`:
+//! One scalar recursion per slot, on a multiplier of the residual spread
+//! rather than on the radius itself. With target coverage `1 − α`, score
+//! `s_t = |resid_t|`, the slot's EW residual standard deviation `σ_t` read
+//! before the row, and step `η_t`:
 //!
 //! ```text
-//! err_t = 1{s_t > q_t}                      the interval missed
-//! q_{t+1} = max(0, q_t + η_t · (w_t / w̄_t) · (err_t − α))
+//! q_t     = m_t · σ_t                        the radius the row is shown
+//! err_t   = 1{s_t > q_t}                     the interval missed
+//! m_{t+1} = max(0, m_t + η_t · (w_t / w̄_t) · (err_t − α))
 //! ```
 //!
 //! with `w̄_t` the stream's EW mean weight, this row's included: the mean
 //! over every row the layer is given with a residual and a weight, which
-//! takes in the row that warm-starts the radius and a delayed row shown no
-//! interval, though neither is scored. So a step reads a row's weight
-//! against the stream's, and multiplying every weight by one constant moves
-//! nothing (docs/PLAN.md task 147: the step was `η·w`, and the same rows at
-//! weight 100 swung the band, width sd 3.10 against 0.21).
+//! takes in the rows the warm start waits through and a delayed row shown
+//! no interval, though none of them is scored. So a step reads a row's
+//! weight against the stream's, and multiplying every weight by one
+//! constant moves nothing (docs/PLAN.md task 147: the step was `η·w`, and
+//! the same rows at weight 100 swung the band, width sd 3.10 against 0.21).
 //!
-//! which is online gradient descent on the pinball loss at level `1 − α` —
-//! the "P" term of Angelopoulos, Candès & Tibshirani (2023), *Conformal PID
-//! control for time series prediction*, and the quantile-tracking form of
-//! Gibbs & Candès (2021)'s adaptive conformal inference. The interval for the
-//! next row is `pred ± q`, read *before* the row (its own score is folded in
+//! That is online gradient descent on the pinball loss at level `1 − α` of
+//! the score in units of `σ`, `s_t / σ_t` -- the "P" term of Angelopoulos,
+//! Candès & Tibshirani (2023), *Conformal PID control for time series
+//! prediction*, and the quantile-tracking form of Gibbs & Candès (2021)'s
+//! adaptive conformal inference, on a score scaled by the model's own
+//! error. The step is `rate` (unit-free, so `m` moves by the same amount
+//! whatever the target's units), and a radius moves with `σ` between steps:
+//! while the model learns and its errors shrink, so does the interval, at
+//! once, where a tracked radius had to step down to it (docs/PLAN.md task
+//! 368: a radius started from a model that had learned almost nothing took
+//! tens of thousands of rows to come down). The interval for the next row
+//! is `pred ± q`, read *before* the row (its own score is folded in
 //! afterwards), so it is out-of-sample the way every other output here is.
 //!
-//! **Guarantee.** For a constant step `η` and scores in `[0, B]`, telescoping
-//! the recursion gives `|q_{T+1} − q_1| = η·|Σ_{t≤T}(err_t − α)|`, and
-//! `q` never leaves `[−η, B + η]`, so
+//! **Guarantee.** For a constant step `η` and scaled scores in `[0, B]`,
+//! telescoping the recursion gives `|m_{T+1} − m_1| = η·|Σ_{t≤T}(err_t −
+//! α)|`, and `m` never leaves `[−η, B + η]`, so
 //!
 //! ```text
 //! |(1/T) Σ_{t≤T} err_t − α| ≤ (B + η) / (η T)
 //! ```
 //!
-//! for *every* sequence of scores: the long-run miscoverage is `α` whatever
-//! the residual distribution is, and however it moves. The clamp at zero
-//! only ever raises `q`, so it can only add coverage. With weights the sum
-//! is `Σ (w_t/w̄_t)(err_t − α)`, so what is held to `α` is the miscoverage
-//! weighted by `w/w̄`: a heavy row's miss counts for more, and the share of
-//! rows missed can sit on either side of `α` when the weights follow the
-//! misses (0.954 of rows covered against 0.900 weighted, with weight 5 on
-//! the wild rows; review round 4, CA5). The step here is `η_t = rate ·
-//! σ_t`, with `σ_t` the slot's EW residual standard deviation before the
-//! row, so that `rate` is unit-free and the radius moves at the scale of
-//! the errors it brackets; the bound then holds in `σ`-weighted form, at
-//! the same rate.
+//! for *every* sequence of scores: the long-run share of rows whose shown
+//! interval missed is `α` whatever the residual distribution is, and however
+//! it moves. The clamp at zero only ever raises `m`, so it can only add
+//! coverage. With weights the sum is `Σ (w_t/w̄_t)(err_t − α)`, so what is
+//! held to `α` is the miscoverage weighted by `w/w̄`: a heavy row's miss
+//! counts for more, and the share of rows missed can sit on either side of
+//! `α` when the weights follow the misses (0.954 of rows covered against
+//! 0.900 weighted, with weight 5 on the wild rows; review round 4, CA5).
 //!
-//! `q` starts where a Gaussian would put it, `σ · Φ⁻¹(1 − α/2)`, on the first
-//! row that has a residual and a finite `σ > 0`, and tracks from there. The
-//! realized coverage is an EW mean of `1{s_t ≤ q_t}` on the same clock as the
-//! model, also read before the row.
+//! **The start.** `m` starts where a Gaussian would put it, `Φ⁻¹(1 − α/2)`,
+//! which needs no data; the first interval is shown on the first row with a
+//! finite `σ > 0` once the tracker has started, and a row with no usable
+//! `σ` is shown none. The tracker starts on the first row it is given with
+//! a residual and a weight, which is not scored -- unless rows are waiting
+//! for their labels (`held`, below), when it starts once the residuals it
+//! has been given outnumber the rows waiting, `1 + n̄`: the rows released
+//! first were served by a model that had learned one or two labels, and an
+//! interval scaled by their spread carries an error the loop hears of only
+//! `n̄` releases later. The realized coverage is an EW mean of
+//! `1{s_t ≤ q_t}` on the same clock as the model, also read before the row.
 //!
 //! **Under a label delay** (docs/records/CONFORMAL-STEP.md, docs/PLAN.md
 //! task 342). A row whose label arrives `n` releases after it was shown its
 //! interval feeds the recursion `n` steps late: linearized about the true
-//! quantile, the radius error follows `e_{t+1} = e_t − k·e_{t−n}` with
+//! quantile, the error of `m` follows `e_{t+1} = e_t − k·e_{t−n}` with
 //! `k = rate · g(α)` ([`gauss_gain`]), stable only for `k·n` below about
 //! `π/2` and free of overshoot below about `1/e`. The delay-aware step
 //! divides the rate by `1 + rate · g(α) · n̄ / c`, with `n̄` the EW mean of
@@ -66,24 +79,26 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Tracked conformal radius and realized coverage for one output slot.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Tracked conformal multiplier and realized coverage for one output slot.
+/// Two trackers are equal when every field is the same bits: `m` and the
+/// kept radius are NaN until they exist, and a NaN equals itself here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(from = "Saved")]
 pub struct Conformal {
     /// Miscoverage target `α`; the interval aims at coverage `1 − α`.
     alpha: f64,
-    /// Step per unit of `σ`: the step itself, or under the delay-aware rule
-    /// the step it takes when nothing waits.
+    /// Step of the multiplier: the step itself, or under the delay-aware
+    /// rule the step it takes when nothing waits.
     rate: f64,
-    /// The radius. NaN until the warm start.
-    q: f64,
+    /// The multiplier `m`: the radius is `m · σ`. NaN until the start.
+    m: f64,
     /// EW mean of `1{|resid| ≤ q}` and its weight.
     cov: f64,
     cov_w: f64,
     /// The stream's EW mean weight, and the EW count behind it: every row
-    /// with a residual and a weight, the warm-start row and a delayed row
-    /// shown no interval included, though neither is scored. What a row's
-    /// step reads its weight against (docs/PLAN.md task 147).
+    /// with a residual and a weight, the rows the start waits through and a
+    /// delayed row shown no interval included, though none is scored. What
+    /// a row's step reads its weight against (docs/PLAN.md task 147).
     #[serde(default)]
     w_mean: f64,
     #[serde(default)]
@@ -92,23 +107,42 @@ pub struct Conformal {
     /// release, the released row aside, on the same rows and decay as
     /// `w_mean`: `n̄` of the delay-aware step (docs/PLAN.md task 342). 0
     /// wherever the stream passes no count, so the step is `rate`'s; not
-    /// written while 0, so no other state's bytes move (schema 67).
+    /// written while 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     held_mean: f64,
+    /// The rows with a residual and a weight given before the start,
+    /// counted without decay: the start waits until they reach `1 + n̄`
+    /// (docs/PLAN.md task 368). 0 from the start on, and not written while
+    /// 0, so only a tracker waiting with rows held writes it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    released: f64,
+    /// A radius from a file written before the multiplier (schema 67),
+    /// shown as it was until the first row with an error scale, which
+    /// converts it to `m = q / σ` (CLAUDE.md rule 5, the user's exception
+    /// of 2026-11-09). NaN otherwise, and not written while NaN.
+    #[serde(skip_serializing_if = "is_nan")]
+    q: f64,
     /// `g(α) = 2φ(Φ⁻¹(1 − α/2))`, the step's loop gain per unit of rate on
     /// Gaussian residuals, derived from `α` when the tracker is made or
     /// loaded and never written: a value of the configuration, not of the
     /// stream.
     #[serde(skip_serializing)]
     gain: f64,
+    /// `Φ⁻¹(1 − α/2)`, where `m` starts: derived like `gain`.
+    #[serde(skip_serializing)]
+    z: f64,
 }
 
-/// A [`Conformal`] as its file holds it: every field but the derived gain.
+/// A [`Conformal`] as its file holds it: every field but the derived ones.
+/// A file of schema 66 or earlier holds the radius `q` and no `m`.
 #[derive(Deserialize)]
 struct Saved {
     alpha: f64,
     rate: f64,
-    q: f64,
+    #[serde(default)]
+    m: Option<f64>,
+    #[serde(default)]
+    q: Option<f64>,
     cov: f64,
     cov_w: f64,
     #[serde(default)]
@@ -117,26 +151,67 @@ struct Saved {
     w_rows: f64,
     #[serde(default)]
     held_mean: f64,
+    #[serde(default)]
+    released: f64,
 }
 
 impl From<Saved> for Conformal {
     fn from(s: Saved) -> Self {
+        // A file before the multiplier holds a radius and no `m`: a finite
+        // radius is shown as it was until the first row with an error scale
+        // converts it; one not yet started (NaN) waits for the start as a
+        // new tracker does.
+        let (m, q) = match (s.m, s.q) {
+            (Some(m), q) => (m, q.unwrap_or(f64::NAN)),
+            (None, Some(q)) => (f64::NAN, q),
+            (None, None) => (f64::NAN, f64::NAN),
+        };
         Self {
             alpha: s.alpha,
             rate: s.rate,
-            q: s.q,
+            m,
             cov: s.cov,
             cov_w: s.cov_w,
             w_mean: s.w_mean,
             w_rows: s.w_rows,
             held_mean: s.held_mean,
+            released: s.released,
+            q: if q.is_finite() { q } else { f64::NAN },
             gain: gauss_gain(s.alpha),
+            z: norm_ppf(1.0 - 0.5 * s.alpha),
         }
+    }
+}
+
+impl PartialEq for Conformal {
+    fn eq(&self, o: &Self) -> bool {
+        let bits = |c: &Self| {
+            [
+                c.alpha,
+                c.rate,
+                c.m,
+                c.cov,
+                c.cov_w,
+                c.w_mean,
+                c.w_rows,
+                c.held_mean,
+                c.released,
+                c.q,
+                c.gain,
+                c.z,
+            ]
+            .map(f64::to_bits)
+        };
+        bits(self) == bits(o)
     }
 }
 
 fn is_zero(v: &f64) -> bool {
     *v == 0.0
+}
+
+fn is_nan(v: &f64) -> bool {
+    v.is_nan()
 }
 
 /// The delay-aware step's constant `c`: the step is cut so that its loop
@@ -146,7 +221,7 @@ pub const HELD_GAIN_BOUND: f64 = 0.5;
 
 impl Conformal {
     /// `coverage` is the target `1 − α`, strictly inside `(0, 1)`; `rate` the
-    /// step per unit of `σ`, `> 0`.
+    /// step of the multiplier, `> 0`.
     pub fn new(coverage: f64, rate: f64) -> Result<Self, String> {
         let mut no = crate::Refusals::new();
         if !(coverage > 0.0 && coverage < 1.0) {
@@ -163,22 +238,39 @@ impl Conformal {
             ));
         }
         no.finish()?;
+        let alpha = 1.0 - coverage;
         Ok(Self {
-            alpha: 1.0 - coverage,
+            alpha,
             rate,
-            q: f64::NAN,
+            m: f64::NAN,
             cov: 0.0,
             cov_w: 0.0,
             w_mean: 0.0,
             w_rows: 0.0,
             held_mean: 0.0,
-            gain: gauss_gain(1.0 - coverage),
+            released: 0.0,
+            q: f64::NAN,
+            gain: gauss_gain(alpha),
+            z: norm_ppf(1.0 - 0.5 * alpha),
         })
     }
 
-    /// The half-width of the current interval, once warm-started.
-    pub fn radius(&self) -> Option<f64> {
-        self.q.is_finite().then_some(self.q)
+    /// The half-width of the interval for a row whose residual spread
+    /// before it is `sigma`: `m · σ` once started, for a finite `σ > 0`.
+    /// A radius kept from a file before the multiplier is shown as it was,
+    /// whatever `sigma` is, until a row converts it.
+    pub fn radius(&self, sigma: f64) -> Option<f64> {
+        if self.m.is_finite() && sigma.is_finite() && sigma > 0.0 {
+            Some(self.m * sigma)
+        } else {
+            self.q.is_finite().then_some(self.q)
+        }
+    }
+
+    /// The multiplier `m`, once started (and converted, for a tracker
+    /// loaded from a file before it).
+    pub fn multiplier(&self) -> Option<f64> {
+        self.m.is_finite().then_some(self.m)
     }
 
     /// Realized coverage so far: the EW fraction of scored rows whose
@@ -193,10 +285,10 @@ impl Conformal {
     /// model's decay factor for the row and `w` the row's weight.
     ///
     /// A row with no residual or no weight only ages the coverage: it is
-    /// not evidence either way. The first row with a residual and a finite
-    /// `sigma > 0` sets the radius and is not scored — no interval was
-    /// emitted for it. Every later row is scored against the radius it was
-    /// given, then moves it.
+    /// not evidence either way. The first row with a residual and a weight
+    /// starts the tracker and is not scored -- no interval was emitted for
+    /// it. Every later row is scored against the radius it was given, then
+    /// moves the multiplier.
     pub fn update(&mut self, resid: f64, sigma: f64, lam: f64, w: f64) {
         self.update_against(resid, sigma, lam, w, None, 0);
     }
@@ -204,27 +296,28 @@ impl Conformal {
     /// [`Self::update`] for a row whose label arrives after the row was
     /// shown its interval (`embargo`, `label_clock`): the row is scored
     /// against the radius it was *shown*, `shown`, not the radius the
-    /// recursion has reached since, and the step moves the current radius by
-    /// that error -- the delayed-feedback form of adaptive conformal
-    /// inference. Scored against the radius at release, the coverage
-    /// described intervals nobody was shown (review 2026-09-12, C21's other
-    /// half; docs/PLAN.md task 112). `None` is the current radius, which is
-    /// what `shown` is with no delay; `Some(NaN)`, a row shown no interval
-    /// because none existed yet, is no evidence either way: it ages the
-    /// coverage and takes no step.
+    /// recursion has reached since, and the step moves the current
+    /// multiplier by that error -- the delayed-feedback form of adaptive
+    /// conformal inference. Scored against the radius at release, the
+    /// coverage described intervals nobody was shown (review 2026-09-12,
+    /// C21's other half; docs/PLAN.md task 112). `None` is the radius the
+    /// row reads now, `m · sigma`, which is what `shown` is with no delay;
+    /// `Some(NaN)`, a row shown no interval because none existed yet, is no
+    /// evidence either way: it ages the coverage and takes no step.
     ///
     /// `held` is the count of rows still waiting for their labels as this
-    /// one is released, itself aside, for the delay-aware step: its EW mean
-    /// `n̄`, over the rows `w̄` is taken over, divides the step,
+    /// one is released, itself aside. Its EW mean `n̄`, over the rows `w̄`
+    /// is taken over, divides the step,
     ///
     /// ```text
-    /// η = rate · σ / (1 + rate · g(α) · n̄ / c)
+    /// η = rate / (1 + rate · g(α) · n̄ / c)
     /// ```
     ///
-    /// so that the loop gain `η·g/σ` times the rows in flight stays below
-    /// `c` ([`HELD_GAIN_BOUND`]); see [`gauss_gain`]. 0 on every row leaves
-    /// `n̄` at 0 and the step at `rate · σ` to the bit, which is how the
-    /// fixed rate is kept.
+    /// so that the loop gain `η·g` times the rows in flight stays below `c`
+    /// ([`HELD_GAIN_BOUND`]); see [`gauss_gain`]. And the start waits until
+    /// the rows given with a residual reach `1 + n̄`. A count of 0 on every
+    /// row leaves `n̄` at 0, the step at `rate` and the start at the first
+    /// row to the bit, which is how the fixed rate is kept.
     pub fn update_against(
         &mut self,
         resid: f64,
@@ -249,27 +342,40 @@ impl Conformal {
         if held > 0 || self.held_mean != 0.0 {
             self.held_mean += (held as f64 - self.held_mean) / self.w_rows;
         }
-        let usable_sigma = sigma.is_finite() && sigma > 0.0;
-        if !self.q.is_finite() {
-            if usable_sigma {
-                self.q = sigma * norm_ppf(1.0 - 0.5 * self.alpha);
+        if !self.m.is_finite() {
+            // A radius kept from a file before the multiplier, off the hot
+            // path: shown as saved until a row with an error scale converts it.
+            if self.q.is_finite() {
+                self.update_kept(resid, sigma, lam, w, shown);
+                return;
+            }
+            // Not started (or a multiplier that overflowed): count the row,
+            // and start once the rows given outnumber the rows waiting.
+            self.released += 1.0;
+            if self.released >= 1.0 + self.held_mean {
+                self.m = self.z;
+                self.released = 0.0;
             }
             self.cov_w *= lam;
             return;
         }
-        let against = shown.unwrap_or(self.q);
+        let against = match shown {
+            Some(a) => a,
+            None if sigma.is_finite() && sigma > 0.0 => self.m * sigma,
+            None => f64::NAN,
+        };
+        self.score_and_step(resid, lam, w, against);
+    }
+
+    /// Score the row against `against` and step `m` by its error, the rows
+    /// that are no evidence (`against` not finite) only ageing the coverage.
+    fn score_and_step(&mut self, resid: f64, lam: f64, w: f64, against: f64) {
         if !against.is_finite() {
             self.cov_w *= lam;
             return;
         }
-        let s = resid.abs();
-        let miss = s > against;
-        let cw = lam * self.cov_w + w;
-        self.cov = (lam * self.cov_w * self.cov + w * f64::from(!miss)) / cw;
-        self.cov_w = cw;
-        // A slot whose residuals have all been exactly zero has sigma 0 and
-        // takes no step: the radius waits until there is an error scale.
-        let mut eta = if usable_sigma { self.rate * sigma } else { 0.0 };
+        let miss = self.score(resid, lam, w, against);
+        let mut eta = self.rate;
         // Nothing has waited: the fixed step, with no division to round it.
         if self.held_mean > 0.0 {
             eta /= 1.0 + self.rate * self.gain * self.held_mean / HELD_GAIN_BOUND;
@@ -279,7 +385,36 @@ impl Conformal {
         } else {
             1.0
         };
-        self.q = (self.q + eta * rel * (f64::from(miss) - self.alpha)).max(0.0);
+        self.m = (self.m + eta * rel * (f64::from(miss) - self.alpha)).max(0.0);
+    }
+
+    /// Fold the row's hit or miss against `against` into the coverage, and
+    /// return whether it missed.
+    fn score(&mut self, resid: f64, lam: f64, w: f64, against: f64) -> bool {
+        let miss = resid.abs() > against;
+        let cw = lam * self.cov_w + w;
+        self.cov = (lam * self.cov_w * self.cov + w * f64::from(!miss)) / cw;
+        self.cov_w = cw;
+        miss
+    }
+
+    /// [`Self::update_against`] for a tracker holding a radius from a file
+    /// before the multiplier: the row is scored against the radius it was
+    /// shown (the kept one, with no delay), and a row with an error scale
+    /// converts it to `m = q / σ` and steps `m`; one with none takes no
+    /// step, as the radius it was took none.
+    #[cold]
+    fn update_kept(&mut self, resid: f64, sigma: f64, lam: f64, w: f64, shown: Option<f64>) {
+        let against = shown.unwrap_or(self.q);
+        if sigma.is_finite() && sigma > 0.0 {
+            self.m = self.q / sigma;
+            self.q = f64::NAN;
+            self.score_and_step(resid, lam, w, against);
+        } else if against.is_finite() {
+            self.score(resid, lam, w, against);
+        } else {
+            self.cov_w *= lam;
+        }
     }
 
     /// `n̄`: the EW mean of the rows waiting at each release, 0 where none
@@ -298,8 +433,7 @@ impl Conformal {
 /// `φ`'s exponential is [`exp_neg`], basic arithmetic alone, so the gain is
 /// the same bits on every platform and a radius stepped by it continues to
 /// the bit wherever its state is loaded. `Φ⁻¹` is [`norm_ppf`], whose tails
-/// beyond `p = 0.02425` (coverage above 95.15%) read the platform's `ln`, as
-/// the warm start does.
+/// read [`ln_basic`], basic arithmetic too.
 pub fn gauss_gain(alpha: f64) -> f64 {
     let z = norm_ppf(1.0 - 0.5 * alpha);
     // 1 / sqrt(2π)
@@ -340,12 +474,62 @@ pub fn exp_neg(x: f64) -> f64 {
     sum * f64::from_bits(((1023 - k as i64) as u64) << 52)
 }
 
+/// `ln x` for a finite `x > 0` in basic arithmetic, the same bits on every
+/// platform: `x = 2^k · f` with `f` in `[√½, √2)` read from the bits (a
+/// subnormal scaled up by `2^54` first), and `ln f = 2·atanh(s)`, `s = (f −
+/// 1)/(f + 1)`, `|s| ≤ 0.1716`, by its odd series to the term below the
+/// last bit; `k·ln 2` added in two parts (Cody and Waite), as [`exp_neg`]
+/// subtracts it. Within a few ulps of the true value; NaN for a negative
+/// or NaN `x`, `−∞` at 0 and `∞` at `∞`.
+pub fn ln_basic(x: f64) -> f64 {
+    if x.is_nan() || x < 0.0 {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    if x.is_infinite() {
+        return f64::INFINITY;
+    }
+    const LN2_HI: f64 = 0.693_147_180_369_123_8;
+    const LN2_LO: f64 = 1.908_214_929_270_587_7e-10;
+    // A subnormal has no implicit bit: scale it into the normals exactly.
+    let (x, k0) = if x < f64::MIN_POSITIVE {
+        (x * f64::from_bits((1023 + 54) << 52), -54i64)
+    } else {
+        (x, 0)
+    };
+    let bits = x.to_bits();
+    let mut k = ((bits >> 52) & 0x7ff) as i64 - 1023 + k0;
+    // The mantissa with the exponent of 1: `f` in [1, 2), exactly.
+    let mut f = f64::from_bits((bits & ((1u64 << 52) - 1)) | (1023u64 << 52));
+    if f > std::f64::consts::SQRT_2 {
+        f *= 0.5;
+        k += 1;
+    }
+    let s = (f - 1.0) / (f + 1.0);
+    let s2 = s * s;
+    // 2·(s + s³/3 + s⁵/5 + …): s² ≤ 0.0295, so the 15th term is below
+    // 2^-53 of the first.
+    let mut term = s;
+    let mut sum = s;
+    for i in 1..=15 {
+        term *= s2;
+        sum += term / f64::from(2 * i + 1);
+    }
+    let kf = k as f64;
+    (kf * LN2_HI + 2.0 * sum) + kf * LN2_LO
+}
+
 /// Inverse of the standard normal CDF, `Φ⁻¹(p)` for `p` in `(0, 1)`.
 ///
 /// Acklam's rational approximation (relative error below `1.2e-9` over the
-/// whole range), evaluated in a fixed order so the same input gives the same
-/// bits on every platform. Good to every purpose here — it seeds a radius
-/// that is then tracked — and a test pins it against known quantiles.
+/// whole range), evaluated in a fixed order, its tails' logarithm in basic
+/// arithmetic ([`ln_basic`]), so the same input gives the same bits on
+/// every platform, and the multiplier a tracker starts at is the same
+/// wherever its state is loaded. Good to every purpose here -- it seeds a
+/// multiplier that is then tracked -- and a test pins it against known
+/// quantiles.
 pub fn norm_ppf(p: f64) -> f64 {
     const A: [f64; 6] = [
         -3.969683028665376e+01,
@@ -385,14 +569,14 @@ pub fn norm_ppf(p: f64) -> f64 {
             / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
     };
     if p < P_LOW {
-        tail((-2.0 * p.ln()).sqrt())
+        tail((-2.0 * ln_basic(p)).sqrt())
     } else if p <= 1.0 - P_LOW {
         let q = p - 0.5;
         let r = q * q;
         (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
             / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
     } else {
-        -tail((-2.0 * (1.0 - p).ln()).sqrt())
+        -tail((-2.0 * ln_basic(1.0 - p)).sqrt())
     }
 }
 
@@ -418,10 +602,8 @@ mod tests {
         // (p, Φ⁻¹(p)) to 15 digits; both branches of the approximation.
         // The lower tail at `2⁻⁷` rather than 0.01 (docs/PLAN.md task 273):
         // `1 − 2⁻⁷` is exact, so `norm_ppf(1 − p)` takes the log of the same
-        // number `norm_ppf(p)` does and the two are negatives to the bit on
-        // any libm. At 0.01 the upper tail read `ln(1 − 0.99)`, 8.7e-18
-        // from 0.01, and agreed with Apple's `ln` alone: 4.5 ulps apart with
-        // it moved by 2. Φ⁻¹(2⁻⁷) from MPFR at 200 bits.
+        // number `norm_ppf(p)` does and the two are negatives to the bit.
+        // Φ⁻¹(2⁻⁷) from MPFR at 200 bits.
         for (p, z) in [
             (0.5, 0.0),
             (0.75, 0.6744897501960817),
@@ -445,6 +627,47 @@ mod tests {
         assert!(norm_ppf(f64::NAN).is_nan());
     }
 
+    /// `ln_basic` against the platform's `ln`, within a few ulps, over the
+    /// normals and subnormals the tails of `Φ⁻¹` and any caller can reach,
+    /// and its edges (docs/PLAN.md task 368: the multiplier starts at
+    /// `Φ⁻¹(1 − α/2)`, whose tails read it, so no libm result enters a
+    /// state).
+    #[test]
+    fn ln_basic_is_the_logarithm() {
+        let mut worst = 0.0f64;
+        let mut s = 7u64;
+        let mut seen = 0;
+        for e in -1074..1024 {
+            for _ in 0..4 {
+                let x = (1.0 + lcg(&mut s)) * 2f64.powi(e);
+                if !(x.is_finite() && x > 0.0) {
+                    continue;
+                }
+                let (got, want) = (ln_basic(x), x.ln());
+                let ulp = (want.abs().next_up() - want.abs()).max(f64::MIN_POSITIVE);
+                worst = worst.max((got - want).abs() / ulp);
+                seen += 1;
+            }
+        }
+        assert!(
+            seen > 8000 && worst <= 4.0,
+            "{seen} values, worst {worst} ulps"
+        );
+        // Near 1, where the result is small and the series alone carries it.
+        for x in [1.0, 1.0 + 1e-15, 1.0 - 1e-15, 0.999, 1.001, 1.41, 0.71] {
+            let (got, want) = (ln_basic(x), f64::ln(x));
+            assert!(
+                (got - want).abs() <= 4.0 * f64::EPSILON * want.abs().max(f64::MIN_POSITIVE),
+                "{x}: {got} vs {want}"
+            );
+        }
+        assert_eq!(ln_basic(1.0), 0.0);
+        assert_eq!(ln_basic(0.0), f64::NEG_INFINITY);
+        assert_eq!(ln_basic(f64::INFINITY), f64::INFINITY);
+        assert!(ln_basic(-1.0).is_nan());
+        assert!(ln_basic(f64::NAN).is_nan());
+    }
+
     #[test]
     fn rejects_bad_parameters() {
         assert!(Conformal::new(0.0, 0.05).is_err());
@@ -462,45 +685,55 @@ mod tests {
         assert!(lines[1].starts_with("conformal_rate must be finite and above 0, but it is 0."));
     }
 
+    /// The tracker starts on the first row with a residual and a weight,
+    /// which is not scored; from there the radius is `m·σ` for the `σ` the
+    /// row reads, `m` starting at `Φ⁻¹(1 − α/2)`, and every row with a
+    /// usable `σ` is scored and moves `m` by `rate·(err − α)`.
     #[test]
-    fn starts_undefined_and_warm_starts_at_the_gaussian_radius() {
+    fn starts_on_the_first_row_at_the_gaussian_multiplier() {
         let mut c = Conformal::new(0.9, 0.05).unwrap();
-        assert_eq!(c.radius(), None);
+        assert_eq!(c.radius(1.0), None);
+        assert_eq!(c.multiplier(), None);
         assert_eq!(c.coverage(), None);
-        // No sigma yet: nothing happens.
+        // No residual: nothing starts.
+        c.update(f64::NAN, 2.0, 1.0, 1.0);
+        assert_eq!(c.multiplier(), None);
+        // The first residual starts it, with no σ needed, and is not scored.
         c.update(0.3, f64::NAN, 1.0, 1.0);
-        assert_eq!(c.radius(), None);
-        // First usable sigma: the radius appears; the row is not scored.
-        c.update(0.3, 2.0, 1.0, 1.0);
         let z = norm_ppf(0.95);
-        assert_eq!(c.radius(), Some(2.0 * z));
+        assert_eq!(c.multiplier(), Some(z));
         assert_eq!(c.coverage(), None);
-        // From here on every row is scored and moves the radius.
+        // No usable σ: no interval to show.
+        assert_eq!(c.radius(f64::NAN), None);
+        assert_eq!(c.radius(0.0), None);
+        assert_eq!(c.radius(2.0), Some(2.0 * z));
+        // From here on every row is scored against `m·σ` and moves `m`.
         c.update(0.3, 2.0, 1.0, 1.0);
         assert_eq!(c.coverage(), Some(1.0));
-        assert_eq!(c.radius(), Some(2.0 * z + 0.05 * 2.0 * (0.0 - 0.1)));
+        assert_eq!(c.multiplier(), Some(z + 0.05 * (0.0 - 0.1)));
+        assert_eq!(c.radius(3.0), Some((z + 0.05 * (0.0 - 0.1)) * 3.0));
     }
 
     #[test]
     fn a_miss_widens_and_a_hit_narrows_by_the_stated_amounts() {
         let mut c = Conformal::new(0.8, 0.1).unwrap();
-        c.update(1.0, 1.0, 1.0, 1.0); // warm start at Φ⁻¹(0.9)
-        let q0 = c.radius().unwrap();
-        c.update(10.0, 1.0, 1.0, 1.0); // miss: + η(1 − α) = 0.1·0.8
-        assert!((c.radius().unwrap() - (q0 + 0.1 * 0.8)).abs() < 1e-15);
-        let q1 = c.radius().unwrap();
-        c.update(0.0, 1.0, 1.0, 1.0); // hit: − ηα = 0.1·0.2
-        assert!((c.radius().unwrap() - (q1 - 0.1 * 0.2)).abs() < 1e-15);
-        // The step reads the weight against the scored rows' mean, this row's
+        c.update(1.0, 1.0, 1.0, 1.0); // the start, at Φ⁻¹(0.9)
+        let m0 = c.multiplier().unwrap();
+        c.update(10.0, 2.0, 1.0, 1.0); // miss: + η(1 − α) = 0.1·0.8
+        assert!((c.multiplier().unwrap() - (m0 + 0.1 * 0.8)).abs() < 1e-15);
+        let m1 = c.multiplier().unwrap();
+        c.update(0.0, 2.0, 1.0, 1.0); // hit: − ηα = 0.1·0.2
+        assert!((c.multiplier().unwrap() - (m1 - 0.1 * 0.2)).abs() < 1e-15);
+        // The step reads the weight against the rows' mean, this row's
         // included: three at 1 and one at 3 make 1.5, so the step doubles. A
         // zero-weight row only ages the coverage.
-        let q2 = c.radius().unwrap();
+        let m2 = c.multiplier().unwrap();
         c.update(10.0, 1.0, 1.0, 3.0);
-        assert!((c.radius().unwrap() - (q2 + 2.0 * 0.1 * 0.8)).abs() < 1e-14);
-        let q3 = c.radius().unwrap();
+        assert!((c.multiplier().unwrap() - (m2 + 2.0 * 0.1 * 0.8)).abs() < 1e-14);
+        let m3 = c.multiplier().unwrap();
         let cov = c.coverage().unwrap();
         c.update(10.0, 1.0, 0.5, 0.0);
-        assert_eq!(c.radius(), Some(q3));
+        assert_eq!(c.multiplier(), Some(m3));
         assert_eq!(c.coverage(), Some(cov));
     }
 
@@ -524,7 +757,7 @@ mod tests {
             let (r, w) = (4.0 * next() - 2.0, 0.5 + next());
             one.update(r, 1.0, 0.99, w);
             many.update(r, 1.0, 0.99, 100.0 * w);
-            let (a, b) = (one.radius().unwrap(), many.radius().unwrap());
+            let (a, b) = (one.radius(1.0).unwrap(), many.radius(1.0).unwrap());
             assert!((a - b).abs() <= 1e-12 * (1.0 + a), "{a} against {b}");
         }
         let (a, b) = (one.coverage().unwrap(), many.coverage().unwrap());
@@ -532,39 +765,40 @@ mod tests {
     }
 
     #[test]
-    fn the_radius_never_goes_negative() {
+    fn the_multiplier_never_goes_negative() {
         let mut c = Conformal::new(0.5, 1.0).unwrap();
         for _ in 0..100 {
             c.update(0.0, 1.0, 1.0, 1.0);
         }
-        assert_eq!(c.radius(), Some(0.0));
+        assert_eq!(c.multiplier(), Some(0.0));
+        assert_eq!(c.radius(1.0), Some(0.0));
         assert_eq!(c.coverage(), Some(1.0));
     }
 
     /// Against the radius it was shown: a row inside the interval it was
-    /// shown counts as covered however the radius has moved since, the step
-    /// moves the current radius, a row shown no interval is no evidence, and
-    /// `None` is `update` to the bit (docs/PLAN.md task 112).
+    /// shown counts as covered however the multiplier has moved since, the
+    /// step moves the current multiplier, a row shown no interval is no
+    /// evidence, and `None` is `update` to the bit (docs/PLAN.md task 112).
     #[test]
     fn a_delayed_row_is_scored_against_the_radius_it_was_shown() {
         let mut c = Conformal::new(0.9, 0.1).unwrap();
-        c.update(0.5, 1.0, 1.0, 1.0); // the warm start: q = 1.645
-        let q0 = c.radius().unwrap();
+        c.update(0.5, 1.0, 1.0, 1.0); // the start: m = 1.645
+        let m0 = c.multiplier().unwrap();
         // |resid| 1.2 against a shown radius of 1.3: covered, though 1.2 is
-        // past a radius of 1.0 it might have moved to since.
+        // past the radius 1.0 the multiplier gives with σ = 0.6 now.
         let mut shown = c.clone();
-        shown.update_against(1.2, 1.0, 1.0, 1.0, Some(1.3), 0);
+        shown.update_against(1.2, 0.6, 1.0, 1.0, Some(1.3), 0);
         assert_eq!(shown.coverage(), Some(1.0));
-        assert!((shown.radius().unwrap() - (q0 - 0.1 * 0.1)).abs() < 1e-15);
+        assert!((shown.multiplier().unwrap() - (m0 - 0.1 * 0.1)).abs() < 1e-15);
         let mut missed = c.clone();
-        missed.update_against(1.2, 1.0, 1.0, 1.0, Some(1.1), 0);
+        missed.update_against(1.2, 0.6, 1.0, 1.0, Some(1.1), 0);
         assert_eq!(missed.coverage(), Some(0.0));
-        assert!((missed.radius().unwrap() - (q0 + 0.1 * 0.9)).abs() < 1e-15);
+        assert!((missed.multiplier().unwrap() - (m0 + 0.1 * 0.9)).abs() < 1e-15);
         // Shown nothing: no evidence, no step.
         let mut none = c.clone();
         none.update_against(9.0, 1.0, 0.5, 1.0, Some(f64::NAN), 0);
-        assert_eq!((none.coverage(), none.radius()), (None, Some(q0)));
-        // `None` is the current radius, which is `update`.
+        assert_eq!((none.coverage(), none.multiplier()), (None, Some(m0)));
+        // `None` is the radius the row reads now, which is `update`.
         let (mut a, mut b) = (c.clone(), c);
         for (r, w) in [(0.3, 1.0), (2.5, 0.5), (-1.7, 2.0), (0.0, 1.0)] {
             a.update(r, 1.1, 0.97, w);
@@ -584,7 +818,8 @@ mod tests {
             let mut s = 11u64 + case as u64;
             let (mut sig2, mut sw) = (0.0f64, 0.0f64);
             let n = 200_000;
-            let mut misses = 0.0;
+            let (mut misses, mut shown) = (0.0, 0.0);
+            let mut last = (f64::NAN, f64::NAN);
             for t in 0..n {
                 let scale = if case == 2 && t >= n / 2 { 2.0 } else { 1.0 };
                 let r = match case {
@@ -592,8 +827,10 @@ mod tests {
                     _ => scale * gauss(&mut s),
                 };
                 let sigma = if sw > 0.0 { sig2.sqrt() } else { f64::NAN };
-                if let Some(q) = c.radius() {
+                if let Some(q) = c.radius(sigma) {
                     misses += f64::from(r.abs() > q);
+                    shown += 1.0;
+                    last = (q, sigma);
                 }
                 c.update(r, sigma, 0.999, 1.0);
                 // A plain EW variance, the way the stream layer keeps sigma.
@@ -601,7 +838,7 @@ mod tests {
                 sig2 = (0.999 * sw * sig2 + r * r) / w_new;
                 sw = w_new;
             }
-            let rate = misses / (n as f64 - 2.0);
+            let rate = misses / shown;
             assert!(
                 (rate - alpha).abs() < 0.01,
                 "case {case}: miss rate {rate} vs alpha {alpha}"
@@ -610,41 +847,51 @@ mod tests {
             if case == 1 {
                 // The Gaussian radius, sigma · Φ⁻¹(0.95), is inflated by the
                 // outliers; the tracked one brackets the bulk.
-                let gaussian = sig2.sqrt() * norm_ppf(0.95);
-                let q = c.radius().unwrap();
+                let (q, sigma) = last;
+                let gaussian = sigma * norm_ppf(0.95);
                 assert!(q < 0.7 * gaussian, "q {q} vs gaussian {gaussian}");
             }
         }
     }
 
+    /// The radius follows a change of the model's error scale at once, with
+    /// `m` where it was: the scale is `σ`'s to read, and the multiplier
+    /// tracks only the shape of the scaled residuals.
     #[test]
-    fn a_shift_in_scale_is_tracked_without_being_told() {
+    fn a_shift_in_scale_moves_the_radius_with_sigma() {
         let mut c = Conformal::new(0.9, 0.05).unwrap();
         let mut s = 5u64;
-        let mut q_before = 0.0;
+        let mut before = (0.0, 0.0);
         for t in 0..40_000 {
             let scale = if t < 20_000 { 1.0 } else { 4.0 };
             let r = scale * gauss(&mut s);
             if t == 19_999 {
-                q_before = c.radius().unwrap();
+                before = (c.radius(1.0).unwrap(), c.radius(4.0).unwrap());
             }
-            // Sigma follows with a lag; here it is the true scale so the
-            // test isolates the tracking itself.
+            // Sigma here is the true scale, so the test isolates the
+            // tracking itself.
             c.update(r, scale, 0.999, 1.0);
         }
-        let q_after = c.radius().unwrap();
-        assert!((q_before - 1.645).abs() < 0.25, "q before {q_before}");
-        assert!((q_after - 4.0 * 1.645).abs() < 1.0, "q after {q_after}");
+        let after = c.radius(4.0).unwrap();
+        assert!((before.0 - 1.645).abs() < 0.25, "q before {before:?}");
+        // At the change the radius is already four times as wide.
+        assert_eq!(before.1, 4.0 * before.0);
+        assert!((after - 4.0 * 1.645).abs() < 1.0, "q after {after}");
     }
 
+    /// A row with no usable `σ` is shown no interval, so it is no evidence:
+    /// it ages the coverage and leaves `m` where it was.
     #[test]
-    fn a_zero_sigma_freezes_the_radius() {
+    fn no_error_scale_shows_no_interval_and_takes_no_step() {
         let mut c = Conformal::new(0.9, 0.05).unwrap();
         c.update(1.0, 1.0, 1.0, 1.0);
-        let q = c.radius().unwrap();
-        c.update(5.0, 0.0, 1.0, 1.0);
-        assert_eq!(c.radius(), Some(q));
-        assert_eq!(c.coverage(), Some(0.0));
+        c.update(1.0, 1.0, 1.0, 1.0);
+        let (m, cov) = (c.multiplier().unwrap(), c.coverage().unwrap());
+        c.update(5.0, 0.0, 0.5, 1.0);
+        c.update(5.0, f64::INFINITY, 0.5, 1.0);
+        assert_eq!(c.multiplier(), Some(m));
+        assert_eq!(c.coverage(), Some(cov));
+        assert_eq!(c.radius(0.0), None);
     }
 
     #[test]
@@ -654,24 +901,30 @@ mod tests {
         for _ in 0..50 {
             c.update(gauss(&mut s), 1.0, 0.99, 1.0);
         }
-        let bytes = rmp_serde::to_vec(&c).unwrap();
+        let bytes = rmp_serde::to_vec_named(&c).unwrap();
         let back: Conformal = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(back, c);
+        let text = String::from_utf8_lossy(&bytes);
+        // No radius, count or derived value is written by a started
+        // tracker with nothing waiting.
+        for field in ["\u{a1}q", "released", "held_mean", "gain", "\u{a1}z"] {
+            assert!(!text.contains(field), "{field} is written: {text}");
+        }
     }
 
     // The mutation survivors of the weekly pass (docs/PLAN.md task 158).
 
     /// The recursion against its definitions, row for row, with each kind of
-    /// row that is no evidence mixed in -- no residual, no weight, and a
-    /// delayed row shown no interval -- under an uneven decay. The realized
-    /// coverage is the weighted EW mean of `1{s ≤ q}` over the scored rows,
-    /// every row ageing it; the step reads the row's weight against `w̄`, the
-    /// EW mean weight of the rows with a residual and a weight, every row
-    /// ageing their count. That is not the scored rows' mean: the row that
-    /// warm-starts the radius and a delayed row shown no interval are pushed
-    /// into `w̄` though neither is scored. Both are written out as sums over
-    /// the rows they hold, each row's age the product of the factors after
-    /// it.
+    /// row that is no evidence mixed in -- no residual, no weight, a delayed
+    /// row shown no interval, and a row with no error scale -- under an
+    /// uneven decay. The realized coverage is the weighted EW mean of
+    /// `1{s ≤ m·σ}` over the scored rows, every row ageing it; the step reads
+    /// the row's weight against `w̄`, the EW mean weight of the rows with a
+    /// residual and a weight, every row ageing their count. That is not the
+    /// scored rows' mean: the row that starts the tracker, a delayed row shown
+    /// no interval and a row with no error scale are pushed into `w̄` though
+    /// none is scored. Both are written out as sums over the rows they hold,
+    /// each row's age the product of the factors after it.
     #[test]
     fn the_recursion_is_its_definitions_among_rows_that_are_no_evidence() {
         let (alpha, rate) = (0.2, 0.3);
@@ -679,9 +932,9 @@ mod tests {
         // `(w, hit, age)` per scored row, and `(w, age)` per row in `w̄`.
         let mut scored: Vec<(f64, f64, f64)> = Vec::new();
         let mut means: Vec<(f64, f64)> = Vec::new();
-        let mut q = f64::NAN;
+        let mut m = f64::NAN;
         let mut s = 3u64;
-        let mut kinds = [0usize; 4];
+        let mut kinds = [0usize; 5];
         for t in 0..300 {
             let lam = 0.9 + 0.09 * lcg(&mut s);
             let resid = 2.0 * gauss(&mut s);
@@ -689,7 +942,7 @@ mod tests {
             let sigma = 1.0 + 0.5 * lcg(&mut s);
             scored.iter_mut().for_each(|e| e.2 *= lam);
             means.iter_mut().for_each(|e| e.1 *= lam);
-            match t % 7 {
+            match t % 9 {
                 1 => {
                     c.update(f64::NAN, sigma, lam, w);
                     kinds[0] += 1;
@@ -698,30 +951,35 @@ mod tests {
                     c.update(resid, sigma, lam, 0.0);
                     kinds[1] += 1;
                 }
-                5 if q.is_finite() => {
+                5 if m.is_finite() => {
                     c.update_against(resid, sigma, lam, w, Some(f64::NAN), 0);
                     means.push((w, 1.0));
                     kinds[2] += 1;
                 }
+                7 if m.is_finite() => {
+                    c.update(resid, 0.0, lam, w);
+                    means.push((w, 1.0));
+                    kinds[3] += 1;
+                }
                 _ => {
                     c.update(resid, sigma, lam, w);
                     means.push((w, 1.0));
-                    if q.is_finite() {
-                        let miss = resid.abs() > q;
+                    if m.is_finite() {
+                        let miss = resid.abs() > m * sigma;
                         scored.push((w, f64::from(!miss), 1.0));
                         let wbar = means.iter().map(|(w, a)| w * a).sum::<f64>()
                             / means.iter().map(|(_, a)| a).sum::<f64>();
-                        q = (q + rate * sigma * (w / wbar) * (f64::from(miss) - alpha)).max(0.0);
-                        kinds[3] += 1;
+                        m = (m + rate * (w / wbar) * (f64::from(miss) - alpha)).max(0.0);
+                        kinds[4] += 1;
                     } else {
-                        q = sigma * norm_ppf(1.0 - 0.5 * alpha);
+                        m = norm_ppf(1.0 - 0.5 * alpha);
                     }
                 }
             }
-            let got = c.radius().unwrap_or(f64::NAN);
+            let got = c.multiplier().unwrap_or(f64::NAN);
             assert!(
-                (got - q).abs() <= 1e-12 * (1.0 + q) || (got.is_nan() && q.is_nan()),
-                "row {t}: radius {got} vs {q}"
+                (got - m).abs() <= 1e-12 * (1.0 + m) || (got.is_nan() && m.is_nan()),
+                "row {t}: multiplier {got} vs {m}"
             );
             let want = (!scored.is_empty()).then(|| {
                 scored.iter().map(|(w, hit, a)| w * hit * a).sum::<f64>()
@@ -732,43 +990,28 @@ mod tests {
                 (g, w) => assert_eq!(g, w, "row {t}"),
             }
         }
-        assert!(kinds.iter().all(|&k| k > 30), "{kinds:?}");
+        assert!(kinds.iter().all(|&k| k > 20), "{kinds:?}");
     }
 
-    /// The radius starts on the first row with a residual and an error
-    /// scale: a `σ` of 0, or one that is not finite, starts nothing, and the
-    /// next row with a finite `σ > 0` starts it at `σ·Φ⁻¹(1 − α/2)`.
+    /// A multiplier that overflows -- a step past the largest double -- is
+    /// none: the next row starts it again at the Gaussian one and, like the
+    /// first start, is not scored, so it only ages the coverage, which
+    /// carries on.
     #[test]
-    fn a_sigma_of_zero_or_infinity_does_not_start_the_radius() {
-        let mut c = Conformal::new(0.9, 0.05).unwrap();
-        c.update(0.3, 0.0, 1.0, 1.0);
-        assert_eq!(c.radius(), None);
-        c.update(0.3, f64::INFINITY, 1.0, 1.0);
-        assert_eq!(c.radius(), None);
-        c.update(0.3, 2.0, 1.0, 1.0);
-        assert_eq!(c.radius(), Some(2.0 * norm_ppf(0.95)));
-    }
-
-    /// A radius that overflows -- a step of `rate·σ` past the largest double
-    /// -- is no radius: the next row with an error scale starts it again at
-    /// the Gaussian one and, like the first warm start, is not scored, so it
-    /// only ages the coverage, which carries on.
-    #[test]
-    fn a_radius_that_overflows_starts_again_and_the_coverage_ages() {
-        let mut c = Conformal::new(0.9, 1e300).unwrap();
-        c.update(1.0, 1e10, 0.5, 1.0); // the warm start
-        c.update(1.0, 1.0, 0.5, 1.0); // a hit: the radius steps down to 0
-        assert_eq!(c.radius(), Some(0.0));
-        c.update(1.0, 1e10, 0.5, 1.0); // a miss, with a step of 1e310
-        assert_eq!(c.radius(), None);
+    fn a_multiplier_that_overflows_starts_again_and_the_coverage_ages() {
+        let mut c = Conformal::new(0.9, 1e308).unwrap();
+        c.update(1.0, 1.0, 0.5, 1.0); // the start
+        c.update(5.0, 1.0, 0.5, 1.0); // a miss: m is about 9e307
+        assert!(c.multiplier().unwrap() > 1e307);
+        // A miss again, against a radius of about 0.09: past the largest
+        // double.
+        c.update(5.0, 1e-310, 0.5, 1.0);
+        assert_eq!(c.multiplier(), None);
+        assert_eq!(c.radius(1.0), None);
         let cov = c.coverage().unwrap();
-        c.update(1.0, 1.0, 0.5, 1.0); // starts again
-        assert_eq!(c.radius(), Some(norm_ppf(0.95)));
+        c.update(1.0, 1.0, 0.5, 1.0); // starts again, and is not scored
+        assert_eq!(c.multiplier(), Some(norm_ppf(0.95)));
         assert_eq!(c.coverage(), Some(cov));
-        c.update(0.1, 1.0, 0.5, 1.0); // a hit
-        // The hit, the miss and the hit, aged by the rows after each.
-        let want = (0.125 * 1.0 + 0.25 * 0.0 + 1.0 * 1.0) / (0.125 + 0.25 + 1.0);
-        assert!((c.coverage().unwrap() - want).abs() < 1e-15, "{c:?}");
     }
 
     /// `Φ⁻¹` is odd about `1/2`, `Φ⁻¹(1 − p) = −Φ⁻¹(p)`, at the knot where
@@ -786,7 +1029,8 @@ mod tests {
         assert!((lo - -1.972_961_051_311_884_5).abs() < 3e-9, "{lo}");
     }
 
-    // The delay-aware step (docs/PLAN.md task 342b).
+    // The delay-aware step (docs/PLAN.md task 342b) and the start's wait
+    // (task 368).
 
     /// `exp_neg` against the platform's `exp` over the range the gain reads
     /// and past it, within a few ulps, and its edges.
@@ -828,7 +1072,7 @@ mod tests {
     }
 
     /// Fed a count of 0 on every row, the delay-aware tracker is the fixed
-    /// one to the bit, and writes the same bytes.
+    /// one to the bit, starts on the first row, and writes the same bytes.
     #[test]
     fn a_count_of_zero_is_the_fixed_step_to_the_bit() {
         let (mut a, mut b) = (
@@ -838,50 +1082,49 @@ mod tests {
         let mut s = 17u64;
         for t in 0..3000 {
             let (r, w, lam) = (2.0 * gauss(&mut s), 0.5 + lcg(&mut s), 0.99);
-            let shown = (t % 3 == 0).then(|| a.radius().unwrap_or(f64::NAN));
+            let shown = (t % 3 == 0).then(|| a.radius(1.3).unwrap_or(f64::NAN));
             a.update_against(r, 1.3, lam, w, shown, 0);
             b.update_against(r, 1.3, lam, w, shown, 0);
-            c_eq_bits(&a, &b);
+            assert_eq!(
+                a.multiplier().map(f64::to_bits),
+                b.multiplier().map(f64::to_bits),
+                "{a:?} vs {b:?}"
+            );
         }
         let mut fixed = Conformal::new(0.9, 0.05).unwrap();
         let mut s = 17u64;
-        for _ in 0..3000 {
-            let (r, w) = (2.0 * gauss(&mut s), 0.5 + lcg(&mut s));
-            fixed.update(r, 1.3, 0.99, w);
-        }
+        let (r, w) = (2.0 * gauss(&mut s), 0.5 + lcg(&mut s));
+        fixed.update(r, f64::NAN, 0.99, w);
+        assert!(fixed.multiplier().is_some(), "started on the first row");
         assert_eq!(fixed.held_mean(), 0.0);
         let bytes = rmp_serde::to_vec_named(&fixed).unwrap();
         let text = String::from_utf8_lossy(&bytes);
         assert!(!text.contains("held_mean"), "a count of 0 is not written");
+        assert!(!text.contains("released"), "nor a count of rows to wait");
         assert!(!text.contains("gain"), "the gain is never written");
-    }
-
-    fn c_eq_bits(a: &Conformal, b: &Conformal) {
-        assert_eq!(
-            a.radius().map(f64::to_bits),
-            b.radius().map(f64::to_bits),
-            "{a:?} vs {b:?}"
-        );
     }
 
     /// `n̄` and the step against their definitions, row for row: `n̄` the
     /// EW mean of the counts over the rows `w̄` is taken over, each row's age
-    /// the product of the factors after it; the step `rate·σ / (1 + rate·g·n̄
+    /// the product of the factors after it; the step `rate / (1 + rate·g·n̄
     /// / c)` times `w / w̄` -- with rows that are no evidence mixed in, which
-    /// age the count and add nothing to it.
+    /// age the count and add nothing to it; and the start once the rows with
+    /// a residual, counted without decay, reach `1 + n̄`.
     #[test]
-    fn the_held_mean_and_the_step_are_their_definitions() {
+    fn the_held_mean_the_start_and_the_step_are_their_definitions() {
         let (alpha, rate) = (0.1, 0.05);
         let g = gauss_gain(alpha);
         let mut c = Conformal::new(1.0 - alpha, rate).unwrap();
         let mut rows: Vec<(f64, f64, f64)> = Vec::new(); // (w, held, age)
-        let mut q = f64::NAN;
+        let mut m = f64::NAN;
+        let mut given = 0.0;
+        let mut started_at = None;
         let mut s = 29u64;
         let mut stepped = 0;
         for t in 0..400 {
             let lam = 0.95 + 0.04 * lcg(&mut s);
             let (resid, w, sigma) = (gauss(&mut s), 0.5 + lcg(&mut s), 1.0 + lcg(&mut s));
-            let held = (lcg(&mut s) * 300.0) as usize;
+            let held = (lcg(&mut s) * 30.0) as usize + 10;
             rows.iter_mut().for_each(|e| e.2 *= lam);
             if t % 5 == 2 {
                 c.update_against(f64::NAN, sigma, lam, w, None, held);
@@ -896,39 +1139,62 @@ mod tests {
                     "row {t}: {} vs {nbar}",
                     c.held_mean()
                 );
-                if q.is_finite() {
-                    let miss = f64::from(resid.abs() > q);
-                    let eta = rate * sigma / (1.0 + rate * g * nbar / HELD_GAIN_BOUND);
-                    q = (q + eta * (w / wbar) * (miss - alpha)).max(0.0);
+                if m.is_finite() {
+                    let miss = f64::from(resid.abs() > m * sigma);
+                    let eta = rate / (1.0 + rate * g * nbar / HELD_GAIN_BOUND);
+                    m = (m + eta * (w / wbar) * (miss - alpha)).max(0.0);
                     stepped += 1;
                 } else {
-                    q = sigma * norm_ppf(1.0 - 0.5 * alpha);
+                    given += 1.0;
+                    if given >= 1.0 + nbar {
+                        m = norm_ppf(1.0 - 0.5 * alpha);
+                        started_at = Some(t);
+                    }
                 }
             }
-            let got = c.radius().unwrap();
-            assert!(
-                (got - q).abs() <= 1e-12 * (1.0 + q),
-                "row {t}: {got} vs {q}"
-            );
+            match c.multiplier() {
+                Some(got) => assert!(
+                    (got - m).abs() <= 1e-12 * (1.0 + m),
+                    "row {t}: {got} vs {m}"
+                ),
+                None => assert!(m.is_nan(), "row {t}: not started, {m}"),
+            }
         }
-        assert!(stepped > 300 && c.held_mean() > 50.0, "{stepped} {c:?}");
+        // It waited a delay's worth of rows: some 20 of the 25 waiting.
+        let at = started_at.unwrap();
+        assert!(
+            at > 20 && stepped > 250 && c.held_mean() > 15.0,
+            "{at} {stepped} {c:?}"
+        );
     }
 
-    /// `held_mean` survives a save, a file without it loads at 0, and the
-    /// gain is derived again on load rather than read.
+    /// While the start waits, the count is written and survives a save; once
+    /// started it is 0 and not written. `held_mean` survives a save too, a
+    /// file without either loads at 0, and the gain and the start's
+    /// multiplier are derived again on load rather than read.
     #[test]
-    fn the_held_mean_round_trips_and_an_older_file_loads_at_zero() {
+    fn the_wait_and_the_held_mean_round_trip_and_an_older_file_loads_at_zero() {
         let mut c = Conformal::new(0.9, 0.05).unwrap();
         let mut s = 5u64;
+        for _ in 0..20 {
+            c.update_against(gauss(&mut s), 1.0, 0.99, 1.0, None, 50);
+        }
+        assert_eq!(c.multiplier(), None, "20 rows given, 50 waiting");
+        let bytes = rmp_serde::to_vec_named(&c).unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("released"));
+        let back: Conformal = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(back, c);
         for i in 0..200 {
             c.update_against(gauss(&mut s), 1.0, 0.99, 1.0, None, i % 40);
         }
-        assert!(c.held_mean() > 0.0);
+        assert!(c.multiplier().is_some() && c.held_mean() > 0.0);
         let bytes = rmp_serde::to_vec_named(&c).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("released"));
         let back: Conformal = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(back, c);
         assert_eq!(back.gain.to_bits(), gauss_gain(0.1 - 0.0).to_bits());
-        // The same state as a build before the field wrote it.
+        assert_eq!(back.z.to_bits(), norm_ppf(0.95).to_bits());
+        // The same state as a build before the count wrote it.
         let mut old = c.clone();
         old.held_mean = 0.0;
         let older = rmp_serde::to_vec_named(&old).unwrap();
@@ -936,6 +1202,73 @@ mod tests {
         let back: Conformal = rmp_serde::from_slice(&older).unwrap();
         assert_eq!(back.held_mean(), 0.0);
         assert_eq!(back, old);
+    }
+
+    /// A tracker as a file of schema 66 or earlier holds it: the radius `q`
+    /// in place of the multiplier.
+    #[derive(Serialize)]
+    struct Before67 {
+        alpha: f64,
+        rate: f64,
+        q: f64,
+        cov: f64,
+        cov_w: f64,
+        w_mean: f64,
+        w_rows: f64,
+    }
+
+    /// A radius saved before the multiplier (CLAUDE.md rule 5, the user's
+    /// exception of 2026-11-09, task 368): it is shown as it was saved,
+    /// whatever `σ` the row reads, and a re-save keeps it; the first row with
+    /// an error scale is scored against it and converts it to `m = q / σ`,
+    /// then steps `m` as any tracker does -- so that row's step moves the
+    /// radius by `rate·σ·(err − α)`, the step the old tracker took, and the
+    /// radius reads `σ` from the next row on. One not yet started (`q` NaN)
+    /// waits for the start as a new tracker does.
+    #[test]
+    fn a_radius_from_before_the_multiplier_is_shown_then_converted() {
+        let old = Before67 {
+            alpha: 0.1,
+            rate: 0.05,
+            q: 2.5,
+            cov: 0.9,
+            cov_w: 10.0,
+            w_mean: 1.0,
+            w_rows: 10.0,
+        };
+        let mut c: Conformal =
+            rmp_serde::from_slice(&rmp_serde::to_vec_named(&old).unwrap()).unwrap();
+        assert_eq!(c.radius(1.3), Some(2.5));
+        assert_eq!(c.radius(f64::NAN), Some(2.5));
+        assert_eq!(c.multiplier(), None);
+        let again: Conformal =
+            rmp_serde::from_slice(&rmp_serde::to_vec_named(&c).unwrap()).unwrap();
+        assert_eq!(again, c);
+        // No error scale: scored, no step, still the radius it was.
+        c.update(3.0, 0.0, 1.0, 1.0);
+        assert_eq!(c.radius(1.0), Some(2.5));
+        let cov = c.coverage().unwrap();
+        assert!((cov - (0.9 * 10.0 + 0.0) / 11.0).abs() < 1e-15);
+        // The first row with one: a hit against 2.5, then m = 2.5/1.25 and
+        // the step on m.
+        c.update(2.4, 1.25, 1.0, 1.0);
+        let m = 2.5 / 1.25 + 0.05 * (1.0 / c.w_mean) * (0.0 - 0.1);
+        assert_eq!(c.multiplier(), Some(m));
+        assert_eq!(c.radius(2.0), Some(m * 2.0));
+        let bytes = rmp_serde::to_vec_named(&c).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("\u{a1}q"));
+        // Not yet started before the multiplier: starts as a new one does.
+        let waiting = Before67 {
+            q: f64::NAN,
+            cov: 0.0,
+            cov_w: 0.0,
+            ..old
+        };
+        let mut c: Conformal =
+            rmp_serde::from_slice(&rmp_serde::to_vec_named(&waiting).unwrap()).unwrap();
+        assert_eq!(c.radius(1.0), None);
+        c.update(1.0, f64::NAN, 1.0, 1.0);
+        assert_eq!(c.multiplier(), Some(norm_ppf(0.95)));
     }
 
     /// The derivation's simulation (docs/records/CONFORMAL-STEP.md §2.4):
@@ -963,7 +1296,7 @@ mod tests {
                     let held = if held_count { shown.len() } else { 0 };
                     c.update_against(r_old, 1.0, 1.0 - 1.0 / 2000.0, 1.0, Some(q_old), held);
                 }
-                let q = c.radius().unwrap_or(f64::NAN);
+                let q = c.radius(1.0).unwrap_or(f64::NAN);
                 if t >= burn && q.is_finite() {
                     sum += q;
                     sum2 += q * q;

@@ -1,7 +1,9 @@
 # The conformal step under a label delay
 
-**Status as of 2026-11-07: PLAN task 342, measured; the default is
-unchanged; the opt-in `conformal_rate="auto"` built in task 342b (§7).** The question (TREE-FEATURES.md §14, question 2): the
+**Status as of 2026-11-09: PLAN task 342, measured; the default is
+unchanged; the opt-in `conformal_rate="auto"` built in task 342b (§7); the
+tracker keeps a multiplier of `sigma` and `"auto"`'s start waits for the
+rows in flight since task 368 (§8), which superseded §1's recursion.** The question (TREE-FEATURES.md §14, question 2): the
 conformal tracker steps its radius by `conformal_rate · sigma` on each
 scored row, 0.05 by default, with no account of how many predictions are
 in flight while their labels are late. Is there a rule for the step that
@@ -12,7 +14,7 @@ the mean rows waiting, removes the default's failure under long delays at
 no cost when nothing waits; it is now the reader's rule of thumb in
 DIAGNOSTICS.md, and an opt-in that computes `n` itself is designed in §7
 for the user to decide. The prototypes are `scripts/conformal_step/`
-(§9 runs them).
+(§10 runs them).
 
 ---
 
@@ -482,7 +484,104 @@ would help every rate; it is a separate question.
 
 ---
 
-## 8. Sources
+## 8. The start, and the multiplier (task 368)
+
+**The finding (task 365, 2026-11-08).** On the highlights page's monitor
+stream with each label 50 to 300 rows late, `"auto"`'s radius started near
+7 and fell about 1 per 1,000 rows: over rows 1,000 to 8,000 it covered
+0.976 at a half-width of 3.52, against 0.901 at 1.31 for the default.
+
+### 8.1 The cause
+
+Traced on that stream's 8,000-row form (`scripts/conformal_step/startup.py`'s
+`regimes8k` cases, the fold equal to the bank to the bit):
+
+- **The warm start read `sigma` from one residual.** At the start `w_rows`
+  was 2, so `sigma` was `|r|` of the first released residual, served by a
+  model that had learned one or two labels: `sigma` 5.53, the radius 9.10,
+  against a steady `q*` of about 1.6. On `generated|0|gauss|steady|long`
+  the first radius was 21.5 against 1.65.
+- **From above, the step saturates.** Far over `q*` every release is a
+  hit, so the radius falls by `α·η` a release; under `"auto"` `η ≈ c·σ/(g·n̄)`,
+  so an excess of `E·σ` takes `E·g·n̄/(α·c)` releases, about `4.1·E·n̄` at
+  90%, where the loop's own time constant is about `n̄(1 + 1/c)`. §2's
+  linear analysis does not cover it: the miss rate cannot fall below 0.
+  On the trace the step was 0.0138 to 0.0116 a release and the radius
+  9.04, 8.64, 7.44, 4.96 at releases 125, 325, 1,025, 3,025.
+- **`n̄` is not the cause.** Its first update sets it to the first count
+  (176 there), and it tracked the count in flight (175 against 175).
+  Spread delays only change which residual seeds the start; with a fixed
+  delay of 175 that residual happened to be smaller.
+- **The fixed rate shares the cause** (the same start), but falls 5 to 10
+  times faster, then swings; at 99%, where a hit lowers the radius by
+  `rate·σ·0.01`, even it took tens of thousands of rows (§7's note).
+
+### 8.2 The candidates
+
+| rule | what it does |
+|---|---|
+| wait `M` | the start waits until the tracker has read `M` residuals (30, or `m(α) = ½(z·g/(α·c))²`, the radius's sampling error `z/√(2m)` held under `α·c/g`) |
+| wait `n̄` | the start waits until the residuals read reach `1 + n̄`: a radius from fewer residuals than the dead time carries an error the loop hears of only `n̄` releases later. Counted with the decay (`w_rows`), it never starts once the delay passes about 1.44 half-lives, where the count saturates (no interval at all at a half-life of 100 rows and a delay of 300); counted without decay it always does |
+| gs | the gain read at the larger of `z_α` and the current radius in `σ` units: far above `q*` the density, so the loop gain, is small and a larger step is still stable |
+| the multiplier | the user's (2026-11-09): keep `m`, show `m·σ` with `σ` the spread the row reads, step `m` by `η·(err − α)`; `m` starts at `z_α`, needing no data, and the interval moves with `σ` as the model learns |
+
+### 8.3 Results
+
+Holds as §4 defines it (scored from 10% of the rows, the best fixed rate in
+hindsight among the radius tracker's), on §4's grid, and on the streams
+with spread delays (24 generated at 90%, 8 at 50% and 99%; 14 regimes):
+
+| rule | grid: holds at 90 / 50 / 99% | `"auto"`'s streams lost | spread delays: holds at 90 / 50 / 99% | generated long, start-up rows (median / max) | first 10%: half-width |
+|---|---|---|---|---|---|
+| fixed 0.05 (the radius) | 73 / 23 / 30 | – | 26 / 4 / 13 | 1,215 / 5,818 | 5.24 |
+| `"auto"` (the radius, 342b) | 88 / 36 / 27 | 0 | 31 / 20 / 11 | 3,256 / 46,060 | 5.03 |
+| `"auto"` + gs | 93 / 36 / 27 | 5 / 0 / 1 | 33 / 22 / 12 | 2,120 / 8,053 | 2.80 |
+| `"auto"` + wait 30 | 92 / 36 / 30 | 0 | 35 / 20 / 17 | 1,535 / 8,258 | 1.98 |
+| `"auto"` + wait `n̄` | 92 / 36 / 30 | 0 | 36 / 22 / 17 | 1,532 / 4,857 | 1.86 |
+| the multiplier, 0.05 | 73 / 23 / 32 | – | 16 / 4 / 19 | 1,615 / 2,175 | 4.11 |
+| **the multiplier, `"auto"` + wait `n̄`** | **97 / 36 / 34** | **1 / 0 / 0** | **38 / 22 / 20** | **1,067 / 2,853** | **1.87** |
+
+Start-up is rows to the first 1,000-row stretch within 0.01 of 90%; the
+first 10% is rows 0 to 10,000. With no delay the multiplier's start-up was
+999 rows at most (the radius: 1,507 median, 5,027 at most) and its first
+10% half-width 1.84 (2.91). The one stream the multiplier loses is flights
+at 8 hours at 90%: 48.0 minutes against a line of 47.6 (1.10 × fixed
+0.002's 43.3), at a coverage of 90.00% where `"auto"` covered 89.89% at
+46.5. Streams whose second-half coverage is off the target by more than
+the holds tolerance (138, 58, 58): the radius at 0.05 15, 29, 4; `"auto"`
+25, 12, 18; with the wait 25, 12, 12; the multiplier at 0.05 14, 29, 2; the
+multiplier under `"auto"` 9, 4, 2. Telescoped on `m`, the guarantee holds
+the miss rate of the intervals as shown, step-weighted, and under a fixed
+rate the step is constant, so it is the plain (weight-relative) miss rate,
+where the radius's was weighted by `σ`.
+
+Flights under the multiplier (§5.2's streams; the formula's rate as §5.2
+sets it):
+
+| labels | default 0.05 | the formula | `"auto"` |
+|---|---:|---:|---:|
+| at once | 90.00% / 44.9 | 90.00% / 44.9 | 90.00% / 44.9 |
+| 1 h | 90.00% / 48.0 | 90.01% / 46.7 | 90.00% / 46.7 |
+| landing | 90.05% / 65.8 | 90.04% / 50.0 | 90.03% / 50.0 |
+| 8 h | 90.16% / 203.2 | 90.02% / 48.1 | 90.00% / 48.0 |
+| 8 h, 50% | 71.35% / 134.0 | 50.06% / 15.5 | 50.01% / 15.5 |
+
+### 8.4 The decision, and as built
+
+The user chose the multiplier with the wait, for both rates (2026-11-09:
+"C"), changing the released conformal output, with a saved-state
+exception (CLAUDE.md rule 5's thirteenth).
+
+| | |
+|---|---|
+| the tracker | `Conformal` keeps `m` (NaN until the start) in place of `q`; `radius(σ)` is `m·σ` for a finite `σ > 0`; a row with no usable `σ` is shown no interval and is no evidence. The step is `rate`, or `rate / (1 + rate·g·n̄/c)`, times `w/w̄`, on `m` |
+| the start | on the first release with a residual and a weight, unscored, `m = z_α`; once rows wait (`n̄ > 0`) only when `released`, the residuals given counted without decay, reaches `1 + n̄`. A fixed rate, and `"auto"` with nothing waiting, start on the first and are the same bits as each other |
+| no libm | `z_α`'s tails read `ln_basic` (basic arithmetic, a few ulps of `ln`), so the start and the gain are the same bits on every platform |
+| the stream | `sigma` is read before the row's record is kept, so a held row's record carries the absolute radius it was shown, `m·σ`, as before |
+| state (schema 67) | `m` in place of `q`; `released` written only while the start waits with rows held. A file of 66 or earlier holds `q`: kept and shown as saved on the next row, converted to `m = q/σ` on the first row with an error scale. No kept fixture holds a tracker; `a_conformal_radius_of_schema_66_is_shown_then_converted` writes the form from a current bank; `bank_conformal_auto` freezes a tracker mid-wait (`released`) beside one past its start; `bank_label_clock` and `bank_conformal_auto` alone moved on regenerating |
+| oracles | the bank is `fold.track_m` to the bit on 58 streams at both rates (task 368's check, `lo` of every row) and on `check_replica.py`'s 20 at both rates; `label_clock.rs`'s `the_interval_is_the_multiplier_fold_of_the_served_residuals` (a fold written from the definition, spread delays, both rates, whole, in chunks of 37 and saved mid-wait); `tests/test_label_clock.py`'s and `tests/test_conformal.py`'s replays, to the bit |
+
+## 9. Sources
 
 - Angelopoulos, A. N., Candès, E. J. and Tibshirani, R. J. (2023).
   Conformal PID control for time series prediction. *NeurIPS 36*.
@@ -504,7 +603,7 @@ would help every rate; it is a separate question.
 
 ---
 
-## 9. Reproducing
+## 10. Reproducing
 
 ```sh
 .venv/bin/python -I scripts/conformal_step/check_replica.py   # the fold is the bank, to the bit; exits 1 if not
@@ -512,7 +611,14 @@ would help every rate; it is a separate question.
 .venv/bin/python -I scripts/conformal_step/measure.py 2       # §5, two processes, a few minutes
 .venv/bin/python -I scripts/conformal_step/summarize.py       # the tables of §5.1-§5.3
 .venv/bin/python -I scripts/conformal_step/formula.py         # §5.2's rule with a fixed n
+.venv/bin/python -I scripts/conformal_step/startup.py cache   # §8: the streams, once
+.venv/bin/python -I scripts/conformal_step/startup.py measure # §8: every rule
+.venv/bin/python -I scripts/conformal_step/startup.py tables  # §8's tables
 ```
+
+`check_replica.py` holds the bank to `fold.track_m`, the multiplier; §5's
+rules replay the radius the bank kept before §8, and are measured on the
+same residuals, which the tracker does not reach.
 
 They need the package built (`maturin develop`), `lightgbm` and `numba`
 (both in the dev group), and nycflights13 in `.cache/tree-features/`

@@ -856,3 +856,174 @@ fn the_auto_step_reads_an_embargo_and_a_label_clock_alike_and_nothing_without_a_
     );
     assert_same(&auto, &fixed, "no delay: auto is 0.05");
 }
+
+/// The conformal interval under `label_clock` is the multiplier's fold
+/// (task 368), written here from its definition over the bank's own served
+/// predictions and spreads: the held rows leave in order of label time and
+/// then arrival, before the first row whose clock reaches theirs, each
+/// decaying the folds by the label step since the one before; a released
+/// row is scored against the radius it was shown and steps the multiplier
+/// `m` by `η·(w/w̄)·(err − α)`, `η` the rate, or under `"auto"` the rate over
+/// `1 + rate·g(α)·n̄/(1/2)` with `n̄` the EW mean of the rows still waiting;
+/// `m` starts at `Φ⁻¹(1 − α/2)` on the first release with a residual -- under
+/// `"auto"` once those releases, counted without decay, reach `1 + n̄` --
+/// and a row is shown `pred ± m·σ`. Delays spread from 20 to 120 clock
+/// units, so the labels overtake one another and the start waits. To the
+/// bit, whole and in chunks of 37, with `lo`, `hi` and `coverage`.
+#[test]
+fn the_interval_is_the_multiplier_fold_of_the_served_residuals() {
+    let n = 1500;
+    let mut r = lcg(31);
+    let mut t = 0i64;
+    let mut ts = Vec::with_capacity(n);
+    for i in 0..n {
+        if i > 0 {
+            t += [0, 1, 1, 2, 3][(r() * 5.0) as usize];
+        }
+        ts.push(t);
+    }
+    let x0: Vec<f64> = (0..n).map(|_| r() * 2.0 - 1.0).collect();
+    let x1: Vec<f64> = (0..n).map(|_| r() * 2.0 - 1.0).collect();
+    let y: Vec<f64> = (0..n)
+        .map(|i| 0.5 + 2.0 * x0[i] - x1[i] + (r() - 0.5) * (1.0 + 2.0 * r()))
+        .collect();
+    let w: Vec<f64> = (0..n).map(|_| 0.5 + r()).collect();
+    let avail: Vec<i64> = (0..n).map(|i| ts[i] + 20 + (r() * 100.0) as i64).collect();
+    let df = df!("t" => ts.clone(), "x0" => x0, "x1" => x1, "y" => y.clone(), "w" => w.clone(),
+        "avail" => avail.clone())
+    .unwrap();
+    let (half_life, alpha) = (200.0f64, 1.0 - 0.9);
+    let z = online_polars::online_core::norm_ppf(1.0 - 0.5 * alpha);
+    let g = online_polars::online_core::gauss_gain(alpha);
+    let mut starts = Vec::new();
+    for (rate_text, auto) in [("0.05", false), (r#""auto""#, true)] {
+        let spec = varied_spec(&format!(
+            r#""half_life": {half_life:?}, "conformal": 0.9, "conformal_rate": {rate_text},
+               "emit_sigma": true, "label_clock": "avail""#
+        ));
+        let out = run(&spec, &df, 0);
+        // (`coef` is read at each chunk's last row by design: the interval's
+        // fields are compared.)
+        let chunked = run(&spec, &df, 37);
+        for name in ["pred_y", "sigma_y", "lo_y", "hi_y", "coverage_y"] {
+            assert_eq!(
+                field_bits(&out, name),
+                field_bits(&chunked, name),
+                "{rate_text}, chunks of 37: {name}"
+            );
+        }
+        let read = |name: &str| -> Vec<f64> {
+            out.column("m")
+                .unwrap()
+                .struct_()
+                .unwrap()
+                .field_by_name(name)
+                .unwrap()
+                .f64()
+                .unwrap()
+                .iter()
+                .map(|v| v.unwrap_or(f64::NAN))
+                .collect()
+        };
+        // Saved and loaded at row 60, where under "auto" the start still
+        // waits (its count is in the file), and at row 700: the same.
+        for at in [60usize, 700] {
+            let mut bank = Bank::new(vec![spec.clone()]).unwrap();
+            let mut first = feed(&mut bank, &df.slice(0, at), 0);
+            let bytes = bank.save_bytes().unwrap();
+            let waits = bytes.windows(8).any(|b| b == b"released");
+            assert_eq!(
+                waits,
+                auto && at == 60,
+                "{rate_text}: the count saved at row {at}"
+            );
+            let mut bank = Bank::load_bytes(&bytes, Some(std::slice::from_ref(&spec))).unwrap();
+            first
+                .vstack_mut(&feed(&mut bank, &df.slice(at as i64, n - at), 0))
+                .unwrap();
+            for name in ["lo_y", "hi_y", "coverage_y"] {
+                assert_eq!(
+                    field_bits(&out, name),
+                    field_bits(&first, name),
+                    "{rate_text}, saved at row {at}: {name}"
+                );
+            }
+        }
+        let (pred, sigma) = (read("pred_y"), read("sigma_y"));
+        let (mut lo, mut hi, mut cover) = (vec![f64::NAN; n], vec![f64::NAN; n], vec![f64::NAN; n]);
+        let mut shown = vec![f64::NAN; n];
+        let (mut m, mut cov, mut cov_w, mut w_mean, mut w_rows, mut nbar, mut given) =
+            (f64::NAN, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let mut held: Vec<(i64, usize)> = Vec::new();
+        let mut last: Option<i64> = None;
+        for i in 0..n {
+            let mut due: Vec<(i64, usize)> =
+                held.iter().copied().filter(|h| h.0 <= ts[i]).collect();
+            due.sort_unstable();
+            held.retain(|h| h.0 > ts[i]);
+            for (k, &(label, j)) in due.iter().enumerate() {
+                let d = last.map_or(0.0, |l| (label - l) as f64);
+                last = Some(label);
+                let lam = (-(d / half_life)).exp2();
+                let res = y[j] - pred[j];
+                if !res.is_finite() {
+                    cov_w *= lam;
+                    w_rows *= lam;
+                    continue;
+                }
+                w_rows = lam * w_rows + 1.0;
+                w_mean += (w[j] - w_mean) / w_rows;
+                let waiting = (held.len() + due.len() - k - 1) as f64;
+                if auto && (waiting > 0.0 || nbar != 0.0) {
+                    nbar += (waiting - nbar) / w_rows;
+                }
+                if !m.is_finite() {
+                    given += 1.0;
+                    if given >= 1.0 + nbar {
+                        m = z;
+                    }
+                    cov_w *= lam;
+                    continue;
+                }
+                if !shown[j].is_finite() {
+                    cov_w *= lam;
+                    continue;
+                }
+                let miss = res.abs() > shown[j];
+                let cw = lam * cov_w + w[j];
+                cov = (lam * cov_w * cov + w[j] * f64::from(u8::from(!miss))) / cw;
+                cov_w = cw;
+                let mut eta = 0.05;
+                if nbar > 0.0 {
+                    eta /= 1.0 + 0.05 * g * nbar / 0.5;
+                }
+                m = (m + eta * (w[j] / w_mean) * (f64::from(u8::from(miss)) - alpha)).max(0.0);
+            }
+            if m.is_finite() && sigma[i].is_finite() && sigma[i] > 0.0 {
+                shown[i] = m * sigma[i];
+                lo[i] = pred[i] - shown[i];
+                hi[i] = pred[i] + shown[i];
+            }
+            if cov_w > 0.0 {
+                cover[i] = cov;
+            }
+            held.push((avail[i], i));
+        }
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        for (name, want) in [("lo_y", &lo), ("hi_y", &hi), ("coverage_y", &cover)] {
+            let got = read(name);
+            let bad: Vec<usize> = (0..n)
+                .filter(|&i| got[i].to_bits() != want[i].to_bits())
+                .collect();
+            assert!(bad.is_empty(), "{rate_text} {name}: rows {bad:?}");
+            assert_eq!(bits(&got), bits(want));
+        }
+        assert!(
+            lo.iter().filter(|v| v.is_finite()).count() > 1200,
+            "{rate_text}"
+        );
+        starts.push(lo.iter().position(|v| v.is_finite()).unwrap());
+    }
+    // Under "auto" the start waited for a delay's worth of releases.
+    assert!(starts[1] > starts[0] + 20, "{starts:?}");
+}

@@ -28,6 +28,13 @@ The rules (all read `sigma` and step in its units, as the bank does):
 - ``saocp``: Bhatnagar et al. (2023)'s strongly adaptive tracker: a
   scale-free OGD expert started at every release, living `g * 2^v(t)`
   releases, combined by coin betting.
+
+And the tracker the bank keeps since task 368 (`track_m`): a multiplier `m`
+of the spread each row reads, the radius `m * sigma`, stepped by `rate` (or
+"auto"'s shrunk rate) times `(err - alpha)`, starting at `z_alpha` once the
+releases with a residual reach `1 + nbar`. `check_replica.py` holds it to
+the bank's `lo` to the bit; the rules above are the tracker on the radius,
+as the bank kept it before (docs/records/CONFORMAL-STEP.md §8).
 """
 
 from __future__ import annotations
@@ -65,7 +72,59 @@ _C = (
 _D = (7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e00, 3.754408661907416e00)
 
 
-def norm_ppf(p: float) -> float:
+@nb.njit(cache=True)
+def ln_basic(x):
+    """`ln x` as `online_core::ln_basic` computes it, in basic arithmetic:
+    `x = 2^k f`, `f` in `[sqrt(1/2), sqrt(2))`, `ln f = 2 atanh(s)` by its odd
+    series, `k ln 2` added in two parts (`math.frexp` gives the same `f` and
+    `k` as the bits, subnormals included)."""
+    if x != x or x < 0.0:
+        return np.nan
+    if x == 0.0:
+        return -np.inf
+    if math.isinf(x):
+        return np.inf
+    mant, e = math.frexp(x)
+    f = 2.0 * mant
+    k = e - 1
+    if f > 1.4142135623730951:
+        f *= 0.5
+        k += 1
+    s = (f - 1.0) / (f + 1.0)
+    s2 = s * s
+    term = s
+    total = s
+    for i in range(1, 16):
+        term *= s2
+        total += term / float(2 * i + 1)
+    kf = float(k)
+    return (kf * 0.6931471803691238 + 2.0 * total) + kf * 1.9082149292705877e-10
+
+
+def exp_neg(x: float) -> float:
+    """`e^{-x}` as `online_core::conformal::exp_neg` computes it."""
+    if x <= 0.0:
+        return 1.0
+    k = math.floor(x / 0.6931471805599453)
+    r = (x - k * 0.6931471803691238) - k * 1.9082149292705877e-10
+    term = total = 1.0
+    for i in range(1, 21):
+        term *= -r / float(i)
+        total += term
+    return total * 2.0 ** (-k)
+
+
+def gain_bits(alpha: float) -> float:
+    """`g(alpha)` as the bank computes it: `exp_neg` and the bank's `Φ⁻¹`."""
+    z = norm_ppf(1.0 - 0.5 * alpha, bank=True)
+    return 2.0 * 0.3989422804014327 * exp_neg(0.5 * z * z)
+
+
+def norm_ppf(p: float, bank: bool = False) -> float:
+    """Acklam's inverse normal; with `bank`, its tails read `ln_basic` as the
+    bank's do since task 368, else the platform's `log` (the tables of
+    §5 were measured so)."""
+    log = ln_basic if bank else math.log
     a, b, c, d = _A, _B, _C, _D
 
     def tail(q):
@@ -74,7 +133,7 @@ def norm_ppf(p: float) -> float:
         )
 
     if p < 0.02425:
-        return tail(math.sqrt(-2.0 * math.log(p)))
+        return tail(math.sqrt(-2.0 * log(p)))
     if p <= 1.0 - 0.02425:
         q = p - 0.5
         r = q * q
@@ -83,7 +142,7 @@ def norm_ppf(p: float) -> float:
             * q
             / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0)
         )
-    return -tail(math.sqrt(-2.0 * math.log(1.0 - p)))
+    return -tail(math.sqrt(-2.0 * log(1.0 - p)))
 
 
 def gain(alpha: float) -> float:
@@ -311,6 +370,87 @@ def track(sched, resid, w, coverage, rate=0.05, kind="fixed", c=1.0):
         KINDS[kind],
         c,
         gain(alpha),
+    )
+
+
+# ------------------------------------------------------- the multiplier (task 368)
+
+
+@nb.njit(cache=True)
+def _track_m(
+    n, rows, at, lam, released_before, held_before, resid, w, sig_row, alpha, rate, auto, c, g, zq
+):
+    """The bank's tracker since task 368: the radius shown to row i is
+    `m * sig_row[i]` (the spread the row reads), a release steps `m` by
+    `eta * (w / w_bar) * (err - alpha)`, `eta = rate`, or under "auto"
+    `rate / (1 + rate g nbar / c)`; `m` starts at `zq` once the releases
+    with a residual, counted without decay, reach `1 + nbar`."""
+    shown = np.full(n, np.nan)
+    m = len(rows)
+    mult = np.nan
+    w_mean = 0.0
+    w_rows = 0.0
+    dbar = 0.0
+    given = 0.0
+    k = 0
+    for i in range(n):
+        while k < m and at[k] == i:
+            j = rows[k]
+            r = resid[j]
+            lm = lam[k]
+            dk = held_before[i] - (k - released_before[i]) - 1
+            if not math.isfinite(r):
+                w_rows *= lm
+                k += 1
+                continue
+            w_rows = lm * w_rows + 1.0
+            w_mean += (w[j] - w_mean) / w_rows
+            if auto and (dk > 0 or dbar != 0.0):
+                dbar += (dk - dbar) / w_rows
+            if not math.isfinite(mult):
+                given += 1.0
+                if given >= 1.0 + dbar:
+                    mult = zq
+                    given = 0.0
+                k += 1
+                continue
+            against = shown[j]
+            if not math.isfinite(against):
+                k += 1
+                continue
+            miss = 1.0 if abs(r) > against else 0.0
+            eta = rate
+            if dbar > 0.0:
+                eta = eta / (1.0 + rate * g * dbar / c)
+            rel = w[j] / w_mean if w_mean > 0.0 else 1.0
+            mult = max(mult + eta * rel * (miss - alpha), 0.0)
+            k += 1
+        s = sig_row[i]
+        if math.isfinite(mult) and math.isfinite(s) and s > 0.0:
+            shown[i] = mult * s
+    return shown
+
+
+def track_m(sched, resid, w, sig_row, coverage, rate=0.05, auto=False, c=0.5):
+    """The radius every row is shown under the bank's tracker since task 368,
+    `sig_row` the spread each row reads (the bank's `sigma_y`)."""
+    alpha = 1.0 - coverage
+    return _track_m(
+        len(resid),
+        sched["row"],
+        sched["at"],
+        sched["lam"],
+        sched["released_before"],
+        sched["held_before"],
+        resid,
+        w,
+        np.asarray(sig_row, dtype=float),
+        alpha,
+        rate,
+        auto,
+        c,
+        gain_bits(alpha),
+        norm_ppf(1.0 - 0.5 * alpha, bank=True),
     )
 
 

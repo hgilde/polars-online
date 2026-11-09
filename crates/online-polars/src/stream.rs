@@ -2514,9 +2514,11 @@ mod last_row;
 pub use last_row::LastRow;
 
 mod notified;
+mod pre_row_sigma;
 mod unmet_floor;
 use notified::span_name;
 pub use notified::{Notice, Notified};
+use pre_row_sigma::pre_row_sigma;
 use unmet_floor::{
     Projection, inflation_notice, unmet_floor_notice, unsolved_notice, unstable_rate_notice,
 };
@@ -5078,11 +5080,22 @@ fn run_instance(
         // fit that has learned the rows released since, read the residuals
         // too small, and the CUSUM of squares sat at −0.70 on iid labels
         // under an embargo of 50 (review round 6, A-6; schema 57).
+        pre_row_sigma(
+            inst.residuals,
+            inst.resid_win.as_ref(),
+            inst.decay,
+            (inst.resid_w, inst.resid_var),
+            n_slots,
+            &mut sc.sig,
+        );
         let mut shown_radius: Option<Vec<f64>> = None;
         if plan.buffered {
             let mut record = step.pred.clone();
             if let Some(cs) = inst.conformal.as_deref() {
-                record.extend(cs.iter().map(|c| c.radius().unwrap_or(f64::NAN)));
+                record.extend(cs.iter().enumerate().map(|(slot, c)| {
+                    let sig = sc.sig.get(slot).copied().unwrap_or(f64::NAN);
+                    c.radius(sig).unwrap_or(f64::NAN)
+                }));
             }
             if has_row_infl {
                 record.extend_from_slice(&sc.row_infl);
@@ -5145,11 +5158,9 @@ fn run_instance(
         // division per slot per row, and filling the three buffers a
         // `memset` per row, that no field ever read (PERFORMANCE-LOG §13).
         sc.r.clear();
-        sc.sig.clear();
         sc.zs.clear();
         let lam = inst.decay.factor(d_clock);
         if inst.residuals {
-            sc.sig.resize(n_slots, f64::NAN);
             sc.zs.resize(n_slots, f64::NAN);
             for (tj, group) in step.pred.chunks(nc).enumerate() {
                 let yj = sc.ys.get(tj).copied().flatten();
@@ -5158,28 +5169,11 @@ fn run_instance(
                     _ => f64::NAN,
                 }));
             }
-
-            // sigma is read from the state BEFORE this row's residual is
-            // folded in, so `zscore` is out-of-sample like the prediction it
-            // scales -- under a window, inside it, where the model reads its
-            // fit (review 2026-09-12, S1).
-            let ring = inst.resid_win.as_ref().map(SpreadRef::get);
+            // `sigma` was read above (`pre_row_sigma`).
             for (slot, &rv) in sc.r.iter().enumerate() {
-                if inst.resid_w[slot] <= 0.0 {
-                    continue;
-                }
-                let var = match ring {
-                    Some(ring) => {
-                        ring.inside(inst.decay, slot, inst.resid_w[slot], inst.resid_var[slot])
-                    }
-                    None => Some(inst.resid_var[slot]),
-                };
-                if let Some(var) = var {
-                    let sd = var.max(0.0).sqrt();
-                    sc.sig[slot] = sd;
-                    if rv.is_finite() && sd > 0.0 {
-                        sc.zs[slot] = rv / sd;
-                    }
+                let sd = sc.sig[slot];
+                if rv.is_finite() && sd > 0.0 {
+                    sc.zs[slot] = rv / sd;
                 }
             }
             if learn {
@@ -5359,9 +5353,10 @@ fn run_instance(
             }
         }
 
-        // The conformal interval is `pred ± q` with `q` read before the row,
-        // then the row's own score moves `q` (ENHANCEMENTS E36). `sigma` is
-        // the pre-row value too: it sets the step and the warm start.
+        // The conformal interval is `pred ± q`, `q = m·sigma` read before the
+        // row, then the row's own score moves `m` (ENHANCEMENTS E36; the
+        // multiplier, task 368). `sigma` is the pre-row value, the one the
+        // row's `sigma` field shows.
         // Under `conformal_rate = "auto"` the step reads the rows waiting,
         // the released one's record already off the front (task 342b).
         let held = if inst.spec.conformal_rate_auto() {
@@ -5374,7 +5369,8 @@ fn run_instance(
                 if emit {
                     let at = slot * n_rows + ri;
                     let p = step.pred[slot];
-                    let q = c.radius().unwrap_or(f64::NAN);
+                    let sig = sc.sig.get(slot).copied().unwrap_or(f64::NAN);
+                    let q = c.radius(sig).unwrap_or(f64::NAN);
                     inst.o_conformal[at] = p - q;
                     inst.o_conformal[block + at] = p + q;
                     inst.o_conformal[2 * block + at] = c.coverage().unwrap_or(f64::NAN);
