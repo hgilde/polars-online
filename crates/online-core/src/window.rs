@@ -1265,7 +1265,7 @@ impl Offer<Moments> for MomentsOf<'_> {
         (cov.n_eff() * lam).pack(out);
         out.dim(cov.means().len());
         out.f64s(cov.means());
-        cov.comoments().pack(out);
+        cov.comoments().pack_side(cov.means().len(), out);
         Some(cov.rows_learned()).pack(out);
         cov.q_sum().map(|q| q * lam * lam).pack(out);
     }

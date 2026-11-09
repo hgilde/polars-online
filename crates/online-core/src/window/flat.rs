@@ -63,6 +63,12 @@ impl Packer {
         self.words.push(w);
     }
 
+    /// A few words at once: one check of the room for all of them.
+    #[inline]
+    pub fn array<const N: usize>(&mut self, w: [u64; N]) {
+        self.words.extend_from_slice(&w);
+    }
+
     /// Numbers, as their bits.
     #[inline]
     pub fn f64s(&mut self, v: &[f64]) {
@@ -99,6 +105,17 @@ impl<'a> Unpacker<'a> {
     #[inline]
     pub fn f64(&mut self) -> f64 {
         f64::from_bits(self.word())
+    }
+
+    /// The next `N` words, split off once, not a word at a time.
+    #[inline]
+    pub fn array<const N: usize>(&mut self) -> &'a [u64; N] {
+        let (w, rest) = self
+            .words
+            .split_first_chunk()
+            .expect("a snapshot reads the words it was written with");
+        self.words = rest;
+        w
     }
 
     /// The next `n` words.
@@ -349,34 +366,35 @@ impl Pack for Stamp {
         match *self {
             Stamp::Ns(ns) => {
                 out.dim(0);
-                out.word(ns as u64);
-                out.word((ns >> 64) as u64);
+                out.array([ns as u64, (ns >> 64) as u64]);
             }
             Stamp::Raw(raw, removed) => {
                 out.dim(1);
-                out.f64(raw);
-                out.f64(removed);
+                out.array([raw.to_bits(), removed.to_bits()]);
             }
             Stamp::Int(whole, frac) => {
                 out.dim(2);
-                out.word(whole as u64);
-                out.word((whole >> 64) as u64);
-                out.f64(frac);
+                out.array([whole as u64, (whole >> 64) as u64, frac.to_bits()]);
             }
         }
     }
 
     #[inline]
     fn unpack(from: &mut Unpacker<'_>) -> Self {
-        let i128_of = |from: &mut Unpacker<'_>| {
-            let lo = from.word();
-            let hi = from.word();
-            (u128::from(lo) | (u128::from(hi) << 64)) as i128
-        };
+        let i128_of = |lo: u64, hi: u64| (u128::from(lo) | (u128::from(hi) << 64)) as i128;
         match from.dim() {
-            0 => Stamp::Ns(i128_of(from)),
-            1 => Stamp::Raw(from.f64(), from.f64()),
-            _ => Stamp::Int(i128_of(from), from.f64()),
+            0 => {
+                let &[lo, hi] = from.array();
+                Stamp::Ns(i128_of(lo, hi))
+            }
+            1 => {
+                let &[raw, removed] = from.array();
+                Stamp::Raw(f64::from_bits(raw), f64::from_bits(removed))
+            }
+            _ => {
+                let &[lo, hi, frac] = from.array();
+                Stamp::Int(i128_of(lo, hi), f64::from_bits(frac))
+            }
         }
     }
 }
@@ -384,13 +402,13 @@ impl Pack for Stamp {
 impl Pack for Product {
     #[inline]
     fn pack(&self, out: &mut Packer) {
-        out.f64(self.0);
-        out.word(self.1 as u64);
+        out.array([self.0.to_bits(), self.1 as u64]);
     }
 
     #[inline]
     fn unpack(from: &mut Unpacker<'_>) -> Self {
-        Product(from.f64(), from.word() as i64)
+        let &[m, k] = from.array();
+        Product(f64::from_bits(m), k as i64)
     }
 }
 
@@ -398,8 +416,11 @@ impl Pack for Products {
     #[inline]
     fn pack(&self, out: &mut Packer) {
         out.dim(self.len());
-        for p in &self.p[..self.len()] {
-            p.pack(out);
+        let [a, b] = self.p;
+        match self.len() {
+            0 => {}
+            1 => out.array([a.0.to_bits(), a.1 as u64]),
+            _ => out.array([a.0.to_bits(), a.1 as u64, b.0.to_bits(), b.1 as u64]),
         }
     }
 
@@ -407,8 +428,9 @@ impl Pack for Products {
     fn unpack(from: &mut Unpacker<'_>) -> Self {
         let n = from.dim();
         let mut out = Products::ones(n);
-        for p in &mut out.p[..n] {
-            *p = Product::unpack(from);
+        let (pairs, _) = from.words(2 * n).as_chunks::<2>();
+        for (p, &[m, k]) in out.p[..n].iter_mut().zip(pairs) {
+            *p = Product(f64::from_bits(m), k as i64);
         }
         out
     }
@@ -512,6 +534,13 @@ fn records<'a>(
         })
 }
 
+/// Whether two shapes' dimensions are the same: compared in place, as a
+/// handful of words, where `==` called the library's `memcmp`.
+#[inline]
+fn same(a: &[usize], b: &[usize]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x == y)
+}
+
 impl<S> Ring<S> {
     pub(super) fn new() -> Self {
         Self {
@@ -566,7 +595,7 @@ impl<S> Ring<S> {
         self.words += n;
         self.later += 1;
         match self.runs.back_mut() {
-            Some(run) if run.shape.footprint == footprint && *run.shape.dims == *dims => {
+            Some(run) if run.shape.footprint == footprint && same(&run.shape.dims, dims) => {
                 run.count += 1;
             }
             _ => self.runs.push_back(Run {
@@ -1128,6 +1157,38 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// A triangle packed with its side given writes what it writes when
+    /// the side is found from its storage, whatever side it is given: the
+    /// side is trusted only when its square is the storage's length.
+    #[test]
+    fn a_lower_triangle_packed_at_a_given_side_writes_its_own() {
+        let mut s = 366u64;
+        for k in 0..8usize {
+            let m = LowerTriangle::from((0..k * k).map(|_| number(&mut s)).collect::<Vec<_>>());
+            let mut want = Packer::default();
+            m.pack(&mut want);
+            for given in [k, k + 1, k.saturating_sub(1), 2 * k, k * k] {
+                let mut got = Packer::default();
+                m.pack_side(given, &mut got);
+                assert_eq!(got.words, want.words, "side {k} given as {given}");
+                assert_eq!(got.dims, want.dims, "side {k} given as {given}");
+            }
+        }
+        // A storage that is no square is written whole, at any side given.
+        let odd = LowerTriangle::from(vec![1.0, 2.0, 3.0]);
+        let mut want = Packer::default();
+        odd.pack(&mut want);
+        assert_eq!(want.dims, [1, 3]);
+        for given in [0, 1, 2, 3] {
+            let mut got = Packer::default();
+            odd.pack_side(given, &mut got);
+            assert_eq!(
+                (got.words, got.dims),
+                (want.words.clone(), want.dims.clone())
+            );
         }
     }
 
