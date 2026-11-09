@@ -141,7 +141,7 @@ pub use cluster::{
     ClusterSummary, FeatureMoments, KMeans, KMeansCfg, LINK_FACTOR, LINK_FLOOR, LINK_QUANTILE,
     Micro, MicroCfg, MicroCluster, SeedRule, SplitMix64, dist2, merged_radius2,
 };
-pub use conformal::{Conformal, norm_ppf};
+pub use conformal::{Conformal, gauss_gain, ln_basic, norm_ppf};
 pub use constraint::Constraint;
 pub use corrchange::{
     ChangeNorm, CorrChange, CorrChangeCfg, CorrChangeKind, MAX_PERM, kolmogorov_cdf,
@@ -823,6 +823,21 @@ pub use window::{
 ///     bytes move; its gain `g(α)` is derived from `α` on load and never
 ///     written. A state of 66 or earlier has no field, loads with 0 and goes
 ///     on to the bit: no such state was saved under `"auto"`.
+///   - The conformal multiplier (task 368, the user's decision of
+///     2026-11-09): a `Conformal` tracker keeps `m`, the interval being
+///     `pred ± m·σ`, in place of the radius `q`; `m` starts at `Φ⁻¹(1 −
+///     α/2)` (its tails' logarithm `ln_basic`, basic arithmetic, so no libm
+///     result enters the state), which it derives on load beside the gain
+///     and never writes; and `released`, the rows given before the start,
+///     counted without decay, is written only while the start waits with
+///     rows held. A state of 66 or earlier holds `q` and no `m`: it loads
+///     with `q` kept, shows it as saved on the next row, and converts it to
+///     `m = q / σ` on the first row with an error scale, so it goes on under
+///     the multiplier from there, not to the bit (CLAUDE.md rule 5's
+///     thirteenth exception); a re-save before that row writes `q` again.
+///     No kept fixture holds a conformal tracker;
+///     `a_conformal_radius_of_schema_66_is_shown_then_converted` holds the
+///     form, written from a current bank.
 ///
 ///   Schema 66's fixtures are kept (`tests/state_fixtures/v66/`).
 pub const SCHEMA_VERSION: u32 = 67;

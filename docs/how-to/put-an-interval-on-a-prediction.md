@@ -33,8 +33,8 @@ what it assumes.
    and `coverage_<t>`, the coverage it has delivered.
 2. **Run the query.**
 3. **Drop its first several half-lives of rows with `.slice(n)`,** while
-   `sigma`, the quantile and the conformal interval's radius (its
-   half-width) approach their steady values. For example, drop ten
+   `sigma`, the quantile and the conformal interval's multiplier of
+   `sigma` approach their steady values. For example, drop ten
    half-lives with `.slice(5_000)` at a half-life of 500 rows.
 4. **Build each interval:** `pred ± 1.645 · sigma` for a Gaussian 90%
    interval, `pred ± abs_resid_q0.9` from the quantile, or `lo` to `hi`.
@@ -92,18 +92,18 @@ for k in noise:
 noise              interval  covered  half-width
 gauss    pred ± 1.645 sigma    0.899       1.642
 gauss           pred ± q0.9    0.900       1.647
-gauss             conformal    0.900       1.650
+gauss             conformal    0.900       1.654
 t3       pred ± 1.645 sigma    0.928       1.585
 t3              pred ± q0.9    0.900       1.359
-t3                conformal    0.900       1.364
+t3                conformal    0.900       1.374
 ```
 
 On Gaussian noise the three intervals are the same: each covers 90% of the
 rows at the same width. On Student's t, the Gaussian interval covers 92.8%,
 more than asked, because `sigma` is inflated by the rare huge residuals,
 and it is wider than it needs to be for most rows. The quantile and the
-conformal interval cover 90.0% at a half-width of 1.36, against the
-Gaussian interval's 1.59. Three more streams of 200,000 rows, with a
+conformal interval cover 90.0% at a half-width of 1.36 and 1.37, against
+the Gaussian interval's 1.59. Three more streams of 200,000 rows, with a
 half-life of 2,000 rows, were measured on 2026-11-08. On Student's t
 noise at 2.5 degrees of freedom the Gaussian interval covered 95.1%, and
 on a scale mixture 94.2%. The third stream's slope flips halfway and its
@@ -114,20 +114,22 @@ all three.
 
 **Serve `lo` and `hi` from `conformal` when the coverage must hold, and
 `sigma` when a scale is enough.** `conformal` tracks a quantile of
-`|resid|` directly, so its long-run coverage is the number asked for,
-whatever the residuals do.
+`|resid| / sigma`, a multiplier `m`, and serves `pred ± m · sigma`, so its
+long-run coverage is the number asked for, whatever the residuals do, and
+the interval moves with `sigma` between steps.
 
 ## Keep the coverage when targets arrive late
 
 Under `embargo` or `label_clock`, a row's target arrives after the row was
-shown its interval. So the conformal radius learns of a miss only when
+shown its interval. So the conformal interval learns of a miss only when
 the target arrives. Once more than about 50 rows wait for their targets,
 for a 90% interval, the default `conformal_rate` of 0.05 no longer holds
-the radius steady. Past about 150, the radius overshoots and undershoots,
-and the interval is wider on average.
+the interval steady. Past about 150, the interval overshoots and
+undershoots, and it is wider on average.
 `"auto"` takes smaller steps the more rows wait for their targets,
 counted at each target's arrival and averaged over the model's
-half-life. [Conformal intervals](../DIAGNOSTICS.md#conformal-intervals)
+half-life, and waits for its first interval until the targets it has seen
+outnumber the rows waiting. [Conformal intervals](../DIAGNOSTICS.md#conformal-intervals)
 derives the step and measures it on New York's 2013 flights.
 
 1. **Set `conformal_rate="auto"` in the spec,** beside `conformal` and the
@@ -167,15 +169,15 @@ for delay, embargo in (("at once", {}), ("300 units later", {"embargo": 300.0}))
 
 ```text
 targets           rate  covered  half-width
-at once           0.05    0.900       1.375
-at once           auto    0.900       1.375
-300 units later   0.05    0.899       2.400
-300 units later   auto    0.900       1.362
+at once           0.05    0.900       1.377
+at once           auto    0.900       1.377
+300 units later   0.05    0.900       2.384
+300 units later   auto    0.900       1.363
 ```
 
 With the targets at once, the two rates are the same. With each target 300
 rows late, both cover 90% of the rows, but the default rate's swings make
-its half-width 2.40 on average, against 1.36 for `"auto"`, about the
+its half-width 2.38 on average, against 1.36 for `"auto"`, about the
 half-width with no delay.
 
 ## Check that it worked
@@ -185,6 +187,6 @@ Read the covered share and the half-width over many half-lives:
 | what you see | what it means | what to do |
 |---|---|---|
 | a Gaussian interval that covers more than asked, and is wider than the quantile's | the residuals have heavy tails, which inflate `sigma` | serve `conformal`'s `lo` and `hi`, or the `resid_quantiles` interval |
-| a conformal interval at the coverage asked, but much wider under a delay than without one | the radius overshoots, since it learns of each miss only when the target arrives | set `conformal_rate="auto"` |
-| a conformal interval slow to recover after the noise jumps | a small rate recovers slowly, and no rate corrects the radius faster than the targets arrive | choose the rate on an earlier stretch of the stream, as [Choose a model's settings from the stream's own errors](../CALIBRATION.md) chooses any setting |
+| a conformal interval at the coverage asked, but much wider under a delay than without one | the interval overshoots, since it learns of each miss only when the target arrives | set `conformal_rate="auto"` |
+| a conformal interval slow to recover after the shape of the noise changes | a small rate recovers slowly, and no rate corrects the interval faster than the targets arrive |  choose the rate on an earlier stretch of the stream, as [Choose a model's settings from the stream's own errors](../CALIBRATION.md) chooses any setting |
 | a conformal interval whose share of rows covered sits off the coverage asked, under a `weight` column | each step is scaled by the row's weight over the mean weight, so a heavy row's miss counts for more, and the share of rows covered can sit on either side of the coverage asked | nothing, where the heavy rows are the ones whose coverage matters; otherwise, fit a second spec without `weight` for the interval |

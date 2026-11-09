@@ -1148,11 +1148,15 @@ fn label_run(bytes: &[u8], input: &DataFrame) -> Ran {
 /// task 342b): a conformal interval under `conformal_rate = "auto"` on rows
 /// held for their label times, past its warm start at the save, so its
 /// tracker writes the mean of the rows waiting at each release
-/// (`held_mean`), which a tracker with nothing waiting does not write. The
-/// rows of `bank_label_clock`, a buffer with no bound.
+/// (`held_mean`), which a tracker with nothing waiting does not write; and a
+/// second whose predictions a `min_weight` held back until late, so at the
+/// save its tracker still waits for its start and writes the count of rows
+/// it has been given (`released`, task 368). The rows of
+/// `bank_label_clock`, a buffer with no bound.
 fn auto_specs() -> Vec<Spec> {
     [
         r#"{"name": "auto", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 30.0, "gap_cap": 50.0, "weight": "w", "label_clock": "avail", "conformal": 0.9, "conformal_rate": "auto", "emit_sigma": true}"#,
+        r#"{"name": "waiting", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 30.0, "gap_cap": 50.0, "weight": "w", "label_clock": "avail", "conformal": 0.9, "conformal_rate": "auto", "min_weight": 19.0, "emit_sigma": true}"#,
     ]
     .iter()
     .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
@@ -1169,6 +1173,11 @@ fn auto_first() -> (Vec<u8>, DataFrame) {
     assert!(
         lo.f64().unwrap().iter().flatten().count() > 10,
         "past the warm start"
+    );
+    let bytes = bank.save_bytes().unwrap();
+    assert!(
+        bytes.windows(8).any(|b| b == b"released"),
+        "a tracker still waits for its start"
     );
     (
         bank.save_bytes().unwrap(),
@@ -2259,6 +2268,13 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
             "a conformal mean of the rows held",
             |p, v| p.ends_with(".held_mean") && v.as_f64().is_some_and(|f| f > 0.0),
         ),
+        // Schema 67 (task 368): a conformal tracker waiting for its start,
+        // the rows it has been given counted.
+        (
+            "bank_conformal_auto",
+            "a conformal tracker's count of the rows before its start",
+            |p, v| p.ends_with(".released") && v.as_f64().is_some_and(|f| f > 0.0),
+        ),
         // Schema 66 (task 328): the rows a window's ring has taken.
         (
             "bank_diagnosed",
@@ -2891,4 +2907,122 @@ fn the_fixture_discovery_is_one_build_script() {
         "crates/online-polars/build.rs and crates/online-core/build.rs differ: copy one over the \
          other"
     );
+}
+
+/// A conformal tracker saved before the multiplier (schema 66 or earlier,
+/// CLAUDE.md rule 5's exception of 2026-11-09, task 368) holds the radius
+/// `q` where one now holds `m`. No kept fixture holds a conformal tracker,
+/// so the form is written here from a current bank, its trackers' `m`
+/// renamed to `q` (a radius of 1.75) and the file's schema set to 66: it
+/// loads, saves its `q` again, shows that radius on the next row to the bit,
+/// and from the first row with an error scale holds `m = q / σ`, stepped,
+/// its radius `m·σ` for the `σ` each later row reads, and writes no `q`.
+#[test]
+fn a_conformal_radius_of_schema_66_is_shown_then_converted() {
+    if regenerating() {
+        return;
+    }
+    let spec: Spec = serde_json::from_str(
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0"],
+            "half_life": 50.0, "conformal": 0.9, "emit_sigma": true}"#,
+    )
+    .unwrap();
+    let n = 80usize;
+    let mut r = lcg(12);
+    let x0: Vec<f64> = (0..n).map(|_| r()).collect();
+    let y: Vec<f64> = (0..n).map(|i| 2.0 * x0[i] + 0.5 * r()).collect();
+    let df = df!("x0" => x0, "y" => y).unwrap();
+    let mut bank = Bank::new(vec![spec.clone()]).unwrap();
+    bank.fit_predict(&df.slice(0, 60)).unwrap();
+    // The file as a build before the multiplier wrote it.
+    let mut v = rmpv::decode::read_value(&mut &bank.save_bytes().unwrap()[..]).unwrap();
+    fn to_66(v: &mut rmpv::Value, found: &mut usize) {
+        match v {
+            rmpv::Value::Map(m) => {
+                let tracker = m.iter().any(|(k, _)| k.as_str() == Some("cov_w"))
+                    && m.iter().any(|(k, _)| k.as_str() == Some("m"));
+                for (k, val) in m.iter_mut() {
+                    if tracker && k.as_str() == Some("m") {
+                        *k = rmpv::Value::from("q");
+                        *val = rmpv::Value::from(1.75);
+                        *found += 1;
+                    } else if k.as_str() == Some("schema_version") {
+                        *val = rmpv::Value::from(66);
+                    } else {
+                        to_66(val, found);
+                    }
+                }
+            }
+            rmpv::Value::Array(a) => a.iter_mut().for_each(|x| to_66(x, found)),
+            _ => {}
+        }
+    }
+    let mut found = 0;
+    to_66(&mut v, &mut found);
+    assert_eq!(found, 1, "one tracker");
+    let mut old = Vec::new();
+    rmpv::encode::write_value(&mut old, &v).unwrap();
+    let mut bank = Bank::load_bytes(&old, Some(std::slice::from_ref(&spec))).unwrap();
+    let again = bank.save_bytes().unwrap();
+    let field_of = |bytes: &[u8], key: &str| -> Vec<f64> {
+        fn walk(v: &rmpv::Value, key: &str, out: &mut Vec<f64>) {
+            match v {
+                rmpv::Value::Map(m) => {
+                    let tracker = m.iter().any(|(k, _)| k.as_str() == Some("cov_w"));
+                    for (k, val) in m {
+                        if tracker && k.as_str() == Some(key) {
+                            out.push(val.as_f64().unwrap_or(f64::NAN));
+                        }
+                        walk(val, key, out);
+                    }
+                }
+                rmpv::Value::Array(a) => a.iter().for_each(|x| walk(x, key, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        walk(
+            &rmpv::decode::read_value(&mut &bytes[..]).unwrap(),
+            key,
+            &mut out,
+        );
+        out
+    };
+    assert_eq!(field_of(&again, "q"), vec![1.75], "the radius kept");
+    let read = |out: &DataFrame, name: &str| -> f64 {
+        out.column("m")
+            .unwrap()
+            .struct_()
+            .unwrap()
+            .field_by_name(name)
+            .unwrap()
+            .f64()
+            .unwrap()
+            .get(0)
+            .unwrap()
+    };
+    let row = |bank: &mut Bank, i: usize| {
+        DataFrame::new(1, bank.fit_predict(&df.slice(i as i64, 1)).unwrap()).unwrap()
+    };
+    // The next row is shown the radius saved, to the bit.
+    let first = row(&mut bank, 60);
+    let (pred, sigma) = (read(&first, "pred_y"), read(&first, "sigma_y"));
+    assert!(sigma > 0.0);
+    assert_eq!(read(&first, "hi_y").to_bits(), (pred + 1.75).to_bits());
+    assert_eq!(read(&first, "lo_y").to_bits(), (pred - 1.75).to_bits());
+    // That row had an error scale: the tracker is a multiplier, stepped
+    // from 1.75 / σ by one step of the rate.
+    let saved = bank.save_bytes().unwrap();
+    assert!(field_of(&saved, "q").is_empty(), "no radius written");
+    let m = field_of(&saved, "m")[0];
+    // Unit weights, so `w/w̄` is 1.
+    let miss = f64::from(u8::from(
+        (df.column("y").unwrap().f64().unwrap().get(60).unwrap() - pred).abs() > 1.75,
+    ));
+    let want = (1.75 / sigma + 0.05 * 1.0 * (miss - (1.0 - 0.9))).max(0.0);
+    assert_eq!(m.to_bits(), want.to_bits(), "{m} vs {want}");
+    // Every later row reads `m·σ`.
+    let next = row(&mut bank, 61);
+    let (pred, sigma) = (read(&next, "pred_y"), read(&next, "sigma_y"));
+    assert_eq!(read(&next, "hi_y").to_bits(), (pred + m * sigma).to_bits());
 }

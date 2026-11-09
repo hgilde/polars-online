@@ -524,7 +524,7 @@ The diagnostics add, per slot:
        of the predictions a readiness gate withholds are among them: a
        gate withholds output only, so ``sigma`` -- and ``zscore``, the
        drift detector's scale, the ranking of ``emit_selected`` and
-       ``emit_averaged`` and the conformal radius's start -- is the same
+       ``emit_averaged`` and the conformal interval ``m * sigma`` -- is the same
        whatever ``min_weight``, ``min_settled_frac`` or
        ``max_error_inflation`` says, and can be a number on a row whose
        prediction is withheld. On ``ewridge`` it reads none below the
@@ -636,28 +636,34 @@ The diagnostics add, per slot:
        has no sign to hit.
    * - ``conformal``
      - ``lo_<slot>``, ``hi_<slot>``, ``coverage_<slot>``
-     - An interval ``pred ± q`` at the asked coverage, and the coverage it
-       has delivered. ``q`` is a tracked quantile of ``|resid|``: it grows
-       by ``conformal_rate * sigma * coverage`` on a miss and shrinks by
-       ``conformal_rate * sigma * (1 - coverage)`` on a hit. Each step is
-       times the row's weight over the EW mean weight of every row with a
-       residual the layer has seen, scored or not, ``w / w̄``, so the
-       long-run coverage weighted by ``w / w̄`` is the number asked for
-       whatever the residuals do, and the weights' scale does not reach
-       it. With unequal weights the share of rows covered can sit on
-       either side of it. Null until the first
-       ``sigma`` exists. The step is taken once per scored row, so ``q``
+     - An interval ``pred ± m * sigma`` at the asked coverage, and the
+       coverage it has delivered. ``m`` is a tracked quantile of
+       ``|resid| / sigma``, ``sigma`` the spread the row reads: it grows by
+       ``conformal_rate * coverage`` on a miss and shrinks by
+       ``conformal_rate * (1 - coverage)`` on a hit, so between steps the
+       interval moves with ``sigma``. It starts at the Gaussian one,
+       ``Φ⁻¹(1 - (1 - coverage) / 2)`` (1.645 at 90%), on the first row
+       with a residual. Each step is times the row's weight over the EW
+       mean weight of every row with a residual the layer has seen, scored
+       or not, ``w / w̄``, so the long-run coverage weighted by ``w / w̄`` is
+       the number asked for whatever the residuals do, and the weights'
+       scale does not reach it. With unequal weights the share of rows
+       covered can sit on either side of it. Null until the first
+       ``sigma`` exists. The step is taken once per scored row, so ``m``
        moves faster in clock time where rows are denser; the delivered
        coverage decays on the clock. Under ``embargo`` or ``label_clock``
-       each row is scored against the radius it was shown, when its label
-       arrives; with hundreds of rows waiting, misses arrive in bursts and
-       the default step overshoots. ``conformal_rate="auto"`` divides the
-       step by the rows waiting: ``0.05 / (1 + 0.1 * g * n)``, ``n`` the
-       rows still waiting at each label's arrival averaged over the
-       half-life, and ``g`` the density of ``|Z|``, ``Z`` standard normal,
-       at the asked quantile (0.21 at 90%). It is 0.05 when nothing waits,
-       and held 90% at a quarter of the default's width on New York's 2013
-       flights with 338 rows waiting.
+       each row is scored against the interval it was shown, when its
+       label arrives; with hundreds of rows waiting, misses arrive in
+       bursts and the default step overshoots. ``conformal_rate="auto"``
+       divides the step by the rows waiting: ``0.05 / (1 + 0.1 * g * n)``,
+       ``n`` the rows still waiting at each label's arrival averaged over
+       the half-life, and ``g`` the density of ``|Z|``, ``Z`` standard
+       normal, at the asked quantile (0.21 at 90%); and it waits for its
+       first interval until the labels it has read outnumber the rows
+       waiting, since the first to arrive were predicted by a model that
+       had learned almost nothing. It is 0.05 when nothing waits, and held
+       90% at a quarter of the default's width on New York's 2013 flights
+       with 338 rows waiting.
    * - ``resid_quantiles``
      - ``abs_resid_q<p>_<slot>``
      - The exponentially weighted quantile of ``|resid|`` at level ``p``,

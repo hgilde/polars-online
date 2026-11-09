@@ -581,7 +581,14 @@ def switched_signature() -> dict[str, float | str | None]:
 #: the buffered ``|e|``, where it was the sketch's read, within a bucket of
 #: it; the largest move 1.5e-4 of ``1 + |v|`` (``quantile.pred_y0@60``);
 #: ``robust_ref`` reads the same median and holds both to every row
-#: (``tests/test_oracles.py``); nothing else moved.
+#: (``tests/test_oracles.py``); nothing else moved. Task 368 (2026-11-09,
+#: the user's decision) moved 16, ``ridge``'s conformal ``lo``, ``hi`` and
+#: ``coverage`` of both slots: the tracker keeps a multiplier of ``sigma``,
+#: so the radius is ``m·sigma`` for the ``sigma`` the row reads, ``m``
+#: starting at ``Φ⁻¹(1 − α/2)`` on the first row with a residual, where the
+#: radius was stepped by ``rate·sigma`` from ``sigma·Φ⁻¹(1 − α/2)``;
+#: ``tests/test_conformal.py``'s replay, rewritten from the new docstring,
+#: holds every row of every model to the bit; nothing else moved.
 GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.684371132566456,
     "ridge.pred_y0__r0.000001@60": -0.25563207972202284,
@@ -607,24 +614,24 @@ GOLDEN: dict[str, float | str | None] = {
     "ridge.zscore_y0__r0.5@25": -0.5856222804890282,
     "ridge.zscore_y0__r0.5@60": -0.5176747009538715,
     "ridge.zscore_y0__r0.5@119": 0.5621086842100151,
-    "ridge.lo_y0__r0.000001@25": -4.9072646094336365,
-    "ridge.lo_y0__r0.000001@60": -0.421417765777976,
-    "ridge.lo_y0__r0.000001@119": -0.3638147239580231,
-    "ridge.lo_y0__r0.5@25": -3.9802489752542964,
-    "ridge.lo_y0__r0.5@60": -1.2485218301108685,
-    "ridge.lo_y0__r0.5@119": -1.684092645629295,
-    "ridge.hi_y0__r0.000001@25": -4.461477655699276,
-    "ridge.hi_y0__r0.000001@60": -0.08984639366606967,
-    "ridge.hi_y0__r0.000001@119": 0.0442800872637204,
-    "ridge.hi_y0__r0.5@25": -2.434561679233436,
-    "ridge.hi_y0__r0.5@60": 1.0145748758243183,
-    "ridge.hi_y0__r0.5@119": 0.6233021657592599,
+    "ridge.lo_y0__r0.000001@25": -4.809053706335373,
+    "ridge.lo_y0__r0.000001@60": -0.4982947539779955,
+    "ridge.lo_y0__r0.000001@119": -0.31857434664426354,
+    "ridge.lo_y0__r0.5@25": -7.788307379395447,
+    "ridge.lo_y0__r0.5@60": -1.2389869348434963,
+    "ridge.lo_y0__r0.5@119": -1.7946746031454988,
+    "ridge.hi_y0__r0.000001@25": -4.559688558797539,
+    "ridge.hi_y0__r0.000001@60": -0.012969405466050188,
+    "ridge.hi_y0__r0.000001@119": -0.0009602900500391975,
+    "ridge.hi_y0__r0.5@25": 1.3734967249077146,
+    "ridge.hi_y0__r0.5@60": 1.005039980556946,
+    "ridge.hi_y0__r0.5@119": 0.7338841232754636,
     "ridge.coverage_y0__r0.000001@25": 1.0,
-    "ridge.coverage_y0__r0.000001@60": 0.652486590856464,
-    "ridge.coverage_y0__r0.000001@119": 0.9943019412287876,
-    "ridge.coverage_y0__r0.5@25": 0.5230027242465501,
+    "ridge.coverage_y0__r0.000001@60": 0.9020291035701509,
+    "ridge.coverage_y0__r0.000001@119": 0.8818947848586911,
+    "ridge.coverage_y0__r0.5@25": 1.0,
     "ridge.coverage_y0__r0.5@60": 0.9207933957773561,
-    "ridge.coverage_y0__r0.5@119": 0.9076565244103686,
+    "ridge.coverage_y0__r0.5@119": 0.9776214238148554,
     "ridge.weight_sum@25": 7.999488060097996,
     "ridge.weight_sum@60": 12.473100285951407,
     "ridge.weight_sum@119": 15.110060335371337,

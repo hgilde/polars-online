@@ -264,7 +264,7 @@ every = po.spec.ewridge(
     emit_zscore=True,             # zscore_y: resid / sigma, how surprising the row was
     resid_quantiles=[0.5, 0.9],   # abs_resid_q0.5_y, abs_resid_q0.9_y: EW quantiles of |resid|
     conformal=0.9,                # lo_y, hi_y, coverage_y: an interval at this coverage ...
-    conformal_rate=0.05,          #   ... whose radius moves this fast
+    conformal_rate=0.05,          #   ... whose width adapts this fast
     emit_metrics=True,            # ic_y, r2_y, hit_rate_y: running accuracy
     emit_autocorr=True,           # autocorr_y: each residual against the one ...
     resid_autocorr_lag=1,         #   ... this many predicted rows back
@@ -1194,44 +1194,57 @@ gate withholds output only, so `sigma` is the same whatever `min_weight`,
 `min_settled_frac` or `max_error_inflation` says, and it can be a number
 on a row whose prediction is withheld. So are `zscore`, the drift
 detector's scale, the ranking of `emit_selected` and `emit_averaged`, and
-the conformal radius's start. On `ewridge` it reads none below
+the conformal interval, `m · sigma`. On `ewridge` it reads none below
 the model's own floor of a row per unknown, where the system has fewer
 rows than unknowns. Each of these costs under 25 ns a row, and the ten
 linear models take them.
 
 ### Conformal intervals
 
-**`conformal` tracks a quantile of `|resid|` directly, so its long-run
-coverage is the number asked for, whatever the residuals do.** Its radius `q` grows by
-`conformal_rate · sigma · coverage` on a miss and shrinks by
-`conformal_rate · sigma · (1 − coverage)` on a hit. That is the
-quantile-tracking step of Angelopoulos, Candès and Tibshirani (2023),
-scaled by `sigma` so that the rate means the same in any units. A miss is rarer than a hit by
-the ratio the coverage sets, so the two steps balance exactly at the
-coverage asked for. This is conformal prediction (Vovk, Gammerman and
-Shafer 2005) without a held-out set, because every residual is already out
-of sample.
+**`conformal` tracks a quantile of `|resid| / sigma`, so its long-run
+coverage is the number asked for, whatever the residuals do.** The
+interval is `pred ± m · sigma`, with `sigma` the residual spread the row
+reads. The multiplier `m` grows by `conformal_rate · coverage` on a miss
+and shrinks by `conformal_rate · (1 − coverage)` on a hit. That is the
+quantile-tracking step of Angelopoulos, Candès and Tibshirani (2023), on
+the residual in units of `sigma`, so the rate means the same in any units.
+A miss is rarer than a hit by the ratio the coverage sets, so the two steps
+balance exactly at the coverage asked for. This is conformal prediction
+(Vovk, Gammerman and Shafer 2005) without a held-out set, because every
+residual is already out-of-sample.
+
+**`m` starts where a Gaussian would put it, 1.645 for a 90% interval, and
+the interval moves with `sigma` from the first row.** The first interval
+comes on the row after the first residual. While the model learns, its
+errors shrink and `sigma` with them, so the interval narrows at once. The
+multiplier only learns the shape of the residuals, which moves slowly. A
+tracker of the width itself would have had to step down from the errors of
+a model that had learned almost nothing. On a stream whose targets arrived
+50 to 300 rows late, such a tracker started at five times its steady width
+and took 7,000 rows to come down; the multiplier's interval covered 90.6%
+of rows 1,000 to 2,000.
 
 **Under a `weight` column, each step is scaled by the row's weight over
 the mean weight**, so a heavy row's miss counts for more. The share of
 rows covered can then sit on either side of the number asked for. The step is
-taken once per predicted row, so the radius moves faster in clock time where
+taken once per predicted row, so the interval moves faster in clock time where
 rows are denser. `conformal_rate` is 0.05 by default.
 
 **Under a long delay, set `conformal_rate="auto"`.** Under
 `embargo` or `label_clock` a row's target becomes known after the row was
-shown its interval, and the row is checked against the radius it was
-shown. So the radius learns of a miss only when the target becomes known,
-and every row served in the meantime was shown the same radius. With `n`
-rows waiting for their targets on average (the rows that arrive in a unit of clock,
-times the mean delay), the radius is a feedback loop whose news is `n` steps old.
+shown its interval, and the row is checked against the interval it was
+shown. So the multiplier learns of a miss only when the target becomes known,
+and every row served in the meantime was shown an interval from the same
+multiplier. With `n` rows waiting for their targets on average (the rows
+that arrive in a unit of clock, times the mean delay), the interval is a
+feedback loop whose news is `n` steps old.
 
 Each step moves the share of misses by about `conformal_rate · g`. Here `g`
 is the density of `|Z|` at the quantile asked for, with `Z` standard
 normal: 0.64 for a 50% interval, 0.21 for 90%, 0.12 for 95% and 0.029 for
 99%. A loop whose news is `n` steps old holds steady when that move times
-`n` stays below about one half. Past about 1.6 it swings: the radius
-overshoots, the misses stop, it undershoots, and the interval is wider on
+`n` stays below about one half. Past about 1.6 it swings: the interval
+overshoots, the misses stop, it undershoots, and it is wider on
 average. So the step should be `0.05 / (1 + 0.1 · g · n)`, which is the
 default when nothing waits. For a 90% interval that is `0.05 / (1 + n /
 48)`.
@@ -1245,25 +1258,30 @@ misses do. Flights pile up in the afternoon, when the delays are worst, and
 such a step covered 92.1% of them where 90% was asked. Under a delay that
 does not move, the formula with a fixed `n` gives the same step.
 
+**`"auto"` also waits for its first interval until the targets it has seen
+outnumber the rows waiting.** The first targets to arrive belong to rows
+predicted by a model that had learned from one or two, and a small step
+corrects an interval scaled by their spread only slowly. With nothing
+waiting it does not wait.
+
 On New York's 2013 flights (327,346 departures, the residual of a tree
 model's arrival delay, scored on October to December), `"auto"` held 90%
-intervals within 10% of the width with no delay, as the formula did:
+intervals 4% to 11% wider than with no delay, as the formula did:
 
 | labels | rows waiting | default 0.05: covered, half-width | the formula's rate | the formula: covered, half-width | `"auto"`: covered, half-width |
 |---|---:|---:|---:|---:|---:|
-| at once | 0 | 90.0%, 44.5 minutes | 0.05 | 90.0%, 44.5 minutes | 90.0%, 44.5 minutes |
-| an `embargo` of 1 hour | 54 | 90.0%, 47.4 | 0.024 | 89.9%, 46.1 | 89.9%, 46.0 |
-| at landing (`label_clock`) | 152 | 90.0%, 63.6 | 0.012 | 89.9%, 48.5 | 89.9%, 48.6 |
-| an `embargo` of 8 hours | 338 | 90.3%, 189 | 0.0063 | 89.9%, 46.6 | 89.9%, 46.5 |
+| at once | 0 | 90.0%, 44.9 minutes | 0.05 | 90.0%, 44.9 minutes | 90.0%, 44.9 minutes |
+| an `embargo` of 1 hour | 54 | 90.0%, 48.0 | 0.024 | 90.0%, 46.7 | 90.0%, 46.7 |
+| at landing (`label_clock`) | 152 | 90.0%, 65.8 | 0.012 | 90.0%, 50.0 | 90.0%, 50.0 |
+| an `embargo` of 8 hours | 338 | 90.2%, 203 | 0.0063 | 90.0%, 48.1 | 90.0%, 48.0 |
 
-At 50% the default's swing pins the radius at zero for long stretches, so
-under the 8-hour delay it covered 70% of rows at a half-width of 127
-minutes. The formula's 0.0022 covered 49.95% at 15.4.
+At 50% the default's swing pins the multiplier at zero for long stretches,
+so under the 8-hour delay it covered 71% of rows at a half-width of 134
+minutes. The formula's 0.0022 covered 50.1% at 15.5.
 
-A smaller step also recovers more slowly from a radius that is wrong for
-another reason. That can be a start from the first residuals of a model
-that has learned little, or a jump in the noise. No step corrects the
-radius faster than the targets become known. Where the noise moves within the
+A smaller step also recovers more slowly from an interval that is wrong
+for a reason `sigma` does not follow, such as a change in the shape of the
+noise. No step corrects the interval faster than the targets become known. Where the noise moves within the
 delay, choose the rate on earlier months, as
 [CALIBRATION.md](CALIBRATION.md) chooses any setting.
 

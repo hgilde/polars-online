@@ -530,9 +530,7 @@ clock units after the row, and its noise has heavy tails.
 6. **Add a `corrchange` spec on the features.**
 7. **Run the query.**
 8. **Read each interval's share of targets covered, and its mean
-   half-width,** past the first five half-lives. At the start, before the
-   interval's radius has come to its steady size, the small steps of
-   `"auto"` leave it wide for longer.
+   half-width,** past the first five half-lives.
 9. **Read the break test's flags** before the slope flipped and after it.
 10. **Match each planted change of correlation to the first flag after
     it.**
@@ -587,8 +585,8 @@ print(f"flags no change explains: {sum(not any(c <= f < c + 5_000 for c in plant
 ```
 
 ```text
-model: covered 0.901 of the targets, half-width 1.57
-fixed: covered 0.898 of the targets, half-width 3.14
+model: covered 0.902 of the targets, half-width 1.59
+fixed: covered 0.900 of the targets, half-width 2.51
 break test: 0 flags before row 10000, the first after it at row 10436
 correlation changed at row 5000: flagged at row 5110
 correlation changed at row 10000: flagged at row 10098
@@ -596,8 +594,8 @@ correlation changed at row 15000: flagged at row 15056
 flags no change explains: 0
 ```
 
-**Both intervals cover 90% of the targets, and the adaptive one at half
-the width.** About 300 rows wait for their targets at any time. At the
+**Both intervals cover 90% of the targets, and the adaptive one is
+narrower, 1.59 against 2.51.** About 300 rows wait for their targets at any time. At the
 default step, the interval's radius learns of each miss 300 rows late,
 overshoots and undershoots, and is wider on average. `"auto"` takes
 smaller steps the more rows wait. [Keep the coverage when targets arrive

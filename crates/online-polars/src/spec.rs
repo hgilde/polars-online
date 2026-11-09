@@ -1920,24 +1920,26 @@ pub struct Spec {
     #[serde(default)]
     pub emit_metrics: bool,
     /// Emit `lo_<slot>`, `hi_<slot>` and `coverage_<slot>`: an
-    /// adaptive conformal interval `pred ± q` at this coverage level, with
-    /// the realized coverage beside it (ENHANCEMENTS E36). `q` is a tracked
-    /// quantile of `|resid|` — `q ← max(0, q + rate·sigma·(w/w̄)·(miss −
-    /// α))`, `miss = 1{|resid| > q}`, `α = 1 − coverage`, `w̄` the EW mean
-    /// weight — so the long-run coverage weighted by `w/w̄` is the target
-    /// whatever the residual distribution is and however it moves, where
-    /// `sigma` gives a Gaussian interval (review round 4, CA5). Read before
-    /// the row, like every other diagnostic. A coverage level strictly
-    /// between 0 and 1.
+    /// adaptive conformal interval `pred ± m·sigma` at this coverage level,
+    /// with the realized coverage beside it (ENHANCEMENTS E36). `m` is a
+    /// tracked quantile of `|resid| / sigma` — `m ← max(0, m +
+    /// rate·(w/w̄)·(miss − α))`, `miss = 1{|resid| > m·sigma}`, `α = 1 −
+    /// coverage`, `w̄` the EW mean weight, `m` starting at `Φ⁻¹(1 − α/2)`
+    /// (task 368) — so the long-run coverage weighted by `w/w̄` is the
+    /// target whatever the residual distribution is and however it moves,
+    /// where `sigma` alone gives a Gaussian interval (review round 4, CA5).
+    /// Read before the row, like every other diagnostic. A coverage level
+    /// strictly between 0 and 1.
     #[serde(default)]
     pub conformal: Option<f64>,
-    /// Step of the conformal radius per unit of the slot's `sigma`. Default
-    /// 0.05: a miss widens the interval by `0.05·sigma·(1 − α)`, a hit
-    /// narrows it by `0.05·sigma·α`, each times the row's weight over the
-    /// scored rows' EW mean weight (docs/PLAN.md task 147). `"auto"`
-    /// divides 0.05 by `1 + 0.05·g(α)·n̄/c`, `n̄` the EW mean of the rows
-    /// waiting for their labels at each release (task 342b): 0.05 exactly
-    /// where nothing waits.
+    /// Step of the conformal multiplier `m`, the interval being `pred ±
+    /// m·sigma` (task 368). Default 0.05: a miss raises `m` by
+    /// `0.05·(1 − α)`, a hit lowers it by `0.05·α`, each times the row's
+    /// weight over the EW mean weight of the rows with a residual
+    /// (docs/PLAN.md task 147). `"auto"` divides 0.05 by `1 + 0.05·g(α)·n̄/c`,
+    /// `n̄` the EW mean of the rows waiting for their labels at each release
+    /// (task 342b), and starts `m` once the releases reach `1 + n̄`: 0.05,
+    /// starting on the first release, exactly where nothing waits.
     #[serde(default)]
     pub conformal_rate: Option<ConformalRate>,
     /// Emit `abs_resid_q<p>_<slot>` for each level in `resid_quantiles`: the
@@ -2533,8 +2535,8 @@ impl Spec {
         self.drift_threshold.as_ref().map_or(20.0, Span::value)
     }
 
-    /// The conformal radius' step per unit of `sigma` with nothing waiting,
-    /// `0.05` unless set (and under `"auto"`).
+    /// The conformal multiplier's step with nothing waiting, `0.05` unless
+    /// set (and under `"auto"`).
     pub fn conformal_rate_or_default(&self) -> f64 {
         self.conformal_rate
             .map_or(ConformalRate::DEFAULT, |r| r.base())

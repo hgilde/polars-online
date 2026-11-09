@@ -229,9 +229,9 @@ is inflated by the last large row. `drift_<t>`, a Page-Hinkley test on
 200,000 stable rows with Student's t noise of 3 degrees of freedom,
 `drift_threshold=20` flagged 7 to 14 rows in each, 11 on average. [Are its
 tails heavy?](../DIAGNOSTICS.md#are-its-tails-heavy) has the thresholds
-that flag fewer. A conformal interval tracks a quantile of `|resid|`
-directly, so its long-run coverage is the one asked for whatever the tails
-(Vovk, Gammerman and Shafer 2005).
+that flag fewer. A conformal interval tracks the multiple of `sigma` that
+covers, a quantile of `|resid| / sigma`, so its long-run coverage is the
+one asked for whatever the tails (Vovk, Gammerman and Shafer 2005).
 
 ### A target that looks ahead leaks without its embargo
 
