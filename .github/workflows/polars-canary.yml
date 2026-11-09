@@ -50,7 +50,10 @@ jobs:
     name: build and test against the latest Polars
     if: github.event.schedule != '47 6 1 * *'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Measured 2026-11-09 (py-polars 2.1.0): uv sync 12 min, the extended
+    # Rust tests 34, pytest about 23 -- about 70 in all, so the old 60 cut
+    # pytest off at 55% two weeks running and the canary said nothing.
+    timeout-minutes: 120
     permissions:
       contents: read
     steps:
