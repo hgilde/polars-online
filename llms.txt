@@ -106,7 +106,7 @@ Windows alike.
   every other example reads, and [a map](https://github.com/hgilde/polars-online#where-to-go-next)
   from each task to its pages
 - [Five tasks](https://github.com/hgilde/polars-online/blob/main/docs/HIGHLIGHTS.md): model
-  selection, a deployed signal, trees, monitoring, ticks
+  selection, a resumed signal, trees, monitoring, ticks
 - [What every spec takes](https://github.com/hgilde/polars-online/blob/main/docs/MODELS.md#what-every-spec-takes): the parameters every
   model shares -- columns, clock and units, the clock's policy, a hard window, the warm-up
   gates -- and what the bank refuses
