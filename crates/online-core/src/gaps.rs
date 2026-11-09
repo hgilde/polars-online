@@ -33,7 +33,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ewcov::{Block, NoRider, Rider};
-use crate::window::EMPTY_FRACTION;
+use crate::window::{EMPTY_FRACTION, TruncWork};
 use crate::{EwCov, Moments, TargetMoments};
 
 /// Which rows a target's Gram is taken over, where the target is null on
@@ -120,7 +120,7 @@ pub(crate) fn decay_into(lam: f64, history: f64, w: f64) -> f64 {
 /// steps a Gram over those rows takes, so under `own_rows` it is the Gram's
 /// mean to the bit, and a row the target misses leaves it exactly where it
 /// was.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Cross {
     pub(crate) w: f64,
     pub(crate) m: Vec<f64>,
@@ -297,14 +297,59 @@ impl Cross {
     /// identity again, `c_R = g_j·c − ratio_j·c_u − ratio_j·g_j·(m_j,u −
     /// m_j)(ȳ_u − ȳ)`, and every mean by `x_R = x − ratio·(x_u − x)` at its
     /// own ratio. The snapshot's means are read as the doubles it holds.
+    #[cfg(test)]
     pub(crate) fn truncated(&self, old: &Self, f: f64, per: &[Option<(f64, f64)>]) -> Option<Self> {
+        let mut out = Self::new(self.my.len(), self.m.len());
+        self.truncated_into(old, f, per, &mut out).then_some(out)
+    }
+
+    /// `out` made `Self::new` of this shape, every number 0, written over
+    /// in place where it has the shape and made afresh where not.
+    pub(crate) fn reset(out: &mut Self, n_targets: usize, k: usize) {
+        if !out.has_shape(n_targets, k, true) {
+            *out = Self::new(n_targets, k);
+            return;
+        }
+        let Self {
+            w,
+            m,
+            mj,
+            my,
+            c,
+            m_lo,
+            my_lo,
+            mj_lo,
+            nj,
+            n,
+        } = out;
+        *w = 0.0;
+        for v in [m, my, m_lo, my_lo] {
+            v.fill(0.0);
+        }
+        for v in mj.iter_mut().chain(c.iter_mut()).chain(mj_lo.iter_mut()) {
+            v.fill(0.0);
+        }
+        nj.fill(0);
+        *n = 0;
+    }
+
+    /// [`Self::truncated`] into `out`, written over in place once it has
+    /// the shape ([`Self::reset`]); `false`, and `out` not touched, where
+    /// that is `None`.
+    pub(crate) fn truncated_into(
+        &self,
+        old: &Self,
+        f: f64,
+        per: &[Option<(f64, f64)>],
+        out: &mut Self,
+    ) -> bool {
         let w_old = f * old.w;
         let w = self.w - w_old;
         if w <= EMPTY_FRACTION * self.w || !w.is_finite() {
-            return None;
+            return false;
         }
         let ratio = w_old / w;
-        let mut out = Self::new(self.my.len(), self.m.len());
+        Self::reset(out, self.my.len(), self.m.len());
         out.w = w;
         for ((o, m), mu) in out.m.iter_mut().zip(&self.m).zip(&old.m) {
             *o = m - ratio * (mu - m);
@@ -322,7 +367,7 @@ impl Cross {
             }
             out.my[j] = self.my[j] - rj * dy;
         }
-        Some(out)
+        true
     }
 
     /// Whether the moments are those of `n_targets` targets over `k` slots,
@@ -527,15 +572,22 @@ impl Grams {
     /// (`crate::truncated`; `f` the decay since it), and an empty one where
     /// nothing of it is left. A Gram made after the snapshot is truncated
     /// against its ancestor's there ([`Grams::ancestor`]).
-    fn truncated(&self, old: &GramsSnap, f: f64) -> Vec<EwCov> {
-        (0..self.grams.len())
-            .map(|g| {
-                let live = &self.grams[g];
-                self.ancestor(g, &old.of, &old.grams)
-                    .and_then(|then| crate::truncated(live, then, f))
-                    .unwrap_or_else(|| empty(live))
-            })
-            .collect()
+    ///
+    /// Into `out`, one Gram a live one, each written over in place
+    /// ([`crate::window::truncated_into`]), so a view kept between solves
+    /// allocates nothing.
+    fn truncated_into(&self, old: &GramsSnap, f: f64, out: &mut Vec<EwCov>, work: &mut TruncWork) {
+        if out.len() != self.grams.len() {
+            out.clone_from(&self.grams);
+        }
+        for (g, (live, o)) in self.grams.iter().zip(out.iter_mut()).enumerate() {
+            let cut = self
+                .ancestor(g, &old.of, &old.grams)
+                .is_some_and(|then| crate::window::truncated_into(live, then, f, o, work));
+            if !cut {
+                empty_into(live, o, work);
+            }
+        }
     }
 
     /// Mix each Gram toward the twin's that its targets read, as a mixture
@@ -573,11 +625,12 @@ impl Grams {
             let delta: Vec<f64> = (0..k).map(|i| fast.mean(i) - slow.mean(i)).collect();
             // The lower triangle alone, which is all an `EwCov` keeps
             // (`LowerTriangle`): its upper one is not read.
-            let (cf, cs) = (fast.comoments().lower(), slow.comoments().lower());
-            let mut c = vec![0.0; k * k];
+            let (cf, cs) = (fast.comoments().packed(), slow.comoments().packed());
+            let mut c = vec![0.0; cf.len()];
             for i in 0..k {
+                let at = crate::ewcov::row_at(i);
                 for j in 0..=i {
-                    let ij = i * k + j;
+                    let ij = at + j;
                     c[ij] = af * cf[ij] + as_ * cs[ij] + af * as_ * delta[i] * delta[j];
                 }
             }
@@ -587,25 +640,18 @@ impl Grams {
             // `EwCov::new`, the blend once put the prior back at full strength
             // on every session boundary; review 2026-09-12, C6.)
             let mut blended = fast.clone();
-            blended.set_moments(&mean, &c, wf, fast.q_sum());
+            blended.set_moments_packed(&mean, &c, wf, fast.q_sum());
             self.grams[g] = blended;
         }
         moved
     }
 }
 
-/// `cov` with nothing in it: no weight, zero moments. What a Gram with no
-/// row inside a window reads as.
-fn empty(cov: &EwCov) -> EwCov {
-    let k = cov.k();
-    let mut out = cov.clone();
-    out.set_moments(
-        &vec![0.0; k],
-        &vec![0.0; k * k],
-        0.0,
-        cov.q_sum().map(|_| 0.0),
-    );
-    out
+/// `cov` with nothing in it -- no weight, zero moments -- written over `out`
+/// in place ([`crate::window::emptied_into`]): what a Gram with no row
+/// inside a window reads as.
+fn empty_into(cov: &EwCov, out: &mut EwCov, work: &mut TruncWork) {
+    crate::window::emptied_into(cov, cov.q_sum().map(|_| 0.0), out, work);
 }
 
 /// [`Grams`] as a window's snapshot holds them.
@@ -1016,13 +1062,34 @@ impl Acc {
     /// 0, when nothing is left inside the window -- a clock gap longer than
     /// it (review 2026-09-12, C2). A target with no row left keeps weight 0
     /// while the others stay windowed.
+    #[cfg(test)]
     pub(crate) fn window(&self, old: &AccSnap, f: f64) -> Option<AccView> {
+        let mut out = AccView::default();
+        self.window_into(old, f, &mut out).then_some(out)
+    }
+
+    /// [`Self::window`] into `out`, written over in place once it has its
+    /// shape: `false`, and `out` not to be read, where that is `None`. A
+    /// solve under a window reads the view every time it runs, and formed
+    /// afresh its Grams, cross-moments and target moments were 18 of a
+    /// windowed `ewridge`'s 19 allocations a row at four features.
+    pub(crate) fn window_into(&self, old: &AccSnap, f: f64, out: &mut AccView) -> bool {
         if old.cross.w == 0.0 {
-            return None;
+            return false;
         }
         let (m, k) = (self.wj.len(), self.cross.m.len());
-        let mut wj = vec![0.0; m];
-        let mut per = vec![None; m];
+        let AccView {
+            grams,
+            wj,
+            cross,
+            tm,
+            per,
+            work,
+        } = out;
+        wj.clear();
+        wj.resize(m, 0.0);
+        per.clear();
+        per.resize(m, None);
         for j in 0..m {
             // The truncated weight is what makes a target's moments a mean
             // again; the test is `crate::truncated_mean`'s, and a window that
@@ -1038,64 +1105,66 @@ impl Acc {
         // The target moments where the snapshot carries them (docs/PLAN.md
         // task 136); a snapshot from before has none, and the Gram export
         // then says `None` until the ring has rolled over.
-        let tm = old.tm.as_ref().map(|t| self.tm.truncated(t, f, &per));
-        let cross = if self.holds_rows(old) {
-            self.cross.truncated(&old.cross, f, &per)
-        } else {
-            None
-        };
-        Some(match cross {
-            Some(mut cross) => {
-                let grams = self.grams.truncated(&old.grams, f);
-                // A slot with no spread in the window of the Gram a target
-                // reads has none over the target's rows inside it either, so
-                // no covariance with the target there (Cauchy-Schwarz): zero
-                // exactly, where the subtraction left a remainder that a
-                // ridge divides by its penalty. The Gram's zero is exact for
-                // a feature that held one value over the window (PLAN task
-                // 94, `crate::truncated`).
-                for (j, p) in per.iter().enumerate() {
-                    let (Some(_), Some(gram)) = (p, grams.get(self.grams.of[j])) else {
-                        continue;
-                    };
-                    for (i, c) in cross.c[j].iter_mut().enumerate() {
-                        if gram.var(i) == 0.0 {
-                            *c = 0.0;
-                        }
+        match old.tm.as_ref() {
+            Some(t) => {
+                let into = tm.get_or_insert_with(|| TargetMoments::new(0));
+                self.tm.truncated_into(t, f, per, into);
+            }
+            None => *tm = None,
+        }
+        let cut = self.holds_rows(old) && self.cross.truncated_into(&old.cross, f, per, cross);
+        if cut {
+            self.grams.truncated_into(&old.grams, f, grams, work);
+            // A slot with no spread in the window of the Gram a target
+            // reads has none over the target's rows inside it either, so
+            // no covariance with the target there (Cauchy-Schwarz): zero
+            // exactly, where the subtraction left a remainder that a
+            // ridge divides by its penalty. The Gram's zero is exact for
+            // a feature that held one value over the window (PLAN task
+            // 94, `crate::truncated`).
+            for (j, p) in per.iter().enumerate() {
+                let (Some(_), Some(gram)) = (p, grams.get(self.grams.of[j])) else {
+                    continue;
+                };
+                for (i, c) in cross.c[j].iter_mut().enumerate() {
+                    if gram.var(i) == 0.0 {
+                        *c = 0.0;
                     }
-                }
-                // And a target with no spread in the window has no
-                // covariance with any slot there, by the same inequality.
-                // Its variance is 0 where the subtraction cannot resolve it
-                // (`TargetMoments::truncated`, `crate::truncated`'s bound),
-                // and the cross-moments' remainder then is the target's mean
-                // rounded at its level: with two rows of weight 1e100 at one
-                // target value inside the window, slopes of 6.6e-4 at a
-                // level of 1e8 where the rows give 1e-95 (docs/PLAN.md task
-                // 217). The rows' slopes are at most the target's spread
-                // over the feature's, so 0 moves a prediction by less than
-                // the spread the window cannot resolve.
-                if let Some(tm) = tm.as_ref() {
-                    for (j, p) in per.iter().enumerate() {
-                        if p.is_some() && tm.vars()[j] == 0.0 {
-                            cross.c[j].iter_mut().for_each(|c| *c = 0.0);
-                        }
-                    }
-                }
-                AccView {
-                    grams,
-                    wj,
-                    cross,
-                    tm,
                 }
             }
-            None => AccView {
-                grams: self.grams.grams.iter().map(empty).collect(),
-                wj: vec![0.0; m],
-                cross: Cross::new(m, k),
-                tm: tm.map(|t| t.truncated(&t, 1.0, &vec![None; m])),
-            },
-        })
+            // And a target with no spread in the window has no
+            // covariance with any slot there, by the same inequality.
+            // Its variance is 0 where the subtraction cannot resolve it
+            // (`TargetMoments::truncated`, `crate::truncated`'s bound),
+            // and the cross-moments' remainder then is the target's mean
+            // rounded at its level: with two rows of weight 1e100 at one
+            // target value inside the window, slopes of 6.6e-4 at a
+            // level of 1e8 where the rows give 1e-95 (docs/PLAN.md task
+            // 217). The rows' slopes are at most the target's spread
+            // over the feature's, so 0 moves a prediction by less than
+            // the spread the window cannot resolve.
+            if let Some(tm) = tm.as_ref() {
+                for (j, p) in per.iter().enumerate() {
+                    if p.is_some() && tm.vars()[j] == 0.0 {
+                        cross.c[j].iter_mut().for_each(|c| *c = 0.0);
+                    }
+                }
+            }
+        } else {
+            if grams.len() != self.grams.grams.len() {
+                grams.clone_from(&self.grams.grams);
+            }
+            for (live, o) in self.grams.grams.iter().zip(grams.iter_mut()) {
+                empty_into(live, o, work);
+            }
+            wj.fill(0.0);
+            Cross::reset(cross, m, k);
+            if let Some(t) = tm.as_mut() {
+                let n = t.means().len();
+                TargetMoments::empty_into(t, n);
+            }
+        }
+        true
     }
 
     /// The window's weights alone, as [`Self::window`] computes them -- over
@@ -1795,6 +1864,7 @@ impl AccSnap {
 
 /// The accumulators inside a window ([`Acc::window`]): one Gram per live
 /// Gram, in the same order, so the live `Grams::of` indexes them.
+#[derive(Default)]
 pub(crate) struct AccView {
     pub(crate) grams: Vec<EwCov>,
     pub(crate) wj: Vec<f64>,
@@ -1802,6 +1872,10 @@ pub(crate) struct AccView {
     /// The target moments inside the window, where the snapshot carries
     /// them.
     pub(crate) tm: Option<TargetMoments>,
+    /// Scratch for [`Acc::window_into`]: each target's share of the
+    /// window's weight, and the buffers the Grams are truncated in.
+    per: Vec<Option<(f64, f64)>>,
+    work: TruncWork,
 }
 
 /// One Gram of a regression's accumulators, as the Gram export hands it back
@@ -2003,6 +2077,75 @@ mod tests {
         // And relative to the row: a weight of 4 moves the edge with it.
         assert_eq!(decay_into(0.5, 4.0 * edge, 4.0), 0.0);
         assert_eq!(decay_into(0.5, 4.0 * above, 4.0), 0.5);
+    }
+
+    /// A window written over a kept view ([`Acc::window_into`]) is the one
+    /// made afresh ([`Acc::window`]), every part of it by its bytes, row
+    /// after row, the kept view never made again: under both target rules,
+    /// through Grams that split as a target goes missing, a target with no
+    /// row inside the window, and windows that hold nothing at all (rows
+    /// of weight 0 after a long gap).
+    #[test]
+    fn a_window_written_in_place_is_the_one_made_afresh() {
+        let b = |v: &dyn erased::Ser| v.bytes();
+        let mut rows = stream(160, 5);
+        for (i, r) in rows.iter_mut().enumerate() {
+            if i % 50 >= 45 {
+                r.2 = 0.0;
+            }
+            if (60..75).contains(&i) {
+                r.1[1] = None;
+            }
+        }
+        for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {
+            let mut acc = Acc::new(2, 2, 0, true);
+            let mut snaps: Vec<AccSnap> = Vec::new();
+            let mut kept = AccView::default();
+            let (mut seen, mut empty) = (0, 0);
+            for (i, (z, y, w)) in rows.iter().enumerate() {
+                let lam = match i {
+                    0 => 1.0,
+                    _ if i % 50 == 45 => 1e-30,
+                    _ => 0.9,
+                };
+                snaps.push(acc.snapshot(lam));
+                if snaps.len() > 8 {
+                    snaps.remove(0);
+                }
+                acc.learn(z, y, lam, *w, gaps);
+                for (age, snap) in snaps.iter().enumerate() {
+                    let f = 0.9f64.powi((snaps.len() - age) as i32);
+                    let what = format!("{gaps:?}, row {i}, snapshot {age}");
+                    let fresh = acc.window(snap, f);
+                    let wrote = acc.window_into(snap, f, &mut kept);
+                    assert_eq!(wrote, fresh.is_some(), "{what}");
+                    let Some(fresh) = fresh else { continue };
+                    seen += 1;
+                    empty += usize::from(fresh.cross.w == 0.0);
+                    assert_eq!(kept.grams.len(), fresh.grams.len(), "{what}");
+                    for (a, f) in kept.grams.iter().zip(&fresh.grams) {
+                        assert_eq!(b(a), b(f), "{what}");
+                    }
+                    assert_eq!(b(&kept.wj), b(&fresh.wj), "{what}");
+                    assert_eq!(b(&kept.cross), b(&fresh.cross), "{what}");
+                    assert_eq!(b(&kept.tm), b(&fresh.tm), "{what}");
+                }
+            }
+            assert!(seen > 1000 && empty > 10, "{gaps:?}: {seen}, {empty}");
+        }
+    }
+
+    /// The bytes of anything a state file holds, to compare two by.
+    mod erased {
+        pub(super) trait Ser {
+            fn bytes(&self) -> Vec<u8>;
+        }
+
+        impl<T: serde::Serialize> Ser for T {
+            fn bytes(&self) -> Vec<u8> {
+                rmp_serde::to_vec_named(self).unwrap()
+            }
+        }
     }
 
     /// PLAN §13 for the cross-moments: the accumulators with a snapshot

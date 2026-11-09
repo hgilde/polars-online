@@ -78,12 +78,13 @@ ignores it (it tests the variance alone since the review of 2026-09-12); \
 
 [[equivalent]]
 file = "crates/online-core/src/ewridge.rs"
-function = "EwRidge::view"
+function = "EwRidge::view_into"
 mutation = "replace > with >="
-line_has = "let sig2 = if acc.cross.w > 0.0 {"
-why = """the cross weight is 0 only in an empty view, where the window's \
-residual weight is 0 too and `truncated_mean` returns `None`, which the \
-branch maps to the same 0 the other branch gives"""
+line_has = "if acc.cross.w > 0.0 {"
+why = """the cross weight is 0 only in an empty view, where every target's \
+window weight is 0 too, so each target's residual variance takes the \
+branch's 0 before `truncated_scalar` is read: the same 0 the other branch \
+gives"""
 
 [[equivalent]]
 file = "crates/online-core/src/lasso.rs"
@@ -104,7 +105,7 @@ that feature's own update, which the descent skips; the coefficient stays 0"""
 
 [[equivalent]]
 file = "crates/online-core/src/lasso.rs"
-function = "Lasso::solve"
+function = "cd_sweep"
 mutation = "replace > with >="
 line_has = "let newb = if rho > l1 {"
 why = """they differ only at `rho == l1`, where the mutant's `(rho - l1) / \
@@ -112,7 +113,7 @@ denom` is +0 divided by a positive denominator: the 0 the original gives"""
 
 [[equivalent]]
 file = "crates/online-core/src/lasso.rs"
-function = "Lasso::solve"
+function = "cd_sweep"
 mutation = "replace < with <="
 line_has = "} else if rho < -l1 {"
 why = """they differ only at `rho == -l1`, where the mutant's `(rho + l1) / \
@@ -147,7 +148,7 @@ why = """both mutants are inside the second argument, which \
 
 [[equivalent]]
 file = "crates/online-core/src/lasso.rs"
-function = "Lasso::solve"
+function = "Lasso::solve_in"
 mutation = "replace > with >="
 line_has = "if s[i] > 0.0 && p.is_finite() {"
 why = """it adds the features with no scale, whose warm start is then \
@@ -539,7 +540,7 @@ maximum returns the same nulls"""
 file = "crates/online-core/src/ewclass.rs"
 function = "EwClass::score"
 mutation = "replace > with >="
-line_has = "let seen: Vec<usize> = (0..nc).filter(|&c| weights[c] > 0.0).collect();"
+line_has = "seen.extend((0..nc).filter(|&c| weights[c] > 0.0));"
 why = """a class of weight 0 joins the pool at `π = 0`, adding exact zeros to \
 the matrix (its co-moments and ridge are finite), and its own score is \
 `ln 0 − … = −∞`, as the class left out has"""
@@ -1910,18 +1911,6 @@ why = """`workers` is at least 1 (`Threads::workers` takes `max(1)`), so the \
 mutant always takes `rank_one_rows`, whose lower entries are `par::rows`' \
 expression in the same order: the same bits, on one thread \
 (`an_accumulator_has_the_same_bits_at_every_thread_count`; task 307)"""
-
-[[equivalent]]
-file = "crates/online-core/src/ewcov/par.rs"
-function = "rows"
-mutation = "replace / with %"
-line_has = "let n_rows = c.len() / k;"
-why = """`n_rows` sets only the band, the rows one item of `spread` takes: \
-`c.len() % k` is 0, so each band is one row, still spread over the \
-threads (`rows_run_in_bands_on_several_threads_from_the_floor`), and \
-each row is `f(i, row)` with its own index (`b · band + r`), the same \
-expression whichever thread runs it; `replace / with *`, one band of \
-every row on one thread, is caught"""
 
 [[equivalent]]
 file = "crates/online-core/src/gramfit/ridge.rs"
@@ -3300,7 +3289,7 @@ size again on its next learned row"""
 
 [[equivalent]]
 file = "crates/online-core/src/window/flat.rs"
-function = "<impl Pack for Stamp>::unpack"
+function = "i128_of"
 mutation = "replace | with ^"
 line_has = "(u128::from(lo) | (u128::from(hi) << 64)) as i128"
 why = """`u128::from(lo)` holds bits 0-63 and `u128::from(hi) << 64` bits \
@@ -3322,7 +3311,7 @@ nothing is written or kept differently either way"""
 file = "crates/online-core/src/window/flat.rs"
 function = "Ring<S>::push_offer"
 mutation = "replace > with >="
-line_has = "if block.len() > cap {"
+line_has = "let rec = (block.len() > cap).then(|| {"
 why = """at `block.len() == cap` the record fitted: `split_off(at)` leaves the \
 block its buffer, `shrink_to(cap)` is a no-op at that capacity, and `put` \
 finds exactly the record's room in the same block (`room` asks `>= n`) and \

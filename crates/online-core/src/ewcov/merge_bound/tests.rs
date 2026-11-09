@@ -51,11 +51,11 @@ fn merged_before(e: &mut Vec<f64>, c: &LowerTriangle, k: usize, s: &MergeStep<'_
     let grow = 1.0 + eps;
     let shrink = 1.0 / (1.0 - 10.0 * eps);
     let (ten, twenty_two) = (10.0 * eps, 22.0 * eps);
-    let lower = c.lower();
+    let lower = c.packed();
     let mut finite = true;
     for (i, ei) in e.iter_mut().enumerate() {
         let (g, h) = (s.big[i].abs(), s.delta[i].abs());
-        let cii = lower[i * k + i];
+        let cii = lower[crate::ewcov::row_at(i) + i];
         let cii = if cii.is_nan() {
             f64::INFINITY
         } else {

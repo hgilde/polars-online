@@ -102,13 +102,14 @@ impl MergeBound {
         if k == 0 || self.0.len() == k {
             return;
         }
-        let lower = c.lower();
+        let lower = c.packed();
         self.0.clear();
         self.0.resize(k, 0.0);
         let mut finite = true;
         for i in 0..k {
+            let at = super::row_at(i);
             for j in 0..=i {
-                let v = lower[i * k + j].abs();
+                let v = lower[at + j].abs();
                 finite &= v.is_finite();
                 self.0[i] = self.0[i].max(v);
                 self.0[j] = self.0[j].max(v);
@@ -154,11 +155,11 @@ impl MergeBound {
         let grow = 1.0 + eps;
         let shrink = 1.0 / (1.0 - 10.0 * eps);
         let (ten, twenty_two) = (10.0 * eps, 22.0 * eps);
-        let lower = c.lower();
+        let lower = c.packed();
         let mut finite = true;
         for (i, ei) in self.0.iter_mut().enumerate() {
             let (g, h) = (s.big[i].abs(), s.delta[i].abs());
-            let cii = lower[i * k + i];
+            let cii = lower[super::row_at(i) + i];
             let cii = if cii.is_nan() {
                 f64::INFINITY
             } else {

@@ -563,6 +563,10 @@ pub struct EwRidge {
     /// The factors of `ready.systems`, rebuilt from them on load.
     #[serde(skip)]
     factors: Factors,
+    /// The window's view a solve reads, kept between solves and written
+    /// over ([`EwRidge::view_into`]). Not state.
+    #[serde(skip)]
+    view: crate::window::Kept<RidgeView>,
 }
 
 /// What a window needs beyond the accumulators: where the clock has got to,
@@ -638,6 +642,7 @@ impl RidgeMoments {
 
 /// The accumulators a windowed fit reads, with everything older than the
 /// window subtracted off.
+#[derive(Default)]
 struct RidgeView {
     /// A target with no row left in the window has weight 0 here, and then
     /// reports nothing (review 2026-09-12, C2).
@@ -693,6 +698,7 @@ impl EwRidge {
             min_weight_output_only: false,
             first_period_by_share: false,
             factors: Factors::default(),
+            view: crate::window::Kept::default(),
             cfg,
         })
     }
@@ -950,35 +956,44 @@ impl EwRidge {
     /// nothing inside the window at all -- a clock gap longer than it -- is an
     /// *empty* view, never the live state (review 2026-09-12, C2).
     fn view(&self) -> Option<RidgeView> {
-        let win = self.win.as_ref()?;
-        let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
-        let acc = self.acc.window(&old.acc, f)?;
+        let mut view = RidgeView::default();
+        self.view_into(&mut view).then_some(view)
+    }
+
+    /// [`Self::view`] into `view`, written over in place once it has its
+    /// shape ([`crate::gaps::Acc::window_into`]): `false`, and `view` not to
+    /// be read, where that is `None`.
+    fn view_into(&self, view: &mut RidgeView) -> bool {
+        let Some(win) = self.win.as_ref() else {
+            return false;
+        };
+        let Some((f, old)) = win.snaps.cut(win.clock, self.cfg.decay, 0) else {
+            return false;
+        };
+        let RidgeView { acc, sig2 } = view;
+        if !self.acc.window_into(&old.acc, f, acc) {
+            return false;
+        }
         let m = self.cfg.n_targets;
-        let sig2 = if acc.cross.w > 0.0 {
+        sig2.clear();
+        if acc.cross.w > 0.0 {
             // The residual variance is one number per target, so the same
             // subtraction on a one-element mean. A target whose residual
             // history is entirely outside the window reports no spread rather
             // than a stale one: one with no row inside it, counted
             // (`gaps::Acc::holds_rows_of`; task 217), has no residual there.
-            (0..m)
-                .map(|j| {
-                    if acc.wj[j] == 0.0 {
-                        return 0.0;
-                    }
-                    crate::truncated_mean(
-                        self.wsig[j],
-                        &[self.sig2[j]],
-                        old.wsig[j],
-                        &[old.sig2[j]],
-                        f,
-                    )
-                    .map_or(0.0, |(_w, s2)| s2[0].max(0.0))
-                })
-                .collect()
+            // `crate::truncated_mean` of the one element, to the bit.
+            sig2.extend((0..m).map(|j| {
+                if acc.wj[j] == 0.0 {
+                    return 0.0;
+                }
+                crate::truncated_scalar(self.wsig[j], self.sig2[j], old.wsig[j], old.sig2[j], f)
+                    .map_or(0.0, |(_w, s2)| s2.max(0.0))
+            }));
         } else {
-            vec![0.0; m]
-        };
-        Some(RidgeView { acc, sig2 })
+            sig2.resize(m, 0.0);
+        }
+        true
     }
 
     /// The window's weights alone, over every row and per target, as
@@ -992,6 +1007,15 @@ impl EwRidge {
     }
 
     fn solve(&mut self) {
+        // The view is kept between solves and written over; taken out while
+        // the solve borrows the model.
+        let mut view = self.view.take();
+        self.solve_in(&mut view);
+        self.view.put(view);
+    }
+
+    /// [`Self::solve`], reading the window's view into `kept`.
+    fn solve_in(&mut self, kept: &mut crate::window::Kept<RidgeView>) {
         #[cfg(test)]
         unread::SOLVED.with(|c| c.set(c.get() + 1));
         // A held Gram block goes in before the matrix is read. Solves are
@@ -1026,8 +1050,14 @@ impl EwRidge {
         // With a `window`, the fit is solved from the truncated accumulators:
         // no row older than the window is in a Gram at all. Without one, and
         // before anything has aged out, these borrow the live state.
-        let view = self.view();
-        if view.as_ref().is_some_and(|v| v.acc.cross.w <= 0.0) {
+        let view = match self.win {
+            Some(_) => {
+                let view = kept.get();
+                self.view_into(view).then_some(&*view)
+            }
+            None => None,
+        };
+        if view.is_some_and(|v| v.acc.cross.w <= 0.0) {
             // An empty window has nothing to solve and no fit to report
             // (C2), and no readiness shares beside it: the last solve's
             // stood there, so the row after a gap reported the row before's
@@ -1744,7 +1774,7 @@ impl EwRidge {
                 s.as_ref().and_then(|s| {
                     let kk = s.z.len();
                     (s.a.len() == kk * kk)
-                        .then(|| work.factor(s.a.lower(), kk))
+                        .then(|| work.factor(&s.a.to_full(), kk))
                         .flatten()
                 })
             })

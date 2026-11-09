@@ -51,7 +51,7 @@ use serde::{Deserialize, Serialize};
 use crate::clock::Decay;
 use crate::ewcov::{EwCov, EwCovDiag};
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
-use crate::solve::{FactorWork, QuadWork, SpdFactor, quad_forms_logdet};
+use crate::solve::{FactorWork, QuadWork, SpdFactor};
 
 /// The shape of the class covariance matrices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -291,6 +291,23 @@ struct ScoreWork {
     delta: Vec<f64>,
     matrix: Vec<f64>,
     quad: QuadWork,
+    view: crate::window::Kept<View>,
+    shared: crate::window::Kept<SharedWork>,
+}
+
+/// The `shared` shape's buffers, kept between rows as [`ScoreWork`]'s
+/// others are: the pooled matrix, the classes it is pooled over, their
+/// deviations and quadratic forms, and the factorization's working space.
+/// Formed afresh, with the factor and its forms, they were all 7 of a
+/// `shared` row's allocations at two classes and four features. Each is
+/// written in full before it is read.
+#[derive(Default)]
+struct SharedWork {
+    m: Vec<f64>,
+    seen: Vec<usize>,
+    deltas: Vec<f64>,
+    forms: Vec<f64>,
+    factor: FactorWork,
 }
 
 impl PartialEq for ScoreWork {
@@ -432,12 +449,18 @@ impl crate::Footprint for ClassMoments {
     }
 }
 
-/// The accumulators a row is scored on: each class's, or under a `window`
-/// each with everything older subtracted. One of the two is empty, as in
-/// the model.
+/// The accumulators a row is scored on under a `window`: each class's with
+/// everything older subtracted. One of the two is empty, as in the model.
+/// Kept between rows in the step's buffers ([`ScoreWork`]) and written over
+/// ([`crate::window::truncated_into`]), with the buffers the subtraction is
+/// formed in: formed afresh, each class's copy and its four vectors were 22
+/// of a windowed row's 23 allocations at two classes and four features.
+/// Scratch, not state ([`crate::window::Kept`]).
+#[derive(Default)]
 struct View {
     classes: Vec<EwCov>,
     diag: Vec<EwCovDiag>,
+    work: crate::window::TruncWork,
 }
 
 impl EwClass {
@@ -522,37 +545,48 @@ impl EwClass {
     /// per-class subtraction is `O(k^2)` and the factorization that follows
     /// is `O(k^3)`.
     fn view(&self) -> Option<View> {
-        let win = self.win.as_ref()?;
-        let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
+        let mut view = View::default();
+        self.view_into(&mut view).then_some(view)
+    }
+
+    /// [`Self::view`] into `view`, written over in place once it has its
+    /// classes; `false` where `view` is `None`, and then `view` is not read.
+    fn view_into(&self, view: &mut View) -> bool {
+        let Some(win) = self.win.as_ref() else {
+            return false;
+        };
+        let Some((f, old)) = win.snaps.cut(win.clock, self.cfg.decay, 0) else {
+            return false;
+        };
         if old.n_eff == 0.0 {
-            return None;
+            return false;
         }
-        let k = self.cfg.n_features;
-        let mut out = Vec::with_capacity(self.classes.len());
-        for (cov, old_c) in self.classes.iter().zip(&old.classes) {
-            match crate::truncated(cov, old_c, f) {
-                Some(t) => out.push(t),
-                // A class with nothing inside the window scores nothing
-                // rather than scoring on rows the window excludes.
-                None => {
-                    let mut empty = cov.clone();
-                    empty.set_moments(&vec![0.0; k], &vec![0.0; k * k], 0.0, None);
-                    out.push(empty);
-                }
+        let View {
+            classes,
+            diag,
+            work,
+        } = view;
+        let n = self.classes.len().min(old.classes.len());
+        if classes.len() != n {
+            *classes = self.classes[..n].to_vec();
+        }
+        for ((cov, old_c), out) in self.classes.iter().zip(&old.classes).zip(classes) {
+            // A class with nothing inside the window scores nothing rather
+            // than scoring on rows the window excludes.
+            if !crate::window::truncated_into(cov, old_c, f, out, work) {
+                crate::window::emptied_into(cov, None, out, work);
             }
         }
-        let mut diag = Vec::with_capacity(self.diag_classes.len());
-        for (cov, old_c) in self.diag_classes.iter().zip(&old.diag_classes) {
-            match crate::truncated_diag(cov, old_c, f) {
-                Some(t) => diag.push(t),
-                None => {
-                    let mut empty = cov.clone();
-                    empty.set_moments(&vec![0.0; k], &vec![0.0; k], 0.0, None);
-                    diag.push(empty);
-                }
+        let n = self.diag_classes.len().min(old.diag_classes.len());
+        if diag.len() != n {
+            *diag = self.diag_classes[..n].to_vec();
+        }
+        for ((cov, old_c), out) in self.diag_classes.iter().zip(&old.diag_classes).zip(diag) {
+            if !crate::window::truncated_diag_into(cov, old_c, f, out, work) {
+                crate::window::emptied_diag_into(cov, None, out, work);
             }
         }
-        Some(View { classes: out, diag })
+        true
     }
 
     /// Each class's weight, from the accumulators `view` gives, or the
@@ -646,15 +680,13 @@ impl EwClass {
     /// the mean the row was measured from came from the window -- and paid a
     /// factorization per class per row, under a window, to factorize the wrong
     /// matrix (review 2026-09-12, C12). `shared` and `diagonal` read the view.
+    ///
+    /// Only the lower triangle is written, into `m` kept at `k²`
+    /// ([`crate::LowerTriangle::ridged_lower_into`]): the factorization reads
+    /// it and the diagonal alone ([`SpdFactor::of`], [`FactorWork`]'s).
     fn class_matrix(&self, cov: &EwCov, m: &mut Vec<f64>) {
-        let k = self.cfg.n_features;
-        m.clear();
-        // The lower triangle is what the factorization reads (`SpdFactor::of`).
-        m.extend_from_slice(cov.comoments().lower());
         let ridge = self.cfg.precision_prior * cov.precision_scale();
-        for i in 0..k {
-            m[i * k + i] += ridge;
-        }
+        cov.comoments().ridged_lower_into(m, ridge);
     }
 
     /// `[class, p_0, .., p_{C-1}]` for `x` from the current state, written
@@ -684,6 +716,8 @@ impl EwClass {
             delta,
             matrix,
             quad,
+            view,
+            shared,
         } = work;
         let nc = self.cfg.n_classes;
         let k = self.cfg.n_features;
@@ -695,12 +729,18 @@ impl EwClass {
             return nan(out);
         }
         // Under a `window`, every class is scored on its truncated moments.
-        let view = self.view();
-        let (classes, diag): (&[EwCov], &[EwCovDiag]) = match view.as_ref() {
+        let view = match self.win {
+            Some(_) => {
+                let view = view.get();
+                self.view_into(view).then_some(&*view)
+            }
+            None => None,
+        };
+        let (classes, diag): (&[EwCov], &[EwCovDiag]) = match view {
             Some(v) => (&v.classes, &v.diag),
             None => (&self.classes, &self.diag_classes),
         };
-        self.weights_of(view.as_ref(), weights);
+        self.weights_of(view, weights);
         let total: f64 = weights.iter().sum();
         if total <= 0.0 || total.is_nan() {
             return nan(out);
@@ -749,10 +789,21 @@ impl EwClass {
             }
             Covariance::Shared => {
                 // M = Σ_c π_c (C_c + r_c I), then every class's quadratic
-                // form against it from one factorization.
-                let mut m = vec![0.0; k * k];
-                let seen: Vec<usize> = (0..nc).filter(|&c| weights[c] > 0.0).collect();
-                for &c in &seen {
+                // form against it from one factorization: the factor
+                // `quad_forms_logdet` makes, its forms and its `ln det`, to
+                // the bit, in the kept buffers ([`SharedWork`]).
+                let SharedWork {
+                    m,
+                    seen,
+                    deltas,
+                    forms: q,
+                    factor,
+                } = shared.get();
+                m.clear();
+                m.resize(k * k, 0.0);
+                seen.clear();
+                seen.extend((0..nc).filter(|&c| weights[c] > 0.0));
+                for &c in seen.iter() {
                     let pi = weights[c] / total;
                     let ridge = self.ridge(c);
                     // The lower triangle, which the factorization reads,
@@ -760,10 +811,11 @@ impl EwClass {
                     // by slot, the loop checked both bounds on every
                     // product and ran a slot at a time, about a tenth of
                     // a 20-feature row's time on arm64 (task 314).
-                    let cl = classes[c].comoments().lower();
+                    let cl = classes[c].comoments().packed();
                     for i in 0..k {
+                        let at = crate::ewcov::row_at(i);
                         let run = i * k..i * k + i + 1;
-                        for (mij, cij) in m[run.clone()].iter_mut().zip(&cl[run]) {
+                        for (mij, cij) in m[run].iter_mut().zip(&cl[at..=at + i]) {
                             *mij += pi * cij;
                         }
                     }
@@ -771,14 +823,18 @@ impl EwClass {
                         m[i * k + i] += pi * ridge;
                     }
                 }
-                let mut deltas = vec![0.0; k * seen.len()];
+                deltas.clear();
+                deltas.resize(k * seen.len(), 0.0);
                 for (j, &c) in seen.iter().enumerate() {
                     for (i, &xi) in x.iter().enumerate() {
                         deltas[j * k + i] = classes[c].deviation(i, xi);
                     }
                 }
-                match quad_forms_logdet(&m, &deltas, k, seen.len()) {
-                    Some((q, log_det, _)) => {
+                match factor.factor(m, k) {
+                    Some(f) => {
+                        f.quad_forms_into(deltas, k, seen.len(), quad, q);
+                        let log_det = f.log_det();
+                        factor.give(f);
                         for (j, &c) in seen.iter().enumerate() {
                             ell[c] = (weights[c] / total).ln() - 0.5 * log_det - 0.5 * q[j];
                         }
@@ -1340,6 +1396,48 @@ mod tests {
             windowed > 200,
             "{windowed} rows scored on a truncated window"
         );
+    }
+
+    /// The step's kept buffers -- under a `window` each class's view of it,
+    /// written over from row to row, and under `shared` the pooled matrix
+    /// and its factorization's working space -- score every row as buffers
+    /// made afresh do, to the bit, in every covariance shape, through
+    /// windows a gap empties of a class (task 374).
+    #[test]
+    fn the_kept_view_and_buffers_score_as_fresh_ones() {
+        for covariance in [Covariance::Full, Covariance::Shared, Covariance::Diagonal] {
+            for window in [None, Some(6.0), Some(30.0)] {
+                let c = EwClassCfg {
+                    window,
+                    ..cfg(3, 3, covariance)
+                };
+                let mut kept = EwClass::new(c).unwrap();
+                let mut fresh = kept.clone();
+                let mut viewed = 0;
+                for (i, r) in stream(400, 3, 3, 23).iter().enumerate() {
+                    fresh.work = ScoreWork::default();
+                    let view = kept.work.view.get();
+                    viewed += usize::from(!view.classes.is_empty() || !view.diag.is_empty());
+                    let y = [r.label.map(|c| c as f64)];
+                    let a = kept.step(&r.x, &y, r.d, r.w);
+                    let b = fresh.step(&r.x, &y, r.d, r.w);
+                    let bits = |v: &[f64]| v.iter().map(|p| p.to_bits()).collect::<Vec<_>>();
+                    let what = format!("{covariance:?}, window {window:?}, row {i}");
+                    assert_eq!(bits(&a.pred), bits(&b.pred), "{what}");
+                    assert_eq!(a.n_eff.to_bits(), b.n_eff.to_bits(), "{what}");
+                }
+                assert_eq!(
+                    viewed > 300,
+                    window.is_some(),
+                    "{covariance:?}, {window:?}: {viewed}"
+                );
+                assert_eq!(kept, fresh);
+                assert_eq!(
+                    format!("{:?}", kept.state()),
+                    format!("{:?}", fresh.state())
+                );
+            }
+        }
     }
 
     /// The factors built in the cache's kept working space -- the factors

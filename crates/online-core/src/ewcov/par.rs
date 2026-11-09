@@ -19,6 +19,7 @@
 //! ([`super::LowerTriangle`]), so the mirror into the upper one each merge
 //! once ended with is gone (task 294).
 
+use super::row_at;
 use crate::pieces::{LEAF, Piece, TILE, pieces, spread};
 use faer::linalg::matmul::matmul as gemm;
 use faer::linalg::matmul::triangular::{BlockStructure, matmul as tri};
@@ -51,16 +52,29 @@ pub(crate) struct Merge<'a> {
 }
 
 /// The merge of a block `D` (`n × k`, row-major, rows already centred and
-/// weighted) into the row-major `k × k` matrix `c`, on `threads` threads.
+/// weighted) into the packed lower triangle `c` over `k` features, on
+/// `threads` threads. The pieces are views of a row-major square, so the
+/// triangle is laid into one and taken back after: two copies of its
+/// `k(k+1)/2` numbers a block, where the merge does `n` times that work,
+/// into `square`, the caller's to keep.
 pub(crate) fn merge_lower(
     c: &mut [f64],
+    square: &mut Vec<f64>,
     k: usize,
     d: &[f64],
     n: usize,
     m: &Merge<'_>,
     threads: usize,
 ) {
-    merge_lower_cut(c, k, d, n, m, threads, (LEAF, TILE));
+    square.clear();
+    square.resize(k * k, 0.0);
+    for (i, dst) in square.chunks_exact_mut(k.max(1)).take(k).enumerate() {
+        dst[..=i].copy_from_slice(&c[row_at(i)..=row_at(i) + i]);
+    }
+    merge_lower_cut(square, k, d, n, m, threads, (LEAF, TILE));
+    for (i, src) in square.chunks_exact(k.max(1)).take(k).enumerate() {
+        c[row_at(i)..=row_at(i) + i].copy_from_slice(&src[..=i]);
+    }
 }
 
 /// [`merge_lower`] with its cut given: `(leaf, tile)`. The tests cut small
@@ -143,31 +157,34 @@ fn run(p: Piece<'_>, d: MatRef<'_, f64>, m: &Merge<'_>) {
     }
 }
 
-/// `f(i, row)` for each row of the row-major `k`-wide matrix `c`, on
-/// `threads` threads: each takes a band of whole rows, so an entry's
-/// arithmetic is the same whichever thread runs it. `row` is the whole row;
-/// the rank-1 update writes its lower part, `..=i`.
+/// `f(i, row)` for each row of the packed lower triangle `c` over `k`
+/// features, row `i` its `i + 1` entries, on `threads` threads: each takes
+/// a band of whole rows, so an entry's arithmetic is the same whichever
+/// thread runs it.
 pub(crate) fn rows(c: &mut [f64], k: usize, threads: usize, f: impl Fn(usize, &mut [f64]) + Sync) {
     if k == 0 {
         return;
     }
-    let n_rows = c.len() / k;
     let threads = threads.max(1);
     let mut bands: Vec<(usize, &mut [f64])> = Vec::with_capacity(threads);
     let mut rest = c;
     let mut at = 0;
     for b in 1..=threads {
-        let end = band_end(n_rows, threads, b).clamp(at, n_rows);
-        let (head, tail) = rest.split_at_mut((end - at) * k);
+        let end = band_end(k, threads, b).clamp(at, k);
+        let (head, tail) = rest.split_at_mut(row_at(end) - row_at(at));
         if !head.is_empty() {
             bands.push((at, head));
         }
         rest = tail;
         at = end;
     }
-    spread(bands, threads, |(start, rows)| {
-        for (r, row) in rows.chunks_mut(k).enumerate() {
-            f(start + r, row);
+    spread(bands, threads, |(start, mut band)| {
+        let mut i = start;
+        while !band.is_empty() {
+            let (row, tail) = std::mem::take(&mut band).split_at_mut(i + 1);
+            f(i, row);
+            band = tail;
+            i += 1;
         }
     });
 }

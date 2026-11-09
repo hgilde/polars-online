@@ -39,6 +39,7 @@ mod par;
 
 pub(crate) use held::HeldSteps;
 pub use lower::LowerTriangle;
+pub(crate) use lower::row_at;
 
 /// Is a centered variance large enough to standardize by, given the raw second
 /// moment it was computed from?
@@ -66,76 +67,83 @@ pub fn variance_is_usable(var: f64, _raw_second_moment: f64) -> bool {
     var > 0.0 && var.is_finite()
 }
 
-/// Below this many features, on x86-64, the serial rank-one step updates
-/// whole rows of the storage, upper entries too ([`rank_one_whole_rows`]);
-/// from it up, and on every other target, the lower triangle's rows alone
-/// ([`rank_one_lower_rows`]). A lower row is `i + 1` entries long, so at a
-/// few features each row is mostly the vector loop's prologue and tail.
-/// The loop timed alone, lower rows' time over whole rows' (task 295, P10):
-/// on x86-64 (the VM) 1.04-1.37 at 2-8 features (1.33-1.37 at 4),
-/// 0.90-1.06 at 10-12, 0.85-0.90 at 16-20, 0.72 at 32; on arm64 (an
-/// Apple M-series core) about 1 at 2 features, 0.69-0.95 at 3-7, 11-15
-/// and 17-20, and above 1 only where whole rows fill the vector loop's
-/// unrolled width: 1.41 at 8, 1.16 at 9, 1.04-1.07 at 10, 1.06-1.15 at 16,
-/// about 1 at 24, 0.85-0.90 at 32. Whole rows at
-/// 2-9 features on arm64 made `ewridge` at 5 features 3.4% slower, so
-/// there the lower rows stay at every width. `None`: never whole rows.
-#[cfg(target_arch = "x86_64")]
-const WHOLE_ROWS_BELOW: Option<usize> = Some(10);
-#[cfg(not(target_arch = "x86_64"))]
-const WHOLE_ROWS_BELOW: Option<usize> = None;
-
-/// Whether the serial rank-one step at `k` features takes whole rows
-/// ([`WHOLE_ROWS_BELOW`]).
-#[inline]
-fn whole_rows(k: usize) -> bool {
-    WHOLE_ROWS_BELOW.is_some_and(|below| k < below)
-}
-
 /// The co-moments' rank-one step on one thread, `c_ij = a·c_ij + (a·b·d_i)·d_j`
-/// over the lower triangle, `j ≤ i` ([`LowerTriangle`]): [`EwCov::update`]'s
-/// serial path, the same expression per lower entry as its threaded one,
-/// by whole rows or by the lower rows ([`whole_rows`]). Each lower entry is
-/// the same number either way, and only the lower triangle is read,
-/// compared or saved, so the choice moves no bit of a prediction or a
-/// state.
+/// over the lower triangle, `j ≤ i`, packed ([`LowerTriangle`]):
+/// [`EwCov::update`]'s serial path, the same expression per entry as its
+/// threaded one. At 3 to 12 features it runs at a side fixed when compiled
+/// ([`rank_one_fixed`]); at 0 to 2 and from 13 up, at a side read at run
+/// time ([`rank_one_lower_rows`]). Each entry is the same number either
+/// way, so the choice moves no bit of a prediction or a state.
+///
+/// A lower row is `i + 1` entries long, so at a few features each row of the
+/// run-time loop is mostly its vector loop's prologue and tail; at a fixed
+/// side every row's length is known and the compiler lays the rows out
+/// without either.
+/// Measured on arm64 (the loop alone, standalone, 2026-11-09; ns a row,
+/// run-time side against fixed): 2.9 against 3.9 at 2, 4.2/4.0 at 3,
+/// 5.7/4.2 at 4, 7.4/4.4 at 5, 12.6/5.1 at 7, 13.6/6.0 at 8, 17.3/6.5 at
+/// 9, 16.4/7.7 at 10, 21.5/10.1 at 12, and 31.2/29.7 at 16, where the
+/// rows are no longer laid out whole. It replaces, on x86-64, whole rows of
+/// a square storage below 10 features, upper entries too, which beat the
+/// run-time lower rows by up to 1.37 there and which a packed triangle
+/// cannot take.
 #[inline]
 fn rank_one_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
-    if whole_rows(k) {
-        rank_one_whole_rows(c, k, d, a, b);
-    } else {
-        rank_one_lower_rows(c, k, d, a, b);
+    match k {
+        3 => rank_one_fixed::<3>(c, d, a, b),
+        4 => rank_one_fixed::<4>(c, d, a, b),
+        5 => rank_one_fixed::<5>(c, d, a, b),
+        6 => rank_one_fixed::<6>(c, d, a, b),
+        7 => rank_one_fixed::<7>(c, d, a, b),
+        8 => rank_one_fixed::<8>(c, d, a, b),
+        9 => rank_one_fixed::<9>(c, d, a, b),
+        10 => rank_one_fixed::<10>(c, d, a, b),
+        11 => rank_one_fixed::<11>(c, d, a, b),
+        12 => rank_one_fixed::<12>(c, d, a, b),
+        _ => rank_one_lower_rows(c, k, d, a, b),
     }
 }
 
-/// [`rank_one_rows`] row by row over the lower triangle. Out of line, so the
-/// loop is compiled on its own rather than inside `update` beside the
+/// [`rank_one_rows`] row by row over the packed lower triangle. Out of line,
+/// so the loop is compiled on its own rather than inside `update` beside the
 /// threaded branch, where it ran 21% slower than 0.13.0's identical loop at
 /// `k = 20` (task 250).
+///
+/// Each row is split off the rows left, `i + 1` long, and run beside
+/// `d[..=i]`, of its own length: found by its place, a row and `d` whole
+/// were two lengths for the loop to reconcile on every row, and each
+/// row's place two bounds to check (task 374: 60 instructions a row more
+/// than a square's rows at 20 features on arm64, with no statistic read).
 #[inline(never)]
 fn rank_one_lower_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
-    for i in 0..k {
-        let ab_di = a * b * d[i];
-        let row = &mut c[i * k..=i * k + i];
-        for (cj, &dj) in row.iter_mut().zip(d.iter()) {
+    let mut rows = &mut c[..row_at(k)];
+    for (i, &di) in d[..k].iter().enumerate() {
+        let ab_di = a * b * di;
+        let (row, rest) = std::mem::take(&mut rows).split_at_mut(i + 1);
+        rows = rest;
+        for (cj, &dj) in row.iter_mut().zip(&d[..=i]) {
             *cj = a * *cj + ab_di * dj;
         }
     }
 }
 
-/// [`rank_one_rows`] over whole rows of the storage: each lower entry gets
-/// [`rank_one_lower_rows`]' expression, and each upper entry one that no
-/// read uses ([`LowerTriangle`]). Out of line, as that one.
+/// [`rank_one_lower_rows`] at the side `K`, fixed when compiled
+/// ([`rank_one_rows`]). Out of line, as that one.
 #[inline(never)]
-fn rank_one_whole_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
-    // The rows as chunks and `d`'s entries beside them, so neither is
-    // indexed and checked a row. A chunk of 0 panics; at `k = 0` there is
-    // no row, and `max(1)` takes none from an empty slice.
-    for (row, &di) in c[..k * k].chunks_exact_mut(k.max(1)).zip(&d[..k]) {
+fn rank_one_fixed<const K: usize>(c: &mut [f64], d: &[f64], a: f64, b: f64) {
+    let (d, _) = d
+        .split_first_chunk::<K>()
+        .expect("a deviation for every feature");
+    let (c, _) = c
+        .split_at_mut_checked(K * (K + 1) / 2)
+        .expect("a lower triangle of the side");
+    let mut at = 0;
+    for (i, &di) in d.iter().enumerate() {
         let ab_di = a * b * di;
-        for (cj, &dj) in row.iter_mut().zip(d.iter()) {
+        for (cj, &dj) in c[at..=at + i].iter_mut().zip(d.iter()) {
             *cj = a * *cj + ab_di * dj;
         }
+        at += i + 1;
     }
 }
 
@@ -339,9 +347,9 @@ pub struct EwCov {
     prior_scale: f64,
     /// EW mean vector, length `k`.
     m: Vec<f64>,
-    /// EW **centered** co-moments, row-major `k*k`, kept as their lower
-    /// triangle: symmetric by construction, and written whole, mirrored, to
-    /// the state file ([`LowerTriangle`]; docs/PLAN.md task 294).
+    /// EW **centered** co-moments, `k*k`, kept as their lower triangle,
+    /// packed: symmetric by construction, and written whole, mirrored, to
+    /// the state file ([`LowerTriangle`]; docs/PLAN.md tasks 294 and 371).
     c: LowerTriangle,
     /// Prior strength for the precision matrix `M⁻¹ = (C + s·prior·I)⁻¹`
     /// (docs/PLAN.md §4.7); `0` when none is wanted.
@@ -362,6 +370,11 @@ pub struct EwCov {
     /// still compares equal to the one that wrote it.
     #[serde(skip)]
     dev: Scratch,
+    /// The co-moments laid into a square for a block's merge, whose pieces
+    /// are views of one ([`par::merge_lower`]): kept, so a merge allocates
+    /// none. Not state, as `dev`.
+    #[serde(skip)]
+    square: Scratch,
     /// A blocked Gram's merges' rounding, bounded as they happen
     /// ([`merge_bound::MergeBound`]; docs/PLAN.md task 308): what lets the
     /// ridge's shortcut read a blocked Gram's system. Not state: serde skips
@@ -433,6 +446,7 @@ impl EwCov {
             m: vec![0.0; k],
             c: LowerTriangle::zeros(k),
             dev: Scratch(Vec::with_capacity(k)),
+            square: Scratch::default(),
             merged: merge_bound::MergeBound::default(),
             precision_prior: 0.0,
             precision_scale: 1.0,
@@ -698,9 +712,9 @@ impl EwCov {
 
     /// The centered co-moment matrix, `k*k` — the EW analogue of the
     /// centered `X'X / n` -- kept as its lower triangle: read an entry with
-    /// [`LowerTriangle::get`], hand a factorization that reads the lower
-    /// triangle [`LowerTriangle::lower`], and take a whole symmetric matrix
-    /// with [`LowerTriangle::to_full`].
+    /// [`LowerTriangle::get`], take its packed rows with
+    /// [`LowerTriangle::packed`], and take a whole symmetric matrix with
+    /// [`LowerTriangle::to_full`].
     ///
     /// This is the accumulator every solve reads, exposed so a caller can do
     /// something *other than* our solve with it: a custom penalty, an
@@ -735,6 +749,17 @@ impl EwCov {
             "EwCov: read the moments with a block still pending; call `flush()` first"
         );
         crate::solve::clamp_rounding(self.cov(i, i))
+    }
+
+    /// Every [`Self::var`], `0..k` in turn, read down the diagonal of the
+    /// packed rows without finding each row again.
+    #[inline]
+    pub(crate) fn vars(&self) -> impl Iterator<Item = f64> + '_ {
+        debug_assert!(
+            !self.has_pending(),
+            "EwCov: read the moments with a block still pending; call `flush()` first"
+        );
+        self.c.diagonal().map(crate::solve::clamp_rounding)
     }
 
     /// The row's mixing factors `(a, b)` and the new weight, or `None` when
@@ -1099,7 +1124,8 @@ impl EwCov {
             delta: &delta,
         };
         par::merge_lower(
-            self.c.lower_mut(),
+            self.c.packed_mut(),
+            &mut self.square.0,
             k,
             x.as_slice(),
             n,
@@ -1179,7 +1205,7 @@ impl EwCov {
         if held.is_open() {
             self.merged.forget();
         }
-        held.merge_into(self.c.lower_mut(), self.k);
+        held.merge_into(self.c.packed_mut(), self.k);
     }
 
     /// [`Self::update_riding`], the co-moments' rank-one step taken by
@@ -1247,7 +1273,7 @@ impl EwCov {
                 .zip(&self.m_lo)
                 .map(|((&xi, &mi), &li)| crate::comp::dev(xi, mi, li)),
         );
-        step.rank_one(self.c.lower_mut(), k, d, a, b, self.threads);
+        step.rank_one(self.c.packed_mut(), k, d, a, b, self.threads);
         // The precision prior decays with the co-moments. `a == 0` only on
         // the very first observation, when the whole history is discarded and
         // the centered co-moments are exactly zero: the prior starts over.
@@ -1277,7 +1303,8 @@ impl EwCov {
         debug_assert_eq!(mean.len(), self.k);
         debug_assert_eq!(centered.len(), self.k * self.k);
         self.m.copy_from_slice(mean);
-        self.m_lo = vec![0.0; self.k];
+        self.m_lo.clear();
+        self.m_lo.resize(self.k, 0.0);
         self.c.copy_from(centered);
         self.merged.forget();
         self.w_sum = w_sum;
@@ -1287,6 +1314,89 @@ impl EwCov {
         // starts again from the next row. That can leave a window reading a
         // held feature from its subtraction, never the reverse.
         self.runs.forget();
+    }
+
+    /// [`Self::set_moments`] with the co-moments given as their lower
+    /// triangle, packed ([`LowerTriangle::packed`]).
+    pub(crate) fn set_moments_packed(
+        &mut self,
+        mean: &[f64],
+        lower: &[f64],
+        w_sum: f64,
+        q_sum: Option<f64>,
+    ) {
+        // As `set_moments`, which says why each step is taken.
+        self.flush();
+        debug_assert_eq!(mean.len(), self.k);
+        debug_assert_eq!(lower.len(), row_at(self.k));
+        self.m.copy_from_slice(mean);
+        self.m_lo.clear();
+        self.m_lo.resize(self.k, 0.0);
+        self.c.copy_from_packed(lower);
+        self.merged.forget();
+        self.w_sum = w_sum;
+        self.q_sum = q_sum;
+        self.runs.forget();
+    }
+
+    /// `self` made `src.clone()` with [`Self::set_moments_packed`]`(mean,
+    /// lower, w_sum, q_sum)` applied, field for field, writing over what
+    /// `self` holds rather than allocating: what a window's view is kept in
+    /// between rows ([`crate::window::truncated_into`]). Where `self` is not
+    /// of `src`'s shape, or `src` holds a block (whose flush the clone
+    /// would run), it is the clone.
+    pub(crate) fn set_window_of(
+        &mut self,
+        src: &EwCov,
+        mean: &[f64],
+        lower: &[f64],
+        w_sum: f64,
+        q_sum: Option<f64>,
+    ) {
+        let held = src.has_pending() || !src.pending.x.is_empty() || !src.pending.w.is_empty();
+        if held || !self.has_shape(src.k) || self.c.packed().len() != row_at(src.k) {
+            *self = src.clone();
+            self.set_moments_packed(mean, lower, w_sum, q_sum);
+            return;
+        }
+        // Every field named, so a field added to `EwCov` is a compile error
+        // here until it is copied (or said not to need it).
+        let EwCov {
+            k: _,
+            w_sum: _,
+            q_sum: _,
+            prior_scale,
+            m: _,
+            c: _,
+            precision_prior,
+            dev: _,
+            square: _,
+            merged: _,
+            precision_scale,
+            threads,
+            runs,
+            rows_learned,
+            m_lo: _,
+            pending,
+        } = src;
+        self.prior_scale = *prior_scale;
+        self.precision_prior = *precision_prior;
+        self.precision_scale = *precision_scale;
+        self.threads = *threads;
+        self.rows_learned = *rows_learned;
+        // `set_moments_packed` forgets the runs and keeps whether they are
+        // kept at all; a clone's held block is none, `src` holding none.
+        self.runs.forget_as(runs);
+        self.pending.clear_rows();
+        self.pending.block_rows = pending.block_rows;
+        self.pending.w_open = pending.w_open;
+        // `set_moments_packed`'s, the flush having nothing to merge.
+        self.m.copy_from_slice(mean);
+        self.m_lo.fill(0.0);
+        self.c.copy_from_packed(lower);
+        self.merged.forget();
+        self.w_sum = w_sum;
+        self.q_sum = q_sum;
     }
 
     /// Age the accumulator without adding data (pure decay: means unchanged,
@@ -1470,14 +1580,42 @@ impl TargetMoments {
     /// row inside the window, has no target-side twin: the targets keep no
     /// runs. A `Q_R` within `64 ε` of `Q` keeps no digit and is 0, so no
     /// Kish size is read from it (review 2026-10-05, CE6b).
+    #[cfg(test)]
     pub(crate) fn truncated(&self, old: &Self, f: f64, per: &[Option<(f64, f64)>]) -> Self {
-        let n = self.mean.len();
         let mut out = Self {
-            mean: vec![f64::NAN; n],
-            var: vec![f64::NAN; n],
-            q: vec![0.0; n],
-            mean_lo: vec![0.0; n],
+            mean: Vec::new(),
+            var: Vec::new(),
+            q: Vec::new(),
+            mean_lo: Vec::new(),
         };
+        self.truncated_into(old, f, per, &mut out);
+        out
+    }
+
+    /// `out` as a window that holds none of `n` targets' rows reads them:
+    /// each mean and variance NaN, each Kish sum and low part 0, written
+    /// over in place.
+    pub(crate) fn empty_into(out: &mut Self, n: usize) {
+        for (v, x) in [
+            (&mut out.mean, f64::NAN),
+            (&mut out.var, f64::NAN),
+            (&mut out.q, 0.0),
+            (&mut out.mean_lo, 0.0),
+        ] {
+            v.clear();
+            v.resize(n, x);
+        }
+    }
+
+    /// [`Self::truncated`] into `out`, written over in place.
+    pub(crate) fn truncated_into(
+        &self,
+        old: &Self,
+        f: f64,
+        per: &[Option<(f64, f64)>],
+        out: &mut Self,
+    ) {
+        Self::empty_into(out, self.mean.len());
         for (t, p) in per.iter().enumerate() {
             let Some((ratio, g)) = *p else { continue };
             let (lo, lo_old) = (self.mean_lo[t], old.mean_lo[t]);
@@ -1504,7 +1642,6 @@ impl TargetMoments {
                 0.0
             };
         }
-        out
     }
 
     /// A row where this target is null: time passes for its weight, and
@@ -2004,6 +2141,13 @@ pub struct EwCovModel {
     /// written nowhere, so neither encoding changes.
     #[serde(skip)]
     std: Scratch,
+    /// The window's moments a row's statistics are read from, kept and
+    /// written over from row to row ([`crate::window::KeptView`]): formed
+    /// afresh, the accumulator's copy and the subtraction's four vectors
+    /// were all 11 of a windowed row's allocations at four features. Not
+    /// state, as `std`.
+    #[serde(skip)]
+    view: crate::window::Kept<crate::window::KeptView>,
 }
 
 /// What a window needs beyond the accumulator: where the clock has got to,
@@ -2078,6 +2222,7 @@ impl EwCovModel {
                 None => None,
             },
             std: Scratch::default(),
+            view: crate::window::Kept::default(),
         })
     }
 
@@ -2129,6 +2274,25 @@ impl EwCovModel {
                 Cow::Owned(out)
             }
         }
+    }
+
+    /// [`Self::view`], written over the view `kept` holds rather than made
+    /// afresh: the same numbers, field for field, borrowed from `kept` where
+    /// `view` owns them.
+    fn view_kept<'a>(
+        &'a self,
+        kept: &'a mut crate::window::Kept<crate::window::KeptView>,
+    ) -> &'a EwCov {
+        let Some(win) = self.win.as_ref() else {
+            return &self.cov;
+        };
+        let Some((f, old)) = win.snaps.cut(win.clock, self.cfg.decay, 0) else {
+            return &self.cov;
+        };
+        if old.w == 0.0 {
+            return &self.cov;
+        }
+        kept.get().of(&self.cov, old, f, old.q.map(|_| 0.0))
     }
 
     /// The components currently in force, if a refresh has happened.
@@ -2225,11 +2389,9 @@ impl EwCovModel {
             .map(|(i, &xi)| cov.deviation(i, xi))
             .collect();
         // The lower triangle, which `solve_spd` reads.
-        let mut m = cov.comoments().lower().to_vec();
-        let ridge = cov.precision_prior * cov.precision_scale;
-        for i in 0..k {
-            m[i * k + i] += ridge;
-        }
+        let mut m = Vec::new();
+        cov.comoments()
+            .ridged_lower_into(&mut m, cov.precision_prior * cov.precision_scale);
         match crate::solve::solve_spd(&m, &delta, k, 1) {
             Some((sol, _)) => {
                 let d2 = delta.iter().zip(&sol).map(|(d, s)| d * s).sum::<f64>() / scale;
@@ -2426,19 +2588,21 @@ impl EwCovModel {
                     }
                 }
                 EwCovStat::Var => {
-                    for (i, o) in slots(&mut rest, k).iter_mut().enumerate() {
-                        *o = scale * cov.var(i);
+                    for (o, v) in slots(&mut rest, k).iter_mut().zip(cov.vars()) {
+                        *o = scale * v;
                     }
                 }
                 EwCovStat::Std => {
-                    for (i, o) in slots(&mut rest, k).iter_mut().enumerate() {
-                        *o = (scale * cov.var(i)).sqrt();
+                    for (o, v) in slots(&mut rest, k).iter_mut().zip(cov.vars()) {
+                        *o = (scale * v).sqrt();
                     }
                 }
                 EwCovStat::Cov => {
                     // Pair `(i, j)`, `j > i`, is the lower entry `(j, i)`.
                     let dst = slots(&mut rest, k * (k - 1) / 2);
-                    cov.comoments().upper_rows_map(k, dst, |_, _, v| scale * v);
+                    // `w` any `k` numbers: this `f` reads none.
+                    cov.comoments()
+                        .upper_rows_map(k, dst, cov.means(), |v, _, _| scale * v);
                 }
                 EwCovStat::Corr => {
                     // `k` square roots, not `k(k-1)`: at k = 20 the pairwise
@@ -2451,11 +2615,10 @@ impl EwCovModel {
                     // `(j, i)`, as `Cov`. The same quotient of the same
                     // numbers, in the same order.
                     std.clear();
-                    std.extend((0..k).map(|i| cov.var(i).sqrt()));
+                    std.extend(cov.vars().map(f64::sqrt));
                     let dst = slots(&mut rest, k * (k - 1) / 2);
-                    let sd = &*std;
-                    cov.comoments().upper_rows_map(k, dst, |i, j, cij| {
-                        let d = sd[i] * sd[j];
+                    cov.comoments().upper_rows_map(k, dst, std, |cij, si, sj| {
+                        let d = si * sj;
                         if d > 0.0 {
                             (cij / d).clamp(-1.0, 1.0)
                         } else {
@@ -2491,7 +2654,7 @@ impl EwCovModel {
                     // correlation it is not bounded by 1 in finite samples,
                     // and clamping would hide that.
                     std.clear();
-                    std.extend((0..k).map(|i| cov.var(i).sqrt()));
+                    std.extend(cov.vars().map(f64::sqrt));
                     let dst = slots(&mut rest, self.cfg.lags.len() * k * k);
                     match &self.lag {
                         Some(lag) => {
@@ -2560,7 +2723,15 @@ impl EwCovModel {
 
     /// [`crate::OnlineModel::predict`], into the caller's buffer: what
     /// `step` reports, read before the row (task 270, M-4).
-    fn predict_into(&self, x: &[f64], d_clock: f64, out: &mut crate::Step, std: &mut Vec<f64>) {
+    /// `kept` holds the window's view between rows ([`Self::view_kept`]).
+    fn predict_into(
+        &self,
+        x: &[f64],
+        d_clock: f64,
+        out: &mut crate::Step,
+        std: &mut Vec<f64>,
+        kept: &mut crate::window::Kept<crate::window::KeptView>,
+    ) {
         if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
             *out = refused;
             return;
@@ -2577,7 +2748,7 @@ impl EwCovModel {
         if self.cfg.n_outputs() == 0 {
             out.pred.clear();
         } else if n_eff >= self.cfg.min_weight {
-            self.read_into(&self.view(), x, &mut out.pred, std);
+            self.read_into(self.view_kept(kept), x, &mut out.pred, std);
         } else {
             out.pred.clear();
             out.pred.resize(self.cfg.n_outputs(), f64::NAN);
@@ -2660,8 +2831,10 @@ impl crate::OnlineModel for EwCovModel {
         // Statistics are read before this row is folded in, so an `ew_cov`
         // column is usable as a feature for the same row without leaking it.
         let mut std = std::mem::take(&mut self.std.0);
-        self.predict_into(x, d_clock, out, &mut std);
+        let mut kept = self.view.take();
+        self.predict_into(x, d_clock, out, &mut std, &mut kept);
         self.std.0 = std;
+        self.view.put(kept);
         let lam = self.cfg.decay.factor(d_clock);
         if let Some(q) = self.mahal_q.as_mut() {
             // The row's own out-of-sample score joins the history it will be
@@ -2735,7 +2908,13 @@ impl crate::OnlineModel for EwCovModel {
 
     fn predict(&self, x: &[f64], d_clock: f64) -> crate::Step {
         let mut out = crate::Step::default();
-        self.predict_into(x, d_clock, &mut out, &mut Vec::new());
+        self.predict_into(
+            x,
+            d_clock,
+            &mut out,
+            &mut Vec::new(),
+            &mut crate::window::Kept::default(),
+        );
         out
     }
 

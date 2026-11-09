@@ -27,6 +27,21 @@
 //! model's accumulators into the block, with no vector allocated, and only a
 //! ring's first snapshot, its boundary, is formed as the struct.
 //!
+//! **A snapshot is a few runs of numbers, each one copy.** The blocks hold
+//! doubles, so a model's vector is written into them, and read back out, by
+//! one copy each; a count or a stamp's integer goes in as the double of the
+//! same bits and comes out as them, and nothing ever computes with it. A
+//! co-moment matrix is its packed lower triangle in the model as in the ring
+//! ([`crate::LowerTriangle`]), so it too is one run, where the triangle of a
+//! square storage was a run a row (measured on arm64, 2026-11-09, a windowed
+//! `ew_cov` and its ring alone: at `k = 4` about 2,590 instructions and 59
+//! ns a row before, 2,000 and 51 after). The structure costs nothing
+//! while it holds: a snapshot is written against the shape of the run before
+//! it, its dimensions checked as they come and written out only from the
+//! first that differs; and while the next snapshot is of the boundary's own
+//! run, it is decoded over the boundary by its numbers alone
+//! ([`Pack::refill`]), every length and form taken from the boundary.
+//!
 //! **Nothing a model reads changes.** The boundary is held decoded, as the
 //! struct it was, so [`super::Snapshots::cut`] hands out a reference, as it
 //! did; when the boundary leaves the window the next snapshot is decoded into
@@ -36,56 +51,86 @@
 //! before it was written, so a budget thins or refuses at the same row. The
 //! saved state is the ring written snapshot by snapshot, as before.
 
-use std::cell::RefCell;
 use std::collections::VecDeque;
 
 use super::{Entry, Footprint, Product, Products};
 use crate::Stamp;
 
-/// Where [`Pack::pack`] writes a snapshot: its numbers as words, and its
+/// Where [`Pack::pack`] writes a snapshot: its numbers as they are, its
+/// counts and other words as the doubles of the same bits, and its
 /// structure -- lengths and which optional parts are there -- as dimensions.
+/// A run of numbers is one copy into the doubles; a word goes through
+/// [`f64::from_bits`] and comes back through [`f64::to_bits`], which move
+/// no bit, and the doubles are only ever copied, never computed with.
+///
+/// A ring writes a snapshot against the shape of the one before it: each
+/// dimension is checked against that shape's as it comes, and the
+/// dimensions are written out only from the first that differs, so a
+/// snapshot of its run's shape writes none.
 #[derive(Debug, Default)]
-pub struct Packer {
-    words: Vec<u64>,
+pub struct Packer<'a> {
+    words: Vec<f64>,
+    /// The dimensions written, from the first that is not the expected
+    /// shape's on: all of them where there is no expected shape.
     dims: Vec<usize>,
+    /// The expected shape's dimensions, and how many have been met.
+    expect: &'a [usize],
+    met: usize,
+    /// Whether every dimension so far is the expected shape's.
+    same: bool,
 }
 
-impl Packer {
+impl Packer<'_> {
     /// One number, as its bits.
     #[inline]
     pub fn f64(&mut self, v: f64) {
-        self.words.push(v.to_bits());
+        self.words.push(v);
     }
 
     /// One count, or any other 64-bit word.
     #[inline]
     pub fn word(&mut self, w: u64) {
-        self.words.push(w);
+        self.words.push(f64::from_bits(w));
     }
 
     /// A few words at once: one check of the room for all of them.
     #[inline]
     pub fn array<const N: usize>(&mut self, w: [u64; N]) {
-        self.words.extend_from_slice(&w);
+        self.words.extend_from_slice(&w.map(f64::from_bits));
     }
 
-    /// Numbers, as their bits.
+    /// Numbers, in one copy.
     #[inline]
     pub fn f64s(&mut self, v: &[f64]) {
-        self.words.extend(v.iter().map(|x| x.to_bits()));
+        self.words.extend_from_slice(v);
     }
 
     /// A length, or which form a part takes.
     #[inline]
     pub fn dim(&mut self, d: usize) {
+        if self.same {
+            if self.expect.get(self.met) == Some(&d) {
+                self.met += 1;
+                return;
+            }
+            self.same = false;
+            self.dims.extend_from_slice(&self.expect[..self.met]);
+        }
         self.dims.push(d);
+    }
+
+    /// The dimensions written: `None` where they were the expected shape's
+    /// to the last.
+    fn written(self) -> (Vec<f64>, Option<Vec<usize>>) {
+        let same = self.same && self.met == self.expect.len();
+        (self.words, (!same).then_some(self.dims))
     }
 }
 
 /// What [`Pack::unpack`] reads a snapshot from, in the order it was written.
 #[derive(Debug)]
 pub struct Unpacker<'a> {
-    words: &'a [u64],
+    words: &'a [f64],
     dims: &'a [usize],
 }
 
@@ -93,6 +138,12 @@ impl<'a> Unpacker<'a> {
     /// The next word.
     #[inline]
     pub fn word(&mut self) -> u64 {
+        self.f64().to_bits()
+    }
+
+    /// The next number.
+    #[inline]
+    pub fn f64(&mut self) -> f64 {
         let (w, rest) = self
             .words
             .split_first()
@@ -101,26 +152,20 @@ impl<'a> Unpacker<'a> {
         *w
     }
 
-    /// The next number.
-    #[inline]
-    pub fn f64(&mut self) -> f64 {
-        f64::from_bits(self.word())
-    }
-
     /// The next `N` words, split off once, not a word at a time.
     #[inline]
-    pub fn array<const N: usize>(&mut self) -> &'a [u64; N] {
+    pub fn array<const N: usize>(&mut self) -> [u64; N] {
         let (w, rest) = self
             .words
-            .split_first_chunk()
+            .split_first_chunk::<N>()
             .expect("a snapshot reads the words it was written with");
         self.words = rest;
-        w
+        w.map(f64::to_bits)
     }
 
-    /// The next `n` words.
+    /// The next `n` numbers, as they were written.
     #[inline]
-    pub fn words(&mut self, n: usize) -> &'a [u64] {
+    pub fn words(&mut self, n: usize) -> &'a [f64] {
         let (w, rest) = self.words.split_at(n);
         self.words = rest;
         w
@@ -151,6 +196,21 @@ pub trait Pack: Sized {
     #[inline]
     fn unpack_into(&mut self, from: &mut Unpacker<'_>) {
         *self = Self::unpack(from);
+    }
+
+    /// [`Self::unpack_into`] of a snapshot written in the shape `self` has
+    /// -- every length and form as `self`'s -- reading its numbers alone, no
+    /// dimension: what a ring decodes its boundary with while the next
+    /// snapshot is of the same run.
+    fn refill(&mut self, from: &mut Unpacker<'_>);
+
+    /// [`Self::refill`] of every item of a slice.
+    #[doc(hidden)]
+    #[inline]
+    fn refill_all(items: &mut [Self], from: &mut Unpacker<'_>) {
+        for x in items {
+            x.refill(from);
+        }
     }
 
     /// Every item of a slice, after its length: one at a time, unless the
@@ -237,6 +297,12 @@ macro_rules! pack_fields {
                 let $t { $($f),* } = self;
                 $( $crate::Pack::unpack_into($f, from); )*
             }
+
+            #[inline]
+            fn refill(&mut self, from: &mut $crate::Unpacker<'_>) {
+                let $t { $($f),* } = self;
+                $( $crate::Pack::refill($f, from); )*
+            }
         }
     };
 }
@@ -253,6 +319,16 @@ impl Pack for f64 {
     }
 
     #[inline]
+    fn refill(&mut self, from: &mut Unpacker<'_>) {
+        *self = from.f64();
+    }
+
+    #[inline]
+    fn refill_all(items: &mut [Self], from: &mut Unpacker<'_>) {
+        items.copy_from_slice(from.words(items.len()));
+    }
+
+    #[inline]
     fn pack_all(items: &[Self], out: &mut Packer) {
         out.f64s(items);
     }
@@ -261,12 +337,10 @@ impl Pack for f64 {
     fn unpack_all_into(items: &mut Vec<Self>, n: usize, from: &mut Unpacker<'_>) {
         let words = from.words(n);
         if items.len() == n {
-            for (x, w) in items.iter_mut().zip(words) {
-                *x = f64::from_bits(*w);
-            }
+            items.copy_from_slice(words);
         } else {
             items.clear();
-            items.extend(words.iter().map(|w| f64::from_bits(*w)));
+            items.extend_from_slice(words);
         }
     }
 }
@@ -283,18 +357,25 @@ impl Pack for u64 {
     }
 
     #[inline]
+    fn refill(&mut self, from: &mut Unpacker<'_>) {
+        *self = from.word();
+    }
+
+    #[inline]
     fn pack_all(items: &[Self], out: &mut Packer) {
-        out.words.extend_from_slice(items);
+        out.words.extend(items.iter().map(|&w| f64::from_bits(w)));
     }
 
     #[inline]
     fn unpack_all_into(items: &mut Vec<Self>, n: usize, from: &mut Unpacker<'_>) {
         let words = from.words(n);
         if items.len() == n {
-            items.copy_from_slice(words);
+            for (x, w) in items.iter_mut().zip(words) {
+                *x = w.to_bits();
+            }
         } else {
             items.clear();
-            items.extend_from_slice(words);
+            items.extend(words.iter().map(|w| w.to_bits()));
         }
     }
 }
@@ -308,6 +389,11 @@ impl Pack for usize {
     #[inline]
     fn unpack(from: &mut Unpacker<'_>) -> Self {
         from.word() as usize
+    }
+
+    #[inline]
+    fn refill(&mut self, from: &mut Unpacker<'_>) {
+        *self = from.word() as usize;
     }
 }
 
@@ -330,6 +416,11 @@ impl<T: Pack> Pack for Vec<T> {
     fn unpack_into(&mut self, from: &mut Unpacker<'_>) {
         let n = from.dim();
         T::unpack_all_into(self, n, from);
+    }
+
+    #[inline]
+    fn refill(&mut self, from: &mut Unpacker<'_>) {
+        T::refill_all(self, from);
     }
 }
 
@@ -358,6 +449,20 @@ impl<T: Pack> Pack for Option<T> {
             _ => *self = None,
         }
     }
+
+    #[inline]
+    fn refill(&mut self, from: &mut Unpacker<'_>) {
+        if let Some(v) = self {
+            v.refill(from);
+        }
+    }
+}
+
+/// The `i128` whose low and high halves are `lo` and `hi`: a stamp's
+/// integer, written as two words.
+#[inline]
+fn i128_of(lo: u64, hi: u64) -> i128 {
+    (u128::from(lo) | (u128::from(hi) << 64)) as i128
 }
 
 impl Pack for Stamp {
@@ -381,34 +486,38 @@ impl Pack for Stamp {
 
     #[inline]
     fn unpack(from: &mut Unpacker<'_>) -> Self {
-        let i128_of = |lo: u64, hi: u64| (u128::from(lo) | (u128::from(hi) << 64)) as i128;
         match from.dim() {
             0 => {
-                let &[lo, hi] = from.array();
+                let [lo, hi] = from.array();
                 Stamp::Ns(i128_of(lo, hi))
             }
             1 => {
-                let &[raw, removed] = from.array();
+                let [raw, removed] = from.array();
                 Stamp::Raw(f64::from_bits(raw), f64::from_bits(removed))
             }
             _ => {
-                let &[lo, hi, frac] = from.array();
+                let [lo, hi, frac] = from.array();
                 Stamp::Int(i128_of(lo, hi), f64::from_bits(frac))
             }
         }
     }
-}
-
-impl Pack for Product {
-    #[inline]
-    fn pack(&self, out: &mut Packer) {
-        out.array([self.0.to_bits(), self.1 as u64]);
-    }
 
     #[inline]
-    fn unpack(from: &mut Unpacker<'_>) -> Self {
-        let &[m, k] = from.array();
-        Product(f64::from_bits(m), k as i64)
+    fn refill(&mut self, from: &mut Unpacker<'_>) {
+        *self = match *self {
+            Stamp::Ns(_) => {
+                let [lo, hi] = from.array();
+                Stamp::Ns(i128_of(lo, hi))
+            }
+            Stamp::Raw(..) => {
+                let [raw, removed] = from.array();
+                Stamp::Raw(f64::from_bits(raw), f64::from_bits(removed))
+            }
+            Stamp::Int(..) => {
+                let [lo, hi, frac] = from.array();
+                Stamp::Int(i128_of(lo, hi), f64::from_bits(frac))
+            }
+        };
     }
 }
 
@@ -428,11 +537,24 @@ impl Pack for Products {
     fn unpack(from: &mut Unpacker<'_>) -> Self {
         let n = from.dim();
         let mut out = Products::ones(n);
-        let (pairs, _) = from.words(2 * n).as_chunks::<2>();
-        for (p, &[m, k]) in out.p[..n].iter_mut().zip(pairs) {
-            *p = Product(f64::from_bits(m), k as i64);
-        }
+        Self::read(&mut out, n, from);
         out
+    }
+
+    #[inline]
+    fn refill(&mut self, from: &mut Unpacker<'_>) {
+        Self::read(self, self.len(), from);
+    }
+}
+
+impl Products {
+    /// The first `n` products from `from`.
+    #[inline]
+    fn read(&mut self, n: usize, from: &mut Unpacker<'_>) {
+        let (pairs, _) = from.words(2 * n).as_chunks::<2>();
+        for (p, &[m, k]) in self.p[..n].iter_mut().zip(pairs) {
+            *p = Product(m, k.to_bits() as i64);
+        }
     }
 }
 
@@ -467,6 +589,15 @@ fn unpack_entry_into<S: Pack>(e: &mut Entry<S>, from: &mut Unpacker<'_>) {
     e.snap.unpack_into(from);
 }
 
+/// [`unpack_entry_into`] of a snapshot of `e`'s shape ([`Pack::refill`]).
+#[inline]
+fn refill_entry<S: Pack>(e: &mut Entry<S>, from: &mut Unpacker<'_>) {
+    e.clock = from.f64();
+    e.stamp.refill(from);
+    e.decay.refill(from);
+    e.snap.refill(from);
+}
+
 /// The structure a run of written snapshots shares, and what each one of
 /// them holds: its words, and the bytes the budget counts of it.
 #[derive(Debug, Clone, PartialEq)]
@@ -483,10 +614,9 @@ struct Run {
     count: usize,
 }
 
-thread_local! {
-    /// Where a snapshot's dimensions are written before they are matched
-    /// to its run's: one a thread, so a ring holds none.
-    static SCRATCH: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+/// Words as their bits: two writes compared to the bit, NaNs among them.
+fn bits(v: &[f64]) -> Vec<u64> {
+    v.iter().map(|x| x.to_bits()).collect()
 }
 
 /// The fewest words a block is made with.
@@ -507,19 +637,26 @@ pub(super) struct Ring<S> {
     /// The later snapshots' words, oldest first, one after another. A
     /// snapshot never spans two blocks, and a block is never grown: one that
     /// lacks the room for the next is followed by a new one.
-    blocks: VecDeque<Vec<u64>>,
+    blocks: VecDeque<Vec<f64>>,
     /// The words of the first block already read back.
     head: usize,
     /// The words the later snapshots hold, which sizes a new block.
     words: usize,
+    /// The newest snapshot's clock and stamp, which every offered row is
+    /// placed against: kept, so a row reads no snapshot back for them.
+    newest: Option<(f64, Stamp)>,
+    /// Whether the boundary was decoded from a snapshot of the oldest run
+    /// of later ones, and so has their shape: the next is then decoded
+    /// over it by its numbers alone ([`Pack::refill`]).
+    shaped: bool,
 }
 
 /// The later snapshots' shapes and words, oldest first.
 fn records<'a>(
     runs: &'a VecDeque<Run>,
-    blocks: &'a VecDeque<Vec<u64>>,
+    blocks: &'a VecDeque<Vec<f64>>,
     head: usize,
-) -> impl Iterator<Item = (&'a Shape, &'a [u64])> + 'a {
+) -> impl Iterator<Item = (&'a Shape, &'a [f64])> + 'a {
     let (mut b, mut at) = (0, head);
     runs.iter()
         .flat_map(|run| std::iter::repeat_n(&run.shape, run.count))
@@ -550,6 +687,8 @@ impl<S> Ring<S> {
             blocks: VecDeque::new(),
             head: 0,
             words: 0,
+            newest: None,
+            shaped: false,
         }
     }
 
@@ -581,13 +720,30 @@ impl<S> Ring<S> {
 
     /// Copy one written snapshot, of `dims` and counted at `footprint`, to
     /// the end of the blocks.
-    fn put(&mut self, dims: &[usize], footprint: usize, rec: &[u64]) {
+    fn put(&mut self, dims: &[usize], footprint: usize, rec: &[f64]) {
         let n = rec.len();
         self.room(n);
         if let Some(b) = self.blocks.back_mut() {
             b.extend_from_slice(rec);
         }
         self.record(dims, footprint, n);
+    }
+
+    /// Count a snapshot of `n` words just written at the end of the blocks
+    /// in the newest run's shape.
+    fn record_same(&mut self, footprint: usize, n: usize) {
+        match self.runs.back_mut() {
+            Some(run) if run.shape.footprint == footprint && run.shape.words == n => {
+                self.words += n;
+                self.later += 1;
+                run.count += 1;
+            }
+            Some(run) => {
+                let dims = run.shape.dims.clone();
+                self.record(&dims, footprint, n);
+            }
+            None => self.record(&[], footprint, n),
+        }
     }
 
     /// Count a snapshot of `n` words just written at the end of the blocks.
@@ -626,6 +782,7 @@ impl<S: Pack + Footprint + Clone> Ring<S> {
         decay: Products,
         snap: V,
     ) {
+        self.newest = Some((clock, stamp));
         if self.front.is_none() {
             self.front = Some(Entry {
                 clock,
@@ -633,6 +790,7 @@ impl<S: Pack + Footprint + Clone> Ring<S> {
                 snap: snap.into_snapshot(),
                 decay,
             });
+            self.shaped = false;
             return;
         }
         // Written straight into the newest block where the newest run's
@@ -641,69 +799,84 @@ impl<S: Pack + Footprint + Clone> Ring<S> {
         let expect = self.runs.back().map_or(0, |r| r.shape.words);
         self.room(expect);
         let footprint = snap.bytes();
-        SCRATCH.with_borrow_mut(|dims| {
-            dims.clear();
-            let block = self
-                .blocks
-                .back_mut()
-                .map(std::mem::take)
-                .unwrap_or_default();
-            let (at, cap) = (block.len(), block.capacity());
-            let mut p = Packer {
-                words: block,
-                dims: std::mem::take(dims),
-            };
-            p.f64(clock);
-            stamp.pack(&mut p);
-            decay.pack(&mut p);
-            snap.write(&mut p);
-            let Packer {
-                words: mut block,
-                dims: written,
-            } = p;
-            *dims = written;
-            if V::VIEW && cfg!(debug_assertions) {
-                // A view writes what the snapshot it forms writes, and is
-                // counted as it is: checked wherever the tests run.
-                let mut own = Packer::default();
-                own.f64(clock);
-                stamp.pack(&mut own);
-                decay.pack(&mut own);
-                let owned = snap.clone().into_snapshot();
-                owned.pack(&mut own);
-                assert_eq!(own.words, block[at..], "a view writes its snapshot's words");
-                assert_eq!(own.dims, *dims, "a view writes its snapshot's shape");
-                assert_eq!(
-                    owned.footprint(),
-                    footprint,
-                    "a view counts its snapshot's bytes"
-                );
-            }
-            let n = block.len() - at;
-            if block.len() > cap {
-                let rec = block.split_off(at);
-                block.shrink_to(cap);
-                if let Some(b) = self.blocks.back_mut() {
-                    *b = block;
-                }
-                self.put(dims, footprint, &rec);
-            } else {
-                if let Some(b) = self.blocks.back_mut() {
-                    *b = block;
-                }
-                self.record(dims, footprint, n);
-            }
+        let block = self
+            .blocks
+            .back_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
+        let (at, cap) = (block.len(), block.capacity());
+        let shape = self.runs.back().map(|r| &*r.shape.dims);
+        let mut p = Packer {
+            words: block,
+            dims: Vec::new(),
+            expect: shape.unwrap_or_default(),
+            met: 0,
+            same: shape.is_some(),
+        };
+        p.f64(clock);
+        stamp.pack(&mut p);
+        decay.pack(&mut p);
+        snap.write(&mut p);
+        let (mut block, dims) = p.written();
+        if V::VIEW && cfg!(debug_assertions) {
+            // A view writes what the snapshot it forms writes, and is
+            // counted as it is: checked wherever the tests run.
+            let mut own = Packer::default();
+            own.f64(clock);
+            stamp.pack(&mut own);
+            decay.pack(&mut own);
+            let owned = snap.clone().into_snapshot();
+            owned.pack(&mut own);
+            assert_eq!(
+                bits(&own.words),
+                bits(&block[at..]),
+                "a view writes its snapshot's words"
+            );
+            let written = dims.as_deref().or(shape).unwrap_or_default();
+            assert_eq!(own.dims, written, "a view writes its snapshot's shape");
+            assert_eq!(
+                owned.footprint(),
+                footprint,
+                "a view counts its snapshot's bytes"
+            );
+        }
+        let n = block.len() - at;
+        let rec = (block.len() > cap).then(|| {
+            let rec = block.split_off(at);
+            block.shrink_to(cap);
+            rec
         });
+        if let Some(b) = self.blocks.back_mut() {
+            *b = block;
+        }
+        match (rec, dims) {
+            (Some(rec), Some(dims)) => self.put(&dims, footprint, &rec),
+            (Some(rec), None) => {
+                let dims = self.runs.back().map(|r| r.shape.dims.clone());
+                self.put(dims.as_deref().unwrap_or_default(), footprint, &rec);
+            }
+            (None, Some(dims)) => self.record(&dims, footprint, n),
+            (None, None) => self.record_same(footprint, n),
+        }
     }
 
     /// Append a written snapshot, decoded if it is to be the boundary.
-    fn push_record(&mut self, shape: &Shape, rec: &[u64]) {
+    fn push_record(&mut self, shape: &Shape, rec: &[f64]) {
         if self.front.is_none() {
-            self.front = Some(unpack_entry(&mut Unpacker {
+            let e: Entry<S> = unpack_entry(&mut Unpacker {
                 words: rec,
                 dims: &shape.dims,
-            }));
+            });
+            self.newest = Some((e.clock, e.stamp));
+            self.front = Some(e);
+            self.shaped = false;
         } else {
+            let mut from = Unpacker {
+                words: rec,
+                dims: &shape.dims,
+            };
+            let clock = from.f64();
+            self.newest = Some((clock, Stamp::unpack(&mut from)));
             self.put(&shape.dims, shape.footprint, rec);
         }
     }
@@ -715,6 +888,7 @@ impl<S: Pack + Footprint + Clone> Ring<S> {
         let footprint = front.snap.footprint();
         let Some(run) = self.runs.front_mut() else {
             self.front = None;
+            self.newest = None;
             return Some(footprint);
         };
         while self.head == self.blocks[0].len() {
@@ -722,14 +896,17 @@ impl<S: Pack + Footprint + Clone> Ring<S> {
             self.head = 0;
         }
         let n = run.shape.words;
-        unpack_entry_into(
-            front,
-            &mut Unpacker {
-                words: &self.blocks[0][self.head..self.head + n],
-                dims: &run.shape.dims,
-            },
-        );
+        let mut from = Unpacker {
+            words: &self.blocks[0][self.head..self.head + n],
+            dims: &run.shape.dims,
+        };
+        if self.shaped {
+            refill_entry(front, &mut from);
+        } else {
+            unpack_entry_into(front, &mut from);
+        }
         run.count -= 1;
+        self.shaped = run.count > 0;
         if run.count == 0 {
             self.runs.pop_front();
         }
@@ -748,18 +925,9 @@ impl<S: Pack + Footprint + Clone> Ring<S> {
     }
 
     /// The newest snapshot's clock and stamp.
+    #[inline]
     pub(super) fn back_place(&self) -> Option<(f64, Stamp)> {
-        match (self.runs.back(), self.blocks.back()) {
-            (Some(run), Some(tail)) => {
-                let mut from = Unpacker {
-                    words: &tail[tail.len() - run.shape.words..],
-                    dims: &run.shape.dims,
-                };
-                let clock = from.f64();
-                Some((clock, Stamp::unpack(&mut from)))
-            }
-            _ => self.front.as_ref().map(|e| (e.clock, e.stamp)),
-        }
+        self.newest
     }
 
     /// The bytes the budget counts of the newest snapshot.
@@ -805,6 +973,7 @@ impl<S: Pack + Footprint + Clone> Ring<S> {
         let keep = |i: usize| (n - 1 - i).is_multiple_of(2);
         let old = std::mem::replace(self, Ring::new());
         if keep(0) {
+            self.newest = old.front.as_ref().map(|e| (e.clock, e.stamp));
             self.front = old.front;
         }
         for (i, (shape, rec)) in records(&old.runs, &old.blocks, old.head).enumerate() {
@@ -951,6 +1120,11 @@ mod tests {
     fn snap(s: &mut u64) -> Snap {
         // A shape that holds for a run of snapshots, then changes.
         let shape = lcg(s) % 9;
+        shaped(s, shape)
+    }
+
+    /// A snapshot of shape `shape`, `0..9`, its numbers drawn from `s`.
+    fn shaped(s: &mut u64, shape: u64) -> Snap {
         let k = (shape % 4) as usize;
         let mut c = vec![0.0; k * k];
         for i in 0..k {
@@ -982,18 +1156,19 @@ mod tests {
     }
 
     /// Two snapshots alike to the bit, through their written form.
-    fn bits(e: &Entry<Snap>) -> Vec<u64> {
+    fn entry_bits(e: &Entry<Snap>) -> Vec<u64> {
         let mut p = Packer::default();
         pack_entry(e, &mut p);
-        p.words.extend(p.dims.iter().map(|&d| d as u64));
-        p.words
+        let mut words = bits(&p.words);
+        words.extend(p.dims.iter().map(|&d| d as u64));
+        words
     }
 
     fn assert_same(ring: &Ring<Snap>, want: &VecDeque<Entry<Snap>>, at: &str) {
         assert_eq!(ring.len(), want.len(), "{at}: the length");
         let got: Vec<_> = ring.entries().collect();
         for (i, (g, w)) in got.iter().zip(want).enumerate() {
-            assert_eq!(bits(g), bits(w), "{at}: snapshot {i}");
+            assert_eq!(entry_bits(g), entry_bits(w), "{at}: snapshot {i}");
         }
         let fp: usize = want.iter().map(|e| e.snap.footprint()).sum();
         assert_eq!(ring.footprint(), fp, "{at}: the counted bytes");
@@ -1006,7 +1181,7 @@ mod tests {
             let mut p = Packer::default();
             p.f64(clock);
             stamp.pack(&mut p);
-            (p.words, p.dims)
+            (bits(&p.words), p.dims)
         };
         assert_eq!(
             ring.back_place().map(|(c, s)| place(c, s)),
@@ -1105,7 +1280,7 @@ mod tests {
             let all = |x: &Snap| {
                 let mut p = Packer::default();
                 x.pack(&mut p);
-                (p.words, p.dims)
+                (bits(&p.words), p.dims)
             };
             assert_eq!(all(&into), all(&b));
             assert_eq!(all(&fresh), all(&b));
@@ -1118,6 +1293,80 @@ mod tests {
             };
             assert_eq!(lower(&into.c), lower(&b.c), "the lower triangle");
             assert_eq!(lower(&fresh.c), lower(&b.c), "the lower triangle");
+        }
+    }
+
+    /// A snapshot refilled over one of its own shape -- its numbers alone,
+    /// no dimension read -- reads what one decoded fresh reads, to the bit;
+    /// and a snapshot written against a shape writes out no dimension
+    /// where it is that shape, and every one where it is not.
+    #[test]
+    fn a_snapshot_refilled_over_one_of_its_shape_reads_as_one_decoded_fresh() {
+        let mut s = 371u64;
+        let all = |x: &Snap| {
+            let mut p = Packer::default();
+            x.pack(&mut p);
+            (bits(&p.words), p.dims)
+        };
+        for _ in 0..500 {
+            let (a, b) = (lcg(&mut s) % 9, lcg(&mut s) % 9);
+            let (x, y) = (shaped(&mut s, a), shaped(&mut s, a));
+            let (_, dims) = all(&y);
+            let mut p = Packer::default();
+            y.pack(&mut p);
+            let mut into = x.clone();
+            into.refill(&mut Unpacker {
+                words: &p.words,
+                dims: &[],
+            });
+            assert_eq!(all(&into), all(&y), "shape {a}");
+            // And with its place: every stamp's form, and 0 to 2 products.
+            let form = lcg(&mut s);
+            let entry = |s: &mut u64, snap: Snap| {
+                let mut decay = Products::ones((form % 3) as usize);
+                for p in &mut decay.p {
+                    *p = Product(number(s), lcg(s) as i64 - (1 << 40));
+                }
+                let stamp = match (form / 3) % 3 {
+                    0 => Stamp::Ns(-(i128::from(lcg(s)) << 70) + 5),
+                    1 => Stamp::Raw(number(s), number(s)),
+                    _ => Stamp::Int(i128::from(lcg(s)) << 66, number(s)),
+                };
+                Entry {
+                    clock: number(s),
+                    stamp,
+                    snap,
+                    decay,
+                }
+            };
+            let (mut e, f) = (entry(&mut s, x.clone()), entry(&mut s, y.clone()));
+            let mut p = Packer::default();
+            pack_entry(&f, &mut p);
+            refill_entry(
+                &mut e,
+                &mut Unpacker {
+                    words: &p.words,
+                    dims: &[],
+                },
+            );
+            assert_eq!(entry_bits(&e), entry_bits(&f), "shape {a}, form {form}");
+            // Written against its own shape, and against another's.
+            let z = shaped(&mut s, b);
+            let (_, other) = all(&z);
+            for (expect, same) in [(&dims, true), (&other, a == b)] {
+                let mut p = Packer {
+                    expect,
+                    same: true,
+                    ..Packer::default()
+                };
+                y.pack(&mut p);
+                let (words, written) = p.written();
+                assert_eq!(bits(&words), all(&y).0, "shapes {a} and {b}");
+                match written {
+                    None => assert!(same && *expect == dims, "shapes {a} and {b}"),
+                    Some(d) => assert_eq!((d, same), (dims.clone(), false), "shapes {a} and {b}"),
+                }
+            }
         }
     }
 
@@ -1157,38 +1406,6 @@ mod tests {
                     }
                 }
             }
-        }
-    }
-
-    /// A triangle packed with its side given writes what it writes when
-    /// the side is found from its storage, whatever side it is given: the
-    /// side is trusted only when its square is the storage's length.
-    #[test]
-    fn a_lower_triangle_packed_at_a_given_side_writes_its_own() {
-        let mut s = 366u64;
-        for k in 0..8usize {
-            let m = LowerTriangle::from((0..k * k).map(|_| number(&mut s)).collect::<Vec<_>>());
-            let mut want = Packer::default();
-            m.pack(&mut want);
-            for given in [k, k + 1, k.saturating_sub(1), 2 * k, k * k] {
-                let mut got = Packer::default();
-                m.pack_side(given, &mut got);
-                assert_eq!(got.words, want.words, "side {k} given as {given}");
-                assert_eq!(got.dims, want.dims, "side {k} given as {given}");
-            }
-        }
-        // A storage that is no square is written whole, at any side given.
-        let odd = LowerTriangle::from(vec![1.0, 2.0, 3.0]);
-        let mut want = Packer::default();
-        odd.pack(&mut want);
-        assert_eq!(want.dims, [1, 3]);
-        for given in [0, 1, 2, 3] {
-            let mut got = Packer::default();
-            odd.pack_side(given, &mut got);
-            assert_eq!(
-                (got.words, got.dims),
-                (want.words.clone(), want.dims.clone())
-            );
         }
     }
 

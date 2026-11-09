@@ -3263,3 +3263,53 @@ fn a_configuration_with_two_problems_reports_both() {
     );
     assert!(lines[1].starts_with("ew_cov: pca must be at most"), "{e}");
 }
+
+/// A windowed model's view, kept between rows and written over
+/// (`crate::window::KeptView`), reads every row's statistics as a view made
+/// afresh does, to the bit: every statistic, through windows that rows of
+/// weight 0 after a gap leave empty, and a held feature (task 374).
+#[test]
+fn the_kept_window_reads_as_a_fresh_one() {
+    use crate::OnlineModel;
+    let stats = vec![
+        EwCovStat::Mean,
+        EwCovStat::Var,
+        EwCovStat::Std,
+        EwCovStat::Cov,
+        EwCovStat::Corr,
+        EwCovStat::PartialCorr,
+        EwCovStat::Mahal,
+    ];
+    let mut cfg = model_cfg(5, stats);
+    cfg.decay = crate::Decay::Halflife(40.0);
+    cfg.min_weight = 0.0;
+    cfg.precision_prior = Some(0.25);
+    cfg.window = Some(12.0);
+    let mut kept = EwCovModel::new(cfg).unwrap();
+    let mut fresh = kept.clone();
+    let mut s = 5u64;
+    let mut empty = 0;
+    for i in 0..400 {
+        fresh.view = crate::window::Kept::default();
+        let x = [
+            lcg(&mut s),
+            3.0,
+            1e6 + lcg(&mut s),
+            lcg(&mut s) - 0.5 * lcg(&mut s),
+            2.0,
+        ];
+        let (d, w) = match i % 100 {
+            90 => (50.0, 0.0),
+            91..=94 => (1.0, 0.0),
+            _ => (1.0, 1.0 + 0.5 * lcg(&mut s)),
+        };
+        let a = kept.step(&x, &[], d, w);
+        let b = fresh.step(&x, &[], d, w);
+        let bits = |v: &[f64]| v.iter().map(|p| p.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&a.pred), bits(&b.pred), "row {i}");
+        assert_eq!(a.n_eff.to_bits(), b.n_eff.to_bits(), "row {i}");
+        empty += usize::from(a.n_eff == 0.0 && i > 50);
+    }
+    assert!(empty > 5, "{empty}");
+    assert_eq!(kept, fresh);
+}

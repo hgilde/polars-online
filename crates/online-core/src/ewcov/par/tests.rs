@@ -339,12 +339,17 @@ fn spread_runs_on_several_threads_and_on_one_when_asked() {
 fn rows_run_in_bands_on_several_threads_from_the_floor() {
     let pool = pool(4);
     let k = 24;
-    let mut c: Vec<f64> = (0..k * k).map(|v| v as f64).collect();
+    let mut c: Vec<f64> = (0..k * (k + 1) / 2).map(|v| v as f64).collect();
     let seen = Mutex::new(Vec::new());
     pool.install(|| {
         rows(&mut c, k, 4, |i, row| {
             std::thread::sleep(std::time::Duration::from_millis(2));
-            assert_eq!(row[0], (i * k) as f64, "row {i} is the matrix's row {i}");
+            assert_eq!(row.len(), i + 1, "row {i} is its lower part");
+            assert_eq!(
+                row[0],
+                (i * (i + 1) / 2) as f64,
+                "row {i} is the matrix's row {i}"
+            );
             row[0] = -1.0;
             seen.lock().unwrap().push((i, std::thread::current().id()));
         })
@@ -357,7 +362,7 @@ fn rows_run_in_bands_on_several_threads_from_the_floor() {
         seen.iter().map(|s| s.0).collect::<Vec<_>>(),
         (0..k).collect::<Vec<_>>()
     );
-    assert!((0..k).all(|i| c[i * k] == -1.0));
+    assert!((0..k).all(|i| c[i * (i + 1) / 2] == -1.0));
     const { assert!(724 * 724 < PAR_MIN_ENTRIES && PAR_MIN_ENTRIES <= 725 * 725) };
 }
 
@@ -475,13 +480,11 @@ fn rows_hands_each_row_once_and_none_of_no_columns() {
     }
     assert_eq!(calls.load(Ordering::Relaxed), 0);
     for threads in [1, 2, 5] {
-        let mut c: Vec<f64> = (0..12).map(f64::from).collect();
+        let mut c: Vec<f64> = (0..6).map(f64::from).collect();
         rows(&mut c, 3, threads, |i, row| {
             row.iter_mut().for_each(|v| *v += 100.0 * i as f64);
         });
-        let want: Vec<f64> = (0..12)
-            .map(|v| f64::from(v) + 100.0 * f64::from(v / 3))
-            .collect();
+        let want = [0.0, 101.0, 102.0, 203.0, 204.0, 205.0];
         assert_eq!(c, want, "{threads} threads");
     }
 }

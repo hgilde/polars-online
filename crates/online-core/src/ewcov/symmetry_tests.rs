@@ -196,21 +196,18 @@ fn the_two_triangles_read_as_one() {
     }
 }
 
-/// The serial step's two forms (task 295, P10): whole rows below x86-64's
-/// threshold, the lower rows from it up and on every other target. At that
-/// threshold and one below it, and at a few features, on every target,
-/// over one stream, `EwCov::update` and both forms run directly leave the
-/// same lower triangle to the bit, equal matrices and the same state bytes;
-/// and the storage shows which form `update` took -- whole rows, whose
-/// upper entries moved, or the lower rows, whose upper entries stayed 0.
+/// The serial step's two forms (task 371): a side fixed when compiled at 3
+/// to 12 features, a side read at run time elsewhere. At every width from 0
+/// to 14, over one stream, `EwCov::update`, the dispatch and the run-time
+/// rows run directly leave the same packed triangle to the bit, equal
+/// matrices and the same state bytes.
 #[test]
-fn whole_rows_and_lower_rows_leave_the_same_state() {
-    let mut widths = vec![2usize, 4, 9, 10];
-    widths.extend(WHOLE_ROWS_BELOW.map(|t| [t - 1, t]).into_iter().flatten());
-    for k in widths {
+fn fixed_and_run_time_rows_leave_the_same_state() {
+    for k in 0..=14usize {
         let mut s = 29 + k as u64;
         let mut cov = EwCov::new(k);
-        let (mut whole, mut lower) = (vec![0.0; k * k], vec![0.0; k * k]);
+        let n = k * (k + 1) / 2;
+        let (mut fixed, mut lower) = (vec![0.0; n], vec![0.0; n]);
         for _ in 0..2_000 {
             let x: Vec<f64> = (0..k).map(|j| j as f64 + lcg(&mut s)).collect();
             let w = 1.0 + 0.5 * lcg(&mut s);
@@ -219,84 +216,39 @@ fn whole_rows_and_lower_rows_leave_the_same_state() {
             let w_new = lam * cov.n_eff() + w;
             let (a, b) = (lam * cov.n_eff() / w_new, w / w_new);
             let d: Vec<f64> = (0..k).map(|i| cov.deviation(i, x[i])).collect();
-            rank_one_whole_rows(&mut whole, k, &d, a, b);
+            rank_one_rows(&mut fixed, k, &d, a, b);
             rank_one_lower_rows(&mut lower, k, &d, a, b);
             cov.update(&x, lam, w);
         }
-        let kept = cov.comoments().lower();
-        for i in 0..k {
-            for j in 0..=i {
-                let ij = i * k + j;
-                assert_eq!(
-                    whole[ij].to_bits(),
-                    lower[ij].to_bits(),
-                    "k = {k}: ({i}, {j})"
-                );
-                assert_eq!(
-                    kept[ij].to_bits(),
-                    lower[ij].to_bits(),
-                    "k = {k}: update ({i}, {j})"
-                );
-            }
-        }
-        let upper = |c: &[f64]| {
-            (0..k)
-                .flat_map(|i| (i + 1..k).map(move |j| c[i * k + j]))
-                .collect::<Vec<_>>()
-        };
-        assert!(
-            upper(&whole).iter().all(|&v| v != 0.0),
-            "k = {k}: whole rows wrote the upper"
-        );
-        assert!(
-            upper(&lower).iter().all(|&v| v == 0.0),
-            "k = {k}: lower rows left it"
-        );
-        // The form each target takes, written out rather than read from
-        // `whole_rows`, so a change to the rule fails here (x86-64: whole
-        // rows below 10 features; every other target: lower rows).
-        let expect_whole = cfg!(target_arch = "x86_64") && k < 10;
-        assert_eq!(whole_rows(k), expect_whole, "k = {k}: the rule");
-        let took = if expect_whole { &whole } else { &lower };
-        assert_eq!(upper(kept), upper(took), "k = {k}: the form update took");
-        // As matrices and as state: the same.
-        let as_matrix = |c: &[f64]| {
-            let mut m = LowerTriangle::zeros(k);
-            m.copy_from(c);
-            m
-        };
-        let (mw, ml) = (as_matrix(&whole), as_matrix(&lower));
-        assert_eq!(mw, ml, "k = {k}");
-        assert_eq!(format!("{mw:?}"), format!("{ml:?}"), "k = {k}");
+        let bits = |c: &[f64]| c.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&fixed), bits(&lower), "k = {k}");
         assert_eq!(
-            rmp_serde::to_vec_named(&mw).unwrap(),
-            rmp_serde::to_vec_named(&ml).unwrap(),
-            "k = {k}: the matrix's bytes"
+            bits(cov.comoments().packed()),
+            bits(&lower),
+            "k = {k}: update"
         );
-        let bytes = rmp_serde::to_vec_named(&cov).unwrap();
-        for (form, c) in [("whole", &whole), ("lower", &lower)] {
-            let mut twin = cov.clone();
-            twin.c.copy_from(c);
-            assert_eq!(twin, cov, "k = {k}: {form}");
-            assert_eq!(
-                rmp_serde::to_vec_named(&twin).unwrap(),
-                bytes,
-                "k = {k}: {form}'s state bytes"
+        if k > 0 {
+            assert!(
+                lower.iter().all(|&v| v != 0.0),
+                "k = {k}: every entry moved"
             );
         }
+        let mut twin = cov.clone();
+        twin.c.copy_from_packed(&lower);
+        assert_eq!(twin, cov, "k = {k}");
+        assert_eq!(
+            rmp_serde::to_vec_named(&twin).unwrap(),
+            rmp_serde::to_vec_named(&cov).unwrap(),
+            "k = {k}: the state bytes"
+        );
     }
 }
 
-/// Whole rows at no feature and at one: the rows are taken as chunks of
-/// `k`, and a chunk of 0 panics, so `k = 0` asks for chunks of 1 from an
-/// empty slice and takes none; at `k = 1` the one entry is the lower
-/// rows' to the bit.
+/// The run-time rows at no feature and at one.
 #[test]
-fn whole_rows_at_no_feature_and_one() {
-    rank_one_whole_rows(&mut [], 0, &[], 0.5, 0.5);
-    let (mut whole, mut lower) = ([0.75f64], [0.75f64]);
-    rank_one_whole_rows(&mut whole, 1, &[0.3], 0.9, 0.1);
+fn run_time_rows_at_no_feature_and_one() {
+    rank_one_lower_rows(&mut [], 0, &[], 0.5, 0.5);
+    let mut lower = [0.75f64];
     rank_one_lower_rows(&mut lower, 1, &[0.3], 0.9, 0.1);
-    assert_eq!(whole[0].to_bits(), lower[0].to_bits());
-    assert_eq!(whole[0], 0.9 * 0.75 + 0.9 * 0.1 * 0.3 * 0.3);
+    assert_eq!(lower[0], 0.9 * 0.75 + 0.9 * 0.1 * 0.3 * 0.3);
 }
