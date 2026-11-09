@@ -431,6 +431,16 @@ returns.
 
 ### Performance
 
+- A windowed model's snapshots are written into and read back from their
+  ring with fewer instructions: a snapshot's clock stamp and decay products
+  move as one block of words, and the co-moment triangle's side is no
+  longer found by a square root on every snapshot. Outputs and saved states
+  are unchanged to the bit.
+- A bank's per-call cost no longer includes building a table of every
+  spec's column reads, which existed only to name the spec and role when a
+  column's cast fails; that name is now found only when a cast fails. Calls
+  of a few rows over many specs or groups run 2-4% fewer instructions, and
+  every message is unchanged.
 - `ewridge` with a short row cap under the default schedule no longer
   factorizes below the floor. At 1,000 features, a row cap of 1 and
   `min_weight` 1,001, 2,600 rows ran at 188 rows a second, from 117. At
