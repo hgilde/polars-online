@@ -894,6 +894,17 @@ mod tests {
         assert_eq!(c.radius(0.0), None);
     }
 
+    /// The keys a tracker's saved map holds.
+    fn written_keys(c: &Conformal) -> Vec<String> {
+        let bytes = rmp_serde::to_vec_named(c).unwrap();
+        let v = rmpv::decode::read_value(&mut bytes.as_slice()).unwrap();
+        v.as_map()
+            .expect("a map")
+            .iter()
+            .map(|(k, _)| k.as_str().expect("a string key").to_owned())
+            .collect()
+    }
+
     #[test]
     fn round_trips_through_msgpack() {
         let mut c = Conformal::new(0.9, 0.05).unwrap();
@@ -904,12 +915,18 @@ mod tests {
         let bytes = rmp_serde::to_vec_named(&c).unwrap();
         let back: Conformal = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(back, c);
-        let text = String::from_utf8_lossy(&bytes);
         // No radius, count or derived value is written by a started
-        // tracker with nothing waiting.
-        for field in ["\u{a1}q", "released", "held_mean", "gain", "\u{a1}z"] {
-            assert!(!text.contains(field), "{field} is written: {text}");
+        // tracker with nothing waiting. (Read as keys: msgpack's one-byte
+        // key `q` is `0xa1 q`, which no UTF-8 text holds, so a search of
+        // the bytes as text never found it; task 373.)
+        let keys = written_keys(&c);
+        for field in ["q", "released", "held_mean", "gain", "z"] {
+            assert!(
+                !keys.iter().any(|k| k == field),
+                "{field} is written: {keys:?}"
+            );
         }
+        assert!(keys.iter().any(|k| k == "m"), "{keys:?}");
     }
 
     // The mutation survivors of the weekly pass (docs/PLAN.md task 158).
@@ -1238,6 +1255,7 @@ mod tests {
         };
         let mut c: Conformal =
             rmp_serde::from_slice(&rmp_serde::to_vec_named(&old).unwrap()).unwrap();
+        assert!(written_keys(&c).iter().any(|k| k == "q"));
         assert_eq!(c.radius(1.3), Some(2.5));
         assert_eq!(c.radius(f64::NAN), Some(2.5));
         assert_eq!(c.multiplier(), None);
@@ -1255,8 +1273,7 @@ mod tests {
         let m = 2.5 / 1.25 + 0.05 * (1.0 / c.w_mean) * (0.0 - 0.1);
         assert_eq!(c.multiplier(), Some(m));
         assert_eq!(c.radius(2.0), Some(m * 2.0));
-        let bytes = rmp_serde::to_vec_named(&c).unwrap();
-        assert!(!String::from_utf8_lossy(&bytes).contains("\u{a1}q"));
+        assert!(!written_keys(&c).iter().any(|k| k == "q"));
         // Not yet started before the multiplier: starts as a new one does.
         let waiting = Before67 {
             q: f64::NAN,
@@ -1330,5 +1347,66 @@ mod tests {
         );
         assert!((fixed_cov - 0.9).abs() < 0.01, "fixed coverage {fixed_cov}");
         assert!((auto_cov - 0.9).abs() < 0.005, "auto coverage {auto_cov}");
+    }
+
+    // The mutation survivors of task 368's multiplier (docs/PLAN.md task 373).
+
+    /// Two trackers that differ in any one field, saved or derived, are not
+    /// equal, and a clone is.
+    #[test]
+    fn trackers_differing_in_any_one_field_are_not_equal() {
+        let mut base = Conformal::new(0.9, 0.05).unwrap();
+        let mut s = 5u64;
+        for t in 0..40 {
+            base.update_against(gauss(&mut s), 1.2, 0.97, 0.5 + lcg(&mut s), None, t % 3);
+        }
+        base.q = 1.5;
+        assert_eq!(base.clone(), base);
+        let edits: [fn(&mut Conformal); 12] = [
+            |c| c.alpha = c.alpha.next_up(),
+            |c| c.rate = c.rate.next_up(),
+            |c| c.m = c.m.next_up(),
+            |c| c.cov = c.cov.next_up(),
+            |c| c.cov_w = c.cov_w.next_up(),
+            |c| c.w_mean = c.w_mean.next_up(),
+            |c| c.w_rows = c.w_rows.next_up(),
+            |c| c.held_mean = c.held_mean.next_up(),
+            |c| c.released = c.released.next_up(),
+            |c| c.q = c.q.next_up(),
+            |c| c.gain = c.gain.next_up(),
+            |c| c.z = c.z.next_up(),
+        ];
+        for (i, edit) in edits.iter().enumerate() {
+            let mut other = base.clone();
+            edit(&mut other);
+            assert_ne!(other, base, "field {i}");
+        }
+    }
+
+    /// A radius kept from a file before the multiplier, given a row shown no
+    /// interval (`Some(NaN)`) and no error scale: no evidence, so the row
+    /// only ages the coverage's weight by `lam`, and the next row scored
+    /// against the kept radius reads that aged weight.
+    #[test]
+    fn a_kept_radius_ages_its_coverage_on_a_row_that_is_no_evidence() {
+        let old = Before67 {
+            alpha: 0.1,
+            rate: 0.05,
+            q: 2.0,
+            cov: 1.0,
+            cov_w: 4.0,
+            w_mean: 1.0,
+            w_rows: 4.0,
+        };
+        let mut c: Conformal =
+            rmp_serde::from_slice(&rmp_serde::to_vec_named(&old).unwrap()).unwrap();
+        c.update_against(0.5, f64::NAN, 0.5, 1.0, Some(f64::NAN), 0);
+        assert_eq!(c.cov_w, 2.0);
+        assert_eq!(c.coverage(), Some(1.0));
+        assert_eq!(c.radius(1.0), Some(2.0), "still the kept radius");
+        // A miss against the kept 2.0 at no decay: (2·1 + 1·0) / 3.
+        c.update(3.0, f64::NAN, 1.0, 1.0);
+        assert_eq!(c.coverage(), Some(2.0 / 3.0));
+        assert_eq!(c.multiplier(), None, "no error scale, no conversion");
     }
 }
