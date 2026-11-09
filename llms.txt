@@ -98,13 +98,13 @@ Windows alike.
 
 ## Start here
 
+- [Every feature](https://github.com/hgilde/polars-online/blob/main/docs/FEATURES.md): each model, function, method, shared
+  parameter, flag and environment variable, a line each, linked
 - [README](https://github.com/hgilde/polars-online#readme): the landing page -- what the
   library is, install, [a first fit](https://github.com/hgilde/polars-online#a-first-fit),
   the [example data](https://github.com/hgilde/polars-online#example-data)
   every other example reads, and [a map](https://github.com/hgilde/polars-online#where-to-go-next)
   from each task to its pages
-- [Every feature](https://github.com/hgilde/polars-online/blob/main/docs/FEATURES.md): each model, function, method, shared
-  parameter, flag and environment variable, a line each, linked
 - [Five tasks](https://github.com/hgilde/polars-online/blob/main/docs/HIGHLIGHTS.md): model
   selection, a deployed signal, trees, monitoring, ticks
 - [What every spec takes](https://github.com/hgilde/polars-online/blob/main/docs/MODELS.md#what-every-spec-takes): the parameters every

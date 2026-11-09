@@ -20,7 +20,9 @@ function and class has a page of its own. The guides, which the README's
 map leads to, show each call at work: the models, which calls stream, the
 state-file workflow, and performance. The `feature index
 <https://github.com/hgilde/polars-online/blob/main/docs/FEATURES.md>`_ lists
-every function and class with a line each. Each model's update equations
+every function and class with a line each. The `highlights page
+<https://github.com/hgilde/polars-online/blob/main/docs/HIGHLIGHTS.md>`_ runs
+five tasks end to end. Each model's update equations
 are in its builder's docstring.
 
 .. list-table::

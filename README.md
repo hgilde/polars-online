@@ -2,6 +2,8 @@
 # polars-online
 
 > **GitHub project:** [github.com/hgilde/polars-online](https://github.com/hgilde/polars-online)
+>
+> **Every feature, one line each:** [FEATURES.md](docs/FEATURES.md) · **Five tasks, end to end:** [HIGHLIGHTS.md](docs/HIGHLIGHTS.md)
 
 polars-online fits models online, one row at a time, to
 [Polars](https://pola.rs) data, for anyone whose data are too large to

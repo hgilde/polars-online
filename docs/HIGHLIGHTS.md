@@ -5,8 +5,16 @@ This page is for anyone with one of five tasks, from a round of model
 selection to correlations and curves on tick data, who wants to see
 polars-online do it end to end. Each task runs on data it makes up with a
 known answer, and prints what the library found, to read against that
-answer. To find the task that shows one capability, and the guide that
-covers it, look the capability up in [Capabilities](#capabilities).
+answer.
+
+| task | what it shows |
+|---|---|
+| [Automate a round of model selection](#automate-a-round-of-model-selection) | every combination of factors built from first-stage residuals, fitted at once at [half-lives](GLOSSARY.md#time) in time and in traded volume, with the best chosen [out-of-sample](GLOSSARY.md#fitting-a-model) on each trade, and breaks and a regime change found in the same pass |
+| [Build a forward-looking signal and deploy it](#build-a-forward-looking-signal-and-deploy-it) | a target over the next five minutes and a feature over the last five, learned under an [embargo](GLOSSARY.md#time), fitted robustly through jumps, and resumed in a fresh process with the same predictions to the bit |
+| [Train gradient-boosted trees on files larger than memory](#train-gradient-boosted-trees-on-files-larger-than-memory) | XGBoost and LightGBM trained from parquet files around an online model's prediction, which follows a level that drifts beyond every training row's |
+| [Monitor a live model](#monitor-a-live-model) | 90% intervals that keep their coverage on targets that arrive late, and a test for a broken slope and a detector of the features' correlation, both checked against planted changes |
+| [Measure correlations and fit curves on tick data](#measure-correlations-and-fit-curves-on-tick-data) | correlations from series that trade at their own times, and a curve fitted locally along trade size |
+| [Capabilities](#capabilities) | each capability the tasks use, with the step that shows it and a guide that covers it |
 
 Every task reads its rows from parquet files, most often as a
 [query](GLOSSARY.md#the-model-bank-and-what-it-reads) (a chain of Polars
