@@ -396,8 +396,8 @@ found, to read against that answer:
 
 | task | what it does |
 |---|---|
-| automate a round of model selection | fits every combination of three factors at half-lives in time and in traded volume, and chooses among them on each trade from the trades before it. In the same pass over the files, one for each day, holding one chunk at a time so the files may be larger than memory, it finds where the coefficients broke and where the factors' regime changed |
-| build a forward-looking signal and deploy it | predicts the next five minutes from the last five and from the out-of-sample residual a first-stage ridge leaves of a factor, learns each row once its five minutes are known, fits through price jumps with a robust regression, and resumes in a fresh Python process from the saved state, to the bit |
+| automate a round of model selection | fits many combinations of factors and targets at once, at half-lives in time and in traded volume, and chooses among them for each target on each trade from the trades before it. In the same pass over the files, one for each day, in bounded memory so the files may be larger than memory, it finds where the coefficients broke and where the factors' regime changed |
+| build a forward-looking signal and resume it | predicts the next five minutes from the last five and from the out-of-sample residual a first-stage ridge leaves of a factor, learns each row once its five minutes are known, fits through price jumps with a robust regression, and resumes in a fresh Python process from the saved state, to the bit |
 | train gradient-boosted trees on files larger than memory | trains XGBoost and LightGBM from parquet files around an online model's prediction, so the trees follow a level that drifts past every training row |
 | monitor a live model | keeps 90% intervals on predictions whose targets arrive about 300 rows late, flags a slope that flips, and finds each planted change in the features' correlation |
 | measure correlations and fit curves on tick data | measures correlations between series that trade at their own times, and fits a curve locally along trade size |
