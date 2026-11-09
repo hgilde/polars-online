@@ -6,7 +6,7 @@ the library found, to read against that answer.
 
 | task | what it shows |
 |---|---|
-| [Automate a round of model selection](#automate-a-round-of-model-selection) | exponentially weighted ridge regressions over many combinations of factors, targets and [half-lives](GLOSSARY.md#time) in time and in traded volume, in one pass that writes each fit's [out-of-sample](GLOSSARY.md#fitting-a-model) residuals and coefficients, the combination chosen as best on each trade, and markers where the factors' regime changed, to read how stable each model is |
+| [Automate a round of model selection](#automate-a-round-of-model-selection) | exponentially weighted ridge regressions over many combinations of factors, targets and [half-lives](GLOSSARY.md#time) in time and in traded volume, in one pass in bounded memory, so the files may be larger than memory, that writes each fit's [out-of-sample](GLOSSARY.md#fitting-a-model) residuals and coefficients, the combination chosen as best on each trade, and markers where the factors' regime changed, to read how stable each model is |
 | [Build a forward-looking signal and resume it](#build-a-forward-looking-signal-and-resume-it) | a target over the next five minutes, a feature over the last five and the out-of-sample residual a first-stage ridge leaves of a factor, learned under an [embargo](GLOSSARY.md#time), fitted robustly through jumps, and resumed in a fresh process with the same predictions to the bit |
 | [Train gradient-boosted trees on files larger than memory](#train-gradient-boosted-trees-on-files-larger-than-memory) | XGBoost and LightGBM trained from parquet files around an online model's prediction, which follows a level that drifts beyond every training row's |
 | [Monitor a live model](#monitor-a-live-model) | 90% intervals that keep their coverage on targets that arrive late, and a test for a broken slope and a detector of the features' correlation, both checked against planted changes |
@@ -42,8 +42,9 @@ Each task builds its own data, so the tasks need only:
 Fit exponentially weighted ridge regressions over many combinations of
 factors, targets and half-lives, measured both in time and in traded
 volume, beside a detector of regime changes in the factors. All of it
-runs in one pass over the files and writes one output: each fit's
-out-of-sample residuals and coefficients, the combination chosen as best
+runs in one pass over the files, in bounded memory so the files may be
+larger than memory. The pass writes one output: each fit's out-of-sample
+residuals and coefficients, the combination chosen as best
 on each trade (always from the trades before it), and markers where the
 regime changed. Read from it how stable each model is, how often each
 combination was chosen, and where the regimes changed:
