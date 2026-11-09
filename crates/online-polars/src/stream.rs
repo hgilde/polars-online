@@ -5080,20 +5080,18 @@ fn run_instance(
         // fit that has learned the rows released since, read the residuals
         // too small, and the CUSUM of squares sat at −0.70 on iid labels
         // under an embargo of 50 (review round 6, A-6; schema 57).
-        pre_row_sigma(
-            inst.residuals,
-            inst.resid_win.as_ref(),
-            inst.decay,
-            (inst.resid_w, inst.resid_var),
-            n_slots,
-            &mut sc.sig,
-        );
         let mut shown_radius: Option<Vec<f64>> = None;
         if plan.buffered {
             let mut record = step.pred.clone();
             if let Some(cs) = inst.conformal.as_deref() {
+                let ring = inst.resid_win.as_ref().map(SpreadRef::get);
+                let spread = (&inst.resid_w[..], &inst.resid_var[..]);
                 record.extend(cs.iter().enumerate().map(|(slot, c)| {
-                    let sig = sc.sig.get(slot).copied().unwrap_or(f64::NAN);
+                    let sig = if inst.residuals {
+                        pre_row_sigma(ring, inst.decay, spread, slot)
+                    } else {
+                        f64::NAN
+                    };
                     c.radius(sig).unwrap_or(f64::NAN)
                 }));
             }
@@ -5158,9 +5156,11 @@ fn run_instance(
         // division per slot per row, and filling the three buffers a
         // `memset` per row, that no field ever read (PERFORMANCE-LOG §13).
         sc.r.clear();
+        sc.sig.clear();
         sc.zs.clear();
         let lam = inst.decay.factor(d_clock);
         if inst.residuals {
+            sc.sig.resize(n_slots, f64::NAN);
             sc.zs.resize(n_slots, f64::NAN);
             for (tj, group) in step.pred.chunks(nc).enumerate() {
                 let yj = sc.ys.get(tj).copied().flatten();
@@ -5169,9 +5169,11 @@ fn run_instance(
                     _ => f64::NAN,
                 }));
             }
-            // `sigma` was read above (`pre_row_sigma`).
+            // `sigma` as the row finds it, beside each residual.
+            let ring = inst.resid_win.as_ref().map(SpreadRef::get);
             for (slot, &rv) in sc.r.iter().enumerate() {
-                let sd = sc.sig[slot];
+                let sd = pre_row_sigma(ring, inst.decay, (inst.resid_w, inst.resid_var), slot);
+                sc.sig[slot] = sd;
                 if rv.is_finite() && sd > 0.0 {
                     sc.zs[slot] = rv / sd;
                 }
