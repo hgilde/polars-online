@@ -100,6 +100,15 @@ itself under 2.0: how a query wraps an error is Polars' to change. A run
 the bank refuses, or one abandoned before its last row, never replaces a
 state file. A refused chunk leaves a bank
 as it was, apart from the two cases :meth:`ModelBank.fit_predict` names.
+
+.. rubric:: See also
+
+- The `feature index
+  <https://github.com/hgilde/polars-online/blob/main/docs/FEATURES.md>`_,
+  every feature of the library with a line each.
+- The `highlights page
+  <https://github.com/hgilde/polars-online/blob/main/docs/HIGHLIGHTS.md>`_,
+  five tasks run end to end.
 """
 
 from polars_online import (
