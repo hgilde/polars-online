@@ -44,10 +44,11 @@ targets under a few settings, picks the best, and asks whether what it
 picked holds. This task fits and watches the whole round in one pass over
 the files:
 
-- **Many combinations of factors and targets, fitted at once**: five named
-  sets drawn from ten factors, for two targets, at two half-lives on each of two
-  clocks. That is 20 [grid points](GLOSSARY.md#grids) (combinations of
-  settings), each fitted to both targets, from one read of the rows.
+- **Many combinations of factors and targets, fitted at once**: five
+  named sets drawn from ten factors, for two targets, at two half-lives on
+  each of two clocks. That is 20 [grid points](GLOSSARY.md#grids)
+  (combinations of settings), each fitted to both targets, from one read
+  of the rows.
 - **Local fits on half-lives**, where each row's weight halves every
   [half-life](GLOSSARY.md#time) on a [clock](GLOSSARY.md#time): two
   half-lives measured in time (30 minutes and 2 hours) and two measured in
