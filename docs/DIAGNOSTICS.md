@@ -1050,9 +1050,23 @@ them against the grid's own slots, and says when to fix one setting with
 errors differ on average.** Its statistic is the mean of the loss
 differential `d = resid_b² − resid_a²` over Newey and West's standard
 error, about `N(0, 1)` when the two predict equally well.
-`po.eval.diebold_mariano(out, a=, b=)` computes it, with `lags` at least
-`h − 1` for a target that looks `h` rows ahead, and 0 for one-step
-predictions.
+`po.eval.diebold_mariano(out, a=, b=)` computes it. Its `lags` are 0 by
+default, which is right only where the differentials are uncorrelated from
+row to row: where neither model's one-step errors can be predicted from
+its past errors. Two models that each leave out something persistent make
+errors that run, and so differentials that do, however equal their
+accuracy. At `lags=0`, two such models, equally accurate by construction,
+were found to differ at 5% on 24% to 32% of simulated streams of 200 and
+2,000 rows. For a target that looks `h` rows ahead, rows fewer than `h`
+apart share shocks. Give it about `2 h` lags, as the bank's diagnostics
+take for the same variance. Newey and West's weights count lag `l` at
+`1 − l / (lags + 1)`, so `h − 1` lags leave part of the overlap out. Even
+so the test rejects too often on short keys. On two equally accurate
+`h`-step forecasts (`h` 5 and 20), `2 h` lags rejected at 5% on 9% to 15%
+of streams of 200 rows, 7% of streams of 2,000 and 6% of streams of
+20,000. A key with at most `4 (lags + 1)` rows reads a null statistic, since the
+variance's sum over a short key shrinks toward zero as `lags` nears its
+rows.
 
 **Between two nested models, the test leans toward the smaller one, and
 Clark and West's (2007) correction removes the lean.** When the larger
@@ -1073,11 +1087,28 @@ mean of `f` over them, and `S` Newey and West's long-run sum of squares of
 
 `po.eval.clark_west(out, big=, small=)` computes it. With `half_life`,
 each call gives its statistic on every row instead, exponentially
-weighted. `po.eval.seqtest` and the `seqtest` model give evidence that one
-model predicts closer, by betting on the sign of `|resid_b| − |resid_a|`.
-It can be read at any row, as often as you like: reject the first time
-`log_e_a ≥ ln 20` for the 5% level
+weighted, from a key's `min_samples`-th row. Each row's value rests on
+about `2.9 · half_life` rows however long the stream. So it is near
+`N(0, 1)` only where `half_life` is well above `lags`: on noise at
+`half_life=5` and `lags=4` it passed 1.96 on 17% of rows. It is also one
+test per row, so acting the first time it passes 1.96 is not a test at 5%.
+
+`po.eval.seqtest` and the `seqtest` model give evidence that one model
+predicts closer on more rows, by betting on the sign of
+`|resid_b| − |resid_a|`. That is a different question from the two tests
+above, which compare mean squared errors: a model with rare large errors
+can be closer on most rows and still have the larger mean squared error.
+The evidence can be read at every row, as often as you like: reject the
+first time `log_e_a ≥ ln 20` for the 5% level
 ([`seqtest`](MODELS.md#seqtest--a-sequential-test-of-a-sign-by-betting)).
+The 5% holds where, at every row and whatever came before, the next sign
+is no more likely positive than negative. Two equally accurate models
+whose errors run from row to row break that: their signs run too, and the
+bet that follows the run grows. On simulated streams of 5,000 rows from
+two such models, with errors that followed an autoregression at 0.9, each
+bet reached `ln 20` on 61% to 62% of streams, where with independent
+errors each reached it on 3.6%. Test one row in each block of rows longer
+than the errors' memory there.
 
 [Compare two models](how-to/compare-two-models.md) runs both tests on 200
 pairs of nested models, and reads a `seqtest` of two models as the stream

@@ -1,0 +1,334 @@
+"""Where `po.eval.diebold_mariano` and `po.eval.clark_west` read null, in the
+frame and over a query alike (task 382b, review of `po.eval` B4, B7 and C2).
+
+- **B4.** The per-row form (``half_life=``) applies ``min_samples``: a key's
+  statistic is null until it has ``min_samples`` rows with a value, 30 by
+  default. It was taken and ignored, and a key's second row read a
+  statistic that passed 1.96 on 32% of streams of noise.
+- **B7.** Both forms null a key's statistic where it has at most
+  ``4 (lags + 1)`` rows with a value. The deviations from the mean sum to
+  zero, so the Bartlett sum of a short key shrinks toward zero as ``lags``
+  nears its rows, and its statistic grows without meaning (11.7 on two rows
+  of noise at ``lags=10``).
+- **C2.** Without ``group``, a query returns a target no row has a value of
+  as the frame does, as a row with ``n = 0`` and null statistics. It left
+  the target out.
+- **B16, B17.** The per-row form reads its statistic at half-lives up to
+  what a double can tell from no decay, and refuses one past it by name.
+- A key whose differentials are all one value reads null over a query in
+  any chunking, as in the frame, beside keys that keep their statistic: the
+  chunks' parts of such a key share one mean, which the merge pools.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal, localcontext
+
+import numpy as np
+import polars as pl
+import pytest
+
+import polars_online as po
+
+TIER = "essential"
+
+CALLS = {
+    "diebold_mariano": ("dm", {"a": "a", "b": "b"}),
+    "clark_west": ("cw", {"big": "a", "small": "b"}),
+}
+
+
+def _two_specs(
+    ra: np.ndarray, rb: np.ndarray, g: np.ndarray | None = None, z: bool = False
+) -> pl.DataFrame:
+    """Two specs' outputs holding ``resid_y``, and with ``z`` a second
+    target ``resid_z`` whose ``a`` side is null on every row."""
+    fields_a = {"resid_y": ra}
+    fields_b = {"resid_y": rb}
+    if z:
+        fields_a["resid_z"] = np.full(len(ra), None)
+        fields_b["resid_z"] = rb
+    df = pl.DataFrame(
+        {
+            "a": pl.DataFrame(fields_a, schema=dict.fromkeys(fields_a, pl.Float64)).to_struct(),
+            "b": pl.DataFrame(fields_b, schema=dict.fromkeys(fields_b, pl.Float64)).to_struct(),
+        }
+    )
+    return df if g is None else df.with_columns(pl.Series("g", g))
+
+
+def _run(df: pl.DataFrame, call: str, monkeypatch, rows: int | None, **kw) -> pl.DataFrame:
+    """The call over ``df``, or over a query of it read ``rows`` at a time."""
+    _, sides = CALLS[call]
+    fn = getattr(po.eval, call)
+    if rows is None:
+        return fn(df, **sides, **kw)
+    monkeypatch.setattr(po.eval, "_chunk_rows", lambda: rows)
+    got = fn(df.lazy(), **sides, **kw)
+    return got.collect() if isinstance(got, pl.LazyFrame) else got
+
+
+def _per_row(df: pl.DataFrame, call: str, monkeypatch, rows: int | None, **kw) -> list:
+    field, _ = CALLS[call]
+    got = _run(df, call, monkeypatch, rows, **kw)
+    return got[call].struct.field(f"{field}_y").to_list()
+
+
+def _interleaved(n: int, seed: int) -> tuple[pl.DataFrame, np.ndarray]:
+    """Two keys of ``n`` rows each, interleaved, with a null residual on
+    every seventh row of key 0, and each row's count of rows with a value
+    in its key so far, itself included (0 where it has none)."""
+    rng = np.random.default_rng(seed)
+    g = np.tile([0, 1], n)
+    ra, rb = rng.normal(size=(2, 2 * n))
+    ra[np.arange(0, 2 * n, 14)] = np.nan
+    seen = {0: 0, 1: 0}
+    counts = np.zeros(2 * n, dtype=int)
+    for i, (key, value) in enumerate(zip(g, ra, strict=True)):
+        if np.isfinite(value):
+            seen[key] += 1
+            counts[i] = seen[key]
+    return _two_specs(ra, rb, g), counts
+
+
+class TestThePerRowFormAppliesMinSamples:
+    """B4: ``min_samples`` with ``half_life`` nulls a key's rows before its
+    ``min_samples``-th row with a value, and moves no other row."""
+
+    @pytest.mark.parametrize("call", list(CALLS))
+    @pytest.mark.parametrize("lags", [0, 2])
+    @pytest.mark.parametrize("min_samples", [20, 45])
+    def test_null_until_the_key_has_min_samples_rows(self, monkeypatch, call, lags, min_samples):
+        df, counts = _interleaved(120, seed=min_samples + lags)
+        kw = dict(lags=lags, half_life=10.0, group="g")
+        free = _per_row(df, call, monkeypatch, None, min_samples=1, **kw)
+        for rows in (None, 1, 7, 10**6):
+            got = _per_row(df, call, monkeypatch, rows, min_samples=min_samples, **kw)
+            for i, (value, count) in enumerate(zip(got, counts, strict=True)):
+                if count < min_samples:
+                    assert value is None, (rows, i, count, value)
+                else:
+                    assert value is not None, (rows, i, count)
+                    assert value == pytest.approx(free[i], rel=1e-12, abs=0.0), (rows, i)
+
+    @pytest.mark.parametrize("call", list(CALLS))
+    def test_by_default_a_keys_first_29_rows_read_null(self, monkeypatch, call):
+        df, counts = _interleaved(60, seed=3)
+        for rows in (None, 13):
+            got = _per_row(df, call, monkeypatch, rows, half_life=20.0, group="g")
+            assert all(v is None for v, c in zip(got, counts, strict=True) if c < 30), rows
+            assert all(v is not None for v, c in zip(got, counts, strict=True) if c >= 30), rows
+
+
+class TestAKeyOfFewRowsForItsLags:
+    """B7: a key with at most ``4 (lags + 1)`` rows with a value reads a
+    null statistic, its ``n`` and ``mean`` kept; one more row and it reads
+    one. Whatever ``min_samples`` says."""
+
+    @pytest.mark.parametrize("call", list(CALLS))
+    @pytest.mark.parametrize("lags", [0, 2, 10])
+    def test_run_once(self, monkeypatch, call, lags):
+        field, _ = CALLS[call]
+        floor = 4 * (lags + 1)
+        rng = np.random.default_rng(lags)
+        sizes = [2, floor, floor + 1, floor + 40]
+        g = np.repeat(np.arange(len(sizes)), sizes)
+        ra, rb = rng.normal(size=(2, len(g)))
+        df = _two_specs(ra, rb, g)
+        for rows in (None, 5, 10**6):
+            got = _run(df, call, monkeypatch, rows, lags=lags, group="g", min_samples=1)
+            assert got["n"].to_list() == sizes, rows
+            assert got["mean"].null_count() == 0, rows
+            assert got[field].is_null().to_list() == [True, True, False, False], rows
+            assert got["p_value"].is_null().to_list() == [True, True, False, False], rows
+
+    @pytest.mark.parametrize("call", list(CALLS))
+    @pytest.mark.parametrize("lags", [0, 3])
+    def test_per_row(self, monkeypatch, call, lags):
+        floor = 4 * (lags + 1)
+        df, counts = _interleaved(80, seed=11 + lags)
+        kw = dict(lags=lags, half_life=30.0, group="g", min_samples=1)
+        for rows in (None, 1, 9):
+            got = _per_row(df, call, monkeypatch, rows, **kw)
+            assert all(v is None for v, c in zip(got, counts, strict=True) if c <= floor), rows
+            assert all(v is not None for v, c in zip(got, counts, strict=True) if c > floor), rows
+
+
+class TestATargetWithNoValueOverAQuery:
+    """C2: a target no row has a value of reads as the frame reads it: one
+    row with ``n = 0`` and null statistics without ``group``, and no row
+    with one."""
+
+    @pytest.mark.parametrize("call", list(CALLS))
+    @pytest.mark.parametrize("grouped", [False, True])
+    def test_the_query_returns_the_frames_rows(self, monkeypatch, call, grouped):
+        rng = np.random.default_rng(5)
+        n = 300
+        ra, rb = rng.normal(size=(2, n))
+        g = np.arange(n) % 3 if grouped else None
+        df = _two_specs(ra, rb, g, z=True)
+        kw = dict(lags=2, group="g") if grouped else dict(lags=2)
+        frame = _run(df, call, monkeypatch, None, **kw)
+        targets = frame["target"].to_list()
+        assert targets == (["y"] * 3 if grouped else ["y", "z"])
+        if not grouped:
+            assert frame.row(1) == ("z", 0, None, None, None)
+        for rows in (7, 10**6):
+            got = _run(df, call, monkeypatch, rows, **kw)
+            assert got.schema == frame.schema, rows
+            assert got["target"].to_list() == targets, rows
+            assert got["n"].to_list() == frame["n"].to_list(), rows
+            for column in ("mean", CALLS[call][0], "p_value"):
+                np.testing.assert_allclose(
+                    got[column].to_numpy().astype(float),
+                    frame[column].to_numpy().astype(float),
+                    rtol=1e-9,
+                    err_msg=f"{rows} {column}",
+                )
+
+
+class TestAConstantKeyOverAQuery:
+    """Without ``half_life``, a key whose differentials are all one value
+    reads a null statistic over a query read in any chunking, as in the
+    frame, beside keys that keep theirs: one whose value steps once, and
+    one of noise. The chunks' sums of a constant key merge parts of one
+    mean, and the merge must not read a spread into them."""
+
+    @pytest.mark.parametrize("call", list(CALLS))
+    @pytest.mark.parametrize("lags", [0, 3])
+    def test_frame_and_query_agree(self, monkeypatch, call, lags):
+        field, _ = CALLS[call]
+        rng = np.random.default_rng(23 + lags)
+        n = 200
+        step = np.r_[np.full(n // 2, 0.37), np.full(n // 2, 2.9)]
+        # Keys 0 and 1 constant (each side's residual one value), 2 a step,
+        # 3 noise; interleaved, so each chunk holds part of every key.
+        ra = np.column_stack([np.full(n, 1.0), np.full(n, 0.2), np.ones(n), rng.normal(size=n)])
+        rb = np.column_stack(
+            [np.full(n, 1.3), np.full(n, 2.1), np.sqrt(1.0 + step), rng.normal(size=n)]
+        )
+        g = np.tile(np.arange(4), n)
+        df = _two_specs(ra.ravel(), rb.ravel(), g)
+        kw = dict(lags=lags, group="g")
+        frame = _run(df, call, monkeypatch, None, **kw)
+        assert frame[field].is_null().to_list() == [True, True, False, False]
+        for rows in (1, 7, 37, 10**6):
+            got = _run(df, call, monkeypatch, rows, **kw)
+            assert got["g"].to_list() == frame["g"].to_list(), rows
+            assert got["n"].to_list() == [n] * 4, rows
+            assert got[field].is_null().to_list() == [True, True, False, False], rows
+            np.testing.assert_allclose(
+                got["mean"].to_numpy(), frame["mean"].to_numpy(), rtol=1e-14, err_msg=str(rows)
+            )
+            np.testing.assert_allclose(
+                got[field].to_numpy()[2:], frame[field].to_numpy()[2:], rtol=1e-9, err_msg=str(rows)
+            )
+
+
+def _exact_per_row(d: np.ndarray, lags: int, half_life: float, rows: list[int]) -> dict:
+    """At each of ``rows``, the per-row statistic by its definition in
+    60-digit decimal over the same f64 values and weight ``λ``: ``m Σω /
+    sqrt(S)``, ``S = Σ_s Σ_u ω_s ω_u k(|s - u|) (d_s - m)(d_u - m)`` with
+    Bartlett's ``k``; None where ``S`` is 0."""
+    with localcontext() as ctx:
+        ctx.prec = 60
+        lam = Decimal(0.5 ** (1.0 / half_life))
+        x = [Decimal(float(v)) for v in d]
+        out = {}
+        for t in rows:
+            w = [lam ** (t - s) for s in range(t + 1)]
+            w1 = sum(w)
+            m = sum(o * e for o, e in zip(w, x, strict=False)) / w1
+            u = [o * (e - m) for o, e in zip(w, x, strict=False)]
+            s = sum(e * e for e in u)
+            for lag in range(1, lags + 1):
+                pairs = sum(u[i] * u[i - lag] for i in range(lag, t + 1))
+                s += 2 * (1 - Decimal(lag) / (lags + 1)) * pairs
+            out[t] = None if s <= 0 else float(m * w1 / s.sqrt())
+    return out
+
+
+class TestALongHalfLife:
+    """B16 (task 381's rework): the per-row cut read each recursion's
+    rounding as a settled one's, ``ε / (1 - λ²)``, whatever rows the key
+    had, so at a half-life of 1e9 rows and more it nulled rows the
+    statistic had right to 1e-9 and better, and from about 1e14 every row.
+    Now each row reads, against the 60-digit definition, in the frame and
+    a query of 37-row chunks. Nearer a double's limit the totals' rounding
+    bound nulls a key's first rows: the rows read are right, and the rest
+    read from a few dozen rows on."""
+
+    @pytest.mark.parametrize("call", list(CALLS))
+    @pytest.mark.parametrize(
+        ("half_life", "level", "lags", "rel"),
+        [(1e9, 1e6, 0, 1e-8), (1e12, 1e3, 0, 1e-11), (1e12, 1e6, 3, 1e-8),
+         (1e14, 0.0, 3, 1e-11), (1e15, 0.0, 0, 1e-11), (1e15, 30.0, 0, 1e-11)],
+    )  # fmt: skip
+    def test_every_row_reads_its_statistic(self, monkeypatch, call, half_life, level, lags, rel):
+        rng = np.random.default_rng(int(np.log10(half_life)) + lags)
+        n = 300
+        d = level + rng.normal(size=n)
+        rb = np.sqrt(np.abs(d))
+        ra = np.where(d < 0, rb, 0.0)
+        rb = np.where(d < 0, 0.0, rb)
+        df = _two_specs(ra, rb)
+        read = rb * rb - ra * ra
+        v = read if call == "diebold_mariano" else read + (ra - rb) ** 2
+        floor = 4 * (lags + 1)
+        asked = list(range(floor, n, 23))
+        exact = _exact_per_row(v, lags, half_life, asked)
+        kw = dict(lags=lags, half_life=half_life, min_samples=1)
+        for rows in (None, 37):
+            got = _per_row(df, call, monkeypatch, rows, **kw)
+            assert all(g is not None for g in got[floor:]), (rows, got.index(None))
+            for t in asked:
+                assert got[t] == pytest.approx(exact[t], rel=rel), (rows, t)
+
+    @pytest.mark.parametrize("call", list(CALLS))
+    @pytest.mark.parametrize("half_life", [1e16, 1.2e16])
+    @pytest.mark.parametrize("lags", [0, 3])
+    def test_at_a_doubles_limit_only_a_keys_first_rows_are_null(
+        self, monkeypatch, call, half_life, lags
+    ):
+        rng = np.random.default_rng(lags)
+        n = 200
+        d = rng.normal(size=n)
+        rb = np.sqrt(np.abs(d))
+        ra = np.where(d < 0, rb, 0.0)
+        rb = np.where(d < 0, 0.0, rb)
+        df = _two_specs(ra, rb)
+        read = rb * rb - ra * ra
+        v = read if call == "diebold_mariano" else read + (ra - rb) ** 2
+        kw = dict(lags=lags, half_life=half_life, min_samples=1)
+        for rows in (None, 37):
+            got = _per_row(df, call, monkeypatch, rows, **kw)
+            live = [t for t, g in enumerate(got) if g is not None]
+            assert live == list(range(live[0], n)) and live[0] <= 80, (rows, live[:3])
+            exact = _exact_per_row(v, lags, half_life, live[::17])
+            for t, want in exact.items():
+                assert got[t] == pytest.approx(want, rel=1e-11), (rows, t)
+
+
+class TestAHalfLifeTooLongForADouble:
+    """B17: past about 1.25e16 rows ``0.5 ** (1 / half_life)`` is 1.0 in a
+    double, no decay, which reached Polars' ``ewm_mean`` as ``alpha = 0``
+    and its error, which does not name the parameter. Refused by name, on
+    a frame and a query, before it runs."""
+
+    @pytest.mark.parametrize("call", list(CALLS))
+    @pytest.mark.parametrize("half_life", [3e16, 1e17, 1e300])
+    @pytest.mark.parametrize("lazy", [False, True])
+    def test_refused(self, call, half_life, lazy):
+        _, sides = CALLS[call]
+        rng = np.random.default_rng(1)
+        df = _two_specs(*rng.normal(size=(2, 50)))
+        with pytest.raises(ValueError, match=f"^po.eval.{call}: half_life must be finite"):
+            getattr(po.eval, call)(df.lazy() if lazy else df, **sides, half_life=half_life)
+
+    def test_the_longest_a_double_tells_from_none_is_taken(self):
+        longest = 1.2e16
+        assert 0.5 ** (1.0 / longest) < 1.0
+        rng = np.random.default_rng(2)
+        df = _two_specs(*rng.normal(size=(2, 80)))
+        got = po.eval.diebold_mariano(df, a="a", b="b", half_life=longest, min_samples=1)
+        assert got["diebold_mariano"].struct.field("dm_y")[40:].null_count() == 0
