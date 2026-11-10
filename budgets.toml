@@ -77,7 +77,7 @@ budget = 296186941
 
 [instructions.ewridge_gram_t10]
 what = "ewridge, 50 features, 10 targets, gram_block_rows 64, pairwise, a solve every 400: AnyModel::step_into, into one kept Step, the targets folded into the block's merge"
-budget = 13974889
+budget = 13525796
 
 [instructions.huber_k20]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale: AnyModel::step_into, into one kept Step"
