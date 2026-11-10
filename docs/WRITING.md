@@ -863,7 +863,7 @@ pages hold a second kind on purpose:
 | the contributor reference on the test machines | the reasons their last bits differ | |
 | the versions reference | the short reason beside each default changed in a minor release | a reader upgrading needs it to decide whether to restore the old one |
 | the glossary | the reason for each contested word | a writer needs it to choose a new one |
-| the highlights page | its index of capabilities, after its five tasks, and, beside each task's results, what other libraries offer for it | a reader with one of the tasks finds each capability's step and guide in one table, and what the combination adds over the tools they may already use |
+| the highlights page | its index of capabilities, after its four tasks, and, beside each task's results, what other libraries offer for it | a reader with one of the tasks finds each capability's step and guide in one table, and what the combination adds over the tools they may already use |
 | this guide | its pass (§6) and its rewrites (§8), beside its rules | every rule cites them |
 
 The page-kind check (§13) accepts these seven kinds: tutorial, how-to,

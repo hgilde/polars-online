@@ -3,7 +3,7 @@
 
 > **GitHub project:** [github.com/hgilde/polars-online](https://github.com/hgilde/polars-online)
 >
-> **Every feature, one line each:** [FEATURES.md](docs/FEATURES.md) · **Five tasks, end to end:** [HIGHLIGHTS.md](docs/HIGHLIGHTS.md)
+> **Every feature, one line each:** [FEATURES.md](docs/FEATURES.md) · **Four tasks, end to end:** [HIGHLIGHTS.md](docs/HIGHLIGHTS.md)
 
 polars-online fits models online, one row at a time, to
 [Polars](https://pola.rs) data, for anyone whose data are too large to
@@ -17,7 +17,7 @@ or from a command line of their own.
 | section | what it covers |
 |---|---|
 | [Introduction](#introduction) | [a first fit](#a-first-fit) · [the idea](#the-idea) · [terminology](#terminology) · [what you can rely on](#what-you-can-rely-on) · [install](#install) · [example data](#example-data) |
-| [What you can do with it](#what-you-can-do-with-it) | five tasks run end to end in [HIGHLIGHTS.md](docs/HIGHLIGHTS.md), and the capabilities they show |
+| [What you can do with it](#what-you-can-do-with-it) | four tasks run end to end in [HIGHLIGHTS.md](docs/HIGHLIGHTS.md), and the capabilities they show |
 | [Where to go next](#where-to-go-next) | [the feature index](docs/FEATURES.md), every feature with a line and a link · the pages for each task, by kind |
 | [Models](#models) | the four families, each linking its models' entries in [MODELS.md](docs/MODELS.md) |
 | [What this is not](#what-this-is-not) | what polars-online leaves to Polars and to other tools |
@@ -390,7 +390,7 @@ relation: its mid is a random walk.
 
 ## What you can do with it
 
-**Five tasks run end to end in [HIGHLIGHTS.md](docs/HIGHLIGHTS.md),** each
+**Four tasks run end to end in [HIGHLIGHTS.md](docs/HIGHLIGHTS.md),** each
 on data it makes up with a known answer, and each prints what the library
 found, to read against that answer:
 
@@ -398,7 +398,6 @@ found, to read against that answer:
 |---|---|
 | automate a round of model selection | fits exponentially weighted ridge regressions over many combinations of factors, targets and half-lives, measured both in time and in traded volume, beside a detector of regime changes in the factors. All of it runs in one pass over the files, in bounded memory so the files may be larger than memory, and writes one output: each fit's out-of-sample residuals and coefficients, the combination chosen as best on each trade from the trades before it, and markers where the regime changed, from which to read how stable each model is |
 | build a forward-looking signal and resume it | builds, as the data streams, a target from a bounded reverse EWMA of the mid, decaying forward over the next five minutes, minus the mid, and a feature of the mid minus its EWMA over the last five. A first-stage ridge's out-of-sample residual becomes a feature of a second stage, which learns under an embargo, so no prediction has learned from a target still being formed. A robust regression handles the price's jumps, and the fit is saved partway and resumed in a fresh Python process exactly where it left off |
-| train gradient-boosted trees on files larger than memory | trains XGBoost and LightGBM from parquet files around an online model's prediction, building their training data a chunk at a time with low peak memory. The online ridge follows a level that drifts past every training row, and the trees learn the nonlinear rest |
 | monitor a live model | keeps 90% intervals on predictions whose targets arrive about 300 rows late, flags a slope that flips, and finds each planted change in the features' correlation |
 | measure correlations and fit curves on tick data | measures correlations between series that trade at their own times, and fits a curve locally along trade size |
 

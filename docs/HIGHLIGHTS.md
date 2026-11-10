@@ -8,7 +8,6 @@ the library found, to read against that answer.
 |---|---|
 | [Automate a round of model selection](#automate-a-round-of-model-selection) | exponentially weighted ridge regressions over many combinations of factors, targets and [half-lives](GLOSSARY.md#time) in time and in traded volume, in one pass in bounded memory, so the files may be larger than memory, that writes each fit's [out-of-sample](GLOSSARY.md#fitting-a-model) residuals and coefficients, the combination chosen as best on each trade, and markers where the factors' regime changed, to read how stable each model is |
 | [Build a forward-looking signal and resume it](#build-a-forward-looking-signal-and-resume-it) | a target built as the data streams, a bounded reverse EWMA of the mid, decaying forward over the next five minutes, minus the mid, a feature of the mid minus its EWMA over the last five, and a first-stage ridge's out-of-sample residual as a feature of the second stage, learned under an [embargo](GLOSSARY.md#time) so no prediction has learned from a target still being formed, fitted robustly through jumps, and saved partway and resumed in a fresh process exactly where it left off |
-| [Train gradient-boosted trees on files larger than memory](#train-gradient-boosted-trees-on-files-larger-than-memory) | XGBoost and LightGBM trained from parquet files around an online model's prediction, a chunk at a time with low peak memory: the online ridge follows a level that drifts beyond every training row's, and the trees learn the nonlinear rest |
 | [Monitor a live model](#monitor-a-live-model) | 90% intervals that keep their coverage on targets that arrive late, and a test for a broken slope and a detector of the features' correlation, both checked against planted changes |
 | [Measure correlations and fit curves on tick data](#measure-correlations-and-fit-curves-on-tick-data) | correlations from series that trade at their own times, and a curve fitted locally along trade size |
 | [Capabilities](#capabilities) | each capability the tasks use, with the step that shows it and a guide that covers it |
@@ -30,12 +29,6 @@ Each task builds its own data, so the tasks need only:
 
 - polars-online installed with numpy, as
   `pip install "polars-online[numpy]"`.
-- For [Train gradient-boosted trees on files larger than
-  memory](#train-gradient-boosted-trees-on-files-larger-than-memory),
-  XGBoost and LightGBM, as `pip install xgboost lightgbm`. `po.gbdt`, which
-  builds their training objects, is unstable: its keywords may change in
-  any release. It runs fastest with XGBoost 2.1 to before 4.0 and LightGBM
-  4.0 to before 5.0, and falls back to a slower engine outside them.
 
 ## Automate a round of model selection
 
@@ -431,120 +424,6 @@ statistics have no window of time. Here the bounded EWMAs, forward and
 back, the embargo, the factor's out-of-sample residual, the robust fit and
 the resume work together on one stream, from files to files.
 
-## Train gradient-boosted trees on files larger than memory
-
-Train gradient-boosted trees on parquet files the process does not hold,
-around an online model's prediction. The trees' training data is built a
-chunk at a time with low peak memory, in two passes over the files for
-LightGBM and four for XGBoost. The online ridge follows a
-level that drifts, and the trees learn the nonlinear rest. The recipe
-trains both XGBoost and LightGBM:
-
-- **A tree fit in passes over the files:** `po.gbdt` builds each library's
-  training object from files or a query, read a chunk at a time. For
-  XGBoost, one pass places each feature's bins from a sample of the rows,
-  and the passes after it put every row in its bin, so it keeps each row's
-  bins and never the rows. LightGBM bins on its own sample, and holds the
-  rows only when they fit in memory ([How `po.gbdt` builds training
-  data](explanation/how-po-gbdt-builds-training-data.md)).
-- **An online model's prediction as the trees' starting point**, the
-  *margin*: XGBoost's `base_margin` and LightGBM's `init_score`.
-
-The recipe plants a target with a level that drifts upward, out of reach
-of every training row by the test rows, plus `sin(2·x0)` and a step in
-`x1`, plus noise of spread 0.3. No feature carries the level.
-
-1. **Make up the rows in clock order, across five parquet files.**
-2. **Run an online ridge on a clock over the files,** with its
-   out-of-sample prediction beside each row as a column of its own,
-   `pred_y` (`.online.unnest`).
-3. **Keep the rows that have a prediction,** since every row needs a
-   margin.
-4. **Write them to a file with `sink_parquet`,** which runs the query and
-   writes the result without holding it all in memory.
-5. **Build XGBoost's training matrix with the prediction as its margin,**
-   with `po.gbdt.xgboost_matrix(..., base_margin="pred_y")`.
-6. **Train XGBoost with `xgb.train`.**
-7. **Build LightGBM's dataset the same way,** with `init_score="pred_y"`.
-8. **Train LightGBM with `lgb.train`.**
-9. **Serve the test rows with each row's margin added back.**
-10. **Compare the error with the online ridge's alone, and with the trees
-    served without the margin.**
-
-```python
-from pathlib import Path
-
-import lightgbm as lgb
-import numpy as np
-import polars as pl
-import polars_online as po
-import xgboost as xgb
-
-# 1. Rows in clock order over five files, 20 a step over 1,000 steps, with the answer planted.
-rng = np.random.default_rng(9)
-steps, per = 1_000, 20
-level = np.repeat(np.cumsum(rng.normal(0.0, 0.1, steps)) + 0.008 * np.arange(steps), per)   # drifts up
-x0, x1 = rng.standard_normal((2, steps * per))
-rows = pl.DataFrame({"t": np.repeat(np.arange(steps), per), "x0": x0, "x1": x1,
-                     "y": level + np.sin(2 * x0) + (x1 > 0.5) + 0.3 * rng.standard_normal(steps * per)})
-Path("rows").mkdir(exist_ok=True)
-for k, part in enumerate(rows.iter_slices(4_000)):
-    part.write_parquet(f"rows/part-{k}.parquet")
-
-# 2 to 4. The online ridge's prediction beside each row that has one, written to a file.
-online = po.spec.ewridge("online", targets=["y"], features=["x0", "x1"], clock="t", half_life=5, gap_cap=10)
-(pl.scan_parquet("rows/*.parquet")
-   .online.fit_predict([online]).online.unnest([online])        # 2.
-   .filter(pl.col("pred_y").is_not_null())                      # 3. every row needs a margin
-   .select("t", "x0", "x1", "y", "pred_y")
-   .sink_parquet("predicted.parquet"))                          # 4.
-# The rows before step 600 train the trees, and those from step 800 test them.
-train = pl.scan_parquet("predicted.parquet").filter(pl.col("t") < 600)
-test = pl.scan_parquet("predicted.parquet").filter(pl.col("t") >= 800).collect()
-X, margin, y = test.select("x0", "x1").to_numpy(), test["pred_y"].to_numpy(), test["y"].to_numpy()
-
-def rmse(pred):
-    return float(np.sqrt(np.mean((pred - y) ** 2)))
-
-# 5 and 6. XGBoost: bins from a sample in one pass, every row binned in the passes after it, then train.
-matrix = po.gbdt.xgboost_matrix(train, label="y", features=["x0", "x1"], base_margin="pred_y")
-booster = xgb.train({"tree_method": "hist", "max_depth": 4, "eta": 0.1}, matrix, 100)
-# 7 and 8. LightGBM, the same way.
-dataset = po.gbdt.lightgbm_dataset(train, label="y", features=["x0", "x1"], init_score="pred_y")
-lgb_trees = lgb.train({"num_leaves": 15, "learning_rate": 0.1, "verbose": -1}, dataset, 100)
-
-# 9. Served with each row's margin; and, for the comparison, XGBoost's trees without it.
-served = booster.predict(xgb.DMatrix(X, base_margin=margin, feature_names=["x0", "x1"]))
-forgot = booster.predict(xgb.DMatrix(X, feature_names=["x0", "x1"]))
-# 10. The test error of each.
-print(f"the online ridge alone: test RMSE {rmse(margin):.2f}")
-print(f"XGBoost around it:      test RMSE {rmse(served):.2f}, and {rmse(forgot):.2f} served without the margin")
-print(f"LightGBM around it:     test RMSE {rmse(lgb_trees.predict(X, raw_score=True) + margin):.2f}")
-```
-
-```text
-the online ridge alone: test RMSE 0.81
-XGBoost around it:      test RMSE 0.40, and 5.03 served without the margin
-LightGBM around it:     test RMSE 0.40
-```
-
-**Together, the online ridge and the trees reach a test error of 0.40,
-against the noise's spread of 0.3.** The ridge alone follows the level but
-misses the curve in `x0` and the step in `x1`, at 0.81. The trees learned
-only what the margin leaves of the target, so served without it they carry
-none of the level, and miss by 5.03. Served with the margin, each library
-reaches 0.40. [Train XGBoost or LightGBM on files larger than
-memory](GBDT.md) gives every step of the build, and what to do when a
-check fails.
-
-**Both libraries train from data larger than memory on their own, given
-an iterator you write, or for LightGBM a CSV or LibSVM text file.**
-XGBoost reads a `DataIter` subclass whose `next` and `reset` you write,
-and LightGBM an `lgb.Sequence` that answers any row or range of rows by
-its index. Both take a margin. `po.gbdt` writes that part for you, from
-parquet files, Arrow IPC files or a query, and the margin comes from an
-online model whose every prediction is out-of-sample.
-
 ## Monitor a live model
 
 This task watches a model whose targets arrive about 300 rows after its
@@ -809,8 +688,6 @@ the library, one line each, see [the feature index](FEATURES.md).
 | scores of an output too large to hold | sums per slot that add up across chunks, files and machines | [model selection](#automate-a-round-of-model-selection), step 6 | [Score an output too large to hold](how-to/evaluate-an-output-frame.md#score-an-output-too-large-to-hold) |
 | robust regression | a fit that down-weights the rows it misses by far, such as jumps | [build a signal](#build-a-forward-looking-signal-and-resume-it), step 6 | [The robust scale](explanation/robust-scale.md) |
 | an exact resume | a saved state goes on in a fresh process as one unbroken run would, dropping the rows it has read | [build a signal](#build-a-forward-looking-signal-and-resume-it), steps 8 to 11 | [Resume from a saved state](how-to/resume-from-a-saved-state.md) |
-| a tree fit in passes over files larger than memory | XGBoost's and LightGBM's training objects, binned from files or a query a chunk at a time | [trees](#train-gradient-boosted-trees-on-files-larger-than-memory), steps 5 to 8 | [Train XGBoost or LightGBM on files larger than memory](GBDT.md) |
-| an online model as the trees' margin | trees that learn what an out-of-sample online prediction leaves, and follow its level | [trees](#train-gradient-boosted-trees-on-files-larger-than-memory), steps 2 and 9 | [Train trees around an online model's prediction](GBDT.md#train-trees-around-an-online-models-prediction) |
 | intervals when targets arrive late | a conformal interval whose step adapts to the targets still waiting | [monitor a model](#monitor-a-live-model), steps 5 and 8 | [Put an interval on a prediction](how-to/put-an-interval-on-a-prediction.md) |
 | per-row break tests | a test on every row of whether a regression has broken | [monitor a model](#monitor-a-live-model), steps 5 and 9 | [Detect a break](how-to/detect-a-break.md) |
 | a detector of the features' correlation | a flag where the features' correlations change | [monitor a model](#monitor-a-live-model), steps 6 and 10 | [Detect a break](how-to/detect-a-break.md#watch-the-features-correlations-with-corrchange) |

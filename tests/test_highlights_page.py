@@ -1,4 +1,4 @@
-"""``docs/HIGHLIGHTS.md``: the five tasks of the highlights page, held to the code.
+"""``docs/HIGHLIGHTS.md``: the four tasks of the highlights page, held to the code.
 
 Each task on the page makes up its own data with a planted answer, writes
 it to parquet files and scans them, and prints what the library found
@@ -48,7 +48,7 @@ def test_every_block_runs_in_order_and_prints_what_the_page_shows(tmp_path, monk
             problems += [
                 f"HIGHLIGHTS.md:{line}:\n{p}" for p in differences(after[2], buf.getvalue())
             ]
-    assert ran >= 6, ran  # five tasks, one of them in two blocks
+    assert ran >= 5, ran  # four tasks, one of them in two blocks
     assert not problems, "\n\n".join(problems)
 
 
@@ -69,7 +69,7 @@ def test_every_capability_row_links_a_step_and_a_guide():
     rows = [
         r for r in index.splitlines() if r.startswith("| ") and not r.startswith("| capability")
     ]
-    assert len(rows) >= 19, len(rows)
+    assert len(rows) >= 17, len(rows)
     for row in rows:
         cells = [c.strip() for c in row.strip("|").split("|")]
         assert "](#" in cells[2], row
