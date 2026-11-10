@@ -8,11 +8,10 @@ a stream's own residuals.
 
 Most calls read the frame a :class:`~polars_online.ModelBank` returns: the
 input's columns plus one output column per spec, whose value in each row is
-a record of the model's fields. :func:`merge_sums` and :func:`from_sums` read
-the frames :func:`sums` makes. :func:`seqtest` can also test the sign of
-plain numeric columns, and :func:`grid_search` runs a bank over a query
-itself. The calls
-fall into five kinds:
+a record of the model's fields, or a query of one. :func:`merge_sums` and
+:func:`from_sums` read the frames :func:`sums` makes. :func:`seqtest` can
+also test the sign of plain numeric columns, and :func:`grid_search` runs a
+bank over a query itself. The calls fall into five kinds:
 
 .. list-table::
    :header-rows: 1
@@ -20,40 +19,42 @@ fall into five kinds:
 
    * - kind
      - the calls
-     - what they hold in memory
-   * - scores over a frame or a query
-     - :func:`metrics`
-     - given a frame, the frame; given a query, one chunk of it and ten
-       numbers per key
-   * - scores in windows, or of several specs
-     - :func:`window_metrics`, :func:`compare_specs`
-     - the whole frame
+     - what they hold in memory, given a query
+   * - scores over the rows, in windows of the clock, or of several specs
+     - :func:`metrics`, :func:`window_metrics`, :func:`compare_specs`
+     - one chunk, and ten numbers per slot and key (and window)
    * - scores one chunk at a time
      - :func:`sums`, :func:`merge_sums`, :func:`from_sums`
-     - ten numbers per key, and given a query, one chunk of it
+     - one chunk, and ten numbers per slot and key
    * - one spec against another
      - :func:`diebold_mariano`, :func:`clark_west`, :func:`seqtest`
-     - the whole frame
+     - one chunk, and per key and target the last ``lags`` values and a
+       few sums
    * - the long form the scores read
      - :func:`unpack`
-     - given a frame, the frame; given a query, nothing until the query it
-       returns runs
+     - nothing until the query it returns runs, and then one chunk
    * - a grid point chosen from a stream's own residuals
      - :func:`grid_search`
      - three numbers per slot for each run of rows between the places a
        test span starts or its choice stops,
        and the bank's state and one chunk
 
-**Give :func:`metrics` or :func:`sums` a query to score an output too long
-to hold.** A query (a ``LazyFrame``) runs only when its result is asked
-for, and these two read its result one chunk at a time: each chunk is
-reduced to the ten sums per key that :func:`sums` keeps, and the chunks'
-sums are added as :func:`merge_sums` adds them. So scoring the file a bank's
-output was written to, ``pl.scan_parquet("out.parquet")``, holds one chunk
-and the sums, not the file. The scores are the frame's, as each function's
-Notes say. To keep scores beside the model as it runs, set a spec's
-``emit_metrics``, which keeps exponentially weighted R², IC and hit rate,
-in memory the size of the model's state.
+**Give a call the query to score an output too long to hold.** A query (a
+``LazyFrame``) runs only when its result is asked for, and every call that
+reads a bank's output reads a query's result one chunk at a time. The
+scores keep the ten sums per key that :func:`sums` keeps, added chunk to
+chunk as :func:`merge_sums` adds them. The tests of two specs keep sums of
+their own, and the last rows of each key, which the next chunk's first rows
+pair with. So scoring the file a bank's output was written to,
+``pl.scan_parquet("out.parquet")``, holds one chunk and the sums, not the
+file. A call whose result has a row for each row of the output returns a
+query of that result, as Polars' own calls on a query return a query:
+:func:`unpack`, :func:`seqtest`, and :func:`diebold_mariano` and
+:func:`clark_west` with ``half_life``. The results are the frame's, as each
+function's Notes say. Given a frame, a call reads it in memory. To keep
+scores beside the model as it runs, set a spec's ``emit_metrics``, which
+keeps exponentially weighted R², IC and hit rate, in memory the size of
+the model's state.
 
 **Pass the spec itself as ``spec`` where a target is not a plain column.**
 ``spec`` is the spec's name, which names its output column, or the spec
@@ -63,13 +64,13 @@ renamed with :func:`polars_online.target`, or a formula target (see
 :func:`unpack`). The dict also says whether a fit is a classifier, whose
 scores take other names (:func:`metrics`' ``binary``).
 
-:func:`metrics`, :func:`sums` and :func:`unpack` take a ``LazyFrame`` as
-well as a ``DataFrame``, and :func:`grid_search` runs a bank over a query
-itself. Every other call here reads a whole ``DataFrame``, and given a
-``LazyFrame`` raises ``TypeError``: pass ``lf.collect()``, which runs the
-query and returns its result. The scores
-start from :func:`unpack` and raise what it raises, over a query as over a
-frame, before the query runs. It raises a
+Every call here that reads a bank's output takes a ``LazyFrame`` as well
+as a ``DataFrame``, and refuses a query as it refuses the frame, with the
+same message, before the query runs. :func:`merge_sums` and
+:func:`from_sums` read the sums a call returned, and given a ``LazyFrame``
+raise ``TypeError``: pass ``lf.collect()``, which runs the query and returns
+its result. The scores
+start from :func:`unpack` and raise what it raises. It raises a
 :class:`~polars_online.OutputColumnNotFoundError` (a ``KeyError`` too) for a
 spec whose output column the frame does not have, ``TypeError`` for a column
 that is not a spec's output or is the output of a model that predicts no
@@ -106,7 +107,7 @@ import numbers
 import operator
 import re
 import warnings
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from datetime import timedelta
 from typing import Any, Literal, overload
 
@@ -886,7 +887,7 @@ def metrics(
         job = _job(
             df, written or spec_name, targets, group, None, binary, "po.eval.metrics", log_loss=True
         )
-        merged = _query_sums(df, [job], group=group, weight=None)[0]
+        merged = _query_sums(df, [job], keys=keys, weight=None)[0]
         if merged is not None:
             return _thin(_scores(merged, keys, binary=binary), min_samples, keys)
         df = _probe(df)
@@ -965,9 +966,9 @@ def _dynamic_windows(
 
 
 @renamed_keywords("po.eval.window_metrics", _WINDOW)
-@_takes_spec("po.eval.window_metrics")
+@_takes_spec("po.eval.window_metrics", lazy=True)
 def window_metrics(
-    df: pl.DataFrame,
+    df: pl.DataFrame | pl.LazyFrame,
     spec: str | dict,
     *,
     clock: str,
@@ -988,8 +989,8 @@ def window_metrics(
 
     ``df``
         A frame a bank returned, holding the spec's output column and the
-        clock column. A ``LazyFrame`` is refused: pass ``lf.collect()``, which
-        runs the query and returns its result.
+        clock column, or a query of one, a ``LazyFrame``, which this runs
+        and reads one chunk at a time, as :func:`metrics` reads one.
     ``spec``
         The spec's name, or the spec dict itself, as :func:`metrics` reads
         it.
@@ -1034,6 +1035,11 @@ def window_metrics(
     :class:`~polars_online.ColumnNotFoundError`
         ``df`` does not have the ``clock`` column or a ``group`` column. It
         is both Polars' ``ColumnNotFoundError`` and a ``ValueError``.
+
+    A query is refused as its result would be, with the same message,
+    before it runs, and also with ``ValueError`` where a key's clock steps
+    back, in a later chunk, before the windows an earlier chunk started for
+    it would place it (see Notes).
 
     .. rubric:: Examples
 
@@ -1088,17 +1094,36 @@ def window_metrics(
       takes it.
     - On a ``Duration`` clock, ``every`` is a length of time with no
       calendar, and a window starts at a whole number of ``every`` from 0.
+
+    **Given a query, this holds one chunk of it and the sums of each window
+    it has seen,** ten numbers per slot, key and window, read as
+    :func:`metrics` reads a query. Scoring a scan of a two-spec output by
+    the day and by a key of four values held 112 MiB at a million rows, 112
+    MiB at four million and 115 MiB at sixteen million, measured as
+    :func:`metrics`' Notes say. The scores are the frame's as
+    :func:`metrics`' are.
+
+    Polars starts the windows of a time-zoned clock whose ``every`` is a
+    fixed length that does not divide a day, such as ``"90m"``, from a
+    key's first clock rather than from midnight. So each chunk of a query
+    is windowed from the first clock of the key in the chunks before it,
+    and its windows are the frame's. A key whose clock steps back, in a
+    later chunk, to before that first clock would be windowed from the new
+    one in the frame, so where that moves its windows the query is refused
+    with ``ValueError``: sort the query by the clock within each key, or
+    pass the collected frame.
     """
     spec_name, written = _spec_of("po.eval.window_metrics", spec)
-    dtype = df.schema.get(clock)
+    probe = _probe(df)
+    dtype = probe.schema.get(clock)
     if dtype is None:
         # Named before the window is checked against it (review R2, P9).
         msg = (
             f"po.eval.window_metrics: clock column {clock!r} is not in the frame, whose "
-            f"columns are {df.columns}. Name a column of the frame as clock."
+            f"columns are {probe.columns}. Name a column of the frame as clock."
         )
         raise ColumnNotFoundError(msg)
-    _check_columns(df, "po.eval.window_metrics", group=group)
+    _check_columns(probe, "po.eval.window_metrics", group=group)
     # The clock's dtype before `every` is read against it: a String clock was
     # refused for the window, not for itself (task 352).
     if not (dtype.is_numeric() or dtype.is_temporal()):
@@ -1149,6 +1174,17 @@ def window_metrics(
     else:
         start = None
     keys = ["slot", "target", *_group_keys(group), "window_start"]
+    binary = _binary(binary, written)
+    every_text = None if start is not None else _polars_every(every, ns)
+    if isinstance(df, pl.LazyFrame):
+        who = "po.eval.window_metrics"
+        job = _job(df, written or spec_name, targets, group, None, binary, who, log_loss=True,
+                   also=[clock])  # fmt: skip
+        windows = _windowing(clock, start, every_text, keys[:-1], every)
+        merged = _query_sums(df, [job], keys=keys, weight=None, prepare=windows)[0]
+        if merged is not None:
+            return _thin(_scores(merged, keys, binary=binary), min_samples, keys)
+        df = probe
     long = _scored(
         _unpack(
             df,
@@ -1157,19 +1193,92 @@ def window_metrics(
             columns=[*keys, clock],
             who="po.eval.window_metrics",
         )
-    ).filter(
+    )
+    long = _windowing(clock, start, every_text, keys[:-1], every)(long)
+    exprs = _metric_exprs(binary=binary, hit=not _no_hit(written))
+    out = long.group_by(keys).agg(exprs).sort(keys)
+    return _thin(out, min_samples, keys)
+
+
+def _windowing(
+    clock: str,
+    start: pl.Expr | None,
+    every: str | timedelta | None,
+    keys: list[str],
+    given: object,
+) -> Callable[[pl.DataFrame], pl.DataFrame]:
+    """What puts each scored row of a long form in its window: the rows with
+    a clock, each with its ``window_start``, by ``start`` or by Polars'
+    ``group_by_dynamic`` over ``keys`` (``every``). Called on each chunk of
+    a query in turn, it starts a key's windows where its first chunk
+    started them: Polars counts a time-zoned clock's windows of a length
+    that does not divide a day from a key's first row, so each chunk is
+    windowed after a row at that first clock, which is then dropped."""
+    anchors: pl.DataFrame | None = None
+    mark = "__po_anchor"
+
+    def windowed(long: pl.DataFrame) -> pl.DataFrame:
+        nonlocal anchors
         # A row with no clock is in no window, as Polars leaves a null key out
         # of `group_by_dynamic`; scored as a window of its own, it was a row
         # of null `window_start` (task 359).
-        pl.col(clock).is_not_null()
+        long = long.filter(pl.col(clock).is_not_null())
+        if start is not None:
+            return long.with_columns(start.alias("window_start"))
+        assert every is not None
+        firsts = long.group_by(keys).agg(pl.col(clock).min())
+        if anchors is None:
+            anchors = firsts
+            return _dynamic_windows(long, clock, every, keys)
+        seen = firsts.join(anchors, on=keys, how="inner", nulls_equal=True, suffix="_was")
+        back = seen.filter(pl.col(clock) < pl.col(f"{clock}_was"))
+        for i in range(back.height):
+            _check_step_back(back.slice(i, 1), clock, every, keys, given)
+        # Each key's earliest clock so far, and the keys new in this chunk.
+        earlier = seen.select(*keys, pl.min_horizontal(clock, f"{clock}_was").alias(clock))
+        anchors = pl.concat(
+            [
+                anchors.join(earlier, on=keys, how="anti", nulls_equal=True),
+                earlier,
+                firsts.join(anchors, on=keys, how="anti", nulls_equal=True),
+            ]
+        )
+        here = anchors.join(firsts.select(keys), on=keys, how="semi", nulls_equal=True)
+        both = pl.concat(
+            [
+                here.with_columns(pl.lit(True).alias(mark)),
+                long.with_columns(pl.lit(False).alias(mark)),
+            ],
+            how="diagonal",
+        )
+        return _dynamic_windows(both, clock, every, keys).filter(~pl.col(mark)).drop(mark)
+
+    return windowed
+
+
+def _check_step_back(
+    row: pl.DataFrame, clock: str, every: str | timedelta, keys: list[str], given: object
+) -> None:
+    """Refuse a key whose clock steps back, in a later chunk of a query, to
+    before the first clock of its earlier chunks, where its windows counted
+    from that earlier first clock are not the windows counted from the new
+    one. A frame in memory is windowed from each key's earliest clock."""
+    was, now = row[f"{clock}_was"][0], row[clock][0]
+    key = {k: row[k][0] for k in keys}
+    pair = pl.concat(
+        [row.select(*keys, clock), row.select(*keys, pl.col(f"{clock}_was").alias(clock))]
     )
-    if start is None:
-        long = _dynamic_windows(long, clock, _polars_every(every, ns), keys[:-1])
-    else:
-        long = long.with_columns(start.alias("window_start"))
-    exprs = _metric_exprs(binary=_binary(binary, written), hit=not _no_hit(written))
-    out = long.group_by(keys).agg(exprs).sort(keys)
-    return _thin(out, min_samples, keys)
+    chained = _dynamic_windows(pair, clock, every, keys)["window_start"][1]
+    alone = _dynamic_windows(pair.tail(1), clock, every, keys)["window_start"][0]
+    if chained != alone:
+        msg = (
+            f"po.eval.window_metrics: clock column {clock!r} steps back to {now} for "
+            f"{key}, before {was}, where an earlier chunk of the query started its windows of "
+            f"{given!r}, and windows of that length on this clock are counted from a key's "
+            "first clock, so the chunks' windows would not be the frame's. Sort the query by "
+            "the clock within each key, or run the query first and pass its result."
+        )
+        raise ValueError(msg)
 
 
 #: Renamed :func:`window_metrics`, and its ``window_size`` ``every``, before
@@ -1188,7 +1297,7 @@ def _takes_specs[R](fn: Callable[..., R]) -> Callable[..., R]:
 
     @functools.wraps(fn)
     def wrapper(df: Any, *args: Any, **kwargs: Any) -> R:
-        _frame(who, df)
+        _frame(who, df, lazy=True)
         if "spec_names" in kwargs:
             if args:
                 msg = (
@@ -1210,7 +1319,7 @@ def _takes_specs[R](fn: Callable[..., R]) -> Callable[..., R]:
 @renamed_keywords("po.eval.compare_specs", _BOTH)
 @_takes_specs
 def compare_specs(
-    df: pl.DataFrame,
+    df: pl.DataFrame | pl.LazyFrame,
     specs: Iterable[str | dict],
     *,
     group: str | Iterable[str] | None = None,
@@ -1229,9 +1338,9 @@ def compare_specs(
     .. rubric:: Parameters
 
     ``df``
-        A frame a bank returned, holding each spec's output column. A
-        ``LazyFrame`` is refused: pass ``lf.collect()``, which runs the query
-        and returns its result.
+        A frame a bank returned, holding each spec's output column, or a
+        query of one, a ``LazyFrame``, which this runs once for every spec
+        and reads one chunk at a time, as :func:`metrics` reads one.
     ``specs``
         The specs that wrote the columns, each its name or its dict, read
         as :func:`metrics` reads its ``spec``.
@@ -1291,7 +1400,11 @@ def compare_specs(
     Each spec is scored on its own rows, so two specs whose warm-ups differ
     in length are scored on different rows, as the 396 and 397 rows in the
     example are. Diebold and Mariano's test and Clark and West's read only
-    the rows where both specs have a residual.
+    the rows where both specs have a residual. Given a query, every spec's
+    sums are read in the one run of it: scoring two specs of a scan by a
+    key of four values held 105 MiB at a million rows, 111 MiB at four
+    million and 115 MiB at sixteen million, measured as :func:`metrics`'
+    Notes say.
 
     **Diebold and Mariano's (1995) test asks whether two specs' squared
     errors differ on average.** Its statistic is the mean of the loss
@@ -1342,19 +1455,51 @@ def compare_specs(
             )
             raise ValueError(msg)
         binary = reads.pop() if reads else False
-    frames = [
-        metrics(
-            df,
-            written or name,
-            group=group,
-            targets=targets,
-            min_samples=min_samples,
-            binary=binary,
-        ).with_columns(pl.lit(name).alias("spec"))
-        for name, written in given
-    ]
+    if isinstance(df, pl.LazyFrame):
+        frames = _compare_query(df, given, group, targets, min_samples, binary)
+    else:
+        frames = [
+            metrics(
+                df,
+                written or name,
+                group=group,
+                targets=targets,
+                min_samples=min_samples,
+                binary=binary,
+            ).with_columns(pl.lit(name).alias("spec"))
+            for name, written in given
+        ]
     cols = ["spec", *frames[0].columns[:-1]] if frames else []
     return pl.concat(frames).select(cols) if frames else pl.DataFrame()
+
+
+def _compare_query(
+    lf: pl.LazyFrame,
+    given: list[tuple[str, dict | None]],
+    group: str | Iterable[str] | None,
+    targets: Sequence[str] | None,
+    min_samples: int,
+    binary: bool,
+) -> list[pl.DataFrame]:
+    """:func:`compare_specs`' tables over a query, every spec's sums read in
+    one pass: each spec checked as :func:`metrics` checks it, in order."""
+    who = "po.eval.metrics"
+    probe = _probe(lf)
+    jobs = []
+    for name, written in given:
+        _check_columns(probe, who, group=group)
+        jobs.append(_job(lf, written or name, targets, group, None, binary, who, log_loss=True))
+    keys = _keys(group)
+    frames = []
+    for (name, written), merged in zip(
+        given, _query_sums(lf, jobs, keys=keys, weight=None) if jobs else [], strict=True
+    ):
+        if merged is None:
+            out = metrics(probe, written or name, group=group, targets=targets, binary=binary)
+        else:
+            out = _thin(_scores(merged, keys, binary=binary), min_samples, keys)
+        frames.append(out.with_columns(pl.lit(name).alias("spec")))
+    return frames
 
 
 #: :func:`grid_search`'s scorings: each names the column it writes and
@@ -2048,7 +2193,7 @@ def _resid_fields(who: str, df: pl.DataFrame, spec_name: str) -> list[str]:
     return [f.name for f in dtype.fields if f.name.startswith("resid_")]
 
 
-@renamed_keywords("po.eval.seqtest", _GROUP)
+@overload
 def seqtest(
     df: pl.DataFrame,
     *,
@@ -2060,23 +2205,53 @@ def seqtest(
     group: str | Iterable[str] | None = None,
     min_weight: float = 0.0,
     name: str = "seqtest",
-) -> pl.DataFrame:
-    """Test a sign sequentially by betting, over a frame in memory.
+) -> pl.DataFrame: ...
+
+
+@overload
+def seqtest(
+    df: pl.LazyFrame,
+    *,
+    targets: Sequence[str] | None = None,
+    a: str | None = None,
+    b: str | None = None,
+    a_suffix: str = "",
+    b_suffix: str = "",
+    group: str | Iterable[str] | None = None,
+    min_weight: float = 0.0,
+    name: str = "seqtest",
+) -> pl.LazyFrame: ...
+
+
+@renamed_keywords("po.eval.seqtest", _GROUP)
+def seqtest(
+    df: pl.DataFrame | pl.LazyFrame,
+    *,
+    targets: Sequence[str] | None = None,
+    a: str | None = None,
+    b: str | None = None,
+    a_suffix: str = "",
+    b_suffix: str = "",
+    group: str | Iterable[str] | None = None,
+    min_weight: float = 0.0,
+    name: str = "seqtest",
+) -> pl.DataFrame | pl.LazyFrame:
+    """Test a sign sequentially by betting, over a frame or a query.
 
     Use it to gather evidence, row by row, that a column's sign leans one
     way, or that one spec predicts closer than another, with evidence you
     may read at any row. It computes what :func:`polars_online.spec.seqtest`
     writes, field for field and row for row, with Polars expressions. For a
-    stream too long to hold, run the ``seqtest`` model in the bank, whose
-    memory is the size of its state.
+    stream too long to hold, give it a query of the output, or run the
+    ``seqtest`` model in the bank, whose memory is the size of its state.
 
     .. rubric:: Parameters
 
     ``df``
         The frame: in column mode, one holding the columns tested; in
         compare mode, one a bank returned, holding both specs' output
-        columns. A ``LazyFrame`` is refused: pass ``lf.collect()``, which runs
-        the query and returns its result.
+        columns. Or a query of either, a ``LazyFrame``, which gives a query
+        back (see Returns).
     ``targets``
         In column mode, the columns whose sign is tested, which column mode
         needs. In compare mode, the targets whose residuals are compared:
@@ -2115,6 +2290,9 @@ def seqtest(
         The rows before this one in its group. Every other field is null
         until it reaches ``min_weight``.
 
+    Given a ``LazyFrame``, a ``LazyFrame`` of the same, which reads ``df``
+    one chunk at a time when it runs (see Notes).
+
     .. rubric:: Raises
 
     ``ValueError``
@@ -2131,8 +2309,8 @@ def seqtest(
         ``df`` has no column ``a`` or ``b``. It is both Polars'
         ``ColumnNotFoundError`` and a ``KeyError``.
     ``TypeError``
-        ``df`` is not a ``DataFrame``, or ``a`` or ``b`` names a column that
-        is not a record.
+        ``df`` is neither a ``DataFrame`` nor a ``LazyFrame``, or ``a`` or
+        ``b`` names a column that is not a record.
     :class:`~polars_online.ColumnNotFoundError`
         ``df`` does not have a ``group`` column. It is both Polars'
         ``ColumnNotFoundError`` and a ``ValueError``.
@@ -2193,11 +2371,22 @@ def seqtest(
     magnitude. The bank's model adds what a frame in memory does not have,
     the clock (``session``, ``restart_after_step_back``), and its output is
     held to this function's to the last bit.
+
+    **Given a query, the result is the frame's to the bit, and holds one
+    chunk and a few numbers per key.** Each chunk carries in, per group,
+    the rows and the signs counted before it and each bet's log wealth
+    after its last row, and adds that wealth to its own first term, so the
+    sums run on in the frame's order. A query is refused as its frame
+    would be, with the same message, before it runs. Written to a file
+    with ``sink_parquet``, the test of two specs of a scan by a key of four
+    values held 152 MiB at a million rows, 170 MiB at four million and 174
+    MiB at sixteen million, measured as :func:`metrics`' Notes say.
     """
     who = "po.eval.seqtest"
-    _frame(who, df)
-    _check_name("po.eval.seqtest", df, name)
-    _check_columns(df, who, group=group)
+    _frame(who, df, lazy=True)
+    probe = _probe(df)
+    _check_name("po.eval.seqtest", probe, name)
+    _check_columns(probe, who, group=group)
     keys = _group_keys(group)
     if (a is None) != (b is None):
         msg = (
@@ -2206,7 +2395,7 @@ def seqtest(
         )
         raise ValueError(msg)
     if a is not None and b is not None:
-        have = {a: _resid_fields(who, df, a), b: _resid_fields(who, df, b)}
+        have = {a: _resid_fields(who, probe, a), b: _resid_fields(who, probe, b)}
         if targets is None:
             # `resid_<t><a_suffix>` of a, for every t with `resid_<t><b_suffix>` in b.
             bodies = [f.removeprefix("resid_") for f in have[a] if f.endswith(a_suffix)]
@@ -2245,61 +2434,256 @@ def seqtest(
             raise ValueError(msg)
         signs = {t: pl.col(t) for t in targets}
         names = ("log_e_pos", "log_e_neg", "n_pos", "n_neg")
+    test = _SeqTest(signs, names, keys, min_weight, name)
+    if isinstance(df, pl.LazyFrame):
+        # A column-mode target the query lacks is Polars' own refusal, here
+        # as on a frame, before the query runs.
+        schema = test.run(probe)[0].schema
+        needed = set(keys).union(*(d.meta.root_names() for d in signs.values()))
 
-    def over(e: pl.Expr) -> pl.Expr:
-        return e.over(keys) if keys else e
+        def step() -> Callable[[pl.DataFrame], pl.DataFrame]:
+            carry: pl.DataFrame | None = None
 
-    def before(e: pl.Expr) -> pl.Expr:
-        """The running sum of ``e`` over the rows before this one."""
-        return over(e.cum_sum().shift(1, fill_value=0))
+            def one(chunk: pl.DataFrame) -> pl.DataFrame:
+                nonlocal carry
+                out, carry = test.run(chunk, carry, carrying=True)
+                return out
 
-    # Two passes, so that no window sits inside another: the log wealth is a
-    # running sum over the rows before, of a bet sized by counts that are
-    # themselves running sums. Polars 1.34.0 refuses a window inside a
-    # window ("window expression not allowed in aggregation"; 1.44.2 takes
-    # it), which failed every `group` at the declared floor (task 109's floor run,
-    # 2026-09-27). The counts go into columns first, then the wealth reads
-    # them; the arithmetic is the same.
-    taken = {*df.columns, name}
+            return one
 
-    def temp(label: str) -> str:
-        column = f"__po_seqtest_{label}"
-        while column in taken:
-            column = "_" + column
-        taken.add(column)
-        return column
+        return _row_query(df, needed, schema, step)
+    return test.run(df)[0]
 
-    n_eff_col = temp("weight_sum")
-    first: list[pl.Expr] = [over(pl.int_range(pl.len())).cast(pl.Float64).alias(n_eff_col)]
-    staged: dict[str, tuple[str, str, str]] = {}
-    for i, (t, d) in enumerate(signs.items()):
-        # What the bank does not learn from -- null, NaN, an infinity, a
-        # magnitude beyond its input bound (docs/PLAN.md section 3) -- is no
-        # sign here either. Polars orders NaN above every float, so without
-        # this `NaN > 0` would be a positive sign.
-        d = d.cast(pl.Float64)
-        d = pl.when(d.is_finite() & (d.abs() <= _INPUT_BOUND)).then(d)
-        cols = (temp(f"s_{i}"), temp(f"n_pos_{i}"), temp(f"n_neg_{i}"))
-        first += [
-            pl.when(d > 0).then(1.0).when(d < 0).then(-1.0).otherwise(0.0).alias(cols[0]),
-            before((d > 0).cast(pl.Int64).fill_null(0)).alias(cols[1]),
-            before((d < 0).cast(pl.Int64).fill_null(0)).alias(cols[2]),
+
+class _SeqTest:
+    """:func:`seqtest`'s arithmetic over a frame, or over one chunk of a
+    query after the chunks before it.
+
+    A chunk carries in, per key, the rows before it, the signs counted, and
+    each bet's log wealth after the last of them; the running sums go on
+    from those. The log wealth is a sum in row order, so the carried sum
+    is added to the chunk's first term and the chunk's sums run on from it,
+    the same additions in the same order as over the frame, and the result
+    is the frame's to the bit."""
+
+    def __init__(
+        self,
+        signs: dict[str, pl.Expr],
+        names: tuple[str, str, str, str],
+        keys: list[str],
+        min_weight: float,
+        name: str,
+    ) -> None:
+        self.signs, self.names, self.keys = signs, names, keys
+        self.min_weight, self.name = min_weight, name
+
+    def run(
+        self, df: pl.DataFrame, carry: pl.DataFrame | None = None, *, carrying: bool = False
+    ) -> tuple[pl.DataFrame, pl.DataFrame | None]:
+        """``df`` with the record column added, and, when ``carrying``, what
+        the next chunk carries in."""
+        keys = self.keys
+
+        def over(e: pl.Expr) -> pl.Expr:
+            return e.over(keys) if keys else e
+
+        def before(e: pl.Expr) -> pl.Expr:
+            """The running sum of ``e`` over the rows before this one."""
+            return over(e.cum_sum().shift(1, fill_value=0))
+
+        # Two passes, so that no window sits inside another: the log wealth is a
+        # running sum over the rows before, of a bet sized by counts that are
+        # themselves running sums. Polars 1.34.0 refuses a window inside a
+        # window ("window expression not allowed in aggregation"; 1.44.2 takes
+        # it), which failed every `group` at the declared floor (task 109's floor run,
+        # 2026-09-27). The counts go into columns first, then the wealth reads
+        # them; the arithmetic is the same.
+        taken = {*df.columns, self.name}
+
+        def temp(label: str) -> str:
+            column = f"__po_seqtest_{label}"
+            while column in taken:
+                column = "_" + column
+            taken.add(column)
+            return column
+
+        n_eff_col = temp("weight_sum")
+        count = over(pl.int_range(pl.len()))
+        # The carried-in columns: the rows before the chunk, and per target
+        # the signs counted and each bet's log wealth (null for a key the
+        # chunks before did not have).
+        rows_in = temp("rows_in")
+        held = [tuple(temp(f"{k}_in_{i}") for k in ("pos", "neg", "lpos", "lneg"))
+                for i in range(len(self.signs))]  # fmt: skip
+        if carrying:
+            counts = [rows_in, *(c for h in held for c in h[:2])]
+            df = _carried_in(df, carry, keys, counts, [c for h in held for c in h[2:]])
+            count = count + pl.col(rows_in)
+        first: list[pl.Expr] = [count.cast(pl.Float64).alias(n_eff_col)]
+        staged: dict[str, tuple[str, str, str]] = {}
+        for i, (t, d) in enumerate(self.signs.items()):
+            # What the bank does not learn from -- null, NaN, an infinity, a
+            # magnitude beyond its input bound (docs/PLAN.md section 3) -- is no
+            # sign here either. Polars orders NaN above every float, so without
+            # this `NaN > 0` would be a positive sign.
+            d = d.cast(pl.Float64)
+            d = pl.when(d.is_finite() & (d.abs() <= _INPUT_BOUND)).then(d)
+            cols = (temp(f"s_{i}"), temp(f"n_pos_{i}"), temp(f"n_neg_{i}"))
+            pos = before((d > 0).cast(pl.Int64).fill_null(0))
+            neg = before((d < 0).cast(pl.Int64).fill_null(0))
+            if carrying:
+                pos, neg = pos + pl.col(held[i][0]), neg + pl.col(held[i][1])
+            first += [
+                pl.when(d > 0).then(1.0).when(d < 0).then(-1.0).otherwise(0.0).alias(cols[0]),
+                pos.alias(cols[1]),
+                neg.alias(cols[2]),
+            ]
+            staged[t] = cols
+        ready = pl.col(n_eff_col) >= self.min_weight
+        fields: list[pl.Expr] = []
+        sums: list[pl.Expr] = []
+        totals: list[tuple[str, str]] = []
+        for i, (t, (s_col, pos_col, neg_col)) in enumerate(staged.items()):
+            s, n_pos, n_neg = pl.col(s_col), pl.col(pos_col), pl.col(neg_col)
+            n1 = (n_pos + n_neg + 1).cast(pl.Float64)
+            lam_pos = pl.max_horizontal((n_pos - n_neg).cast(pl.Float64) / n1, 0.0)
+            lam_neg = pl.max_horizontal((n_neg - n_pos).cast(pl.Float64) / n1, 0.0)
+            bets = ((lam_pos * s).log1p(), (-lam_neg * s).log1p())
+            if carrying:
+                # The carried log wealth added to the key's first term in the
+                # chunk, so each running sum goes on from it.
+                start = over(pl.int_range(pl.len())) == 0
+                wealth = []
+                for bet, kept, label in zip(bets, held[i][2:], ("lpos", "lneg"), strict=True):
+                    total = temp(f"{label}_{i}")
+                    lead = pl.when(start & pl.col(kept).is_not_null())
+                    sums.append(
+                        over(lead.then(bet + pl.col(kept)).otherwise(bet).cum_sum()).alias(total)
+                    )
+                    wealth.append(
+                        over(pl.col(total).shift(1)).fill_null(pl.col(kept).fill_null(0.0))
+                    )
+                    totals.append((total, label))
+                log_e_pos, log_e_neg = wealth
+            else:
+                log_e_pos, log_e_neg = before(bets[0]), before(bets[1])
+            for label, e in zip(self.names, (log_e_pos, log_e_neg, n_pos, n_neg), strict=True):
+                fields.append(pl.when(ready).then(e).alias(f"{label}_{t}"))
+        fields.append(pl.col(n_eff_col).alias("weight_sum"))
+        temps = [n_eff_col, *(c for cols in staged.values() for c in cols)]
+        staged_df = df.with_columns(first)
+        if sums:
+            staged_df = staged_df.with_columns(sums)
+        out = staged_df.with_columns(pl.struct(fields).alias(self.name))
+        if not carrying:
+            return out.drop(temps), None
+        last = [
+            (pl.col(n_eff_col).last().cast(pl.Int64) + 1).alias(rows_in),
+            *(
+                e
+                for i, (s_col, pos_col, neg_col) in enumerate(staged.values())
+                for e in (
+                    (pl.col(pos_col).last() + (pl.col(s_col).last() > 0).cast(pl.Int64)).alias(
+                        held[i][0]
+                    ),
+                    (pl.col(neg_col).last() + (pl.col(s_col).last() < 0).cast(pl.Int64)).alias(
+                        held[i][1]
+                    ),
+                    pl.col(totals[2 * i][0]).last().alias(held[i][2]),
+                    pl.col(totals[2 * i + 1][0]).last().alias(held[i][3]),
+                )
+            ),
         ]
-        staged[t] = cols
-    ready = pl.col(n_eff_col) >= min_weight
-    fields: list[pl.Expr] = []
-    for t, (s_col, pos_col, neg_col) in staged.items():
-        s, n_pos, n_neg = pl.col(s_col), pl.col(pos_col), pl.col(neg_col)
-        n1 = (n_pos + n_neg + 1).cast(pl.Float64)
-        lam_pos = pl.max_horizontal((n_pos - n_neg).cast(pl.Float64) / n1, 0.0)
-        lam_neg = pl.max_horizontal((n_neg - n_pos).cast(pl.Float64) / n1, 0.0)
-        log_e_pos = before((lam_pos * s).log1p())
-        log_e_neg = before((-lam_neg * s).log1p())
-        for label, e in zip(names, (log_e_pos, log_e_neg, n_pos, n_neg), strict=True):
-            fields.append(pl.when(ready).then(e).alias(f"{label}_{t}"))
-    fields.append(pl.col(n_eff_col).alias("weight_sum"))
-    temps = [n_eff_col, *(c for cols in staged.values() for c in cols)]
-    return df.with_columns(first).with_columns(pl.struct(fields).alias(name)).drop(temps)
+        kept_cols = [rows_in, *(c for h in held for c in h)]
+        if out.is_empty():
+            new = carry
+        else:
+            now = out.group_by(keys, maintain_order=True).agg(last) if keys else out.select(last)
+            new = _carry_on(carry, now, keys)
+        drop = [*temps, *kept_cols, *(t for t, _ in totals)]
+        return out.drop(drop), new
+
+
+def _carried_in(
+    df: pl.DataFrame,
+    carry: pl.DataFrame | None,
+    keys: list[str],
+    counts: list[str],
+    sums: list[str],
+) -> pl.DataFrame:
+    """``df`` with the carried-in columns beside each row, by its key: the
+    ``counts`` 0 and the ``sums`` null for a key the chunks before did not
+    have."""
+    if carry is None:
+        return df.with_columns(
+            *(pl.lit(0, dtype=pl.Int64).alias(c) for c in counts),
+            *(pl.lit(None, dtype=pl.Float64).alias(c) for c in sums),
+        )
+    if keys:
+        joined = df.join(carry, on=keys, how="left", nulls_equal=True, maintain_order="left")
+    else:
+        joined = df.with_columns(
+            pl.lit(carry[c][0], dtype=carry.schema[c]).alias(c) for c in (*counts, *sums)
+        )
+    return joined.with_columns(pl.col(c).fill_null(0) for c in counts)
+
+
+def _carry_on(old: pl.DataFrame | None, now: pl.DataFrame, keys: list[str]) -> pl.DataFrame:
+    """The carry after a chunk: each key's from ``now``, and the keys the
+    chunk did not have from ``old``."""
+    if old is None or not keys:
+        return now
+    return pl.concat([old.join(now, on=keys, how="anti", nulls_equal=True), now])
+
+
+def _row_query(
+    lf: pl.LazyFrame,
+    needed: set[str],
+    schema: pl.Schema,
+    step: Callable[[], Callable[[pl.DataFrame], pl.DataFrame]],
+) -> pl.LazyFrame:
+    """A query of ``lf``'s rows, each chunk passed through a fresh ``step()``
+    in order: what a call that adds a column computed row by row returns for
+    a query, read in one pass a chunk at a time when it runs.
+
+    A Polars IO source: Polars hands it the columns, the filter and the row
+    count the query asks of it, and does not apply them again, so it applies
+    all three, the filter and the row count after the column is computed,
+    since each row's value reads the rows before it. Each chunk's result is
+    handed on in slices of at most a mebibyte, as the package's other
+    sources hand theirs."""
+    from polars.io.plugins import register_io_source
+
+    from polars_online._frame import _in_morsels
+
+    columns = list(lf.collect_schema())
+
+    def source(
+        with_columns: list[str] | None,
+        predicate: pl.Expr | None,
+        n_rows: int | None,
+        batch_size: int | None,
+    ) -> Iterator[pl.DataFrame]:
+        plan = lf
+        if with_columns is not None:
+            wanted = set(with_columns) | needed
+            plan = plan.select([c for c in columns if c in wanted])
+        one = step()
+        seen = 0
+        for chunk in plan.collect_batches(chunk_size=_chunk_rows(), maintain_order=True):
+            if n_rows is not None:
+                chunk = chunk.head(n_rows - seen)
+            out = one(chunk)
+            seen += chunk.height
+            if predicate is not None:
+                out = out.filter(predicate)
+            if with_columns is not None:
+                out = out.select(with_columns)
+            yield from _in_morsels(out)
+            if n_rows is not None and seen >= n_rows:
+                break
+
+    return register_io_source(source, schema=schema, validate_schema=True, is_pure=True)
 
 
 @renamed_keywords("po.eval.sums", _GROUP)
@@ -2431,7 +2815,7 @@ def sums(
     binary = _binary(binary, written)
     if isinstance(df, pl.LazyFrame):
         jobs = [_job(df, written or spec_name, targets, group, weight, binary, "po.eval.sums")]
-        merged = _query_sums(df, jobs, group=group, weight=weight)[0]
+        merged = _query_sums(df, jobs, keys=_keys(group), weight=weight)[0]
         if merged is not None:
             return merged.select(*_keys(group), *SUM_FIELDS)
         df = _probe(df)
@@ -2548,13 +2932,15 @@ def _job(
     who: str,
     *,
     log_loss: bool = False,
+    also: Sequence[str] = (),
 ) -> _Job:
     """``spec``'s :class:`_Job` over ``lf``, checked against the query's
     schema as :func:`_unpack` checks a frame, so it raises what a frame
-    raises, before the query runs."""
+    raises, before the query runs. ``also`` names more columns to carry,
+    such as a clock."""
     probe = _probe(lf)
     spec_name, slots = _slots(probe, spec, targets, who)
-    keep = _kept(probe, [*_group_keys(group), *([] if weight is None else [weight])])
+    keep = _kept(probe, [*_group_keys(group), *([] if weight is None else [weight]), *also])
     _, written = _spec_of(who, spec)
     return _Job(spec_name, slots, keep, binary, _no_hit(written), log_loss and binary)
 
@@ -2563,16 +2949,17 @@ def _query_sums(
     lf: pl.LazyFrame,
     jobs: list[_Job],
     *,
-    group: str | Iterable[str] | None,
+    keys: list[str],
     weight: str | None,
+    prepare: Callable[[pl.DataFrame], pl.DataFrame] | None = None,
 ) -> list[pl.DataFrame | None]:
-    """Each job's sums over every row of ``lf``, read in one pass a chunk at
-    a time: each chunk reduced to :data:`SUM_FIELDS` per key, and the
-    chunks' sums merged as :func:`merge_sums` merges them, every
-    :data:`_MERGE_EVERY` chunks and at the end. ``None`` for a job no row
-    of the query was scored for. What it holds is one chunk and the sums,
-    not the query's rows."""
-    keys = _keys(group)
+    """Each job's sums over every row of ``lf`` by ``keys``, read in one
+    pass a chunk at a time: each chunk reduced to :data:`SUM_FIELDS` per
+    key, and the chunks' sums merged as :func:`merge_sums` merges them,
+    every :data:`_MERGE_EVERY` chunks and at the end. ``prepare`` takes each
+    slot's scored rows in a chunk and adds a key, such as a window's start.
+    ``None`` for a job no row of the query was scored for. What it holds is
+    one chunk and the sums, not the query's rows."""
     needed = set().union(*(job.columns() for job in jobs))
     plan = lf.select([c for c in lf.collect_schema() if c in needed])
     extra = {id(job): [_LOG_LOSS] if job.log_loss else [] for job in jobs}
@@ -2593,7 +2980,10 @@ def _query_sums(
                     pl.col(job.spec_name).struct.field(slot).alias("pred"),
                     y.alias("y"),
                 )
-                long = _weighed(_scored(long), weight)
+                long = _scored(long)
+                if prepare is not None:
+                    long = prepare(long)
+                long = _weighed(long, weight)
                 if not long.is_empty():
                     got.append(long.group_by(keys).agg(aggs))
             if not got:
@@ -2916,7 +3306,7 @@ def _normal_sf(z: float | None) -> float | None:
 
 
 def _hac_test(
-    df: pl.DataFrame,
+    df: pl.DataFrame | pl.LazyFrame,
     values: dict[str, pl.Expr],
     keys: list[str],
     lags: int,
@@ -2930,6 +3320,11 @@ def _hac_test(
     ``S = Σ (d − d̄)² + 2 Σ_{l ≤ L} (1 − l/(L+1)) Σ_t (d_t − d̄)(d_{t−l} − d̄)``,
     ``stat = d̄ · n / sqrt(S)``.
     """
+    if isinstance(df, pl.LazyFrame):
+        got = _hac_query(df, values, keys, lags, stat)
+        if got is not None:
+            return _thin(got, min_samples, [*keys, "target"])
+        df = _probe(df)
     frames = []
     for t, d in values.items():
         col = "__po_d"
@@ -2953,6 +3348,130 @@ def _hac_test(
     return _thin(out, min_samples, [*keys, "target"])
 
 
+def _hac_query(
+    lf: pl.LazyFrame, values: dict[str, pl.Expr], keys: list[str], lags: int, stat: str
+) -> pl.DataFrame | None:
+    """:func:`_hac_test` over a query, read in one pass a chunk at a time, or
+    ``None`` where no row has a value.
+
+    Each lag's sum is a co-moment about the overall mean, of the pairs of
+    rows ``l`` apart with a value: with ``x`` the later of a pair and ``y``
+    the earlier, ``Σ (x − d̄)(y − d̄) = C + n (x̄ − d̄)(ȳ − d̄)``, where ``C``
+    is the pairs' co-moment about their own means. So each chunk keeps, per
+    key and lag, the pairs' count, means and co-moment, which merge as
+    :func:`merge_sums` merges a chunk's (lag 0 is the rows themselves), and
+    the last ``lags`` values of each key, which pair with the next chunk's
+    first rows. What it holds is one chunk, and per key and target ``lags``
+    values and ``lags + 1`` rows of sums, not the query's rows."""
+    schema = lf.collect_schema()
+    taken = set(schema)
+    col, other, mark, lag_col = (_free(taken, n) for n in ("d", "d_back", "carried", "lag"))
+    needed = set(keys).union(*(d.meta.root_names() for d in values.values()))
+    plan = lf.select([c for c in schema if c in needed])
+    pair_keys = [*keys, lag_col]
+    carry: dict[str, pl.DataFrame | None] = dict.fromkeys(values)
+    seen: dict[str, pl.DataFrame | None] = dict.fromkeys(values)
+    parts: dict[str, list[pl.DataFrame]] = {t: [] for t in values}
+    x, y = pl.col(col), pl.col(other)
+    aggs = [
+        pl.len().cast(pl.Int64).alias("n"),
+        pl.len().cast(pl.Float64).alias("w"),
+        x.mean().alias("mean_y"),
+        y.mean().alias("mean_pred"),
+        ((x - x.mean()) ** 2).sum().alias("m2_y"),
+        ((y - y.mean()) ** 2).sum().alias("m2_pred"),
+        ((x - x.mean()) * (y - y.mean())).sum().alias("cov"),
+        *(pl.lit(0.0).alias(f) for f in ("sse", "hits", "signed")),
+    ]
+    for chunk in plan.collect_batches(chunk_size=_chunk_rows(), maintain_order=True):
+        for t, d in values.items():
+            rows = chunk.select(*keys, d.alias(col)).filter(x.is_not_null())
+            if rows.is_empty():
+                continue
+            # The keys in the order they first have a value, as the frame's
+            # `group_by(maintain_order=True)` gives them.
+            first = rows.select(keys).unique(maintain_order=True) if keys else rows.head(1)
+            was = seen[t]
+            if was is None:
+                seen[t] = first
+            elif keys:
+                fresh = first.join(was, on=keys, how="anti", nulls_equal=True)
+                seen[t] = pl.concat([was, fresh])
+            both = rows.with_columns(pl.lit(False).alias(mark))
+            held = carry[t]
+            if held is not None:
+                both = pl.concat([held, both])
+            got = []
+            for lag in range(lags + 1):
+                back = x.shift(lag).over(keys) if keys and lag else x.shift(lag)
+                pairs = both.with_columns(back.alias(other)).filter(~pl.col(mark) & y.is_not_null())
+                summed = pairs.group_by(keys).agg(aggs) if keys else pairs.select(aggs)
+                got.append(summed.filter(pl.col("n") > 0).with_columns(pl.lit(lag).alias(lag_col)))
+            parts[t].append(pl.concat(got).select(*pair_keys, *SUM_FIELDS))
+            if len(parts[t]) >= _MERGE_EVERY:
+                parts[t] = [_merge(parts[t], pair_keys)]
+            if lags:
+                kept = (
+                    both.group_by(keys, maintain_order=True).tail(lags) if keys else both.tail(lags)
+                )
+                carry[t] = kept.with_columns(pl.lit(True).alias(mark))
+    frames = []
+    for t in values:
+        if not parts[t]:
+            continue
+        merged = _merge(parts[t], pair_keys)
+        own = merged.filter(pl.col(lag_col) == 0).select(
+            *keys, "n", pl.col("mean_y").alias("mean"), pl.col("m2_y").alias("s")
+        )
+        s_expr = pl.col("s")
+        if lags:
+            lagged = merged.filter(pl.col(lag_col) > 0)
+            on = own.select(*keys, "mean")
+            if keys:
+                lagged = lagged.join(on, on=keys, how="left", nulls_equal=True)
+            else:
+                lagged = lagged.with_columns(pl.lit(own["mean"][0]).alias("mean"))
+            weight = 1.0 - pl.col(lag_col) / (lags + 1.0)
+            term = (
+                2.0
+                * weight
+                * (
+                    pl.col("cov")
+                    + pl.col("w")
+                    * (pl.col("mean_y") - pl.col("mean"))
+                    * (pl.col("mean_pred") - pl.col("mean"))
+                )
+            )
+            extra = (
+                lagged.group_by(keys).agg(term.sum().alias("__po_lagged"))
+                if keys
+                else lagged.select(term.sum().alias("__po_lagged"))
+            )
+            own = (
+                own.join(extra, on=keys, how="left", nulls_equal=True)
+                if keys
+                else own.with_columns(extra.to_series())
+            )
+            s_expr = s_expr + pl.col("__po_lagged").fill_null(0.0)
+        result = own.select(
+            *keys,
+            pl.lit(t).alias("target"),
+            "n",
+            "mean",
+            pl.when(s_expr > 0).then(pl.col("mean") * pl.col("n") / s_expr.sqrt()).alias(stat),
+        )
+        order = seen[t]
+        if keys and order is not None:
+            result = order.join(
+                result, on=keys, how="left", nulls_equal=True, maintain_order="left"
+            )
+        frames.append(result)
+    if not frames:
+        return None
+    return pl.concat(frames).select(*keys, "target", pl.col("n").cast(pl.Int64), "mean", stat)
+
+
+@overload
 def _ew_test(
     df: pl.DataFrame,
     values: dict[str, pl.Expr],
@@ -2961,7 +3480,30 @@ def _ew_test(
     half_life: float,
     stat: str,
     name: str,
-) -> pl.DataFrame:
+) -> pl.DataFrame: ...
+
+
+@overload
+def _ew_test(
+    df: pl.LazyFrame,
+    values: dict[str, pl.Expr],
+    keys: list[str],
+    lags: int,
+    half_life: float,
+    stat: str,
+    name: str,
+) -> pl.LazyFrame: ...
+
+
+def _ew_test(
+    df: pl.DataFrame | pl.LazyFrame,
+    values: dict[str, pl.Expr],
+    keys: list[str],
+    lags: int,
+    half_life: float,
+    stat: str,
+    name: str,
+) -> pl.DataFrame | pl.LazyFrame:
     """Per row, the same t statistic with each row before it weighed by
     ``λ^age``, ``λ = 0.5 ** (1 / half_life)``, one step per row that has a
     value, the row itself included:
@@ -2973,6 +3515,8 @@ def _ew_test(
     products, the two sides and the pairs -- read as ``ewm_mean`` times its
     weights, so the statistic is a few window expressions, not a loop.
     """
+    if isinstance(df, pl.LazyFrame):
+        return _ew_query(df, values, keys, lags, half_life, stat, name)
     lam = 0.5 ** (1.0 / half_life)
     lam2 = lam * lam
     # Working columns step around the frame's and the result's name, so a
@@ -3018,6 +3562,147 @@ def _ew_test(
     return base.with_columns(pl.struct(fields).alias(name)).drop(idx, *temps)
 
 
+def _ew_query(
+    lf: pl.LazyFrame,
+    values: dict[str, pl.Expr],
+    keys: list[str],
+    lags: int,
+    half_life: float,
+    stat: str,
+    name: str,
+) -> pl.LazyFrame:
+    """:func:`_ew_test` over a query: a query of its rows with the record
+    column added, read in one pass a chunk at a time when it runs.
+
+    Each of the statistic's weighted sums is ``E_t = Σ_{j ≤ t} μ^{t−j} e_j``
+    (``μ`` is ``λ`` or ``λ²``), so a chunk carries in each key's sums after
+    the rows before it, ``E_c``, and goes on as ``E_t = μ^{k+1} E_c + Σ`` of
+    its own ``k + 1`` rows so far; with the last ``lags`` values of each
+    key, which the chunk's first rows read as the rows ``l`` before them.
+    What it holds is one chunk, and per key and target ``lags`` values and
+    ``2 + 4 lags`` sums, not the query's rows."""
+    schema = _ew_test(_probe(lf), values, keys, lags, half_life, stat, name).schema
+    needed = set(keys).union(*(d.meta.root_names() for d in values.values()))
+
+    def step() -> Callable[[pl.DataFrame], pl.DataFrame]:
+        carry: dict[str, tuple[pl.DataFrame, pl.DataFrame]] = {}
+
+        def one(chunk: pl.DataFrame) -> pl.DataFrame:
+            return _ew_chunk(chunk, values, keys, lags, half_life, stat, name, carry)
+
+        return one
+
+    return _row_query(lf, needed, schema, step)
+
+
+def _ew_chunk(
+    df: pl.DataFrame,
+    values: dict[str, pl.Expr],
+    keys: list[str],
+    lags: int,
+    half_life: float,
+    stat: str,
+    name: str,
+    carry: dict[str, tuple[pl.DataFrame, pl.DataFrame]],
+) -> pl.DataFrame:
+    """One chunk of :func:`_ew_query`, after the chunks whose sums and last
+    values ``carry`` holds per target; ``carry`` is updated in place. A key
+    the chunks before did not have is read as :func:`_ew_test` reads a
+    frame, so a query of one chunk gives the frame's result."""
+    lam = 0.5 ** (1.0 / half_life)
+    lam2 = lam * lam
+    taken = {*df.columns, name}
+    idx = _free(taken, "row")
+    col, mark, count = _free(taken, "d"), _free(taken, "carried"), _free(taken, "count")
+    sums = ["num", "dd", "d", *(f"{q}{lag}" for lag in range(1, lags + 1) for q in "abcz")]
+    held = {q: _free(taken, f"in_{q}") for q in sums}
+    now = {q: _free(taken, f"now_{q}") for q in sums}
+    base = df.with_row_index(idx)
+    fields: list[pl.Expr] = []
+    temps: list[str] = []
+
+    def over(e: pl.Expr) -> pl.Expr:
+        return e.over(keys) if keys else e
+
+    dd = pl.col(col)
+    k = over(pl.int_range(pl.len())).cast(pl.Float64)
+    i = k + pl.col(count).cast(pl.Float64)
+    known = pl.col(held["num"]).is_not_null()
+    w1 = (1.0 - pl.lit(lam).pow(i + 1.0)) / (1.0 - lam)
+    w2 = (1.0 - pl.lit(lam2).pow(i + 1.0)) / (1.0 - lam2)
+    p1, p2 = pl.lit(lam).pow(k + 1.0), pl.lit(lam2).pow(k + 1.0)
+
+    def local(e: pl.Expr, mu: float) -> pl.Expr:
+        return over(e.fill_null(0.0).ewm_mean(alpha=1.0 - mu, adjust=True))
+
+    for t, d in values.items():
+        rows = base.select(idx, *keys, d.alias(col)).filter(dd.is_not_null())
+        sums_in, tail_in = carry.get(t, (None, None))
+        both = rows.with_columns(pl.lit(False).alias(mark))
+        if tail_in is not None:
+            both = pl.concat([tail_in, both], how="diagonal")
+        backs = [over(dd.shift(lag)).alias(f"__po_back{lag}") for lag in range(1, lags + 1)]
+        loc = both.with_columns(backs).filter(~pl.col(mark))
+        loc = _carried_in(loc, sums_in, keys, [count], list(held.values()))
+        # Each sum as the frame reads it (`ewm_mean` times its weights) for a
+        # key with nothing carried in, and the carried sum decayed by the
+        # chunk's rows plus the chunk's own for one with.
+        own = {"num": (local(dd, lam), lam), "dd": (local(dd * dd, lam2), lam2),
+               "d": (local(dd, lam2), lam2)}  # fmt: skip
+        for lag in range(1, lags + 1):
+            back = pl.col(f"__po_back{lag}")
+            has = back.is_not_null().cast(pl.Float64)
+            own |= {
+                f"a{lag}": (local(dd * back, lam2), lam2),
+                f"b{lag}": (local(dd * has, lam2), lam2),
+                f"c{lag}": (local(back, lam2), lam2),
+                f"z{lag}": (local(has, lam2), lam2),
+            }
+        went = []
+        for q, (mean, mu) in own.items():
+            p = p1 if mu == lam else p2
+            weights = (1.0 - p) / (1.0 - mu)
+            went.append((p * pl.col(held[q]).fill_null(0.0) + mean * weights).alias(now[q]))
+        loc = loc.with_columns(went)
+
+        def e(q: str, own: dict[str, tuple[pl.Expr, float]] = own) -> pl.Expr:
+            mean, mu = own[q]
+            return pl.when(known).then(pl.col(now[q])).otherwise(mean * (w1 if mu == lam else w2))
+
+        m = pl.when(known).then(pl.col(now["num"]) / w1).otherwise(own["num"][0])
+        s = e("dd") - 2.0 * m * e("d") + m * m * w2
+        for lag in range(1, lags + 1):
+            weight = 1.0 - lag / (lags + 1.0)
+            s = s + 2.0 * weight * lam**lag * (
+                e(f"a{lag}") - m * (e(f"b{lag}") + e(f"c{lag}")) + m * m * e(f"z{lag}")
+            )
+        out_col = _free(taken, f"{stat}_{len(temps)}")
+        got = loc.with_columns(pl.when(s > 0).then(m * w1 / s.sqrt()).alias(out_col))
+        base = base.join(got.select(idx, out_col), on=idx, how="left", maintain_order="left")
+        fields.append(pl.col(out_col).alias(f"{stat}_{t}"))
+        temps.append(out_col)
+        if not got.is_empty():
+            last = [
+                (pl.col(count).first() + pl.len().cast(pl.Int64)).alias(count),
+                *(pl.col(now[q]).last().alias(held[q]) for q in sums),
+            ]
+            summed = got.group_by(keys).agg(last) if keys else got.select(last)
+            back_tail = both.select(*keys, col, pl.lit(True).alias(mark))
+            if lags:
+                back_tail = (
+                    back_tail.group_by(keys, maintain_order=True).tail(lags)
+                    if keys
+                    else back_tail.tail(lags)
+                )
+            else:
+                back_tail = back_tail.head(0)
+            carry[t] = (
+                _carry_on(sums_in, summed.select(*keys, count, *held.values()), keys),
+                back_tail,
+            )
+    return base.with_columns(pl.struct(fields).alias(name)).drop(idx, *temps)
+
+
 def _check_half_life(who: str, half_life: float) -> None:
     """The per-row form's ``half_life``: above 0, and finite. An infinite
     one reached polars' ``ewm_mean`` as ``alpha = 0``, which it refuses
@@ -3038,7 +3723,6 @@ def _check_half_life(who: str, half_life: float) -> None:
         raise ValueError(msg)
 
 
-@renamed_keywords("po.eval.diebold_mariano", _GROUP)
 def _lags(who: str, lags: Any) -> int:
     """``lags`` as an int, once it is checked to be a whole number of at least 0:
     any whole number, numpy's integers included, but not a bool."""
@@ -3055,6 +3739,7 @@ def _lags(who: str, lags: Any) -> int:
     return operator.index(lags)
 
 
+@overload
 def diebold_mariano(
     df: pl.DataFrame,
     *,
@@ -3068,7 +3753,58 @@ def diebold_mariano(
     half_life: float | None = None,
     min_samples: int = 30,
     name: str = "diebold_mariano",
-) -> pl.DataFrame:
+) -> pl.DataFrame: ...
+
+
+@overload
+def diebold_mariano(
+    df: pl.LazyFrame,
+    *,
+    a: str,
+    b: str,
+    targets: Sequence[str] | None = None,
+    a_suffix: str = "",
+    b_suffix: str = "",
+    lags: int = 0,
+    group: str | Iterable[str] | None = None,
+    half_life: None = None,
+    min_samples: int = 30,
+    name: str = "diebold_mariano",
+) -> pl.DataFrame: ...
+
+
+@overload
+def diebold_mariano(
+    df: pl.LazyFrame,
+    *,
+    a: str,
+    b: str,
+    targets: Sequence[str] | None = None,
+    a_suffix: str = "",
+    b_suffix: str = "",
+    lags: int = 0,
+    group: str | Iterable[str] | None = None,
+    half_life: float,
+    min_samples: int = 30,
+    name: str = "diebold_mariano",
+) -> pl.LazyFrame: ...
+
+
+@renamed_keywords("po.eval.diebold_mariano", _GROUP)
+def diebold_mariano(
+    df: pl.DataFrame | pl.LazyFrame,
+    *,
+    a: str,
+    b: str,
+    targets: Sequence[str] | None = None,
+    a_suffix: str = "",
+    b_suffix: str = "",
+    lags: int = 0,
+    group: str | Iterable[str] | None = None,
+    half_life: float | None = None,
+    min_samples: int = 30,
+    name: str = "diebold_mariano",
+) -> pl.DataFrame | pl.LazyFrame:
     """Test whether two specs' out-of-sample squared errors differ on average,
     by Diebold and Mariano's test.
 
@@ -3082,9 +3818,9 @@ def diebold_mariano(
     .. rubric:: Parameters
 
     ``df``
-        A frame a bank returned, holding both specs' output columns. A
-        ``LazyFrame`` is refused: pass ``lf.collect()``, which runs the query
-        and returns its result.
+        A frame a bank returned, holding both specs' output columns, or a
+        query of one, a ``LazyFrame``, which this reads one chunk at a time
+        (see Notes).
     ``a``, ``b``
         The names of the two specs' output columns. The statistic is
         positive when ``a`` was closer.
@@ -3124,7 +3860,8 @@ def diebold_mariano(
 
     With ``half_life``, ``df`` with a record column ``name`` added, holding
     ``dm_<t>`` per target ``t``, null on a row where a side has no residual.
-    It can be read at any row.
+    It can be read at any row. Given a ``LazyFrame``, a ``LazyFrame`` of the
+    same, which reads ``df`` one chunk at a time when it runs.
 
     .. rubric:: Raises
 
@@ -3175,16 +3912,47 @@ def diebold_mariano(
     - :func:`clark_west`, the test for two nested specs.
     - :func:`seqtest`, evidence to read at any row.
     - :func:`compare_specs`, whose Notes say when to use each test.
+
+    .. rubric:: Notes
+
+    **Given a query, this holds one chunk and, per key and target, the
+    last** ``lags`` **differentials and a few sums.** Without
+    ``half_life``, each lag's sum in ``S`` is a co-moment about ``d̄`` of the
+    pairs of rows ``l`` apart, and with ``x`` the later of a pair and ``y``
+    the earlier, ``Σ (x - d̄)(y - d̄) = C + n (x̄ - d̄)(ȳ - d̄)``, where ``C``
+    is the pairs' co-moment about their own means. So each chunk keeps, per
+    key and lag, the pairs' count, means and co-moment, added chunk to
+    chunk as :func:`merge_sums` adds its sums, and the last ``lags``
+    differentials of each key, which pair with the next chunk's first rows.
+    The result is the frame's within rounding: within 1e-9 relative, and
+    1e-12 at the most measured, on a mean differential near zero read a
+    row at a time. Scoring a scan of two specs by a key of four values with
+    ``lags=5`` held 102 MiB at a million rows, 103 MiB at four million and
+    105 MiB at sixteen million, measured as :func:`metrics`' Notes say,
+    where the collected frame's held 252 MiB at a million.
+
+    With ``half_life``, each weighted sum of the statistic is ``E_t = Σ_{j ≤
+    t} μ^(t-j) e_j``, with ``μ`` the weight's decay a row or its square, so
+    a chunk carries in each key's sums after the rows before it, ``E_c``,
+    and goes on as ``μ^(k+1) E_c`` plus its own ``k + 1`` rows' sum. While
+    the query is one chunk the result is the frame's to the bit, and over
+    many within 1e-12 relative (3e-15 measured in chunks of 97 rows). On a
+    key's first rows, where ``S`` is zero but for rounding, the frame's
+    ``dm`` can be a large number and the query's null, or the other way
+    round. Written to a file with ``sink_parquet``, the test by the row with
+    ``lags=2`` held 155 MiB at a million rows, 167 MiB at four million and
+    172 MiB at sixteen million.
     """
-    _frame("po.eval.diebold_mariano", df)
-    _check_columns(df, "po.eval.diebold_mariano", group=group)
+    _frame("po.eval.diebold_mariano", df, lazy=True)
+    probe = _probe(df)
+    _check_columns(probe, "po.eval.diebold_mariano", group=group)
     keys = _group_keys(group)
-    pairs = _paired_residuals(df, a, b, targets, a_suffix, b_suffix, "po.eval.diebold_mariano")
+    pairs = _paired_residuals(probe, a, b, targets, a_suffix, b_suffix, "po.eval.diebold_mariano")
     values = {t: rb * rb - ra * ra for t, (ra, rb) in pairs.items()}
     lags = _lags("po.eval.diebold_mariano", lags)
     if half_life is not None:
         _check_half_life("po.eval.diebold_mariano", half_life)
-        _check_name("po.eval.diebold_mariano", df, name)
+        _check_name("po.eval.diebold_mariano", probe, name)
         return _ew_test(df, values, keys, lags, half_life, "dm", name)
     out = _hac_test(df, values, keys, lags, "dm", min_samples)
     p = [
@@ -3194,7 +3962,7 @@ def diebold_mariano(
     return out.with_columns(pl.Series("p_value", p, dtype=pl.Float64))
 
 
-@renamed_keywords("po.eval.clark_west", _GROUP)
+@overload
 def clark_west(
     df: pl.DataFrame,
     *,
@@ -3208,7 +3976,58 @@ def clark_west(
     half_life: float | None = None,
     min_samples: int = 30,
     name: str = "clark_west",
-) -> pl.DataFrame:
+) -> pl.DataFrame: ...
+
+
+@overload
+def clark_west(
+    df: pl.LazyFrame,
+    *,
+    big: str,
+    small: str,
+    targets: Sequence[str] | None = None,
+    big_suffix: str = "",
+    small_suffix: str = "",
+    lags: int = 0,
+    group: str | Iterable[str] | None = None,
+    half_life: None = None,
+    min_samples: int = 30,
+    name: str = "clark_west",
+) -> pl.DataFrame: ...
+
+
+@overload
+def clark_west(
+    df: pl.LazyFrame,
+    *,
+    big: str,
+    small: str,
+    targets: Sequence[str] | None = None,
+    big_suffix: str = "",
+    small_suffix: str = "",
+    lags: int = 0,
+    group: str | Iterable[str] | None = None,
+    half_life: float,
+    min_samples: int = 30,
+    name: str = "clark_west",
+) -> pl.LazyFrame: ...
+
+
+@renamed_keywords("po.eval.clark_west", _GROUP)
+def clark_west(
+    df: pl.DataFrame | pl.LazyFrame,
+    *,
+    big: str,
+    small: str,
+    targets: Sequence[str] | None = None,
+    big_suffix: str = "",
+    small_suffix: str = "",
+    lags: int = 0,
+    group: str | Iterable[str] | None = None,
+    half_life: float | None = None,
+    min_samples: int = 30,
+    name: str = "clark_west",
+) -> pl.DataFrame | pl.LazyFrame:
     """Test whether a larger spec predicts better than a smaller one nested in
     it, by Clark and West's test.
 
@@ -3221,9 +4040,9 @@ def clark_west(
     .. rubric:: Parameters
 
     ``df``
-        A frame a bank returned, holding both specs' output columns. A
-        ``LazyFrame`` is refused: pass ``lf.collect()``, which runs the query
-        and returns its result.
+        A frame a bank returned, holding both specs' output columns, or a
+        query of one, a ``LazyFrame``, which this reads one chunk at a time
+        as :func:`diebold_mariano` reads one.
     ``big``, ``small``
         The names of the larger and the smaller spec's output columns, as
         :func:`diebold_mariano`'s ``a`` and ``b``.
@@ -3247,7 +4066,8 @@ def clark_west(
     Update equation); ``cw``, the statistic; and ``p_value``, its one-sided p-value. With
     ``half_life``, ``df`` with a record column ``name`` added, holding
     ``cw_<t>`` per target ``t``, the exponentially weighted statistic on
-    every row, as :func:`diebold_mariano` gives it.
+    every row, as :func:`diebold_mariano` gives it, and given a
+    ``LazyFrame``, a ``LazyFrame`` of the same.
 
     .. rubric:: Raises
 
@@ -3299,18 +4119,25 @@ def clark_west(
     nested specs. Under the null, the larger spec's extra coefficients are
     zero but estimated, and their noise adds ``(pred_small - pred_big)²``
     to its squared error on average. Clark and West add that term back.
+
+    Given a query, this holds and computes what :func:`diebold_mariano`
+    does for one, of ``f`` in place of ``d``, with the same agreement with
+    the frame: scoring a scan of two specs by a key of four values with
+    ``lags=5`` held 99 MiB at a million rows, 102 MiB at four million and
+    105 MiB at sixteen million.
     """
-    _frame("po.eval.clark_west", df)
-    _check_columns(df, "po.eval.clark_west", group=group)
+    _frame("po.eval.clark_west", df, lazy=True)
+    probe = _probe(df)
+    _check_columns(probe, "po.eval.clark_west", group=group)
     keys = _group_keys(group)
     pairs = _paired_residuals(
-        df, big, small, targets, big_suffix, small_suffix, "po.eval.clark_west"
+        probe, big, small, targets, big_suffix, small_suffix, "po.eval.clark_west"
     )
     values = {t: rs * rs - rb * rb + (rb - rs) * (rb - rs) for t, (rb, rs) in pairs.items()}
     lags = _lags("po.eval.clark_west", lags)
     if half_life is not None:
         _check_half_life("po.eval.clark_west", half_life)
-        _check_name("po.eval.clark_west", df, name)
+        _check_name("po.eval.clark_west", probe, name)
         return _ew_test(df, values, keys, lags, half_life, "cw", name)
     out = _hac_test(df, values, keys, lags, "cw", min_samples)
     return out.with_columns(

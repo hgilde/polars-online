@@ -27,8 +27,9 @@ rate (the share of rows whose sign the prediction got right) and MSE.
 defines each, and what they mean on a logistic fit.
 
 1. **Run the query with `.collect()`, which returns its result as a frame
-   in memory.** The calls in the steps after this one take a frame in
-   memory.
+   in memory, or pass the query itself.** The calls in the steps after
+   this one take either, and read a query a chunk at a time ([Score an
+   output too large to hold](#score-an-output-too-large-to-hold)).
 2. **Compare several specs in one table with
    `po.eval.compare_specs(out, [...])`.** It gives one row per spec and
    slot.
@@ -121,8 +122,10 @@ result a chunk at a time, keeping ten numbers per slot and group.
    scan a file a run wrote its output to, with `pl.scan_parquet`.
 2. **Pass the query to `po.eval.metrics(query, spec, group=...)`.** It
    returns the same table as for the output held in memory, within the
-   rounding of adding the chunks' sums. `po.eval.sums` takes a query the
-   same way, and gives `weight=` to weight the rows by a column.
+   rounding of adding the chunks' sums. Every other `po.eval` call that
+   reads a bank's output takes a query the same way: `window_metrics`,
+   `compare_specs`, `diebold_mariano`, `clark_west`, `seqtest`, `unpack`,
+   and `sums`, which takes `weight=` to weight the rows by a column.
 3. **To add up the scores of several runs, such as one output file a day,
    reduce each with `po.eval.sums`, add them with `po.eval.merge_sums`,
    and read the metrics with `po.eval.from_sums`.** The total is the same,

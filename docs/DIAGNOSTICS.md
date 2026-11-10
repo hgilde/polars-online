@@ -996,7 +996,7 @@ after the run.
 | running accuracy | `emit_metrics` | `ic_<t>`, the EW correlation of prediction with target; `r2_<t>`, the out-of-sample R² against the running mean; `hit_rate_<t>`, the share of rows whose sign the prediction got right | |
 | a choice as the stream runs | `emit_selected`, `emit_averaged` | the grid point with the lowest EW error so far, and every slot's prediction weighted by its error | [Choose among a grid's settings as the stream runs](how-to/choose-among-a-grid-online.md) |
 | a test of two models | `po.eval.diebold_mariano`, `po.eval.clark_west`, `po.eval.seqtest`, the `seqtest` model | a t statistic, or evidence that can be read at any row | [Compare two models](how-to/compare-two-models.md) |
-| metrics after the run | `po.eval.metrics`, `window_metrics`, `compare_specs`; `po.eval.metrics` and `po.eval.sums` over a query for an output too large to hold | R², IC, hit rate and MSE, per group or per window | [Evaluate an output frame](how-to/evaluate-an-output-frame.md) |
+| metrics after the run | `po.eval.metrics`, `window_metrics`, `compare_specs`, over the output or a query of it for an output too large to hold; `po.eval.sums` for scores that add up across runs | R², IC, hit rate and MSE, per group or per window | [Evaluate an output frame](how-to/evaluate-an-output-frame.md) |
 
 **`hit_rate` asks whether prediction and target fall on the same side of
 zero.** A row where either is exactly zero is on neither side, and both
@@ -1088,8 +1088,9 @@ runs.
 `po.eval`'s calls score a finished run's output frame: `metrics` per spec
 and group, `window_metrics` per window of the clock, `compare_specs` over
 several specs, and `unpack` to long form. For an output too large to hold,
-`metrics` and `sums` take a query of it in place of the frame, and read it
-a chunk at a time, reducing each chunk to ten numbers per slot and group.
+each takes a query of it in place of the frame, as the tests of two specs
+do, and reads it a chunk at a time, reducing each chunk to ten numbers per
+slot and group.
 The sums are centered, so a target far from zero keeps its variance.
 `merge_sums` adds the sums of several runs, the same to rounding whatever
 the split, and `from_sums` turns the total into the metrics. [Evaluate an output

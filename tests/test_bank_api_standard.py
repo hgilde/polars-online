@@ -346,9 +346,10 @@ def test_m20_spec_takes_a_name_or_the_dict():
 
 def test_m23_a_lazyframe_is_read_where_a_call_reads_a_query_and_refused_by_name_elsewhere():
     """M-23 refused a ``LazyFrame`` with one clear ``TypeError`` where Polars'
-    own calls warned three times first. Task 380: ``metrics``, ``sums`` and
-    ``unpack`` read the query; a call that reads a whole frame still
-    refuses it, by name, without a warning."""
+    own calls warned three times first. Task 380: every call that reads a
+    bank's output reads the query; ``merge_sums`` and ``from_sums``, which
+    read the sums a call returned, still refuse it, by name, without a
+    warning."""
     _, out = _scored()
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -360,7 +361,7 @@ def test_m23_a_lazyframe_is_read_where_a_call_reads_a_query_and_refused_by_name_
         with pytest.raises(
             TypeError, match="must be a Polars DataFrame, but it is a LazyFrame. Pass the query"
         ):
-            po.eval.diebold_mariano(out.lazy(), a="m", b="m")
+            po.eval.from_sums(po.eval.sums(out, "m").lazy())
 
 
 # --- M-9 and M-17: the operators -------------------------------------------------
