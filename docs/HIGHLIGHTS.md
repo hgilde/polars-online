@@ -118,34 +118,42 @@ for k in range(4):
     day = date(2024, 1, 2 + k)
     ts = [datetime(2024, 1, 2 + k, 9, 30) + timedelta(seconds=float(s))
           for s in np.cumsum(rng.exponential(23_400 / n, n))]
-    volume = np.round(rng.lognormal(6.0, 0.8, n))
+    volume = np.round(rng.lognormal(6.0, 0.8, n))                  # shares per trade
     # Ten factors, three times as large from noon on 2024-01-03, and two returns on them.
-    calm = (k == 0) | ((k == 1) & (np.array(ts) < datetime(2024, 1, 3, 12)))
-    f = rng.standard_normal((10, n)) * np.where(calm, 1.0, 3.0)
-    ret_a = 0.5 * f[0] + (0.6 if k >= 2 else 0.0) * f[1] + rng.standard_normal(n)
-    ret_b = 0.4 * f[3] - 0.3 * f[4] + rng.standard_normal(n)
+    calm = (k == 0) | ((k == 1) & (np.array(ts) < datetime(2024, 1, 3, 12)))   # True on day one, and on day two before noon
+    f = rng.standard_normal((10, n)) * np.where(calm, 1.0, 3.0)    # f[i] is factor f{i}'s value on each trade
+    ret_a = 0.5 * f[0] + (0.6 if k >= 2 else 0.0) * f[1] + rng.standard_normal(n)   # f1 joins from 2024-01-04
+    ret_b = 0.4 * f[3] - 0.3 * f[4] + rng.standard_normal(n)       # the same loadings every day
+    # One row per trade; cum_volume starts again from zero each day, and is the volume spec's clock.
     pl.DataFrame({"ts": ts, "day": day, "volume": volume, "cum_volume": np.cumsum(volume), "ret_a": ret_a, "ret_b": ret_b}
                  | {f"f{i}": f[i] for i in range(10)}).write_parquet(f"days/{day}.parquet")
 
 # 2. The grid: two targets, five named sets of the ten factors, two half-lives in time and two in traded volume.
 factors = [f"f{i}" for i in range(10)]
+# Each named set is one candidate feature list; its name tags the slots it writes, e.g. pred_ret_a__f0+f1@h30m.
 sets = {"f0": ["f0"], "f0+f1": ["f0", "f1"], "f3+f4": ["f3", "f4"], "f0-f4": factors[:5], "f0-f9": factors}
+# Shared by both specs: every set is fitted to both targets, and emit_selected adds each row's chosen grid point.
 grid = dict(targets=["ret_a", "ret_b"], features=factors, feature_sets=sets, emit_selected=True)
+# The time clock: rows age by the time between trades, a step capped at five minutes, and a new day ages them one minute.
 on_time = dict(clock="ts", gap_cap="5m", session="day", session_gap="1m")   # a new day ages a fit by one minute
-by_time = po.spec.ewridge("by_time", half_life=["30m", "2h"], **on_time, **grid)
+by_time = po.spec.ewridge("by_time", half_life=["30m", "2h"], **on_time, **grid)   # 5 sets x 2 half-lives = 10 points
+# The volume clock: rows age by the shares traded between them, so the half-lives and caps are in shares.
 by_volume = po.spec.ewridge("by_volume", clock="cum_volume", half_life=[200_000.0, 800_000.0],   # in shares
                             gap_cap=20_000.0, session="day", session_gap=1_000.0, **grid)
 
 # 3. The watchers: a test for a break in the coefficients, and the age of the factors' regime.
+# A plain ridge on the four planted factors whose break_wald_<target> field tests for moved coefficients.
 breaks = po.spec.ewridge("breaks", targets=["ret_a", "ret_b"], features=["f0", "f1", "f3", "f4"],
                          half_life="30m", emit_breaks=True, **on_time)
 regime = po.spec.bocpd("regime", features=factors[:5], hazard=20_000.0)   # a prior of one change in 20,000 rows
 
 # 4. One streaming query over every file: the bank's output, with the readings to count, written to a file.
-field = lambda spec, name: pl.col(spec).struct.field(name)
-(pl.scan_parquet("days/*.parquet")
-   .online.fit_predict([by_time, by_volume, breaks, regime])
+field = lambda spec, name: pl.col(spec).struct.field(name)   # each spec writes one column of fields, named after it
+(pl.scan_parquet("days/*.parquet")                                # all four days, read in order
+   .online.fit_predict([by_time, by_volume, breaks, regime])     # every spec fitted in one pass over the rows
+   # Keep the two grid specs whole for step 6, and reduce the watchers to the readings counted in step 5.
    .select("ts", "day", "ret_a", "ret_b", "by_time", "by_volume",
+           # the grid point the time spec chose on each trade, for each target
            pick_a=field("by_time", "selected_ret_a"), pick_b=field("by_time", "selected_ret_b"),
            # chi2(5)'s 0.01% value: four factors and the intercept
            break_a=field("breaks", "break_wald_ret_a") > 25.7, break_b=field("breaks", "break_wald_ret_b") > 25.7,
@@ -156,21 +164,26 @@ field = lambda spec, name: pl.col(spec).struct.field(name)
 # 5. Each day's most chosen sets, and the break test's flags, read from the file as queries.
 fitted = pl.scan_parquet("fitted.parquet")
 for target in ("a", "b"):
+    # Count each day's choices, sort the most chosen first within each day, and keep that one.
     top = (fitted.group_by("day", f"pick_{target}").len().sort("day", "len", descending=[False, True])
            .group_by("day", maintain_order=True).first().collect(engine="streaming"))
     # The break test's flags for the target, by day.
     flags = fitted.group_by("day").agg(pl.col(f"break_{target}").sum(), pl.col("ts").filter(f"break_{target}").min()).sort("day")
     flags = flags.collect(engine="streaming")
+    # One line per day: the set chosen most, on how many trades, and the first break flag if any.
     for (day, pick, held), (_, n_flagged, first) in zip(top.iter_rows(), flags.iter_rows()):
         flag = f"flagged from {first:%H:%M:%S}" if n_flagged else "no break"
         print(f"ret_{target} {day}: {pick} on {held:,} trades; {flag}")
+# The first young-regime row of each day: where the detector saw a new regime begin.
 starts = fitted.filter("new_regime").group_by("day").agg(pl.col("ts").min()).sort("day").collect(engine="streaming")
 print("a new regime from " + ", ".join(f"{t:%Y-%m-%d %H:%M:%S}" for t in starts["ts"]))
 
 # 6. Every slot's score in both specs, read from the file's query in one pass, a chunk at a time.
+# One row per spec, slot and target with its mse and other scores; sorted so each group's best slot comes first.
 scores = po.eval.compare_specs(fitted, ["by_time", "by_volume"]).sort("spec", "target", "mse")
 # Each spec's best grid point for each target, beside the selection made as it ran.
 for (spec, target), rows in scores.group_by("spec", "target", maintain_order=True):
+    # The lowest mse over the grid (known only after the fact), and the slot that followed each row's choice.
     best, chose = rows.row(0, named=True), rows.filter(slot=f"pred_{target}__selected").row(0, named=True)
     print(f"{spec}, {target}: best {best['slot']} at mse {best['mse']:.3f}, the selection made as it ran {chose['mse']:.3f}")
 ```
@@ -322,30 +335,33 @@ for k in range(3):
     jumps = np.where(rng.random(n) < 0.001, rng.choice([-50.0, 50.0], n), 0.0)
     step = 0.5 * flow + 0.3 * e + 0.1 * rng.standard_normal(n) + jumps
     mid = 100.0 + np.concatenate([[0.0], np.cumsum(step)[:-1]])    # each trade sees the mid before its move
+    # The factor d is the sum of its inputs plus its own move e; e itself is not written, only d and the inputs.
     pl.DataFrame({"ts": ts, "day": day, "flow": flow, "mid": mid, "d": x.sum(axis=0) + e}
                  | {f"x{j}": x[j] for j in range(3)}).write_parquet(f"trades/{day}.parquet")
 
 # 2. The feature and the target, bounded EWMAs over five minutes, back and ahead.
-recent = dict(half_life="1m", window_size="5m")
+recent = dict(half_life="1m", window_size="5m")                    # weights halve each minute; rows past 5 minutes drop out
+# with_windows adds each expression as a column, computed as the rows stream past.
 windows = pl.scan_parquet("trades/*.parquet").online.with_windows(
     stretch=pl.col("mid") - po.ewm_mean("mid", **recent),                 # the mid against its last five minutes
     fwd=po.ewm_mean("mid", **recent, reverse=True) - pl.col("mid"),       # the next five minutes against the mid
-    clock="ts", gap_cap="5m",
+    clock="ts", gap_cap="5m",                                             # the windows' clock, and its longest step
 )
 # 3. The first stage: a ridge of the factor on its inputs, in the same query.
 factor = po.spec.ewridge("factor", targets=["d"], features=["x0", "x1", "x2"], clock="ts", gap_cap="5m", half_life="1h")
-staged = windows.online.fit_predict([factor])
+staged = windows.online.fit_predict([factor])                    # still a query: nothing has run yet
 # 4 and 5. Its out-of-sample residual as a column, and the columns written to a file, a chunk at a time.
+# resid_d is d minus the ridge's prediction made before learning that row, so it is out-of-sample.
 staged.with_columns(pl.col("factor").struct.field("resid_d")).drop("factor").sink_parquet("features.parquet")
 
 # 6. A robust regression and a ridge, each learning a row once its five minutes are known.
 common = dict(targets=["fwd"], features=["flow", "stretch", "resid_d"], clock="ts", half_life="2h", gap_cap="5m",
               embargo="5m",       # a row is learned once its five minutes are known
               coef_every=0)       # each fit's coefficients on every row
-bank = po.ModelBank([po.spec.huber("robust", **common), po.spec.ewridge("ridge", **common)])
+bank = po.ModelBank([po.spec.huber("robust", **common), po.spec.ewridge("ridge", **common)])   # same settings, two losses
 # 7 and 8. Fit up to noon on the second day, and save the state.
-bank.fit(pl.scan_parquet("features.parquet").filter(pl.col("ts") < datetime(2024, 1, 3, 12)))
-bank.save("signal.state")
+bank.fit(pl.scan_parquet("features.parquet").filter(pl.col("ts") < datetime(2024, 1, 3, 12)))   # learns, writes nothing
+bank.save("signal.state")                                        # the fits, and the rows still waiting out their embargo
 ```
 
 Steps 9 to 11 run in a fresh Python process, as they would on another
@@ -362,12 +378,14 @@ bank = po.ModelBank.load("signal.state")
 kept = bank.skip_learned(pl.scan_parquet("features.parquet"))   # still a query
 # 10. The rest of the rows through the state, which is saved again at the end.
 kept.online.fit_predict(load_state="signal.state", save_state="signal.state").sink_parquet("served.parquet")
+# Row counts of the two files: the resumed run's rows, and all rows; the difference is what the state had read.
 resumed, read = (pl.scan_parquet(f).select(pl.len()).collect().item() for f in ("served.parquet", "features.parquet"))
 print(f"resumed on {resumed:,} rows, after {read - resumed:,} the state had read")
 
 # 11. One unbroken run over every row, with the same specs, as a query of its own.
 (pl.scan_parquet("features.parquet").online.fit_predict(bank.specs, save_state="whole.state")
    .sink_parquet("whole.parquet"))
+# Each spec's prediction from both runs, lined up row for row: the unbroken run's last rows are the resumed run's.
 preds = dict(robust=pl.col("robust").struct.field("pred_fwd"), ridge=pl.col("ridge").struct.field("pred_fwd"))
 served = pl.scan_parquet("served.parquet").select(**preds)
 whole = pl.scan_parquet("whole.parquet").tail(resumed).select(**{f"{k}_whole": v for k, v in preds.items()})
@@ -376,10 +394,11 @@ differ = pl.concat([served, whole], how="horizontal").select(   # rows where the
 print(f"the same predictions to the bit: {differ == 0}")
 print(f"and the same state, byte for byte: {Path('signal.state').read_bytes() == Path('whole.state').read_bytes()}")
 # Each fit's coefficients averaged over the last two days, against the planted 0.5, 0.3 and 0.
-last_two_days = pl.scan_parquet("whole.parquet").tail(8_000)
+last_two_days = pl.scan_parquet("whole.parquet").tail(8_000)      # 4,000 trades a day
 for s in ("robust", "ridge"):
     coef = pl.col(s).struct.field("coef")                          # [intercept, flow, stretch, resid_d] on every row
     on_flow, on_stretch, on_resid = (coef.list.get(i) for i in (1, 2, 3))
+    # The mean of each coefficient over those rows, and how far the one on flow typically sits from 0.5.
     flow, rms, resid, stretch = last_two_days.select(
         flow=on_flow.mean(), rms=((on_flow - 0.5) ** 2).mean().sqrt(), resid=on_resid.mean(), stretch=on_stretch.mean(),
     ).collect(engine="streaming").row(0)
@@ -485,8 +504,9 @@ import polars_online as po
 sim = po.sim.regimes(2, states=[0.0, 0.7], transition=[[0.0, 1.0], [1.0, 0.0]],
                      n_blocks=4, rows_per_block=5_000, seed=4)   # the correlation takes turns every 5,000 rows
 rng = np.random.default_rng(4)
-n = sim["rows"].height
+n = sim["rows"].height                                             # 20,000 rows: four blocks of 5,000
 slope = pl.when(pl.col("t") < 10_000).then(0.5).otherwise(-0.5)   # x_2's slope flips at row 10,000
+# Attach each row's block, then build the stream's columns one step at a time.
 (sim["rows"].join(sim["truth_rows"].select("t", "block"), on="t")
    .with_columns(pl.col("x_1", "x_2").diff().fill_null(0.0))        # 2. the levels' changes
    # 3. A trade every 0.1 s on average, the target with heavy-tailed noise, and when each target becomes known.
@@ -499,32 +519,37 @@ slope = pl.when(pl.col("t") < 10_000).then(0.5).otherwise(-0.5)   # x_2's slope 
 live = dict(targets=["y"], features=["x_1", "x_2"], clock="ts", gap_cap="1s", half_life="200s",
             label_clock="known",                  # each row is learned when its target is known, 25 to 35 s later
             conformal=0.9)                        # an interval meant to cover 90% of the targets
-model = po.spec.ewridge("model", **live, conformal_rate="auto", emit_breaks=True)
+model = po.spec.ewridge("model", **live, conformal_rate="auto",   # a step that shrinks as more targets wait
+                        emit_breaks=True)                         # a per-row test of whether the coefficients moved
 fixed = po.spec.ewridge("fixed", **live)          # the default step, 0.05
 # 6. A watcher of the features' correlation.
 watch = po.spec.corrchange("watch", features=["x_1", "x_2"], kind="sequential",
                            window_rows=300,       # the history the rows after it are monitored against
                            monitor_rows=2_000)    # the rows monitored after each history
 # 7. The query, run a chunk at a time, with the readings to count written to a file.
-field = lambda spec, name: pl.col(spec).struct.field(name)
+field = lambda spec, name: pl.col(spec).struct.field(name)   # each spec writes one column of fields, named after it
 (pl.scan_parquet("live.parquet").online.fit_predict([model, fixed, watch])
+   # Per spec: did the interval [lo_y, hi_y] cover the target, and its half-width.
    .select("t", "block",
            **{f"covered_{s}": pl.col("y").is_between(field(s, "lo_y"), field(s, "hi_y")) for s in ("model", "fixed")},
            **{f"width_{s}": (field(s, "hi_y") - field(s, "lo_y")) / 2 for s in ("model", "fixed")},
            broke=field("model", "break_wald_y") > 21.1,   # chi2(3)'s 0.01% value: two features and the intercept
-           flag=field("watch", "flag"))
+           flag=field("watch", "flag"))                    # True on a row where corrchange flags a change
    .sink_parquet("watched.parquet"))
 watched = pl.scan_parquet("watched.parquet")
 
 # 8. Each interval's coverage and mean half-width, past the first five half-lives.
 for s in ("model", "fixed"):
+    # The share of rows whose target fell inside the interval, and the interval's mean half-width.
     covered, width = watched.filter(pl.col("t") >= 10_000).select(f"covered_{s}", f"width_{s}").mean().collect(engine="streaming").row(0)
     print(f"{s}: covered {covered:.3f} of the targets, half-width {width:.2f}")
 # 9. The break test's flags before the slope flipped, and its first after.
+# Of the flagged rows: how many fell before the flip (false alarms), and the first one after it.
 before, first = watched.filter("broke").select(
     before=(pl.col("t") < 10_000).sum(), first=pl.col("t").filter(pl.col("t") >= 10_000).min()).collect(engine="streaming").row(0)
 print(f"break test: {before} flags before row 10000, the first after it at row {first:.0f}")
 # 10. Each block's first row and first correlation flag: the first block holds no change.
+# Per block: its first row (where the planted change is), its first flag, and its number of flags.
 blocks = watched.group_by("block").agg(start=pl.col("t").min(), flagged=pl.col("t").filter("flag").min(), flags=pl.col("flag").sum())
 for block, start, flagged, flags in blocks.sort("block").collect(engine="streaming").iter_rows():
     if block == 0:
@@ -599,26 +624,31 @@ import polars_online as po
 rng = np.random.default_rng(1)
 shared = np.cumsum(rng.normal(0.0, 0.1, 200_000))           # a hidden path, 0.01 clock units a step
 names = ["AAA", "BBB", "CCC"]
-frames = []
+frames = []                                                      # one frame of trades per series
 for s in names:
     # The series' price, plus a move of its own as large, and the times it trades.
     price = shared + np.cumsum(rng.normal(0.0, 0.1, 200_000))
-    t = np.cumsum(rng.exponential(1.0, 2_100))
+    t = np.cumsum(rng.exponential(1.0, 2_100))                   # trade times, about one per clock unit
     t = t[t < 2_000]
+    # Each trade's price is the series' price at that time on the 0.01-unit grid.
     frames.append(pl.DataFrame({"symbol": s, "t": t, "px": price[(t * 100).astype(int)]}))
-pl.concat(frames).sort("t").write_parquet("ticks.parquet")
+pl.concat(frames).sort("t").write_parquet("ticks.parquet")      # one stream: every series' trades in time order
 
 # 2 to 4. The series on refresh times, their changes, and the changes' correlations.
+# One row per refresh time, with each series' last price by then in <symbol>_value.
 refresh = po.stream.refresh_time(pl.scan_parquet("ticks.parquet"), series="symbol", names=names, clock="t", value="px")
+# Each series' change since the previous refresh time.
 moves = refresh.select("time_refresh", *(pl.col(f"{s}_value").diff().alias(s) for s in names))
+# The changes' correlations over the whole stream: an infinite half-life weighs every row alike.
 comove = po.spec.ew_cov("comove", features=names, stats=["corr"], clock="time_refresh", gap_cap=10.0, half_life=float("inf"))
-last = moves.online.fit_predict([comove]).select(pl.col("comove").last()).collect().item()
+last = moves.online.fit_predict([comove]).select(pl.col("comove").last()).collect().item()   # the last row's struct
 pairs = [("AAA", "BBB"), ("AAA", "CCC"), ("BBB", "CCC")]
 print("planted 0.5; on the refresh times: " + ", ".join(f"{last[f'corr_{a}_{b}']:.2f}" for a, b in pairs))
 # 5. Each series' last price every 0.1 clock units, and the correlations of its changes there.
-every = pl.LazyFrame({"t": np.arange(0.0, 2_000.0, 0.1)})
+every = pl.LazyFrame({"t": np.arange(0.0, 2_000.0, 0.1)})        # a regular grid of times
 for s in names:                                                  # builds the query: one as-of join per series
     every = every.join_asof(pl.scan_parquet("ticks.parquet").filter(symbol=s).select("t", pl.col("px").alias(s)), on="t")
+# The changes between grid times, and their correlations; most grid steps see no trade, so most changes are 0.
 corr = (every.select(pl.col(names).diff()).drop_nulls()
         .select(pl.corr(a, b).alias(f"{a}_{b}") for a, b in pairs).collect(engine="streaming").row(0))
 print("read every 0.1: " + ", ".join(f"{c:.2f}" for c in corr))

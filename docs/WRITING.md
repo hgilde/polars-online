@@ -350,6 +350,11 @@ large code blocks in sections" (2026-10-11). So
 guide to it: a python block of ten statements or more has no run of more
 than eight without a comment on a line of its own. It counts statements,
 not lines, so a spec written one parameter to a line is one step.
+The highlights page asks more of its code, since a reader skims it for
+what the library can do: "The highlights code should have more comments to
+describe what's happening" (the user, 2026-11-10). There a comment also
+says what a dense line computes, what a column or field holds, and why a
+setting has its value, so the code reads without the prose beside it.
 
 **An example builds a thing in Polars' own terms when the library takes
 them.** Where a spec takes a Polars expression, the example writes one, and
