@@ -1591,3 +1591,9 @@ to = 13974889
 date = 2026-11-09
 reason = "tasks 371 and 374: the co-moment triangle is kept packed in the model, so a windowed snapshot copies it in one run and a windowed ew_class / ew_cov row runs 24-50% faster on x86-64; above 12 features the rank-one update walks the packed rows where it walked a square, +3.67% instructions in this 50-feature Gram against 32980bf6 under the frozen clock (the VM's count on 694e0f9d, V43), its time -0.5% / +4.4% (default / aligned layout), not slower in both. Set from main's CI count on 0d9e4356 (13,480,167) times that ratio"
 changelog = "A windowed model's ring holds its snapshots as runs of doubles"
+
+[[signoff]]
+key = "instructions.corrchange_window_w100"
+version = "1.5.0"
+reason = "-61.0% since 1.4.0 (about 100565668 -> 39,230,667), a gain: a window spanning four blocks or more merges its correlations from the blocks' moments instead of reading every row in it (task 328)"
+changelog = "`corrchange(kind=\"window\")` merges each window's correlations from"
