@@ -3,7 +3,7 @@
 
 > **GitHub project:** [github.com/hgilde/polars-online](https://github.com/hgilde/polars-online)
 >
-> **Every feature, one line each:** [FEATURES.md](docs/FEATURES.md) · **Four use cases, each in one pass at hundreds of thousands or millions of rows per second, in bounded memory:** [HIGHLIGHTS.md](docs/HIGHLIGHTS.md)
+> **Every feature, one line each:** [FEATURES.md](docs/FEATURES.md) · **Four complete use cases on model selection, stability, factors, asynchronous streams:** [HIGHLIGHTS.md](docs/HIGHLIGHTS.md)
 
 polars-online fits models online, one row at a time, to
 [Polars](https://pola.rs) data, for anyone whose data are too large to
