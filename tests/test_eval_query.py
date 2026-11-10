@@ -27,9 +27,11 @@ returns a ``LazyFrame`` that collects to the frame's result. Held here:
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import sys
 import textwrap
+from fractions import Fraction
 
 import numpy as np
 import polars as pl
@@ -720,3 +722,147 @@ def test_by_is_refused_by_name_on_every_test_of_two_specs(pair, call):
     names = {"clark_west": {"big": "big", "small": "small"}}.get(call, {"a": "big", "b": "small"})
     with pytest.raises(TypeError, match=f"po.eval.{call}: by was renamed group"):
         getattr(po.eval, call)(pair.lazy(), by="g", **names)
+
+
+# --- the per-row tests where S is zero but for rounding (task 381) -------------
+
+
+def _sides(ra: np.ndarray, rb: np.ndarray, g: list[int] | None = None) -> pl.DataFrame:
+    """Two specs' outputs holding only ``resid_y``, so ``d = rb² - ra²``."""
+    df = pl.DataFrame(
+        {
+            "a": pl.DataFrame({"resid_y": ra}).to_struct(),
+            "b": pl.DataFrame({"resid_y": rb}).to_struct(),
+        }
+    )
+    return df if g is None else df.with_columns(pl.Series("g", g))
+
+
+def _per_row(df: pl.DataFrame | pl.LazyFrame, call: str, **kw) -> list[float | None]:
+    sides = {"a": "a", "b": "b"} if call == "diebold_mariano" else {"big": "a", "small": "b"}
+    got = getattr(po.eval, call)(df, **sides, **kw)
+    got = got.collect() if isinstance(got, pl.LazyFrame) else got
+    return got[call].struct.field(f"{'dm' if call == 'diebold_mariano' else 'cw'}_y").to_list()
+
+
+def _exact(v: list[float], half_life: float, lags: int) -> list[tuple[float | None, Fraction]]:
+    """Each row's statistic by its definition, in exact rational arithmetic
+    over the same f64 weights ``λ^age`` and values, with ``S / Q`` (``Q``
+    the scale the rounding rule reads, about the first value): null where
+    the exact ``S`` is 0."""
+    lam = Fraction(0.5 ** (1.0 / half_life))
+    out = []
+    for j in range(len(v)):
+        om = [lam ** (j - i) for i in range(j + 1)]
+        x = [Fraction(e) for e in v[: j + 1]]
+        total = sum(om)
+        m = sum(o * e for o, e in zip(om, x, strict=True)) / total
+        u = [o * (e - m) for o, e in zip(om, x, strict=True)]
+        s = sum(e * e for e in u)
+        for lag in range(1, lags + 1):
+            pairs = sum(u[i] * u[i - lag] for i in range(lag, len(u)))
+            s += 2 * (1 - Fraction(lag, lags + 1)) * pairs
+        q = sum(o * o * (e - x[0]) ** 2 for o, e in zip(om, x, strict=True))
+        q += (m - x[0]) ** 2 * sum(o * o for o in om)
+        stat = None if s <= 0 else float(m * total) / math.sqrt(s)
+        out.append((stat, s / q if q else Fraction(0)))
+    return out
+
+
+def _f(rb: np.ndarray, ra: np.ndarray, call: str) -> list[float]:
+    d = rb**2 - ra**2
+    return list(d if call == "diebold_mariano" else d + (ra - rb) ** 2)
+
+
+CALLS = ["diebold_mariano", "clark_west"]
+
+
+class TestPerRowWhereSIsZeroButForRounding:
+    """The per-row form's ``S`` is summed from weighted sums of each key's
+    values about its first; where it is at most ``po.eval._ew_rounding(lags)``
+    of their scale ``Q`` it is zero but for rounding, and the statistic is
+    null, in the frame and the query alike. Before, the frame expanded the
+    sums about 0, and on a key's rows of one value read a statistic of about
+    1e8 from a residue of rounding, where the query read null; and a value of
+    spread 1e-8 about a level of 1 read nothing like its statistic."""
+
+    @pytest.mark.parametrize("call", CALLS)
+    @pytest.mark.parametrize("lags", [0, 2])
+    @pytest.mark.parametrize("half_life", [1.0, 5.0, 200.0])
+    def test_a_constant_value_and_each_first_row_read_null(self, call, lags, half_life):
+        n = 14
+        ra = np.r_[np.full(n, 0.3), np.full(n, 0.1)]
+        rb = np.r_[np.full(n, 0.7), np.full(n, 1.3)]
+        df = _sides(ra, rb, g=[0] * n + [1] * n)
+        kw = dict(lags=lags, half_life=half_life, group="g")
+        assert _per_row(df, call, **kw) == [None] * (2 * n)
+        # One row per key: each is its key's first.
+        firsts = _sides(np.array([0.3, 0.2, 0.1]), np.array([0.7, 1.1, 0.5]), g=[0, 1, 2])
+        assert _per_row(firsts, call, **kw) == [None] * 3
+
+    @pytest.mark.parametrize("call", CALLS)
+    @pytest.mark.parametrize(("half_life", "lags"), [(1.0, 0), (5.0, 2), (200.0, 1)])
+    def test_a_constant_value_after_varied_ones_frame_query_and_exact(
+        self, monkeypatch, call, half_life, lags
+    ):
+        """Under a short half-life ``S`` decays toward 0 on the constant
+        rows: null where it is below the rounding cut, and elsewhere within
+        the statistic's own rounding, ``4 ε (2 + 4 lags) Q / S``, of the exact
+        value, in the frame and in queries of 1-row, 7-row and whole chunks,
+        which are null on the same rows. Two keys interleaved, so the query
+        carries each key's first value."""
+        rng = np.random.default_rng(381)
+        k = 50
+        ra = np.r_[rng.normal(size=5), np.full(k, 0.3)]
+        rb = np.r_[rng.normal(size=5), np.full(k, 0.7)]
+        ra2, rb2 = rng.normal(size=5 + k), rng.normal(size=5 + k)
+        both_a = np.ravel(np.column_stack([ra, ra2]))
+        both_b = np.ravel(np.column_stack([rb, rb2]))
+        df = _sides(both_a, both_b, g=[0, 1] * (5 + k))
+        kw = dict(lags=lags, half_life=half_life, group="g")
+        frame = _per_row(df, call, **kw)
+        queries = {}
+        for rows in (1, 7, 10**6):
+            monkeypatch.setattr(po.eval, "_chunk_rows", lambda rows=rows: rows)
+            queries[rows] = _per_row(df.lazy(), call, **kw)
+        cut = po.eval._ew_rounding(lags)
+        for key, (a, b) in enumerate(((ra, rb), (ra2, rb2))):
+            exact = _exact(_f(b, a, call), half_life, lags)
+            got = frame[key::2]
+            for rows, q in queries.items():
+                assert [v is None for v in q[key::2]] == [v is None for v in got], rows
+            for i, (v, (want, ratio)) in enumerate(zip(got, exact, strict=True)):
+                if v is None:
+                    assert ratio <= 2 * cut, (key, i, float(ratio))
+                    continue
+                assert want is not None and ratio > cut / 2, (key, i)
+                bound = max(1e-12, 4 * sys.float_info.epsilon * (2 + 4 * lags) / float(ratio))
+                for q in (got, *(r[key::2] for r in queries.values())):
+                    assert abs(q[i] - want) <= bound * abs(want), (key, i, q[i], want)
+        # The decay does reach the cut on the constant rows at the shortest
+        # half-life, so the null side of the rule is exercised.
+        if half_life == 1.0:
+            assert frame[0::2][-1] is None
+
+    @pytest.mark.parametrize("call", CALLS)
+    @pytest.mark.parametrize("level", [1.0, 0.0])
+    @pytest.mark.parametrize(("half_life", "lags"), [(1.0, 0), (5.0, 2), (200.0, 1)])
+    def test_a_small_spread_is_not_taken_for_rounding(
+        self, monkeypatch, call, level, half_life, lags
+    ):
+        """Values of spread 1e-8 about a level of 1 and about 0: a statistic on
+        every row but the first, matching the exact one; about 1 the old
+        expansion about 0 cancelled the level and read noise."""
+        rng = np.random.default_rng(3810)
+        n = 16
+        rb = np.sqrt(np.abs(level + 1e-8 * rng.normal(size=n)))
+        ra = np.zeros(n)
+        df = _sides(ra, rb)
+        kw = dict(lags=lags, half_life=half_life)
+        exact = _exact(_f(rb, ra, call), half_life, lags)
+        monkeypatch.setattr(po.eval, "_chunk_rows", lambda: 3)
+        for got in (_per_row(df, call, **kw), _per_row(df.lazy(), call, **kw)):
+            assert got[0] is None
+            for v, (want, _) in zip(got[1:], exact[1:], strict=True):
+                assert v is not None and want is not None
+                assert abs(v - want) <= 1e-9 * abs(want)
