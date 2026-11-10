@@ -3424,3 +3424,13 @@ line_has = "let mut f = f64::from_bits((bits & ((1u64 << 52) - 1)) | (1023u64 <<
 why = """the mask leaves the mantissa's 52 low bits and `1023 << 52` sets only \
 bits 52 to 61, so the two operands share no set bit and their `^` is their \
 `|` (task 373)"""
+
+[[equivalent]]
+file = "crates/online-polars/src/stream/stack_line.rs"
+function = "StackLine::keep"
+mutation = "replace StackLine::keep with ()"
+line_has = "std::hint::black_box(&self.0);"
+why = """the line's address taken only so that `run_instance` keeps it, \
+aligned, on its stack: where the models' frames fall within a cache line, \
+a matter of speed alone; nothing reads the line, and every output is the \
+same without it"""

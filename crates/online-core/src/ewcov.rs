@@ -370,9 +370,10 @@ pub struct EwCov {
     /// still compares equal to the one that wrote it.
     #[serde(skip)]
     dev: Scratch,
-    /// The co-moments laid into a square for a block's merge, whose pieces
-    /// are views of one ([`par::merge_lower`]): kept, so a merge allocates
-    /// none. Not state, as `dev`.
+    /// The co-moments laid into a square for a block's merge where the
+    /// matrix is one piece, no wider than a leaf ([`par::merge_lower`]):
+    /// kept, so a merge allocates none; a wider matrix's pieces run in their
+    /// threads' own buffers and leave it empty. Not state, as `dev`.
     #[serde(skip)]
     square: Scratch,
     /// A blocked Gram's merges' rounding, bounded as they happen
@@ -2388,11 +2389,9 @@ impl EwCovModel {
             .enumerate()
             .map(|(i, &xi)| cov.deviation(i, xi))
             .collect();
-        // The lower triangle, which `solve_spd` reads.
-        let mut m = Vec::new();
-        cov.comoments()
-            .ridged_lower_into(&mut m, cov.precision_prior * cov.precision_scale);
-        match crate::solve::solve_spd(&m, &delta, k, 1) {
+        // From the packed rows themselves, with no square laid out.
+        let ridge = cov.precision_prior * cov.precision_scale;
+        match crate::solve::solve_spd_ridged(cov.comoments().packed(), ridge, &delta, k) {
             Some((sol, _)) => {
                 let d2 = delta.iter().zip(&sol).map(|(d, s)| d * s).sum::<f64>() / scale;
                 if d2.is_finite() {

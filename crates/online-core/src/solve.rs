@@ -417,6 +417,45 @@ pub fn solve_spd(a: &[f64], b: &[f64], k: usize, m: usize) -> Option<(Vec<f64>, 
     Some((out, attempts))
 }
 
+/// [`solve_spd`] of `C + ridge·I` with one right-hand side `b`, `C`
+/// symmetric over `k` features and given as its lower triangle packed row
+/// by row ([`crate::LowerTriangle::packed`]), with no square laid out: each
+/// rung's matrix is made from the packed rows as [`solve_spd`] makes it
+/// from `C + ridge·I`'s square -- `c_ij` below the diagonal, `(c_ii +
+/// ridge) + jitter` on it, the same trace -- so the solution and the
+/// attempts are its to the bit. `ew_cov`'s `mahal`, a factorization a row:
+/// laying the square out first, zeroed, then the triangle's rows into it,
+/// cost it 4% of its speed at 20 features on arm64 against the one copy of
+/// a square it made when the matrix was kept as one.
+pub(crate) fn solve_spd_ridged(
+    c: &[f64],
+    ridge: f64,
+    b: &[f64],
+    k: usize,
+) -> Option<(Vec<f64>, u32)> {
+    debug_assert_eq!(b.len(), k);
+    debug_assert_eq!(c.len(), crate::ewcov::row_at(k));
+    let diag = |i: usize| c[crate::ewcov::row_at(i) + i] + ridge;
+    let trace: f64 = (0..k).map(diag).sum();
+    let base = if trace > 0.0 { trace / k as f64 } else { 1.0 };
+    let threads = rayon::current_num_threads();
+    for (attempts, &eps) in JITTER.iter().enumerate() {
+        let jitter = base * eps;
+        let mut l = Mat::from_fn(k, k, |i, j| match i.cmp(&j) {
+            Ordering::Less => 0.0,
+            Ordering::Equal => diag(i) + jitter,
+            Ordering::Greater => c[crate::ewcov::row_at(i) + j] + 0.0,
+        });
+        if cholesky_in_place(l.as_mut(), threads, (LEAF, TILE), None).is_ok() {
+            clear_upper(&mut l);
+            let mut x = Mat::from_fn(k, 1, |i, _| b[i]);
+            solve_in_place(&l, x.as_mut());
+            return Some(((0..k).map(|i| x[(i, 0)]).collect(), attempts as u32));
+        }
+    }
+    None
+}
+
 /// A Cholesky factorization of a symmetric positive definite `A` kept for
 /// reuse: the factor of the matrix actually factorized (with the diagonal
 /// jitter it needed, escalating as in [`solve_spd`]), its `ln det`, and the
@@ -1091,6 +1130,56 @@ mod tests {
         let by_hand: f64 = z.iter().zip(&beta).map(|(z, b)| z * b).sum();
         assert_eq!(dot_aug(&beta, &x, true), by_hand);
         assert_eq!(dot_aug(&beta[1..], &x, false), 2.0 * 3.0 - 4.0);
+    }
+
+    /// `solve_spd_ridged` on a packed triangle is `solve_spd` on `C +
+    /// ridge·I` laid out as a square ([`crate::LowerTriangle::ridged_lower_
+    /// into`]), to the bit, attempts and all: definite matrices, ones a
+    /// ridge of 0 leaves singular so a jitter rung is climbed, an
+    /// indefinite one every rung fails, negative zeros below the diagonal,
+    /// a trace that is not positive, and sides 0 to 20.
+    #[test]
+    fn solve_spd_ridged_is_solve_spd_on_the_ridged_square() {
+        let mut s = 7u64;
+        let mut lcg = || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        };
+        for k in 0..=20usize {
+            let rows = k + 2;
+            let x: Vec<f64> = (0..rows * k).map(|_| lcg()).collect();
+            let gram =
+                |i: usize, j: usize| (0..rows).map(|r| x[r * k + i] * x[r * k + j]).sum::<f64>();
+            let b: Vec<f64> = (0..k).map(|_| lcg()).collect();
+            let mut cases: Vec<(Vec<f64>, f64)> = Vec::new();
+            let full = |f: &dyn Fn(usize, usize) -> f64| -> Vec<f64> {
+                (0..k * k).map(|p| f(p / k, p % k)).collect()
+            };
+            cases.push((full(&|i, j| gram(i, j)), 0.0));
+            cases.push((full(&|i, j| gram(i, j)), 0.5));
+            // Rank one: singular at ridge 0 from k = 2.
+            cases.push((full(&|i, j| x[i] * x[j]), 0.0));
+            // Indefinite, a trace below zero, negative zeros off the diagonal.
+            cases.push((
+                full(&|i, j| if i == j { -1.0 - i as f64 } else { -0.0 }),
+                0.0,
+            ));
+            cases.push((full(&|i, j| if i == j { 0.0 } else { -0.0 }), 1e-3));
+            for (c, ridge) in cases {
+                let tri = crate::LowerTriangle::from(c);
+                let mut square = Vec::new();
+                tri.ridged_lower_into(&mut square, ridge);
+                let want = solve_spd(&square, &b, k, 1);
+                let got = solve_spd_ridged(tri.packed(), ridge, &b, k);
+                let bits = |v: &Option<(Vec<f64>, u32)>| {
+                    v.as_ref()
+                        .map(|(x, a)| (x.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), *a))
+                };
+                assert_eq!(bits(&got), bits(&want), "k = {k}, ridge {ridge}");
+            }
+        }
     }
 
     /// `solve_spd` and `SpdFactor::of` climb one ladder (review 2026-09-12,
