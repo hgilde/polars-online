@@ -943,8 +943,8 @@ def target(column: str, *, name: str | None = None) -> Target:
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 

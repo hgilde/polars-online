@@ -26,6 +26,7 @@ import functools
 import itertools
 import os
 import pickle
+import posixpath
 import re
 import subprocess
 import threading
@@ -607,6 +608,10 @@ def _doc_blocks(rel: str, fence: str = "python") -> list[tuple[str, int, str]]:
 #: that point: on what the README built before it, and on what the page's
 #: own earlier blocks built.
 MOVED_PAGES = {
+    # The README's *Example data* moved to a page of its own (task 383; the
+    # user, 2026-11-10: "The main readme has example data but not use of
+    # it"), which *Install*'s last sentence points to.
+    "docs/EXAMPLE-DATA.md": "### Install",
     # The README is a landing page, and its map, *Where to go next*, is
     # where it points to each of these (task 338 stage 8).
     "docs/WINDOWS.md": "## Where to go next",
@@ -743,12 +748,13 @@ def _built_by_the_readme(
     return out
 
 
+#: The page that builds the frames every example may read.
+EXAMPLE_DATA = "docs/EXAMPLE-DATA.md"
+
+
 def _example_data_block() -> str:
-    """The README's *Example data* block: the frames every example may read."""
-    text = (REPO / "README.md").read_text(encoding="utf-8")
-    start = text.index("\n### Example data\n")
-    section = text[start : text.index("\n## ", start)]
-    blocks = [code for _, _, code in README_BLOCKS if code in section]
+    """*Example data*'s block: the frames every example may read."""
+    blocks = [code for path, _, code in README_BLOCKS if path == EXAMPLE_DATA]
     assert len(blocks) == 1, f"Example data should hold one python block, not {len(blocks)}"
     return blocks[0]
 
@@ -835,14 +841,14 @@ def _closed_rows(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def _example_data(tmp_path: Path) -> dict[str, object]:
-    """What the README's *Example data* block builds, run as written in
+    """What *Example data*'s block builds, run as written in
     ``tmp_path``, which is where it writes its parquet files: the frames
     (``df``, ``lf``, ``today``, ``later``, ``trades``), the modules it
     imports, and whatever else it names. A recipe runs in this namespace
     and nothing more, so what it prints comes from the README's own data."""
     ns: dict[str, object] = {"__name__": "__readme__"}
     with contextlib.chdir(tmp_path):
-        exec(compile(_example_data_block(), "README.md: Example data", "exec"), ns)
+        exec(compile(_example_data_block(), f"{EXAMPLE_DATA}: Example data", "exec"), ns)
     return ns
 
 
@@ -1016,7 +1022,7 @@ class TestReadmeExamples:
         """A recipe is complete: it reads what *Example data* builds and
         nothing else, and the ```text block under it is what it prints
         (README-ITERATIONS, I8's V5). So each runs alone, in a directory of
-        its own, in the namespace the README's *Example data* block builds
+        its own, in the namespace *Example data*'s block builds
         there -- not `_readme_namespace`'s, which also hands out the specs,
         banks and outputs other sections built -- and what it prints is held
         to the text by `doc_recipes.differences`: the same lines and words,
@@ -1138,7 +1144,7 @@ class TestReadmeExamples:
         readme.mkdir()
         monkeypatch.chdir(readme)
         shown: dict[str, object] = {}
-        exec(compile(_example_data_block(), "README.md: Example data", "exec"), shown)
+        exec(compile(_example_data_block(), f"{EXAMPLE_DATA}: Example data", "exec"), shown)
         for name in ("df", "trades", "today"):
             assert shown[name].equals(ns[name]), name
         assert shown["lf"].collect().equals(ns["df"])
@@ -1263,25 +1269,32 @@ class TestReadmeExamples:
         (README-ITERATIONS, C15). A block reads it when it reads a name
         *Example data* builds without assigning that name itself, or a file
         *Example data* writes. The pages README sections moved to are held
-        to it too, their link reaching back into the README."""
+        to it too. Since task 383 *Example data* is a page of its own, so
+        each link is to that page, relative to the page the block is on."""
         built = {"df", "lf", "trades", "today", "later"}
         written = re.compile(r"[\"'](ticks/|(ticks|today|trades)\.parquet[\"'])")
-        missing = []
+        missing, checked, builders = [], 0, 0
         for path, line, code in README_ONLY:
             text = (REPO / path).read_text(encoding="utf-8").split("\n")
-            link = "](#example-data)" if path == "README.md" else "](../README.md#example-data)"
+            target = posixpath.relpath(EXAMPLE_DATA, posixpath.dirname(path) or ".")
+            link = f"]({target})"
             names = [n for n in ast.walk(ast.parse(code)) if isinstance(n, ast.Name)]
             stored = {n.id for n in names if not isinstance(n.ctx, ast.Load)}
             loaded = {n.id for n in names if isinstance(n.ctx, ast.Load)}
             if stored >= built:  # Example data's own block, which builds them
+                builders += 1
                 continue
             if not ((loaded - stored) & built or written.search(code)):
                 continue
+            checked += 1
             above = line - 2  # the fence is at line - 1, counted from 0
             while above >= 0 and not text[above].strip():
                 above -= 1
             if link not in text[above]:
                 missing.append(f"{path}:{line}")
+        # A check that finds no block checks nothing: one block builds the
+        # frames, and the moved pages hold six that read them (task 383).
+        assert (builders, checked >= 6) == (1, True), (builders, checked)
         assert not missing, (
             "README blocks that read the example data with no line just above linking "
             f"*Example data*, at the lines of their fences: {missing}"
@@ -1386,7 +1399,7 @@ class TestReadmeExamples:
     def test_every_name_a_docstring_example_reads_is_built_on_its_page(self):
         """The README's rule (the test above it) for the API reference and
         the runner guide. A reader of one docstring has that docstring and
-        the README's *Example data*, not the README's every name, which the
+        *Example data*, not the README's every name, which the
         namespace hands each block: `ModelBank.skip_learned`'s example read
         `rerun`, defined nowhere, and ran green (review 2026-10-05, TC4). So
         each block is parsed, not run, and every name it reads must be one

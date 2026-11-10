@@ -15,7 +15,7 @@ clips its steps a shorter memory (`huber_scale_half_life`).
 These steps need the library and a spec of one of the two models:
 
 - polars-online installed. Each example builds its own rows, so none
-  needs the README's example data.
+  needs the [example data](../EXAMPLE-DATA.md).
 - A [spec](../GLOSSARY.md#the-model-bank-and-what-it-reads) of `pa`, or of
   `sgd` with `loss="huber"`, whose
   [target](../GLOSSARY.md#the-model-bank-and-what-it-reads) can change

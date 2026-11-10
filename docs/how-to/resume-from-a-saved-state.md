@@ -9,8 +9,8 @@ or from the command line.
 
 Each way to resume needs a saved state and the rows that follow it:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The Python examples
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The Python examples
   read `df`, the stream so far, and `today`, the 400 rows that follow it on
   the clock `t`. `lf` and `later` are the same rows, saved as
   `ticks.parquet` and `today.parquet` and read back as queries.
@@ -48,7 +48,7 @@ time.
 This code fits `df`, saves the bank, loads it, and resumes on `today`. It
 compares the resumed bank's predictions with one run over `df` and `today`
 together. It uses `df` and `today` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
@@ -107,7 +107,7 @@ the command line, which saves the state only after the output is written.
 
 This code fits `lf` and saves its state, then resumes on `later`, the
 query over `today`'s rows. It uses `lf` and `later` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
@@ -292,7 +292,7 @@ names what is wrong with the file:**
 | was saved by 0.13.0 or an earlier release | `ValueError`, saying an older version of polars-online wrote it | refit the bank from its input. `po.schema_version()` gives this version's schema |
 
 This code makes three loads that fail. It uses `df` and `ticks.parquet`
-from [Example data](../../README.md#example-data):
+from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 # A saved bank, and a spec that does not match it.

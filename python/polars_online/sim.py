@@ -195,7 +195,8 @@ def regimes(
     Use it to measure a detector of changing correlation, such as ``deco``,
     ``hmm``, ``corrchange`` or ``bocpd``, against data whose regimes are known.
     For a stream with a planted relation to a target, build the frame with
-    numpy, as the README's *Example data* does.
+    numpy, as `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_ does.
 
     .. rubric:: Parameters
 

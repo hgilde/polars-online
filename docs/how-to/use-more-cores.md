@@ -15,8 +15,8 @@ explains why, and why the thread count never changes the numbers.
 
 These steps need the library and a machine with several cores:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `ticks.parquet`, 400 rows of four stocks in the column `stock_id`. One
   example builds its own file.
 - A run of a bank on a machine with more than one core.
@@ -178,7 +178,7 @@ piece of work on each group, and the query reads the file once.
 
 This code is a script of its own, run in a new process, since Polars reads
 `POLARS_MAX_THREADS` when it is first imported. It uses the file
-`ticks.parquet` from [Example data](../../README.md#example-data):
+`ticks.parquet` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 import os
@@ -245,7 +245,7 @@ gives the default threads' number, and `po.thread_pool_size(threads=n)`
 the number a bank given `threads=n` runs on, without starting them. This
 code fits one spec on one thread and on four, and checks the two agree. It
 uses the file `ticks.parquet` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 import polars as pl

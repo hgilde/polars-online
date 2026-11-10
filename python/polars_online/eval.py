@@ -432,8 +432,8 @@ def unpack(
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -879,8 +879,8 @@ def metrics(
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1147,8 +1147,8 @@ def window_metrics(
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1510,8 +1510,8 @@ def compare_specs(
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -2116,8 +2116,8 @@ def grid_search(
 
     .. rubric:: Examples
 
-    This code reads ``ticks.parquet`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``ticks.parquet`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -2589,8 +2589,8 @@ def seqtest(
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -3057,8 +3057,8 @@ def sums(
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -3411,8 +3411,8 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -3620,8 +3620,8 @@ def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -4552,8 +4552,8 @@ def diebold_mariano(
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -4827,8 +4827,8 @@ def clark_west(
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 

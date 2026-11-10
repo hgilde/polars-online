@@ -192,7 +192,7 @@ it by name, and chunking the stream cannot change its output:
 
 This code tries both refusals on `trades`, a stream of quotes with trades
 between them. Its `mid` is on every row, and `side`, `quantity` and `price`
-are null on a quote. It uses `trades` from [Example data](../README.md#example-data):
+are null on a quote. It uses `trades` from [Example data](EXAMPLE-DATA.md):
 
 ```python
 clock = dict(clock="ts", gap_cap="5m", group="symbol")
@@ -248,7 +248,7 @@ come out null, never dropped:
 `partial` needs a `window_size`, since without one no window is cut short.
 On `trades`, a window of a minute looking back is cut short on each
 symbol's first minute of rows, 102 rows in all.
-This code uses `trades` from [Example data](../README.md#example-data):
+This code uses `trades` from [Example data](EXAMPLE-DATA.md):
 
 ```python
 for partial in ["keep", "null", "drop"]:

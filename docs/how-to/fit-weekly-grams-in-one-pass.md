@@ -17,7 +17,7 @@ These steps need the library, numpy and a column that names each block:
 - polars-online installed with numpy, an optional extra, which
   `pip install "polars-online[numpy]"` adds. `bank.gram(spec)` returns
   numpy arrays, and `po.gram` fits from them.
-- The README's [Example data](../../README.md#example-data) built. The
+- [Example data](../EXAMPLE-DATA.md) built. The
   example reads `lf`, a
   [query](../GLOSSARY.md#the-model-bank-and-what-it-reads) over
   `ticks.parquet`: 400 rows a minute apart, with the timestamp `ts`, five
@@ -46,7 +46,7 @@ them.
 Here one pass over `lf` leaves eight hourly Grams of its five features.
 Pooled, they give least squares on all 400 rows, near the truth
 `1 + 2·x0 − x1`, with the t of each coefficient. Any run of hours, on any of the columns, is one more
-call. This code uses `lf` from [Example data](../../README.md#example-data):
+call. This code uses `lf` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 # 1 to 3. One Gram per hour, from one pass.

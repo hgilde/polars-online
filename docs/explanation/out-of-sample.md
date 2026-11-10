@@ -52,7 +52,7 @@ learned before the row.
 
 So a prediction made in one pass over a stream is the prediction a bank
 that had learned only the rows before it would make. This code fits `df`
-from the README's [Example data](../../README.md#example-data) in one run,
+from [Example data](../EXAMPLE-DATA.md) in one run,
 then predicts row 300 with a bank that has learned only rows 0 to 299:
 
 ```python

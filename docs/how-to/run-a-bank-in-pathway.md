@@ -9,8 +9,8 @@ predict and learn inside it.
 
 These steps need the library and, for a real pipeline, Pathway:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The example reads
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The example reads
   `df`, 400 rows in clock order.
 - For a pipeline, Pathway, installed under its own license, and an input
   connector. Pathway is not a dependency of this package, and the example
@@ -39,7 +39,7 @@ have.
 
 This code feeds the operator two plain frames with a save and a
 restore between them, and compares its predictions with one run's over the
-same rows. It uses `df` from [Example data](../../README.md#example-data):
+same rows. It uses `df` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 # The operator: a bank fed a chunk at a time, saved and restored as bytes.

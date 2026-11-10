@@ -18,8 +18,8 @@ bank writes out its running sums, a row per half-life and per
 
 These steps need the library and a column whose values name the groups:
 
-- polars-online and numpy installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online and numpy installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `df`, a frame of 400 rows with the features `x0` and `x1`.
 - A group column whose groups end in one of two ways: its key only ever
   rises, as a block number or a date cast to an integer does, or a
@@ -60,7 +60,7 @@ upper triangle. It adds the span's own `rows_fed`, `rows_learned`,
 Here a block id rises every 100 rows, so blocks 0 to 2 close, and block 3,
 the last, stays open. `po.gram.from_row` turns a closed row back into the
 dict `gram()` returns, so everything in `po.gram` works on it. This code
-uses `df` from [Example data](../../README.md#example-data):
+uses `df` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 # 1. A Gram per block, each closed once a higher block arrives.
@@ -109,7 +109,7 @@ command line writes the rows as it goes.
 
 Here the blocked stream is saved to disk, learned from as it is read back,
 and each closed block's row goes to `blocks.parquet`. This code uses `df`
-from [Example data](../../README.md#example-data):
+from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 blocks = po.spec.ew_cov("cov", features=["x0", "x1"], lam=1.0, group="block", group_close="monotone")
@@ -129,7 +129,7 @@ group's rows, and the two agree to the bit.** In this code, block 0's bank
 has not seen block 1, so its block 0 is still open. This code uses `blocks`,
 `by_block` and `closed` from [Close each group as its rows
 end](#close-each-group-as-its-rows-end), which read `df` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 # Block 0 in a bank that has seen only its rows, so it is still open: its Gram, packed as a closed row's is.

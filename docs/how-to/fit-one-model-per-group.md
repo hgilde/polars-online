@@ -16,8 +16,8 @@ are those of the same spec fitted to that group's rows alone.
 
 These steps need the library and a column whose values name the groups:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `df`, a frame of 400 rows in which four stocks, `b0` to `b3` in the
   column `stock_id`, take turns row by row. They also read `lf`, a
   [query](../GLOSSARY.md#the-model-bank-and-what-it-reads) over the same
@@ -41,7 +41,7 @@ same pass over the rows.
    the rows it was fed and its last clock value.
 
 This code fits one model per stock. It uses `df` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 # 1. One model per stock.
@@ -79,7 +79,7 @@ per hour.
 3. **Run the query,** here with `collect`, which runs it and returns its
    result.
 
-This code uses `lf` from [Example data](../../README.md#example-data):
+This code uses `lf` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 seasonal = po.spec.holt("seasonal", targets=["y"], clock="ts", gap_cap="1h",
@@ -108,7 +108,7 @@ hour 16: 10 rows, last prediction 3.179
 **Compare one group's predictions in the bank with the same spec fitted to
 that group's rows alone.** Drop `group` from the spec, feed it the group's
 rows, and the predictions agree. This code compares stock `b0`'s. It uses
-`df` from [Example data](../../README.md#example-data), and `per_stock`
+`df` from [Example data](../EXAMPLE-DATA.md), and `per_stock`
 and `together` from [Fit a model for each value of a
 column](#fit-a-model-for-each-value-of-a-column):
 

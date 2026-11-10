@@ -1636,8 +1636,8 @@ def epps_invert(gram_or_row: Any, *, L: int) -> Any:  # noqa: N803 - the paper's
 
     .. rubric:: Examples
 
-    This code reads ``trades`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``trades`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 

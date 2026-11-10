@@ -1287,7 +1287,7 @@ beside them.
 the example data: a name *Example data* builds (`df`, `lf`, `trades`,
 `today`, `later`) that the block reads and does not assign, or a file it
 writes (`ticks.parquet`, `ticks/*.parquet`). Above each, the last sentence
-is now *This code uses … from [Example data](../../README.md#example-data):*,
+is now *This code uses … from [Example data](../EXAMPLE-DATA.md):*,
 naming what that block reads. Where the paragraph above ended in a colon
 that introduced the code, the colon became a full stop. Where a table or
 an equations block sat just above, the line is a paragraph of its own. One

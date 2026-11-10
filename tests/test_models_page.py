@@ -9,7 +9,7 @@ which show a model's parameters, run in ``tests/test_production_hardening.py``
 with the README's.
 
 Each recipe runs alone, in a directory of its own, in the namespace the
-README's *Example data* block builds there, as the README's recipes do. So a
+*Example data* block (``docs/EXAMPLE-DATA.md``) builds there, as the README's recipes do. So a
 recipe may read ``df`` or ``trades`` (and say so in the line above it), or
 make its own data and save it to parquet, as the linear models' recipes do.
 """
@@ -36,15 +36,13 @@ LINEAR = ["ewridge", "rls", "lasso", "kalman", "huber", "quantile", "sgd", "pa",
 
 
 def _example_data(here: Path) -> dict[str, object]:
-    """What the README's *Example data* block builds, run as written in
-    ``here``, where it writes its parquet files."""
-    text = (REPO / "README.md").read_text(encoding="utf-8")
-    start = text.index("\n### Example data\n")
-    section = text[start : text.index("\n## ", start)]
-    (block,) = re.findall(r"```python\n(.*?)\n```", section, re.S)
+    """What *Example data*'s block (``docs/EXAMPLE-DATA.md``) builds, run
+    as written in ``here``, where it writes its parquet files."""
+    text = (REPO / "docs" / "EXAMPLE-DATA.md").read_text(encoding="utf-8")
+    (block,) = re.findall(r"```python\n(.*?)\n```", text, re.S)
     ns: dict[str, object] = {"__name__": "__readme__"}
     with contextlib.chdir(here):
-        exec(compile(block, "README.md: Example data", "exec"), ns)
+        exec(compile(block, "docs/EXAMPLE-DATA.md: Example data", "exec"), ns)
     return ns
 
 

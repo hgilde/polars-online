@@ -1,7 +1,7 @@
 """``docs/WINDOWS.md``: how a window operator weighs its rows, held to the code.
 
 Every python block on the page is a recipe: a complete program whose printed
-output the ```text block under it shows. Each reads only what the README's
+output the ```text block under it shows. Each reads only what the
 *Example data* block builds (``trades``, ``df`` and the parquet files it
 writes) or builds its own frame, so each runs here alone, in a directory of
 its own, in the namespace that block builds as written. What it prints is

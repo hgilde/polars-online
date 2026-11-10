@@ -372,8 +372,8 @@ class OrderNotGuaranteedWarning(PolarsOnlineWarning, UserWarning):
 
     .. rubric:: Examples
 
-    This code reads ``ticks.parquet`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``ticks.parquet`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -496,8 +496,8 @@ class ReadinessWarning(PolarsOnlineWarning, UserWarning):
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -593,8 +593,8 @@ class ConsumedSourceWarning(PolarsOnlineWarning, UserWarning):
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1630,8 +1630,8 @@ class LazyFrameOnlineNamespace:
 
         .. rubric:: Examples
 
-        This code reads ``lf`` from the README's `Example data
-        <https://github.com/hgilde/polars-online#example-data>`_:
+        This code reads ``lf`` from `Example data
+        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -1792,8 +1792,8 @@ class LazyFrameOnlineNamespace:
 
         .. rubric:: Examples
 
-        This code reads ``lf`` and ``later`` from the README's `Example data
-        <https://github.com/hgilde/polars-online#example-data>`_:
+        This code reads ``lf`` and ``later`` from `Example data
+        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -1887,8 +1887,8 @@ class LazyFrameOnlineNamespace:
 
         .. rubric:: Examples
 
-        This code reads ``lf`` from the README's `Example data
-        <https://github.com/hgilde/polars-online#example-data>`_:
+        This code reads ``lf`` from `Example data
+        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -1953,8 +1953,8 @@ class LazyFrameOnlineNamespace:
 
         .. rubric:: Examples
 
-        This code reads ``trades.parquet`` from the README's `Example data
-        <https://github.com/hgilde/polars-online#example-data>`_:
+        This code reads ``trades.parquet`` from `Example data
+        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -2074,8 +2074,8 @@ class DataFrameOnlineNamespace:
 
         .. rubric:: Examples
 
-        This code reads ``df`` from the README's `Example data
-        <https://github.com/hgilde/polars-online#example-data>`_:
+        This code reads ``df`` from `Example data
+        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -2164,8 +2164,8 @@ class DataFrameOnlineNamespace:
 
         .. rubric:: Examples
 
-        This code reads ``df`` and ``today`` from the README's `Example data
-        <https://github.com/hgilde/polars-online#example-data>`_:
+        This code reads ``df`` and ``today`` from `Example data
+        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -2223,8 +2223,8 @@ class DataFrameOnlineNamespace:
 
         .. rubric:: Examples
 
-        This code reads ``df`` from the README's `Example data
-        <https://github.com/hgilde/polars-online#example-data>`_:
+        This code reads ``df`` from `Example data
+        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -2283,8 +2283,8 @@ class DataFrameOnlineNamespace:
 
         .. rubric:: Examples
 
-        This code reads ``trades`` from the README's `Example data
-        <https://github.com/hgilde/polars-online#example-data>`_:
+        This code reads ``trades`` from `Example data
+        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -2403,8 +2403,8 @@ def fit_predict(
 
     .. rubric:: Examples
 
-    This code reads ``lf`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``lf`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -2501,8 +2501,8 @@ def predict(
 
     .. rubric:: Examples
 
-    This code reads ``df`` and ``today`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` and ``today`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -2581,8 +2581,8 @@ def unnest(
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 

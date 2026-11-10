@@ -9,8 +9,8 @@ or replays, and who wants to choose what each of them does to the fit.
 
 These steps need the library and a stream with a clock:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `df`, a frame of 400 rows a minute apart, on the timestamp column `ts`.
   Its column `session` is `"m"` on the first 200 rows (a morning session)
   and `"a"` on the last 200 (an afternoon one).
@@ -68,7 +68,7 @@ fits one regression under four policies:
 | `one_minute` | `session="session"`, `session_gap="1m"` | one minute, the step chosen for the session boundary |
 | `reset` | `session="session"`, `session_gap="reset"` | a reset: the model starts over with nothing learned |
 
-This code uses `df` from [Example data](../../README.md#example-data):
+This code uses `df` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 # df with a weekend between its two sessions, saved.

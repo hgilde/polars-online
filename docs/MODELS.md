@@ -108,7 +108,7 @@ how it treats time. The name of the spec (the first parameter) is used to
 name the output column: `po.spec.ewridge("ridge", ...)` adds a column named
 `ridge`. Each row of that column is a record of the model's fields for the
 row, and the input's columns pass through untouched.
-This code uses `df` from [Example data](../README.md#example-data):
+This code uses `df` from [Example data](EXAMPLE-DATA.md):
 
 ```python
 ridge_spec = po.spec.ewridge(
@@ -335,14 +335,14 @@ later row's step is measured from it.
 
 ### Examples
 
-Each recipe runs on the README's example data and prints what it shows.
+Each recipe runs on the [example data](EXAMPLE-DATA.md) and prints what it shows.
 
 #### Refused specs
 
 This code prints two refusals, then fits the venue as a comparison. Its
 last line finds the truth planted in `y`: an intercept of 1, 2 on `x0`, −1
 on `x1`, and nothing on the venue.
-It reads `df` and `lf` from [Example data](../README.md#example-data):
+It reads `df` and `lf` from [Example data](EXAMPLE-DATA.md):
 
 ```python
 # Two specs the bank refuses, each refusal printed.
@@ -374,7 +374,7 @@ by one each minute, once on the numeric clock `t` and once on the
 `Datetime` clock `ts`. The two clocks mark the same rows, so the weights
 agree, and the trend is the same rate in two units. Its last lines show
 the bank refusing a plain number on the `Datetime` clock.
-It reads `df` from [Example data](../README.md#example-data):
+It reads `df` from [Example data](EXAMPLE-DATA.md):
 
 ```python
 import textwrap
@@ -408,7 +408,7 @@ pl.col("ts").dt.epoch("s").cast(pl.Float64) (pl.col("ts").dt.total_seconds() for
 
 This code sets all three warm-up gates on one spec and counts the rows
 each withholds.
-It reads `df` from [Example data](../README.md#example-data):
+It reads `df` from [Example data](EXAMPLE-DATA.md):
 
 ```python
 warm = po.spec.ewridge(

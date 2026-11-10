@@ -9,8 +9,8 @@ do when the bank warns about a query's row order or refuses a chunk.
 
 These steps need the library and a stream with a clock:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `df`, a frame of 400 rows with a clock `t`, and `lf`, a query over the
   same rows saved as `ticks.parquet`.
 - A [spec](../GLOSSARY.md#the-model-bank-and-what-it-reads) with a
@@ -52,7 +52,7 @@ one, so every chunk the bank takes is in order.
    since the second is predicted after the first is learned, and Polars
    keeps rows with equal keys in their order only under
    `maintain_order=True`. This code uses `lf` from [Example
-   data](../../README.md#example-data):
+   data](../EXAMPLE-DATA.md):
 
    ```python
    ordered = lf.sort("t", maintain_order=True)              # a query: nothing runs yet
@@ -87,7 +87,7 @@ one, so every chunk the bank takes is in order.
    Polars does not promise, naming the step and its fix. This code
    joins each row's venue to a fee, once as Polars' `join` does by default
    and once with `maintain_order="left"`, and prints what the bank warns of
-   each. It uses `lf` from [Example data](../../README.md#example-data):
+   each. It uses `lf` from [Example data](../EXAMPLE-DATA.md):
 
    ```python
    import textwrap
@@ -176,7 +176,7 @@ it on a bank that starts with nothing learned. Choose the fix by what caused the
 This code feeds ten rows of `df` with the row at `t = 6` two rows late,
 then the same rows sorted, then a day replayed from its start under a
 `restart_after_step_back` below the replay's step. It uses `df` from
-[Example data](../../README.md#example-data):
+[Example data](../EXAMPLE-DATA.md):
 
 ```python
 import textwrap

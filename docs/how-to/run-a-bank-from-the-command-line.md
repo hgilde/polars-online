@@ -22,7 +22,7 @@ A run needs the program, a TOML file and an input file:
 
 - The `polars-online` program, whose binaries are attached to each GitHub
   release.
-- The README's [Example data](../../README.md#example-data) built, in the
+- [Example data](../EXAMPLE-DATA.md) built, in the
   directory the commands run in. The examples read `ticks.parquet`, a
   stream of 400 rows with a clock `t`.
 - An input file in Parquet, Arrow IPC, CSV or NDJSON, holding every column

@@ -22,8 +22,8 @@ the weight inside the window.
 
 These steps need the library and a spec of one of the five models:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `ticks.parquet`, 400 rows a unit of the clock `t` apart, in which the
   coefficient of `ret` on `signal_a` flips from 0.8 to −0.8 at row 200.
 - A spec of `ewridge`, `lasso`, `ew_cov`, `ew_class` or `marginal`. With a
@@ -85,7 +85,7 @@ before the change should count for nothing.** Two cases call for one:
 
 This code screens `signal_a` and `signal_b` against `ret` over every row,
 and over a hard window of the last 100. It uses `ticks.parquet` from
-[Example data](../../README.md#example-data), where the planted
+[Example data](../EXAMPLE-DATA.md), where the planted
 coefficient on `signal_a` is −0.8 over the last 200 rows:
 
 ```python
@@ -168,7 +168,7 @@ thins them. Choose the rows inside the window by the clock, with
 This code compares `ewridge`'s coefficients under a flat hard window of
 100 units of `t` with the same spec fitted to the rows of the last 100
 units. It uses `ticks.parquet` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 # A flat hard window of the last 100 units of t, and the same spec on those rows alone.

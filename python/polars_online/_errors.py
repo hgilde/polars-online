@@ -42,8 +42,8 @@ class ColumnNotFoundError(pl.exceptions.ColumnNotFoundError, ValueError):
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -77,8 +77,8 @@ class OutputColumnNotFoundError(ColumnNotFoundError, KeyError):
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 

@@ -9,8 +9,8 @@ a wide run faster, and smaller ones make a run hold less memory.
 
 These steps need the library and a run that reads a query:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   the file `ticks.parquet` and `df`, the same 400 rows of four stocks in
   the column `stock_id`.
 - A bank run over a query or a frame.
@@ -54,7 +54,7 @@ chunks, less the first chunk's four, where each group has had two or three
 rows, too few for a fit.
 
 This code uses the file `ticks.parquet` and `df` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 # The same spec over chunks of 10 rows, the whole file, and a frame.

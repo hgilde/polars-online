@@ -11,8 +11,8 @@ question.
 
 These steps need the library and a question to put to a stream:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `df`, 400 rows a minute apart. In `df`, `y` is `1 + 2·x0 − x1` plus
   noise, and `ret`'s slope on `signal_a` is 0.8 on rows 0 to 199 and −0.8
   from row 200. Two examples make their own data.
@@ -57,7 +57,7 @@ follows a relationship that breaks.** `ewridge`, with every row counted
 the same, averages the two slopes of `ret` on `signal_a`. `kalman` follows
 the new one, as far as the afternoon's noisier rows let it.
 
-This code uses `df` from [Example data](../../README.md#example-data):
+This code uses `df` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 common = dict(targets=["ret"], features=["signal_a"], clock="t", gap_cap=10.0)
@@ -84,7 +84,7 @@ can serve as a feature for that row without leaking the row's own values.
 Here the correlation of `signal_a` and `ret` changes sign after the change
 of slope at row 200.
 
-This code uses `df` from [Example data](../../README.md#example-data):
+This code uses `df` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 moves = po.spec.ew_cov("moves", features=["signal_a", "ret"], clock="t", gap_cap=10.0,
@@ -226,7 +226,7 @@ the other tests between two models.
 3. **Read the first row where `log_e_a_<target>` reaches `ln 20`,** the
    5% level however often you look.
 
-This code uses `df` from [Example data](../../README.md#example-data):
+This code uses `df` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 import math

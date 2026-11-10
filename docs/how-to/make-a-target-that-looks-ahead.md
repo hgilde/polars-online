@@ -12,8 +12,8 @@ bank.
 These steps need the library, a stream with a clock, and a model that
 regresses its targets:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `trades.parquet`, a stream of quotes with trades between them. Its `mid`
   is on every row, and `side`, `quantity` and `price` are null on a quote.
 - A [clock](../GLOSSARY.md#time) column, here the timestamp column `ts`,
@@ -67,7 +67,7 @@ why the bank waits.
 
 This code fits the next minute's VWAP (volume-weighted average price) of
 the trades, less the mid now, on two trends of the mid that look back. It
-uses `trades.parquet` from [Example data](../../README.md#example-data):
+uses `trades.parquet` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 # Features that look back, on one clock shared with the model.
@@ -169,7 +169,7 @@ trade's signed size, in both forms. `pred` is on the target's scale, so
 `pred + mid` predicts the mean trade price itself. No two of the rows'
 clock values are exactly five minutes apart, so the forms agree under an
 `embargo` equal to the window. It runs on `trades.parquet`, the
-quotes and trades saved in [Example data](../../README.md#example-data):
+quotes and trades saved in [Example data](../EXAMPLE-DATA.md):
 
 ```python
 # A feature, a target that looks ahead, and a fit on the trades.
@@ -222,7 +222,7 @@ minutes' mean trade price over the mid,
 `(po.ewm_mean("price", half_life=float("inf"), window_size="5m", reverse=True) / pl.col("mid")).log().alias("fwd_log")`.
 `mid * exp(pred)` turns its prediction back into a price. This code regresses four forms of a
 trade's price against the mid at its row on the same signed size, `flow`.
-It reads `trades.parquet` from [Example data](../../README.md#example-data):
+It reads `trades.parquet` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 flows = pl.scan_parquet("trades.parquet").with_columns(
@@ -262,7 +262,7 @@ stream](make-window-features.md)). Here the target, how far from the mid
 each trade printed, is known at the trade's own row, so the spec needs no
 embargo. The quotes have no `quantity`, so the bank skips them, as it
 skips any row with a null feature. This code uses `trades.parquet` from
-[Example data](../../README.md#example-data):
+[Example data](../EXAMPLE-DATA.md):
 
 ```python
 edges = pl.scan_parquet("trades.parquet").with_columns(edge=(pl.col("price") - pl.col("mid")).abs())   # the target as a column, null on the quotes

@@ -207,8 +207,8 @@ stays near zero until the stream has run for about 10¹² clock units, so a
 This code fits `ewridge` with no decay to `df`'s rows in their order,
 reversed and shuffled, and solves the same least squares with numpy. The
 last line reads `settled_frac` on the last row under `half_life=1e12`.
-It reads `df` from the README's [Example
-data](../../README.md#example-data):
+It reads `df` from [Example
+data](../EXAMPLE-DATA.md):
 
 ```python
 # Plain least squares in three orders, then numpy's.
@@ -257,7 +257,7 @@ the coefficient of `ret` on `signal_a` flips from 0.8 to −0.8 at row 200
 with a flat hard window of 100 rows. A hundred rows after the break, the
 hard window holds only rows after it and reads the new coefficient, while
 the half-life still gives the old rows half their weight. It reads `df`
-from the README's [Example data](../../README.md#example-data):
+from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 common = dict(targets=["ret"], features=["signal_a"], clock="t", gap_cap=300.0, coef_every=0)   # the coefficients on every row
@@ -297,8 +297,8 @@ over a hard window of 150 units of `t` with a half-life of 50, and a
 snapshot every 10 units. Without a hard window, the weight levels off at
 its ceiling, about 72.6. A hard window keeps the share of it younger than
 its edge, `1 − 0.5 ** (edge / 50)`, with the edge between 140 and 150
-units back. It reads `df` from the README's [Example
-data](../../README.md#example-data):
+units back. It reads `df` from [Example
+data](../EXAMPLE-DATA.md):
 
 ```python
 # The same model with a hard window and without.

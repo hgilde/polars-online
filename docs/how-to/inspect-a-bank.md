@@ -15,8 +15,8 @@ reports each group as it stood after the last row it learned from.
 
 These steps need the library and a bank that has learned from rows:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `lf`, a [query](../GLOSSARY.md#the-model-bank-and-what-it-reads) over
   `ticks.parquet`: 400 rows in which four stocks, `b0` to `b3` in the
   column `stock_id`, take turns, and whose target `y` is
@@ -40,7 +40,7 @@ reshape.
 
 Here a spec with a group per stock learns from `lf`, and the bank it saves
 is loaded back with nothing but the file. This code uses `lf` from
-[Example data](../../README.md#example-data):
+[Example data](../EXAMPLE-DATA.md):
 
 ```python
 # A bank fitted per stock, and saved.
@@ -95,7 +95,7 @@ coefficient or column:
 Here each stock's coefficients come back near the truth the example data
 plants: intercept 1,
 `x0` 2, `x1` −1 and `x2` 0. This code uses `lf` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 # A ridge per stock, learned from every row of lf.
@@ -180,7 +180,7 @@ column, so the tables of banks from different runs stack.**
 
 Here two fits at different half-lives are saved to files of their own and
 compared in one table. This code uses `lf` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 from pathlib import Path

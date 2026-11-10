@@ -254,9 +254,9 @@ def embargo(
         (3.0, 1.0, 'learn')
 
     A bank fed the doubled stream learns each row's target 5 rows late, and the
-    predict rows carry its predictions. This code reads ``lf`` from the
-    README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    predict rows carry its predictions. This code reads ``lf`` from
+    `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1117,8 +1117,8 @@ def with_windows(
     Over ``trades``, quotes with a ``mid`` and trades between them with a
     ``side``, a ``quantity`` and a ``price``, a trailing mean of the mid and
     forward VWAPs of all trades and of the buys. This code reads ``trades``
-    from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 

@@ -118,8 +118,8 @@ class Gram(TypedDict):
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -461,8 +461,8 @@ def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -568,9 +568,9 @@ def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
     key as it is. The means and co-moments are weighted means, and
     ``n_kish`` and ``target_n_kish`` do not change when every weight is
     scaled, so the sums of squared weights the merge recovers from them
-    decay with the weights. For example, this code reads ``df`` from the
-    README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    decay with the weights. For example, this code reads ``df`` from
+    `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -954,8 +954,8 @@ def from_row(row: Any) -> Gram:
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1114,8 +1114,8 @@ def subset(g: Gram, columns: Sequence[str | int]) -> Gram:
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1200,8 +1200,8 @@ def correlation(g: Gram) -> Any:
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1317,8 +1317,8 @@ def solve(
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1587,8 +1587,8 @@ def lasso_path(
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1932,8 +1932,8 @@ def lars_path(
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -2089,8 +2089,8 @@ def lars_paths(
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -2337,8 +2337,8 @@ def solve_subsets(
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -2976,8 +2976,8 @@ def coef_stats(
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -3188,8 +3188,8 @@ def vif(g: Gram, *, features: Sequence[str | int] | None = None) -> Any:
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -3307,8 +3307,8 @@ def condition(g: Gram, *, features: Sequence[str | int] | None = None) -> dict[s
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_:
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 

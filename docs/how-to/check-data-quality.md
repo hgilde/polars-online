@@ -14,8 +14,8 @@ These steps need the library and a stream to check:
   recipe in [Check that it worked](#check-that-it-worked) reuses it. The
   recipes in [Find a duplicated column](#find-a-duplicated-column) and
   [Read every group as one stream](#read-every-group-as-one-stream) use
-  `df` from the README's
-  [Example data](../../README.md#example-data).
+  `df` from
+  [Example data](../EXAMPLE-DATA.md).
 - A [spec](../GLOSSARY.md#the-model-bank-and-what-it-reads) for each
   model you mean to fit, and the
   [features](../GLOSSARY.md#the-model-bank-and-what-it-reads) and
@@ -165,7 +165,7 @@ the rows on which the two are equal. `bank.check()` reads them for its
 This code adds to
 `df` a copy of `x0` in cents, recorded with a little noise of its own,
 audits it per stock, and prints what `check()` finds. It uses `df` from
-[Example data](../../README.md#example-data), and `np` and `po` from the
+[Example data](../EXAMPLE-DATA.md), and `np` and `po` from the
 code in [Run the check after a pass](#run-the-check-after-a-pass):
 
 ```python
@@ -209,7 +209,7 @@ This code reads the audit of [Find a
 duplicated column](#find-a-duplicated-column) per stock and pooled, and
 holds the pooled mean of `x0` to numpy's over all of `df`'s rows. It uses
 `bank` from that code and `df` from
-[Example data](../../README.md#example-data):
+[Example data](../EXAMPLE-DATA.md):
 
 ```python
 columns = bank.audit()                            # one row per (group, column)

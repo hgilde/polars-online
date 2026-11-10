@@ -20,8 +20,8 @@ why). Three ways hold each row back until its target would have arrived:
 
 These steps need the library and a stream with a clock:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `df`, a frame of 400 rows a minute apart on the clock `ts`, and `lf`, a
   [query](../GLOSSARY.md#the-model-bank-and-what-it-reads) over the same
   rows saved as `ticks.parquet`, whose clock `t` counts them.
@@ -57,7 +57,7 @@ This code fits `df`'s minute-apart rows under `embargo="5m"`, and prints
 the clocks of five rows, counting from 0. Each row is predicted from the
 rows at least five minutes older, the one exactly five minutes older
 included, so the first five rows have learned nothing. It uses `df` from
-[Example data](../../README.md#example-data):
+[Example data](../EXAMPLE-DATA.md):
 
 ```python
 fwd = po.spec.ewridge("fwd", targets=["y"], features=["x0", "x1"],
@@ -216,7 +216,7 @@ every row before it.
 
 This code doubles `lf`, whose clock `t` moves a row at a time, and holds
 the predicted copies to the built-in delay of the same five units. It uses
-`lf` from [Example data](../../README.md#example-data):
+`lf` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 # 1. lf is already in clock order across all rows. 2. Every row twice, in clock order.
@@ -247,7 +247,7 @@ least the delay on every row.** `learned_clock` is null until the model
 has learned a row. This code fits `fwd`, the spec of [Give every row the
 same delay](#give-every-row-the-same-delay), on `df` again, and its delay
 is five minutes. It uses `df` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 rows = po.ModelBank([fwd]).fit_predict(df).unnest("fwd")

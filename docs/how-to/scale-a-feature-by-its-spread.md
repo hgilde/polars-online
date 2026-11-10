@@ -10,8 +10,8 @@ against its own recent mean and spread.
 
 These steps need the library and a stream with a clock:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The example reads
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The example reads
   `ticks.parquet`, which holds the README's `df`: 400 rows on the clock
   `t`, which steps by 1 a row. Its `y` is `1 + 2·x0 − x1` plus noise.
 - A [clock](../GLOSSARY.md#time) column, and the
@@ -46,7 +46,7 @@ The truth is `y = 1 + 2·x0 − x1`, so per standard deviation of `x0` the
 response is 2 times `x0`'s spread on that row. The
 recipe prints the spread `po.ewm_std` gives against Polars' own `ewm_std`,
 and the fitted coefficients against the truth. This code uses
-`ticks.parquet` from [Example data](../../README.md#example-data):
+`ticks.parquet` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 # Each feature in units of its current spread, and a fit on those.

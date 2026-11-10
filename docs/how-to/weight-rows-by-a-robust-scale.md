@@ -11,8 +11,8 @@ on each row, so a row's own target never sets its weight.
 
 These steps need the library and a stream with a clock:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `trades`, a stream of quotes with trades between them, and `df`, saved
   as `ticks.parquet`. `df`'s `ret` is `±0.8·signal_a` plus noise of
   spread 0.5 on rows 0-99 and 200-299 and 2.0 on the others.
@@ -56,7 +56,7 @@ has nothing to do. The recipe adds a wild print of 1.00 to every 40th
 trade, whose prints sit about 0.02 from the mid, and compares the two
 scales. It checks the last
 row against numpy's weighted median by hand. This code uses `trades` from
-[Example data](../../README.md#example-data):
+[Example data](../EXAMPLE-DATA.md):
 
 ```python
 # The trades' prints about the mid, a few of them wild: every 40th print 1.00 off.
@@ -126,7 +126,7 @@ Here each row's `ret` arrives 5 rows late. The recipe computes its EW-MAD
 on each row from the targets that have arrived, and checks row 250 by
 hand against numpy's weighted median of the targets of rows 0 to 245
 alone. This code uses `df` and `ticks.parquet` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 # Each target of ret arrives 5 rows late: the stream twice, a predict row at t and a learn row at t + 5.
@@ -209,7 +209,7 @@ and why the first rows are refit.
 
 This code fits `huber` on `y`, whose noise has a spread of 0.5, and weighs
 each row of a second model by `1 / huber_scale_y²`. It uses
-`ticks.parquet` from [Example data](../../README.md#example-data):
+`ticks.parquet` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 # A huber fit that emits its robust scale of the residuals, read before each row.

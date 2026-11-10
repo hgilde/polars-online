@@ -120,8 +120,8 @@ interval ends at its row. A mean with no other value in the window is null.
 **A weighted mean is a ratio of two sums.** A volume-weighted average price
 (VWAP) is decayed notional over decayed volume, and the time mass cancels.
 For one side's VWAP, put ``when/then`` inside both sums. The operators take
-no ``weight=``. This code reads ``trades`` from the README's `Example data
-<https://github.com/hgilde/polars-online#example-data>`_:
+no ``weight=``. This code reads ``trades`` from `Example data
+<https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
 .. code-block:: python
 
@@ -145,8 +145,8 @@ spread stands on each row, where a model on ``x`` has one per unit. Where a
 target responds to a feature relative to its volatility, fit on the
 z-score. Every model reads it as a column. `Scale a feature by its spread
 <https://github.com/hgilde/polars-online/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_
-gives the measured gain. This code reads ``trades.parquet`` from the README's
-`Example data <https://github.com/hgilde/polars-online#example-data>`_:
+gives the measured gain. This code reads ``trades.parquet`` from
+`Example data <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
 .. code-block:: python
 

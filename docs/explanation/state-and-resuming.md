@@ -52,8 +52,8 @@ This code feeds `df` to a bank in four
 chunks, and saves the bank after each chunk and loads it back before the
 next. An `embargo` holds the last five rows of each chunk across the
 save. It compares the predictions, and the state at the end,
-with one run over every row. It reads `df` from the README's [Example
-data](../../README.md#example-data):
+with one run over every row. It reads `df` from [Example
+data](../EXAMPLE-DATA.md):
 
 ```python
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0,
@@ -91,8 +91,8 @@ interrupted save leaves the old file whole. Each writes at its own moment:
 | the command line | `--save-state` | `--load-state` | only after it has finished writing its output file |
 
 This code saves the same state from a bank object and from a query, and
-compares their bytes. It uses `df` and `ticks.parquet` from the README's
-[Example data](../../README.md#example-data):
+compares their bytes. It uses `df` and `ticks.parquet` from
+[Example data](../EXAMPLE-DATA.md):
 
 ```python
 from pathlib import Path

@@ -1067,7 +1067,9 @@ class TestSettledWeight:
 
         monkeypatch.chdir(tmp_path)  # Example data writes its parquet files here
         ns: dict = {}
-        exec(compile(block("README.md", "### Example data"), "README.md: Example data", "exec"), ns)
+        page = (repo / "docs" / "EXAMPLE-DATA.md").read_text(encoding="utf-8")
+        (data,) = re.findall(r"```python\n(.*?)\n```", page, flags=re.S)
+        exec(compile(data, "docs/EXAMPLE-DATA.md: Example data", "exec"), ns)
         # The README's section now fits a curve of its own (task 238), and
         # its block is held by the README's recipe test; the kernel on
         # `df`'s sorted `x0` that this regression was found on is kept here.

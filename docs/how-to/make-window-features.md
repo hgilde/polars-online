@@ -14,8 +14,8 @@ window operators of `po.ops` and `.online.with_windows`.
 These steps need the library, a stream with a clock, and rows in clock
 order:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `trades`, a stream of quotes with trades between them, saved as
   `trades.parquet`. Its `mid` is on every row, and `side`, `quantity` and
   `price` are null on a quote.
@@ -72,7 +72,7 @@ lists every operator, and how each one weighs the rows of its window.
 
 This code makes two trends of the mid, over 5 and 30 seconds, and fits
 how far from the mid each trade printed on them. It uses `trades.parquet`
-from [Example data](../../README.md#example-data):
+from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 # Features that look back, on one clock shared with the model.
@@ -104,7 +104,7 @@ symbol's rows, where no gap cuts a window, the running mean is Polars'
 `ewm_mean_by`. An evenly weighted sum over the last minute
 (`half_life=float("inf")`) is Polars' `rolling_sum_by` over the same
 minute, on a stream where no two rows share a clock value, as here. This code
-uses `trades.parquet` from [Example data](../../README.md#example-data):
+uses `trades.parquet` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 aaa = pl.read_parquet("trades.parquet").filter(pl.col("symbol") == "AAA")   # one symbol's quotes and trades
@@ -143,7 +143,7 @@ without holding it all in memory. A window that looks ahead, under
 `reverse=True`, makes the same column over the rows after each row, which
 is a target ([Make a target that looks
 ahead](make-a-target-that-looks-ahead.md)). This code uses `trades` and
-`trades.parquet` from [Example data](../../README.md#example-data):
+`trades.parquet` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 from datetime import timedelta
@@ -195,7 +195,7 @@ call. A query whose row order Polars does not guarantee draws an
 `OrderNotGuaranteedWarning`. The refusal arrives as the library's
 `ValueError` under py-polars 2.0, and as `polars.exceptions.ComputeError`
 carrying the same message under 1.x. This code uses `trades` from
-[Example data](../../README.md#example-data):
+[Example data](../EXAMPLE-DATA.md):
 
 ```python
 import re
@@ -234,7 +234,7 @@ Here a rate of traded volume comes from a column of cumulative volume, as
 a feed prints it, and a trend of that rate from the second call. Each
 symbol trades about 1.56 units a second over the whole stream, and the
 rate, read per second, sits near that. This code uses `trades` and
-`trades.parquet` from [Example data](../../README.md#example-data):
+`trades.parquet` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 clock = dict(clock="ts", gap_cap="5m", group="symbol")

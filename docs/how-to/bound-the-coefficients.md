@@ -10,8 +10,8 @@ or to a fixed total, as portfolio weights are. It bounds the slopes of
 
 These steps need the library:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The first recipe
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The first recipe
   reads `df`, 400 rows whose `signal_a` and `signal_b` are columns of
   noise, and whose `y` is `1 + 2·x0 − x1` plus noise. The second builds
   its own data, with numpy.
@@ -50,7 +50,7 @@ their total:**
    `online.fit_predict(...)`.** Each row's `coef` field holds the bounded
    coefficients, the intercept first.
 
-This code uses `df` from [Example data](../../README.md#example-data):
+This code uses `df` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 portfolio = po.spec.sgd(

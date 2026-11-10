@@ -5,7 +5,7 @@ output. ``tests/test_production_hardening.py`` runs every docstring's python
 block; here a block that prints, followed directly by a ``.. code-block:: text``, is
 a recipe, and what it prints is held to that text with
 ``tests/doc_recipes.py``'s ``differences``, as a page's recipe is. It runs
-in the namespace the README's *Example data* builds, which the docstring
+in the namespace *Example data* (docs/EXAMPLE-DATA.md) builds, which the docstring
 names where it reads ``df``.
 """
 

@@ -102,8 +102,7 @@ Windows alike.
   parameter, flag and environment variable, a line each, linked
 - [README](https://github.com/hgilde/polars-online#readme): the landing page -- what the
   library is, install, [a first fit](https://github.com/hgilde/polars-online#a-first-fit),
-  the [example data](https://github.com/hgilde/polars-online#example-data)
-  every other example reads, and [a map](https://github.com/hgilde/polars-online#where-to-go-next)
+  and [a map](https://github.com/hgilde/polars-online#where-to-go-next)
   from each task to its pages
 - [Four tasks](https://github.com/hgilde/polars-online/blob/main/docs/HIGHLIGHTS.md): model
   selection, a resumed signal, late intervals, ticks
@@ -163,7 +162,8 @@ Windows alike.
 [STATE-WORKFLOW.md](https://github.com/hgilde/polars-online/blob/main/docs/STATE-WORKFLOW.md), [DIAGNOSTICS.md](https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md),
 [DATA-QUALITY.md](https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md),
 [PERFORMANCE.md](https://github.com/hgilde/polars-online/blob/main/docs/PERFORMANCE.md),
-[VERSIONS.md](https://github.com/hgilde/polars-online/blob/main/docs/VERSIONS.md)
+[VERSIONS.md](https://github.com/hgilde/polars-online/blob/main/docs/VERSIONS.md),
+[EXAMPLE-DATA.md](https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md)
 
 ## Explanations
 

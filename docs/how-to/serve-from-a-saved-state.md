@@ -20,8 +20,8 @@ everything a bank needs to go on.
 
 Each way to serve needs a saved state and the rows to predict:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The Python examples
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The Python examples
   read `df`, the stream so far, and `today`, the 400 rows that follow it on
   the clock `t`. `later` is `today`'s rows, saved as `today.parquet` and
   read back as a [query](../GLOSSARY.md#the-model-bank-and-what-it-reads)
@@ -67,7 +67,7 @@ To serve a query:
 
 This code fits `df`, saves the bank and loads it back, then serves the
 rows after `df`'s three ways. It uses `df`, `today` and `later` from
-[Example data](../../README.md#example-data):
+[Example data](../EXAMPLE-DATA.md):
 
 ```python
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
@@ -141,7 +141,7 @@ rows and then predicted the new.** The first new row is the one row both
 predict from the same state. The rows after it differ, since one run has
 learned the rows before them and the served rows have not. This code
 compares the two. It uses `df` and `today` from [Example
-data](../../README.md#example-data), and `served` from [Serve in
+data](../EXAMPLE-DATA.md), and `served` from [Serve in
 Python](#serve-in-python):
 
 ```python

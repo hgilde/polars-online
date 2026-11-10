@@ -9,8 +9,8 @@ not learn from.
 
 These steps need the library and a stream:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `df`, a frame of 400 rows on the clock `t`, and the file `ticks.parquet`,
   the same rows on disk. Its column `venue` takes turns between `"X"` and
   `"Y"` row by row.
@@ -55,7 +55,7 @@ This code holds row 100 of `df` back from a model in each of the three
 ways, beside a run that learns it. For each it prints whether row 100 was
 predicted, the clock the model stands at after it, whether the fit moved, and
 `weight_sum` on the row after it. It uses `df` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 # One spec, and four copies of the stream that differ only at row 100.
@@ -121,7 +121,7 @@ advances through them, so no gap opens where they were.
 Here the model learns only venue X's 200 rows. Under
 `half_life=float("inf")` no row's weight decays, so `weight_sum` counts the
 rows learned before each row. This code uses `ticks.parquet` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 learn_from_x = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],

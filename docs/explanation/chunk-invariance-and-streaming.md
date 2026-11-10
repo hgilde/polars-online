@@ -59,8 +59,8 @@ This code runs the same spec over `df` as one chunk and as 400 chunks of
 one row, through `fit_predict_batches`, and compares the predictions and
 the rows that carry `coef`. The first two rows carry none in either run:
 the fit needs a row per coefficient, three here, so the model solves
-nothing on its first two rows. It reads `df` from the README's [Example
-data](../../README.md#example-data):
+nothing on its first two rows. It reads `df` from [Example
+data](../EXAMPLE-DATA.md):
 
 ```python
 spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], clock="t", half_life=100.0, gap_cap=300.0)

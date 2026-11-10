@@ -19,8 +19,8 @@ rows under the settings on this page.
 
 These steps need the earlier release's number and the spec it ran:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The example reads
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The example reads
   `ticks.parquet`, 400 rows that Example data writes.
 - The release whose numbers you want, such as 1.2.0, and the
   [spec](../GLOSSARY.md#the-model-bank-and-what-it-reads) you ran under it.
@@ -87,7 +87,7 @@ changed since, so `huber_refit_rows=0` gives the one-pass fit of its
 current steps, which no earlier release gave.
 
 This code fits `huber` with both settings of 1.2.0's row, on
-`ticks.parquet` from [Example data](../../README.md#example-data), and
+`ticks.parquet` from [Example data](../EXAMPLE-DATA.md), and
 writes its output to `huber-now.parquet`:
 
 ```python

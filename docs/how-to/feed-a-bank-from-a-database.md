@@ -9,8 +9,8 @@ statement's result without first writing it to a file.
 
 These steps need the library, a database client and a table to read:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The example reads
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The example reads
   the file `ticks.parquet`.
 - py-polars 1.43.0 or later, whose `pl.scan_arrow_c_stream` reads the
   statement's result.
@@ -34,7 +34,7 @@ to Polars through the Arrow PyCapsule interface, so no pyarrow is needed.
    column for each spec.
 
 This code uses the file `ticks.parquet` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 import duckdb

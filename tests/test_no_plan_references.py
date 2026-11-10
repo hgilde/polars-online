@@ -205,6 +205,7 @@ FILES: list[str] = [
     "docs/FEATURES.md",
     "docs/HIGHLIGHTS.md",
     "docs/VERSIONS.md",
+    "docs/EXAMPLE-DATA.md",
     "docs/contributing/add-an-output-or-a-parameter.md",
     "docs/contributing/iterate-on-a-change.md",
     "docs/contributing/merge-a-wave-of-branches.md",

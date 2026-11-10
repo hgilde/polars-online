@@ -8,9 +8,9 @@ streams, in Rust, and hands back the library's own training object, so that
 ``xgb.train`` and ``lgb.train`` run unchanged, with their evaluation sets,
 early stopping and callbacks. Each function requires its library
 (``pip install xgboost`` or ``lightgbm``), which is not a dependency of this
-package, and numpy, which both libraries require. This code reads the README's `Example data
-<https://github.com/hgilde/polars-online#example-data>`_, the training rows
-from its two parquet files by a glob:
+package, and numpy, which both libraries require. This code reads the training
+rows by a glob from the two parquet files that `Example data
+<https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_ writes:
 
 .. code-block:: python
 
@@ -818,8 +818,8 @@ def xgboost_matrix(
 
     .. rubric:: Examples
 
-    This code reads ``df`` from the README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_, and writes it
+    This code reads ``df`` from `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_, and writes it
     to Arrow IPC files, which the native engine reads itself:
 
     .. code-block:: python
@@ -1308,9 +1308,9 @@ def lightgbm_dataset(
 
     .. rubric:: Examples
 
-    This code reads ``ticks/*.parquet`` and ``today.parquet`` from the
-    README's `Example data
-    <https://github.com/hgilde/polars-online#example-data>`_, the training
+    This code reads ``ticks/*.parquet`` and ``today.parquet`` from
+    `Example data
+    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_, the training
     rows by a glob:
 
     .. code-block:: python

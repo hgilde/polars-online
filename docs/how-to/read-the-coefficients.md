@@ -20,8 +20,8 @@ A row's own `pred_<target>` came from the fit *before* that row
 
 These steps need the library and a model with coefficients:
 
-- polars-online and numpy installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online and numpy installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `lf`, a [query](../GLOSSARY.md#the-model-bank-and-what-it-reads) over
   `ticks.parquet`, and `df`, the same 400 rows as a frame, in which four
   stocks, `b0` to `b3` in the column `stock_id`, take turns. Their target
@@ -49,7 +49,7 @@ output, a saved output, or numpy code that wants a matrix.
 
 Here the bank, the output and a saved output each give the same fit, near
 `df`'s truth. This code uses `lf` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 ols = po.spec.ewridge("ols", targets=["y"], features=["x0", "x1"], clock="t",
@@ -154,7 +154,7 @@ grid has a `coef` field of its own.
 
 Here `grid` has two half-lives and two ridge values, and the ridge of 0.5
 shrinks each slope by more than a third. This code uses `df` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 # A grid of two half-lives by two ridge values, fitted on df.

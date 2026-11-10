@@ -12,8 +12,8 @@ start of the next.
 These steps need the library, a stream with a clock, and the call that
 makes the windows:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `trades`, a stream of quotes with trades between them, saved as
   `trades.parquet`. Its `mid` is on every row, and `side`, `quantity` and
   `price` are null on a quote.
@@ -49,7 +49,7 @@ Use this when each part of the stream is a file of its own.
 
 This code cuts `trades` into two files at row 2,000, and compares the two
 runs with one run over the whole stream. It uses `trades` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 # The forward VWAP in one run over the whole stream, for comparison.
@@ -89,7 +89,7 @@ the input's first row (clock and session) and the last rows it read, which
 is how a resumed run tells the same input from another.
 
 This code stops a run at 500 rows and resumes it on the same file. It uses
-`trades.parquet` from [Example data](../../README.md#example-data), and
+`trades.parquet` from [Example data](../EXAMPLE-DATA.md), and
 `vwap`, `clock` and `one_run` from the recipe before it:
 
 ```python
@@ -139,7 +139,7 @@ under 2.0:
 
 This code resumes the sliced run's state on a file that starts
 before the last row it read. It uses `trades` from [Example
-data](../../README.md#example-data), and `vwap` and `clock` from the first
+data](../EXAMPLE-DATA.md), and `vwap` and `clock` from the first
 recipe:
 
 ```python

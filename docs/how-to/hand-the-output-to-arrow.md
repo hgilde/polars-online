@@ -18,8 +18,8 @@ carry a promise](../explanation/polars-interfaces.md) for why).
 
 These steps need the library and a frame to fit:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The example reads
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The example reads
   `df`, a frame of 400 rows on the clock `t`, and `today`, the 400 rows
   that follow it.
 - A consumer that reads `__arrow_c_array__`, such as pyarrow, or one that
@@ -38,7 +38,7 @@ a second read raises `ValueError`.
 3. **Serve new rows the same way with `bank.predict_arrow(df)`.**
 
 This code uses `df` and `today` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 # One spec's output as Arrow, read once as a Series.

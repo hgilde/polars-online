@@ -298,21 +298,26 @@ code returns, as `tests/test_refresh_time.py` holds that refresh grid.
 
 **Every name an example reads was built by an example before it.** A reader
 starts with nothing and runs the examples in order, so a frame described in
-prose is a frame they cannot make. A frame that several sections read is
-built once, in *Example data* after *Install*, and a section that runs on
-it links there. An earlier pass answered a reviewer's *introduce every
+prose is a frame they cannot make. A frame that several pages read is
+built once, on its own page, [Example data](EXAMPLE-DATA.md), and a section
+that runs on it links there. That code stood in the README, after
+*Install*, until the user moved it to a page of its own (2026-11-10): "The
+main readme has example data but not use of it". So the README shows only
+code a reader runs on the README itself, and points to the page from
+*Install*. An earlier pass answered a reviewer's *introduce every
 frame an example reads* with a paragraph that listed `df`'s columns. It sat at the end of a section
 about parameters for four rewrites, until the user found it "out of
 context" and "very hard to understand". No test could see it, because the
 README test's namespace hands every block `df` ready-made. So
 `test_every_name_a_readme_example_reads_was_built_by_an_earlier_one` parses
-the README's blocks in order, and fails on a name that no block before it
-builds.
+the README's blocks in order, with *Example data*'s where *Install* points
+to it and each moved page's where the README's map points to it, and fails
+on a name that no block before it builds.
 
 **An example that reads the example data says so in the line just above it,
 with a link.** The last sentence above such a block names what it reads, as
-*This code uses `df` from [Example data](../README.md#example-data):*, so a
-reader who opens the README at any section can tell where `df` comes from,
+*This code uses `df` from [Example data](EXAMPLE-DATA.md):*, so a
+reader who opens a page at any section can tell where `df` comes from,
 and build it (the user, 2026-10-05).
 `test_an_example_on_the_example_data_says_so_just_above_it` holds every
 block to it.
@@ -389,7 +394,7 @@ coefficient beside its estimate, a break's row beside the row it was
 flagged. A block whose output is not shown only runs, so a section that
 claims a capability shows it with a recipe instead. Each page with recipes
 has a test that runs them, as `tests/test_kind_pages.py` runs the how-tos', and
-the README's run in what its *Example data* block builds.
+the README's run in what the block on *Example data* builds.
 
 **Every code block runs.** A code example is a claim the reader trusts. The
 test suite runs the README's python blocks and the docstrings' examples, so

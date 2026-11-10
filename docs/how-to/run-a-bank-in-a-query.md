@@ -18,8 +18,8 @@ Arrow](hand-the-output-to-arrow.md).
 
 These steps need the library and a stream on disk:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read the
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read the
   file `ticks.parquet` and the same rows split across `ticks/*.parquet`,
   400 rows on the clock `t`. In them four stocks, `b0` to `b3` in the
   column `stock_id`, take turns row by row. The rows' `y` is `1 + 2·x0 − x1`
@@ -56,7 +56,7 @@ run it once.
 Here the query runs the same spec over `ticks/*.parquet` in one chunk, and
 over `ticks.parquet` one row at a time, and the two agree to the bit. This
 code uses the files `ticks.parquet` and `ticks/*.parquet` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 spec = po.spec.ewridge(                                   # a ridge regression of y for each stock, at two ridge values
@@ -152,7 +152,7 @@ change. Either way its message names the row and the way out.
 2. **Catch `ValueError`,** and read which column the message names.
 
 This code uses `ticks.parquet` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 misspelled = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x9"], half_life=100.0)
@@ -178,7 +178,7 @@ Polars' frames when it is imported, so a type checker cannot see them.
 2. **Pass the frame as the function's first argument.**
 
 This code uses `lf` and `later` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)

@@ -22,8 +22,8 @@ columns silently** ([What is stable](../VERSIONS.md#what-is-stable)).
 
 These steps need the library and a spec:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The example reads
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The example reads
   `df`, a frame of 400 rows whose target `y` is `1 + 2·x0 − x1` plus
   noise.
 - The spec whose output you read. `po.spec.output_index` and
@@ -50,7 +50,7 @@ renders the names, so they always agree with the output:
 
 Here `grid` has two half-lives and two ridge values, and its coefficient
 on `x1` at the smaller ridge comes back as `df`'s −1. This code uses `df`
-from [Example data](../../README.md#example-data):
+from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 grid = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], clock="t",

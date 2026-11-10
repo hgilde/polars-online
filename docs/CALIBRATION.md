@@ -14,7 +14,7 @@ end (`hazard`).
 These steps need the library, a stream in a file and a spec:
 
 - polars-online and numpy installed. Each recipe on this page generates
-  its own data, so none needs the README's example data.
+  its own data, so none needs the [example data](EXAMPLE-DATA.md).
 - The stream saved as a file in clock order, to read back with
   `pl.scan_parquet` as a [query](GLOSSARY.md#the-model-bank-and-what-it-reads)
   (a Polars `LazyFrame`).

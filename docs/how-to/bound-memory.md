@@ -22,8 +22,8 @@ regression holds in its state for its refit.
 
 These steps need the library and a run that reads a file:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `ticks.parquet`, 400 rows that Example data writes.
 - A run that reads a parquet file with `pl.scan_parquet`, which reads the
   file as a [query](../GLOSSARY.md#the-model-bank-and-what-it-reads): a
@@ -114,7 +114,7 @@ the bank's `threads` changes only the bank's speed.
 
 This code is a script of its own, run in a new process, since Polars reads
 `POLARS_MAX_THREADS` when it is first imported. It uses the file
-`ticks.parquet` from [Example data](../../README.md#example-data):
+`ticks.parquet` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 import os

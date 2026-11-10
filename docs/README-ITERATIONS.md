@@ -50,6 +50,7 @@ with its map, oldest first:
 | I8, task 238 | 2026-10-10 | rewrite every reader-facing document, with recipes as the examples of capabilities and a README section for every feature page: first the map | the map merged to `main` (`3176294`), C1-C5 decided by the coordinator (the user: "Your call"); six writers merged at `9cce8f7`, then the assembler on `task238-asm` (`ccd4a3d` to `c88f55f`) | pending |
 | task 323, a fact | 2026-11-05 | not a pass: one sentence of the 1.4.0 changes made true again, since with `huber_refit_rows=0` the MAD's sketch reads the fixed buckets 1.3.0 used (no anchor is taken from the first residuals any more) | `4d86a3b0` | none asked |
 | task 331, a fact | 2026-11-05 | not a pass: *Four defaults have changed in a minor release* (was two), the user having chosen to declare this release's two default moves in a minor: `refit_budget` 256 to 320 MiB and `corrchange(kind="window")`'s `permute_every_rows` 50 to `window_rows`, each with its mechanism, its reason, the setting that restores it and how an old state goes on, in the 1.3.0 and 1.4.0 paragraphs' form | this commit, on `task-331-refit-budget` | none asked |
+| I11, task 383 | 2026-11-10 | not a rewrite: *Example data* moves off the README to `docs/EXAMPLE-DATA.md`, which *Install* points to, since none of the README's own examples read it | this commit, on `task-383-example-data-page` | pending |
 
 ### I1, task 89 (2026-09-23)
 
@@ -1032,6 +1033,37 @@ the moved pages in two halves), then scoped rounds 2 and 3, which circled,
 then a final full read in three parts, fixed without reopening.
 
 **Verdict:** pending; the user reviews the rewrite at its end.
+
+### I11, task 383 (2026-11-10)
+
+**Prompt:** the user, 2026-11-10: "The main readme has example data but not
+use of it". Asked whether to move the block to its own page or add a README
+recipe that uses it, the user chose to move it to its own page.
+
+**Scope:** *Example data*, the README's last section under *Introduction*.
+Its prose, its python block (to the byte) and its paragraph on `df`'s
+planted answers moved to `docs/EXAMPLE-DATA.md`, a reference page, under a
+lead saying which pages read it and what each frame is for. *Install* ends
+with two sentences pointing there, and the contents table drops its
+*example data* entry. Every link to the section, in the guides, the
+docstrings, `llms.txt` and `docs/WRITING.md`, now names the page; a
+docstring's *the README's `Example data`* became *`Example data`*.
+
+**Ideas applied:** the README shows only code a reader runs on the README
+itself (the user's reason); the two rules of WRITING §3 that named the
+README's section, *Every name an example reads was built by an example
+before it* and *An example that reads the example data says so in the line
+just above it*, now name the page, and their tests read the page where
+*Install* points to it, checking the same 37 blocks and the same 6 readers
+of the example data as before.
+
+**Counts** (`doc_review.py measure`): before, 515 lines, 2,080 prose
+words, 111 sentences, mean 18.7 words, 3 of 35 or more and none of 45, 14
+tables, 2 python blocks, 6 top-level sections; after, 446 lines, 1,907
+prose words, 103 sentences, mean 18.5, 2 of 35 or more and none of 45, 14
+tables, 1 python block (the first fit), 6 top-level sections.
+
+**Verdict:** pending.
 
 ## The ideas
 

@@ -9,8 +9,8 @@ a Python object, in a query or from the command line.
 
 These steps need the library and rows to learn from:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `lf` and `later`, [queries](../GLOSSARY.md#the-model-bank-and-what-it-reads)
   over the files `ticks.parquet` and `today.parquet`, whose rows follow
   one another on the clock `t`.
@@ -57,7 +57,7 @@ state is read when the query is built and written whole or not at all.
    file.
 
 This code saves a state from a query and uses it in each of those ways. It
-uses `lf` and `later` from [Example data](../../README.md#example-data):
+uses `lf` and `later` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
@@ -93,7 +93,7 @@ it after committing the output. In a query, follow these steps:
    of the day before it, which the failure did not overwrite.
 
 This code runs two days, each with its own state file. It uses `lf` and
-`later` from [Example data](../../README.md#example-data):
+`later` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
@@ -138,7 +138,7 @@ holds.** The file alone is enough, since it carries its specs. This code
 reads `bank-2024-01-02.state` and `bank-2024-01-03.state`, which [Give
 each day's input its own state
 file](#give-each-days-input-its-own-state-file) saved from `lf` and
-`later` of [Example data](../../README.md#example-data):
+`later` of [Example data](../EXAMPLE-DATA.md):
 
 ```python
 for day in ["2024-01-02", "2024-01-03"]:

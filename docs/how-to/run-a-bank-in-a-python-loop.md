@@ -20,8 +20,8 @@ runs the same bank inside a Polars query instead.
 
 These steps need the library and a stream:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The examples read
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The examples read
   `df`, a frame of 400 rows on the clock `t`, in which four stocks, `b0` to
   `b3` in the column `stock_id`, take turns row by row. Its target `y` is
   `1 + 2·x0 − x1` plus noise. They also read the file `ticks.parquet`, the
@@ -50,7 +50,7 @@ bank.
 
 Here the bank reads 100 rows at a time, and stock `b0`'s coefficient on
 `x0` stays near the 2 that `df` plants. This code uses `ticks.parquet`
-from [Example data](../../README.md#example-data):
+from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
@@ -97,7 +97,7 @@ over, with nothing learned, if it appears again.
 
 In `df` the four stocks take turns, so each last ticked at a different
 `t`. This code uses `df` and `ticks.parquet` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],

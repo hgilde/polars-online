@@ -22,7 +22,7 @@ on a terminal. The files are these:
 |---|---|
 | `job.toml` | the configuration [The configuration file](#the-configuration-file) shows: one spec with one feature and no groups, so that its output is short |
 | `blocks.toml` | the configuration [Closed groups to a sidecar file](#closed-groups-to-a-sidecar-file) shows: one `ew_cov` spec whose groups close |
-| `ticks.parquet`, `today.parquet` | the files the README's [Example data](../README.md#example-data) writes: 400 rows, and the 400 rows that follow them on the clock `t` |
+| `ticks.parquet`, `today.parquet` | the files [Example data](EXAMPLE-DATA.md) writes: 400 rows, and the 400 rows that follow them on the clock `t` |
 | `today.csv` | `today.parquet`'s rows as CSV, written with Polars' `pl.read_parquet("today.parquet").write_csv("today.csv")` |
 | `feed.dat` | `ticks.parquet`'s rows as Arrow IPC, written with Polars' `pl.read_parquet("ticks.parquet").write_ipc("feed.dat")`, under a name whose extension does not say its format |
 

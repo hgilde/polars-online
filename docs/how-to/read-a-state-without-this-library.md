@@ -15,8 +15,8 @@ can parse.
 
 These steps need the library, to export the state, and a JSON reader:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The example reads
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The example reads
   `df`, a frame of 400 rows with the features `x0` and `x1` and the target
   `y`.
 - A bank that has learned from rows, or a state file loaded with
@@ -42,7 +42,7 @@ Export the state from Python, and read the JSON in the other program.
 
 This code exports a bank whose spec forgets nothing, and reads its
 `half_life` back as a number. It uses `df` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 import json

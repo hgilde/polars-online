@@ -3,7 +3,7 @@
 Every page under ``docs/how-to/``, ``docs/explanation/`` and
 ``docs/tutorials/`` is a page of one of WRITING §9's kinds, and its examples
 are claims like any other (docs/WRITING.md §3). So each page's python blocks
-run here in order, in the namespace the README's *Example data* builds (a
+run here in order, in the namespace *Example data* builds (a
 page names that as a prerequisite and links it), as a reader runs them: a
 block reads what an earlier block of the page built. A block followed by a
 ```text block is held to it with ``tests/doc_recipes.py``'s

@@ -18,8 +18,8 @@ from it
 
 These steps need the library and a column of weights:
 
-- polars-online installed, and the README's
-  [Example data](../../README.md#example-data) built. The example reads
+- polars-online installed, and
+  [Example data](../EXAMPLE-DATA.md) built. The example reads
   `df`, a frame of 400 rows whose target `y` is `1 + 2·x0 − x1` plus noise.
 - A numeric column of row weights, each 0 or above, in the stream or made
   in the query before the bank with Polars' `with_columns`.
@@ -46,7 +46,7 @@ This code gives row 100 a weight of 0 and every other row a weight of 1,
 then scales every weight by 10. With no decay, `weight_sum` counts the
 weight learned before each row: row 100 is predicted, but the row after it
 finds the weight unchanged. It reads `df` from [Example
-data](../../README.md#example-data):
+data](../EXAMPLE-DATA.md):
 
 ```python
 weighted = po.spec.ewridge(
