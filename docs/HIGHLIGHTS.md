@@ -8,7 +8,7 @@ the library found, to read against that answer.
 |---|---|
 | [Automate a round of model selection](#automate-a-round-of-model-selection) | exponentially weighted ridge regressions over many combinations of factors, targets and [half-lives](GLOSSARY.md#time) in time and in traded volume, in one pass in bounded memory, so the files may be larger than memory, that writes each fit's [out-of-sample](GLOSSARY.md#fitting-a-model) residuals and coefficients, the combination chosen as best on each trade, and markers where the factors' regime changed, to read how stable each model is |
 | [Build a forward-looking signal and resume it](#build-a-forward-looking-signal-and-resume-it) | a target built as the data streams, a bounded reverse EWMA of the mid, decaying forward over the next five minutes, minus the mid, a feature of the mid minus its EWMA over the last five, and a first-stage ridge's out-of-sample residual as a feature of the second stage, learned under an [embargo](GLOSSARY.md#time) so no prediction has learned from a target still being formed, fitted robustly through jumps, and saved partway and resumed in a fresh process exactly where it left off |
-| [Monitor a live model](#monitor-a-live-model) | a model whose target is known about 30 seconds after it was predicted, with a 90% prediction interval around each forecast that still covers nine answers in ten, and flags where a coefficient of the regression and the correlation between the features significantly change, each checked against changes planted at known rows |
+| [Prediction intervals on late-arriving residuals](#prediction-intervals-on-late-arriving-residuals) | a model whose target is known about 30 seconds after it was predicted, with a 90% prediction interval around each forecast that still covers nine answers in ten, and flags where a coefficient of the regression and the correlation between the features significantly change, each checked against changes planted at known rows |
 | [Measure correlations and fit curves on tick data](#measure-correlations-and-fit-curves-on-tick-data) | correlations from series that trade at their own times, and a curve fitted locally along trade size |
 | [Capabilities](#capabilities) | each capability the tasks use, with the step that shows it and a guide that covers it |
 
@@ -424,7 +424,7 @@ statistics have no window of time. Here the bounded EWMAs, forward and
 back, the embargo, the factor's out-of-sample residual, the robust fit and
 the resume work together on one stream, from files to files.
 
-## Monitor a live model
+## Prediction intervals on late-arriving residuals
 
 For a model whose target is known about 30 seconds after it was
 predicted, build a 90% prediction interval around each forecast, one that
@@ -698,9 +698,9 @@ the library, one line each, see [the feature index](FEATURES.md).
 | scores of an output too large to hold | sums per slot that add up across chunks, files and machines | [model selection](#automate-a-round-of-model-selection), step 6 | [Score an output too large to hold](how-to/evaluate-an-output-frame.md#score-an-output-too-large-to-hold) |
 | robust regression | a fit that down-weights the rows it misses by far, such as jumps | [build a signal](#build-a-forward-looking-signal-and-resume-it), step 6 | [The robust scale](explanation/robust-scale.md) |
 | an exact resume | a saved state goes on in a fresh process as one unbroken run would, dropping the rows it has read | [build a signal](#build-a-forward-looking-signal-and-resume-it), steps 8 to 11 | [Resume from a saved state](how-to/resume-from-a-saved-state.md) |
-| intervals when targets arrive late | a conformal interval whose step adapts to the targets still waiting | [monitor a model](#monitor-a-live-model), steps 5 and 8 | [Put an interval on a prediction](how-to/put-an-interval-on-a-prediction.md) |
-| per-row break tests | a test on every row of whether a regression has broken | [monitor a model](#monitor-a-live-model), steps 5 and 9 | [Detect a break](how-to/detect-a-break.md) |
-| a detector of the features' correlation | a flag where the features' correlations change | [monitor a model](#monitor-a-live-model), steps 6 and 10 | [Detect a break](how-to/detect-a-break.md#watch-the-features-correlations-with-corrchange) |
-| a detector tested against known truth | a simulated stream with planted regime changes, and each change matched to the detector's flag | [monitor a model](#monitor-a-live-model), steps 1 and 10 | [Test a detector on known truth](how-to/test-a-detector-on-known-truth.md) |
+| intervals when targets arrive late | a conformal interval whose step adapts to the targets still waiting | [intervals](#prediction-intervals-on-late-arriving-residuals), steps 5 and 8 | [Put an interval on a prediction](how-to/put-an-interval-on-a-prediction.md) |
+| per-row break tests | a test on every row of whether a regression has broken | [intervals](#prediction-intervals-on-late-arriving-residuals), steps 5 and 9 | [Detect a break](how-to/detect-a-break.md) |
+| a detector of the features' correlation | a flag where the features' correlations change | [intervals](#prediction-intervals-on-late-arriving-residuals), steps 6 and 10 | [Detect a break](how-to/detect-a-break.md#watch-the-features-correlations-with-corrchange) |
+| a detector tested against known truth | a simulated stream with planted regime changes, and each change matched to the detector's flag | [intervals](#prediction-intervals-on-late-arriving-residuals), steps 1 and 10 | [Test a detector on known truth](how-to/test-a-detector-on-known-truth.md) |
 | correlations from asynchronous ticks | series that tick at their own times, aligned on refresh times | [tick data](#measure-correlations-and-fit-curves-on-tick-data), steps 2 to 4 | [Align series that tick at their own times](how-to/align-series-that-tick-at-their-own-times.md) |
 | a local regression along any feature | a fit whose clock is a feature, so its half-life is a bandwidth in that feature | [tick data](#measure-correlations-and-fit-curves-on-tick-data), step 7 | [Fit locally along a feature](how-to/fit-locally-along-a-feature.md) |
