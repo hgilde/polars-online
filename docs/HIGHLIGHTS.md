@@ -8,7 +8,7 @@ the library found, to read against that answer.
 |---|---|
 | [Automate a round of model selection](#automate-a-round-of-model-selection) | exponentially weighted ridge regressions over many combinations of factors, targets and [half-lives](GLOSSARY.md#time) in time and in traded volume, in one pass in bounded memory, so the files may be larger than memory, that writes each fit's [out-of-sample](GLOSSARY.md#fitting-a-model) residuals and coefficients, the combination chosen as best on each trade, and markers where the factors' regime changed, to read how stable each model is |
 | [Build a forward-looking signal and resume it](#build-a-forward-looking-signal-and-resume-it) | a target built as the data streams, a bounded reverse EWMA of the mid, decaying forward over the next five minutes, minus the mid, a feature of the mid minus its EWMA over the last five, and a first-stage ridge's out-of-sample residual as a feature of the second stage, learned under an [embargo](GLOSSARY.md#time) so no prediction has learned from a target still being formed, fitted robustly through jumps, and saved partway and resumed in a fresh process exactly where it left off |
-| [Train gradient-boosted trees on files larger than memory](#train-gradient-boosted-trees-on-files-larger-than-memory) | XGBoost and LightGBM trained from parquet files around an online model's prediction, in two passes over the files with low peak memory: the online ridge follows a level that drifts beyond every training row's, and the trees learn the nonlinear rest |
+| [Train gradient-boosted trees on files larger than memory](#train-gradient-boosted-trees-on-files-larger-than-memory) | XGBoost and LightGBM trained from parquet files around an online model's prediction, a chunk at a time with low peak memory: the online ridge follows a level that drifts beyond every training row's, and the trees learn the nonlinear rest |
 | [Monitor a live model](#monitor-a-live-model) | 90% intervals that keep their coverage on targets that arrive late, and a test for a broken slope and a detector of the features' correlation, both checked against planted changes |
 | [Measure correlations and fit curves on tick data](#measure-correlations-and-fit-curves-on-tick-data) | correlations from series that trade at their own times, and a curve fitted locally along trade size |
 | [Capabilities](#capabilities) | each capability the tasks use, with the step that shows it and a guide that covers it |
@@ -434,8 +434,9 @@ the resume work together on one stream, from files to files.
 ## Train gradient-boosted trees on files larger than memory
 
 Train gradient-boosted trees on parquet files the process does not hold,
-around an online model's prediction. The trees' training data is built in
-two passes over the files with low peak memory. The online ridge follows a
+around an online model's prediction. The trees' training data is built a
+chunk at a time with low peak memory, in two passes over the files for
+LightGBM and four for XGBoost. The online ridge follows a
 level that drifts, and the trees learn the nonlinear rest. The recipe
 trains both XGBoost and LightGBM:
 
