@@ -3,7 +3,7 @@
 Usage: python3 scripts/wheel_size.py [--readme README.md] [--notes FILE] WHEEL...
 
 The README states one range for every platform's wheel, with no version:
-``| size | 25 to 30 MB to download and 71 to 99 MB installed, by platform |``.
+``| size | 25 to 31 MB to download and 71 to 102 MB installed, by platform |``.
 A wheel's download is its file's size, and what it installs is the sum of
 its members' unpacked sizes, each in megabytes of 10**6 bytes, rounded to
 the whole number the row states. Every wheel a release builds must fall

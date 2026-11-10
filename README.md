@@ -306,7 +306,7 @@ pip install polars-online      # or: uv add polars-online
 | depends on | nothing beyond `polars` at run time: the wheel carries its own copy of Polars' Rust code, so it needs no other native library |
 | numpy | needed only by `ModelBank.gram()`, the `po.gram`, `po.corr`, `po.sim` and `po.gbdt` helpers, and `bank.check()`'s collinearity and leakage checks: to use them, install it with the package, as `pip install "polars-online[numpy]"`. Without it, those calls raise `ModuleNotFoundError`, and `bank.check()` reports one `not_checked` finding for the two checks |
 | wheels | macOS (arm64, x86_64), Windows x64, and Linux (x64 glibc and musl, aarch64 glibc), on PyPI and on each GitHub release beside the command-line binaries. On any other platform, the install builds the package from its source distribution, which needs a stable Rust toolchain ([rustup](https://rustup.rs)) |
-| size | 25 to 30 MB to download and 71 to 99 MB installed, by platform |
+| size | 25 to 31 MB to download and 71 to 102 MB installed, by platform |
 
 To build from a checkout, install uv and a stable Rust toolchain
 ([CONTRIBUTING.md](CONTRIBUTING.md)), then run from its root:
