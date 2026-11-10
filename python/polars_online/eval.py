@@ -3617,36 +3617,60 @@ def _ew_test(
     return _ew_chunk(df, values, keys, lags, half_life, stat, name, min_samples, {})
 
 
-def _ew_rounding(lags: int, half_life: float, s0: pl.Expr, r: pl.Expr) -> pl.Expr:
+def _ew_rounding(
+    lags: int, lam2: float, s0: pl.Expr, r: pl.Expr, w1: pl.Expr, w2: pl.Expr
+) -> pl.Expr:
     """The most rounding the per-row ``S`` carries, from ``s0 = W₂ (v₂ +
-    (m₂ − m)²)``, its lag-0 sum, and ``r = W₂ (v₂ + m₂²) = Σ ω² d²``:
-    ``E = 10 (1 + L) (η s0 + η sqrt(s0 r) + η² r)``, ``η = ε / (1 − λ²)``.
+    (m₂ − m)²)``, its lag-0 sum, ``r = W₂ (v₂ + m₂²) = Σ ω² d²``, and the
+    row's weights ``w1 = Σ ω`` and ``w2 = W₂ = Σ ω²``:
+    ``E = 10 (1 + L) ((η_r + η_w) s0 + η_r sqrt(s0 r) + η_r² r)``, with
+    ``η_r = ε w1`` and ``η_w = ε / ((1 − λ²) W₂)``.
 
-    Each of the means and variances is an exponentially weighted recursion
-    (``ewm_mean``, ``ewm_var``), each step rounding by a few ``ε`` of the
-    value it holds, and those roundings fade by ``1 − α`` a step; so each
-    rests within about ``ε / α`` of its value relative to its size, and a
-    mean of a constant ``c``, where a step ``(c − mean) / weight`` is below
-    half an ulp and rounds to nothing, rests up to ``ε |c| / (2α)`` from
-    it. ``m`` is at ``α = 1 − λ``, the rest at ``α₂ = 1 − λ² ≤ 2 (1 − λ)``,
-    so every mean is within ``2 η |mean|`` and ``|m₂ − m|`` within ``3 η
-    |c|``. On rows of a constant ``c``, where ``S`` is 0, what is left is:
-    lag 0, ``W₂ ((3 η c)² + (η c)²)``, the difference of the means squared
-    and the variance's floor (its mean's offset squared); lag ``l``, ``λ^l
-    W_l ((2 η c)² / 4 + (3 η c)²)``, the floor of ``var(u + v)`` (``u + v
-    = 2c``; ``u − v`` is 0 exactly) and the product of the means'
-    offsets; each at most ``10 η² W₂ c² = 10 η² r``, at Bartlett weights
-    that add up to ``1 + L``. Away from a constant, the error is relative:
-    ``η`` of each sum's size, and the lag sums are each at most ``s0`` by
-    Cauchy and Schwarz (``λ^l Σ ω_t² (d_t − m)² ≤ s0``, and so for
-    ``d_{t−l}``), the covariance's polarisation at most their mean, so
-    ``10 (1 + L) η s0`` holds the terms' rounding; and the cross term of
-    the means' offsets, ``2 W₂ |m₂ − m| 3 η |c|``, is at most ``6 η sqrt(s0
+    ``η_r``, the recursions. Each mean and variance is an exponentially
+    weighted recursion (``ewm_mean``, ``ewm_var``) that steps by ``(x −
+    mean) / weight``, its weight the sum of its own weights so far: at
+    most the rows read and at most ``1 / α``, so never above ``w1`` (``m``
+    is at ``α = 1 − λ``, whose weight is ``w1``; the rest at ``1 − λ²``,
+    whose weight ``W₂`` is below it). Each step rounds by about ``ε`` of the
+    value held, and the next step keeps ``1 − 1 / weight`` of that, so the
+    roundings rest within ``ε · weight`` of its size; and a mean of a
+    constant ``c``, whose step ``(c − mean) / weight`` is below half an ulp
+    and rounds to nothing, rests up to ``ε |c| weight / 2`` from it. So
+    every mean is within ``η_r`` of its size, and so is ``λ²`` raised to
+    the recursion's powers, ``λ²`` being ``λ`` squared to a double. A key
+    with few rows has gathered few roundings: ``η_r`` grows with ``w1``
+    to ``ε / (1 − λ)`` once the key has had many half-lives, where a
+    settled recursion's ``ε / (1 − λ²)`` for every row nulled the rows of
+    a young key at a long half-life that were right to 1e-9 and better.
+
+    ``η_w``, the totals. ``W = (1 − μ^n) / (1 − μ)`` is read from the
+    count, and ``μ^n`` rounds to within ``ε``, so ``1 − μ^n`` is within
+    ``ε`` of its value, ``ε / ((1 − μ) W)`` relative: ``η_w`` for ``W₂``,
+    at most ``2 η_w`` for ``w1``. Near ``μ = 1`` it is most of the
+    rounding; it is ``ε`` once a key has had many half-lives.
+
+    The sums. On rows of a constant ``c``, where ``S`` is 0, ``|m₂ − m| <=
+    2 η_r |c|``, and what is left is: lag 0, ``W₂ ((2 η_r c)² + (η_r
+    c)²)``, the difference of the means squared and the variance's floor
+    (its mean's offset squared); lag ``l``, ``λ^l W_l ((2 η_r c)² / 4 +
+    (2 η_r c)²)``, the floor of ``var(u + v)`` (``u + v = 2c``; ``u − v``
+    is 0 exactly) and the product of the means' offsets; each at most ``10
+    η_r² W₂ c² = 10 η_r² r``, at Bartlett weights that add up to ``1 +
+    L``. Away from a constant the error is relative, ``η_r + η_w`` of each
+    sum, and the lag sums are each at most ``s0`` by Cauchy and Schwarz
+    (``λ^l Σ ω_t² (d_t − m)² <= s0``, and so for ``d_{t−l}``), the
+    covariance's polarisation at most their mean, so ``10 (1 + L) (η_r +
+    η_w) s0`` holds the terms' rounding; and the cross term of the means'
+    offsets, ``2 W₂ |m₂ − m| 2 η_r |c|``, is at most ``4 η_r sqrt(s0
     r)``. ``E`` adds the three: no less than ``S``'s rounding, so ``S <=
     E`` is ``S`` zero but for rounding, and above it the statistic's own
     rounding is at most about ``E / (2 S)`` of its value."""
-    eta = sys.float_info.epsilon / (1.0 - 0.25 ** (1.0 / half_life))
-    return 10.0 * (1.0 + lags) * (eta * s0 + eta * (s0 * r).sqrt() + eta * eta * r)
+    eps = sys.float_info.epsilon
+    eta_r = eps * w1
+    eta_w = eps / ((1.0 - lam2) * w2)
+    return (
+        10.0 * (1.0 + lags) * ((eta_r + eta_w) * s0 + eta_r * (s0 * r).sqrt() + eta_r * eta_r * r)
+    )
 
 
 def _ew_query(
@@ -3844,7 +3868,7 @@ def _ew_chunk(
             s = s + 2.0 * weight * pl.when(n > lag).then(term).otherwise(0.0)
         r = w2 * (p("v2") + p("m2") * p("m2"))
         out_col = _free(taken, f"{stat}_{len(temps)}")
-        cut = _ew_rounding(lags, half_life, s0, r)
+        cut = _ew_rounding(lags, lam2, s0, r, w1, w2)
         # `n`, the key's rows with a value up to this one, is a whole number
         # held in a float, so the comparisons are exact.
         live = (s > cut) & (n >= float(min_samples)) & (n > float(_few_rows(lags)))
@@ -3875,12 +3899,20 @@ def _ew_chunk(
 
 
 def _check_half_life(who: str, half_life: float) -> None:
-    """The per-row form's ``half_life``: above 0, and finite. An infinite
-    one reached polars' ``ewm_mean`` as ``alpha = 0``, which it refuses
-    with no word of the parameter."""
-    if not 0 < half_life < math.inf:
+    """The per-row form's ``half_life``: above 0, finite, and short enough
+    that ``0.5 ** (1 / half_life)`` is below 1 in a double, up to about
+    1.25e16 rows. An infinite one, or a longer one, reached polars'
+    ``ewm_mean`` as ``alpha = 0``, which it refuses with no word of the
+    parameter."""
+    finite = 0 < half_life < math.inf
+    if not finite or 0.5 ** (1.0 / half_life) == 1.0:
+        why = (
+            ""
+            if not finite
+            else ", longer than a double can tell from no decay (0.5 ** (1 / half_life) is 1.0)"
+        )
         msg = (
-            f"{who}: half_life must be finite and above 0, but it is {half_life}. Give "
+            f"{who}: half_life must be finite and above 0, but it is {half_life}{why}. Give "
             f"half_life a positive number of rows, or leave it None for one statistic over "
             f"every row."
         )
@@ -4087,9 +4119,10 @@ def diebold_mariano(
 
     Whatever :func:`seqtest` raises for ``a``, ``b``, ``targets``, the
     suffixes and ``group``. ``ValueError`` too, for ``lags`` below 0, for a
-    ``half_life`` that is not finite and above 0, and, with ``half_life``,
-    for a ``name`` that ``df`` already has as a column, which the result
-    would replace. :class:`~polars_online.WrongTypeError`, both a
+    ``half_life`` that is not finite and above 0, or so long that ``0.5 **
+    (1 / half_life)`` is 1.0 in a double (from about 1.25e16 rows), and,
+    with ``half_life``, for a ``name`` that ``df`` already has as a
+    column, which the result would replace. :class:`~polars_online.WrongTypeError`, both a
     ``TypeError`` and a ``ValueError``, for a ``lags`` that is not a whole
     number, such as ``1.5``.
 
@@ -4183,13 +4216,17 @@ def diebold_mariano(
     key's count, means and variances after the rows before it, decays
     their weight over its own rows, and pools them with its own as two
     groups' means and variances pool. While the query is one chunk the
-    result is the frame's to the bit, and over many within 1e-12 relative
-    (5e-15 measured in chunks of 97 rows), but on rows where ``S`` is near
-    its rounding, below. Written to a file with ``sink_parquet``, the test
-    by the row with ``lags=2`` and ``half_life=500`` held 157 MiB at a
-    million rows, 161 MiB at four million and 161 MiB at sixteen million
-    under the bounded settings, and 395, 681 and 1,129 MiB under Polars'
-    defaults.
+    result is the frame's to the bit. Over many, frame and query each
+    carry the rounding the next paragraph bounds, about ``E / (2 S)`` of
+    ``dm``, so they are within about ``E / S`` of each other: near 1e-14
+    where the differentials' level is near their spread, and about 1e-10
+    at a level a million spreads from zero (7.9e-11 measured at
+    ``half_life=5`` in chunks of 7 rows). A row whose ``S`` is within its
+    rounding of ``E`` can be null in one and not the other. Written to a
+    file with ``sink_parquet``, the test by the row with ``lags=2`` and
+    ``half_life=500`` held 157 MiB at a million rows, 161 MiB at four
+    million and 161 MiB at sixteen million under the bounded settings, and
+    395, 681 and 1,129 MiB under Polars' defaults.
 
     **With** ``half_life``, ``S`` **is summed about the weighted means, and**
     ``dm`` **is null where** ``S`` **is zero but for rounding.** Each row's
@@ -4203,25 +4240,35 @@ def diebold_mariano(
     No sum cancels the differentials' level against itself, so a spread
     far below the level, or one first differential far from the rest, is
     read to the digits the means hold. Each mean and variance is a
-    recursion, and its rounding fades by ``1 - α`` a row, so it rests
-    within about ``η = ε / (1 - λ²)`` of its size, ``ε = 2.2e-16``; a mean
-    of a constant can rest that far from it, since a step smaller than half
-    its last digit rounds to nothing. From there, with ``S₀`` lag 0's sum
-    and ``R = Σ ω² d²``, ``S`` is within ``E = 10 (1 + lags) (η S₀ + η
-    sqrt(S₀ R) + η² R)`` of its value: ``η²`` of ``R`` where the
-    differentials have been one value (the means' offsets squared), and
-    ``η`` of the sums where they have not. ``dm`` is null where ``S <= E``:
-    on a key's first row, on rows whose differentials have all been equal,
-    and once a constant has run long enough that the rows before it weigh
-    less than its rounding. Above it, ``dm``'s rounding is at most about
-    ``E / (2 S)`` of it, and the mean's, about ``η`` of the differentials'
-    size; there the query's ``dm`` can differ from the frame's by more than
-    1e-12, and a row whose ``S`` is within its rounding of ``E`` can be
-    null in one and not the other.
+    recursion that steps by ``1 / weight`` of the gap to the new value, its
+    weight the sum of its weights so far, at most the rows read and at most
+    ``Σ ω``. Each step rounds by about ``ε = 2.2e-16`` of the value held,
+    and the next keeps ``1 - 1 / weight`` of that, so the roundings rest
+    within ``η_r = ε Σ ω`` of its size; a mean of a constant can rest that
+    far from it, since a step smaller than half its last digit rounds to
+    nothing. A key with few rows has gathered few roundings, whatever the
+    half-life. The totals ``Σ ω²`` are read from the count as ``(1 -
+    λ^(2n)) / (1 - λ²)``, and ``λ^(2n)`` rounds to within ``ε``, so near
+    ``λ = 1`` they are within ``η_w = ε / ((1 - λ²) Σ ω²)``. From there,
+    with ``S₀`` lag 0's sum and ``R = Σ ω² d²``, ``S`` is within ``E = 10
+    (1 + lags) ((η_r + η_w) S₀ + η_r sqrt(S₀ R) + η_r² R)`` of its value:
+    ``η_r²`` of ``R`` where the differentials have been one value (the
+    means' offsets squared), and ``η_r + η_w`` of the sums where they have
+    not. ``dm`` is null where ``S <= E``: on rows whose differentials have
+    all been equal, and once a constant has run long enough that the rows
+    before it weigh less than its rounding. Above it, ``dm``'s rounding is
+    at most about ``E / (2 S)`` of it, and the mean's, about ``η_r`` of the
+    differentials' size. At a half-life near the longest a double can tell
+    from no decay, about 1e16 rows, ``η_w`` nears ``1 / n`` and nulls a
+    key's first rows, a few dozen at ``lags=3``, though its statistic is
+    right there to 1e-12.
 
     Without ``half_life``, ``dm`` is null where every differential of the
     key is the same value, whose ``S`` is zero but for the rounding of the
-    mean.
+    mean. A key whose differentials take values a few units in the last
+    place apart reads a statistic only as good as the rounding of that
+    spread, 1e16 or more and not the same in a frame and a query, with a
+    p-value of 0 either way.
     """
     _frame("po.eval.diebold_mariano", df, lazy=True)
     probe = _probe(df)

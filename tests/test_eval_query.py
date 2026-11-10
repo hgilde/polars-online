@@ -783,11 +783,13 @@ def _exact(v: np.ndarray, half_life: float, lags: int, rows: list[int]) -> dict[
     decimal over the same f64 values and weight ``λ``: ``(stat, bound)``,
     the statistic None where ``S`` is 0, and ``bound`` the rounding the
     statistic may carry: ``E / (2 S)`` of it, ``E`` the cut's rounding of
-    ``S`` from the exact ``S₀ = Σ ω² (d - m)²`` and ``R = Σ ω² d²``, plus the
-    mean's, ``4 η`` of the weights' root mean square of ``d``; and ``S / E``
-    (0 where ``S`` is). ``η = ε / (1 - λ²)``."""
+    ``S`` from the exact ``S₀ = Σ ω² (d - m)²``, ``R = Σ ω² d²`` and the
+    weights ``w1 = Σ ω``, ``W₂ = Σ ω²``, plus the mean's, ``4 η_r`` of the
+    weights' root mean square of ``d``; and ``S / E`` (0 where ``S`` is).
+    ``η_r = ε w1``, ``η_w = ε / ((1 - λ²) W₂)`` (task 382b, B16: a settled
+    ``ε / (1 - λ²)`` before)."""
     lam = 0.5 ** (1.0 / half_life)
-    eta = sys.float_info.epsilon / (1.0 - lam * lam)
+    eps = sys.float_info.epsilon
     dl = Decimal(lam)
     x = [Decimal(float(e)) for e in v]
     pw = [Decimal(1)]
@@ -806,8 +808,12 @@ def _exact(v: np.ndarray, half_life: float, lags: int, rows: list[int]) -> dict[
             pairs = sum(u[i] * u[i - lag] for i in range(lag, t + 1))
             s += 2 * (1 - Decimal(lag) / (lags + 1)) * pairs
         r = sum(o * o * e * e for o, e in zip(w, x, strict=False))
+        eta = eps * float(w1)
+        eta_w = eps / ((1.0 - lam * lam) * float(w2))
         cut = (
-            10 * (1 + lags) * (eta * float(s0) + eta * math.sqrt(float(s0 * r)) + eta**2 * float(r))
+            10
+            * (1 + lags)
+            * ((eta + eta_w) * float(s0) + eta * math.sqrt(float(s0 * r)) + eta**2 * float(r))
         )
         if s <= 0:
             out[t] = (None, 0.0, 0.0)

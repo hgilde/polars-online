@@ -13,12 +13,16 @@ frame and over a query alike (task 382b, review of `po.eval` B4, B7 and C2).
 - **C2.** Without ``group``, a query returns a target no row has a value of
   as the frame does, as a row with ``n = 0`` and null statistics. It left
   the target out.
+- **B16, B17.** The per-row form reads its statistic at half-lives up to
+  what a double can tell from no decay, and refuses one past it by name.
 - A key whose differentials are all one value reads null over a query in
   any chunking, as in the frame, beside keys that keep their statistic: the
   chunks' parts of such a key share one mean, which the merge pools.
 """
 
 from __future__ import annotations
+
+from decimal import Decimal, localcontext
 
 import numpy as np
 import polars as pl
@@ -219,3 +223,112 @@ class TestAConstantKeyOverAQuery:
             np.testing.assert_allclose(
                 got[field].to_numpy()[2:], frame[field].to_numpy()[2:], rtol=1e-9, err_msg=str(rows)
             )
+
+
+def _exact_per_row(d: np.ndarray, lags: int, half_life: float, rows: list[int]) -> dict:
+    """At each of ``rows``, the per-row statistic by its definition in
+    60-digit decimal over the same f64 values and weight ``λ``: ``m Σω /
+    sqrt(S)``, ``S = Σ_s Σ_u ω_s ω_u k(|s - u|) (d_s - m)(d_u - m)`` with
+    Bartlett's ``k``; None where ``S`` is 0."""
+    with localcontext() as ctx:
+        ctx.prec = 60
+        lam = Decimal(0.5 ** (1.0 / half_life))
+        x = [Decimal(float(v)) for v in d]
+        out = {}
+        for t in rows:
+            w = [lam ** (t - s) for s in range(t + 1)]
+            w1 = sum(w)
+            m = sum(o * e for o, e in zip(w, x, strict=False)) / w1
+            u = [o * (e - m) for o, e in zip(w, x, strict=False)]
+            s = sum(e * e for e in u)
+            for lag in range(1, lags + 1):
+                pairs = sum(u[i] * u[i - lag] for i in range(lag, t + 1))
+                s += 2 * (1 - Decimal(lag) / (lags + 1)) * pairs
+            out[t] = None if s <= 0 else float(m * w1 / s.sqrt())
+    return out
+
+
+class TestALongHalfLife:
+    """B16 (task 381's rework): the per-row cut read each recursion's
+    rounding as a settled one's, ``ε / (1 - λ²)``, whatever rows the key
+    had, so at a half-life of 1e9 rows and more it nulled rows the
+    statistic had right to 1e-9 and better, and from about 1e14 every row.
+    Now each row reads, against the 60-digit definition, in the frame and
+    a query of 37-row chunks. Nearer a double's limit the totals' rounding
+    bound nulls a key's first rows: the rows read are right, and the rest
+    read from a few dozen rows on."""
+
+    @pytest.mark.parametrize("call", list(CALLS))
+    @pytest.mark.parametrize(
+        ("half_life", "level", "lags", "rel"),
+        [(1e9, 1e6, 0, 1e-8), (1e12, 1e3, 0, 1e-11), (1e12, 1e6, 3, 1e-8),
+         (1e14, 0.0, 3, 1e-11), (1e15, 0.0, 0, 1e-11), (1e15, 30.0, 0, 1e-11)],
+    )  # fmt: skip
+    def test_every_row_reads_its_statistic(self, monkeypatch, call, half_life, level, lags, rel):
+        rng = np.random.default_rng(int(np.log10(half_life)) + lags)
+        n = 300
+        d = level + rng.normal(size=n)
+        rb = np.sqrt(np.abs(d))
+        ra = np.where(d < 0, rb, 0.0)
+        rb = np.where(d < 0, 0.0, rb)
+        df = _two_specs(ra, rb)
+        read = rb * rb - ra * ra
+        v = read if call == "diebold_mariano" else read + (ra - rb) ** 2
+        floor = 4 * (lags + 1)
+        asked = list(range(floor, n, 23))
+        exact = _exact_per_row(v, lags, half_life, asked)
+        kw = dict(lags=lags, half_life=half_life, min_samples=1)
+        for rows in (None, 37):
+            got = _per_row(df, call, monkeypatch, rows, **kw)
+            assert all(g is not None for g in got[floor:]), (rows, got.index(None))
+            for t in asked:
+                assert got[t] == pytest.approx(exact[t], rel=rel), (rows, t)
+
+    @pytest.mark.parametrize("call", list(CALLS))
+    @pytest.mark.parametrize("half_life", [1e16, 1.2e16])
+    @pytest.mark.parametrize("lags", [0, 3])
+    def test_at_a_doubles_limit_only_a_keys_first_rows_are_null(
+        self, monkeypatch, call, half_life, lags
+    ):
+        rng = np.random.default_rng(lags)
+        n = 200
+        d = rng.normal(size=n)
+        rb = np.sqrt(np.abs(d))
+        ra = np.where(d < 0, rb, 0.0)
+        rb = np.where(d < 0, 0.0, rb)
+        df = _two_specs(ra, rb)
+        read = rb * rb - ra * ra
+        v = read if call == "diebold_mariano" else read + (ra - rb) ** 2
+        kw = dict(lags=lags, half_life=half_life, min_samples=1)
+        for rows in (None, 37):
+            got = _per_row(df, call, monkeypatch, rows, **kw)
+            live = [t for t, g in enumerate(got) if g is not None]
+            assert live == list(range(live[0], n)) and live[0] <= 80, (rows, live[:3])
+            exact = _exact_per_row(v, lags, half_life, live[::17])
+            for t, want in exact.items():
+                assert got[t] == pytest.approx(want, rel=1e-11), (rows, t)
+
+
+class TestAHalfLifeTooLongForADouble:
+    """B17: past about 1.25e16 rows ``0.5 ** (1 / half_life)`` is 1.0 in a
+    double, no decay, which reached Polars' ``ewm_mean`` as ``alpha = 0``
+    and its error, which does not name the parameter. Refused by name, on
+    a frame and a query, before it runs."""
+
+    @pytest.mark.parametrize("call", list(CALLS))
+    @pytest.mark.parametrize("half_life", [3e16, 1e17, 1e300])
+    @pytest.mark.parametrize("lazy", [False, True])
+    def test_refused(self, call, half_life, lazy):
+        _, sides = CALLS[call]
+        rng = np.random.default_rng(1)
+        df = _two_specs(*rng.normal(size=(2, 50)))
+        with pytest.raises(ValueError, match=f"^po.eval.{call}: half_life must be finite"):
+            getattr(po.eval, call)(df.lazy() if lazy else df, **sides, half_life=half_life)
+
+    def test_the_longest_a_double_tells_from_none_is_taken(self):
+        longest = 1.2e16
+        assert 0.5 ** (1.0 / longest) < 1.0
+        rng = np.random.default_rng(2)
+        df = _two_specs(*rng.normal(size=(2, 80)))
+        got = po.eval.diebold_mariano(df, a="a", b="b", half_life=longest, min_samples=1)
+        assert got["diebold_mariano"].struct.field("dm_y")[40:].null_count() == 0
