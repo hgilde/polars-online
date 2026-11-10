@@ -128,8 +128,8 @@ these conditions:
 | | |
 |---|---|
 | machine | an Apple M4 Pro, one process |
-| runs | four runs of `uv run python scripts/benchmark.py --markdown`, each the best of 3 over 200k rows, and the best of the four for each row; measured on 2026-11-03 at commit `0311852`, 1.4.0's build, beside a load average of 3.7 to 5.9 |
-| noise | the four runs of a row lay within 4.8% of one another (`deco`'s within 9.7%), and on busier days a run has moved by up to 11% from the last on this machine, so read a gap smaller than that as noise |
+| runs | three runs of `uv run python scripts/benchmark.py --markdown`, each the best of 3 over 200k rows, and the best of the three for each row; measured on 2026-11-10 at commit `ebfde144`, 1.5.0's build, beside a load average of 3.0 to 4.6 |
+| noise | the three runs of a row lay within 3.7% of one another (`kalman`'s within 5.0%), and on busier days a run has moved by up to 11% from the last on this machine, so read a gap smaller than that as noise |
 | half-life | 1,000, in every row that gives none of its own |
 | `k`, `K` | the number of features; the number of clusters or hidden states |
 
@@ -137,30 +137,30 @@ The [linear models](MODELS.md#linear-models):
 
 | model | settings | rows/sec | what sets its speed |
 |---|---|---:|---|
-| `ewridge` | k=5, 1 target, 1 half-life | 5,308,149 | |
-| `ewridge` | k=20, 1 target, 1 half-life | 3,339,800 | |
-| `ewridge` | k=50, 1 target, 1 half-life | 1,205,322 | |
-| `ewridge` | k=20, 10 targets | 1,552,590 | one set of feature sums for every target |
-| `ewridge` | k=20, 5 half-lives, 500 to 2,500 | 1,826,370 | one set of sums per half-life, run in parallel |
-| `ewridge` + `conformal` | k=20, 90% interval | 3,278,341 | nothing measurable: the interval reads the residual the model already has |
-| `rls` | k=20, 1 target | 1,706,253 | its square-root form, at 51% of `ewridge`'s speed: the form is what keeps one extreme row from destroying it by cancellation |
-| `kalman` | k=20, 1 target | 1,821,628 | |
-| `kalman` | k=20, `revert_half_life` | 1,582,737 | |
-| `lasso` | k=20, 1 target (3-point path) | 1,869,574 | |
-| `huber` | k=20, 1 target | 3,551,157 | |
-| `quantile` | k=20, the median | 1,730,774 | |
-| `sgd` | k=20, squared loss, `standardize=False` | 7,552,383 | the raw step; the default, `standardize=True`, scales each feature on the row first |
-| `sgd` | k=20, `coef_min=0`, `coef_sum=1`, `standardize=False` | 2,346,605 | a simplex constraint sorts `2k` breakpoints per row, which makes `sgd` 3.2 times slower |
-| `pa` | k=20, `standardize=False` | 8,502,016 | the raw step, as for `sgd` |
-| `ftrl` | k=20, 1 target | 5,038,836 | |
-| `holt` | level and trend of one column | 12,057,090 | |
+| `ewridge` | k=5, 1 target, 1 half-life | 5,703,144 | |
+| `ewridge` | k=20, 1 target, 1 half-life | 3,391,220 | |
+| `ewridge` | k=50, 1 target, 1 half-life | 1,220,635 | |
+| `ewridge` | k=20, 10 targets | 1,563,506 | one set of feature sums for every target |
+| `ewridge` | k=20, 5 half-lives, 500 to 2,500 | 1,880,475 | one set of sums per half-life, run in parallel |
+| `ewridge` + `conformal` | k=20, 90% interval | 3,312,947 | nothing measurable: the interval reads the residual the model already has |
+| `rls` | k=20, 1 target | 1,740,172 | its square-root form, at 51% of `ewridge`'s speed: the form is what keeps one extreme row from destroying it by cancellation |
+| `kalman` | k=20, 1 target | 1,832,892 | |
+| `kalman` | k=20, `revert_half_life` | 1,573,464 | |
+| `lasso` | k=20, 1 target (3-point path) | 1,932,145 | |
+| `huber` | k=20, 1 target | 3,585,209 | |
+| `quantile` | k=20, the median | 1,733,947 | |
+| `sgd` | k=20, squared loss, `standardize=False` | 7,574,120 | the raw step; the default, `standardize=True`, scales each feature on the row first |
+| `sgd` | k=20, `coef_min=0`, `coef_sum=1`, `standardize=False` | 2,377,249 | a simplex constraint sorts `2k` breakpoints per row, which makes `sgd` 3.2 times slower |
+| `pa` | k=20, `standardize=False` | 8,335,504 | the raw step, as for `sgd` |
+| `ftrl` | k=20, 1 target | 5,103,136 | |
+| `holt` | level and trend of one column | 12,181,752 | |
 
 **Several targets on the same features in one spec's `targets` share one
-set of feature sums,** so 10 targets take 2.15 times as long as one.
+set of feature sums,** so 10 targets take 2.17 times as long as one.
 
 **A grid of half-lives keeps one set of sums per half-life, and runs them
-in parallel.** So the grid of five takes 1.45 times as long as its shortest
-half-life, 500, which runs alone at 2,647,560 rows a second. That is slower
+in parallel.** So the grid of five takes 1.42 times as long as its shortest
+half-life, 500, which runs alone at 2,671,331 rows a second. That is slower
 than at the half-life of 1,000 that every other row here uses, because a
 shorter half-life solves more often.
 
@@ -168,40 +168,40 @@ The models of [moments and correlation](MODELS.md#moments-and-correlation):
 
 | model | settings | rows/sec | what sets its speed |
 |---|---|---:|---|
-| `ew_cov` | k=20: mean, std, corr (230 statistics) | 2,029,717 | |
-| `ew_cov` | k=20: mean, mahal, `mahal_q0.99` | 832,440 | the Mahalanobis distance factors a `k × k` matrix by Cholesky once per row |
-| `ew_cov` | k=20: mean, cov, lags 1–5 | 1,628,550 | |
-| `marginal` | 20 features against one target | 10,212,831 | `O(k)` pairs a row, and each row writes only `weight_sum`: the pairs are read from the state after the run |
-| `deco` | k=20, one equicorrelation | 5,043,924 | one number for the whole matrix of its `m` series, computed in `O(m)` a row with no `m × m` matrix to factor |
-| `deco` | k=20 in 4 blocks | 2,844,648 | |
-| `rcov` | 4 features, kernel, blocks of 1000 | 4,518,149 | it accumulates per row and computes its kernel only when the block closes |
-| `audit` | 20 columns, 256 counters each | 958,272 | each row updates every column's counts and measures, and writes only `weight_sum` |
+| `ew_cov` | k=20: mean, std, corr (230 statistics) | 2,169,178 | |
+| `ew_cov` | k=20: mean, mahal, `mahal_q0.99` | 835,422 | the Mahalanobis distance factors a `k × k` matrix by Cholesky once per row |
+| `ew_cov` | k=20: mean, cov, lags 1–5 | 1,645,781 | |
+| `marginal` | 20 features against one target | 10,372,525 | `O(k)` pairs a row, and each row writes only `weight_sum`: the pairs are read from the state after the run |
+| `deco` | k=20, one equicorrelation | 5,034,639 | one number for the whole matrix of its `m` series, computed in `O(m)` a row with no `m × m` matrix to factor |
+| `deco` | k=20 in 4 blocks | 2,828,546 | |
+| `rcov` | 4 features, kernel, blocks of 1000 | 4,489,560 | it accumulates per row and computes its kernel only when the block closes |
+| `audit` | 20 columns, 256 counters each | 964,870 | each row updates every column's counts and measures, and writes only `weight_sum` |
 
 The models of [clustering and classification](MODELS.md#clustering-and-classification):
 
 | model | settings | rows/sec | what sets its speed |
 |---|---|---:|---|
-| `ew_class` | k=20, 3 classes, full covariance | 582,797 | a `k × k` matrix factored by Cholesky once per *learned* row |
-| `ew_class` | k=20, 3 classes, tied covariance | 601,016 | |
-| `ew_class` | k=20, 3 classes, diagonal | 2,545,255 | |
-| `kmeans` | 4 features, K=8 | 5,285,220 | a distance to each center |
-| `kmeans` | k=20, K=8 | 3,199,622 | a distance to each center |
-| `micro` | 4 features, `eps=1` | 7,883,016 | a distance to each center |
+| `ew_class` | k=20, 3 classes, full covariance | 576,752 | a `k × k` matrix factored by Cholesky once per *learned* row |
+| `ew_class` | k=20, 3 classes, tied covariance | 635,448 | |
+| `ew_class` | k=20, 3 classes, diagonal | 3,105,881 | |
+| `kmeans` | 4 features, K=8 | 5,276,494 | a distance to each center |
+| `kmeans` | k=20, K=8 | 3,208,597 | a distance to each center |
+| `micro` | 4 features, `eps=1` | 7,778,936 | a distance to each center |
 
 The [sequential tests and regimes](MODELS.md#sequential-tests-and-regimes):
 
 | model | settings | rows/sec | what sets its speed |
 |---|---|---:|---|
-| `seqtest` | sign of one column | 14,804,580 | a handful of operations |
-| `corrchange` | 4 features, monitor, `window_rows=500` | 5,960,689 | |
-| `corrchange` | 4 features, window 100, permute every 500 | 493,752 | its permutation null |
-| `bocpd` | 4 features, `covariance_type="diag"`, `degrees_of_freedom_prior` 3 (its default there), `max_run=200` | 704,535 | the number of runs it keeps |
-| `bocpd` | 4 features, `covariance_type="full"`, `degrees_of_freedom_prior=6.0` (its default there, `d + 2`), `max_run=200` | 1,158,813 | the number of runs it keeps |
-| `hmm` | 4 features, K=2 | 2,519,190 | a `k × k` covariance factorized per state per row, which is `ew_class`'s work with the classes hidden |
-| `hmm` | k=20, K=2 | 437,770 | |
+| `seqtest` | sign of one column | 14,610,360 | a handful of operations |
+| `corrchange` | 4 features, monitor, `window_rows=500` | 6,042,228 | |
+| `corrchange` | 4 features, window 100, permute every 500 | 1,313,716 | its permutation null |
+| `bocpd` | 4 features, `covariance_type="diag"`, `degrees_of_freedom_prior` 3 (its default there), `max_run=200` | 712,704 | the number of runs it keeps |
+| `bocpd` | 4 features, `covariance_type="full"`, `degrees_of_freedom_prior=6.0` (its default there, `d + 2`), `max_run=200` | 1,144,714 | the number of runs it keeps |
+| `hmm` | 4 features, K=2 | 2,546,042 | a `k × k` covariance factorized per state per row, which is `ew_class`'s work with the classes hidden |
+| `hmm` | k=20, K=2 | 430,745 | |
 
-**`corrchange`'s window kind runs at a twelfth of its monitor kind's speed,
-because its permutation null redraws `n_perm` statistics every
+**`corrchange`'s window kind runs at about a fifth of its monitor kind's
+speed, because its permutation null redraws `n_perm` statistics every
 `permute_every_rows` rows.** A number given as `crit` fixes the threshold,
 and then no redraw runs.
 

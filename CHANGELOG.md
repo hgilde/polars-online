@@ -9,7 +9,7 @@ order, another kernel), each declared with its size. Before 1.0, the minor
 version carried breaking changes, and any change to the numbers a model
 returns.
 
-## [Unreleased]
+## [1.5.0] — 2026-11-10
 
 ### Added
 

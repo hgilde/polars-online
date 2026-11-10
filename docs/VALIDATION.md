@@ -11,7 +11,7 @@ uv run python scripts/validate.py > docs/VALIDATION.md
 
 - Data: public intraday (BTCUSDT 1m, Binance public dump, 2024-01-02..2024-01-11, 10 days)
 - Rows: 14335, features: ['x0', 'x1', 'x2', 'x3'], targets: ['y0', 'y1']
-- Polars 2.0.0, polars-online 1.4.0
+- Polars 2.0.0, polars-online 1.5.0
 
 ## How the runs are set
 
@@ -29,7 +29,7 @@ Every prediction is out-of-sample: each row is predicted before the model learns
 
 ## 1. Solve schedule (`solve_every` default = by weight, half_life/50 in steady state)
 
-Solving every `half_life/d` clock units, half_life = 500.0, on `y0`. The 7 schedules run as 7 specs in one pass over the rows (0.03s).
+Solving every `half_life/d` clock units, half_life = 500.0, on `y0`. The 7 schedules run as 7 specs in one pass over the rows (0.04s).
 
 | divisor | n | r2 | ic | hit_rate | mse |
 |---|---|---|---|---|---|
