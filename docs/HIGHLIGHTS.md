@@ -93,9 +93,10 @@ in size at noon on 2024-01-03.
    and writes the result without holding it all in memory.
 5. **Count the choices, the break flags and the new regimes by day,** with
    queries over that file.
-6. **Score every slot** with `po.eval.metrics` over a query of that
-   file. It runs the query and reads its result a chunk at a time, adding
-   up a few sums per slot, so it holds one chunk of the file and the sums.
+6. **Score every slot of both specs** with `po.eval.compare_specs` over a
+   query of that file. It runs the query once and reads its result a chunk
+   at a time, adding up a few sums per slot, so it holds one chunk of the
+   file and the sums.
 
 ```python
 from datetime import date, datetime, timedelta
@@ -163,13 +164,12 @@ for target in ("a", "b"):
 starts = fitted.filter("new_regime").group_by("day").agg(pl.col("ts").min()).sort("day").collect(engine="streaming")
 print("a new regime from " + ", ".join(f"{t:%Y-%m-%d %H:%M:%S}" for t in starts["ts"]))
 
-# 6. Every slot's score, read from the file's query a chunk at a time.
+# 6. Every slot's score in both specs, read from the file's query in one pass, a chunk at a time.
+scores = po.eval.compare_specs(fitted, ["by_time", "by_volume"]).sort("spec", "target", "mse")
 # Each spec's best grid point for each target, beside the selection made as it ran.
-for spec in ("by_time", "by_volume"):
-    ranked = po.eval.metrics(fitted, spec).sort("target", "mse")
-    for target, rows in ranked.group_by("target", maintain_order=True):
-        best, chose = rows.row(0, named=True), rows.filter(slot=f"pred_{target[0]}__selected").row(0, named=True)
-        print(f"{spec}, {target[0]}: best {best['slot']} at mse {best['mse']:.3f}, the selection made as it ran {chose['mse']:.3f}")
+for (spec, target), rows in scores.group_by("spec", "target", maintain_order=True):
+    best, chose = rows.row(0, named=True), rows.filter(slot=f"pred_{target}__selected").row(0, named=True)
+    print(f"{spec}, {target}: best {best['slot']} at mse {best['mse']:.3f}, the selection made as it ran {chose['mse']:.3f}")
 ```
 
 ```text
