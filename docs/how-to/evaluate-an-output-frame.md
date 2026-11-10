@@ -4,7 +4,7 @@
 This how-to is for anyone who has run a bank over a stream and wants to
 score its predictions afterward: per spec, per group or over windows of
 the clock. It also scores an output too large to hold in memory, by
-reducing each chunk to a few sums as the run goes.
+passing the query in place of its result.
 
 ## Prerequisites
 
@@ -112,25 +112,26 @@ holds the fit's warm-up.
 
 ## Score an output too large to hold
 
-`po.eval.metrics` needs the whole output in one frame. When the output is
-too large to hold, say fifty slots over a billion rows, reduce each chunk
-of it to ten numbers per slot and group as the run goes.
+When the output is too large to hold, say fifty slots over a billion rows,
+give `po.eval.metrics` the query in place of its result. A query runs only
+when its result is asked for, and `metrics` runs it once and reads the
+result a chunk at a time, keeping ten numbers per slot and group.
 
-1. **Build a bank with `po.ModelBank([spec])`.**
-2. **Feed it the query a chunk at a time with
-   `bank.fit_predict_batches(query, chunk_size=...)`.**
-3. **Reduce each chunk of the output with `po.eval.sums(out, spec,
-   group=...)`.** Give `weight=` the name of a column to weight the rows
-   by.
-4. **Add each chunk's sums to the running total with
-   `po.eval.merge_sums`.** The total is the same, to rounding, whatever the
-   split.
-5. **Turn the total into the metrics with `po.eval.from_sums`.**
+1. **Write the bank's query, `query.online.fit_predict([spec])`,** or
+   scan a file a run wrote its output to, with `pl.scan_parquet`.
+2. **Pass the query to `po.eval.metrics(query, spec, group=...)`.** It
+   returns the same table as for the output held in memory, within the
+   rounding of adding the chunks' sums. `po.eval.sums` takes a query the
+   same way, and gives `weight=` to weight the rows by a column.
+3. **To add up the scores of several runs, such as one output file a day,
+   reduce each with `po.eval.sums`, add them with `po.eval.merge_sums`,
+   and read the metrics with `po.eval.from_sums`.** The total is the same,
+   to rounding, however the rows were split.
 
 The sums are centered, so a target far from zero keeps its variance,
 where raw `Σy` and `Σy²` would lose all of it. This code scores a target
-near 1e8 with unit spread, a chunk at a time, and compares the result with
-the metrics of the whole output held in memory:
+near 1e8 with unit spread over the bank's query, and compares the result
+with the metrics of the whole output held in memory:
 
 ```python
 # A target near 1e8 with unit spread, three stocks, 30,000 rows.
@@ -144,31 +145,34 @@ far = pl.scan_parquet("far.parquet")
 
 ridge = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=500.0, group="stock")
 
-# 1 to 4. Reduce each chunk of the output to a few sums per stock, and add the parts as they come.
-running = None
-for chunk in po.ModelBank([ridge]).fit_predict_batches(far, chunk_size=1_000):
-    part = po.eval.sums(chunk, "ridge", group="stock")  # weight= names a column to weight the rows by
-    running = part if running is None else po.eval.merge_sums(running, part)
-# 5. The metrics from the total.
-streamed = po.eval.from_sums(running).sort("stock")
+# 1 and 2. The bank's query, scored a chunk at a time: one chunk and a few sums per stock are held.
+streamed = po.eval.metrics(far.online.fit_predict([ridge]), ridge, group="stock")
 
 # The same metrics from the whole output held in memory, for comparison.
-held = po.eval.metrics(far.online.fit_predict([ridge]).collect(), "ridge", group="stock").sort("stock")
+held = po.eval.metrics(far.online.fit_predict([ridge]).collect(), "ridge", group="stock")
 for (stock, n_, r2, mse), (r2_held, mse_held) in zip(
     streamed.select("stock", "n", "r2", "mse").iter_rows(), held.select("r2", "mse").iter_rows()
 ):
     print(f"{stock}: {n_} rows, R² {r2:.6f} streamed and {r2_held:.6f} held, mse {mse:.6f} and {mse_held:.6f}")
+
+# 3. The output written to a file, its two halves reduced apart, as two runs' files would be, and added up.
+far.online.fit_predict([ridge]).sink_parquet("far_out.parquet")
+written = pl.scan_parquet("far_out.parquet")
+halves = [po.eval.sums(written.head(n // 2), ridge, group="stock"), po.eval.sums(written.tail(n // 2), ridge, group="stock")]
+added = po.eval.from_sums(po.eval.merge_sums(*halves))
+print(", ".join(f"{stock} R² {r2:.6f}" for stock, r2 in added.select("stock", "r2").iter_rows()), "from the two halves")
 ```
 
 ```text
 A: 10160 rows, R² 0.545017 streamed and 0.545017 held, mse 1.017160 and 1.017160
 B: 9801 rows, R² 0.551971 streamed and 0.551971 held, mse 1.006657 and 1.006657
 C: 10027 rows, R² 0.551899 streamed and 0.551899 held, mse 1.017914 and 1.017914
+A R² 0.545017, B R² 0.551971, C R² 0.551899 from the two halves
 ```
 
-The streamed metrics agree with the ones computed from the whole output to
-every digit printed, with only one chunk of the output in memory at a
-time.
+The metrics of the query agree with the ones computed from the whole
+output to every digit printed, with only one chunk of the output in memory
+at a time, and so do the two halves' sums added up.
 
 ## Score a target that is renamed or looks ahead
 

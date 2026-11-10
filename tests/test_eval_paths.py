@@ -37,7 +37,8 @@ def test_a_frame_that_is_not_a_polars_frame_is_refused(fitted):
     out, _, _ = fitted
     with pytest.raises(
         TypeError,
-        match="po.eval.metrics: the frame must be a Polars DataFrame, but it is of type dict",
+        match="po.eval.metrics: the frame must be a Polars DataFrame or LazyFrame, but it is "
+        "of type dict",
     ):
         po.eval.metrics(out.to_dict(), "big")  # type: ignore[arg-type]
 

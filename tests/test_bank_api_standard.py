@@ -344,18 +344,23 @@ def test_m20_spec_takes_a_name_or_the_dict():
         po.eval.compare_specs(out, spec_names=["m"])
 
 
-def test_m23_a_lazyframe_gets_one_clear_type_error():
+def test_m23_a_lazyframe_is_read_where_a_call_reads_a_query_and_refused_by_name_elsewhere():
+    """M-23 refused a ``LazyFrame`` with one clear ``TypeError`` where Polars'
+    own calls warned three times first. Task 380: ``metrics``, ``sums`` and
+    ``unpack`` read the query; a call that reads a whole frame still
+    refuses it, by name, without a warning."""
     _, out = _scored()
     with warnings.catch_warnings():
         warnings.simplefilter("error")
+        # To the bit but `ic`, which rounds apart (tests/test_eval_query.py).
+        got, want = po.eval.metrics(out.lazy(), "m"), po.eval.metrics(out, "m")
+        assert got.drop("ic").equals(want.drop("ic"))
+        assert got["ic"][0] == pytest.approx(want["ic"][0], rel=1e-14)
+        assert po.eval.unpack(out.lazy(), "m").collect().equals(po.eval.unpack(out, "m"))
         with pytest.raises(
             TypeError, match="must be a Polars DataFrame, but it is a LazyFrame. Pass the query"
         ):
-            po.eval.metrics(out.lazy(), "m")
-        with pytest.raises(TypeError, match="but it is a LazyFrame"):
             po.eval.diebold_mariano(out.lazy(), a="m", b="m")
-        with pytest.raises(TypeError, match="but it is a LazyFrame"):
-            po.eval.unpack(out.lazy(), "m")
 
 
 # --- M-9 and M-17: the operators -------------------------------------------------

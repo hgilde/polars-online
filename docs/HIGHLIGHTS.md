@@ -60,8 +60,8 @@ combination was chosen, and where the regimes changed:
 - All in one pass over sorted data too large for RAM, split by date
   across files with session breaks between them. Every
   [slot](GLOSSARY.md#grids) (each prediction a spec writes) is then scored
-  from **sums merged chunk by chunk** over the written output, so no
-  output is held in memory.
+  by **one call over a query of the written output**, which adds up a few
+  sums per slot a chunk at a time, so no output is held in memory.
 
 The recipe plants each answer it looks for. The return `ret_a` loads 0.5
 on factor `f0` throughout, and on `f1` from 0 to 0.6 at the open of
@@ -93,9 +93,9 @@ in size at noon on 2024-01-03.
    and writes the result without holding it all in memory.
 5. **Count the choices, the break flags and the new regimes by day,** with
    queries over that file.
-6. **Score every slot** with `po.eval.sums`, reading the file a chunk at a
-   time. `po.eval` reads a frame in memory, not a query, so this step is a
-   loop over the file's chunks, whose sums `po.eval.merge_sums` adds up.
+6. **Score every slot** with `po.eval.metrics` over a query of that
+   file. It runs the query and reads its result a chunk at a time, adding
+   up a few sums per slot, so it holds one chunk of the file and the sums.
 
 ```python
 from datetime import date, datetime, timedelta
@@ -163,15 +163,10 @@ for target in ("a", "b"):
 starts = fitted.filter("new_regime").group_by("day").agg(pl.col("ts").min()).sort("day").collect(engine="streaming")
 print("a new regime from " + ", ".join(f"{t:%Y-%m-%d %H:%M:%S}" for t in starts["ts"]))
 
-# 6. Every slot's score. po.eval reads a frame in memory, not a query, so the sums add up a chunk at a time.
-scores = {}
-for chunk in fitted.collect_batches(chunk_size=5_000):
-    for spec in ("by_time", "by_volume"):
-        part = po.eval.sums(chunk, spec)
-        scores[spec] = po.eval.merge_sums(scores[spec], part) if spec in scores else part
+# 6. Every slot's score, read from the file's query a chunk at a time.
 # Each spec's best grid point for each target, beside the selection made as it ran.
 for spec in ("by_time", "by_volume"):
-    ranked = po.eval.from_sums(scores[spec]).sort("target", "mse")
+    ranked = po.eval.metrics(fitted, spec).sort("target", "mse")
     for target, rows in ranked.group_by("target", maintain_order=True):
         best, chose = rows.row(0, named=True), rows.filter(slot=f"pred_{target[0]}__selected").row(0, named=True)
         print(f"{spec}, {target[0]}: best {best['slot']} at mse {best['mse']:.3f}, the selection made as it ran {chose['mse']:.3f}")
@@ -661,7 +656,7 @@ the library, one line each, see [the feature index](FEATURES.md).
 | many combinations of factors and targets, with multiple specs | every feature set at every half-life, for every target, in several specs, from one read of the rows | [model selection](#automate-a-round-of-model-selection), step 2 | [Grids, instances and slots](explanation/grids-and-instances.md) |
 | one pass that detects changes of coefficients, selection and regimes | a break test, the grid point chosen on each row and a regime's age, beside the fits they watch | [model selection](#automate-a-round-of-model-selection), steps 2 to 5 | [Detect a break](how-to/detect-a-break.md) |
 | model selection made out-of-sample | the grid point whose exponentially weighted out-of-sample error is lowest so far, chosen on each row from the rows before it | [model selection](#automate-a-round-of-model-selection), step 2 | [Choose among a grid's settings as the stream runs](how-to/choose-among-a-grid-online.md) |
-| scores of an output too large to hold | sums per slot that add up across chunks, files and machines | [model selection](#automate-a-round-of-model-selection), step 6 | [Score an output too large to hold](how-to/evaluate-an-output-frame.md#score-an-output-too-large-to-hold) |
+| scores of an output too large to hold | one call over a query of the output, which adds up sums per slot a chunk at a time | [model selection](#automate-a-round-of-model-selection), step 6 | [Score an output too large to hold](how-to/evaluate-an-output-frame.md#score-an-output-too-large-to-hold) |
 | robust regression | a fit that down-weights the rows it misses by far, such as jumps | [build a signal](#build-a-forward-looking-signal-and-resume-it), step 6 | [The robust scale](explanation/robust-scale.md) |
 | an exact resume | a saved state goes on in a fresh process as one unbroken run would, dropping the rows it has read | [build a signal](#build-a-forward-looking-signal-and-resume-it), steps 8 to 11 | [Resume from a saved state](how-to/resume-from-a-saved-state.md) |
 | intervals when targets arrive late | a conformal interval whose step adapts to the targets still waiting | [intervals](#prediction-intervals-on-late-arriving-residuals), steps 5 and 8 | [Put an interval on a prediction](how-to/put-an-interval-on-a-prediction.md) |

@@ -21,30 +21,39 @@ fall into five kinds:
    * - kind
      - the calls
      - what they hold in memory
-   * - scores over a frame
-     - :func:`metrics`, :func:`window_metrics`, :func:`compare_specs`
+   * - scores over a frame or a query
+     - :func:`metrics`
+     - given a frame, the frame; given a query, one chunk of it and ten
+       numbers per key
+   * - scores in windows, or of several specs
+     - :func:`window_metrics`, :func:`compare_specs`
      - the whole frame
    * - scores one chunk at a time
      - :func:`sums`, :func:`merge_sums`, :func:`from_sums`
-     - ten numbers per key
+     - ten numbers per key, and given a query, one chunk of it
    * - one spec against another
      - :func:`diebold_mariano`, :func:`clark_west`, :func:`seqtest`
      - the whole frame
    * - the long form the scores read
      - :func:`unpack`
-     - the whole frame
+     - given a frame, the frame; given a query, nothing until the query it
+       returns runs
    * - a grid point chosen from a stream's own residuals
      - :func:`grid_search`
      - three numbers per slot for each run of rows between the places a
        test span starts or its choice stops,
        and the bank's state and one chunk
 
-The scores over a frame are Polars aggregations, so they need the whole
-frame. For a stream too long to hold, set a spec's ``emit_metrics``, which
-keeps exponentially weighted R², IC and hit rate beside the model, in memory
-the size of its state. Or
-reduce each chunk with :func:`sums`, add the chunks with :func:`merge_sums`
-and read the scores with :func:`from_sums`.
+**Give :func:`metrics` or :func:`sums` a query to score an output too long
+to hold.** A query (a ``LazyFrame``) runs only when its result is asked
+for, and these two read its result one chunk at a time: each chunk is
+reduced to the ten sums per key that :func:`sums` keeps, and the chunks'
+sums are added as :func:`merge_sums` adds them. So scoring the file a bank's
+output was written to, ``pl.scan_parquet("out.parquet")``, holds one chunk
+and the sums, not the file. The scores are the frame's, as each function's
+Notes say. To keep scores beside the model as it runs, set a spec's
+``emit_metrics``, which keeps exponentially weighted R², IC and hit rate,
+in memory the size of the model's state.
 
 **Pass the spec itself as ``spec`` where a target is not a plain column.**
 ``spec`` is the spec's name, which names its output column, or the spec
@@ -54,10 +63,13 @@ renamed with :func:`polars_online.target`, or a formula target (see
 :func:`unpack`). The dict also says whether a fit is a classifier, whose
 scores take other names (:func:`metrics`' ``binary``).
 
-Every call here but :func:`grid_search` reads a whole ``DataFrame``. Given a
-``LazyFrame``, it raises ``TypeError``: pass ``lf.collect()``, which runs the
+:func:`metrics`, :func:`sums` and :func:`unpack` take a ``LazyFrame`` as
+well as a ``DataFrame``, and :func:`grid_search` runs a bank over a query
+itself. Every other call here reads a whole ``DataFrame``, and given a
+``LazyFrame`` raises ``TypeError``: pass ``lf.collect()``, which runs the
 query and returns its result. The scores
-start from :func:`unpack` and raise what it raises. It raises a
+start from :func:`unpack` and raise what it raises, over a query as over a
+frame, before the query runs. It raises a
 :class:`~polars_online.OutputColumnNotFoundError` (a ``KeyError`` too) for a
 spec whose output column the frame does not have, ``TypeError`` for a column
 that is not a spec's output or is the output of a model that predicts no
@@ -96,10 +108,11 @@ import re
 import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import timedelta
-from typing import Any, Literal
+from typing import Any, Literal, overload
 
 import polars as pl
 
+from polars_online import _polars_online as _native
 from polars_online._duration import Duration, clock_nanoseconds
 from polars_online._errors import (
     ColumnNotFoundError,
@@ -153,12 +166,21 @@ SUM_FIELDS = (
 )
 
 
-def _frame(who: str, df: object) -> None:
-    """Refuse anything but a ``DataFrame`` here, where every call reads the
-    whole frame: a ``LazyFrame`` once reached Polars' own calls, which warned
-    three times and then failed on ``LazyFrame is not subscriptable``."""
+def _frame(who: str, df: object, *, lazy: bool = False) -> None:
+    """Refuse anything but a ``DataFrame``, and a ``LazyFrame`` where the
+    call reads a query (``lazy``): a ``LazyFrame`` once reached Polars' own
+    calls, which warned three times and then failed on ``LazyFrame is not
+    subscriptable``."""
     if isinstance(df, pl.DataFrame):
         return
+    if lazy:
+        if isinstance(df, pl.LazyFrame):
+            return
+        msg = (
+            f"{who}: the frame must be a Polars DataFrame or LazyFrame, but it is of type "
+            f"{type(df).__name__}. Pass a Polars DataFrame, or a LazyFrame to read a query."
+        )
+        raise TypeError(msg)
     if isinstance(df, pl.LazyFrame):
         msg = (
             f"{who}: the frame must be a Polars DataFrame, but it is a LazyFrame. Pass the "
@@ -203,17 +225,20 @@ def _warn_merged(who: str, what: str) -> None:
     )
 
 
-def _takes_spec[R](who: str) -> Callable[[Callable[..., R]], Callable[..., R]]:
+def _takes_spec[R](
+    who: str, *, lazy: bool = False
+) -> Callable[[Callable[..., R]], Callable[..., R]]:
     """A decorator for a call whose ``spec_name`` and ``spec=`` became one
     ``spec``, the name or the dict: the old forms, ``spec_name=`` and a name
     beside ``spec=``, are read as the new one, with a
     :class:`~polars_online.PolarsOnlineDeprecationWarning`, and a frame
-    that is not a ``DataFrame`` is refused by name."""
+    that is not a ``DataFrame`` (or a ``LazyFrame``, where ``lazy``) is
+    refused by name."""
 
     def decorate(fn: Callable[..., R]) -> Callable[..., R]:
         @functools.wraps(fn)
         def wrapper(df: Any, *args: Any, **kwargs: Any) -> R:
-            _frame(who, df)
+            _frame(who, df, lazy=lazy)
             if "spec_name" in kwargs:
                 if args:
                     msg = (
@@ -291,13 +316,25 @@ _INPUT_BOUND = 1e100
 RESERVED = ("slot", "target", "pred", "y")
 
 
-@_takes_spec("po.eval.unpack")
+@overload
 def unpack(
-    df: pl.DataFrame,
+    df: pl.DataFrame, spec: str | dict, *, targets: Sequence[str] | None = None
+) -> pl.DataFrame: ...
+
+
+@overload
+def unpack(
+    df: pl.LazyFrame, spec: str | dict, *, targets: Sequence[str] | None = None
+) -> pl.LazyFrame: ...
+
+
+@_takes_spec("po.eval.unpack", lazy=True)
+def unpack(
+    df: pl.DataFrame | pl.LazyFrame,
     spec: str | dict,
     *,
     targets: Sequence[str] | None = None,
-) -> pl.DataFrame:
+) -> pl.DataFrame | pl.LazyFrame:
     """Turn a spec's output into long form, one row per input row and slot.
 
     Use it to score or plot predictions with your own Polars code: each row
@@ -308,9 +345,8 @@ def unpack(
 
     ``df``
         A frame a bank returned: the input's columns and the spec's output
-        column. A ``LazyFrame`` is refused, since every call here reads the
-        whole frame: pass ``lf.collect()``, which runs the query and returns
-        its result.
+        column. Or a query of one, a ``LazyFrame``, which gives a query of
+        the long form back (see Returns).
     ``spec``
         The spec's name, which is its output column's, or the spec dict
         itself, which names the column too. Pass the dict to read each
@@ -349,10 +385,20 @@ def unpack(
     dropped, so a target column called ``y`` does not collide with the
     ``y`` added.
 
+    Given a ``LazyFrame``, a ``LazyFrame`` of the same rows, which runs
+    only when its result is asked for, as Polars' own calls on a query
+    return a query. Its rows come slot by slot, as the frame's do, so it
+    reads ``df`` once for each slot: a query that runs a bank runs the bank
+    once per slot. Write the bank's output to a file first, with
+    ``sink_parquet``, and unpack a scan of the file. Written to a file with
+    ``sink_parquet``, the long form of a 20-slot output held 123 MiB at a
+    million rows and 131 MiB at four million, measured as :func:`metrics`'
+    Notes say.
+
     .. rubric:: Raises
 
     ``TypeError``
-        ``df`` is not a ``DataFrame``, such as a ``LazyFrame``; or the
+        ``df`` is neither a ``DataFrame`` nor a ``LazyFrame``; or the
         spec's column is not a record, or holds no ``pred_*`` field, as an
         ``ew_cov``, ``kmeans``, ``micro``, ``ew_class`` or ``seqtest`` model
         writes; or ``spec`` is neither a name nor a spec dict.
@@ -391,52 +437,80 @@ def unpack(
     - :func:`polars_online.spec.output_index`, each output field's slot,
       target and grid point, read from the spec.
     """
+    if isinstance(df, pl.LazyFrame):
+        return _unpack(df, spec, targets=targets, who="po.eval.unpack")
     return _unpack(df, spec, targets=targets, who="po.eval.unpack")
 
 
-def _unpack(
-    df: pl.DataFrame,
+def _unpack[F: (pl.DataFrame, pl.LazyFrame)](
+    df: F,
     spec: str | dict,
     *,
     targets: Sequence[str] | None = None,
     columns: Sequence[str] | None = None,
     who: str = "po.eval.unpack",
-) -> pl.DataFrame:
+) -> F:
     """:func:`unpack`, carrying of the input's columns only those in
     ``columns`` (all of them when ``None``). A score reads the key columns
     and the clock or weight beside ``pred`` and ``y``; carrying every input
     column once per slot made its long form the frame's width times the
     slots, 1.4 GiB from a 290 MiB frame of 43 columns and 8 slots, where
     the four columns it reads take 137 MiB."""
+    probe = _probe(df)
+    spec_name, slots = _slots(probe, spec, targets, who)
+    keep = _kept(probe, columns)
+    frames = [
+        df.select(
+            *keep,
+            pl.lit(slot).alias("slot"),
+            pl.lit(target).alias("target"),
+            pl.col(spec_name).struct.field(slot).alias("pred"),
+            y.alias("y"),
+        )
+        for slot, target, y in slots
+    ]
+    return pl.concat(frames)
+
+
+def _probe(df: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
+    """``df`` itself, or for a query a frame of no rows with the query's
+    schema: what the checks of a spec and its columns read, so a query is
+    refused as a frame is, with the same message, before it runs."""
+    return df if isinstance(df, pl.DataFrame) else pl.DataFrame(schema=df.collect_schema())
+
+
+def _slots(
+    df: pl.DataFrame, spec: str | dict, targets: Sequence[str] | None, who: str
+) -> tuple[str, list[tuple[str, str, pl.Expr]]]:
+    """The spec's output column, and each of its ``pred`` fields with the
+    target it predicts and the expression of the target's value."""
     spec_name, written = _spec_of(who, spec)
     fields = _pred_fields(who, df, spec_name)
-    keep = [c for c, d in df.schema.items() if not isinstance(d, pl.Struct) and c not in RESERVED]
-    if columns is not None:
-        wanted = set(columns)
-        keep = [c for c in keep if c in wanted]
     # With the spec in hand, the slot -> target mapping comes from
     # `output_index` -- the same Rust code that named the fields -- and each
     # target's value from the spec's own table of it, instead of the
     # heuristic name-parsing below, which exists only for callers who have a
     # frame but no spec.
     exact = {} if written is None else _spec_targets(written, df, who)
-    frames = []
+    slots = []
     for slot in fields:
         if slot in exact:
             target, y = exact[slot]
         else:
             target = _target_of(who, slot, df, targets)
             y = pl.col(target)
-        frames.append(
-            df.select(
-                *keep,
-                pl.lit(slot).alias("slot"),
-                pl.lit(target).alias("target"),
-                df[spec_name].struct.field(slot).alias("pred"),
-                y.alias("y"),
-            )
-        )
-    return pl.concat(frames)
+        slots.append((slot, target, y))
+    return spec_name, slots
+
+
+def _kept(df: pl.DataFrame, columns: Sequence[str] | None) -> list[str]:
+    """The input columns :func:`unpack` carries: every one that is not a
+    record or :data:`RESERVED`, or of those only the ones in ``columns``."""
+    keep = [c for c, d in df.schema.items() if not isinstance(d, pl.Struct) and c not in RESERVED]
+    if columns is not None:
+        wanted = set(columns)
+        keep = [c for c in keep if c in wanted]
+    return keep
 
 
 def _spec_targets(spec: dict, df: pl.DataFrame, who: str) -> dict[str, tuple[str, pl.Expr]]:
@@ -640,9 +714,9 @@ def _thin(out: pl.DataFrame, min_samples: int, keep: Iterable[str]) -> pl.DataFr
 
 
 @renamed_keywords("po.eval.metrics", _BOTH)
-@_takes_spec("po.eval.metrics")
+@_takes_spec("po.eval.metrics", lazy=True)
 def metrics(
-    df: pl.DataFrame,
+    df: pl.DataFrame | pl.LazyFrame,
     spec: str | dict,
     *,
     group: str | Iterable[str] | None = None,
@@ -653,17 +727,18 @@ def metrics(
     """Score a spec's out-of-sample predictions over a whole frame.
 
     Use it to read how well a spec predicted, per slot, target and group,
-    once its output is in memory. For scores in windows of the clock, use
-    :func:`window_metrics`; for several specs in one table,
-    :func:`compare_specs`; for a stream too long to hold, :func:`sums`, or
-    the spec's own ``emit_metrics``.
+    over a frame in memory or over a query too long to hold, such as a scan
+    of the file a bank's output was written to. For scores in windows of the
+    clock, use :func:`window_metrics`; for several specs in one table,
+    :func:`compare_specs`; for scores kept beside the model as it runs, the
+    spec's own ``emit_metrics``.
 
     .. rubric:: Parameters
 
     ``df``
-        A frame a bank returned, holding the spec's output column. A
-        ``LazyFrame`` is refused: pass ``lf.collect()``, which runs the query
-        and returns its result.
+        A frame a bank returned, holding the spec's output column, or a
+        query of one, a ``LazyFrame``, which this runs and reads one chunk
+        at a time (see Notes).
     ``spec``
         The spec's name, or the spec dict itself, as :func:`unpack` reads
         it. Pass the dict for a target that is not a plain column, and to
@@ -690,7 +765,8 @@ def metrics(
     .. rubric:: Returns
 
     A ``DataFrame`` with one row per ``slot``, ``target`` and ``group``
-    key, sorted by them, and these columns after the keys:
+    key, sorted by them, given a frame or a query alike, and these columns
+    after the keys:
 
     ``n``
         The rows scored.
@@ -734,7 +810,8 @@ def metrics(
     Whatever :func:`unpack` raises for ``df`` and ``spec``, and
     :class:`~polars_online.ColumnNotFoundError`, both Polars'
     ``ColumnNotFoundError`` and a ``ValueError``, for a ``group`` column
-    ``df`` does not have.
+    ``df`` does not have. A query is refused as its result would be, with
+    the same message, before it runs.
 
     .. rubric:: Examples
 
@@ -767,6 +844,27 @@ def metrics(
 
     .. rubric:: Notes
 
+    **Given a query, this holds one chunk of it and a few sums per key, not
+    its rows.** It runs the query once and reads its result 100,000 rows
+    at a time, the chunk a bank reads by default. Each chunk is reduced to
+    :func:`sums`' ten numbers per slot, target and key, with the sum of the
+    log loss under ``binary``, and the chunks' sums are added as
+    :func:`merge_sums` adds them. Measured on macOS (an M4 Pro, py-polars
+    2.0.0, four threads, the allocator told to return freed pages at once)
+    as the most memory the process held, scoring a scan of a 20-slot output
+    by a key of four values held 195 MiB at a million rows, 200 MiB at
+    four million and 203 MiB at sixteen million, 43 MiB of each Python and
+    Polars before the call. The same scores of the collected frame held
+    2,193 MiB at a million rows.
+
+    The scores of a query are the frame's. While the query gives one chunk,
+    every column is the frame's to the bit but ``ic``, which is read from
+    the sums as the co-moment over the root of the two moments, where a
+    frame's is Polars' ``corr``, and the two round apart. Over many chunks
+    each score is the frame's within the rounding of the merge, which
+    :func:`merge_sums`' Notes measure. They agree within 1e-9 relative at
+    the least, and within 5e-11 for a target about 1e8 with unit spread.
+
     A row is scored only where both the prediction and the target are
     values the bank would learn from: not null, NaN or infinite, and within
     the bank's input bound of 1e100 in magnitude. So the rows of a warm-up,
@@ -781,9 +879,17 @@ def metrics(
     known, and the sign test reads 1.0.
     """
     spec_name, written = _spec_of("po.eval.metrics", spec)
-    _check_columns(df, "po.eval.metrics", group=group)
+    _check_columns(_probe(df), "po.eval.metrics", group=group)
     binary = _binary(binary, written)
-    keys = ["slot", "target", *_group_keys(group)]
+    keys = _keys(group)
+    if isinstance(df, pl.LazyFrame):
+        job = _job(
+            df, written or spec_name, targets, group, None, binary, "po.eval.metrics", log_loss=True
+        )
+        merged = _query_sums(df, [job], group=group, weight=None)[0]
+        if merged is not None:
+            return _thin(_scores(merged, keys, binary=binary), min_samples, keys)
+        df = _probe(df)
     long = _scored(
         _unpack(df, written or spec_name, targets=targets, columns=keys, who="po.eval.metrics")
     )
@@ -2197,9 +2303,9 @@ def seqtest(
 
 
 @renamed_keywords("po.eval.sums", _GROUP)
-@_takes_spec("po.eval.sums")
+@_takes_spec("po.eval.sums", lazy=True)
 def sums(
-    df: pl.DataFrame,
+    df: pl.DataFrame | pl.LazyFrame,
     spec: str | dict,
     *,
     group: str | Iterable[str] | None = None,
@@ -2207,20 +2313,21 @@ def sums(
     weight: str | None = None,
     binary: bool | None = None,
 ) -> pl.DataFrame:
-    """Reduce one chunk of a bank's output to the sums its scores are read from.
+    """Reduce a bank's output, or one chunk of it, to the sums its scores are read from.
 
-    Use it to score a stream too long to hold: reduce each chunk to ten
-    numbers per slot, target and group, add the chunks with
+    Use it to keep scores that can be added up: reduce each part of a
+    stream to ten numbers per slot, target and group, add the parts with
     :func:`merge_sums`, and read :func:`metrics`' scores with
-    :func:`from_sums`. For a frame in memory, :func:`metrics` gives the
-    same scores in one call.
+    :func:`from_sums`. Given a query, it reduces all of the query's rows,
+    one chunk at a time. For the scores themselves, :func:`metrics` gives
+    them in one call, over a frame or a query.
 
     .. rubric:: Parameters
 
     ``df``
-        One chunk a bank returned, holding the spec's output column. A
-        ``LazyFrame`` is refused: pass ``lf.collect()``, which runs the query
-        and returns its result.
+        A frame a bank returned, or one chunk of it, holding the spec's
+        output column. Or a query of one, a ``LazyFrame``, which this runs
+        and reads one chunk at a time, as :func:`metrics` reads one.
     ``spec``
         The spec's name, or the spec dict itself, as :func:`unpack` reads
         it.
@@ -2240,7 +2347,8 @@ def sums(
     .. rubric:: Returns
 
     A ``DataFrame`` with one row per ``slot``, ``target`` and ``group`` key,
-    and these columns after the keys, :data:`SUM_FIELDS`:
+    given a frame or a query alike, and these columns after the keys,
+    :data:`SUM_FIELDS`:
 
     ``n``, ``w``
         The rows, and the weight behind them.
@@ -2267,7 +2375,8 @@ def sums(
     Whatever :func:`unpack` raises for ``df`` and ``spec``, and
     :class:`~polars_online.ColumnNotFoundError`, both Polars'
     ``ColumnNotFoundError`` and a ``ValueError``, for a ``group`` or
-    ``weight`` column ``df`` does not have.
+    ``weight`` column ``df`` does not have. A query is refused as its result
+    would be, with the same message, before it runs.
 
     .. rubric:: Examples
 
@@ -2293,7 +2402,7 @@ def sums(
 
     - :func:`merge_sums`, which adds the sums of several chunks.
     - :func:`from_sums`, which reads the scores from them.
-    - :func:`metrics`, the same scores over a frame in memory.
+    - :func:`metrics`, the same scores in one call, over a frame or a query.
 
     .. rubric:: Notes
 
@@ -2310,14 +2419,41 @@ def sums(
     subtraction has nothing left. Keeping the moments about the mean adds
     one term to :func:`merge_sums`, a multiply, and keeps the variance to
     rounding, as its Notes measure.
+
+    Given a query, the sums are those of the query's chunks of 100,000
+    rows, each reduced as a frame is and added as :func:`merge_sums` adds
+    them, so they hold what :func:`metrics`' Notes measure. While the query
+    gives one chunk, they are the frame's to the bit; over many, within the
+    merge's rounding.
     """
     spec_name, written = _spec_of("po.eval.sums", spec)
-    _check_columns(df, "po.eval.sums", group=group, weight=weight)
+    _check_columns(_probe(df), "po.eval.sums", group=group, weight=weight)
     binary = _binary(binary, written)
+    if isinstance(df, pl.LazyFrame):
+        jobs = [_job(df, written or spec_name, targets, group, weight, binary, "po.eval.sums")]
+        merged = _query_sums(df, jobs, group=group, weight=weight)[0]
+        if merged is not None:
+            return merged.select(*_keys(group), *SUM_FIELDS)
+        df = _probe(df)
     columns = [*_group_keys(group), *([] if weight is None else [weight])]
-    long = _scored(
-        _unpack(df, written or spec_name, targets=targets, columns=columns, who="po.eval.sums")
+    long = _weighed(
+        _scored(
+            _unpack(df, written or spec_name, targets=targets, columns=columns, who="po.eval.sums")
+        ),
+        weight,
     )
+    keys = _keys(group)
+    return long.group_by(keys).agg(_sum_aggs(binary, _no_hit(written))).sort(keys)
+
+
+def _keys(group: str | Iterable[str] | None) -> list[str]:
+    """The keys a score is read per: the slot, its target and ``group``'s."""
+    return ["slot", "target", *_group_keys(group)]
+
+
+def _weighed(long: pl.DataFrame, weight: str | None) -> pl.DataFrame:
+    """``long`` with each row's weight as ``__w``: ``weight``'s column, the
+    rows whose weight the bank cannot use left out, or 1.0 without one."""
     if weight is not None:
         # What the bank does with the same weight: it skips a row whose
         # weight it cannot use and refuses a negative one (review round 4,
@@ -2326,7 +2462,12 @@ def sums(
         long = long.filter(_usable(wexpr) & (wexpr >= 0.0))
     else:
         wexpr = pl.lit(1.0)
-    long = long.with_columns(wexpr.alias("__w"))
+    return long.with_columns(wexpr.alias("__w"))
+
+
+def _sum_aggs(binary: bool, no_hit: bool) -> list[pl.Expr]:
+    """:data:`SUM_FIELDS` as aggregations of a long form's ``y``, ``pred``
+    and weight ``__w``."""
     w, y, p = pl.col("__w"), pl.col("y"), pl.col("pred")
     tw = w.sum()
     my, mp = (w * y).sum() / tw, (w * p).sum() / tw
@@ -2336,25 +2477,134 @@ def sums(
         # A target or a prediction of zero has no sign, as in :func:`metrics`
         # and the bank (docs/PLAN.md task 195, S6); a fit with no sign to
         # hit signs no row at all, so :func:`from_sums` gives null (E1).
-        scored = pl.lit(False) if _no_hit(written) else (y != 0) & (p != 0)
+        scored = pl.lit(False) if no_hit else (y != 0) & (p != 0)
         hits, signed = w * ((y.sign() == p.sign()) & scored), w * scored
-    keys = ["slot", "target", *_group_keys(group)]
-    return (
-        long.group_by(keys)
-        .agg(
-            pl.len().cast(pl.Int64).alias("n"),
-            tw.alias("w"),
-            my.alias("mean_y"),
-            mp.alias("mean_pred"),
-            (w * (y - my) ** 2).sum().alias("m2_y"),
-            (w * (p - mp) ** 2).sum().alias("m2_pred"),
-            (w * (y - my) * (p - mp)).sum().alias("cov"),
-            (w * (y - p) ** 2).sum().alias("sse"),
-            hits.sum().alias("hits"),
-            signed.sum().alias("signed"),
-        )
-        .sort(keys)
-    )
+    return [
+        pl.len().cast(pl.Int64).alias("n"),
+        tw.alias("w"),
+        my.alias("mean_y"),
+        mp.alias("mean_pred"),
+        (w * (y - my) ** 2).sum().alias("m2_y"),
+        (w * (p - mp) ** 2).sum().alias("m2_pred"),
+        (w * (y - my) * (p - mp)).sum().alias("cov"),
+        (w * (y - p) ** 2).sum().alias("sse"),
+        hits.sum().alias("hits"),
+        signed.sum().alias("signed"),
+    ]
+
+
+#: The column a query's sums carry beside :data:`SUM_FIELDS` for
+#: :func:`metrics`' ``log_loss``: the sum of each row's log loss.
+_LOG_LOSS = "__po_log_loss"
+
+#: How many chunks' sums a query's reading keeps before it merges them into
+#: one, so what it holds is bounded by the keys, not by the query's length.
+_MERGE_EVERY = 64
+
+
+def _chunk_rows() -> int:
+    """The rows of a query read at once: a bank's default ``chunk_size``."""
+    return int(_native.default_chunk_size())
+
+
+def _log_loss_sum() -> pl.Expr:
+    """The sum of :func:`metrics`' log loss over a long form's rows, ``p``
+    clipped as :func:`_metric_exprs` clips it."""
+    p = pl.col("pred").clip(1e-15, 1.0 - 1e-15)
+    y = pl.col("y")
+    return (-(y * p.log() + (1.0 - y) * (1.0 - p).log())).sum().alias(_LOG_LOSS)
+
+
+class _Job:
+    """One spec's sums to read from a query: its output column, its slots
+    (each field, its target and the target's value), what to count as a hit,
+    and whether to keep the log loss."""
+
+    def __init__(
+        self,
+        spec_name: str,
+        slots: list[tuple[str, str, pl.Expr]],
+        keep: list[str],
+        binary: bool,
+        no_hit: bool,
+        log_loss: bool,
+    ) -> None:
+        self.spec_name, self.slots, self.keep = spec_name, slots, keep
+        self.binary, self.no_hit, self.log_loss = binary, no_hit, log_loss
+
+    def columns(self) -> set[str]:
+        """The query's columns this job reads."""
+        roots = {r for _, _, y in self.slots for r in y.meta.root_names()}
+        return {self.spec_name, *self.keep, *roots}
+
+
+def _job(
+    lf: pl.LazyFrame,
+    spec: str | dict,
+    targets: Sequence[str] | None,
+    group: str | Iterable[str] | None,
+    weight: str | None,
+    binary: bool,
+    who: str,
+    *,
+    log_loss: bool = False,
+) -> _Job:
+    """``spec``'s :class:`_Job` over ``lf``, checked against the query's
+    schema as :func:`_unpack` checks a frame, so it raises what a frame
+    raises, before the query runs."""
+    probe = _probe(lf)
+    spec_name, slots = _slots(probe, spec, targets, who)
+    keep = _kept(probe, [*_group_keys(group), *([] if weight is None else [weight])])
+    _, written = _spec_of(who, spec)
+    return _Job(spec_name, slots, keep, binary, _no_hit(written), log_loss and binary)
+
+
+def _query_sums(
+    lf: pl.LazyFrame,
+    jobs: list[_Job],
+    *,
+    group: str | Iterable[str] | None,
+    weight: str | None,
+) -> list[pl.DataFrame | None]:
+    """Each job's sums over every row of ``lf``, read in one pass a chunk at
+    a time: each chunk reduced to :data:`SUM_FIELDS` per key, and the
+    chunks' sums merged as :func:`merge_sums` merges them, every
+    :data:`_MERGE_EVERY` chunks and at the end. ``None`` for a job no row
+    of the query was scored for. What it holds is one chunk and the sums,
+    not the query's rows."""
+    keys = _keys(group)
+    needed = set().union(*(job.columns() for job in jobs))
+    plan = lf.select([c for c in lf.collect_schema() if c in needed])
+    extra = {id(job): [_LOG_LOSS] if job.log_loss else [] for job in jobs}
+    parts: dict[int, list[pl.DataFrame]] = {id(job): [] for job in jobs}
+    for chunk in plan.collect_batches(chunk_size=_chunk_rows(), maintain_order=True):
+        for job in jobs:
+            aggs = _sum_aggs(job.binary, job.no_hit)
+            if job.log_loss:
+                aggs.append(_log_loss_sum())
+            got = []
+            for slot, target, y in job.slots:
+                # The long form of one slot, grouped as :func:`sums` groups
+                # a frame's, so a query read as one chunk sums as it does.
+                long = chunk.select(
+                    *job.keep,
+                    pl.lit(slot).alias("slot"),
+                    pl.lit(target).alias("target"),
+                    pl.col(job.spec_name).struct.field(slot).alias("pred"),
+                    y.alias("y"),
+                )
+                long = _weighed(_scored(long), weight)
+                if not long.is_empty():
+                    got.append(long.group_by(keys).agg(aggs))
+            if not got:
+                continue
+            held = parts[id(job)]
+            held.append(pl.concat(got))
+            if len(held) >= _MERGE_EVERY:
+                held[:] = [_merge(held, keys, extra[id(job)])]
+    return [
+        _merge(parts[id(job)], keys, extra[id(job)]) if parts[id(job)] else None for job in jobs
+    ]
 
 
 def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
@@ -2448,6 +2698,12 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
                 f"{keys} and another {other}. Pass parts from po.eval.sums with the same group."
             )
             raise ValueError(msg)
+    return _merge(frames, keys)
+
+
+def _merge(frames: list[pl.DataFrame], keys: list[str], extra: Sequence[str] = ()) -> pl.DataFrame:
+    """:func:`merge_sums` of ``frames`` by ``keys``, each column of
+    ``extra`` added as ``n`` is."""
     w = pl.col("w").sum()
     mean_y = (pl.col("w") * pl.col("mean_y")).sum() / w
     mean_p = (pl.col("w") * pl.col("mean_pred")).sum() / w
@@ -2482,8 +2738,9 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
             pl.col("sse").sum(),
             pl.col("hits").sum(),
             pl.col("signed").sum(),
+            *(pl.col(c).sum() for c in extra),
         )
-        .select(*keys, *SUM_FIELDS)
+        .select(*keys, *SUM_FIELDS, *extra)
         .sort(keys)
     )
 
@@ -2525,7 +2782,7 @@ def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -
     number. Sums whose ``w`` is 0, from rows that all weigh 0, give null
     ``r2``, ``ic``, ``mse`` and ``rmse``, since no row counts. There is no
     ``log_loss`` column under ``binary``: :data:`SUM_FIELDS` carries no sum
-    for it, and :func:`metrics` computes it only over a frame in memory.
+    for it. :func:`metrics` gives it, over a frame or a query.
 
     .. rubric:: Raises
 
@@ -2555,17 +2812,24 @@ def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -
     .. rubric:: See also
 
     - :func:`sums` and :func:`merge_sums`, which make the sums.
-    - :func:`metrics`, the same scores over a frame in memory.
+    - :func:`metrics`, the same scores in one call, over a frame or a query.
     """
     _frame("po.eval.from_sums", s)
     keys = [c for c in s.columns if c not in SUM_FIELDS]
+    return _thin(_scores(s, keys, binary=binary), min_samples, keys)
+
+
+def _scores(s: pl.DataFrame, keys: list[str], *, binary: bool) -> pl.DataFrame:
+    """:func:`from_sums` before ``min_samples``, and :func:`metrics`'
+    ``log_loss`` after ``accuracy`` where ``s`` holds its sum."""
     # Rows that all weigh 0 have no weighted score: their means are 0/0, so
     # every sum but `sse` is NaN, and Polars orders NaN above 0, so each
     # score is null by `w` first, as `hit_rate` is by `signed` (task 359).
     weighed = pl.col("w") > 0
     mse = pl.when(weighed).then(pl.col("sse") / pl.col("w"))
     denom = (pl.col("m2_y") * pl.col("m2_pred")).sqrt()
-    out = s.select(
+    log_loss = [(pl.col(_LOG_LOSS) / pl.col("n")).alias("log_loss")] if _LOG_LOSS in s else []
+    return s.select(
         *keys,
         pl.col("n"),
         pl.when(weighed & (pl.col("m2_y") > 0))
@@ -2577,10 +2841,10 @@ def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -
         .then(pl.col("hits") / pl.col("signed"))
         .otherwise(None)
         .alias("accuracy" if binary else "hit_rate"),
+        *log_loss,
         mse.alias("mse"),
         mse.sqrt().alias("rmse"),
     ).sort(keys)
-    return _thin(out, min_samples, keys)
 
 
 def _paired_residuals(
