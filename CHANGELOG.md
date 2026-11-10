@@ -346,6 +346,68 @@ returns.
   span's notice is its own text and both are shown. Every other notice's
   text is unchanged, including under `session_gap="reset"`, which restarts
   the models in the same stream and repeats no notice (task 334).
+- `po.eval.diebold_mariano` and `po.eval.clark_west` with `half_life` sum
+  the long-run variance `S` about the weighted means (`ewm_mean` and `ewm_var`
+  at the squared weights) rather than expanding it about 0. A small spread
+  about a large level, or a key whose first differential lies far from the
+  rest, is now read to the digits its means hold (1e-8 relative at a level of
+  1e8; a spread of 1e-8 about 1), where it read noise or null before. The
+  statistic is null where `S` is zero but for rounding: on a key's first row,
+  on rows whose differentials have all been equal, and once a constant has run
+  long enough that the rows before it weigh less than its rounding. The cut is
+  derived from the rounding of each recursion at the weight its key has
+  gathered, and a `DataFrame` and a query apply it alike. Those rows read a
+  large, meaningless statistic before (about 1e8 to 1e12), on a `DataFrame`
+  while a query of the same rows read null. Without `half_life`, both tests
+  read null for a key whose differentials are all one value, where they read
+  1e16 or more. The per-row form is about twice as fast at a million rows with
+  `lags=2`.
+- `po.eval.diebold_mariano` and `po.eval.clark_west` with `half_life` now
+  apply `min_samples`: a key's statistic is null until it has `min_samples`
+  rows with a differential, 30 by default, so a key's first 29 rows read
+  null. On a key's first rows the statistic is a mean of a few rows over an
+  estimate of its own spread; on noise it passed 1.96 on 32% of streams at a
+  key's second row.
+- Both tests, in both forms, read a null statistic for a key with at most
+  `4 (lags + 1)` rows with a differential, whatever `min_samples` is. The
+  deviations from the mean sum to zero, so the Newey-West sum over a short key
+  shrinks toward zero as `lags` nears its rows; on 40 rows of noise, `lags=10`
+  rejected at 5% on 15% of streams. `n` and `mean` are kept.
+- Both tests without `group`, given a `LazyFrame`, return a target that no row
+  has a differential for as a row with `n = 0` and null statistics, as they do
+  for a frame. Before, they left it out.
+- The guidance for `lags` is rewritten: 0, the default, holds only where the
+  differentials are uncorrelated from row to row, which two specs that each
+  leave out something persistent break (a true null was rejected at 5% on
+  24-32% of such streams); for an `h`-step target give about `2 h`, not
+  `h - 1`, under the Bartlett weights. `seqtest`'s guarantee now states its
+  null, and the docs say the three tests ask different questions.
+- `grid_search`: each choice after the first is read from the test spans'
+  rows before it, the rows the rank reads, not from row 0. The first span is
+  where every model starts up, and a model whose first errors were large was
+  passed over on every span it was best on. The choice row changes on short
+  streams; the first choice still reads the first span.
+- `grid_search` refuses to rank slots that score different data: under
+  `scoring="loglik"`, specs whose `features` differ (score each set in its
+  own call); under `"mse"`, one target name that two specs read from
+  different columns (name each target after what it reads with `po.target`).
+  `chunk_size` is refused in `grid_search`'s own name.
+- The scores refuse, by name and with the rename to make, a `group` column
+  named like a column they make (`y`, `pred`, `slot`, `target`, a sum such as
+  `n` or `w`, a score's name, `window_start`, and `spec` in `compare_specs`),
+  and a `clock` or `weight` column named `y`, `pred`, `slot` or `target` (a
+  clock `window_start` too): `group="y"` keyed the scores by the target's
+  value, and `group="n"` raised Polars' `DuplicateError`. An `Object` key is
+  refused on a frame and a query alike, by every call that takes `group`.
+- `min_samples` must be a whole number of at least 0 (`None`, `True` and -5
+  scored every key; 20.5 thinned a key of 20 rows); a bare string `targets`
+  is one name.
+- Under `binary`, a scored target other than 0 or 1 is refused (a regression
+  target read a negative log loss).
+- `merge_sums` and `from_sums` refuse a frame that is not a `sums` frame (such
+  as the scores `metrics` returns) and parts whose key dtypes differ, by
+  name, where they raised Polars' errors; `compare_specs` refuses in its own
+  name.
 
 ### Fixed
 
@@ -470,6 +532,42 @@ returns.
   the `refresh_time` state (an older build refuses it rather than dropping
   the points, and it is 71 bytes larger per point held); every other state
   is byte-identical to before (task 321).
+- `po.eval.merge_sums`, `po.eval.sums(..., weight=)` over a query, and every
+  score over a query, no longer turn a key's moments to NaN, and its `r2` and
+  `ic` to NaN, where one part of the rows (a frame given to `merge_sums`, or a
+  query's chunk) holds that key only at weight 0: such a part adds its rows to
+  `n` and nothing else, and a key whose weight is in one part keeps that
+  part's sums exactly.
+- A target or a prediction that never varies reads the null `r2` and `ic` the
+  docs promise, on a frame, from sums, weighted and merged, whatever the
+  constant. The computed mean of a constant such as 0.35 is not the constant,
+  so its spread was rounding: `r2` about -1e32, and an `ic` such as 0.14 for
+  an intercept-only fit (one key in ten unweighted, a third weighted, three in
+  four merged). A value every row that weighs shares is now its own mean, and
+  parts whose means are one value pool to it.
+- `ic` no longer reads 0.0, or null, where the product of the target's and
+  the prediction's second moments overflows or underflows, at scales inside
+  the input bound of 1e100 (from about 1e78, and 1e-90); the roots are taken
+  first. It is clipped to [-1, 1], where two rows that agree read
+  1.0000000000000002.
+- A `Float32` target or prediction is scored in double precision by
+  `metrics`, `window_metrics` and `compare_specs` on a frame, as it was from
+  sums and over a query (1.7e-8 to 4.2e-7 relative before).
+- A frame's `ic` is read from the same centered sums as a query's, not from
+  Polars' `corr`, which lost the target's level over its spread times the
+  rounding (4e-9 relative at a level of 1e9, against 6e-15). A frame's scores
+  are now a one-chunk query's to the bit in every column.
+- `window_metrics` leaves a row whose float clock is NaN or infinite out of
+  every window, as it leaves a null clock; such rows were scored as windows
+  labelled NaN, inf and -inf.
+- `window_metrics` on an `Int8`, `Int16` or `Int32` clock no longer wraps a
+  window's left edge past the dtype (`every=100` over an `Int8` clock labelled
+  the window from -200 as 56), and refuses an edge the dtype cannot hold, or
+  an `every` past it, by name, where it raised Polars' cast error.
+- `po.eval.diebold_mariano` and `po.eval.clark_west` refuse by name a
+  `half_life` so long that `0.5 ** (1 / half_life)` is 1.0 in a double (from
+  about 1.25e16 rows), on a frame and a query. Before, Polars raised its own
+  `alpha` error, which does not name the parameter.
 
 ### Performance
 
@@ -609,6 +707,10 @@ returns.
   before it: a call with 128 specs made about 24,770 allocations to join its
   columns; a call's cost now grows in proportion to its specs. The output is
   unchanged, column for column (task 326).
+- `po.eval.metrics`, `window_metrics`, `compare_specs` and `sums` read a frame
+  a slot at a time, as a query's chunk is read: `metrics` of a 20-slot,
+  million-row frame held 345 MiB where it held 2,317, and took 580 ms where it
+  took 651 (608 against 724 by a key of four values).
 
 ### Tests and documents
 
