@@ -571,6 +571,11 @@ returns.
 
 ### Performance
 
+- `hmm` at 20 features and two states runs about 2% slower than in 1.4.0
+  (−2.1% and −2.0% in two code layouts, seven runs each within 1.5%);
+  `hmm` at four features is level. The likely cause is the packed
+  co-moment triangle: `hmm`'s full covariance lays it into a square for its
+  factorization each row. It is to be fixed in a later release.
 - A windowed model's snapshots are written into and read back from their
   ring with fewer instructions: a snapshot's clock stamp and decay products
   move as one block of words, and the co-moment triangle's side is no

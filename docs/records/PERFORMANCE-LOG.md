@@ -5317,8 +5317,9 @@ another; an earlier set on 2026-11-09, on a main of that day, read
 −1.8% to −2.4%. `hmm` at four features is level (+0.3%, +0.9%). The
 packed co-moment triangle is the likely cause: above 12 features its
 rank-one update walks packed rows, and `hmm`'s full covariance lays the
-triangle into a square for its factorization each row. Not yet declared
-in the CHANGELOG. `deco`'s blocks read −1.1% and −1.8%, and −1.9% in the
+triangle into a square for its factorization each row. Declared in the
+CHANGELOG's 1.5.0 *Performance* section on the user's word (2026-11-10), and
+queued to fix (PLAN task 387). `deco`'s blocks read −1.1% and −1.8%, and −1.9% in the
 second set, but within the 1.6-2.1% spread of the default layout's seven
 runs; `ew_class`'s full covariance −1.4% and −0.6%, and `micro` −1.1% and
 −1.0%, read inside their scatter.
