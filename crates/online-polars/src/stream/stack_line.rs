@@ -15,9 +15,17 @@
 /// product (`matmul_imp`, 3.8 times its samples), which read the views its
 /// caller had just stored on the stack, now 32 bytes on. A local of 32
 /// bytes more gave the speed back, as this does at any frame size.
+///
+/// Only on aarch64. On x86-64 the same frame growth cost nothing measurable
+/// (the 20-feature `ewridge` rows level at every commit, both layouts), and
+/// the aligned frame there takes a register for the realignment: 28 more
+/// instructions a row in the bank, up to 1.8% of a bank cell, for nothing
+/// gained. Elsewhere it is a zero-sized value whose calls do nothing.
+#[cfg(target_arch = "aarch64")]
 #[repr(align(64))]
 pub(super) struct StackLine(std::mem::MaybeUninit<[u8; 64]>);
 
+#[cfg(target_arch = "aarch64")]
 impl StackLine {
     #[inline(always)]
     pub(super) fn new() -> Self {
@@ -30,4 +38,19 @@ impl StackLine {
     pub(super) fn keep(&self) {
         std::hint::black_box(&self.0);
     }
+}
+
+/// The fallback off aarch64: nothing on the stack, nothing to keep.
+#[cfg(not(target_arch = "aarch64"))]
+pub(super) struct StackLine;
+
+#[cfg(not(target_arch = "aarch64"))]
+impl StackLine {
+    #[inline(always)]
+    pub(super) fn new() -> Self {
+        Self
+    }
+
+    #[inline(always)]
+    pub(super) fn keep(&self) {}
 }
