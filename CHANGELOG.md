@@ -1004,6 +1004,15 @@ returns.
   pages of the file it has read count there. The most memory the process
   held was the same on 1.37.0 and 2.0.0, 316 and 406 MiB at 1M and 4M rows
   against 318 and 405 (task 376).
+- The example data has its own page, `docs/EXAMPLE-DATA.md`: the code that
+  builds `df`, `today` and `trades` and writes their parquet files, what each
+  frame is for, and the answers planted in `df`. The README now shows only
+  code a reader runs on the README itself, and its *Install* section points
+  to the page. Every guide and docstring that read the example data links
+  the page. The tests that hold each example to saying where its data comes
+  from read the page, and assert how many blocks they check.
+- The highlights page's code says in comments what each dense line computes,
+  what each column and field holds, and why a setting has its value.
 
 ## [1.4.0] — 2026-11-03
 
