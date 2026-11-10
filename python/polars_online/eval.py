@@ -47,7 +47,10 @@ chunk as :func:`merge_sums` adds them. The tests of two specs keep sums of
 their own, and the last rows of each key, which the next chunk's first rows
 pair with. So scoring the file a bank's output was written to,
 ``pl.scan_parquet("out.parquet")``, holds one chunk and the sums, not the
-file. A call whose result has a row for each row of the output returns a
+file, and Polars what it reads of the file ahead of them, which
+`Cut what Polars reads ahead
+<https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+bounds. A call whose result has a row for each row of the output returns a
 query of that result, as Polars' own calls on a query return a query:
 :func:`unpack`, :func:`seqtest`, and :func:`diebold_mariano` and
 :func:`clark_west` with ``half_life``. The results are the frame's, as each
@@ -78,7 +81,13 @@ target. A slot whose target column cannot be found raises a
 :class:`~polars_online.ColumnNotFoundError` when ``spec`` is the spec dict,
 and ``ValueError`` when it is the spec's name alone. A ``group``, ``clock`` or
 ``weight`` column the frame does not have raises a
-:class:`~polars_online.ColumnNotFoundError` too.
+:class:`~polars_online.ColumnNotFoundError` too. A ``group`` column of the
+scores named like a column they make (:data:`RESERVED`, :data:`SUM_FIELDS`,
+a score's name or ``window_start``), and a ``clock`` or ``weight`` column
+named like one of :data:`RESERVED`, raise ``ValueError``, since the column
+made would take its place: rename it. An ``Object`` ``group`` column raises
+:class:`~polars_online.WrongTypeError`, since a query's chunks cannot be
+matched by it: cast it to ``String`` or ``Categorical``.
 
 ``group`` names one key column, as a spec's ``group`` does, or a list of
 them, and ``None``, the default, is no key. ``min_samples`` is the fewest
@@ -366,7 +375,8 @@ def unpack(
         column. So only the dict can say what either read.
     ``targets``
         The columns the name-based rule may read as targets; every column
-        of ``df`` by default. Not read when ``spec`` is the dict.
+        of ``df`` by default. A bare string is one name, as ``group`` takes
+        one. Not read when ``spec`` is the dict.
 
     .. rubric:: Returns
 
@@ -393,8 +403,12 @@ def unpack(
     once per slot. Write the bank's output to a file first, with
     ``sink_parquet``, and unpack a scan of the file. Written to a file with
     ``sink_parquet``, the long form of a 20-slot output held 123 MiB at a
-    million rows and 131 MiB at four million, measured as :func:`metrics`'
-    Notes say.
+    million rows, 133 MiB at four million and 172 MiB at sixteen million
+    under :func:`metrics`' bounded settings, and 656, 1,137
+    and 1,469 MiB under Polars' defaults, which read the scan ahead of the
+    writing: `Cut what Polars reads ahead
+    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+    bounds that.
 
     .. rubric:: Raises
 
@@ -566,6 +580,10 @@ def _target_of(who: str, slot: str, df: pl.DataFrame, targets: Sequence[str] | N
     """``pred_<target>[__combo][@hN]`` -> ``<target>``. Longest match wins, so
     targets whose names are prefixes of each other still resolve."""
     body = slot[len("pred_") :]
+    if isinstance(targets, str):
+        # One name, as `group` takes one: iterated, "ret" was the targets
+        # "r", "e" and "t" (task 382a, A14).
+        targets = [targets]
     candidates = targets if targets is not None else list(df.columns)
     matches = [
         t for t in candidates if body == t or body.startswith(t + "__") or body.startswith(t + "@")
@@ -596,12 +614,40 @@ def _group_keys(group: str | Iterable[str] | None) -> list[str]:
     return [group] if isinstance(group, str) else list(group)
 
 
-def _check_columns(df: pl.DataFrame, who: str, **roles: str | Iterable[str] | None) -> None:
+#: The names of the columns the scores make, beside :data:`RESERVED`'s:
+#: :data:`SUM_FIELDS`, each score's name, and a window's ``window_start``.
+#: A key, clock or weight column of one of these names collides with the
+#: column made (task 382a, A6 and A11).
+_SCORE_NAMES = (
+    "r2", "ic", "hit_rate", "mse", "rmse", "brier_skill", "accuracy", "log_loss", "window_start",
+)  # fmt: skip
+_PRODUCED = (*RESERVED, *SUM_FIELDS, *_SCORE_NAMES)
+
+#: The names a clock or a weight column may not take: :data:`RESERVED`,
+#: which :func:`unpack` puts in its place, and for a clock the window's
+#: ``window_start``, which a time window joins beside it.
+_TAKEN_BY_LONG = {"clock": (*RESERVED, "window_start"), "weight": RESERVED}
+
+
+def _check_columns(
+    df: pl.DataFrame, who: str, *, produced: Iterable[str] = (), **roles: str | Iterable[str] | None
+) -> None:
     """Each column a score reads beside a spec's output, by its role
     (``group``, ``clock``, ``weight``), checked to be in ``df``: a missing
     one is :class:`~polars_online.ColumnNotFoundError`, a ``ValueError``
-    too, as a bank's refusal of a missing column is."""
+    too, as a bank's refusal of a missing column is. A column named in
+    ``produced``, a name the call's result or its sums give a column of
+    their own, is refused with ``ValueError``: named ``y`` or ``pred`` it
+    was replaced by the unpacked target or prediction, so ``group="y"``
+    keyed the scores by the target's value, and named ``n`` or ``w`` it
+    raised Polars' ``DuplicateError``. An ``Object`` key is refused with
+    :class:`~polars_online.WrongTypeError`: it grouped a frame and failed
+    over a query on Polars' internals (task 382a, A6, A11 and C9)."""
+    produced = set(produced)
     for role, value in roles.items():
+        # A key is a column of the result; a clock or a weight is read beside
+        # the unpacked long form only, so only its own names collide there.
+        taken = produced if role == "group" or not produced else set(_TAKEN_BY_LONG[role])
         for column in _group_keys(value):
             if column not in df.schema:
                 msg = (
@@ -609,6 +655,47 @@ def _check_columns(df: pl.DataFrame, who: str, **roles: str | Iterable[str] | No
                     f"{df.columns}. Name a column of the frame as {role}."
                 )
                 raise ColumnNotFoundError(msg)
+            if column in taken:
+                msg = (
+                    f"{who}: {role} column {column!r} is named like a column the scores make "
+                    f"({', '.join(sorted(taken))}), and would be confused with it. Rename the "
+                    f"column, with df.rename({{{column!r}: ...}}), and pass the new name."
+                )
+                raise ValueError(msg)
+            if role == "group" and isinstance(df.schema[column], pl.Object):
+                msg = (
+                    f"{who}: group column {column!r} is an Object column, which Polars can group "
+                    "a frame by but not join or deduplicate a query's chunks by. Cast it to "
+                    "String or Categorical."
+                )
+                raise WrongTypeError(msg)
+
+
+def _check_min_samples(who: str, min_samples: object) -> None:
+    """``min_samples`` a whole number of at least 0, numpy's integers
+    included but not a bool: ``None``, ``True`` and -5 scored every key,
+    20.5 thinned a key of 20 rows, and "30" raised Polars' error on
+    comparing a string with a number (task 382a, A14)."""
+    if isinstance(min_samples, bool) or not isinstance(min_samples, numbers.Integral):
+        msg = (
+            f"{who}: min_samples must be a whole number of rows, but it is {min_samples!r}. "
+            "Give a whole number, such as the default 30."
+        )
+        raise WrongTypeError(msg)
+    if min_samples < 0:
+        msg = (
+            f"{who}: min_samples must be a whole number of at least 0, but it is {min_samples}. "
+            "Give 0 to score every key, or more."
+        )
+        raise ValueError(msg)
+
+
+def _int_range(dtype: pl.DataType) -> tuple[int, int]:
+    """The least and the greatest value of an integer ``dtype``."""
+    bits = int(re.sub(r"\D", "", str(dtype)))
+    if str(dtype).startswith("U"):
+        return 0, 2**bits - 1
+    return -(2 ** (bits - 1)), 2 ** (bits - 1) - 1
 
 
 def _usable(value: pl.Expr) -> pl.Expr:
@@ -623,10 +710,14 @@ def _scored(long: pl.DataFrame) -> pl.DataFrame:
     not past its input bound of 1e100. The bank reads such a target as
     missing and still predicts its row. Dropping nulls alone would keep the
     row, make ``r2``, ``ic`` and ``mse`` NaN, and quietly lower
-    ``hit_rate``."""
-    return long.filter(
-        _usable(pl.col("pred").cast(pl.Float64)) & _usable(pl.col("y").cast(pl.Float64))
-    )
+    ``hit_rate``.
+
+    ``pred`` and ``y`` come back as ``Float64``, so every score is computed
+    in doubles: a bank passes a ``Float32`` target through as it is, and its
+    deviations were squared in single precision on a frame, 2e-8 apart from
+    the same scores of a query (task 382a, A4)."""
+    long = long.with_columns(pl.col("pred").cast(pl.Float64), pl.col("y").cast(pl.Float64))
+    return long.filter(_usable(pl.col("pred")) & _usable(pl.col("y")))
 
 
 def _no_hit(spec: dict | None) -> bool:
@@ -640,66 +731,20 @@ def _no_hit(spec: dict | None) -> bool:
     return model.get("type") == "sgd" and model.get("loss") == "poisson"
 
 
-def _metric_exprs(*, binary: bool = False, hit: bool = True) -> list[pl.Expr]:
-    resid = pl.col("y") - pl.col("pred")
-    # The centred sums, as :func:`sums` keeps them: a metric is null where
-    # one it divides by is 0, as :func:`from_sums` gives it, where this gave
-    # -inf and NaN (review 2026-10-05, YB9).
-    m2_y = (pl.col("y") - pl.col("y").mean()).pow(2).sum()
-    m2_pred = (pl.col("pred") - pl.col("pred").mean()).pow(2).sum()
-    exprs = [
-        # Every count an Int64, as in every frame of the library (task 244).
-        pl.len().cast(pl.Int64).alias("n"),
-        # Out-of-sample R^2 against the realized mean of y in the window. When
-        # `binary` (`pred` a probability, `y` a 0/1 label) the same formula
-        # is the Brier skill score, and is named so (task 244, M-19).
-        pl.when(m2_y > 0)
-        .then(1.0 - resid.pow(2).sum() / m2_y)
-        .alias("brier_skill" if binary else "r2"),
-        # Correlation of prediction with target -- the point-biserial
-        # correlation when `binary`, again the same formula.
-        pl.when(m2_y * m2_pred > 0).then(pl.corr("pred", "y")).alias("ic"),
-    ]
-    if binary:
-        # Accuracy at a 0.5 threshold. Every row scores: 0 is one of the two
-        # classes here, not the sign test's excluded case, and `pred` and `y`
-        # are both positive by construction, so the sign test below always
-        # agrees and is not a hit rate at all on this kind of fit (task 76
-        # found it reading exactly 1.0 on a fit that had learned nothing).
-        exprs.append(
-            (((pl.col("pred") > 0.5) == (pl.col("y") > 0.5)).sum() / pl.len()).alias("accuracy")
+def _check_labels(long: pl.DataFrame, who: str) -> None:
+    """Under ``binary``, refuse a scored row whose target is not 0 or 1: a
+    regression target scored as a classifier's read a negative log loss
+    and an accuracy with nothing to say why (task 382a, A15)."""
+    bad = long.filter(~pl.col("y").is_in([0.0, 1.0])).head(1)
+    if bad.height:
+        row = bad.row(0, named=True)
+        msg = (
+            f"{who}: under binary the target is a 0/1 label, but slot {row['slot']!r} reads "
+            f"target {row['target']!r}, which is {row['y']} on a scored row, where the log loss, "
+            "the accuracy and the Brier skill score have no meaning. Pass binary=False to "
+            "score it as a regression, or pass the 0/1 target column."
         )
-        # Log loss: -(y*ln(p) + (1-y)*ln(1-p)), mean over the window. Lives
-        # here, over a collected frame, rather than in the streaming
-        # `emit_metrics` -- an EW accumulator would put a `ln` result into
-        # model state, which `docs/PLAN.md` §11a's B4 rule forbids (glibc's
-        # last bit is not Apple's, and that difference broke a frozen state
-        # fixture on Linux alone). Clipped so a confident, correct prediction
-        # is a strong negative number rather than -inf.
-        p = pl.col("pred").clip(1e-15, 1.0 - 1e-15)
-        exprs.append(
-            (-(pl.col("y") * p.log() + (1.0 - pl.col("y")) * (1.0 - p).log()))
-            .mean()
-            .alias("log_loss")
-        )
-    elif not hit:
-        # A fit with no sign to hit (`_no_hit`): null, as the bank nulls it.
-        exprs.append(pl.lit(None, dtype=pl.Float64).alias("hit_rate"))
-    else:
-        # Fraction of rows where the sign of pred matches the sign of y
-        # (rows with y == 0 or pred == 0 excluded: neither up nor down, not a
-        # class), and null where no row has a sign. A prediction of exactly
-        # zero is left out as the bank leaves it out (docs/PLAN.md task 195,
-        # S6): polars' `sign(0)` is 0, a miss here, where the bank's
-        # `signum(+0.0)` was 1, a hit.
-        y, pred = pl.col("y"), pl.col("pred")
-        scored = (y != 0) & (pred != 0)
-        signed = scored.sum()
-        hits = ((pred.sign() == y.sign()) & scored).sum()
-        exprs.append(pl.when(signed > 0).then(hits.truediv(signed)).alias("hit_rate"))
-    exprs.append(resid.pow(2).mean().alias("mse"))
-    exprs.append(resid.pow(2).mean().sqrt().alias("rmse"))
-    return exprs
+        raise ValueError(msg)
 
 
 def _thin(out: pl.DataFrame, min_samples: int, keep: Iterable[str]) -> pl.DataFrame:
@@ -761,13 +806,15 @@ def metrics(
         a 0/1 target, the output of an ``sgd`` or ``ftrl`` fit with
         ``loss="logistic"``. ``None``, the default, reads it from the spec
         dict's loss, and is off given the name alone, since nothing here
-        reads the target's values to decide.
+        reads the target's values to decide. A target other than 0 or 1 on
+        a scored row is refused under it.
 
     .. rubric:: Returns
 
     A ``DataFrame`` with one row per ``slot``, ``target`` and ``group``
     key, sorted by them, given a frame or a query alike, and these columns
-    after the keys:
+    after the keys. A slot or key with no scored row has no row, such as a
+    slot whose predictions were all withheld by a warm-up.
 
     ``n``
         The rows scored.
@@ -808,11 +855,26 @@ def metrics(
 
     .. rubric:: Raises
 
-    Whatever :func:`unpack` raises for ``df`` and ``spec``, and
-    :class:`~polars_online.ColumnNotFoundError`, both Polars'
-    ``ColumnNotFoundError`` and a ``ValueError``, for a ``group`` column
-    ``df`` does not have. A query is refused as its result would be, with
-    the same message, before it runs.
+    Whatever :func:`unpack` raises for ``df`` and ``spec``, and:
+
+    :class:`~polars_online.ColumnNotFoundError`
+        ``df`` does not have a ``group`` column. It is both Polars'
+        ``ColumnNotFoundError`` and a ``ValueError``.
+    ``ValueError``
+        A ``group`` column is named like a column the scores make, in
+        :data:`RESERVED` or :data:`SUM_FIELDS`, a score's name, or
+        ``window_start``: named ``y``, it would key the scores by the
+        target's value. Rename it. Or, under ``binary``, a scored row's
+        target is not 0 or 1, which a query raises from the chunk that
+        holds it. Or ``min_samples`` is below 0.
+    :class:`~polars_online.WrongTypeError`
+        A ``group`` column is an ``Object``, which a query's chunks cannot
+        be matched by: cast it to ``String`` or ``Categorical``. Or
+        ``min_samples`` is not a whole number. It is both a ``TypeError``
+        and a ``ValueError``.
+
+    A query is refused as its result would be, with the same message,
+    before it runs.
 
     .. rubric:: Examples
 
@@ -846,25 +908,45 @@ def metrics(
     .. rubric:: Notes
 
     **Given a query, this holds one chunk of it and a few sums per key, not
-    its rows.** It runs the query once and reads its result 100,000 rows
-    at a time, the chunk a bank reads by default. Each chunk is reduced to
+    its rows, and Polars holds what it has read of the query ahead of
+    them.** It runs the query once and reads its result 100,000 rows at a
+    time, the chunk a bank reads by default. Each chunk is reduced to
     :func:`sums`' ten numbers per slot, target and key, with the sum of the
     log loss under ``binary``, and the chunks' sums are added as
-    :func:`merge_sums` adds them. Measured on macOS (an M4 Pro, py-polars
-    2.0.0, four threads, the allocator told to return freed pages at once)
-    as the most memory the process held, scoring a scan of a 20-slot output
-    by a key of four values held 195 MiB at a million rows, 200 MiB at
-    four million and 203 MiB at sixteen million, 43 MiB of each Python and
-    Polars before the call. The same scores of the collected frame held
-    2,193 MiB at a million rows.
+    :func:`merge_sums` adds them. A scan of a parquet file reads blocks of
+    it, its row groups, ahead of a slower consumer, as many as Polars'
+    thread count sizes, and under Polars' defaults that read-ahead is most
+    of what the process holds: `Cut what Polars reads ahead
+    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+    bounds it. Measured on macOS (an M4 Pro, py-polars 2.0.0) as the most
+    memory the process held, 47 MiB of it Python and Polars before the
+    call, scoring a scan of a 20-slot output written in row groups of
+    100,000 rows, by a key of four values: under Polars' defaults, 494 MiB
+    at a million rows, 1,012 MiB at four million and 1,020 MiB at sixteen
+    million; with four threads (``POLARS_MAX_THREADS=4``), the read-ahead
+    cut to one row group (``POLARS_ROW_GROUP_PREFETCH_SIZE=1``) and the
+    allocator told to return freed pages at once
+    (``_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0``), the bounded
+    settings, 205, 208 and 211 MiB. The same scores of the collected frame,
+    read a slot at a time, held 345 MiB at a million rows under the bounded
+    settings, the frame's 168 MiB among them.
 
-    The scores of a query are the frame's. While the query gives one chunk,
-    every column is the frame's to the bit but ``ic``, which is read from
-    the sums as the co-moment over the root of the two moments, where a
-    frame's is Polars' ``corr``, and the two round apart. Over many chunks
-    each score is the frame's within the rounding of the merge, which
-    :func:`merge_sums`' Notes measure. They agree within 1e-9 relative at
-    the least, and within 5e-11 for a target about 1e8 with unit spread.
+    The scores of a query are the frame's. A frame is scored from the same
+    centered sums as a chunk, so while the query gives one chunk every
+    column is the frame's to the bit. Over many chunks each score is the
+    frame's within the rounding of the merge. Each chunk's mean is rounded
+    to a double, and that rounding enters the moments about the pooled
+    mean at first order: about ``eps * |mean| / (spread * sqrt(N))``
+    relative in a key's ``m2_y``, ``m2_pred`` and ``cov``, with ``eps``
+    2.2e-16 and ``N`` the key's rows, whatever the number or size of the
+    chunks. ``r2`` and ``ic`` then differ from the frame's by about that
+    much, not relative to themselves, so a score near 0 keeps it in
+    absolute terms (``r2`` by ``1 - r2`` times it). Measured against exact
+    rational sums, keys of unit spread over 1,000 to 100,000 rows read in
+    parts of 25 rows to a tenth of the key were within 1.4 times that
+    figure: 1e-13 at a level of 1e4 over 1,000 rows, 3e-10 at a level of
+    1e8 over 10,000 rows. Score a target that sits far above its spread,
+    such as a price, as a difference or a return.
 
     A row is scored only where both the prediction and the target are
     values the bank would learn from: not null, NaN or infinite, and within
@@ -879,24 +961,38 @@ def metrics(
     Given the name alone, the loss of a Poisson ``sgd`` fit cannot be
     known, and the sign test reads 1.0.
     """
-    spec_name, written = _spec_of("po.eval.metrics", spec)
-    _check_columns(_probe(df), "po.eval.metrics", group=group)
+    return _metrics(
+        df, spec, group=group, targets=targets, min_samples=min_samples, binary=binary,
+        who="po.eval.metrics",
+    )  # fmt: skip
+
+
+def _metrics(
+    df: pl.DataFrame | pl.LazyFrame,
+    spec: str | dict,
+    *,
+    group: str | Iterable[str] | None,
+    targets: Sequence[str] | None,
+    min_samples: int,
+    binary: bool | None,
+    who: str,
+) -> pl.DataFrame:
+    """:func:`metrics`, refusing in the name of ``who``: the call made,
+    :func:`compare_specs`' own where it scores each of its specs."""
+    spec_name, written = _spec_of(who, spec)
+    _check_min_samples(who, min_samples)
+    _check_columns(_probe(df), who, group=group, produced=_PRODUCED)
     binary = _binary(binary, written)
     keys = _keys(group)
     if isinstance(df, pl.LazyFrame):
-        job = _job(
-            df, written or spec_name, targets, group, None, binary, "po.eval.metrics", log_loss=True
-        )
+        job = _job(df, written or spec_name, targets, group, None, binary, who, log_loss=True)
         merged = _query_sums(df, [job], keys=keys, weight=None)[0]
         if merged is not None:
             return _thin(_scores(merged, keys, binary=binary), min_samples, keys)
         df = _probe(df)
-    long = _scored(
-        _unpack(df, written or spec_name, targets=targets, columns=keys, who="po.eval.metrics")
-    )
-    exprs = _metric_exprs(binary=binary, hit=not _no_hit(written))
-    out = long.group_by(keys).agg(exprs).sort(keys)
-    return _thin(out, min_samples, keys)
+    job = _job(df, written or spec_name, targets, group, None, binary, who, log_loss=True)
+    s = _frame_sums(df, job, keys, None)
+    return _thin(_scores(s, keys, binary=binary), min_samples, keys)
 
 
 #: Polars' duration text, every unit it takes: ``mo``, ``q`` and ``y`` are
@@ -998,8 +1094,9 @@ def window_metrics(
         The column whose values place each row in a window: a number, a
         ``Datetime``, a ``Date`` or a ``Duration``. A row whose clock is
         null is in no window and is not scored, as Polars leaves a null key
-        out of a group. A ``Time`` is refused, since it starts again at
-        midnight.
+        out of a group, and so is a row whose float clock is NaN or
+        infinite, which no window holds. A ``Time`` is refused, since it
+        starts again at midnight.
     ``every``
         The length of each window, in the clock's units. On a numeric clock
         it is a number, finite and above 0, and a whole number on an
@@ -1027,7 +1124,13 @@ def window_metrics(
     ``ValueError``
         ``every`` is not finite and above 0, is of the wrong kind for the
         clock, is not a whole number on an integer clock, or is a month, a
-        quarter or a year on a ``Duration`` clock.
+        quarter or a year on a ``Duration`` clock. Or ``every``, or the
+        left edge of a window, is past what an integer clock's dtype holds,
+        as a window of 100 that holds -120 starts at -200, past ``Int8``:
+        cast the clock to ``Int64``. Or the ``clock`` column is named like
+        a column of :func:`unpack`'s long form (:data:`RESERVED`) or
+        ``window_start``. And what :func:`metrics` raises for ``group``,
+        ``min_samples`` and ``binary``.
     :class:`~polars_online.WrongTypeError`
         The ``clock`` column is neither numeric nor temporal, or is a
         ``Time``, which starts again at midnight. It is both a ``TypeError``
@@ -1078,8 +1181,13 @@ def window_metrics(
     same rows:
 
     - On a numeric clock, a window starts at
-      ``floor(clock / every) * every``, as Polars' integer index does. A float clock, which Polars
-      does not window, is windowed the same way.
+      ``floor(clock / every) * every``, as Polars' integer index does. A
+      float clock, which Polars does not window, is windowed the same way,
+      in doubles: a label can read a little above the decimal edge it
+      stands for, ``0.30000000000000004`` for ``0.3``, and a clock on a
+      decimal edge can, rarely, fall in the window before it (7 of 2,000
+      rows on a grid of 0.001 with ``every=0.01``). Give the clock in whole
+      units, as an integer, where the edges must be exact.
     - On a ``Datetime`` or ``Date`` clock, ``every`` is read as Polars
       reads a duration. Nanoseconds to hours (``"ns"`` to ``"h"``) are
       elapsed time: across a change of a time zone's offset, a ``"5h"``
@@ -1097,11 +1205,14 @@ def window_metrics(
 
     **Given a query, this holds one chunk of it and the sums of each window
     it has seen,** ten numbers per slot, key and window, read as
-    :func:`metrics` reads a query. Scoring a scan of a two-spec output by
-    the day and by a key of four values held 112 MiB at a million rows, 112
-    MiB at four million and 115 MiB at sixteen million, measured as
-    :func:`metrics`' Notes say. The scores are the frame's as
-    :func:`metrics`' are.
+    :func:`metrics` reads a query, and Polars holds what it has read ahead
+    of them, which `Cut what Polars reads ahead
+    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+    bounds. Scoring a scan of a two-spec output by the day and by a key of
+    four values held 102 MiB at a million rows, 108 MiB at four million and
+    110 MiB at sixteen million under :func:`metrics`' bounded
+    settings, and 236, 416 and 715 MiB under Polars'
+    defaults. The scores are the frame's as :func:`metrics`' are.
 
     Polars starts the windows of a time-zoned clock whose ``every`` is a
     fixed length that does not divide a day, such as ``"90m"``, from a
@@ -1113,7 +1224,9 @@ def window_metrics(
     with ``ValueError``: sort the query by the clock within each key, or
     pass the collected frame.
     """
-    spec_name, written = _spec_of("po.eval.window_metrics", spec)
+    who = "po.eval.window_metrics"
+    spec_name, written = _spec_of(who, spec)
+    _check_min_samples(who, min_samples)
     probe = _probe(df)
     dtype = probe.schema.get(clock)
     if dtype is None:
@@ -1123,7 +1236,7 @@ def window_metrics(
             f"columns are {probe.columns}. Name a column of the frame as clock."
         )
         raise ColumnNotFoundError(msg)
-    _check_columns(probe, "po.eval.window_metrics", group=group)
+    _check_columns(probe, who, group=group, clock=clock, produced=_PRODUCED)
     # The clock's dtype before `every` is read against it: a String clock was
     # refused for the window, not for itself (task 352).
     if not (dtype.is_numeric() or dtype.is_temporal()):
@@ -1133,6 +1246,7 @@ def window_metrics(
         )
         raise WrongTypeError(msg)
     ns: int | None
+    narrow: pl.DataType | None = None
     if isinstance(dtype, (pl.Datetime, pl.Date)) and isinstance(every, str) and _is_calendar(every):
         ns = _calendar_every(every, dtype, clock)
     else:
@@ -1164,7 +1278,24 @@ def window_metrics(
             )
             raise ValueError(msg)
         whole = int(every)  # type: ignore[arg-type]
-        start = (pl.col(clock) // whole * whole).cast(dtype)
+        low, high = _int_range(dtype)
+        if whole > high:
+            # Polars' own cast error, from the supertype the literal took
+            # (task 382a, A13).
+            msg = (
+                f"po.eval.window_metrics: every is {every!r}, which clock column {clock!r}, "
+                f"{dtype}, cannot hold, so no window's edge but 0 is a value of the column. Cast "
+                "the clock to Int64, or give a smaller every."
+            )
+            raise ValueError(msg)
+        if -(2**63) < low < 0:
+            # In Int64, and back to the clock's dtype only where the edge
+            # fits: the window of 100 that holds -120 starts at -200, which
+            # Int8 wrapped to 56 (task 382a, A13).
+            start = pl.col(clock).cast(pl.Int64) // whole * whole
+            narrow = dtype
+        else:
+            start = (pl.col(clock) // whole * whole).cast(dtype)
     elif ns is None:
         start = (pl.col(clock) / every).floor() * every
     elif isinstance(dtype, pl.Duration):
@@ -1177,27 +1308,18 @@ def window_metrics(
     binary = _binary(binary, written)
     every_text = None if start is not None else _polars_every(every, ns)
     if isinstance(df, pl.LazyFrame):
-        who = "po.eval.window_metrics"
         job = _job(df, written or spec_name, targets, group, None, binary, who, log_loss=True,
                    also=[clock])  # fmt: skip
-        windows = _windowing(clock, start, every_text, keys[:-1], every)
+        windows = _windowing(clock, start, every_text, keys[:-1], every, narrow)
         merged = _query_sums(df, [job], keys=keys, weight=None, prepare=windows)[0]
         if merged is not None:
             return _thin(_scores(merged, keys, binary=binary), min_samples, keys)
         df = probe
-    long = _scored(
-        _unpack(
-            df,
-            written or spec_name,
-            targets=targets,
-            columns=[*keys, clock],
-            who="po.eval.window_metrics",
-        )
-    )
-    long = _windowing(clock, start, every_text, keys[:-1], every)(long)
-    exprs = _metric_exprs(binary=binary, hit=not _no_hit(written))
-    out = long.group_by(keys).agg(exprs).sort(keys)
-    return _thin(out, min_samples, keys)
+    job = _job(df, written or spec_name, targets, group, None, binary, who, log_loss=True,
+               also=[clock])  # fmt: skip
+    windows = _windowing(clock, start, every_text, keys[:-1], every, narrow)
+    s = _frame_sums(df, job, keys, None, windows)
+    return _thin(_scores(s, keys, binary=binary), min_samples, keys)
 
 
 def _windowing(
@@ -1206,6 +1328,7 @@ def _windowing(
     every: str | timedelta | None,
     keys: list[str],
     given: object,
+    narrow: pl.DataType | None = None,
 ) -> Callable[[pl.DataFrame], pl.DataFrame]:
     """What puts each scored row of a long form in its window: the rows with
     a clock, each with its ``window_start``, by ``start`` or by Polars'
@@ -1213,7 +1336,9 @@ def _windowing(
     a query in turn, it starts a key's windows where its first chunk
     started them: Polars counts a time-zoned clock's windows of a length
     that does not divide a day from a key's first row, so each chunk is
-    windowed after a row at that first clock, which is then dropped."""
+    windowed after a row at that first clock, which is then dropped.
+    ``narrow`` is a signed integer clock's dtype narrower than ``Int64``,
+    whose ``start`` is computed in ``Int64`` and cast back where it fits."""
     anchors: pl.DataFrame | None = None
     mark = "__po_anchor"
 
@@ -1221,10 +1346,26 @@ def _windowing(
         nonlocal anchors
         # A row with no clock is in no window, as Polars leaves a null key out
         # of `group_by_dynamic`; scored as a window of its own, it was a row
-        # of null `window_start` (task 359).
-        long = long.filter(pl.col(clock).is_not_null())
+        # of null `window_start` (task 359). A float clock's NaN or infinity
+        # is as unusable, and made windows labelled NaN, inf and -inf (task
+        # 382a, A7).
+        has = pl.col(clock).is_not_null()
+        if long.schema[clock].is_float():
+            has = has & pl.col(clock).is_finite()
+        long = long.filter(has)
         if start is not None:
-            return long.with_columns(start.alias("window_start"))
+            out = long.with_columns(start.alias("window_start"))
+            if narrow is not None:
+                edge = out.select(pl.col("window_start").arg_min()).item()
+                if edge is not None and out["window_start"][edge] < _int_range(narrow)[0]:
+                    msg = (
+                        f"po.eval.window_metrics: the window of every={given!r} that holds "
+                        f"clock {out[clock][edge]} starts at {out['window_start'][edge]}, which "
+                        f"clock column {clock!r}, {narrow}, cannot hold. Cast the clock to Int64."
+                    )
+                    raise ValueError(msg)
+                out = out.with_columns(pl.col("window_start").cast(narrow))
+            return out
         assert every is not None
         firsts = long.group_by(keys).agg(pl.col(clock).min())
         if anchors is None:
@@ -1360,10 +1501,11 @@ def compare_specs(
 
     .. rubric:: Raises
 
-    Whatever :func:`metrics` raises for each spec, and ``ValueError`` when
-    ``binary`` is ``None`` and some specs are fits with
-    ``loss="logistic"`` and others are not. Pass the two sets in two calls,
-    or set ``binary``.
+    Whatever :func:`metrics` raises for each spec, in this function's name,
+    and ``ValueError`` when ``binary`` is ``None`` and some specs are fits
+    with ``loss="logistic"`` and others are not (pass the two sets in two
+    calls, or set ``binary``), or when a ``group`` column is named
+    ``spec``, as the result's first column is.
 
     .. rubric:: Examples
 
@@ -1401,10 +1543,13 @@ def compare_specs(
     in length are scored on different rows, as the 396 and 397 rows in the
     example are. Diebold and Mariano's test and Clark and West's read only
     the rows where both specs have a residual. Given a query, every spec's
-    sums are read in the one run of it: scoring two specs of a scan by a
-    key of four values held 105 MiB at a million rows, 111 MiB at four
-    million and 115 MiB at sixteen million, measured as :func:`metrics`'
-    Notes say.
+    sums are read in the one run of it, beside what Polars reads ahead of
+    the call, which `Cut what Polars reads ahead
+    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+    bounds: scoring two specs of a scan by a key of four values held 91
+    MiB at a million rows, 106 MiB at four million and 108 MiB at sixteen
+    million under :func:`metrics`' bounded settings, and 242,
+    450 and 871 MiB under Polars' defaults.
 
     **Diebold and Mariano's (1995) test asks whether two specs' squared
     errors differ on average.** Its statistic is the mean of the loss
@@ -1455,17 +1600,21 @@ def compare_specs(
             )
             raise ValueError(msg)
         binary = reads.pop() if reads else False
+    who = "po.eval.compare_specs"
+    _check_min_samples(who, min_samples)
+    _check_columns(_probe(df), who, group=group, produced=(*_PRODUCED, "spec"))
     if isinstance(df, pl.LazyFrame):
         frames = _compare_query(df, given, group, targets, min_samples, binary)
     else:
         frames = [
-            metrics(
+            _metrics(
                 df,
                 written or name,
                 group=group,
                 targets=targets,
                 min_samples=min_samples,
                 binary=binary,
+                who=who,
             ).with_columns(pl.lit(name).alias("spec"))
             for name, written in given
         ]
@@ -1482,20 +1631,22 @@ def _compare_query(
     binary: bool,
 ) -> list[pl.DataFrame]:
     """:func:`compare_specs`' tables over a query, every spec's sums read in
-    one pass: each spec checked as :func:`metrics` checks it, in order."""
-    who = "po.eval.metrics"
+    one pass: each spec checked as :func:`metrics` checks it, in order, in
+    :func:`compare_specs`' name."""
+    who = "po.eval.compare_specs"
     probe = _probe(lf)
-    jobs = []
-    for name, written in given:
-        _check_columns(probe, who, group=group)
-        jobs.append(_job(lf, written or name, targets, group, None, binary, who, log_loss=True))
+    jobs = [
+        _job(lf, written or name, targets, group, None, binary, who, log_loss=True)
+        for name, written in given
+    ]
     keys = _keys(group)
     frames = []
     for (name, written), merged in zip(
         given, _query_sums(lf, jobs, keys=keys, weight=None) if jobs else [], strict=True
     ):
         if merged is None:
-            out = metrics(probe, written or name, group=group, targets=targets, binary=binary)
+            out = _metrics(probe, written or name, group=group, targets=targets,
+                           min_samples=min_samples, binary=binary, who=who)  # fmt: skip
         else:
             out = _thin(_scores(merged, keys, binary=binary), min_samples, keys)
         frames.append(out.with_columns(pl.lit(name).alias("spec")))
@@ -1713,7 +1864,49 @@ def _search_slots(
                     **{c: r[c] for c in _GRID_COLUMNS},
                 }
             )
+    _check_same_data(specs, slots, scoring)
     return slots
+
+
+def _check_same_data(
+    specs: list[dict[str, Any]], slots: list[dict[str, Any]], scoring: str
+) -> None:
+    """Refuse to rank slots that score different data against each other: a
+    log density compares two models only as densities of the same columns,
+    and a squared error two predictions only of the same quantity. Ranked
+    together, ``bocpd`` over a column and over that column times 1000 read
+    ranks by the scale alone, and two targets named ``ret`` read from ``y``
+    and from a column a thousand times larger got one choice (task 382a,
+    C5)."""
+    who = "po.eval.grid_search"
+    if scoring == "loglik":
+        data: dict[frozenset[str], list[str]] = {}
+        for spec in specs:
+            data.setdefault(frozenset(spec.get("features") or ()), []).append(spec["name"])
+        if len(data) > 1:
+            sets = "; ".join(f"{names} model {sorted(cols)}" for cols, names in data.items())
+            msg = (
+                f'{who}: scoring="loglik" ranks log densities, which compare two models only '
+                f"as densities of the same columns, but the specs model different ones: {sets}. "
+                "Pass the specs of each set of columns in a call of their own."
+            )
+            raise ValueError(msg)
+        return
+    read: dict[str, dict[str, list[str]]] = {}
+    for slot in slots:
+        names = read.setdefault(slot["target"], {}).setdefault(str(slot["y"]), [])
+        if specs[slot["spec"]]["name"] not in names:
+            names.append(specs[slot["spec"]]["name"])
+    for target, columns in read.items():
+        if len(columns) > 1:
+            ways = "; ".join(f"{names} read {column}" for column, names in columns.items())
+            msg = (
+                f"{who}: target {target!r} is read from different columns by different specs "
+                f"({ways}), so their squared errors are of different quantities and cannot be "
+                "ranked together. Name each target after what it reads, with "
+                "po.target(column, name=...), or score the specs in separate calls."
+            )
+            raise ValueError(msg)
 
 
 def _slot_sums(
@@ -1789,16 +1982,22 @@ def grid_search(
         default, when ``specs`` are built already. A key may not be one of
         the result's own columns.
     ``n_splits``
-        The number of test spans, 5 by default. The rows are cut as
-        scikit-learn's ``TimeSeriesSplit(n_splits, gap=gap)`` cuts them:
-        the ``n`` rows into ``n_splits + 1`` spans, the last ``n_splits`` of
-        ``n // (n_splits + 1)`` rows each. Fewer spans make the first span,
-        the rows the first choice is made from, longer.
+        The number of test spans, 5 by default. For 2 or more, the rows
+        are cut as scikit-learn's ``TimeSeriesSplit(n_splits, gap=gap)``
+        cuts them: the ``n`` rows into ``n_splits + 1`` spans, the last
+        ``n_splits`` of ``n // (n_splits + 1)`` rows each. 1, which
+        scikit-learn refuses, gives one test span of the last ``n // 2``
+        rows. Fewer spans make the first span, the rows the first choice is
+        made from, longer.
     ``gap``
         The rows left out between the rows a choice is made from and the
-        span it is scored on, 0 by default. Give it the number of rows a
-        target looks ahead, so a choice never reads a row whose target was
-        not yet known when its span started.
+        span it is scored on, 0 by default. Give it the number of rows of
+        the stream a target looks ahead, so a choice never reads a row
+        whose target was not yet known when its span started. It counts
+        rows of the stream, as scikit-learn's ``gap`` counts samples, not
+        steps of one series: with ``G`` series interleaved, as under a
+        spec's ``group``, a target ``h`` steps ahead in its series looks
+        about ``h * G`` rows ahead, and ``gap`` should be that.
     ``scoring``
         ``"mse"``, the default, the mean of ``(y - pred)**2``, lower
         better; or ``"loglik"``, the mean log predictive density of a row,
@@ -1851,10 +2050,15 @@ def grid_search(
         How many test spans the choice ran the slot on. A tie goes to the
         first in grid order. Null on every row but a ``"candidate"``.
 
-    The choice's row is the out-of-sample score of choosing: what choosing
-    the best grid point from the rows before each span scored on that span.
-    How far it falls short of the rank-1 score is how much choosing on the
-    same rows would have overstated the score.
+    The choice's row is the out-of-sample score of a rule: run the slot
+    best over the rows read before each span (see Notes), and score it on
+    the span. How far it falls short of the rank-1 score is the rule's
+    regret against the best grid point in hindsight. With no ``gap`` it
+    cannot be negative, since following the leader never beats the best
+    fixed choice over the same spans; it is an upper bound on how much the
+    rank-1 score overstates, and it holds as well what the rule lost by
+    choosing from fewer rows, and the first choice from the first span's
+    rows, where every model starts up.
 
     .. rubric:: Raises
 
@@ -1867,8 +2071,8 @@ def grid_search(
         one of its lists is empty. It is both a ``ValueError`` and a
         ``TypeError``.
     :class:`~polars_online.WrongTypeError`
-        ``n_splits`` or ``gap`` is not a whole number. It is both a
-        ``TypeError`` and a ``ValueError``.
+        ``n_splits``, ``gap`` or ``chunk_size`` is not a whole number. It
+        is both a ``TypeError`` and a ``ValueError``.
     :class:`~polars_online.ColumnNotFoundError`
         A spec's target has no column in the stream. A formula target never
         has one, since the bank computes it as it learns and does not write
@@ -1878,11 +2082,17 @@ def grid_search(
         When:
 
         - ``scoring`` is neither word;
-        - ``n_splits`` is below 1, or ``gap`` below 0;
+        - ``n_splits`` is below 1, ``gap`` below 0, or ``chunk_size``
+          below 1;
         - a builder returns a spec not named by its first argument;
         - a ``param_grid`` key is one of the result's columns;
         - a spec has nothing to score: no prediction of a target under
           ``"mse"``, or no ``loglik`` under ``"loglik"``;
+        - the slots score different data, which no rank can compare: under
+          ``"loglik"``, specs that model different columns (score each set
+          in a call of its own); under ``"mse"``, a target name that two
+          specs read from different columns (name each target after what
+          it reads, with :func:`polars_online.target`);
         - a query gives a number of rows other than its count when run;
         - the first choice has no row to read. The error names the rows and
           the remedy. The stream is too short for its spans, ``gap`` is as
@@ -1934,14 +2144,22 @@ def grid_search(
     reporting that error, is optimistic: each error is the grid point's
     true error plus noise, and the minimum picks the grid point whose noise
     happened to run lowest. So the choice is scored too. Before each test
-    span, the slot with the best score over every row before it (``gap``
-    rows short of it) is chosen, and scored on the span:
+    span, the slot with the best score over the rows read before it
+    (``gap`` rows short of it) is chosen, and scored on the span. The
+    first choice reads the first span, the only rows before it. Each later
+    choice reads the test spans' rows before it, the rows the rank reads,
+    and not the first span's: there every model starts up, and a model
+    whose first errors were large, as one with more coefficients to learn,
+    would weigh them on every choice and be passed over on spans it was
+    best on. Where the gap leaves no test row before a span, or no row
+    there that every slot predicts, its choice reads from row 0:
 
     .. code-block:: text
 
         size     = n // (n_splits + 1)
         start_k  = n - (n_splits - k) * size                 k = 0 .. n_splits - 1
-        chosen_k = argbest over candidate slots s of score(s, rows [0, start_k - gap))
+        from_k   = start_0 where start_k - gap > start_0, else 0
+        chosen_k = argbest over candidate slots s of score(s, rows [from_k, start_k - gap))
         choice   = score(chosen_k on rows [start_k, start_k + size), pooled over k)
 
     **What is scored.** The slots are every prediction a spec writes, one
@@ -1950,7 +2168,10 @@ def grid_search(
     row counts for a target only where every slot of that target has a
     value and the target is present. So the grid points are compared on
     the same rows, and the rows any slot withholds while it warms up count
-    for none. Every row weighs alike. Under ``scoring="loglik"``, the sum
+    for none. Every row weighs alike: a spec's ``weight`` column is not
+    read here, so a row of weight 0 is scored like any other. To leave
+    such rows out of the score, score the specs chosen with
+    :func:`sums`' ``weight``. Under ``scoring="loglik"``, the sum
     of a stream's log densities, each read before its row is learned, is
     its log marginal likelihood (the prequential score). It is the
     criterion that compares ``bocpd``'s hazards and priors. For ``hmm``'s number of
@@ -2008,6 +2229,17 @@ def grid_search(
             f"Set scoring to one of those words."
         )
         raise ValueError(msg)
+    wrong_type = chunk_size is not None and (
+        isinstance(chunk_size, bool) or not isinstance(chunk_size, numbers.Integral)
+    )
+    if wrong_type or (chunk_size is not None and chunk_size < 1):
+        # Refused here, where the bank's own refusal named a method the
+        # caller did not call (task 382a, C10).
+        msg = (
+            f"{who}: chunk_size must be a whole number of rows of at least 1, or None, but it "
+            f"is {chunk_size!r}. Give a number of rows, or None for the default."
+        )
+        raise WrongTypeError(msg) if wrong_type else ValueError(msg)
     built, points = _search_specs(specs, param_grid)
     if isinstance(source, pl.LazyFrame):
         n = int(source.select(pl.len()).collect().item())
@@ -2097,8 +2329,18 @@ def grid_search(
             raise ValueError(msg)
         picks = []
         honest_sum, honest_n = 0.0, 0
+        tested_from = folds[0][1]
         for choose_end, start, end in folds:
-            before = {k: over(k, 0, choose_end) for k in chosen_from}
+            # The first choice reads the first span, the only rows it has. Each
+            # later one reads the test spans' rows before it, as the rank reads
+            # them, so no model's start-up rows weigh on it: read from row 0, a
+            # model whose first errors were large was passed over on every
+            # span it was best on (task 382a, C3(b)). With a gap as long as a
+            # span, or no row there every slot predicts, it reads from row 0.
+            low = tested_from if choose_end > tested_from else 0
+            before = {k: over(k, low, choose_end) for k in chosen_from}
+            if not before[chosen_from[0]][1]:
+                before = {k: over(k, 0, choose_end) for k in chosen_from}
             means = {k: s / c for k, (s, c, _) in before.items()}
             pick = (min if lower else max)(chosen_from, key=lambda k: means[k])
             picks.append(pick)
@@ -2722,17 +2964,23 @@ def sums(
         row 1, and then ``w`` equals ``n``. A row whose weight is null,
         NaN, infinite, past the input bound of 1e100, or negative is
         dropped: the bank skips the first four and refuses a negative one.
-        A row of weight 0 is kept, counted in ``n`` and not in ``w``.
+        A row of weight 0 is kept, counted in ``n`` and not in ``w``, so
+        :func:`from_sums`' ``min_samples`` counts it: 30 rows of which 28
+        weigh 0 pass ``min_samples=30`` and are scored on two. Filter out
+        the rows that are not to count before this call, rather than
+        weighting them 0, where ``min_samples`` is to count the rows
+        scored.
     ``binary``
         :func:`metrics`' own: whether ``hits`` and ``signed`` count a
         classifier's accuracy at 0.5 or the sign test. Keep the sums of the
-        two readings apart (see Returns).
+        two readings apart (see Returns). A target other than 0 or 1 on a
+        scored row is refused under it.
 
     .. rubric:: Returns
 
     A ``DataFrame`` with one row per ``slot``, ``target`` and ``group`` key,
     given a frame or a query alike, and these columns after the keys,
-    :data:`SUM_FIELDS`:
+    :data:`SUM_FIELDS`. A slot or key with no scored row has no row.
 
     ``n``, ``w``
         The rows, and the weight behind them.
@@ -2759,8 +3007,11 @@ def sums(
     Whatever :func:`unpack` raises for ``df`` and ``spec``, and
     :class:`~polars_online.ColumnNotFoundError`, both Polars'
     ``ColumnNotFoundError`` and a ``ValueError``, for a ``group`` or
-    ``weight`` column ``df`` does not have. A query is refused as its result
-    would be, with the same message, before it runs.
+    ``weight`` column ``df`` does not have. What :func:`metrics` raises for
+    ``group`` and ``binary``, and ``ValueError`` for a ``weight`` column
+    named like a column of :func:`unpack`'s long form (:data:`RESERVED`).
+    A query is refused as its result would be, with the same message,
+    before it runs.
 
     .. rubric:: Examples
 
@@ -2806,12 +3057,17 @@ def sums(
 
     Given a query, the sums are those of the query's chunks of 100,000
     rows, each reduced as a frame is and added as :func:`merge_sums` adds
-    them, so they hold what :func:`metrics`' Notes measure. While the query
-    gives one chunk, they are the frame's to the bit; over many, within the
-    merge's rounding.
+    them, so they hold what :func:`metrics`' Notes measure, and Polars what
+    it reads ahead of them, which `Cut what Polars reads ahead
+    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+    bounds: 204, 208 and 212 MiB at one, four and sixteen million rows under
+    its bounded settings, 493, 990 and 1,072 MiB under Polars'
+    defaults. While the query gives one chunk, they are the frame's to the
+    bit; over many, within the merge's rounding, which :func:`metrics`'
+    Notes measure.
     """
     spec_name, written = _spec_of("po.eval.sums", spec)
-    _check_columns(_probe(df), "po.eval.sums", group=group, weight=weight)
+    _check_columns(_probe(df), "po.eval.sums", group=group, weight=weight, produced=_PRODUCED)
     binary = _binary(binary, written)
     if isinstance(df, pl.LazyFrame):
         jobs = [_job(df, written or spec_name, targets, group, weight, binary, "po.eval.sums")]
@@ -2819,15 +3075,8 @@ def sums(
         if merged is not None:
             return merged.select(*_keys(group), *SUM_FIELDS)
         df = _probe(df)
-    columns = [*_group_keys(group), *([] if weight is None else [weight])]
-    long = _weighed(
-        _scored(
-            _unpack(df, written or spec_name, targets=targets, columns=columns, who="po.eval.sums")
-        ),
-        weight,
-    )
-    keys = _keys(group)
-    return long.group_by(keys).agg(_sum_aggs(binary, _no_hit(written))).sort(keys)
+    job = _job(df, written or spec_name, targets, group, weight, binary, "po.eval.sums")
+    return _frame_sums(df, job, _keys(group), weight).select(*_keys(group), *SUM_FIELDS)
 
 
 def _keys(group: str | Iterable[str] | None) -> list[str]:
@@ -2849,31 +3098,51 @@ def _weighed(long: pl.DataFrame, weight: str | None) -> pl.DataFrame:
     return long.with_columns(wexpr.alias("__w"))
 
 
-def _sum_aggs(binary: bool, no_hit: bool) -> list[pl.Expr]:
+def _sum_aggs(binary: bool, no_hit: bool, *, weighted: bool = True) -> list[pl.Expr]:
     """:data:`SUM_FIELDS` as aggregations of a long form's ``y``, ``pred``
-    and weight ``__w``."""
-    w, y, p = pl.col("__w"), pl.col("y"), pl.col("pred")
-    tw = w.sum()
-    my, mp = (w * y).sum() / tw, (w * p).sum() / tw
+    and weight ``__w``. Not ``weighted``, every row weighs 1 and ``__w`` is
+    not read: the same numbers to the bit, since a product by 1.0 is exact,
+    without the products and the filter of rows that weigh, which took a
+    frame's ``metrics`` of 20 slots over a million rows from 560 ms to 860
+    (task 382a, A5)."""
+    y, p = pl.col("y"), pl.col("pred")
+    w = pl.col("__w") if weighted else None
+
+    def times(e: pl.Expr) -> pl.Expr:
+        return e if w is None else w * e
+
+    tw = pl.len().cast(pl.Float64) if w is None else w.sum()
+
+    def mean(v: pl.Expr) -> pl.Expr:
+        # A value the rows that weigh all share is its own mean, exactly: the
+        # computed `sum(w * c) / sum(w)` of a constant `c` is `c` only where
+        # the sum happens to be exact, and otherwise leaves a spread of
+        # rounding, about `n * (eps * c)**2`, that read as a variance: `r2`
+        # about -1e32 and `ic` of a constant prediction 0.14 (task 382a, A2).
+        held = v if w is None else v.filter(w > 0)
+        return pl.when(held.min() == held.max()).then(held.first()).otherwise(times(v).sum() / tw)
+
+    my, mp = mean(y), mean(p)
     if binary:
-        hits, signed = w * ((p > 0.5) == (y > 0.5)), w
+        hits, signed = times(((p > 0.5) == (y > 0.5)).cast(pl.Float64)), times(pl.lit(1.0))
     else:
         # A target or a prediction of zero has no sign, as in :func:`metrics`
         # and the bank (docs/PLAN.md task 195, S6); a fit with no sign to
         # hit signs no row at all, so :func:`from_sums` gives null (E1).
         scored = pl.lit(False) if no_hit else (y != 0) & (p != 0)
-        hits, signed = w * ((y.sign() == p.sign()) & scored), w * scored
+        hits = times(((y.sign() == p.sign()) & scored).cast(pl.Float64))
+        signed = times(scored.cast(pl.Float64))
     return [
         pl.len().cast(pl.Int64).alias("n"),
         tw.alias("w"),
         my.alias("mean_y"),
         mp.alias("mean_pred"),
-        (w * (y - my) ** 2).sum().alias("m2_y"),
-        (w * (p - mp) ** 2).sum().alias("m2_pred"),
-        (w * (y - my) * (p - mp)).sum().alias("cov"),
-        (w * (y - p) ** 2).sum().alias("sse"),
+        times((y - my) ** 2).sum().alias("m2_y"),
+        times((p - mp) ** 2).sum().alias("m2_pred"),
+        times((y - my) * (p - mp)).sum().alias("cov"),
+        times((y - p) ** 2).sum().alias("sse"),
         hits.sum().alias("hits"),
-        signed.sum().alias("signed"),
+        (pl.len().cast(pl.Float64) if binary and w is None else signed.sum()).alias("signed"),
     ]
 
 
@@ -2892,8 +3161,13 @@ def _chunk_rows() -> int:
 
 
 def _log_loss_sum() -> pl.Expr:
-    """The sum of :func:`metrics`' log loss over a long form's rows, ``p``
-    clipped as :func:`_metric_exprs` clips it."""
+    """The sum of :func:`metrics`' log loss over a long form's rows,
+    ``-(y*ln(p) + (1-y)*ln(1-p))``, read over the rows rather than kept in a
+    spec's streaming ``emit_metrics``: an exponentially weighted sum would
+    put a ``ln`` result into model state, and glibc's last bit is not
+    Apple's (that difference broke a frozen state fixture on Linux alone).
+    ``p`` is clipped to ``[1e-15, 1 - 1e-15]`` so a confident miss, whose
+    term is ``-ln(1e-15)``, is a large number rather than ``+inf``."""
     p = pl.col("pred").clip(1e-15, 1.0 - 1e-15)
     y = pl.col("y")
     return (-(y * p.log() + (1.0 - y) * (1.0 - p).log())).sum().alias(_LOG_LOSS)
@@ -2912,9 +3186,15 @@ class _Job:
         binary: bool,
         no_hit: bool,
         log_loss: bool,
+        who: str,
     ) -> None:
         self.spec_name, self.slots, self.keep = spec_name, slots, keep
         self.binary, self.no_hit, self.log_loss = binary, no_hit, log_loss
+        self.who = who
+
+    def extra(self) -> list[str]:
+        """The columns its sums carry beside :data:`SUM_FIELDS`."""
+        return [_LOG_LOSS] if self.log_loss else []
 
     def columns(self) -> set[str]:
         """The query's columns this job reads."""
@@ -2923,7 +3203,7 @@ class _Job:
 
 
 def _job(
-    lf: pl.LazyFrame,
+    lf: pl.DataFrame | pl.LazyFrame,
     spec: str | dict,
     targets: Sequence[str] | None,
     group: str | Iterable[str] | None,
@@ -2942,7 +3222,7 @@ def _job(
     spec_name, slots = _slots(probe, spec, targets, who)
     keep = _kept(probe, [*_group_keys(group), *([] if weight is None else [weight]), *also])
     _, written = _spec_of(who, spec)
-    return _Job(spec_name, slots, keep, binary, _no_hit(written), log_loss and binary)
+    return _Job(spec_name, slots, keep, binary, _no_hit(written), log_loss and binary, who)
 
 
 def _query_sums(
@@ -2962,39 +3242,79 @@ def _query_sums(
     one chunk and the sums, not the query's rows."""
     needed = set().union(*(job.columns() for job in jobs))
     plan = lf.select([c for c in lf.collect_schema() if c in needed])
-    extra = {id(job): [_LOG_LOSS] if job.log_loss else [] for job in jobs}
     parts: dict[int, list[pl.DataFrame]] = {id(job): [] for job in jobs}
     for chunk in plan.collect_batches(chunk_size=_chunk_rows(), maintain_order=True):
         for job in jobs:
-            aggs = _sum_aggs(job.binary, job.no_hit)
-            if job.log_loss:
-                aggs.append(_log_loss_sum())
-            got = []
-            for slot, target, y in job.slots:
-                # The long form of one slot, grouped as :func:`sums` groups
-                # a frame's, so a query read as one chunk sums as it does.
-                long = chunk.select(
-                    *job.keep,
-                    pl.lit(slot).alias("slot"),
-                    pl.lit(target).alias("target"),
-                    pl.col(job.spec_name).struct.field(slot).alias("pred"),
-                    y.alias("y"),
-                )
-                long = _scored(long)
-                if prepare is not None:
-                    long = prepare(long)
-                long = _weighed(long, weight)
-                if not long.is_empty():
-                    got.append(long.group_by(keys).agg(aggs))
-            if not got:
+            got = _chunk_sums(chunk, job, keys, weight, prepare)
+            if got is None:
                 continue
             held = parts[id(job)]
-            held.append(pl.concat(got))
+            held.append(got)
             if len(held) >= _MERGE_EVERY:
-                held[:] = [_merge(held, keys, extra[id(job)])]
-    return [
-        _merge(parts[id(job)], keys, extra[id(job)]) if parts[id(job)] else None for job in jobs
-    ]
+                held[:] = [_merge(held, keys, job.extra())]
+    return [_merge(parts[id(job)], keys, job.extra()) if parts[id(job)] else None for job in jobs]
+
+
+def _chunk_sums(
+    chunk: pl.DataFrame,
+    job: _Job,
+    keys: list[str],
+    weight: str | None,
+    prepare: Callable[[pl.DataFrame], pl.DataFrame] | None,
+    *,
+    empty: bool = False,
+) -> pl.DataFrame | None:
+    """``job``'s sums of one chunk by ``keys``, a slot at a time: each slot's
+    scored rows reduced to :data:`SUM_FIELDS` per key. ``None`` where no row
+    of the chunk is scored, or, with ``empty``, a frame of no rows with the
+    sums' columns. A frame is scored as one chunk, so its scores are a
+    one-chunk query's to the bit; a slot at a time, it holds one slot's long
+    form, where the long form of every slot held 2.9 GiB of a 20-slot
+    million-row frame's ``metrics`` (task 382a, A5)."""
+    aggs = _sum_aggs(job.binary, job.no_hit, weighted=weight is not None)
+    if job.log_loss:
+        aggs.append(_log_loss_sum())
+    got = []
+    long = None
+    for slot, target, y in job.slots:
+        long = chunk.select(
+            *job.keep,
+            pl.lit(slot).alias("slot"),
+            pl.lit(target).alias("target"),
+            pl.col(job.spec_name).struct.field(slot).alias("pred"),
+            y.alias("y"),
+        )
+        long = _scored(long)
+        if job.binary:
+            _check_labels(long, job.who)
+        if prepare is not None:
+            long = prepare(long)
+        long = _weighed(long, weight)
+        if not long.is_empty():
+            # A `group_by` even without a `group`, though a plain reduction
+            # over the column would be about nine times as fast there: Polars
+            # sums a whole column and a group's rows in different orders, and
+            # a key's scores are the call on its rows alone, to the bit.
+            got.append(long.group_by(keys).agg(aggs))
+    if got:
+        return pl.concat(got)
+    if empty and long is not None:
+        return long.group_by(keys).agg(aggs)
+    return None
+
+
+def _frame_sums(
+    df: pl.DataFrame,
+    job: _Job,
+    keys: list[str],
+    weight: str | None,
+    prepare: Callable[[pl.DataFrame], pl.DataFrame] | None = None,
+) -> pl.DataFrame:
+    """``job``'s sums of a frame by ``keys``, read as a query of one chunk
+    reads them."""
+    got = _chunk_sums(df, job, keys, weight, prepare, empty=True)
+    assert got is not None  # a spec has a slot, so `empty` gives a frame
+    return _merge([got], keys, job.extra())
 
 
 def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
@@ -3021,7 +3341,9 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
     ``TypeError``
         A frame is not a ``DataFrame``.
     ``ValueError``
-        The frames' key columns differ.
+        A frame lacks a column of :data:`SUM_FIELDS`, such as the scores
+        :func:`metrics` or :func:`from_sums` returns; or the frames' key
+        columns differ, in their names or their dtypes.
 
     .. rubric:: Update equation
 
@@ -3038,7 +3360,12 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
         m2   = sum(m2_g + w_g * (mean_g - mean)**2)
         cov  = sum(cov_g + w_g * (mean_y_g - mean_y) * (mean_pred_g - mean_pred))
 
-    ``n``, ``sse``, ``hits`` and ``signed`` are summed.
+    ``n``, ``sse``, ``hits`` and ``signed`` are summed. A frame whose rows
+    all weigh 0 (``w`` is 0, its means 0/0) adds its ``n`` and nothing
+    else. Where every frame that weighs has one mean, the pooled mean is
+    that value, exactly, so a constant target or prediction keeps a second
+    moment of exactly 0, and its ``r2`` or ``ic`` the null of
+    :func:`from_sums`, through any number of merges.
 
     .. rubric:: Examples
 
@@ -3075,10 +3402,18 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
     is each frame's mean rounded to a double at that level, before any
     merging. A difference of running totals loses the level's square over
     the variance times the rounding, about 1e-8 there.
+
+    That rounding of each frame's mean enters the merged moments at first
+    order, about ``eps * |mean| / (spread * sqrt(N))`` relative, with ``N``
+    the key's rows: it does not grow with the number of frames, nor shrink
+    as they grow larger, but it grows as a key gets shorter, to 1e-13 at a
+    level of 1e4 over 1,000 rows, as :func:`metrics`' Notes measure.
     """
+    who = "po.eval.merge_sums"
     frames = [first, *rest]
     for f in frames:
-        _frame("po.eval.merge_sums", f)
+        _frame(who, f)
+        _check_sums(who, f)
     keys = [c for c in frames[0].columns if c not in SUM_FIELDS]
     for f in frames[1:]:
         other = [c for c in f.columns if c not in SUM_FIELDS]
@@ -3088,22 +3423,81 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
                 f"{keys} and another {other}. Pass parts from po.eval.sums with the same group."
             )
             raise ValueError(msg)
+        for k in keys:
+            if f.schema[k] != frames[0].schema[k]:
+                msg = (
+                    f"po.eval.merge_sums: key column {k!r} is {frames[0].schema[k]} in one part "
+                    f"and {f.schema[k]} in another, so their keys cannot be matched. Cast the "
+                    "key to one dtype before po.eval.sums."
+                )
+                raise ValueError(msg)
     return _merge(frames, keys)
+
+
+def _check_sums(who: str, f: pl.DataFrame) -> None:
+    """Refuse a frame that is not one :func:`sums` made: one without every
+    column of :data:`SUM_FIELDS` raised Polars' ``ColumnNotFoundError`` or
+    ``ShapeError``, and :func:`metrics`' scores beside sums were read as
+    keys (task 382a, A12)."""
+    missing = [c for c in SUM_FIELDS if c not in f.columns]
+    if not missing:
+        return
+    if any(c in f.columns for c in ("r2", "brier_skill")):
+        msg = (
+            f"{who}: a frame holds scores, not sums: its columns {f.columns} are those "
+            "po.eval.metrics or po.eval.from_sums returns. Pass the frames po.eval.sums returns, "
+            "whose scores po.eval.from_sums reads."
+        )
+    else:
+        msg = (
+            f"{who}: a frame lacks {missing} of the sums' columns, {list(SUM_FIELDS)}, so it is "
+            "not a frame po.eval.sums returned. Pass the frames po.eval.sums returns."
+        )
+    raise ValueError(msg)
 
 
 def _merge(frames: list[pl.DataFrame], keys: list[str], extra: Sequence[str] = ()) -> pl.DataFrame:
     """:func:`merge_sums` of ``frames`` by ``keys``, each column of
     ``extra`` added as ``n`` is."""
-    w = pl.col("w").sum()
-    mean_y = (pl.col("w") * pl.col("mean_y")).sum() / w
-    mean_p = (pl.col("w") * pl.col("mean_pred")).sum() / w
-    # A key in one part alone keeps that part's sums as they are: recomputed
-    # as `w * mean / w`, about one mean in ten moved by its last bit, and a
-    # small `m2` by `w` times that bit squared (task 359).
-    alone = pl.len() == 1
+    w_g = pl.col("w")
+    w = w_g.sum()
+    # A part whose rows all weigh 0 has means of 0/0, NaN, and moments of
+    # NaN; it adds its rows to `n` and nothing else, where its `0 * NaN`
+    # terms turned the key's moments to NaN (task 382a, A1).
+    weighed = w_g > 0
+
+    def pooled(field: str) -> pl.Expr:
+        # Parts whose means are all one value pool to that value exactly, so
+        # a constant stays constant through any number of merges, its
+        # parallel-axis terms exactly 0 (task 382a, A2).
+        held = pl.col(field).filter(weighed)
+        return (
+            pl.when(held.min() == held.max())
+            .then(held.first())
+            .otherwise((w_g * pl.col(field)).filter(weighed).sum() / w)
+        )
+
+    mean_y, mean_p = pooled("mean_y"), pooled("mean_pred")
+
+    def summed(term: pl.Expr) -> pl.Expr:
+        return pl.when(weighed).then(term).otherwise(0.0).sum()
 
     def merged(field: str, expr: pl.Expr) -> pl.Expr:
-        return pl.when(alone).then(pl.col(field).first()).otherwise(expr).alias(field)
+        # A key whose weight is in one part alone keeps that part's sums as
+        # they are: recomputed as `w * mean / w`, about one mean in ten moved
+        # by its last bit, and a small `m2` by `w` times that bit squared
+        # (task 359). A key whose parts all weigh 0 keeps the NaN of a
+        # frame of such rows.
+        return (
+            pl.when(weighed.sum() == 1)
+            .then(pl.col(field).filter(weighed).first())
+            .when(pl.len() == 1)
+            .then(pl.col(field).first())
+            .when(w > 0)
+            .then(expr)
+            .otherwise(float("nan"))
+            .alias(field)
+        )
 
     return (
         pl.concat(frames)
@@ -3113,17 +3507,16 @@ def _merge(frames: list[pl.DataFrame], keys: list[str], extra: Sequence[str] = (
             w.alias("w"),
             merged("mean_y", mean_y),
             merged("mean_pred", mean_p),
-            merged("m2_y", (pl.col("m2_y") + pl.col("w") * (pl.col("mean_y") - mean_y) ** 2).sum()),
+            merged("m2_y", summed(pl.col("m2_y") + w_g * (pl.col("mean_y") - mean_y) ** 2)),
             merged(
-                "m2_pred",
-                (pl.col("m2_pred") + pl.col("w") * (pl.col("mean_pred") - mean_p) ** 2).sum(),
+                "m2_pred", summed(pl.col("m2_pred") + w_g * (pl.col("mean_pred") - mean_p) ** 2)
             ),
             merged(
                 "cov",
-                (
+                summed(
                     pl.col("cov")
-                    + pl.col("w") * (pl.col("mean_y") - mean_y) * (pl.col("mean_pred") - mean_p)
-                ).sum(),
+                    + w_g * (pl.col("mean_y") - mean_y) * (pl.col("mean_pred") - mean_p)
+                ),
             ),
             pl.col("sse").sum(),
             pl.col("hits").sum(),
@@ -3150,7 +3543,8 @@ def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -
     ``min_samples``
         The fewest rows a key is scored on, 30 by default. A key with fewer
         rows keeps its row, with ``n`` filled and the scores null, as
-        :func:`metrics` keeps it.
+        :func:`metrics` keeps it. It counts rows, ``n``, whatever they
+        weigh: a row of weight 0 counts (see :func:`sums`' ``weight``).
     ``binary``
         Say that the sums were made under :func:`sums`' ``binary``, and
         name the columns as :func:`metrics` names them under it:
@@ -3176,7 +3570,11 @@ def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -
 
     .. rubric:: Raises
 
-    ``TypeError`` for an ``s`` that is not a ``DataFrame``.
+    ``TypeError`` for an ``s`` that is not a ``DataFrame``; ``ValueError``
+    for one that lacks a column of :data:`SUM_FIELDS`, such as the scores
+    :func:`metrics` returns, and for a ``min_samples`` below 0; and
+    :class:`~polars_online.WrongTypeError`, both a ``TypeError`` and a
+    ``ValueError``, for a ``min_samples`` that is not a whole number.
 
     .. rubric:: Examples
 
@@ -3205,6 +3603,8 @@ def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -
     - :func:`metrics`, the same scores in one call, over a frame or a query.
     """
     _frame("po.eval.from_sums", s)
+    _check_sums("po.eval.from_sums", s)
+    _check_min_samples("po.eval.from_sums", min_samples)
     keys = [c for c in s.columns if c not in SUM_FIELDS]
     return _thin(_scores(s, keys, binary=binary), min_samples, keys)
 
@@ -3217,16 +3617,22 @@ def _scores(s: pl.DataFrame, keys: list[str], *, binary: bool) -> pl.DataFrame:
     # score is null by `w` first, as `hit_rate` is by `signed` (task 359).
     weighed = pl.col("w") > 0
     mse = pl.when(weighed).then(pl.col("sse") / pl.col("w"))
-    denom = (pl.col("m2_y") * pl.col("m2_pred")).sqrt()
+    m2_y, m2_pred = pl.col("m2_y"), pl.col("m2_pred")
+    # The roots before the product: `m2_y * m2_pred` overflowed to inf (an
+    # `ic` of 0.0) or underflowed to 0 (null) at scales inside the input
+    # bound of 1e100, where each root cannot. Clipped, since the roots'
+    # rounding read two rows that agree as 1.0000000000000002 (task 382a,
+    # A3 and A16).
+    ic = (pl.col("cov") / (m2_y.sqrt() * m2_pred.sqrt())).clip(-1.0, 1.0)
     log_loss = [(pl.col(_LOG_LOSS) / pl.col("n")).alias("log_loss")] if _LOG_LOSS in s else []
     return s.select(
         *keys,
         pl.col("n"),
-        pl.when(weighed & (pl.col("m2_y") > 0))
-        .then(1.0 - pl.col("sse") / pl.col("m2_y"))
+        pl.when(weighed & (m2_y > 0))
+        .then(1.0 - pl.col("sse") / m2_y)
         .otherwise(None)
         .alias("brier_skill" if binary else "r2"),
-        pl.when(weighed & (denom > 0)).then(pl.col("cov") / denom).otherwise(None).alias("ic"),
+        pl.when(weighed & (m2_y > 0) & (m2_pred > 0)).then(ic).otherwise(None).alias("ic"),
         pl.when(pl.col("signed") > 0)
         .then(pl.col("hits") / pl.col("signed"))
         .otherwise(None)

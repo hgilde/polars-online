@@ -82,8 +82,13 @@ def by_hand(out, specs, n_splits, gap=0, field_prefix="pred_y", target="y", logl
         splits = [(np.arange(start - gap), np.arange(start, n))]
     else:
         splits = TimeSeriesSplit(n_splits=n_splits, gap=gap).split(np.zeros(n))
+    first_test = None
     for train, test in splits:
-        rows = train[usable[train]]
+        # The first choice reads the first span; each later one reads only the
+        # test spans' rows before it, as the rank does (task 382a, C3(b)).
+        first_test = test[0] if first_test is None else first_test
+        later = train[train >= first_test]
+        rows = later[usable[later]] if usable[later].any() else train[usable[train]]
         pick = int(best(matrix[rows].mean(axis=0)))
         picks.append(keys[pick])
         honest.extend(matrix[test[usable[test]], pick])

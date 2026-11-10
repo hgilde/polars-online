@@ -10,7 +10,7 @@ has a row per row (``unpack``, ``seqtest``, the per-row ``half_life`` tests)
 returns a ``LazyFrame`` that collects to the frame's result. Held here:
 
 - the numbers are the frame's: to the bit for ``sums``, for every column of
-  the scores but ``ic``, and for the per-row tests, while the query is one
+  the scores, and for the per-row tests, while the query is one
   chunk, and for ``seqtest`` at any chunk; within rounding across many
   chunks (1e-9 relative, the bound the merged sums are held to in
   ``test_eval_sums.py``, and 1e-12 for the per-row tests), at a level of 1e8
@@ -160,14 +160,14 @@ class TestTheQueryGivesTheFramesNumbers:
         )
 
     @pytest.mark.parametrize(("name", "kw"), CASES)
-    def test_metrics_of_one_chunk_are_the_frames_to_the_bit_but_ic(self, fitted, name, kw):
-        """``ic`` is Polars' ``corr`` over a frame and the co-moment over the
-        root of the two moments from sums, which round apart."""
+    def test_metrics_of_one_chunk_are_the_frames_to_the_bit(self, fitted, name, kw):
+        """Every column, ``ic`` too: a frame's scores are read from the same
+        centred sums as a query's (task 382a, A5; ``ic`` was Polars' ``corr``
+        over a frame, which rounded apart)."""
         out, specs = fitted
         got = po.eval.metrics(out.lazy(), specs[name], **kw)
         want = po.eval.metrics(out, specs[name], **kw)
-        assert got.drop("ic").equals(want.drop("ic"))
-        close(got.select("ic"), want.select("ic"), rel=1e-14)
+        assert got.equals(want)
 
     def test_a_name_reads_as_the_dict_does_on_a_plain_target(self, fitted, small_chunks):
         out, specs = fitted
