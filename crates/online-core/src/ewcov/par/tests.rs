@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::EwCov;
+use crate::pieces::{Piece, pieces};
 
 fn lcg(state: &mut u64) -> f64 {
     *state = state
@@ -60,10 +61,24 @@ impl Case {
         }
     }
 
-    /// `merge_lower_cut` on a copy of `C`.
+    /// `merge_lower_cut` on `C`'s lower triangle, packed, with a fresh
+    /// square, read back into a copy of `C`: its upper triangle as given.
     fn cut(&self, threads: usize, cut: (usize, usize)) -> Vec<f64> {
+        self.cut_with(&mut Vec::new(), threads, cut)
+    }
+
+    /// [`Self::cut`] with the square given, whatever it holds.
+    fn cut_with(&self, square: &mut Vec<f64>, threads: usize, cut: (usize, usize)) -> Vec<f64> {
+        let k = self.k;
+        let mut packed: Vec<f64> = (0..k)
+            .flat_map(|i| self.c[i * k..=i * k + i].iter().copied())
+            .collect();
+        let m = self.merge();
+        merge_lower_cut(&mut packed, square, k, &self.d, self.n, &m, threads, cut);
         let mut c = self.c.clone();
-        merge_lower_cut(&mut c, self.k, &self.d, self.n, &self.merge(), threads, cut);
+        for i in 0..k {
+            c[i * k..=i * k + i].copy_from_slice(&packed[row_at(i)..=row_at(i) + i]);
+        }
         c
     }
 
@@ -295,6 +310,47 @@ fn every_thread_count_gives_the_same_bits() {
         for threads in [2, 3, 8, 64] {
             let many = pool.install(|| case.cut(threads, cut));
             assert_eq!(bits(&many), one, "k = {k}, {threads} threads");
+        }
+    }
+}
+
+/// The working space is kept from merge to merge and not zeroed -- the
+/// square a one-piece matrix runs in, and each thread's buffer -- and a
+/// merge lays in every entry it reads: one run after others of other
+/// matrices, at other cuts, on other threads, gives the bits fresh space
+/// gives. The square's strict upper triangle stays as it was sized, zeros,
+/// for no piece writes it; a matrix of several pieces leaves it unsized.
+#[test]
+fn kept_working_space_gives_a_fresh_ones_bits() {
+    let pool = pool(4);
+    let mut square = Vec::new();
+    for (k, cut) in [
+        (300, (LEAF, TILE)),
+        (100, FINE),
+        (16, FINE),
+        (61, FINE),
+        (40, (LEAF, TILE)),
+        (40, (LEAF, TILE)),
+        (12, FINE),
+        (257, (LEAF, TILE)),
+    ] {
+        for (seed, threads) in [(31u64, 4usize), (37, 1), (41, 3)] {
+            let case = Case::new(k, 5, seed + k as u64);
+            let fresh = std::thread::scope(|s| s.spawn(|| bits(&case.cut(threads, cut))).join())
+                .expect("a fresh thread");
+            let kept = pool.install(|| case.cut_with(&mut square, threads, cut));
+            assert_eq!(bits(&kept), fresh, "k = {k}, seed {seed}");
+            if k <= cut.0 {
+                assert_eq!(square.len(), k * k);
+                for i in 0..k {
+                    assert!(
+                        square[i * k + i + 1..(i + 1) * k]
+                            .iter()
+                            .all(|&v| v.to_bits() == 0),
+                        "k = {k}: the square's upper row {i} written"
+                    );
+                }
+            }
         }
     }
 }

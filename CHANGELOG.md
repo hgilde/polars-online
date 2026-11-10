@@ -495,6 +495,20 @@ returns.
   10-target `ewridge` Gram than the square matrix did, with no change in its
   time past the runs' scatter. Outputs and saved states are unchanged to the
   bit.
+- A blocked Gram's merge (`gram_block_rows`) lays each piece of the
+  co-moment triangle out on the thread that multiplies it, rather than
+  passing the whole triangle through a square on the calling thread, and
+  `ew_cov`'s `mahal` factorizes straight from the triangle. With the
+  triangle packed, a 1,000-feature `ewridge` blocked at 256 rows had run
+  31% slower on arm64 and 40% slower on x86-64, a 500-feature one 15% and
+  13-21% slower, and `mahal` at 20 features 4-8% slower; against 1.4.0 the
+  blocked fits now run at its speed on arm64 and 7-20% faster on x86-64,
+  and `mahal` is level. A wide blocked fit no longer keeps a square copy of
+  its matrix beside the triangle. On arm64 the bank starts each model's
+  step at a fixed place within a cache line, so the models' speed no longer
+  moves with the size of the bank's own stack frame (`ewridge` at 20
+  features had run 3-6% slower after an unrelated change there). Outputs
+  and saved states are unchanged to the bit.
 - A bank's per-call cost no longer includes building a table of every
   spec's column reads, which existed only to name the spec and role when a
   column's cast fails; that name is now found only when a cast fails. Calls

@@ -2516,6 +2516,7 @@ pub use last_row::LastRow;
 mod conformal_rows;
 mod notified;
 mod pre_row_sigma;
+mod stack_line;
 mod unmet_floor;
 use notified::span_name;
 pub use notified::{Notice, Notified};
@@ -4558,6 +4559,8 @@ fn run_instance(
     // ([`u32::MAX`] for none); empty elsewhere.
     places: &[(u32, u32)],
 ) -> bool {
+    // The models' frames below at one place in a cache line (`StackLine`).
+    let line = stack_line::StackLine::new();
     let mut drift_seen = false;
     // No clock column: the clock is the row count.
     let row_clock = inst.spec.clock.is_none();
@@ -5577,6 +5580,7 @@ fn run_instance(
     if matches!(inst.model, ModelRef::Learn(_)) {
         inst.model.get_mut().flush(inst.shards);
     }
+    line.keep();
     drift_seen
 }
 

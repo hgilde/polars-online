@@ -98,6 +98,63 @@ fn tiles<'a>(low: MatMut<'a, f64>, r0: usize, c0: usize, tile: usize, out: &mut 
     }
 }
 
+/// Where one of [`pieces`]' pieces lies: rows `r0..r0 + rows`, columns
+/// `c0..c0 + cols`; a diagonal block's (`diag`) is its lower triangle with
+/// the diagonal, `r0 == c0` and `rows == cols`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Place {
+    pub(crate) diag: bool,
+    pub(crate) r0: usize,
+    pub(crate) c0: usize,
+    pub(crate) rows: usize,
+    pub(crate) cols: usize,
+}
+
+/// The places of the pieces [`pieces`] cuts a `k × k` square into, in its
+/// order, with no square to cut: for work that lays each piece out where
+/// its thread keeps it. The same recursion, on sizes alone
+/// (`places_are_where_the_pieces_lie`).
+pub(crate) fn places(k: usize, cut: (usize, usize)) -> Vec<Place> {
+    let mut out = Vec::new();
+    plan_places(0, k, cut, &mut out);
+    out
+}
+
+fn plan_places(o: usize, s: usize, cut: (usize, usize), out: &mut Vec<Place>) {
+    if s <= cut.0 {
+        out.push(Place {
+            diag: true,
+            r0: o,
+            c0: o,
+            rows: s,
+            cols: s,
+        });
+        return;
+    }
+    let h = s / 2;
+    tile_places(o + h, o, s - h, h, cut.1, out);
+    plan_places(o, h, cut, out);
+    plan_places(o + h, s - h, cut, out);
+}
+
+fn tile_places(r0: usize, c0: usize, rows: usize, cols: usize, tile: usize, out: &mut Vec<Place>) {
+    if let Some(first) = first_part(rows, tile) {
+        tile_places(r0, c0, first, cols, tile, out);
+        tile_places(r0 + first, c0, rows - first, cols, tile, out);
+    } else if let Some(first) = first_part(cols, tile) {
+        tile_places(r0, c0, rows, first, tile, out);
+        tile_places(r0, c0 + first, rows, cols - first, tile, out);
+    } else {
+        out.push(Place {
+            diag: false,
+            r0,
+            c0,
+            rows,
+            cols,
+        });
+    }
+}
+
 /// The columns of `m` in bands of [`first_part`]'s rule: right-hand sides
 /// that one sequential solve each takes, fixed by their count alone.
 pub(crate) fn col_parts(m: MatMut<'_, f64>, tile: usize) -> Vec<MatMut<'_, f64>> {
@@ -189,6 +246,37 @@ mod oracle_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`places`] are where [`pieces`] cuts, piece for piece, in order, at
+    /// every side up to past four leaves and at a fine cut.
+    #[test]
+    fn places_are_where_the_pieces_lie() {
+        for cut in [(LEAF, TILE), (16, 8), (128, 65)] {
+            for k in (0..=40).chain([255, 256, 257, 300, 511, 512, 513, 700, 1000, 1100]) {
+                let mut m = vec![0.0; k * k];
+                let want: Vec<Place> = pieces(MatMut::from_row_major_slice_mut(&mut m, k, k), cut)
+                    .into_iter()
+                    .map(|p| match p {
+                        Piece::Diag(b, o) => Place {
+                            diag: true,
+                            r0: o,
+                            c0: o,
+                            rows: b.nrows(),
+                            cols: b.ncols(),
+                        },
+                        Piece::Tile(b, r0, c0) => Place {
+                            diag: false,
+                            r0,
+                            c0,
+                            rows: b.nrows(),
+                            cols: b.ncols(),
+                        },
+                    })
+                    .collect();
+                assert_eq!(places(k, cut), want, "k = {k}, cut {cut:?}");
+            }
+        }
+    }
 
     /// The cut the docs state: `k = 1,000` is 15 pieces at the shipped cut
     /// ([`LEAF`]) -- four diagonal blocks of 250, a 250 × 250 tile in each

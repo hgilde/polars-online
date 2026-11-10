@@ -3424,3 +3424,138 @@ line_has = "let mut f = f64::from_bits((bits & ((1u64 << 52) - 1)) | (1023u64 <<
 why = """the mask leaves the mantissa's 52 low bits and `1023 << 52` sets only \
 bits 52 to 61, so the two operands share no set bit and their `^` is their \
 `|` (task 373)"""
+
+[[equivalent]]
+file = "crates/online-polars/src/stream/stack_line.rs"
+function = "StackLine::keep"
+mutation = "replace StackLine::keep with ()"
+line_has = "std::hint::black_box(&self.0);"
+why = """the line's address taken only so that `run_instance` keeps it, \
+aligned, on its stack: where the models' frames fall within a cache line, \
+a matter of speed alone; nothing reads the line, and every output is the \
+same without it"""
+
+# Task 378 (docs/PLAN.md): the survivors of 66481237's changed lines (tasks
+# 371, 374 and 375) that no input can tell from the original.
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "rank_one_rows"
+mutation = "delete match arm 3"
+line_has = "3 => rank_one_fixed::<3>(c, d, a, b),"
+why = """the fixed-side loop takes, for each entry of the lower triangle, \
+`c_ij = a·c_ij + (a·b·d_i)·d_j` with `a·b·d_i` formed once a row, in the \
+same order over the same packed rows as `rank_one_lower_rows`, which the \
+deleted arm falls to; no operation is fused or reordered, so every entry \
+is the same bits, and only the loop's speed differs (task 378)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "rank_one_rows"
+mutation = "delete match arm 4"
+line_has = "4 => rank_one_fixed::<4>(c, d, a, b),"
+why = """as `delete match arm 3` here, at the side 4 (task 378)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "rank_one_rows"
+mutation = "delete match arm 5"
+line_has = "5 => rank_one_fixed::<5>(c, d, a, b),"
+why = """as `delete match arm 3` here, at the side 5 (task 378)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "rank_one_rows"
+mutation = "delete match arm 6"
+line_has = "6 => rank_one_fixed::<6>(c, d, a, b),"
+why = """as `delete match arm 3` here, at the side 6 (task 378)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "rank_one_rows"
+mutation = "delete match arm 7"
+line_has = "7 => rank_one_fixed::<7>(c, d, a, b),"
+why = """as `delete match arm 3` here, at the side 7 (task 378)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "rank_one_rows"
+mutation = "delete match arm 8"
+line_has = "8 => rank_one_fixed::<8>(c, d, a, b),"
+why = """as `delete match arm 3` here, at the side 8 (task 378)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "rank_one_rows"
+mutation = "delete match arm 9"
+line_has = "9 => rank_one_fixed::<9>(c, d, a, b),"
+why = """as `delete match arm 3` here, at the side 9 (task 378)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "rank_one_rows"
+mutation = "delete match arm 10"
+line_has = "10 => rank_one_fixed::<10>(c, d, a, b),"
+why = """as `delete match arm 3` here, at the side 10 (task 378)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "rank_one_rows"
+mutation = "delete match arm 11"
+line_has = "11 => rank_one_fixed::<11>(c, d, a, b),"
+why = """as `delete match arm 3` here, at the side 11 (task 378)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "rank_one_rows"
+mutation = "delete match arm 12"
+line_has = "12 => rank_one_fixed::<12>(c, d, a, b),"
+why = """as `delete match arm 3` here, at the side 12 (task 378)"""
+
+[[equivalent]]
+file = "crates/online-core/src/window.rs"
+function = "<impl Clone for Kept<T>>::clone"
+mutation = "replace <impl Clone for Kept<T>>::clone -> Self with Default::default()"
+line_has = "Self(None)"
+why = """`Kept`'s `Default` is `Self(None)`, the very value the body returns: a \
+copy of a model's scratch holds none (task 378)"""
+
+[[equivalent]]
+file = "crates/online-core/src/window/flat.rs"
+function = "Ring<S>::record_same"
+mutation = "replace match guard run.shape.footprint == footprint && run.shape.words == n with false"
+line_has = "Some(run) if run.shape.footprint == footprint && run.shape.words == n => {"
+why = """the shortcut's arm and the one the mutant falls to agree: the next arm \
+calls `record` with the run's own dimensions, whose guard finds the same \
+dimensions and, where the counted bytes match, adds the `n` words, the \
+snapshot and the run's count exactly as the shortcut does; where they do \
+not, both start a run (held by \
+`snapshots_of_one_shape_counted_apart_are_each_counted_at_their_own`) \
+(task 378)"""
+
+[[equivalent]]
+file = "crates/online-core/src/window/flat.rs"
+function = "Ring<S>::record_same"
+mutation = "replace == with !="
+line_has = "Some(run) if run.shape.footprint == footprint && run.shape.words == n => {"
+columns = [78]
+why = """a snapshot reaches `record_same` only written in its run's dimensions \
+to the last, and the words a snapshot is written in are fixed by its \
+dimensions (`unpack` reads exactly what `pack` wrote, by them alone), so \
+`run.shape.words == n` always holds here; the mutant's guard is then \
+false, and `match guard ... with false` here says why that is the same \
+(task 378)"""
+
+[[equivalent]]
+file = "crates/online-core/src/window/flat.rs"
+function = "Ring<S>::pop_front"
+mutation = "replace > with <"
+line_has = "self.shaped = run.count > 0;"
+why = """a count is a `usize`, so the mutant's flag is always false and the \
+next boundary is always decoded by `unpack_entry_into`, which reads the \
+dimensions as well as the numbers, rather than by `refill_entry`, which \
+reads the numbers alone over a boundary of the same shape: the same \
+snapshot to the bit either way (held by \
+`a_snapshot_refilled_over_one_of_its_shape_reads_as_one_decoded_fresh`), \
+the general path taken where the fast one was; only the decoding's speed \
+differs, and the flag is never wrongly true (task 378)"""
