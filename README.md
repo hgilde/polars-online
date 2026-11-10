@@ -321,9 +321,11 @@ frames, built by the code on [Example data](docs/EXAMPLE-DATA.md).
 
 ## What you can do with it
 
-**Four tasks run end to end in [HIGHLIGHTS.md](docs/HIGHLIGHTS.md),** each
-on data it makes up with a known answer, and each prints what the library
-found, to read against that answer:
+**[HIGHLIGHTS.md](docs/HIGHLIGHTS.md) runs four use cases end to end:**
+linear model selection on many models at once, model stability over time,
+complex factor construction, and correlation of asynchronous streams. Each
+runs in one pass at hundreds of thousands or millions of rows per second, in
+bounded memory:
 
 | task | what it does |
 |---|---|
