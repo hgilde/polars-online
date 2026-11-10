@@ -3341,7 +3341,11 @@ def _hac_test(
         exprs = [
             pl.len().alias("n"),
             dd.mean().alias("mean"),
-            pl.when(s > 0).then(dd.mean() * pl.len() / s.sqrt()).alias(stat),
+            # Null where every value is the same, whose S is 0 but for the
+            # rounding of the mean.
+            pl.when((s > 0) & (dd.min() < dd.max()))
+            .then(dd.mean() * pl.len() / s.sqrt())
+            .alias(stat),
         ]
         g = rows.group_by(keys, maintain_order=True).agg(exprs) if keys else rows.select(exprs)
         frames.append(g.with_columns(pl.lit(t).alias("target")))
@@ -3373,7 +3377,11 @@ def _hac_query(
     carry: dict[str, pl.DataFrame | None] = dict.fromkeys(values)
     seen: dict[str, pl.DataFrame | None] = dict.fromkeys(values)
     parts: dict[str, list[pl.DataFrame]] = {t: [] for t in values}
+    # Each key's least and greatest value: where they are equal, every
+    # value is, and the statistic is null.
+    bounds: dict[str, pl.DataFrame | None] = dict.fromkeys(values)
     x, y = pl.col(col), pl.col(other)
+    lo, hi = _free(taken, "lo"), _free(taken, "hi")
     aggs = [
         pl.len().cast(pl.Int64).alias("n"),
         pl.len().cast(pl.Float64).alias("w"),
@@ -3389,6 +3397,14 @@ def _hac_query(
             rows = chunk.select(*keys, d.alias(col)).filter(x.is_not_null())
             if rows.is_empty():
                 continue
+            ends = [x.min().alias(lo), x.max().alias(hi)]
+            spans = rows.group_by(keys).agg(ends) if keys else rows.select(ends)
+            was_spans = bounds[t]
+            if was_spans is not None:
+                spans = pl.concat([was_spans, spans])
+                ends = [pl.col(lo).min(), pl.col(hi).max()]
+                spans = spans.group_by(keys).agg(ends) if keys else spans.select(ends)
+            bounds[t] = spans
             # The keys in the order they first have a value, as the frame's
             # `group_by(maintain_order=True)` gives them.
             first = rows.select(keys).unique(maintain_order=True) if keys else rows.head(1)
@@ -3454,12 +3470,20 @@ def _hac_query(
                 else own.with_columns(extra.to_series())
             )
             s_expr = s_expr + pl.col("__po_lagged").fill_null(0.0)
+        ends_t = bounds[t]
+        if ends_t is not None:
+            own = (
+                own.join(ends_t, on=keys, how="left", nulls_equal=True)
+                if keys
+                else own.with_columns(pl.lit(ends_t[c][0]).alias(c) for c in (lo, hi))
+            )
+        live = (s_expr > 0) & (pl.col(lo) < pl.col(hi))
         result = own.select(
             *keys,
             pl.lit(t).alias("target"),
             "n",
             "mean",
-            pl.when(s_expr > 0).then(pl.col("mean") * pl.col("n") / s_expr.sqrt()).alias(stat),
+            pl.when(live).then(pl.col("mean") * pl.col("n") / s_expr.sqrt()).alias(stat),
         )
         order = seen[t]
         if keys and order is not None:
@@ -3512,81 +3536,52 @@ def _ew_test(
     ``m = Σ ω d / Σ ω``, ``S = Σ ω_t² (d_t − m)² + 2 Σ_l (1 − l/(L+1)) Σ_t ω_t ω_{t−l}
     (d_t − m)(d_{t−l} − m)``, ``stat = m Σ ω / sqrt(S)``.
 
-    Each double sum is an exponentially weighted sum at ``λ²`` -- of the
-    products, the two sides and the pairs -- read as ``ewm_mean`` times its
-    weights, so the statistic is a few window expressions, not a loop. The
-    sums are of each key's ``d`` about its first, and the statistic is null
-    where ``S`` is at most :func:`_ew_rounding` of their scale.
+    ``S`` is summed about the weighted means, so no sum in it cancels a
+    level against itself. With ``ω_t ω_{t−l} = λ^l ω_t²``, each double sum
+    is one at the weights ``ω_t²``, which ``ewm_mean`` and
+    ``ewm_var(bias=True)`` at ``α = 1 − λ²`` read: with ``W₂ = Σ ω²``, and
+    ``m₂`` and ``v₂`` the mean and variance of ``d`` at those weights, lag
+    0's is ``W₂ (v₂ + (m₂ − m)²)``; lag ``l``'s, over the pairs ``(u, v) =
+    (d_t, d_{t−l})``, is ``λ^l W_l (c_l + (μ_l − m)(ν_l − m))``, with
+    ``W_l`` the pairs' weight, ``μ_l`` and ``ν_l`` their means and ``c_l =
+    (var(u + v) − var(u − v)) / 4`` their covariance. The statistic is null
+    where ``S`` is no more than its rounding, :func:`_ew_rounding`.
     """
     if isinstance(df, pl.LazyFrame):
         return _ew_query(df, values, keys, lags, half_life, stat, name)
-    lam = 0.5 ** (1.0 / half_life)
-    lam2 = lam * lam
-    # Working columns step around the frame's and the result's name, so a
-    # frame holding `dm_<t>` keeps it and a name spelled like one is kept.
-    taken = {*df.columns, name}
-    idx = _free(taken, "row")
-    base = df.with_row_index(idx)
-    fields: list[pl.Expr] = []
-    temps: list[str] = []
-
-    def over(e: pl.Expr) -> pl.Expr:
-        return e.over(keys) if keys else e
-
-    i = over(pl.int_range(pl.len())).cast(pl.Float64)
-    w1 = (1.0 - pl.lit(lam).pow(i + 1.0)) / (1.0 - lam)
-    w2 = (1.0 - pl.lit(lam2).pow(i + 1.0)) / (1.0 - lam2)
-
-    def ew_sum2(e: pl.Expr) -> pl.Expr:
-        """``Σ λ^{2(T−t)} e_t``, the missing terms as zeros."""
-        return over(e.fill_null(0.0).ewm_mean(alpha=1.0 - lam2, adjust=True)) * w2
-
-    for t, d in values.items():
-        col, ref = _free(taken, "d"), _free(taken, "ref")
-        rows = base.select(idx, *keys, d.alias(col)).filter(pl.col(col).is_not_null())
-        # Each key's differentials about its first, `x = d - d_0`: S is the
-        # same about any point, and about one near the differentials the
-        # expansion below does not cancel a level many times the spread.
-        rows = rows.with_columns(over(pl.col(col).first()).alias(ref))
-        dd = pl.col(col) - pl.col(ref)
-        m = over(dd.ewm_mean(alpha=1.0 - lam, adjust=True))
-        s = ew_sum2(dd * dd) - 2.0 * m * ew_sum2(dd) + m * m * w2
-        scale = ew_sum2(dd * dd) + m * m * w2
-        for lag in range(1, lags + 1):
-            back = over(pl.col(col).shift(lag)) - pl.col(ref)
-            has = back.is_not_null().cast(pl.Float64)
-            a_l = ew_sum2(dd * back)
-            b_l = ew_sum2(dd * has)
-            c_l = ew_sum2(back)
-            d_l = ew_sum2(has)
-            weight = 1.0 - lag / (lags + 1.0)
-            s = s + 2.0 * weight * lam**lag * (a_l - m * (b_l + c_l) + m * m * d_l)
-        out_col = _free(taken, f"{stat}_{len(temps)}")
-        whole = (m + pl.col(ref)) * w1 / s.sqrt()
-        value = pl.when(s > _ew_rounding(lags) * scale).then(whole).alias(out_col)
-        got = rows.select(idx, value)
-        base = base.join(got, on=idx, how="left", maintain_order="left")
-        fields.append(pl.col(out_col).alias(f"{stat}_{t}"))
-        temps.append(out_col)
-    return base.with_columns(pl.struct(fields).alias(name)).drop(idx, *temps)
+    return _ew_chunk(df, values, keys, lags, half_life, stat, name, {})
 
 
-def _ew_rounding(lags: int) -> float:
-    """The most rounding the per-row ``S`` carries, as a share of ``Q =
-    Σ ω² x² + m² Σ ω²`` (``x`` the differential about the key's first,
-    ``m`` their weighted mean): below it, ``S`` is zero but for rounding,
-    and the statistic is null.
+def _ew_rounding(lags: int, half_life: float, s0: pl.Expr, r: pl.Expr) -> pl.Expr:
+    """The most rounding the per-row ``S`` carries, from ``s0 = W₂ (v₂ +
+    (m₂ − m)²)``, its lag-0 sum, and ``r = W₂ (v₂ + m₂²) = Σ ω² d²``:
+    ``E = 10 (1 + L) (η s0 + η sqrt(s0 r) + η² r)``, ``η = ε / (1 − λ²)``.
 
-    ``S`` is formed as a sum of weighted sums, each bounded by Cauchy and
-    Schwarz in ``Q``: ``Σ ω² x²``, ``2 |m Σ ω² x|`` and ``m² Σ ω²`` add up
-    to at most ``2 Q``, and each lag's ``λ^l (|Σ ω² x x_{-l}| + |m| (|Σ ω²
-    x| + |Σ ω² x_{-l}|) + m² Σ ω²)``, twice and at a Bartlett weight of at
-    most 1, to at most ``4 Q``: ``(2 + 4 lags) Q`` in all. Each is formed
-    with about eight roundings, each at most ``ε`` of its magnitude --
-    ``ewm_mean``'s step, the weights' power and quotient, the products with
-    ``m``, the sum, and a chunk's carry and decay -- so ``S`` is within
-    ``8 ε (2 + 4 lags) Q`` of its value; twice that is the bound."""
-    return 2.0 * 8.0 * (2.0 + 4.0 * lags) * sys.float_info.epsilon
+    Each of the means and variances is an exponentially weighted recursion
+    (``ewm_mean``, ``ewm_var``), each step rounding by a few ``ε`` of the
+    value it holds, and those roundings fade by ``1 − α`` a step; so each
+    rests within about ``ε / α`` of its value relative to its size, and a
+    mean of a constant ``c``, where a step ``(c − mean) / weight`` is below
+    half an ulp and rounds to nothing, rests up to ``ε |c| / (2α)`` from
+    it. ``m`` is at ``α = 1 − λ``, the rest at ``α₂ = 1 − λ² ≤ 2 (1 − λ)``,
+    so every mean is within ``2 η |mean|`` and ``|m₂ − m|`` within ``3 η
+    |c|``. On rows of a constant ``c``, where ``S`` is 0, what is left is:
+    lag 0, ``W₂ ((3 η c)² + (η c)²)``, the difference of the means squared
+    and the variance's floor (its mean's offset squared); lag ``l``, ``λ^l
+    W_l ((2 η c)² / 4 + (3 η c)²)``, the floor of ``var(u + v)`` (``u + v
+    = 2c``; ``u − v`` is 0 exactly) and the product of the means'
+    offsets; each at most ``10 η² W₂ c² = 10 η² r``, at Bartlett weights
+    that add up to ``1 + L``. Away from a constant, the error is relative:
+    ``η`` of each sum's size, and the lag sums are each at most ``s0`` by
+    Cauchy and Schwarz (``λ^l Σ ω_t² (d_t − m)² ≤ s0``, and so for
+    ``d_{t−l}``), the covariance's polarisation at most their mean, so
+    ``10 (1 + L) η s0`` holds the terms' rounding; and the cross term of
+    the means' offsets, ``2 W₂ |m₂ − m| 3 η |c|``, is at most ``6 η sqrt(s0
+    r)``. ``E`` adds the three: no less than ``S``'s rounding, so ``S <=
+    E`` is ``S`` zero but for rounding, and above it the statistic's own
+    rounding is at most about ``E / (2 S)`` of its value."""
+    eta = sys.float_info.epsilon / (1.0 - 0.25 ** (1.0 / half_life))
+    return 10.0 * (1.0 + lags) * (eta * s0 + eta * (s0 * r).sqrt() + eta * eta * r)
 
 
 def _ew_query(
@@ -3601,13 +3596,16 @@ def _ew_query(
     """:func:`_ew_test` over a query: a query of its rows with the record
     column added, read in one pass a chunk at a time when it runs.
 
-    Each of the statistic's weighted sums is ``E_t = Σ_{j ≤ t} μ^{t−j} e_j``
-    (``μ`` is ``λ`` or ``λ²``), so a chunk carries in each key's sums after
-    the rows before it, ``E_c``, and goes on as ``E_t = μ^{k+1} E_c + Σ`` of
-    its own ``k + 1`` rows so far; with the last ``lags`` values of each
-    key, which the chunk's first rows read as the rows ``l`` before them.
-    What it holds is one chunk, and per key and target ``lags`` values and
-    ``2 + 4 lags`` sums, not the query's rows."""
+    Each of the statistic's weighted means and variances is of the rows
+    ``j ≤ t`` at weights ``μ^{t−j}`` (``μ`` is ``λ`` or ``λ²``), whose total
+    follows from the count, so a chunk carries in each key's count and its
+    means and variances after the rows before it, decays their weight by
+    ``μ^{k+1}`` over the chunk's own ``k + 1`` rows so far, and pools them
+    with the chunk's own, as two groups' means and variances pool: every
+    term non-negative. With them it carries the last ``lags`` values of
+    each key, which the chunk's first rows read as the rows ``l`` before
+    them. What it holds is one chunk, and per key and target ``lags``
+    values and ``3 + 4 lags`` means and variances, not the query's rows."""
     schema = _ew_test(_probe(lf), values, keys, lags, half_life, stat, name).schema
     needed = set(keys).union(*(d.meta.root_names() for d in values.values()))
 
@@ -3632,19 +3630,32 @@ def _ew_chunk(
     name: str,
     carry: dict[str, tuple[pl.DataFrame, pl.DataFrame]],
 ) -> pl.DataFrame:
-    """One chunk of :func:`_ew_query`, after the chunks whose sums and last
-    values ``carry`` holds per target; ``carry`` is updated in place. A key
-    the chunks before did not have is read as :func:`_ew_test` reads a
-    frame, so a query of one chunk gives the frame's result."""
+    """One chunk of :func:`_ew_query`, after the chunks whose counts, means,
+    variances and last values ``carry`` holds per target; ``carry`` is
+    updated in place. A key the chunks before did not have reads the
+    chunk's own means and variances as they are, so a frame is one chunk
+    with nothing carried in, and a query of one chunk gives the frame's
+    result to the bit."""
     lam = 0.5 ** (1.0 / half_life)
     lam2 = lam * lam
     taken = {*df.columns, name}
     idx = _free(taken, "row")
     col, mark, count = _free(taken, "d"), _free(taken, "carried"), _free(taken, "count")
-    ref, ref_in = _free(taken, "ref"), _free(taken, "in_ref")
-    sums = ["num", "dd", "d", *(f"{q}{lag}" for lag in range(1, lags + 1) for q in "abcz")]
-    held = {q: _free(taken, f"in_{q}") for q in sums}
-    now = {q: _free(taken, f"now_{q}") for q in sums}
+    seq = _free(taken, "seq")
+    # Each pooled quantity: its name, its decay, the lag whose pairs it is
+    # of (0 for the rows themselves), and the mean it is a variance about
+    # (None for a mean), as (name, sign) pairs of the means of `u` and `v`.
+    means = [("m", lam, 0), ("m2", lam2, 0)]
+    variances: list[tuple[str, int, list[tuple[str, float]]]] = [("v2", 0, [("m2", 1.0)])]
+    for lag in range(1, lags + 1):
+        means += [(f"mu{lag}", lam2, lag), (f"nu{lag}", lam2, lag)]
+        variances += [
+            (f"vp{lag}", lag, [(f"mu{lag}", 1.0), (f"nu{lag}", 1.0)]),
+            (f"vm{lag}", lag, [(f"mu{lag}", 1.0), (f"nu{lag}", -1.0)]),
+        ]
+    names = [q for q, _, _ in means] + [q for q, _, _ in variances]
+    held = {q: _free(taken, f"in_{q}") for q in names}
+    now = {q: _free(taken, f"now_{q}") for q in names}
     base = df.with_row_index(idx)
     fields: list[pl.Expr] = []
     temps: list[str] = []
@@ -3653,75 +3664,128 @@ def _ew_chunk(
         return e.over(keys) if keys else e
 
     raw = pl.col(col)
-    dd = raw - pl.col(ref)
-    k = over(pl.int_range(pl.len())).cast(pl.Float64)
-    i = k + pl.col(count).cast(pl.Float64)
-    known = pl.col(held["num"]).is_not_null()
-    w1 = (1.0 - pl.lit(lam).pow(i + 1.0)) / (1.0 - lam)
-    w2 = (1.0 - pl.lit(lam2).pow(i + 1.0)) / (1.0 - lam2)
-    p1, p2 = pl.lit(lam).pow(k + 1.0), pl.lit(lam2).pow(k + 1.0)
+    # Rows of the key before the chunk, `c`, and up to this row, `n`; `j`
+    # the chunk's own.
+    c = pl.col(count).cast(pl.Float64)
+    j = pl.col(seq)
 
-    def local(e: pl.Expr, mu: float) -> pl.Expr:
-        return over(e.fill_null(0.0).ewm_mean(alpha=1.0 - mu, adjust=True))
+    def total(mu: float, rows: pl.Expr) -> pl.Expr:
+        """``Σ μ^age`` over ``rows`` rows, 0 over none."""
+        return (1.0 - pl.lit(mu).pow(rows.clip(lower_bound=0.0))) / (1.0 - mu)
+
+    def pairs(rows: pl.Expr, lag: int) -> pl.Expr:
+        return rows - float(lag)
+
+    def ewm(e: pl.Expr, mu: float, var: bool = False) -> pl.Expr:
+        a = 1.0 - mu
+        got = (
+            e.ewm_var(alpha=a, adjust=True, bias=True) if var else e.ewm_mean(alpha=a, adjust=True)
+        )
+        return over(got)
 
     for t, d in values.items():
         rows = base.select(idx, *keys, d.alias(col)).filter(raw.is_not_null())
-        sums_in, tail_in = carry.get(t, (None, None))
+        carried, tail_in = carry.get(t, (None, None))
         both = rows.with_columns(pl.lit(False).alias(mark))
         if tail_in is not None:
             both = pl.concat([tail_in, both], how="diagonal")
         backs = [over(raw.shift(lag)).alias(f"__po_back{lag}") for lag in range(1, lags + 1)]
         loc = both.with_columns(backs).filter(~pl.col(mark))
-        loc = _carried_in(loc, sums_in, keys, [count], [*held.values(), ref_in])
-        # The differentials about the key's first, as the frame reads them:
-        # carried in, or this chunk's first for a key new to it.
-        loc = loc.with_columns(
-            pl.when(known).then(pl.col(ref_in)).otherwise(over(raw.first())).alias(ref)
-        )
-        # Each sum as the frame reads it (`ewm_mean` times its weights) for a
-        # key with nothing carried in, and the carried sum decayed by the
-        # chunk's rows plus the chunk's own for one with.
-        own = {"num": (local(dd, lam), lam), "dd": (local(dd * dd, lam2), lam2),
-               "d": (local(dd, lam2), lam2)}  # fmt: skip
+        loc = _carried_in(loc, carried, keys, [count], list(held.values()))
+        # The chunk's own means and variances, each key's rows from the
+        # chunk's first: of the rows, and of each lag's pairs, which start
+        # where a row `l` back has a value.
+        own: dict[str, pl.Expr] = {
+            "m": ewm(raw, lam),
+            "m2": ewm(raw, lam2),
+            "v2": ewm(raw, lam2, var=True),
+        }
         for lag in range(1, lags + 1):
-            back = pl.col(f"__po_back{lag}") - pl.col(ref)
-            has = back.is_not_null().cast(pl.Float64)
+            v = pl.col(f"__po_back{lag}")
+            u = pl.when(v.is_not_null()).then(raw)
             own |= {
-                f"a{lag}": (local(dd * back, lam2), lam2),
-                f"b{lag}": (local(dd * has, lam2), lam2),
-                f"c{lag}": (local(back, lam2), lam2),
-                f"z{lag}": (local(has, lam2), lam2),
+                f"mu{lag}": ewm(u, lam2),
+                f"nu{lag}": ewm(v, lam2),
+                f"vp{lag}": ewm(u + v, lam2, var=True),
+                f"vm{lag}": ewm(u - v, lam2, var=True),
             }
-        went = []
-        for q, (mean, mu) in own.items():
-            p = p1 if mu == lam else p2
-            weights = (1.0 - p) / (1.0 - mu)
-            went.append((p * pl.col(held[q]).fill_null(0.0) + mean * weights).alias(now[q]))
-        loc = loc.with_columns(went)
+        loc = loc.with_columns(
+            *(e.alias(now[q]) for q, e in own.items()),
+            (over(pl.int_range(pl.len())).cast(pl.Float64) + 1.0).alias(seq),
+        )
 
-        def e(q: str, own: dict[str, tuple[pl.Expr, float]] = own) -> pl.Expr:
-            mean, mu = own[q]
-            return pl.when(known).then(pl.col(now[q])).otherwise(mean * (w1 if mu == lam else w2))
+        # Pool the carried quantities, decayed over the chunk's rows so far,
+        # with the chunk's own: `A` the carried weight, `B` the chunk's, one
+        # pair of columns per decay and lag.
+        shares: dict[tuple[float, int], tuple[str, str]] = {}
+        for mu, lag in sorted({(mu, lag) for _, mu, lag in means}):
+            shares[(mu, lag)] = (_free(taken, f"a{len(shares)}"), _free(taken, f"b{len(shares)}"))
 
-        m = pl.when(known).then(pl.col(now["num"]) / w1).otherwise(own["num"][0])
-        s = e("dd") - 2.0 * m * e("d") + m * m * w2
-        scale = e("dd") + m * m * w2
-        for lag in range(1, lags + 1):
-            weight = 1.0 - lag / (lags + 1.0)
-            s = s + 2.0 * weight * lam**lag * (
-                e(f"a{lag}") - m * (e(f"b{lag}") + e(f"c{lag}")) + m * m * e(f"z{lag}")
+        def share(mu: float, lag: int) -> tuple[pl.Expr, pl.Expr]:
+            before = total(mu, pairs(c, lag))
+            after = total(mu, pairs(c + j, lag)) - pl.lit(mu).pow(j) * before
+            return pl.lit(mu).pow(j) * before, after
+
+        loc = loc.with_columns(
+            e.alias(nm)
+            for key, names_ab in shares.items()
+            for e, nm in zip(share(*key), names_ab, strict=True)
+        )
+
+        pooled: dict[str, pl.Expr] = {}
+        shift: dict[str, pl.Expr] = {}
+        for q, mu, lag in means:
+            a, b = (pl.col(nm) for nm in shares[(mu, lag)])
+            gap = pl.col(held[q]) - pl.col(now[q])
+            shift[q] = gap
+            pooled[q] = (
+                pl.when(a <= 0.0)
+                .then(pl.col(now[q]))
+                .when(b <= 0.0)
+                .then(pl.col(held[q]))
+                .otherwise(pl.col(now[q]) + gap * (a / (a + b)))
             )
+        for q, lag, parts in variances:
+            a, b = (pl.col(nm) for nm in shares[(lam2, lag)])
+            gap = functools.reduce(operator.add, (sign * shift[p] for p, sign in parts))
+            pooled[q] = (
+                pl.when(a <= 0.0)
+                .then(pl.col(now[q]))
+                .when(b <= 0.0)
+                .then(pl.col(held[q]))
+                .otherwise(
+                    (a * pl.col(held[q]) + b * pl.col(now[q])) / (a + b)
+                    + a * b * gap * gap / ((a + b) * (a + b))
+                )
+            )
+        loc = loc.with_columns(pooled[q].alias(now[q]) for q in names)
+        got = loc.with_columns(pl.col(now[q]).alias(held[q]) for q in names)
+
+        def p(q: str) -> pl.Expr:
+            return pl.col(held[q])
+
+        n = c + j
+        w1, w2 = total(lam, n), total(lam2, n)
+        m = p("m")
+        s0 = w2 * (p("v2") + (p("m2") - m) * (p("m2") - m))
+        s = s0
+        for lag in range(1, lags + 1):
+            cov = (p(f"vp{lag}") - p(f"vm{lag}")) / 4.0
+            term = lam**lag * total(lam2, pairs(n, lag))
+            term = term * (cov + (p(f"mu{lag}") - m) * (p(f"nu{lag}") - m))
+            weight = 1.0 - lag / (lags + 1.0)
+            s = s + 2.0 * weight * pl.when(n > lag).then(term).otherwise(0.0)
+        r = w2 * (p("v2") + p("m2") * p("m2"))
         out_col = _free(taken, f"{stat}_{len(temps)}")
-        whole = (m + pl.col(ref)) * w1 / s.sqrt()
-        got = loc.with_columns(pl.when(s > _ew_rounding(lags) * scale).then(whole).alias(out_col))
+        cut = _ew_rounding(lags, half_life, s0, r)
+        got = got.with_columns(pl.when(s > cut).then(m * w1 / s.sqrt()).alias(out_col))
         base = base.join(got.select(idx, out_col), on=idx, how="left", maintain_order="left")
         fields.append(pl.col(out_col).alias(f"{stat}_{t}"))
         temps.append(out_col)
         if not got.is_empty():
             last = [
                 (pl.col(count).first() + pl.len().cast(pl.Int64)).alias(count),
-                *(pl.col(now[q]).last().alias(held[q]) for q in sums),
-                pl.col(ref).first().alias(ref_in),
+                *(pl.col(held[q]).last() for q in names),
             ]
             summed = got.group_by(keys).agg(last) if keys else got.select(last)
             back_tail = both.select(*keys, col, pl.lit(True).alias(mark))
@@ -3734,7 +3798,7 @@ def _ew_chunk(
             else:
                 back_tail = back_tail.head(0)
             carry[t] = (
-                _carry_on(sums_in, summed.select(*keys, count, *held.values(), ref_in), keys),
+                _carry_on(carried, summed.select(*keys, count, *held.values()), keys),
                 back_tail,
             )
     return base.with_columns(pl.struct(fields).alias(name)).drop(idx, *temps)
@@ -3891,7 +3955,8 @@ def diebold_mariano(
 
     Without ``half_life``, a ``DataFrame`` with one row per ``group`` key
     and target: ``n``, the rows read; ``mean``, the mean differential;
-    ``dm``, the statistic; and ``p_value``, its two-sided p-value. A
+    ``dm``, the statistic, null where every differential is the same value;
+    and ``p_value``, its two-sided p-value. A
     ``dm`` above 1.96 says ``a`` predicted better at the 5% level, and one
     below -1.96 says ``b`` did.
 
@@ -3969,32 +4034,49 @@ def diebold_mariano(
     105 MiB at sixteen million, measured as :func:`metrics`' Notes say,
     where the collected frame's held 252 MiB at a million.
 
-    With ``half_life``, each weighted sum of the statistic is ``E_t = Σ_{j ≤
-    t} μ^(t-j) e_j``, with ``μ`` the weight's decay a row or its square, so
-    a chunk carries in each key's sums after the rows before it, ``E_c``,
-    and goes on as ``μ^(k+1) E_c`` plus its own ``k + 1`` rows' sum. While
-    the query is one chunk the result is the frame's to the bit, and over
-    many within 1e-12 relative (3e-15 measured in chunks of 97 rows), but
-    on rows where ``S`` is near its rounding, below. Written to a file with
-    ``sink_parquet``, the test by the row with ``lags=2`` held 155 MiB at a
-    million rows, 167 MiB at four million and 172 MiB at sixteen million.
+    With ``half_life``, ``S`` is read from weighted means and variances (see
+    below), each over the rows ``j ≤ t`` at weights ``μ^(t-j)``, with ``μ``
+    the weight's decay a row or its square, so a chunk carries in each
+    key's count, means and variances after the rows before it, decays
+    their weight over its own rows, and pools them with its own as two
+    groups' means and variances pool. While the query is one chunk the
+    result is the frame's to the bit, and over many within 1e-12 relative
+    (5e-15 measured in chunks of 97 rows), but on rows where ``S`` is near
+    its rounding, below. Written to a file with ``sink_parquet``, the test
+    by the row with ``lags=2`` held 155 MiB at a million rows, 167 MiB at
+    four million and 172 MiB at sixteen million.
 
-    **With** ``half_life``, ``dm`` **is null where** ``S`` **is zero but
-    for rounding:** on a key's first row, on rows whose differentials have
-    all been equal, and once the weights have shrunk every differential
-    unlike the latest below rounding. ``S`` is summed from the
-    differentials about the key's first, ``x = d - d_0``, as it is the
-    same about any point, and the sums do not then cancel a level far above
-    the differentials' spread. With ``ω`` each row's weight and ``m`` the
-    weighted mean of ``x``, its terms, each bounded by Cauchy and Schwarz,
-    add up to at most ``(2 + 4 lags) Q``, ``Q = Σ ω² x² + m² Σ ω²``, and
-    each is formed with about eight roundings, each at most ``ε =
-    2.2e-16`` of its size, so ``S`` is within ``8 ε (2 + 4 lags) Q`` of its
-    value. Where ``S`` is at most twice that, ``dm`` is null; above it,
-    its rounding is at most about ``4 ε (2 + 4 lags) Q / S`` of its value,
-    which is where the query's ``dm`` can differ from the frame's by more
-    than 1e-12, and a row with ``S`` within its rounding of the cut can be
+    **With** ``half_life``, ``S`` **is summed about the weighted means, and**
+    ``dm`` **is null where** ``S`` **is zero but for rounding.** Each row's
+    weight is ``ω``, ``d̄`` is the mean at those weights, and ``ω_t ω_(t-l)
+    = λ^l ω_t²``, so each sum in ``S``
+    is a sum at the weights ``ω²``: with ``W = Σ ω²``, and ``m₂`` and
+    ``v₂`` the mean and variance of ``d`` at those weights, lag 0's is ``W
+    (v₂ + (m₂ - d̄)²)``, and lag ``l``'s, over the pairs ``(u, v) = (d_i,
+    d_(i-l))``, is ``λ^l W_l (c_l + (μ_l - d̄)(ν_l - d̄))``, with ``W_l``,
+    ``μ_l``, ``ν_l`` and ``c_l`` the pairs' weight, means and covariance.
+    No sum cancels the differentials' level against itself, so a spread
+    far below the level, or one first differential far from the rest, is
+    read to the digits the means hold. Each mean and variance is a
+    recursion, and its rounding fades by ``1 - α`` a row, so it rests
+    within about ``η = ε / (1 - λ²)`` of its size, ``ε = 2.2e-16``; a mean
+    of a constant can rest that far from it, since a step smaller than half
+    its last digit rounds to nothing. From there, with ``S₀`` lag 0's sum
+    and ``R = Σ ω² d²``, ``S`` is within ``E = 10 (1 + lags) (η S₀ + η
+    sqrt(S₀ R) + η² R)`` of its value: ``η²`` of ``R`` where the
+    differentials have been one value (the means' offsets squared), and
+    ``η`` of the sums where they have not. ``dm`` is null where ``S <= E``:
+    on a key's first row, on rows whose differentials have all been equal,
+    and once a constant has run long enough that the rows before it weigh
+    less than its rounding. Above it, ``dm``'s rounding is at most about
+    ``E / (2 S)`` of it, and the mean's, about ``η`` of the differentials'
+    size; there the query's ``dm`` can differ from the frame's by more than
+    1e-12, and a row whose ``S`` is within its rounding of ``E`` can be
     null in one and not the other.
+
+    Without ``half_life``, ``dm`` is null where every differential of the
+    key is the same value, whose ``S`` is zero but for the rounding of the
+    mean.
     """
     _frame("po.eval.diebold_mariano", df, lazy=True)
     probe = _probe(df)
@@ -4173,8 +4255,9 @@ def clark_west(
     zero but estimated, and their noise adds ``(pred_small - pred_big)²``
     to its squared error on average. Clark and West add that term back.
 
-    With ``half_life``, ``cw`` is null where :func:`diebold_mariano`'s
-    ``dm`` is, of ``f``: where ``S`` is zero but for rounding.
+    ``cw`` is null where :func:`diebold_mariano`'s ``dm`` is, of ``f``:
+    where every ``f`` of a key is the same value, and, with ``half_life``,
+    where ``S`` is zero but for rounding.
 
     Given a query, this holds and computes what :func:`diebold_mariano`
     does for one, of ``f`` in place of ``d``, with the same agreement with
