@@ -756,7 +756,9 @@ def _per_row(
     df: pl.DataFrame, call: str, monkeypatch, rows: int | None = None, **kw
 ) -> list[float | None]:
     """The per-row statistic of ``df``, or of a query of it read ``rows`` at
-    a time."""
+    a time; at ``min_samples=1`` unless ``kw`` says, so that only the rows
+    of a key too short for its lags (:func:`_floor`) are null by count."""
+    kw.setdefault("min_samples", 1)
     field, sides = CALLS[call]
     if rows is None:
         got = getattr(po.eval, call)(df, **sides, **kw)
@@ -816,16 +818,28 @@ def _exact(v: np.ndarray, half_life: float, lags: int, rows: list[int]) -> dict[
     return out
 
 
-def _null_only_where_constant(got: list[float | None], v: np.ndarray) -> bool:
-    """Every null row of ``got`` is one whose values so far are all equal."""
-    return all(v[: i + 1].min() == v[: i + 1].max() for i, g in enumerate(got) if g is None)
+def _floor(lags: int) -> int:
+    """The rows a key's statistic is null on for its ``lags`` (task 382b,
+    B7): its first ``4 (lags + 1)`` rows with a value."""
+    return 4 * (lags + 1)
 
 
-def _held(got: list[float | None], exact: dict[int, tuple], what: str) -> None:
-    """``got`` is the exact statistic within its rounding on every row
-    asked, and null only where ``S`` is at most twice its rounding."""
+def _null_only_where_constant(got: list[float | None], v: np.ndarray, floor: int) -> bool:
+    """Every null row of ``got`` is one of the first ``floor``, or one whose
+    values so far are all equal."""
+    return all(
+        i < floor or v[: i + 1].min() == v[: i + 1].max() for i, g in enumerate(got) if g is None
+    )
+
+
+def _held(got: list[float | None], exact: dict[int, tuple], what: str, floor: int) -> None:
+    """``got`` is null on its first ``floor`` rows, and on every later row
+    asked the exact statistic within its rounding, null only where ``S`` is
+    at most twice its rounding."""
     for t, (want, bound, ratio) in exact.items():
-        if got[t] is None:
+        if t < floor:
+            assert got[t] is None, (what, t, got[t])
+        elif got[t] is None:
             assert ratio <= 2.0, (what, t, ratio)
         else:
             assert want is not None, (what, t, got[t])
@@ -861,10 +875,10 @@ class TestPerRowWhereSIsZeroButForRounding:
     @pytest.mark.parametrize("first", [1e7, 1e8])
     def test_an_outlying_first_value_does_not_null_the_key(self, monkeypatch, call, lags, first):
         """The key's first differential ``first``, then differentials of two
-        chi-squared(1) apart, half-life 20: every later row reads the exact
-        statistic within its rounding, in the frame and in queries of 1, 7,
-        97 rows and one chunk. Two keys interleaved, so the query carries
-        each key's own sums."""
+        chi-squared(1) apart, half-life 20: every row after the key's first
+        ``4 (lags + 1)`` reads the exact statistic within its rounding, in
+        the frame and in queries of 1, 7, 97 rows and one chunk. Two keys
+        interleaved, so the query carries each key's own sums."""
         rng = np.random.default_rng(int(first) % 1000 + lags)
         n = 300
         d = rng.chisquare(1, n) - rng.chisquare(1, n)
@@ -875,8 +889,8 @@ class TestPerRowWhereSIsZeroButForRounding:
         exact = _exact(_value(call, read[0::2]), 20.0, lags, list(range(0, n, 7)))
         for rows in (None, 1, 7, 97, 10**6):
             got = _per_row(df, call, monkeypatch, rows, **kw)[0::2]
-            _held(got, exact, rows)
-            assert sum(v is None for v in got) == 1, rows
+            _held(got, exact, rows, _floor(lags))
+            assert sum(v is None for v in got) == _floor(lags), rows
 
     @pytest.mark.parametrize("call", list(CALLS))
     @pytest.mark.parametrize("lags", [0, 2])
@@ -888,8 +902,8 @@ class TestPerRowWhereSIsZeroButForRounding:
     def test_a_small_spread_about_a_level_is_its_statistic(
         self, monkeypatch, call, lags, level, spread, half_life
     ):
-        """A first value of 0, then ``level + spread · z``: no row but the
-        first null, and each the exact statistic within its rounding, in the
+        """A first value of 0, then ``level + spread · z``: no row null but
+        the first ``4 (lags + 1)``, and each the exact statistic within its rounding, in the
         frame and a query of 37-row chunks."""
         rng = np.random.default_rng(int(1 / spread) % 997 + lags)
         n = 400
@@ -900,8 +914,8 @@ class TestPerRowWhereSIsZeroButForRounding:
         exact = _exact(_value(call, read), half_life, lags, list(range(0, n, 9)))
         for rows in (None, 37):
             got = _per_row(df, call, monkeypatch, rows, **kw)
-            _held(got, exact, rows)
-            assert _null_only_where_constant(got, _value(call, read)), rows
+            _held(got, exact, rows, _floor(lags))
+            assert _null_only_where_constant(got, _value(call, read), _floor(lags)), rows
 
     @pytest.mark.parametrize("call", list(CALLS))
     @pytest.mark.parametrize(
@@ -926,9 +940,10 @@ class TestPerRowWhereSIsZeroButForRounding:
         apart = set()
         for rows, values in got.items():
             assert values[n - 300 :] == [None] * 300, rows
-            # Null from one row on, and statistics before it (but the first).
+            # Null from one row on, and statistics before it (but the first
+            # `_floor(lags)`).
             live = [i for i, v in enumerate(values) if v is not None]
-            assert live == list(range(1, len(live) + 1)), rows
+            assert live == list(range(_floor(lags), _floor(lags) + len(live))), rows
             apart |= {i for i, v in enumerate(values) if (v is None) != (got[None][i] is None)}
         # Where the paths differ, `S` is at its rounding: the cut, within a
         # factor of 2 of the exact `S`.

@@ -34,14 +34,22 @@ models](../DIAGNOSTICS.md#comparing-two-models) defines both statistics.
    `po.eval.diebold_mariano(out, a=, b=)`.** It returns `dm`, positive
    when `a` predicts closer, and its two-sided `p_value`. For a one-sided
    test at 5% that `a` predicts closer, read `dm > 0` with
-   `p_value < 0.10`. `lags=`, the lags of its Newey-West variance, is 0
-   by default, for one row ahead; for a target that looks `h` rows ahead,
-   give at least `h − 1`.
+   `p_value < 0.10`.
 4. **For two nested models, call `po.eval.clark_west(out, big=, small=)`.**
    It returns a one-sided `p_value`: below 0.05, the larger model predicts
-   better at the 5% level. Give it `lags=` as step 3 does, at least
-   `h − 1` for a target `h` rows ahead.
-5. **Pass `group=` to either call** for one test per
+   better at the 5% level.
+5. **Give either call `lags=`, the lags of its Newey-West variance.** The
+   default, 0, is right only where the loss differentials are uncorrelated
+   from row to row. Two models that each leave out something persistent,
+   such as a feature that moves slowly, make one-step errors that run, and
+   at `lags=0` two such models of equal accuracy were found to differ at 5%
+   on 24% to 32% of simulated streams. For a target that looks `h` rows
+   ahead, give about `2 h`. Rows fewer than `h` apart share shocks, and
+   Newey and West's weights count lag `l` at `1 − l / (lags + 1)`, so
+   `h − 1` lags leave part of that correlation out. A group needs many
+   times `lags` rows: one with at most `4 (lags + 1)` reads a null
+   statistic.
+6. **Pass `group=` to either call** for one test per
    [group](../GLOSSARY.md#the-model-bank-and-what-it-reads).
 
 This code compares two nested models on 200 streams, one group each. On
@@ -78,7 +86,7 @@ small = po.spec.ewridge("small", features=["x0"], **common)
 big = po.spec.ewridge("big", features=["x0", "x1"], **common)
 out = nested.online.fit_predict([small, big]).collect()
 
-# 3 to 5. One test of each kind per stream: does big predict better than small?
+# 3 to 6. One test of each kind per stream: does big predict better than small?
 dm = po.eval.diebold_mariano(out, a="big", b="small", group="stream")
 cw = po.eval.clark_west(out, big="big", small="small", group="stream")
 tests = (
@@ -117,8 +125,22 @@ rejected on 2% to 6%.
 
 A test computed once over the stream answers at its last row. To act the
 first time the evidence is enough, read a test whose evidence can be read
-at any row, as often as you like. A p-value read repeatedly inflates its
-error rate. The evidence a `seqtest` keeps does not.
+at every row, as often as you like. A p-value read repeatedly inflates its
+error rate, and so does the per-row statistic `half_life=` gives the two
+tests above, which is one test per row. The evidence a `seqtest` keeps does
+not.
+
+A `seqtest` asks which model is closer on more rows, by the sign of the
+difference of their absolute errors. The two tests above ask which has the
+smaller mean squared error. A model with rare large errors can win the
+first and lose the second, so read the two as answers to two questions.
+
+Its 5% holds where, at every row and whatever came before, the next sign
+is no more likely positive than negative. Equally accurate models whose
+errors run from row to row give signs that run, which breaks that. Take
+simulated streams of 5,000 rows from two such models, with errors that
+followed an autoregression at 0.9. Each side's evidence reached `ln 20` on
+61% to 62% of them, where with independent errors each reached it on 3.6%.
 
 1. **Name the two specs in a `seqtest` spec's `a` and `b`.** The sign it
    tests is
@@ -131,7 +153,8 @@ error rate. The evidence a `seqtest` keeps does not.
    holds](find-an-output-field.md)). Without the suffix, the
    bank refuses the spec and lists the grid's residual fields.
 4. **Read `log_e_a_<t>` on each row,** and reject the first time it
-   reaches `ln 20`: that is the 5% level, however often you read it.
+   reaches `ln 20`: that is the 5% level, however often you read it, under
+   the null above.
    `log_e_b_<t>` is the evidence that `b` came closer.
 
 This code makes two
@@ -213,7 +236,8 @@ A test of two models is only as good as the rows it reads:
 | what you see | what it means | what to do |
 |---|---|---|
 | Diebold and Mariano's test never finds a larger, nested model better | the test leans toward the smaller model | use `po.eval.clark_west` for nested models |
-| a significant `dm`, or a small Clark and West `p_value`, on a target that looks ahead, which goes away at a larger `lags` | the overlapping targets correlate the residuals, and too few lags understate the standard error | set `lags` to at least `h − 1` for a target `h` rows ahead |
+| a significant `dm`, or a small Clark and West `p_value`, which goes away at a larger `lags` | the differentials correlate from row to row, through a target that looks ahead or errors that persist, and too few lags understate the standard error | set `lags` to about `2 h` for a target `h` rows ahead, and above 0 wherever the differentials correlate |
 | a test that finds a difference on every one of many streams, or on none | the difference is large against the noise, or the streams are too short to see it | read the size of the difference too, as the two models' `mse` from `po.eval.compare_specs` |
-| a `seqtest` that passes the 5% level in the first rows and falls back | one model is still in its warm-up, and its first predictions are far off | set `min_weight` on both specs, so the test reads only rows both models are ready on |
+| a `seqtest` that passes the 5% level in the first rows and falls back | one model is still in its warm-up, and its first predictions are far off; or the signs run | set `min_weight` on both specs, so the test reads only rows both models are ready on |
+| both `log_e_a_<t>` and `log_e_b_<t>` past `ln 20` on one stream | the signs run: the two models' errors persist from row to row, which breaks the test's null | test one row in each block of rows longer than the errors' memory, with `po.eval.seqtest` over the output filtered to those rows |
 | `log_e_a_<t>` stays null or flat | one side's residual is null on the rows, as in a warm-up | check that both specs predict the rows |

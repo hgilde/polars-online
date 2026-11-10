@@ -26,7 +26,10 @@ keeps an *e-process* instead: the wealth of a gambler who bets on the
 next sign. The null is that, given everything so far, the next sign is
 no more likely positive than negative. Under it, the wealth `E⁺` is a
 nonnegative supermartingale. Ville's inequality then gives
-`P(E⁺ ever reaches 1/α) ≤ α`, however the rows depend on each other.
+`P(E⁺ ever reaches 1/α) ≤ α`, read at every row, not only the last. The
+null is about every row, not only the average: signs that run, positive
+for a while and then negative, are even on average but break it, and the
+bet that follows the run grows.
 
 1. **Build a `seqtest` spec with the column in `targets=`.**
 2. **Add the spec to the query with `online.fit_predict([sign])`.**

@@ -1390,8 +1390,8 @@ def compare_specs(
     - :func:`metrics`, the same scores for one spec.
     - :func:`diebold_mariano` and :func:`clark_west`, tests of whether one
       spec's squared error is lower than another's.
-    - :func:`seqtest`, evidence that one spec predicts closer, to read at
-      any row.
+    - :func:`seqtest`, evidence that one spec predicts closer on more rows,
+      to read at every row.
     - `Compare two models
       <https://github.com/hgilde/polars-online/blob/main/docs/how-to/compare-two-models.md>`_,
       with a recipe that compares two models on 200 streams.
@@ -1411,9 +1411,13 @@ def compare_specs(
     errors differ on average.** Its statistic is the mean of the loss
     differential ``d = resid_b² − resid_a²`` over Newey and West's
     standard error, and is about ``N(0, 1)`` when the two predict equally
-    well. :func:`diebold_mariano` computes it. Give its ``lags`` at least
-    ``h − 1`` for a target that looks ``h`` rows ahead, and 0 for one-step
-    predictions.
+    well. :func:`diebold_mariano` computes it. Its ``lags``, 0 by default,
+    are right at 0 only where the differentials are uncorrelated from row
+    to row: two specs that each leave out something persistent make
+    one-step errors that run, and then ``lags=0`` found two equally
+    accurate specs to differ at 5% on 24% to 32% of simulated streams.
+    For a target that looks ``h`` rows ahead, give about ``2 h``; its
+    ``lags`` entry gives the sizes measured.
 
     **Between two nested specs, Diebold and Mariano's test leans toward
     the smaller one, and Clark and West's (2007) correction removes the
@@ -1438,10 +1442,17 @@ def compare_specs(
     :func:`seqtest`, and the `seqtest
     <https://github.com/hgilde/polars-online/blob/main/docs/MODELS.md#seqtest--a-sequential-test-of-a-sign-by-betting>`_
     model a bank runs, give evidence
-    that one spec predicts closer, by betting on the sign of ``|resid_b| −
-    |resid_a|``. The evidence can be read at any row, as often as you like,
-    without increasing the false-alarm rate: reject at the 5% level the first
-    time ``log_e_a_<t>`` reaches ``ln 20``.
+    that one spec predicts closer on more rows, by betting on the sign of
+    ``|resid_b| − |resid_a|``. That is not the question the two tests
+    above ask: a spec with rare large errors can be closer on most rows and
+    have the larger mean squared error. The evidence can be read at every
+    row, as often as you like, without increasing the false-alarm rate:
+    reject at the 5% level the first time ``log_e_a_<t>`` reaches ``ln
+    20``. The 5% holds where, at every row and whatever came before, the
+    next sign is no more likely positive than negative, which is more than
+    the two being equally close on average: equally accurate specs whose
+    errors run from row to row give signs that run, and both bets grow
+    (:func:`seqtest`'s Notes give the rates measured).
     """
     given = [_spec_of("po.eval.compare_specs", s) for s in specs]
     if binary is None:
@@ -2240,9 +2251,10 @@ def seqtest(
     """Test a sign sequentially by betting, over a frame or a query.
 
     Use it to gather evidence, row by row, that a column's sign leans one
-    way, or that one spec predicts closer than another, with evidence you
-    may read at any row. It computes what :func:`polars_online.spec.seqtest`
-    writes, field for field and row for row, with Polars expressions. For a
+    way, or that one spec predicts closer than another on more rows, with
+    evidence you may read at every row (see Notes for the null that
+    holds). It computes what :func:`polars_online.spec.seqtest` writes,
+    field for field and row for row, with Polars expressions. For a
     stream too long to hold, give it a query of the output, or run the
     ``seqtest`` model in the bank, whose memory is the size of its state.
 
@@ -2363,13 +2375,30 @@ def seqtest(
 
     .. rubric:: Notes
 
-    The evidence can be read at any row. Each target has two bets, one on
+    The evidence can be read at every row. Each target has two bets, one on
     each direction: reject a direction at the 5% level the first time its
     bet's log wealth reaches ``ln 20``, about 3.0. Watching both bets at
     once, to test either direction at 5%, needs ``ln 40``. A value of zero bets
     nothing and counts nothing, and so does one the bank would not learn
     from: null, NaN, infinite, or past its input bound of 1e100 in
-    magnitude. The bank's model adds what a frame in memory does not have,
+    magnitude. In compare mode the value is the difference ``|resid_b| -
+    |resid_a|``, and the bound is on it, where :func:`diebold_mariano`
+    bounds each residual.
+
+    **The 5% holds under a null about every row:** at each row, whatever
+    came before, the next sign is no more likely positive than negative.
+    Then each bet's wealth is a nonnegative supermartingale started at 1,
+    and by Ville's inequality it reaches 20 with probability at most 5%,
+    read at every row, not only the last. That null is more than "the two
+    specs are equally close": signs that run break it with neither spec
+    closer on average, and the bet that follows the run grows, in either
+    direction. On simulated streams of 5,000 rows from two equally accurate
+    specs, each bet reached ``ln 20`` on 3.6% of streams where their errors
+    were independent, and on 61% (``a`` closer) and 62% (``b`` closer)
+    where each spec's errors followed an autoregression at 0.9, on 88% one
+    or the other at ``ln 40``. Where errors persist, test one row in each
+    block of rows longer than their memory: filter the frame to those rows
+    first. The bank's model adds what a frame in memory does not have,
     the clock (``session``, ``restart_after_step_back``), and its output is
     held to this function's to the last bit.
 
@@ -3306,6 +3335,20 @@ def _normal_sf(z: float | None) -> float | None:
     return None if z is None or math.isnan(z) else 0.5 * math.erfc(z / math.sqrt(2.0))
 
 
+#: The rows a key needs per lag of the Newey-West variance, ``lags + 1``
+#: counting lag 0, before its statistic is read: a rule of thumb (see
+#: :func:`diebold_mariano`'s ``lags``).
+_ROWS_PER_LAG = 4
+
+
+def _few_rows(lags: int) -> int:
+    """The most rows with a value on which a key's statistic is null for
+    its ``lags``: ``4 (lags + 1)``. The deviations from the mean sum to 0,
+    so the Bartlett sum of a short key shrinks toward 0 as ``lags`` nears
+    its rows, and the statistic grows with no meaning."""
+    return _ROWS_PER_LAG * (lags + 1)
+
+
 def _hac_test(
     df: pl.DataFrame | pl.LazyFrame,
     values: dict[str, pl.Expr],
@@ -3342,8 +3385,8 @@ def _hac_test(
             pl.len().alias("n"),
             dd.mean().alias("mean"),
             # Null where every value is the same, whose S is 0 but for the
-            # rounding of the mean.
-            pl.when((s > 0) & (dd.min() < dd.max()))
+            # rounding of the mean, and on a key too short for its lags.
+            pl.when((s > 0) & (dd.min() < dd.max()) & (pl.len() > _few_rows(lags)))
             .then(dd.mean() * pl.len() / s.sqrt())
             .alias(stat),
         ]
@@ -3435,6 +3478,11 @@ def _hac_query(
     frames = []
     for t in values:
         if not parts[t]:
+            if not keys:
+                # The frame's row for a target no row has a value of.
+                types = {"target": pl.String, "n": pl.Int64, "mean": pl.Float64, stat: pl.Float64}
+                none = {"target": [t], "n": [0], "mean": [None], stat: [None]}
+                frames.append(pl.DataFrame(none, schema=types))
             continue
         merged = _merge(parts[t], pair_keys)
         own = merged.filter(pl.col(lag_col) == 0).select(
@@ -3477,7 +3525,7 @@ def _hac_query(
                 if keys
                 else own.with_columns(pl.lit(ends_t[c][0]).alias(c) for c in (lo, hi))
             )
-        live = (s_expr > 0) & (pl.col(lo) < pl.col(hi))
+        live = (s_expr > 0) & (pl.col(lo) < pl.col(hi)) & (pl.col("n") > _few_rows(lags))
         result = own.select(
             *keys,
             pl.lit(t).alias("target"),
@@ -3505,6 +3553,7 @@ def _ew_test(
     half_life: float,
     stat: str,
     name: str,
+    min_samples: int,
 ) -> pl.DataFrame: ...
 
 
@@ -3517,6 +3566,7 @@ def _ew_test(
     half_life: float,
     stat: str,
     name: str,
+    min_samples: int,
 ) -> pl.LazyFrame: ...
 
 
@@ -3528,6 +3578,7 @@ def _ew_test(
     half_life: float,
     stat: str,
     name: str,
+    min_samples: int,
 ) -> pl.DataFrame | pl.LazyFrame:
     """Per row, the same t statistic with each row before it weighed by
     ``λ^age``, ``λ = 0.5 ** (1 / half_life)``, one step per row that has a
@@ -3545,11 +3596,13 @@ def _ew_test(
     (d_t, d_{t−l})``, is ``λ^l W_l (c_l + (μ_l − m)(ν_l − m))``, with
     ``W_l`` the pairs' weight, ``μ_l`` and ``ν_l`` their means and ``c_l =
     (var(u + v) − var(u − v)) / 4`` their covariance. The statistic is null
-    where ``S`` is no more than its rounding, :func:`_ew_rounding`.
+    where ``S`` is no more than its rounding, :func:`_ew_rounding`, and
+    until the key has ``min_samples`` rows with a value and more than
+    :func:`_few_rows`.
     """
     if isinstance(df, pl.LazyFrame):
-        return _ew_query(df, values, keys, lags, half_life, stat, name)
-    return _ew_chunk(df, values, keys, lags, half_life, stat, name, {})
+        return _ew_query(df, values, keys, lags, half_life, stat, name, min_samples)
+    return _ew_chunk(df, values, keys, lags, half_life, stat, name, min_samples, {})
 
 
 def _ew_rounding(lags: int, half_life: float, s0: pl.Expr, r: pl.Expr) -> pl.Expr:
@@ -3592,6 +3645,7 @@ def _ew_query(
     half_life: float,
     stat: str,
     name: str,
+    min_samples: int,
 ) -> pl.LazyFrame:
     """:func:`_ew_test` over a query: a query of its rows with the record
     column added, read in one pass a chunk at a time when it runs.
@@ -3606,14 +3660,14 @@ def _ew_query(
     each key, which the chunk's first rows read as the rows ``l`` before
     them. What it holds is one chunk, and per key and target ``lags``
     values and ``3 + 4 lags`` means and variances, not the query's rows."""
-    schema = _ew_test(_probe(lf), values, keys, lags, half_life, stat, name).schema
+    schema = _ew_test(_probe(lf), values, keys, lags, half_life, stat, name, min_samples).schema
     needed = set(keys).union(*(d.meta.root_names() for d in values.values()))
 
     def step() -> Callable[[pl.DataFrame], pl.DataFrame]:
         carry: dict[str, tuple[pl.DataFrame, pl.DataFrame]] = {}
 
         def one(chunk: pl.DataFrame) -> pl.DataFrame:
-            return _ew_chunk(chunk, values, keys, lags, half_life, stat, name, carry)
+            return _ew_chunk(chunk, values, keys, lags, half_life, stat, name, min_samples, carry)
 
         return one
 
@@ -3628,6 +3682,7 @@ def _ew_chunk(
     half_life: float,
     stat: str,
     name: str,
+    min_samples: int,
     carry: dict[str, tuple[pl.DataFrame, pl.DataFrame]],
 ) -> pl.DataFrame:
     """One chunk of :func:`_ew_query`, after the chunks whose counts, means,
@@ -3778,7 +3833,10 @@ def _ew_chunk(
         r = w2 * (p("v2") + p("m2") * p("m2"))
         out_col = _free(taken, f"{stat}_{len(temps)}")
         cut = _ew_rounding(lags, half_life, s0, r)
-        got = got.with_columns(pl.when(s > cut).then(m * w1 / s.sqrt()).alias(out_col))
+        # `n`, the key's rows with a value up to this one, is a whole number
+        # held in a float, so the comparisons are exact.
+        live = (s > cut) & (n >= float(min_samples)) & (n > float(_few_rows(lags)))
+        got = got.with_columns(pl.when(live).then(m * w1 / s.sqrt()).alias(out_col))
         base = base.join(got.select(idx, out_col), on=idx, how="left", maintain_order="left")
         fields.append(pl.col(out_col).alias(f"{stat}_{t}"))
         temps.append(out_col)
@@ -3808,14 +3866,7 @@ def _check_half_life(who: str, half_life: float) -> None:
     """The per-row form's ``half_life``: above 0, and finite. An infinite
     one reached polars' ``ewm_mean`` as ``alpha = 0``, which it refuses
     with no word of the parameter."""
-    if not half_life > 0:
-        msg = (
-            f"{who}: half_life must be finite and above 0, but it is {half_life}. Give "
-            f"half_life a positive number of rows, or leave it None for one statistic over "
-            f"every row."
-        )
-        raise ValueError(msg)
-    if math.isinf(half_life):
+    if not 0 < half_life < math.inf:
         msg = (
             f"{who}: half_life must be finite and above 0, but it is {half_life}. Give "
             f"half_life a positive number of rows, or leave it None for one statistic over "
@@ -3831,7 +3882,8 @@ def _lags(who: str, lags: Any) -> int:
     if wrong_type:
         msg = (
             f"{who}: lags must be a whole number of at least 0, but it is {lags!r}. Set lags "
-            "to a whole number, such as 0 for one-step forecasts."
+            "to a whole number: 0 where the loss differentials are uncorrelated from row to "
+            "row, or about twice the horizon for a target that looks ahead."
         )
         raise WrongTypeError(msg)
     if operator.index(lags) < 0:
@@ -3913,8 +3965,9 @@ def diebold_mariano(
     nested in it. It is Diebold and Mariano's (1995) test, with Newey and
     West's (1987) variance. When one spec's features are a subset of the other's,
     use :func:`clark_west`, since this test leans toward the smaller of two
-    nested specs. For evidence you may read at any row, use
-    :func:`seqtest`.
+    nested specs. For evidence you may read at every row as the rows come,
+    use :func:`seqtest`, which asks a different question: which spec is
+    closer on more rows (see Notes).
 
     .. rubric:: Parameters
 
@@ -3930,9 +3983,40 @@ def diebold_mariano(
         compared (every target the two share by default), and the suffix of
         each side's residual field.
     ``lags``
-        The lags of the Newey-West variance, 0 by default, for one-step
-        predictions, whose differentials are not correlated under the null.
-        For a target that looks ``h`` rows ahead, give at least ``h - 1``.
+        The lags of the Newey-West variance, 0 by default. 0 is right only
+        where the differentials are uncorrelated from row to row, which
+        holds where neither spec's one-step errors can be predicted from
+        its past errors. Two specs that each leave out something persistent,
+        such as a feature that moves slowly, make errors that run from row
+        to row, and so differentials that do, however equal their accuracy;
+        then ``lags=0`` understates the variance. Two ridges, each on one of
+        two features that follow an autoregression at 0.9, equally accurate
+        by construction, were found to differ at 5% on 28% of simulated
+        streams of 200 rows and 32% of streams of 2,000 at ``lags=0``. Read
+        the differentials' autocorrelation, or give ``lags``.
+
+        For a target that looks ``h`` rows ahead, rows fewer than ``h``
+        apart share shocks, so their differentials correlate whatever the
+        specs. Give about ``2 h``, as many as the bank's diagnostics take
+        for the same variance: Newey and West's weights count lag ``l`` at
+        ``1 - l / (lags + 1)``, so ``h - 1`` lags count the overlap's
+        correlations at less than their weight, and the test rejects too
+        often however long the stream. On simulated errors of two equally
+        accurate ``h``-step forecasts, at ``h = 5`` and ``h = 20``,
+        ``lags=2h`` rejected at 5% on 6% of streams of 20,000 rows, 7% of
+        streams of 2,000 and 9% to 15% of streams of 200, where ``h - 1``
+        rejected on 8% to 9%, 9% to 10% and 10% to 13%. On short keys no
+        number of lags holds 5%: read a p-value near 0.05 there as weaker
+        evidence than it says.
+
+        A key with at most ``4 (lags + 1)`` rows with a differential reads
+        a null statistic, whatever ``min_samples`` is. The deviations from
+        the mean sum to zero, so the variance's sum over a key shrinks
+        toward zero as ``lags`` nears the key's rows, and the statistic
+        grows with no meaning: on 40 rows of noise, ``lags=10`` rejected at
+        5% on 15% of streams and ``lags=19`` on 21%, and on two rows
+        ``lags=10`` read 11.7. The 4 is a rule of thumb; give a key many
+        times ``lags`` rows.
     ``group``
         :func:`seqtest`'s: the key columns to test each group apart.
     ``half_life``
@@ -3943,10 +4027,16 @@ def diebold_mariano(
         with a differential after it, up to this row, so the row itself has
         age 0.
     ``min_samples``
-        The fewest rows a key is tested on, 30 by default. Without
-        ``half_life``, a key with fewer rows keeps its row, with ``n``
-        filled and the other three columns null, as Polars gives null below
-        its ``min_samples``.
+        The fewest rows with a differential a key is tested on, 30 by
+        default. Without ``half_life``, a key with fewer rows keeps its
+        row, with ``n`` filled and the other three columns null, as Polars
+        gives null below its ``min_samples``. With ``half_life``, a key's
+        statistic is null on its rows before its ``min_samples``-th row
+        with a differential. On a key's first rows the statistic is a mean
+        of a few rows over an estimate of its own spread, far from ``N(0,
+        1)``: on simulated noise it passed 1.96 on 32% of streams at a
+        key's second row and 8% to 9% at its tenth, at ``lags=0``, and on
+        72% and 21% to 24% at ``lags=4``.
     ``name``
         With ``half_life``, the name of the record column added,
         ``"diebold_mariano"`` by default.
@@ -3961,10 +4051,25 @@ def diebold_mariano(
     below -1.96 says ``b`` did.
 
     With ``half_life``, ``df`` with a record column ``name`` added, holding
-    ``dm_<t>`` per target ``t``, null on a row where a side has no residual
-    and where ``S`` is zero but for rounding (see Notes).
-    It can be read at any row. Given a ``LazyFrame``, a ``LazyFrame`` of the
-    same, which reads ``df`` one chunk at a time when it runs.
+    ``dm_<t>`` per target ``t``: null on a row where a side has no
+    residual, on a key's rows before its ``min_samples``-th with a
+    differential and while it has at most ``4 (lags + 1)`` of them (see
+    ``lags``), and where ``S`` is zero but for rounding (see Notes); it has
+    a value on every other row. Given a ``LazyFrame``, a ``LazyFrame`` of
+    the same, which reads ``df`` one chunk at a time when it runs.
+
+    Each row's value is about ``N(0, 1)`` when the two predict equally
+    well, once its weight covers many rows. It rests on about ``2.9 ·
+    half_life`` rows however long the stream (``(1 + λ) / (1 - λ)``, with
+    ``λ`` the weight's decay a row), so keep ``half_life`` well above
+    ``lags`` and above the differentials' memory. On simulated noise it
+    passed 1.96 on 8% of rows at ``half_life=5`` (17% at ``lags=4``), on
+    5% at ``half_life=20`` (8% at ``lags=4``), and on 5% at
+    ``half_life=100`` (5% to 6% at ``lags=4``). It is one test per row, not a sequential test:
+    acting the first time it passes 1.96 is not a test at 5%. Over 2,000
+    rows of noise some row past the 30th passed 1.96 on 96% of streams at
+    ``half_life=100`` and 65% at ``half_life=500``. :func:`seqtest` is the
+    test to act on as the rows come.
 
     .. rubric:: Raises
 
@@ -3989,8 +4094,10 @@ def diebold_mariano(
         dm = d̄ · n / sqrt(S)                  ~ N(0, 1) with equal accuracy
 
     ``S`` is Newey and West's estimate of the differential's long-run
-    variance, times ``n``, and ``d_i`` is the differential on row
-    ``i``.
+    variance, times ``n``. ``i`` counts the rows that have a differential:
+    a row without one is left out before the lags are taken, so
+    ``d_(i-l)`` is the ``l``-th earlier row that has one, not the row ``l``
+    places back.
 
     .. rubric:: Examples
 
@@ -4013,10 +4120,20 @@ def diebold_mariano(
     .. rubric:: See also
 
     - :func:`clark_west`, the test for two nested specs.
-    - :func:`seqtest`, evidence to read at any row.
+    - :func:`seqtest`, evidence to read at every row, of which spec is
+      closer more often.
     - :func:`compare_specs`, whose Notes say when to use each test.
 
     .. rubric:: Notes
+
+    **This test asks which spec has the smaller mean squared error;**
+    :func:`seqtest` **asks which is closer on more rows.** A spec with rare
+    large errors can win the second and lose the first. On a simulated
+    stream of 4,999 rows where ``a`` was closer on 3,415 rows but its mean
+    squared error was 4.80 against ``b``'s 1.01, :func:`seqtest`'s log
+    evidence that ``a`` was closer reached 339 (``ln 20`` is 3.0), and this
+    test read ``dm`` -8.7, ``b`` better at a p-value of 4e-18. Each answer
+    is right for its question.
 
     **Given a query, this holds one chunk and, per key and target, the
     last** ``lags`` **differentials and a few sums.** Without
@@ -4088,7 +4205,7 @@ def diebold_mariano(
     if half_life is not None:
         _check_half_life("po.eval.diebold_mariano", half_life)
         _check_name("po.eval.diebold_mariano", probe, name)
-        return _ew_test(df, values, keys, lags, half_life, "dm", name)
+        return _ew_test(df, values, keys, lags, half_life, "dm", name, min_samples)
     out = _hac_test(df, values, keys, lags, "dm", min_samples)
     p = [
         None if z is None or math.isnan(z) else math.erfc(abs(z) / math.sqrt(2.0))
@@ -4169,8 +4286,9 @@ def clark_west(
     Use it when one spec's features are a subset of the other's, such as a
     spec with and without one more feature. It is Clark and West's (2007)
     test, with Newey and West's variance. For two specs that are not
-    nested, use :func:`diebold_mariano`, and for evidence you may read at
-    any row, :func:`seqtest`.
+    nested, use :func:`diebold_mariano`. For evidence you may read at every
+    row as the rows come, use :func:`seqtest`, which asks which spec is
+    closer on more rows, not which has the smaller mean squared error.
 
     .. rubric:: Parameters
 
@@ -4200,9 +4318,10 @@ def clark_west(
     and target: ``n``, the rows read; ``mean``, the mean of ``f`` (see
     Update equation); ``cw``, the statistic; and ``p_value``, its one-sided p-value. With
     ``half_life``, ``df`` with a record column ``name`` added, holding
-    ``cw_<t>`` per target ``t``, the exponentially weighted statistic on
-    every row, as :func:`diebold_mariano` gives it, and given a
-    ``LazyFrame``, a ``LazyFrame`` of the same.
+    ``cw_<t>`` per target ``t``, the exponentially weighted statistic,
+    null on the rows :func:`diebold_mariano`'s ``dm_<t>`` is and read as
+    its Returns say, one test per row; given a ``LazyFrame``, a
+    ``LazyFrame`` of the same.
 
     .. rubric:: Raises
 
@@ -4256,8 +4375,12 @@ def clark_west(
     to its squared error on average. Clark and West add that term back.
 
     ``cw`` is null where :func:`diebold_mariano`'s ``dm`` is, of ``f``:
-    where every ``f`` of a key is the same value, and, with ``half_life``,
-    where ``S`` is zero but for rounding.
+    where every ``f`` of a key is the same value, on a key with at most
+    ``4 (lags + 1)`` rows with an ``f``, and, with ``half_life``, before a
+    key's ``min_samples``-th row and where ``S`` is zero but for rounding.
+    Its ``lags`` are chosen as :func:`diebold_mariano`'s are: 0 only where
+    ``f`` is uncorrelated from row to row, and about twice the horizon for
+    a target that looks ahead.
 
     Given a query, this holds and computes what :func:`diebold_mariano`
     does for one, of ``f`` in place of ``d``, with the same agreement with
@@ -4277,7 +4400,7 @@ def clark_west(
     if half_life is not None:
         _check_half_life("po.eval.clark_west", half_life)
         _check_name("po.eval.clark_west", probe, name)
-        return _ew_test(df, values, keys, lags, half_life, "cw", name)
+        return _ew_test(df, values, keys, lags, half_life, "cw", name, min_samples)
     out = _hac_test(df, values, keys, lags, "cw", min_samples)
     return out.with_columns(
         pl.Series("p_value", [_normal_sf(z) for z in out["cw"].to_list()], dtype=pl.Float64)
