@@ -8,7 +8,7 @@ the library found, to read against that answer.
 |---|---|
 | [Automate a round of model selection](#automate-a-round-of-model-selection) | exponentially weighted ridge regressions over many combinations of factors, targets and [half-lives](GLOSSARY.md#time) in time and in traded volume, in one pass in bounded memory, so the files may be larger than memory, that writes each fit's [out-of-sample](GLOSSARY.md#fitting-a-model) residuals and coefficients, the combination chosen as best on each trade, and markers where the factors' regime changed, to read how stable each model is |
 | [Build a forward-looking signal and resume it](#build-a-forward-looking-signal-and-resume-it) | a target built as the data streams, a bounded reverse EWMA of the mid, decaying forward over the next five minutes, minus the mid, a feature of the mid minus its EWMA over the last five, and a first-stage ridge's out-of-sample residual as a feature of the second stage, learned under an [embargo](GLOSSARY.md#time) so no prediction has learned from a target still being formed, fitted robustly through jumps, and saved partway and resumed in a fresh process exactly where it left off |
-| [Monitor a live model](#monitor-a-live-model) | a model whose answers arrive about 300 rows late, with a 90% interval around every prediction that still covers nine answers in ten, a flag where a coefficient changes, and a flag when the features stop moving together the way they did, each checked against changes planted at known rows |
+| [Monitor a live model](#monitor-a-live-model) | a model whose target is known about 30 seconds after it was predicted, with a 90% prediction interval around each forecast that still covers nine answers in ten, and flags where a coefficient of the regression and the correlation between the features significantly change, each checked against changes planted at known rows |
 | [Measure correlations and fit curves on tick data](#measure-correlations-and-fit-curves-on-tick-data) | correlations from series that trade at their own times, and a curve fitted locally along trade size |
 | [Capabilities](#capabilities) | each capability the tasks use, with the step that shows it and a guide that covers it |
 
@@ -426,12 +426,13 @@ the resume work together on one stream, from files to files.
 
 ## Monitor a live model
 
-Watch a model whose answers arrive late: each row's true value is known
-only about 300 rows after the model predicted it. Around every prediction,
-keep a 90% interval that still covers nine answers in ten while they arrive
-late. Flag the row where a coefficient changes, and flag when the features
-stop moving together the way they did. All of it runs in one pass over the
-data, and each check is tested here against changes planted at known rows:
+For a model whose target is known about 30 seconds after it was
+predicted, build a 90% prediction interval around each forecast, one that
+still covers nine answers in ten while they arrive late. Enrich it by
+flagging the rows where a coefficient of the regression significantly
+changes, and where the correlation between the features does. All of it
+runs in one pass over the data, and each check is tested here against
+changes planted at known rows:
 
 - **Intervals that hold their coverage when targets arrive late:** a
   conformal interval (`conformal=0.9`) on each prediction, learned as each
@@ -447,15 +448,16 @@ data, and each check is tested here against changes planted at known rows:
 
 The recipe plants a correlation between the two features that takes turns
 between 0 and 0.7 every 5,000 rows, and a slope on `x_2` that flips from
-0.5 to −0.5 at row 10,000. Each row's target becomes known 250 to 350
-clock units after the row, and its noise has heavy tails.
+0.5 to −0.5 at row 10,000. The rows are trades about 0.1 seconds apart,
+each row's target becomes known 25 to 35 seconds after the trade, and its
+noise has heavy tails.
 
 1. **Simulate the features' levels with `po.sim.regimes`,** which also
    returns the block of rows (one regime) each row is in.
 2. **Take the levels' changes with `diff()`,** since a correlation
    detector reads changes, not levels.
-3. **Add the target, and the time each target becomes known, as
-   columns.**
+3. **Add each trade's time, the target, and the time each target becomes
+   known, as columns.**
 4. **Write the stream to a parquet file.**
 5. **Give the model `label_clock="known"`, `conformal=0.9`,
    `conformal_rate="auto"` and `emit_breaks=True`,** and a second spec
@@ -473,6 +475,8 @@ clock units after the row, and its noise has heavy tails.
     block is a false alarm.
 
 ```python
+from datetime import datetime
+
 import numpy as np
 import polars as pl
 import polars_online as po
@@ -485,14 +489,15 @@ n = sim["rows"].height
 slope = pl.when(pl.col("t") < 10_000).then(0.5).otherwise(-0.5)   # x_2's slope flips at row 10,000
 (sim["rows"].join(sim["truth_rows"].select("t", "block"), on="t")
    .with_columns(pl.col("x_1", "x_2").diff().fill_null(0.0))        # 2. the levels' changes
-   # 3. The target, with heavy-tailed noise, and when each target becomes known.
+   # 3. A trade every 0.1 s on average, the target with heavy-tailed noise, and when each target becomes known.
+   .with_columns(ts=pl.lit(datetime(2024, 1, 2, 9, 30)) + pl.duration(microseconds=pl.lit(np.cumsum(rng.exponential(1e5, n)).astype(np.int64))))
    .with_columns(y=pl.col("x_1") + slope * pl.col("x_2") + pl.lit(rng.standard_t(3, n) / np.sqrt(3.0)),
-                 known=pl.col("t") + pl.lit(rng.uniform(250.0, 350.0, n)))
+                 known=pl.col("ts") + pl.duration(milliseconds=pl.lit(rng.uniform(25_000, 35_000, n).astype(np.int64))))
    .write_parquet("live.parquet"))                                  # 4.
 
 # 5. The model, its intervals and its break test; and the same model at the default step.
-live = dict(targets=["y"], features=["x_1", "x_2"], clock="t", gap_cap=10.0, half_life=2_000.0,
-            label_clock="known",                  # each row is learned when its target is known
+live = dict(targets=["y"], features=["x_1", "x_2"], clock="ts", gap_cap="1s", half_life="200s",
+            label_clock="known",                  # each row is learned when its target is known, 25 to 35 s later
             conformal=0.9)                        # an interval meant to cover 90% of the targets
 model = po.spec.ewridge("model", **live, conformal_rate="auto", emit_breaks=True)
 fixed = po.spec.ewridge("fixed", **live)          # the default step, 0.05
@@ -529,9 +534,9 @@ for block, start, flagged, flags in blocks.sort("block").collect(engine="streami
 ```
 
 ```text
-model: covered 0.902 of the targets, half-width 1.59
-fixed: covered 0.900 of the targets, half-width 2.51
-break test: 0 flags before row 10000, the first after it at row 10436
+model: covered 0.904 of the targets, half-width 1.56
+fixed: covered 0.895 of the targets, half-width 3.39
+break test: 0 flags before row 10000, the first after it at row 10474
 flags before any change: 0
 correlation changed at row 5000: flagged at row 5110
 correlation changed at row 10000: flagged at row 10098
@@ -539,9 +544,10 @@ correlation changed at row 15000: flagged at row 15056
 ```
 
 **Both intervals cover 90% of the targets, and the adaptive one is
-narrower, 1.59 against 2.51.** About 300 rows wait for their targets at
-any time. At the default step, the interval's radius learns of each miss
-300 rows late, overshoots and undershoots, and is wider on average.
+narrower, 1.56 against 3.39.** About 300 trades, the last 30 seconds of
+them, wait for their targets at any time. At the default step, the
+interval learns of each miss 30 seconds late, overshoots and undershoots,
+and is wider on average.
 `"auto"` takes smaller steps the more rows wait. [Keep the coverage when
 targets arrive
 late](how-to/put-an-interval-on-a-prediction.md#keep-the-coverage-when-targets-arrive-late)
@@ -550,7 +556,7 @@ measures the step on more streams.
 **The break test flagged nothing before the slope flipped, and the
 correlation detector found each planted change, with no false alarm.**
 The break test needs the targets of the rows after the flip, which arrive
-about 300 rows late, so it flagged the flip 436 rows after it. [Test a
+about 30 seconds late, so it flagged the flip 474 rows after it. [Test a
 detector on known truth](how-to/test-a-detector-on-known-truth.md) runs a
 detector over many simulated streams to measure its false alarms.
 
