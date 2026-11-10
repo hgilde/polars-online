@@ -13,6 +13,9 @@ frame and over a query alike (task 382b, review of `po.eval` B4, B7 and C2).
 - **C2.** Without ``group``, a query returns a target no row has a value of
   as the frame does, as a row with ``n = 0`` and null statistics. It left
   the target out.
+- A key whose differentials are all one value reads null over a query in
+  any chunking, as in the frame, beside keys that keep their statistic: the
+  chunks' parts of such a key share one mean, which the merge pools.
 """
 
 from __future__ import annotations
@@ -178,3 +181,41 @@ class TestATargetWithNoValueOverAQuery:
                     rtol=1e-9,
                     err_msg=f"{rows} {column}",
                 )
+
+
+class TestAConstantKeyOverAQuery:
+    """Without ``half_life``, a key whose differentials are all one value
+    reads a null statistic over a query read in any chunking, as in the
+    frame, beside keys that keep theirs: one whose value steps once, and
+    one of noise. The chunks' sums of a constant key merge parts of one
+    mean, and the merge must not read a spread into them."""
+
+    @pytest.mark.parametrize("call", list(CALLS))
+    @pytest.mark.parametrize("lags", [0, 3])
+    def test_frame_and_query_agree(self, monkeypatch, call, lags):
+        field, _ = CALLS[call]
+        rng = np.random.default_rng(23 + lags)
+        n = 200
+        step = np.r_[np.full(n // 2, 0.37), np.full(n // 2, 2.9)]
+        # Keys 0 and 1 constant (each side's residual one value), 2 a step,
+        # 3 noise; interleaved, so each chunk holds part of every key.
+        ra = np.column_stack([np.full(n, 1.0), np.full(n, 0.2), np.ones(n), rng.normal(size=n)])
+        rb = np.column_stack(
+            [np.full(n, 1.3), np.full(n, 2.1), np.sqrt(1.0 + step), rng.normal(size=n)]
+        )
+        g = np.tile(np.arange(4), n)
+        df = _two_specs(ra.ravel(), rb.ravel(), g)
+        kw = dict(lags=lags, group="g")
+        frame = _run(df, call, monkeypatch, None, **kw)
+        assert frame[field].is_null().to_list() == [True, True, False, False]
+        for rows in (1, 7, 37, 10**6):
+            got = _run(df, call, monkeypatch, rows, **kw)
+            assert got["g"].to_list() == frame["g"].to_list(), rows
+            assert got["n"].to_list() == [n] * 4, rows
+            assert got[field].is_null().to_list() == [True, True, False, False], rows
+            np.testing.assert_allclose(
+                got["mean"].to_numpy(), frame["mean"].to_numpy(), rtol=1e-14, err_msg=str(rows)
+            )
+            np.testing.assert_allclose(
+                got[field].to_numpy()[2:], frame[field].to_numpy()[2:], rtol=1e-9, err_msg=str(rows)
+            )

@@ -2402,15 +2402,27 @@ def seqtest(
     the clock (``session``, ``restart_after_step_back``), and its output is
     held to this function's to the last bit.
 
-    **Given a query, the result is the frame's to the bit, and holds one
-    chunk and a few numbers per key.** Each chunk carries in, per group,
+    **Given a query, the result is the frame's to the bit, and this holds
+    one chunk and a few numbers per key, beside what Polars reads of the
+    query ahead of it.** Each chunk carries in, per group,
     the rows and the signs counted before it and each bet's log wealth
     after its last row, and adds that wealth to its own first term, so the
     sums run on in the frame's order. A query is refused as its frame
-    would be, with the same message, before it runs. Written to a file
-    with ``sink_parquet``, the test of two specs of a scan by a key of four
-    values held 152 MiB at a million rows, 170 MiB at four million and 174
-    MiB at sixteen million, measured as :func:`metrics`' Notes say.
+    would be, with the same message, before it runs. A scan of a parquet
+    file reads its row groups ahead of a slower consumer, as many as
+    Polars' thread count sizes, and under Polars' defaults that read-ahead
+    is most of what the process holds: `Cut what Polars reads ahead
+    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+    bounds it. Written to a file with ``sink_parquet``, the test of two
+    specs of a scan by a key of four values, the file in row groups of
+    100,000 rows, held at most 149 MiB at a million rows, 159 MiB at four
+    million and 157 MiB at sixteen million with four threads
+    (``POLARS_MAX_THREADS=4``), the read-ahead cut to one row group
+    (``POLARS_ROW_GROUP_PREFETCH_SIZE=1``) and the allocator told to return
+    freed pages at once (``_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0``);
+    under Polars' defaults, 349, 646 and 1,155 MiB. Each figure is the
+    most memory the process held, about 48 MiB of it Python and Polars
+    before the call, measured on macOS (an M4 Pro, py-polars 2.0.0).
     """
     who = "po.eval.seqtest"
     _frame(who, df, lazy=True)
@@ -4136,7 +4148,8 @@ def diebold_mariano(
     is right for its question.
 
     **Given a query, this holds one chunk and, per key and target, the
-    last** ``lags`` **differentials and a few sums.** Without
+    last** ``lags`` **differentials and a few sums, beside what Polars
+    reads of the query ahead of it.** Without
     ``half_life``, each lag's sum in ``S`` is a co-moment about ``d̄`` of the
     pairs of rows ``l`` apart, and with ``x`` the later of a pair and ``y``
     the earlier, ``Σ (x - d̄)(y - d̄) = C + n (x̄ - d̄)(ȳ - d̄)``, where ``C``
@@ -4146,10 +4159,23 @@ def diebold_mariano(
     differentials of each key, which pair with the next chunk's first rows.
     The result is the frame's within rounding: within 1e-9 relative, and
     1e-12 at the most measured, on a mean differential near zero read a
-    row at a time. Scoring a scan of two specs by a key of four values with
-    ``lags=5`` held 102 MiB at a million rows, 103 MiB at four million and
-    105 MiB at sixteen million, measured as :func:`metrics`' Notes say,
-    where the collected frame's held 252 MiB at a million.
+    row at a time.
+
+    A scan of a parquet file reads its row groups ahead of a slower
+    consumer, as many as Polars' thread count sizes, and under Polars'
+    defaults that read-ahead is most of what the process holds: `Cut what Polars reads ahead
+    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+    bounds it. Measured on macOS (an M4 Pro, py-polars 2.0.0) as the most
+    memory the process held, about 48 MiB of it Python and Polars before
+    the call, testing two specs of a scan, a file in row groups of 100,000
+    rows, by a key of four values with ``lags=5``: 97 MiB at a million
+    rows, 97 MiB at four million and 101 MiB at sixteen million with four
+    threads (``POLARS_MAX_THREADS=4``), the read-ahead cut to one row group
+    (``POLARS_ROW_GROUP_PREFETCH_SIZE=1``) and the allocator told to return
+    freed pages at once (``_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0``),
+    the bounded settings; under Polars' defaults, 247, 409 and 793 MiB.
+    The collected frame's test held 252 MiB at a million rows under the
+    bounded settings.
 
     With ``half_life``, ``S`` is read from weighted means and variances (see
     below), each over the rows ``j ≤ t`` at weights ``μ^(t-j)``, with ``μ``
@@ -4160,8 +4186,10 @@ def diebold_mariano(
     result is the frame's to the bit, and over many within 1e-12 relative
     (5e-15 measured in chunks of 97 rows), but on rows where ``S`` is near
     its rounding, below. Written to a file with ``sink_parquet``, the test
-    by the row with ``lags=2`` held 155 MiB at a million rows, 167 MiB at
-    four million and 172 MiB at sixteen million.
+    by the row with ``lags=2`` and ``half_life=500`` held 157 MiB at a
+    million rows, 161 MiB at four million and 161 MiB at sixteen million
+    under the bounded settings, and 395, 681 and 1,129 MiB under Polars'
+    defaults.
 
     **With** ``half_life``, ``S`` **is summed about the weighted means, and**
     ``dm`` **is null where** ``S`` **is zero but for rounding.** Each row's
@@ -4384,9 +4412,16 @@ def clark_west(
 
     Given a query, this holds and computes what :func:`diebold_mariano`
     does for one, of ``f`` in place of ``d``, with the same agreement with
-    the frame: scoring a scan of two specs by a key of four values with
-    ``lags=5`` held 99 MiB at a million rows, 102 MiB at four million and
-    105 MiB at sixteen million.
+    the frame, beside what Polars reads of the query ahead of it, which
+    `Cut what Polars reads ahead
+    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+    bounds. Scoring a scan of two specs, a file in row groups of 100,000
+    rows, by a key of four values with ``lags=5`` held at most 97 MiB at a
+    million rows, 100 MiB at four million and 100 MiB at sixteen million
+    with four threads, the read-ahead cut to one row group
+    (``POLARS_ROW_GROUP_PREFETCH_SIZE=1``) and the allocator told to return
+    freed pages at once, and 241, 425 and 787 MiB under Polars' defaults,
+    measured as :func:`diebold_mariano`'s Notes say.
     """
     _frame("po.eval.clark_west", df, lazy=True)
     probe = _probe(df)
