@@ -3559,3 +3559,13 @@ snapshot to the bit either way (held by \
 `a_snapshot_refilled_over_one_of_its_shape_reads_as_one_decoded_fresh`), \
 the general path taken where the fast one was; only the decoding's speed \
 differs, and the flag is never wrongly true (task 378)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov/par.rs"
+function = "merge_lower_cut"
+mutation = "replace < with <="
+line_has = "if buf.len() < len {"
+why = """the mutant also resizes a buffer already `len` long, to `len`: \
+`Vec::resize` to the length it has changes nothing, and every entry a \
+piece reads is laid in before it is read, so the buffer and the merge are \
+the same to the bit (task 384)"""

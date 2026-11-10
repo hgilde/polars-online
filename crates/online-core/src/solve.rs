@@ -1136,8 +1136,9 @@ mod tests {
     /// ridge·I` laid out as a square ([`crate::LowerTriangle::ridged_lower_
     /// into`]), to the bit, attempts and all: definite matrices, ones a
     /// ridge of 0 leaves singular so a jitter rung is climbed, an
-    /// indefinite one every rung fails, negative zeros below the diagonal,
-    /// a trace that is not positive, and sides 0 to 20.
+    /// indefinite one every rung fails, negative zeros below the diagonal
+    /// (with a right-hand side of negative zeros, which shows their sign),
+    /// a trace below zero and one of exactly zero, and sides 0 to 20.
     #[test]
     fn solve_spd_ridged_is_solve_spd_on_the_ridged_square() {
         let mut s = 7u64;
@@ -1167,17 +1168,32 @@ mod tests {
                 0.0,
             ));
             cases.push((full(&|i, j| if i == j { 0.0 } else { -0.0 }), 1e-3));
+            // A trace of exactly 0: the jitter's base is 1, not 0/k, so a
+            // rung above the first rescues the zero matrix.
+            cases.push((full(&|i, j| if i == j { 0.0 } else { -0.0 }), 0.0));
+            // Negative zeros below a unit diagonal: each is read as +0, as
+            // `solve_spd`'s square reads it, which a negative zero on the
+            // right-hand side shows in the solution's signs.
+            cases.push((full(&|i, j| if i == j { 1.0 } else { -0.0 }), 0.0));
+            // The first entry 1, the rest negative zeros.
+            let signed: Vec<f64> = (0..k).map(|i| if i == 0 { 1.0 } else { -0.0 }).collect();
             for (c, ridge) in cases {
+                let zero = k > 0 && ridge == 0.0 && c.iter().all(|&v| v == 0.0);
                 let tri = crate::LowerTriangle::from(c);
                 let mut square = Vec::new();
                 tri.ridged_lower_into(&mut square, ridge);
-                let want = solve_spd(&square, &b, k, 1);
-                let got = solve_spd_ridged(tri.packed(), ridge, &b, k);
-                let bits = |v: &Option<(Vec<f64>, u32)>| {
-                    v.as_ref()
-                        .map(|(x, a)| (x.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), *a))
-                };
-                assert_eq!(bits(&got), bits(&want), "k = {k}, ridge {ridge}");
+                for b in [&b, &signed] {
+                    let want = solve_spd(&square, b, k, 1);
+                    let got = solve_spd_ridged(tri.packed(), ridge, b, k);
+                    let bits = |v: &Option<(Vec<f64>, u32)>| {
+                        v.as_ref()
+                            .map(|(x, a)| (x.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), *a))
+                    };
+                    assert_eq!(bits(&got), bits(&want), "k = {k}, ridge {ridge}, b {b:?}");
+                    if zero {
+                        assert_eq!(got.as_ref().map(|g| g.1), Some(1), "k = {k}");
+                    }
+                }
             }
         }
     }

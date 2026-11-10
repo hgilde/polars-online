@@ -355,6 +355,25 @@ fn kept_working_space_gives_a_fresh_ones_bits() {
     }
 }
 
+/// A one-piece matrix's square is sized to `k²` whatever length it is
+/// handed -- none, one entry, `2k`, one short of `k²` or one past it --
+/// and the merge gives a fresh square's bits. A kept square that is not
+/// `k²` long is resized, not read as one: a length of `2k` or of 1 (a side
+/// other than 2 or 1) is not the square's.
+#[test]
+fn a_square_of_any_length_is_sized_to_the_matrix() {
+    for k in [1usize, 3, 5, 16] {
+        let case = Case::new(k, 4, 53 + k as u64);
+        let fresh = bits(&case.cut(1, FINE));
+        for len in [0, 1, 2 * k, k * k - 1, k * k + 1, k * k] {
+            let mut square = vec![f64::NAN; len];
+            let got = bits(&case.cut_with(&mut square, 1, FINE));
+            assert_eq!(got, fresh, "k = {k}, a square of {len}");
+            assert_eq!(square.len(), k * k, "k = {k}, a square of {len}");
+        }
+    }
+}
+
 /// The work does reach other threads: the test above would pass on one.
 #[test]
 fn spread_runs_on_several_threads_and_on_one_when_asked() {
