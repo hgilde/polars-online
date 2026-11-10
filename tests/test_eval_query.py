@@ -331,11 +331,16 @@ def pair():
 
 
 def _bits(frame: pl.DataFrame) -> pl.DataFrame:
-    """``frame`` with each record column's fields as columns of their own."""
+    """``frame`` with each record column's fields as columns of their own.
+
+    Built from the columns rather than by ``drop(c).hstack(...)``: on
+    py-polars 1.x a frame whose only column is dropped has height 0, and
+    the record's fields then do not fit it."""
     for c, dtype in frame.schema.items():
         if isinstance(dtype, pl.Struct):
             fields = frame[c].struct.unnest().rename(lambda f, c=c: f"{c}.{f}")
-            frame = frame.drop(c).hstack(fields)
+            kept = [frame[x] for x in frame.columns if x != c]
+            frame = pl.DataFrame([*kept, *fields.get_columns()])
     return frame
 
 
