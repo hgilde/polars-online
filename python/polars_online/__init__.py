@@ -108,7 +108,7 @@ as it was, apart from the two cases :meth:`ModelBank.fit_predict` names.
   every feature of the library with a line each.
 - The `highlights page
   <https://github.com/hgilde/polars-online/blob/main/docs/HIGHLIGHTS.md>`_,
-  four tasks run end to end.
+  four use cases run end to end.
 """
 
 from polars_online import (

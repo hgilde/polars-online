@@ -3,7 +3,7 @@
 
 > **GitHub project:** [github.com/hgilde/polars-online](https://github.com/hgilde/polars-online)
 >
-> **Every feature, one line each:** [FEATURES.md](docs/FEATURES.md) · **Four tasks, end to end:** [HIGHLIGHTS.md](docs/HIGHLIGHTS.md)
+> **Every feature, one line each:** [FEATURES.md](docs/FEATURES.md) · **Four use cases, each in one pass at hundreds of thousands or millions of rows per second, in bounded memory:** [HIGHLIGHTS.md](docs/HIGHLIGHTS.md)
 
 polars-online fits models online, one row at a time, to
 [Polars](https://pola.rs) data, for anyone whose data are too large to
@@ -17,7 +17,7 @@ or from a command line of their own.
 | section | what it covers |
 |---|---|
 | [Introduction](#introduction) | [a first fit](#a-first-fit) · [the idea](#the-idea) · [terminology](#terminology) · [what you can rely on](#what-you-can-rely-on) · [install](#install) |
-| [What you can do with it](#what-you-can-do-with-it) | four tasks run end to end in [HIGHLIGHTS.md](docs/HIGHLIGHTS.md), and the capabilities they show |
+| [What you can do with it](#what-you-can-do-with-it) | four use cases run end to end in [HIGHLIGHTS.md](docs/HIGHLIGHTS.md), and the capabilities they show |
 | [Where to go next](#where-to-go-next) | [the feature index](docs/FEATURES.md), every feature with a line and a link · the pages for each task, by kind |
 | [Models](#models) | the four families, each linking its models' entries in [MODELS.md](docs/MODELS.md) |
 | [What this is not](#what-this-is-not) | what polars-online leaves to Polars and to other tools |

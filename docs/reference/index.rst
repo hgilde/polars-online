@@ -22,7 +22,7 @@ state-file workflow, and performance. The `feature index
 <https://github.com/hgilde/polars-online/blob/main/docs/FEATURES.md>`_ lists
 every function and class with a line each. The `highlights page
 <https://github.com/hgilde/polars-online/blob/main/docs/HIGHLIGHTS.md>`_ runs
-four tasks end to end. Each model's update equations
+four use cases end to end. Each model's update equations
 are in its builder's docstring.
 
 .. list-table::
