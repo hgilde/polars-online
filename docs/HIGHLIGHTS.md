@@ -9,7 +9,7 @@ the library found, to read against that answer.
 | [Automate a round of model selection](#automate-a-round-of-model-selection) | exponentially weighted ridge regressions over many combinations of factors, targets and [half-lives](GLOSSARY.md#time) in time and in traded volume, in one pass in bounded memory, so the files may be larger than memory, that writes each fit's [out-of-sample](GLOSSARY.md#fitting-a-model) residuals and coefficients, the combination chosen as best on each trade, and markers where the factors' regime changed, to read how stable each model is |
 | [Build a forward-looking signal and resume it](#build-a-forward-looking-signal-and-resume-it) | a target built as the data streams, a bounded reverse EWMA of the mid, decaying forward over the next five minutes, minus the mid, a feature of the mid minus its EWMA over the last five, and a first-stage ridge's out-of-sample residual as a feature of the second stage, learned under an [embargo](GLOSSARY.md#time) so no prediction has learned from a target still being formed, fitted robustly through jumps, and saved partway and resumed in a fresh process exactly where it left off |
 | [Prediction intervals on late-arriving residuals](#prediction-intervals-on-late-arriving-residuals) | a model whose target is known about 30 seconds after it was predicted, with a 90% prediction interval around each forecast, and flags where a coefficient of the regression and the correlation between the features significantly change, each checked against changes planted at known rows |
-| [Measure correlations on tick data](#measure-correlations-on-tick-data) | correlations from series that trade at their own times, measured on the times by which every series has traded again, where sampling them on a fixed grid all but loses them |
+| [Measure correlations on tick data](#measure-correlations-on-tick-data) | correlation from asynchronous tick feeds with different timestamps. Sampling is corrected automatically, so you don't have to fix a sampling frequency grid that might accidentally wash out the real correlation effect |
 | [Capabilities](#capabilities) | each capability the tasks use, with the step that shows it and a guide that covers it |
 
 Every task reads its rows from parquet files, most often as a
@@ -595,8 +595,10 @@ the correlation detector run in the same pass as the model.
 
 ## Measure correlations on tick data
 
-This task works on trades, where each instrument ticks at times of its
-own:
+Measure the correlation from asynchronous tick feeds with different
+timestamps. Sampling is corrected automatically, so you don't have to fix
+a sampling frequency grid that might accidentally wash out the real
+correlation effect:
 
 - **Correlations from asynchronous ticks:** `po.stream.refresh_time` puts
   series that tick at their own times on *refresh times*, the times by
