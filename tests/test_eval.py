@@ -591,8 +591,9 @@ def test_a_score_carries_only_the_columns_it_reads(monkeypatch):
     ``y`` and the columns they read -- the group keys, the clock, the weight
     -- where it carried every input column once per slot: a 290 MiB frame
     of 43 columns and 8 slots asked 2 GiB of ``metrics`` (task 270, I-1).
-    Each score is the one the whole long form gives, to the bit, and the
-    long form it reads is a small multiple of ``pred`` and ``y``."""
+    Since task 382a (A5) a frame is read as a query of one chunk is, a slot
+    at a time, so each long form is one slot's, and each score is the
+    one-chunk query's, to the bit."""
     rng = np.random.default_rng(3)
     df, _ = synthetic(seed=51, n_groups=2, n_rows=400, k=3, null_frac=0.0)
     wide = df.with_columns(
@@ -612,38 +613,42 @@ def test_a_score_carries_only_the_columns_it_reads(monkeypatch):
     )
     out = po.ModelBank([spec]).fit_predict(wide)
     real = po.eval._scored
-    seen: list[pl.DataFrame] = []
+    seen: dict[str, list[pl.DataFrame]] = {}
 
-    def spy(long: pl.DataFrame) -> pl.DataFrame:
-        seen.append(long)
-        return real(long)
+    def calls(df):
+        return {
+            "metrics": lambda: po.eval.metrics(df, spec, group="group"),
+            "window_metrics": lambda: po.eval.window_metrics(
+                df, spec, clock="t", every=100.0, group="group"
+            ),
+            "sums": lambda: po.eval.sums(df, spec, group="group", weight="w"),
+        }
 
-    monkeypatch.setattr(po.eval, "_scored", spy)
-    got = {
-        "metrics": po.eval.metrics(out, spec, group="group"),
-        "window_metrics": po.eval.window_metrics(out, spec, clock="t", every=100.0, group="group"),
-        "sums": po.eval.sums(out, spec, group="group", weight="w"),
-    }
+    got = {}
+    for name, call in calls(out).items():
+        seen[name] = []
+
+        def spy(long: pl.DataFrame, into=seen[name]) -> pl.DataFrame:
+            into.append(long)
+            return real(long)
+
+        monkeypatch.setattr(po.eval, "_scored", spy)
+        got[name] = call()
     monkeypatch.setattr(po.eval, "_scored", real)
-    assert [sorted(s.columns) for s in seen] == [
-        sorted(["group", "slot", "target", "pred", "y"]),
-        sorted(["group", "t", "slot", "target", "pred", "y"]),
-        sorted(["group", "w", "slot", "target", "pred", "y"]),
-    ]
+    reads = {"metrics": [], "window_metrics": ["t"], "sums": ["w"]}
+    for name, longs in seen.items():
+        assert len(longs) == 4, name  # one per slot: two half-lives by two ridges
+        for long in longs:
+            assert sorted(long.columns) == sorted(
+                ["group", *reads[name], "slot", "target", "pred", "y"]
+            )
+            assert long["slot"].n_unique() == 1
     full = po.eval.unpack(out, spec)
-    assert full.width > 45 and full.estimated_size() > 8 * max(s.estimated_size() for s in seen)
-    # The same scores from the whole long form, as the scores built it.
-    monkeypatch.setattr(
-        po.eval, "_unpack", lambda df, spec, targets=None, columns=None, who=None: full
-    )
-    want = {
-        "metrics": po.eval.metrics(out, spec, group="group"),
-        "window_metrics": po.eval.window_metrics(out, spec, clock="t", every=100.0, group="group"),
-        "sums": po.eval.sums(out, spec, group="group", weight="w"),
-    }
+    assert full.width > 45
+    assert full.estimated_size() > 30 * max(s.estimated_size() for v in seen.values() for s in v)
     for name, frame in got.items():
         assert frame.height > 0, name
-        assert frame.equals(want[name], null_equal=True), name
+        assert frame.equals(calls(out.lazy())[name](), null_equal=True), name
 
 
 # -------------------- task 278 (b12): the metrics family against its own parts
@@ -699,6 +704,9 @@ def test_compare_specs_is_each_specs_metrics_stacked(two_specs, kw):
     column, to the bit. ``min_samples=320`` sits between the groups'
     counts (310, 311 and 327), so it nulls some rows and not others."""
     out, specs = two_specs
+    if kw.get("binary"):
+        # A 0/1 target, which `binary` refuses otherwise (task 382a, A15).
+        out = out.with_columns(y0=(pl.col("y0") > 0).cast(pl.Float64))
     got = po.eval.compare_specs(out, specs, **kw)
     want = pl.concat(
         po.eval.metrics(out, s, **kw).with_columns(spec=pl.lit(s["name"])).select(got.columns)
@@ -721,6 +729,9 @@ def test_each_window_is_metrics_on_its_rows(two_specs, kw):
     bit, with ``binary`` and ``min_samples`` passed through: the windows
     hold 22 to 54 scored rows, so 40 nulls some of them."""
     out, _ = two_specs
+    if kw.get("binary"):
+        # A 0/1 target, which `binary` refuses otherwise (task 382a, A15).
+        out = out.with_columns(y0=(pl.col("y0") > 0).cast(pl.Float64))
     every = 500.0
     got = po.eval.window_metrics(out, "b", clock="t", every=every, group="group", **kw)
     assert got.height > 20

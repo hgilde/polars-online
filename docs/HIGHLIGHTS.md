@@ -61,7 +61,8 @@ combination was chosen, and where the regimes changed:
   across files with session breaks between them. Every
   [slot](GLOSSARY.md#grids) (each prediction a spec writes) is then scored
   by **one call over a query of the written output**, which adds up a few
-  sums per slot a chunk at a time, so no output is held in memory.
+  sums per slot a chunk at a time, so the output is never held in memory
+  whole.
 
 The recipe plants each answer it looks for. The return `ret_a` loads 0.5
 on factor `f0` throughout, and on `f1` from 0 to 0.6 at the open of
@@ -96,7 +97,9 @@ in size at noon on 2024-01-03.
 6. **Score every slot of both specs** with `po.eval.compare_specs` over a
    query of that file. It runs the query once and reads its result a chunk
    at a time, adding up a few sums per slot, so it holds one chunk of the
-   file and the sums.
+   file and the sums. Polars holds what it reads of the file ahead of them,
+   which [Cut what Polars reads ahead](how-to/bound-memory.md#cut-what-polars-reads-ahead)
+   bounds.
 
 ```python
 from datetime import date, datetime, timedelta

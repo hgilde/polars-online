@@ -118,6 +118,15 @@ give `po.eval.metrics` the query in place of its result. A query runs only
 when its result is asked for, and `metrics` runs it once and reads the
 result a chunk at a time, keeping ten numbers per slot and group.
 
+What the process holds is that chunk and the sums, and on top of them
+what Polars has read ahead of the call: a scan reads blocks of the file
+ahead of a slower consumer, sized from its thread count. Scoring a scan of
+a 20-slot output held 494 MiB at a million rows and 1,012 MiB at four
+million under Polars' defaults. With four threads and the read-ahead cut
+to one block, it held 205 and 208 MiB:
+[Cut what Polars reads ahead](bound-memory.md#cut-what-polars-reads-ahead)
+says how.
+
 1. **Write the bank's query, `query.online.fit_predict([spec])`,** or
    scan a file a run wrote its output to, with `pl.scan_parquet`.
 2. **Pass the query to `po.eval.metrics(query, spec, group=...)`.** It
@@ -174,8 +183,9 @@ A R² 0.545017, B R² 0.551971, C R² 0.551899 from the two halves
 ```
 
 The metrics of the query agree with the ones computed from the whole
-output to every digit printed, with only one chunk of the output in memory
-at a time, and so do the two halves' sums added up.
+output to every digit printed, and so do the two halves' sums added up.
+Only one chunk of the output is in memory at a time, beside what Polars
+reads ahead of it.
 
 ## Score a target that is renamed or looks ahead
 
