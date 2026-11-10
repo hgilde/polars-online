@@ -13,6 +13,17 @@ returns.
 
 ### Added
 
+- Every `po.eval` call that reads a bank's output (`metrics`, `sums`,
+  `window_metrics`, `compare_specs`, `diebold_mariano`, `clark_west`,
+  `seqtest`, `unpack`) now takes a `LazyFrame` as well as a `DataFrame`.
+  Given a query, it reads it in one pass, a chunk at a time, so scoring a
+  stream needs no loop over its chunks. Scoring a scan of a 20-slot output
+  held about 200 MiB at 1, 4 and 16 million rows, where the collected
+  frame's scores held 2.2 GiB at one million. The results are the frame's,
+  within rounding. A call whose result has a row per row (`unpack`,
+  `seqtest`, and the two tests with `half_life`) returns a `LazyFrame`. A
+  query is refused as its frame would be, with the same message, before it
+  runs.
 - `conformal_rate="auto"`: under `embargo` or `label_clock`, the conformal
   interval's step is divided by the rows waiting for their labels:
   `0.05 / (1 + 0.1 · g · n̄)`, where `n̄` is the rows still waiting at each
@@ -338,6 +349,9 @@ returns.
 
 ### Fixed
 
+- `po.eval.diebold_mariano(..., by=...)` now names its replacement,
+  `group`, as every other call does, where it raised Python's generic
+  "unexpected keyword" error.
 - Refusals that came from Python or Polars without naming the parameter
   now name the call and the parameter. A `chunk_size` that is not a whole
   number (every surface that takes one), and `xgboost_matrix`'s `seed`,
