@@ -69,7 +69,7 @@ def test_every_capability_row_links_a_step_and_a_guide():
     rows = [
         r for r in index.splitlines() if r.startswith("| ") and not r.startswith("| capability")
     ]
-    assert len(rows) >= 17, len(rows)
+    assert len(rows) >= 16, len(rows)
     for row in rows:
         cells = [c.strip() for c in row.strip("|").split("|")]
         assert "](#" in cells[2], row

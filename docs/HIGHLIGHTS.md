@@ -9,7 +9,7 @@ the library found, to read against that answer.
 | [Automate a round of model selection](#automate-a-round-of-model-selection) | exponentially weighted ridge regressions over many combinations of factors, targets and [half-lives](GLOSSARY.md#time) in time and in traded volume, in one pass in bounded memory, so the files may be larger than memory, that writes each fit's [out-of-sample](GLOSSARY.md#fitting-a-model) residuals and coefficients, the combination chosen as best on each trade, and markers where the factors' regime changed, to read how stable each model is |
 | [Build a forward-looking signal and resume it](#build-a-forward-looking-signal-and-resume-it) | a target built as the data streams, a bounded reverse EWMA of the mid, decaying forward over the next five minutes, minus the mid, a feature of the mid minus its EWMA over the last five, and a first-stage ridge's out-of-sample residual as a feature of the second stage, learned under an [embargo](GLOSSARY.md#time) so no prediction has learned from a target still being formed, fitted robustly through jumps, and saved partway and resumed in a fresh process exactly where it left off |
 | [Prediction intervals on late-arriving residuals](#prediction-intervals-on-late-arriving-residuals) | a model whose target is known about 30 seconds after it was predicted, with a 90% prediction interval around each forecast that still covers nine answers in ten, and flags where a coefficient of the regression and the correlation between the features significantly change, each checked against changes planted at known rows |
-| [Measure correlations and fit curves on tick data](#measure-correlations-and-fit-curves-on-tick-data) | correlations from series that trade at their own times, and a curve fitted locally along trade size |
+| [Measure correlations on tick data](#measure-correlations-on-tick-data) | correlations from series that trade at their own times, measured on the times by which every series has traded again, where sampling them on a fixed grid all but loses them |
 | [Capabilities](#capabilities) | each capability the tasks use, with the step that shows it and a guide that covers it |
 
 Every task reads its rows from parquet files, most often as a
@@ -371,9 +371,11 @@ print(f"resumed on {resumed:,} rows, after {read - resumed:,} the state had read
 (pl.scan_parquet("features.parquet").online.fit_predict(bank.specs, save_state="whole.state")
    .sink_parquet("whole.parquet"))
 preds = dict(robust=pl.col("robust").struct.field("pred_fwd"), ridge=pl.col("ridge").struct.field("pred_fwd"))
-same = pl.scan_parquet("served.parquet").select(**preds).collect().equals(
-    pl.scan_parquet("whole.parquet").tail(resumed).select(**preds).collect())
-print(f"the same predictions to the bit: {same}")
+served = pl.scan_parquet("served.parquet").select(**preds)
+whole = pl.scan_parquet("whole.parquet").tail(resumed).select(**{f"{k}_whole": v for k, v in preds.items()})
+differ = pl.concat([served, whole], how="horizontal").select(   # rows where the two runs differ, counted as a stream
+    sum((~pl.col(k).eq_missing(pl.col(f"{k}_whole"))).sum() for k in preds)).collect(engine="streaming").item()
+print(f"the same predictions to the bit: {differ == 0}")
 print(f"and the same state, byte for byte: {Path('signal.state').read_bytes() == Path('whole.state').read_bytes()}")
 # Each fit's coefficients averaged over the last two days, against the planted 0.5, 0.3 and 0.
 last_two_days = pl.scan_parquet("whole.parquet").tail(8_000)
@@ -569,7 +571,7 @@ residuals. Of the three, checked on 2026-11-08, none sets its step by how
 many targets are waiting. Here that interval, the per-row break test and
 the correlation detector run in the same pass as the model.
 
-## Measure correlations and fit curves on tick data
+## Measure correlations on tick data
 
 This task works on trades, where each instrument ticks at times of its
 own:
@@ -578,16 +580,9 @@ own:
   series that tick at their own times on *refresh times*, the times by
   which every series has ticked again, and a model tracks their moves'
   correlation there.
-- **A local regression along any feature:** a fit whose clock is trade
-  size, so its half-life is a bandwidth in shares. Sorted by size, with
-  size as the clock, each trade is predicted from the trades learned
-  before it: those at its own size and at nearby smaller sizes, weighted
-  by how near they are. Sorting the trades by size holds them all while it
-  sorts, so this part is for trades that fit in memory.
 
 The recipe plants three prices that share one move, each adding a move of
-its own as large, so the moves of any two correlate at 0.5. Each trade
-prints away from its price by `0.05·√size` plus noise.
+its own as large, so the moves of any two correlate at 0.5.
 
 1. **Make up the three series' trades, each at times of its own, in one
    parquet file in clock order.**
@@ -596,13 +591,6 @@ prints away from its price by `0.05·√size` plus noise.
 4. **Track the changes' correlations with an `ew_cov` spec.**
 5. **Read each series' last price every 0.1 clock units, for
    comparison,** and correlate the changes there.
-6. **Keep the trades of 40 shares or fewer, and sort them by size.** A
-   bandwidth of two shares needs a few trades at every size, which the
-   rarer, larger trades do not give.
-7. **Fit `impact` on `size` with `size` as the clock,** with
-   `half_life=2.0` shares and a solve on every row.
-8. **Compare the local fit with the planted curve and with one straight
-   line** at a few sizes.
 
 ```python
 import numpy as np
@@ -619,10 +607,7 @@ for s in names:
     price = shared + np.cumsum(rng.normal(0.0, 0.1, 200_000))
     t = np.cumsum(rng.exponential(1.0, 2_100))
     t = t[t < 2_000]
-    # Each trade's size, and how far it printed from the price.
-    size = np.round(rng.lognormal(2.0, 1.0, t.size)) + 1        # shares, 1 to a few hundred
-    impact = 0.05 * np.sqrt(size) + 0.02 * rng.standard_normal(t.size)
-    frames.append(pl.DataFrame({"symbol": s, "t": t, "px": price[(t * 100).astype(int)], "size": size, "impact": impact}))
+    frames.append(pl.DataFrame({"symbol": s, "t": t, "px": price[(t * 100).astype(int)]}))
 pl.concat(frames).sort("t").write_parquet("ticks.parquet")
 
 # 2 to 4. The series on refresh times, their changes, and the changes' correlations.
@@ -636,27 +621,15 @@ print("planted 0.5; on the refresh times: " + ", ".join(f"{last[f'corr_{a}_{b}']
 every = pl.LazyFrame({"t": np.arange(0.0, 2_000.0, 0.1)})
 for s in names:                                                  # builds the query: one as-of join per series
     every = every.join_asof(pl.scan_parquet("ticks.parquet").filter(symbol=s).select("t", pl.col("px").alias(s)), on="t")
-corr = every.select(pl.col(names).diff()).drop_nulls().collect().corr()
-print("read every 0.1: " + ", ".join(f"{corr[b][names.index(a)]:.2f}" for a, b in pairs))
+corr = (every.select(pl.col(names).diff()).drop_nulls()
+        .select(pl.corr(a, b).alias(f"{a}_{b}") for a, b in pairs).collect(engine="streaming").row(0))
+print("read every 0.1: " + ", ".join(f"{c:.2f}" for c in corr))
 
-# 6 and 7. A local fit along trade size: the trades up to 40 shares, sorted by size, and size as the clock.
-along = po.spec.ewridge("along", targets=["impact"], features=["size"], clock="size", half_life=2.0, gap_cap=10.0,
-                        max_rows_between_solves=1)
-by_size = pl.scan_parquet("ticks.parquet").filter(pl.col("size") <= 40).sort("size", maintain_order=True)
-curve = by_size.online.fit_predict([along]).online.unnest([along]).collect()
-# 8. The local fit, the planted curve and one straight line through every trade, at a few sizes.
-line = np.polyfit(curve["size"], curve["impact"], 1)
-for at in (2, 8, 32):
-    near = curve.filter(pl.col("size") == at)
-    print(f"size {at:>2}: planted {0.05 * at ** 0.5:.3f}, local fit {near['pred_impact'].mean():.3f}, straight line {np.polyval(line, at):.3f}")
 ```
 
 ```text
-planted 0.5; on the refresh times: 0.34, 0.35, 0.34
-read every 0.1: 0.03, 0.02, 0.02
-size  2: planted 0.071, local fit 0.070, straight line 0.092
-size  8: planted 0.141, local fit 0.143, straight line 0.134
-size 32: planted 0.283, local fit 0.285, straight line 0.301
+planted 0.5; on the refresh times: 0.34, 0.32, 0.36
+read every 0.1: 0.01, 0.02, 0.02
 ```
 
 **On refresh times the correlation is two thirds of the planted 0.5, and
@@ -666,18 +639,11 @@ almost never fall together. [Series that tick at their own
 times](explanation/asynchronous-series.md) explains the fall, and [the two
 ways out](explanation/asynchronous-series.md#the-two-ways-out) of it.
 
-
-**The local fit follows the square-root curve that one straight line
-cannot.** It is the same `ewridge` the other tasks fit, with a feature as
-its clock ([Fit locally along a
-feature](how-to/fit-locally-along-a-feature.md)).
-
 **Each part has a counterpart elsewhere. What one pass gives here is the
 combination.** Neither Polars nor pandas samples on refresh times, and
 Python's `hfhd` package and R's `highfrequency` package do, on series held
-in memory. The statsmodels library fits a local line along a feature
-(`lowess`) on data held in memory too. Here the refresh times, the
-correlations on them and the local fit run as queries over parquet files.
+in memory. Here the refresh times and the correlations on them run as
+queries over parquet files.
 
 ## Capabilities
 
@@ -702,5 +668,4 @@ the library, one line each, see [the feature index](FEATURES.md).
 | per-row break tests | a test on every row of whether a regression has broken | [intervals](#prediction-intervals-on-late-arriving-residuals), steps 5 and 9 | [Detect a break](how-to/detect-a-break.md) |
 | a detector of the features' correlation | a flag where the features' correlations change | [intervals](#prediction-intervals-on-late-arriving-residuals), steps 6 and 10 | [Detect a break](how-to/detect-a-break.md#watch-the-features-correlations-with-corrchange) |
 | a detector tested against known truth | a simulated stream with planted regime changes, and each change matched to the detector's flag | [intervals](#prediction-intervals-on-late-arriving-residuals), steps 1 and 10 | [Test a detector on known truth](how-to/test-a-detector-on-known-truth.md) |
-| correlations from asynchronous ticks | series that tick at their own times, aligned on refresh times | [tick data](#measure-correlations-and-fit-curves-on-tick-data), steps 2 to 4 | [Align series that tick at their own times](how-to/align-series-that-tick-at-their-own-times.md) |
-| a local regression along any feature | a fit whose clock is a feature, so its half-life is a bandwidth in that feature | [tick data](#measure-correlations-and-fit-curves-on-tick-data), step 7 | [Fit locally along a feature](how-to/fit-locally-along-a-feature.md) |
+| correlations from asynchronous ticks | series that tick at their own times, aligned on refresh times | [tick data](#measure-correlations-on-tick-data), steps 2 to 4 | [Align series that tick at their own times](how-to/align-series-that-tick-at-their-own-times.md) |
