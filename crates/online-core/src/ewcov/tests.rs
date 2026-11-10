@@ -3313,3 +3313,73 @@ fn the_kept_window_reads_as_a_fresh_one() {
     assert!(empty > 5, "{empty}");
     assert_eq!(kept, fresh);
 }
+
+/// A window's view written over a kept accumulator of its shape is
+/// `src.clone()` with the window's moments set, field for field and to the
+/// bytes, and is written in place: the kept vectors are the ones it held.
+/// Where the kept one is not of the shape -- another side, or a part short
+/// of it -- or `src` holds rows not yet merged, a block or a damaged
+/// state's rows, it is that clone, made afresh.
+#[test]
+fn a_window_view_is_written_in_place_only_over_one_of_its_shape() {
+    let k = 3;
+    let bytes = |v: &EwCov| rmp_serde::to_vec_named(v).unwrap();
+    let fill = |cov: &mut EwCov, rows: usize| {
+        for r in 0..rows {
+            let t = r as f64;
+            cov.update(&[t.sin(), 0.5 * t, (0.3 * t).cos()], 0.9, 1.0 + 0.1 * t);
+        }
+    };
+    let mean = [0.25, -1.5, 2.0];
+    let lower = [2.0, 0.5, 3.0, -0.25, 0.75, 1.5];
+    let fresh = |src: &EwCov| {
+        let mut e = src.clone();
+        e.set_moments_packed(&mean, &lower, 4.5, Some(3.0));
+        e
+    };
+    let write = |src: &EwCov, out: &mut EwCov, what: &str| {
+        out.set_window_of(src, &mean, &lower, 4.5, Some(3.0));
+        let want = fresh(src);
+        assert_eq!(*out, want, "{what}");
+        assert_eq!(bytes(out), bytes(&want), "{what}");
+    };
+    let mut src = EwCov::new(k);
+    fill(&mut src, 20);
+
+    // Of its shape: written in place.
+    let mut out = src.clone();
+    fill(&mut out, 3);
+    let (m, c) = (out.means().as_ptr(), out.comoments().packed().as_ptr());
+    write(&src, &mut out, "in place");
+    assert!(std::ptr::eq(out.means().as_ptr(), m), "the kept means");
+    assert!(
+        std::ptr::eq(out.comoments().packed().as_ptr(), c),
+        "the kept co-moments"
+    );
+
+    // Another side, and a part short of the side.
+    let mut other = EwCov::new(k + 1);
+    write(&src, &mut other, "another side");
+    let mut short = src.clone();
+    short.m_lo.clear();
+    write(&src, &mut short, "the means' low parts short");
+
+    // `src` holding a block of rows not yet merged.
+    let mut blocked = EwCov::new(k);
+    blocked.set_block_rows(8);
+    fill(&mut blocked, 13);
+    assert!(blocked.has_pending());
+    let mut out = src.clone();
+    write(&blocked, &mut out, "a held block");
+
+    // A damaged state's held rows with no decay beside them, which no
+    // merge reads; the clone keeps them as the file had them.
+    for (x, w) in [(vec![1.0; k], vec![]), (vec![], vec![1.0])] {
+        let mut damaged = src.clone();
+        damaged.pending.x = x;
+        damaged.pending.w = w;
+        assert!(!damaged.has_pending());
+        let mut out = src.clone();
+        write(&damaged, &mut out, "a damaged state's rows");
+    }
+}

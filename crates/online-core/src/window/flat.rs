@@ -1258,6 +1258,79 @@ mod tests {
         assert!(thinned > 50, "the stream thinned the ring {thinned} times");
     }
 
+    /// Words as their bits, every one, NaN payloads and signed zeros
+    /// among them.
+    #[test]
+    fn bits_are_each_word_s_bits() {
+        let words = [1.5, -0.0, f64::from_bits(0x7ff8_0000_0000_0001)];
+        assert_eq!(
+            bits(&words),
+            [1.5f64.to_bits(), 1 << 63, 0x7ff8_0000_0000_0001]
+        );
+        assert!(bits(&[]).is_empty());
+    }
+
+    /// A snapshot whose counted bytes its shape does not fix: a number it
+    /// holds, so two of one shape may be counted apart.
+    #[derive(Debug, Clone, PartialEq)]
+    struct Counted {
+        v: Vec<f64>,
+        bytes: usize,
+    }
+
+    crate::pack_fields!(Counted { v, bytes });
+
+    impl Footprint for Counted {
+        fn footprint(&self) -> usize {
+            self.bytes
+        }
+    }
+
+    /// Snapshots of one shape whose counted bytes change are counted each
+    /// at its own: a run is one shape and one count of bytes, so a snapshot
+    /// written in the run's shape but counted apart starts a run of its own,
+    /// and the ring's bytes, the newest's and each one popped are the
+    /// queue's.
+    #[test]
+    fn snapshots_of_one_shape_counted_apart_are_each_counted_at_their_own() {
+        let mut ring: Ring<Counted> = Ring::new();
+        let mut want: VecDeque<Counted> = VecDeque::new();
+        let mut s = 5u64;
+        let mut runs = 0;
+        for step in 0..600i128 {
+            if lcg(&mut s).is_multiple_of(3) {
+                let popped = ring.pop_front();
+                assert_eq!(popped, want.pop_front().map(|c| c.bytes), "step {step}");
+            } else {
+                let snap = Counted {
+                    v: vec![number(&mut s); 3],
+                    bytes: 100 + 8 * (step as usize / 7 % 3),
+                };
+                if want.back().is_some_and(|b| b.bytes != snap.bytes) {
+                    runs += 1;
+                }
+                ring.push_back(Entry {
+                    clock: step as f64,
+                    stamp: Stamp::Ns(step),
+                    snap: snap.clone(),
+                    decay: Products::ones(0),
+                });
+                want.push_back(snap);
+            }
+            let total: usize = want.iter().map(|c| c.bytes).sum();
+            assert_eq!(ring.footprint(), total, "step {step}");
+            assert_eq!(
+                ring.back_footprint(),
+                want.back().map(|c| c.bytes),
+                "step {step}"
+            );
+            let places: Vec<usize> = ring.places().map(|(_, _, b)| b).collect();
+            let wanted: Vec<usize> = want.iter().map(|c| c.bytes).collect();
+            assert_eq!(places, wanted, "step {step}");
+        }
+        assert!(runs > 50, "the bytes changed within a shape {runs} times");
+    }
+
     /// A snapshot decoded into the boundary's place, over a snapshot of
     /// another shape, reads what one decoded fresh reads, to the bit, its
     /// lower triangle among it.

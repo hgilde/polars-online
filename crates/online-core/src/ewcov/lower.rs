@@ -457,6 +457,33 @@ mod tests {
         assert_eq!(again, m);
     }
 
+    /// `C + ridge·I` is written into the lower triangle and diagonal of a
+    /// square of the side, and a square kept at that size has its strict
+    /// upper triangle left as it held it, not zeroed again; one of another
+    /// size is sized, zeros above the diagonal.
+    #[test]
+    fn the_ridged_lower_triangle_leaves_a_kept_square_s_upper_triangle() {
+        let full = vec![1.0, 9.0, 9.0, 2.0, 3.0, 9.0, 4.0, 5.0, 6.0];
+        let mut m = LowerTriangle::zeros(3);
+        m.copy_from(&full);
+        let mut square = vec![-1.0; 9];
+        m.ridged_lower_into(&mut square, 0.5);
+        assert_eq!(square, [1.5, -1.0, -1.0, 2.0, 3.5, -1.0, 4.0, 5.0, 6.5]);
+        let mut sized = vec![-1.0; 4];
+        m.ridged_lower_into(&mut sized, 0.5);
+        assert_eq!(sized, [1.5, 0.0, 0.0, 2.0, 3.5, 0.0, 4.0, 5.0, 6.5]);
+    }
+
+    /// Only the matrix of side 0 is empty; a damaged one with numbers is not.
+    #[test]
+    fn only_the_matrix_of_no_side_is_empty() {
+        assert!(LowerTriangle::zeros(0).is_empty());
+        assert!(LowerTriangle::default().is_empty());
+        assert!(!LowerTriangle::zeros(1).is_empty());
+        assert!(!LowerTriangle::zeros(3).is_empty());
+        assert!(!LowerTriangle::from(vec![1.0, 2.0]).is_empty());
+    }
+
     /// The strict upper triangle row by row, mapped, at every `k` the
     /// four-column blocks and the columns left over meet: `0` to `9`.
     #[test]

@@ -1868,6 +1868,44 @@ mod tests {
     use super::*;
     use crate::Decay;
 
+    /// A model's kept scratch is lent out whole and handed back the same:
+    /// taking it leaves none behind and hands over what it held, made once;
+    /// putting it back keeps it for the next row, where a row that found
+    /// none would make it again. A copy holds none, and `Debug` shows its
+    /// name alone.
+    #[test]
+    fn kept_scratch_is_lent_and_handed_back_the_same() {
+        let mut kept: Kept<Vec<f64>> = Kept::default();
+        assert!(kept.0.is_none(), "made on first use");
+        kept.get().push(1.0);
+        let made: *const Vec<f64> = kept.get();
+        let mut lent = kept.take();
+        assert!(kept.0.is_none(), "taking it leaves none behind");
+        assert_eq!(lent.get(), &[1.0], "what was kept is lent");
+        assert!(std::ptr::eq(lent.get(), made), "lent, not made again");
+        lent.get().push(2.0);
+        kept.put(lent);
+        assert_eq!(kept.0.as_deref(), Some(&vec![1.0, 2.0]), "handed back");
+        assert!(std::ptr::eq(kept.get(), made), "the same scratch");
+        assert!(kept.clone().0.is_none(), "a copy holds none");
+        assert!(kept == Kept::default(), "any two compare equal");
+        assert_eq!(format!("{kept:?}"), "Kept");
+    }
+
+    /// The window's buffers are scratch: two compare equal whatever they
+    /// hold, so a model that keeps them compares by its state alone.
+    #[test]
+    fn trunc_work_compares_equal_whatever_it_holds() {
+        let mut work = TruncWork::default();
+        assert_eq!(work, TruncWork::default());
+        let cov = EwCov::new(2);
+        emptied_into(&cov, None, &mut cov.clone(), &mut work);
+        work.d.push(3.0);
+        work.unresolved.push(true);
+        assert_eq!(work, TruncWork::default());
+        assert_eq!(work.clone(), work);
+    }
+
     /// Eight bytes a snapshot, for rings of counters.
     impl Footprint for usize {
         fn footprint(&self) -> usize {
