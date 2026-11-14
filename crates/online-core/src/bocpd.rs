@@ -1111,10 +1111,13 @@ pub struct Bocpd {
     /// which records the same rule for task 38's sums).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub solve_failures: u64,
-    /// The predictive's gamma-function terms already taken, by the degrees
-    /// of freedom they were taken at (task 250). Not state.
+    /// What the predictive takes of a run's degrees of freedom alone, held
+    /// by the bits they were taken at (tasks 250 and 389). Not state.
     #[serde(skip)]
-    gammas: GammaCache,
+    gammas: LengthTerms,
+    /// The chance of a break the last row took (task 389). Not state.
+    #[serde(skip)]
+    branches: HeldBranches,
     /// A row's working space (task 292). Not state.
     #[serde(skip)]
     work: Work,
@@ -1128,80 +1131,201 @@ fn gamma_diff(nu: f64, a: f64) -> f64 {
     ln_gamma((nu + a) / 2.0) - ln_gamma(nu / 2.0)
 }
 
-/// [`gamma_diff`] by the bits of `ν` and `a` (task 250): a run's `ν` is the
-/// prior's plus its weight, so under rows of one weight the run of length
-/// `r` asks this row for the value the run of length `r` asked the last
-/// row for, and two `ln_gamma` a run a row -- four logarithms and a Lanczos
-/// sum -- become a lookup. A slot keeps the value `gamma_diff` gave for
-/// exactly those bits, so a hit is the value a miss computes: two `ν` that
-/// differ in any bit, `0.0` and `-0.0` included, never share an entry, and
-/// a different `a` empties every slot. Direct-mapped, [`Self::SLOTS`]
-/// entries at most, filled as it is asked. Not state: a state file carries
-/// none of it, a restored model starts empty, and two models are the same
-/// model whatever each has cached, so [`PartialEq`] ignores it.
-#[derive(Debug, Clone, Default)]
-struct GammaCache {
-    /// The bits of the `a` the slots were filled for.
+/// What the predictive takes of a run's `ν` alone -- [`gamma_diff`], and
+/// under `gaussian` `ln(ν·π)` beside it -- held by the bits of `ν` and `a`
+/// (tasks 250 and 389). A run's `ν` is the prior's plus its weight, so
+/// under rows of one weight the run of length `r` asks this row for the
+/// values the run of length `r` asked the last row for, and two `ln_gamma`
+/// a run a row -- four logarithms and a Lanczos sum -- become a lookup. An
+/// entry keeps the value the function gave for exactly those bits, so a hit
+/// is the value a miss computes: two `ν` that differ in any bit, `0.0` and
+/// `-0.0` included, never share an entry, and a different `a` empties the
+/// table. Open addressing over a power of two at most a quarter full of the
+/// runs one row asks for, so every `ν` of a row has its own entry: a
+/// direct-mapped table put the 200 keys of a stream of 200 runs in 111
+/// slots and hit 30% of the time. A table that fills up is emptied, which
+/// a stream whose `ν` never repeat (fractional weights) does every few
+/// rows, at the cost of the lookups it could not have answered. Not state:
+/// a state file carries none of it, a restored or cloned model starts
+/// empty, and two models are the same model whatever each has held, so
+/// [`PartialEq`] ignores it.
+#[derive(Debug, Default)]
+struct LengthTerms {
+    /// The bits of the `a` the entries were made for, and whether they hold
+    /// `ln(ν·π)` (the `gaussian` form's) or only the gamma difference.
     a: u64,
-    keys: Vec<u64>,
-    vals: Vec<f64>,
-    /// Lookups answered from a slot, and computed: the tests read them to
-    /// show the cache was used.
+    with_pi: bool,
+    /// A power of two, or empty before the first lookup. A key that is a
+    /// NaN's bits marks an entry never filled.
+    slots: Vec<LengthSlot>,
+    /// Entries filled.
+    filled: usize,
+    /// Lookups answered from an entry, and computed: the tests read them to
+    /// show the table was used.
     #[cfg(test)]
     hits: u64,
     #[cfg(test)]
     misses: u64,
 }
 
-impl PartialEq for GammaCache {
+#[derive(Debug, Clone, Copy)]
+struct LengthSlot {
+    key: u64,
+    gamma: f64,
+    ln_pi: f64,
+}
+
+impl Clone for LengthTerms {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for LengthTerms {
     fn eq(&self, _: &Self) -> bool {
         true
     }
 }
 
-impl GammaCache {
-    const SLOTS: usize = 256;
+impl LengthTerms {
+    /// The least entries a table has: a row's `runs` runs get four each, so
+    /// the table is at most a quarter full of one row's keys and a half full
+    /// of two rows'.
+    const MIN_SLOTS: usize = 64;
 
-    /// The slot for `ν`'s bits: their low bits mixed with the exponent's
-    /// and the mantissa's top, which are what change between the `ν` of
-    /// one stream's runs. Where two keys share a slot the later evicts the
-    /// earlier; the key is checked whole, so the slot only places it.
-    #[inline]
-    fn slot(bits: u64) -> usize {
-        ((bits ^ (bits >> 29) ^ (bits >> 47)) as usize) & (Self::SLOTS - 1)
+    /// No `ν` asked for here has a NaN's bits, so they mark an entry never
+    /// filled.
+    const EMPTY: u64 = f64::NAN.to_bits();
+
+    /// Ready for a row of `runs` runs asking for the terms of dimension
+    /// `a`, with `ln(ν·π)` beside the gamma difference where `with_pi`. A
+    /// table built for another `a` or form is emptied, and one without room
+    /// for the row's keys grows and starts again.
+    #[inline(never)]
+    fn begin(&mut self, runs: usize, a: f64, with_pi: bool) {
+        if self.a != a.to_bits() || self.with_pi != with_pi {
+            self.a = a.to_bits();
+            self.with_pi = with_pi;
+            self.empty();
+        }
+        let need = 4 * (runs + 1);
+        if self.slots.len() < need.max(Self::MIN_SLOTS) {
+            self.grow(need);
+        }
     }
 
-    /// [`gamma_diff`]`(nu, a)`, from the slot for `nu`'s bits when it holds
-    /// them.
+    /// A table of room for `need` entries or more, empty.
+    #[cold]
+    fn grow(&mut self, need: usize) {
+        self.slots.clear();
+        self.slots.resize(
+            need.next_power_of_two().max(Self::MIN_SLOTS),
+            LengthSlot {
+                key: Self::EMPTY,
+                gamma: 0.0,
+                ln_pi: 0.0,
+            },
+        );
+        self.filled = 0;
+    }
+
+    /// Empty every entry, keeping the room.
+    fn empty(&mut self) {
+        for slot in self.slots.iter_mut() {
+            slot.key = Self::EMPTY;
+        }
+        self.filled = 0;
+    }
+
+    /// The entry for `ν`'s bits: where they hash to, or the next one along
+    /// that holds them or was never filled. The hash is Fibonacci's, of the
+    /// bits folded onto themselves: the `ν` of a stream's runs differ in the
+    /// exponent and the mantissa's top, which a fold of the halves brings
+    /// down to where the product's top bits, the index, read them.
     #[inline]
-    fn get(&mut self, nu: f64, a: f64) -> f64 {
-        if nu.is_nan() {
-            return gamma_diff(nu, a);
+    fn find(&self, bits: u64) -> usize {
+        let mask = self.slots.len() - 1;
+        let folded = bits ^ (bits >> 32);
+        let mut at = (folded.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize & mask;
+        loop {
+            let key = self.slots[at].key;
+            if key == bits || key == Self::EMPTY {
+                return at;
+            }
+            at = (at + 1) & mask;
         }
-        if self.keys.is_empty() || self.a != a.to_bits() {
-            // No `nu` asked for here has a NaN's bits, so they mark a slot
-            // never filled.
-            self.a = a.to_bits();
-            self.keys = vec![f64::NAN.to_bits(); Self::SLOTS];
-            self.vals = vec![0.0; Self::SLOTS];
-        }
+    }
+
+    /// The entry for `nu`, made if it is not held; the table is emptied
+    /// first where it would hold more than half its entries. After
+    /// [`Self::begin`] for `a`.
+    #[inline]
+    fn entry(&mut self, nu: f64, a: f64) -> LengthSlot {
+        debug_assert!(a.to_bits() == self.a && !self.slots.is_empty());
         let bits = nu.to_bits();
-        let at = Self::slot(bits);
-        if self.keys[at] == bits {
+        let mut at = self.find(bits);
+        if self.slots[at].key == bits {
             #[cfg(test)]
             {
                 self.hits += 1;
             }
-            return self.vals[at];
+            return self.slots[at];
         }
         #[cfg(test)]
         {
             self.misses += 1;
         }
-        let v = gamma_diff(nu, a);
-        self.keys[at] = bits;
-        self.vals[at] = v;
-        v
+        if 2 * (self.filled + 1) > self.slots.len() {
+            self.empty();
+            at = self.find(bits);
+        }
+        let made = LengthSlot {
+            key: bits,
+            gamma: gamma_diff(nu, a),
+            // The `gaussian` form's `ln(ν·π)`, as its expression takes it.
+            ln_pi: if self.with_pi {
+                (nu * std::f64::consts::PI).ln()
+            } else {
+                0.0
+            },
+        };
+        self.slots[at] = made;
+        self.filled += 1;
+        made
+    }
+
+    /// [`gamma_diff`]`(nu, a)`, for the `a` and form [`Self::begin`] was
+    /// given.
+    #[inline]
+    fn gamma(&mut self, nu: f64, a: f64) -> f64 {
+        if nu.is_nan() {
+            return gamma_diff(nu, a);
+        }
+        self.entry(nu, a).gamma
+    }
+
+    /// [`gamma_diff`]`(nu, a)` and `ln(nu·π)`.
+    #[inline]
+    fn gamma_and_ln_pi(&mut self, nu: f64, a: f64) -> (f64, f64) {
+        if nu.is_nan() {
+            return (gamma_diff(nu, a), (nu * std::f64::consts::PI).ln());
+        }
+        let e = self.entry(nu, a);
+        (e.gamma, e.ln_pi)
+    }
+}
+
+/// The chance of a break the last row took, by the bits of what it came
+/// from -- the row's hazard under a per-row hazard, the step under one on
+/// the clock -- so that a stream of one hazard or of regular steps takes the
+/// two logarithms of [`Branches`] once (task 389). Not state, and every
+/// model is equal to every other as to it.
+#[derive(Debug, Clone, Copy, Default)]
+struct HeldBranches(Option<(u64, Branches)>);
+
+impl PartialEq for HeldBranches {
+    fn eq(&self, _: &Self) -> bool {
+        true
     }
 }
 
@@ -1215,7 +1339,8 @@ impl Bocpd {
             logjoint: vec![0.0],
             n_eff: 0.0,
             solve_failures: 0,
-            gammas: GammaCache::default(),
+            gammas: LengthTerms::default(),
+            branches: HeldBranches::default(),
             work: Work::default(),
             w_mean: 0.0,
             w_rows: 0.0,
@@ -1403,7 +1528,7 @@ impl Bocpd {
         x: &[f64],
         mu0: &[f64],
         psi0: &[f64],
-        cache: Option<&mut GammaCache>,
+        cache: Option<&mut LengthTerms>,
         work: &mut RunWork,
     ) -> Option<(f64, f64)> {
         let d = self.cfg.n_features;
@@ -1452,13 +1577,14 @@ impl Bocpd {
             // `quad_forms(delta, d, 1)[0]` to the bit, in a kept column.
             let q = f.quad_form(delta, &mut work.quad);
             let df = d as f64;
-            // `(Γ − Γ) − ..` as the expression groups, so the cached
-            // difference is the same value (task 250).
-            let gammas = match cache {
-                Some(c) => c.get(dof, df),
-                None => gamma_diff(dof, df),
+            // `(Γ − Γ) − ..` as the expression groups, so the held
+            // difference is the same value, and `ln(dof·π)` the same call
+            // (tasks 250 and 389).
+            let (gammas, ln_pi) = match cache {
+                Some(c) => c.gamma_and_ln_pi(dof, df),
+                None => (gamma_diff(dof, df), (dof * std::f64::consts::PI).ln()),
             };
-            let base = gammas - 0.5 * df * (dof * std::f64::consts::PI).ln() - 0.5 * f.log_det();
+            let base = gammas - 0.5 * df * ln_pi - 0.5 * f.log_det();
             factors.give(f);
             Some((base - 0.5 * (dof + df) * (1.0 + q / dof).ln(), base))
         } else {
@@ -1468,7 +1594,7 @@ impl Bocpd {
             // the same value, `(Γ − Γ) − ½ ln(..)` as the expression groups
             // (task 250).
             let gammas = match cache {
-                Some(c) => c.get(nun, 1.0),
+                Some(c) => c.gamma(nun, 1.0),
                 None => gamma_diff(nun, 1.0),
             };
             let mut lp = 0.0;
@@ -1511,12 +1637,38 @@ impl Bocpd {
     /// has passed since the row (the module docs). `(None, None)` for a step
     /// the clock cannot read, which refuses the row.
     fn before_row(&self, y: &[Option<f64>], d_clock: f64) -> (Option<Vec<f64>>, Option<Branches>) {
-        if !self.cfg.hazard_on_clock {
-            return (None, Branches::per_row(self.hazard_of(y)));
-        }
-        match Branches::over(d_clock, self.cfg.hazard) {
-            Some(step) => (Some(self.transition(step)), Some(Branches::NONE)),
+        self.before_row_held(y, d_clock, &mut HeldBranches::default())
+    }
+
+    /// [`Self::before_row`], the chance of a break taken from `held` where
+    /// it was taken from the same bits last, and left there where it was
+    /// made (task 389): the same two logarithms of the same value.
+    fn before_row_held(
+        &self,
+        y: &[Option<f64>],
+        d_clock: f64,
+        held: &mut HeldBranches,
+    ) -> (Option<Vec<f64>>, Option<Branches>) {
+        let on_clock = self.cfg.hazard_on_clock;
+        let from = if on_clock { d_clock } else { self.hazard_of(y) };
+        let branches = match held.0 {
+            Some((bits, b)) if bits == from.to_bits() => Some(b),
+            _ => {
+                let made = if on_clock {
+                    Branches::over(from, self.cfg.hazard)
+                } else {
+                    Branches::per_row(from)
+                };
+                if let Some(b) = made {
+                    held.0 = Some((from.to_bits(), b));
+                }
+                made
+            }
+        };
+        match branches {
             None => (None, None),
+            Some(step) if on_clock => (Some(self.transition(step)), Some(Branches::NONE)),
+            Some(step) => (None, Some(step)),
         }
     }
 
@@ -1544,7 +1696,7 @@ impl Bocpd {
         joint: &[f64],
         next: Option<Branches>,
         rel: f64,
-        cache: Option<&mut GammaCache>,
+        cache: Option<&mut LengthTerms>,
     ) -> (Vec<f64>, Option<Update>) {
         let mut out = Vec::new();
         let mut work = Work::default();
@@ -1565,7 +1717,7 @@ impl Bocpd {
         joint: &[f64],
         next: Option<Branches>,
         rel: f64,
-        mut cache: Option<&mut GammaCache>,
+        mut cache: Option<&mut LengthTerms>,
         work: &mut Work,
         out: &mut Vec<f64>,
     ) -> Option<Option<f64>> {
@@ -1595,6 +1747,10 @@ impl Bocpd {
         } = work;
         logpi.clear();
         weights.clear();
+        if let Some(c) = cache.as_deref_mut() {
+            let full = self.full();
+            c.begin(r, if full { d as f64 } else { 1.0 }, full);
+        }
         self.mu0_into(mu0);
         self.psi0_into(psi0);
         for run in &self.runs {
@@ -1937,9 +2093,11 @@ impl Bocpd {
         } else {
             (1.0, self.w_mean, self.w_rows)
         };
-        let (moved, next) = self.before_row(y, d_clock);
+        let mut held = self.branches;
+        let (moved, next) = self.before_row_held(y, d_clock, &mut held);
+        self.branches = held;
         let joint = moved.as_deref().unwrap_or(self.logjoint.as_slice());
-        // The gamma cache and the working space, out of `self` while `read`
+        // The held terms and the working space, out of `self` while `read`
         // borrows it.
         let mut gammas = std::mem::take(&mut self.gammas);
         let mut work = std::mem::take(&mut self.work);
@@ -5234,8 +5392,9 @@ mod tests {
         )
     }
 
-    /// The fast path -- the gamma cache, the runs growing in place, `prune`
-    /// handed `read`'s `log_sum_exp` -- is the reference above to the bit,
+    /// The fast path -- the held length terms and branches, the runs growing
+    /// in place, `prune` handed `read`'s `log_sum_exp` -- is the reference
+    /// above to the bit,
     /// row by row and in the state's bytes, on streams that reach every
     /// branch it touches: each emission (the cache keyed on `νₙ` and on the
     /// inverse-Wishart's `ν − d + 1`), the data's prior and the cfg's, a
@@ -5291,7 +5450,8 @@ mod tests {
                 t += 1;
             }
             let mut slow = fast.clone();
-            slow.gammas = GammaCache::default();
+            slow.gammas = LengthTerms::default();
+            slow.branches = HeldBranches::default();
             let (mut pruned, mut folded, mut folded_many) = (0, 0, 0);
             let (mut zero, mut nan, mut uneven) = (0, 0, 0);
             for t in t..1_200 {
@@ -5354,11 +5514,11 @@ mod tests {
         }
     }
 
-    /// The cache on a long stream of one weight hits nearly every lookup,
-    /// and every value it holds is `gamma_diff` taken again at its key, to
+    /// The table on a long stream of one weight hits nearly every lookup,
+    /// and every value it holds is what its function gives at its key, to
     /// the bit.
     #[test]
-    fn the_gamma_cache_hits_on_a_long_stream_and_holds_what_it_computes() {
+    fn the_length_terms_hit_on_a_long_stream_and_hold_what_they_compute() {
         for (c, a) in [
             (cfg(2), 1.0),
             (
@@ -5371,6 +5531,7 @@ mod tests {
                 2.0,
             ),
         ] {
+            let with_pi = c.emission == BocpdEmission::Gaussian;
             let mut m = Bocpd::new(BocpdCfg {
                 max_run: 60,
                 prune_below: 1e-6,
@@ -5388,68 +5549,165 @@ mod tests {
                 g.hits,
                 g.misses
             );
-            assert_eq!(g.a, f64::to_bits(a));
-            assert_eq!(
-                (g.keys.len(), g.vals.len()),
-                (GammaCache::SLOTS, GammaCache::SLOTS)
-            );
-            let empty = f64::NAN.to_bits();
-            let filled: Vec<usize> = (0..g.keys.len()).filter(|&i| g.keys[i] != empty).collect();
-            assert!(filled.len() >= 30, "{} slots filled", filled.len());
-            for i in filled {
-                let nu = f64::from_bits(g.keys[i]);
-                assert_eq!(g.vals[i].to_bits(), gamma_diff(nu, a).to_bits(), "nu {nu}");
+            assert_eq!((g.a, g.with_pi), (f64::to_bits(a), with_pi));
+            assert!(g.slots.len().is_power_of_two() && g.slots.len() >= 64);
+            let filled: Vec<&LengthSlot> = g
+                .slots
+                .iter()
+                .filter(|s| s.key != LengthTerms::EMPTY)
+                .collect();
+            assert_eq!(filled.len(), g.filled);
+            assert!(filled.len() >= 30, "{} entries filled", filled.len());
+            for e in filled {
+                let nu = f64::from_bits(e.key);
+                assert_eq!(e.gamma.to_bits(), gamma_diff(nu, a).to_bits(), "nu {nu}");
+                let ln_pi = if with_pi {
+                    (nu * std::f64::consts::PI).ln()
+                } else {
+                    0.0
+                };
+                assert_eq!(e.ln_pi.to_bits(), ln_pi.to_bits(), "nu {nu}");
             }
         }
     }
 
-    /// A slot is keyed on every bit of `ν`: two values in the same slot
-    /// evict each other and each reads its own value, `0.0` and `-0.0` are
-    /// two keys, another `a` empties the cache, a NaN is computed and never
-    /// stored, and no number of distinct keys grows it past its slots.
+    /// A stream of 200 runs, which a direct-mapped table of 256 entries
+    /// answered 30% of the time: every length but the first row's is held,
+    /// whatever the keys' bits.
     #[test]
-    fn the_gamma_cache_never_shares_an_entry_between_two_keys() {
-        let slot = |nu: f64| GammaCache::slot(nu.to_bits());
-        let mut c = GammaCache::default();
+    fn the_length_terms_miss_each_length_once() {
+        let mut t = LengthTerms::default();
+        let nus: Vec<f64> = (0..200).map(|r| 3.0 + r as f64).collect();
+        for row in 0..50 {
+            t.begin(nus.len(), 1.0, false);
+            for &nu in &nus {
+                assert_eq!(t.gamma(nu, 1.0).to_bits(), gamma_diff(nu, 1.0).to_bits());
+            }
+            assert_eq!(t.misses, 200, "row {row}");
+            assert_eq!(t.hits, 200 * row, "row {row}");
+        }
+        // Halves too, as a `gaussian` run's `ν − d + 1` is, and fractions.
+        let mut t = LengthTerms::default();
+        let nus: Vec<f64> = (0..300).map(|r| 0.5 + r as f64 * 0.25).collect();
+        for _ in 0..3 {
+            t.begin(nus.len(), 2.0, true);
+            for &nu in &nus {
+                assert_eq!(
+                    t.gamma_and_ln_pi(nu, 2.0).0.to_bits(),
+                    gamma_diff(nu, 2.0).to_bits()
+                );
+            }
+        }
+        assert_eq!((t.misses, t.hits), (300, 600));
+    }
+
+    /// An entry is keyed on every bit of `ν`: `0.0` and `-0.0` are two keys,
+    /// another `a`, or the other form, empties the table, a NaN is computed
+    /// and never stored, two keys the hash puts at one place each read
+    /// their own value, and no number of distinct keys grows the table past
+    /// its room or leaves it without an empty entry.
+    #[test]
+    fn the_length_terms_never_share_an_entry_between_two_keys() {
+        let mut c = LengthTerms::default();
         assert_eq!(
-            c.get(f64::NAN, 1.0).to_bits(),
+            c.gamma(f64::NAN, 1.0).to_bits(),
             gamma_diff(f64::NAN, 1.0).to_bits()
         );
         assert!(
-            c.keys.is_empty() && c.hits + c.misses == 0,
+            c.slots.is_empty() && c.hits + c.misses == 0,
             "a NaN is not stored"
         );
         let p: f64 = 3.5;
+        c.begin(0, 1.0, false);
+        // Every `ν` the hash sends where `p` goes.
+        let home = |nu: f64| {
+            let b = nu.to_bits();
+            ((b ^ (b >> 32)).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize
+                & (c.slots.len() - 1)
+        };
         let q = (1..)
             .map(|k| f64::from_bits(p.to_bits() + k))
-            .find(|q| slot(*q) == slot(p))
+            .find(|q| home(*q) == home(p))
             .unwrap();
-        for (nu, hits, misses) in [(p, 0, 1), (p, 1, 1), (q, 1, 2), (p, 1, 3), (q, 1, 4)] {
-            assert_eq!(
-                c.get(nu, 1.0).to_bits(),
-                gamma_diff(nu, 1.0).to_bits(),
-                "{nu}"
-            );
+        for (nu, hits, misses) in [(p, 0, 1), (p, 1, 1), (q, 1, 2), (p, 2, 2), (q, 3, 2)] {
+            assert_eq!(c.gamma(nu, 1.0).to_bits(), gamma_diff(nu, 1.0).to_bits());
             assert_eq!((c.hits, c.misses), (hits, misses), "{nu}");
         }
-        c.get(0.0, 1.0);
+        c.gamma(0.0, 1.0);
         let misses = c.misses;
-        c.get(-0.0, 1.0);
+        c.gamma(-0.0, 1.0);
         assert_eq!(c.misses, misses + 1, "-0.0 is not 0.0");
         // Another `a` asks for another function: nothing from the first is
         // reused.
         let misses = c.misses;
-        assert_eq!(c.get(q, 3.0).to_bits(), gamma_diff(q, 3.0).to_bits());
+        c.begin(0, 3.0, false);
+        assert_eq!(c.gamma(q, 3.0).to_bits(), gamma_diff(q, 3.0).to_bits());
         assert_eq!(c.misses, misses + 1, "a new a starts empty");
-        assert_eq!(c.get(q, 3.0).to_bits(), gamma_diff(q, 3.0).to_bits());
+        assert_eq!(c.gamma(q, 3.0).to_bits(), gamma_diff(q, 3.0).to_bits());
         assert_eq!(c.misses, misses + 1, "and then fills");
+        // So does the other form, which carries `ln(ν·π)` as well.
+        c.begin(0, 3.0, true);
+        let (g, l) = c.gamma_and_ln_pi(q, 3.0);
+        assert_eq!(c.misses, misses + 2, "the other form starts empty");
+        assert_eq!(g.to_bits(), gamma_diff(q, 3.0).to_bits());
+        assert_eq!(l.to_bits(), (q * std::f64::consts::PI).ln().to_bits());
+        let room = c.slots.len();
         for k in 0..10_000u64 {
-            c.get(1.0 + k as f64 * 0.37, 3.0);
+            let nu = 1.0 + k as f64 * 0.37;
+            assert_eq!(
+                c.gamma_and_ln_pi(nu, 3.0).0.to_bits(),
+                gamma_diff(nu, 3.0).to_bits()
+            );
+            assert!(2 * c.filled <= c.slots.len());
         }
-        assert_eq!(
-            (c.keys.len(), c.vals.len()),
-            (GammaCache::SLOTS, GammaCache::SLOTS)
-        );
+        assert_eq!(c.slots.len(), room);
+        assert!(c.slots.iter().any(|s| s.key == LengthTerms::EMPTY));
+        // A row of more runs makes room, and starts again.
+        c.begin(1_000, 3.0, true);
+        assert!(c.slots.len() >= 4_000 && c.filled == 0);
+        c.begin(10, 3.0, true);
+        assert!(c.slots.len() >= 4_000, "the room is not given back");
+    }
+
+    /// The chance of a break is the one `Branches` makes, to the bit, held
+    /// while the same bits come and made again when they do not; and a hazard
+    /// that is no hazard is refused and holds nothing.
+    #[test]
+    fn the_held_branches_are_the_ones_made_and_follow_the_bits() {
+        let bits = |b: Branches| (b.ln_break.to_bits(), b.ln_grow.to_bits());
+        let mut m = Bocpd::new(BocpdCfg {
+            hazard_from_row: true,
+            ..cfg(1)
+        })
+        .unwrap();
+        let mut held = HeldBranches::default();
+        for h in [50.0, 50.0, 7.5, 50.0, 7.5, 7.5, -0.0, 3.0] {
+            let (_, got) = m.before_row_held(&[Some(h)], 1.0, &mut held);
+            let (_, want) = m.before_row(&[Some(h)], 1.0);
+            assert_eq!(got.map(bits), want.map(bits), "{h}");
+        }
+        // A hazard of 1 or below is refused, and holds nothing of its own.
+        let before = held.0.map(|(k, b)| (k, bits(b)));
+        let (_, got) = m.before_row_held(&[Some(1.0)], 1.0, &mut held);
+        assert!(got.is_none());
+        assert_eq!(held.0.map(|(k, b)| (k, bits(b))), before);
+        // On the clock, by the step.
+        m.cfg.hazard_from_row = false;
+        m.cfg.hazard_on_clock = true;
+        let mut held = HeldBranches::default();
+        for dc in [1.0, 1.0, 2.5, 0.0, 1.0, 0.0, 0.0, 2.5] {
+            let (a, got) = m.before_row_held(&[], dc, &mut held);
+            let (b, want) = m.before_row(&[], dc);
+            assert_eq!(got.map(bits), want.map(bits), "{dc}");
+            let eq = |a: Option<Vec<f64>>, b: Option<Vec<f64>>| {
+                a.map(|v| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>())
+                    == b.map(|v| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>())
+            };
+            assert!(eq(a, b), "{dc}");
+        }
+        for bad in [-1.0, f64::NAN, f64::INFINITY] {
+            assert!(m.before_row_held(&[], bad, &mut held).1.is_none());
+        }
     }
 
     /// The cache is not state: a state written with a warm cache is the
@@ -5468,9 +5726,9 @@ mod tests {
         for _ in 0..600 {
             m.step(&[n.normal(), n.normal()], &[], 1.0, 1.0);
         }
-        assert!(m.gammas.hits > 0 && !m.gammas.keys.is_empty());
+        assert!(m.gammas.hits > 0 && !m.gammas.slots.is_empty());
         let mut cold = m.clone();
-        cold.gammas = GammaCache::default();
+        cold.gammas = LengthTerms::default();
         assert_eq!(
             rmp_serde::to_vec(&m).unwrap(),
             rmp_serde::to_vec(&cold).unwrap()
@@ -5487,7 +5745,7 @@ mod tests {
         let bytes = rmp_serde::to_vec(&m).unwrap();
         let mut loaded: Bocpd = rmp_serde::from_slice(&bytes).unwrap();
         for r in [&back, &loaded] {
-            assert!(r.gammas.keys.is_empty() && r.gammas.hits + r.gammas.misses == 0);
+            assert!(r.gammas.slots.is_empty() && r.gammas.hits + r.gammas.misses == 0);
             assert_eq!(*r, m, "equality ignores the cache");
         }
         for t in 0..400 {
