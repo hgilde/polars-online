@@ -417,6 +417,56 @@ pub fn solve_spd(a: &[f64], b: &[f64], k: usize, m: usize) -> Option<(Vec<f64>, 
     Some((out, attempts))
 }
 
+/// The working space of a caller that solves a system of one shape on every
+/// row ([`solve_spd_in`]): the factor's matrix, faer's scratch and the
+/// right-hand sides' matrix, each kept between calls and written over, so a
+/// shape it has held allocates nothing. It holds nothing a caller reads
+/// between calls.
+pub(crate) struct SolveWork {
+    chol: CholWork,
+    l: Mat<f64>,
+    x: QuadWork,
+}
+
+impl Default for SolveWork {
+    fn default() -> Self {
+        Self {
+            chol: CholWork::default(),
+            l: Mat::new(),
+            x: QuadWork::default(),
+        }
+    }
+}
+
+/// [`solve_spd`], to the bit, with its factor, scratch and right-hand sides
+/// in `work` and the solution (column-major `k x m`, as [`solve_spd`]'s)
+/// written into `out`: the attempts, or `None` where every jitter fails.
+/// The factor is [`factorize_into`]'s, which is [`factorize`]'s to the bit,
+/// and the two triangular solves are the same; only the allocations differ.
+pub(crate) fn solve_spd_in(
+    a: &[f64],
+    b: &[f64],
+    k: usize,
+    m: usize,
+    work: &mut SolveWork,
+    out: &mut Vec<f64>,
+) -> Option<u32> {
+    debug_assert_eq!(b.len(), k * m);
+    let (attempts, _) = factorize_into(a, k, &mut work.l, &mut work.chol)?;
+    let x = work.x.columns(k, m);
+    for j in 0..m {
+        for (i, v) in x.col_as_slice_mut(j).iter_mut().enumerate() {
+            *v = b[j * k + i];
+        }
+    }
+    solve_in_place(&work.l, x.as_mut());
+    out.clear();
+    for j in 0..m {
+        out.extend_from_slice(x.col_as_slice(j));
+    }
+    Some(attempts)
+}
+
 /// [`solve_spd`] of `C + ridge·I` with one right-hand side `b`, `C`
 /// symmetric over `k` features and given as its lower triangle packed row
 /// by row ([`crate::LowerTriangle::packed`]), with no square laid out: each
