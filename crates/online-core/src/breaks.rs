@@ -1071,7 +1071,15 @@ impl TwinFit {
     /// over short-run variance under a horizon
     /// ([`Breaks::long_run_residuals`]), 1 without one.
     pub fn wald(&self, idx: &[usize], intercept: bool, long_run: f64) -> Option<f64> {
-        WALD_SCRATCH.with_borrow_mut(|sc| self.wald_in(sc, idx, intercept, long_run))
+        WALD_SCRATCH.with_borrow_mut(|sc| {
+            let distance = self.wald_in(sc, idx, intercept, long_run);
+            // A thread keeps buffers for the orders a bank usually reads, not
+            // for a thousand features' matrices.
+            if idx.len() >= KEPT_ORDER {
+                *sc = WaldScratch::default();
+            }
+            distance
+        })
     }
 
     /// [`Self::wald`] in `sc`'s buffers: every matrix it forms is written
@@ -1326,9 +1334,11 @@ thread_local! {
 /// distance solves.
 type Solves = Vec<(usize, usize, crate::solve::SolveWork)>;
 
-/// Past this order a solve allocates its own space, as [`crate::solve_spd`]
-/// does, rather than keep one for the thread.
-const KEPT_SOLVE_ORDER: usize = 128;
+/// Past this order (faer's own recursion threshold, where a factorization
+/// is no longer one call) a solve allocates its own space, as
+/// [`crate::solve_spd`] does, rather than keep one for the thread, and a
+/// distance leaves no buffer behind.
+const KEPT_ORDER: usize = 64;
 
 /// [`crate::solve_spd`] of `A x = B` (`B` column-major `k × m`) into `out`,
 /// to the bit, in the space kept for its shape: the attempts, `None` where
@@ -1341,7 +1351,7 @@ fn solve_in(
     m: usize,
     out: &mut Vec<f64>,
 ) -> Option<u32> {
-    if k > KEPT_SOLVE_ORDER {
+    if k > KEPT_ORDER {
         let (x, attempts) = crate::solve_spd(a, b, k, m)?;
         *out = x;
         return Some(attempts);
@@ -3184,6 +3194,42 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Past the order a thread keeps buffers for, the distance is the plain
+    /// form's to the bit too.
+    #[test]
+    fn a_wide_distance_is_the_plain_forms_to_the_bit() {
+        let kx = 70;
+        let mut t = TwinFit::new(kx);
+        let mut s = 71u64;
+        let all: Vec<usize> = (0..kx).collect();
+        let few: Vec<usize> = (0..kx).step_by(11).collect();
+        let mut seen = 0;
+        for i in 0..400 {
+            let x: Vec<f64> = (0..kx).map(|_| lcg(&mut s) + 1.0).collect();
+            let y = x[0] - x[1] + 0.3 * lcg(&mut s) + if i < 250 { 0.0 } else { x[2] };
+            t.update(&x, y, 0.98, 1.0);
+            if i % 20 != 19 {
+                continue;
+            }
+            for idx in [&all, &few] {
+                for intercept in [true, false] {
+                    let (got, want) = (
+                        t.wald(idx, intercept, 1.0),
+                        plain::wald(&t, idx, intercept, 1.0),
+                    );
+                    assert_eq!(
+                        got.map(f64::to_bits),
+                        want.map(f64::to_bits),
+                        "row {i}, {} features",
+                        idx.len()
+                    );
+                    seen += usize::from(got.is_some());
+                }
+            }
+        }
+        assert!(seen > 10, "{seen} distances");
     }
 
     /// The distance is the plain form's to the bit, over every feature
