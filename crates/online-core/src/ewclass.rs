@@ -51,7 +51,7 @@ use serde::{Deserialize, Serialize};
 use crate::clock::Decay;
 use crate::ewcov::{EwCov, EwCovDiag};
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
-use crate::solve::{FactorWork, QuadWork, SpdFactor};
+use crate::solve::{CholWork, FactorWork, QuadWork, SpdFactor};
 
 /// The shape of the class covariance matrices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -224,22 +224,22 @@ impl PartialEq for Factors {
 }
 
 impl Factors {
-    /// The factor for class `c`, computing and keeping it when stale, from
-    /// the matrix `matrix` writes into `buf`.
+    /// The factor for class `c`, computing and keeping it when stale, of
+    /// `C + ridge·I` for `C` the packed triangle `packed`
+    /// ([`crate::LowerTriangle::packed`]), with no square laid out.
     fn get(
         &mut self,
         c: usize,
         n_classes: usize,
-        buf: &mut Vec<f64>,
-        matrix: impl FnOnce(&mut Vec<f64>),
+        packed: &[f64],
+        ridge: f64,
         k: usize,
     ) -> Option<&SpdFactor> {
         if self.slots.len() != n_classes {
             self.slots = vec![Cached::Stale; n_classes];
         }
         if matches!(self.slots[c], Cached::Stale) {
-            matrix(buf);
-            self.slots[c] = match self.work.factor(buf, k) {
+            self.slots[c] = match self.work.factor_ridged(packed, ridge, k) {
                 Some(f) => Cached::Ready(f),
                 None => Cached::Failed,
             };
@@ -279,8 +279,8 @@ impl Factors {
 }
 
 /// The buffers a row's scores are formed in, kept between rows: the class
-/// weights, the class scores, the row's deviations, the matrix a stale
-/// class factorizes and the quadratic form's column. Scratch, not state:
+/// weights, the class scores, the row's deviations, faer's scratch for a
+/// class factorized without a kept cache and the quadratic form's column. Scratch, not state:
 /// each is written in full before it is read, so it is neither serialized
 /// nor compared. Formed afresh, they were 13 allocations of a row's 15 at
 /// three classes and twenty features.
@@ -289,7 +289,7 @@ struct ScoreWork {
     weights: Vec<f64>,
     ell: Vec<f64>,
     delta: Vec<f64>,
-    matrix: Vec<f64>,
+    chol: CholWork,
     quad: QuadWork,
     view: crate::window::Kept<View>,
     shared: crate::window::Kept<SharedWork>,
@@ -674,19 +674,16 @@ impl EwClass {
         self.cfg.precision_prior * scale
     }
 
-    /// `C_c + r_c I`, the matrix the `full` shape factorizes for one class,
+    /// The ridge in force on the `full` shape's class matrix `C_c + r_c I`,
     /// from the accumulator the row is scored on: under a `window`, the
     /// truncated one. This read `self.classes[c]`, the whole history, while
     /// the mean the row was measured from came from the window -- and paid a
     /// factorization per class per row, under a window, to factorize the wrong
     /// matrix (review 2026-09-12, C12). `shared` and `diagonal` read the view.
-    ///
-    /// Only the lower triangle is written, into `m` kept at `k²`
-    /// ([`crate::LowerTriangle::ridged_lower_into`]): the factorization reads
-    /// it and the diagonal alone ([`SpdFactor::of`], [`FactorWork`]'s).
-    fn class_matrix(&self, cov: &EwCov, m: &mut Vec<f64>) {
-        let ridge = self.cfg.precision_prior * cov.precision_scale();
-        cov.comoments().ridged_lower_into(m, ridge);
+    /// The factorization reads the packed triangle and the ridge directly
+    /// ([`SpdFactor::of_ridged_in`]), laying out no square.
+    fn class_ridge(&self, cov: &EwCov) -> f64 {
+        self.cfg.precision_prior * cov.precision_scale()
     }
 
     /// `[class, p_0, .., p_{C-1}]` for `x` from the current state, written
@@ -714,7 +711,7 @@ impl EwClass {
             weights,
             ell,
             delta,
-            matrix,
+            chol,
             quad,
             view,
             shared,
@@ -761,14 +758,13 @@ impl EwClass {
                         *d = cov.deviation(i, xi);
                     }
                     let fresh;
-                    let fill = |m: &mut Vec<f64>| self.class_matrix(cov, m);
+                    let (packed, ridge) = (cov.comoments().packed(), self.class_ridge(cov));
                     let factor = match factors.as_deref_mut() {
-                        Some(cache) => cache.get(c, nc, matrix, fill, k),
+                        Some(cache) => cache.get(c, nc, packed, ridge, k),
                         None => match self.factors.peek(c) {
                             Some(f) => Some(f),
                             None => {
-                                fill(matrix);
-                                fresh = SpdFactor::of(matrix, k);
+                                fresh = SpdFactor::of_ridged_in(packed, ridge, k, None, chol);
                                 fresh.as_ref()
                             }
                         },
