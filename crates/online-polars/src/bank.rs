@@ -5003,6 +5003,19 @@ impl Bank {
         rmp_serde::encode::write_named(out, &file).map_err(|e| e.to_string())
     }
 
+    /// [`Self::write_msgpack`] for a file: a failed write keeps the
+    /// filesystem's own error, its kind and OS code, which the encoder's
+    /// message would lose.
+    fn write_msgpack_io<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<()> {
+        let mut stash = file_encoding::Stash::new(out);
+        match self.write_msgpack(&mut stash) {
+            Ok(()) => Ok(()),
+            Err(msg) => Err(stash
+                .take_error()
+                .unwrap_or_else(|| std::io::Error::other(msg))),
+        }
+    }
+
     /// The same state as JSON, for reading rather than for loading: a state
     /// file is msgpack and only msgpack ([`Bank::load_bytes`] takes nothing
     /// else), so this is an export.
@@ -5392,7 +5405,7 @@ impl Bank {
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         let (file, pending) = crate::atomic::AtomicFile::create(path)?;
         let mut w = std::io::BufWriter::with_capacity(1 << 20, file);
-        self.write_msgpack(&mut w).map_err(std::io::Error::other)?;
+        self.write_msgpack_io(&mut w)?;
         // Flushed, then closed, so `commit` reopens exactly one handle to sync.
         w.into_inner().map_err(|e| e.into_error())?;
         pending.commit()

@@ -92,3 +92,86 @@ impl Serialize for LazyStates<'_> {
         seq.end()
     }
 }
+
+/// A writer that keeps the first I/O error its target raised, with its kind
+/// and OS code, since the encoder reports a failed write as text.
+pub(super) struct Stash<'a, W: std::io::Write> {
+    inner: &'a mut W,
+    error: Option<std::io::Error>,
+}
+
+impl<'a, W: std::io::Write> Stash<'a, W> {
+    pub(super) fn new(inner: &'a mut W) -> Self {
+        Self { inner, error: None }
+    }
+
+    pub(super) fn take_error(&mut self) -> Option<std::io::Error> {
+        self.error.take()
+    }
+
+    fn keep(&mut self, e: &std::io::Error) {
+        if self.error.is_none() {
+            self.error = Some(match e.raw_os_error() {
+                Some(code) => std::io::Error::from_raw_os_error(code),
+                None => std::io::Error::new(e.kind(), e.to_string()),
+            });
+        }
+    }
+}
+
+impl<W: std::io::Write> std::io::Write for Stash<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner.write(buf).inspect_err(|e| self.keep(e))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush().inspect_err(|e| self.keep(e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::Bank;
+    use std::io::{self, ErrorKind, Write};
+
+    struct Failing(ErrorKind, Option<i32>);
+    impl Write for Failing {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(match self.1 {
+                Some(c) => io::Error::from_raw_os_error(c),
+                None => io::Error::new(self.0, "no"),
+            })
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A write that fails mid-encode reaches the caller as the same kind
+    /// (and OS code), not as the encoder's text.
+    #[test]
+    fn a_failed_write_keeps_its_error_kind() {
+        let spec = serde_json::from_str(
+            r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
+                "features": ["x"], "half_life": 10.0}"#,
+        )
+        .unwrap();
+        let bank = Bank::new(vec![spec]).unwrap();
+        for kind in [
+            ErrorKind::PermissionDenied,
+            ErrorKind::StorageFull,
+            ErrorKind::NotFound,
+        ] {
+            let e = bank.write_msgpack_io(&mut Failing(kind, None)).unwrap_err();
+            assert_eq!(e.kind(), kind);
+        }
+        let e = bank
+            .write_msgpack_io(&mut Failing(ErrorKind::Other, Some(libc_enospc())))
+            .unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc_enospc()));
+    }
+
+    fn libc_enospc() -> i32 {
+        if cfg!(windows) { 112 } else { 28 }
+    }
+}
