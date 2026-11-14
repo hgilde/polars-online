@@ -137,9 +137,10 @@ class Case:
     ``raises`` is the exact class (``type(e) is raises``), ``bases`` the
     parents the class keeps, ``text`` a fragment of the message (so the case
     cannot pass on another refusal of the same class), and ``errno`` the
-    ``OSError``'s errno where the call carries one: ``None`` says it is not
-    carried (an error built by the Rust side, where pyo3 makes the
-    ``OSError`` from the message alone) and ``_ANY`` says it is not asserted.
+    ``OSError``'s errno: an ``OSError`` with an errno also has its system
+    text and its file (as Python's ``open`` gives them), and ``None`` says the
+    call's error carries no errno (the Python layer's own checks of a path,
+    raised with the message alone); ``_ANY`` says it is not asserted.
     """
 
     id: str
@@ -537,11 +538,13 @@ CASES: list[Case] = [
 
 # --- The I/O kinds: each filesystem outcome and the class it reaches Python as.
 #
-# Python opens a state file to load it, so the OSError is Python's own, with
-# its errno; the savers are Rust's, which builds the OSError from the kind and
-# the message, so pyo3 gives the right subclass and no errno. A save is asked
-# for each kind the filesystem gives; the platform's own class is pinned where
-# the platforms differ (``_the_one_that``), never one for both.
+# Python opens a state file to load it, so that OSError is Python's own; the
+# savers and the runner's writer are Rust's, which builds the OSError as
+# Python's ``open`` does, from ``(errno, strerror, filename)``, so each carries
+# the errno, the system's text and the file, and Python picks the subclass from
+# the errno. A save is asked for each kind the filesystem gives; the platform's
+# own class is pinned where the platforms differ (``_the_one_that``), never one
+# for both.
 
 CASES += [
     Case(
@@ -570,28 +573,28 @@ CASES += [
         lambda w: w.bank.save(w.tmp / "nope" / "b.state"),
         FileNotFoundError,
         "nope",
-        errno=None,
+        errno=errno_codes.ENOENT,
     ),
     Case(
         "io-save-onto-a-folder",
         lambda w: w.bank.save(w.tmp),
         _the_one_that(PermissionError, IsADirectoryError),
-        "(os error",
-        errno=None,
+        "",
+        errno=errno_codes.EACCES if WINDOWS else errno_codes.EISDIR,
     ),
     Case(
         "io-save-under-a-file",
         lambda w: w.bank.save(_file(w) / "b.state"),
         FileNotFoundError if WINDOWS else NotADirectoryError,
         "b.state",
-        errno=None,
+        errno=errno_codes.ENOENT if WINDOWS else errno_codes.ENOTDIR,
     ),
     Case(
         "io-save-permission-denied",
         lambda w: w.bank.save(_read_only_folder(w) / "b.state"),
         PermissionError,
         "Permission denied",
-        errno=None,
+        errno=errno_codes.EACCES,
         guard=(
             WINDOWS or ROOT,
             "a folder's write bit stops no one on Windows, and nothing for root: there "
@@ -603,14 +606,14 @@ CASES += [
         lambda w: w.bank.save(Path(w.tmp.anchor)),
         OSError,
         "not a file path",
-        errno=None,
+        errno=errno_codes.EINVAL,
     ),
     Case(
         "io-closed-groups-csv-is-a-folder",
         _closed_csv_is_a_folder,
         _the_one_that(PermissionError, IsADirectoryError),
         "closed.csv",
-        errno=None,
+        errno=errno_codes.EACCES if WINDOWS else errno_codes.EISDIR,
     ),
 ]
 
@@ -648,6 +651,9 @@ def test_a_public_call_raises_exactly_its_class(case: Case, world: SimpleNamespa
     assert case.text in str(e), f"{case.id}: {case.text!r} is not in {str(e)!r}"
     if isinstance(e, OSError) and case.errno is not _ANY:
         assert e.errno == case.errno, f"{case.id}: errno {e.errno}, expected {case.errno}"
+        if case.errno is not None:
+            assert e.strerror and "(os error" not in e.strerror, f"{case.id}: {e.strerror!r}"
+            assert e.filename, f"{case.id}: the error names no file"
 
 
 def test_every_case_has_a_distinct_id() -> None:
@@ -697,6 +703,32 @@ def test_a_call_while_a_fit_runs_is_refused_with_exactly_runtime_error() -> None
         pytest.fail("no call reached the bank while a fit of 400,000 rows ran")
     assert type(refused) is RuntimeError
     assert "in use on another thread" in str(refused)
+
+
+def test_a_save_to_a_path_with_no_file_name_names_the_path_once(world: SimpleNamespace) -> None:
+    """The message was ``/: /: not a file path``: the saver and the writer under
+    it each named the path. The text is the system's, and the path is the
+    error's file."""
+    anchor = str(Path(world.tmp.anchor))
+    with pytest.raises(OSError) as caught:
+        world.bank.save(anchor)
+    e = caught.value
+    assert e.strerror == "not a file path"
+    assert e.filename == anchor
+    assert str(e).count("not a file path") == 1
+
+
+def test_a_save_to_a_folder_that_is_not_there_carries_its_errno(world: SimpleNamespace) -> None:
+    """``except OSError as e: e.errno == errno.ENOENT`` reads the Rust savers'
+    errors as it reads Python's ``open``: the errno, the text and the file."""
+    missing = world.tmp / "nope" / "b.state"
+    with pytest.raises(FileNotFoundError) as caught:
+        world.bank.save(missing)
+    e = caught.value
+    assert e.errno == errno_codes.ENOENT
+    assert e.filename == str(missing)
+    assert e.strerror and "(os error" not in e.strerror
+    assert not missing.exists()
 
 
 def test_the_savers_refuse_a_state_that_will_not_encode_as_a_value_error_not_an_os_error(

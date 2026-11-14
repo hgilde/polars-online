@@ -448,7 +448,8 @@ fn the_noise_gates_notice_under_lam_names_the_lam_that_opens_it() {
 }
 
 /// A state saved to a path that names no file is refused before anything
-/// is written, naming the path.
+/// is written. The message is the reason alone: the caller names the path,
+/// and a message that named it too read it twice.
 #[test]
 fn a_state_saved_to_a_path_that_names_no_file_is_refused() {
     let s = spec(
@@ -458,11 +459,7 @@ fn a_state_saved_to_a_path_that_names_no_file_is_refused() {
     let bank = Bank::new(vec![s]).unwrap();
     let e = bank.save(std::path::Path::new("..")).unwrap_err();
     assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
-    assert!(
-        e.to_string().contains(".. : not a file path")
-            || e.to_string().contains("..: not a file path"),
-        "{e}"
-    );
+    assert_eq!(e.to_string(), "not a file path");
 }
 
 /// Each format's name is the one its config key and its extension use.
