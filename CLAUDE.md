@@ -57,52 +57,20 @@ scripts/oracles.py check|raises|apply    # the oracle ledger (oracles.toml): eac
 uv run python scripts/oracles.py rerun   # the oracle grids whose hashes the gate's guard says moved
 ```
 
-Iterating (task 245; docs/TESTING.md, "Iterating" and "Caches and when to
-clear them"): workers run `scripts/quick.sh` while iterating and finish
-with `scripts/quick.sh --extended` plus the lints, not a full gate, and
-never merge `main` unless asked. The coordinator merges each wave of
-finished branches onto an `integration` branch cut from `main`, regenerates
-any generated files that conflict (fixtures, goldens, the API snapshot)
-once, runs ONE essentials gate, and fast-forwards `main` on PASS; a failure
-is mapped to a branch by the files it touched (`scripts/slot.sh overlap`)
-or bisected over the wave's merges (the user, 2026-10-26: parallel gates
-and the re-gates of conflicting merges were the agents' two bottlenecks).
-A wave of one branch skips `integration` and the essentials gate: it merges
-onto `main` (a fast-forward where it can be) and the full tier runs once, on
-that sha, before the push (the user, 2026-11-03: "why bother with an
-integration branch").
-`scripts/gate.sh` takes one of two machine-wide tokens and waits for one
-(`POLARS_ONLINE_GATES`). The full tier runs, always, before every push on
-the exact sha.
-Run at most two building agents at once on this machine -- three while the
-1-minute load stays under about 20 (the user, 2026-11-07) -- each with
-`CARGO_BUILD_JOBS=6`, pytest at `-n 4` and the gate at `GATE_WORKERS=4`;
-a local `cargo mutants` runs alone, under `.claude/coord/mutants.lock`;
-check `uptime` first and wait above a load of about 20 (docs/TESTING.md,
-"At most two agents": four parallel mutants runs at a load of 88 panicked
-the Mac twice, 2026-10-27/28). Coordination files -- briefs, the queue,
-the worker rules, survivor lists -- live in `.claude/coord/` (locally
-excluded), never under `/tmp`, which a restart empties. A worker gets a
-worktree slot, not a fresh worktree (task 248; docs/TESTING.md, "Worktree
-slots"): the coordinator runs `scripts/slot.sh take <branch> main`, starts
-the worker without `isolation`, told to work only in that path, and runs
-`scripts/slot.sh give <n>` after merging; a warm slot rebuilds the tests in
-23 s and the dev wheel in 6 s where a fresh worktree takes 79 s and 145 s. Nobody runs a full
-`cargo mutants` pass locally (the user, 2026-10-11: "Every task seems to
-spend a lot of time waiting for mutants", then "we need a thorough mutants
-check to run the smallest number of times"): the one thorough check is CI's
-changed-lines pass on the push, sharded across runners and free; its
-survivors are a follow-up batch, and a fix is checked locally only with an
-`--in-diff` of the fix itself (`--copy-target=true --test-tool nextest`).
-So push each merged, gated wave as it lands (the user, 2026-10-12: "Yes"
-to it): a push needs the full gate on the exact sha and no open bug, and
-then no further word; small pushes keep each CI mutants pass short and its
-survivors fresh. Dispatching a release still needs the user's explicit
-word, and its PyPI approval is always the user's click. Workers lean on activation tests instead. After each push
-wave and its branch and worktree cleanup, run `scripts/clear_caches.sh
---worktrees` (or whenever free disk is under 100 GB). sccache stays off:
-from a new worktree path a third of the crates miss its cache, so it is
-slower there; `POLARS_ONLINE_SCCACHE=1` turns it on for one checkout.
+Workflow (the detail and each rule's reason: `docs/records/AGENT-WORKFLOW.md`):
+- Workers iterate with `scripts/quick.sh` and finish with `scripts/quick.sh --extended`
+  plus the lints, never a full gate, never a merge of `main` unless asked.
+- The coordinator merges a wave of 2+ branches onto `integration`, runs ONE essentials
+  gate, fast-forwards `main`; a wave of one merges onto `main` directly. **The full tier
+  runs before every push, on the exact sha**; a gated wave with no open bug is pushed
+  without asking. A release dispatch needs the user's word; PyPI approval is the user's click.
+- At most two building agents (three while the 1-minute load is under about 20), each with
+  `CARGO_BUILD_JOBS=6`, pytest `-n 4`, `GATE_WORKERS=4`; check `uptime` first.
+- No local full `cargo mutants`: CI's changed-lines pass is the one check; a survivor fix
+  is checked locally only by `--in-diff`, alone, under `.claude/coord/mutants.lock`.
+- Coordination files live in `.claude/coord/`, never `/tmp`. Workers get a slot
+  (`scripts/slot.sh take <branch> main`, `give <n>` after the merge), not a fresh worktree.
+- After each push wave, `scripts/clear_caches.sh --worktrees` (or under 100 GB free). sccache off.
 
 Two tiers of tests (docs/TESTING.md, "Two tiers"; PLAN task 210). The
 essentials gate each commit while a task is in progress, for speed of
@@ -139,112 +107,9 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    current sets to `v<N>/`, ships a loader and regenerates the current sets. The bank
    fixture carries the package version, so it is regenerated at every version bump.
    `ModelState`'s variant names are frozen: they are the file's tags.
-   One exception, the user's (2026-10-24, task 275): a *windowed* state of
-   schema 61 or 62 continues within the golden tolerance, not to the bit,
-   once a snapshot taken after its load is the window's edge (those states
-   never recorded the per-row decay factors); its first read is exact.
-   A second, the user's (2026-10-25, task 278): a `kmeans` state of schema
-   61-63 saved before it seeded seeds by the new rule after loading -- the
-   same centres and distances to the bit, the cluster labels possibly
-   permuted, held to one consistent relabelling.
-   A third, the user's (2026-10-25, task 278): a `lasso` state of schema
-   61-63 continues within 1e-9 relative, not to the bit (the stopping rule
-   became relative to the target's spread), and still loads and re-saves the
-   same bytes.
-   A fourth, the user's (2026-10-25, task 278): a diagnosed state of schema
-   61-63 continues to the current values in its windowed `cusum_*` and
-   `cusum_sq_*` fields while their sums are young (their null's share is now
-   read at the sums' age); every other field continues to the bit.
-   A fifth, the user's (2026-10-26, task 278): a `holt` state of schema
-   61-63 loads with no line fit and continues with the textbook gains it
-   was fitted under, within 1e-14 in its predictions and state, and its
-   diagnostics derived over many rows within the golden 1e-12 (to the bit
-   until task 291a's kept reciprocals, the user's, 2026-11-01); its re-saved bytes cannot be the current
-   fixture's (which carries the line fit), so it is held, beside `kmeans`,
-   to re-saving bytes that load back the same.
-   A sixth, the user's (2026-11-01, task 294): the co-moment matrix every
-   `EwCov` keeps is now stored as its lower triangle and read through its
-   mirror, so a state of schema 61-63 continues within rounding, not to the
-   bit, where it read an upper entry: an `ew_cov` state's covariances and
-   correlations within 1e-15 by |Δ|/(1+|x|), and a diagnosed state's
-   specification, calibration, break and `ic` statistics (and a closed
-   group's exported `comoments`) within the golden 1e-12; every prediction
-   continues to the bit, `lasso` stays inside its own 1e-9, and each state
-   still re-saves the current fixture's bytes exactly.
-   A seventh, the user's (2026-11-03, task 311): an `ewridge` state saved
-   by an earlier build no longer runs a solve its weight schedule brings due
-   while the weight is below `(1 − s)(1 − 2⁻¹⁶)` of its lowest floor. It
-   continues with every residual, spread, weight and Gram to the bit, and
-   every prediction to the bit except where a target's weight has decayed to
-   exactly 0 below the floor or a fit's factorization fails at every rung:
-   there a row may read the last fit solved rather than the skipped one.
-   Until the next solve run, its `coef`, `support_coef` and `se_coef` report
-   the file's fit and `solve_failures` counts only the solves run, so the
-   state it re-saves after those rows is not the old build's. No frozen
-   fixture reaches it.
-   An eighth, the user's (2026-11-05, task 323; amended 2026-11-05, task
-   340): a state of schema 64 or earlier that holds a MAD scale sketch
-   (`huber`, `quantile`, `sgd(loss="huber")`, `marginal`'s huber bins)
-   keeps the rule it was saved under -- a sketch awaiting its anchor takes
-   its first value, a warm-up with no held residuals reads its sketch --
-   marked in its bytes (`anchor_by_first_value`, `before_65`). It continues
-   to the bit, but re-saves to its own marked bytes, not the current
-   fixture's, so it is held, beside `kmeans` and `holt`, to re-saving bytes
-   that load back the same (`kept_scale_rule`). A converted `marginal`
-   state re-saves so only until its histogram is built: `before_65` acts at
-   the freeze and is cleared there (schema 67), so from the freeze it
-   re-saves the current form; a state of 65 or 66 saved past its freeze
-   still carries the mark and loads without it, converting to the current
-   fixture's bytes exactly (`marginal_bins_refit_first_value_frozen`, kept
-   under `v66/` by the 66 build).
-   A ninth, the user's (2026-11-05, task 328): a `corrchange(kind="window")`
-   state of schema 65 or earlier loads numbered from its ring's oldest row
-   (it never recorded `ring_rows`), and where its windows span four blocks
-   or more its statistic is merged from block moments rather than read from
-   the rows, so `stat` continues within the merged form's derived rounding
-   bound (held at 1e-14 of `1 + |stat|`, measured 4e-16), not to the bit;
-   every other output continues to the bit, a kept `permute_every_rows`
-   stays as saved, and its re-saved state equals the current fixture's but
-   for `ring_rows` (`RENUMBERED`).
-   A tenth, the user's (2026-11-05, task 327): a windowed `ew_class` under
-   `covariance_type="diag"` now counts each snapshot class at its k
-   variances, not k² co-moments, against `window_budget`, so a state of
-   schema 65 or earlier that had reached its budget thins or refuses later
-   than it would have, and from that row does not continue to the bit. No
-   frozen fixture reaches it; every state below its budget continues to the
-   bit.
-   An eleventh, the user's (2026-11-05, task 331): `refit_budget`'s
-   default rose from 256 to 320 MiB, and the spec keeps only a budget the
-   user gave, so a bank saved under the old default reads its saved
-   reservation against 320 MiB when loaded. The groups it gave up stay
-   given up and every group it holds continues to the bit, but a group it
-   first sees after the load refits until 320 MiB is reserved, where the
-   old build would have given it up. No frozen fixture reaches the
-   default budget.
-   A twelfth, the user's (2026-11-08, task 364): an `ewridge` state
-   saved by an earlier build no longer runs a solve its row cap brings due
-   under a weight share (the default schedule under a finite half-life)
-   while the weight is below `(1 − s)(1 − 2⁻¹⁶)` of its lowest floor, as it
-   already ran none the weight brought due there. It continues with every
-   residual, spread, weight and Gram to the bit, and every prediction to
-   the bit except in the seventh exception's two cases. Until the next
-   solve run, its `coef`, `support_coef` and `se_coef` report the file's
-   fit and `solve_failures` counts only the solves run, so the state it
-   re-saves after those rows is not the old build's. A given
-   `solve_every`'s clock and row cap still run every solve they bring due.
-   No frozen fixture reaches it.
-   A thirteenth, the user's (2026-11-09, task 368): a conformal tracker
-   now keeps a multiplier `m` of the residual spread, the interval being
-   `pred ± m·σ`, where a state of schema 66 or earlier holds the radius
-   `q`. Such a state loads with `q` kept, re-saves it, and shows it to the
-   bit on its next row; that row, if it reads an error scale, converts it
-   to `m = q / σ` and steps `m`, so from there its intervals and coverage
-   go on under the multiplier, not to the old build's, and the state it
-   re-saves is not the old build's. Every other field continues to the
-   bit. No frozen fixture holds a conformal tracker;
-   `a_conformal_radius_of_schema_66_is_shown_then_converted` holds the form,
-   written from a current bank, and `tests/test_released_state.py` each
-   release's file (`CONVERTED`: each group's first row to the bit).
+   Thirteen exceptions, each the user's, are numbered and stated in full in
+   `docs/records/STATE-CONTINUATION.md` ("rule 5's Nth exception" means its Nth);
+   a new one is added there and counted here.
 6. No `unsafe` in `online-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
 8. **`n_eff` -- the models' accessor, emitted as `weight_sum` -- means the same thing in
@@ -296,88 +161,19 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
     not tests: a dev-dependency linked only into test binaries needs no
     raise (the user, 2026-09-25).
 
-**Raised and resolved (2026-08-31): static linking here is what Polars
-prescribes, not a shortcut.** Checked against Polars' own documentation rather
-than reasoned about:
+Static linking of Polars into the wheel is what Polars prescribes for a compiled
+extension, and the `#[global_allocator] static ALLOC: PolarsAllocator` line in
+`online-py` must stay: it keeps allocation coherent between the two copies of Polars
+(the evidence, raised and resolved 2026-08-31: `docs/records/LINKING.md`).
 
-- The [User Guide](https://docs.pola.rs/user-guide/plugins/expr_plugins/) calls
-  expression plugins "the preferred way to create user defined functions... The
-  Polars engine will **dynamically link your function at runtime**". The dynamic
-  link is the engine `dlopen`-ing our `cdylib`; the plugin itself carries its
-  own Polars. The pyo3-polars README says so outright: "The plugin functions are
-  **compiled separately**."
-- Their canonical `Cargo.toml` is ours: `crate-type = ["cdylib"]`, a plain
-  `polars` dependency, `pyo3` with `abi3`, `pyo3-polars` with `derive`.
-- Their canonical `lib.rs` opens with
-  `#[global_allocator] static ALLOC: PolarsAllocator = PolarsAllocator::new();`
-  — **this is prescribed, not an optimisation.** It is the mechanism that keeps
-  allocation coherent between the two copies of Polars, and the reason a
-  statically linked plugin is safe rather than a double-free waiting to happen.
-  Without it we silently ran on a second heap (and 43% slower).
-
-So rule 12 is satisfied, and **stays** satisfied now that the plugin is gone
-(task 85). The quotations above are the evidence that settled the question,
-not a description of a surface we still ship; what they established still
-holds of the wheel itself. `online-py` is a `cdylib` that Python `dlopen`s, it
-carries its own statically linked Polars, and the `PolarsAllocator` above is
-still what keeps allocation coherent between the two copies — which is why
-that `#[global_allocator]` line must stay whatever else changes. Nothing on
-crates.io publishes a `dylib` to link against anyway (0 of our 453
-dependencies; `crate-type` is the publisher's choice).
-
-13. **Know which of the interfaces a change rides on.** Four, and the three
-    that are py-polars' to change carry no guarantee. (The expression plugin —
-    which had a version handshake — was removed in task 85: it read every row
-    by construction, which is the opposite of what this library is for.)
-    - **PyO3 extension types** (`PyDataFrame`/`PySeries`, i.e. `ModelBank`) —
-      the README states these "are however only provided for convenience and
-      **do not have stability guarantees** beyond that the latest definitions
-      should work for the latest version of Polars."
-
-    - **IO plugin** (`lf.online.fit_predict(...)`, `polars.io.plugins.register_io_source`)
-      — documented in the user guide but decorated `@unstable` in py-polars:
-      "may be changed at any point without it being considered a breaking
-      change". The bank is the source; polars does not re-apply the
-      projection, predicate or slice it pushes into a Python source, so the
-      source honours all three (`python/polars_online/_frame.py`).
-
-    - **An expression's serialized form** (`expr.meta.serialize(format="json")`,
-      the window formulas, task 143) — unstable across Polars versions, by
-      Polars' own account. `python/polars_online/_formula.py` reads seven node
-      kinds from it, under the caller's Polars, into this library's own tree,
-      and refuses any other node by name. Its shapes were measured the same on
-      1.34.0 and 1.44.2 (task 154).
-
-    - **The Arrow PyCapsule interface** (`ModelBank.fit_predict_arrow`, task
-      86) — the *output* side only, and the one path whose contract is not
-      py-polars' to change: `__arrow_c_array__` is an Arrow specification,
-      py-polars consumes it through the public `PySeries.from_arrow_c_array`,
-      and pyarrow and duckdb consume it too. A break here would be an
-      Arrow-level break rather than a polars one. Two caveats, both real: the
-      *input* still arrives as a `PyDataFrame`, so a `fit_predict_arrow` call
-      rides on this **and** on the first entry above; and which py-polars
-      versions expose `from_arrow_c_array` has not been measured here, so the
-      floor below is not known to hold for it.
-
-    `polars>=1.37.0,<3` in `pyproject.toml` is therefore *measured* for all
-    four but *guaranteed* for none below the latest — and the two that stream
-    are among those — see `docs/RELEASE-READINESS.md`.
-    Treat a `ModelBank`, IO-plugin or formula break on a new Polars as expected
-    maintenance, not a surprise, and check those paths first. The floor is
-    py-polars 1.37.0, the first whose `LazyFrame.collect_batches` (added in
-    1.34.0), which the IO plugin reads with, stops reading ahead of a slower
-    consumer: 1.34.0-1.36.1 held a whole 1 GB source (2026-10-12). That
-    holds only where a source feeds `collect_batches` directly. Polars
-    bounds what it keeps in flight by frames, not bytes, about ten frames a
-    thread between a source and a node that runs on every thread
-    (`with_columns`, a computing `select`), on 1.37.0 and 2.0 alike
-    (2026-11-06, task 348): so a scan followed by `with_columns` in front of
-    a slower `fit_predict` reads ahead (848 MB at 4M rows, against 279 MB
-    for the same model in a loop over the bare scan), and this library's
-    own sources hand Polars slices of at most 1 MiB so that two stages in
-    series stay bounded. The loop is the remedy for a Polars scan;
-    `docs/PERFORMANCE.md` §47 measures both.
-    `ModelBank` alone works from 1.28.1.
+13. **Know which of the interfaces a change rides on**: the PyO3 extension types
+    (`ModelBank`), the IO plugin (`lf.online.fit_predict`, `@unstable` in py-polars),
+    an expression's serialized form (the window formulas, `_formula.py`), and the Arrow
+    PyCapsule output. The first three carry no stability guarantee from py-polars:
+    treat a break on a new Polars as expected maintenance and check those paths first.
+    `polars>=1.37.0,<3` is measured, not guaranteed; 1.37.0 is the first whose
+    `collect_batches` does not read ahead of a slower consumer. Each interface's
+    account and the read-ahead measurements: `docs/records/LINKING.md`.
 
 ## Style
 
