@@ -5082,7 +5082,16 @@ fn run_instance(
         // under an embargo of 50 (review round 6, A-6; schema 57).
         let mut shown_radius: Option<Vec<f64>> = None;
         if plan.buffered {
-            let mut record = step.pred.clone();
+            // The record is sized once, for every part it will hold, so a
+            // held row allocates once rather than growing by a reallocation
+            // per part (P34; the VM measured about 430 instructions a held
+            // row on x86 in the growth, R-V41).
+            let len = step.pred.len()
+                + inst.conformal.as_deref().map_or(0, |cs| cs.len())
+                + if has_row_infl { sc.row_infl.len() } else { 0 }
+                + if kept { sc.ungated.len() } else { 0 };
+            let mut record = Vec::with_capacity(len);
+            record.extend_from_slice(&step.pred);
             if let Some(cs) = inst.conformal.as_deref() {
                 let ring = inst.resid_win.as_ref().map(SpreadRef::get);
                 let spread = inst
