@@ -1101,6 +1101,11 @@ pub trait OnlineModel: Sized {
 
     fn state(&self) -> State;
     fn restore(s: &State) -> Result<Self, StateError>;
+    /// [`Self::restore`] taking the state, for a model that can move its
+    /// own out of it rather than copy it.
+    fn restore_owned(s: State) -> Result<Self, StateError> {
+        Self::restore(&s)
+    }
     fn n_targets(&self) -> usize;
     fn n_features(&self) -> usize;
     /// Number of prediction slots (`n_targets * grid combos`; usually `n_targets`).

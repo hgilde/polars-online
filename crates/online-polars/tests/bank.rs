@@ -188,6 +188,23 @@ fn save_load_mid_stream_is_identical() {
     assert!(d1.equals_missing(&d2));
 }
 
+/// `Bank::save` encodes straight into the file, one group's snapshot at a
+/// time, and the file is the bytes `save_bytes` returns.
+#[test]
+fn save_to_a_file_writes_the_bytes_save_bytes_returns() {
+    let mut bank = Bank::new(vec![spec_json("m", true)]).unwrap();
+    bank.fit_predict(&make_df(200)).unwrap();
+    let dir = std::env::temp_dir().join(format!("po-save-bytes-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("bank.msgpack");
+    bank.save(&path).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), bank.save_bytes().unwrap());
+    // Loaded and saved again, the same file.
+    let again = Bank::load(&path, Some(bank.specs())).unwrap();
+    assert_eq!(again.save_bytes().unwrap(), bank.save_bytes().unwrap());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A file of other specs is refused, naming the first spec that differs
 /// and the first key in which it does, with both values: "saved specs do
 /// not match" alone left a resuming job of ten specs to diff them by hand
