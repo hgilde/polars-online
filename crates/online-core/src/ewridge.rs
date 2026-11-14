@@ -2763,10 +2763,15 @@ impl OnlineModel for EwRidge {
     }
 
     fn restore(s: &State) -> Result<Self, StateError> {
-        check_schema(s)?;
-        match &s.model {
+        Self::restore_owned(s.clone())
+    }
+
+    /// [`Self::restore`] taking the state, so its model is moved, not cloned.
+    fn restore_owned(s: State) -> Result<Self, StateError> {
+        check_schema(&s)?;
+        match s.model {
             ModelState::EwRidge(m) => {
-                let mut m = (**m).clone();
+                let mut m = *m;
                 crate::model::check_cfg("ewridge", m.cfg.validate())?;
                 let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
                 // The slow twin exactly when `session_shrink` asks for one:

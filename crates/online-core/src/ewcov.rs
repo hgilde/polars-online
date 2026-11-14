@@ -2928,10 +2928,15 @@ impl crate::OnlineModel for EwCovModel {
     }
 
     fn restore(s: &crate::State) -> Result<Self, crate::StateError> {
-        crate::check_schema(s)?;
-        match &s.model {
+        Self::restore_owned(s.clone())
+    }
+
+    /// [`Self::restore`] taking the state, so its model is moved, not cloned.
+    fn restore_owned(s: crate::State) -> Result<Self, crate::StateError> {
+        crate::check_schema(&s)?;
+        match s.model {
             crate::ModelState::EwCovModel(m) => {
-                let mut m = (**m).clone();
+                let mut m = *m;
                 crate::model::check_cfg("ew_cov", m.cfg.validate())?;
                 // Levels need the sketch they are read from.
                 if m.mahal_q.is_none() && !m.cfg.mahal_quantiles.is_empty() {
