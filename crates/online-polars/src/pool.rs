@@ -8,9 +8,12 @@
 //! (docs/how-to/use-more-cores.md). The bank's arithmetic never calls back
 //! into polars' pool, so having both busy at once costs nothing measurable,
 //! even with each sized to the whole machine. A formula target's window pass
-//! does: each group's step hands work to polars' pool and waits, and a thread
-//! that waits runs other jobs of its own pool on its stack, so that pass
-//! takes one group at a time on a thread (`resolvers::in_parallel`).
+//! does, once a chunk, for the formulas of every group together (one plan of
+//! polars' lazy engine, from the calling thread); and in a group's own step
+//! where the formulas cannot be evaluated together (an increment, a plan
+//! that refuses), which hands work to polars' pool and waits. A thread that
+//! waits runs other jobs of its own pool on its stack, so that pass takes one
+//! group at a time on a thread (`resolvers::in_parallel`).
 //!
 //! A bank, a run or a Gram fit given no `threads` runs on the process
 //! default, built at the first such call, which is when the variable is

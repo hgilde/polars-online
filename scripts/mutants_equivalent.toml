@@ -3649,3 +3649,39 @@ function = "bare_operator"
 mutation = "replace Node::bare_operator -> Option<&OpNode> with None"
 line_has = "pub fn bare_operator(&self) -> Option<&OpNode> {"
 why = """as `short_cuts` -> false: no formula is bare, so every formula takes the lazy engine, which gives the same values to the bit"""
+
+[[equivalent]]
+file = "crates/online-polars/src/resolvers.rs"
+function = "resolve_targets"
+mutation = "replace > with =="
+line_has = ".filter(|_| groups.len() > 1)"
+why = """the guard only skips the evaluation of the chunk's operator inputs \
+over every group's rows at once where one group is all of them, which the \
+group's own step evaluates over the same rows to the same values (an \
+input is element-wise): a chunk of one group gets its inputs either way, \
+and a chunk of several is handed them or evaluates them itself, the same \
+bits"""
+
+[[equivalent]]
+file = "crates/online-polars/src/resolvers.rs"
+function = "resolve_targets"
+mutation = "replace > with <"
+line_has = ".filter(|_| groups.len() > 1)"
+why = """the guard only skips the evaluation of the chunk's operator inputs \
+over every group's rows at once where one group is all of them, which the \
+group's own step evaluates over the same rows to the same values (an \
+input is element-wise): a chunk of one group gets its inputs either way, \
+and a chunk of several is handed them or evaluates them itself, the same \
+bits"""
+
+[[equivalent]]
+file = "crates/online-polars/src/resolvers.rs"
+function = "resolve_targets"
+mutation = "replace > with >="
+line_has = ".filter(|_| groups.len() > 1)"
+why = """the guard only skips the evaluation of the chunk's operator inputs \
+over every group's rows at once where one group is all of them, which the \
+group's own step evaluates over the same rows to the same values (an \
+input is element-wise): a chunk of one group gets its inputs either way, \
+and a chunk of several is handed them or evaluates them itself, the same \
+bits"""
