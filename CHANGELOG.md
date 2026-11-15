@@ -128,6 +128,18 @@ returns.
   once a chunk for all groups, rather than twice a group: 1,000 groups in
   2,000-row chunks run 1.8 to 2.6 times as fast, 100 groups 1.2 to 1.6
   times, one group level. Outputs and saved states unchanged to the bit.
+- The window operators keep the last decay factor and the last two masses
+  they computed, keyed by the exact bits of the time step, and answer a
+  repeated step from them: a clock with a regular step costs 7 to 15% less
+  a row, four operators with a `window_size` 15% less on an irregular
+  clock, and an irregular clock without a window 1 to 4% less. Outputs
+  unchanged to the bit.
+- `lasso`'s coordinate descent takes each coordinate's terms from the
+  coordinates before it off ahead of time, beside the previous
+  coordinate's work, which halves the chain of dependent subtractions a
+  sweep waits on; each sum takes the same subtractions in the same order.
+  1.1 times as fast at 20 features, 1.4 at 100, 1.7 to 1.8 at 200 to 500.
+  Outputs and saved state unchanged to the bit.
 
 ## [1.5.0] — 2026-11-10
 
