@@ -57,8 +57,10 @@ pub(crate) struct TargetWindows {
 }
 
 /// From this many groups a chunk's groups resolve on the pool's threads
-/// whatever its rows: a group's fixed cost -- two plans of Polars' lazy
-/// engine, about 85 microseconds measured -- is a dispatch's many times over.
+/// whatever its rows: a group's fixed cost -- its rows taken, its core's
+/// bookkeeping, and for a formula that Polars' lazy engine plans, as an
+/// increment's does, about 85 microseconds a plan -- is a dispatch's many
+/// times over.
 const PAR_MIN_GROUPS: usize = 8;
 
 /// The row-number column a resolver's frame carries: a row's number in the
@@ -226,14 +228,7 @@ pub(crate) fn prepare_targets(
     let frame = resolver_frame(chunk, spec, &resolver_columns(spec), first_row)?;
     for (key, idx) in groups {
         if !resolver.runs.contains_key(key) {
-            let sub = if idx.len() == n {
-                frame.clone()
-            } else {
-                let take: IdxCa =
-                    IdxCa::from_vec("".into(), idx.iter().map(|&i| i as IdxSize).collect());
-                frame.take(&take)?
-            };
-            resolver.run(key, spec, &sub)?;
+            resolver.run(key, spec, &group_frame(&frame, idx, n)?)?;
         }
     }
     Ok(frame)
@@ -276,10 +271,31 @@ pub(crate) fn resolve_targets(
     // A chunk of one group, or of too few rows and groups to repay a
     // dispatch, runs on this thread; the cores and the rows each is fed are
     // the same either way, and the results are read in the groups' order, so
-    // the first refusal is the one a serial pass reports. A group costs a
-    // plan of Polars' lazy engine, tens of microseconds, besides its rows.
+    // the first refusal is the one a serial pass reports.
+    // The operator inputs a formula computes (a product, a when/then, a
+    // cast) over the whole chunk in one plan of Polars' lazy engine, where a
+    // plan a group cost tens of microseconds each; a group is handed its
+    // rows' values. Every input is element-wise, so a value does not depend
+    // on the rows beside it. A plan that refuses is left for the groups'
+    // own, which report it by group. A chunk of one group has nothing to
+    // share.
+    let inputs: Option<Vec<Vec<f64>>> = cores
+        .first()
+        .filter(|_| groups.len() > 1)
+        .and_then(|r| r.evaluate_inputs(frame));
+    let chunk = Chunk {
+        spec,
+        frame,
+        names: &names,
+        first_row,
+    };
     let one = |(key, idx): &(GroupKey, Vec<usize>), run: &mut WindowsRun| {
-        resolve_group(spec, run, frame, key, idx, &names, first_row)
+        let given = inputs.as_ref().map(|all| {
+            all.iter()
+                .map(|v| idx.iter().map(|&i| v[i]).collect())
+                .collect()
+        });
+        resolve_group(&chunk, run, key, idx, given)
     };
     let results: Vec<Resolved> =
         if groups.len() > 1 && (n >= PAR_MIN_ROWS || groups.len() >= PAR_MIN_GROUPS) {
@@ -301,12 +317,7 @@ pub(crate) fn resolve_targets(
     for ((key, _), run) in groups.iter().zip(cores) {
         resolver.runs.insert(key.clone(), run);
     }
-    let mut by_group: HashMap<GroupKey, Resolutions> = HashMap::with_capacity(groups.len());
-    for r in results {
-        if let Some((key, resolutions)) = r? {
-            by_group.insert(key, resolutions);
-        }
-    }
+    let by_group = settle(spec, resolver, groups, results, &names)?;
     let seqs = gathered((0..n).map(|i| first_row + i as u64).collect(), layout);
     Ok(FormulaBundle {
         slots: spec.targets.formula_slots(),
@@ -315,8 +326,19 @@ pub(crate) fn resolve_targets(
     })
 }
 
-/// What one group's step gives: its resolutions, `None` where nothing resolved.
-type Resolved = PolarsResult<Option<(GroupKey, Resolutions)>>;
+/// What one group's step gives: its key and rows, `None` where nothing
+/// resolved.
+type Resolved = PolarsResult<Option<(GroupKey, Rows)>>;
+
+/// One group's resolved rows, as its step leaves them.
+enum Rows {
+    /// With the formulas' values, as [`Resolutions`] holds them.
+    Done(Resolutions),
+    /// Before the formulas, which [`WindowsRun::resolved_formulas`] evaluates
+    /// for every group of the chunk at once: the rows' held columns, the
+    /// operators' hidden ones, `@po:row` and `@po:at`.
+    Pending(DataFrame),
+}
 
 thread_local! {
     /// Whether this thread is inside [`in_parallel`]'s loop.
@@ -346,8 +368,12 @@ impl Drop for Looping {
 /// `one` on every group's core, on the pool's threads, the results in the
 /// groups' order.
 ///
-/// A group's step blocks its thread: Polars' lazy engine and `take` hand
-/// their work to Polars' own pool and wait for it. A rayon thread that
+/// A group's step can block its thread: Polars' lazy engine hands its work
+/// to Polars' own pool and waits for it. (A step does so only where the
+/// chunk's formulas could not be evaluated once for all its groups -- an
+/// increment, a plan that refuses -- since the group's rows are taken a
+/// column at a time on its own thread and the formulas are evaluated
+/// outside this loop.) A rayon thread that
 /// waits does not idle, it runs other jobs of its own pool on top of its
 /// stack, so a parallel iterator over the groups nests: the thread blocked
 /// in one group's step starts another group's, which blocks and starts
@@ -418,30 +444,100 @@ where
 }
 
 /// The rows of the chunk's frame that are one group's: the frame itself
-/// where the group is all of it.
+/// where the group is all of it. Each column is taken on this thread:
+/// `DataFrame::take` hands its columns to Polars' own pool and waits, which
+/// is what [`in_parallel`] must not nest.
 fn group_frame(frame: &DataFrame, idx: &[usize], n: usize) -> PolarsResult<DataFrame> {
     if idx.len() == n {
         return Ok(frame.clone());
     }
     let take: IdxCa = IdxCa::from_vec("".into(), idx.iter().map(|&i| i as IdxSize).collect());
-    frame.take(&take)
+    let cols = frame
+        .columns()
+        .iter()
+        .map(|c| c.take(&take))
+        .collect::<PolarsResult<Vec<_>>>()?;
+    DataFrame::new(idx.len(), cols)
 }
 
-/// One group's rows fed to its core: what the core resolved, as the values
-/// of each formula target by resolved row, with the rows' numbers; `None`
-/// where nothing resolved.
+/// A resolved frame's columns, read once: each formula's values as doubles,
+/// the rows' numbers and the numbers of the rows that resolved them.
+struct ResolvedColumns {
+    values: Vec<Float64Chunked>,
+    seqs: Vec<u64>,
+    ats: Vec<u64>,
+}
+
+impl ResolvedColumns {
+    fn of(out: &DataFrame, names: &[&str]) -> PolarsResult<Self> {
+        let values = names
+            .iter()
+            .map(|name| Ok(out.column(name)?.cast(&DataType::Float64)?.f64()?.clone()))
+            .collect::<PolarsResult<_>>()?;
+        let seqs = out.column("@po:seq")?.u64()?.iter().flatten().collect();
+        let ats = out.column("@po:at")?.u64()?.iter().flatten().collect();
+        Ok(Self { values, seqs, ats })
+    }
+
+    /// The `h` rows from `lo`.
+    fn resolutions(&self, lo: usize, h: usize) -> Resolutions {
+        let width = self.values.len();
+        let mut values: Vec<f64> = vec![f64::NAN; h * width];
+        for (k, ca) in self.values.iter().enumerate() {
+            for (r, v) in ca.slice(lo as i64, h).iter().enumerate() {
+                if let Some(v) = v {
+                    values[r * width + k] = v;
+                }
+            }
+        }
+        let seqs = self.seqs[lo..lo + h].to_vec();
+        let ats = self.ats[lo..lo + h].to_vec();
+        debug_assert!(
+            seqs.windows(2).all(|w| w[0] < w[1]),
+            "a group resolves in row order"
+        );
+        Resolutions {
+            seqs,
+            ats,
+            values,
+            width,
+        }
+    }
+}
+
+/// What every group of a chunk is fed from.
+#[derive(Clone, Copy)]
+struct Chunk<'a> {
+    spec: &'a Spec,
+    frame: &'a DataFrame,
+    /// The formula targets' names.
+    names: &'a [&'a str],
+    first_row: u64,
+}
+
+/// One group's rows fed to its core: what the core resolved, with the
+/// formulas' values by resolved row and the rows' numbers where the core
+/// evaluates the formulas itself, and the rows before them where the chunk's
+/// groups' are evaluated together; `None` where nothing resolved. `given`
+/// is the chunk's operator inputs at this group's rows, where they were
+/// evaluated beforehand.
 fn resolve_group(
-    spec: &Spec,
+    chunk: &Chunk<'_>,
     run: &mut WindowsRun,
-    frame: &DataFrame,
     key: &GroupKey,
     idx: &[usize],
-    names: &[&str],
-    first_row: u64,
+    given: Option<Vec<Vec<f64>>>,
 ) -> Resolved {
+    let Chunk {
+        spec,
+        frame,
+        names,
+        first_row,
+    } = *chunk;
     let rows: Vec<u64> = idx.iter().map(|&i| first_row + i as u64).collect();
     let sub = group_frame(frame, idx, frame.height())?;
-    let out = run.feed_resolving(&sub, &rows).map_err(|e| {
+    let pending = run.formulas_pending();
+    let out = run.feed_resolving_with(&sub, &rows, given).map_err(|e| {
         let prefix = format!("spec {:?}: formula target", spec.name);
         polars_err!(ComputeError: "{prefix}: {}", without_who(&e.to_string()))
     })?;
@@ -449,32 +545,102 @@ fn resolve_group(
     if h == 0 {
         return Ok(None);
     }
-    let width = names.len();
-    let mut values: Vec<f64> = vec![f64::NAN; h * width];
-    for (k, name) in names.iter().enumerate() {
-        let s = out.column(name)?.cast(&DataType::Float64)?;
-        for (r, v) in s.f64()?.iter().enumerate() {
-            if let Some(v) = v {
-                values[r * width + k] = v;
+    if pending {
+        return Ok(Some((key.clone(), Rows::Pending(out))));
+    }
+    let resolutions = ResolvedColumns::of(&out, names)?.resolutions(0, h);
+    Ok(Some((key.clone(), Rows::Done(resolutions))))
+}
+
+/// The formulas over every group's pending rows in one plan, and every
+/// group's resolutions, the first refusal in the groups' order being the one
+/// reported: a group's own step's, or its rows' formulas', each as if the
+/// groups were taken one by one.
+///
+/// The formulas are element-wise, so a row's value does not depend on the
+/// rows stacked beside it. A formula that refuses the stacked rows (a strict
+/// cast of a value out of range, whose message counts the failing values) is
+/// evaluated group by group again, so that the refusal is the first group's
+/// own.
+fn settle(
+    spec: &Spec,
+    resolver: &TargetWindows,
+    groups: &[(GroupKey, Vec<usize>)],
+    results: Vec<Resolved>,
+    names: &[&str],
+) -> PolarsResult<HashMap<GroupKey, Resolutions>> {
+    // A group's own refusal comes after the formulas' refusals of the groups
+    // before it, and before those of the groups after it.
+    let mut taken: Vec<Option<(GroupKey, Rows)>> = Vec::with_capacity(results.len());
+    let mut refusal: Option<PolarsError> = None;
+    for r in results {
+        match r {
+            Ok(r) => taken.push(r),
+            Err(e) => {
+                refusal = Some(e);
+                break;
             }
         }
     }
-    let seqs: Vec<u64> = out.column("@po:seq")?.u64()?.iter().flatten().collect();
-    let ats: Vec<u64> = out.column("@po:at")?.u64()?.iter().flatten().collect();
-    debug_assert!(seqs.len() == h && ats.len() == h, "no null row number");
-    debug_assert!(
-        seqs.windows(2).all(|w| w[0] < w[1]),
-        "a group resolves in row order"
-    );
-    Ok(Some((
-        key.clone(),
-        Resolutions {
-            seqs,
-            ats,
-            values,
-            width,
-        },
-    )))
+    let pending: Vec<usize> = (0..taken.len())
+        .filter(|&i| matches!(taken[i], Some((_, Rows::Pending(_)))))
+        .collect();
+    let mut resolved: HashMap<usize, Resolutions> = HashMap::new();
+    if !pending.is_empty() {
+        let run = &resolver.runs[&groups[0].0];
+        let frames = |i: usize| match &taken[i] {
+            Some((_, Rows::Pending(f))) => f,
+            _ => unreachable!("pending above"),
+        };
+        let stacked = (|| {
+            let mut all = frames(pending[0]).clone();
+            for &i in &pending[1..] {
+                all.vstack_mut(frames(i))?;
+            }
+            all.rechunk_mut();
+            run.resolved_formulas(all)
+        })();
+        match stacked {
+            Ok(out) => {
+                let cols = ResolvedColumns::of(&out, names)?;
+                let mut lo = 0;
+                for &i in &pending {
+                    let h = frames(i).height();
+                    resolved.insert(i, cols.resolutions(lo, h));
+                    lo += h;
+                }
+            }
+            Err(_) => {
+                for &i in &pending {
+                    let out = run.resolved_formulas(frames(i).clone()).map_err(|e| {
+                        let prefix = format!("spec {:?}: formula target", spec.name);
+                        polars_err!(ComputeError: "{prefix}: {}", without_who(&e.to_string()))
+                    })?;
+                    let h = out.height();
+                    resolved.insert(i, ResolvedColumns::of(&out, names)?.resolutions(0, h));
+                }
+            }
+        }
+    }
+    if let Some(e) = refusal {
+        return Err(e);
+    }
+    let mut by_group: HashMap<GroupKey, Resolutions> = HashMap::with_capacity(groups.len());
+    for (i, r) in taken.into_iter().enumerate() {
+        match r {
+            None => {}
+            Some((key, Rows::Done(res))) => {
+                by_group.insert(key, res);
+            }
+            Some((key, Rows::Pending(_))) => {
+                by_group.insert(
+                    key,
+                    resolved.remove(&i).expect("every pending group settled"),
+                );
+            }
+        }
+    }
+    Ok(by_group)
 }
 
 /// A core's message without its own caller's name: a bank's refusal names

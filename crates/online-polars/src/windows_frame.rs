@@ -1079,7 +1079,7 @@ impl WindowsRun {
     /// A chunk whose columns are not the input's, and every row refusal the
     /// core makes, each naming the row.
     pub fn feed(&mut self, df: &DataFrame, limit: Option<usize>) -> PolarsResult<DataFrame> {
-        self.feed_inner(df, limit, None)
+        self.feed_inner(df, limit, None, None, false)
     }
 
     /// Feed one chunk for a bank learning formula targets (docs/PLAN.md
@@ -1100,7 +1100,129 @@ impl WindowsRun {
                 @po:row column, which is a defect in polars-online. Open an issue at \
                 https://github.com/hgilde/polars-online/issues with this message."
         );
-        self.feed_inner(df, None, Some(rows))
+        self.feed_inner(df, None, Some(rows), None, false)
+    }
+
+    /// [`Self::feed_resolving`] for a caller that evaluates what the lazy
+    /// engine would per chunk, once for every group it feeds (the bank's
+    /// resolver, which hands the engine its whole chunk rather than one
+    /// plan a group): `inputs` are this chunk's operator inputs as
+    /// [`Self::evaluate_inputs`] gave them over the whole frame, taken at
+    /// this group's rows, and, where [`Self::formulas_pending`], the frame
+    /// returned is the resolved rows before their formulas, which
+    /// [`Self::resolved_formulas`] evaluates over any number of such frames
+    /// stacked.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::feed_resolving`].
+    pub fn feed_resolving_with(
+        &mut self,
+        df: &DataFrame,
+        rows: &[u64],
+        inputs: Option<Vec<Vec<f64>>>,
+    ) -> PolarsResult<DataFrame> {
+        polars_ensure!(
+            rows.len() == df.height() && df.get_column_names().iter().any(|c| c.as_str() == "@po:row"),
+            ComputeError: "internal: feed_resolving: the chunk must carry a row number for each row and an \
+                @po:row column, which is a defect in polars-online. Open an issue at \
+                https://github.com/hgilde/polars-online/issues with this message."
+        );
+        if let Some(given) = &inputs {
+            polars_ensure!(
+                given.len() == self.inputs.len() && given.iter().all(|v| v.len() == df.height()),
+                ComputeError: "internal: feed_resolving: the operator inputs handed over must be \
+                    one value a row for each input, which is a defect in polars-online. Open an \
+                    issue at https://github.com/hgilde/polars-online/issues with this message."
+            );
+        }
+        self.feed_inner(df, None, Some(rows), inputs, true)
+    }
+
+    /// Whether the formulas of a resolving feed are evaluated by the lazy
+    /// engine, over the resolved rows: unless each is only an operator's
+    /// values.
+    pub fn formulas_pending(&self) -> bool {
+        self.bare_formulas().is_none()
+    }
+
+    /// The operator each formula is, where every formula is nothing else
+    /// but one (and the short cuts are on).
+    fn bare_formulas(&self) -> Option<Vec<&OpNode>> {
+        short_cuts()
+            .then(|| {
+                self.config
+                    .formulas
+                    .iter()
+                    .map(|f| f.tree.bare_operator())
+                    .collect()
+            })
+            .flatten()
+    }
+
+    /// Every operator input over a whole frame, as one plan of the lazy
+    /// engine, each as doubles with a null (as a NaN) where the input has
+    /// none: what a feed would evaluate for any rows of the frame, since a
+    /// formula's inputs are element-wise. `None` where there is nothing to
+    /// save a feed -- an input that reads an increment, which a group's own
+    /// rows give, or inputs that are all columns of doubles -- and where the
+    /// plan refuses, which a feed reports for the rows it was handed.
+    pub fn evaluate_inputs(&self, frame: &DataFrame) -> Option<Vec<Vec<f64>>> {
+        if !self.increments.is_empty() || self.bare_inputs(frame).is_some() {
+            return None;
+        }
+        self.evaluated_inputs(frame).ok()
+    }
+
+    /// The input columns, where each is a column of doubles.
+    fn bare_inputs<'a>(&self, chunk: &'a DataFrame) -> Option<Vec<&'a Column>> {
+        short_cuts()
+            .then(|| {
+                self.inputs
+                    .iter()
+                    .map(|node| match node {
+                        Node::Col(c) => chunk
+                            .column(c.as_str())
+                            .ok()
+                            .filter(|s| *s.dtype() == DataType::Float64),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .flatten()
+    }
+
+    /// Polars evaluates every operator's input over the chunk.
+    fn evaluated_inputs(&self, chunk: &DataFrame) -> PolarsResult<Vec<Vec<f64>>> {
+        let resolve_incr = |op: &OpNode| col(hidden(op).as_str());
+        // `with_columns` then `select`: a bare literal input (the stand-in
+        // where only increments run) broadcasts to the chunk's rows.
+        let evaluated = chunk
+            .clone()
+            .lazy()
+            .with_columns(
+                self.inputs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, node)| {
+                        node.to_expr(&resolve_incr)
+                            .cast(DataType::Float64)
+                            .alias(input_column(i).as_str())
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .select(
+                (0..self.inputs.len())
+                    .map(|i| col(input_column(i).as_str()))
+                    .collect::<Vec<_>>(),
+            )
+            .collect()?;
+        (0..self.inputs.len())
+            .map(|i| {
+                let s = evaluated.column(input_column(i).as_str())?;
+                Ok(s.f64()?.iter().map(|v| v.unwrap_or(f64::NAN)).collect())
+            })
+            .collect()
     }
 
     fn feed_inner(
@@ -1108,6 +1230,8 @@ impl WindowsRun {
         df: &DataFrame,
         limit: Option<usize>,
         resolving: Option<&[u64]>,
+        given: Option<Vec<Vec<f64>>>,
+        defer: bool,
     ) -> PolarsResult<DataFrame> {
         // The clock of the whole chunk first: the row numbers an error
         // names count the rows skipped below.
@@ -1217,6 +1341,7 @@ impl WindowsRun {
         let skipped: DataFrame;
         let mut df = df;
         let mut resolving = resolving;
+        let mut given = given;
         let skip = self.resume_skip.min(df.height());
         if skip > 0 {
             // The skipped rows inside the held window -- the last
@@ -1241,6 +1366,9 @@ impl WindowsRun {
             skipped = df.slice(skip as i64, df.height() - skip);
             df = &skipped;
             resolving = resolving.map(|r| &r[skip..]);
+            for v in given.iter_mut().flatten() {
+                v.drain(..skip);
+            }
             if let Some(c) = &mut clock {
                 c.drain(..skip);
             }
@@ -1286,57 +1414,17 @@ impl WindowsRun {
         // that is a column of doubles, as a price is, is its values already:
         // the cast to double of a double is none, and a plan of the lazy
         // engine is tens of microseconds a call, which a bank's group pays
-        // every chunk.
-        let bare: Option<Vec<&Column>> = short_cuts()
-            .then(|| {
-                self.inputs
-                    .iter()
-                    .map(|node| match node {
-                        Node::Col(c) => chunk
-                            .column(c.as_str())
-                            .ok()
-                            .filter(|s| *s.dtype() == DataType::Float64),
-                        _ => None,
-                    })
-                    .collect()
-            })
-            .flatten();
-        let values: Vec<Vec<f64>> = if let Some(columns) = bare {
+        // every chunk. A bank's resolver evaluates the whole chunk's in one
+        // plan, and hands each group its rows' values.
+        let values: Vec<Vec<f64>> = if let Some(values) = given {
+            values
+        } else if let Some(columns) = self.bare_inputs(&chunk) {
             columns
                 .iter()
                 .map(|s| Ok(s.f64()?.iter().map(|v| v.unwrap_or(f64::NAN)).collect()))
                 .collect::<PolarsResult<_>>()?
         } else {
-            let resolve_incr = |op: &OpNode| col(hidden(op).as_str());
-            // `with_columns` then `select`: a bare literal input (the
-            // stand-in where only increments run) broadcasts to the chunk's
-            // rows.
-            let evaluated = chunk
-                .clone()
-                .lazy()
-                .with_columns(
-                    self.inputs
-                        .iter()
-                        .enumerate()
-                        .map(|(i, node)| {
-                            node.to_expr(&resolve_incr)
-                                .cast(DataType::Float64)
-                                .alias(input_column(i).as_str())
-                        })
-                        .collect::<Vec<_>>(),
-                )
-                .select(
-                    (0..self.inputs.len())
-                        .map(|i| col(input_column(i).as_str()))
-                        .collect::<Vec<_>>(),
-                )
-                .collect()?;
-            (0..self.inputs.len())
-                .map(|i| {
-                    let s = evaluated.column(input_column(i).as_str())?;
-                    Ok(s.f64()?.iter().map(|v| v.unwrap_or(f64::NAN)).collect())
-                })
-                .collect::<PolarsResult<_>>()?
+            self.evaluated_inputs(&chunk)?
         };
         let accepts: Vec<Vec<f64>> = self
             .accept
@@ -1414,7 +1502,7 @@ impl WindowsRun {
         };
         if resolving.is_some() {
             debug_assert_eq!(at.len(), e.rows);
-            self.assemble_resolved(e, &at)
+            self.assemble_resolved(e, &at, defer)
         } else {
             self.assemble(e)
         }
@@ -1426,22 +1514,32 @@ impl WindowsRun {
         &mut self,
         e: crate::windows::Emitted,
         at: &[u64],
+        defer: bool,
     ) -> PolarsResult<DataFrame> {
         let resolved_at: UInt64Chunked = at.iter().map(|&a| Some(a)).collect();
         let mut frame = self.assemble_rows(e)?;
         frame.hstack_mut(&[resolved_at.with_name("@po:at".into()).into_column()])?;
+        if defer && self.formulas_pending() {
+            return Ok(frame);
+        }
+        self.resolved_formulas(frame)
+    }
+
+    /// The formulas over resolved rows, as [`Self::feed_resolving`] gives
+    /// them: the rows with their operators' hidden columns, `@po:row` and
+    /// `@po:at`, in; the formulas' columns, `@po:seq` and `@po:at` out. The
+    /// formulas are element-wise, so the rows may be of any number of runs
+    /// of one call, stacked.
+    ///
+    /// # Errors
+    ///
+    /// A formula that cannot be evaluated over the rows, such as a strict
+    /// cast that fails.
+    pub fn resolved_formulas(&self, frame: DataFrame) -> PolarsResult<DataFrame> {
         // A formula that is only a window operator's values is its hidden
         // column under the formula's name: no plan of the lazy engine for
         // it, which a bank's group would pay every chunk.
-        let bare: Option<Vec<&OpNode>> = short_cuts()
-            .then(|| {
-                self.config
-                    .formulas
-                    .iter()
-                    .map(|f| f.tree.bare_operator())
-                    .collect()
-            })
-            .flatten();
+        let bare = self.bare_formulas();
         if let Some(ops) = bare {
             let mut cols: Vec<Column> = Vec::with_capacity(ops.len() + 2);
             for (f, op) in self.config.formulas.iter().zip(ops) {

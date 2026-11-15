@@ -411,26 +411,39 @@ fn groups_resolve_on_many_threads_to_the_same_bits() {
 fn thousands_of_groups_on_a_small_pool_do_not_nest_to_the_stack_s_end() {
     let groups = 2_000;
     let df = many_groups(60_000, groups, 41);
-    let spec = native(Some(12.5));
-    let on = |threads: usize| {
-        let mut bank = Bank::new(vec![spec.clone()]).unwrap();
-        bank.set_threads(Some(threads)).unwrap();
-        let out = feed(&mut bank, &df, 1);
-        (out, bank.save_bytes().unwrap())
-    };
-    let (want, want_bytes) = on(1);
-    let predicted = column(&want, "pred_fwd")
-        .iter()
-        .filter(|p| p.is_some())
-        .count();
-    assert!(predicted > df.height() / 4, "{predicted} rows predicted");
-    let (got, bytes) = on(2);
-    assert_eq!(column(&got, "pred_fwd"), column(&want, "pred_fwd"));
-    assert_eq!(
-        column(&got, "learned_clock"),
-        column(&want, "learned_clock")
+    // The bare-operator-and-arithmetic form, and one whose input is computed
+    // and whose output is arithmetic over two operators: each evaluated
+    // once a chunk for every group, off the groups' loop.
+    let opt = r#"{"half_life": 5.0, "window_size": 10.0}"#;
+    let computed = format!(
+        r#"["-", ["rewm_sum", ["*", ["col", "mid"], ["+", ["col", "x"], ["lit", 2.0]]], {opt}], ["rewm_mean", ["col", "mid"], {opt}]]"#
     );
-    assert!(bytes == want_bytes, "two threads: state");
+    let computed = self::spec(
+        &format!(r#"[{{"name": "fwd", "formula": {computed}}}]"#),
+        Some(12.5),
+        "",
+    );
+    for spec in [native(Some(12.5)), computed] {
+        let on = |threads: usize| {
+            let mut bank = Bank::new(vec![spec.clone()]).unwrap();
+            bank.set_threads(Some(threads)).unwrap();
+            let out = feed(&mut bank, &df, 1);
+            (out, bank.save_bytes().unwrap())
+        };
+        let (want, want_bytes) = on(1);
+        let predicted = column(&want, "pred_fwd")
+            .iter()
+            .filter(|p| p.is_some())
+            .count();
+        assert!(predicted > df.height() / 4, "{predicted} rows predicted");
+        let (got, bytes) = on(2);
+        assert_eq!(column(&got, "pred_fwd"), column(&want, "pred_fwd"));
+        assert_eq!(
+            column(&got, "learned_clock"),
+            column(&want, "learned_clock")
+        );
+        assert!(bytes == want_bytes, "two threads: state");
+    }
 }
 
 /// A state's bytes are the same however the input's text columns are laid
@@ -796,4 +809,172 @@ fn describe_counts_a_formula_target_as_the_models_were_handed_it() {
             assert_eq!(learned, Some(values.len() as i64), "{what}: rows_learned");
         }
     }
+}
+
+/// The formula targets whose inputs or outputs are computed -- a product
+/// into an operator, arithmetic over two operators, a cast, a when/then, a
+/// power -- as JSON trees over `many_groups`' columns.
+fn computed_trees() -> Vec<(&'static str, String)> {
+    let opt = r#"{"half_life": 5.0, "window_size": 10.0}"#;
+    vec![
+        (
+            "a product into an operator",
+            format!(
+                r#"["rewm_sum", ["*", ["col", "mid"], ["+", ["col", "x"], ["lit", 2.0]]], {opt}]"#
+            ),
+        ),
+        (
+            "arithmetic over two operators",
+            format!(
+                r#"["/", ["-", ["rewm_mean", ["col", "mid"], {opt}], ["col", "mid"]], ["rewm_mean", ["+", ["col", "x"], ["lit", 3.0]], {opt}]]"#
+            ),
+        ),
+        (
+            "a cast",
+            format!(
+                r#"["cast", ["cast", ["rewm_mean", ["col", "mid"], {opt}], "Float32"], "Float64"]"#
+            ),
+        ),
+        (
+            "a when/then and a power",
+            format!(
+                r#"["when", [">", ["rewm_mean", ["col", "mid"], {opt}], ["col", "mid"]], ["**", ["rewm_mean", ["col", "mid"], {opt}], ["lit", 1.5]], ["neg", ["col", "mid"]]]"#
+            ),
+        ),
+    ]
+}
+
+/// [`with_column`] for any tree.
+fn with_column_of(df: &DataFrame, like: &Spec, tree: &str) -> DataFrame {
+    let config: WindowsConfig = serde_json::from_str(&format!(
+        r#"{{"formulas": [{{"name": "fwd", "tree": {tree}}}], "clock": "t", "gap_cap": 100.0,
+             "group": "g"}}"#
+    ))
+    .unwrap();
+    let config = WindowsConfig {
+        like: Some(Like {
+            spec: like.name.clone(),
+            accept: like.features.clone(),
+        }),
+        ..config
+    };
+    let mut run = WindowsRun::new(config, df.schema()).unwrap();
+    let mut out = run.feed(df, None).unwrap();
+    out.vstack_mut(&run.finish().unwrap()).unwrap();
+    out
+}
+
+/// A formula that computes its inputs, or its output from several operators
+/// or around one, is evaluated once for all of a chunk's groups, where it
+/// was planned once a group. The predictions are the column form's, which
+/// Polars evaluates over the whole frame, whatever the chunking, and the
+/// state's bytes are the same at every chunking.
+#[test]
+fn a_computed_formula_over_many_groups_is_the_column_form() {
+    let n = 2_400;
+    for groups in [1, 5, 60] {
+        let df = many_groups(n, groups, 17 + groups as u64);
+        for (what, tree) in computed_trees() {
+            let spec = spec(
+                &format!(r#"[{{"name": "fwd", "formula": {tree}}}]"#),
+                Some(12.5),
+                "",
+            );
+            let plain_spec = self::spec(r#"["fwd"]"#, Some(12.5), "");
+            let reference = run(&plain_spec, &with_column_of(&df, &spec, &tree), 1);
+            let want = column(&reference, "pred_fwd");
+            assert!(
+                want.iter().filter(|p| p.is_some()).count() > n / 3,
+                "{groups} groups, {what}: the reference predicts"
+            );
+            let mut bytes: Option<Vec<u8>> = None;
+            for chunks in [1, 4, 40] {
+                let mut bank = Bank::new(vec![spec.clone()]).unwrap();
+                let got = feed(&mut bank, &df, chunks);
+                assert_eq!(
+                    column(&got, "pred_fwd"),
+                    want,
+                    "{groups} groups, {what}, {chunks} chunks"
+                );
+                let saved = bank.save_bytes().unwrap();
+                assert!(
+                    bytes.get_or_insert_with(|| saved.clone()) == &saved,
+                    "{groups} groups, {what}, {chunks} chunks: state"
+                );
+            }
+        }
+    }
+}
+
+/// A strict cast that refuses on some groups' rows only: the refusal
+/// reported is the first group's, in the chunk's order, as the group's rows
+/// alone would give it -- a message that counts the failing values, which a
+/// plan over every group's rows would count together -- and the bank is
+/// left as a bank that never saw the chunk.
+#[test]
+fn a_cast_that_refuses_on_two_groups_reports_the_first_s_message() {
+    let n = 2_000;
+    let mut df = many_groups(n, 12, 29);
+    let g: Vec<String> = df
+        .column("g")
+        .unwrap()
+        .str()
+        .unwrap()
+        .iter()
+        .map(|v| v.unwrap().to_string())
+        .collect();
+    let big = |bad: &[(&str, f64)]| -> Column {
+        let v: Vec<f64> = g
+            .iter()
+            .map(|k| bad.iter().find(|(b, _)| b == k).map_or(1.0, |(_, m)| *m))
+            .collect();
+        Column::new("big".into(), v)
+    };
+    let tree = r#"["cast", ["*", ["rewm_mean", ["col", "x"], {"half_life": 5.0, "window_size": 10.0}], ["col", "big"]], "Int8"]"#;
+    let spec = spec(
+        &format!(r#"[{{"name": "fwd", "formula": {tree}}}]"#),
+        Some(12.5),
+        "",
+    );
+    let refused = |bank: &mut Bank, df: &DataFrame| -> Option<String> {
+        Some(bank.fit_predict_from_with(df, 0, false).err()?.to_string())
+    };
+    // The groups in the order the chunk meets them: the first of the two bad
+    // groups is the one whose rows come first.
+    let order: Vec<&String> = {
+        let mut seen: Vec<&String> = Vec::new();
+        for k in &g {
+            if !seen.contains(&k) {
+                seen.push(k);
+            }
+        }
+        seen
+    };
+    let (first, second) = (order[2].as_str(), order[7].as_str());
+    df.with_column(big(&[(first, 1000.0), (second, 5000.0)]))
+        .unwrap();
+    let fresh = || Bank::new(vec![spec.clone()]).unwrap();
+    let mut bank = fresh();
+    let both = refused(&mut bank, &df).expect("the cast refuses");
+    let only = |key: &str, m: f64| {
+        let mut d = df.clone();
+        d.with_column(big(&[(key, m)])).unwrap();
+        refused(&mut fresh(), &d).expect("the cast refuses")
+    };
+    assert_eq!(both, only(first, 1000.0));
+    assert_ne!(both, only(second, 5000.0));
+    // The refused chunk left no row fed: the same rows, now taking the cast,
+    // give what a bank that never saw the refusal gives.
+    df.with_column(big(&[])).unwrap();
+    let after = feed(&mut bank, &df, 1);
+    let never = feed(&mut fresh(), &df, 1);
+    assert_eq!(column(&after, "pred_fwd"), column(&never, "pred_fwd"));
+    assert!(bank.save_bytes().unwrap() == fresh_fed(&spec, &df));
+}
+
+/// The state's bytes of a fresh bank of `spec` fed `df` whole.
+fn fresh_fed(spec: &Spec, df: &DataFrame) -> Vec<u8> {
+    let mut bank = Bank::new(vec![spec.clone()]).unwrap();
+    feed(&mut bank, df, 1);
+    bank.save_bytes().unwrap()
 }
