@@ -512,7 +512,24 @@ pub(crate) fn solve_spd_in(
     out: &mut Vec<f64>,
 ) -> Option<u32> {
     debug_assert_eq!(b.len(), k * m);
+    let attempts = factorize_kept(a, k, work)?;
+    solve_kept(b, k, m, work, out);
+    Some(attempts)
+}
+
+/// [`solve_spd_in`]'s factorization alone, left in `work` for any number of
+/// [`solve_kept`]s against it: the attempts, or `None` where every jitter
+/// fails.
+pub(crate) fn factorize_kept(a: &[f64], k: usize, work: &mut SolveWork) -> Option<u32> {
     let (attempts, _) = factorize_into(a, k, &mut work.l, &mut work.chol)?;
+    Some(attempts)
+}
+
+/// `A x = B` against the factor [`factorize_kept`] left in `work` (`k`, the
+/// order it was made for): `B` and the solution `out` column-major `k x m`,
+/// as [`solve_spd_in`]'s.
+pub(crate) fn solve_kept(b: &[f64], k: usize, m: usize, work: &mut SolveWork, out: &mut Vec<f64>) {
+    debug_assert_eq!(b.len(), k * m);
     let x = work.x.columns(k, m);
     for j in 0..m {
         for (i, v) in x.col_as_slice_mut(j).iter_mut().enumerate() {
@@ -524,7 +541,6 @@ pub(crate) fn solve_spd_in(
     for j in 0..m {
         out.extend_from_slice(x.col_as_slice(j));
     }
-    Some(attempts)
 }
 
 /// The solves' working spaces, one for each shape `(order, columns)` a
@@ -553,6 +569,11 @@ pub(crate) fn solve_in(
         *out = x;
         return Some(attempts);
     }
+    solve_spd_in(a, b, k, m, kept_work(solves, k, m), out)
+}
+
+/// The working space kept for the shape `(k, m)`, made where there is none.
+pub(crate) fn kept_work(solves: &mut Solves, k: usize, m: usize) -> &mut SolveWork {
     let at = match solves.iter().position(|(sk, sm, _)| (*sk, *sm) == (k, m)) {
         Some(at) => at,
         None => {
@@ -563,7 +584,7 @@ pub(crate) fn solve_in(
             solves.len() - 1
         }
     };
-    solve_spd_in(a, b, k, m, &mut solves[at].2, out)
+    &mut solves[at].2
 }
 
 /// [`solve_spd`] of `C + ridge·I` with one right-hand side `b`, `C`

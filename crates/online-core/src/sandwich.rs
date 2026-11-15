@@ -43,10 +43,49 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
+use crate::solve::{KEPT_ORDER, Solves, factorize_kept, kept_work, solve_in, solve_kept};
+
 thread_local! {
     /// A row's `z` and its score `u`, as [`Sandwich::update`] forms them:
     /// kept by the thread and written over, no part of any state.
     static ROW: std::cell::RefCell<(Vec<f64>, Vec<f64>)> = const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
+}
+
+/// The buffers a covariance is formed in ([`Sandwich::covariance`] and what
+/// reads it), one set a thread, kept between calls and written over:
+/// nothing in it is read between calls, so it is no part of any state.
+#[derive(Default)]
+struct CovScratch {
+    solves: Solves,
+    pos: Vec<usize>,
+    bread: Vec<f64>,
+    meat: Vec<f64>,
+    col: Vec<f64>,
+    left: Vec<f64>,
+    left_t: Vec<f64>,
+    v: Vec<f64>,
+    out: Vec<f64>,
+    c: Vec<f64>,
+    row0: Vec<f64>,
+    sub: Vec<f64>,
+    x: Vec<f64>,
+}
+
+thread_local! {
+    static COV: std::cell::RefCell<CovScratch> = std::cell::RefCell::new(CovScratch::default());
+}
+
+/// `f` in this thread's [`CovScratch`], which a covariance of `order`
+/// coefficients or more leaves empty: a thread keeps buffers for the orders
+/// a bank usually reads, not for a thousand features'.
+fn with_cov<T>(order: usize, f: impl FnOnce(&mut CovScratch) -> T) -> T {
+    COV.with_borrow_mut(|sc| {
+        let out = f(sc);
+        if order >= KEPT_ORDER {
+            *sc = CovScratch::default();
+        }
+        out
+    })
 }
 
 /// The sandwich of one slot's fit. See the module docs.
@@ -221,59 +260,98 @@ impl Sandwich {
     /// `None` until a row is folded, and while the bread over `idx` does not
     /// factorize: fewer rows than coefficients, or a feature with no spread.
     pub fn covariance(&self, idx: &[usize], hac: bool) -> Option<Vec<f64>> {
+        with_cov(idx.len() + usize::from(self.intercept), |sc| {
+            self.covariance_in(sc, idx, hac)?;
+            Some(sc.out.clone())
+        })
+    }
+
+    /// [`Self::covariance`] into `sc.out`, in `sc`'s buffers: each matrix
+    /// is written over one the thread kept, the lag sums are read where
+    /// they lie rather than picked out into a matrix each, and the bread's
+    /// factor serves both solves. The arithmetic is that of the allocating
+    /// form, operation for operation.
+    fn covariance_in(&self, sc: &mut CovScratch, idx: &[usize], hac: bool) -> Option<()> {
         let d = self.dim();
         let off = usize::from(self.intercept);
-        let pos: Vec<usize> = (0..off).chain(idx.iter().map(|&i| i + off)).collect();
+        let CovScratch {
+            solves,
+            pos,
+            bread,
+            meat,
+            col,
+            left,
+            left_t,
+            v,
+            out,
+            c,
+            row0,
+            ..
+        } = sc;
+        pos.clear();
+        pos.extend((0..off).chain(idx.iter().map(|&i| i + off)));
         let p = pos.len();
         if p == 0 {
             return None;
         }
-        let pick = |m: &[f64]| -> Vec<f64> {
-            pos.iter()
-                .flat_map(|&i| pos.iter().map(move |&j| m[i * d + j]))
-                .collect()
+        let pick = |m: &[f64], into: &mut Vec<f64>| {
+            into.clear();
+            into.extend(
+                pos.iter()
+                    .flat_map(|&i| pos.iter().map(move |&j| m[i * d + j])),
+            );
         };
-        let bread = pick(&self.bread);
-        let mut meat = pick(&self.meat);
+        pick(&self.bread, bread);
+        pick(&self.meat, meat);
         if hac {
             let lags = self.lags as f64;
             for (l, g) in self.gammas.iter().enumerate() {
                 let b = 1.0 - (l + 1) as f64 / (lags + 1.0);
-                let g = pick(g);
+                // Entries `(i, j)` and `(j, i)` add the one number `b (g_ij +
+                // g_ji)`: a sum of the same two terms either way round.
                 for i in 0..p {
-                    for j in 0..p {
-                        meat[i * p + j] += b * (g[i * p + j] + g[j * p + i]);
+                    for j in 0..=i {
+                        let t = b * (g[pos[i] * d + pos[j]] + g[pos[j] * d + pos[i]]);
+                        meat[i * p + j] += t;
+                        if j != i {
+                            meat[j * p + i] += t;
+                        }
                     }
                 }
             }
         }
-        let factor = crate::SpdFactor::of(&bread, p).filter(|f| f.attempts() == 0)?;
+        let work = kept_work(solves, p, p);
+        if factorize_kept(bread, p, work)? != 0 {
+            return None;
+        }
         // `B⁻¹ M B⁻¹`: the meat's columns solved, transposed (`M B⁻¹`, `M`
         // symmetric), and solved again. Column-major in and out.
-        let col = |m: &[f64]| -> Vec<f64> { (0..p * p).map(|n| m[(n % p) * p + n / p]).collect() };
-        let left = factor.solve(&col(&meat), p, p);
-        let left_t: Vec<f64> = (0..p * p).map(|n| left[(n % p) * p + n / p]).collect();
-        let v = factor.solve(&left_t, p, p);
+        col.clear();
+        col.extend((0..p * p).map(|n| meat[(n % p) * p + n / p]));
+        solve_kept(col, p, p, work, left);
+        left_t.clear();
+        left_t.extend((0..p * p).map(|n| left[(n % p) * p + n / p]));
+        solve_kept(left_t, p, p, work, v);
         // Column-major `v`: entry (i, j) at `j·p + i`; symmetric.
-        let mut out: Vec<f64> = (0..p * p)
-            .map(|n| {
-                let (i, j) = (n / p, n % p);
-                0.5 * (v[j * p + i] + v[i * p + j])
-            })
-            .collect();
+        out.clear();
+        out.extend((0..p * p).map(|n| {
+            let (i, j) = (n / p, n % p);
+            0.5 * (v[j * p + i] + v[i * p + j])
+        }));
         if self.intercept {
             // The intercept in the features' own units is `β₀ − c'β_x`:
             // `T V T'` with `T = [[1, −c'], [0, I]]`.
-            let c: Vec<f64> = std::iter::once(0.0)
-                .chain(
-                    idx.iter()
-                        .map(|&i| self.origin.get(i).copied().unwrap_or(0.0)),
-                )
-                .collect();
+            c.clear();
+            c.push(0.0);
+            c.extend(
+                idx.iter()
+                    .map(|&i| self.origin.get(i).copied().unwrap_or(0.0)),
+            );
             // Row 0 of `T V`: `v_0j − Σ_a c_a v_aj`.
-            let row0: Vec<f64> = (0..p)
-                .map(|j| out[j] - (1..p).map(|a| c[a] * out[a * p + j]).sum::<f64>())
-                .collect();
+            row0.clear();
+            row0.extend(
+                (0..p).map(|j| out[j] - (1..p).map(|a| c[a] * out[a * p + j]).sum::<f64>()),
+            );
             let v00 = row0[0] - (1..p).map(|b| c[b] * row0[b]).sum::<f64>();
             for j in 1..p {
                 out[j] = row0[j];
@@ -281,7 +359,7 @@ impl Sandwich {
             }
             out[0] = v00;
         }
-        Some(out)
+        Some(())
     }
 
     /// The standard errors of the coefficients over the features `idx`
@@ -290,20 +368,23 @@ impl Sandwich {
     /// outside `idx` -- with Newey and West's lags (`hac`) or HC0's
     /// diagonal alone. `None` as [`Self::covariance`] is.
     pub fn standard_errors(&self, idx: &[usize], hac: bool) -> Option<Vec<f64>> {
-        let v = self.covariance(idx, hac)?;
         let off = usize::from(self.intercept);
         let p = idx.len() + off;
-        let mut out = vec![f64::NAN; self.k + off];
-        // A rounding below 0 is 0, but a NaN variance stays NaN: `f64::max`
-        // read it as 0.0, a standard error that says the coefficient is
-        // exact (review round 9, B-2).
-        for (a, &i) in idx.iter().enumerate() {
-            out[off + i] = crate::solve::clamp_rounding(v[(a + off) * p + a + off]).sqrt();
-        }
-        if self.intercept {
-            out[0] = crate::solve::clamp_rounding(v[0]).sqrt();
-        }
-        out.iter().any(|v| v.is_finite()).then_some(out)
+        with_cov(p, |sc| {
+            self.covariance_in(sc, idx, hac)?;
+            let v = &sc.out;
+            let mut out = vec![f64::NAN; self.k + off];
+            // A rounding below 0 is 0, but a NaN variance stays NaN:
+            // `f64::max` read it as 0.0, a standard error that says the
+            // coefficient is exact (review round 9, B-2).
+            for (a, &i) in idx.iter().enumerate() {
+                out[off + i] = crate::solve::clamp_rounding(v[(a + off) * p + a + off]).sqrt();
+            }
+            if self.intercept {
+                out[0] = crate::solve::clamp_rounding(v[0]).sqrt();
+            }
+            out.iter().any(|v| v.is_finite()).then_some(out)
+        })
     }
 
     /// Wald's statistic `d' V⁻¹ d` for the coefficients at `pick` --
@@ -312,20 +393,30 @@ impl Sandwich {
     /// with Newey and West's lags (`hac`). `None` where the covariance is
     /// not there, or its part over `pick` does not factorize.
     pub fn wald(&self, idx: &[usize], hac: bool, pick: &[usize], d: &[f64]) -> Option<f64> {
-        let v = self.covariance(idx, hac)?;
         let p = idx.len() + usize::from(self.intercept);
-        let q = pick.len();
-        if q == 0 || d.len() != q || pick.iter().any(|&i| i >= p) {
-            return None;
-        }
-        let v = &v;
-        let sub: Vec<f64> = pick
-            .iter()
-            .flat_map(|&i| pick.iter().map(move |&j| v[i * p + j]))
-            .collect();
-        let (x, attempts) = crate::solve_spd(&sub, d, q, 1)?;
-        let w: f64 = x.iter().zip(d).map(|(a, b)| a * b).sum();
-        (attempts == 0 && w.is_finite()).then_some(w.max(0.0))
+        with_cov(p, |sc| {
+            self.covariance_in(sc, idx, hac)?;
+            let q = pick.len();
+            if q == 0 || d.len() != q || pick.iter().any(|&i| i >= p) {
+                return None;
+            }
+            let CovScratch {
+                solves,
+                out,
+                sub,
+                x,
+                ..
+            } = sc;
+            let cov = &*out;
+            sub.clear();
+            sub.extend(
+                pick.iter()
+                    .flat_map(|&i| pick.iter().map(move |&j| cov[i * p + j])),
+            );
+            let attempts = solve_in(solves, sub, d, q, 1, x)?;
+            let w: f64 = x.iter().zip(d).map(|(a, b)| a * b).sum();
+            (attempts == 0 && w.is_finite()).then_some(w.max(0.0))
+        })
     }
 }
 
@@ -523,6 +614,264 @@ mod tests {
         let se = s.standard_errors(&[0], false);
         let se = se.as_deref().unwrap_or(&[]);
         assert!(se.iter().all(|v| *v != 0.0), "{se:?}");
+    }
+
+    /// [`Sandwich::update`] as it was before its decay and its row's term
+    /// shared a pass: the decay ([`Sandwich::age`]), then each sum's term
+    /// added, the row's `z` and `u` each a vector of their own, the ring's
+    /// new score pushed and the oldest truncated.
+    fn update_by_parts(s: &mut Sandwich, x: &[f64], e: f64, lam: f64, w: f64) {
+        s.age(lam);
+        if !(e.is_finite() && w > 0.0 && x.len() == s.k && x.iter().all(|v| v.is_finite())) {
+            return;
+        }
+        if s.intercept && s.origin.is_empty() {
+            s.origin = x.to_vec();
+        }
+        let d = s.dim();
+        let mut z = Vec::with_capacity(d);
+        if s.intercept {
+            z.push(1.0);
+            z.extend(x.iter().zip(&s.origin).map(|(v, c)| v - c));
+        } else {
+            z.extend_from_slice(x);
+        }
+        let u: Vec<f64> = z.iter().map(|v| w * e * v).collect();
+        let fits = (0..d).all(|i| {
+            (s.bread[i * d + i] + w * z[i] * z[i]).is_finite()
+                && (s.meat[i * d + i] + u[i] * u[i]).is_finite()
+        });
+        if !fits {
+            return;
+        }
+        for i in 0..d {
+            for j in 0..d {
+                s.bread[i * d + j] += w * z[i] * z[j];
+                s.meat[i * d + j] += u[i] * u[j];
+            }
+        }
+        for (g, back) in s.gammas.iter_mut().zip(&s.ring) {
+            for i in 0..d {
+                for j in 0..d {
+                    g[i * d + j] += u[i] * back[j];
+                }
+            }
+        }
+        if s.lags > 0 {
+            s.ring.push_front(u);
+            s.ring.truncate(s.lags);
+        }
+    }
+
+    /// Every number a sandwich holds, as bits.
+    fn bits(s: &Sandwich) -> Vec<u64> {
+        s.origin
+            .iter()
+            .chain(&s.bread)
+            .chain(&s.meat)
+            .chain(s.gammas.iter().flatten())
+            .chain(s.ring.iter().flatten())
+            .map(|v| v.to_bits())
+            .collect()
+    }
+
+    /// A row's decay and its term in one pass give the sums the two passes
+    /// gave, to the bit, whatever the row: with and without an intercept,
+    /// at no lags and several, under a decay of 1 or below, through zero
+    /// weights, a residual or a feature that is not finite, a row whose
+    /// score overflows a sum, and a cleared ring.
+    #[test]
+    fn a_row_in_one_pass_is_the_row_aged_then_added_to_the_bit() {
+        for (k, intercept, lags) in [(3, true, 0), (3, true, 4), (2, false, 2), (1, true, 1)] {
+            let (mut fused, mut parts) = (
+                Sandwich::new(k, intercept, lags),
+                Sandwich::new(k, intercept, lags),
+            );
+            let mut st = 41u64;
+            for i in 0..300 {
+                let mut x: Vec<f64> = (0..k).map(|_| lcg(&mut st) + 30.0).collect();
+                let mut e = lcg(&mut st);
+                let mut w = 0.5 + lcg(&mut st);
+                let lam = [0.97, 1.0, 0.5, 0.999][i % 4];
+                match i % 29 {
+                    3 => w = 0.0,
+                    5 => e = f64::NAN,
+                    7 => x[0] = f64::INFINITY,
+                    11 => {
+                        x[0] = 1e160;
+                        e = 1e160;
+                    }
+                    13 => w = -1.0,
+                    _ => {}
+                }
+                if i == 150 {
+                    fused.clear_lags();
+                    parts.clear_lags();
+                }
+                fused.update(&x, e, lam, w);
+                update_by_parts(&mut parts, &x, e, lam, w);
+                assert_eq!(
+                    bits(&fused),
+                    bits(&parts),
+                    "row {i}, {k} {intercept} {lags}"
+                );
+            }
+            assert!(fused.has_shape(k, intercept, lags));
+        }
+    }
+
+    /// [`Sandwich::covariance`] and [`Sandwich::wald`] as they were written
+    /// before their buffers were kept: each matrix a vector of its own, the
+    /// bread factorized by [`crate::SpdFactor::of`] and solved against
+    /// twice, each lag sum picked out.
+    impl Sandwich {
+        fn covariance_alloc(&self, idx: &[usize], hac: bool) -> Option<Vec<f64>> {
+            let d = self.dim();
+            let off = usize::from(self.intercept);
+            let pos: Vec<usize> = (0..off).chain(idx.iter().map(|&i| i + off)).collect();
+            let p = pos.len();
+            if p == 0 {
+                return None;
+            }
+            let pick = |m: &[f64]| -> Vec<f64> {
+                pos.iter()
+                    .flat_map(|&i| pos.iter().map(move |&j| m[i * d + j]))
+                    .collect()
+            };
+            let bread = pick(&self.bread);
+            let mut meat = pick(&self.meat);
+            if hac {
+                let lags = self.lags as f64;
+                for (l, g) in self.gammas.iter().enumerate() {
+                    let b = 1.0 - (l + 1) as f64 / (lags + 1.0);
+                    let g = pick(g);
+                    for i in 0..p {
+                        for j in 0..p {
+                            meat[i * p + j] += b * (g[i * p + j] + g[j * p + i]);
+                        }
+                    }
+                }
+            }
+            let factor = crate::SpdFactor::of(&bread, p).filter(|f| f.attempts() == 0)?;
+            // `B⁻¹ M B⁻¹`: the meat's columns solved, transposed (`M B⁻¹`, `M`
+            // symmetric), and solved again. Column-major in and out.
+            let col =
+                |m: &[f64]| -> Vec<f64> { (0..p * p).map(|n| m[(n % p) * p + n / p]).collect() };
+            let left = factor.solve(&col(&meat), p, p);
+            let left_t: Vec<f64> = (0..p * p).map(|n| left[(n % p) * p + n / p]).collect();
+            let v = factor.solve(&left_t, p, p);
+            // Column-major `v`: entry (i, j) at `j·p + i`; symmetric.
+            let mut out: Vec<f64> = (0..p * p)
+                .map(|n| {
+                    let (i, j) = (n / p, n % p);
+                    0.5 * (v[j * p + i] + v[i * p + j])
+                })
+                .collect();
+            if self.intercept {
+                // The intercept in the features' own units is `β₀ − c'β_x`:
+                // `T V T'` with `T = [[1, −c'], [0, I]]`.
+                let c: Vec<f64> = std::iter::once(0.0)
+                    .chain(
+                        idx.iter()
+                            .map(|&i| self.origin.get(i).copied().unwrap_or(0.0)),
+                    )
+                    .collect();
+                // Row 0 of `T V`: `v_0j − Σ_a c_a v_aj`.
+                let row0: Vec<f64> = (0..p)
+                    .map(|j| out[j] - (1..p).map(|a| c[a] * out[a * p + j]).sum::<f64>())
+                    .collect();
+                let v00 = row0[0] - (1..p).map(|b| c[b] * row0[b]).sum::<f64>();
+                for j in 1..p {
+                    out[j] = row0[j];
+                    out[j * p] = row0[j];
+                }
+                out[0] = v00;
+            }
+            Some(out)
+        }
+
+        fn wald_alloc(&self, idx: &[usize], hac: bool, pick: &[usize], d: &[f64]) -> Option<f64> {
+            let v = self.covariance_alloc(idx, hac)?;
+            let p = idx.len() + usize::from(self.intercept);
+            let q = pick.len();
+            if q == 0 || d.len() != q || pick.iter().any(|&i| i >= p) {
+                return None;
+            }
+            let v = &v;
+            let sub: Vec<f64> = pick
+                .iter()
+                .flat_map(|&i| pick.iter().map(move |&j| v[i * p + j]))
+                .collect();
+            let (x, attempts) = crate::solve_spd(&sub, d, q, 1)?;
+            let w: f64 = x.iter().zip(d).map(|(a, b)| a * b).sum();
+            (attempts == 0 && w.is_finite()).then_some(w.max(0.0))
+        }
+    }
+
+    /// The covariance, the standard errors and Wald's statistic read in the
+    /// thread's kept buffers are the allocating forms', to the bit, over
+    /// every subset of features, HC0 and Newey and West, with and without an
+    /// intercept, on a sandwich young and old, one that does not factorize
+    /// (a constant feature, an exact copy) and one folded through rows that
+    /// only age.
+    #[test]
+    fn the_covariance_in_kept_buffers_is_the_allocating_one_to_the_bit() {
+        let same = |a: Option<&[f64]>, b: Option<&[f64]>| {
+            a.map(|v| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>())
+                == b.map(|v| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>())
+        };
+        let mut seen = 0;
+        for (intercept, lags, copy, constant) in [
+            (true, 0, false, false),
+            (true, 3, false, false),
+            (false, 2, false, false),
+            (true, 2, true, false),
+            (true, 2, false, true),
+        ] {
+            let mut s = Sandwich::new(4, intercept, lags);
+            let mut st = 53u64;
+            for i in 0..200 {
+                let a = lcg(&mut st);
+                let x = [
+                    a,
+                    lcg(&mut st) + 5.0,
+                    if copy { a } else { lcg(&mut st) },
+                    if constant { 2.0 } else { lcg(&mut st) },
+                ];
+                let w = if i % 13 == 4 { 0.0 } else { 0.5 + lcg(&mut st) };
+                s.update(&x, lcg(&mut st) * (1.0 + a.abs()), 0.98, w);
+                if i % 9 != 0 && i > 5 {
+                    continue;
+                }
+                for idx in [&[0, 1, 2, 3][..], &[2, 0], &[1], &[3, 1, 0], &[]] {
+                    for hac in [false, true] {
+                        let (got, want) = (s.covariance(idx, hac), s.covariance_alloc(idx, hac));
+                        assert!(same(got.as_deref(), want.as_deref()), "row {i} {idx:?}");
+                        seen += usize::from(got.is_some());
+                        let off = usize::from(intercept);
+                        let p = idx.len() + off;
+                        // Picks at the last coefficient, every one, and a
+                        // position past them (refused).
+                        for pick in [vec![p.saturating_sub(1)], (0..p).collect(), vec![p]] {
+                            if p == 0 {
+                                continue;
+                            }
+                            let d: Vec<f64> = pick.iter().map(|&j| 0.1 * (j + 1) as f64).collect();
+                            let (g, w) = (
+                                s.wald(idx, hac, &pick, &d),
+                                s.wald_alloc(idx, hac, &pick, &d),
+                            );
+                            assert_eq!(
+                                g.map(f64::to_bits),
+                                w.map(f64::to_bits),
+                                "wald {i} {idx:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(seen > 400, "the covariances reached numbers: {seen}");
     }
 
     /// A sandwich over `k` rows of `(1, x)` at `lags` lags, its ring full.
