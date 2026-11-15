@@ -1691,6 +1691,58 @@ pub fn partial_corr(precision: &[f64], k: usize, i: usize, j: usize) -> f64 {
     }
 }
 
+/// The correlation of a pair from its co-moment and its two standard
+/// deviations, clamped to `[-1, 1]`: NaN where the denominator is not
+/// positive. The quotient is taken whatever the denominator is and chosen
+/// after, which is the same number as dividing only where it is positive:
+/// a branch kept the divides one at a time, where this form lets the
+/// compiler take two at once.
+#[inline(always)]
+fn correlation(cij: f64, si: f64, sj: f64) -> f64 {
+    let d = si * sj;
+    let r = (cij / d).clamp(-1.0, 1.0);
+    if d > 0.0 { r } else { f64::NAN }
+}
+
+/// [`partial_corr`] of every pair `i < j`, row by row, into `dst`, which holds
+/// `k(k-1)/2`; `sqrt_diag` is scratch. The same numbers in the same order as
+/// the pair-at-a-time form: the diagonal's square roots taken once, not twice
+/// a pair, and each row of `P` read along its length, the quotient taken as
+/// [`correlation`] takes it.
+fn partial_corrs_into(precision: &[f64], k: usize, dst: &mut [f64], sqrt_diag: &mut Vec<f64>) {
+    sqrt_diag.clear();
+    sqrt_diag.extend((0..k).map(|i| precision[i * k + i].sqrt()));
+    let mut dst = dst;
+    for (i, &si) in sqrt_diag.iter().enumerate() {
+        let (row, rest) = dst.split_at_mut(k - 1 - i);
+        dst = rest;
+        let p_row = &precision[i * k + i + 1..(i + 1) * k];
+        for ((o, &pij), &sj) in row.iter_mut().zip(p_row).zip(&sqrt_diag[i + 1..]) {
+            *o = correlation(-pij, si, sj);
+        }
+    }
+}
+
+/// The lagged cross-correlations `C_l[a,b] / (std[a]·std[b])`, not clamped,
+/// into `dst`: `lags` holds the lags' `k × k` matrices one after the next,
+/// row-major, and `dst` is laid out as they are, so each row is read and
+/// written along its length. NaN where the denominator is not positive,
+/// the quotient taken whatever it is and chosen after, as [`correlation`].
+fn lag_corrs_into(lags: &[f64], std: &[f64], k: usize, dst: &mut [f64]) {
+    if k == 0 {
+        return;
+    }
+    for (out, c) in dst.chunks_exact_mut(k * k).zip(lags.chunks_exact(k * k)) {
+        for ((out, c), &sa) in out.chunks_exact_mut(k).zip(c.chunks_exact(k)).zip(std) {
+            for ((o, &cab), &sb) in out.iter_mut().zip(c).zip(std) {
+                let d = sa * sb;
+                let r = cab / d;
+                *o = if d > 0.0 { r } else { f64::NAN };
+            }
+        }
+    }
+}
+
 /// Which statistics an [`EwCovModel`] emits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2616,24 +2668,13 @@ impl EwCovModel {
                     std.clear();
                     std.extend(cov.vars().map(f64::sqrt));
                     let dst = slots(&mut rest, k * (k - 1) / 2);
-                    cov.comoments().upper_rows_map(k, dst, std, |cij, si, sj| {
-                        let d = si * sj;
-                        if d > 0.0 {
-                            (cij / d).clamp(-1.0, 1.0)
-                        } else {
-                            f64::NAN
-                        }
-                    });
+                    cov.comoments().upper_rows_map(k, dst, std, correlation);
                 }
                 EwCovStat::PartialCorr => {
-                    let mut dst = slots(&mut rest, k * (k - 1) / 2).iter_mut();
-                    for i in 0..k {
-                        for (j, o) in ((i + 1)..k).zip(dst.by_ref()) {
-                            *o = match &precision {
-                                Some(p) => partial_corr(p, k, i, j),
-                                None => f64::NAN,
-                            };
-                        }
+                    let dst = slots(&mut rest, k * (k - 1) / 2);
+                    match &precision {
+                        Some(p) => partial_corrs_into(p, k, dst, std),
+                        None => dst.fill(f64::NAN),
                     }
                 }
                 // From the precision in hand where the partial correlations
@@ -2658,19 +2699,7 @@ impl EwCovModel {
                     match &self.lag {
                         Some(lag) => {
                             // `restore` holds the lags to the cfg's.
-                            let mut dst = dst.iter_mut();
-                            for li in 0..lag.lags().len() {
-                                for a in 0..k {
-                                    for (b, o) in (0..k).zip(dst.by_ref()) {
-                                        let d = std[a] * std[b];
-                                        *o = if d > 0.0 {
-                                            lag.get(li, a, b) / d
-                                        } else {
-                                            f64::NAN
-                                        };
-                                    }
-                                }
-                            }
+                            lag_corrs_into(lag.comoments(), std, k, dst);
                         }
                         None => dst.fill(f64::NAN),
                     }
@@ -3054,3 +3083,6 @@ mod path_tests;
 
 #[cfg(test)]
 mod symmetry_tests;
+
+#[cfg(test)]
+mod emit_tests;
