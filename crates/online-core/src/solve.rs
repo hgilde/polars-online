@@ -905,6 +905,44 @@ impl SpdFactor {
         out
     }
 
+    /// [`Self::solve`], to the bit, with the right-hand sides' matrix in
+    /// `work` and the solution written into `out`: the same two triangular
+    /// solves on the same numbers, so a caller that solves on a schedule
+    /// allocates nothing for a shape it has held ([`QuadWork`]).
+    pub(crate) fn solve_into(
+        &self,
+        b: &[f64],
+        k: usize,
+        m: usize,
+        work: &mut QuadWork,
+        out: &mut Vec<f64>,
+    ) {
+        debug_assert_eq!(b.len(), k * m);
+        let x = work.columns(k, m);
+        for j in 0..m {
+            for (i, v) in x.col_as_slice_mut(j).iter_mut().enumerate() {
+                *v = b[j * k + i];
+            }
+        }
+        solve_in_place(&self.l, x.as_mut());
+        out.clear();
+        for j in 0..m {
+            out.extend_from_slice(x.col_as_slice(j));
+        }
+    }
+
+    /// A factor of no order and no entries, which holds no memory: what a
+    /// holder that moves a real one out of a place leaves there.
+    pub(crate) fn hollow() -> Self {
+        Self {
+            l: Mat::new(),
+            log_det: OnceLock::new(),
+            attempts: 0,
+            jitter: 0.0,
+            moves: 0,
+        }
+    }
+
     /// `A⁻¹ b` for one right-hand side, `b_i = rhs(i)` over the factor's
     /// order: [`Self::solve`]'s `solve(b, k, 1)` to the bit -- the same
     /// column, solved by the same two triangular solves -- but solved in
@@ -957,9 +995,16 @@ impl SpdFactor {
     /// its own: `z_i > 0`, so it makes its row's `z` infinite or NaN, which
     /// the check on each `z` refuses.
     pub fn inverse_is_finite(&self) -> bool {
+        self.inverse_is_finite_in(&mut Vec::new())
+    }
+
+    /// [`Self::inverse_is_finite`], its running sums formed in `z`, kept
+    /// between calls by a caller that certifies a factor on a schedule.
+    pub(crate) fn inverse_is_finite_in(&self, z: &mut Vec<f64>) -> bool {
         let l = self.l.as_ref();
         let k = l.nrows();
-        let mut z = vec![1.0f64; k];
+        z.clear();
+        z.resize(k, 1.0);
         let mut l_max = 1.0f64;
         for i in 0..k {
             let Some(col) = l.col(i).try_as_col_major() else {
@@ -1313,6 +1358,41 @@ mod pool_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`SpdFactor::solve_into`] is [`SpdFactor::solve`] to the bit, in one
+    /// kept matrix and one kept output across shapes it returns to, and the
+    /// certificate formed in a dirty kept list is the one formed afresh.
+    #[test]
+    fn solving_into_kept_space_is_solving_to_the_bit() {
+        let mut s = 17u64;
+        let mut work = QuadWork::default();
+        let mut out = vec![9.0; 3];
+        let mut z = vec![f64::NAN; 40];
+        for (k, m) in [
+            (1, 1),
+            (3, 1),
+            (5, 2),
+            (8, 3),
+            (3, 1),
+            (5, 2),
+            (12, 1),
+            (5, 2),
+        ] {
+            let a = spd(k, 10.0, &mut s);
+            let f = SpdFactor::of(&a, k).unwrap();
+            let b: Vec<f64> = (0..k * m).map(|_| draw(&mut s)).collect();
+            f.solve_into(&b, k, m, &mut work, &mut out);
+            let want = f.solve(&b, k, m);
+            assert_eq!(
+                out.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "order {k}, {m} columns"
+            );
+            assert_eq!(f.inverse_is_finite_in(&mut z), f.inverse_is_finite());
+        }
+        let hollow = SpdFactor::hollow();
+        assert_eq!(hollow.order(), 0);
+    }
 
     /// A solve of order `k` is kept a space up to `KEPT_ORDER`, past it
     /// none: the thread's buffers stay bounded. A space is found again by
