@@ -3580,7 +3580,7 @@ impl Stream {
             use rayon::prelude::*;
             // Only reached when instances are independent, which (given
             // `coupled` above) means `drift_action` is not "reset".
-            insts.par_iter_mut().for_each(|inst| {
+            let run = |inst: &mut Instance| {
                 run_instance(
                     inst,
                     &plans,
@@ -3593,7 +3593,12 @@ impl Stream {
                     &front_cuts,
                     &places,
                 );
-            });
+            };
+            if crate::pool::inline() {
+                insts.iter_mut().for_each(run);
+            } else {
+                insts.par_iter_mut().for_each(run);
+            }
         } else if let Some(inst) = insts.first_mut() {
             // One instance: a drift reset has nothing to coordinate with, so
             // it resets itself inline at the row that fired.
@@ -3916,7 +3921,7 @@ impl Stream {
         let places: [(u32, u32); 0] = [];
         if insts.len() > 1 {
             use rayon::prelude::*;
-            insts.par_iter_mut().for_each(|inst| {
+            let run = |inst: &mut Instance| {
                 run_instance(
                     inst,
                     plans,
@@ -3929,7 +3934,12 @@ impl Stream {
                     &front_cuts,
                     &places,
                 );
-            });
+            };
+            if crate::pool::inline() {
+                insts.iter_mut().for_each(run);
+            } else {
+                insts.par_iter_mut().for_each(run);
+            }
         } else if let Some(inst) = insts.first_mut() {
             run_instance(
                 inst,

@@ -12,7 +12,11 @@ use polars::prelude::*;
 static SEEN: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
 /// The spec names this module probes; every other spec is ignored.
-const PROBED: [&str; 2] = ["threads-probe-one", "threads-probe-two"];
+const PROBED: [&str; 3] = [
+    "threads-probe-one",
+    "threads-probe-two",
+    "threads-probe-small",
+];
 
 /// Record the current thread for `spec`, when it is one this module probes.
 pub(super) fn probe(spec: &str) {
@@ -277,4 +281,118 @@ fn the_transpose_spreads_only_for_a_lone_spec_with_features() {
     assert!(transposes_in_parallel(&[one.clone(), bare.clone()]));
     assert!(!transposes_in_parallel(&[one.clone(), spec("t-two")]));
     assert!(transposes_in_parallel(&[]));
+}
+
+/// A spec of two features over four groups, small enough to run inline.
+fn small_spec(name: &str) -> Spec {
+    serde_json::from_str(&format!(
+        r#"{{"name": "{name}", "model": {{"type": "ewridge"}}, "targets": ["y"],
+            "features": ["x0", "x1"], "group": "g", "half_life": 10.0}}"#
+    ))
+    .unwrap()
+}
+
+fn small_frame(seed: usize) -> DataFrame {
+    let n = 12usize;
+    let g: Vec<i64> = (0..n).map(|i| (i % 4) as i64).collect();
+    let x0: Vec<f64> = (0..n).map(|i| ((i + seed) % 7) as f64 + 0.5).collect();
+    let x1: Vec<f64> = (0..n).map(|i| ((i * 3 + seed) % 11) as f64).collect();
+    let y: Vec<f64> = (0..n).map(|i| ((i + 2 * seed) % 5) as f64).collect();
+    df!("g" => g, "x0" => x0, "x1" => x1, "y" => y).unwrap()
+}
+
+/// A call too small for the pool runs every task on the calling thread, and
+/// one at the cut or above it is handed to the pool.
+#[test]
+fn a_small_call_runs_on_the_calling_thread_and_a_large_one_on_the_pool() {
+    let name = PROBED[2];
+    let mut bank = Bank::new(vec![small_spec(name)]).unwrap();
+    bank.set_threads(Some(2)).unwrap();
+    assert!(bank.runs_inline(12));
+    bank.fit_predict(&small_frame(0)).unwrap();
+    bank.predict(&small_frame(1)).unwrap();
+    let caller = std::thread::current().name().unwrap_or("").to_string();
+    assert_eq!(seen(name), BTreeSet::from([caller]));
+    // Past the work cut (here 4 groups of a 2-feature spec: 9 a row), and
+    // from the rows at which a chunk is spread.
+    assert!(bank.runs_inline(100));
+    assert!(!bank.runs_inline(200));
+    assert!(!bank.runs_inline(crate::PAR_MIN_ROWS));
+    // On a pool's own thread the call stays on that pool.
+    let pool = bank.threads().pool().unwrap();
+    assert!(!pool.install(|| bank.runs_inline(12)));
+}
+
+/// One ungrouped single-instance spec has one task whatever the chunk: it
+/// runs inline at every size below the rows at which a chunk is spread. A
+/// grid of instances, a count of Gram threads and a wide spec do not.
+#[test]
+fn what_runs_inline_is_decided_by_tasks_work_and_width() {
+    let one = |extra: &str, features: &str| -> Bank {
+        let s: Spec = serde_json::from_str(&format!(
+            r#"{{"name": "m", "model": {{"type": "ewridge"{extra}}}, "targets": ["y"],
+                "features": [{features}], "half_life": 10.0}}"#
+        ))
+        .unwrap();
+        Bank::new(vec![s]).unwrap()
+    };
+    assert!(one("", r#""x0", "x1""#).runs_inline(crate::PAR_MIN_ROWS - 1));
+    assert!(!one("", r#""x0", "x1""#).runs_inline(crate::PAR_MIN_ROWS));
+    let wide: Vec<String> = (0..=super::inline::INLINE_MAX_FEATURES)
+        .map(|i| format!("\"x{i}\""))
+        .collect();
+    assert!(!one("", &wide.join(", ")).runs_inline(1));
+    assert!(!one(r#", "gram_threads": 2"#, r#""x0""#).runs_inline(1));
+    assert!(one(r#", "gram_threads": 1"#, r#""x0""#).runs_inline(1));
+    let grid: Spec = serde_json::from_str(
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
+            "features": ["x0", "x1"], "half_life": [10.0, 20.0, 40.0]}"#,
+    )
+    .unwrap();
+    let grid = Bank::new(vec![grid]).unwrap();
+    assert!(grid.runs_inline(10) && !grid.runs_inline(1000));
+}
+
+/// The same chunks give the same bits run inline and on the pool, in the
+/// outputs of learning and of scoring.
+#[test]
+fn a_small_call_gives_the_bits_the_pool_gives() {
+    let specs = || vec![small_spec("a"), small_spec("b")];
+    let (mut inline, mut pooled) = (Bank::new(specs()).unwrap(), Bank::new(specs()).unwrap());
+    pooled.set_threads(Some(2)).unwrap();
+    for seed in 0..6 {
+        let chunk = small_frame(seed);
+        assert!(inline.runs_inline(chunk.height()));
+        let a = inline.fit_predict(&chunk).unwrap();
+        let pool = pooled.threads().clone();
+        let b = pool
+            .install(|| {
+                assert!(!pooled.runs_inline(chunk.height()));
+                pooled.fit_predict(&chunk)
+            })
+            .unwrap();
+        assert_eq!(format!("{a:?}"), format!("{b:?}"), "chunk {seed}");
+        let probe = small_frame(seed + 20);
+        let a = inline.predict(&probe).unwrap();
+        let b = pool.install(|| pooled.predict(&probe)).unwrap();
+        assert_eq!(format!("{a:?}"), format!("{b:?}"), "predict {seed}");
+    }
+}
+
+/// A small call runs on the caller's own stack, which a thread of another
+/// program may have made small: it needs little.
+#[test]
+fn a_small_call_fits_a_half_megabyte_stack() {
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            let mut bank = Bank::new(vec![small_spec("s")]).unwrap();
+            for seed in 0..3 {
+                bank.fit_predict(&small_frame(seed)).unwrap();
+            }
+            bank.predict(&small_frame(9)).unwrap();
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
