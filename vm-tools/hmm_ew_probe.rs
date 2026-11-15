@@ -16,12 +16,14 @@ const K: usize = 20;
 fn frame(n: usize, classes: usize) -> DataFrame {
     let mut s = 12345u64;
     let mut cols: Vec<Vec<f64>> = vec![Vec::with_capacity(n); K];
-    let mut y = Vec::with_capacity(n);
+    let mut y: Vec<f64> = Vec::with_capacity(n);
+    let mut ys: Vec<String> = Vec::with_capacity(n);
     let mut state = 0usize;
     for _ in 0..n {
         if (lcg(&mut s) + 1.0) / 2.0 < 0.02 {
             state = ((lcg(&mut s) + 1.0) / 2.0 * classes as f64) as usize % classes;
         }
+        ys.push(["a", "b", "c"][state].to_string());
         y.push(state as f64);
         for (j, c) in cols.iter_mut().enumerate() {
             c.push(lcg(&mut s) + 1.5 * state as f64 * (1.0 + (j % 3) as f64 * 0.2));
@@ -31,7 +33,11 @@ fn frame(n: usize, classes: usize) -> DataFrame {
     for (j, c) in cols.into_iter().enumerate() {
         out.push(Column::new(format!("x{j}").into(), c));
     }
-    out.push(Column::new("y".into(), y));
+    if classes == 3 {
+        out.push(Column::new("y".into(), ys));
+    } else {
+        out.push(Column::new("y".into(), y));
+    }
     DataFrame::new(n, out).unwrap()
 }
 
@@ -40,7 +46,7 @@ fn spec(model: &str) -> Spec {
     let m = if model == "hmm" {
         r#"{"type": "hmm", "n_components": 2, "precision_prior": 0.1}"#
     } else {
-        r#"{"type": "ew_class", "classes": ["a", "b", "c"], "precision_prior": 1.0, "covariance": "full"}"#
+        r#"{"type": "ew_class", "classes": ["a", "b", "c"], "precision_prior": 1.0, "covariance_type": "full"}"#
     };
     serde_json::from_str(&format!(
         r#"{{"name": "s", "model": {m}, "targets": ["y"], "features": [{}], "half_life": 200.0, "min_weight": 30.0}}"#,
