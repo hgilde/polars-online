@@ -813,7 +813,7 @@ fn describe_counts_a_formula_target_as_the_models_were_handed_it() {
 
 /// The formula targets whose inputs or outputs are computed -- a product
 /// into an operator, arithmetic over two operators, a cast, a when/then, a
-/// power -- as JSON trees over `many_groups`' columns.
+/// power, an increment of a column against its group's previous row -- as JSON trees over `many_groups`' columns.
 fn computed_trees() -> Vec<(&'static str, String)> {
     let opt = r#"{"half_life": 5.0, "window_size": 10.0}"#;
     vec![
@@ -839,6 +839,34 @@ fn computed_trees() -> Vec<(&'static str, String)> {
             "a when/then and a power",
             format!(
                 r#"["when", [">", ["rewm_mean", ["col", "mid"], {opt}], ["col", "mid"]], ["**", ["rewm_mean", ["col", "mid"], {opt}], ["lit", 1.5]], ["neg", ["col", "mid"]]]"#
+            ),
+        ),
+        (
+            "an increment into an operator",
+            format!(r#"["rewm_mean", ["increment", ["col", "mid"]], {opt}]"#),
+        ),
+        (
+            "arithmetic around an increment's operator",
+            format!(
+                r#"["-", ["rewm_mean", ["increment", ["col", "mid"]], {opt}], ["col", "mid"]]"#
+            ),
+        ),
+        (
+            "an input that mixes an increment with a column",
+            format!(
+                r#"["rewm_sum", ["*", ["increment", ["col", "mid"]], ["+", ["col", "x"], ["lit", 2.0]]], {opt}]"#
+            ),
+        ),
+        (
+            "the increment of a computed input, with nulls",
+            format!(
+                r#"["rewm_sum", ["increment", ["*", ["col", "mid"], ["+", ["col", "x"], ["lit", 2.0]]]], {opt}]"#
+            ),
+        ),
+        (
+            "two increments of different inputs",
+            format!(
+                r#"["-", ["rewm_mean", ["increment", ["col", "mid"]], {opt}], ["rewm_mean", ["increment", ["col", "x"]], {opt}]]"#
             ),
         ),
     ]

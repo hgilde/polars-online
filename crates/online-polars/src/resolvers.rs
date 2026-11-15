@@ -17,7 +17,7 @@ use crate::bank::{GroupKey, Layout, PAR_MIN_ROWS, gathered};
 use crate::formula::Formula;
 use crate::spec::Spec;
 use crate::stream::{FormulaTargets, Resolutions};
-use crate::windows_frame::{WindowsConfig, WindowsRun};
+use crate::windows_frame::{Given, WindowsConfig, WindowsRun};
 
 /// One chunk's formula-target inputs for a spec's streams (docs/PLAN.md
 /// task 104): which targets are formulas, each row's number in the bank's
@@ -58,9 +58,9 @@ pub(crate) struct TargetWindows {
 
 /// From this many groups a chunk's groups resolve on the pool's threads
 /// whatever its rows: a group's fixed cost -- its rows taken, its core's
-/// bookkeeping, and for a formula that Polars' lazy engine plans, as an
-/// increment's does, about 85 microseconds a plan -- is a dispatch's many
-/// times over.
+/// bookkeeping, and where a formula's inputs could not be evaluated once for
+/// the chunk, the plan of Polars' lazy engine a group then makes, about 85
+/// microseconds -- is a dispatch's many times over.
 const PAR_MIN_GROUPS: usize = 8;
 
 /// The row-number column a resolver's frame carries: a row's number in the
@@ -276,13 +276,18 @@ pub(crate) fn resolve_targets(
     // cast) over the whole chunk in one plan of Polars' lazy engine, where a
     // plan a group cost tens of microseconds each; a group is handed its
     // rows' values. Every input is element-wise, so a value does not depend
-    // on the rows beside it. A plan that refuses is left for the groups'
-    // own, which report it by group. A chunk of one group has nothing to
-    // share.
-    let inputs: Option<Vec<Vec<f64>>> = cores
-        .first()
-        .filter(|_| groups.len() > 1)
-        .and_then(|r| r.evaluate_inputs(frame));
+    // on the rows beside it. So are an increment's input and the operator
+    // inputs that read an increment, which each group's own previous row
+    // gives: the increments are read off each group's state first
+    // (`WindowsRun::share`), and the inputs evaluated over the chunk with
+    // them. A plan that refuses is left for the groups' own, which report
+    // it by group. A chunk of one group has nothing to share.
+    let shared = (groups.len() > 1)
+        .then(|| {
+            let rows: Vec<&[usize]> = groups.iter().map(|(_, idx)| idx.as_slice()).collect();
+            WindowsRun::share(&cores, frame, &rows)
+        })
+        .flatten();
     let chunk = Chunk {
         spec,
         frame,
@@ -290,11 +295,7 @@ pub(crate) fn resolve_targets(
         first_row,
     };
     let one = |(key, idx): &(GroupKey, Vec<usize>), run: &mut WindowsRun| {
-        let given = inputs.as_ref().map(|all| {
-            all.iter()
-                .map(|v| idx.iter().map(|&i| v[i]).collect())
-                .collect()
-        });
+        let given = shared.as_ref().map(|s| s.of_group(idx));
         resolve_group(&chunk, run, key, idx, given)
     };
     let results: Vec<Resolved> =
@@ -370,8 +371,8 @@ impl Drop for Looping {
 ///
 /// A group's step can block its thread: Polars' lazy engine hands its work
 /// to Polars' own pool and waits for it. (A step does so only where the
-/// chunk's formulas could not be evaluated once for all its groups -- an
-/// increment, a plan that refuses -- since the group's rows are taken a
+/// chunk's formulas could not be evaluated once for all its groups -- a plan
+/// that refuses, a run that skips rows it read before it was saved -- since the group's rows are taken a
 /// column at a time on its own thread and the formulas are evaluated
 /// outside this loop.) A rayon thread that
 /// waits does not idle, it runs other jobs of its own pool on top of its
@@ -519,14 +520,14 @@ struct Chunk<'a> {
 /// formulas' values by resolved row and the rows' numbers where the core
 /// evaluates the formulas itself, and the rows before them where the chunk's
 /// groups' are evaluated together; `None` where nothing resolved. `given`
-/// is the chunk's operator inputs at this group's rows, where they were
-/// evaluated beforehand.
+/// is what the chunk's inputs evaluated beforehand gave at this group's
+/// rows.
 fn resolve_group(
     chunk: &Chunk<'_>,
     run: &mut WindowsRun,
     key: &GroupKey,
     idx: &[usize],
-    given: Option<Vec<Vec<f64>>>,
+    given: Option<Given>,
 ) -> Resolved {
     let Chunk {
         spec,

@@ -167,6 +167,200 @@ struct IncrState {
     clock: Option<ClockValue>,
 }
 
+/// The increments' state of a run, borrowed: a run's own, or a copy of it
+/// that a caller reads the increments off without moving the run.
+struct IncrTrack<'a> {
+    state: &'a mut Vec<IncrState>,
+    index: &'a mut HashMap<String, usize>,
+    null: &'a mut Option<usize>,
+    stream_clock: &'a mut Option<ClockValue>,
+}
+
+/// A chunk's increments' inputs, each read in the form its step is taken
+/// in: integers, doubles or nanoseconds, one `Some` of the three per
+/// increment.
+#[derive(Clone)]
+pub struct IncrInputs {
+    rows: usize,
+    integer: Vec<Option<Vec<Option<i128>>>>,
+    numeric: Vec<Option<Vec<Option<f64>>>>,
+    temporal: Vec<Option<Vec<Option<i64>>>>,
+}
+
+impl IncrInputs {
+    /// The inputs at `rows` of the chunk, in that order.
+    fn gather(&self, rows: &[usize]) -> Self {
+        fn take<T: Copy>(all: &[Option<Vec<T>>], rows: &[usize]) -> Vec<Option<Vec<T>>> {
+            all.iter()
+                .map(|v| v.as_ref().map(|v| rows.iter().map(|&i| v[i]).collect()))
+                .collect()
+        }
+        Self {
+            rows: rows.len(),
+            integer: take(&self.integer, rows),
+            numeric: take(&self.numeric, rows),
+            temporal: take(&self.temporal, rows),
+        }
+    }
+}
+
+/// What a chunk's groups' runs share, evaluated once for the chunk
+/// ([`WindowsRun::share`]): each group is handed its rows' part
+/// ([`Shared::of_group`]).
+pub struct Shared {
+    /// The operator inputs, a double a row, NaN for a null; none where each
+    /// is a column of doubles a run reads for itself.
+    inputs: Option<Vec<Vec<f64>>>,
+    /// The increments' inputs.
+    incr: Option<IncrInputs>,
+}
+
+impl Shared {
+    /// The part of the chunk's values at a group's `rows`.
+    pub fn of_group(&self, rows: &[usize]) -> Given {
+        Given {
+            inputs: self.inputs.as_ref().map(|all| {
+                all.iter()
+                    .map(|v| rows.iter().map(|&i| v[i]).collect())
+                    .collect()
+            }),
+            incr: self.incr.as_ref().map(|r| r.gather(rows)),
+        }
+    }
+}
+
+/// One group's part of what its chunk shares ([`Shared::of_group`]), handed
+/// to [`WindowsRun::feed_resolving_with`].
+pub struct Given {
+    inputs: Option<Vec<Vec<f64>>>,
+    incr: Option<IncrInputs>,
+}
+
+/// One value an increment's step reads, per row of `keys`: `x_i - x_{i-1}`
+/// within each key's session, moving `track` as it goes.
+fn step_increments(
+    track: IncrTrack<'_>,
+    width: usize,
+    (restart, restarts): (f64, bool),
+    inputs: &IncrInputs,
+    keys: &[Option<&str>],
+    clock: &Option<Vec<ClockValue>>,
+    session: Option<&[u64]>,
+) -> Vec<Vec<Option<f64>>> {
+    let IncrTrack {
+        state,
+        index,
+        null,
+        stream_clock,
+    } = track;
+    let IncrInputs {
+        rows: n,
+        integer,
+        numeric,
+        temporal,
+    } = inputs;
+    let mut out: Vec<Vec<Option<f64>>> = vec![Vec::with_capacity(*n); width];
+    for r in 0..*n {
+        let found = match keys[r] {
+            Some(k) => index.get(k).copied(),
+            None => *null,
+        };
+        let gi = match found {
+            Some(gi) => gi,
+            None => {
+                let gi = state.len();
+                state.push(IncrState {
+                    key: keys[r].map(str::to_string),
+                    prev: vec![f64::NAN; width],
+                    prev_ns: vec![None; width],
+                    prev_int: vec![None; width],
+                    session: None,
+                    clock: None,
+                });
+                match keys[r] {
+                    Some(k) => {
+                        index.insert(k.to_string(), gi);
+                    }
+                    None => *null = Some(gi),
+                }
+                gi
+            }
+        };
+        // A step back on the stream's clock past the threshold restarts
+        // every group in the core, so every group's increments start
+        // over too (review R1, S4).
+        let now_clock = clock.as_ref().map(|c| c[r]);
+        if let (Some(now), Some(prev)) = (now_clock, *stream_clock)
+            && restarts
+            && back_past(prev, now, restart)
+        {
+            for st in state.iter_mut() {
+                st.prev.iter_mut().for_each(|p| *p = f64::NAN);
+                st.prev_ns.iter_mut().for_each(|p| *p = None);
+                st.prev_int.iter_mut().for_each(|p| *p = None);
+            }
+        }
+        *stream_clock = now_clock;
+        let st = &mut state[gi];
+        let now_session = session.map(|s| s[r]);
+        let mut new_start = st.session != now_session && st.session.is_some();
+        if let (Some(now), Some(prev)) = (now_clock, st.clock)
+            && restarts
+            && back_past(prev, now, restart)
+        {
+            new_start = true;
+        }
+        if new_start {
+            st.prev.iter_mut().for_each(|p| *p = f64::NAN);
+            st.prev_ns.iter_mut().for_each(|p| *p = None);
+            st.prev_int.iter_mut().for_each(|p| *p = None);
+        }
+        st.session = now_session;
+        st.clock = now_clock;
+        for i in 0..width {
+            if let Some(vals) = &integer[i] {
+                let v = vals[r];
+                out[i].push(match (v, st.prev_int[i]) {
+                    (Some(c), Some(p)) => Some(integer_step(c, p)),
+                    // A previous value a float input of another chunk left.
+                    (Some(c), None) if !st.prev[i].is_nan() => Some(c as f64 - st.prev[i]),
+                    _ => None,
+                });
+                if let Some(c) = v {
+                    st.prev_int[i] = Some(c);
+                    st.prev[i] = c as f64;
+                }
+            } else if let Some(vals) = &numeric[i] {
+                let v = match vals[r] {
+                    Some(x) if usable(x) => x,
+                    _ => f64::NAN,
+                };
+                out[i].push(if v.is_nan() || st.prev[i].is_nan() {
+                    None
+                } else {
+                    Some(v - st.prev[i])
+                });
+                if !v.is_nan() {
+                    st.prev[i] = v;
+                    st.prev_int[i] = None;
+                }
+            } else if let Some(vals) = &temporal[i] {
+                let v = vals[r];
+                out[i].push(match (v, st.prev_ns[i]) {
+                    (Some(c), Some(p)) => {
+                        Some(online_core::seconds_of_ns(i128::from(c) - i128::from(p)))
+                    }
+                    _ => None,
+                });
+                if v.is_some() {
+                    st.prev_ns[i] = v;
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 thread_local! {
     /// A test's switch: the lazy engine for every input and formula, as
@@ -1106,9 +1300,10 @@ impl WindowsRun {
     /// [`Self::feed_resolving`] for a caller that evaluates what the lazy
     /// engine would per chunk, once for every group it feeds (the bank's
     /// resolver, which hands the engine its whole chunk rather than one
-    /// plan a group): `inputs` are this chunk's operator inputs as
-    /// [`Self::evaluate_inputs`] gave them over the whole frame, taken at
-    /// this group's rows, and, where [`Self::formulas_pending`], the frame
+    /// plan a group): `given` is what [`Self::share`] evaluated over the
+    /// whole frame -- the chunk's operator inputs and its increments'
+    /// inputs -- taken at this group's rows, and, where
+    /// [`Self::formulas_pending`], the frame
     /// returned is the resolved rows before their formulas, which
     /// [`Self::resolved_formulas`] evaluates over any number of such frames
     /// stacked.
@@ -1120,7 +1315,7 @@ impl WindowsRun {
         &mut self,
         df: &DataFrame,
         rows: &[u64],
-        inputs: Option<Vec<Vec<f64>>>,
+        given: Option<Given>,
     ) -> PolarsResult<DataFrame> {
         polars_ensure!(
             rows.len() == df.height() && df.get_column_names().iter().any(|c| c.as_str() == "@po:row"),
@@ -1128,15 +1323,19 @@ impl WindowsRun {
                 @po:row column, which is a defect in polars-online. Open an issue at \
                 https://github.com/hgilde/polars-online/issues with this message."
         );
-        if let Some(given) = &inputs {
+        if let Some(given) = &given {
+            let inputs_fit = given.inputs.as_ref().is_none_or(|all| {
+                all.len() == self.inputs.len() && all.iter().all(|v| v.len() == df.height())
+            });
+            let incr_fits = given.incr.as_ref().is_none_or(|r| r.rows == df.height());
             polars_ensure!(
-                given.len() == self.inputs.len() && given.iter().all(|v| v.len() == df.height()),
+                inputs_fit && incr_fits,
                 ComputeError: "internal: feed_resolving: the operator inputs handed over must be \
                     one value a row for each input, which is a defect in polars-online. Open an \
                     issue at https://github.com/hgilde/polars-online/issues with this message."
             );
         }
-        self.feed_inner(df, None, Some(rows), inputs, true)
+        self.feed_inner(df, None, Some(rows), given, true)
     }
 
     /// Whether the formulas of a resolving feed are evaluated by the lazy
@@ -1164,11 +1363,11 @@ impl WindowsRun {
     /// engine, each as doubles with a null (as a NaN) where the input has
     /// none: what a feed would evaluate for any rows of the frame, since a
     /// formula's inputs are element-wise. `None` where there is nothing to
-    /// save a feed -- an input that reads an increment, which a group's own
-    /// rows give, or inputs that are all columns of doubles -- and where the
-    /// plan refuses, which a feed reports for the rows it was handed.
-    pub fn evaluate_inputs(&self, frame: &DataFrame) -> Option<Vec<Vec<f64>>> {
-        if !self.increments.is_empty() || self.bare_inputs(frame).is_some() {
+    /// save a feed -- inputs that are all columns of doubles -- and where the
+    /// plan refuses, which a feed reports for the rows it was handed. For a
+    /// run with no increments; [`Self::share_increments`] does the rest.
+    fn evaluate_inputs(&self, frame: &DataFrame) -> Option<Vec<Vec<f64>>> {
+        if self.bare_inputs(frame).is_some() {
             return None;
         }
         self.evaluated_inputs(frame).ok()
@@ -1230,7 +1429,7 @@ impl WindowsRun {
         df: &DataFrame,
         limit: Option<usize>,
         resolving: Option<&[u64]>,
-        given: Option<Vec<Vec<f64>>>,
+        given: Option<Given>,
         defer: bool,
     ) -> PolarsResult<DataFrame> {
         // The clock of the whole chunk first: the row numbers an error
@@ -1341,7 +1540,7 @@ impl WindowsRun {
         let skipped: DataFrame;
         let mut df = df;
         let mut resolving = resolving;
-        let mut given = given;
+        let (mut given_inputs, mut given_incr) = given.map_or((None, None), |g| (g.inputs, g.incr));
         let skip = self.resume_skip.min(df.height());
         if skip > 0 {
             // The skipped rows inside the held window -- the last
@@ -1366,9 +1565,12 @@ impl WindowsRun {
             skipped = df.slice(skip as i64, df.height() - skip);
             df = &skipped;
             resolving = resolving.map(|r| &r[skip..]);
-            for v in given.iter_mut().flatten() {
+            for v in given_inputs.iter_mut().flatten() {
                 v.drain(..skip);
             }
+            // The increments' inputs of the rows after those skipped: not
+            // handed over, the run reads them from its own rows.
+            given_incr = None;
             if let Some(c) = &mut clock {
                 c.drain(..skip);
             }
@@ -1377,15 +1579,7 @@ impl WindowsRun {
             }
         }
         let n = df.height();
-        // Keys are text, a zoned Datetime's its instant, as the bank keys
-        // them: the cast to text failed on one (task 160, PA4b).
-        let session: Option<Vec<u64>> = match &self.config.session {
-            None => None,
-            Some(c) => {
-                let s = key_text(df.column(c.as_str())?.as_materialized_series())?;
-                Some(s.str()?.iter().map(session_hash).collect())
-            }
-        };
+        let session: Option<Vec<u64>> = self.session_hashes(df)?;
         let group_col = match &self.config.group {
             None => None,
             Some(c) => Some(key_text(df.column(c.as_str())?.as_materialized_series())?),
@@ -1408,7 +1602,7 @@ impl WindowsRun {
             self.incr_null,
             self.stream_clock,
         );
-        let chunk = self.with_increments(df, &keys, &clock, session.as_deref())?;
+        let chunk = self.with_increments(df, &keys, &clock, session.as_deref(), given_incr)?;
 
         // Pass two: Polars evaluates every operator's input -- but an input
         // that is a column of doubles, as a price is, is its values already:
@@ -1416,7 +1610,7 @@ impl WindowsRun {
         // engine is tens of microseconds a call, which a bank's group pays
         // every chunk. A bank's resolver evaluates the whole chunk's in one
         // plan, and hands each group its rows' values.
-        let values: Vec<Vec<f64>> = if let Some(values) = given {
+        let values: Vec<Vec<f64>> = if let Some(values) = given_inputs {
             values
         } else if let Some(columns) = self.bare_inputs(&chunk) {
             columns
@@ -1694,6 +1888,7 @@ impl WindowsRun {
                 &keys[..rows],
                 &clock,
                 session.map(|s| &s[..rows]),
+                None,
             )?;
         }
         Ok(())
@@ -1702,18 +1897,71 @@ impl WindowsRun {
     /// The chunk with one hidden column per increment: `x_i - x_{i-1}`
     /// within the group's session, null on a session's first row and after
     /// a step back the policy reads as a new start; seconds for a temporal
-    /// input.
+    /// input. `given` is the increments' inputs where a caller has
+    /// evaluated them (see [`Self::share`]); the lazy engine does it here
+    /// otherwise.
     fn with_increments(
         &mut self,
         df: &DataFrame,
         keys: &[Option<&str>],
         clock: &Option<Vec<ClockValue>>,
         session: Option<&[u64]>,
+        given: Option<IncrInputs>,
     ) -> PolarsResult<DataFrame> {
         if self.increments.is_empty() {
             return Ok(df.clone());
         }
-        let n = df.height();
+        let inputs = match given {
+            Some(read) => read,
+            None => self.increment_inputs(df)?,
+        };
+        let (restart, restarts) = self.restart_policy();
+        let out = step_increments(
+            IncrTrack {
+                state: &mut self.incr_state,
+                index: &mut self.incr_index,
+                null: &mut self.incr_null,
+                stream_clock: &mut self.stream_clock,
+            },
+            self.increments.len(),
+            (restart, restarts),
+            &inputs,
+            keys,
+            clock,
+            session,
+        );
+        let cols = self.increment_columns(out);
+        let mut chunk = df.clone();
+        chunk.hstack_mut(&cols)?;
+        Ok(chunk)
+    }
+
+    /// The clock policy's reading of a step back: the span past which it is
+    /// a new start, and whether a step back starts anew at all.
+    fn restart_policy(&self) -> (f64, bool) {
+        (
+            self.core.clock_cfg().min_backwards_jump,
+            matches!(
+                self.core.clock_cfg().on_clock_reset,
+                online_core::OnClockReset::ResetState
+            ),
+        )
+    }
+
+    /// The increments' values as the hidden columns they stand in as.
+    fn increment_columns(&self, out: Vec<Vec<Option<f64>>>) -> Vec<Column> {
+        self.increments
+            .iter()
+            .zip(out)
+            .map(|((name, _, _), values)| {
+                let ca: Float64Chunked = values.into_iter().collect();
+                ca.with_name(name.as_str().into()).into_column()
+            })
+            .collect()
+    }
+
+    /// The increments' inputs over `df`, as one plan of the lazy engine.
+    fn increment_inputs(&self, df: &DataFrame) -> PolarsResult<IncrInputs> {
         let inputs = df
             .clone()
             .lazy()
@@ -1728,17 +1976,16 @@ impl WindowsRun {
                     .collect::<Vec<_>>(),
             )
             .collect()?;
-        let restart = self.core.clock_cfg().min_backwards_jump;
-        let restarts = matches!(
-            self.core.clock_cfg().on_clock_reset,
-            online_core::OnClockReset::ResetState
-        );
-        let mut cols: Vec<Column> = Vec::with_capacity(self.increments.len());
-        let mut out: Vec<Vec<Option<f64>>> = vec![Vec::with_capacity(n); self.increments.len()];
+        self.read_increment_inputs(&inputs)
+    }
+
+    /// Each increment's input read in the form its step is taken in.
+    fn read_increment_inputs(&self, inputs: &DataFrame) -> PolarsResult<IncrInputs> {
+        let width = self.increments.len();
         // An integer input's values as integers (task 200): its step is
         // taken in integers and then converted, where two doubles of an
         // epoch-nanosecond column near 1.8e18 tied at a step of 1.
-        let integer: Vec<Option<Vec<Option<i128>>>> = (0..self.increments.len())
+        let integer: Vec<Option<Vec<Option<i128>>>> = (0..width)
             .map(|i| {
                 let c = inputs.column(input_column(i).as_str())?;
                 if self.increments[i].2 || !integer_input(c.dtype()) {
@@ -1748,7 +1995,7 @@ impl WindowsRun {
                 }
             })
             .collect::<PolarsResult<_>>()?;
-        let numeric: Vec<Option<Vec<Option<f64>>>> = (0..self.increments.len())
+        let numeric: Vec<Option<Vec<Option<f64>>>> = (0..width)
             .map(|i| {
                 if self.increments[i].2 || integer[i].is_some() {
                     Ok(None)
@@ -1760,7 +2007,7 @@ impl WindowsRun {
                 }
             })
             .collect::<PolarsResult<_>>()?;
-        let temporal: Vec<Option<Vec<Option<i64>>>> = (0..self.increments.len())
+        let temporal: Vec<Option<Vec<Option<i64>>>> = (0..width)
             .map(|i| {
                 if self.increments[i].2 {
                     // A time of day is read too, in nanoseconds since
@@ -1773,111 +2020,143 @@ impl WindowsRun {
                 }
             })
             .collect::<PolarsResult<_>>()?;
-        for r in 0..n {
-            let found = match keys[r] {
-                Some(k) => self.incr_index.get(k).copied(),
-                None => self.incr_null,
-            };
-            let gi = match found {
-                Some(gi) => gi,
-                None => {
-                    let gi = self.incr_state.len();
-                    self.incr_state.push(IncrState {
-                        key: keys[r].map(str::to_string),
-                        prev: vec![f64::NAN; self.increments.len()],
-                        prev_ns: vec![None; self.increments.len()],
-                        prev_int: vec![None; self.increments.len()],
-                        session: None,
-                        clock: None,
-                    });
-                    match keys[r] {
-                        Some(k) => {
-                            self.incr_index.insert(k.to_string(), gi);
-                        }
-                        None => self.incr_null = Some(gi),
-                    }
-                    gi
-                }
-            };
-            // A step back on the stream's clock past the threshold restarts
-            // every group in the core, so every group's increments start
-            // over too (review R1, S4).
-            let now_clock = clock.as_ref().map(|c| c[r]);
-            if let (Some(now), Some(prev)) = (now_clock, self.stream_clock)
-                && restarts
-                && back_past(prev, now, restart)
-            {
-                for st in &mut self.incr_state {
-                    st.prev.iter_mut().for_each(|p| *p = f64::NAN);
-                    st.prev_ns.iter_mut().for_each(|p| *p = None);
-                    st.prev_int.iter_mut().for_each(|p| *p = None);
-                }
-            }
-            self.stream_clock = now_clock;
-            let st = &mut self.incr_state[gi];
-            let now_session = session.map(|s| s[r]);
-            let mut new_start = st.session != now_session && st.session.is_some();
-            if let (Some(now), Some(prev)) = (now_clock, st.clock)
-                && restarts
-                && back_past(prev, now, restart)
-            {
-                new_start = true;
-            }
-            if new_start {
-                st.prev.iter_mut().for_each(|p| *p = f64::NAN);
-                st.prev_ns.iter_mut().for_each(|p| *p = None);
-                st.prev_int.iter_mut().for_each(|p| *p = None);
-            }
-            st.session = now_session;
-            st.clock = now_clock;
-            for i in 0..self.increments.len() {
-                if let Some(vals) = &integer[i] {
-                    let v = vals[r];
-                    out[i].push(match (v, st.prev_int[i]) {
-                        (Some(c), Some(p)) => Some(integer_step(c, p)),
-                        // A previous value a float input of another chunk left.
-                        (Some(c), None) if !st.prev[i].is_nan() => Some(c as f64 - st.prev[i]),
-                        _ => None,
-                    });
-                    if let Some(c) = v {
-                        st.prev_int[i] = Some(c);
-                        st.prev[i] = c as f64;
-                    }
-                } else if let Some(vals) = &numeric[i] {
-                    let v = match vals[r] {
-                        Some(x) if usable(x) => x,
-                        _ => f64::NAN,
-                    };
-                    out[i].push(if v.is_nan() || st.prev[i].is_nan() {
-                        None
-                    } else {
-                        Some(v - st.prev[i])
-                    });
-                    if !v.is_nan() {
-                        st.prev[i] = v;
-                        st.prev_int[i] = None;
-                    }
-                } else if let Some(vals) = &temporal[i] {
-                    let v = vals[r];
-                    out[i].push(match (v, st.prev_ns[i]) {
-                        (Some(c), Some(p)) => {
-                            Some(online_core::seconds_of_ns(i128::from(c) - i128::from(p)))
-                        }
-                        _ => None,
-                    });
-                    if v.is_some() {
-                        st.prev_ns[i] = v;
-                    }
+        Ok(IncrInputs {
+            rows: inputs.height(),
+            integer,
+            numeric,
+            temporal,
+        })
+    }
+
+    /// What a chunk's groups' runs share, evaluated once over the whole
+    /// chunk instead of once for each group (a bank's resolver, which feeds
+    /// every group's run its own rows of one frame): the operator inputs
+    /// and, where the runs have increments, the increments' inputs. Every
+    /// one is an element-wise formula of the row, so a value does not
+    /// depend on the rows beside it; the increments themselves are a group's
+    /// own, which [`Self::preview_increments`] reads off each run's state
+    /// without moving it, so that the operator inputs that read them can be
+    /// evaluated over the chunk too. `groups` is each run's rows of `frame`,
+    /// in `runs`' order. `None` where there is nothing to save, a feed
+    /// plans for itself -- one group; inputs that are all columns of doubles
+    /// -- or where a plan refuses, which a feed reports for the rows it was
+    /// handed.
+    pub fn share(runs: &[WindowsRun], frame: &DataFrame, groups: &[&[usize]]) -> Option<Shared> {
+        let first = runs.first()?;
+        if first.increments.is_empty() {
+            return first.evaluate_inputs(frame).map(|inputs| Shared {
+                inputs: Some(inputs),
+                incr: None,
+            });
+        }
+        first.share_increments(runs, frame, groups)
+    }
+
+    /// [`Self::share`] for runs with increments.
+    fn share_increments(
+        &self,
+        runs: &[WindowsRun],
+        frame: &DataFrame,
+        groups: &[&[usize]],
+    ) -> Option<Shared> {
+        // A run keeps its rows' increments by group: only a bank's, whose
+        // run is one group's, is read here. One that skips rows its input
+        // read before it was saved is left to feed for itself.
+        if self.config.group.is_some() || runs.iter().any(|r| r.resume_skip > 0) {
+            return None;
+        }
+        let n = frame.height();
+        let inputs = frame
+            .clone()
+            .lazy()
+            .select(
+                self.increments
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_, node, _))| {
+                        node.to_expr(&|_| unreachable!("no operator in an increment's input"))
+                            .alias(input_column(i).as_str())
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .collect()
+            .ok()?;
+        // A literal is one value, which a feed broadcasts.
+        if inputs.height() != n {
+            return None;
+        }
+        let read = self.read_increment_inputs(&inputs).ok()?;
+        let clock = self.clock_values(frame).ok()?;
+        let session = self.session_hashes(frame).ok()?;
+        let mut values: Vec<Vec<Option<f64>>> = vec![vec![None; n]; self.increments.len()];
+        for (run, rows) in runs.iter().zip(groups) {
+            let keys = vec![Some(""); rows.len()];
+            let clock = clock
+                .as_ref()
+                .map(|c| rows.iter().map(|&i| c[i]).collect::<Vec<_>>());
+            let session: Option<Vec<u64>> = session
+                .as_ref()
+                .map(|s| rows.iter().map(|&i| s[i]).collect());
+            let out = run.preview_increments(&read.gather(rows), &keys, &clock, session.as_deref());
+            for (all, part) in values.iter_mut().zip(out) {
+                for (&i, v) in rows.iter().zip(part) {
+                    all[i] = v;
                 }
             }
         }
-        for (i, (name, _, _)) in self.increments.iter().enumerate() {
-            let ca: Float64Chunked = std::mem::take(&mut out[i]).into_iter().collect();
-            cols.push(ca.with_name(name.as_str().into()).into_column());
-        }
-        let mut chunk = df.clone();
-        chunk.hstack_mut(&cols)?;
-        Ok(chunk)
+        let mut chunk = frame.clone();
+        chunk.hstack_mut(&self.increment_columns(values)).ok()?;
+        let inputs = if self.bare_inputs(&chunk).is_some() {
+            None
+        } else {
+            Some(self.evaluated_inputs(&chunk).ok()?)
+        };
+        Some(Shared {
+            inputs,
+            incr: Some(read),
+        })
+    }
+
+    /// The increments of `rows` rows as [`Self::with_increments`] would give
+    /// them, with this run's state left as it is.
+    fn preview_increments(
+        &self,
+        inputs: &IncrInputs,
+        keys: &[Option<&str>],
+        clock: &Option<Vec<ClockValue>>,
+        session: Option<&[u64]>,
+    ) -> Vec<Vec<Option<f64>>> {
+        let mut state = self.incr_state.clone();
+        let mut index = self.incr_index.clone();
+        let mut null = self.incr_null;
+        let mut stream_clock = self.stream_clock;
+        step_increments(
+            IncrTrack {
+                state: &mut state,
+                index: &mut index,
+                null: &mut null,
+                stream_clock: &mut stream_clock,
+            },
+            self.increments.len(),
+            self.restart_policy(),
+            inputs,
+            keys,
+            clock,
+            session,
+        )
+    }
+
+    /// The session column's values, each as the hash the core reads. Keys
+    /// are text, a zoned Datetime's its instant, as the bank keys them: the
+    /// cast to text failed on one (task 160, PA4b).
+    fn session_hashes(&self, df: &DataFrame) -> PolarsResult<Option<Vec<u64>>> {
+        Ok(match &self.config.session {
+            None => None,
+            Some(c) => {
+                let s = key_text(df.column(c.as_str())?.as_materialized_series())?;
+                Some(s.str()?.iter().map(session_hash).collect())
+            }
+        })
     }
 
     /// Clock values of a chunk, in the form the column has them: a temporal
@@ -2600,6 +2879,191 @@ mod tests {
                 let resolved: usize = lazy.iter().map(DataFrame::height).sum();
                 assert!(resolved > 20, "{what}: {resolved} rows resolved");
                 assert_eq!(bits(&fast), bits(&lazy), "{what}, cuts {cuts:?}");
+            }
+        }
+    }
+
+    /// What a chunk's groups share, evaluated once ([`WindowsRun::share`]),
+    /// is what each group's run computes for itself: runs fed their rows with
+    /// the chunk's shared inputs give the same rows to the bit and keep the
+    /// same state as runs that plan their own, over two chunks (the second
+    /// starts from the first's increments), with a null, a step back past a
+    /// restart, a session change and an integer input; and the shared values
+    /// are there, not a fallback.
+    #[test]
+    fn a_chunk_s_shared_increments_are_each_run_s_own() {
+        let n = 90;
+        let key = |i: usize| (i * 7 + i / 5) % 4;
+        let frame_of = |lo: usize, hi: usize| {
+            let rows = lo..hi;
+            df!(
+                "t" => rows.clone().map(|i| i as f64 * 0.5).collect::<Vec<_>>(),
+                "tr" => rows.clone().map(|i| if i == 50 { 3.0 } else { i as f64 * 0.5 }).collect::<Vec<_>>(),
+                "x" => rows.clone().map(|i| (i % 11 != 4).then(|| (i * i % 17) as f64 * 0.25)).collect::<Vec<_>>(),
+                "k" => rows.clone().map(|i| (i % 9 != 2).then_some((i * 3 % 13) as i64)).collect::<Vec<_>>(),
+                "s" => rows.clone().map(|i| if i < 40 { "a" } else { "b" }).collect::<Vec<_>>(),
+                "g" => rows.clone().map(|i| key(i) as i64).collect::<Vec<_>>(),
+                "@po:row" => rows.map(|i| i as u64).collect::<Vec<_>>(),
+            )
+            .unwrap()
+        };
+        let window = r#"{"half_life": 4, "window_size": 6}"#;
+        for (what, inputs_shared, tree, policy) in [
+            (
+                "bare",
+                true,
+                format!(r#"["rewm_mean", ["increment", ["col", "x"]], {window}]"#),
+                r#", "clock": "t", "gap_cap": 100"#,
+            ),
+            (
+                "arithmetic and two increments",
+                true,
+                format!(
+                    r#"["-", ["rewm_sum", ["*", ["increment", ["col", "x"]], ["col", "x"]], {window}],
+                    ["rewm_mean", ["increment", ["col", "k"]], {window}]]"#
+                ),
+                r#", "clock": "t", "gap_cap": 100"#,
+            ),
+            (
+                // Every input is a column of doubles: each run reads its own.
+                "an increment in the formula's body",
+                false,
+                format!(
+                    r#"["-", ["rewm_mean", ["col", "x"], {window}], ["increment", ["col", "x"]]]"#
+                ),
+                r#", "clock": "t", "gap_cap": 100"#,
+            ),
+            (
+                "a restart",
+                true,
+                format!(r#"["rewm_mean", ["increment", ["col", "x"]], {window}]"#),
+                r#", "clock": "tr", "gap_cap": 100, "restart_after_step_back": 0"#,
+            ),
+            (
+                "a session",
+                true,
+                format!(r#"["rewm_mean", ["increment", ["col", "k"]], {window}]"#),
+                r#", "clock": "t", "gap_cap": 100, "session": "s", "session_gap": "reset""#,
+            ),
+        ] {
+            let json = format!(r#"{{"formulas": [{{"name": "f", "tree": {tree}}}]{policy}}}"#);
+            let first = frame_of(0, 35);
+            let schema = first.schema().clone();
+            let new_runs = || -> Vec<WindowsRun> {
+                (0..4)
+                    .map(|_| WindowsRun::new(config(&json), &schema).unwrap())
+                    .collect()
+            };
+            let (mut own, mut shared) = (new_runs(), new_runs());
+            let bits = |df: &DataFrame| -> Vec<(String, Vec<Option<u64>>)> {
+                df.columns()
+                    .iter()
+                    .map(|c| {
+                        let cast = c.cast(&DataType::Float64).unwrap();
+                        let values = cast.f64().unwrap().iter().map(|v| v.map(f64::to_bits));
+                        (c.name().to_string(), values.collect())
+                    })
+                    .collect()
+            };
+            let mut resolved = 0;
+            for (lo, hi) in [(0, 35), (35, n)] {
+                let chunk = frame_of(lo, hi);
+                let rows_of: Vec<Vec<usize>> = (0..4)
+                    .map(|g| (0..chunk.height()).filter(|&r| key(lo + r) == g).collect())
+                    .collect();
+                let groups: Vec<&[usize]> = rows_of.iter().map(Vec::as_slice).collect();
+                let all = WindowsRun::share(&shared, &chunk, &groups)
+                    .expect("a chunk of several groups shares its inputs");
+                assert!(
+                    all.incr.is_some(),
+                    "{what}: the increments' inputs are shared"
+                );
+                assert_eq!(all.inputs.is_some(), inputs_shared, "{what}: the inputs");
+                for (g, rows) in rows_of.iter().enumerate() {
+                    let take =
+                        IdxCa::from_vec("".into(), rows.iter().map(|&r| r as IdxSize).collect());
+                    let sub = chunk.take(&take).unwrap();
+                    let numbers: Vec<u64> = rows.iter().map(|&r| (lo + r) as u64).collect();
+                    let want = own[g].feed_resolving(&sub, &numbers).unwrap();
+                    let mut got = shared[g]
+                        .feed_resolving_with(&sub, &numbers, Some(all.of_group(rows)))
+                        .unwrap();
+                    if shared[g].formulas_pending() {
+                        got = shared[g].resolved_formulas(got).unwrap();
+                    }
+                    resolved += want.height();
+                    assert_eq!(
+                        bits(&got),
+                        bits(&want),
+                        "{what}: group {g}, rows {lo}..{hi}"
+                    );
+                }
+            }
+            assert!(resolved > 40, "{what}: {resolved} rows resolved");
+            for (g, (a, b)) in own.iter().zip(&shared).enumerate() {
+                assert_eq!(
+                    a.save_bytes().unwrap(),
+                    b.save_bytes().unwrap(),
+                    "{what}: group {g}'s state"
+                );
+            }
+            // Without an increment, the operator inputs alone.
+            let plain = format!(
+                r#"{{"formulas": [{{"name": "f", "tree": ["rewm_sum", ["*", ["col", "x"], ["col", "x"]], {window}]}}]{policy}}}"#
+            );
+            let plain = vec![WindowsRun::new(config(&plain), &schema).unwrap(); 4];
+            let rows20: Vec<Vec<usize>> = (0..4)
+                .map(|g| (0..20).filter(|&r| key(r) == g).collect())
+                .collect();
+            let groups20: Vec<&[usize]> = rows20.iter().map(Vec::as_slice).collect();
+            let only = WindowsRun::share(&plain, &frame_of(0, 20), &groups20).unwrap();
+            assert!(only.inputs.is_some() && only.incr.is_none(), "{what}");
+            // Nothing is shared for a run that skips rows of its input, or
+            // one keyed by a group column: each plans for itself.
+            let chunk = frame_of(0, 20);
+            let rows_of: Vec<Vec<usize>> = (0..4)
+                .map(|g| (0..20).filter(|&r| key(r) == g).collect())
+                .collect();
+            let groups: Vec<&[usize]> = rows_of.iter().map(Vec::as_slice).collect();
+            let mut skipping = new_runs();
+            skipping[3].resume_skip = 2;
+            assert!(WindowsRun::share(&skipping, &chunk, &groups).is_none());
+            let grouped = r#", "group": "g""#;
+            let json =
+                format!(r#"{{"formulas": [{{"name": "f", "tree": {tree}}}]{policy}{grouped}}}"#);
+            let keyed = vec![WindowsRun::new(config(&json), &schema).unwrap(); 4];
+            assert!(WindowsRun::share(&keyed, &chunk, &groups).is_none());
+            // A part that is not one value a row for each input and each
+            // row is refused, whichever of the two is the wrong one.
+            let all = WindowsRun::share(&new_runs(), &chunk, &groups).unwrap();
+            let sub = chunk
+                .take(&IdxCa::from_vec(
+                    "".into(),
+                    rows_of[0].iter().map(|&r| r as IdxSize).collect(),
+                ))
+                .unwrap();
+            let numbers: Vec<u64> = rows_of[0].iter().map(|&r| r as u64).collect();
+            let (whole, short) = (all.of_group(&rows_of[0]), all.of_group(&rows_of[0][1..]));
+            let wrong_incr = Given {
+                inputs: whole.inputs.clone(),
+                incr: short.incr.clone(),
+            };
+            let wrong_inputs = Given {
+                inputs: short.inputs.clone(),
+                incr: whole.incr.clone(),
+            };
+            for (which, given) in [("increments", wrong_incr), ("inputs", wrong_inputs)] {
+                if given.inputs.is_none() && which == "inputs" {
+                    continue;
+                }
+                let err = new_runs()[0]
+                    .feed_resolving_with(&sub, &numbers, Some(given))
+                    .err()
+                    .unwrap_or_else(|| panic!("{what}: wrong {which} accepted"));
+                assert!(
+                    err.to_string().contains("internal: feed_resolving"),
+                    "{err}"
+                );
             }
         }
     }
