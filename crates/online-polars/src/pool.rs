@@ -5,9 +5,12 @@
 //! and writers. The bank keeps separate ones so that the two can be set
 //! apart: polars' count also sizes what its readers hold in flight, so a
 //! reader can be kept small for memory while the bank still has every core
-//! (docs/how-to/use-more-cores.md). Neither pool ever waits on the other -- a bank
-//! task never calls back into polars' pool -- so having both busy at once
-//! costs nothing measurable, even with each sized to the whole machine.
+//! (docs/how-to/use-more-cores.md). The bank's arithmetic never calls back
+//! into polars' pool, so having both busy at once costs nothing measurable,
+//! even with each sized to the whole machine. A formula target's window pass
+//! does: each group's step hands work to polars' pool and waits, and a thread
+//! that waits runs other jobs of its own pool on its stack, so that pass
+//! takes one group at a time on a thread (`resolvers::in_parallel`).
 //!
 //! A bank, a run or a Gram fit given no `threads` runs on the process
 //! default, built at the first such call, which is when the variable is

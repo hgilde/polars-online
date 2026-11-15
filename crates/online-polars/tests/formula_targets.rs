@@ -399,6 +399,40 @@ fn groups_resolve_on_many_threads_to_the_same_bits() {
     }
 }
 
+/// Thousands of groups in one chunk on a small pool: a group's step waits on
+/// Polars' pool, and a pool thread that waits runs other jobs of its own on
+/// top of its stack, so groups split into jobs nested one inside another to
+/// a depth that grew with their number, and the thread's 2 MiB stack ran out
+/// (task 401: a debug build aborted past about 400 groups on two threads, a
+/// release build past about 10,000, and one thread nests as well). Each
+/// thread now runs one group's step at a time. A pool of one thread is the
+/// reference, and two give the same bits. The abort is the failure.
+#[test]
+fn thousands_of_groups_on_a_small_pool_do_not_nest_to_the_stack_s_end() {
+    let groups = 2_000;
+    let df = many_groups(60_000, groups, 41);
+    let spec = native(Some(12.5));
+    let on = |threads: usize| {
+        let mut bank = Bank::new(vec![spec.clone()]).unwrap();
+        bank.set_threads(Some(threads)).unwrap();
+        let out = feed(&mut bank, &df, 1);
+        (out, bank.save_bytes().unwrap())
+    };
+    let (want, want_bytes) = on(1);
+    let predicted = column(&want, "pred_fwd")
+        .iter()
+        .filter(|p| p.is_some())
+        .count();
+    assert!(predicted > df.height() / 4, "{predicted} rows predicted");
+    let (got, bytes) = on(2);
+    assert_eq!(column(&got, "pred_fwd"), column(&want, "pred_fwd"));
+    assert_eq!(
+        column(&got, "learned_clock"),
+        column(&want, "learned_clock")
+    );
+    assert!(bytes == want_bytes, "two threads: state");
+}
+
 /// A state's bytes are the same however the input's text columns are laid
 /// out in memory (task 278, b32). The resolver holds the session column's
 /// text for an open window, and a parquet read gives a text column whose

@@ -7,9 +7,10 @@
 //! `resolve_targets`, and saves the cores as `SavedResolvers`.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use polars::prelude::*;
-use rayon::prelude::*;
 
 use crate::arrow::{ArrowChunk, Form};
 use crate::bank::{GroupKey, Layout, PAR_MIN_ROWS, gathered};
@@ -280,13 +281,9 @@ pub(crate) fn resolve_targets(
     let one = |(key, idx): &(GroupKey, Vec<usize>), run: &mut WindowsRun| {
         resolve_group(spec, run, frame, key, idx, &names, first_row)
     };
-    let results: Vec<PolarsResult<Option<(GroupKey, Resolutions)>>> =
+    let results: Vec<Resolved> =
         if groups.len() > 1 && (n >= PAR_MIN_ROWS || groups.len() >= PAR_MIN_GROUPS) {
-            cores
-                .par_iter_mut()
-                .zip(groups.par_iter())
-                .map(|(run, g)| one(g, run))
-                .collect()
+            in_parallel(&mut cores, groups, one)
         } else {
             // Up to the first refusal, as a pass over the groups in order
             // stops at it.
@@ -318,6 +315,108 @@ pub(crate) fn resolve_targets(
     })
 }
 
+/// What one group's step gives: its resolutions, `None` where nothing resolved.
+type Resolved = PolarsResult<Option<(GroupKey, Resolutions)>>;
+
+thread_local! {
+    /// Whether this thread is inside [`in_parallel`]'s loop.
+    static LOOPING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Marks the thread as in [`in_parallel`]'s loop until dropped.
+struct Looping {
+    /// Whether it was in the loop already.
+    was: bool,
+}
+
+impl Looping {
+    fn enter() -> Self {
+        Self {
+            was: LOOPING.with(|l| l.replace(true)),
+        }
+    }
+}
+
+impl Drop for Looping {
+    fn drop(&mut self) {
+        LOOPING.with(|l| l.set(self.was));
+    }
+}
+
+/// `one` on every group's core, on the pool's threads, the results in the
+/// groups' order.
+///
+/// A group's step blocks its thread: Polars' lazy engine and `take` hand
+/// their work to Polars' own pool and wait for it. A rayon thread that
+/// waits does not idle, it runs other jobs of its own pool on top of its
+/// stack, so a parallel iterator over the groups nests: the thread blocked
+/// in one group's step starts another group's, which blocks and starts
+/// another, to a depth that grows with the number of groups. A debug build's
+/// 2 MiB thread stack held about 400 groups on two threads, and the
+/// process aborted past that (800 and 2,000 measured); a release build's held
+/// a few thousand.
+///
+/// So the groups are not split into jobs. The calling thread and up to one
+/// job for each other thread run a loop that takes the next group from a
+/// shared counter, and a job that finds its thread in the loop already --
+/// one it picked up while blocked in a step -- leaves at once: the loop that
+/// thread is in, resumed when its step returns, takes the groups left. Each
+/// thread runs one group's step at a time, so its stack holds one step
+/// however many groups there are, and the threads stay as busy as they were,
+/// each taking a group as it finishes the last. The caller's loop runs
+/// whether or not its thread was in one, which is what makes every group
+/// taken.
+fn in_parallel<F>(
+    cores: &mut Vec<WindowsRun>,
+    groups: &[(GroupKey, Vec<usize>)],
+    one: F,
+) -> Vec<Resolved>
+where
+    F: Fn(&(GroupKey, Vec<usize>), &mut WindowsRun) -> Resolved + Sync,
+{
+    // Each core is locked once, by the thread that takes its group, so the
+    // lock is never waited for.
+    let steps: Vec<Mutex<(WindowsRun, Option<Resolved>)>> = std::mem::take(cores)
+        .into_iter()
+        .map(|run| Mutex::new((run, None)))
+        .collect();
+    let next = AtomicUsize::new(0);
+    let drain = || {
+        loop {
+            let i = next.fetch_add(1, Ordering::Relaxed);
+            let Some(step) = steps.get(i) else {
+                return;
+            };
+            let mut step = step
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (run, out) = &mut *step;
+            *out = Some(one(&groups[i], run));
+        }
+    };
+    rayon::scope(|s| {
+        for _ in 1..rayon::current_num_threads().min(steps.len()) {
+            s.spawn(|_| {
+                let looping = Looping::enter();
+                if !looping.was {
+                    drain();
+                }
+            });
+        }
+        let _looping = Looping::enter();
+        drain();
+    });
+    let mut results = Vec::with_capacity(steps.len());
+    for step in steps {
+        let (run, out) = step
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cores.push(run);
+        results.push(out.expect("the caller's loop takes every group before the scope ends"));
+    }
+    results
+}
+
 /// The rows of the chunk's frame that are one group's: the frame itself
 /// where the group is all of it.
 fn group_frame(frame: &DataFrame, idx: &[usize], n: usize) -> PolarsResult<DataFrame> {
@@ -339,7 +438,7 @@ fn resolve_group(
     idx: &[usize],
     names: &[&str],
     first_row: u64,
-) -> PolarsResult<Option<(GroupKey, Resolutions)>> {
+) -> Resolved {
     let rows: Vec<u64> = idx.iter().map(|&i| first_row + i as u64).collect();
     let sub = group_frame(frame, idx, frame.height())?;
     let out = run.feed_resolving(&sub, &rows).map_err(|e| {

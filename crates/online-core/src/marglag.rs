@@ -1463,9 +1463,9 @@ mod tests {
                 for tt in 0..t {
                     near(l.cyy(li, tt), o.cyy[li][tt], "cyy");
                     near(snap.cyy(li, tt), o.cyy[li][tt], "the snapshot's cyy");
-                    for j in 0..p {
-                        near(l.cxx(li, tt, j), o.cxx[li][tt][j], "cxx");
-                        near(snap.cxx(li, tt, j), o.cxx[li][tt][j], "the snapshot's cxx");
+                    for (j, &want) in o.cxx[li][tt].iter().enumerate().take(p) {
+                        near(l.cxx(li, tt, j), want, "cxx");
+                        near(snap.cxx(li, tt, j), want, "the snapshot's cxx");
                     }
                 }
             }
@@ -1540,8 +1540,8 @@ mod tests {
             for li in 0..lags.len() {
                 for tt in 0..t {
                     near(l.cyy(li, tt), o.cyy[li][tt], "cyy");
-                    for j in 0..p {
-                        near(l.cxx(li, tt, j), o.cxx_shared[li][j], "the shared cxx");
+                    for (j, &want) in o.cxx_shared[li].iter().enumerate().take(p) {
+                        near(l.cxx(li, tt, j), want, "the shared cxx");
                     }
                 }
             }
