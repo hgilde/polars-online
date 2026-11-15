@@ -2414,9 +2414,10 @@ mod tests {
             ("integer input", vec![op("rewm_sum", "n", "")]),
             (
                 "computed input",
-                vec![format!(
-                    r#"["rewm_sum", ["*", ["col", "x"], ["col", "y"]], {{"half_life": 1.5, "window_size": 4}}]"#
-                )],
+                vec![
+                    r#"["rewm_sum", ["*", ["col", "x"], ["col", "y"]], {"half_life": 1.5, "window_size": 4}]"#
+                        .to_string(),
+                ],
             ),
         ];
         let n = 60;
