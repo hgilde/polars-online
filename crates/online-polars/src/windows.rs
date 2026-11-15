@@ -70,6 +70,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 use online_core::{ClockAdvance, ClockCfg, ClockState, ClockValue, Stamp, seconds_of_ns};
 use serde::{Deserialize, Serialize};
@@ -1371,12 +1372,14 @@ pub struct Emitted {
 /// input order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Windows {
-    kernels: Vec<KernelDef>,
-    ops: Vec<OpDef>,
+    /// The operators' definitions: the call's, and the same for every group
+    /// of a spec, so behind an `Arc` they are shared (see [`Windows::share_with`]).
+    kernels: Arc<Vec<KernelDef>>,
+    ops: Arc<Vec<OpDef>>,
     #[serde(with = "clock_form")]
     clock_cfg: ClockCfg,
     /// Per kernel: its operators, in output order.
-    members: Vec<Vec<usize>>,
+    members: Arc<Vec<Vec<usize>>>,
     n_outputs: usize,
     n_forward: u32,
     groups: Vec<Group>,
@@ -1811,10 +1814,10 @@ impl Windows {
         Ok(Self {
             n_outputs: ops.len(),
             n_forward: u32::try_from(n_forward).map_err(|_| "too many kernels")?,
-            kernels,
-            ops,
+            kernels: Arc::new(kernels),
+            ops: Arc::new(ops),
             clock_cfg,
-            members,
+            members: Arc::new(members),
             groups: Vec::new(),
             index: HashMap::new(),
             null_group: None,
@@ -1875,7 +1878,7 @@ impl Windows {
     ///
     /// A core that is none this module could have built and fed.
     pub fn check(&self) -> Result<(), String> {
-        for k in &self.kernels {
+        for k in self.kernels.iter() {
             k.check()?;
         }
         let (nk, no) = (self.kernels.len(), self.ops.len());
@@ -1887,7 +1890,7 @@ impl Windows {
             }
             check_op(o, op, &self.kernels[op.kernel])?;
         }
-        if no == 0 || members != self.members || members.iter().any(Vec::is_empty) {
+        if no == 0 || members != *self.members || members.iter().any(Vec::is_empty) {
             return Err("its kernels' operators are not its operators".into());
         }
         if self.n_outputs != no {
@@ -1924,7 +1927,10 @@ impl Windows {
         );
         let is_held = |seq: u64| seq >= self.held_first && seq < self.next_seq;
         let widths = |v: &[Vec<f64>]| {
-            v.len() == nk && v.iter().zip(&self.members).all(|(x, m)| x.len() == m.len())
+            v.len() == nk
+                && v.iter()
+                    .zip(self.members.iter())
+                    .all(|(x, m)| x.len() == m.len())
         };
         let mut open = vec![0u32; held];
         let var: Vec<Vec<bool>> = (0..nk).map(|ki| self.var_of(ki)).collect();
@@ -2036,6 +2042,28 @@ impl Windows {
             let widest = self.members.iter().map(Vec::len).max().unwrap_or(0);
             self.scratch_row = vec![0.0; ROW_VAR * widest];
             self.scratch_sum = vec![0.0; SUM_VAR * widest];
+        }
+    }
+
+    /// Whether this core and `other` hold one copy of the operator
+    /// definitions.
+    #[cfg(test)]
+    pub fn shares_definitions_with(&self, other: &Windows) -> bool {
+        Arc::ptr_eq(&self.kernels, &other.kernels)
+            && Arc::ptr_eq(&self.ops, &other.ops)
+            && Arc::ptr_eq(&self.members, &other.members)
+    }
+
+    /// Share `other`'s operator definitions where they are the same as this
+    /// core's, so that the cores of one spec's groups hold one copy of them.
+    pub fn share_with(&mut self, other: &Windows) {
+        if self.kernels != other.kernels {
+            return;
+        }
+        if self.ops == other.ops && self.members == other.members {
+            self.kernels = Arc::clone(&other.kernels);
+            self.ops = Arc::clone(&other.ops);
+            self.members = Arc::clone(&other.members);
         }
     }
 
@@ -3465,8 +3493,12 @@ mod tests {
         let fit = "does not fit";
         type Damage<'a> = (&'a str, &'a dyn Fn(&mut Windows));
         let damage: [Damage; 23] = [
-            ("names kernel", &|c| c.ops[0].kernel = 99),
-            ("operators are not", &|c| c.members.swap(0, 1)),
+            ("names kernel", &|c| {
+                Arc::make_mut(&mut c.ops)[0].kernel = 99
+            }),
+            ("operators are not", &|c| {
+                Arc::make_mut(&mut c.members).swap(0, 1)
+            }),
             ("outputs for", &|c| c.n_outputs += 1),
             ("forward kernels of", &|c| c.n_forward += 1),
             ("values held for", &|c| {
@@ -5046,7 +5078,7 @@ mod tests {
         )
         .unwrap();
         core.check().unwrap();
-        core.ops[0].kernel = 1;
+        Arc::make_mut(&mut core.ops)[0].kernel = 1;
         let err = core.check().expect_err("refused");
         assert!(
             err.contains("a variance reads only the rows up to each row"),

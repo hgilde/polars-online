@@ -111,6 +111,17 @@ returns.
   rows from one flat copy and sums each window in unrolled loops up to 8
   columns, with the same random draws in the same order. Outputs and saved
   state unchanged to the bit.
+- A call too small to gain from threads runs on the calling thread rather
+  than being handed to the bank's thread pool: a one-row
+  `ModelBank.fit_predict` takes 24 µs instead of 37, and a three-spec bank's
+  one-row call 49 µs instead of 82; a large call is unchanged. Outputs
+  unchanged to the bit.
+- A bank with formula targets that can refuse a chunk (a cast, for one)
+  copied every group's window state before each chunk; it now copies only
+  the chunk's groups, and a spec's groups share one copy of its
+  definitions: 1,000 groups in 2,000-row chunks run 1.8 times as fast with
+  a cast, and each group's window state takes 15 to 25 KB less memory.
+  Outputs and saved states unchanged to the bit.
 
 ## [1.5.0] — 2026-11-10
 

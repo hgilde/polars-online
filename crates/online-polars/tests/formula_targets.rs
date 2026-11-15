@@ -1000,6 +1000,70 @@ fn a_cast_that_refuses_on_two_groups_reports_the_first_s_message() {
     assert!(bank.save_bytes().unwrap() == fresh_fed(&spec, &df));
 }
 
+/// A strict cast that refuses on a chunk after others were fed, in a bank of
+/// many groups of which the chunk reaches only some: the cores the chunk fed
+/// are put back as they were and the cores it did not reach were never
+/// changed, so the bank's bytes are those before the chunk, and going on
+/// from there is going on in a bank that never saw it.
+#[test]
+fn a_refused_chunk_mid_stream_leaves_every_group_as_it_was() {
+    let n = 2_400;
+    let groups = 40;
+    let mut df = many_groups(n, groups, 31);
+    df.with_column(Column::new("big".into(), vec![1.0; n]))
+        .unwrap();
+    let tree = r#"["cast", ["*", ["rewm_mean", ["col", "x"], {"half_life": 5.0, "window_size": 10.0}], ["col", "big"]], "Int8"]"#;
+    let spec = spec(
+        &format!(r#"[{{"name": "fwd", "formula": {tree}}}]"#),
+        Some(12.5),
+        "",
+    );
+    let (head, tail) = (df.slice(0, 1_200), df.slice(1_200, n - 1_200));
+    // The tail's rows of the first group to appear in it are out of range.
+    let key = tail
+        .column("g")
+        .unwrap()
+        .str()
+        .unwrap()
+        .get(0)
+        .unwrap()
+        .to_string();
+    let bad: Vec<f64> = tail
+        .column("g")
+        .unwrap()
+        .str()
+        .unwrap()
+        .iter()
+        .map(|k| if k == Some(key.as_str()) { 1.0e9 } else { 1.0 })
+        .collect();
+    let mut refusing = tail.clone();
+    refusing
+        .with_column(Column::new("big".into(), bad))
+        .unwrap();
+    // Half the tail reaches a group the head did not, a group made at the
+    // chunk and gone on the refusal or kept cold, as the bank had it.
+    let mut bank = Bank::new(vec![spec.clone()]).unwrap();
+    let before_chunk = {
+        feed(&mut bank, &head, 3);
+        bank.save_bytes().unwrap()
+    };
+    let msg = bank
+        .fit_predict_from_with(&refusing, 0, false)
+        .expect_err("the cast refuses")
+        .to_string();
+    assert!(msg.contains("conversion from"), "{msg}");
+    assert!(
+        bank.save_bytes().unwrap() == before_chunk,
+        "the refused chunk left the bank as it was"
+    );
+    let after = feed(&mut bank, &tail, 4);
+    let mut never = Bank::new(vec![spec.clone()]).unwrap();
+    feed(&mut never, &head, 3);
+    let want = feed(&mut never, &tail, 4);
+    assert_eq!(column(&after, "pred_fwd"), column(&want, "pred_fwd"));
+    assert!(bank.save_bytes().unwrap() == never.save_bytes().unwrap());
+}
+
 /// The state's bytes of a fresh bank of `spec` fed `df` whole.
 fn fresh_fed(spec: &Spec, df: &DataFrame) -> Vec<u8> {
     let mut bank = Bank::new(vec![spec.clone()]).unwrap();

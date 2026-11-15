@@ -34,6 +34,7 @@ use crate::stream::{
     last_accepted,
 };
 use crate::summary::{DataSummary, Role, SummaryRow, counts, describe_frame, summary_frame};
+use crate::windows_frame::WindowsRun;
 use online_core::ClockValue;
 
 /// One stream's group key. A null group value is its own key, distinct from any
@@ -459,33 +460,6 @@ pub const PAR_MIN_ROWS: usize = 4096;
 /// megabyte of features is not the many-small-chunks case above. The block itself
 /// is allocated on the calling thread either way.
 const PAR_MIN_CELLS: usize = 1 << 16;
-
-/// `items.par_iter().map(f)` when `par`, the same on this thread otherwise.
-fn map_maybe_par<T, R, C>(items: &[T], par: bool, f: impl Fn(&T) -> R + Sync + Send) -> C
-where
-    T: Sync,
-    R: Send,
-    C: FromIterator<R> + FromParallelIterator<R>,
-{
-    if par {
-        items.par_iter().map(f).collect()
-    } else {
-        items.iter().map(f).collect()
-    }
-}
-
-/// `rayon::join(a, b)` when `par`, `a` then `b` on this thread otherwise.
-fn join_maybe_par<A, B>(
-    par: bool,
-    a: impl FnOnce() -> A + Send,
-    b: impl FnOnce() -> B + Send,
-) -> (A, B)
-where
-    A: Send,
-    B: Send,
-{
-    if par { rayon::join(a, b) } else { (a(), b()) }
-}
 
 /// `scoring` is [`Bank::predict`]'s reading of the chunk: the features and
 /// the clock are required as ever, a target or session column is read when
@@ -1219,10 +1193,15 @@ fn process<'s>(
     // `"auto"`'s share of the pool: the tasks here run side by side, so a
     // spec's Gram update splits only into threads no task holds (task 253).
     // Called inside the bank's pool, so this is its size.
-    let share = crate::pool::gram_share(work.len(), rayon::current_num_threads());
-    let per_task: Vec<TaskOut<'s>> = work
-        .into_par_iter()
-        .map(|((si, key, idx, base, stream), mut sink, mut spare)| {
+    let share = if par() {
+        crate::pool::gram_share(work.len(), rayon::current_num_threads())
+    } else {
+        1
+    };
+    let per_task: Vec<TaskOut<'s>> = map_vec_maybe_par(
+        work,
+        par(),
+        |((si, key, idx, base, stream), mut sink, mut spare)| {
             #[cfg(test)]
             threads_tests::probe(&specs[si].name);
             let spec = &specs[si];
@@ -1309,7 +1288,8 @@ fn process<'s>(
                     // another thread while this one is learned.
                     let r = match (sink.as_mut(), pending.as_mut()) {
                         (Some(sink), Some(prev)) => {
-                            let (r, ()) = rayon::join(
+                            let (r, ()) = join_maybe_par(
+                                par(),
                                 || learn(stream, &mut out, &mut rows),
                                 || sink.absorb(std::slice::from_mut(prev)),
                             );
@@ -1352,8 +1332,8 @@ fn process<'s>(
                 sink.absorb(std::slice::from_mut(prev));
             }
             (outs, closed, sink.map(|s| (si, s)), pending.or(spare))
-        })
-        .collect();
+        },
+    );
     let mut outs = Vec::with_capacity(per_task.len());
     let mut closed = Vec::new();
     let mut filled = Vec::new();
@@ -1381,28 +1361,24 @@ fn sinks<'s>(
     for si in work {
         streams[si] += 1;
     }
-    streams
-        .par_iter()
-        .enumerate()
-        .map(|(si, &k)| {
-            #[cfg(test)]
-            if assembly::tests::sink_off(&specs[si].name) {
-                return None;
-            }
-            (k == 1).then(|| {
-                let dt = clock_dtypes.get(si).and_then(Option::as_ref);
-                Sink::new(&specs[si], &derived[si], n, dt, true)
-            })
+    map_range_maybe_par(streams.len(), par(), |si| {
+        #[cfg(test)]
+        if assembly::tests::sink_off(&specs[si].name) {
+            return None;
+        }
+        (streams[si] == 1).then(|| {
+            let dt = clock_dtypes.get(si).and_then(Option::as_ref);
+            Sink::new(&specs[si], &derived[si], n, dt, true)
         })
-        .collect()
+    })
 }
 
 /// The structs of the sinks `process` filled, into `out`.
 fn finish_sinks(filled: Filled<'_>, out: &mut [Option<StructArray>]) -> PolarsResult<()> {
-    let built: Vec<(usize, StructArray)> = filled
-        .into_par_iter()
-        .map(|(si, sink)| Ok((si, sink.finish()?)))
-        .collect::<PolarsResult<_>>()?;
+    let built: Vec<(usize, StructArray)> =
+        map_vec_maybe_par::<_, _, PolarsResult<_>>(filled, par(), |(si, sink)| {
+            Ok((si, sink.finish()?))
+        })?;
     for (si, st) in built {
         out[si] = Some(st);
     }
@@ -1416,35 +1392,33 @@ fn score(
     cfgs: &[ClockCfg],
     cols: &[SpecColumns],
 ) -> Vec<(usize, StreamRows)> {
-    work.into_par_iter()
-        .map(|(si, idx, base, stream)| {
-            #[cfg(test)]
-            threads_tests::probe(&specs[si].name);
-            let spec = &specs[si];
-            let sc = &cols[si];
-            // Scoring refuses no clock (`Stream::predict_chunk`).
-            let mut out = Box::new(ChunkOut::new(
-                spec,
-                stream.n_models(),
-                stream.n_slots(),
-                idx.len(),
-            ));
-            // Every row of the task at once: scoring is one pass.
-            let rows = sc.features.rows(base, idx.len());
-            stream.predict_chunk(
-                spec,
-                &cfgs[si],
-                &rows,
-                &sc.targets,
-                sc.clock.as_ref(),
-                sc.session.as_deref(),
-                idx,
-                base,
-                &mut out,
-            );
-            (si, Ok(out))
-        })
-        .collect()
+    map_vec_maybe_par(work, par(), |(si, idx, base, stream)| {
+        #[cfg(test)]
+        threads_tests::probe(&specs[si].name);
+        let spec = &specs[si];
+        let sc = &cols[si];
+        // Scoring refuses no clock (`Stream::predict_chunk`).
+        let mut out = Box::new(ChunkOut::new(
+            spec,
+            stream.n_models(),
+            stream.n_slots(),
+            idx.len(),
+        ));
+        // Every row of the task at once: scoring is one pass.
+        let rows = sc.features.rows(base, idx.len());
+        stream.predict_chunk(
+            spec,
+            &cfgs[si],
+            &rows,
+            &sc.targets,
+            sc.clock.as_ref(),
+            sc.session.as_deref(),
+            idx,
+            base,
+            &mut out,
+        );
+        (si, Ok(out))
+    })
 }
 
 /// Assemble the structs of the specs `pick` selects, in parallel, into
@@ -1466,20 +1440,28 @@ fn assemble_phase(
     spares: &mut Spares,
 ) -> PolarsResult<()> {
     let done: Vec<bool> = out.iter().map(Option::is_some).collect();
-    let built: Vec<(usize, StructArray, Vec<Box<ChunkOut>>)> = rows
-        .par_iter_mut()
-        .enumerate()
-        .filter(|(si, _)| pick(*si) && !done[*si])
-        .map(|(si, chunks)| {
-            let dt = clock_dtypes.get(si).and_then(Option::as_ref);
-            // The runs are done with once assembled: their buffers are kept
-            // for a later chunk's small runs, or freed, here rather than at
-            // the end of the call.
-            let mut chunks = std::mem::take(chunks);
-            let st = assemble(&specs[si], &derived[si], n, &mut chunks, dt)?;
-            Ok((si, st, chunks))
-        })
-        .collect::<PolarsResult<_>>()?;
+    let one = |(si, chunks): (usize, &mut Vec<Box<ChunkOut>>)| -> PolarsResult<_> {
+        let dt = clock_dtypes.get(si).and_then(Option::as_ref);
+        // The runs are done with once assembled: their buffers are kept
+        // for a later chunk's small runs, or freed, here rather than at
+        // the end of the call.
+        let mut chunks = std::mem::take(chunks);
+        let st = assemble(&specs[si], &derived[si], n, &mut chunks, dt)?;
+        Ok((si, st, chunks))
+    };
+    let built: Vec<(usize, StructArray, Vec<Box<ChunkOut>>)> = if par() {
+        rows.par_iter_mut()
+            .enumerate()
+            .filter(|(si, _)| pick(*si) && !done[*si])
+            .map(one)
+            .collect::<PolarsResult<_>>()?
+    } else {
+        rows.iter_mut()
+            .enumerate()
+            .filter(|(si, _)| pick(*si) && !done[*si])
+            .map(one)
+            .collect::<PolarsResult<_>>()?
+    };
     for (si, c, chunks) in built {
         out[si] = Some(c);
         for ch in chunks {
@@ -1541,7 +1523,9 @@ fn compare_targets(
         .collect()
 }
 
+mod inline;
 mod refusals;
+use inline::{join_maybe_par, map_maybe_par, map_range_maybe_par, map_vec_maybe_par, par};
 pub(crate) use refusals::clock_amount;
 #[cfg(test)]
 use refusals::over_budget_message;
@@ -4028,10 +4012,18 @@ impl Bank {
         // per-instance ones in `Stream` -- runs on the bank's own pool
         // (pool.rs, `threads`), never on rayon's global one, whichever
         // thread calls.
-        let out = self
-            .threads
-            .clone()
-            .install(|| self.fit_predict_on_pool(chunk, &merged, &keys))?;
+        // The pool is asked for even by a call that will not use it, so that
+        // a variable naming a size the system will not start is refused by
+        // the first call, whatever its size.
+        self.threads.pool()?;
+        let out = if self.runs_inline(chunk.height()) {
+            let _inline = crate::pool::Inline::enter();
+            self.fit_predict_on_pool(chunk, &merged, &keys)?
+        } else {
+            self.threads
+                .clone()
+                .install(|| self.fit_predict_on_pool(chunk, &merged, &keys))?
+        };
         self.clock_dtypes = merged;
         self.key_dtypes = keys;
         Ok(out)
@@ -4156,11 +4148,10 @@ impl Bank {
         // they run in parallel with each other (docs/records/PERFORMANCE-LOG.md P3). The
         // groups come first because they decide the layout the columns are
         // extracted in (P9).
-        let groups: Vec<Vec<(GroupKey, Vec<usize>)>> = self
-            .specs
-            .par_iter()
-            .map(|s| group_indices(chunk, s))
-            .collect::<PolarsResult<_>>()?;
+        let groups: Vec<Vec<(GroupKey, Vec<usize>)>> =
+            map_maybe_par::<_, _, PolarsResult<_>>(&self.specs, par(), |s| {
+                group_indices(chunk, s)
+            })?;
         // `group_close = "monotone"` reads the keys in the column's own
         // order, not `GroupKey`'s lexicographic one, and refuses a chunk
         // whose keys are out of order -- before any model is touched, beside
@@ -4186,12 +4177,16 @@ impl Bank {
         let t_group = t0.elapsed();
         let t1 = std::time::Instant::now();
         let par_transpose = transposes_in_parallel(&self.specs);
-        let mut cols: Vec<SpecColumns> = self
-            .specs
-            .par_iter()
-            .zip(layouts.par_iter())
-            .map(|(s, l)| extract(chunk, s, false, l.as_deref(), par_transpose))
-            .collect::<PolarsResult<_>>()?;
+        let mut cols: Vec<SpecColumns> =
+            map_range_maybe_par::<_, PolarsResult<_>>(self.specs.len(), par(), |i| {
+                extract(
+                    chunk,
+                    &self.specs[i],
+                    false,
+                    layouts[i].as_deref(),
+                    par_transpose,
+                )
+            })?;
         let t_extract = t1.elapsed();
         let t2 = std::time::Instant::now();
 
@@ -4258,29 +4253,30 @@ impl Bank {
         // `groups()` lists what the bank has learned from -- and the corrected
         // chunk can be fed. A no-op where nothing can refuse: a row-count
         // clock, or `"reset_state"` with a minimum of 0.
-        let checked = work.par_iter().try_for_each(|(si, _, idx, base, stream)| {
-            let sc = &cols[*si];
-            // A step that is not a number of clock units, refused by row as
-            // a clock value that is not a number is (review 2026-10-06, PB7).
-            stream
-                .check_steps(sc.clock.as_ref(), idx, *base)
-                .map_err(|refusal| non_finite_step(&specs[*si], refusal, chunk.row_base()))?;
-            stream
-                .check_clock(
-                    &cfgs[*si],
-                    sc.clock.as_ref(),
-                    sc.session.as_deref(),
-                    idx,
-                    *base,
-                )
-                .map_err(|refusal| backwards_clock(&specs[*si], refusal, chunk.row_base()))?;
-            // Under `label_clock`, a label time before its row, or a buffer
-            // past its bound (task 341). Asked only of a spec with one: the
-            // call is ten arguments a group (task 375, P32).
-            if specs[*si].label_clock.is_none() {
-                return Ok(());
-            }
-            stream
+        let check =
+            |(si, _, idx, base, stream): &(usize, &GroupKey, &Vec<usize>, usize, &mut Stream)| {
+                let sc = &cols[*si];
+                // A step that is not a number of clock units, refused by row as
+                // a clock value that is not a number is (review 2026-10-06, PB7).
+                stream
+                    .check_steps(sc.clock.as_ref(), idx, *base)
+                    .map_err(|refusal| non_finite_step(&specs[*si], refusal, chunk.row_base()))?;
+                stream
+                    .check_clock(
+                        &cfgs[*si],
+                        sc.clock.as_ref(),
+                        sc.session.as_deref(),
+                        idx,
+                        *base,
+                    )
+                    .map_err(|refusal| backwards_clock(&specs[*si], refusal, chunk.row_base()))?;
+                // Under `label_clock`, a label time before its row, or a buffer
+                // past its bound (task 341). Asked only of a spec with one: the
+                // call is ten arguments a group (task 375, P32).
+                if specs[*si].label_clock.is_none() {
+                    return Ok(());
+                }
+                stream
                 .check_labels(
                     &specs[*si],
                     &cfgs[*si],
@@ -4295,7 +4291,12 @@ impl Bank {
                 .map_err(
                     |r| polars_err!(ComputeError: "{}", r.message(&specs[*si], chunk.row_base())),
                 )
-        });
+            };
+        let checked = if par() {
+            work.par_iter().try_for_each(check)
+        } else {
+            work.iter().try_for_each(check)
+        };
         if let Err(e) = checked {
             drop(work);
             forget(&mut self.states, &fresh);
@@ -4359,8 +4360,12 @@ impl Bank {
                         specs[*si].model.keeps_window_ring()
                             && stream.could_refuse_window(idx.len())
                     })));
-        let snapshot: Vec<TargetWindows> = if needs_snapshot {
-            self.resolvers.clone()
+        // Only the cores of the chunk's groups are fed, so only those are kept.
+        let snapshot: Vec<(usize, Vec<(GroupKey, WindowsRun)>)> = if needs_snapshot {
+            formula_specs
+                .iter()
+                .map(|&si| (si, self.resolvers[si].snapshot(&groups[si])))
+                .collect()
         } else {
             Vec::new()
         };
@@ -4383,8 +4388,8 @@ impl Bank {
         }
         if let Err(e) = resolved {
             drop(work);
-            if needs_snapshot {
-                self.resolvers = snapshot;
+            for (si, cores) in snapshot {
+                self.resolvers[si].restore(cores);
             }
             forget(&mut self.states, &fresh);
             refits_before.restore(
@@ -4404,48 +4409,59 @@ impl Bank {
         // Only a spec that keeps a ring has one to replay: for any other the
         // pass was a vector and a session scan a task (task 270, G-1).
         if self.window_prepass && specs.iter().any(|s| s.model.keeps_window_ring()) {
-            let over = work
-                .par_iter()
-                .filter(|(si, ..)| specs[*si].model.keeps_window_ring())
-                .find_map_first(|(si, key, idx, base, stream)| {
-                    let (spec, sc) = (&specs[*si], &cols[*si]);
-                    let bounds = match (spec.closes_on_session(), sc.session.as_deref()) {
-                        (true, Some(sess)) => session_bounds(stream, sess, idx.len(), *base),
-                        _ => Vec::new(),
+            let replay = |(si, key, idx, base, stream): &(
+                usize,
+                &GroupKey,
+                &Vec<usize>,
+                usize,
+                &mut Stream,
+            )| {
+                let (spec, sc) = (&specs[*si], &cols[*si]);
+                let bounds = match (spec.closes_on_session(), sc.session.as_deref()) {
+                    (true, Some(sess)) => session_bounds(stream, sess, idx.len(), *base),
+                    _ => Vec::new(),
+                };
+                let mut starts = vec![0];
+                starts.extend_from_slice(&bounds);
+                let mut spare: Option<Stream> = None;
+                for (seg, &start) in starts.iter().enumerate() {
+                    let end = starts.get(seg + 1).copied().unwrap_or(idx.len());
+                    let s: &Stream = if seg == 0 {
+                        stream
+                    } else {
+                        spare.insert(Stream::new(spec).ok()?)
                     };
-                    let mut starts = vec![0];
-                    starts.extend_from_slice(&bounds);
-                    let mut spare: Option<Stream> = None;
-                    for (seg, &start) in starts.iter().enumerate() {
-                        let end = starts.get(seg + 1).copied().unwrap_or(idx.len());
-                        let s: &Stream = if seg == 0 {
-                            stream
-                        } else {
-                            spare.insert(Stream::new(spec).ok()?)
-                        };
-                        let run = &idx[start..end];
-                        if let Some((bytes, cadence)) = s.window_prepass(
-                            spec,
-                            &cfgs[*si],
-                            &sc.features,
-                            &sc.targets,
-                            sc.clock.as_ref(),
-                            sc.label.as_ref(),
-                            sc.session.as_deref(),
-                            sc.weight.as_deref(),
-                            run,
-                            *base + start,
-                            formulas[*si].as_ref().map(|b| b.targets(key)),
-                        ) {
-                            return Some(over_budget(spec, key, bytes, cadence, false));
-                        }
+                    let run = &idx[start..end];
+                    if let Some((bytes, cadence)) = s.window_prepass(
+                        spec,
+                        &cfgs[*si],
+                        &sc.features,
+                        &sc.targets,
+                        sc.clock.as_ref(),
+                        sc.label.as_ref(),
+                        sc.session.as_deref(),
+                        sc.weight.as_deref(),
+                        run,
+                        *base + start,
+                        formulas[*si].as_ref().map(|b| b.targets(key)),
+                    ) {
+                        return Some(over_budget(spec, key, bytes, cadence, false));
                     }
-                    None
-                });
+                }
+                None
+            };
+            let keeps = |(si, ..): &(usize, &GroupKey, &Vec<usize>, usize, &mut Stream)| {
+                specs[*si].model.keeps_window_ring()
+            };
+            let over = if par() {
+                work.par_iter().filter(|w| keeps(w)).find_map_first(replay)
+            } else {
+                work.iter().filter(|w| keeps(w)).find_map(replay)
+            };
             if let Some(e) = over {
                 drop(work);
-                if needs_snapshot {
-                    self.resolvers = snapshot;
+                for (si, cores) in snapshot {
+                    self.resolvers[si].restore(cores);
                 }
                 forget(&mut self.states, &fresh);
                 refits_before.restore(
@@ -4717,7 +4733,13 @@ impl Bank {
     /// [`Self::predict`] over Arrow, as [`Self::fit_predict_arrow`] is to
     /// [`Self::fit_predict`].
     pub fn predict_arrow(&self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
-        self.threads.install(|| self.predict_on_pool(chunk))
+        self.threads.pool()?;
+        if self.runs_inline(chunk.height()) {
+            let _inline = crate::pool::Inline::enter();
+            self.predict_on_pool(chunk)
+        } else {
+            self.threads.install(|| self.predict_on_pool(chunk))
+        }
     }
 
     fn predict_on_pool(&self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
@@ -4731,19 +4753,22 @@ impl Bank {
         // A key column of another form names no group the bank holds, and
         // would score every row as a stream never seen (N22).
         self.key_forms(chunk)?;
-        let groups: Vec<Vec<(GroupKey, Vec<usize>)>> = self
-            .specs
-            .par_iter()
-            .map(|s| group_indices(chunk, s))
-            .collect::<PolarsResult<_>>()?;
+        let groups: Vec<Vec<(GroupKey, Vec<usize>)>> =
+            map_maybe_par::<_, _, PolarsResult<_>>(&self.specs, par(), |s| {
+                group_indices(chunk, s)
+            })?;
         let layouts: Vec<Option<Vec<usize>>> = groups.iter().map(|g| layout_of(g, n)).collect();
         let par_transpose = transposes_in_parallel(&self.specs);
-        let mut cols: Vec<SpecColumns> = self
-            .specs
-            .par_iter()
-            .zip(layouts.par_iter())
-            .map(|(s, l)| extract(chunk, s, true, l.as_deref(), par_transpose))
-            .collect::<PolarsResult<_>>()?;
+        let mut cols: Vec<SpecColumns> =
+            map_range_maybe_par::<_, PolarsResult<_>>(self.specs.len(), par(), |i| {
+                extract(
+                    chunk,
+                    &self.specs[i],
+                    true,
+                    layouts[i].as_deref(),
+                    par_transpose,
+                )
+            })?;
 
         let specs = &self.specs;
         let derived = &self.derived;
@@ -5434,82 +5459,8 @@ pub use learned::Learned;
 mod audit;
 pub use audit::AuditTable;
 
-/// The three output fields that do not come from an [`F64Column`], as Arrow
-/// arrays: the drift flag, the selected slot's name, and the selected and
-/// averaged predictions (docs/PLAN.md task 86).
-fn opt_f64_array(vals: &[Option<f64>]) -> Box<dyn ArrowArray> {
-    let values: Vec<f64> = vals.iter().map(|v| v.unwrap_or(f64::NAN)).collect();
-    let validity = MutableBitmap::from_trusted_len_iter(vals.iter().map(Option::is_some));
-    let validity = (validity.unset_bits() > 0).then(|| validity.into());
-    Box::new(PrimitiveArray::new(
-        ArrowDataType::Float64,
-        values.into(),
-        validity,
-    ))
-}
-
-fn opt_bool_array(vals: &[Option<bool>]) -> Box<dyn ArrowArray> {
-    let values = MutableBitmap::from_trusted_len_iter(vals.iter().map(|v| v.unwrap_or(false)));
-    let validity = MutableBitmap::from_trusted_len_iter(vals.iter().map(Option::is_some));
-    let validity = (validity.unset_bits() > 0).then(|| validity.into());
-    Box::new(BooleanArray::new(
-        ArrowDataType::Boolean,
-        values.into(),
-        validity,
-    ))
-}
-
-/// The `coef` field: a list per row, null where the row carried none. Built by
-/// hand rather than through a builder because the nulls are nested -- a null
-/// list and a null *inside* a list are different things, and the finite-or-null
-/// contract applies to both.
-fn coef_list_array(coef: &[Option<&Vec<f64>>]) -> Box<dyn ArrowArray> {
-    let mut offsets: Vec<i64> = Vec::with_capacity(coef.len() + 1);
-    offsets.push(0);
-    let mut values: Vec<f64> = Vec::new();
-    let mut inner = MutableBitmap::new();
-    let mut outer = MutableBitmap::with_capacity(coef.len());
-    for v in coef {
-        match v {
-            Some(flat) => {
-                for &c in flat.iter() {
-                    let ok = c.is_finite();
-                    values.push(if ok { c } else { f64::NAN });
-                    inner.push(ok);
-                }
-                outer.push(true);
-            }
-            None => outer.push(false),
-        }
-        offsets.push(values.len() as i64);
-    }
-    let inner_validity = (inner.unset_bits() > 0).then(|| inner.into());
-    let child = PrimitiveArray::new(ArrowDataType::Float64, values.into(), inner_validity);
-    let dtype = ListArray::<i64>::default_datatype(ArrowDataType::Float64);
-    let outer_validity = (outer.unset_bits() > 0).then(|| outer.into());
-    Box::new(ListArray::<i64>::new(
-        dtype,
-        OffsetsBuffer::try_from(offsets).expect("offsets are monotonic by construction"),
-        Box::new(child),
-        outer_validity,
-    ))
-}
-
-/// One spec's struct array as a named polars column. Naming the struct is
-/// the whole of what the polars adapter adds to an Arrow output.
-fn named_column(spec: &Spec, st: StructArray) -> PolarsResult<Column> {
-    Ok(Series::from_arrow(spec.name.as_str().into(), Box::new(st))?.into())
-}
-
-/// Every spec's struct array, named, in spec order.
-fn named_columns(specs: &[Spec], arrays: Vec<StructArray>) -> PolarsResult<Vec<Column>> {
-    debug_assert_eq!(specs.len(), arrays.len(), "one struct array per spec");
-    specs
-        .iter()
-        .zip(arrays)
-        .map(|(s, st)| named_column(s, st))
-        .collect()
-}
+mod arrays;
+use arrays::{coef_list_array, named_column, named_columns, opt_bool_array, opt_f64_array};
 
 mod assembly;
 use assembly::{Sink, assemble};

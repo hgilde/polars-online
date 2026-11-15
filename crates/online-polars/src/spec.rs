@@ -2248,6 +2248,26 @@ impl Spec {
         self.group_close.as_deref() == Some("session")
     }
 
+    /// Whether a call of this spec's can leave the calling thread for reasons
+    /// of its own, which a call run inline ([`crate::pool::Inline`]) must not
+    /// let reach rayon's global pool: a formula target's window pass, a
+    /// `marginal`'s shards, or a Gram update asked to take more than one
+    /// thread.
+    pub fn threads_inside(&self) -> bool {
+        self.targets.any_formula()
+            || matches!(
+                self.model,
+                ModelKind::Marginal {
+                    shards: Some(_),
+                    ..
+                }
+            )
+            || matches!(
+                self.model.gram_threads_given(),
+                Some(CountOrAuto::Count(n)) if n > 1
+            )
+    }
+
     /// Does this spec close a group once a larger key has been seen?
     pub fn closes_monotone(&self) -> bool {
         self.group_close.as_deref() == Some("monotone")
