@@ -74,6 +74,17 @@ returns.
   each coordinate-descent sweep, in the same order: 1.4 times as fast at
   200 features and 1.8 times at 500 with 3 to 10 penalties, 3 to 5 times
   with one. Outputs unchanged to the bit.
+- The window operators (`with_windows`, `po.ewm_*`, rolling) cost 30-45%
+  less a row on one thread: the stream's and each group's clock step in
+  place rather than through copies, a datetime or row-count clock takes the
+  float clock's direct step, and the gap and stamp tests compare integers
+  rather than converting each step to seconds. Over 4 million rows a
+  datetime `ewm_mean` is 1.85 times as fast, four operators 1.58 times,
+  with a 60-second `window_size` 1.47 times. Outputs and saved states
+  unchanged to the bit.
+- `rcov` is up to 3.8 times as fast a row at 4 features and 1.5 times at
+  20: its lagged-product update unrolls for the common feature counts.
+  Outputs and saved state unchanged to the bit.
 
 ## [1.5.0] — 2026-11-10
 
