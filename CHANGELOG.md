@@ -19,6 +19,13 @@ returns.
   errno.ENOENT` works; its text now reads `[Errno 2] No such file or
   directory: 'path'`. A save to a path with no file name names the path
   once in its message, as does the command line's.
+- A bank with formula targets no longer aborts with a stack overflow in one
+  of its threads when a chunk holds many groups (a few hundred in a debug
+  build, a few thousand in a release build). Each of the bank's threads now
+  takes the chunk's groups one at a time, rather than starting another
+  group's work while it waits on Polars, so the stack it uses no longer
+  grows with the groups. This came with the faster formula targets below,
+  which no release has shipped.
 - An I/O error raised while a save writes keeps its class and its errno
   (a `PermissionError` stays one).
 

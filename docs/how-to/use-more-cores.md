@@ -129,8 +129,9 @@ are first used, and ignored after. `threads=` never reads it. A
 `POLARS_ONLINE_MAX_THREADS` that is not a whole number, or is past the
 same bound as `threads`, makes the first call that uses the default
 threads raise `ValueError`, naming the variable.
-Giving both sets every core slows neither, because the bank's work never
-calls back into Polars' threads.
+Giving both sets every core slows neither: the models run on the bank's
+threads alone, and only a formula target's window step hands a group's rows
+to Polars' threads, one group at a time on each of the bank's threads.
 
 ## Split one wide spec across threads
 
