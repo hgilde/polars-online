@@ -719,7 +719,12 @@ impl Digest {
     fn merge(&mut self, o: &Digest) {
         let mut centroids = self.centroids.clone();
         centroids.extend(o.centroids.iter().copied());
-        let fresh: Vec<(f64, f64)> = self.buffer.iter().chain(&o.buffer).map(|&v| (v, 1.0)).collect();
+        let fresh: Vec<(f64, f64)> = self
+            .buffer
+            .iter()
+            .chain(&o.buffer)
+            .map(|&v| (v, 1.0))
+            .collect();
         self.buffer.clear();
         self.centroids = Self::fold(centroids, fresh);
     }

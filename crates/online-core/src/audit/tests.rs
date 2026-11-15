@@ -1612,15 +1612,24 @@ fn the_fold_keeps_the_stable_sort_order_on_ties() {
         .collect();
 
     // compress: the buffer's last value tips the fold.
-    let mut d = Digest { centroids: centroids.clone(), buffer: buffer.clone() };
+    let mut d = Digest {
+        centroids: centroids.clone(),
+        buffer: buffer.clone(),
+    };
     d.add(vals[0]);
     let mut all: Vec<(f64, f64)> = centroids.clone();
     all.extend(buffer.iter().chain([&vals[0]]).map(|&v| (v, 1.0)));
     assert_eq!(bits(&d.centroids), bits(&stable_sort_fold(all)));
 
     // merge: two digests whose centroids and buffers tie with each other.
-    let a = Digest { centroids: centroids.clone(), buffer: buffer[..10].to_vec() };
-    let b = Digest { centroids: centroids.clone(), buffer: buffer[10..20].to_vec() };
+    let a = Digest {
+        centroids: centroids.clone(),
+        buffer: buffer[..10].to_vec(),
+    };
+    let b = Digest {
+        centroids: centroids.clone(),
+        buffer: buffer[10..20].to_vec(),
+    };
     let mut m = a.clone();
     m.merge(&b);
     let mut all: Vec<(f64, f64)> = a.centroids.clone();
