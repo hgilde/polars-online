@@ -87,6 +87,43 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
+use crate::solve::{KEPT_ORDER, Solves, solve_in};
+
+/// The buffers the statistics are read in, one set a thread, kept between
+/// reads and written over: each statistic is read on every row, and each
+/// read formed a matrix, a right-hand side and a solution, and a solve's
+/// factor and scratch, anew. Nothing in it is read between calls, so it is
+/// no part of any state.
+#[derive(Default)]
+struct ReadScratch {
+    solves: Solves,
+    /// A system's matrix (its lower triangle: the factorization reads no
+    /// other), its right-hand side and its solution.
+    a: Vec<f64>,
+    b: Vec<f64>,
+    x: Vec<f64>,
+    /// Ljung and Box's autocorrelations and the scaled ones.
+    rho: Vec<f64>,
+    r: Vec<f64>,
+}
+
+thread_local! {
+    static READ: std::cell::RefCell<ReadScratch> = std::cell::RefCell::new(ReadScratch::default());
+}
+
+/// `f` in this thread's [`ReadScratch`], which a read of `order` or more
+/// features leaves empty: a thread keeps buffers for the orders a bank
+/// usually reads, not for a thousand features' matrices.
+fn with_scratch<T>(order: usize, f: impl FnOnce(&mut ReadScratch) -> T) -> T {
+    READ.with_borrow_mut(|sc| {
+        let out = f(sc);
+        if order >= KEPT_ORDER {
+            *sc = ReadScratch::default();
+        }
+        out
+    })
+}
+
 /// The three tests of one slot. See the module docs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Specification {
@@ -264,6 +301,12 @@ impl Specification {
     /// each lag has a pair, the residuals a spread, and Kish's size passes
     /// the largest lag.
     pub fn ljung_box(&self, forget: bool) -> Option<f64> {
+        with_scratch(0, |sc| self.ljung_box_in(sc, forget))
+    }
+
+    /// [`Self::ljung_box`] in `sc`'s buffers: the arithmetic of the
+    /// allocating form, operation for operation.
+    fn ljung_box_in(&self, sc: &mut ReadScratch, forget: bool) -> Option<f64> {
         let n = self.n_kish()?;
         if self.lags == 0 || n <= (self.skip + self.lags) as f64 {
             return None;
@@ -273,7 +316,15 @@ impl Specification {
         if den.is_nan() || den <= 0.0 {
             return None;
         }
-        let mut rho = Vec::with_capacity(self.pairs.len());
+        let ReadScratch {
+            solves,
+            a,
+            x,
+            rho,
+            r,
+            ..
+        } = sc;
+        rho.clear();
         for [s, a, b, c] in &self.pairs {
             if *c <= 0.0 {
                 return None;
@@ -281,16 +332,15 @@ impl Specification {
             rho.push((s - mean * (a + b) + c * mean * mean) / den);
         }
         let (skip, lags) = (self.skip, self.lags);
-        let r: Vec<f64> = (0..lags)
-            .map(|j| {
-                let l = skip + j + 1;
-                if forget {
-                    rho[l - 1]
-                } else {
-                    rho[l - 1] * ((n + 2.0) / (n - l as f64)).sqrt()
-                }
-            })
-            .collect();
+        r.clear();
+        r.extend((0..lags).map(|j| {
+            let l = skip + j + 1;
+            if forget {
+                rho[l - 1]
+            } else {
+                rho[l - 1] * ((n + 2.0) / (n - l as f64)).sqrt()
+            }
+        }));
         if skip == 0 {
             return Some(n * r.iter().map(|v| v * v).sum::<f64>());
         }
@@ -304,32 +354,45 @@ impl Specification {
         };
         let s = skip as isize;
         let gamma = |v: usize| -> f64 { (-s..=s).map(|j| at(j) * at(j + v as isize)).sum() };
-        let c: Vec<f64> = (0..lags)
-            .flat_map(|k| (0..lags).map(move |l| (k, l)))
-            .map(|(k, l)| gamma(k.abs_diff(l)))
-            .collect();
-        let (x, attempts) = crate::solve_spd(&c, &r, lags, 1)?;
-        (attempts == 0).then(|| n * x.iter().zip(&r).map(|(a, b)| a * b).sum::<f64>())
+        a.clear();
+        a.extend(
+            (0..lags)
+                .flat_map(|k| (0..lags).map(move |l| (k, l)))
+                .map(|(k, l)| gamma(k.abs_diff(l))),
+        );
+        let attempts = solve_in(solves, a, r, lags, 1, x)?;
+        (attempts == 0).then(|| n * x.iter().zip(r.iter()).map(|(a, b)| a * b).sum::<f64>())
+    }
+
+    /// The system `A β = b` of column `y` of `m` regressed on the columns
+    /// `xs`, from the centred moments, into `sc`'s `a` (the lower triangle,
+    /// zeros above it, which no factorization reads) and `b`.
+    fn system(sc: &mut ReadScratch, m: &crate::EwCov, xs: &[usize], y: usize) {
+        let p = xs.len();
+        sc.a.clear();
+        sc.a.resize(p * p, 0.0);
+        for (r, &i) in xs.iter().enumerate() {
+            for (c, &j) in xs[..=r].iter().enumerate() {
+                sc.a[r * p + c] = m.cov(i, j);
+            }
+        }
+        sc.b.clear();
+        sc.b.extend(xs.iter().map(|&i| m.cov(i, y)));
     }
 
     /// The slopes of column `y` of `m` regressed on the columns `xs`, from
-    /// the centred moments; `None` where they do not factorize.
-    fn slopes(m: &crate::EwCov, xs: &[usize], y: usize) -> Option<Vec<f64>> {
-        let p = xs.len();
-        let a: Vec<f64> = xs
-            .iter()
-            .flat_map(|&i| xs.iter().map(move |&j| (i, j)))
-            .map(|(i, j)| m.cov(i, j))
-            .collect();
-        let b: Vec<f64> = xs.iter().map(|&i| m.cov(i, y)).collect();
-        let (beta, attempts) = crate::solve_spd(&a, &b, p, 1)?;
-        (attempts == 0).then_some(beta)
+    /// the centred moments, into `sc.x`; `None` where they do not
+    /// factorize.
+    fn slopes(sc: &mut ReadScratch, m: &crate::EwCov, xs: &[usize], y: usize) -> Option<()> {
+        Self::system(sc, m, xs, y);
+        let attempts = solve_in(&mut sc.solves, &sc.a, &sc.b, xs.len(), 1, &mut sc.x)?;
+        (attempts == 0).then_some(())
     }
 
     /// The `R²` of column `y` of `m` regressed on the columns `xs`, from the
     /// centred moments; `None` where the regressors' moments do not
     /// factorize or `y` has no spread.
-    fn r2(m: &crate::EwCov, xs: &[usize], y: usize) -> Option<f64> {
+    fn r2(sc: &mut ReadScratch, m: &crate::EwCov, xs: &[usize], y: usize) -> Option<f64> {
         let var_y = m.var(y);
         if var_y.is_nan() || var_y <= 0.0 {
             return None;
@@ -337,18 +400,8 @@ impl Specification {
         if xs.is_empty() {
             return Some(0.0);
         }
-        let p = xs.len();
-        let a: Vec<f64> = xs
-            .iter()
-            .flat_map(|&i| xs.iter().map(move |&j| (i, j)))
-            .map(|(i, j)| m.cov(i, j))
-            .collect();
-        let b: Vec<f64> = xs.iter().map(|&i| m.cov(i, y)).collect();
-        let (beta, attempts) = crate::solve_spd(&a, &b, p, 1)?;
-        if attempts > 0 {
-            return None;
-        }
-        let fit: f64 = beta.iter().zip(&b).map(|(x, y)| x * y).sum();
+        Self::slopes(sc, m, xs, y)?;
+        let fit: f64 = sc.x.iter().zip(&sc.b).map(|(x, y)| x * y).sum();
         Some((fit / var_y).clamp(0.0, 1.0))
     }
 
@@ -361,14 +414,16 @@ impl Specification {
         if idx.is_empty() || n <= (idx.len() + 1) as f64 {
             return None;
         }
-        if let Some(h) = &self.het_hac {
-            // Wald's test of the slopes with Newey and West's variance
-            // (module docs): the slopes sit after the intercept.
-            let gamma = Self::slopes(&self.het, idx, k)?;
-            let pick: Vec<usize> = (1..=idx.len()).collect();
-            return h.wald(idx, true, &pick, &gamma);
-        }
-        Some(n * Self::r2(&self.het, idx, k)?)
+        with_scratch(idx.len(), |sc| {
+            if let Some(h) = &self.het_hac {
+                // Wald's test of the slopes with Newey and West's variance
+                // (module docs): the slopes sit after the intercept.
+                Self::slopes(sc, &self.het, idx, k)?;
+                let pick: Vec<usize> = (1..=idx.len()).collect();
+                return h.wald(idx, true, &pick, &sc.x);
+            }
+            Some(n * Self::r2(sc, &self.het, idx, k)?)
+        })
     }
 
     /// RESET's Lagrange multiplier for `p²` and `p³` beside `p`: `None`
@@ -379,15 +434,18 @@ impl Specification {
         if n <= 4.0 {
             return None;
         }
-        if let Some(h) = &self.reset_hac {
-            // Wald's test of `p²`'s and `p³`'s coefficients with Newey and
-            // West's variance (module docs), after the intercept and `p`'s.
-            let beta = Self::slopes(&self.reset, &[0, 1, 2], 3)?;
-            return h.wald(&[0, 1, 2], true, &[2, 3], &beta[1..]);
-        }
-        let full = Self::r2(&self.reset, &[0, 1, 2], 3)?;
-        let base = Self::r2(&self.reset, &[0], 3)?;
-        (base < 1.0).then(|| n * (full - base).max(0.0) / (1.0 - base))
+        with_scratch(0, |sc| {
+            if let Some(h) = &self.reset_hac {
+                // Wald's test of `p²`'s and `p³`'s coefficients with Newey
+                // and West's variance (module docs), after the intercept
+                // and `p`'s.
+                Self::slopes(sc, &self.reset, &[0, 1, 2], 3)?;
+                return h.wald(&[0, 1, 2], true, &[2, 3], &sc.x[1..]);
+            }
+            let full = Self::r2(sc, &self.reset, &[0, 1, 2], 3)?;
+            let base = Self::r2(sc, &self.reset, &[0], 3)?;
+            (base < 1.0).then(|| n * (full - base).max(0.0) / (1.0 - base))
+        })
     }
 }
 
@@ -1482,7 +1540,10 @@ mod tests {
             let p = (i % 7) as f64;
             line.update(&[lcg(&mut st)], p, 2.0 * p, 1.0, 1.0);
         }
-        assert_eq!(Specification::r2(&line.reset, &[0], 3), Some(1.0));
+        assert_eq!(
+            with_scratch(0, |sc| Specification::r2(sc, &line.reset, &[0], 3)),
+            Some(1.0)
+        );
         assert!(
             line.reset().is_none(),
             "a residual on the prediction's line"
@@ -1508,5 +1569,179 @@ mod tests {
         by_hand.reset_hac.as_mut().unwrap().clear_lags();
         assert_eq!(s, by_hand);
         assert_ne!(s, unbroken, "the sandwiches held lags to clear");
+    }
+
+    /// The reads as they were written before their buffers were kept: each
+    /// matrix, right-hand side and solution a vector of its own, each solve
+    /// [`crate::solve_spd`].
+    mod allocating {
+        use super::*;
+
+        pub fn ljung_box(s: &Specification, forget: bool) -> Option<f64> {
+            let n = s.n_kish()?;
+            if s.lags == 0 || n <= (s.skip + s.lags) as f64 {
+                return None;
+            }
+            let mean = s.e1 / s.w;
+            let den = s.e2 - s.w * mean * mean;
+            if den.is_nan() || den <= 0.0 {
+                return None;
+            }
+            let mut rho = Vec::with_capacity(s.pairs.len());
+            for [sum, a, b, c] in &s.pairs {
+                if *c <= 0.0 {
+                    return None;
+                }
+                rho.push((sum - mean * (a + b) + c * mean * mean) / den);
+            }
+            let (skip, lags) = (s.skip, s.lags);
+            let r: Vec<f64> = (0..lags)
+                .map(|j| {
+                    let l = skip + j + 1;
+                    if forget {
+                        rho[l - 1]
+                    } else {
+                        rho[l - 1] * ((n + 2.0) / (n - l as f64)).sqrt()
+                    }
+                })
+                .collect();
+            if skip == 0 {
+                return Some(n * r.iter().map(|v| v * v).sum::<f64>());
+            }
+            let at = |j: isize| -> f64 {
+                match j.unsigned_abs() {
+                    0 => 1.0,
+                    a if a <= skip => rho[a - 1],
+                    _ => 0.0,
+                }
+            };
+            let sk = skip as isize;
+            let gamma = |v: usize| -> f64 { (-sk..=sk).map(|j| at(j) * at(j + v as isize)).sum() };
+            let c: Vec<f64> = (0..lags)
+                .flat_map(|k| (0..lags).map(move |l| (k, l)))
+                .map(|(k, l)| gamma(k.abs_diff(l)))
+                .collect();
+            let (x, attempts) = crate::solve_spd(&c, &r, lags, 1)?;
+            (attempts == 0).then(|| n * x.iter().zip(&r).map(|(a, b)| a * b).sum::<f64>())
+        }
+
+        fn slopes(m: &crate::EwCov, xs: &[usize], y: usize) -> Option<Vec<f64>> {
+            let p = xs.len();
+            let a: Vec<f64> = xs
+                .iter()
+                .flat_map(|&i| xs.iter().map(move |&j| (i, j)))
+                .map(|(i, j)| m.cov(i, j))
+                .collect();
+            let b: Vec<f64> = xs.iter().map(|&i| m.cov(i, y)).collect();
+            let (beta, attempts) = crate::solve_spd(&a, &b, p, 1)?;
+            (attempts == 0).then_some(beta)
+        }
+
+        fn r2(m: &crate::EwCov, xs: &[usize], y: usize) -> Option<f64> {
+            let var_y = m.var(y);
+            if var_y.is_nan() || var_y <= 0.0 {
+                return None;
+            }
+            if xs.is_empty() {
+                return Some(0.0);
+            }
+            let p = xs.len();
+            let a: Vec<f64> = xs
+                .iter()
+                .flat_map(|&i| xs.iter().map(move |&j| (i, j)))
+                .map(|(i, j)| m.cov(i, j))
+                .collect();
+            let b: Vec<f64> = xs.iter().map(|&i| m.cov(i, y)).collect();
+            let (beta, attempts) = crate::solve_spd(&a, &b, p, 1)?;
+            if attempts > 0 {
+                return None;
+            }
+            let fit: f64 = beta.iter().zip(&b).map(|(x, y)| x * y).sum();
+            Some((fit / var_y).clamp(0.0, 1.0))
+        }
+
+        pub fn breusch_pagan(s: &Specification, idx: &[usize]) -> Option<f64> {
+            let n = s.het.n_kish()?;
+            let k = s.het.k() - 1;
+            if idx.is_empty() || n <= (idx.len() + 1) as f64 {
+                return None;
+            }
+            if let Some(h) = &s.het_hac {
+                let gamma = slopes(&s.het, idx, k)?;
+                let pick: Vec<usize> = (1..=idx.len()).collect();
+                return h.wald(idx, true, &pick, &gamma);
+            }
+            Some(n * r2(&s.het, idx, k)?)
+        }
+
+        pub fn reset(s: &Specification) -> Option<f64> {
+            let n = s.reset.n_kish()?;
+            if n <= 4.0 {
+                return None;
+            }
+            if let Some(h) = &s.reset_hac {
+                let beta = slopes(&s.reset, &[0, 1, 2], 3)?;
+                return h.wald(&[0, 1, 2], true, &[2, 3], &beta[1..]);
+            }
+            let full = r2(&s.reset, &[0, 1, 2], 3)?;
+            let base = r2(&s.reset, &[0], 3)?;
+            (base < 1.0).then(|| n * (full - base).max(0.0) / (1.0 - base))
+        }
+    }
+
+    /// Every statistic read in the thread's kept buffers is the one the
+    /// allocating forms read, to the bit, on every row of a stream, at no
+    /// horizon, a short one and a long one, over features of every
+    /// conditioning (an exact copy of another, a constant one), through
+    /// rows that only age and reads that cannot be made.
+    #[test]
+    fn the_reads_in_kept_buffers_are_the_allocating_reads_to_the_bit() {
+        let same = |a: Option<f64>, b: Option<f64>| a.map(f64::to_bits) == b.map(f64::to_bits);
+        // `nw` is 0 or `2 skip`: Newey and West's lags past a horizon.
+        for (skip, nw, copy, constant) in [
+            (0, 0, false, false),
+            (0, 0, true, false),
+            (0, 0, false, true),
+            (0, 4, false, false),
+            (3, 6, false, false),
+            (3, 6, true, false),
+            (1, 2, false, true),
+        ] {
+            let mut s = Specification::new(4, skip, 5, nw);
+            let mut st = 97u64;
+            let mut seen = 0;
+            for i in 0..400 {
+                let a = lcg(&mut st);
+                let x = [
+                    a,
+                    lcg(&mut st),
+                    if copy { a } else { lcg(&mut st) + 1.0 },
+                    if constant { 2.0 } else { lcg(&mut st) },
+                ];
+                let p = lcg(&mut st) + 0.3 * x[0];
+                let e = (1.0 + x[1].abs()) * lcg(&mut st) + 0.2 * p;
+                let (w, e) = match i % 37 {
+                    5 => (0.0, e),
+                    9 => (1.0, f64::NAN),
+                    _ => (0.5 + lcg(&mut st), e),
+                };
+                s.update(&x, p, e, 0.98, w);
+                for forget in [false, true] {
+                    assert!(
+                        same(s.ljung_box(forget), allocating::ljung_box(&s, forget)),
+                        "row {i}, ljung_box({forget}), skip {skip}"
+                    );
+                }
+                for idx in [&[0, 1, 2, 3][..], &[2, 0], &[1], &[3, 3], &[]] {
+                    let (got, want) = (s.breusch_pagan(idx), allocating::breusch_pagan(&s, idx));
+                    assert!(same(got, want), "row {i}, bp {idx:?}: {got:?} {want:?}");
+                    seen += usize::from(got.is_some());
+                }
+                let (got, want) = (s.reset(), allocating::reset(&s));
+                assert!(same(got, want), "row {i}, reset: {got:?} {want:?}");
+                seen += usize::from(got.is_some());
+            }
+            assert!(seen > 300, "the reads reached numbers: {seen}");
+        }
     }
 }

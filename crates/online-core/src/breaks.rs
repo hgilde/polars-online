@@ -82,6 +82,8 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
+use crate::solve::{KEPT_ORDER, Solves, solve_in};
+
 /// The Kish size of the recursive residuals' spread before a studentized
 /// residual is read against it: measured, 3, 10 and 30 flagged the same
 /// share of streams with no break at Brown, Durbin and Evans' boundaries
@@ -1328,45 +1330,6 @@ struct WaldScratch {
 
 thread_local! {
     static WALD_SCRATCH: std::cell::RefCell<WaldScratch> = std::cell::RefCell::new(WaldScratch::default());
-}
-
-/// The solves' working spaces, one for each shape `(order, columns)` a
-/// distance solves.
-type Solves = Vec<(usize, usize, crate::solve::SolveWork)>;
-
-/// Past this order (faer's own recursion threshold, where a factorization
-/// is no longer one call) a solve allocates its own space, as
-/// [`crate::solve_spd`] does, rather than keep one for the thread, and a
-/// distance leaves no buffer behind.
-const KEPT_ORDER: usize = 64;
-
-/// [`crate::solve_spd`] of `A x = B` (`B` column-major `k × m`) into `out`,
-/// to the bit, in the space kept for its shape: the attempts, `None` where
-/// every jitter fails.
-fn solve_in(
-    solves: &mut Solves,
-    a: &[f64],
-    b: &[f64],
-    k: usize,
-    m: usize,
-    out: &mut Vec<f64>,
-) -> Option<u32> {
-    if k > KEPT_ORDER {
-        let (x, attempts) = crate::solve_spd(a, b, k, m)?;
-        *out = x;
-        return Some(attempts);
-    }
-    let at = match solves.iter().position(|(sk, sm, _)| (*sk, *sm) == (k, m)) {
-        Some(at) => at,
-        None => {
-            if solves.len() >= 16 {
-                solves.clear();
-            }
-            solves.push((k, m, crate::solve::SolveWork::default()));
-            solves.len() - 1
-        }
-    };
-    crate::solve::solve_spd_in(a, b, k, m, &mut solves[at].2, out)
 }
 
 /// The second moment a fit reads: centred with an intercept, raw through
