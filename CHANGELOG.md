@@ -9,6 +9,49 @@ order, another kernel), each declared with its size. Before 1.0, the minor
 version carried breaking changes, and any change to the numbers a model
 returns.
 
+## [Unreleased]
+
+### Fixed
+
+- An `OSError` from `ModelBank.save`, `RefreshTime.save`, `Windows.save` or
+  a `closed_groups` write now carries `errno`, `strerror` and `filename`, as
+  one from Python's own `open` does, so `except OSError as e: e.errno ==
+  errno.ENOENT` works; its text now reads `[Errno 2] No such file or
+  directory: 'path'`. A save to a path with no file name names the path
+  once in its message, as does the command line's.
+- An I/O error raised while a save writes keeps its class and its errno
+  (a `PermissionError` stays one).
+
+### Performance
+
+- `emit_breaks` is about 1.75 times as fast at 4 and 20 features, and the
+  model-selection highlight 1.8 times as fast at a million rows: the break
+  test's Wald distance no longer allocates, keeps its factors, and forms
+  its matrix products in registers. Outputs unchanged to the bit.
+- `hmm` and `ew_class` with full covariance factorize each state or class
+  straight from its packed co-moment triangle instead of laying a square
+  out first: `hmm` at 20 features 7.8% faster per row on arm64, now faster
+  than 1.4.0; `ew_class` at 20 features and 3 classes 5.8% faster. Outputs
+  and saved states unchanged to the bit.
+- Saving a bank no longer copies its state before encoding it: the memory
+  a save adds above the bank falls from about the file's size to almost
+  nothing, and a save of 10,000 `ewridge` groups at 20 features is twice
+  as fast. Loading holds one copy of each group's state, not two (peak
+  3.3 times the file, now 2.4). A held row's record under an `embargo` or
+  `label_clock` is allocated once (about 5% faster for `ewridge` with an
+  embargo and conformal intervals). Saved bytes unchanged.
+- `bocpd` holds each run's gamma terms (and under `covariance_type`
+  `"gaussian"`, `ln(dof·π)`) in a table with no collisions, and its
+  hazard's logarithms by the hazard: 1.04 times as fast at the default
+  pruning (4 features, diagonal), up to 1.24 times with `prune_below=0`.
+  Outputs and saved states unchanged to the bit.
+- A bank with formula targets resolves a chunk's groups on its pool's
+  threads, and a formula that is a window operator over a column no longer
+  plans a Polars query per group per chunk: 2.7 times as fast at 10 groups
+  and 2.8 times at 1,000 (a million rows), up to 12 times with many groups
+  in small chunks, and a single group's pass about 8% faster. Outputs
+  unchanged to the bit.
+
 ## [1.5.0] — 2026-11-10
 
 ### Added
