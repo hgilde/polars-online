@@ -122,6 +122,12 @@ returns.
   definitions: 1,000 groups in 2,000-row chunks run 1.8 times as fast with
   a cast, and each group's window state takes 15 to 25 KB less memory.
   Outputs and saved states unchanged to the bit.
+- A formula target whose window operators read an increment (a column's
+  step against its previous row: a difference, a rate over the clock)
+  evaluates the increments' inputs and the operator inputs that read them
+  once a chunk for all groups, rather than twice a group: 1,000 groups in
+  2,000-row chunks run 1.8 to 2.6 times as fast, 100 groups 1.2 to 1.6
+  times, one group level. Outputs and saved states unchanged to the bit.
 
 ## [1.5.0] — 2026-11-10
 
