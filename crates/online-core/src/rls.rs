@@ -204,6 +204,115 @@ pub struct Rls {
     ybuf: Vec<f64>,
 }
 
+/// The 0 a coefficient that came out not finite is set to. A call, so that
+/// the finite test is a branch the processor guesses and runs past, where a
+/// select would put the test on the chain the next coefficient waits on.
+#[cold]
+#[inline(never)]
+fn zero_unseen() -> f64 {
+    std::hint::black_box(0.0)
+}
+
+/// The size from which the columns go four at a time, below it two: a wider
+/// block saves the passes over the rows above it, and costs registers and
+/// code a short factor does not repay.
+const WIDE: usize = 32;
+
+/// `beta_t = R^-1 u_t` for `N` targets, by back-substitution (`Rls::solve`).
+///
+/// Coefficient `i`'s sum starts from `u_i` and takes off `R_ij b_j` for
+/// `j = k-1` down to `i+1`, in that order. The terms are taken off as the
+/// `b_j` arrive, in blocks of columns, instead of in one pass over row `i`
+/// when `i` is reached: the same subtractions of the same products in the
+/// same order. What the next coefficient waits on is then its last
+/// subtraction and its division, where it waited on the whole pass over its
+/// row; the sums of the rows above are chains of their own, beside it. The
+/// `N` targets share each pass over `R`, and their divisions run side by
+/// side.
+fn solve_block<const N: usize>(r: &[f64], k: usize, betas: &mut [Vec<f64>; N], us: &[Vec<f64>; N]) {
+    let mut acc = [0.0; N];
+    for t in 0..N {
+        betas[t][..k].copy_from_slice(&us[t][..k]);
+        acc[t] = betas[t][k - 1];
+    }
+    if k >= WIDE {
+        solve_sweep::<N, 4>(r, k, betas, &mut acc);
+    } else {
+        solve_sweep::<N, 2>(r, k, betas, &mut acc);
+    }
+}
+
+/// The columns of `R`, `B` at a time from the last, then what is left.
+#[inline(always)]
+fn solve_sweep<const N: usize, const B: usize>(
+    r: &[f64],
+    k: usize,
+    betas: &mut [Vec<f64>; N],
+    acc: &mut [f64; N],
+) {
+    let mut j = k;
+    while j >= B {
+        solve_columns::<N, B>(r, k, betas, acc, j);
+        j -= B;
+    }
+    match j {
+        3 => solve_columns::<N, 3>(r, k, betas, acc, j),
+        2 => solve_columns::<N, 2>(r, k, betas, acc, j),
+        1 => solve_columns::<N, 1>(r, k, betas, acc, j),
+        _ => {}
+    }
+}
+
+/// `B` coefficients, `j-1` down to `j-B`, for `N` targets (`solve_block`):
+/// each one's sum is finished from the terms of the block's earlier
+/// columns, its division taken, and then every row above the block has the
+/// block's `B` terms taken off in one pass over it, the next coefficient's
+/// row first, kept in `acc`.
+#[inline(always)]
+fn solve_columns<const N: usize, const B: usize>(
+    r: &[f64],
+    k: usize,
+    betas: &mut [Vec<f64>; N],
+    acc: &mut [f64; N],
+    j: usize,
+) {
+    let mut b = [[0.0; N]; B];
+    for c in 0..B {
+        let col = j - 1 - c;
+        let d = r[col * k + col];
+        for t in 0..N {
+            let mut a = if c == 0 { acc[t] } else { betas[t][col] };
+            for (q, bq) in b.iter().enumerate().take(c) {
+                a -= r[col * k + (j - 1 - q)] * bq[t];
+            }
+            let x = if d > 0.0 { a / d } else { 0.0 };
+            b[c][t] = if x.is_finite() { x } else { zero_unseen() };
+            betas[t][col] = b[c][t];
+        }
+    }
+    let top = j - B;
+    if top == 0 {
+        return;
+    }
+    let m = top - 1;
+    for t in 0..N {
+        let mut a = betas[t][m];
+        for (q, bq) in b.iter().enumerate() {
+            a -= r[m * k + (j - 1 - q)] * bq[t];
+        }
+        acc[t] = a;
+    }
+    for m in (0..m).rev() {
+        for t in 0..N {
+            let mut a = betas[t][m];
+            for (q, bq) in b.iter().enumerate() {
+                a -= r[m * k + (j - 1 - q)] * bq[t];
+            }
+            betas[t][m] = a;
+        }
+    }
+}
+
 impl Rls {
     /// `predict`'s answer for a row whose features are usable, written
     /// over `out`: the step reads it before the update into the caller's
@@ -282,30 +391,123 @@ impl Rls {
         }
     }
 
+    /// Folds the working row (`zbuf`, `ybuf`) into `R` and `u` by the `k`
+    /// rotations, taking up the decay (`root = sqrt(lam)`) as each row of
+    /// `R` and entry of `u` is read: the same products in the same order as a
+    /// pass over `R` and `u` before the rotations. The next rotation's
+    /// working entry is the one the rotation just made, kept in a register
+    /// instead of being read back from `zbuf`, which is the chain's
+    /// critical path.
+    fn fold_row<const DECAY: bool>(&mut self, root: f64) {
+        let k = self.cfg.k_total();
+        let (r, zbuf) = (&mut self.r, &mut self.zbuf);
+        let mut zi = zbuf.first().copied().unwrap_or(0.0);
+        for i in 0..k {
+            let row = i * k;
+            // The entry the next rotation starts from, as the rotations
+            // before this one left it; this rotation replaces it.
+            let mut znext = if i + 1 < k { zbuf[i + 1] } else { 0.0 };
+            let rotation = 'rotation: {
+                if zi == 0.0 {
+                    break 'rotation None;
+                }
+                let mut rii = r[row + i];
+                if DECAY {
+                    rii *= root;
+                }
+                let squares = rii * rii + zi * zi;
+                let mut rho = squares.sqrt();
+                if !(squares >= f64::MIN_POSITIVE && squares.is_finite()) {
+                    // Squares that overflowed (inputs beyond 1e154), or that
+                    // are subnormal or 0 (below 1e-154), where the plain root
+                    // has lost its bits or is 0/0: `hypot` scales internally
+                    // (a subnormal sum cost 1.4e-5 of a slope, task 158).
+                    rho = rii.hypot(zi);
+                    if !(rho > 0.0 && rho.is_finite()) {
+                        break 'rotation None;
+                    }
+                }
+                Some((rho, rii / rho, zi / rho))
+            };
+            let Some((rho, c, s)) = rotation else {
+                // Nothing to rotate: the row is only decayed.
+                if DECAY {
+                    for v in &mut r[row + i..row + k] {
+                        *v *= root;
+                    }
+                    for u in &mut self.u {
+                        u[i] *= root;
+                    }
+                }
+                zi = znext;
+                continue;
+            };
+            r[row + i] = rho;
+            zbuf[i] = 0.0;
+            if i + 1 < k {
+                // The first entry of the row, apart: its working entry is
+                // the next rotation's.
+                let mut a = r[row + i + 1];
+                if DECAY {
+                    a *= root;
+                }
+                let b = znext;
+                r[row + i + 1] = c * a + s * b;
+                znext = c * b - s * a;
+                zbuf[i + 1] = znext;
+                // Two disjoint slices, so the loop has no bounds checks to
+                // clear and nothing to alias: it vectorizes.
+                let r_rest = &mut r[row + i + 2..row + k];
+                let z_rest = &mut zbuf[i + 2..k];
+                for (rij, zj) in r_rest.iter_mut().zip(z_rest.iter_mut()) {
+                    let (mut a, b) = (*rij, *zj);
+                    if DECAY {
+                        a *= root;
+                    }
+                    *rij = c * a + s * b;
+                    *zj = c * b - s * a;
+                }
+            }
+            for (u, yb) in self.u.iter_mut().zip(self.ybuf.iter_mut()) {
+                let mut ui = u[i];
+                if DECAY {
+                    ui *= root;
+                }
+                u[i] = c * ui + s * *yb;
+                *yb = c * *yb - s * ui;
+            }
+            zi = znext;
+        }
+    }
+
     /// `beta_j = R^-1 u_j` by back-substitution. A zero pivot is a direction
     /// no row has ever excited after the prior has decayed away entirely
     /// (`sqrt(delta) lam_acc^(1/2)` underflows after ~2000 half-lives without
     /// data): the coefficient there is set to zero rather than to `0/0`.
     fn solve(&mut self) {
         let k = self.cfg.k_total();
-        for (beta, u) in self.beta.iter_mut().zip(&self.u) {
-            for i in (0..k).rev() {
-                let row = i * k;
-                let mut acc = u[i];
-                // Summed from the far end of the row: every term but the last
-                // is known before the coefficient just solved arrives, so the
-                // rows' chains overlap instead of queueing on it.
-                for (rij, bj) in self.r[row + i + 1..row + k]
-                    .iter()
-                    .zip(&beta[i + 1..])
-                    .rev()
-                {
-                    acc -= rij * bj;
-                }
-                let d = self.r[row + i];
-                let b = if d > 0.0 { acc / d } else { 0.0 };
-                beta[i] = if b.is_finite() { b } else { 0.0 };
+        if k == 0 {
+            return;
+        }
+        let mut betas = &mut self.beta[..];
+        let mut us = &self.u[..];
+        // Targets in blocks that go down `R` together: their chains are
+        // independent, so one's division runs under the other's.
+        while !betas.is_empty() {
+            let n = match betas.len() {
+                1 => 1,
+                2 | 3 => 2,
+                _ => 4,
+            };
+            let (b, brest) = betas.split_at_mut(n);
+            let (u, urest) = us.split_at(n);
+            match n {
+                1 => solve_block::<1>(&self.r, k, b.try_into().unwrap(), u.try_into().unwrap()),
+                2 => solve_block::<2>(&self.r, k, b.try_into().unwrap(), u.try_into().unwrap()),
+                _ => solve_block::<4>(&self.r, k, b.try_into().unwrap(), u.try_into().unwrap()),
             }
+            betas = brest;
+            us = urest;
         }
     }
 
@@ -434,19 +636,10 @@ impl OnlineModel for Rls {
         // ---- decay ----
         // A <- lam A, b <- lam b  =>  R <- sqrt(lam) R, u <- sqrt(lam) u. The
         // coefficients are invariant to it. Skipped when lam == 1 (no-op).
-        if lam != 1.0 {
-            let s = lam.sqrt();
-            for i in 0..k {
-                for v in &mut self.r[i * k + i..(i + 1) * k] {
-                    *v *= s;
-                }
-            }
-            for u in &mut self.u {
-                for v in u.iter_mut() {
-                    *v *= s;
-                }
-            }
-        }
+        // A row that learns takes it up in `fold_row`, row by row, where the
+        // rotation reads each entry.
+        let decays = lam != 1.0;
+        let root = if decays { lam.sqrt() } else { 1.0 };
         self.w_sum = lam * self.w_sum + weight;
         let learns = weight > 0.0 && y.iter().all(Option::is_some);
         crate::model::age_target_weights(&mut self.w_target, |_| learns, lam, weight);
@@ -466,45 +659,24 @@ impl OnlineModel for Rls {
             for (yb, yj) in self.ybuf.iter_mut().zip(y) {
                 *yb = sw * yj.unwrap();
             }
-            for i in 0..k {
-                let zi = self.zbuf[i];
-                if zi == 0.0 {
-                    continue;
-                }
-                let row = i * k;
-                let rii = self.r[row + i];
-                let squares = rii * rii + zi * zi;
-                let mut rho = squares.sqrt();
-                if !(squares >= f64::MIN_POSITIVE && squares.is_finite()) {
-                    // Squares that overflowed (inputs beyond 1e154), or that
-                    // are subnormal or 0 (below 1e-154), where the plain root
-                    // has lost its bits or is 0/0: `hypot` scales internally
-                    // (a subnormal sum cost 1.4e-5 of a slope, task 158).
-                    rho = rii.hypot(zi);
-                    if !(rho > 0.0 && rho.is_finite()) {
-                        continue;
-                    }
-                }
-                let (c, s) = (rii / rho, zi / rho);
-                self.r[row + i] = rho;
-                self.zbuf[i] = 0.0;
-                // Two disjoint slices, so the loop has no bounds checks to
-                // clear and nothing to alias: it vectorizes.
-                let r_rest = &mut self.r[row + i + 1..row + k];
-                let z_rest = &mut self.zbuf[i + 1..k];
-                for (rij, zj) in r_rest.iter_mut().zip(z_rest.iter_mut()) {
-                    let (a, b) = (*rij, *zj);
-                    *rij = c * a + s * b;
-                    *zj = c * b - s * a;
-                }
-                for (u, yb) in self.u.iter_mut().zip(self.ybuf.iter_mut()) {
-                    let ui = u[i];
-                    u[i] = c * ui + s * *yb;
-                    *yb = c * *yb - s * ui;
-                }
+            if decays {
+                self.fold_row::<true>(root);
+            } else {
+                self.fold_row::<false>(root);
             }
             self.solve();
             self.seen = true;
+        } else if decays {
+            for i in 0..k {
+                for v in &mut self.r[i * k + i..(i + 1) * k] {
+                    *v *= root;
+                }
+            }
+            for u in &mut self.u {
+                for v in u.iter_mut() {
+                    *v *= root;
+                }
+            }
         }
     }
 
@@ -677,6 +849,222 @@ mod tests {
             delta: ridge,
             coef_prior: None,
             min_weight: 0.0,
+        }
+    }
+
+    /// A model of `k` features (no intercept) and `m` targets, for the tests
+    /// that set its factor and vectors directly.
+    fn bare(k: usize, m: usize) -> Rls {
+        Rls::new(RlsCfg {
+            n_features: k,
+            n_targets: m,
+            fit_intercept: false,
+            decay: Decay::Halflife(100.0),
+            delta: 1.0,
+            coef_prior: None,
+            min_weight: 0.0,
+        })
+        .unwrap()
+    }
+
+    /// A value for a test vector: mostly an ordinary one, sometimes one the
+    /// arithmetic has special cases for.
+    fn odd(state: &mut u64, special: f64) -> f64 {
+        let v = lcg(state);
+        let pick = (lcg(state).abs() * 1e6) as u32 % 100;
+        let rare = [
+            0.0,
+            -0.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            1e-310,
+            -1e-310,
+            1e200,
+            -1e200,
+            1e-200,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+        ];
+        if f64::from(pick) < special * 100.0 {
+            rare[pick as usize % rare.len()]
+        } else {
+            v
+        }
+    }
+
+    /// The back-substitution as it was before the sums were taken off as
+    /// the coefficients arrived: coefficient `i`'s sum, from the far end of
+    /// the row, one pass when row `i` is reached.
+    fn solve_serial(r: &[f64], u: &[Vec<f64>], k: usize) -> Vec<Vec<f64>> {
+        u.iter()
+            .map(|u| {
+                let mut beta = vec![0.0; k];
+                for i in (0..k).rev() {
+                    let row = i * k;
+                    let mut acc = u[i];
+                    for (rij, bj) in r[row + i + 1..row + k].iter().zip(&beta[i + 1..]).rev() {
+                        acc -= rij * bj;
+                    }
+                    let d = r[row + i];
+                    let b = if d > 0.0 { acc / d } else { 0.0 };
+                    beta[i] = if b.is_finite() { b } else { 0.0 };
+                }
+                beta
+            })
+            .collect()
+    }
+
+    fn bits(v: &[f64]) -> Vec<u64> {
+        v.iter().map(|x| x.to_bits()).collect()
+    }
+
+    /// The right-looking back-substitution against the serial one, to the
+    /// bit: each coefficient's sum is the same subtractions of the same
+    /// products in the same order, whatever the entries are (signed zeros,
+    /// infinities, NaN, overflow, pivots that are 0, negative or NaN), for
+    /// every size and every count of targets (blocks of 4, 2 and 1).
+    #[test]
+    fn the_back_substitution_is_the_serial_one_to_the_bit() {
+        let mut state = 99u64;
+        for k in (1..=40).chain([63, 64, 65]) {
+            for m in [1, 2, 3, 4, 5, 6, 7, 8, 9] {
+                for special in [0.0, 0.03, 0.3] {
+                    let mut model = bare(k, m);
+                    for i in 0..k {
+                        for j in i..k {
+                            model.r[i * k + j] = odd(&mut state, special);
+                        }
+                        // A pivot that is usually positive.
+                        if lcg(&mut state) > -0.5 {
+                            model.r[i * k + i] = 0.5 + lcg(&mut state).abs();
+                        }
+                    }
+                    for u in model.u.iter_mut() {
+                        for v in u.iter_mut() {
+                            *v = odd(&mut state, special);
+                        }
+                    }
+                    let want = solve_serial(&model.r, &model.u, k);
+                    model.solve();
+                    for (t, (got, want)) in model.beta.iter().zip(&want).enumerate() {
+                        assert_eq!(
+                            bits(got),
+                            bits(want),
+                            "k={k} m={m} special={special} target {t}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The decay and the rotations as they were: a pass over `R` and `u`
+    /// first (when there is a decay), then each rotation reading the working
+    /// entry back from the buffer.
+    fn fold_serial(
+        r: &mut [f64],
+        u: &mut [Vec<f64>],
+        z: &mut [f64],
+        y: &mut [f64],
+        k: usize,
+        root: Option<f64>,
+    ) {
+        if let Some(s) = root {
+            for i in 0..k {
+                for v in &mut r[i * k + i..(i + 1) * k] {
+                    *v *= s;
+                }
+            }
+            for u in u.iter_mut() {
+                for v in u.iter_mut() {
+                    *v *= s;
+                }
+            }
+        }
+        for i in 0..k {
+            let zi = z[i];
+            if zi == 0.0 {
+                continue;
+            }
+            let row = i * k;
+            let rii = r[row + i];
+            let squares = rii * rii + zi * zi;
+            let mut rho = squares.sqrt();
+            if !(squares >= f64::MIN_POSITIVE && squares.is_finite()) {
+                rho = rii.hypot(zi);
+                if !(rho > 0.0 && rho.is_finite()) {
+                    continue;
+                }
+            }
+            let (c, s) = (rii / rho, zi / rho);
+            r[row + i] = rho;
+            z[i] = 0.0;
+            for j in i + 1..k {
+                let (a, b) = (r[row + j], z[j]);
+                r[row + j] = c * a + s * b;
+                z[j] = c * b - s * a;
+            }
+            for (u, yb) in u.iter_mut().zip(y.iter_mut()) {
+                let ui = u[i];
+                u[i] = c * ui + s * *yb;
+                *yb = c * *yb - s * ui;
+            }
+        }
+    }
+
+    /// The fold with the decay taken up row by row and the working entry
+    /// carried, against a decay pass and rotations reading it back, to the
+    /// bit: `R`, `u`, the working row and the targets' entries, with and
+    /// without a decay, whatever the entries are (zeros that skip a
+    /// rotation, squares that overflow or underflow, NaN, infinities).
+    #[test]
+    fn the_fold_is_the_decay_pass_and_the_rotations_to_the_bit() {
+        let mut state = 7u64;
+        for k in (1..=40).chain([63, 64, 65]) {
+            for m in [1, 2, 3] {
+                for special in [0.0, 0.05, 0.3] {
+                    for root in [None, Some(0.973), Some(0.0), Some(1e-170)] {
+                        let mut model = bare(k, m);
+                        for i in 0..k {
+                            for j in i..k {
+                                model.r[i * k + j] = odd(&mut state, special);
+                            }
+                            if lcg(&mut state) > -0.5 {
+                                model.r[i * k + i] = lcg(&mut state).abs();
+                            }
+                        }
+                        for u in model.u.iter_mut() {
+                            for v in u.iter_mut() {
+                                *v = odd(&mut state, special);
+                            }
+                        }
+                        for z in model.zbuf.iter_mut() {
+                            *z = odd(&mut state, special);
+                            if lcg(&mut state) > 0.6 {
+                                *z = 0.0;
+                            }
+                        }
+                        for y in model.ybuf.iter_mut() {
+                            *y = odd(&mut state, special);
+                        }
+                        let (mut r, mut u) = (model.r.clone(), model.u.clone());
+                        let (mut z, mut y) = (model.zbuf.clone(), model.ybuf.clone());
+                        fold_serial(&mut r, &mut u, &mut z, &mut y, k, root);
+                        match root {
+                            Some(s) => model.fold_row::<true>(s),
+                            None => model.fold_row::<false>(1.0),
+                        }
+                        let ctx = format!("k={k} m={m} special={special} root={root:?}");
+                        assert_eq!(bits(&model.r), bits(&r), "R, {ctx}");
+                        assert_eq!(bits(&model.zbuf), bits(&z), "working row, {ctx}");
+                        assert_eq!(bits(&model.ybuf), bits(&y), "targets, {ctx}");
+                        for (got, want) in model.u.iter().zip(&u) {
+                            assert_eq!(bits(got), bits(want), "u, {ctx}");
+                        }
+                    }
+                }
+            }
         }
     }
 
