@@ -915,17 +915,56 @@ pub fn slow_factor(lam: f64) -> f64 {
 }
 
 /// `a b`, both `p × p` row-major.
+#[cfg(test)]
 fn mat_mul(a: &[f64], b: &[f64], p: usize) -> Vec<f64> {
-    let mut out = vec![0.0; p * p];
-    for i in 0..p {
-        for k in 0..p {
-            let aik = a[i * p + k];
-            for j in 0..p {
-                out[i * p + j] += aik * b[k * p + j];
-            }
+    let mut out = Vec::new();
+    mat_mul_into(a, b, p, &mut out);
+    out
+}
+
+/// [`mat_mul`] into `out`, whose old contents are not read: entry `(i, j)`
+/// is `((0 + a_i0 b_0j) + a_i1 b_1j) + ...`, the products added in `k`'s
+/// order, each rounded as a product and then as a sum (never fused), as the
+/// plain triple loop adds them to a zeroed matrix. Eight columns of a row
+/// are held in registers across the `k` loop, then four, two and one, each
+/// column's sum the same sequence of roundings whatever the block it falls
+/// in.
+fn mat_mul_into(a: &[f64], b: &[f64], p: usize, out: &mut Vec<f64>) {
+    debug_assert!(a.len() == p * p && b.len() == p * p);
+    out.clear();
+    out.resize(p * p, 0.0);
+    for (arow, orow) in a.chunks_exact(p).zip(out.chunks_exact_mut(p)) {
+        let mut j = 0;
+        while j + 8 <= p {
+            mat_mul_block::<8>(arow, b, p, j, orow);
+            j += 8;
+        }
+        if j + 4 <= p {
+            mat_mul_block::<4>(arow, b, p, j, orow);
+            j += 4;
+        }
+        if j + 2 <= p {
+            mat_mul_block::<2>(arow, b, p, j, orow);
+            j += 2;
+        }
+        if j < p {
+            mat_mul_block::<1>(arow, b, p, j, orow);
         }
     }
-    out
+}
+
+/// `W` columns from `j` of one row of [`mat_mul_into`]'s product, summed in
+/// registers.
+#[inline(always)]
+fn mat_mul_block<const W: usize>(arow: &[f64], b: &[f64], p: usize, j: usize, orow: &mut [f64]) {
+    let mut acc = [0.0f64; W];
+    for (aik, brow) in arow.iter().zip(b.chunks_exact(p)) {
+        let brow: &[f64; W] = brow[j..j + W].try_into().expect("a block of W columns");
+        for (s, bv) in acc.iter_mut().zip(brow) {
+            *s += aik * bv;
+        }
+    }
+    orow[j..j + W].copy_from_slice(&acc);
 }
 
 impl TwinFit {
@@ -988,28 +1027,36 @@ impl TwinFit {
         } else {
             self.fresh_rows.saturating_add(1)
         };
-        let mut row = Vec::with_capacity(x.len() + 1);
-        row.extend_from_slice(x);
-        row.push(y);
-        self.fast.update(&row, lam, w);
-        self.slow.update(&row, slow, w);
-        if self.origin.is_empty() {
-            self.origin = x.to_vec();
-        }
-        let z: Vec<f64> = std::iter::once(1.0)
-            .chain(x.iter().zip(&self.origin).map(|(v, c)| v - c))
-            .collect();
-        let d = z.len();
-        let (ff, ss, fs, w2) = (lam * lam, slow * slow, lam * slow, w * w);
-        for i in 0..d {
-            for j in 0..d {
-                let zz = w2 * z[i] * z[j];
-                let at = i * d + j;
-                self.hff[at] = ff * self.hff[at] + zz;
-                self.hss[at] = ss * self.hss[at] + zz;
-                self.hfs[at] = fs * self.hfs[at] + zz;
+        WALD_SCRATCH.with_borrow_mut(|sc| {
+            let row = &mut sc.row;
+            row.clear();
+            row.extend_from_slice(x);
+            row.push(y);
+            self.fast.update(row, lam, w);
+            self.slow.update(row, slow, w);
+            if self.origin.is_empty() {
+                self.origin = x.to_vec();
             }
-        }
+            let z = &mut sc.z;
+            z.clear();
+            z.push(1.0);
+            z.extend(x.iter().zip(&self.origin).map(|(v, c)| v - c));
+            let d = z.len();
+            let (ff, ss, fs, w2) = (lam * lam, slow * slow, lam * slow, w * w);
+            for (i, &zi) in z.iter().enumerate() {
+                let at = i * d..(i + 1) * d;
+                let wz = w2 * zi;
+                let hff = &mut self.hff[at.clone()];
+                let hss = &mut self.hss[at.clone()];
+                let hfs = &mut self.hfs[at];
+                for (((f, s), c), &zj) in hff.iter_mut().zip(hss).zip(hfs).zip(z.iter()) {
+                    let zz = wz * zj;
+                    *f = ff * *f + zz;
+                    *s = ss * *s + zz;
+                    *c = fs * *c + zz;
+                }
+            }
+        });
     }
 
     /// The Wald distance between the two fits' coefficients over the
@@ -1024,6 +1071,27 @@ impl TwinFit {
     /// over short-run variance under a horizon
     /// ([`Breaks::long_run_residuals`]), 1 without one.
     pub fn wald(&self, idx: &[usize], intercept: bool, long_run: f64) -> Option<f64> {
+        WALD_SCRATCH.with_borrow_mut(|sc| {
+            let distance = self.wald_in(sc, idx, intercept, long_run);
+            // A thread keeps buffers for the orders a bank usually reads, not
+            // for a thousand features' matrices.
+            if idx.len() >= KEPT_ORDER {
+                *sc = WaldScratch::default();
+            }
+            distance
+        })
+    }
+
+    /// [`Self::wald`] in `sc`'s buffers: every matrix it forms is written
+    /// over one it kept, and the arithmetic is the arithmetic of the
+    /// allocating form, operation for operation.
+    fn wald_in(
+        &self,
+        sc: &mut WaldScratch,
+        idx: &[usize],
+        intercept: bool,
+        long_run: f64,
+    ) -> Option<f64> {
         let kx = self.fast.k() - 1;
         let k = idx.len() + usize::from(intercept);
         if k == 0 || self.origin.len() != kx {
@@ -1041,65 +1109,104 @@ impl TwinFit {
         if nf <= k as f64 || ns <= k as f64 {
             return None;
         }
-        let (bf, bs) = (
-            self.slopes(&self.fast, idx, intercept)?,
-            self.slopes(&self.slow, idx, intercept)?,
-        );
-        let mut delta = Vec::with_capacity(k);
+        let WaldScratch {
+            solves,
+            a,
+            b,
+            bf,
+            bs,
+            delta,
+            g,
+            dev,
+            ident,
+            af,
+            a_s,
+            hff,
+            hss,
+            hfs,
+            prod,
+            ff,
+            ss,
+            fs,
+            var,
+            sol,
+            ..
+        } = sc;
+        self.slopes(&self.fast, idx, intercept, (a, b), solves, bf)?;
+        self.slopes(&self.slow, idx, intercept, (a, b), solves, bs)?;
+        delta.clear();
         if intercept {
-            delta.push(self.level(&self.fast, idx, &bf) - self.level(&self.slow, idx, &bs));
+            delta.push(self.level(&self.fast, idx, bf) - self.level(&self.slow, idx, bs));
         }
-        delta.extend(bf.iter().zip(&bs).map(|(f, s)| f - s));
-        let (af, a_s) = (
-            inverse(&self.gram(&self.fast, idx, intercept), k)?,
-            inverse(&self.gram(&self.slow, idx, intercept), k)?,
-        );
-        let hff = self.pick(&self.hff, idx, intercept);
-        let hss = self.pick(&self.hss, idx, intercept);
-        let hfs = self.pick(&self.hfs, idx, intercept);
-        let ff = mat_mul(&mat_mul(&af, &hff, k), &af, k);
-        let ss = mat_mul(&mat_mul(&a_s, &hss, k), &a_s, k);
-        let fs = mat_mul(&mat_mul(&af, &hfs, k), &a_s, k);
-        let var: Vec<f64> = (0..k * k)
-            .map(|n| ff[n] + ss[n] - fs[n] - fs[(n % k) * k + n / k])
-            .collect();
+        delta.extend(bf.iter().zip(bs.iter()).map(|(f, s)| f - s));
+        // The residual's spread and the noise's scale read only the slow
+        // fit: where they leave no distance, the inverses are not formed.
         let fitted: f64 = idx
             .iter()
-            .zip(&bs)
+            .zip(bs.iter())
             .map(|(&i, b)| b * moment(&self.slow, intercept, i, kx))
             .sum();
         let s2 = (moment(&self.slow, intercept, kx, kx) - fitted) * ns / (ns - k as f64);
         if s2.is_nan() || s2 <= 0.0 || long_run.is_nan() || long_run <= 0.0 {
             return None;
         }
+        self.gram(&self.fast, idx, intercept, g, dev);
+        inverse(g, k, ident, solves, af)?;
+        self.gram(&self.slow, idx, intercept, g, dev);
+        inverse(g, k, ident, solves, a_s)?;
+        self.pick(&self.hff, idx, intercept, hff);
+        self.pick(&self.hss, idx, intercept, hss);
+        self.pick(&self.hfs, idx, intercept, hfs);
+        mat_mul_into(af, hff, k, prod);
+        mat_mul_into(prod, af, k, ff);
+        mat_mul_into(a_s, hss, k, prod);
+        mat_mul_into(prod, a_s, k, ss);
+        mat_mul_into(af, hfs, k, prod);
+        mat_mul_into(prod, a_s, k, fs);
+        var.clear();
+        for i in 0..k {
+            for j in 0..k {
+                let n = i * k + j;
+                var.push(ff[n] + ss[n] - fs[n] - fs[j * k + i]);
+            }
+        }
         // A variance that does not factorize -- the memories coincide, or
         // nothing tells the fits apart -- has no distance to read.
-        let (x, attempts) = crate::solve_spd(&var, &delta, k, 1)?;
-        if attempts > 0 {
+        if solve_in(solves, var, delta, k, 1, sol)? > 0 {
             return None;
         }
-        let quad: f64 = x.iter().zip(&delta).map(|(a, b)| a * b).sum();
+        let quad: f64 = sol.iter().zip(delta.iter()).map(|(a, b)| a * b).sum();
         quad.is_finite().then(|| quad.max(0.0) / (s2 * long_run))
     }
 
     /// A fit's slopes over `idx`, from its centred moments under an
-    /// intercept and its raw ones through the origin.
-    fn slopes(&self, m: &crate::EwCov, idx: &[usize], intercept: bool) -> Option<Vec<f64>> {
+    /// intercept and its raw ones through the origin, into `out` (`a` and
+    /// `b` the system's matrix and right-hand side, kept for the caller to
+    /// write over).
+    fn slopes(
+        &self,
+        m: &crate::EwCov,
+        idx: &[usize],
+        intercept: bool,
+        (a, b): (&mut Vec<f64>, &mut Vec<f64>),
+        solves: &mut Solves,
+        out: &mut Vec<f64>,
+    ) -> Option<()> {
         let kx = m.k() - 1;
         let p = idx.len();
+        out.clear();
         if p == 0 {
-            return Some(Vec::new());
+            return Some(());
         }
-        let mut a = Vec::with_capacity(p * p);
+        a.clear();
         for &i in idx {
             for &j in idx {
                 a.push(moment(m, intercept, i, j));
             }
         }
-        let b: Vec<f64> = idx.iter().map(|&i| moment(m, intercept, i, kx)).collect();
-        crate::solve_spd(&a, &b, p, 1)
-            .filter(|(_, attempts)| *attempts == 0)
-            .map(|(beta, _)| beta)
+        b.clear();
+        b.extend(idx.iter().map(|&i| moment(m, intercept, i, kx)));
+        (solve_in(solves, a, b, p, 1, out)? == 0).then_some(())
     }
 
     /// A fit's intercept at the origin `c`: `m_y − β'(m_x − c)`.
@@ -1112,15 +1219,25 @@ impl TwinFit {
         out
     }
 
-    /// A fit's Gram in the coefficients' coordinates, from its moments: `W`
-    /// times the second moments of `(1, x − c)` under an intercept, of `x`
-    /// through the origin.
-    fn gram(&self, m: &crate::EwCov, idx: &[usize], intercept: bool) -> Vec<f64> {
+    /// A fit's Gram in the coefficients' coordinates, from its moments, into
+    /// `g` (`dev` the means' offsets from the origin, kept to be written
+    /// over): `W` times the second moments of `(1, x − c)` under an
+    /// intercept, of `x` through the origin.
+    fn gram(
+        &self,
+        m: &crate::EwCov,
+        idx: &[usize],
+        intercept: bool,
+        g: &mut Vec<f64>,
+        dev: &mut Vec<f64>,
+    ) {
         let w = m.n_eff();
         let k = idx.len() + usize::from(intercept);
-        let mut g = vec![0.0; k * k];
+        g.clear();
+        g.resize(k * k, 0.0);
         if intercept {
-            let dev: Vec<f64> = idx.iter().map(|&i| m.mean(i) - self.origin[i]).collect();
+            dev.clear();
+            dev.extend(idx.iter().map(|&i| m.mean(i) - self.origin[i]));
             g[0] = w;
             for (a, &i) in idx.iter().enumerate() {
                 g[a + 1] = w * dev[a];
@@ -1136,37 +1253,120 @@ impl TwinFit {
                 }
             }
         }
-        g
     }
 
-    /// A kept sum over `z = (1, x − c)` in the coefficients' coordinates:
-    /// `z` itself under an intercept, `x = c + (x − c)` through the origin.
-    fn pick(&self, h: &[f64], idx: &[usize], intercept: bool) -> Vec<f64> {
+    /// A kept sum over `z = (1, x − c)` in the coefficients' coordinates,
+    /// into `out`: `z` itself under an intercept, `x = c + (x − c)` through
+    /// the origin. Entry `(a, b)` is the sum of `u t h_ij` over the terms
+    /// `(i, u)` of row `a` and `(j, t)` of row `b`, in that order, from 0:
+    /// one term under an intercept, four through the origin.
+    fn pick(&self, h: &[f64], idx: &[usize], intercept: bool, out: &mut Vec<f64>) {
         let d = self.origin.len() + 1;
-        let rows: Vec<Vec<(usize, f64)>> = if intercept {
-            std::iter::once(vec![(0, 1.0)])
-                .chain(idx.iter().map(|&i| vec![(1 + i, 1.0)]))
-                .collect()
-        } else {
-            idx.iter()
-                .map(|&i| vec![(0, self.origin[i]), (1 + i, 1.0)])
-                .collect()
-        };
-        let k = rows.len();
-        let mut out = vec![0.0; k * k];
-        for (a, ta) in rows.iter().enumerate() {
-            for (b, tb) in rows.iter().enumerate() {
-                let mut v = 0.0;
-                for &(i, u) in ta {
-                    for &(j, t) in tb {
-                        v += u * t * h[i * d + j];
-                    }
+        let k = idx.len() + usize::from(intercept);
+        out.clear();
+        if intercept {
+            let at = |a: usize| if a == 0 { 0 } else { 1 + idx[a - 1] };
+            for a in 0..k {
+                for b in 0..k {
+                    let mut v = 0.0;
+                    v += 1.0 * 1.0 * h[at(a) * d + at(b)];
+                    out.push(v);
                 }
-                out[a * k + b] = v;
+            }
+        } else {
+            let terms = |a: usize| [(0, self.origin[idx[a]]), (1 + idx[a], 1.0)];
+            for a in 0..k {
+                for b in 0..k {
+                    let mut v = 0.0;
+                    for (i, u) in terms(a) {
+                        for (j, t) in terms(b) {
+                            v += u * t * h[i * d + j];
+                        }
+                    }
+                    out.push(v);
+                }
             }
         }
-        out
     }
+}
+
+/// The buffers [`TwinFit::wald`] and [`TwinFit::update`] work in, one set a
+/// thread, kept between calls and written over: a distance reads a dozen
+/// matrices and a solve's factor, scratch and right-hand sides, and each was
+/// allocated anew on every row of every slot. Nothing in it is read between
+/// calls, so it is no part of any state.
+#[derive(Default)]
+struct WaldScratch {
+    /// `update`: the row `(x, y)` and `z = (1, x − c)`.
+    row: Vec<f64>,
+    z: Vec<f64>,
+    solves: Solves,
+    /// The slopes' system, each fit's slopes, the difference.
+    a: Vec<f64>,
+    b: Vec<f64>,
+    bf: Vec<f64>,
+    bs: Vec<f64>,
+    delta: Vec<f64>,
+    /// A Gram, its means' offsets, the identity, the two inverses.
+    g: Vec<f64>,
+    dev: Vec<f64>,
+    ident: Vec<f64>,
+    af: Vec<f64>,
+    a_s: Vec<f64>,
+    /// The three picked sums, a product's first factor, the three
+    /// products, the variance and its solution.
+    hff: Vec<f64>,
+    hss: Vec<f64>,
+    hfs: Vec<f64>,
+    prod: Vec<f64>,
+    ff: Vec<f64>,
+    ss: Vec<f64>,
+    fs: Vec<f64>,
+    var: Vec<f64>,
+    sol: Vec<f64>,
+}
+
+thread_local! {
+    static WALD_SCRATCH: std::cell::RefCell<WaldScratch> = std::cell::RefCell::new(WaldScratch::default());
+}
+
+/// The solves' working spaces, one for each shape `(order, columns)` a
+/// distance solves.
+type Solves = Vec<(usize, usize, crate::solve::SolveWork)>;
+
+/// Past this order (faer's own recursion threshold, where a factorization
+/// is no longer one call) a solve allocates its own space, as
+/// [`crate::solve_spd`] does, rather than keep one for the thread, and a
+/// distance leaves no buffer behind.
+const KEPT_ORDER: usize = 64;
+
+/// [`crate::solve_spd`] of `A x = B` (`B` column-major `k × m`) into `out`,
+/// to the bit, in the space kept for its shape: the attempts, `None` where
+/// every jitter fails.
+fn solve_in(
+    solves: &mut Solves,
+    a: &[f64],
+    b: &[f64],
+    k: usize,
+    m: usize,
+    out: &mut Vec<f64>,
+) -> Option<u32> {
+    if k > KEPT_ORDER {
+        let (x, attempts) = crate::solve_spd(a, b, k, m)?;
+        *out = x;
+        return Some(attempts);
+    }
+    let at = match solves.iter().position(|(sk, sm, _)| (*sk, *sm) == (k, m)) {
+        Some(at) => at,
+        None => {
+            if solves.len() >= 16 {
+                solves.clear();
+            }
+            solves.push((k, m, crate::solve::SolveWork::default()));
+            solves.len() - 1
+        }
+    };
+    crate::solve::solve_spd_in(a, b, k, m, &mut solves[at].2, out)
 }
 
 /// The second moment a fit reads: centred with an intercept, raw through
@@ -1175,14 +1375,22 @@ fn moment(m: &crate::EwCov, intercept: bool, i: usize, j: usize) -> f64 {
     if intercept { m.cov(i, j) } else { m.raw(i, j) }
 }
 
-/// `g⁻¹` for a `k × k` Gram, `None` where it does not factorize unjittered.
-fn inverse(g: &[f64], k: usize) -> Option<Vec<f64>> {
-    let identity: Vec<f64> = (0..k * k)
-        .map(|n| if n / k == n % k { 1.0 } else { 0.0 })
-        .collect();
-    crate::solve_spd(g, &identity, k, k)
-        .filter(|(_, attempts)| *attempts == 0)
-        .map(|(v, _)| v)
+/// `g⁻¹` for a `k × k` Gram into `out`, `None` where it does not factorize
+/// unjittered (`ident` the identity it is solved against, kept to be written
+/// over).
+fn inverse(
+    g: &[f64],
+    k: usize,
+    ident: &mut Vec<f64>,
+    solves: &mut Solves,
+    out: &mut Vec<f64>,
+) -> Option<()> {
+    ident.clear();
+    ident.resize(k * k, 0.0);
+    for i in 0..k {
+        ident[i * k + i] = 1.0;
+    }
+    (solve_in(solves, g, ident, k, k, out)? == 0).then_some(())
 }
 
 #[cfg(test)]
@@ -2800,6 +3008,282 @@ mod tests {
                 assert_eq!(got[i * 3 + j], want, "({i}, {j})");
             }
         }
+    }
+
+    /// The distance as it was first written: every matrix a fresh vector, the
+    /// products by the plain triple loop, the solves by [`crate::solve_spd`].
+    /// [`TwinFit::wald`] holds its buffers between calls and sums in
+    /// registers, and must give this to the bit.
+    mod plain {
+        use super::super::*;
+
+        pub fn mat_mul(a: &[f64], b: &[f64], p: usize) -> Vec<f64> {
+            let mut out = vec![0.0; p * p];
+            for i in 0..p {
+                for k in 0..p {
+                    let aik = a[i * p + k];
+                    for j in 0..p {
+                        out[i * p + j] += aik * b[k * p + j];
+                    }
+                }
+            }
+            out
+        }
+
+        pub fn inverse(g: &[f64], k: usize) -> Option<Vec<f64>> {
+            let identity: Vec<f64> = (0..k * k)
+                .map(|n| if n / k == n % k { 1.0 } else { 0.0 })
+                .collect();
+            crate::solve_spd(g, &identity, k, k)
+                .filter(|(_, attempts)| *attempts == 0)
+                .map(|(v, _)| v)
+        }
+
+        pub fn slopes(
+            t: &TwinFit,
+            m: &crate::EwCov,
+            idx: &[usize],
+            intercept: bool,
+        ) -> Option<Vec<f64>> {
+            let kx = m.k() - 1;
+            let p = idx.len();
+            if p == 0 {
+                return Some(Vec::new());
+            }
+            let _ = t;
+            let mut a = Vec::with_capacity(p * p);
+            for &i in idx {
+                for &j in idx {
+                    a.push(moment(m, intercept, i, j));
+                }
+            }
+            let b: Vec<f64> = idx.iter().map(|&i| moment(m, intercept, i, kx)).collect();
+            crate::solve_spd(&a, &b, p, 1)
+                .filter(|(_, attempts)| *attempts == 0)
+                .map(|(beta, _)| beta)
+        }
+
+        pub fn gram(t: &TwinFit, m: &crate::EwCov, idx: &[usize], intercept: bool) -> Vec<f64> {
+            let w = m.n_eff();
+            let k = idx.len() + usize::from(intercept);
+            let mut g = vec![0.0; k * k];
+            if intercept {
+                let dev: Vec<f64> = idx.iter().map(|&i| m.mean(i) - t.origin[i]).collect();
+                g[0] = w;
+                for (a, &i) in idx.iter().enumerate() {
+                    g[a + 1] = w * dev[a];
+                    g[(a + 1) * k] = w * dev[a];
+                    for (b, &j) in idx.iter().enumerate() {
+                        g[(a + 1) * k + b + 1] = w * (m.cov(i, j) + dev[a] * dev[b]);
+                    }
+                }
+            } else {
+                for (a, &i) in idx.iter().enumerate() {
+                    for (b, &j) in idx.iter().enumerate() {
+                        g[a * k + b] = w * m.raw(i, j);
+                    }
+                }
+            }
+            g
+        }
+
+        pub fn pick(t: &TwinFit, h: &[f64], idx: &[usize], intercept: bool) -> Vec<f64> {
+            let d = t.origin.len() + 1;
+            let rows: Vec<Vec<(usize, f64)>> = if intercept {
+                std::iter::once(vec![(0, 1.0)])
+                    .chain(idx.iter().map(|&i| vec![(1 + i, 1.0)]))
+                    .collect()
+            } else {
+                idx.iter()
+                    .map(|&i| vec![(0, t.origin[i]), (1 + i, 1.0)])
+                    .collect()
+            };
+            let k = rows.len();
+            let mut out = vec![0.0; k * k];
+            for (a, ta) in rows.iter().enumerate() {
+                for (b, tb) in rows.iter().enumerate() {
+                    let mut v = 0.0;
+                    for &(i, u) in ta {
+                        for &(j, w) in tb {
+                            v += u * w * h[i * d + j];
+                        }
+                    }
+                    out[a * k + b] = v;
+                }
+            }
+            out
+        }
+
+        pub fn wald(t: &TwinFit, idx: &[usize], intercept: bool, long_run: f64) -> Option<f64> {
+            let kx = t.fast.k() - 1;
+            let k = idx.len() + usize::from(intercept);
+            if k == 0 || t.origin.len() != kx {
+                return None;
+            }
+            if t.fresh_rows < 2 * k as u64 {
+                return None;
+            }
+            let (nf, ns) = (t.fast.n_kish()?, t.slow.n_kish()?);
+            if nf <= k as f64 || ns <= k as f64 {
+                return None;
+            }
+            let (bf, bs) = (
+                slopes(t, &t.fast, idx, intercept)?,
+                slopes(t, &t.slow, idx, intercept)?,
+            );
+            let mut delta = Vec::with_capacity(k);
+            if intercept {
+                delta.push(t.level(&t.fast, idx, &bf) - t.level(&t.slow, idx, &bs));
+            }
+            delta.extend(bf.iter().zip(&bs).map(|(f, s)| f - s));
+            let (af, a_s) = (
+                inverse(&gram(t, &t.fast, idx, intercept), k)?,
+                inverse(&gram(t, &t.slow, idx, intercept), k)?,
+            );
+            let hff = pick(t, &t.hff, idx, intercept);
+            let hss = pick(t, &t.hss, idx, intercept);
+            let hfs = pick(t, &t.hfs, idx, intercept);
+            let ff = mat_mul(&mat_mul(&af, &hff, k), &af, k);
+            let ss = mat_mul(&mat_mul(&a_s, &hss, k), &a_s, k);
+            let fs = mat_mul(&mat_mul(&af, &hfs, k), &a_s, k);
+            let var: Vec<f64> = (0..k * k)
+                .map(|n| ff[n] + ss[n] - fs[n] - fs[(n % k) * k + n / k])
+                .collect();
+            let fitted: f64 = idx
+                .iter()
+                .zip(&bs)
+                .map(|(&i, b)| b * moment(&t.slow, intercept, i, kx))
+                .sum();
+            let s2 = (moment(&t.slow, intercept, kx, kx) - fitted) * ns / (ns - k as f64);
+            if s2.is_nan() || s2 <= 0.0 || long_run.is_nan() || long_run <= 0.0 {
+                return None;
+            }
+            let (x, attempts) = crate::solve_spd(&var, &delta, k, 1)?;
+            if attempts > 0 {
+                return None;
+            }
+            let quad: f64 = x.iter().zip(&delta).map(|(a, b)| a * b).sum();
+            quad.is_finite().then(|| quad.max(0.0) / (s2 * long_run))
+        }
+    }
+
+    /// `mat_mul` is the plain triple loop's product to the bit, at every
+    /// order across the register blocks' widths (8, 4, 2, 1) and over
+    /// values that round, cancel and carry signed zeros.
+    #[test]
+    fn mat_mul_is_the_plain_loops_product_to_the_bit() {
+        let mut s = 21u64;
+        for p in 1..=21 {
+            for kind in 0..3 {
+                let gen_ = |s: &mut u64| match kind {
+                    0 => lcg(s),
+                    // Magnitudes over a dozen decades, both signs.
+                    1 => lcg(s) * 10f64.powi((lcg(s) * 24.0) as i32),
+                    // Zeros of both signs among the values.
+                    _ => match (lcg(s) * 8.0) as i32 {
+                        -4..=-3 => -0.0,
+                        -2 => 0.0,
+                        _ => lcg(s),
+                    },
+                };
+                let a: Vec<f64> = (0..p * p).map(|_| gen_(&mut s)).collect();
+                let b: Vec<f64> = (0..p * p).map(|_| gen_(&mut s)).collect();
+                let (got, want) = (mat_mul(&a, &b, p), plain::mat_mul(&a, &b, p));
+                for (n, (g, w)) in got.iter().zip(&want).enumerate() {
+                    assert_eq!(g.to_bits(), w.to_bits(), "p {p}, kind {kind}, entry {n}");
+                }
+            }
+        }
+    }
+
+    /// Past the order a thread keeps buffers for, the distance is the plain
+    /// form's to the bit too.
+    #[test]
+    fn a_wide_distance_is_the_plain_forms_to_the_bit() {
+        let kx = 70;
+        let mut t = TwinFit::new(kx);
+        let mut s = 71u64;
+        let all: Vec<usize> = (0..kx).collect();
+        let few: Vec<usize> = (0..kx).step_by(11).collect();
+        let mut seen = 0;
+        for i in 0..400 {
+            let x: Vec<f64> = (0..kx).map(|_| lcg(&mut s) + 1.0).collect();
+            let y = x[0] - x[1] + 0.3 * lcg(&mut s) + if i < 250 { 0.0 } else { x[2] };
+            t.update(&x, y, 0.98, 1.0);
+            if i % 20 != 19 {
+                continue;
+            }
+            for idx in [&all, &few] {
+                for intercept in [true, false] {
+                    let (got, want) = (
+                        t.wald(idx, intercept, 1.0),
+                        plain::wald(&t, idx, intercept, 1.0),
+                    );
+                    assert_eq!(
+                        got.map(f64::to_bits),
+                        want.map(f64::to_bits),
+                        "row {i}, {} features",
+                        idx.len()
+                    );
+                    seen += usize::from(got.is_some());
+                }
+            }
+        }
+        assert!(seen > 10, "{seen} distances");
+    }
+
+    /// The distance is the plain form's to the bit, over every feature
+    /// subset with and without an intercept, through uneven weights, zero
+    /// weights, a row the fits cannot learn and a gap that wipes the history.
+    #[test]
+    fn the_wald_distance_is_the_plain_forms_to_the_bit() {
+        let sets: [&[usize]; 7] = [&[0], &[1], &[0, 1], &[3, 1], &[2, 3, 0], &[0, 1, 2, 3], &[]];
+        let mut t = TwinFit::new(4);
+        let mut s = 33u64;
+        let (mut some, mut none) = (0, 0);
+        for i in 0..600 {
+            let x: [f64; 4] = std::array::from_fn(|j| lcg(&mut s) * (1.0 + j as f64) + 2.0);
+            let shift = if i < 350 { 0.0 } else { 1.0 };
+            let y = 1.0 + (0.5 + shift) * x[0] - x[1] + 0.3 * lcg(&mut s);
+            let w = match i % 11 {
+                4 => 0.0,
+                _ => 0.5 + lcg(&mut s) + 0.5,
+            };
+            // A decay that is 1 on some rows, a step's on most, and a gap's.
+            let lam = match i {
+                300 => 2f64.powi(-60),
+                _ if i % 13 == 0 => 1.0,
+                _ => 0.97,
+            };
+            if i == 100 {
+                t.update(&x, f64::NAN, lam, w);
+            } else {
+                t.update(&x, y, lam, w);
+            }
+            for idx in sets {
+                for intercept in [true, false] {
+                    for long_run in [1.0, 2.5, f64::NAN, 0.0] {
+                        let (got, want) = (
+                            t.wald(idx, intercept, long_run),
+                            plain::wald(&t, idx, intercept, long_run),
+                        );
+                        assert_eq!(
+                            got.map(f64::to_bits),
+                            want.map(f64::to_bits),
+                            "row {i}, {idx:?}, intercept {intercept}, long run {long_run}"
+                        );
+                        if long_run == 1.0 {
+                            if got.is_some() {
+                                some += 1;
+                            } else {
+                                none += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(some > 3000 && none > 100, "{some} distances, {none} none");
     }
 
     /// A restored pair is refused unless it is shaped for the features and
