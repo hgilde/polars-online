@@ -60,9 +60,11 @@ uv run python scripts/oracles.py rerun   # the oracle grids whose hashes the gat
 Workflow (the detail and each rule's reason: `docs/records/AGENT-WORKFLOW.md`):
 - Workers iterate with `scripts/quick.sh` and finish with `scripts/quick.sh --extended`
   plus the lints, never a full gate, never a merge of `main` unless asked.
-- The coordinator merges a wave of 2+ branches onto `integration`, runs ONE essentials
-  gate, fast-forwards `main`; a wave of one merges onto `main` directly. **The full tier
-  runs before every push, on the exact sha**; a gated wave with no open bug is pushed
+- The coordinator merges a wave of 2+ branches onto `integration`; a wave of one merges onto
+  `main` directly. **The full tier runs before every push, on the exact sha**, and is the
+  only gate a wave pushed at once gets; the essentials gate runs on `integration` only when
+  the wave will wait before its push (the user, 2026-11-14). Budget tightenings from CI ride
+  with the next wave, never a gate of their own. A gated wave with no open bug is pushed
   without asking. A release dispatch needs the user's word; PyPI approval is the user's click.
 - At most two building agents (three while the 1-minute load is under about 20), each with
   `CARGO_BUILD_JOBS=6`, pytest `-n 4`, `GATE_WORKERS=4`; check `uptime` first.

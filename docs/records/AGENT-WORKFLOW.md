@@ -52,3 +52,11 @@ wave and its branch and worktree cleanup, run `scripts/clear_caches.sh
 --worktrees` (or whenever free disk is under 100 GB). sccache stays off:
 from a new worktree path a third of the crates miss its cache, so it is
 slower there; `POLARS_ONLINE_SCCACHE=1` turns it on for one checkout.
+
+Amended 2026-11-14 (the user: "a too", on the coordinator's count of the day's
+gates): a wave pushed at once gets the full tier only, on the exact sha; the
+essentials gate on `integration` runs only when the wave waits before its push,
+since the full tier re-runs everything it does. Budget tightenings from CI's
+counts ride with the next wave rather than taking a gate of their own. Workers
+run fmt and clippy `--all-targets` before `scripts/quick.sh --extended`, and
+that once, at the end.
