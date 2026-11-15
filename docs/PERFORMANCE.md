@@ -408,11 +408,10 @@ before the bank writes the column the spec names in its `targets`, under
 the same `embargo`, and Polars runs the window and the bank at once, as
 two stages of one query. In the native form the bank resolves the windows
 itself, one after the other in the same pass as the model. With many
-groups, it keeps one window state a group and evaluates what Polars
-computes -- the operators' inputs, the arithmetic around them -- once a
-chunk for all the chunk's groups together, so the Polars queries a chunk
-costs do not grow with its groups; a group's window step itself is plain
-Rust. A chunk of one group has one query of each kind to itself. [Make a target that looks
+groups, it keeps one window state a group. What Polars computes, the
+operators' inputs and the arithmetic around them, it evaluates once a
+chunk for all the chunk's groups together, so the queries a chunk costs do
+not grow with its groups. A group's window step itself is plain Rust. A chunk of one group has one query of each kind to itself. [Make a target that looks
 ahead](how-to/make-a-target-that-looks-ahead.md#check-the-targets-the-model-learned) runs both
 forms.
 
