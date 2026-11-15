@@ -850,12 +850,13 @@ impl Lasso {
             let s: Vec<f64> = (0..k).map(|i| acc.raw(i, i).max(0.0).sqrt()).collect();
             let mut c = vec![0.0; k * k];
             for i in 0..k {
-                for j in 0..k {
+                for j in 0..=i {
                     c[i * k + j] = if s[i] > 0.0 && s[j] > 0.0 {
                         acc.raw(i, j) / (s[i] * s[j])
                     } else {
                         f64::from(i == j)
                     };
+                    c[j * k + i] = c[i * k + j];
                 }
             }
             let d = readers
@@ -890,14 +891,18 @@ impl Lasso {
                 }
             })
             .collect();
+        // The lower triangle, copied across: the descent reads a column as
+        // a row, so `c` is its own transpose to the bit (the two halves were
+        // the same numbers already, a lower triangle read either way round).
         for i in 0..k {
-            for j in 0..k {
+            for j in 0..=i {
                 let cov = c[i * k + j];
                 c[i * k + j] = if s[i] > 0.0 && s[j] > 0.0 {
                     cov / (s[i] * s[j])
                 } else {
                     f64::from(i == j)
                 };
+                c[j * k + i] = c[i * k + j];
             }
         }
         // Each target's cross-covariance is the centred one it keeps, so
@@ -1083,14 +1088,16 @@ impl Lasso {
     }
 }
 
-/// Coordinate descent at one point of the path: sweeps of [`cd_sweep`]
-/// until the largest move settles below `limit` (`gramfit::settled`) or
-/// `max_iter` sweeps have run; whether it settled. Out of line, so the
-/// sweep compiles on its own rather than inside the solve: there its run
-/// over a row lost its fusion and kept its bounds checks when the solve's
-/// body moved (2.5% more instructions in `lasso_k20` on x86, task 374).
-/// A call per sweep rather than per path point cost `lasso` 16% more
-/// instructions a row at four features on arm64.
+/// Coordinate descent at one point of the path: sweeps of [`cd_sweep`] (or
+/// [`cd_sweep_sparse`], where the coefficients are mostly zero) until the
+/// largest move settles below `limit` (`gramfit::settled`) or `max_iter`
+/// sweeps have run; whether it settled. Out of line, so the sweep compiles
+/// on its own rather than inside the solve: there its run over a row lost
+/// its fusion and kept its bounds checks when the solve's body moved (2.5%
+/// more instructions in `lasso_k20` on x86, task 374). A call per sweep
+/// rather than per path point cost `lasso` 16% more instructions a row at
+/// four features on arm64. `c` is its own transpose to the bit, as
+/// `standardized` makes it.
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
 fn descend(
@@ -1104,11 +1111,12 @@ fn descend(
     limit: f64,
     support: &mut Support,
 ) -> bool {
+    debug_assert!(is_symmetric(c, k), "the sweeps read a column as a row");
     for _ in 0..max_iter {
         let delta = if support.reads(b) {
             cd_sweep_sparse(c, k, d, s, l1, l2, b, support)
         } else {
-            cd_sweep(c, k, d, s, l1, l2, b)
+            cd_sweep(c, k, d, s, l1, l2, b, &mut support.acc)
         };
         if crate::gramfit::settled(delta, limit) {
             return true;
@@ -1121,7 +1129,8 @@ fn descend(
 /// coefficients ([`Support`]): below it the dense run is as quick.
 const SPARSE_MIN_K: usize = 64;
 
-/// What [`cd_sweep_sparse`] reads: whether it may, and the buffers it works in.
+/// What [`cd_sweep_sparse`] reads: whether it may, and the buffers the
+/// sweeps work in.
 struct Support {
     /// Every entry of the correlation matrix is finite, so a term `c_ij * 0`
     /// is exactly 0 and leaving it out changes no bit of the sum. With a
@@ -1130,8 +1139,10 @@ struct Support {
     finite: bool,
     /// The sweep's starting nonzero coefficients, ascending.
     start: Vec<usize>,
-    /// The nonzero coefficients before the one being updated, ascending.
-    done: Vec<usize>,
+    /// Their values, in the same order.
+    vals: Vec<f64>,
+    /// The partial sums a sweep keeps for the coordinates not yet reached.
+    acc: Vec<f64>,
 }
 
 impl Support {
@@ -1139,7 +1150,8 @@ impl Support {
         Self {
             finite: c.len() >= SPARSE_MIN_K * SPARSE_MIN_K && c.iter().all(|v| v.is_finite()),
             start: Vec::new(),
-            done: Vec::new(),
+            vals: Vec::new(),
+            acc: Vec::new(),
         }
     }
 
@@ -1161,11 +1173,151 @@ impl Support {
     }
 }
 
+/// Whether the `k × k` row-major `c` equals its transpose to the bit, in
+/// every entry: the same bits at `(i, j)` and `(j, i)`, a NaN's payload too.
+fn is_symmetric(c: &[f64], k: usize) -> bool {
+    c.len() == k * k
+        && (0..k).all(|i| (0..i).all(|j| c[i * k + j].to_bits() == c[j * k + i].to_bits()))
+}
+
+/// The soft-thresholded coordinate: `sign(rho) * max(|rho| - l1, 0)` over
+/// `denom`, with the exact 0 inside `[-l1, l1]`.
+#[inline(always)]
+fn soft_over(rho: f64, l1: f64, denom: f64) -> f64 {
+    if rho > l1 {
+        (rho - l1) / denom
+    } else if rho < -l1 {
+        (rho + l1) / denom
+    } else {
+        0.0
+    }
+}
+
+/// One sweep of coordinate descent over the `k` standardized coefficients
+/// `b`, in order, against the correlation matrix `c` (row-major `k × k`),
+/// the cross-correlations `d` and the penalties `l1`, `l2`; a feature of
+/// scale `s_i = 0` is held at 0. Returns the largest move. Each coefficient
+/// is the soft-thresholded `rho = d_i − Σ_{j≠i} c_ij b_j` over
+/// `c_ii + l2`, the terms taken off `d_i` one at a time in the order `j`
+/// runs: the coefficients this sweep has set (`j < i`), then the sweep's
+/// starting ones (`j > i`).
+///
+/// **Two chains.** Taken off in that order, `rho_i` is one chain of
+/// subtractions, each waiting for the one before (about two cycles a term,
+/// the latency of the subtraction, measured at 2.4 cycles a term at 2.6
+/// instructions a cycle: the loop is bound by that chain, not by its
+/// branches or its loads), `k` terms a coordinate and `b_i` waiting for
+/// the last. The terms of the first run, `j < i`, are known one coordinate
+/// at a time and all before `b_{i-1}`'s: the chain has to wait for `b_{i-1}`
+/// only to take off `c_{i,i-1} b_{i-1}`, the last of them, and then
+/// the second run. So the first run is taken off ahead of time, as a second
+/// chain beside the second run of the coordinate before: `acc[m]` holds
+/// `d_m` with the terms `c_mj b_j` taken off for the `j` set so far, in
+/// order, so when coordinate `j` has its `b_j` every `acc[m]`, `m > j`,
+/// takes off `c_mj b_j` (the column `j` of `c`, which is its row `j`: `c`
+/// is symmetric to the bit). That update runs in the loop of coordinate
+/// `j + 1`'s second run, beside its chain; its own term goes in first,
+/// before the chain starts. Each `acc[m]` is the same chain of subtractions
+/// of the same products in the same order as the one-chain sweep's, so the
+/// same bits; what is left on the path to `b_i` is the second run alone,
+/// `k - i - 1` terms: half the terms in all, the other half beside them.
+/// A coordinate held at 0 still has its column taken off, as the term
+/// `c * 0` is in the one-chain sweep (`NaN` where `c` is not finite).
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn cd_sweep(
+    c: &[f64],
+    k: usize,
+    d: &[f64],
+    s: &[f64],
+    l1: f64,
+    l2: f64,
+    b: &mut [f64],
+    acc: &mut Vec<f64>,
+) -> f64 {
+    let mut max_delta: f64 = 0.0;
+    if k == 0 {
+        return max_delta;
+    }
+    acc.clear();
+    acc.extend_from_slice(d);
+    // Coordinate `i - 1`'s new coefficient, its column not yet taken off
+    // `acc[i..]`.
+    let mut pending: Option<(usize, f64)> = None;
+    let rows = c.chunks_exact(k).zip(s);
+    for (i, (row, &si)) in rows.take(k).enumerate() {
+        let Some((acc_i, acc_after)) = acc[i..].split_first_mut() else {
+            break;
+        };
+        let (bl, br) = b.split_at_mut(i + 1);
+        let Some((&cii, row_after)) = row[i..].split_first() else {
+            break;
+        };
+        // The column of the coordinate before, from this coordinate down:
+        // `c[p][i..]`, its first entry this coordinate's own.
+        let column = |p: usize| &c[p * k + i..(p + 1) * k];
+        if si <= 0.0 {
+            bl[i] = 0.0;
+            if let Some((p, bp)) = pending {
+                for (a, cpj) in acc_after.iter_mut().zip(&column(p)[1..]) {
+                    *a -= cpj * bp;
+                }
+            }
+            pending = Some((i, 0.0));
+            continue;
+        }
+        let mut rho = *acc_i;
+        match pending {
+            None => {
+                for (cij, bj) in row_after.iter().zip(br.iter()) {
+                    rho -= cij * bj;
+                }
+            }
+            Some((p, bp)) => {
+                let Some((&cpi, column_after)) = column(p).split_first() else {
+                    break;
+                };
+                rho -= cpi * bp;
+                // Four terms of the chain and four of the column at a
+                // time, so the column's go as vectors.
+                const W: usize = 4;
+                let ((ci, c_rest), (bi, b_rest)) =
+                    (row_after.as_chunks::<W>(), br.as_chunks::<W>());
+                let ((pi, p_rest), (ai, a_rest)) = (
+                    column_after.as_chunks::<W>(),
+                    acc_after.as_chunks_mut::<W>(),
+                );
+                for (((cc, bb), pp), aa) in ci.iter().zip(bi).zip(pi).zip(ai) {
+                    for l in 0..W {
+                        rho -= cc[l] * bb[l];
+                    }
+                    for l in 0..W {
+                        aa[l] -= pp[l] * bp;
+                    }
+                }
+                for (((cij, bj), cpj), a) in c_rest.iter().zip(b_rest).zip(p_rest).zip(a_rest) {
+                    rho -= cij * bj;
+                    *a -= cpj * bp;
+                }
+            }
+        }
+        let newb = soft_over(rho, l1, cii + l2);
+        max_delta = max_delta.max((newb - bl[i]).abs());
+        bl[i] = newb;
+        pending = Some((i, newb));
+    }
+    max_delta
+}
+
 /// [`cd_sweep`] summing only the terms whose coefficient is nonzero: the
 /// other terms subtract exactly 0, so `rho` is the same bits, the terms in
-/// the same order, in `O(nnz)` a coordinate instead of `O(k)`. The terms
-/// before `i` are the coefficients this sweep has set (`support.done`, in
-/// order), those after it the sweep's starting ones (`support.start`).
+/// the same order, in `O(nnz)` a coordinate instead of `O(k)`. The chain
+/// that ends in `b_i` is `acc[i]` and then the starting nonzeros after `i`
+/// (`support.start`, with their values in `support.vals`), and each
+/// nonzero coefficient's column is taken off the partial sums of the
+/// coordinates after it beside the next coordinate's chain, in blocks of
+/// terms, the column's share per block. A zero coefficient has no column
+/// to take off. Needs every `c` finite ([`Support::finite`]).
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
 fn cd_sweep_sparse(
@@ -1178,94 +1330,74 @@ fn cd_sweep_sparse(
     b: &mut [f64],
     support: &mut Support,
 ) -> f64 {
+    const BLOCK: usize = 8;
     let mut max_delta: f64 = 0.0;
-    let Support { start, done, .. } = support;
-    done.clear();
+    let Support {
+        start, vals, acc, ..
+    } = support;
+    acc.clear();
+    acc.extend_from_slice(d);
+    vals.clear();
+    vals.extend(start.iter().map(|&j| b[j]));
+    // The last coordinate set to a nonzero coefficient, its column not yet
+    // taken off `acc[i..]`.
+    let mut pending: Option<(usize, f64)> = None;
     let mut next = 0;
-    let rows = c.chunks_exact(k).zip(d).zip(s);
-    for (i, ((row, &di), &si)) in rows.take(k).enumerate() {
+    let rows = c.chunks_exact(k).zip(s);
+    for (i, (row, &si)) in rows.take(k).enumerate() {
         // The starting nonzeros past `i`.
         while start.get(next).is_some_and(|&j| j <= i) {
             next += 1;
         }
-        let Some((&cii, _)) = row[i..].split_first() else {
+        let Some((acc_i, acc_after)) = acc[i..].split_first_mut() else {
+            break;
+        };
+        let Some(&cii) = row.get(i) else {
             break;
         };
         if si <= 0.0 {
             b[i] = 0.0;
             continue;
         }
-        let mut rho = di;
-        for &j in done.iter() {
-            rho -= row[j] * b[j];
+        let mut rho = *acc_i;
+        let (chain_at, chain_vals) = (&start[next..], &vals[next..]);
+        match pending {
+            None => {
+                for (&j, &bj) in chain_at.iter().zip(chain_vals) {
+                    rho -= row[j] * bj;
+                }
+            }
+            Some((p, bp)) => {
+                let Some((&cpi, column_after)) = c[p * k + i..(p + 1) * k].split_first() else {
+                    break;
+                };
+                rho -= cpi * bp;
+                // The column's terms, a share beside each block of the
+                // chain's, the rest after.
+                let blocks = chain_at.len().div_ceil(BLOCK).max(1);
+                let step = acc_after.len().div_ceil(blocks).next_multiple_of(4);
+                let (mut a_rest, mut p_rest) = (acc_after, column_after);
+                for (jb, vb) in chain_at.chunks(BLOCK).zip(chain_vals.chunks(BLOCK)) {
+                    for (&j, &bj) in jb.iter().zip(vb) {
+                        rho -= row[j] * bj;
+                    }
+                    let take = step.min(a_rest.len());
+                    let (a_now, a_later) = a_rest.split_at_mut(take);
+                    let (p_now, p_later) = p_rest.split_at(take);
+                    for (a, cpj) in a_now.iter_mut().zip(p_now) {
+                        *a -= cpj * bp;
+                    }
+                    (a_rest, p_rest) = (a_later, p_later);
+                }
+                for (a, cpj) in a_rest.iter_mut().zip(p_rest) {
+                    *a -= cpj * bp;
+                }
+            }
         }
-        for &j in &start[next..] {
-            rho -= row[j] * b[j];
-        }
-        let denom = cii + l2;
-        let newb = if rho > l1 {
-            (rho - l1) / denom
-        } else if rho < -l1 {
-            (rho + l1) / denom
-        } else {
-            0.0
-        };
+        let newb = soft_over(rho, l1, cii + l2);
         max_delta = max_delta.max((newb - b[i]).abs());
         b[i] = newb;
-        if newb != 0.0 {
-            done.push(i);
-        }
-    }
-    max_delta
-}
-
-/// One sweep of coordinate descent over the `k` standardized coefficients
-/// `b`, in order, against the correlation matrix `c` (row-major `k × k`),
-/// the cross-correlations `d` and the penalties `l1`, `l2`; a feature of
-/// scale `s_i = 0` is held at 0. Returns the largest move. Each coefficient
-/// is the soft-thresholded `rho = d_i − Σ_{j≠i} c_ij b_j` over
-/// `c_ii + l2`, the terms in the order `j` runs, as two runs either side of
-/// `i`: the same subtractions in the same order, so the same bits, with no
-/// bound checked or branch taken per term. The loop the descent spends its
-/// time in: one instruction more per term, a block placement, was 3% of
-/// `lasso_k20`'s count (task 275 (b)). Its rows are `c`'s chunks of `k`.
-#[inline(always)]
-fn cd_sweep(c: &[f64], k: usize, d: &[f64], s: &[f64], l1: f64, l2: f64, b: &mut [f64]) -> f64 {
-    let mut max_delta: f64 = 0.0;
-    if k == 0 {
-        return max_delta;
-    }
-    let rows = c.chunks_exact(k).zip(d).zip(s);
-    for (i, ((row, &di), &si)) in rows.take(k).enumerate() {
-        // The row and the coefficients split either side of `i`, each
-        // split checked once, so no term below is.
-        let (left, right) = row.split_at(i);
-        let (bl, br) = b.split_at_mut(i);
-        let (Some((&cii, right)), Some((bi, br))) = (right.split_first(), br.split_first_mut())
-        else {
-            break;
-        };
-        if si <= 0.0 {
-            *bi = 0.0;
-            continue;
-        }
-        let mut rho = di;
-        for (cij, bj) in left.iter().zip(bl.iter()) {
-            rho -= cij * bj;
-        }
-        for (cij, bj) in right.iter().zip(br.iter()) {
-            rho -= cij * bj;
-        }
-        let denom = cii + l2;
-        let newb = if rho > l1 {
-            (rho - l1) / denom
-        } else if rho < -l1 {
-            (rho + l1) / denom
-        } else {
-            0.0
-        };
-        max_delta = max_delta.max((newb - *bi).abs());
-        *bi = newb;
+        pending = (newb != 0.0).then_some((i, newb));
     }
     max_delta
 }
@@ -4114,6 +4246,102 @@ mod tests {
         assert_eq!(solves.first(), Some(&2), "{solves:?}");
     }
 
+    /// The sweep as one chain of subtractions per coordinate: `rho` is
+    /// `d_i` with the terms `c_ij b_j` taken off in the order `j` runs,
+    /// the coefficients this sweep has set first (`j < i`), then the
+    /// starting ones (`j > i`). The order every sweep of the model holds to
+    /// the bit; read from `c`'s row `i`, never a column.
+    fn cd_sweep_serial(
+        c: &[f64],
+        k: usize,
+        d: &[f64],
+        s: &[f64],
+        l1: f64,
+        l2: f64,
+        b: &mut [f64],
+    ) -> f64 {
+        let mut max_delta: f64 = 0.0;
+        for i in 0..k {
+            if s[i] <= 0.0 {
+                b[i] = 0.0;
+                continue;
+            }
+            let mut rho = d[i];
+            for j in 0..i {
+                rho -= c[i * k + j] * b[j];
+            }
+            for j in i + 1..k {
+                rho -= c[i * k + j] * b[j];
+            }
+            let denom = c[i * k + i] + l2;
+            let newb = if rho > l1 {
+                (rho - l1) / denom
+            } else if rho < -l1 {
+                (rho + l1) / denom
+            } else {
+                0.0
+            };
+            max_delta = max_delta.max((newb - b[i]).abs());
+            b[i] = newb;
+        }
+        max_delta
+    }
+
+    /// What the descent's symmetry check calls a transpose: the same bits
+    /// at `(i, j)` and `(j, i)`, one bit off or a NaN's payload off is not,
+    /// and a slice that is not `k × k` is not.
+    #[test]
+    fn is_symmetric_compares_bits_across_the_diagonal() {
+        let k = 6;
+        let (c, _) = dense_problem(k, 4, 0.3);
+        assert!(is_symmetric(&c, k));
+        assert!(is_symmetric(&[], 0));
+        assert!(!is_symmetric(&c[1..], k));
+        assert!(!is_symmetric(&c, k - 1));
+        let mut off = c.clone();
+        off[4 * k + 1] = f64::from_bits(off[4 * k + 1].to_bits() ^ 1);
+        assert!(!is_symmetric(&off, k));
+        let mut signed = c.clone();
+        (signed[2 * k + 5], signed[5 * k + 2]) = (0.0, -0.0);
+        assert!(!is_symmetric(&signed, k), "+0 and -0 are different bits");
+        let mut nan = c.clone();
+        nan[2 * k + 4] = f64::from_bits(0x7ff8_0000_0000_0001);
+        nan[4 * k + 2] = f64::from_bits(0x7ff8_0000_0000_0002);
+        assert!(!is_symmetric(&nan, k), "payloads differ");
+        nan[4 * k + 2] = nan[2 * k + 4];
+        assert!(is_symmetric(&nan, k));
+    }
+
+    /// The correlations the descent reads are their own transpose to the
+    /// bit, with and without an intercept, with a feature of no spread (its
+    /// row and column the identity's) and a collinear pair: the sweeps take
+    /// a column of `c` for a row.
+    #[test]
+    fn the_correlations_the_descent_reads_are_their_own_transpose_to_the_bit() {
+        let k = 9;
+        for fit_intercept in [true, false] {
+            let mut c = cfg(k, 1, vec![0.1, 0.01]);
+            c.fit_intercept = fit_intercept;
+            c.decay = Decay::Halflife(40.0);
+            let mut m = Lasso::new(c).unwrap();
+            let mut st = 5u64;
+            for i in 0..80 {
+                let mut x: Vec<f64> = (0..k).map(|_| lcg(&mut st) + 0.3).collect();
+                x[3] = 0.0;
+                x[6] = 2.0 * x[5] - 0.1;
+                let y = x[0] - 0.5 * x[1] + 0.05 * lcg(&mut st);
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            let readers = m.acc.grams.readers(0);
+            let (corr, _, s, _) = m.standardized(&m.acc.grams.grams[0], &m.acc.cross, &readers);
+            assert!(
+                s[3] <= 0.0,
+                "a feature with no spread, intercept {fit_intercept}"
+            );
+            assert!(is_symmetric(&corr, k), "intercept {fit_intercept}");
+        }
+    }
+
     /// A correlation-form problem of `k` features: a unit-diagonal matrix
     /// with small seeded off-diagonals (symmetric), a right-hand side with
     /// a few strong entries, and scales with two zeros.
@@ -4161,7 +4389,7 @@ mod tests {
             assert!(support.finite);
             assert!(support.reads(&sparse), "the start is sparse");
             for sweep in 0..25 {
-                let a = cd_sweep(&c, k, &d, &s, l1, l2, &mut dense);
+                let a = cd_sweep_serial(&c, k, &d, &s, l1, l2, &mut dense);
                 // Reads the sweep's starting nonzeros into `support`, whether
                 // or not `descend` would run it sparse.
                 support.reads(&sparse);
@@ -4188,9 +4416,11 @@ mod tests {
         let k = 80;
         let (mut c, mut d, s) = sparse_problem(k, 21);
         for i in 0..k {
-            for j in 0..k {
-                if i != j && (i + 2 * j) % 5 == 0 {
-                    c[i * k + j] = if (i + j) % 2 == 0 { -0.0 } else { 0.0 };
+            for j in 0..i {
+                if (i + 2 * j) % 5 == 0 {
+                    let v = if (i + j) % 2 == 0 { -0.0 } else { 0.0 };
+                    c[i * k + j] = v;
+                    c[j * k + i] = v;
                 }
             }
             if i % 3 == 0 {
@@ -4211,7 +4441,7 @@ mod tests {
             assert!(support.finite);
             for sweep in 0..12 {
                 support.reads(&sparse);
-                let a = cd_sweep(&c, k, &d, &s, l1, l2, &mut dense);
+                let a = cd_sweep_serial(&c, k, &d, &s, l1, l2, &mut dense);
                 let b = cd_sweep_sparse(&c, k, &d, &s, l1, l2, &mut sparse, &mut support);
                 assert_eq!(a.to_bits(), b.to_bits(), "l1 {l1}, sweep {sweep}");
                 for i in 0..k {
@@ -4238,7 +4468,10 @@ mod tests {
         for l1 in [0.4, 0.15, 0.05, 0.01, 0.0] {
             let mut converged_dense = false;
             for _ in 0..100 {
-                if crate::gramfit::settled(cd_sweep(&c, k, &d, &s, l1, 0.0, &mut dense), limit) {
+                if crate::gramfit::settled(
+                    cd_sweep_serial(&c, k, &d, &s, l1, 0.0, &mut dense),
+                    limit,
+                ) {
                     converged_dense = true;
                     break;
                 }
@@ -4289,6 +4522,255 @@ mod tests {
             let mut c_bad = c.clone();
             c_bad[5 * k + 9] = bad;
             assert!(!Support::of(&c_bad).reads(&vec![0.0; k]), "{bad}");
+        }
+    }
+
+    /// A symmetric problem of `k` features with a dense `c`: off-diagonals
+    /// as large as `spread` (a correlation-like matrix at 0.2, a rougher
+    /// one past it), a unit diagonal, and a right-hand side of every size.
+    fn dense_problem(k: usize, seed: u64, spread: f64) -> (Vec<f64>, Vec<f64>) {
+        let mut st = seed;
+        let mut c = vec![0.0; k * k];
+        for i in 0..k {
+            c[i * k + i] = 1.0;
+            for j in 0..i {
+                let v = spread * lcg(&mut st);
+                c[i * k + j] = v;
+                c[j * k + i] = v;
+            }
+        }
+        let d: Vec<f64> = (0..k).map(|_| 0.7 * lcg(&mut st)).collect();
+        (c, d)
+    }
+
+    /// Runs `sweeps` sweeps of both forms from the same start and asserts
+    /// the coefficients and the move reported match to the bit after each.
+    #[allow(clippy::too_many_arguments)]
+    fn chains_match_serial(
+        c: &[f64],
+        k: usize,
+        d: &[f64],
+        s: &[f64],
+        start: &[f64],
+        pens: (f64, f64),
+        sweeps: usize,
+        what: &str,
+    ) {
+        let mut serial = start.to_vec();
+        let mut chains = start.to_vec();
+        let mut acc = Vec::new();
+        for sweep in 0..sweeps {
+            let a = cd_sweep_serial(c, k, d, s, pens.0, pens.1, &mut serial);
+            let b = cd_sweep(c, k, d, s, pens.0, pens.1, &mut chains, &mut acc);
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "{what}, k {k}, sweep {sweep}: the move"
+            );
+            for i in 0..k {
+                assert_eq!(
+                    serial[i].to_bits(),
+                    chains[i].to_bits(),
+                    "{what}, k {k}, sweep {sweep}, coefficient {i}"
+                );
+            }
+        }
+    }
+
+    /// The two chains are the serial sweep's bits: coefficients and move
+    /// after every sweep, from a dense start and from zeros, at every size
+    /// around the shortest runs and the vector widths, at penalties that
+    /// keep the fit sparse and that let it fill in, with ridge, and with
+    /// features held at scale 0 first, last, in a row and apart.
+    #[test]
+    fn the_two_chains_are_the_serial_sweep_to_the_bit() {
+        for k in [1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 31, 33, 64, 100] {
+            for (seed, spread) in [(3u64, 0.2), (8, 0.5)] {
+                let (c, d) = dense_problem(k, seed + k as u64, spread);
+                for held in [
+                    vec![],
+                    vec![0],
+                    vec![k - 1],
+                    vec![0, 1, 2],
+                    vec![1, k / 2, k - 1],
+                ] {
+                    let mut s = vec![1.0; k];
+                    for &h in held.iter().filter(|&&h| h < k) {
+                        s[h] = 0.0;
+                    }
+                    let mut dense_start = vec![0.0; k];
+                    for (i, v) in dense_start.iter_mut().enumerate() {
+                        *v = 0.01 * (i as f64 + 1.0) * if i % 3 == 0 { -1.0 } else { 1.0 };
+                    }
+                    for start in [vec![0.0; k], dense_start] {
+                        for pens in [(0.3, 0.0), (0.05, 0.0), (0.02, 0.01), (0.0, 0.0)] {
+                            chains_match_serial(&c, k, &d, &s, &start, pens, 12, "dense");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Signed zeros in `c`, `d` and the start, a NaN and an infinity in `c`
+    /// (symmetric: a column is a row), and a `-0.0` where a coefficient is
+    /// held: the operations are the serial sweep's on the same operands, so
+    /// the bits are, NaN fallout included.
+    #[test]
+    fn the_two_chains_keep_signed_zeros_and_non_finite_entries_to_the_bit() {
+        let k = 40;
+        let (c0, d0) = dense_problem(k, 17, 0.3);
+        let mut s = vec![1.0; k];
+        s[5] = 0.0;
+        s[6] = 0.0;
+        let mut zeros = c0.clone();
+        let mut d_zero = d0.clone();
+        for i in 0..k {
+            for j in 0..i {
+                if (i + 2 * j) % 5 == 0 {
+                    let v = if (i + j) % 2 == 0 { -0.0 } else { 0.0 };
+                    zeros[i * k + j] = v;
+                    zeros[j * k + i] = v;
+                }
+            }
+            if i % 3 == 0 {
+                d_zero[i] = -0.0;
+            }
+        }
+        let mut start = vec![0.0; k];
+        for (i, v) in start.iter_mut().enumerate() {
+            if i % 4 == 1 {
+                *v = -0.0;
+            } else if i % 9 == 0 {
+                *v = 0.3;
+            }
+        }
+        for pens in [(0.2, 0.0), (0.0, 0.0), (0.05, 0.02)] {
+            chains_match_serial(&zeros, k, &d_zero, &s, &start, pens, 10, "signed zeros");
+        }
+        for (at, bad) in [
+            (1, 30, f64::NAN),
+            (0, 9, f64::INFINITY),
+            (20, 5, f64::NEG_INFINITY),
+            (5, 20, f64::NAN),
+        ]
+        .map(|(i, j, v)| ((i, j), v))
+        {
+            let mut c = c0.clone();
+            c[at.0 * k + at.1] = bad;
+            c[at.1 * k + at.0] = bad;
+            chains_match_serial(&c, k, &d0, &s, &start, (0.05, 0.0), 6, "non-finite");
+        }
+        let mut d_nan = d0.clone();
+        d_nan[7] = f64::NAN;
+        chains_match_serial(&c0, k, &d_nan, &s, &start, (0.05, 0.0), 6, "NaN in d");
+    }
+
+    /// `descend` over a path on a dense problem: the serial descent's
+    /// bits, the sweeps counted alike, the penalties from strong to none.
+    #[test]
+    fn descend_on_a_dense_problem_is_the_serial_descent_to_the_bit() {
+        for k in [2, 3, 20, 50] {
+            let (c, d) = dense_problem(k, 9, 0.3);
+            let s = vec![1.0; k];
+            let limit = crate::gramfit::sweep_tol(1e-10, 1.0, &d);
+            let mut serial = vec![0.0; k];
+            let mut chains = vec![0.0; k];
+            let mut support = Support::of(&c);
+            for l1 in [0.4, 0.15, 0.05, 0.01, 0.0] {
+                let mut converged_serial = false;
+                for _ in 0..100 {
+                    let delta = cd_sweep_serial(&c, k, &d, &s, l1, 0.0, &mut serial);
+                    if crate::gramfit::settled(delta, limit) {
+                        converged_serial = true;
+                        break;
+                    }
+                }
+                let converged = descend(
+                    &c,
+                    k,
+                    &d,
+                    &s,
+                    (l1, 0.0),
+                    &mut chains,
+                    100,
+                    limit,
+                    &mut support,
+                );
+                assert_eq!(converged, converged_serial, "k {k}, l1 {l1}");
+                for i in 0..k {
+                    assert_eq!(
+                        serial[i].to_bits(),
+                        chains[i].to_bits(),
+                        "k {k}, l1 {l1}, coefficient {i}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The sparse sweep on two chains is the serial dense sweep's bits: the
+    /// coefficients and the move after every sweep, from seeded starts of
+    /// every sparsity (zeros first, last and in runs, a coefficient held at
+    /// scale 0 among them), at penalties that keep the fit sparse and that
+    /// fill it in, with signed zeros in `c`, `d` and the start.
+    #[test]
+    fn the_sparse_sweep_on_two_chains_is_the_serial_sweep_to_the_bit() {
+        for k in [64, 65, 66, 71, 100, 130] {
+            for seed in 0..6u64 {
+                let (mut c, mut d, mut s) = sparse_problem(k, 40 + seed + k as u64);
+                let mut st = seed * 977 + k as u64;
+                for held in [0, 1, k / 3, k - 1] {
+                    if lcg(&mut st) > 0.2 {
+                        s[held] = 0.0;
+                    }
+                }
+                if seed % 2 == 1 {
+                    for i in 0..k {
+                        for j in 0..i {
+                            if (i + 3 * j + seed as usize).is_multiple_of(6) {
+                                let v = if (i + j) % 2 == 0 { -0.0 } else { 0.0 };
+                                c[i * k + j] = v;
+                                c[j * k + i] = v;
+                            }
+                        }
+                        if i % 5 == 0 {
+                            d[i] = -0.0;
+                        }
+                    }
+                }
+                let mut start = vec![0.0; k];
+                let fill = [0.02, 0.1, 0.4, 0.7][seed as usize % 4];
+                for v in start.iter_mut() {
+                    let u = lcg(&mut st);
+                    if u.abs() < fill {
+                        *v = if u > 0.3 { -0.0 } else { u + 0.01 };
+                    }
+                }
+                for (l1, l2) in [(0.3, 0.0), (0.1, 0.0), (0.02, 0.01), (0.0, 0.0)] {
+                    let mut serial = start.clone();
+                    let mut chains = start.clone();
+                    let mut support = Support::of(&c);
+                    assert!(support.finite);
+                    for sweep in 0..15 {
+                        let a = cd_sweep_serial(&c, k, &d, &s, l1, l2, &mut serial);
+                        support.reads(&chains);
+                        let b = cd_sweep_sparse(&c, k, &d, &s, l1, l2, &mut chains, &mut support);
+                        assert_eq!(
+                            a.to_bits(),
+                            b.to_bits(),
+                            "k {k}, seed {seed}, l1 {l1}, sweep {sweep}"
+                        );
+                        for i in 0..k {
+                            assert_eq!(
+                                serial[i].to_bits(),
+                                chains[i].to_bits(),
+                                "k {k}, seed {seed}, l1 {l1}, sweep {sweep}, coefficient {i}"
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 }
