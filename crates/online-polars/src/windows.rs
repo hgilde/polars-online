@@ -365,6 +365,61 @@ impl KernelDef {
         }
     }
 
+    /// [`Self::discount`] through `memo`, which keeps the last distance it
+    /// was asked for and its discount: a clock with a regular step asks the
+    /// same distance row after row, and the operators of a kernel ask the same
+    /// one on a row. The same function of the same bits, so the same bits.
+    #[inline]
+    pub(crate) fn discount_in(&self, d: f64, memo: &mut DecayMemo) -> f64 {
+        if self.half_life.is_infinite() || d == 0.0 {
+            return 1.0;
+        }
+        let (bits, v) = memo.discount;
+        if bits == d.to_bits() {
+            return v;
+        }
+        let v = (-(d / self.half_life)).exp2();
+        memo.discount = (d.to_bits(), v);
+        v
+    }
+
+    /// [`Self::mass`] through `memo`, as [`Self::discount_in`].
+    #[inline]
+    fn mass_in(&self, t: f64, memo: &mut DecayMemo) -> f64 {
+        if t <= 0.0 {
+            return 0.0;
+        }
+        if self.half_life.is_infinite() {
+            return t;
+        }
+        let (bits, v) = memo.mass;
+        if bits == t.to_bits() {
+            return v;
+        }
+        let v = self.mass_finite(t);
+        memo.mass = (t.to_bits(), v);
+        v
+    }
+
+    /// [`Self::mass_in`] on the memo's second slot, for a second distance
+    /// asked beside the first.
+    #[inline]
+    fn mass_far_in(&self, t: f64, memo: &mut DecayMemo) -> f64 {
+        if t <= 0.0 {
+            return 0.0;
+        }
+        if self.half_life.is_infinite() {
+            return t;
+        }
+        let (bits, v) = memo.mass_far;
+        if bits == t.to_bits() {
+            return v;
+        }
+        let v = self.mass_finite(t);
+        memo.mass_far = (t.to_bits(), v);
+        v
+    }
+
     /// `∫_0^T λ^s ds`: the decayed mass of `T` units of time.
     #[inline]
     fn mass(&self, t: f64) -> f64 {
@@ -373,13 +428,37 @@ impl KernelDef {
         } else if self.half_life.is_infinite() {
             t
         } else {
-            // `1 − 2^(−t/h)` cancels where `t ≪ h`: 6e-5 of the mass at
-            // `h/t = 1e12`, all of it from 1e17, every mean null (task 159,
-            // W2). `exp_m1` keeps the small difference whole; `discount`
-            // itself has nothing to lose.
-            let h = self.half_life;
-            -(h / std::f64::consts::LN_2) * (-(t * std::f64::consts::LN_2 / h)).exp_m1()
+            self.mass_finite(t)
         }
+    }
+
+    /// [`Self::mass`] of a distance above 0 under a finite half-life.
+    #[inline]
+    fn mass_finite(&self, t: f64) -> f64 {
+        // `1 − 2^(−t/h)` cancels where `t ≪ h`: 6e-5 of the mass at
+        // `h/t = 1e12`, all of it from 1e17, every mean null (task 159,
+        // W2). `exp_m1` keeps the small difference whole; `discount`
+        // itself has nothing to lose.
+        let h = self.half_life;
+        -(h / std::f64::consts::LN_2) * (-(t * std::f64::consts::LN_2 / h)).exp_m1()
+    }
+}
+
+/// A queue's last discount and last mass, each with the bits of the distance
+/// it is of. Never written to a state and never compared; a queue read back
+/// starts with none (0 bits is a distance no call reaches the memo with: a
+/// distance of 0 has its own answer first).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DecayMemo {
+    discount: (u64, f64),
+    mass: (u64, f64),
+    /// The mass at the far end of an interval read in the window's cut.
+    mass_far: (u64, f64),
+}
+
+impl PartialEq for DecayMemo {
+    fn eq(&self, _: &Self) -> bool {
+        true
     }
 }
 
@@ -607,8 +686,16 @@ fn merge(a: Acc, b: Acc) -> Acc {
 /// ahead, so a window's sums are always anchored at the row they are read
 /// from or discounted to it once.
 #[inline]
-fn then(k: &KernelDef, a: Acc, a_at: f64, b: Acc, b_at: f64, var: bool) -> (Acc, f64) {
-    then_by(k, k.discount(b_at - a_at), a, a_at, b, b_at, var)
+fn then(
+    k: &KernelDef,
+    m: &mut DecayMemo,
+    a: Acc,
+    a_at: f64,
+    b: Acc,
+    b_at: f64,
+    var: bool,
+) -> (Acc, f64) {
+    then_by(k, k.discount_in(b_at - a_at, m), a, a_at, b, b_at, var)
 }
 
 /// [`then`] with the discount across the two anchors given: the operators
@@ -848,6 +935,8 @@ struct Queue {
     quant: Vec<Option<QSide>>,
     #[serde(skip)]
     memo: Memo,
+    #[serde(skip)]
+    decay: DecayMemo,
 }
 
 impl Queue {
@@ -866,6 +955,7 @@ impl Queue {
                 Vec::new()
             },
             memo: Memo::default(),
+            decay: DecayMemo::default(),
         }
     }
 
@@ -943,7 +1033,7 @@ impl Queue {
                 }
                 Some(last) => {
                     let last_at = self.back.at[last];
-                    let f = k.discount(tau - last_at);
+                    let f = k.discount_in(tau - last_at, &mut self.decay);
                     for j in 0..n {
                         let (a, a_at) = then_by(
                             k,
@@ -969,7 +1059,7 @@ impl Queue {
         } else {
             let mut at = tau;
             let sw = sum_w::<W>();
-            let f = k.discount(tau - self.total_at);
+            let f = k.discount_in(tau - self.total_at, &mut self.decay);
             for j in 0..n {
                 let t = Acc::read(&self.total[j * sw..], W);
                 let (a, a_at) = then_by(k, f, t, self.total_at, own(j), tau, W && self.var[j]);
@@ -1023,7 +1113,7 @@ impl Queue {
                 }
                 Some(newer) => {
                     let newer_at = self.front.at[newer];
-                    let f = k.discount(newer_at - tau);
+                    let f = k.discount_in(newer_at - tau, &mut self.decay);
                     for j in 0..n {
                         let (a, a_at) = then_by(
                             k,
@@ -1082,7 +1172,7 @@ impl Queue {
     }
 
     /// The window's sums for operator `j`, with their anchor.
-    fn sum_op<const W: bool>(&self, k: &KernelDef, j: usize) -> Option<(Acc, f64)> {
+    fn sum_op<const W: bool>(&mut self, k: &KernelDef, j: usize) -> Option<(Acc, f64)> {
         if k.window_size.is_none() {
             if self.total.is_empty() {
                 return None;
@@ -1100,7 +1190,9 @@ impl Queue {
             .checked_sub(1)
             .map(|l| (self.back.sum::<W>(l, j), self.back.at[l]));
         match (f, b) {
-            (Some((a, a_at)), Some((b, b_at))) => Some(then(k, a, a_at, b, b_at, W && self.var[j])),
+            (Some((a, a_at)), Some((b, b_at))) => {
+                Some(then(k, &mut self.decay, a, a_at, b, b_at, W && self.var[j]))
+            }
             (Some(x), None) | (None, Some(x)) => Some(x),
             (None, None) => None,
         }
@@ -1128,7 +1220,15 @@ impl Queue {
             let i = n - 2 - p;
             let a = (self.front.sum::<W>(i, j), self.front.at[i]);
             return Some(match self.back.len().checked_sub(1) {
-                Some(l) => then(k, a.0, a.1, self.back.sum::<W>(l, j), self.back.at[l], var),
+                Some(l) => then(
+                    k,
+                    &mut self.decay,
+                    a.0,
+                    a.1,
+                    self.back.sum::<W>(l, j),
+                    self.back.at[l],
+                    var,
+                ),
                 None => a,
             });
         }
@@ -1152,7 +1252,15 @@ impl Queue {
             None => (back.own::<W>(from, j), back.tau[from], from + 1),
         };
         for i in next..len {
-            (acc, at) = then(k, acc, at, back.own::<W>(i, j), back.tau[i], var);
+            (acc, at) = then(
+                k,
+                &mut self.decay,
+                acc,
+                at,
+                back.own::<W>(i, j),
+                back.tau[i],
+                var,
+            );
         }
         self.memo.tails[j] = Some(Tail {
             from,
@@ -1665,34 +1773,28 @@ fn mass_between(k: &KernelDef, t: f64, a: f64, b: f64) -> f64 {
     }
 }
 
-/// A value of a pure function of a double, kept with its argument's bits for
-/// the next ask: the operators of a kernel on a row are asked for the same
-/// discount, and often for the same mass.
-#[derive(Clone, Copy, Default)]
-struct Last(Option<(u64, f64)>);
-
-impl Last {
-    #[inline]
-    fn of(&mut self, x: f64, f: impl FnOnce(f64) -> f64) -> f64 {
-        match self.0 {
-            Some((bits, v)) if bits == x.to_bits() => v,
-            _ => {
-                let v = f(x);
-                self.0 = Some((x.to_bits(), v));
-                v
-            }
-        }
+/// [`mass_between`] with both masses taken through `memo`: a window's cut
+/// reads the same two distances for each operator of a kernel.
+#[inline]
+fn mass_between_in(k: &KernelDef, memo: &mut DecayMemo, t: f64, a: f64, b: f64) -> f64 {
+    if b <= a {
+        return 0.0;
+    }
+    match k.direction {
+        Direction::Backward => k.mass_in(t - a, memo) - k.mass_far_in(t - b, memo),
+        Direction::Forward => k.mass(b - t) - k.mass(a - t),
     }
 }
 
 /// [`mass_between`] for a backward kernel's interval ending at `t` -- a
-/// value held from `a` to the row's own time -- with `last` holding the mass
-/// of the distance back to `a` that an operator before it asked for: where
-/// operators of a kernel hold from the same time (they read one column, as a
-/// mean and a spread of it do), it is taken once. A forward kernel's is
+/// value held from `a` to the row's own time -- with `memo` holding the mass
+/// of the distance back to `a` that the last ask was for: where operators of
+/// a kernel hold from the same time (they read one column, as a mean and a
+/// spread of it do), it is taken once, and where a clock steps by the same
+/// amount row after row, once for the stream. A forward kernel's is
 /// [`mass_between`]'s.
 #[inline]
-fn mass_held_to(k: &KernelDef, t: f64, a: f64, last: &mut Last) -> f64 {
+fn mass_held_to(k: &KernelDef, t: f64, a: f64, memo: &mut DecayMemo) -> f64 {
     // The interval is `[a, b]` with `b` the row's own time `t`, as `mass_between`
     // takes it, its far end's mass `M(t - b)` read where it is.
     let b = t;
@@ -1700,7 +1802,7 @@ fn mass_held_to(k: &KernelDef, t: f64, a: f64, last: &mut Last) -> f64 {
         return 0.0;
     }
     match k.direction {
-        Direction::Backward => last.of(t - a, |x| k.mass(x)) - k.mass(t - b),
+        Direction::Backward => k.mass_in(t - a, memo) - k.mass(t - b),
         Direction::Forward => mass_between(k, t, a, b),
     }
 }
@@ -2491,7 +2593,6 @@ impl Windows {
             // of a stretch from before it: from `-inf`, or from a window
             // back where one bounds the mass.
             let (rw, wide) = (g.queues[ki].row_w(), g.queues[ki].wide());
-            let mut mass = Last::default();
             for (j, &o) in m.iter().enumerate() {
                 let v = row.values[self.ops[o].input];
                 let v = if usable(v) { v } else { f64::NAN };
@@ -2504,7 +2605,11 @@ impl Windows {
                 let acc = if v.is_nan() {
                     Acc::default()
                 } else if stat.weighs_held() {
-                    Acc::held(v, mass_held_to(k, tau, start, &mut mass), stat.is_var())
+                    Acc::held(
+                        v,
+                        mass_held_to(k, tau, start, &mut g.queues[ki].decay),
+                        stat.is_var(),
+                    )
                 } else {
                     Acc {
                         s: v,
@@ -2937,7 +3042,6 @@ fn read_backward<const W: bool>(
     }
     let span = k.window_size.map_or(tau, |w| w.min(tau));
     let edge = k.window_size.map_or(f64::NEG_INFINITY, |w| tau - w);
-    let mut discount = Last::default();
     for (j, &o) in members.iter().enumerate() {
         let op = &ops[o];
         let var = op.stat.is_var();
@@ -2975,14 +3079,14 @@ fn read_backward<const W: bool>(
                 let mut a = q
                     .sum_after_op::<W>(k, p, j)
                     .map_or(Acc::default(), |(r, r_at)| {
-                        r.scaled(k.discount(tau - r_at), var)
+                        r.scaled(k.discount_in(tau - r_at, &mut q.decay), var)
                     });
-                let m = mass_between(k, tau, start.max(edge), end);
+                let m = mass_between_in(k, &mut q.decay, tau, start.max(edge), end);
                 a = a.plus(Acc::held(x, m, var), var);
                 a
             }
             // The sums are anchored at the newest row; seen from `tau`.
-            None => sum.scaled(discount.of(tau - at, |d| k.discount(d)), var),
+            None => sum.scaled(k.discount_in(tau - at, &mut q.decay), var),
         };
         out[j] = value_of(k, op, a, span);
     }
@@ -3584,6 +3688,106 @@ mod tests {
             (got - want).abs() <= 10.0 * f64::EPSILON,
             "{got} vs {want}: {:e} of 2^-52",
             (got - want).abs() / f64::EPSILON
+        );
+    }
+
+    /// A discount or a mass taken through a queue's memo is the one taken
+    /// without it, to the bit, whatever the distances run through it: a
+    /// repeat, a different one between two repeats, 0, a step back, `NaN`,
+    /// an infinity, and a half-life of infinity, which has no decay.
+    #[test]
+    fn a_memoed_discount_and_mass_are_the_unmemoed_ones() {
+        let distances = [
+            0.0,
+            1.0,
+            1.0,
+            0.25,
+            1.0,
+            f64::NAN,
+            f64::NAN,
+            -0.0,
+            -3.0,
+            3.0,
+            3.0,
+            f64::INFINITY,
+            f64::INFINITY,
+            1e-300,
+            1e-300,
+            1e300,
+            0.1 + 0.2,
+            0.1 + 0.2,
+            0.3,
+        ];
+        for half_life in [0.5, 5.0, 1e12, f64::INFINITY] {
+            let k = KernelDef {
+                direction: Direction::Backward,
+                half_life,
+                window_size: Some(5.0),
+                window_ns: None,
+                closed: Closed::Right,
+            };
+            let mut memo = DecayMemo::default();
+            for pass in 0..2 {
+                for &d in &distances {
+                    assert_eq!(
+                        k.discount_in(d, &mut memo).to_bits(),
+                        k.discount(d).to_bits(),
+                        "discount of {d} at {half_life}, pass {pass}"
+                    );
+                    assert_eq!(
+                        k.mass_in(d, &mut memo).to_bits(),
+                        k.mass(d).to_bits(),
+                        "mass of {d} at {half_life}, pass {pass}"
+                    );
+                    assert_eq!(
+                        k.mass_far_in(d, &mut memo).to_bits(),
+                        k.mass(d).to_bits(),
+                        "far mass of {d} at {half_life}, pass {pass}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The memo is used: a distance it holds is answered from it, and one
+    /// it does not is taken and kept; 0 and an infinite half-life are
+    /// answered before it, and leave it alone.
+    #[test]
+    fn a_queues_memo_answers_the_distance_it_holds_and_keeps_the_last() {
+        let kernel = |half_life: f64| KernelDef {
+            direction: Direction::Backward,
+            half_life,
+            window_size: Some(5.0),
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let k = kernel(5.0);
+        let mut memo = DecayMemo {
+            discount: (2.0f64.to_bits(), 123.0),
+            mass: (2.0f64.to_bits(), 456.0),
+            mass_far: (2.0f64.to_bits(), 789.0),
+        };
+        assert_eq!(k.discount_in(2.0, &mut memo), 123.0);
+        assert_eq!(k.mass_in(2.0, &mut memo), 456.0);
+        assert_eq!(k.mass_far_in(2.0, &mut memo), 789.0);
+        // Another distance is taken, and replaces the one held.
+        assert_eq!(k.discount_in(3.0, &mut memo), k.discount(3.0));
+        assert_eq!(k.mass_in(3.0, &mut memo), k.mass(3.0));
+        assert_eq!(k.mass_far_in(3.0, &mut memo), k.mass(3.0));
+        assert_eq!(memo.discount, (3.0f64.to_bits(), k.discount(3.0)));
+        assert_eq!(memo.mass, (3.0f64.to_bits(), k.mass(3.0)));
+        assert_eq!(memo.mass_far, (3.0f64.to_bits(), k.mass(3.0)));
+        // No distance, and no decay, are answered before the memo.
+        let held = memo.clone();
+        assert_eq!(k.discount_in(0.0, &mut memo), 1.0);
+        assert_eq!(k.mass_in(0.0, &mut memo), 0.0);
+        assert_eq!(k.mass_far_in(-1.0, &mut memo), 0.0);
+        assert_eq!(kernel(f64::INFINITY).discount_in(4.0, &mut memo), 1.0);
+        assert_eq!(kernel(f64::INFINITY).mass_in(4.0, &mut memo), 4.0);
+        assert_eq!(kernel(f64::INFINITY).mass_far_in(4.0, &mut memo), 4.0);
+        assert_eq!(
+            (memo.discount, memo.mass, memo.mass_far),
+            (held.discount, held.mass, held.mass_far)
         );
     }
 
@@ -5958,7 +6162,7 @@ mod tests {
             let own = (q.back.own::<W>(i, j), q.back.tau[i]);
             sum = Some(match sum {
                 None => own,
-                Some((a, a_at)) => then(k, a, a_at, own.0, own.1, var),
+                Some((a, a_at)) => then(k, &mut DecayMemo::default(), a, a_at, own.0, own.1, var),
             });
         }
         sum
