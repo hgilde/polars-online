@@ -49,7 +49,9 @@ def rss_kb() -> float:
     return PROC.memory_info().rss / 1024
 
 
-def assert_plateaus(fn, *, blocks=7, per_block=120, kb_per_iter=4.0, warm_blocks=16):
+def assert_plateaus(
+    fn, *, blocks=7, per_block=120, kb_per_iter=4.0, warm_blocks=32, quiet_blocks=3, windows=3
+):
     """Run `fn` in blocks and require RSS growth to flatten.
 
     Measurement starts **after** the allocator has stopped ramping, and the
@@ -72,6 +74,19 @@ def assert_plateaus(fn, *, blocks=7, per_block=120, kb_per_iter=4.0, warm_blocks
     the median gap reads that as growth; Theil and Sen's slope over every
     pair of blocks does not, so the check fails only when both statistics
     pass the limit (2026-10-10), which a leak's every gap and pair do.
+
+    A ramp can also stall before it ends. Under a load of about 14 (2026-11-15)
+    a gate run read two flat blocks at 120.4 MB, took them for the end of the
+    ramp, and then climbed 12 MB over the six gaps that followed -- marks of
+    [120464, 120448, 124272, 128320, 129920, 132240, 132320] KB, a Theil-Sen
+    slope of 19.6 against a limit of 4 -- where the same test passes alone
+    every time. So the ramp is declared over only after `quiet_blocks` (three)
+    consecutive quiet blocks, and a measurement that fails is repeated, up to
+    `windows` times in all, passing if any window plateaus. A ramp that was
+    still going settles in a later window; a leak grows in every window and
+    fails all of them (`test_a_leak_still_fails_every_window`, and
+    `TestAnOutputKeptLeaksFails` on a real process), so the repetition costs a
+    leak nothing but time.
 
     Two earlier versions got this wrong, both by measuring the ramp:
 
@@ -98,40 +113,49 @@ def assert_plateaus(fn, *, blocks=7, per_block=120, kb_per_iter=4.0, warm_blocks
         gc.collect()
         return rss_kb()
 
-    # Walk until the ramp is over: two consecutive quiet blocks. A leak has
-    # none, runs out of `warm_blocks`, and is caught by the measurement below.
+    # Walk until the ramp is over: `quiet_blocks` consecutive quiet blocks. A
+    # leak has none, runs out of `warm_blocks`, and is caught by the
+    # measurement below.
     prev = block()
     quiet = 0
     for _ in range(warm_blocks):
         now = block()
         quiet = quiet + 1 if (now - prev) / per_block < kb_per_iter else 0
         prev = now
-        if quiet >= 2:
+        if quiet >= quiet_blocks:
             break
 
-    marks = [block() for _ in range(blocks)]
+    failure = ""
+    for _ in range(windows):
+        marks = [block() for _ in range(blocks)]
 
-    # Growth per iteration, block against block, and over every pair of
-    # blocks. Each statistic is robust to one kind of noise: the median gap
-    # to a one-off allocator step, which moves one gap; Theil and Sen's slope,
-    # the median of every pair's, to RSS swinging both ways when the machine
-    # compresses or swaps memory under load, which cancels across pairs (two
-    # flakes of 2026-10-08/09: a median gap of 6.33 KB/iter, a Theil-Sen
-    # slope of 0.15). A leak grows in every block, so both read its rate,
-    # and the check fails only when both pass the limit.
-    gaps = [(b - a) / per_block for a, b in zip(marks, marks[1:], strict=False)]
-    per_iter = statistics.median(gaps)
-    pairs = [
-        (marks[j] - marks[i]) / ((j - i) * per_block)
-        for i in range(len(marks))
-        for j in range(i + 1, len(marks))
-    ]
-    theil_sen = statistics.median(pairs)
-    assert per_iter < kb_per_iter or theil_sen < kb_per_iter, (
-        f"RSS still climbing after the ramp: {per_iter:.2f} KB/iter, the "
-        f"median of {[round(g, 2) for g in gaps]}, and a Theil-Sen slope of "
-        f"{theil_sen:.2f} (marks, KB: {[round(m) for m in marks]}). A plateau "
-        "is expected; a slope means something is not being released."
+        # Growth per iteration, block against block, and over every pair of
+        # blocks. Each statistic is robust to one kind of noise: the median
+        # gap to a one-off allocator step, which moves one gap; Theil and
+        # Sen's slope, the median of every pair's, to RSS swinging both ways
+        # when the machine compresses or swaps memory under load, which
+        # cancels across pairs (two flakes of 2026-10-08/09: a median gap of
+        # 6.33 KB/iter, a Theil-Sen slope of 0.15). A leak grows in every
+        # block, so both read its rate, and a window fails only when both
+        # pass the limit.
+        gaps = [(b - a) / per_block for a, b in zip(marks, marks[1:], strict=False)]
+        per_iter = statistics.median(gaps)
+        pairs = [
+            (marks[j] - marks[i]) / ((j - i) * per_block)
+            for i in range(len(marks))
+            for j in range(i + 1, len(marks))
+        ]
+        theil_sen = statistics.median(pairs)
+        if per_iter < kb_per_iter or theil_sen < kb_per_iter:
+            return
+        failure += (
+            f"\n  window: {per_iter:.2f} KB/iter, the median of "
+            f"{[round(g, 2) for g in gaps]}, and a Theil-Sen slope of "
+            f"{theil_sen:.2f} (marks, KB: {[round(m) for m in marks]})"
+        )
+    raise AssertionError(
+        f"RSS still climbing after the ramp, in each of {windows} windows:{failure}\n"
+        "A plateau is expected; a slope means something is not being released."
     )
 
 
@@ -181,6 +205,27 @@ class TestThePlateauStatistic:
         self._script(monkeypatch, [1000.0 + 2000.0 * i for i in range(60)])
         with pytest.raises(AssertionError, match="RSS still climbing"):
             assert_plateaus(lambda: None, per_block=240)
+
+    def test_a_leak_still_fails_every_window(self, monkeypatch):
+        """The repeated window must not forgive a slope: one that begins
+        after a flat stretch is a leak in the first window and in each later
+        one, so all three fail."""
+        self._script(monkeypatch, [1000.0] * 4 + [1000.0 + 2000.0 * i for i in range(100)])
+        with pytest.raises(AssertionError, match="in each of 3 windows"):
+            assert_plateaus(lambda: None, per_block=240)
+
+    def test_a_ramp_that_stalls_before_it_ends_is_not_a_leak(self, monkeypatch):
+        """The gate flake of `test_sliced_frame_sharing_buffers` under load:
+        flat for two blocks, taken for the end of the ramp, then 12 MB of
+        climbing -- marks of [120464, 120448, 124272, 128320, 129920,
+        132240, 132320] KB. The ramp then ends, and a later window is flat."""
+        self._script(
+            monkeypatch,
+            [120400, 120430, 120464, 120448]
+            + [120464, 120448, 124272, 128320, 129920, 132240, 132320]
+            + [132320.0] * 7,
+        )
+        assert_plateaus(lambda: None, per_block=120)
 
 
 def frame(n=1500, seed=0):
@@ -323,6 +368,20 @@ for _name in [n for n in vars(TestNothingLeaksAcrossTheBoundary) if n.startswith
         _name,
         in_a_fresh_interpreter(getattr(TestNothingLeaksAcrossTheBoundary, _name)),
     )
+
+
+class TestAnOutputKeptLeaksFails:
+    """The plateau check on a real process that really leaks, so the
+    repeated windows are shown not to forgive one: each call's output is
+    kept, the same loop as `test_repeated_fit_predict` with a reference
+    held."""
+
+    @in_a_fresh_interpreter
+    def test_kept_outputs_fail_the_plateau_check(self):
+        bank, df, kept = po.ModelBank([SPEC]), frame(300), []
+        with pytest.raises(AssertionError, match="RSS still climbing"):
+            assert_plateaus(lambda: kept.append(bank.fit_predict(df)))
+        assert len(kept) > 1000
 
 
 def run_isolated(body: str, timeout=180):
