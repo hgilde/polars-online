@@ -1566,3 +1566,75 @@ fn a_merge_keeps_a_damaged_files_flag() {
     clean.merge(&fresh, 8);
     assert!(!clean.unordered && clean.has_shape(8));
 }
+
+/// The fold before task 390: one stable sort of centroids then values, then
+/// the same neighbour merge. Its order on ties is the order the new fold
+/// must keep.
+fn stable_sort_fold(mut all: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    all.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let total: f64 = all.iter().map(|c| c.1).sum();
+    let cap = (2.0 * total / COMPRESSION).max(1.0);
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for (m, w) in all {
+        match out.last_mut() {
+            Some(cur) if cur.1 + w <= cap => {
+                let s = cur.1 + w;
+                cur.0 += (m - cur.0) * (w / s);
+                cur.1 = s;
+            }
+            _ => out.push((m, w)),
+        }
+    }
+    out
+}
+
+fn bits(v: &[(f64, f64)]) -> Vec<(u64, u64)> {
+    v.iter().map(|c| (c.0.to_bits(), c.1.to_bits())).collect()
+}
+
+/// Ties: values repeated across centroids and buffer, including `-0.0` and
+/// `0.0` (equal in value, unequal under `total_cmp`), with unequal weights
+/// so the order of a tie shows in the merged means. The fold must match the
+/// stable-sort fold to the bit, for compress and for merge.
+#[test]
+fn the_fold_keeps_the_stable_sort_order_on_ties() {
+    let vals = [0.0f64, -0.0, 1.0, 2.0, 1.0, 0.0, -0.0];
+    let mut r = SplitMix64::new(390);
+    let centroids: Vec<(f64, f64)> = {
+        let mut c: Vec<(f64, f64)> = (0..40)
+            .map(|i| (vals[i % vals.len()], 1.0 + (i % 3) as f64))
+            .collect();
+        c.sort_by(|a, b| a.0.total_cmp(&b.0));
+        Digest::fold(Vec::new(), c)
+    };
+    let buffer: Vec<f64> = (0..DIGEST_BUFFER - 1)
+        .map(|_| vals[(r.next_u64() % vals.len() as u64) as usize])
+        .collect();
+
+    // compress: the buffer's last value tips the fold.
+    let mut d = Digest {
+        centroids: centroids.clone(),
+        buffer: buffer.clone(),
+    };
+    d.add(vals[0]);
+    let mut all: Vec<(f64, f64)> = centroids.clone();
+    all.extend(buffer.iter().chain([&vals[0]]).map(|&v| (v, 1.0)));
+    assert_eq!(bits(&d.centroids), bits(&stable_sort_fold(all)));
+
+    // merge: two digests whose centroids and buffers tie with each other.
+    let a = Digest {
+        centroids: centroids.clone(),
+        buffer: buffer[..10].to_vec(),
+    };
+    let b = Digest {
+        centroids: centroids.clone(),
+        buffer: buffer[10..20].to_vec(),
+    };
+    let mut m = a.clone();
+    m.merge(&b);
+    let mut all: Vec<(f64, f64)> = a.centroids.clone();
+    all.extend(b.centroids.iter().copied());
+    all.extend(a.buffer.iter().chain(&b.buffer).map(|&v| (v, 1.0)));
+    assert_eq!(bits(&m.centroids), bits(&stable_sort_fold(all)));
+    assert!(m.buffer.is_empty());
+}
