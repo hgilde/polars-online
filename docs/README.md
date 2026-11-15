@@ -216,7 +216,7 @@ out-of-date one, its row here says what became of it.
 | [ARROW-SOURCES.md](ARROW-SOURCES.md) | whether anything that produces Arrow chunks, DuckDB first, can feed a bank. Its status line, dated 2026-10-06, says tier 0, which works through Polars, has shipped, and the native import is parked. Its §4, corrected on 2026-09-22, finds no blocker to that import |
 | **The working rules' detail** | |
 | [AGENT-WORKFLOW.md](records/AGENT-WORKFLOW.md) | how the coordinator and its workers run -- waves, gates, slots, load limits, mutants, caches -- with each rule's reason, moved verbatim out of CLAUDE.md, which keeps the summary |
-| [STATE-CONTINUATION.md](records/STATE-CONTINUATION.md) | the thirteen cases, each the user's decision, where a saved state of an earlier schema continues within a stated tolerance or form rather than to the bit, numbered as code comments cite them, moved verbatim out of CLAUDE.md |
+| [STATE-CONTINUATION.md](records/STATE-CONTINUATION.md) | the fourteen cases, each the user's decision, where a saved state of an earlier schema continues within a stated tolerance or form rather than to the bit, numbered as code comments cite them, moved verbatim out of CLAUDE.md |
 | [LINKING.md](records/LINKING.md) | the evidence that decided static linking of Polars, and each interface a change can ride on with its stability and the read-ahead measurements, moved verbatim out of CLAUDE.md |
 | **Logs of measurements, tests and releases** | |
 | [PERFORMANCE-LOG.md](records/PERFORMANCE-LOG.md) | every dated measurement of speed and memory from 2026-08-30 to 2026-11-06, §1 to §47 by topic, moved out of PERFORMANCE.md with its section numbers, which code comments and records cite |

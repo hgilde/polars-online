@@ -11,6 +11,19 @@ returns.
 
 ## [Unreleased]
 
+### Changed
+
+- `lasso`: `solve_failures` no longer counts a coordinate descent that runs
+  out of `max_iter` sweeps while the fit has too few effective rows for its
+  features to settle in that many sweeps on any data (below about 2.3 rows
+  a feature at the defaults of 100 sweeps and `tol` 1e-10). The bound comes
+  from the smallest eigenvalue that many rows can give, not from a measured
+  data set. A wide `lasso` no longer warns from its first rows; the fit is
+  still where the descent stopped, predictions and coefficients are
+  unchanged, and a descent that runs out past that point is counted as
+  before. A state saved by an earlier build continues to the bit except for
+  this count.
+
 ### Fixed
 
 - An `OSError` from `ModelBank.save`, `RefreshTime.save`, `Windows.save` or
