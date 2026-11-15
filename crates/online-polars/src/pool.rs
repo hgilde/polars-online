@@ -220,6 +220,39 @@ impl std::fmt::Debug for Held {
     }
 }
 
+thread_local! {
+    static INLINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this thread is running a call inline ([`Inline`]): every parallel
+/// section of the bank's call then runs on this thread, in order.
+#[must_use]
+pub fn inline() -> bool {
+    INLINE.with(std::cell::Cell::get)
+}
+
+/// A call too small to gain from the pool, run on the calling thread
+/// instead of handed to it: from [`Inline::enter`] until the guard drops,
+/// [`inline`] is true on this thread, and the bank's parallel sections
+/// check it. Handing a call to the pool and waking a parked worker costs
+/// about 13 us on the Mac, a third of a one-row call. Only the thread
+/// differs, never the arithmetic, so the output is the same to the bit.
+pub struct Inline(bool);
+
+impl Inline {
+    /// Marks this thread inline; the guard puts back what it found.
+    #[must_use]
+    pub fn enter() -> Self {
+        Self(INLINE.with(|c| c.replace(true)))
+    }
+}
+
+impl Drop for Inline {
+    fn drop(&mut self) {
+        INLINE.with(|c| c.set(self.0));
+    }
+}
+
 /// The pools built for a `threads` count, by count, held weakly so that a
 /// pool lives exactly as long as something holds it.
 static SIZED: Mutex<Option<HashMap<usize, Weak<ThreadPool>>>> = Mutex::new(None);
