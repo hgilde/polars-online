@@ -105,15 +105,15 @@ that feature's own update, which the descent skips; the coefficient stays 0"""
 
 [[equivalent]]
 file = "crates/online-core/src/lasso.rs"
-function = "cd_sweep"
+function = "soft_over"
 mutation = "replace > with >="
-line_has = "let newb = if rho > l1 {"
+line_has = "if rho > l1 {"
 why = """they differ only at `rho == l1`, where the mutant's `(rho - l1) / \
 denom` is +0 divided by a positive denominator: the 0 the original gives"""
 
 [[equivalent]]
 file = "crates/online-core/src/lasso.rs"
-function = "cd_sweep"
+function = "soft_over"
 mutation = "replace < with <="
 line_has = "} else if rho < -l1 {"
 why = """they differ only at `rho == -l1`, where the mutant's `(rho + l1) / \
