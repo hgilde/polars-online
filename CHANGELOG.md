@@ -51,6 +51,18 @@ returns.
   and 2.8 times at 1,000 (a million rows), up to 12 times with many groups
   in small chunks, and a single group's pass about 8% faster. Outputs
   unchanged to the bit.
+- `emit_specification` and `emit_robust_se` cost about half as much a row
+  once past their readiness gate: the specification statistics at 20
+  features 3.06 to 1.64 µs a row (27.0 to 12.9 µs under a horizon), the
+  robust standard errors 0.68 to 0.53 µs (3.8 to 1.3 µs under a horizon).
+  The statistics are read in buffers kept between rows, and the robust
+  covariance's row folds its decay and its term in one pass. Outputs and
+  saved states unchanged to the bit.
+- A one-row `ModelBank.fit_predict` or `predict` call costs about a fifth
+  less on the Python side (55 to 43 µs): the output columns are appended
+  to the frame directly rather than through a query, and a frame check and
+  an import that ran on every call now run only when needed. Outputs
+  unchanged.
 
 ## [1.5.0] — 2026-11-10
 
