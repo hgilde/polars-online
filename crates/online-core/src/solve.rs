@@ -95,6 +95,57 @@ fn factorize_into(
     None
 }
 
+/// [`factorize_into`] of `C + ridge·I` with `C` given as its lower triangle
+/// packed row by row ([`crate::LowerTriangle::packed`]), with no square laid
+/// out first: each rung's entries are the ones [`factorize_into`] writes from
+/// the ridged square ([`crate::LowerTriangle::ridged_lower_into`]) -- `c_ij +
+/// 0.0` below the diagonal, `(c_ii + ridge) + jitter` on it, zeros above, the
+/// same trace -- written straight into `l` in the same order, so `L` and the
+/// attempts and jitter it returns are the square's, to the bit. The square
+/// was a copy of the triangle that the rung's fill read once and then left.
+fn factorize_ridged_into(
+    c: &[f64],
+    ridge: f64,
+    k: usize,
+    l: &mut Mat<f64>,
+    work: &mut CholWork,
+) -> Option<(u32, f64)> {
+    debug_assert_eq!(c.len(), crate::ewcov::row_at(k));
+    let diag = |i: usize| c[crate::ewcov::row_at(i) + i] + ridge;
+    let trace: f64 = (0..k).map(diag).sum();
+    let base = if trace > 0.0 { trace / k as f64 } else { 1.0 };
+    let threads = rayon::current_num_threads();
+    for (attempts, &eps) in JITTER.iter().enumerate() {
+        let jitter = base * eps;
+        if l.nrows() == k && l.ncols() == k {
+            for j in 0..k {
+                let col = l.col_as_slice_mut(j);
+                let (above, rest) = col.split_at_mut(j);
+                above.fill(0.0);
+                rest[0] = diag(j) + jitter;
+                // Entry `(i, j)` is at `row_at(i) + j`, and row `i + 1`
+                // starts `i + 1` after row `i`.
+                let mut at = crate::ewcov::row_at(j + 1) + j;
+                for (i, v) in (j + 1..).zip(&mut rest[1..]) {
+                    *v = c[at] + 0.0;
+                    at += i + 1;
+                }
+            }
+        } else {
+            *l = Mat::from_fn(k, k, |i, j| match i.cmp(&j) {
+                Ordering::Less => 0.0,
+                Ordering::Equal => diag(i) + jitter,
+                Ordering::Greater => c[crate::ewcov::row_at(i) + j] + 0.0,
+            });
+        }
+        if cholesky_in_place(l.as_mut(), threads, (LEAF, TILE), Some(&mut *work)).is_ok() {
+            clear_upper(l);
+            return Some((attempts as u32, jitter));
+        }
+    }
+    None
+}
+
 /// The ladder [`factorize`] and [`factorize_into`] climb: the attempts so
 /// far and the jitter `eps · trace/k` (`trace/k` read as 1 where the trace
 /// is not positive) for each `eps` in [`JITTER`] in turn; each caller
@@ -197,6 +248,15 @@ impl FactorWork {
     pub(crate) fn factor(&mut self, a: &[f64], k: usize) -> Option<SpdFactor> {
         let spare = self.spare(k);
         SpdFactor::of_in(a, k, spare, &mut self.chol)
+    }
+
+    /// [`Self::factor`] of `C + ridge·I`, `C` given as its lower triangle
+    /// packed row by row ([`crate::LowerTriangle::packed`]): the factor of
+    /// the ridged square ([`crate::LowerTriangle::ridged_lower_into`]), to
+    /// the bit, with no square laid out.
+    pub(crate) fn factor_ridged(&mut self, c: &[f64], ridge: f64, k: usize) -> Option<SpdFactor> {
+        let spare = self.spare(k);
+        SpdFactor::of_ridged_in(c, ridge, k, spare, &mut self.chol)
     }
 
     /// A copy of `f`, written over a kept factor of its order where there
@@ -586,6 +646,28 @@ impl SpdFactor {
     ) -> Option<Self> {
         let mut l = spare.map_or_else(Mat::new, |f| f.l);
         let (attempts, jitter) = factorize_into(a, k, &mut l, work)?;
+        Some(Self {
+            l,
+            log_det: OnceLock::new(),
+            attempts,
+            jitter,
+            moves: 0,
+        })
+    }
+
+    /// [`Self::of_in`] of `C + ridge·I` from `C`'s lower triangle packed
+    /// row by row, to the bit of [`Self::of_in`] on the ridged square
+    /// ([`crate::LowerTriangle::ridged_lower_into`]): the square is not laid
+    /// out ([`factorize_ridged_into`]).
+    pub(crate) fn of_ridged_in(
+        c: &[f64],
+        ridge: f64,
+        k: usize,
+        spare: Option<Self>,
+        work: &mut CholWork,
+    ) -> Option<Self> {
+        let mut l = spare.map_or_else(Mat::new, |f| f.l);
+        let (attempts, jitter) = factorize_ridged_into(c, ridge, k, &mut l, work)?;
         Some(Self {
             l,
             log_det: OnceLock::new(),
@@ -1180,6 +1262,81 @@ mod tests {
         let by_hand: f64 = z.iter().zip(&beta).map(|(z, b)| z * b).sum();
         assert_eq!(dot_aug(&beta, &x, true), by_hand);
         assert_eq!(dot_aug(&beta[1..], &x, false), 2.0 * 3.0 - 4.0);
+    }
+
+    /// `FactorWork::factor_ridged` of a packed triangle is `SpdFactor::of` of
+    /// `C + ridge·I` laid out as a square ([`crate::LowerTriangle::ridged_
+    /// lower_into`]), to the bit -- `L`, the attempts, the jitter, every
+    /// zero above the diagonal -- written over a kept factor of its order, of
+    /// another, or of none: definite matrices, singular ones that climb a
+    /// jitter rung, an indefinite one every rung fails, negative zeros below
+    /// the diagonal, a trace below zero and one of exactly zero, sides 0 to
+    /// 20.
+    #[test]
+    fn factor_ridged_is_the_factor_of_the_ridged_square() {
+        let mut s = 11u64;
+        let mut lcg = || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        };
+        let bits = |f: &Option<SpdFactor>| {
+            f.as_ref().map(|f| {
+                let k = f.order();
+                let l: Vec<u64> = (0..k * k).map(|p| f.l[(p / k, p % k)].to_bits()).collect();
+                (l, f.attempts, f.jitter.to_bits(), f.moves)
+            })
+        };
+        let mut work = FactorWork::default();
+        let mut checked = 0;
+        for k in 0..=20usize {
+            let rows = k + 2;
+            let x: Vec<f64> = (0..rows * k).map(|_| lcg()).collect();
+            let gram =
+                |i: usize, j: usize| (0..rows).map(|r| x[r * k + i] * x[r * k + j]).sum::<f64>();
+            let full = |f: &dyn Fn(usize, usize) -> f64| -> Vec<f64> {
+                (0..k * k).map(|p| f(p / k, p % k)).collect()
+            };
+            let cases: Vec<(Vec<f64>, f64)> = vec![
+                (full(&|i, j| gram(i, j)), 0.0),
+                (full(&|i, j| gram(i, j)), 0.5),
+                (full(&|i, j| x[i] * x[j]), 0.0),
+                (
+                    full(&|i, j| if i == j { -1.0 - i as f64 } else { -0.0 }),
+                    0.0,
+                ),
+                (full(&|i, j| if i == j { 0.0 } else { -0.0 }), 1e-3),
+                (full(&|i, j| if i == j { 0.0 } else { -0.0 }), 0.0),
+                (full(&|i, j| if i == j { 1.0 } else { -0.0 }), 0.0),
+                (full(&|i, j| gram(i, j) * 1e-300), 1e-310),
+            ];
+            for (c, ridge) in cases {
+                let tri = crate::LowerTriangle::from(c);
+                let mut square = Vec::new();
+                tri.ridged_lower_into(&mut square, ridge);
+                let want = SpdFactor::of(&square, k);
+                // Written over a kept factor of this order, of another, and
+                // over none.
+                for spare_order in [k, k + 1, 0] {
+                    let kept = SpdFactor::of(&vec![1.0; spare_order * spare_order], spare_order);
+                    // A matrix of ones is singular past order 1, but a
+                    // jitter rung factorizes it: a factor to keep, where
+                    // the order is 0 or the ladder gives one.
+                    if let Some(kept) = kept {
+                        work.give(kept);
+                    }
+                    let got = work.factor_ridged(tri.packed(), ridge, k);
+                    assert_eq!(bits(&got), bits(&want), "k = {k}, ridge {ridge}");
+                    checked += usize::from(got.is_some());
+                    if let Some(f) = got {
+                        work.give(f);
+                    }
+                    work.drop_spares();
+                }
+            }
+        }
+        assert!(checked > 100, "{checked}");
     }
 
     /// `solve_spd_ridged` on a packed triangle is `solve_spd` on `C +

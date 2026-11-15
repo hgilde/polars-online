@@ -351,17 +351,16 @@ struct RowWork {
 /// Beside the factors it keeps the working space their rebuilding needs
 /// (task 298): a learned row drops every factor and the next row builds
 /// each again, so the dropped factors are kept and written over, with
-/// faer's scratch ([`FactorWork`]), beside the state matrix the
-/// factorization reads, where each was made afresh on every
-/// factorization. Each is written in full before it is read, so a factor
-/// is the one [`SpdFactor::of`] gives, to the bit. The working space is
+/// faer's scratch ([`FactorWork`]), where each was made afresh on every
+/// factorization. Each is written in full before it is read, and is made
+/// from the state's packed triangle with no square laid out, so a factor
+/// is the one [`SpdFactor::of`] gives of the ridged square, to the bit. The working space is
 /// shown by no `Debug` (a state's digest reads the model's), and a copy
 /// keeps none of it.
 #[derive(Default)]
 struct Factors {
     held: Vec<Option<SpdFactor>>,
     work: FactorWork,
-    matrix: Vec<f64>,
     /// Boxed so that taking it for a row moves a pointer, not nine vectors.
     row: Option<Box<RowWork>>,
 }
@@ -533,10 +532,12 @@ impl Hmm {
         } = self;
         for (s, cov) in states.iter().enumerate() {
             if factors.peek(s).is_none() {
-                // Formed and factorized in the cache's working space: the
-                // factor `SpdFactor::of` gives of the same matrix, to the bit.
-                Self::matrix_of(cfg, cov, &mut factors.matrix);
-                let f = factors.work.factor(&factors.matrix, d);
+                // Factorized in the cache's working space, from the packed
+                // triangle: the factor `SpdFactor::of` gives of the same
+                // matrix ([`Self::matrix_of`]), to the bit, with no square
+                // laid out.
+                let r = cfg.precision_prior * cov.precision_scale();
+                let f = factors.work.factor_ridged(cov.comoments().packed(), r, d);
                 factors.set(s, k, f);
             }
         }
@@ -2179,12 +2180,12 @@ mod tests {
         }))
         .unwrap();
         scorer.step(&[0.1, 0.2], &[], 1.0, 1.0);
-        assert!(scorer.factors.row.is_some() && !scorer.factors.matrix.is_empty());
+        assert!(scorer.factors.row.is_some());
         let copy = scorer.clone();
         assert_eq!(copy.factors.held.len(), 2);
         assert_eq!(copy.factors.held, scorer.factors.held);
         assert!(copy.factors.held.iter().all(Option::is_some));
-        assert!(copy.factors.row.is_none() && copy.factors.matrix.is_empty());
+        assert!(copy.factors.row.is_none());
         assert_eq!(copy.factors.work.kept(), 0);
     }
 
@@ -3019,7 +3020,7 @@ mod tests {
     }
 
     /// The factors rebuilt in the cache's kept working space -- the factors
-    /// a learned row dropped, faer's scratch and the state matrix -- are the
+    /// a learned row dropped and faer's scratch -- are the
     /// ones a cache built afresh gives, to the bit: every output of every
     /// row, a zero-weight row's among them, and the state's `Debug`, which
     /// shows none of the working space (task 298). The kept model writes
@@ -3032,7 +3033,6 @@ mod tests {
         for (i, (x, _)) in stream(400, 7, 30).iter().enumerate() {
             let w = if i % 37 == 5 { 0.0 } else { 1.0 };
             fresh.factors.work = FactorWork::default();
-            fresh.factors.matrix = Vec::new();
             fresh.factors.row = None;
             written_over += usize::from(kept.factors.work.kept() == 3);
             let a = kept.step(x, &[], 1.0, w);
