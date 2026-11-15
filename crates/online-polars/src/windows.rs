@@ -353,7 +353,10 @@ impl KernelDef {
     /// `λ^d`, the discount across `d` units of policy time.
     #[inline]
     pub(crate) fn discount(&self, d: f64) -> f64 {
-        if self.half_life.is_infinite() {
+        if self.half_life.is_infinite() || d == 0.0 {
+            // No distance discounts nothing: `exp2(-0)` is 1 exactly, for
+            // the half-life above 0 every kernel has (`check`), and every
+            // read of a backward window at its newest row is one.
             1.0
         } else {
             // `exp2(-x)`, as `Decay::factor` spells it, for the same reason.
@@ -604,7 +607,14 @@ fn merge(a: Acc, b: Acc) -> Acc {
 /// from or discounted to it once.
 #[inline]
 fn then(k: &KernelDef, a: Acc, a_at: f64, b: Acc, b_at: f64, var: bool) -> (Acc, f64) {
-    let f = k.discount(b_at - a_at);
+    then_by(k, k.discount(b_at - a_at), a, a_at, b, b_at, var)
+}
+
+/// [`then`] with the discount across the two anchors given: the operators
+/// of a queue are folded at the same two anchors on a row, so the caller
+/// takes it once.
+#[inline]
+fn then_by(k: &KernelDef, f: f64, a: Acc, a_at: f64, b: Acc, b_at: f64, var: bool) -> (Acc, f64) {
     match k.direction {
         Direction::Backward => (a.scaled(f, var).plus(b, var), b_at),
         Direction::Forward => (a.plus(b.scaled(f, var), var), a_at),
@@ -932,9 +942,11 @@ impl Queue {
                 }
                 Some(last) => {
                     let last_at = self.back.at[last];
+                    let f = k.discount(tau - last_at);
                     for j in 0..n {
-                        let (a, a_at) = then(
+                        let (a, a_at) = then_by(
                             k,
+                            f,
                             self.back.sum::<W>(last, j),
                             last_at,
                             own(j),
@@ -956,9 +968,10 @@ impl Queue {
         } else {
             let mut at = tau;
             let sw = sum_w::<W>();
+            let f = k.discount(tau - self.total_at);
             for j in 0..n {
                 let t = Acc::read(&self.total[j * sw..], W);
-                let (a, a_at) = then(k, t, self.total_at, own(j), tau, W && self.var[j]);
+                let (a, a_at) = then_by(k, f, t, self.total_at, own(j), tau, W && self.var[j]);
                 put::<W>(&mut self.total, j, a);
                 at = a_at;
             }
@@ -1009,9 +1022,11 @@ impl Queue {
                 }
                 Some(newer) => {
                     let newer_at = self.front.at[newer];
+                    let f = k.discount(newer_at - tau);
                     for j in 0..n {
-                        let (a, a_at) = then(
+                        let (a, a_at) = then_by(
                             k,
+                            f,
                             self.back.own::<W>(i, j),
                             tau,
                             self.front.sum::<W>(newer, j),
@@ -1565,10 +1580,49 @@ fn elapsed(now: ClockValue, last: ClockValue) -> f64 {
     }
 }
 
+/// Whether `now` is after `last`: `elapsed(now, last) > 0.0`, the sign of the
+/// step, which between two temporal values is the integers' own.
+#[inline]
+fn is_after(now: ClockValue, last: ClockValue) -> bool {
+    match (now, last) {
+        (ClockValue::Ns(c), ClockValue::Ns(p)) => c > p,
+        _ => elapsed(now, last) > 0.0,
+    }
+}
+
 /// Whether `now` is more than `cap` clock units after `last`: on an
 /// integer clock their difference in integers against the cap, exactly
 /// (task 200), and as [`elapsed`] gives it otherwise.
+#[inline]
 fn past_cap(now: ClockValue, last: ClockValue, cap: f64) -> bool {
+    match (now, last) {
+        // Between two temporal values, a step short of the cap's whole
+        // seconds is not past it, as the integers say, with no conversion to
+        // seconds: a step of fewer whole seconds than `floor(cap)` converts
+        // to at most `floor(cap)` (the conversion never rounds past the next
+        // whole second), which is not more than `cap`. Any other step is
+        // converted and compared, as `elapsed` gives it.
+        (ClockValue::Ns(c), ClockValue::Ns(p)) => {
+            let step = i128::from(c) - i128::from(p);
+            if (1.0..4.0e9).contains(&cap)
+                && step < i128::from(u32::try_from(cap as u64).unwrap_or(0)) * 1_000_000_000
+            {
+                return false;
+            }
+            seconds_of_ns(step) > cap
+        }
+        // Neither pair has an integer step: `elapsed` is the difference.
+        (ClockValue::F64(c), ClockValue::F64(p)) => c - p > cap,
+        _ => past_cap_general(now, last, cap),
+    }
+}
+
+/// [`past_cap`] for any other pair, out of line: the exact comparison of an
+/// integer clock's step against the cap takes a conversion to 128 bits that
+/// the rows of a float or temporal clock, taking the arms above, would
+/// otherwise pay for on every row.
+#[inline(never)]
+fn past_cap_general(now: ClockValue, last: ClockValue, cap: f64) -> bool {
     match now.int_step(last) {
         Some(step) => online_core::cmp_int_f64(step, cap) == Some(Ordering::Greater),
         None => elapsed(now, last) > cap,
@@ -1605,6 +1659,46 @@ fn mass_between(k: &KernelDef, t: f64, a: f64, b: f64) -> f64 {
         Direction::Backward => k.mass(t - a) - k.mass(t - b),
         // ∫_a^b λ^(s - T) ds = M(b - T) - M(a - T)
         Direction::Forward => k.mass(b - t) - k.mass(a - t),
+    }
+}
+
+/// A value of a pure function of a double, kept with its argument's bits for
+/// the next ask: the operators of a kernel on a row are asked for the same
+/// discount, and often for the same mass.
+#[derive(Clone, Copy, Default)]
+struct Last(Option<(u64, f64)>);
+
+impl Last {
+    #[inline]
+    fn of(&mut self, x: f64, f: impl FnOnce(f64) -> f64) -> f64 {
+        match self.0 {
+            Some((bits, v)) if bits == x.to_bits() => v,
+            _ => {
+                let v = f(x);
+                self.0 = Some((x.to_bits(), v));
+                v
+            }
+        }
+    }
+}
+
+/// [`mass_between`] for a backward kernel's interval ending at `t` -- a
+/// value held from `a` to the row's own time -- with `last` holding the mass
+/// of the distance back to `a` that an operator before it asked for: where
+/// operators of a kernel hold from the same time (they read one column, as a
+/// mean and a spread of it do), it is taken once. A forward kernel's is
+/// [`mass_between`]'s.
+#[inline]
+fn mass_held_to(k: &KernelDef, t: f64, a: f64, last: &mut Last) -> f64 {
+    // The interval is `[a, b]` with `b` the row's own time `t`, as `mass_between`
+    // takes it, its far end's mass `M(t - b)` read where it is.
+    let b = t;
+    if b <= a {
+        return 0.0;
+    }
+    match k.direction {
+        Direction::Backward => last.of(t - a, |x| k.mass(x)) - k.mass(t - b),
+        Direction::Forward => mass_between(k, t, a, b),
     }
 }
 
@@ -2127,9 +2221,36 @@ impl Windows {
         self.scratch();
         let seq = self.next_seq;
         let gi = row.group;
-        // Both clocks step on copies, kept only once neither refuses the row.
-        let (shared, adv, clock, own) = self.step_clocks(Some(gi), row.clock, row.session)?;
-        self.shared = shared;
+        // A plain step forward on both clocks is never refused: each steps
+        // where it stands, with no copy of the state to keep or put back.
+        // Any other row steps both on copies, kept only once neither
+        // refuses it.
+        let stream_session = if self.grouped { None } else { row.session };
+        let plain = match self.shared.plain_forward(row.clock, stream_session, true) {
+            // The group's clock, at the stream's last clock value as it
+            // mostly is, takes the step the stream's did.
+            Some(a) => self.groups[gi]
+                .clock
+                .plain_forward_after(&self.shared, a, row.clock, row.session, true)
+                .map(|b| (a, b)),
+            None => None,
+        };
+        let (adv, clock, own) = if let Some((a, b)) = plain {
+            let adv = self
+                .shared
+                .take_plain_forward(&self.clock_cfg, row.clock, stream_session, a);
+            let own = self.groups[gi].clock.take_plain_forward(
+                &self.clock_cfg,
+                row.clock,
+                row.session,
+                b,
+            );
+            (adv, None, own)
+        } else {
+            let (shared, adv, clock, own) = self.step_clocks(Some(gi), row.clock, row.session)?;
+            self.shared = shared;
+            (adv, Some(clock), own)
+        };
         self.next_seq += 1;
         // An event on the stream's clock reaches every group now; each
         // group's own clock would show it at that group's next row.
@@ -2180,7 +2301,9 @@ impl Windows {
         });
 
         let g = &mut self.groups[gi];
-        g.clock = clock;
+        if let Some(clock) = clock {
+            g.clock = clock;
+        }
         let restarted = own.reset || own.session_changed || own.capped || g.restart;
         if restarted {
             // Every window of the group was ended above or before: nothing
@@ -2340,6 +2463,7 @@ impl Windows {
             // of a stretch from before it: from `-inf`, or from a window
             // back where one bounds the mass.
             let (rw, wide) = (g.queues[ki].row_w(), g.queues[ki].wide());
+            let mut mass = Last::default();
             for (j, &o) in m.iter().enumerate() {
                 let v = row.values[self.ops[o].input];
                 let v = if usable(v) { v } else { f64::NAN };
@@ -2352,7 +2476,7 @@ impl Windows {
                 let acc = if v.is_nan() {
                     Acc::default()
                 } else if stat.weighs_held() {
-                    Acc::held(v, mass_between(k, tau, start, tau), stat.is_var())
+                    Acc::held(v, mass_held_to(k, tau, start, &mut mass), stat.is_var())
                 } else {
                     Acc {
                         s: v,
@@ -2426,8 +2550,7 @@ impl Windows {
     /// which pend no row, and nothing on a row at the same stamp. They are
     /// flushed in the list's order, the head walk's.
     fn flush_stamps_before(&mut self, now: ClockValue) {
-        let passed =
-            |g: &Group| !g.pending.is_empty() && g.stamp.is_some_and(|s| elapsed(now, s) > 0.0);
+        let passed = |g: &Group| !g.pending.is_empty() && g.stamp.is_some_and(|s| is_after(now, s));
         let mut first = None;
         let mut at = self.tail;
         while let Some(i) = at.filter(|&i| passed(&self.groups[i])) {
@@ -2609,6 +2732,11 @@ impl Windows {
     /// Move a group to the tail of the silent list: its last row is the
     /// stream's latest.
     fn link_back(&mut self, gi: usize) {
+        // Already the tail: unlinking it and linking it back would leave
+        // every link as it is.
+        if self.tail == Some(gi) && self.groups[gi].linked {
+            return;
+        }
         self.unlink(gi);
         let tail = self.tail;
         let g = &mut self.groups[gi];
@@ -2781,6 +2909,7 @@ fn read_backward<const W: bool>(
     }
     let span = k.window_size.map_or(tau, |w| w.min(tau));
     let edge = k.window_size.map_or(f64::NEG_INFINITY, |w| tau - w);
+    let mut discount = Last::default();
     for (j, &o) in members.iter().enumerate() {
         let op = &ops[o];
         let var = op.stat.is_var();
@@ -2825,7 +2954,7 @@ fn read_backward<const W: bool>(
                 a
             }
             // The sums are anchored at the newest row; seen from `tau`.
-            None => sum.scaled(k.discount(tau - at), var),
+            None => sum.scaled(discount.of(tau - at, |d| k.discount(d)), var),
         };
         out[j] = value_of(k, op, a, span);
     }
@@ -3081,6 +3210,88 @@ mod tests {
     use online_core::{OnClockReset, SessionGap};
 
     use super::*;
+
+    /// The integer short cuts in `past_cap` and `is_after` say what the
+    /// conversion to seconds says, for every step around the cap's whole
+    /// seconds and its edges, at caps from a second to the largest the short
+    /// cut takes, and past them.
+    #[test]
+    fn the_temporal_short_cuts_in_past_cap_and_is_after_are_the_conversions() {
+        let base = -4_000_000_000_000_000_000i64;
+        let caps = [
+            0.0,
+            0.5,
+            1.0,
+            1.5,
+            59.999_999_999,
+            60.0,
+            300.0,
+            300.000_000_001,
+            86_400.0,
+            1e7,
+            8.9e9,
+            9.0e9,
+            1e12,
+            f64::MAX,
+        ];
+        for cap in caps {
+            let edge = (cap.min(9.2e9) * 1e9) as i64;
+            for wiggle in (-3i64..=3).chain([-1_000_000_000, 1_000_000_000, -1, 1_000, -1_000]) {
+                for step in [edge.saturating_add(wiggle), wiggle, wiggle.abs(), 0, 1] {
+                    let (now, last) = (
+                        ClockValue::Ns(base.saturating_add(step)),
+                        ClockValue::Ns(base),
+                    );
+                    let want = elapsed(now, last) > cap;
+                    assert_eq!(past_cap(now, last, cap), want, "{cap} {step}");
+                    let (back, fwd) = (
+                        ClockValue::Ns(base),
+                        ClockValue::Ns(base.saturating_add(step)),
+                    );
+                    let want = elapsed(back, fwd) > cap;
+                    assert_eq!(past_cap(back, fwd, cap), want, "{cap} -{step}");
+                    assert_eq!(is_after(now, last), elapsed(now, last) > 0.0, "{step}");
+                    assert_eq!(is_after(back, fwd), elapsed(back, fwd) > 0.0, "-{step}");
+                }
+            }
+        }
+        // The other forms: a number clock's difference, an integer clock's
+        // step against the cap exactly, and a mixed pair as the numbers.
+        let numbers = [
+            0.0,
+            -0.0,
+            1.5,
+            299.5,
+            300.0,
+            1e300,
+            -1e300,
+            f64::INFINITY,
+            f64::NAN,
+        ];
+        for cap in [0.0, 1.0, 300.0, 1e300] {
+            for a in numbers {
+                for b in numbers {
+                    let (now, last) = (ClockValue::F64(a), ClockValue::F64(b));
+                    assert_eq!(past_cap(now, last, cap), elapsed(now, last) > cap);
+                    assert_eq!(is_after(now, last), elapsed(now, last) > 0.0);
+                }
+            }
+            for (a, b) in [
+                (0i64, 0i64),
+                (301, 0),
+                (300, 0),
+                (i64::MAX, i64::MIN),
+                (-5, 5),
+            ] {
+                let (now, last) = (ClockValue::I64(a), ClockValue::I64(b));
+                let step = i128::from(a) - i128::from(b);
+                let want = online_core::cmp_int_f64(step, cap) == Some(Ordering::Greater);
+                assert_eq!(past_cap(now, last, cap), want, "{a} {b} {cap}");
+            }
+            let (now, last) = (ClockValue::F64(400.0), ClockValue::I64(0));
+            assert_eq!(past_cap(now, last, cap), elapsed(now, last) > cap);
+        }
+    }
 
     /// [`long_windows_keep_their_bits`]'s digest, computed on the code
     /// before task 270 (M-2).

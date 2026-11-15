@@ -1372,7 +1372,8 @@ impl WindowsRun {
             // A key is looked up once while it repeats: a chunk of one
             // group, as a bank's resolver is fed, hashed it every row.
             let group = match last_group {
-                Some((k, g)) if k == keys[i] => g,
+                // Without a group column every key is the one.
+                Some((k, g)) if groups.is_none() || k == keys[i] => g,
                 _ => {
                     let g = self.core.group(keys[i]);
                     last_group = Some((keys[i], g));
