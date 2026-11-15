@@ -140,6 +140,21 @@ returns.
   sweep waits on; each sum takes the same subtractions in the same order.
   1.1 times as fast at 20 features, 1.4 at 100, 1.7 to 1.8 at 200 to 500.
   Outputs and saved state unchanged to the bit.
+- `ewridge`'s solves no longer allocate: the lists a solve formed and
+  dropped (about 22 at five features) are kept and written over. `ewridge`
+  at five features is 1.57 times as fast a row (1.2 at twenty), and a bank
+  of 1,000 groups at five features twice as fast. Outputs and saved state
+  unchanged to the bit.
+- `rls` keeps each rotation's working entry in a register, folds the
+  decay into the rotations, and takes each coefficient's terms off as the
+  coefficients arrive, with targets sharing each pass: 1.5 to 1.8 times as
+  fast through `fit_predict` at 20 and 50 features (1.8 with 3 targets).
+  Outputs and saved state unchanged to the bit.
+- `ew_cov`'s correlations, `lag_corr` and `partial_corr` divide two at a
+  time (the zero-variance case is chosen after the division rather than
+  branched around it): the 20-feature model 1.4 times as fast, 1.6 at 50,
+  1.7 for `lag_corr` with 5 lags, about 1.2 through the bank. Outputs
+  unchanged to the bit.
 
 ## [1.5.0] — 2026-11-10
 

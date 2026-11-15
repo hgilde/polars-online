@@ -137,7 +137,7 @@ budget = 9076026
 
 [instructions.lasso_k20]
 what = "lasso, 20 features, 1 target, half-life 1000, penalties 0.1, 0.01 and 0, the default cadence: AnyModel::step_into, into one kept Step"
-budget = 11975839
+budget = 12605148
 
 [instructions.corrchange_monitor_w2500]
 what = "corrchange monitor, 4 features (6 pairs), a span of 2,500 rows closing once in the block: AnyModel::step"
@@ -1501,6 +1501,14 @@ changelog = "`ewridge`'s condition estimate costs 4.3% at 5 features"
 # key = "instructions.bocpd"
 # version = "1.1.0"
 # reason = "why a release may carry this drift"
+
+[[raised]]
+key = "instructions.lasso_k20"
+from = 11975839
+to = 12605148
+date = 2026-11-15
+reason = "task 413: lasso's coordinate descent takes each coordinate's terms from the coordinates before it off ahead of time, beside the previous coordinate's chain, which halves the dependent subtractions a sweep waits on; at 20 features the sweep runs 6-13% more instructions (arm64) for 14-17% fewer cycles, 1.1 times as fast through fit_predict and 1.7-1.8 at 200-500 features, outputs identical to the bit. CI's count on 682332c4 (run 43752576671), +5.25%"
+changelog = "`lasso`'s coordinate descent takes each coordinate's terms from the"
 
 [[signoff]]
 key = "instructions.clock_temporal"
