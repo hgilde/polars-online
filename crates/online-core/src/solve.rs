@@ -1314,6 +1314,55 @@ mod pool_tests;
 mod tests {
     use super::*;
 
+    /// A solve of order `k` is kept a space up to `KEPT_ORDER`, past it
+    /// none: the thread's buffers stay bounded. A space is found again by
+    /// its shape, and a thread keeps at most sixteen shapes.
+    #[test]
+    fn the_kept_spaces_are_bounded_by_order_and_count() {
+        let spd = |k: usize| -> Vec<f64> {
+            (0..k * k)
+                .map(|n| {
+                    if n / k == n % k {
+                        2.0 + (n / k) as f64
+                    } else {
+                        0.1
+                    }
+                })
+                .collect()
+        };
+        let mut out = Vec::new();
+        let mut solves = Solves::new();
+        for (k, kept) in [(2, 1), (KEPT_ORDER, 2), (KEPT_ORDER + 1, 2)] {
+            let (a, b) = (spd(k), vec![1.0; k]);
+            let attempts = solve_in(&mut solves, &a, &b, k, 1, &mut out).unwrap();
+            let (want, want_attempts) = crate::solve_spd(&a, &b, k, 1).unwrap();
+            assert_eq!((attempts, &out), (want_attempts, &want), "order {k}");
+            assert_eq!(solves.len(), kept, "spaces after order {k}");
+        }
+
+        let mut solves = Solves::new();
+        let first = kept_work(&mut solves, 3, 1) as *const SolveWork;
+        kept_work(&mut solves, 4, 2);
+        kept_work(&mut solves, 5, 3);
+        assert_eq!(solves.len(), 3);
+        assert_eq!(kept_work(&mut solves, 3, 1) as *const SolveWork, first);
+        assert_eq!(solves.len(), 3, "a shape found is not made again");
+        let third = kept_work(&mut solves, 5, 3) as *const SolveWork;
+        assert_eq!(third, &solves[2].2 as *const SolveWork);
+        let second = kept_work(&mut solves, 4, 2) as *const SolveWork;
+        assert_eq!(second, &solves[1].2 as *const SolveWork);
+        assert_ne!(first, second);
+
+        let mut solves = Solves::new();
+        for k in 1..=16 {
+            kept_work(&mut solves, k, 1);
+        }
+        assert_eq!(solves.len(), 16);
+        kept_work(&mut solves, 17, 1);
+        assert_eq!(solves.len(), 1, "the seventeenth shape clears the rest");
+        assert_eq!((solves[0].0, solves[0].1), (17, 1));
+    }
+
     #[test]
     fn dot_aug_matches_the_augmented_row() {
         let beta = [0.5, 2.0, -1.0];

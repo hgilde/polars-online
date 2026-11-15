@@ -453,6 +453,18 @@ impl Specification {
 mod tests {
     use super::*;
 
+    /// A read of `KEPT_ORDER` features or more leaves this thread's scratch
+    /// empty; one of fewer keeps what it used.
+    #[test]
+    fn the_read_scratch_is_kept_below_the_order_and_released_at_it() {
+        let kept = || READ.with_borrow(|sc| sc.a.capacity() > 0);
+        for (order, want) in [(KEPT_ORDER - 1, true), (KEPT_ORDER, false), (0, true)] {
+            with_scratch(order, |sc| sc.a.resize(9, 1.0));
+            assert_eq!(kept(), want, "order {order}");
+            with_scratch(0, |sc| *sc = ReadScratch::default());
+        }
+    }
+
     fn lcg(state: &mut u64) -> f64 {
         *state = state
             .wrapping_mul(6364136223846793005)
