@@ -292,6 +292,23 @@ impl LowerTriangle {
         }
     }
 
+    /// [`Self::from`] a whole row-major matrix, written over this one's
+    /// storage: the same matrix, where a state of another size is read into
+    /// the same list.
+    pub(crate) fn set_from_square(&mut self, full: &[f64]) {
+        let n = full.len();
+        let k = n.isqrt();
+        if k * k != n {
+            *self = Self::damaged(full.to_vec());
+            return;
+        }
+        self.k = k;
+        self.n = n;
+        self.v.clear();
+        self.v.resize(row_at(k), 0.0);
+        self.copy_from(full);
+    }
+
     /// Take a lower triangle of the same size, packed.
     pub(crate) fn copy_from_packed(&mut self, packed: &[f64]) {
         self.v.copy_from_slice(packed);
@@ -425,6 +442,21 @@ impl<'de> Deserialize<'de> for LowerTriangle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A matrix set into a kept one is the matrix `From` makes, of the
+    /// same side, another side and no side at all.
+    #[test]
+    fn setting_a_square_into_a_kept_matrix_is_converting_it() {
+        let mut kept = LowerTriangle::default();
+        for n in [9usize, 4, 16, 9, 1, 0, 7, 9] {
+            let full: Vec<f64> = (0..n).map(|i| i as f64 * 1.5 - 2.0).collect();
+            kept.set_from_square(&full);
+            let fresh = LowerTriangle::from(full.clone());
+            assert_eq!(kept.len(), fresh.len(), "{n} numbers");
+            assert!(kept == fresh, "{n} numbers");
+            assert_eq!(kept.to_full(), fresh.to_full(), "{n} numbers");
+        }
+    }
 
     #[test]
     fn every_read_is_the_lower_triangle() {

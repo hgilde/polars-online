@@ -66,7 +66,7 @@ use serde::{Deserialize, Serialize};
 use crate::gaps::{Acc, AccSnap, AccView, Cross, gram_parts};
 use crate::model::{Fit, ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::since::Since;
-use crate::solve::{FactorWork, OverMoments, SpdFactor, dot_aug};
+use crate::solve::{FactorWork, OverMoments, QuadWork, SpdFactor, dot_aug};
 use crate::{Decay, EwCov, GramPart, TargetGaps, TargetMoments};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -235,11 +235,13 @@ impl EwRidgeCfg {
         self.n_features + usize::from(self.fit_intercept)
     }
 
-    /// (feature-set index, ridge index) pairs in output order.
-    fn combos(&self) -> Vec<(usize, usize)> {
+    /// (feature-set index, ridge index) pairs in output order, written into
+    /// `out`.
+    fn combos_into(&self, out: &mut Vec<(usize, usize)>) {
         let nf = self.feature_sets.len().max(1);
         let nr = self.ridge.len();
-        (0..nf).flat_map(|f| (0..nr).map(move |r| (f, r))).collect()
+        out.clear();
+        out.extend((0..nf).flat_map(|f| (0..nr).map(move |r| (f, r))));
     }
 
     pub fn n_combos(&self) -> usize {
@@ -567,6 +569,12 @@ pub struct EwRidge {
     /// over ([`EwRidge::view_into`]). Not state.
     #[serde(skip)]
     view: crate::window::Kept<RidgeView>,
+    /// The storage of the fit before the last, which the next solve writes
+    /// its fit over: the fit's lists, the last solve's staying the model's
+    /// until then. Not state, and boxed with the rest of what a model
+    /// keeps that way ([`crate::window::Kept`]).
+    #[serde(skip)]
+    spare_fit: crate::window::Kept<Vec<Vec<f64>>>,
 }
 
 /// What a window needs beyond the accumulators: where the clock has got to,
@@ -699,6 +707,7 @@ impl EwRidge {
             first_period_by_share: false,
             factors: Factors::default(),
             view: crate::window::Kept::default(),
+            spare_fit: crate::window::Kept::default(),
             cfg,
         })
     }
@@ -923,22 +932,19 @@ impl EwRidge {
         }
     }
 
-    /// Indices into z for a combo's feature set (intercept first if configured).
-    fn combo_z_indices(&self, fs_idx: usize) -> Vec<usize> {
+    /// Indices into z for a combo's feature set (intercept first if
+    /// configured), written into `idx`.
+    fn combo_z_indices_into(&self, fs_idx: usize, idx: &mut Vec<usize>) {
         let off = usize::from(self.cfg.fit_intercept);
-        let mut idx: Vec<usize> = if self.cfg.feature_sets.is_empty() {
-            (0..self.cfg.n_features).map(|i| i + off).collect()
-        } else {
-            self.cfg.feature_sets[fs_idx]
-                .1
-                .iter()
-                .map(|&i| i + off)
-                .collect()
-        };
+        idx.clear();
         if self.cfg.fit_intercept {
-            idx.insert(0, 0);
+            idx.push(0);
         }
-        idx
+        if self.cfg.feature_sets.is_empty() {
+            idx.extend((0..self.cfg.n_features).map(|i| i + off));
+        } else {
+            idx.extend(self.cfg.feature_sets[fs_idx].1.iter().map(|&i| i + off));
+        }
     }
 
     /// The accumulators a fit is read from: the live ones, or -- with a
@@ -1010,12 +1016,19 @@ impl EwRidge {
         // The view is kept between solves and written over; taken out while
         // the solve borrows the model.
         let mut view = self.view.take();
-        self.solve_in(&mut view);
+        // The thread's lists, lent to this solve: none are left in the cell
+        // while it runs, so a solve that starts on this thread meanwhile (a
+        // pool thread waiting on a parallel factorization takes other work)
+        // forms its own and leaves them for the next.
+        let mut bufs = SOLVE_BUFS.take().unwrap_or_default();
+        self.solve_in(&mut view, &mut bufs);
+        SOLVE_BUFS.set(Some(bufs));
         self.view.put(view);
     }
 
-    /// [`Self::solve`], reading the window's view into `kept`.
-    fn solve_in(&mut self, kept: &mut crate::window::Kept<RidgeView>) {
+    /// [`Self::solve`], reading the window's view into `kept` and forming
+    /// its lists in `bufs`.
+    fn solve_in(&mut self, kept: &mut crate::window::Kept<RidgeView>, bufs: &mut SolveBufs) {
         #[cfg(test)]
         unread::SOLVED.with(|c| c.set(c.get() + 1));
         // A held Gram block goes in before the matrix is read. Solves are
@@ -1025,20 +1038,37 @@ impl EwRidge {
         self.acc.flush();
         let k_total = self.cfg.k_total();
         let m = self.cfg.n_targets;
-        let combos = self.cfg.combos();
+        let SolveBufs {
+            combos,
+            readers,
+            zidx,
+            sup0,
+            cert,
+            r,
+            parts,
+        } = bufs;
+        self.cfg.combos_into(combos);
         let nc = combos.len();
         // Zeros outside each combo's feature set, which no solve writes; a
         // slot no system solves has no fit, NaN, which predicts nothing (a
         // combo skipped for no weight, a first solve that fails, a target
-        // with no row: below).
-        let mut beta = vec![vec![0.0; k_total]; m * nc];
+        // with no row: below). Written over the storage of the fit before
+        // the last, which the last solve's replaces ([`SolveBufs::beta`]).
+        let mut beta = std::mem::take(self.spare_fit.get());
+        beta.resize_with(m * nc, Vec::new);
+        for b in &mut beta {
+            b.clear();
+            b.resize(k_total, 0.0);
+        }
         // The readiness statistics of the last solve, carried forward for a
         // combo whose solve fails at every jitter (it keeps its previous
         // coefficients, and so its previous shares), and resized on the
         // first. Taken out first: the loop below borrows the accumulators.
         let mut ready = std::mem::take(&mut self.ready);
         ready.edf.resize(m * nc, f64::NAN);
-        ready.support.resize(m * nc, vec![f64::NAN; k_total]);
+        if ready.support.len() != m * nc {
+            ready.support.resize(m * nc, vec![f64::NAN; k_total]);
+        }
         ready.system_of.resize(m * nc, usize::MAX);
         ready.pending.resize(m * nc, None);
         let Factors {
@@ -1063,6 +1093,7 @@ impl EwRidge {
             // stood there, so the row after a gap reported the row before's
             // `support_coef` beside a fit of NaN (review round 4, CA1).
             self.beta = Some(Fit(vec![vec![f64::NAN; k_total]; m * nc]));
+            *self.spare_fit.get() = beta;
             for slot in 0..m * nc {
                 ready.clear(slot, &mut work);
             }
@@ -1093,7 +1124,7 @@ impl EwRidge {
 
         // One system per Gram, for the targets that read it.
         for (g, cov) in grams.iter().enumerate() {
-            let readers = self.acc.grams.readers(g);
+            self.acc.grams.readers_into(g, readers);
             // Whether the centred solve may read this Gram's system as a
             // ridge over semidefinite co-moments: a live one, built row by
             // row since it was empty or merged block by block -- not a
@@ -1102,11 +1133,13 @@ impl EwRidge {
             // shortcut*).
             let over_moments = view.is_none() && self.slow.is_none();
             let mr = readers.len();
-            let r: Vec<Vec<f64>> = if centred {
-                Vec::new()
-            } else {
-                readers.iter().map(|&j| cross.raw(j)).collect()
-            };
+            // The uncentred right-hand sides, formed only where they are read.
+            if !centred {
+                r.resize_with(mr, Vec::new);
+                for (rj, &j) in r.iter_mut().zip(readers.iter()) {
+                    cross.raw_into(j, rj);
+                }
+            }
             for (ci, &(fs_idx, r_idx)) in combos.iter().enumerate() {
                 let ridge = self.cfg.ridge[r_idx];
                 // A Gram with no weight and no penalty has no system to
@@ -1122,38 +1155,41 @@ impl EwRidge {
                 // zeros, a share of data under no fit (review 2026-10-05,
                 // CA6).
                 if ridge == 0.0 && cov.n_eff() <= 0.0 {
-                    for &j in &readers {
+                    for &j in readers.iter() {
                         beta[j * nc + ci].fill(f64::NAN);
                         ready.clear(j * nc + ci, &mut work);
                     }
                     continue;
                 }
-                let zidx = self.combo_z_indices(fs_idx);
+                self.combo_z_indices_into(fs_idx, zidx);
                 let kc = zidx.len();
 
                 let solved: Option<Solved> = if centred {
                     self.solve_centred(
                         cov,
                         cross,
-                        &readers,
+                        readers,
                         &mut failures,
                         &mut work,
-                        &zidx,
+                        parts,
+                        zidx,
                         ridge,
                         over_moments,
                     )
                 } else {
                     // Gather the sub-block of S and the per-target rhs.
-                    let mut a = vec![0.0; kc * kc];
+                    parts.a.clear();
+                    parts.a.resize(kc * kc, 0.0);
                     for (ai, &zi) in zidx.iter().enumerate() {
                         for (aj, &zj) in zidx.iter().enumerate() {
-                            a[ai * kc + aj] = cov.raw(zi, zj);
+                            parts.a[ai * kc + aj] = cov.raw(zi, zj);
                         }
                     }
-                    let mut b = vec![0.0; kc * mr];
+                    parts.b.clear();
+                    parts.b.resize(kc * mr, 0.0);
                     for (jj, rj) in r.iter().enumerate() {
                         for (ai, &zi) in zidx.iter().enumerate() {
-                            b[jj * kc + ai] = rj[zi];
+                            parts.b[jj * kc + ai] = rj[zi];
                         }
                     }
                     if self.cfg.ridge_scale {
@@ -1165,11 +1201,11 @@ impl EwRidge {
                         let ps = cov.prior_scale();
                         for i in 0..kc {
                             for j in 0..kc {
-                                a[i * kc + j] *= w;
+                                parts.a[i * kc + j] *= w;
                             }
-                            a[i * kc + i] += ps * ridge;
+                            parts.a[i * kc + i] += ps * ridge;
                         }
-                        for v in b.iter_mut() {
+                        for v in parts.b.iter_mut() {
                             *v *= w;
                         }
                         // Warm start: the prior enters on the same decaying sum
@@ -1177,22 +1213,18 @@ impl EwRidge {
                         if let Some(c0) = &self.cfg.coef_prior {
                             for (jj, &j) in readers.iter().enumerate() {
                                 for (ai, &zi) in zidx.iter().enumerate() {
-                                    b[jj * kc + ai] += ps * ridge * c0[j][zi];
+                                    parts.b[jj * kc + ai] += ps * ridge * c0[j][zi];
                                 }
                             }
                         }
                         // The system is on the sum scale, so a row form
                         // against it is scaled back by `W` (see `System`).
-                        Self::run_solve(&mut failures, &mut work, &a, &b, kc, mr, None).map(
-                            |(sol, factor, ill)| {
-                                Solved::raw(sol, factor, a, kc, ps * ridge, w, ill)
-                            },
-                        )
+                        Self::solve_raw(&mut failures, &mut work, parts, kc, mr, ps * ridge, w)
                     } else if !self.cfg.standardize {
                         // Through the origin every slot is a slope, and every
                         // slot is penalized.
                         for i in 0..kc {
-                            a[i * kc + i] += ridge;
+                            parts.a[i * kc + i] += ridge;
                         }
                         // Warm prior: shrink toward coef_prior rather than
                         // toward zero, by moving the penalty's target into the
@@ -1200,21 +1232,19 @@ impl EwRidge {
                         if let Some(c0) = &self.cfg.coef_prior {
                             for (jj, &j) in readers.iter().enumerate() {
                                 for (ai, &zi) in zidx.iter().enumerate() {
-                                    b[jj * kc + ai] += ridge * c0[j][zi];
+                                    parts.b[jj * kc + ai] += ridge * c0[j][zi];
                                 }
                             }
                         }
-                        Self::run_solve(&mut failures, &mut work, &a, &b, kc, mr, None).map(
-                            |(sol, factor, ill)| Solved::raw(sol, factor, a, kc, ridge, 1.0, ill),
-                        )
+                        Self::solve_raw(&mut failures, &mut work, parts, kc, mr, ridge, 1.0)
                     } else {
                         Self::solve_scaled_through_origin(
                             cov,
                             &mut failures,
                             &mut work,
-                            &zidx,
-                            &b,
-                            &readers,
+                            parts,
+                            zidx,
+                            readers,
                             self.cfg.coef_prior.as_deref(),
                             ridge,
                         )
@@ -1230,7 +1260,7 @@ impl EwRidge {
                     // with no field added to the state. No system is kept for
                     // the leverage either: there is no fit to read it against.
                     let at = g * nc + ci;
-                    for &j in &readers {
+                    for &j in readers.iter() {
                         let slot = j * nc + ci;
                         beta[slot].fill(f64::NAN);
                         ready.clear(slot, &mut work);
@@ -1242,8 +1272,11 @@ impl EwRidge {
                             work.give(old);
                         }
                     }
-                    if let Some(f) = solved.and_then(|s| s.factor) {
-                        work.give(f);
+                    if let Some(mut solved) = solved {
+                        if let Some(f) = solved.factor.take() {
+                            work.give(f);
+                        }
+                        parts.reclaim(solved);
                     }
                 } else if let Some(mut solved) = solved {
                     for (jj, &j) in readers.iter().enumerate() {
@@ -1266,7 +1299,8 @@ impl EwRidge {
                     // a save, or the end of the stream's chunk (`Pending`;
                     // docs/PLAN.md tasks 140 and 265).
                     let is_intercept = |pos: usize| self.cfg.fit_intercept && pos == 0;
-                    let mut sup0 = vec![f64::NAN; k_total];
+                    sup0.clear();
+                    sup0.resize(k_total, f64::NAN);
                     for (pos, &zi) in zidx.iter().enumerate() {
                         if !is_intercept(pos) {
                             sup0[zi] = 0.0;
@@ -1281,57 +1315,71 @@ impl EwRidge {
                     };
                     let pending = factor.map(|factor| {
                         let lam = solved.shift + factor.jitter();
-                        Arc::new(Pending {
-                            numbers: lam.is_finite() && factor.inverse_is_finite(),
+                        ready.spare.get().pending(
+                            factor,
                             lam,
-                            to: solved
+                            solved
                                 .keep
                                 .iter()
-                                .map(|&pos| (!is_intercept(pos)).then(|| zidx[pos]))
-                                .collect(),
-                            factor,
+                                .map(|&pos| (!is_intercept(pos)).then(|| zidx[pos])),
                             edf0,
-                            sup0: sup0.clone(),
-                            shares: OnceLock::new(),
-                        })
+                            sup0.as_slice(),
+                            cert,
+                        )
                     });
                     let at = g * nc + ci;
-                    for &j in &readers {
+                    for &j in readers.iter() {
                         let slot = j * nc + ci;
                         match &pending {
                             Some(p) => ready.set_pending(slot, Some(Arc::clone(p)), &mut work),
                             None => {
                                 ready.edf[slot] = edf0;
-                                ready.support[slot].clone_from(&sup0);
+                                ready.support[slot].clone_from(&*sup0);
                                 ready.set_pending(slot, None, &mut work);
                             }
                         }
                         ready.system_of[slot] = at;
                     }
                     if keep_factor {
-                        ready.systems[at] = Some(System {
-                            a: solved.a.into(),
-                            z: solved.keep.iter().map(|&p| zidx[p]).collect(),
-                            s: solved.s,
-                            mean: solved.mean,
-                            centred: solved.centred,
-                            scale: solved.scale,
-                        });
+                        // The system the last solve kept for this slot is
+                        // written over, its lists as they were.
+                        match &mut ready.systems[at] {
+                            Some(sys) => {
+                                sys.a.set_from_square(&solved.a);
+                                sys.z.clear();
+                                sys.z.extend(solved.keep.iter().map(|&p| zidx[p]));
+                                sys.s.clone_from(&solved.s);
+                                sys.mean.clone_from(&solved.mean);
+                                sys.centred = solved.centred;
+                                sys.scale = solved.scale;
+                            }
+                            none => {
+                                *none = Some(System {
+                                    a: solved.a.as_slice().to_vec().into(),
+                                    z: solved.keep.iter().map(|&p| zidx[p]).collect(),
+                                    s: solved.s.clone(),
+                                    mean: solved.mean.clone(),
+                                    centred: solved.centred,
+                                    scale: solved.scale,
+                                });
+                            }
+                        }
                         if let Some(old) = std::mem::replace(&mut factors[at], kept) {
                             work.give(old);
                         }
                     }
+                    parts.reclaim(solved);
                 } else if let Some(prev) = &self.beta {
                     // Total failure even with jitter: keep the previous
                     // coefficients.
-                    for &j in &readers {
-                        beta[j * nc + ci] = prev[j * nc + ci].clone();
+                    for &j in readers.iter() {
+                        beta[j * nc + ci].clone_from(&prev[j * nc + ci]);
                     }
                 } else {
                     // And with no fit before it, no fit: the zeros `beta`
                     // starts at predicted 0.0 as though they had been
                     // learned (review 2026-10-05, CA5).
-                    for &j in &readers {
+                    for &j in readers.iter() {
                         beta[j * nc + ci].fill(f64::NAN);
                     }
                 }
@@ -1379,7 +1427,13 @@ impl EwRidge {
             work.drop_spares();
         }
         self.solve_failures += failures;
-        self.beta = Some(Fit(beta));
+        // The fit this one replaces keeps its storage for the next solve's.
+        let spare = self.spare_fit.get();
+        *spare = self.beta.replace(Fit(beta)).map_or_else(Vec::new, |f| f.0);
+        if spare.len() * k_total > KEEP_ENTRIES {
+            *spare = Vec::new();
+        }
+        parts.release();
         self.ready = ready;
         self.factors = Factors {
             kept: factors,
@@ -1415,26 +1469,55 @@ impl EwRidge {
     fn run_solve(
         failures: &mut u64,
         work: &mut FactorWork,
+        quads: &mut Quads,
         a: &[f64],
         b: &[f64],
         k: usize,
         m: usize,
         over: Option<OverMoments>,
-    ) -> Option<(Vec<f64>, SpdFactor, bool)> {
+        sol: &mut Vec<f64>,
+    ) -> Option<(SpdFactor, bool)> {
         match work.factor(a, k) {
             Some(f) => {
                 *failures += u64::from(f.attempts());
+                sol.clear();
                 if f.carries_no_digit_over(a, over) {
                     *failures += 1;
-                    return Some((vec![f64::NAN; k * m], f, true));
+                    sol.resize(k * m, f64::NAN);
+                    return Some((f, true));
                 }
-                Some((f.solve(b, k, m), f, false))
+                if k > crate::solve::KEPT_ORDER {
+                    // Past the order a kept space is held for.
+                    *sol = f.solve(b, k, m);
+                } else {
+                    f.solve_into(b, k, m, quad_for(quads, k, m), sol);
+                }
+                Some((f, false))
             }
             None => {
                 *failures += 1;
                 None
             }
         }
+    }
+
+    /// The solve of the raw system in `parts.a` and `parts.b` (`kc` columns,
+    /// `mr` right-hand sides): [`Self::run_solve`] on them, as the solve
+    /// through the origin and the sum scale pose it.
+    fn solve_raw(
+        failures: &mut u64,
+        work: &mut FactorWork,
+        parts: &mut Parts,
+        kc: usize,
+        mr: usize,
+        shift: f64,
+        scale: f64,
+    ) -> Option<Solved> {
+        let Parts {
+            a, b, out, quads, ..
+        } = &mut *parts;
+        let (factor, ill) = Self::run_solve(failures, work, quads, a, b, kc, mr, None, out)?;
+        Some(parts.raw(factor, kc, shift, scale, ill))
     }
 
     /// The standardized solve through the origin, on one combo's raw
@@ -1453,27 +1536,45 @@ impl EwRidge {
         cov: &EwCov,
         failures: &mut u64,
         work: &mut FactorWork,
+        parts: &mut Parts,
         zidx: &[usize],
-        b: &[f64],
         readers: &[usize],
         coef_prior: Option<&[Vec<f64>]>,
         ridge: f64,
     ) -> Option<Solved> {
         let kc = zidx.len();
         let m = readers.len();
-        let s: Vec<f64> = (0..kc)
-            .map(|i| cov.raw(zidx[i], zidx[i]).max(0.0).sqrt())
-            .collect();
+        let Parts {
+            scale,
+            cols,
+            a,
+            b,
+            bs,
+            sol,
+            out,
+            pos,
+            kept_s,
+            mean,
+            quads,
+        } = &mut *parts;
+        // `b` is the uncentred right-hand side, `kc` slots a reader; the
+        // system's own is formed in `bs`.
+        let b = &*b;
+        scale.clear();
+        scale.extend((0..kc).map(|i| cov.raw(zidx[i], zidx[i]).max(0.0).sqrt()));
         // No centering here, so no cancellation: any strictly positive raw
         // moment is usable.
-        let keep: Vec<usize> = (0..kc).filter(|&i| s[i] > 0.0).collect();
-        let kk = keep.len();
+        cols.clear();
+        cols.extend((0..kc).filter(|&i| scale[i] > 0.0));
+        let kk = cols.len();
         if kk == 0 {
+            out.clear();
+            out.resize(kc * m, 0.0);
             return Some(Solved {
-                sol: vec![0.0; kc * m],
+                sol: std::mem::take(out),
                 factor: None,
                 a: Vec::new(),
-                keep,
+                keep: Vec::new(),
                 s: Vec::new(),
                 mean: Vec::new(),
                 centred: false,
@@ -1484,39 +1585,47 @@ impl EwRidge {
         }
         // The lower triangle alone, each entry once; the upper stays 0
         // (task 314; see `solve_centred`, and `Solved::a`).
-        let mut asub = vec![0.0; kk * kk];
-        for (i2, &i) in keep.iter().enumerate() {
-            for (j2, &j) in keep[..=i2].iter().enumerate() {
-                asub[i2 * kk + j2] = cov.raw(zidx[i], zidx[j]) / (s[i] * s[j]);
+        a.clear();
+        a.resize(kk * kk, 0.0);
+        for (i2, &i) in cols.iter().enumerate() {
+            for (j2, &j) in cols[..=i2].iter().enumerate() {
+                a[i2 * kk + j2] = cov.raw(zidx[i], zidx[j]) / (scale[i] * scale[j]);
             }
         }
         for i2 in 0..kk {
-            asub[i2 * kk + i2] += ridge;
+            a[i2 * kk + i2] += ridge;
         }
-        let mut bsub = vec![0.0; kk * m];
+        bs.clear();
+        bs.resize(kk * m, 0.0);
         for (jj, &j) in readers.iter().enumerate() {
-            for (i2, &i) in keep.iter().enumerate() {
-                bsub[jj * kk + i2] = b[jj * kc + i] / s[i];
+            for (i2, &i) in cols.iter().enumerate() {
+                bs[jj * kk + i2] = b[jj * kc + i] / scale[i];
                 if let Some(c0) = coef_prior {
-                    bsub[jj * kk + i2] += ridge * c0[j][zidx[i]] * s[i];
+                    bs[jj * kk + i2] += ridge * c0[j][zidx[i]] * scale[i];
                 }
             }
         }
-        let (sol, factor, ill) = Self::run_solve(failures, work, &asub, &bsub, kk, m, None)?;
-        let mut out = vec![0.0; kc * m];
+        let (factor, ill) = Self::run_solve(failures, work, quads, a, bs, kk, m, None, sol)?;
+        out.clear();
+        out.resize(kc * m, 0.0);
         for j in 0..m {
-            for (i2, &i) in keep.iter().enumerate() {
-                out[j * kc + i] = sol[j * kk + i2] / s[i];
+            for (i2, &i) in cols.iter().enumerate() {
+                out[j * kc + i] = sol[j * kk + i2] / scale[i];
             }
         }
-        let s_kept = keep.iter().map(|&i| s[i]).collect();
+        kept_s.clear();
+        kept_s.extend(cols.iter().map(|&i| scale[i]));
+        mean.clear();
+        mean.resize(kk, 0.0);
+        pos.clear();
+        pos.extend(cols.iter().copied());
         Some(Solved {
-            sol: out,
+            sol: std::mem::take(out),
             factor: Some(factor),
-            a: asub,
-            keep,
-            s: s_kept,
-            mean: vec![0.0; kk],
+            a: std::mem::take(a),
+            keep: std::mem::take(pos),
+            s: std::mem::take(kept_s),
+            mean: std::mem::take(mean),
             centred: false,
             shift: ridge,
             scale: 1.0,
@@ -1548,10 +1657,24 @@ impl EwRidge {
         readers: &[usize],
         failures: &mut u64,
         work: &mut FactorWork,
+        parts: &mut Parts,
         zidx: &[usize],
         ridge: f64,
         over_moments: bool,
     ) -> Option<Solved> {
+        let Parts {
+            scale: s,
+            cols: keep,
+            a: asub,
+            b: bsub,
+            sol,
+            out,
+            pos,
+            kept_s,
+            mean,
+            quads,
+            ..
+        } = &mut *parts;
         // Feature slots are 1..kc; slot 0 is the intercept.
         let kc = zidx.len();
         let kf = kc - 1;
@@ -1564,21 +1687,26 @@ impl EwRidge {
         // sixth of the solve (docs/records/PERFORMANCE-LOG.md §29).
         let standardize = self.cfg.standardize;
         let var = |i: usize| cov.cov(zidx[i + 1], zidx[i + 1]);
-        let (s, keep): (Vec<f64>, Vec<usize>) = if standardize {
-            let s = (0..kf).map(|i| var(i).max(0.0).sqrt()).collect();
+        s.clear();
+        keep.clear();
+        if standardize {
+            s.extend((0..kf).map(|i| var(i).max(0.0).sqrt()));
             // A genuinely constant feature is dropped (coefficient 0) rather
             // than blowing up; with centered accumulators its variance is
             // exactly zero.
-            let keep = (0..kf)
-                .filter(|&i| crate::variance_is_usable(var(i), cov.raw(zidx[i + 1], zidx[i + 1])))
-                .collect();
-            (s, keep)
+            keep.extend(
+                (0..kf).filter(|&i| {
+                    crate::variance_is_usable(var(i), cov.raw(zidx[i + 1], zidx[i + 1]))
+                }),
+            );
         } else {
-            (vec![1.0; kf], (0..kf).collect())
-        };
+            s.resize(kf, 1.0);
+            keep.extend(0..kf);
+        }
         let kk = keep.len();
-        let mut out = vec![0.0; kc * mr];
-        let mut system = None;
+        out.clear();
+        out.resize(kc * mr, 0.0);
+        let mut factor = None;
         let mut ill = false;
         if kk > 0 {
             // The lower triangle alone, each entry once; the upper stays 0.
@@ -1590,7 +1718,8 @@ impl EwRidge {
             // solving every row, 7 µs of a 147 µs row on arm64 (task 314);
             // written as the lower's mirror, it was `k(k − 1)/2` strided
             // stores a solve that nothing read (task 316).
-            let mut asub = vec![0.0; kk * kk];
+            asub.clear();
+            asub.resize(kk * kk, 0.0);
             for (i2, &i) in keep.iter().enumerate() {
                 let zi = zidx[i + 1];
                 for (j2, &j) in keep[..=i2].iter().enumerate() {
@@ -1601,7 +1730,8 @@ impl EwRidge {
             for i2 in 0..kk {
                 asub[i2 * kk + i2] += ridge;
             }
-            let mut bsub = vec![0.0; kk * mr];
+            bsub.clear();
+            bsub.resize(kk * mr, 0.0);
             for (jj, &j) in readers.iter().enumerate() {
                 for (i2, &i) in keep.iter().enumerate() {
                     let z = zidx[i + 1];
@@ -1636,7 +1766,7 @@ impl EwRidge {
                     // c_ii` on the standardized scale, where `S =
                     // diag(√c_ii)` (the condition module's docs, item 9).
                     let mut e_hat = 0.0;
-                    for &i in &keep {
+                    for &i in keep.iter() {
                         let z = zidx[i + 1];
                         e_hat += if standardize {
                             let v = var(i);
@@ -1651,7 +1781,7 @@ impl EwRidge {
                     Some(OverMoments::merged(ridge, e_hat))
                 })
             };
-            let (sol, factor, past) = Self::run_solve(failures, work, &asub, &bsub, kk, mr, over)?;
+            let (f, past) = Self::run_solve(failures, work, quads, asub, bsub, kk, mr, over, sol)?;
             ill = past;
             for jj in 0..mr {
                 for (i2, &i) in keep.iter().enumerate() {
@@ -1659,7 +1789,7 @@ impl EwRidge {
                     out[jj * kc + i + 1] = if standardize { v / s[i] } else { v };
                 }
             }
-            system = Some((asub, factor));
+            factor = Some(f);
         }
         // `m_j` is the Gram's mean, which under `own_rows` is over exactly the
         // target's rows (and the cross-moments' own copy of it to the bit),
@@ -1681,19 +1811,24 @@ impl EwRidge {
         }
         // The kept columns as positions in `zidx`, the centred system's
         // scale and the mean it subtracted, for the row form.
-        let (a, factor) = match system {
-            Some((a, f)) => (a, Some(f)),
-            None => (Vec::new(), None),
+        let a = if kk > 0 {
+            std::mem::take(asub)
+        } else {
+            Vec::new()
         };
-        let mean = keep.iter().map(|&i| cov.mean(zidx[i + 1])).collect();
-        let s_kept = keep.iter().map(|&i| s[i]).collect();
+        mean.clear();
+        mean.extend(keep.iter().map(|&i| cov.mean(zidx[i + 1])));
+        kept_s.clear();
+        kept_s.extend(keep.iter().map(|&i| s[i]));
+        pos.clear();
+        pos.extend(keep.iter().map(|&i| i + 1));
         Some(Solved {
-            sol: out,
+            sol: std::mem::take(out),
             factor,
             a,
-            keep: keep.iter().map(|&i| i + 1).collect(),
-            s: s_kept,
-            mean,
+            keep: std::mem::take(pos),
+            s: std::mem::take(kept_s),
+            mean: std::mem::take(mean),
             centred: true,
             shift: ridge,
             scale: 1.0,
@@ -1980,30 +2115,153 @@ struct Solved {
     ill: bool,
 }
 
-impl Solved {
-    /// A raw, uncentred system over every column of the combo.
-    fn raw(
-        sol: Vec<f64>,
-        factor: SpdFactor,
-        a: Vec<f64>,
-        kc: usize,
-        shift: f64,
-        scale: f64,
-        ill: bool,
-    ) -> Self {
-        Self {
-            sol,
+/// The most entries a list of a solve's is kept at between solves: past it
+/// (an order of [`crate::solve::KEPT_ORDER`] squared) the list is made at
+/// each solve, as it was before they were kept, since an allocation that
+/// size is nothing beside the solve's `O(k³)` and a model at rest should
+/// not hold a matrix's worth beside its Gram.
+const KEEP_ENTRIES: usize = crate::solve::KEPT_ORDER * crate::solve::KEPT_ORDER;
+
+/// The right-hand sides' matrices a solve works in, one for each shape
+/// `(order, columns)` it has solved ([`SpdFactor::solve_into`]).
+type Quads = Vec<(usize, usize, QuadWork)>;
+
+/// The working matrix kept for the shape `(k, m)`, made where there is none.
+fn quad_for(quads: &mut Quads, k: usize, m: usize) -> &mut QuadWork {
+    let at = match quads.iter().position(|(qk, qm, _)| (*qk, *qm) == (k, m)) {
+        Some(at) => at,
+        None => {
+            if quads.len() >= 16 {
+                quads.clear();
+            }
+            quads.push((k, m, QuadWork::default()));
+            quads.len() - 1
+        }
+    };
+    &mut quads[at].2
+}
+
+/// The lists a combo's solve forms, which its result moves through
+/// [`Solved`] and [`Parts::reclaim`] hands back.
+#[derive(Default)]
+struct Parts {
+    /// The standardiser's scale of each feature, and the features kept.
+    scale: Vec<f64>,
+    cols: Vec<usize>,
+    /// The raw system's gathered matrix and right-hand sides, and the
+    /// scaled one's right-hand sides.
+    a: Vec<f64>,
+    b: Vec<f64>,
+    bs: Vec<f64>,
+    /// The solution of the system as posed, before it is unscaled into
+    /// `out`.
+    sol: Vec<f64>,
+    /// [`Solved::sol`], and its kept columns, scales and means.
+    out: Vec<f64>,
+    pos: Vec<usize>,
+    kept_s: Vec<f64>,
+    mean: Vec<f64>,
+    quads: Quads,
+}
+
+impl Parts {
+    /// A raw, uncentred system over every column of the combo: the matrix
+    /// in `a`, the solution in `out`.
+    fn raw(&mut self, factor: SpdFactor, kc: usize, shift: f64, scale: f64, ill: bool) -> Solved {
+        self.pos.clear();
+        self.pos.extend(0..kc);
+        self.kept_s.clear();
+        self.kept_s.resize(kc, 1.0);
+        self.mean.clear();
+        self.mean.resize(kc, 0.0);
+        Solved {
+            sol: std::mem::take(&mut self.out),
             factor: Some(factor),
-            a,
-            keep: (0..kc).collect(),
-            s: vec![1.0; kc],
-            mean: vec![0.0; kc],
+            a: std::mem::take(&mut self.a),
+            keep: std::mem::take(&mut self.pos),
+            s: std::mem::take(&mut self.kept_s),
+            mean: std::mem::take(&mut self.mean),
             centred: false,
             shift,
             scale,
             ill,
         }
     }
+
+    /// Take back the lists of a [`Solved`] its reader has done with.
+    fn reclaim(&mut self, solved: Solved) {
+        let Solved {
+            sol,
+            a,
+            keep,
+            s,
+            mean,
+            ..
+        } = solved;
+        // A list the reader took the storage of (a system kept for the
+        // leverage) comes back empty, and does not replace one held.
+        fn put<T>(held: &mut Vec<T>, back: Vec<T>) {
+            if back.capacity() >= held.capacity() {
+                *held = back;
+            }
+        }
+        put(&mut self.out, sol);
+        put(&mut self.a, a);
+        put(&mut self.pos, keep);
+        put(&mut self.kept_s, s);
+        put(&mut self.mean, mean);
+    }
+
+    /// Drop what is past [`KEEP_ENTRIES`].
+    fn release(&mut self) {
+        for v in [
+            &mut self.a,
+            &mut self.b,
+            &mut self.bs,
+            &mut self.sol,
+            &mut self.out,
+            &mut self.kept_s,
+            &mut self.mean,
+            &mut self.scale,
+        ] {
+            if v.capacity() > KEEP_ENTRIES {
+                *v = Vec::new();
+            }
+        }
+        for v in [&mut self.cols, &mut self.pos] {
+            if v.capacity() > KEEP_ENTRIES {
+                *v = Vec::new();
+            }
+        }
+    }
+}
+
+thread_local! {
+    /// The lists a solve on this thread works in ([`SolveBufs`]), lent to
+    /// each solve and left here for the next, whichever model runs it: a
+    /// thread runs one solve at a time, so a stream of a thousand groups
+    /// keeps one set, hot in cache, where a set a model was a few
+    /// kilobytes a group.
+    static SOLVE_BUFS: std::cell::Cell<Option<Box<SolveBufs>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// What a solve works in: the lists it formed and dropped each time, a
+/// dozen allocations a solve at five features. One set a thread
+/// ([`SOLVE_BUFS`]), written in full before each is read, so a solve gives
+/// the bits one that made them afresh gave.
+#[derive(Default)]
+struct SolveBufs {
+    combos: Vec<(usize, usize)>,
+    readers: Vec<usize>,
+    zidx: Vec<usize>,
+    /// The readiness shares' starting values, and the running sums of the
+    /// check that they are numbers.
+    sup0: Vec<f64>,
+    cert: Vec<f64>,
+    /// The targets' uncentred right-hand sides, where a solve reads them.
+    r: Vec<Vec<f64>>,
+    parts: Parts,
 }
 
 /// One solved system, kept so a row's leverage can be read against the
@@ -2063,6 +2321,75 @@ struct Readiness {
     /// tasks 140 and 265).
     #[serde(skip)]
     pending: Vec<Option<Arc<Pending>>>,
+    /// Pending solves nothing holds any more, emptied of their factors and
+    /// kept to be written over by the next solve's ([`Spare`]). Not state.
+    #[serde(skip)]
+    spare: crate::window::Kept<Spare>,
+}
+
+/// The pending solves a model has done with, each an `Arc` nothing else
+/// holds, its factor moved to the working space and its lists empty but for
+/// their capacity: a solve made one afresh at every solve, an allocation
+/// for the `Arc` and one for each of its lists. Not state: kept in a
+/// [`crate::window::Kept`], so a copy holds none.
+#[derive(Default)]
+struct Spare(Vec<Arc<Pending>>);
+
+impl Spare {
+    /// The most a model keeps: a pending solve's lists are a column's long.
+    const KEPT: usize = 64;
+
+    /// `old`, a pending solve its slot is done with: its factor, where
+    /// nothing else holds it, and the `Arc` kept to be written over. A solve
+    /// another slot still holds is left to that slot.
+    fn take_factor(&mut self, mut old: Arc<Pending>) -> Option<SpdFactor> {
+        let p = Arc::get_mut(&mut old)?;
+        let factor = std::mem::replace(&mut p.factor, SpdFactor::hollow());
+        p.shares = OnceLock::new();
+        if self.0.len() < Self::KEPT {
+            self.0.push(old);
+        }
+        Some(factor)
+    }
+
+    /// A pending solve of these parts, written over a kept one where there
+    /// is one: [`Pending`] as the solve built it, to the bit.
+    fn pending(
+        &mut self,
+        factor: SpdFactor,
+        lam: f64,
+        to: impl Iterator<Item = Option<usize>>,
+        edf0: f64,
+        sup0: &[f64],
+        cert: &mut Vec<f64>,
+    ) -> Arc<Pending> {
+        let numbers = lam.is_finite() && factor.inverse_is_finite_in(cert);
+        let mut arc = self.0.pop().unwrap_or_else(|| Arc::new(Pending::hollow()));
+        match Arc::get_mut(&mut arc) {
+            Some(p) => {
+                p.factor = factor;
+                p.lam = lam;
+                p.to.clear();
+                p.to.extend(to);
+                p.edf0 = edf0;
+                p.sup0.clear();
+                p.sup0.extend_from_slice(sup0);
+                p.numbers = numbers;
+                p.shares = OnceLock::new();
+                arc
+            }
+            // Kept unique, so not reached: made afresh all the same.
+            None => Arc::new(Pending {
+                factor,
+                lam,
+                to: to.collect(),
+                edf0,
+                sup0: sup0.to_vec(),
+                numbers,
+                shares: OnceLock::new(),
+            }),
+        }
+    }
 }
 
 /// One solve's shares, taken when something reads them (docs/PLAN.md task
@@ -2096,6 +2423,20 @@ struct Pending {
 }
 
 impl Pending {
+    /// A pending solve with no factor and no lists, for [`Spare`] to write
+    /// over.
+    fn hollow() -> Self {
+        Self {
+            factor: SpdFactor::hollow(),
+            lam: 0.0,
+            to: Vec::new(),
+            edf0: 0.0,
+            sup0: Vec::new(),
+            numbers: false,
+            shares: OnceLock::new(),
+        }
+    }
+
     /// The effective degrees of freedom and every coefficient's data share,
     /// computed on the first read.
     fn shares(&self) -> &(f64, Vec<f64>) {
@@ -2169,9 +2510,9 @@ impl Readiness {
     /// later solve to write over.
     fn set_pending(&mut self, s: usize, p: Option<Arc<Pending>>, work: &mut FactorWork) {
         if let Some(old) = std::mem::replace(&mut self.pending[s], p)
-            && let Ok(old) = Arc::try_unwrap(old)
+            && let Some(factor) = self.spare.get().take_factor(old)
         {
-            work.give(old.factor);
+            work.give(factor);
         }
     }
 
@@ -2183,6 +2524,9 @@ impl Readiness {
                 let (edf, sup) = p.shares();
                 self.edf[s] = *edf;
                 self.support[s].clone_from(sup);
+                // The factor is dropped: a stream at rest holds none. The
+                // `Arc` and its lists are kept for the next solve's.
+                drop(self.spare.get().take_factor(p));
             }
         }
     }
@@ -2875,3 +3219,6 @@ mod output_only_tests;
 
 #[cfg(test)]
 mod factor_work_tests;
+
+#[cfg(test)]
+mod solve_scratch_tests;

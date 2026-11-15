@@ -272,7 +272,8 @@ fn case_per_row(id: &str, into: bool) -> f64 {
 /// nothing a row but `ewridge`'s solves (a solve every 17 rows or so here,
 /// at the default weight-share cadence), one allocation fewer than `step`;
 /// two fewer a solve since its solves keep their factors' working space
-/// (task 301).
+/// (task 301), and none since they keep the lists they form as well (task
+/// 415: 22 a solve at five features, 1.30 a row here).
 /// `sgd` joined them once task 271's rewrite of its Huber scale had landed
 /// (task 270 (h)), under its squared loss and under Huber's, whose scale is
 /// a sketch of `|e|` aged and fed each row. Then every model's step was
@@ -289,8 +290,8 @@ fn the_cheap_models_step_into_a_kept_buffer_without_allocating() {
         ("pa", 0.0, 1.0, 1.0),
         ("kmeans", 0.0, 1.0, 1.0),
         ("ew_cov", 0.0, 1.0, 2.0),
-        ("ewridge_k5", 1.30, 2.30, 2.48),
-        ("ewridge_k20", 1.30, 2.30, 2.48),
+        ("ewridge_k5", 0.0, 1.0, 2.48),
+        ("ewridge_k20", 0.0, 1.0, 2.48),
         ("sgd", 0.0, 1.0, 1.0),
         ("sgd_huber", 0.0, 1.0, 1.0),
         ("holt", 0.0, 1.0, 1.0),
@@ -435,19 +436,103 @@ fn hmm_with_a_shared_covariance_allocates_nothing_a_row() {
 /// cadence and 3 in `ewridge_gram_t10`'s. The factors the solves have done
 /// with are kept and written over now, with the scratch; what is left is
 /// the rest of each solve's working lists. Counted over each bench case's
-/// own measured block, as the bank steps it.
+/// own measured block, as the bank steps it. What was left, 22 allocations
+/// a solve at five features -- the solve's combos, readers and feature
+/// indices, the system's scales, kept columns, matrix and right-hand sides,
+/// the solution's matrix and vector, the fit's lists, the readiness shares'
+/// starting values and the pending solve's `Arc`, its lists and the
+/// certificate's sums (1.518 a row) -- is kept between solves and written
+/// over now (task 415), nothing a row at five and twenty features. What
+/// `ewridge_gram_t10` still allocates is its blocked Gram's merges, not its
+/// solves.
 #[test]
 fn ewridge_keeps_its_solves_working_space() {
     for (id, bound, before) in [
-        ("ewridge_k5", 1.518, 1.656),
-        ("ewridge_k20", 1.518, 1.656),
-        ("ewridge_gram_t10", 1.241, 1.247),
+        ("ewridge_k5", 0.0, 1.518),
+        ("ewridge_k20", 0.0, 1.518),
+        ("ewridge_gram_t10", 1.123, 1.241),
     ] {
         let mut run = online_bench::model_setup(id);
         let start = calls();
         std::hint::black_box(online_bench::polars_online_budget_model_rows(&mut run));
         let got = (calls() - start) as f64 / online_bench::ROWS as f64;
         check(id, got, bound, before);
+    }
+}
+
+/// `ewridge`'s solves allocate nothing in any of the systems they pose
+/// (task 415): the plain and the standardized centred system, the raw ones
+/// through the origin and on the sum scale, a grid of ridges over feature
+/// sets, three targets, and the systems and factors kept for the row
+/// inflation (`emit_error_inflation`). A solve ran about every 17 rows
+/// here, and each allocated between 7 and 18 times a row before, a count in
+/// the comment of each row.
+#[test]
+fn ewridge_solves_allocate_nothing_in_any_system() {
+    let sets = json!([["a", ["x0", "x1"]], ["b", ["x1", "x2", "x3"]]]);
+    for (what, model, fit_intercept, inflation, m, before) in [
+        ("centred", json!({"type": "ewridge"}), true, false, 1, 3.41),
+        (
+            "standardized",
+            json!({"type": "ewridge", "standardize": true}),
+            true,
+            false,
+            3,
+            9.2,
+        ),
+        (
+            "through the origin",
+            json!({"type": "ewridge"}),
+            false,
+            false,
+            2,
+            6.05,
+        ),
+        (
+            "through the origin, standardized",
+            json!({"type": "ewridge", "standardize": true}),
+            false,
+            false,
+            2,
+            7.68,
+        ),
+        (
+            "sum scale",
+            json!({"type": "ewridge", "ridge_scale": "sum"}),
+            true,
+            false,
+            2,
+            6.38,
+        ),
+        (
+            "ridges over feature sets",
+            json!({"type": "ewridge", "ridge": [0.0, 0.1, 10.0], "feature_sets": sets}),
+            true,
+            false,
+            2,
+            30.0,
+        ),
+        (
+            "systems kept for the row inflation",
+            json!({"type": "ewridge"}),
+            true,
+            true,
+            2,
+            7.36,
+        ),
+    ] {
+        let mut spec = json!({"name": "m", "model": model, "targets": names("y", m),
+                              "features": names("x", 5), "clock": "t", "half_life": 300.0,
+                              "gap_cap": 100.0, "min_weight": 5.0, "fit_intercept": fit_intercept});
+        if inflation {
+            spec["emit_error_inflation"] = json!(true);
+        }
+        check(
+            &format!("ewridge, {what}"),
+            per_row_with(spec, 5, m, true),
+            0.0,
+            before,
+        );
     }
 }
 
@@ -682,7 +767,10 @@ fn windowed_per_row(model: Value, k: usize, label: bool) -> f64 {
 /// on every solve. The view is kept between rows now and written over in
 /// place; what is left is the ring's (a snapshot every 12 rows here, 0.083
 /// a row, which `marginal`, whose window is no view, shows alone) and,
-/// for `ewridge` and `lasso`, what a solve allocates of its own. `ew_class`
+/// for `ewridge` and `lasso`, what a solve allocates of its own (`ewridge`'s
+/// solves allocate nothing since task 415, 9.432 a row before it; what is
+/// left of its 2.084 is the window's weights, 2 a row, formed where the
+/// prediction and the update read them). `ew_class`
 /// under `tied` formed its pooled matrix, its classes, their deviations and
 /// a factor and its forms on every row, windowed or not: kept too. Each:
 /// the bound in a release build and in a debug one, where the ring checks
@@ -729,7 +817,7 @@ fn a_windowed_row_reads_its_window_in_kept_buffers() {
             "ewridge",
             json!({"type": "ewridge", "window_size": w}),
             false,
-            (9.432, 42.432),
+            (2.084, 35.084),
             19.786,
         ),
         (

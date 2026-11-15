@@ -252,6 +252,13 @@ impl Cross {
             .collect()
     }
 
+    /// [`Self::raw`], written into `out`.
+    pub(crate) fn raw_into(&self, j: usize, out: &mut Vec<f64>) {
+        let my = self.my[j];
+        out.clear();
+        out.extend(self.c[j].iter().zip(&self.mj[j]).map(|(c, m)| c + m * my));
+    }
+
     /// Mix toward the twin's as [`Grams::blend`] mixes the Grams: `(a, b)`
     /// over every row, with `w_new` the mixed all-row weight, and `per[j] =
     /// (a_j, b_j)` over target `j`'s own rows (`None` where neither side has
@@ -539,6 +546,12 @@ impl Grams {
     /// The targets that read Gram `g`, in order.
     pub(crate) fn readers(&self, g: usize) -> Vec<usize> {
         (0..self.of.len()).filter(|&j| self.of[j] == g).collect()
+    }
+
+    /// [`Self::readers`], written into `out`.
+    pub(crate) fn readers_into(&self, g: usize, out: &mut Vec<usize>) {
+        out.clear();
+        out.extend((0..self.of.len()).filter(|&j| self.of[j] == g));
     }
 
     /// Whether the Grams hold rows for a blocked merge (`gram_block_rows`).
@@ -1944,6 +1957,36 @@ mod held_tests;
 mod tests {
     use super::*;
     use crate::Footprint;
+
+    /// The `_into` forms the solves keep their lists with write what the
+    /// allocating ones return, over a list that held something else.
+    #[test]
+    fn the_into_forms_write_what_the_allocating_ones_return() {
+        let mut acc = Acc::new(3, 4, 0, false);
+        for i in 0..40 {
+            let z = [1.0, i as f64, (i * i % 7) as f64, 3.0 - i as f64 * 0.1];
+            let y = [Some(i as f64), (i % 3 != 0).then_some(1.0), Some(-1.0)];
+            acc.learn(&z, &y, 0.97, 1.0, TargetGaps::OwnRows);
+        }
+        let mut readers = vec![9usize; 7];
+        for g in 0..acc.grams.grams.len() {
+            acc.grams.readers_into(g, &mut readers);
+            assert_eq!(readers, acc.grams.readers(g), "Gram {g}");
+        }
+        let mut raw = vec![f64::NAN; 11];
+        for j in 0..3 {
+            acc.cross.raw_into(j, &mut raw);
+            assert_eq!(
+                raw.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                acc.cross
+                    .raw(j)
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect::<Vec<_>>(),
+                "target {j}"
+            );
+        }
+    }
 
     /// One row of a test stream: the feature row, each target, the row's
     /// weight.
