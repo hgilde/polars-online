@@ -7,7 +7,7 @@
 //! and whole; and the rules around it: what `fit_predict` refuses, what
 //! `fit` takes, a state saved mid-window, and groups on clocks of their own.
 
-use online_polars::{Bank, Like, Spec, WindowsConfig, WindowsRun};
+use online_polars::{Bank, Like, PAR_MIN_ROWS, Spec, WindowsConfig, WindowsRun};
 use polars::prelude::*;
 
 const TREE: &str = r#"["-", ["rewm_mean", ["col", "mid"], {"half_life": 5.0, "window_size": 10.0}], ["col", "mid"]]"#;
@@ -315,6 +315,87 @@ fn a_state_s_bytes_are_the_same_however_the_input_was_chunked() {
         for chunks in [7, rows] {
             assert!(saved(chunks) == one, "{rows} rows in {chunks} chunks");
         }
+    }
+}
+
+/// `n` rows of `groups` groups interleaved on one clock, each group's own
+/// rows about a time step apart, a feature null now and then.
+fn many_groups(n: usize, groups: usize, seed: u64) -> DataFrame {
+    let mut s = seed;
+    let mut lcg = move || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (s >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let (mut t, mut g, mut x, mut mid) = (vec![], vec![], vec![], vec![]);
+    let (mut clock, mut level) = (0.0, 100.0);
+    for i in 0..n {
+        clock += (0.25 + lcg() * 2.0) / groups as f64;
+        t.push(clock);
+        g.push(format!("g{}", (lcg() * groups as f64) as usize));
+        x.push(if i % 13 == 4 { None } else { Some(lcg() - 0.5) });
+        level += lcg() - 0.5;
+        mid.push(level);
+    }
+    df!("t" => t, "g" => g, "x" => x, "mid" => mid).unwrap()
+}
+
+/// A chunk of several groups from `PAR_MIN_ROWS` rows up, or of many groups,
+/// resolves its groups on the pool's threads, one core each, and a smaller
+/// one on the calling thread:
+/// the predictions, the rows learned and the state's bytes are the same on
+/// either side, at every chunking, and across a save.
+#[test]
+fn groups_resolve_on_many_threads_to_the_same_bits() {
+    let n = 2 * PAR_MIN_ROWS + 1_500;
+    for groups in [3, 200] {
+        let df = many_groups(n, groups, 5 + groups as u64);
+        let spec = native(Some(12.5));
+        let saved = |chunks: usize| {
+            let mut bank = Bank::new(vec![spec.clone()]).unwrap();
+            let out = feed(&mut bank, &df, chunks);
+            (out, bank.save_bytes().unwrap())
+        };
+        let (want, want_bytes) = saved(1);
+        let predicted = column(&want, "pred_fwd")
+            .iter()
+            .filter(|p| p.is_some())
+            .count();
+        assert!(
+            predicted > n / 2,
+            "{groups} groups: {predicted} rows predicted"
+        );
+        // The whole input is one chunk past the row threshold, on the pool;
+        // five chunks below it, on this thread for 3 groups and on the pool
+        // for 200; two past it.
+        for chunks in [5, 2] {
+            let (got, bytes) = saved(chunks);
+            assert_eq!(
+                column(&got, "pred_fwd"),
+                column(&want, "pred_fwd"),
+                "{groups} groups, {chunks} chunks"
+            );
+            assert_eq!(
+                column(&got, "learned_clock"),
+                column(&want, "learned_clock"),
+                "{groups} groups, {chunks} chunks"
+            );
+            assert!(
+                bytes == want_bytes,
+                "{groups} groups, {chunks} chunks: state"
+            );
+        }
+        let mut bank = Bank::new(vec![spec.clone()]).unwrap();
+        let mut got = feed(&mut bank, &df.slice(0, 600), 600);
+        let mut bank = Bank::load_bytes(&bank.save_bytes().unwrap(), None).unwrap();
+        got.vstack_mut(&feed(&mut bank, &df.slice(600, n - 600), 1))
+            .unwrap();
+        assert_eq!(
+            column(&got, "pred_fwd"),
+            column(&want, "pred_fwd"),
+            "{groups} groups, resumed"
+        );
     }
 }
 

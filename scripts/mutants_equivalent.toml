@@ -3571,3 +3571,81 @@ why = """the mutant also resizes a buffer already `len` long, to `len`: \
 `Vec::resize` to the length it has changes nothing, and every entry a \
 piece reads is laid in before it is read, so the buffer and the merge are \
 the same to the bit (task 384)"""
+
+[[equivalent]]
+file = "crates/online-polars/src/resolvers.rs"
+function = "resolve_targets"
+mutation = "replace > with =="
+line_has = "if groups.len() > 1 && (n >= PAR_MIN_ROWS || groups.len() >= PAR_MIN_GROUPS) {"
+why = """the guard only picks between a `par_iter_mut` over the groups' cores \
+and the loop beside it, which feed each core the same rows in the same \
+order and read the results in the groups' order: which branch runs decides \
+which thread feeds a core, never a bit (`groups_resolve_on_many_threads_to_the_same_bits`)"""
+
+[[equivalent]]
+file = "crates/online-polars/src/resolvers.rs"
+function = "resolve_targets"
+mutation = "replace > with <"
+line_has = "if groups.len() > 1 && (n >= PAR_MIN_ROWS || groups.len() >= PAR_MIN_GROUPS) {"
+why = """as `replace > with ==` here: either branch feeds each core the same rows, so the same bits"""
+
+[[equivalent]]
+file = "crates/online-polars/src/resolvers.rs"
+function = "resolve_targets"
+mutation = "replace > with >="
+line_has = "if groups.len() > 1 && (n >= PAR_MIN_ROWS || groups.len() >= PAR_MIN_GROUPS) {"
+why = """as `replace > with ==` here: either branch feeds each core the same rows, so the same bits"""
+
+[[equivalent]]
+file = "crates/online-polars/src/resolvers.rs"
+function = "resolve_targets"
+mutation = "replace >= with <"
+line_has = "if groups.len() > 1 && (n >= PAR_MIN_ROWS || groups.len() >= PAR_MIN_GROUPS) {"
+why = """as `replace > with ==` here: either branch feeds each core the same rows, so the same bits"""
+
+[[equivalent]]
+file = "crates/online-polars/src/resolvers.rs"
+function = "resolve_targets"
+mutation = "replace && with ||"
+line_has = "if groups.len() > 1 && (n >= PAR_MIN_ROWS || groups.len() >= PAR_MIN_GROUPS) {"
+why = """as `replace > with ==` here: either branch feeds each core the same rows, so the same bits"""
+
+[[equivalent]]
+file = "crates/online-polars/src/resolvers.rs"
+function = "resolve_targets"
+mutation = "replace || with &&"
+line_has = "if groups.len() > 1 && (n >= PAR_MIN_ROWS || groups.len() >= PAR_MIN_GROUPS) {"
+why = """as `replace > with ==` here: either branch feeds each core the same rows, so the same bits"""
+
+[[equivalent]]
+file = "crates/online-polars/src/resolvers.rs"
+function = "resolve_targets"
+mutation = "replace r.is_err() with false"
+line_has = "let refused = r.is_err();"
+why = """only an error path reads it: a pass that does not stop at the first \
+refusal feeds the groups after it, whose cores the bank puts back to the \
+snapshot it takes wherever a formula can refuse (a cast, a second formula \
+spec, a ring that can refuse), and where none can, no group refuses"""
+
+[[equivalent]]
+file = "crates/online-polars/src/windows_frame.rs"
+function = "short_cuts"
+mutation = "replace short_cuts -> bool with true"
+line_has = "fn short_cuts() -> bool {"
+why = """the short cuts are the lazy engine's values to the bit (`the_short_cuts_resolve_as_the_lazy_engine_does` \
+holds the two, a thread-local switching them off), so which a run takes decides its speed, never a value"""
+
+[[equivalent]]
+file = "crates/online-polars/src/windows_frame.rs"
+function = "short_cuts"
+mutation = "replace short_cuts -> bool with false"
+line_has = "fn short_cuts() -> bool {"
+why = """the short cuts are the lazy engine's values to the bit (`the_short_cuts_resolve_as_the_lazy_engine_does` \
+holds the two, a thread-local switching them off), so which a run takes decides its speed, never a value"""
+
+[[equivalent]]
+file = "crates/online-polars/src/formula.rs"
+function = "bare_operator"
+mutation = "replace Node::bare_operator -> Option<&OpNode> with None"
+line_has = "pub fn bare_operator(&self) -> Option<&OpNode> {"
+why = """as `short_cuts` -> false: no formula is bare, so every formula takes the lazy engine, which gives the same values to the bit"""
