@@ -491,8 +491,8 @@ class ReadinessWarning(PolarsOnlineWarning, UserWarning):
     for the penalties whose coordinate descent ran out of its ``max_iter``
     sweeps before it met its stopping rule, naming them. Each such
     penalty's row of the path is where its descent stopped. The ``lasso``
-    model counts the same event in
-    :meth:`ModelBank.solve_failures`.
+    model counts the same event in :meth:`ModelBank.solve_failures`, except
+    on a Gram with too few rows for its features, its warm-up.
 
     .. rubric:: Examples
 

@@ -344,7 +344,7 @@ constant over a stretch, which is the same problem in time.
 | `constant` | warning | a feature, or an audited column, took one value on every row |
 | `frozen` | warning | from an audit: the rows equal to the row before, less those its values' frequencies give by chance, outnumber the changes at the column's smallest step by five standard errors, in a column whose smallest step is less than half its moves |
 | `low_support` | warning | more than half of the smallest coefficient comes from the ridge rather than the data; not repeated for a column already found constant, collinear or shrunk by the ridge |
-| `solve_failures` | warning | a solve needed jitter, or failed and kept the previous fit: constant or collinear features, or too few rows for their number. For `lasso` (`info`) its coordinate descent ran out of sweeps more than 10 times; clean data runs out up to 7 times on its first rows |
+| `solve_failures` | warning | a solve needed jitter, or failed and kept the previous fit: constant or collinear features, or too few rows for their number. For `lasso` (`info`) its coordinate descent ran out of sweeps more than 10 times, not counting the ones on a Gram whose rows are too few for its features (its first rows), which no data could have met; a count here is correlated or nearly dependent features |
 
 **How `frozen` tells a stale feed from a column that holds still.** A
 column that moves smoothly, seen at its own resolution, repeats the row

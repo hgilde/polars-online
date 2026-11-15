@@ -69,6 +69,98 @@ pub(crate) fn settled(delta: f64, limit: f64) -> bool {
     delta < limit || delta == 0.0
 }
 
+/// Whether a descent that ran out of sweeps did so because the rows behind
+/// its Gram are too few for the features: a fit in its warm-up, whose cap
+/// hit says nothing about the data or the settings, so it is not counted as
+/// a failure. A property of the solve itself, from the Gram's size and the
+/// descent's own settings, with no row threshold in it.
+///
+/// **The rate.** A sweep of cyclic coordinate descent on a quadratic with
+/// matrix `H` (unit diagonal, which the correlation form and the
+/// `l₂`-scaled diagonal below give) is one Gauss–Seidel sweep, and its error
+/// contracts by `ρ ≈ 1 − 2 λ_min(H)` per sweep when `λ_min` is small: the
+/// Jacobi rate `1 − λ_min` squared, Young's relation for a consistently
+/// ordered matrix, and a dense Gram agrees to first order: the iteration's
+/// spectral radius for sample correlation matrices of 50 and 200 features
+/// at 1.2 to 10 rows per feature has a log rate `−ln ρ` within 25% above
+/// `2 λ_min` wherever `λ_min ≤ 0.35`, never below it. So the estimate
+/// below is never short of the sweeps a descent takes, by about a quarter
+/// near the warm-up's edge. To bring a move under `tol` times the
+/// target's spread from an error of that spread takes
+///
+/// ```text
+/// sweeps ≈ ln(1/tol) / (2 λ_min(H)).
+/// ```
+///
+/// A descent that stops at `max_iter` sweeps on a matrix whose `λ_min` is
+/// below `ln(1/tol) / (2 max_iter)` is stopped by that matrix, not by a
+/// fault.
+///
+/// **The smallest eigenvalue, from the rows.** Rows are all the Gram knows
+/// about its conditioning that does not depend on the data's own
+/// dependence. A Gram of `n` independent rows of `k` features, in
+/// correlation form, has smallest eigenvalue tending to `(1 − √(k/n))²` as
+/// `n` and `k` grow together (Bai and Yin, 1993: the Marchenko–Pastur
+/// edge), and no population does better: correlated features only lower it.
+/// So `(1 − √(k/n))²` is the best the rows can do. With an intercept the
+/// centred Gram holds `n − 1` degrees of freedom, and with at most `k` of
+/// them it is singular. An `l₂` penalty adds `l₂` to the diagonal of `R`
+/// and the matrix is rescaled to unit diagonal by `1 + l₂`:
+///
+/// ```text
+/// λ_best = ((1 − √(k/dof))² + l₂) / (1 + l₂),   dof = n − intercept.
+/// ```
+///
+/// The solve is in its warm-up when `λ_best < ln(1/tol) / (2 max_iter)`:
+/// even the best-case data of this many rows would not settle in the sweeps
+/// allowed. The sweeps allowed and the tolerance set the row count, so it
+/// moves with them -- `max_iter` of 100 and `tol` of 1e-10 give about
+/// `2.3 k` rows, 1,000 sweeps `1.25 k`, and with no limit it tends to `k`,
+/// where the Gram is singular -- and no constant in it was fitted to a
+/// data set. Where `ln(1/tol) / (2 max_iter)` reaches 1, no number of rows
+/// meets it (`λ_best` is below 1 for every finite `n` and a ridge of `l₂`
+/// reaches it only as `l₂` grows), so the cap is the settings' and every
+/// cap hit is counted: a `max_iter` of a handful of sweeps is never a
+/// warm-up.
+///
+/// **Why the rows and not the Gram's condition.** The condition number of
+/// the Gram it was solved from is the same number whether too few rows or a
+/// dependent pair of features made it ill-conditioned, so a rule from it
+/// excuses a near-collinear pair that appears when the rows are many, which
+/// is a failure a user should be told of. The row count separates them:
+/// more rows cure the first and not the second.
+///
+/// `n_kish` is Kish's effective sample size behind the Gram
+/// ([`crate::EwCov::n_kish`]), the number of equally weighted rows its
+/// weights are worth; `None` where it is not known, and then nothing is
+/// excused. `features` counts the columns the descent works on. Not a
+/// bound: the rate is the first-order estimate above, and a Gram of
+/// correlated features may need more sweeps than its rows' best case.
+pub(crate) fn warming_up(
+    n_kish: Option<f64>,
+    features: usize,
+    centred: bool,
+    l2: f64,
+    (max_iter, tol): (u32, f64),
+) -> bool {
+    let Some(n) = n_kish.filter(|n| n.is_finite()) else {
+        return false;
+    };
+    let dof = n - f64::from(u8::from(centred));
+    let k = features as f64;
+    // At most `k` degrees of freedom: a singular Gram, whatever the penalty
+    // on the others (the penalty below is what a ridge adds).
+    let edge = if dof > k {
+        let r = 1.0 - (k / dof).sqrt();
+        r * r
+    } else {
+        0.0
+    };
+    let best = (edge + l2) / (1.0 + l2);
+    let need = (1.0 / tol).ln() / (2.0 * f64::from(max_iter));
+    need < 1.0 && best < need
+}
+
 /// The path at each penalty in the basis of `R` (row-major `k × k`) and
 /// `d`, and which penalties ran out of sweeps. `spread` is the target's,
 /// for [`sweep_tol`].

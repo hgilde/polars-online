@@ -343,6 +343,10 @@ pub struct Lasso {
     /// Coordinate descents that ran out of sweeps (`max_iter`) before
     /// meeting `tol`, one per target and path point; such a fit is where
     /// the descent stopped (review 2026-09-12, S11: nothing wrote this).
+    /// A descent on a Gram whose effective rows are too few for its
+    /// features to settle in `max_iter` sweeps even on the best data of
+    /// that many rows is not counted: it is the warm-up
+    /// (`gramfit::warming_up`), and the fit is still where it stopped.
     pub solve_failures: u64,
     /// Whether the explicit cadence's first period runs on the default
     /// weight-share schedule (`since::FirstPeriod`; task 278): set by a
@@ -1038,8 +1042,23 @@ impl Lasso {
                     );
                     // Out of sweeps before `tol`: the fit is where the
                     // descent stopped, and it is counted (review 2026-09-12,
-                    // S11: nothing wrote `solve_failures`).
-                    unconverged += u64::from(!converged);
+                    // S11: nothing wrote `solve_failures`) -- unless the
+                    // Gram's rows are too few for its features, where no
+                    // data could have settled in the sweeps allowed
+                    // (`gramfit::warming_up`, which gives the argument).
+                    // Asked only of a descent that failed: a solve past its
+                    // warm-up pays nothing for it.
+                    if !converged
+                        && !crate::gramfit::warming_up(
+                            gram.n_kish(),
+                            s.iter().filter(|&&v| v > 0.0).count(),
+                            self.cfg.fit_intercept,
+                            l2,
+                            (self.cfg.max_iter, self.cfg.tol),
+                        )
+                    {
+                        unconverged += 1;
+                    }
                     // Unscale and recover the intercept, from the target's
                     // own means.
                     let coefs = &mut out[j][li];
@@ -2473,6 +2492,101 @@ mod tests {
             long.solve_failures, 0,
             "and enough sweeps converge them all"
         );
+    }
+
+    /// A cap hit while the Gram's rows are too few for its features is the
+    /// warm-up, not a failure (task 405): 30 features at 40 sweeps and the
+    /// default tolerance, whose rule ends at about 4.7 rows a feature (141
+    /// rows), over rows 40 to 120. The descent stops at its cap on many of
+    /// them -- the converged fit, of 100,000 sweeps, differs from where it
+    /// stopped -- and none is counted.
+    #[test]
+    fn a_cap_hit_in_the_warm_up_is_not_a_solve_failure() {
+        let path = vec![0.1, 0.01, 0.001, 0.0];
+        let mut c = cfg(30, 1, path);
+        c.max_iter = 40;
+        c.tol = 1e-10;
+        let mut long = c.clone();
+        long.max_iter = 100_000;
+        let (mut capped, mut converged) = (Lasso::new(c).unwrap(), Lasso::new(long).unwrap());
+        let mut s = 5u64;
+        let mut stopped_short = 0;
+        for i in 0..120 {
+            let x: Vec<f64> = (0..30).map(|_| lcg(&mut s)).collect();
+            // A dense truth and noise as large as half its spread.
+            let y = x
+                .iter()
+                .enumerate()
+                .map(|(j, v)| if j % 2 == 0 { *v } else { -*v })
+                .sum::<f64>()
+                / 30f64.sqrt()
+                + 0.25
+                + 0.5 * lcg(&mut s);
+            for m in [&mut capped, &mut converged] {
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            if i >= 40 {
+                let (a, b) = (
+                    capped.coefficients().unwrap(),
+                    converged.coefficients().unwrap(),
+                );
+                let apart = a[0].iter().flatten().zip(b[0].iter().flatten());
+                if apart.map(|(p, q)| (p - q).abs()).fold(0.0, f64::max) > 1e-6 {
+                    stopped_short += 1;
+                }
+            }
+        }
+        assert!(
+            stopped_short >= 10,
+            "the descent hit its cap on {stopped_short} rows only"
+        );
+        assert_eq!(capped.solve_failures, 0, "a warm-up is not a failure");
+        assert_eq!(converged.solve_failures, 0);
+    }
+
+    /// A cap hit past the warm-up is counted: eight features on a stream
+    /// that decays (a half-life of 30 rows, a Kish size near 86, ten rows a
+    /// feature) whose second feature becomes the first plus a trace of
+    /// noise from row 200. The Gram is near-singular, the rows are many,
+    /// and the 100 sweeps run out: that is the data's, and a user is to be
+    /// told. The same stream without the pair counts nothing.
+    #[test]
+    fn a_cap_hit_past_the_warm_up_is_a_solve_failure() {
+        let run = |collinear: bool| {
+            let mut c = cfg(8, 1, vec![0.01, 0.001, 0.0]);
+            c.decay = Decay::Halflife(30.0);
+            c.max_iter = 100;
+            c.tol = 1e-10;
+            let mut m = Lasso::new(c).unwrap();
+            let mut s = 9u64;
+            let mut before = 0;
+            for i in 0..500 {
+                let mut x: Vec<f64> = (0..8).map(|_| lcg(&mut s)).collect();
+                if collinear && i >= 200 {
+                    x[1] = x[0] + 1e-5 * lcg(&mut s);
+                }
+                let y = x[0] + x[1] - 0.5 * x[2] + 0.01 * lcg(&mut s);
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                if i == 199 {
+                    before = m.solve_failures;
+                }
+            }
+            // Far past the rule's edge: 2.3 rows a feature is 18 rows.
+            let kish = m.acc.grams.grams[0].n_kish().unwrap();
+            assert!(kish > 70.0, "{kish}");
+            assert!(!crate::gramfit::warming_up(
+                Some(kish),
+                8,
+                true,
+                0.0,
+                (100, 1e-10)
+            ));
+            (before, m.solve_failures)
+        };
+        let (before, after) = run(true);
+        assert_eq!(before, 0, "no failure before the pair");
+        assert!(after > 0, "the near-collinear pair was not counted");
+        assert_eq!(run(false), (0, 0), "and without the pair nothing is");
     }
 
     /// The stopping rule is dimensionless (task 278, D3): the target scaled

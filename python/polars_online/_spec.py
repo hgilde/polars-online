@@ -2183,7 +2183,9 @@ def lasso(
         deviation, or its root mean square without an intercept, where the
         fit is not centered. A descent that runs out of sweeps first is
         counted in :meth:`polars_online.ModelBank.solve_failures`, one per
-        target and grid point (*The descent* in Notes).
+        target and grid point, unless the rows behind its Gram are too few
+        for the features to settle in ``max_iter`` sweeps on any data (*The
+        descent* in Notes).
     ``target_gaps``
         Which rows a target's feature correlations are taken over where the
         target is null on some: ``"own_rows"``, the default, or
@@ -2350,6 +2352,21 @@ def lasso(
     nearly repeat each other most descents can run out: on 800 rows of two
     columns 0.1 apart (``kappa`` near 400) at a penalty of 0.001, 798 of
     799.
+
+    A descent that runs out of sweeps while the rows are too few for the
+    features is the fit's warm-up, and is not counted. A sweep shrinks the
+    error by about ``1 - 2 * lmin``, ``lmin`` the smallest eigenvalue of the
+    correlation matrix (with the penalty's ridge share added to its
+    diagonal), so settling to ``tol`` takes about ``ln(1/tol) / (2 * lmin)``
+    sweeps. ``n`` independent rows of ``k`` features give at best ``lmin =
+    (1 - sqrt(k / dof)) ** 2``, with ``dof`` the Kish size ``n`` less one for
+    an intercept, and correlated features only less. Where that best case
+    would not settle in ``max_iter`` sweeps, about 2.3 rows a feature at 100
+    sweeps and 1.25 at 1,000, the cap hit comes from the rows and says
+    nothing about the data, so it is not counted; the fit is still where the
+    descent stopped. Past it every cap hit is counted. A ``max_iter`` below
+    ``ln(1/tol) / 2``, about 12 sweeps, is counted always, since no number
+    of rows would settle it.
     """
     model: dict[str, Any] = {
         "type": "lasso",
