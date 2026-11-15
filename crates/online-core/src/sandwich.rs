@@ -43,6 +43,12 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
+thread_local! {
+    /// A row's `z` and its score `u`, as [`Sandwich::update`] forms them:
+    /// kept by the thread and written over, no part of any state.
+    static ROW: std::cell::RefCell<(Vec<f64>, Vec<f64>)> = const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
+}
+
 /// The sandwich of one slot's fit. See the module docs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sandwich {
@@ -131,52 +137,81 @@ impl Sandwich {
     /// weight of 0, only ages (CLAUDE.md hard rule 9), and so does a row
     /// whose score `u = w e z` or bread term `w z z'` would put a sum past
     /// `f64`: kept, its `inf` would stay in the sums for good.
+    ///
+    /// Each sum's decay and its row's term are one pass over it, `S ← λS +
+    /// term`: the two roundings [`Self::age`] and an addition would make, in
+    /// the same order, and the same bits, with the sums read once rather than
+    /// twice. The row's `z` and `u` are written into buffers the thread
+    /// keeps, and `u` goes on to the ring in the buffer of the score it
+    /// pushes out, so a row allocates nothing once the ring is full.
     pub fn update(&mut self, x: &[f64], e: f64, lam: f64, w: f64) {
-        self.age(lam);
         if !(e.is_finite() && w > 0.0 && x.len() == self.k && x.iter().all(|v| v.is_finite())) {
-            return;
+            return self.age(lam);
         }
         if self.intercept && self.origin.is_empty() {
             self.origin = x.to_vec();
         }
         let d = self.dim();
-        let mut z = Vec::with_capacity(d);
-        if self.intercept {
-            z.push(1.0);
-            z.extend(x.iter().zip(&self.origin).map(|(v, c)| v - c));
-        } else {
-            z.extend_from_slice(x);
-        }
-        let u: Vec<f64> = z.iter().map(|v| w * e * v).collect();
-        // The bread and the meat are sums of positive semidefinite terms, so
-        // each entry is bounded by its diagonal ones (Cauchy-Schwarz), and
-        // each lag sum by the meat's diagonal at the two rows' present
-        // weights: a finite diagonal after the row keeps every sum finite
-        // (docs/PLAN.md task 270, review round 9 B-2).
-        let fits = (0..d).all(|i| {
-            (self.bread[i * d + i] + w * z[i] * z[i]).is_finite()
-                && (self.meat[i * d + i] + u[i] * u[i]).is_finite()
-        });
-        if !fits {
-            return;
-        }
-        for i in 0..d {
-            for j in 0..d {
-                self.bread[i * d + j] += w * z[i] * z[j];
-                self.meat[i * d + j] += u[i] * u[j];
+        ROW.with_borrow_mut(|(z, u)| {
+            z.clear();
+            if self.intercept {
+                z.push(1.0);
+                z.extend(x.iter().zip(&self.origin).map(|(v, c)| v - c));
+            } else {
+                z.extend_from_slice(x);
             }
-        }
-        for (g, back) in self.gammas.iter_mut().zip(&self.ring) {
+            let we = w * e;
+            u.clear();
+            u.extend(z.iter().map(|v| we * v));
+            // The bread and the meat are sums of positive semidefinite
+            // terms, so each entry is bounded by its diagonal ones
+            // (Cauchy-Schwarz), and each lag sum by the meat's diagonal at
+            // the two rows' present weights: a finite diagonal after the row
+            // keeps every sum finite (docs/PLAN.md task 270, review round 9
+            // B-2). The diagonals are read as the decay leaves them.
+            let lam2 = lam * lam;
+            let fits = (0..d).all(|i| {
+                (self.bread[i * d + i] * lam + w * z[i] * z[i]).is_finite()
+                    && (self.meat[i * d + i] * lam2 + u[i] * u[i]).is_finite()
+            });
+            if !fits {
+                return self.age(lam);
+            }
             for i in 0..d {
-                for j in 0..d {
-                    g[i * d + j] += u[i] * back[j];
+                let (wz, ui) = (w * z[i], u[i]);
+                let at = i * d..(i + 1) * d;
+                for (b, &zj) in self.bread[at.clone()].iter_mut().zip(z.iter()) {
+                    *b = *b * lam + wz * zj;
+                }
+                for (m, &uj) in self.meat[at].iter_mut().zip(u.iter()) {
+                    *m = *m * lam2 + ui * uj;
                 }
             }
-        }
-        if self.lags > 0 {
-            self.ring.push_front(u);
-            self.ring.truncate(self.lags);
-        }
+            for (l, g) in self.gammas.iter_mut().enumerate() {
+                match self.ring.get_mut(l) {
+                    Some(back) => {
+                        // The score as the step's decay leaves it.
+                        back.iter_mut().for_each(|v| *v *= lam);
+                        for (i, &ui) in u.iter().enumerate() {
+                            for (g, &bj) in g[i * d..(i + 1) * d].iter_mut().zip(back.iter()) {
+                                *g = *g * lam2 + ui * bj;
+                            }
+                        }
+                    }
+                    None => g.iter_mut().for_each(|v| *v *= lam2),
+                }
+            }
+            if self.lags > 0 {
+                let mut kept = if self.ring.len() >= self.lags {
+                    self.ring.pop_back().unwrap_or_default()
+                } else {
+                    Vec::with_capacity(d)
+                };
+                kept.clear();
+                kept.extend_from_slice(u);
+                self.ring.push_front(kept);
+            }
+        });
     }
 
     /// The covariance of the coefficients over the features `idx`

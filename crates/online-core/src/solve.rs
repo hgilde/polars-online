@@ -527,6 +527,45 @@ pub(crate) fn solve_spd_in(
     Some(attempts)
 }
 
+/// The solves' working spaces, one for each shape `(order, columns)` a
+/// reader solves (a distance's, a statistic's).
+pub(crate) type Solves = Vec<(usize, usize, SolveWork)>;
+
+/// Past this order (faer's own recursion threshold, where a factorization
+/// is no longer one call) a solve allocates its own space, as
+/// [`crate::solve_spd`] does, rather than keep one for the thread, and a
+/// reader leaves no buffer behind.
+pub(crate) const KEPT_ORDER: usize = 64;
+
+/// [`crate::solve_spd`] of `A x = B` (`B` column-major `k × m`) into `out`,
+/// to the bit, in the space kept for its shape: the attempts, `None` where
+/// every jitter fails.
+pub(crate) fn solve_in(
+    solves: &mut Solves,
+    a: &[f64],
+    b: &[f64],
+    k: usize,
+    m: usize,
+    out: &mut Vec<f64>,
+) -> Option<u32> {
+    if k > KEPT_ORDER {
+        let (x, attempts) = crate::solve_spd(a, b, k, m)?;
+        *out = x;
+        return Some(attempts);
+    }
+    let at = match solves.iter().position(|(sk, sm, _)| (*sk, *sm) == (k, m)) {
+        Some(at) => at,
+        None => {
+            if solves.len() >= 16 {
+                solves.clear();
+            }
+            solves.push((k, m, SolveWork::default()));
+            solves.len() - 1
+        }
+    };
+    solve_spd_in(a, b, k, m, &mut solves[at].2, out)
+}
+
 /// [`solve_spd`] of `C + ridge·I` with one right-hand side `b`, `C`
 /// symmetric over `k` features and given as its lower triangle packed row
 /// by row ([`crate::LowerTriangle::packed`]), with no square laid out: each
