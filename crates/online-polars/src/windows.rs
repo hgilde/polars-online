@@ -1544,7 +1544,7 @@ impl Gap {
                 Some(w) => i128::from(n).cmp(&w),
                 None => Stamp::Ns(i128::from(n)).cmp_span_ns(Stamp::Ns(0), span, None),
             },
-            Gap::Secs(s) => ((s - 0.0) - (0.0 - 0.0))
+            Gap::Secs(s) => ((s - 0.0) - 0.0)
                 .partial_cmp(&span)
                 .unwrap_or(Ordering::Equal),
             Gap::Int(n) => Stamp::Int(n, 0.0).cmp_span_ns(Stamp::Int(0, 0.0), span, None),
