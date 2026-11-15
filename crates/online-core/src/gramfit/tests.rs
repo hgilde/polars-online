@@ -1232,3 +1232,130 @@ fn the_targets_spread_is_centred_with_an_intercept_and_raw_without() {
     assert_eq!(target_spread(f64::NAN, 1.0, true), 0.0);
     assert_eq!(target_spread(f64::NAN, 1.0, false), 0.0);
 }
+
+/// The warm-up's row count follows from the descent's own settings alone:
+/// at `max_iter` sweeps and `tol` the best Gram of `n` rows, `(1 − √(k/n))²`,
+/// settles when `(1 − √(k/n))² ≥ ln(1/tol) / (2 max_iter)`, which gives
+/// `n ≥ k / (1 − √(ln(1/tol) / (2 max_iter)))²`. Written out here as the
+/// closed form the function must meet at both sides of its edge, with no
+/// number from a data set in it.
+#[test]
+fn the_warm_up_ends_at_the_row_count_the_sweeps_and_the_tolerance_give() {
+    let k = 200usize;
+    for (max_iter, tol) in [(100u32, 1e-10f64), (1000, 1e-10), (100, 1e-6), (30, 1e-10)] {
+        let need = (1.0 / tol).ln() / (2.0 * f64::from(max_iter));
+        assert!(need < 1.0, "the case is one a warm-up can end in");
+        let edge = k as f64 / (1.0 - need.sqrt()).powi(2);
+        // With an intercept the centred Gram has one degree of freedom less.
+        for (n, warm) in [(edge * 0.98, true), (edge * 1.02, false)] {
+            let got = warming_up(Some(n + 1.0), k, true, 0.0, (max_iter, tol));
+            assert_eq!(got, warm, "max_iter {max_iter}, tol {tol:e}, n {n:.1}");
+            let got = warming_up(Some(n), k, false, 0.0, (max_iter, tol));
+            assert_eq!(got, warm, "no intercept: max_iter {max_iter}, tol {tol:e}");
+        }
+    }
+    // The defaults: about 2.3 rows a feature; 1,000 sweeps, 1.25.
+    let ratio = |max_iter| {
+        let need = (1e10f64).ln() / (2.0 * f64::from(max_iter));
+        1.0 / (1.0 - need.sqrt()).powi(2)
+    };
+    assert!((ratio(100) - 2.29).abs() < 0.01, "{}", ratio(100));
+    assert!((ratio(1000) - 1.25).abs() < 0.01, "{}", ratio(1000));
+}
+
+/// The edges of the rule: a Gram of at most `k` degrees of freedom is
+/// singular; an unknown size excuses nothing; a cap no number of rows could
+/// meet -- fewer sweeps than the tolerance's logarithm over two -- is the
+/// settings' and always counts; a ridge of `l₂` lifts the best case; no
+/// features is no warm-up.
+#[test]
+fn the_warm_up_rule_holds_at_its_edges() {
+    let d = (100u32, 1e-10);
+    assert!(warming_up(Some(40.0), 40, false, 0.0, d), "n = k: singular");
+    assert!(
+        warming_up(Some(41.0), 40, true, 0.0, d),
+        "n - 1 = k: singular"
+    );
+    assert!(
+        warming_up(Some(5.0), 40, true, 0.0, d),
+        "fewer rows than features"
+    );
+    assert!(
+        warming_up(Some(0.5), 40, true, 0.0, d),
+        "less than a row: no degrees of freedom"
+    );
+    assert!(
+        !warming_up(None, 40, true, 0.0, d),
+        "an unknown size excuses nothing"
+    );
+    assert!(!warming_up(Some(f64::NAN), 40, true, 0.0, d));
+    assert!(!warming_up(Some(1e9), 40, true, 0.0, d), "many rows");
+    assert!(
+        !warming_up(Some(5.0), 0, true, 0.0, d),
+        "no features: nothing to settle"
+    );
+    // ln(1e10)/2 = 11.5 sweeps: below it no data settles, so a cap of 5 or
+    // 11 is never a warm-up, however few the rows.
+    for max_iter in [1u32, 5, 11] {
+        assert!(
+            !warming_up(Some(5.0), 40, true, 0.0, (max_iter, 1e-10)),
+            "{max_iter}"
+        );
+    }
+    assert!(warming_up(Some(5.0), 40, true, 0.0, (12, 1e-10)));
+    // A tolerance of 1 or more needs no sweep to speak of.
+    assert!(!warming_up(Some(5.0), 40, true, 0.0, (100, 1.0)));
+    // A ridge: at n = 2k the rows alone are warm-up (edge 0.0858 < 0.1151);
+    // the ridge's l2 of 0.05 lifts the best case to (0.0858 + 0.05) / 1.05.
+    assert!(warming_up(Some(80.0 + 1.0), 40, true, 0.0, d));
+    assert!(!warming_up(Some(80.0 + 1.0), 40, true, 0.05, d));
+}
+
+/// The two claims the rule rests on, against faer's eigensolver
+/// (`crate::oracle`) and the descent itself, on Grams of independent
+/// features: the smallest eigenvalue is near the edge `(1 − √(k/n))²`, and
+/// a cold descent to the penalty-free fit settles in about
+/// `ln(1/tol) / (2 λ_min)` sweeps -- measured at about three quarters of
+/// it, and never under half or over 1.1 times, which is all the rule asks
+/// of the estimate: it errs toward more sweeps than the descent takes.
+#[test]
+fn the_edge_and_the_sweep_estimate_hold_on_independent_features() {
+    let (k, tol) = (40usize, 1e-10f64);
+    for (i, ratio) in [1.5, 2.0, 3.0, 5.0].into_iter().enumerate() {
+        let n = (ratio * k as f64) as usize;
+        let beta: Vec<f64> = (0..k).map(|j| 1.0 + (j % 3) as f64).collect();
+        let (r, d) = design(100 + i as u64, n, k, 0.0, &beta);
+        let (values, _) = oracle::sym_eigen(&r);
+        let least = values[0];
+        // `design` centres, so the Gram holds n - 1 degrees of freedom.
+        let edge = (1.0 - (k as f64 / (n as f64 - 1.0)).sqrt()).powi(2);
+        assert!(
+            least > 0.5 * edge && least < 1.6 * edge,
+            "n/k {ratio}: λ_min {least:.4} against the edge {edge:.4}"
+        );
+        let estimate = (1.0 / tol).ln() / (2.0 * least);
+        let spread = d.iter().fold(1.0f64, |m, v| m.max(v.abs()));
+        let converges_in = |max_iter: usize| {
+            let path = cd_path(
+                &r,
+                &d,
+                &vec![true; k],
+                &[0.0],
+                1.0,
+                &vec![1.0; k],
+                max_iter,
+                tol,
+                spread,
+            );
+            !path.unconverged[0]
+        };
+        assert!(
+            !converges_in((estimate / 2.0).floor().max(1.0) as usize),
+            "n/k {ratio}: half the estimate ({estimate:.0}) settled"
+        );
+        assert!(
+            converges_in((1.1 * estimate).ceil() as usize),
+            "n/k {ratio}: 1.1 times the estimate ({estimate:.0}) did not"
+        );
+    }
+}

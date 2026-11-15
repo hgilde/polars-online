@@ -89,8 +89,10 @@ MISSING_TARGET_SHARE = 0.5
 #: Fewer than this share of the rows fed processed: the rest skipped for a
 #: missing feature or weight (``few_learned``).
 PROCESSED_SHARE = 0.5
-#: ``lasso``'s coordinate descent runs out of sweeps on up to 7 of a stream's
-#: first rows on clean data; past this count it is told (``solve_failures``).
+#: ``lasso``'s coordinate descent runs out of sweeps on a few solves of
+#: correlated features past its warm-up (a cap hit while the rows are too few
+#: for the features is not counted); past this count it is told
+#: (``solve_failures``).
 LASSO_SWEEPS = 10
 #: ``|mean| / std`` past which a model that centres its features is told its
 #: input keeps few digits of its variation (``level_over_spread``, info).

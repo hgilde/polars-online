@@ -280,25 +280,29 @@ class TestPowerOfTwoTargetScale:
             c = 2.0**k
             assert_scaled(base, fit(Y_SCALE[model](c), x, y * c), c, f"{model} at 2^{k}")
 
-    def test_the_lassos_default_descent_scales_to_the_bit_with_its_counts(self):
+    def test_the_lassos_capped_descent_scales_to_the_bit_with_its_counts(self):
         # The descent's `tol` is relative to the target's spread, so the
-        # default descent stops on the same sweep at every scale: the fit is
+        # descent stops on the same sweep at every scale: the fit is
         # bitwise the unscaled one scaled, and `solve_failures` counts the
         # same cap hits. While `tol` was in the target's units (task 278,
         # D3), a target near 1e-9 met it after a sweep: 0.20 of the spread
         # off at 2^-30 and 1e-3 at 2^-20 (0.57 and 1.05e-3 on this stream),
         # with no descent counted, and 16 counted at 2^20 and up against 10
-        # at scale 1 (measured 2026-10-25).
+        # at scale 1 (measured 2026-10-25). The cap is 2 sweeps, under the
+        # 12 a descent needs to cut an error by the default `tol` even on
+        # independent features: the default's own cap hits on this stream
+        # are its first rows' (task 405) and are not counted, so only a cap
+        # that no rows could meet is counted here.
         x, y = stream(0, N_FULL)
 
         def run(c: float) -> tuple[pl.DataFrame, int]:
-            bank = po.ModelBank([Y_SCALE["lasso"](c)])
+            bank = po.ModelBank([Y_SCALE["lasso"](c, max_iter=2)])
             cols: dict[str, Any] = {f: x[:, i] for i, f in enumerate(FEATURES)}
             out = bank.fit_predict(pl.DataFrame({**cols, "y": y * c}))["m"].struct.unnest()
             return out, int(bank.solve_failures()["solve_failures"].sum())
 
         base, counted = run(1.0)
-        print("lasso at scale 1:", counted, "descents counted")
+        print("lasso at scale 1 and 2 sweeps:", counted, "descents counted")
         assert counted > 0, "no descent ran out of sweeps: the cap's path did not run"
         for k in (-30, -20, 20, 30):
             c = 2.0**k

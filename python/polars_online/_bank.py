@@ -3489,7 +3489,21 @@ class ModelBank:
         ``lasso``
             A coordinate descent that ran out of ``max_iter`` sweeps before
             every coefficient moved less than ``tol``, one per target and path
-            point.
+            point. Not counted: one whose Gram has too few effective rows
+            (Kish's size) for its features to settle in ``max_iter`` sweeps
+            even if they were independent. A sweep shrinks the error by about
+            ``1 - 2 * lmin``, ``lmin`` the smallest eigenvalue of the
+            correlation matrix, with the ridge share of the penalty added, so
+            settling to ``tol`` takes about ``ln(1/tol) / (2 * lmin)``
+            sweeps. ``n`` independent rows of ``k`` features give at best
+            ``lmin = (1 - sqrt(k / dof)) ** 2``, ``dof`` being ``n``, less one
+            with an intercept. Below ``ln(1/tol) / (2 * max_iter)`` that
+            says nothing about the data, and the fit is where the descent
+            stopped. At 100 sweeps and the default ``tol`` that is under about
+            2.3 rows a feature, at 1,000 sweeps 1.25. Past it every cap hit
+            counts, so nearly dependent features show here. A ``max_iter``
+            below ``ln(1/tol) / 2``, about 12, is never excused: no number of
+            rows would settle it.
         ``kmeans``
             Each run of a ``"lloyd"`` start that was still moving rows after
             300 passes, and stopped there.
