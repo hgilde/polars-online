@@ -2558,9 +2558,9 @@ impl OnlineModel for Kalman {
                     self.basis[0].add(sum, n, weight);
                 }
             } else {
-                for j in 0..m {
+                for (j, basis) in self.basis.iter_mut().enumerate().take(m) {
                     if let Some(e2) = square(j) {
-                        self.basis[j].add(e2, 1.0, weight);
+                        basis.add(e2, 1.0, weight);
                     }
                 }
             }

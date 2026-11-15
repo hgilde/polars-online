@@ -2356,15 +2356,15 @@ mod tests {
                         let w = w_now - w_old;
                         let (ratio, g) = (w_old / w, w_now / w);
                         let (c, c_old) = (cov.comoments().packed(), old.c.packed());
-                        for i in 0..2 {
+                        for (i, &m_old) in old.m.iter().enumerate().take(2) {
                             let ii = crate::ewcov::row_at(i) + i;
-                            let d = old.m[i] - cov.mean(i);
+                            let d = m_old - cov.mean(i);
                             let cen = crate::solve::clamp_rounding(
                                 g * c[ii] - ratio * c_old[ii] - ratio * g * d * d,
                             );
                             let terms = g * c[ii] + ratio * c_old[ii];
                             let level_part =
-                                ratio * g * d.abs() * (cov.mean(i).abs() + old.m[i].abs());
+                                ratio * g * d.abs() * (cov.mean(i).abs() + m_old.abs());
                             if cen > 64.0 * f64::EPSILON * terms {
                                 assert_eq!(
                                     out.cov(i, i).to_bits(),

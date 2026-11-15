@@ -3577,7 +3577,7 @@ file = "crates/online-polars/src/resolvers.rs"
 function = "resolve_targets"
 mutation = "replace > with =="
 line_has = "if groups.len() > 1 && (n >= PAR_MIN_ROWS || groups.len() >= PAR_MIN_GROUPS) {"
-why = """the guard only picks between a `par_iter_mut` over the groups' cores \
+why = """the guard only picks between `in_parallel` over the groups' cores \
 and the loop beside it, which feed each core the same rows in the same \
 order and read the results in the groups' order: which branch runs decides \
 which thread feeds a core, never a bit (`groups_resolve_on_many_threads_to_the_same_bits`)"""

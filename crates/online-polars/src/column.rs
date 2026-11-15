@@ -368,8 +368,8 @@ mod column_tests {
             assert_eq!(col.is_valid(i), col.values[i].is_finite());
         }
         let v = col.validity().expect("some rows are null");
-        for i in 0..n {
-            assert_eq!(v.get_bit(i), col.values[i].is_finite());
+        for (i, value) in col.values.iter().enumerate().take(n) {
+            assert_eq!(v.get_bit(i), value.is_finite());
         }
     }
 

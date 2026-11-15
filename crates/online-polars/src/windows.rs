@@ -4937,13 +4937,13 @@ mod tests {
         // Held at `8·2⁻⁵²`, a libm up to 4.8 ulps off: measured 0 with
         // Apple's, 3 with Apple's moved by up to 2 ulps and 5 by up to 4,
         // where `1e-15` (4.5), the bound before, failed.
-        for o in 0..3 {
+        for (o, values) in reset.values.iter().enumerate().take(3) {
             assert!(
-                (reset.values[o][0] - whole).abs() <= 8.0 * f64::EPSILON,
+                (values[0] - whole).abs() <= 8.0 * f64::EPSILON,
                 "op {o}: {} vs {whole}",
-                reset.values[o][0]
+                values[0]
             );
-            assert!(reset.values[o][1..].iter().all(|v| v.is_nan()), "op {o}");
+            assert!(values[1..].iter().all(|v| v.is_nan()), "op {o}");
         }
         assert!(reset.drop.iter().all(|d| !d), "{:?}", reset.drop);
     }
