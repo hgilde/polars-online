@@ -1605,7 +1605,7 @@ fn the_fold_keeps_the_stable_sort_order_on_ties() {
             .map(|i| (vals[i % vals.len()], 1.0 + (i % 3) as f64))
             .collect();
         c.sort_by(|a, b| a.0.total_cmp(&b.0));
-        Digest::fold(Vec::new(), c)
+        Digest::fold(c, &mut [])
     };
     let buffer: Vec<f64> = (0..DIGEST_BUFFER - 1)
         .map(|_| vals[(r.next_u64() % vals.len() as u64) as usize])
