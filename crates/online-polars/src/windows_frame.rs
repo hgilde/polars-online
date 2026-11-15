@@ -741,11 +741,11 @@ fn session_hash(v: Option<&str>) -> u64 {
     crate::bank::session_hash(v)
 }
 
-/// One `with_windows` run: the core, its plan, and the input rows it holds.
-#[derive(Clone)]
-pub struct WindowsRun {
+/// What a [`WindowsRun`] holds that no row changes: the call, its plan and
+/// the schemas it was built against.
+#[derive(PartialEq)]
+struct Constants {
     config: WindowsConfig,
-    core: Windows,
     inputs: Vec<Node>,
     columns: Vec<(String, usize)>,
     increments: Vec<(String, Node, bool)>,
@@ -758,9 +758,22 @@ pub struct WindowsRun {
     key_dtypes: Vec<(String, String)>,
     /// The output's schema: the input's columns, then each formula.
     output: Schema,
+}
+
+/// One `with_windows` run: the core, its plan, and the input rows it holds.
+#[derive(Clone)]
+pub struct WindowsRun {
+    /// What the call fixes and no row changes, shared by every run of a spec
+    /// (the bank's cores of one spec's groups): a copy of the run is then
+    /// its state alone.
+    k: Arc<Constants>,
+    core: Windows,
     /// The rows the core holds, oldest first, as slices of the input with
     /// the increment columns beside them.
-    held: VecDeque<DataFrame>,
+    /// Each behind an `Arc`, so that a copy of the run (the bank keeps one
+    /// before a chunk that may be refused) shares the rows rather than
+    /// copying a frame a chunk.
+    held: VecDeque<Arc<DataFrame>>,
     /// Per group, the increments' state; the null key apart, so a row's
     /// key is looked up as text without a copy.
     incr_state: Vec<IncrState>,
@@ -833,6 +846,17 @@ fn compact_views(rows: &mut DataFrame) -> PolarsResult<()> {
 }
 
 impl WindowsRun {
+    /// Share `other`'s constants where they are the same as this run's: the
+    /// bank builds one core a group, and the cores of one spec's groups hold
+    /// one copy of the call and its plan, not one each. A run that differs
+    /// (another input schema, say) keeps its own.
+    pub fn share_with(&mut self, other: &WindowsRun) {
+        if !Arc::ptr_eq(&self.k, &other.k) && *self.k == *other.k {
+            self.k = Arc::clone(&other.k);
+        }
+        self.core.share_with(&other.core);
+    }
+
     /// A run of `config` over an input with schema `input`.
     ///
     /// # Errors
@@ -998,15 +1022,17 @@ impl WindowsRun {
                 })
                 .collect();
         Ok(Self {
-            config,
+            k: Arc::new(Constants {
+                config,
+                inputs,
+                columns: p.columns,
+                increments: p.increments,
+                accept,
+                input: input.clone(),
+                key_dtypes,
+                output,
+            }),
             core,
-            inputs,
-            columns: p.columns,
-            increments: p.increments,
-            accept,
-            input: input.clone(),
-            key_dtypes,
-            output,
             held: VecDeque::new(),
             incr_state: Vec::new(),
             incr_index: HashMap::new(),
@@ -1029,7 +1055,7 @@ impl WindowsRun {
 
     /// The output's schema: the input's columns, then each formula.
     pub fn schema(&self) -> Schema {
-        self.output.clone()
+        self.k.output.clone()
     }
 
     /// Rows fed and not yet out.
@@ -1051,22 +1077,30 @@ impl WindowsRun {
                 out.push(c.clone());
             }
         };
-        for c in [&self.config.clock, &self.config.session, &self.config.group]
-            .into_iter()
-            .flatten()
+        for c in [
+            &self.k.config.clock,
+            &self.k.config.session,
+            &self.k.config.group,
+        ]
+        .into_iter()
+        .flatten()
         {
             put(c);
         }
-        for f in &self.config.formulas {
+        for f in &self.k.config.formulas {
             f.tree.columns().iter().for_each(&mut put);
         }
-        self.accept.iter().for_each(&mut put);
+        self.k.accept.iter().for_each(&mut put);
         out
     }
 
     /// The hidden columns a held chunk carries beside the input's.
     fn hidden_names(&self) -> Vec<String> {
-        self.increments.iter().map(|(k, _, _)| k.clone()).collect()
+        self.k
+            .increments
+            .iter()
+            .map(|(k, _, _)| k.clone())
+            .collect()
     }
 
     /// Feed one chunk and return the rows it resolved, in input order, less
@@ -1130,7 +1164,7 @@ impl WindowsRun {
         );
         if let Some(given) = &inputs {
             polars_ensure!(
-                given.len() == self.inputs.len() && given.iter().all(|v| v.len() == df.height()),
+                given.len() == self.k.inputs.len() && given.iter().all(|v| v.len() == df.height()),
                 ComputeError: "internal: feed_resolving: the operator inputs handed over must be \
                     one value a row for each input, which is a defect in polars-online. Open an \
                     issue at https://github.com/hgilde/polars-online/issues with this message."
@@ -1151,7 +1185,8 @@ impl WindowsRun {
     fn bare_formulas(&self) -> Option<Vec<&OpNode>> {
         short_cuts()
             .then(|| {
-                self.config
+                self.k
+                    .config
                     .formulas
                     .iter()
                     .map(|f| f.tree.bare_operator())
@@ -1168,7 +1203,7 @@ impl WindowsRun {
     /// rows give, or inputs that are all columns of doubles -- and where the
     /// plan refuses, which a feed reports for the rows it was handed.
     pub fn evaluate_inputs(&self, frame: &DataFrame) -> Option<Vec<Vec<f64>>> {
-        if !self.increments.is_empty() || self.bare_inputs(frame).is_some() {
+        if !self.k.increments.is_empty() || self.bare_inputs(frame).is_some() {
             return None;
         }
         self.evaluated_inputs(frame).ok()
@@ -1178,7 +1213,8 @@ impl WindowsRun {
     fn bare_inputs<'a>(&self, chunk: &'a DataFrame) -> Option<Vec<&'a Column>> {
         short_cuts()
             .then(|| {
-                self.inputs
+                self.k
+                    .inputs
                     .iter()
                     .map(|node| match node {
                         Node::Col(c) => chunk
@@ -1201,7 +1237,8 @@ impl WindowsRun {
             .clone()
             .lazy()
             .with_columns(
-                self.inputs
+                self.k
+                    .inputs
                     .iter()
                     .enumerate()
                     .map(|(i, node)| {
@@ -1212,12 +1249,12 @@ impl WindowsRun {
                     .collect::<Vec<_>>(),
             )
             .select(
-                (0..self.inputs.len())
+                (0..self.k.inputs.len())
                     .map(|i| col(input_column(i).as_str()))
                     .collect::<Vec<_>>(),
             )
             .collect()?;
-        (0..self.inputs.len())
+        (0..self.k.inputs.len())
             .map(|i| {
                 let s = evaluated.column(input_column(i).as_str())?;
                 Ok(s.f64()?.iter().map(|v| v.unwrap_or(f64::NAN)).collect())
@@ -1266,7 +1303,7 @@ impl WindowsRun {
                 // overlapping file (review R5, C4; R6, D3 and D4).
                 match self.core.peek(key.as_deref(), first_clock, session) {
                     Ok(Peek::NewStart) => self.resume_skip = 0,
-                    Ok(Peek::Forward) if self.config.clock.is_some() => self.resume_skip = 0,
+                    Ok(Peek::Forward) if self.k.config.clock.is_some() => self.resume_skip = 0,
                     // A row-count clock steps forward at every row, so a step
                     // forward is evidence of nothing there: without a clock
                     // column the next file begins with a new session (review
@@ -1310,7 +1347,8 @@ impl WindowsRun {
                         )
                     }
                 }
-            } else if self.resume_skip == 0 && self.config.clock.is_some() && resolving.is_none() {
+            } else if self.resume_skip == 0 && self.k.config.clock.is_some() && resolving.is_none()
+            {
                 // A state saved without a slice goes on with the next file,
                 // and refuses one that starts at the last stamp it read, as a
                 // sliced state does: a file boundary inside a tied stamp
@@ -1379,14 +1417,14 @@ impl WindowsRun {
         let n = df.height();
         // Keys are text, a zoned Datetime's its instant, as the bank keys
         // them: the cast to text failed on one (task 160, PA4b).
-        let session: Option<Vec<u64>> = match &self.config.session {
+        let session: Option<Vec<u64>> = match &self.k.config.session {
             None => None,
             Some(c) => {
                 let s = key_text(df.column(c.as_str())?.as_materialized_series())?;
                 Some(s.str()?.iter().map(session_hash).collect())
             }
         };
-        let group_col = match &self.config.group {
+        let group_col = match &self.k.config.group {
             None => None,
             Some(c) => Some(key_text(df.column(c.as_str())?.as_materialized_series())?),
         };
@@ -1427,6 +1465,7 @@ impl WindowsRun {
             self.evaluated_inputs(&chunk)?
         };
         let accepts: Vec<Vec<f64>> = self
+            .k
             .accept
             .iter()
             .map(|c| {
@@ -1437,7 +1476,7 @@ impl WindowsRun {
 
         // Pass three: the core.
         let chunk_base = self.core.next_seq();
-        let mut row_values = vec![0.0; self.inputs.len()];
+        let mut row_values = vec![0.0; self.k.inputs.len()];
         let mut consumed = n;
         let mut last_group: Option<(Option<&str>, usize)> = None;
         // Resolving: per resolved row, the number of the row that resolved
@@ -1479,7 +1518,7 @@ impl WindowsRun {
                 // The rows before it are in the core: hold them, and put the
                 // increments' state where they end.
                 if i > 0 {
-                    self.held.push_back(chunk.slice(0, i));
+                    self.held.push_back(Arc::new(chunk.slice(0, i)));
                     self.last_row = Some(chunk.slice(i as i64 - 1, 1));
                 }
                 self.rewind_increments(snapshot, df, &keys, &clock, session.as_deref(), i)?;
@@ -1490,7 +1529,7 @@ impl WindowsRun {
             }
         }
         if consumed > 0 {
-            self.held.push_back(chunk.slice(0, consumed));
+            self.held.push_back(Arc::new(chunk.slice(0, consumed)));
             self.last_row = Some(chunk.slice(consumed as i64 - 1, 1));
         }
         if consumed < n {
@@ -1542,7 +1581,7 @@ impl WindowsRun {
         let bare = self.bare_formulas();
         if let Some(ops) = bare {
             let mut cols: Vec<Column> = Vec::with_capacity(ops.len() + 2);
-            for (f, op) in self.config.formulas.iter().zip(ops) {
+            for (f, op) in self.k.config.formulas.iter().zip(ops) {
                 cols.push(
                     frame
                         .column(hidden(op).as_str())?
@@ -1558,6 +1597,7 @@ impl WindowsRun {
         // over it is null of itself; the row's other formulas keep theirs
         // (review R1, D4: every formula of the row was nulled).
         let exprs: Vec<Expr> = self
+            .k
             .config
             .formulas
             .iter()
@@ -1568,6 +1608,7 @@ impl WindowsRun {
             })
             .collect();
         let keep: Vec<Expr> = self
+            .k
             .config
             .formulas
             .iter()
@@ -1590,14 +1631,14 @@ impl WindowsRun {
     /// The first row's group key and session hash, as the core reads them.
     fn first_key_session(&self, df: &DataFrame) -> PolarsResult<(Option<String>, Option<u64>)> {
         let head = df.slice(0, 1);
-        let key = match &self.config.group {
+        let key = match &self.k.config.group {
             None => Some(String::new()),
             Some(c) => key_text(head.column(c.as_str())?.as_materialized_series())?
                 .str()?
                 .get(0)
                 .map(str::to_string),
         };
-        let session = match &self.config.session {
+        let session = match &self.k.config.session {
             None => None,
             Some(c) => {
                 let s = key_text(head.column(c.as_str())?.as_materialized_series())?;
@@ -1615,9 +1656,9 @@ impl WindowsRun {
     /// refused by name rather than fed with rows skipped or doubled.
     fn check_resumed_input(&mut self) -> PolarsResult<()> {
         let rows = std::mem::take(&mut self.resume_rows);
-        let names: Vec<&str> = self.input.iter_names().map(|n| n.as_str()).collect();
+        let names: Vec<&str> = self.k.input.iter_names().map(|n| n.as_str()).collect();
         let stack = |parts: &[DataFrame]| -> PolarsResult<DataFrame> {
-            let mut out = DataFrame::empty_with_schema(&self.input);
+            let mut out = DataFrame::empty_with_schema(&self.k.input);
             for part in parts {
                 out.vstack_mut(&part.select(names.iter().copied())?)?;
             }
@@ -1710,7 +1751,7 @@ impl WindowsRun {
         clock: &Option<Vec<ClockValue>>,
         session: Option<&[u64]>,
     ) -> PolarsResult<DataFrame> {
-        if self.increments.is_empty() {
+        if self.k.increments.is_empty() {
             return Ok(df.clone());
         }
         let n = df.height();
@@ -1718,7 +1759,8 @@ impl WindowsRun {
             .clone()
             .lazy()
             .select(
-                self.increments
+                self.k
+                    .increments
                     .iter()
                     .enumerate()
                     .map(|(i, (_, node, _))| {
@@ -1733,24 +1775,24 @@ impl WindowsRun {
             self.core.clock_cfg().on_clock_reset,
             online_core::OnClockReset::ResetState
         );
-        let mut cols: Vec<Column> = Vec::with_capacity(self.increments.len());
-        let mut out: Vec<Vec<Option<f64>>> = vec![Vec::with_capacity(n); self.increments.len()];
+        let mut cols: Vec<Column> = Vec::with_capacity(self.k.increments.len());
+        let mut out: Vec<Vec<Option<f64>>> = vec![Vec::with_capacity(n); self.k.increments.len()];
         // An integer input's values as integers (task 200): its step is
         // taken in integers and then converted, where two doubles of an
         // epoch-nanosecond column near 1.8e18 tied at a step of 1.
-        let integer: Vec<Option<Vec<Option<i128>>>> = (0..self.increments.len())
+        let integer: Vec<Option<Vec<Option<i128>>>> = (0..self.k.increments.len())
             .map(|i| {
                 let c = inputs.column(input_column(i).as_str())?;
-                if self.increments[i].2 || !integer_input(c.dtype()) {
+                if self.k.increments[i].2 || !integer_input(c.dtype()) {
                     Ok(None)
                 } else {
                     integer_values(c.as_materialized_series()).map(Some)
                 }
             })
             .collect::<PolarsResult<_>>()?;
-        let numeric: Vec<Option<Vec<Option<f64>>>> = (0..self.increments.len())
+        let numeric: Vec<Option<Vec<Option<f64>>>> = (0..self.k.increments.len())
             .map(|i| {
-                if self.increments[i].2 || integer[i].is_some() {
+                if self.k.increments[i].2 || integer[i].is_some() {
                     Ok(None)
                 } else {
                     let s = inputs
@@ -1760,9 +1802,9 @@ impl WindowsRun {
                 }
             })
             .collect::<PolarsResult<_>>()?;
-        let temporal: Vec<Option<Vec<Option<i64>>>> = (0..self.increments.len())
+        let temporal: Vec<Option<Vec<Option<i64>>>> = (0..self.k.increments.len())
             .map(|i| {
-                if self.increments[i].2 {
+                if self.k.increments[i].2 {
                     // A time of day is read too, in nanoseconds since
                     // midnight (review round 4, PD5).
                     let c = inputs.column(input_column(i).as_str())?;
@@ -1784,9 +1826,9 @@ impl WindowsRun {
                     let gi = self.incr_state.len();
                     self.incr_state.push(IncrState {
                         key: keys[r].map(str::to_string),
-                        prev: vec![f64::NAN; self.increments.len()],
-                        prev_ns: vec![None; self.increments.len()],
-                        prev_int: vec![None; self.increments.len()],
+                        prev: vec![f64::NAN; self.k.increments.len()],
+                        prev_ns: vec![None; self.k.increments.len()],
+                        prev_int: vec![None; self.k.increments.len()],
                         session: None,
                         clock: None,
                     });
@@ -1830,7 +1872,7 @@ impl WindowsRun {
             }
             st.session = now_session;
             st.clock = now_clock;
-            for i in 0..self.increments.len() {
+            for i in 0..self.k.increments.len() {
                 if let Some(vals) = &integer[i] {
                     let v = vals[r];
                     out[i].push(match (v, st.prev_int[i]) {
@@ -1871,7 +1913,7 @@ impl WindowsRun {
                 }
             }
         }
-        for (i, (name, _, _)) in self.increments.iter().enumerate() {
+        for (i, (name, _, _)) in self.k.increments.iter().enumerate() {
             let ca: Float64Chunked = std::mem::take(&mut out[i]).into_iter().collect();
             cols.push(ca.with_name(name.as_str().into()).into_column());
         }
@@ -1884,7 +1926,7 @@ impl WindowsRun {
     /// clock as nanoseconds, a numeric one as numbers; null, NaN and
     /// infinity refused by row, and the other kind than the state's.
     fn clock_values(&self, df: &DataFrame) -> PolarsResult<Option<Vec<ClockValue>>> {
-        let Some(c) = &self.config.clock else {
+        let Some(c) = &self.k.config.clock else {
             return Ok(None);
         };
         let col = df.column(c.as_str())?;
@@ -1960,7 +2002,7 @@ impl WindowsRun {
                 now,
                 min_backwards_jump,
             } => {
-                let column = self.config.clock.as_deref().unwrap_or("<row count>");
+                let column = self.k.config.clock.as_deref().unwrap_or("<row count>");
                 // A step that is no number (the core refuses it like a step
                 // back): two finite values whose difference is past the
                 // largest double, since a value that is not finite was
@@ -2007,7 +2049,7 @@ impl WindowsRun {
                          restart_after_step_back below the step to reset the windows at such a \
                          step back (0 resets them at every one).",
                         row(seq),
-                        self.config.restart_after_step_back.as_ref().map_or_else(|| crate::spec::num_label(m), ToString::to_string)
+                        self.k.config.restart_after_step_back.as_ref().map_or_else(|| crate::spec::num_label(m), ToString::to_string)
                     ),
                 }
             }
@@ -2025,6 +2067,7 @@ impl WindowsRun {
         }
         // Pass four: the formulas, over the rows with their operators.
         let exprs: Vec<Expr> = self
+            .k
             .config
             .formulas
             .iter()
@@ -2040,12 +2083,12 @@ impl WindowsRun {
             .get_column_names()
             .iter()
             .map(|n| n.to_string())
-            .filter(|n| self.input.contains(n.as_str()))
+            .filter(|n| self.k.input.contains(n.as_str()))
             .collect();
         let keep: Vec<Expr> = present
             .iter()
             .map(|n| col(n.as_str()))
-            .chain(self.config.formulas.iter().map(|f| col(f.name.as_str())))
+            .chain(self.k.config.formulas.iter().map(|f| col(f.name.as_str())))
             .collect();
         frame.lazy().with_columns(exprs).select(keep).collect()
     }
@@ -2057,14 +2100,15 @@ impl WindowsRun {
         let mut parts = 0;
         let mut left = e.rows;
         while left > 0 {
-            let h = self.held.front().map_or(0, DataFrame::height);
+            let h = self.held.front().map_or(0, |f| f.height());
             assert!(h > 0, "the core holds no row the frames do not");
             let part = if h <= left {
-                self.held.pop_front().expect("checked")
+                let whole = self.held.pop_front().expect("checked");
+                Arc::try_unwrap(whole).unwrap_or_else(|shared| (*shared).clone())
             } else {
                 let front = self.held.front_mut().expect("checked");
                 let part = front.slice(0, left);
-                *front = front.slice(left as i64, h - left);
+                *front = Arc::new(front.slice(left as i64, h - left));
                 part
             };
             left -= part.height();
@@ -2077,7 +2121,7 @@ impl WindowsRun {
             }
         }
         let held_schema = {
-            let mut s = self.input.clone();
+            let mut s = self.k.input.clone();
             for k in self.hidden_names() {
                 s.insert(k.as_str().into(), DataType::Float64);
             }
@@ -2089,8 +2133,8 @@ impl WindowsRun {
         if parts > 8 {
             frame.rechunk_mut();
         }
-        let mut cols: Vec<Column> = Vec::with_capacity(self.columns.len());
-        for (name, o) in &self.columns {
+        let mut cols: Vec<Column> = Vec::with_capacity(self.k.columns.len());
+        for (name, o) in &self.k.columns {
             let ca: Float64Chunked = e.values[*o]
                 .iter()
                 .map(|&x| (!x.is_nan()).then_some(x))
@@ -2129,7 +2173,7 @@ impl WindowsRun {
             return Err(msg);
         }
         let held_schema = {
-            let mut s = self.input.clone();
+            let mut s = self.k.input.clone();
             for k in self.hidden_names() {
                 s.insert(k.as_str().into(), DataType::Float64);
             }
@@ -2153,7 +2197,7 @@ impl WindowsRun {
         // (review R7, E3): the bank saves every core unsliced.
         let mut last_row = Vec::new();
         if let (true, Some(r)) = (skip_on_resume > 0, &self.last_row) {
-            let names: Vec<&str> = self.input.iter_names().map(|n| n.as_str()).collect();
+            let names: Vec<&str> = self.k.input.iter_names().map(|n| n.as_str()).collect();
             let mut r = r.select(names.iter().copied()).map_err(|e| e.to_string())?;
             compact_views(&mut r).map_err(|e| e.to_string())?;
             IpcWriter::new(&mut last_row)
@@ -2163,7 +2207,7 @@ impl WindowsRun {
         rmp_serde::to_vec_named(&FileOut {
             magic: WINDOWS_MAGIC,
             version: WINDOWS_VERSION,
-            config: &self.config,
+            config: &self.k.config,
             core: &self.core,
             held: &held,
             increments: &self.incr_state,
@@ -2181,7 +2225,7 @@ impl WindowsRun {
                 self.resume_first_session
             },
             last_row: &last_row,
-            key_dtypes: &self.key_dtypes,
+            key_dtypes: &self.k.key_dtypes,
         })
         .map_err(|e| e.to_string())
     }
@@ -2262,12 +2306,12 @@ impl WindowsRun {
             .into());
         }
         let mut run = Self::new(config, input)?;
-        if file.key_dtypes != run.key_dtypes {
+        if file.key_dtypes != run.k.key_dtypes {
             let name = |role: &str| {
                 if role == "group" {
-                    run.config.group.clone()
+                    run.k.config.group.clone()
                 } else {
-                    run.config.session.clone()
+                    run.k.config.session.clone()
                 }
                 .unwrap_or_default()
             };
@@ -2277,11 +2321,12 @@ impl WindowsRun {
                 .map(|(r, t)| format!("{r} column {:?}: {t}", name(r)))
                 .collect();
             let now: Vec<String> = run
+                .k
                 .key_dtypes
                 .iter()
                 .map(|(r, t)| format!("{r} column {:?}: {t}", name(r)))
                 .collect();
-            let what = match (run.config.group.is_some(), run.config.session.is_some()) {
+            let what = match (run.k.config.group.is_some(), run.k.config.session.is_some()) {
                 (true, true) => "group and session columns",
                 (true, false) => "group column",
                 _ => "session column",
@@ -2365,7 +2410,7 @@ impl WindowsRun {
         run.run_base = file.core.next_seq();
         run.core = file.core;
         if held.height() > 0 {
-            run.held.push_back(held);
+            run.held.push_back(Arc::new(held));
         }
         if file.resume_skip > 0 && !file.last_row.is_empty() {
             let last = IpcReader::new(Cursor::new(file.last_row))
@@ -2411,8 +2456,8 @@ impl WindowsRun {
             // out in order (review R6, D2) -- or, where it holds none (an
             // operator that resolves a row at its push), the last row it
             // read (R6, D1).
-            let names: Vec<&str> = run.input.iter_names().map(|n| n.as_str()).collect();
-            let mut want = DataFrame::empty_with_schema(&run.input);
+            let names: Vec<&str> = run.k.input.iter_names().map(|n| n.as_str()).collect();
+            let mut want = DataFrame::empty_with_schema(&run.k.input);
             for part in &run.held {
                 want.vstack_mut(
                     &part
@@ -2475,6 +2520,34 @@ mod tests {
             "wide" => t.iter().map(|v| format!("row {v} {}", "pad".repeat(20))).collect::<Vec<_>>(),
         )
         .unwrap()
+    }
+
+    /// The cores of one spec's groups hold one copy of the call and its plan,
+    /// a core of another input does not take them, and sharing changes
+    /// nothing a core saves.
+    #[test]
+    fn runs_of_one_call_share_their_constants_and_only_those() {
+        let cfg = config(FORWARD);
+        let f = frame(&[1.0, 2.0, 3.0]);
+        let mut a = WindowsRun::new(cfg.clone(), f.schema()).unwrap();
+        let mut b = WindowsRun::new(cfg.clone(), f.schema()).unwrap();
+        a.feed(&f, None).unwrap();
+        let unshared = (a.save_bytes().unwrap(), b.save_bytes().unwrap());
+        assert!(!Arc::ptr_eq(&a.k, &b.k));
+        b.share_with(&a);
+        assert!(Arc::ptr_eq(&a.k, &b.k));
+        assert!(a.core.shares_definitions_with(&b.core));
+        assert_eq!((a.save_bytes().unwrap(), b.save_bytes().unwrap()), unshared);
+        // A copy shares them too, and feeding it leaves the original alone.
+        let mut c = a.clone();
+        assert!(Arc::ptr_eq(&a.k, &c.k));
+        c.feed(&frame(&[4.0]), None).unwrap();
+        assert_eq!(a.save_bytes().unwrap(), unshared.0);
+        // Another input's schema is another plan.
+        let wider = df!("t" => [1.0], "x" => [1i64], "wide" => ["a"]).unwrap();
+        let mut d = WindowsRun::new(cfg, wider.schema()).unwrap();
+        d.share_with(&a);
+        assert!(!Arc::ptr_eq(&a.k, &d.k));
     }
 
     /// A bare column input skips the lazy engine's cast and a bare operator

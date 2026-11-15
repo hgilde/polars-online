@@ -54,6 +54,11 @@ pub(crate) struct TargetWindows {
     pub(crate) runs: HashMap<GroupKey, WindowsRun>,
     /// A loaded bank's cores, each resumed at its group's first chunk.
     pub(crate) saved: HashMap<GroupKey, Vec<u8>>,
+    /// A core that has read no row: what every group's core of this spec
+    /// shares its call and plan with, so that a copy of the cores (the
+    /// bank's, before a chunk that may be refused) and their memory are each
+    /// group's state alone.
+    proto: Option<WindowsRun>,
 }
 
 /// From this many groups a chunk's groups resolve on the pool's threads
@@ -167,7 +172,10 @@ impl TargetWindows {
         if !self.runs.contains_key(key) {
             let config = resolver_config(spec);
             let schema = frame.schema();
-            let run = match self.saved.remove(key) {
+            if self.proto.is_none() {
+                self.proto = WindowsRun::new(config.clone(), schema).ok();
+            }
+            let mut run = match self.saved.remove(key) {
                 None => WindowsRun::new(config, schema),
                 Some(bytes) => WindowsRun::load_bytes(&bytes, config, schema),
             }
@@ -176,9 +184,33 @@ impl TargetWindows {
                 let prefix = format!("spec {:?}: formula target", spec.name);
                 polars_err!(ComputeError: "{prefix}: {}", without_who(&e))
             })?;
+            if let Some(proto) = &self.proto {
+                run.share_with(proto);
+            }
             self.runs.insert(key.clone(), run);
         }
         Ok(self.runs.get_mut(key).expect("inserted above"))
+    }
+
+    /// The cores of `groups` as they are, for a chunk that may refuse after
+    /// feeding them: a chunk changes no other core, so these are all a
+    /// refusal has to put back (see [`Self::restore`]). A group with no core
+    /// yet is left out.
+    pub(crate) fn snapshot(
+        &self,
+        groups: &[(GroupKey, Vec<usize>)],
+    ) -> Vec<(GroupKey, WindowsRun)> {
+        groups
+            .iter()
+            .filter_map(|(key, _)| self.runs.get(key).map(|run| (key.clone(), run.clone())))
+            .collect()
+    }
+
+    /// Put back the cores [`Self::snapshot`] took.
+    pub(crate) fn restore(&mut self, cores: Vec<(GroupKey, WindowsRun)>) {
+        for (key, run) in cores {
+            self.runs.insert(key, run);
+        }
     }
 
     /// Every group's core as bytes, by key: the running ones, and the

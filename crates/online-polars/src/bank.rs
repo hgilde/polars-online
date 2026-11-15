@@ -34,6 +34,7 @@ use crate::stream::{
     last_accepted,
 };
 use crate::summary::{DataSummary, Role, SummaryRow, counts, describe_frame, summary_frame};
+use crate::windows_frame::WindowsRun;
 use online_core::ClockValue;
 
 /// One stream's group key. A null group value is its own key, distinct from any
@@ -4359,8 +4360,12 @@ impl Bank {
                         specs[*si].model.keeps_window_ring()
                             && stream.could_refuse_window(idx.len())
                     })));
-        let snapshot: Vec<TargetWindows> = if needs_snapshot {
-            self.resolvers.clone()
+        // Only the cores of the chunk's groups are fed, so only those are kept.
+        let snapshot: Vec<(usize, Vec<(GroupKey, WindowsRun)>)> = if needs_snapshot {
+            formula_specs
+                .iter()
+                .map(|&si| (si, self.resolvers[si].snapshot(&groups[si])))
+                .collect()
         } else {
             Vec::new()
         };
@@ -4383,8 +4388,8 @@ impl Bank {
         }
         if let Err(e) = resolved {
             drop(work);
-            if needs_snapshot {
-                self.resolvers = snapshot;
+            for (si, cores) in snapshot {
+                self.resolvers[si].restore(cores);
             }
             forget(&mut self.states, &fresh);
             refits_before.restore(
@@ -4455,8 +4460,8 @@ impl Bank {
             };
             if let Some(e) = over {
                 drop(work);
-                if needs_snapshot {
-                    self.resolvers = snapshot;
+                for (si, cores) in snapshot {
+                    self.resolvers[si].restore(cores);
                 }
                 forget(&mut self.states, &fresh);
                 refits_before.restore(
