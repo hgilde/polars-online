@@ -427,6 +427,62 @@ pub(crate) mod rounding;
 mod tests {
     use super::*;
 
+    /// Whether this thread's covariance scratch holds anything.
+    fn cov_kept() -> bool {
+        COV.with_borrow(|sc| !sc.solves.is_empty() || sc.bread.capacity() > 0)
+    }
+
+    /// A covariance of fewer than `KEPT_ORDER` coefficients leaves its
+    /// buffers with the thread, one of that many or more leaves none --
+    /// counting the intercept, and without one, the features alone.
+    #[test]
+    fn the_covariance_scratch_is_kept_below_the_order_and_released_at_it() {
+        let mut st = 5u64;
+        let mut fold = |k: usize, intercept: bool| {
+            let mut s = Sandwich::new(k, intercept, 1);
+            for _ in 0..k + 10 {
+                let x: Vec<f64> = (0..k).map(|_| lcg(&mut st)).collect();
+                s.update(&x, lcg(&mut st), 1.0, 1.0);
+            }
+            s
+        };
+        let small = fold(3, true);
+        assert!(small.covariance(&[0, 1, 2], false).is_some());
+        assert!(cov_kept());
+        let big = fold(KEPT_ORDER - 1, true);
+        let idx: Vec<usize> = (0..KEPT_ORDER - 1).collect();
+        big.covariance(&idx, false);
+        assert!(!cov_kept(), "{KEPT_ORDER} coefficients with the intercept");
+        assert!(small.covariance(&[0, 1, 2], false).is_some());
+        assert!(cov_kept());
+        let bare = fold(KEPT_ORDER, false);
+        let idx: Vec<usize> = (0..KEPT_ORDER).collect();
+        bare.covariance(&idx, false);
+        assert!(!cov_kept(), "{KEPT_ORDER} features without one");
+        // One coefficient short of it, kept.
+        let short = fold(KEPT_ORDER - 2, true);
+        let idx: Vec<usize> = (0..KEPT_ORDER - 2).collect();
+        short.covariance(&idx, false);
+        assert!(cov_kept(), "{} coefficients", KEPT_ORDER - 1);
+    }
+
+    /// A sum that the decay brings back under `f64`'s range takes the
+    /// row: the check reads each diagonal as the decay leaves it, `λS + t`,
+    /// not as `S` and `λ` and `t` in some other combination (a sum of
+    /// the three, a quotient by the decay).
+    #[test]
+    fn a_row_is_judged_by_the_sums_as_the_decay_leaves_them() {
+        let mut s = Sandwich::new(1, false, 0);
+        s.update(&[1e154], 1.0, 1.0, 1.0);
+        assert_eq!((s.bread[0], s.meat[0]), (1e154 * 1e154, 1e154 * 1e154));
+        // The bread: 0.5e308 + 1.21e308 and the meat 0.25e308 + 1.46e308,
+        // each under f64::MAX, each over it unless decayed first.
+        let (x, e) = (1.1e154, 1.1);
+        s.update(&[x], e, 0.5, 1.0);
+        assert_eq!(s.bread[0], 1e308 * 0.5 + x * x);
+        assert_eq!(s.meat[0], 1e308 * 0.25 + (e * x) * (e * x));
+    }
+
     fn lcg(state: &mut u64) -> f64 {
         *state = state
             .wrapping_mul(6364136223846793005)

@@ -1659,7 +1659,7 @@ once, so the ring stays empty as before"""
 
 [[equivalent]]
 file = "crates/online-core/src/specification.rs"
-function = "Specification::ljung_box"
+function = "Specification::ljung_box_in"
 mutation = "replace + with -"
 line_has = "(-s..=s).map(|j| at(j) * at(j + v as isize)).sum()"
 why = """`at` is even, so `Σ_j at(j) at(j − v)` is the same sum: its terms \
