@@ -135,7 +135,7 @@ pub use breaks::{Breaks, TwinFit, cusum_null, cusum_null_at, cusum_null_window, 
 pub use calibration::{Calibration, Coverage};
 pub use clock::{
     ClockAdvance, ClockCfg, ClockState, ClockValue, Decay, Disorder, ExactCaps, OnClockReset,
-    SessionGap, Stamp, cmp_int_f64, ns_of_seconds, seconds_of_ns,
+    PlainStep, SessionGap, Stamp, cmp_int_f64, ns_of_seconds, seconds_of_ns,
 };
 pub use cluster::{
     ClusterSummary, FeatureMoments, KMeans, KMeansCfg, LINK_FACTOR, LINK_FLOOR, LINK_QUANTILE,

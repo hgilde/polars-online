@@ -806,6 +806,11 @@ pub fn seconds_of_ns(ns: i128) -> f64 {
     ns.div_euclid(PER) as f64 + ns.rem_euclid(PER) as f64 / 1e9
 }
 
+/// A plain step forward, decided by [`ClockState::plain_forward`] and taken
+/// by [`ClockState::take_plain_forward`]: the step in clock units.
+#[derive(Debug, Clone, Copy)]
+pub struct PlainStep(f64);
+
 /// Per-stream clock state. Serialized as part of a stream's saved state.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ClockState {
@@ -1051,13 +1056,14 @@ impl ClockState {
 
     /// [`Self::step_forward`] for a caller that keeps no exact clock -- the
     /// window operators, which step [`Self::advance`] -- on a learned row:
-    /// a step forward of a float clock within one session, finite, taken as
-    /// [`Self::step_any`] takes it with no caps -- its arm for a step forward
-    /// within a session and the accepted row's arm, the same expressions in
-    /// the same order -- and none of the integer, session, refusal or
-    /// stamping branches the general step weighs first. `None` for any other
-    /// row, which `step_any` takes. A proptest holds the two to the same
-    /// advance and the same state, to the bit.
+    /// a step forward of a float or a temporal clock, or a row-count clock
+    /// past its first row, within one session, finite, taken as
+    /// [`Self::step_any`] takes it -- its arm for a step forward within a
+    /// session and the accepted row's arm, the same expressions in the same
+    /// order -- and none of the integer, session, refusal or stamping
+    /// branches the general step weighs first. `None` for any other row,
+    /// which `step_any` takes. A proptest holds the two to the same advance
+    /// and the same state, to the bit.
     #[inline]
     fn step_forward_unstamped(
         &mut self,
@@ -1066,23 +1072,90 @@ impl ClockState {
         session: Option<u64>,
         accept: bool,
     ) -> Option<ClockAdvance> {
-        let (Some(ClockValue::F64(c)), Some(ClockValue::F64(p)), true) =
-            (clock, self.prev_clock, accept)
-        else {
-            return None;
-        };
-        if matches!((session, self.prev_session), (Some(s), Some(q)) if s != q)
+        let step = self.plain_forward(clock, session, accept)?;
+        Some(self.take_plain_forward(cfg, clock, session, step))
+    }
+
+    /// Whether a learned row is the plain step forward
+    /// [`Self::step_forward_unstamped`] takes, and its step in clock units,
+    /// without taking it: `None` for any other row. A caller with two
+    /// clocks to step on one row -- a window core's stream clock and its
+    /// group's -- asks both before taking either, and steps them in place
+    /// where a refusal would have to put them back; a plain step forward is
+    /// never refused.
+    #[inline]
+    pub fn plain_forward(
+        &self,
+        clock: Option<ClockValue>,
+        session: Option<u64>,
+        accept: bool,
+    ) -> Option<PlainStep> {
+        if !accept
+            || matches!((session, self.prev_session), (Some(s), Some(q)) if s != q)
             || !self.pending_int.is_zero()
         {
             return None;
         }
-        let raw = c - p;
+        let raw = match (clock, self.prev_clock) {
+            (Some(ClockValue::F64(c)), Some(ClockValue::F64(p))) => c - p,
+            (Some(ClockValue::Ns(c)), Some(ClockValue::Ns(p))) => {
+                seconds_of_ns(i128::from(c) - i128::from(p))
+            }
+            // A row-count clock steps by 1 once it has started.
+            (None, _) if self.started => 1.0,
+            _ => return None,
+        };
         // As `step_forward`: a NaN step fails the first test, and a step
         // past 1e308 -- an infinite one among them -- goes the general way.
         #[allow(clippy::neg_cmp_op_on_partial_ord)]
         if !(raw >= 0.0) || raw > 1e308 {
             return None;
         }
+        Some(PlainStep(raw))
+    }
+
+    /// [`Self::plain_forward`] for a row `other` -- another clock, stepped
+    /// by the same rows -- has just decided on, as `other_step`: where this
+    /// clock stood at the same previous clock value, to the bit, the step is
+    /// the same and is not taken again, only the session and the
+    /// skipped-rows checks are this clock's own.
+    #[inline]
+    pub fn plain_forward_after(
+        &self,
+        other: &Self,
+        other_step: PlainStep,
+        clock: Option<ClockValue>,
+        session: Option<u64>,
+        accept: bool,
+    ) -> Option<PlainStep> {
+        let same = match (self.prev_clock, other.prev_clock) {
+            (Some(ClockValue::F64(a)), Some(ClockValue::F64(b))) => a.to_bits() == b.to_bits(),
+            (Some(ClockValue::Ns(a)), Some(ClockValue::Ns(b))) => a == b,
+            _ => false,
+        };
+        if !same {
+            return self.plain_forward(clock, session, accept);
+        }
+        if !accept
+            || matches!((session, self.prev_session), (Some(s), Some(q)) if s != q)
+            || !self.pending_int.is_zero()
+        {
+            return None;
+        }
+        Some(other_step)
+    }
+
+    /// Take the step [`Self::plain_forward`] decided on this clock, for the
+    /// same row.
+    #[inline]
+    pub fn take_plain_forward(
+        &mut self,
+        cfg: &ClockCfg,
+        clock: Option<ClockValue>,
+        session: Option<u64>,
+        step: PlainStep,
+    ) -> ClockAdvance {
+        let raw = step.0;
         let capped = raw > cfg.gap_cap;
         let d = raw.min(cfg.gap_cap);
         self.prev_clock = clock;
@@ -1094,7 +1167,7 @@ impl ClockState {
         self.pending_int = Ticks::ZERO;
         let elapsed = self.skipped_elapsed + raw;
         self.skipped_elapsed = 0.0;
-        Some(ClockAdvance {
+        ClockAdvance {
             d_clock,
             reset: false,
             accepted: true,
@@ -1105,7 +1178,7 @@ impl ClockState {
             elapsed,
             stamp: None,
             elapsed_stamp: None,
-        })
+        }
     }
 
     /// The row almost every stamped row of a float clock is -- a step forward
@@ -3395,13 +3468,26 @@ mod finite_steps {
         }
         assert_eq!(taken, 99);
         assert!(c.exact.is_none(), "no exact clock is kept");
+        // A temporal clock's rows take it too.
+        let mut t = ClockState::new();
+        let mut taken = 0;
+        for i in 0..100i64 {
+            let at = Some(ClockValue::Ns(1_704_067_200_000_000_000 + i * 700_000_000));
+            taken += usize::from(
+                t.clone()
+                    .step_forward_unstamped(&cfg, at, Some(1), true)
+                    .is_some(),
+            );
+            t.advance(&cfg, at, Some(1), true);
+        }
+        assert_eq!(taken, 99);
+        assert!(t.exact.is_none(), "no exact clock is kept");
         let at = Some(ClockValue::F64(1e3));
         for (clock, session, accept) in [
             (Some(ClockValue::F64(f64::NAN)), Some(1), true),
             (Some(ClockValue::F64(1.0)), Some(1), true),
             (at, Some(2), true),
             (at, Some(1), false),
-            (None, Some(1), true),
             (Some(ClockValue::I64(1_000)), Some(1), true),
         ] {
             assert!(
@@ -3410,6 +3496,21 @@ mod finite_steps {
                     .is_none(),
                 "{clock:?} {session:?} {accept}"
             );
+        }
+    }
+
+    /// A row-count clock takes the unstamped short cut from its second row.
+    #[test]
+    fn a_row_count_clock_takes_the_unstamped_short_cut_from_its_second_row() {
+        let cfg = ClockCfg::default();
+        let mut c = ClockState::new();
+        for i in 0..10 {
+            let taken = c
+                .clone()
+                .step_forward_unstamped(&cfg, None, None, true)
+                .is_some();
+            assert_eq!(taken, i > 0, "row {i}");
+            c.advance(&cfg, None, None, true);
         }
     }
 
@@ -3584,6 +3685,72 @@ mod finite_steps {
                 let b = general.step_any(&cfg, Some(&caps), c, s, accept, false);
                 prop_assert_eq!(format!("{a:?}"), format!("{b:?}"));
                 prop_assert_eq!(format!("{fast:?}"), format!("{general:?}"));
+            }
+        }
+
+        /// The unstamped short cut over a temporal clock -- the window
+        /// operators' datetime clock -- or a row-count clock gives the advance and the state
+        /// [`ClockState::step_any`] does with no caps, to the bit, over steps
+        /// forward and back of any size out to an `i64`'s two ends, sessions,
+        /// skipped rows, caps and both policies; and the two halves it is
+        /// made of ([`ClockState::plain_forward`] and
+        /// [`ClockState::take_plain_forward`]) agree with it on which rows it
+        /// takes.
+        #[test]
+        fn the_unstamped_temporal_short_cut_is_the_general_step(
+            (cfg, _) in cfg(),
+            start in prop_oneof![
+                Just(1_704_067_200_000_000_000i64),
+                any::<i64>(),
+                Just(i64::MIN),
+                Just(i64::MAX),
+            ],
+            rows in prop::collection::vec(
+                (
+                    prop_oneof![0i64..3_000_000_000, Just(0i64), 0i64..1_000, any::<i64>()],
+                    0u64..3,
+                    any::<bool>(),
+                    prop_oneof![3 => Just(true), 1 => Just(false)],
+                ),
+                1..60,
+            ),
+            sessions in any::<bool>(),
+            counting in any::<bool>(),
+        ) {
+            let mut fast = ClockState::new();
+            let mut halves = ClockState::new();
+            let mut twin = ClockState::new();
+            let mut general = ClockState::new();
+            let mut t = start;
+            for (step, session, back, accept) in rows {
+                let step = step.saturating_abs();
+                t = if back { t.saturating_sub(step) } else { t.saturating_add(step) };
+                let c = (!counting).then_some(ClockValue::Ns(t));
+                let s = sessions.then_some(session);
+                let split = halves.plain_forward(c, s, accept);
+                // The step a clock that stood where this one did, seen by
+                // no session, decided on is this one's, where this one takes
+                // the row at all.
+                if let Some(twin_step) = twin.plain_forward(c, None, accept) {
+                    let after = halves.plain_forward_after(&twin, twin_step, c, s, accept);
+                    prop_assert_eq!(format!("{after:?}"), format!("{split:?}"));
+                }
+                twin.advance(&cfg, c, None, accept);
+                let a = fast.advance(&cfg, c, s, accept);
+                let b = general.step_any(&cfg, None, c, s, accept, false);
+                prop_assert_eq!(format!("{a:?}"), format!("{b:?}"));
+                prop_assert_eq!(format!("{fast:?}"), format!("{general:?}"));
+                // The halves, where they take the row, are the whole's.
+                match split {
+                    Some(step) => {
+                        let h = halves.take_plain_forward(&cfg, c, s, step);
+                        prop_assert_eq!(format!("{h:?}"), format!("{b:?}"));
+                    }
+                    None => {
+                        halves.advance(&cfg, c, s, accept);
+                    }
+                }
+                prop_assert_eq!(format!("{halves:?}"), format!("{general:?}"));
             }
         }
 
