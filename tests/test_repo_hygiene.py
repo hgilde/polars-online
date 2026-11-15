@@ -57,12 +57,19 @@ TOOL_OUTPUT_DIRS = {"mutants.out", "mutants.out.old", "target", ".venv", "htmlco
 #: (task 87, 2026-09-21); a data file would still be caught, only later.
 MAX_SOURCE_BYTES = 250_000
 
-#: Prose gets more room: `docs/PLAN.md` is the design log and passed 200 KB
+#: Prose gets more room: `docs/PLAN.md` was the design log and passed 200 KB
 #: when tasks 45-56 were prepared (2026-09-05), and 1 MB with tasks 221-231
-#: (2026-10-09); its review sections are cited by number (PLAN §18 D1 in
-#: CLAUDE.md), so it stays one file. A data file renamed `.md` would still
-#: be caught by the cap below, only later.
-MAX_DOC_BYTES = 2_000_000
+#: (2026-10-09). Task 398 (2026-11-14) moved its finished work, word for
+#: word, to `docs/records/PLAN-ARCHIVE-N.md` (each under 240 KB) and left the
+#: plan at about 145 KB. The cap fell from 2 MB to 650 KB: the plan's size
+#: plus 300 KB would be 450 KB, but CHANGELOG.md (579 KB, the largest prose
+#: file now) is one file by its nature, so the cap is its size with some
+#: room. A plan that grows past 450 KB wants another archive, not a larger
+#: cap (`tests/test_plan_references.py` holds the archives' own cap). Its
+#: sections are still cited by number (PLAN §18 D1 in CLAUDE.md), and each
+#: keeps its heading. A data file renamed `.md` would still be caught by the
+#: cap below, only later.
+MAX_DOC_BYTES = 650_000
 
 #: Lockfiles are generated but must be tracked, and grow with every wheel a
 #: dependency publishes (mypy alone added 65 KB); their size says nothing
