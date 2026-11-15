@@ -4064,6 +4064,53 @@ mod tests {
         }
     }
 
+    /// A skipped term `c * 0` can differ from the dense one only in the sign
+    /// of a `rho` that is itself zero (`-0.0 - (-0.0)` is `+0.0`), and a zero
+    /// `rho` soft-thresholds to the literal `0.0` either way, so no output
+    /// bit depends on it. Held with signed zeros forced into `c`, the start
+    /// `b` and `d` (so `rho` starts at `-0.0`), at a penalty of 0 too.
+    #[test]
+    fn signed_zeros_do_not_separate_the_sparse_sweep_from_the_dense() {
+        let k = 80;
+        let (mut c, mut d, s) = sparse_problem(k, 21);
+        for i in 0..k {
+            for j in 0..k {
+                if i != j && (i + 2 * j) % 5 == 0 {
+                    c[i * k + j] = if (i + j) % 2 == 0 { -0.0 } else { 0.0 };
+                }
+            }
+            if i % 3 == 0 {
+                d[i] = -0.0;
+            }
+        }
+        for (l1, l2) in [(0.2, 0.0), (0.0, 0.0), (0.05, 0.02)] {
+            let mut dense = vec![0.0; k];
+            for (i, v) in dense.iter_mut().enumerate() {
+                if i % 4 == 1 {
+                    *v = -0.0;
+                } else if i % 9 == 0 {
+                    *v = 0.3;
+                }
+            }
+            let mut sparse = dense.clone();
+            let mut support = Support::of(&c);
+            assert!(support.finite);
+            for sweep in 0..12 {
+                support.reads(&sparse);
+                let a = cd_sweep(&c, k, &d, &s, l1, l2, &mut dense);
+                let b = cd_sweep_sparse(&c, k, &d, &s, l1, l2, &mut sparse, &mut support);
+                assert_eq!(a.to_bits(), b.to_bits(), "l1 {l1}, sweep {sweep}");
+                for i in 0..k {
+                    assert_eq!(
+                        dense[i].to_bits(),
+                        sparse[i].to_bits(),
+                        "l1 {l1}, sweep {sweep}, {i}"
+                    );
+                }
+            }
+        }
+    }
+
     /// `descend` picks the sparse sweep where it pays, per sweep, and its
     /// result is the dense descent's, the sweeps counted alike.
     #[test]
