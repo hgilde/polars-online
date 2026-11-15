@@ -140,6 +140,16 @@ def _group_keys(
     return keys
 
 
+def _with_outputs(df: pl.DataFrame, outs: list[pl.Series]) -> pl.DataFrame:
+    """``df`` with each output column appended. The extension has refused a
+    frame that holds a column named as a spec, and a spec name given twice is
+    refused at construction, so every output name is new and the columns can
+    be appended as they are. Going through ``with_columns`` builds and
+    optimizes a one-node query for every call, most of a one-row call's
+    cost."""
+    return df.hstack(outs)
+
+
 def _refuse_uint128(schema: pl.Schema, who: str, clocks: Collection[str | None] = ()) -> None:
     """Refuse a ``UInt128`` column by name, before a frame with one crosses
     to the extension. The extension's Polars is built without 128-bit
@@ -914,7 +924,7 @@ class ModelBank:
         self._check_frame(df, what)
         outs = self._native.fit_predict(df, row_base, learn_only)
         self._warn_notices()
-        return df.with_columns([pl.Series(s) for s in outs])
+        return _with_outputs(df, outs)
 
     def _warn_notices(self) -> None:
         """Raise each readiness notice the last chunk left as a
@@ -923,9 +933,12 @@ class ModelBank:
         coefficient the ridge determined more than the data did, or a
         ``max_error_inflation`` the stream has settled below
         (docs/WARMUP-AND-CONVERGENCE.md §3)."""
+        notices = self._native.take_notices()
+        if not notices:
+            return
         from polars_online._frame import ReadinessWarning, _user_stacklevel
 
-        for notice in self._native.take_notices():
+        for notice in notices:
             warnings.warn(ReadinessWarning(notice), stacklevel=_user_stacklevel())
 
     def predict(self, df: pl.DataFrame) -> pl.DataFrame:
@@ -1042,7 +1055,7 @@ class ModelBank:
         :meth:`_fit_predict_from` is to :meth:`fit_predict`."""
         self._check_frame(df, "predict")
         outs = self._native.predict(df, row_base)
-        return df.with_columns([pl.Series(s) for s in outs])
+        return _with_outputs(df, outs)
 
     def fit_predict_arrow(self, df: pl.DataFrame) -> list[ArrowStruct]:
         """Learn a frame's rows, and return each spec's output as an Arrow array.
@@ -1191,7 +1204,10 @@ class ModelBank:
 
     def _check_frame(self, df: object, what: str) -> None:
         if isinstance(df, pl.DataFrame):
-            _refuse_uint128(df.schema, f"ModelBank.{what}", self._clocks())
+            # `dtypes` is a list; `schema` builds a Schema object. Only a
+            # frame that holds a UInt128 column needs the names.
+            if any(d == pl.UInt128 for d in df.dtypes):
+                _refuse_uint128(df.schema, f"ModelBank.{what}", self._clocks())
             return
         # A LazyFrame is the common slip, and the attribute error it used to
         # produce named an internal method.
