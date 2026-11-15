@@ -53,10 +53,9 @@ static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 /// sequence number, so no two writers -- processes or threads -- share one.
 fn temp_name(dest: &Path, seq: u64) -> io::Result<PathBuf> {
     let name = dest.file_name().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{}: not a file path", dest.display()),
-        )
+        // The path is not in the message: every caller names it itself, and
+        // one that did too read it twice.
+        io::Error::new(io::ErrorKind::InvalidInput, "not a file path")
     })?;
     Ok(dest.with_file_name(format!(
         ".{}.tmp{}-{seq}",

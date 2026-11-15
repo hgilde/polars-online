@@ -2747,67 +2747,16 @@ struct BankHeader {
     schema_version: u32,
 }
 
-/// The lines around a parse failure, so the error names the field rather than
-/// a line number nobody can look up: the export is thousands of lines and the
-/// enclosing keys are what identify the struct.
-fn near(text: &str, line: usize) -> String {
-    if line == 0 {
-        return String::new();
-    }
-    let lines: Vec<&str> = text.lines().collect();
-    let lo = line.saturating_sub(4);
-    let hi = line.min(lines.len());
-    let mut out = String::from(", at:");
-    for (i, l) in lines[lo..hi].iter().enumerate() {
-        let n = lo + i + 1;
-        let mark = if n == line { ">" } else { " " };
-        out.push_str(&format!("\n  {mark} {}", l.trim_end()));
-    }
-    out
-}
+mod file_encoding;
+#[cfg(test)]
+use file_encoding::near;
+use file_encoding::{LazyStates, json_is_faithful};
 
-/// Is `text` the whole of `file`? The JSON is read back into a `BankFile`
-/// and re-encoded, and the msgpack must match the real state byte for byte.
-///
-/// This is the enforcement behind [`online_core::humanfloat`], not a
-/// belt-and-braces check. JSON has no literal for `NaN` or `±inf` and
-/// `serde_json` writes all three as `null` without a word, so every config
-/// float a caller may set to infinity needs annotating -- and the only way
-/// to know one was missed is to read the export back. A `null` where an
-/// `f64` belongs fails to parse, and the byte comparison catches anything
-/// subtler. `O(state)` twice over, paid once at the end of a run.
-///
-/// Note that the interception is in `serde_json`'s *serializer*, not its
-/// formatter: `serialize_f64` sends a non-finite value to `write_null`
-/// before any `Formatter` sees it, so a custom formatter cannot fix this
-/// and the annotation has to be on the field.
-fn json_is_faithful(file: &BankFile, text: &str) -> Result<(), String> {
-    let want = rmp_serde::to_vec_named(file).map_err(|e| e.to_string())?;
-    let back: BankFile = serde_json::from_str(text).map_err(|e| {
-        format!(
-            // A field that writes NaN or ±inf as null, which needs
-            // `#[serde(with = "crate::humanfloat::f64_or_tag")]` in online-core.
-            "ModelBank.write_json: the export dropped a value the state holds ({e}), which is a \
-             defect in polars-online. Open an issue at \
-             https://github.com/hgilde/polars-online/issues with this message and the lines it \
-             shows{}",
-            near(text, e.line())
-        )
-    })?;
-    let got = rmp_serde::to_vec_named(&back).map_err(|e| e.to_string())?;
-    if got != want {
-        return Err(
-            "ModelBank.write_json: the export did not read back as the state it came from, \
-             which is a defect in polars-online. Open an issue at \
-             https://github.com/hgilde/polars-online/issues with this message."
-                .to_string(),
-        );
-    }
-    Ok(())
-}
+/// The groups' states as a file holds them: per spec, `(key, state)` pairs.
+type FileStates = Vec<Vec<(GroupKey, StreamState)>>;
 
 #[derive(Serialize, Deserialize)]
-struct BankFile {
+struct BankFile<S = FileStates> {
     magic: String,
     /// Bank file layout (see [`BANK_FORMAT_VERSION`]). Absent in v1 files.
     #[serde(default = "default_format_version")]
@@ -2817,7 +2766,7 @@ struct BankFile {
     package_version: String,
     specs: Vec<Spec>,
     /// Per spec: (group key, stream state) pairs.
-    states: Vec<Vec<(GroupKey, StreamState)>>,
+    states: S,
     /// Rows fed over the bank's life. An optional field (the file is a map),
     /// so a file without it still loads and reports the streams' own count.
     #[serde(default)]
@@ -4950,6 +4899,22 @@ impl Bank {
     /// The state as the struct every encoding writes. One builder, so the
     /// msgpack and JSON forms cannot drift apart.
     fn to_file(&self) -> Result<BankFile, String> {
+        let states = self
+            .states
+            .iter()
+            .map(|hm| {
+                let mut v: Vec<(GroupKey, StreamState)> =
+                    hm.iter().map(|(k, s)| (k.clone(), s.save())).collect();
+                v.sort_by(|a, b| a.0.cmp(&b.0));
+                v
+            })
+            .collect();
+        self.to_file_with(states)
+    }
+
+    /// [`Self::to_file`] with the states given: the msgpack encoder passes
+    /// them lazily ([`LazyStates`]), so no copy of all of them is made.
+    fn to_file_with<S>(&self, states: S) -> Result<BankFile<S>, String> {
         let mut resolvers: SavedResolvers = Vec::new();
         for (si, r) in self.resolvers.iter().enumerate() {
             let groups = r.save()?;
@@ -4972,16 +4937,7 @@ impl Bank {
             schema_version: online_core::SCHEMA_VERSION,
             package_version: env!("CARGO_PKG_VERSION").to_string(),
             specs: self.specs.clone(),
-            states: self
-                .states
-                .iter()
-                .map(|hm| {
-                    let mut v: Vec<(GroupKey, StreamState)> =
-                        hm.iter().map(|(k, s)| (k.clone(), s.save())).collect();
-                    v.sort_by(|a, b| a.0.cmp(&b.0));
-                    v
-                })
-                .collect(),
+            states,
             closed: self.closed.clone(),
             high_water: self
                 .high_water
@@ -5035,7 +4991,29 @@ impl Bank {
     /// built by this crate cannot make happen.
     pub fn save_bytes(&self) -> Result<Vec<u8>, String> {
         self.refuse_if_broken().map_err(|e| e.to_string())?;
-        rmp_serde::to_vec_named(&self.to_file()?).map_err(|e| e.to_string())
+        let mut out = Vec::new();
+        self.write_msgpack(&mut out)?;
+        Ok(out)
+    }
+
+    /// The msgpack [`Bank::save_bytes`] returns, written to `out` as it is
+    /// encoded, one group's snapshot at a time.
+    fn write_msgpack<W: std::io::Write>(&self, out: &mut W) -> Result<(), String> {
+        let file = self.to_file_with(LazyStates(self))?;
+        rmp_serde::encode::write_named(out, &file).map_err(|e| e.to_string())
+    }
+
+    /// [`Self::write_msgpack`] for a file: a failed write keeps the
+    /// filesystem's own error, its kind and OS code, which the encoder's
+    /// message would lose.
+    fn write_msgpack_io<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<()> {
+        let mut stash = file_encoding::Stash::new(out);
+        match self.write_msgpack(&mut stash) {
+            Ok(()) => Ok(()),
+            Err(msg) => Err(stash
+                .take_error()
+                .unwrap_or_else(|| std::io::Error::other(msg))),
+        }
     }
 
     /// The same state as JSON, for reading rather than for loading: a state
@@ -5116,7 +5094,7 @@ impl Bank {
         // reads, so a refusal is damage. A model's own refusal (a `try_from`
         // of its saved form, which rmp-serde shows bare) already says what to
         // do; any other is said with the remedy here, so the text has one.
-        let file: BankFile = rmp_serde::from_slice(bytes).map_err(|e| {
+        let mut file: BankFile = rmp_serde::from_slice(bytes).map_err(|e| {
             use rmp_serde::decode::Error as De;
             // The decoder's own failures in plain words: its text names
             // MessagePack markers, a word of the code.
@@ -5311,9 +5289,12 @@ impl Bank {
                 .and_then(|m| m.get(l))
                 .map_or_else(|| l.to_string(), Clone::clone)
         };
-        for (si, groups) in file.states.iter().enumerate() {
+        // Each group's decoded state is consumed as its stream is made, so
+        // the decoded states and the streams are not all held at once.
+        let states = std::mem::take(&mut file.states);
+        for (si, groups) in states.into_iter().enumerate() {
             for (key, st) in groups {
-                let stream = Stream::restore(&bank.specs[si], st).map_err(|e| {
+                let stream = Stream::restore_owned(&bank.specs[si], st).map_err(|e| {
                     // The where of every refusal a stream's restore says.
                     let spec = &bank.specs[si];
                     let group = match (&spec.group, key.as_str()) {
@@ -5324,7 +5305,7 @@ impl Bank {
                     let prefix = format!("state file: spec {:?}{group}", spec.name);
                     format!("{prefix}: {e}")
                 })?;
-                bank.states[si].insert(key.clone(), stream);
+                bank.states[si].insert(key, stream);
             }
         }
         bank.closed = file
@@ -5420,8 +5401,14 @@ impl Bank {
     /// directory that is not there, `PermissionError` for one it cannot
     /// write, ... from it).
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let bytes = self.save_bytes().map_err(std::io::Error::other)?;
-        crate::atomic::write(path, &bytes)
+        self.refuse_if_broken()
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let (file, pending) = crate::atomic::AtomicFile::create(path)?;
+        let mut w = std::io::BufWriter::with_capacity(1 << 20, file);
+        self.write_msgpack_io(&mut w)?;
+        // Flushed, then closed, so `commit` reopens exactly one handle to sync.
+        w.into_inner().map_err(|e| e.into_error())?;
+        pending.commit()
     }
 
     /// [`Bank::load_bytes`] over a file. The error is a message, whichever

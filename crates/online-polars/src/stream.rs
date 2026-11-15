@@ -9,9 +9,9 @@ use online_core::{
     EwAutoCorr, EwClass, EwClassCfg, EwCovCfg, EwCovModel, EwCovStat, EwQuantile, EwRidge,
     EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, HitTest, Hmm, HmmCfg, Holt, HoltCfg, HuberScale, KMeans,
     KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal, MarginalCfg, Micro,
-    MicroCfg, ModelState, OnlineModel, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind,
-    Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg,
-    SgdLoss, SlotMetrics, State, StateError, WindowShadow,
+    MicroCfg, OnlineModel, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg,
+    Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss,
+    SlotMetrics, State, WindowShadow,
 };
 use online_core::{ClockValue, CoefVariance, ExactCaps, Stamp};
 use serde::{Deserialize, Serialize};
@@ -564,40 +564,6 @@ impl AnyModel {
     /// infinity written as `null` cannot be pinned as one (`faithful_json`).
     pub fn cfg_json(&self) -> Result<serde_json::Value, String> {
         dispatch!(self, m => crate::defaults::faithful_json(m.cfg()))
-    }
-
-    pub fn restore(s: &State) -> Result<Self, StateError> {
-        match &s.model {
-            ModelState::EwRidge(_) => Ok(AnyModel::EwRidge(Box::new(EwRidge::restore(s)?))),
-            ModelState::Rls(_) => Ok(AnyModel::Rls(Box::new(Rls::restore(s)?))),
-            ModelState::Lasso(_) => Ok(AnyModel::Lasso(Box::new(Lasso::restore(s)?))),
-            ModelState::Kalman(_) => Ok(AnyModel::Kalman(Box::new(Kalman::restore(s)?))),
-            ModelState::Robust(_) => Ok(AnyModel::Robust(Box::new(Robust::restore(s)?))),
-            ModelState::Ftrl(_) => Ok(AnyModel::Ftrl(Box::new(Ftrl::restore(s)?))),
-            ModelState::EwCovModel(_) => Ok(AnyModel::EwCov(Box::new(EwCovModel::restore(s)?))),
-            ModelState::Sgd(_) => Ok(AnyModel::Sgd(Box::new(Sgd::restore(s)?))),
-            ModelState::Pa(_) => Ok(AnyModel::Pa(Box::new(Pa::restore(s)?))),
-            ModelState::Holt(_) => Ok(AnyModel::Holt(Box::new(Holt::restore(s)?))),
-            ModelState::KMeans(_) => Ok(AnyModel::KMeans(Box::new(KMeans::restore(s)?))),
-            ModelState::Micro(_) => Ok(AnyModel::Micro(Box::new(Micro::restore(s)?))),
-            ModelState::EwClass(_) => Ok(AnyModel::EwClass(Box::new(EwClass::restore(s)?))),
-            ModelState::SeqTest(_) => Ok(AnyModel::SeqTest(Box::new(SeqTest::restore(s)?))),
-            ModelState::Marginal(_) => Ok(AnyModel::Marginal(Box::new(Marginal::restore(s)?))),
-            ModelState::Deco(_) => Ok(AnyModel::Deco(Box::new(Deco::restore(s)?))),
-            ModelState::Rcov(_) => Ok(AnyModel::Rcov(Box::new(Rcov::restore(s)?))),
-            ModelState::Hmm(_) => Ok(AnyModel::Hmm(Box::new(Hmm::restore(s)?))),
-            ModelState::CorrChange(_) => {
-                Ok(AnyModel::CorrChange(Box::new(CorrChange::restore(s)?)))
-            }
-            ModelState::Bocpd(_) => Ok(AnyModel::Bocpd(Box::new(Bocpd::restore(s)?))),
-            ModelState::Audit(_) => Ok(AnyModel::Audit(Box::new(online_core::Audit::restore(s)?))),
-            // A kind only online-core builds, such as `ew_cov`'s bare running
-            // sums: its name is the code's, so the message does not print it.
-            _ => Err(StateError::Invalid(format!(
-                "it is damaged, since it holds a model of a kind no spec builds. {}",
-                online_core::DAMAGED
-            ))),
-        }
     }
 }
 
@@ -2506,6 +2472,7 @@ fn keep_ungated(keep: bool, kept: &mut bool, ungated: &mut Vec<f64>, pred: &[f64
     }
 }
 
+mod any_restore;
 mod chunk_out;
 use chunk_out::Buffers;
 pub use chunk_out::ChunkOut;
@@ -2650,6 +2617,13 @@ impl Stream {
     /// since gained or lost the option for starts afresh, and one shaped for
     /// another spec, which would index past this one's slots, is refused.
     pub fn restore(spec: &Spec, saved: &StreamState) -> Result<Self, String> {
+        Self::restore_owned(spec, saved.clone())
+    }
+
+    /// [`Self::restore`] taking the state, so its models and the rest of it
+    /// are moved into the stream, not copied: loading a file holds one copy
+    /// of each group's state, not two.
+    pub fn restore_owned(spec: &Spec, saved: StreamState) -> Result<Self, String> {
         let mut stream = Stream::new(spec)?;
         if stream.models.len() != saved.models.len() {
             return Err(format!(
@@ -2663,9 +2637,9 @@ impl Stream {
         let models = stream
             .models
             .drain(..)
-            .zip(&saved.models)
+            .zip(saved.models)
             .map(|((suffix, fresh), st)| {
-                let mut m = AnyModel::restore(st).map_err(|e| e.to_string())?;
+                let mut m = AnyModel::restore_owned(st).map_err(|e| e.to_string())?;
                 // The cadence is the spec's, as the budget is: a state saved
                 // before the weight-share rule takes it on load (task 115 (b)).
                 m.set_solve_share(fresh.solve_share());
@@ -2702,7 +2676,7 @@ impl Stream {
             m.set_gram_threads(spec.model.gram_threads());
         }
         let fresh = &stream.persisted;
-        let mut p = saved.persisted.clone();
+        let mut p = saved.persisted;
         // The decay time per instance, which every file this build loads
         // keeps: one of the wrong length is damage, refused as the held-rows
         // clock is below. Replaced with zeros, as a file written before it
@@ -2935,14 +2909,16 @@ impl Stream {
         // queue stays in step with `pending` and those rows fold nothing when
         // they mature -- there being no honest prediction to fold.
         let held = p.pending.len();
+        let mut saved_qs = std::mem::take(&mut p.score_pred);
         p.score_pred = (0..instances)
             .map(|mi| {
-                let saved_q = saved.persisted.score_pred.get(mi);
-                let kept = saved_q.map_or(0, |q| q.len().min(held));
+                let mut saved_q = saved_qs.get_mut(mi).map(std::mem::take);
+                let kept = saved_q.as_ref().map_or(0, |q| q.len().min(held));
                 let mut q: std::collections::VecDeque<Vec<f64>> =
                     std::iter::repeat_n(Vec::new(), held - kept).collect();
-                if let Some(saved_q) = saved_q {
-                    q.extend(saved_q.iter().skip(saved_q.len() - kept).cloned());
+                if let Some(saved_q) = saved_q.as_mut() {
+                    let skip = saved_q.len() - kept;
+                    q.extend(saved_q.drain(skip..));
                 }
                 q
             })
@@ -5082,7 +5058,16 @@ fn run_instance(
         // under an embargo of 50 (review round 6, A-6; schema 57).
         let mut shown_radius: Option<Vec<f64>> = None;
         if plan.buffered {
-            let mut record = step.pred.clone();
+            // The record is sized once, for every part it will hold, so a
+            // held row allocates once rather than growing by a reallocation
+            // per part (P34; the VM measured about 430 instructions a held
+            // row on x86 in the growth, R-V41).
+            let len = step.pred.len()
+                + inst.conformal.as_deref().map_or(0, |cs| cs.len())
+                + if has_row_infl { sc.row_infl.len() } else { 0 }
+                + if kept { sc.ungated.len() } else { 0 };
+            let mut record = Vec::with_capacity(len);
+            record.extend_from_slice(&step.pred);
             if let Some(cs) = inst.conformal.as_deref() {
                 let ring = inst.resid_win.as_ref().map(SpreadRef::get);
                 let spread = inst

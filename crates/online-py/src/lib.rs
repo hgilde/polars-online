@@ -207,8 +207,79 @@ fn keys(group: Option<Vec<Option<String>>>) -> Option<Vec<GroupKey>> {
     group.map(|g| g.into_iter().map(GroupKey).collect())
 }
 
-fn os_err(kind: std::io::ErrorKind, msg: String) -> PyErr {
-    PyErr::from(std::io::Error::new(kind, msg))
+/// `e` as the `OSError` Python's own `open` raises for the same failure:
+/// built from `(errno, strerror, filename)`, so Python picks the subclass
+/// from the errno (`FileNotFoundError` for `ENOENT`, `PermissionError` for
+/// `EACCES`, ...) and `e.errno`, `e.strerror` and `e.filename` are set, and
+/// `str(e)` reads `[Errno 2] No such file or directory: 'path'`.
+///
+/// The errno is the operating system's own (`raw_os_error`) where the error
+/// came from a system call, and the kind's POSIX errno where the library
+/// built the error itself (a path with no file name is `EINVAL`), as
+/// Python's `errno` module spells it on this platform. `strerror` is the
+/// system's text without the ` (os error N)` Rust appends, or `text` where
+/// given. On Windows the system's code is a Windows error code, which
+/// Python takes as the fourth argument, `winerror`, and derives the errno
+/// and the subclass from, as CPython does for its own errors; that branch
+/// is the one only a Windows build compiles. An error with neither (a kind
+/// with no POSIX errno) is pyo3's own mapping of the kind, the message
+/// alone.
+fn os_err(e: &std::io::Error, filename: Option<&str>, text: Option<String>) -> PyErr {
+    let strerror = text.unwrap_or_else(|| {
+        let shown = e.to_string();
+        match e.raw_os_error() {
+            Some(code) => shown
+                .strip_suffix(&format!(" (os error {code})"))
+                .map_or(shown.clone(), str::to_string),
+            None => shown,
+        }
+    });
+    #[cfg(windows)]
+    if let Some(winerror) = e.raw_os_error() {
+        return pyo3::exceptions::PyOSError::new_err((
+            winerror,
+            strerror,
+            filename.map(String::from),
+            winerror,
+        ));
+    }
+    let errno = e.raw_os_error().or_else(|| kind_errno(e.kind()));
+    match errno {
+        Some(code) => {
+            pyo3::exceptions::PyOSError::new_err((code, strerror, filename.map(String::from)))
+        }
+        None => {
+            let msg = match filename {
+                Some(path) => format!("{path}: {strerror}"),
+                None => strerror,
+            };
+            PyErr::from(std::io::Error::new(e.kind(), msg))
+        }
+    }
+}
+
+/// The errno `std::io::ErrorKind` `kind` stands for, as Python's `errno`
+/// module has it on this platform, for an error the library built from a
+/// kind and no system call.
+fn kind_errno(kind: std::io::ErrorKind) -> Option<i32> {
+    use std::io::ErrorKind::{
+        AlreadyExists, InvalidInput, IsADirectory, NotADirectory, NotFound, PermissionDenied,
+    };
+    let name = match kind {
+        NotFound => "ENOENT",
+        PermissionDenied => "EACCES",
+        IsADirectory => "EISDIR",
+        NotADirectory => "ENOTDIR",
+        AlreadyExists => "EEXIST",
+        InvalidInput => "EINVAL",
+        _ => return None,
+    };
+    Python::attach(|py| {
+        py.import("errno")
+            .and_then(|m| m.getattr(name))
+            .and_then(|v| v.extract::<i32>())
+            .ok()
+    })
 }
 
 /// A saver's error as Python sees it, one rule for the three --
@@ -227,7 +298,7 @@ fn save_err(path: &str, e: std::io::Error) -> PyErr {
         std::io::ErrorKind::Other | std::io::ErrorKind::InvalidData => {
             PyValueError::new_err(e.to_string())
         }
-        kind => os_err(kind, format!("{path}: {e}")),
+        _ => os_err(&e, Some(path), None),
     }
 }
 
@@ -235,9 +306,14 @@ fn save_err(path: &str, e: std::io::Error) -> PyErr {
 /// (`IO` errors, kind intact) is an `OSError`; everything else -- a column a
 /// spec names that the frames lack, a bank error mid-stream -- is a
 /// `ValueError` with the message.
-fn run_err(e: &PolarsError) -> PyErr {
+///
+/// `filename` is the file the call wrote, where the caller knows it: the
+/// `OSError` then carries it, as Python's `open` does. Without it the
+/// message the runner built, which names the file, is its `strerror`.
+fn run_err(e: &PolarsError, filename: Option<&str>) -> PyErr {
     match e {
-        PolarsError::IO { error, .. } => os_err(error.kind(), e.to_string()),
+        PolarsError::IO { error, .. } if filename.is_some() => os_err(error, filename, None),
+        PolarsError::IO { error, .. } => os_err(error, None, Some(e.to_string())),
         _ => bank_err(e),
     }
 }
@@ -1002,7 +1078,7 @@ impl PyRefreshTime {
         let out = slf
             .py()
             .detach(|| inner.feed_limited(&df, &cols, limit))
-            .map_err(|e| run_err(&e))?;
+            .map_err(|e| run_err(&e, None))?;
         Ok(PyDataFrame(out))
     }
 }
@@ -1101,7 +1177,7 @@ impl PyWindows {
         let out = slf
             .py()
             .detach(|| run.feed(&df, limit))
-            .map_err(|e| run_err(&e))?;
+            .map_err(|e| run_err(&e, None))?;
         Ok(PyDataFrame(out))
     }
 
@@ -1110,7 +1186,10 @@ impl PyWindows {
     fn finish(slf: &Bound<'_, Self>) -> PyResult<PyDataFrame> {
         let mut this = slf.try_borrow_mut().map_err(|_| windows_busy("finish"))?;
         let run = &mut this.inner;
-        let out = slf.py().detach(|| run.finish()).map_err(|e| run_err(&e))?;
+        let out = slf
+            .py()
+            .detach(|| run.finish())
+            .map_err(|e| run_err(&e, None))?;
         Ok(PyDataFrame(out))
     }
 
@@ -1149,7 +1228,7 @@ fn format_of_path(path: &str, who: &str) -> PyResult<&'static str> {
 fn csv_flat(df: PyDataFrame, who: &str) -> PyResult<PyDataFrame> {
     online_polars::csv_flat(&df.0, who)
         .map(PyDataFrame)
-        .map_err(|e| run_err(&e))
+        .map_err(|e| run_err(&e, None))
 }
 
 /// `df` written to `path` in the format its extension names, by the
@@ -1159,12 +1238,13 @@ fn csv_flat(df: PyDataFrame, who: &str) -> PyResult<PyDataFrame> {
 #[pyfunction]
 #[pyo3(signature = (df, path, who="closed_groups"))]
 fn write_frame(py: Python<'_>, df: PyDataFrame, path: &str, who: &str) -> PyResult<()> {
+    let name = path;
     let path = std::path::Path::new(path);
     let format =
         online_polars::Format::from_path_named(path, who, "").map_err(PyValueError::new_err)?;
     let who = format!("{who} \"{}\"", path.display());
     py.detach(|| online_polars::write_frame(path, format, df.0, &who))
-        .map_err(|e| run_err(&e))
+        .map_err(|e| run_err(&e, Some(name)))
 }
 
 /// The bank's `chunk_size` when a caller does not say.
