@@ -770,16 +770,16 @@ why = "as `inertia`'s: on a tie the mutant writes the value already there"
 
 [[equivalent]]
 file = "crates/online-core/src/rls.rs"
-function = "Rls::solve"
+function = "solve_columns"
 mutation = "replace > with >="
-line_has = "let b = if d > 0.0 { acc / d } else { 0.0 };"
+line_has = "let x = if d > 0.0 { a / d } else { 0.0 };"
 why = """the factor's diagonal is never negative, and at `d = 0` the mutant's \
 `acc / 0` is ±inf or NaN, which the next line's `is_finite` check sets to \
 the 0 the original gives"""
 
 [[equivalent]]
 file = "crates/online-core/src/rls.rs"
-function = "<impl OnlineModel for Rls>::step_into"
+function = "Rls::fold_row"
 mutation = "replace > with >="
 line_has = "                    if !(rho > 0.0 && rho.is_finite()) {"
 why = """the inner check, after `hypot`: `zi` is not 0 there (a zero entry \
