@@ -838,25 +838,7 @@ impl Rcov {
     fn emit(&mut self, y: Vec<f64>) {
         let k = self.k();
         let max_bandwidth = self.cfg.ring_for().unwrap_or(0);
-        for h in 0..=max_bandwidth {
-            let past = if h == 0 {
-                Some(&y)
-            } else {
-                self.fin.len().checked_sub(h).map(|i| &self.fin[i])
-            };
-            let Some(past) = past else { continue };
-            // The lag's `k×k` block taken once and walked a row at a time:
-            // the same products added in the same order as indexing each
-            // row of `gamma` afresh, without its bounds and the check of
-            // each row against `past` (task 292).
-            let block = &mut self.gamma[h * k * k..(h + 1) * k * k];
-            let past = &past[..k];
-            for (row, &yi) in block.chunks_exact_mut(k).zip(&y) {
-                for (g, &pj) in row.iter_mut().zip(past) {
-                    *g += yi * pj;
-                }
-            }
-        }
+        add_lagged_products(&mut self.gamma, &y, &self.fin, k);
         if max_bandwidth > 0 {
             if self.fin.len() == max_bandwidth {
                 self.fin.pop_front();
@@ -978,22 +960,7 @@ impl Rcov {
                 let mut gamma = self.gamma.clone();
                 if closes {
                     let y = self.trail();
-                    let fin = &self.fin;
-                    for h in 0..=max_bandwidth {
-                        let past = if h == 0 {
-                            Some(&y)
-                        } else {
-                            fin.len().checked_sub(h).map(|i| &fin[i])
-                        };
-                        let Some(past) = past else { continue };
-                        let block = h * k * k;
-                        for (i, &yi) in y.iter().enumerate() {
-                            let row = &mut gamma[block + i * k..block + (i + 1) * k];
-                            for (g, &pj) in row.iter_mut().zip(past) {
-                                *g += yi * pj;
-                            }
-                        }
-                    }
+                    add_lagged_products(&mut gamma, &y, &self.fin, k);
                 }
                 let n_eff = self.emitted as i64 + i64::from(closes);
                 let h = self.bandwidth(n_eff as f64).min(max_bandwidth);
@@ -1123,6 +1090,67 @@ impl Rcov {
         }
         let mean = per.iter().sum::<f64>() / per.len() as f64;
         (mean.ceil().max(1.0)) as usize
+    }
+}
+
+/// One final effective return `y` into the lagged products: `Γ̂_0 += yy'` and
+/// `Γ̂_h += y·fin[len − h]'` for each lag the ring holds, `fin` newest last.
+/// Each entry of `gamma` takes the one product added in place, so the order
+/// of lags and rows is free and a loop of a known width can unroll; the
+/// common widths are types here so that the compiler sees them (the bits are
+/// the same at every `k`).
+fn add_lagged_products(gamma: &mut [f64], y: &[f64], fin: &VecDeque<Vec<f64>>, k: usize) {
+    match k {
+        1 => lagged_products::<1>(gamma, y, fin),
+        2 => lagged_products::<2>(gamma, y, fin),
+        3 => lagged_products::<3>(gamma, y, fin),
+        4 => lagged_products::<4>(gamma, y, fin),
+        5 => lagged_products::<5>(gamma, y, fin),
+        6 => lagged_products::<6>(gamma, y, fin),
+        7 => lagged_products::<7>(gamma, y, fin),
+        8 => lagged_products::<8>(gamma, y, fin),
+        10 => lagged_products::<10>(gamma, y, fin),
+        16 => lagged_products::<16>(gamma, y, fin),
+        20 => lagged_products::<20>(gamma, y, fin),
+        _ => {
+            let mut blocks = gamma.chunks_exact_mut(k * k);
+            if let Some(block) = blocks.next() {
+                outer_product_into(block, y, y, k);
+            }
+            for (block, past) in blocks.zip(fin.iter().rev()) {
+                outer_product_into(block, y, past, k);
+            }
+        }
+    }
+}
+
+fn outer_product_into(block: &mut [f64], y: &[f64], past: &[f64], k: usize) {
+    let past = &past[..k];
+    for (row, &yi) in block.chunks_exact_mut(k).zip(y) {
+        for (g, &pj) in row.iter_mut().zip(past) {
+            *g += yi * pj;
+        }
+    }
+}
+
+fn lagged_products<const K: usize>(gamma: &mut [f64], y: &[f64], fin: &VecDeque<Vec<f64>>) {
+    let y: &[f64; K] = y.try_into().expect("a return is k wide");
+    let mut blocks = gamma.chunks_exact_mut(K * K);
+    let outer = |block: &mut [f64], past: &[f64; K]| {
+        for (row, &yi) in block.as_chunks_mut::<K>().0.iter_mut().zip(y) {
+            for (g, &pj) in row.iter_mut().zip(past) {
+                *g += yi * pj;
+            }
+        }
+    };
+    if let Some(block) = blocks.next() {
+        outer(block, y);
+    }
+    for (block, past) in blocks.zip(fin.iter().rev()) {
+        outer(
+            block,
+            past.as_slice().try_into().expect("a return is k wide"),
+        );
     }
 }
 
@@ -1845,6 +1873,48 @@ mod tests {
 
     /// Nothing reads a future row: the close from a stream fed one row at a
     /// time equals the offline computation over the whole block.
+    /// Every width's unrolled loop adds the same products as the plain
+    /// definition `Γ̂_h += y·y_{−h}'`, to the bit, at a ring not yet full and one full.
+    #[test]
+    fn the_lagged_products_are_the_definition_at_every_width() {
+        let mut s = 5u64;
+        for k in (1..=12).chain([16, 20]) {
+            for depth in [0usize, 1, 5] {
+                let mut gamma = vec![0.0; (depth + 1) * k * k];
+                let mut want = gamma.clone();
+                let mut fin: VecDeque<Vec<f64>> = VecDeque::new();
+                for _ in 0..(depth + 3) {
+                    let y: Vec<f64> = (0..k).map(|_| lcg(&mut s)).collect();
+                    add_lagged_products(&mut gamma, &y, &fin, k);
+                    for h in 0..=depth {
+                        let past = if h == 0 {
+                            Some(&y)
+                        } else {
+                            fin.len().checked_sub(h).map(|i| &fin[i])
+                        };
+                        let Some(past) = past else { continue };
+                        for i in 0..k {
+                            for j in 0..k {
+                                want[h * k * k + i * k + j] += y[i] * past[j];
+                            }
+                        }
+                    }
+                    if depth > 0 {
+                        if fin.len() == depth {
+                            fin.pop_front();
+                        }
+                        fin.push_back(y);
+                    }
+                    let (a, b): (Vec<u64>, Vec<u64>) = (
+                        gamma.iter().map(|v| v.to_bits()).collect(),
+                        want.iter().map(|v| v.to_bits()).collect(),
+                    );
+                    assert_eq!(a, b, "k {k} depth {depth}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn the_close_is_the_same_however_the_rows_arrive() {
         for kind in [RcovKind::Plain, RcovKind::Kernel, RcovKind::Preavg] {
