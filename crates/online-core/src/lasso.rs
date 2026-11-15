@@ -366,6 +366,10 @@ pub struct Lasso {
     /// over ([`Lasso::view_into`]). Not state.
     #[serde(skip)]
     view: crate::window::Kept<LassoView>,
+    /// The descent's buffers, kept between solves so a solve allocates none
+    /// of them. Not state.
+    #[serde(skip)]
+    sweep: crate::window::Kept<Support>,
 }
 
 /// One Gram's statistics in correlation form (`Lasso::standardized`): the
@@ -505,6 +509,7 @@ impl Lasso {
             win,
             zbuf: vec![0.0; k_total],
             view: crate::window::Kept::default(),
+            sweep: crate::window::Kept::default(),
             cfg,
         })
     }
@@ -946,12 +951,14 @@ impl Lasso {
         // The view is kept between solves and written over; taken out while
         // the solve borrows the model.
         let mut view = self.view.take();
-        self.solve_in(&mut view);
+        let mut sweep = self.sweep.take();
+        self.solve_in(&mut view, sweep.get());
+        self.sweep.put(sweep);
         self.view.put(view);
     }
 
     /// [`Self::solve`], reading the window's view into `kept`.
-    fn solve_in(&mut self, kept: &mut crate::window::Kept<LassoView>) {
+    fn solve_in(&mut self, kept: &mut crate::window::Kept<LassoView>, support: &mut Support) {
         let k = self.cfg.n_features;
         let k_total = self.cfg.k_total();
         let off = usize::from(self.cfg.fit_intercept);
@@ -1029,7 +1036,7 @@ impl Lasso {
                         }
                     }
                 }
-                let mut support = Support::of(&c);
+                support.reset(&c);
                 for (li, &lam) in self.cfg.lasso_path.iter().enumerate() {
                     // Coordinate descent, warm-started along the path.
                     let l1 = lam * self.cfg.l1_ratio;
@@ -1043,7 +1050,7 @@ impl Lasso {
                         &mut b,
                         self.cfg.max_iter,
                         limit,
-                        &mut support,
+                        support,
                     );
                     // Out of sweeps before `tol`: the fit is where the
                     // descent stopped, and it is counted (review 2026-09-12,
@@ -1131,6 +1138,7 @@ const SPARSE_MIN_K: usize = 64;
 
 /// What [`cd_sweep_sparse`] reads: whether it may, and the buffers the
 /// sweeps work in.
+#[derive(Default)]
 struct Support {
     /// Every entry of the correlation matrix is finite, so a term `c_ij * 0`
     /// is exactly 0 and leaving it out changes no bit of the sum. With a
@@ -1146,13 +1154,17 @@ struct Support {
 }
 
 impl Support {
+    /// For a new correlation matrix: whether the sparse sweep may read it.
+    /// The buffers keep what they hold.
+    fn reset(&mut self, c: &[f64]) {
+        self.finite = c.len() >= SPARSE_MIN_K * SPARSE_MIN_K && c.iter().all(|v| v.is_finite());
+    }
+
+    #[cfg(test)]
     fn of(c: &[f64]) -> Self {
-        Self {
-            finite: c.len() >= SPARSE_MIN_K * SPARSE_MIN_K && c.iter().all(|v| v.is_finite()),
-            start: Vec::new(),
-            vals: Vec::new(),
-            acc: Vec::new(),
-        }
+        let mut support = Self::default();
+        support.reset(c);
+        support
     }
 
     /// Whether the next sweep runs sparse, its `start` read from `b`: the
