@@ -9,9 +9,10 @@
 use std::collections::HashMap;
 
 use polars::prelude::*;
+use rayon::prelude::*;
 
 use crate::arrow::{ArrowChunk, Form};
-use crate::bank::{GroupKey, Layout, gathered};
+use crate::bank::{GroupKey, Layout, PAR_MIN_ROWS, gathered};
 use crate::formula::Formula;
 use crate::spec::Spec;
 use crate::stream::{FormulaTargets, Resolutions};
@@ -53,6 +54,11 @@ pub(crate) struct TargetWindows {
     /// A loaded bank's cores, each resumed at its group's first chunk.
     pub(crate) saved: HashMap<GroupKey, Vec<u8>>,
 }
+
+/// From this many groups a chunk's groups resolve on the pool's threads
+/// whatever its rows: a group's fixed cost -- two plans of Polars' lazy
+/// engine, about 85 microseconds measured -- is a dispatch's many times over.
+const PAR_MIN_GROUPS: usize = 8;
 
 /// The row-number column a resolver's frame carries: a row's number in the
 /// bank's stream, which a resolution names it by.
@@ -253,51 +259,56 @@ pub(crate) fn resolve_targets(
         .filter(|t| t.is_formula())
         .map(|t| t.name.as_str())
         .collect();
-    let mut by_group: HashMap<GroupKey, Resolutions> = HashMap::with_capacity(groups.len());
+    // A core a caller has not prepared is made here, serially, as
+    // `prepare_targets` makes it. Then each group's core is taken out of the
+    // map to be fed: they are independent, and a group resolves on whichever
+    // thread takes it. A chunk's groups are distinct keys.
     for (key, idx) in groups {
-        let rows: Vec<u64> = idx.iter().map(|&i| first_row + i as u64).collect();
-        let sub = if idx.len() == n {
-            frame.clone()
-        } else {
-            let take: IdxCa =
-                IdxCa::from_vec("".into(), idx.iter().map(|&i| i as IdxSize).collect());
-            frame.take(&take)?
-        };
-        let run = resolver.run(key, spec, &sub)?;
-        let out = run.feed_resolving(&sub, &rows).map_err(|e| {
-            let prefix = format!("spec {:?}: formula target", spec.name);
-            polars_err!(ComputeError: "{prefix}: {}", without_who(&e.to_string()))
-        })?;
-        let h = out.height();
-        if h == 0 {
-            continue;
+        if !resolver.runs.contains_key(key) {
+            resolver.run(key, spec, &group_frame(frame, idx, n)?)?;
         }
-        let width = names.len();
-        let mut values: Vec<f64> = vec![f64::NAN; h * width];
-        for (k, name) in names.iter().enumerate() {
-            let s = out.column(name)?.cast(&DataType::Float64)?;
-            for (r, v) in s.f64()?.iter().enumerate() {
-                if let Some(v) = v {
-                    values[r * width + k] = v;
+    }
+    let mut cores: Vec<WindowsRun> = groups
+        .iter()
+        .map(|(key, _)| resolver.runs.remove(key).expect("made above"))
+        .collect();
+    // A chunk of one group, or of too few rows and groups to repay a
+    // dispatch, runs on this thread; the cores and the rows each is fed are
+    // the same either way, and the results are read in the groups' order, so
+    // the first refusal is the one a serial pass reports. A group costs a
+    // plan of Polars' lazy engine, tens of microseconds, besides its rows.
+    let one = |(key, idx): &(GroupKey, Vec<usize>), run: &mut WindowsRun| {
+        resolve_group(spec, run, frame, key, idx, &names, first_row)
+    };
+    let results: Vec<PolarsResult<Option<(GroupKey, Resolutions)>>> =
+        if groups.len() > 1 && (n >= PAR_MIN_ROWS || groups.len() >= PAR_MIN_GROUPS) {
+            cores
+                .par_iter_mut()
+                .zip(groups.par_iter())
+                .map(|(run, g)| one(g, run))
+                .collect()
+        } else {
+            // Up to the first refusal, as a pass over the groups in order
+            // stops at it.
+            let mut done = Vec::with_capacity(cores.len());
+            for (run, g) in cores.iter_mut().zip(groups) {
+                let r = one(g, run);
+                let refused = r.is_err();
+                done.push(r);
+                if refused {
+                    break;
                 }
             }
+            done
+        };
+    for ((key, _), run) in groups.iter().zip(cores) {
+        resolver.runs.insert(key.clone(), run);
+    }
+    let mut by_group: HashMap<GroupKey, Resolutions> = HashMap::with_capacity(groups.len());
+    for r in results {
+        if let Some((key, resolutions)) = r? {
+            by_group.insert(key, resolutions);
         }
-        let seqs: Vec<u64> = out.column("@po:seq")?.u64()?.iter().flatten().collect();
-        let ats: Vec<u64> = out.column("@po:at")?.u64()?.iter().flatten().collect();
-        debug_assert!(seqs.len() == h && ats.len() == h, "no null row number");
-        debug_assert!(
-            seqs.windows(2).all(|w| w[0] < w[1]),
-            "a group resolves in row order"
-        );
-        by_group.insert(
-            key.clone(),
-            Resolutions {
-                seqs,
-                ats,
-                values,
-                width,
-            },
-        );
     }
     let seqs = gathered((0..n).map(|i| first_row + i as u64).collect(), layout);
     Ok(FormulaBundle {
@@ -305,6 +316,66 @@ pub(crate) fn resolve_targets(
         seqs,
         groups: by_group,
     })
+}
+
+/// The rows of the chunk's frame that are one group's: the frame itself
+/// where the group is all of it.
+fn group_frame(frame: &DataFrame, idx: &[usize], n: usize) -> PolarsResult<DataFrame> {
+    if idx.len() == n {
+        return Ok(frame.clone());
+    }
+    let take: IdxCa = IdxCa::from_vec("".into(), idx.iter().map(|&i| i as IdxSize).collect());
+    frame.take(&take)
+}
+
+/// One group's rows fed to its core: what the core resolved, as the values
+/// of each formula target by resolved row, with the rows' numbers; `None`
+/// where nothing resolved.
+fn resolve_group(
+    spec: &Spec,
+    run: &mut WindowsRun,
+    frame: &DataFrame,
+    key: &GroupKey,
+    idx: &[usize],
+    names: &[&str],
+    first_row: u64,
+) -> PolarsResult<Option<(GroupKey, Resolutions)>> {
+    let rows: Vec<u64> = idx.iter().map(|&i| first_row + i as u64).collect();
+    let sub = group_frame(frame, idx, frame.height())?;
+    let out = run.feed_resolving(&sub, &rows).map_err(|e| {
+        let prefix = format!("spec {:?}: formula target", spec.name);
+        polars_err!(ComputeError: "{prefix}: {}", without_who(&e.to_string()))
+    })?;
+    let h = out.height();
+    if h == 0 {
+        return Ok(None);
+    }
+    let width = names.len();
+    let mut values: Vec<f64> = vec![f64::NAN; h * width];
+    for (k, name) in names.iter().enumerate() {
+        let s = out.column(name)?.cast(&DataType::Float64)?;
+        for (r, v) in s.f64()?.iter().enumerate() {
+            if let Some(v) = v {
+                values[r * width + k] = v;
+            }
+        }
+    }
+    let seqs: Vec<u64> = out.column("@po:seq")?.u64()?.iter().flatten().collect();
+    let ats: Vec<u64> = out.column("@po:at")?.u64()?.iter().flatten().collect();
+    debug_assert!(seqs.len() == h && ats.len() == h, "no null row number");
+    debug_assert!(
+        seqs.windows(2).all(|w| w[0] < w[1]),
+        "a group resolves in row order"
+    );
+    Ok(Some((
+        key.clone(),
+        Resolutions {
+            seqs,
+            ats,
+            values,
+            width,
+        },
+    )))
 }
 
 /// A core's message without its own caller's name: a bank's refusal names

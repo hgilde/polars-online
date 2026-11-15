@@ -1536,8 +1536,17 @@ impl Gap {
     #[inline]
     fn cmp_span(self, span: f64, span_ns: Option<i128>) -> Ordering {
         match self {
-            Gap::Ns(n) => Stamp::Ns(i128::from(n)).cmp_span_ns(Stamp::Ns(0), span, span_ns),
-            Gap::Secs(s) => Stamp::Raw(s, 0.0).cmp_span_ns(Stamp::Raw(0.0, 0.0), span, None),
+            // `Stamp::cmp_span_ns`'s two arms for these pairs, written out
+            // where this is called a row at a time: integer nanoseconds
+            // against a span in nanoseconds, and a number clock's
+            // `(a - b) - (ra - rb)` of the pair `s, 0` with removed time 0.
+            Gap::Ns(n) => match span_ns {
+                Some(w) => i128::from(n).cmp(&w),
+                None => Stamp::Ns(i128::from(n)).cmp_span_ns(Stamp::Ns(0), span, None),
+            },
+            Gap::Secs(s) => ((s - 0.0) - (0.0 - 0.0))
+                .partial_cmp(&span)
+                .unwrap_or(Ordering::Equal),
             Gap::Int(n) => Stamp::Int(n, 0.0).cmp_span_ns(Stamp::Int(0, 0.0), span, None),
         }
     }
@@ -2051,6 +2060,7 @@ impl Windows {
     /// gaps and takes no session (review R2, W3: groups with sessions of
     /// their own restarted every group at every row); without, the stream
     /// is the one group. `gi` is `None` for a group with no row yet.
+    #[inline(always)]
     fn step_clocks(
         &self,
         gi: Option<usize>,
@@ -2148,8 +2158,11 @@ impl Windows {
             self.flush_stamps_before(now);
         }
 
-        self.held_values
-            .extend(std::iter::repeat_n(f64::NAN, self.n_outputs));
+        // One push each: `extend(repeat_n(..))` was a call to a fill routine
+        // for the one or two values a row holds.
+        for _ in 0..self.n_outputs {
+            self.held_values.push_back(f64::NAN);
+        }
         let has_clock = row.clock.is_some();
         // Under "right" and "both" a backward window waits for the next
         // distinct stamp; a row-count clock repeats no stamp, so the row's

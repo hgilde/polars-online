@@ -13,6 +13,8 @@
 //! evaluates the formulas over the held rows with the operators standing
 //! in as hidden columns, and the hidden columns are dropped.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Cursor;
 
@@ -163,6 +165,26 @@ struct IncrState {
     prev_int: Vec<Option<i128>>,
     session: Option<u64>,
     clock: Option<ClockValue>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's switch: the lazy engine for every input and formula, as
+    /// before the short cuts, to hold the two to the same bits.
+    static NO_SHORT_CUTS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether a bare column input and a bare operator formula skip the lazy
+/// engine (always, but in a test that switches them off).
+fn short_cuts() -> bool {
+    #[cfg(test)]
+    {
+        !NO_SHORT_CUTS.with(Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
 }
 
 /// The hidden column an operator stands in as, in a formula.
@@ -1260,36 +1282,62 @@ impl WindowsRun {
         );
         let chunk = self.with_increments(df, &keys, &clock, session.as_deref())?;
 
-        // Pass two: Polars evaluates every operator's input.
-        let resolve_incr = |op: &OpNode| col(hidden(op).as_str());
-        // `with_columns` then `select`: a bare literal input (the stand-in
-        // where only increments run) broadcasts to the chunk's rows.
-        let evaluated = chunk
-            .clone()
-            .lazy()
-            .with_columns(
+        // Pass two: Polars evaluates every operator's input -- but an input
+        // that is a column of doubles, as a price is, is its values already:
+        // the cast to double of a double is none, and a plan of the lazy
+        // engine is tens of microseconds a call, which a bank's group pays
+        // every chunk.
+        let bare: Option<Vec<&Column>> = short_cuts()
+            .then(|| {
                 self.inputs
                     .iter()
-                    .enumerate()
-                    .map(|(i, node)| {
-                        node.to_expr(&resolve_incr)
-                            .cast(DataType::Float64)
-                            .alias(input_column(i).as_str())
+                    .map(|node| match node {
+                        Node::Col(c) => chunk
+                            .column(c.as_str())
+                            .ok()
+                            .filter(|s| *s.dtype() == DataType::Float64),
+                        _ => None,
                     })
-                    .collect::<Vec<_>>(),
-            )
-            .select(
-                (0..self.inputs.len())
-                    .map(|i| col(input_column(i).as_str()))
-                    .collect::<Vec<_>>(),
-            )
-            .collect()?;
-        let values: Vec<Vec<f64>> = (0..self.inputs.len())
-            .map(|i| {
-                let s = evaluated.column(input_column(i).as_str())?;
-                Ok(s.f64()?.iter().map(|v| v.unwrap_or(f64::NAN)).collect())
+                    .collect()
             })
-            .collect::<PolarsResult<_>>()?;
+            .flatten();
+        let values: Vec<Vec<f64>> = if let Some(columns) = bare {
+            columns
+                .iter()
+                .map(|s| Ok(s.f64()?.iter().map(|v| v.unwrap_or(f64::NAN)).collect()))
+                .collect::<PolarsResult<_>>()?
+        } else {
+            let resolve_incr = |op: &OpNode| col(hidden(op).as_str());
+            // `with_columns` then `select`: a bare literal input (the
+            // stand-in where only increments run) broadcasts to the chunk's
+            // rows.
+            let evaluated = chunk
+                .clone()
+                .lazy()
+                .with_columns(
+                    self.inputs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, node)| {
+                            node.to_expr(&resolve_incr)
+                                .cast(DataType::Float64)
+                                .alias(input_column(i).as_str())
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .select(
+                    (0..self.inputs.len())
+                        .map(|i| col(input_column(i).as_str()))
+                        .collect::<Vec<_>>(),
+                )
+                .collect()?;
+            (0..self.inputs.len())
+                .map(|i| {
+                    let s = evaluated.column(input_column(i).as_str())?;
+                    Ok(s.f64()?.iter().map(|v| v.unwrap_or(f64::NAN)).collect())
+                })
+                .collect::<PolarsResult<_>>()?
+        };
         let accepts: Vec<Vec<f64>> = self
             .accept
             .iter()
@@ -1303,6 +1351,7 @@ impl WindowsRun {
         let chunk_base = self.core.next_seq();
         let mut row_values = vec![0.0; self.inputs.len()];
         let mut consumed = n;
+        let mut last_group: Option<(Option<&str>, usize)> = None;
         // Resolving: per resolved row, the number of the row that resolved
         // it, read off the core's ready count after each push. Nothing is
         // ready before the chunk: every resolving feed drains everything.
@@ -1320,7 +1369,16 @@ impl WindowsRun {
             for (k, col) in values.iter().enumerate() {
                 row_values[k] = col[i];
             }
-            let group = self.core.group(keys[i]);
+            // A key is looked up once while it repeats: a chunk of one
+            // group, as a bank's resolver is fed, hashed it every row.
+            let group = match last_group {
+                Some((k, g)) if k == keys[i] => g,
+                _ => {
+                    let g = self.core.group(keys[i]);
+                    last_group = Some((keys[i], g));
+                    g
+                }
+            };
             let row = RowIn {
                 group,
                 clock: clock.as_ref().map(|c| c[i]),
@@ -1371,6 +1429,32 @@ impl WindowsRun {
         let resolved_at: UInt64Chunked = at.iter().map(|&a| Some(a)).collect();
         let mut frame = self.assemble_rows(e)?;
         frame.hstack_mut(&[resolved_at.with_name("@po:at".into()).into_column()])?;
+        // A formula that is only a window operator's values is its hidden
+        // column under the formula's name: no plan of the lazy engine for
+        // it, which a bank's group would pay every chunk.
+        let bare: Option<Vec<&OpNode>> = short_cuts()
+            .then(|| {
+                self.config
+                    .formulas
+                    .iter()
+                    .map(|f| f.tree.bare_operator())
+                    .collect()
+            })
+            .flatten();
+        if let Some(ops) = bare {
+            let mut cols: Vec<Column> = Vec::with_capacity(ops.len() + 2);
+            for (f, op) in self.config.formulas.iter().zip(ops) {
+                cols.push(
+                    frame
+                        .column(hidden(op).as_str())?
+                        .clone()
+                        .with_name(f.name.as_str().into()),
+                );
+            }
+            cols.push(frame.column("@po:row")?.clone().with_name("@po:seq".into()));
+            cols.push(frame.column("@po:at")?.clone());
+            return DataFrame::new(frame.height(), cols);
+        }
         // An operator partial under `"drop"` gives no value, so a formula
         // over it is null of itself; the row's other formulas keep theirs
         // (review R1, D4: every formula of the row was nulled).
@@ -2292,6 +2376,132 @@ mod tests {
             "wide" => t.iter().map(|v| format!("row {v} {}", "pad".repeat(20))).collect::<Vec<_>>(),
         )
         .unwrap()
+    }
+
+    /// A bare column input skips the lazy engine's cast and a bare operator
+    /// formula its plan, and the bits are the lazy engine's: every value, null
+    /// and row number of what a run resolves, over nulls, NaN, infinities,
+    /// signed zeros and a column of integers (which takes the plan), whole and
+    /// in chunks, for a mix of formulas that take the short cut and ones that
+    /// do not.
+    #[test]
+    fn the_short_cuts_resolve_as_the_lazy_engine_does() {
+        let op = |kind: &str, col: &str, extra: &str| {
+            format!(
+                r#"["{kind}", ["col", "{col}"], {{"half_life": 1.5, "window_size": 4{extra}}}]"#
+            )
+        };
+        let shapes: Vec<(&str, Vec<String>)> = vec![
+            ("bare forward", vec![op("rewm_sum", "x", "")]),
+            (
+                "bare drop",
+                vec![op("rewm_mean", "x", r#", "partial": "drop""#)],
+            ),
+            (
+                "bare, aliased, two inputs",
+                vec![
+                    format!(r#"["alias", {}, "a"]"#, op("rewm_mean", "x", "")),
+                    op("ewm_sum", "y", ""),
+                ],
+            ),
+            (
+                "one not bare",
+                vec![
+                    op("rewm_sum", "x", ""),
+                    format!(r#"["-", {}, ["col", "x"]]"#, op("ewm_mean", "x", "")),
+                ],
+            ),
+            ("integer input", vec![op("rewm_sum", "n", "")]),
+            (
+                "computed input",
+                vec![format!(
+                    r#"["rewm_sum", ["*", ["col", "x"], ["col", "y"]], {{"half_life": 1.5, "window_size": 4}}]"#
+                )],
+            ),
+        ];
+        let n = 60;
+        let mut seed = 7u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut t = 0.0;
+        let (mut ts, mut xs, mut ys, mut ns) = (vec![], vec![], vec![], vec![]);
+        for i in 0..n {
+            t += if i % 9 == 4 { 0.0 } else { 0.2 + 1.5 * next() };
+            ts.push(t);
+            let v = next();
+            xs.push(match i % 11 {
+                3 => None,
+                5 => Some(f64::NAN),
+                7 => Some(f64::INFINITY),
+                8 => Some(-0.0),
+                _ => Some(v - 0.5),
+            });
+            ys.push(Some(next() * 3.0));
+            ns.push(i as i64 % 5);
+        }
+        let rows: Vec<u64> = (0..n as u64).collect();
+        let df =
+            df!("t" => ts, "x" => xs, "y" => ys, "n" => ns, "@po:row" => rows.clone()).unwrap();
+        let run = |formulas: &[String], cuts: &[usize], off: bool| -> Vec<DataFrame> {
+            NO_SHORT_CUTS.with(|c| c.set(off));
+            let names: Vec<String> = (0..formulas.len())
+                .map(|i| format!(r#"{{"name": "f{i}", "tree": {}}}"#, formulas[i]))
+                .collect();
+            let mut r = WindowsRun::new(
+                config(&format!(
+                    r#"{{"formulas": [{}], "clock": "t", "gap_cap": 100}}"#,
+                    names.join(",")
+                )),
+                df.schema(),
+            )
+            .unwrap();
+            let mut out = vec![];
+            let mut at = 0;
+            for &c in cuts {
+                let part = df.slice(at as i64, c);
+                out.push(r.feed_resolving(&part, &rows[at..at + c]).unwrap());
+                at += c;
+            }
+            NO_SHORT_CUTS.with(|c| c.set(false));
+            out
+        };
+        let bits = |frames: &[DataFrame]| -> Vec<String> {
+            frames
+                .iter()
+                .flat_map(|f| {
+                    f.columns().iter().map(|c| match c.dtype() {
+                        DataType::Float64 => format!(
+                            "{} {:?}",
+                            c.name(),
+                            c.f64()
+                                .unwrap()
+                                .iter()
+                                .map(|v| v.map(f64::to_bits))
+                                .collect::<Vec<_>>()
+                        ),
+                        _ => format!(
+                            "{} {:?} {:?}",
+                            c.name(),
+                            c.dtype(),
+                            c.u64().map(|u| u.iter().collect::<Vec<_>>())
+                        ),
+                    })
+                })
+                .collect()
+        };
+        for (what, formulas) in &shapes {
+            for cuts in [vec![n], vec![7, 1, 30, 22]] {
+                let fast = run(formulas, &cuts, false);
+                let lazy = run(formulas, &cuts, true);
+                let resolved: usize = lazy.iter().map(DataFrame::height).sum();
+                assert!(resolved > 20, "{what}: {resolved} rows resolved");
+                assert_eq!(bits(&fast), bits(&lazy), "{what}, cuts {cuts:?}");
+            }
+        }
     }
 
     /// Task 160, PB2: without a clock a row is one step, and a cap on it cut

@@ -804,6 +804,17 @@ impl Node {
         }
     }
 
+    /// The operator this node is, where it is nothing else but, under any
+    /// `alias`es at the root: a formula that only names a window operator's
+    /// values.
+    pub fn bare_operator(&self) -> Option<&OpNode> {
+        match self {
+            Node::Op(op) => Some(op),
+            Node::Call(name, args) if name == "alias" => args[0].bare_operator(),
+            _ => None,
+        }
+    }
+
     /// The name an `alias` at the root gives, if any.
     pub fn alias(&self) -> Option<&str> {
         match self {
