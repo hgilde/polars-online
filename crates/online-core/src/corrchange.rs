@@ -682,6 +682,10 @@ struct Work {
     spare: Vec<f64>,
     stats: Vec<f64>,
     order: Vec<usize>,
+    /// The pooled rows, `d` numbers to a row, one after another, in the
+    /// ring's order.
+    pool: Vec<f64>,
+    /// The pooled rows' places in `pool`, in a permuted order.
     shuffled: Vec<usize>,
 }
 
@@ -1393,14 +1397,7 @@ impl CorrChange {
                 p += rest;
             }
         }
-        let mut p = 0;
-        for a in 0..d {
-            for b in (a + 1)..d {
-                let den = (ss[a] * ss[b]).sqrt();
-                corr[p] = if den > 0.0 { corr[p] / den } else { f64::NAN };
-                p += 1;
-            }
-        }
+        Self::normalise_pairs(d, ss, corr);
     }
 
     /// `‖vech(R̂_pre − R̂_post)‖` over the two windows of the `n` rows
@@ -1426,6 +1423,13 @@ impl CorrChange {
         let (pre, post) = buf.split_at_mut(len);
         self.window_corr_into(w, &row, pre);
         self.window_corr_into(w, |i| row(w + i), post);
+        self.change_between(pre, post)
+    }
+
+    /// `‖vech(R̂_pre − R̂_post)‖` from the two windows' buffers, each as
+    /// [`Self::window_corr_into`] leaves it.
+    fn change_between(&self, pre: &[f64], post: &[f64]) -> f64 {
+        let at = 2 * self.cfg.n_features;
         let mut acc = 0.0f64;
         for (x, y) in pre[at..].iter().zip(&post[at..]) {
             if !(x.is_finite() && y.is_finite()) {
@@ -1438,6 +1442,124 @@ impl CorrChange {
             }
         }
         acc
+    }
+
+    /// [`Self::window_stat_by`] over the `2 w` rows `pool` holds at the
+    /// places `at` gives, `d` numbers to a row in `pool`: the pooled rows of
+    /// a permutation draw, copied from the ring once for every draw and not
+    /// once for each.
+    fn window_stat_flat(&self, pool: &[f64], at: &[usize], buf: &mut Vec<f64>) -> f64 {
+        let w = self.cfg.span_rows;
+        let d = self.cfg.n_features;
+        if w < 2 {
+            return f64::NAN;
+        }
+        let len = 2 * d + d * d.saturating_sub(1) / 2;
+        buf.clear();
+        buf.resize(2 * len, 0.0);
+        let (pre, post) = buf.split_at_mut(len);
+        let (head, tail) = at.split_at(w);
+        Self::window_corr_flat(d, pool, head, pre);
+        Self::window_corr_flat(d, pool, tail, post);
+        self.change_between(pre, post)
+    }
+
+    /// [`Self::window_corr_into`] over the rows of `pool`, `d` numbers to
+    /// a row, at the places `at` gives, the same sums in the same order. For
+    /// up to eight columns the loops over the pairs have a length known at
+    /// compile time, so they unroll and each sum stays in a register.
+    fn window_corr_flat(d: usize, pool: &[f64], at: &[usize], buf: &mut [f64]) {
+        let w = at.len();
+        let wf = w as f64;
+        buf.fill(0.0);
+        let (mean, rest) = buf.split_at_mut(d);
+        let (ss, corr) = rest.split_at_mut(d);
+        for &i in at {
+            for (m, x) in mean.iter_mut().zip(&pool[i * d..(i + 1) * d]) {
+                *m += x;
+            }
+        }
+        mean.iter_mut().for_each(|m| *m /= wf);
+        macro_rules! fixed {
+            ($($n:literal)+) => {
+                match d {
+                    $($n => Self::co_moments_fixed::<$n>(pool, at, mean, ss, corr),)+
+                    _ => Self::co_moments_rows(d, pool, at, mean, ss, corr),
+                }
+            };
+        }
+        fixed!(1 2 3 4 5 6 7 8);
+        Self::normalise_pairs(d, ss, corr);
+    }
+
+    /// The sums of squared deviations and of cross products of the rows of
+    /// `pool`, `D` numbers to a row, at the places `at` gives, about `mean`.
+    fn co_moments_fixed<const D: usize>(
+        pool: &[f64],
+        at: &[usize],
+        mean: &[f64],
+        ss: &mut [f64],
+        corr: &mut [f64],
+    ) {
+        let mean: [f64; D] = mean.try_into().expect("d means");
+        // At most 28 pairs, at eight columns.
+        let mut s = [0.0f64; D];
+        let mut c = [0.0f64; 28];
+        for &i in at {
+            let r: &[f64; D] = pool[i * D..(i + 1) * D].try_into().expect("a row");
+            let mut p = 0;
+            for a in 0..D {
+                let da = r[a] - mean[a];
+                s[a] += da * da;
+                for b in (a + 1)..D {
+                    c[p] += da * (r[b] - mean[b]);
+                    p += 1;
+                }
+            }
+        }
+        ss.copy_from_slice(&s);
+        corr.copy_from_slice(&c[..D * (D - 1) / 2]);
+    }
+
+    /// [`Self::co_moments_fixed`] for any number of columns.
+    fn co_moments_rows(
+        d: usize,
+        pool: &[f64],
+        at: &[usize],
+        mean: &[f64],
+        ss: &mut [f64],
+        corr: &mut [f64],
+    ) {
+        for &i in at {
+            let r = &pool[i * d..(i + 1) * d];
+            let mut p = 0;
+            for a in 0..d {
+                let da = r[a] - mean[a];
+                ss[a] += da * da;
+                let rest = d - a - 1;
+                for ((c, &rb), &mb) in corr[p..p + rest]
+                    .iter_mut()
+                    .zip(&r[a + 1..])
+                    .zip(&mean[a + 1..])
+                {
+                    *c += da * (rb - mb);
+                }
+                p += rest;
+            }
+        }
+    }
+
+    /// Each cross sum over the root of the product of its two columns'
+    /// squared deviations, NaN where that is not positive.
+    fn normalise_pairs(d: usize, ss: &[f64], corr: &mut [f64]) {
+        let mut p = 0;
+        for a in 0..d {
+            for b in (a + 1)..d {
+                let den = (ss[a] * ss[b]).sqrt();
+                corr[p] = if den > 0.0 { corr[p] / den } else { f64::NAN };
+                p += 1;
+            }
+        }
     }
 
     /// The critical value of the permutation test at `alpha`: the
@@ -1456,6 +1578,7 @@ impl CorrChange {
         let mut work = std::mem::take(&mut self.work);
         let Work {
             report: buf,
+            pool,
             stats,
             order,
             shuffled,
@@ -1465,10 +1588,16 @@ impl CorrChange {
         stats.reserve_exact(self.cfg.n_perm);
         order.clear();
         order.extend(0..nblocks);
-        // The pooled rows by their places in the ring, permuted in blocks.
+        // The pooled rows, by their places in one run of numbers copied
+        // from the ring, permuted in blocks.
+        let d = self.cfg.n_features;
+        pool.clear();
+        pool.reserve_exact(2 * w * d);
+        for r in &self.ring {
+            pool.extend_from_slice(&r[..d]);
+        }
         shuffled.clear();
         shuffled.reserve_exact(2 * w);
-        let ring = &self.ring;
         for _ in 0..self.cfg.n_perm {
             // Fisher-Yates over the blocks, from the state's own generator
             // so the draws are a function of the data alone.
@@ -1481,7 +1610,7 @@ impl CorrChange {
                 let start = bi * block;
                 shuffled.extend(start..(start + block).min(2 * w));
             }
-            let s = self.window_stat_by(2 * w, |i| &ring[shuffled[i]], buf);
+            let s = self.window_stat_flat(pool, shuffled, buf);
             if s.is_finite() {
                 stats.push(s);
             }
