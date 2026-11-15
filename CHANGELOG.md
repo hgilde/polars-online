@@ -105,6 +105,12 @@ returns.
   as fast (1.8 times with a cast), and a group's rows are taken without
   waiting on Polars' threads. Outputs and saved states unchanged to the
   bit.
+- `corrchange(kind="window")` redraws its permutation critical value about
+  2.1 times as fast (a 500-row window over 4 columns with 200 draws: 15.6 to
+  7.3 µs a row, averaged over a redraw every 100 rows): it reads the pooled
+  rows from one flat copy and sums each window in unrolled loops up to 8
+  columns, with the same random draws in the same order. Outputs and saved
+  state unchanged to the bit.
 
 ## [1.5.0] — 2026-11-10
 
