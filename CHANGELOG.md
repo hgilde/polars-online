@@ -98,6 +98,13 @@ returns.
 - `rcov` is up to 3.8 times as fast a row at 4 features and 1.5 times at
   20: its lagged-product update unrolls for the common feature counts.
   Outputs and saved state unchanged to the bit.
+- A formula target whose inputs are computed (`ewm_sum(y * x)`) or whose
+  formula does arithmetic around its operators (`ewm_mean(y) - y`, a cast,
+  two operators combined) is evaluated once a chunk for all groups rather
+  than once a group: 1,000 groups in 2,000-row chunks run 3.8 to 4.2 times
+  as fast (1.8 times with a cast), and a group's rows are taken without
+  waiting on Polars' threads. Outputs and saved states unchanged to the
+  bit.
 
 ## [1.5.0] — 2026-11-10
 

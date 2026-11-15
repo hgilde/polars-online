@@ -130,8 +130,8 @@ are first used, and ignored after. `threads=` never reads it. A
 same bound as `threads`, makes the first call that uses the default
 threads raise `ValueError`, naming the variable.
 Giving both sets every core slows neither: the models run on the bank's
-threads alone, and only a formula target's window step hands a group's rows
-to Polars' threads, one group at a time on each of the bank's threads.
+threads alone, and Polars' threads compute a formula target's inputs and
+formula once a chunk, for all its groups together.
 
 ## Split one wide spec across threads
 
