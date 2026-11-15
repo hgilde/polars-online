@@ -2036,34 +2036,36 @@ twin on the next loop is caught"""
 
 [[equivalent]]
 file = "crates/online-core/src/bocpd.rs"
-function = "GammaCache::slot"
+function = "LengthTerms::find"
 mutation = "replace ^ with |"
-line_has = "((bits ^ (bits >> 29) ^ (bits >> 47)) as usize) & (Self::SLOTS - 1)"
-why = """the mask keeps the slot inside the 256 whatever is mixed, and the slot \
-only places a key: a lookup answers from it only where the stored key's 64 \
-bits are the asked `ν`'s, and computes `gamma_diff(ν, a)` otherwise, so every \
-lookup returns the same value. A worse mix changes only how often a key is \
-found, a count the tests read to show the cache is used, not a result. \
-Both `^` on the line"""
+line_has = "let folded = bits ^ (bits >> 32);"
+why = """the table's index only places a key: `find` walks on from it to the entry \
+holding the asked `ν`'s 64 bits or to one never filled, and the table is \
+never full (half at most), so every lookup returns the value its function \
+gives at that key, and the same hit and miss counts while no entry is \
+emptied (`the_length_terms_miss_each_length_once` reads them). A worse mix \
+changes only how many entries a lookup steps over. Both `^` of the fold's line"""
 
 [[equivalent]]
 file = "crates/online-core/src/bocpd.rs"
-function = "GammaCache::slot"
+function = "LengthTerms::find"
 mutation = "replace ^ with &"
-line_has = "((bits ^ (bits >> 29) ^ (bits >> 47)) as usize) & (Self::SLOTS - 1)"
-why = """as `replace ^ with |` here: the slot stays inside the mask and only \
-places a key that every hit compares whole. The first `^`; the second's \
-`&`, which empties the slot's mix more, is caught by the hit count of \
-`the_gamma_cache_hits_on_a_long_stream_and_holds_what_it_computes`"""
+line_has = "let folded = bits ^ (bits >> 32);"
+why = """as `replace ^ with |` on this line: the fold only mixes the bits the index is read from, and `find` walks on from wherever it lands to the key or a free entry"""
 
 [[equivalent]]
 file = "crates/online-core/src/bocpd.rs"
-function = "GammaCache::slot"
+function = "LengthTerms::find"
 mutation = "replace >> with <<"
-line_has = "((bits ^ (bits >> 29) ^ (bits >> 47)) as usize) & (Self::SLOTS - 1)"
-why = """as `replace ^ with |` here: a shift left by 29 cannot overflow into a \
-panic, and the mask keeps the slot inside the 256, where a hit compares \
-the key whole"""
+line_has = "let folded = bits ^ (bits >> 32);"
+why = """as `replace ^ with |` on this line: a shift left by 32 cannot overflow into a panic, and the fold only mixes the bits the index is read from"""
+
+[[equivalent]]
+file = "crates/online-core/src/bocpd.rs"
+function = "LengthTerms::find"
+mutation = "replace >> with <<"
+line_has = "let mut at = (folded.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize & mask;"
+why = """as the fold above: the product shifted left leaves the index's low bits zero, every key starts its walk at entry 0, and `find` still ends at the key or a free entry; only the number of entries stepped over changes"""
 
 [[equivalent]]
 file = "crates/online-core/src/gaps.rs"
