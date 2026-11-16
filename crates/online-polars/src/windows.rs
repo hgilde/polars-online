@@ -628,6 +628,20 @@ impl Acc {
     /// it is, its masses scale, and their squares with `f²`.
     #[inline]
     fn scaled(self, f: f64, var: bool) -> Acc {
+        // A discount of 1 (no decay, or no distance) multiplies each sum by
+        // 1, which is that sum to the bit.
+        if f == 1.0 {
+            return if var {
+                self
+            } else {
+                Acc {
+                    s: self.s,
+                    w: self.w,
+                    n: self.n,
+                    ..Acc::default()
+                }
+            };
+        }
         if var {
             Acc {
                 s: self.s,
