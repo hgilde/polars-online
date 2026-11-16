@@ -278,6 +278,18 @@ impl AnyModel {
         dispatch!(self, m => m.predict_with(x, y, d_clock))
     }
 
+    /// [`Self::predict`] into the caller's step, which it overwrites in
+    /// full ([`OnlineModel::predict_with_into`]).
+    pub fn predict_into(
+        &self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        out: &mut online_core::Step,
+    ) {
+        dispatch!(self, m => m.predict_with_into(x, y, d_clock, out))
+    }
+
     /// [`Self::predict`] at another `min_weight` floor, set for the read and
     /// put back ([`OnlineModel::predict_with_floor`]): the prediction a
     /// floor withholds from the output, which the residual spread folds.
@@ -399,6 +411,13 @@ impl AnyModel {
     /// out like [`Self::coefficients`].
     pub fn support_coef(&self) -> Option<Vec<Vec<f64>>> {
         dispatch!(self, m => m.support_coef())
+    }
+
+    /// Each coefficient's data share as one list, slot after slot, written
+    /// over `out` ([`OnlineModel::support_coef_into`]); `false` where there
+    /// is none.
+    pub fn support_coef_into(&self, out: &mut Vec<f64>) -> bool {
+        dispatch!(self, m => m.support_coef_into(out))
     }
 
     /// Whether the model is still in its own warm-up: a standardizing `sgd`
@@ -4720,7 +4739,7 @@ fn run_instance(
                 .get_mut()
                 .step_sharded_into(xs, &sc.ys, step_d, w, inst.shards, step);
         } else {
-            *step = inst.model.get().predict(xs, &sc.ys, score_d);
+            inst.model.get().predict_into(xs, &sc.ys, score_d, step);
         }
         let n_slots = step.pred.len();
         // `ew_cov` has no targets; its slots are statistics, so every one
@@ -5362,18 +5381,19 @@ fn run_instance(
             // noisy feature variances, and settled at 0.51-0.53 (task 116,
             // G). Below `ewridge`'s own floor no gate names a row, and its
             // fit is the last solved, not the latest due (task 311).
-            let support = inst.model.get().support_coef();
-            if let (Some(s), false, 0, true, true) = (
-                &support,
+            let mut support = Vec::new();
+            let has_support = inst.model.get().support_coef_into(&mut support);
+            if let (true, false, 0, true, true) = (
+                has_support,
                 inst.notified.support,
                 reason,
                 settled_enough(learned),
                 step.pred.iter().any(|p| p.is_finite()),
             ) {
                 let k_total = inst.spec.k() + usize::from(inst.spec.fit_intercept);
-                let worst = s
+                let worst = support
                     .iter()
-                    .flat_map(|slot| slot.iter().enumerate())
+                    .enumerate()
                     .filter(|(_, v)| v.is_finite())
                     .min_by(|a, b| a.1.total_cmp(b.1));
                 if let Some((i, &share)) = worst
@@ -5413,7 +5433,7 @@ fn run_instance(
                     ));
                 }
             }
-            inst.o_support_coef[ri] = support.map(joined);
+            inst.o_support_coef[ri] = has_support.then_some(support);
             // Each coefficient's standard error on the same cadence, in
             // `coef`'s units (docs/PLAN.md task 116, F): a variance over the
             // noise times the slot's `sigma` as the row read it -- the EW

@@ -2912,6 +2912,22 @@ impl OnlineModel for EwRidge {
         })
     }
 
+    fn support_coef_into(&self, out: &mut Vec<f64>) -> bool {
+        out.clear();
+        if self.beta.is_none() {
+            return false;
+        }
+        let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
+        if self.ready.support.len() != m * nc {
+            return false;
+        }
+        out.reserve_exact((0..m * nc).map(|s| self.ready.support_at(s).len()).sum());
+        for s in 0..m * nc {
+            out.extend_from_slice(self.ready.support_at(s));
+        }
+        true
+    }
+
     /// The step, into the caller's buffer (task 270, M-4).
     fn step_into(
         &mut self,
@@ -3100,6 +3116,10 @@ impl OnlineModel for EwRidge {
         let mut out = Step::default();
         self.predict_into(x, d_clock, &mut out);
         out
+    }
+
+    fn predict_with_into(&self, x: &[f64], _y: &[Option<f64>], d_clock: f64, out: &mut Step) {
+        self.predict_into(x, d_clock, out);
     }
 
     fn state(&self) -> State {
