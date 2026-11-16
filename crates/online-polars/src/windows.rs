@@ -6642,4 +6642,52 @@ mod tests {
             "{into_back} of {checked} into back"
         );
     }
+
+    /// A turn-over moves every row of `back` to `front`, the oldest on top,
+    /// into room made for them at once, and leaves `back` empty.
+    #[test]
+    fn a_turn_over_moves_every_row_into_room_made_for_them() {
+        let k = KernelDef {
+            direction: Direction::Backward,
+            half_life: 5.0,
+            window_size: Some(100.0),
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let mut q = Queue::new(vec![false, false], &[false, false]);
+        let mut scratch = vec![0.0; ROW * 2];
+        let rows = 50usize;
+        for i in 0..rows {
+            let t = i as f64 * 0.5;
+            let mut row = [0.0; ROW * 2];
+            for j in 0..2 {
+                let x = (i * 2 + j) as f64;
+                row[j * ROW..j * ROW + 5].copy_from_slice(&[t, x, x, 1.0, 1.0]);
+            }
+            q.push_row(&k, i as u64, t, i as i64, t, &row, &mut scratch);
+        }
+        assert_eq!((q.front.len(), q.back.len()), (0, rows));
+        q.settle::<false>(&k, &mut scratch);
+        assert_eq!((q.front.len(), q.back.len()), (rows, 0));
+        assert!(q.back.vals.is_empty() && q.back.sums.is_empty());
+        // The oldest row is on top: the newest at the bottom.
+        assert_eq!((q.front.seq[0], q.front.seq[rows - 1]), (rows as u64 - 1, 0));
+        // Room for the whole stack in every arena, made at once (a row-by-row
+        // growth would have doubled past it, to 64 for 50 rows).
+        let n = rows;
+        for (cap, need) in [
+            (q.front.seq.capacity(), n),
+            (q.front.tau.capacity(), n),
+            (q.front.off.capacity(), n),
+            (q.front.end.capacity(), n),
+            (q.front.at.capacity(), n),
+            (q.front.vals.capacity(), n * ROW * 2),
+            (q.front.sums.capacity(), n * SUM * 2),
+        ] {
+            assert!(need <= cap && cap < need + 8, "{cap} for {need}");
+        }
+        // A second turn-over with nothing in `back` changes nothing.
+        q.settle::<false>(&k, &mut scratch);
+        assert_eq!((q.front.len(), q.back.len()), (rows, 0));
+    }
 }
