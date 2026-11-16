@@ -100,9 +100,9 @@ pub(crate) struct PlainRows<'a> {
     pub values: &'a [Vec<f64>],
     /// Per `like=` column, as `values`: a row is accepted where all are usable.
     pub accepts: &'a [Vec<f64>],
-    /// The rows' group keys, where there is a group column: a block ends at a
-    /// row of another key.
-    pub keys: Option<&'a [Option<&'a str>]>,
+    /// The rows' group keys as codes ([`ChunkKeys`]), where there is a group
+    /// column: a block ends at a row of another key.
+    pub keys: Option<&'a [u32]>,
 }
 
 /// One operator's fold over a block. `NEAR`: its kernel's windows wait for

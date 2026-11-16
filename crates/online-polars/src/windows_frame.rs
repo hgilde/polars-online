@@ -27,6 +27,7 @@ use crate::formula::{Formula, Node, OpNode};
 use crate::span::{Span, format_duration};
 use crate::spec::{ClockPolicy, SessionGapSpec, clock_cfg_of};
 use crate::stream::usable;
+use crate::windows::{ChunkKeys, session_hashes};
 use crate::windows::{
     Closed, Direction, KernelDef, OpDef, OpKind, Partial, Peek, PlainRows, Refusal, RowIn, Stat,
     Windows,
@@ -1633,17 +1634,34 @@ impl WindowsRun {
         }
         let n = df.height();
         let session: Option<Vec<u64>> = self.session_hashes(df)?;
+        // The groups' keys as codes from the column's own values: a group is
+        // made at the first row that reaches it, below. The increments (a
+        // `diff` or `pct_change` in an input) keep their state by the key's
+        // text, which only they read.
+        let mut codes = match &self.k.config.group {
+            None => ChunkKeys::ungrouped(),
+            Some(c) => ChunkKeys::of(
+                &mut self.core,
+                df.column(c.as_str())?.as_materialized_series(),
+            )?,
+        };
         let group_col = match &self.k.config.group {
-            None => None,
-            Some(c) => Some(key_text(df.column(c.as_str())?.as_materialized_series())?),
+            Some(c) if !self.k.increments.is_empty() => {
+                Some(key_text(df.column(c.as_str())?.as_materialized_series())?)
+            }
+            _ => None,
         };
         let groups = group_col.as_ref().map(|c| c.str()).transpose()?;
-        let keys: Vec<Option<&str>> = (0..n)
-            .map(|i| match groups {
-                None => Some(""),
-                Some(g) => g.get(i),
-            })
-            .collect();
+        let keys: Vec<Option<&str>> = if self.k.increments.is_empty() {
+            Vec::new()
+        } else {
+            (0..n)
+                .map(|i| match groups {
+                    None => Some(""),
+                    Some(g) => g.get(i),
+                })
+                .collect()
+        };
 
         // Pass one: the increments, one row back within the group's
         // session, as hidden columns of the chunk. On a snapshot: the state
@@ -1687,7 +1705,6 @@ impl WindowsRun {
         let chunk_base = self.core.next_seq();
         let mut row_values = vec![0.0; self.k.inputs.len()];
         let mut consumed = n;
-        let mut last_group: Option<(Option<&str>, usize)> = None;
         // Resolving: per resolved row, the number of the row that resolved
         // it, read off the core's ready count after each push. Nothing is
         // ready before the chunk: every resolving feed drains everything.
@@ -1704,17 +1721,9 @@ impl WindowsRun {
                 consumed = i;
                 break;
             }
-            // A key is looked up once while it repeats: a chunk of one
-            // group, as a bank's resolver is fed, hashed it every row.
-            let group = match last_group {
-                // Without a group column every key is the one.
-                Some((k, g)) if groups.is_none() || k == keys[i] => g,
-                _ => {
-                    let g = self.core.group(keys[i]);
-                    last_group = Some((keys[i], g));
-                    g
-                }
-            };
+            // The row's group: its code names it, or makes it where this is
+            // the first row of a key the core had no group for.
+            let group = codes.group(&mut self.core, i);
             // The rows the core's plain loop runs, taken by it as one block
             // after another; the first row that is not plain, and the rows
             // of a feed that stops at a row count or names the row that
@@ -1729,7 +1738,7 @@ impl WindowsRun {
                     session: session.as_deref(),
                     values: &values,
                     accepts: &accepts,
-                    keys: groups.is_some().then_some(keys.as_slice()),
+                    keys: codes.codes(),
                 });
                 if taken > 0 {
                     i += taken;
@@ -1965,7 +1974,7 @@ impl WindowsRun {
             let clock = clock.as_ref().map(|c| c[..rows].to_vec());
             self.with_increments(
                 &df.slice(0, rows),
-                &keys[..rows],
+                keys.get(..rows).unwrap_or(&[]),
                 &clock,
                 session.map(|s| &s[..rows]),
                 None,
@@ -2233,13 +2242,12 @@ impl WindowsRun {
     /// are text, a zoned Datetime's its instant, as the bank keys them: the
     /// cast to text failed on one (task 160, PA4b).
     fn session_hashes(&self, df: &DataFrame) -> PolarsResult<Option<Vec<u64>>> {
-        Ok(match &self.k.config.session {
-            None => None,
-            Some(c) => {
-                let s = key_text(df.column(c.as_str())?.as_materialized_series())?;
-                Some(s.str()?.iter().map(session_hash).collect())
-            }
-        })
+        self.k
+            .config
+            .session
+            .as_ref()
+            .map(|c| session_hashes(df.column(c.as_str())?.as_materialized_series()))
+            .transpose()
     }
 
     /// Clock values of a chunk, in the form the column has them: a temporal
