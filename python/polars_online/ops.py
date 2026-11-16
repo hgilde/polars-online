@@ -60,8 +60,8 @@ half_life)``:
        Unless ``bias``, it is multiplied by ``V1 ** 2 / (V1 ** 2 - V2)``,
        ``V2 = sum m_i ** 2``. :func:`ewm_std` is its root. Looking back only
      - Polars' ``ewm_var`` and ``ewm_std`` under ``adjust=False`` on a
-       clock that steps by 1 a row, with Polars' own correction for unequal
-       weights
+       clock that steps by 1 a row and an input with no nulls, with Polars'
+       own correction for unequal weights
    * - :func:`ewm_quantile`
      - the smallest ``x`` with ``W(<= x) >= q W``, each row of the window
        weighing ``lam**|t_j - tau_t|``, as in :func:`ewm_sum`, ``W`` their
@@ -1063,9 +1063,9 @@ def ewm_var(
     ``V1 ** 2 / (V1 ** 2 - V2)``, with ``V2 = sum m_i ** 2``: the correction
     for unequal weights that Polars' ``ewm_var`` applies to its own.
 
-    On a clock that steps by 1 a row, with ``half_life`` in rows, this is
-    Polars' ``ewm_var(half_life=..., adjust=False, bias=...)``.
-    ``adjust=False`` is the form :func:`ewm_mean` already mirrors, since
+    On a clock that steps by 1 a row, with ``half_life`` in rows, and an input
+    with no nulls, this is Polars' ``ewm_var(half_life=..., adjust=False,
+    bias=...)``. ``adjust=False`` is the form :func:`ewm_mean` already mirrors, since
     ``ewm_mean_by`` holds a stretch's first value from before it. So the first
     row weighs ``(1 - alpha) ** (n - 1)``, with ``alpha = 1 - lam``, as
     ``adjust=False`` weighs it. A window that holds one value gives null under
@@ -1073,6 +1073,13 @@ def ewm_var(
     Polars' ``ewm_var`` gives that row null too from py-polars 1.44, and 0
     before it, so on an older Polars the example's first value from Polars
     reads ``0.0``.
+
+    With a null in the input the two differ, from the first row after it, under
+    either setting of Polars' ``ignore_nulls``. This operator follows
+    :func:`ewm_mean`, which follows ``ewm_mean_by``: a null row moves nothing,
+    and the last value is held across the longer step to the next row with a
+    value, so that row weighs the whole step. Polars' ``ewm_var`` has no such
+    mode.
     """
     return operator(
         "ewm_var",
@@ -1214,7 +1221,8 @@ def ewm_std(
     It is the square root of :func:`ewm_var`, as Polars' ``ewm_std`` is the
     root of its ``ewm_var``. Before py-polars 1.44, Polars gives a window of
     one value 0 rather than null, so the example's first value from Polars
-    reads ``0.0`` there.
+    reads ``0.0`` there. As :func:`ewm_var` says, it matches Polars' ``ewm_std``
+    only on an input with no nulls.
     """
     return operator(
         "ewm_std",

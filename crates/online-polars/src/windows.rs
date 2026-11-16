@@ -3069,19 +3069,28 @@ fn read_backward<const W: bool>(
                 .find_oldest(j, |st, i| !st.x::<W>(i, j).is_nan())
                 .map(|(p, in_front, i)| {
                     let st = q.stack(in_front);
-                    (p, st.start::<W>(i, j), st.end[i], st.x::<W>(i, j))
+                    // A row exactly a window old (exact, from the raw
+                    // clocks, as its membership was decided) holds its
+                    // value up to the window's edge and no further: no mass
+                    // inside it, however `tau - w` rounds against its `tau`.
+                    let on_edge = gap(form, st.off[i], off).cmp_window(k) == Ordering::Equal;
+                    (p, st.start::<W>(i, j), st.end[i], st.x::<W>(i, j), on_edge)
                 })
-                .filter(|&(_, start, _, _)| start < edge),
+                .filter(|&(_, start, _, _, on_edge)| on_edge || start < edge),
             _ => None,
         };
         let a = match cut {
-            Some((p, start, end, x)) => {
+            Some((p, start, end, x, on_edge)) => {
                 let mut a = q
                     .sum_after_op::<W>(k, p, j)
                     .map_or(Acc::default(), |(r, r_at)| {
                         r.scaled(k.discount_in(tau - r_at, &mut q.decay), var)
                     });
-                let m = mass_between_in(k, &mut q.decay, tau, start.max(edge), end);
+                let m = if on_edge {
+                    0.0
+                } else {
+                    mass_between_in(k, &mut q.decay, tau, start.max(edge), end)
+                };
                 a = a.plus(Acc::held(x, m, var), var);
                 a
             }
@@ -3203,9 +3212,14 @@ fn close<const W: bool>(
     // stamp, under "left" and "both") and not past the far edge.
     // The open row may be the row itself, when the next row closed the
     // window before the row joined the queue: in under "left" and "both".
+    // An open row exactly a window ahead is in a "right" or "both" window and
+    // is held from the far edge on: no mass inside the window, however
+    // `t.tau + w` rounds against its `tau`.
+    let mut open_on_edge = false;
     let open = open.filter(|&(_, _, o_off)| {
         let ahead = gap(form, t.off, o_off);
         let (near, far) = (ahead.cmp_zero(), ahead.cmp_window(k));
+        open_on_edge = far == Ordering::Equal;
         (if near_in {
             near != Ordering::Less
         } else {
@@ -3268,7 +3282,11 @@ fn close<const W: bool>(
             let n = f64::from(u8::from(own));
             match op.stat {
                 Stat::Mean if !h.is_nan() && (own || first_own.is_some()) => {
-                    let m = mass_between(k, t.tau, otau, open_end.min(far));
+                    let m = if open_on_edge {
+                        0.0
+                    } else {
+                        mass_between(k, t.tau, otau, open_end.min(far))
+                    };
                     a = a.plus(
                         Acc {
                             s: m * h,
@@ -4125,7 +4143,18 @@ mod tests {
                                         };
                                         let edge =
                                             k.window_size.map_or(f64::NEG_INFINITY, |w| ta - w);
-                                        (start.max(edge), tb)
+                                        // A row exactly a window old holds its
+                                        // value up to the edge and no further,
+                                        // decided from the raw clocks as its
+                                        // membership is (task 430).
+                                        let on_edge = k.window_size.is_some()
+                                            && gap_bf(rows, s, b, a).cmp_window(k)
+                                                == Ordering::Equal;
+                                        if on_edge {
+                                            (tb, tb)
+                                        } else {
+                                            (start.max(edge), tb)
+                                        }
                                     }
                                     Direction::Forward => {
                                         // Held until the operator's next valued row.
@@ -4136,11 +4165,17 @@ mod tests {
                                             None => s.end.map_or(f64::INFINITY, |(_, e)| e),
                                         };
                                         let far = ta + k.window_size.unwrap();
-                                        (
-                                            tb,
-                                            end.min(far)
-                                                .min(s.end.map_or(f64::INFINITY, |(_, e)| e)),
-                                        )
+                                        // As backward: a row exactly a window
+                                        // ahead holds nothing inside it.
+                                        if gap_bf(rows, s, a, b).cmp_window(k) == Ordering::Equal {
+                                            (tb, tb)
+                                        } else {
+                                            (
+                                                tb,
+                                                end.min(far)
+                                                    .min(s.end.map_or(f64::INFINITY, |(_, e)| e)),
+                                            )
+                                        }
                                     }
                                 };
                                 let m = mass_bf(k, ta, lo, hi);
