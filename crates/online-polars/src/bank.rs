@@ -822,7 +822,8 @@ impl Spares {
     }
 }
 
-/// A run's buffers for `n_rows` rows: `spare`'s, renewed, or new.
+/// A run's buffers for `n_rows` rows: `spare`'s, renewed (`ChunkOut::renew_run`:
+/// what the run writes in full is not filled again), or new.
 fn run_buffers(
     spare: Option<Box<ChunkOut>>,
     spec: &Spec,
@@ -832,7 +833,7 @@ fn run_buffers(
 ) -> Box<ChunkOut> {
     match spare {
         Some(mut out) => {
-            out.renew(spec, n_models, n_slots, n_rows);
+            out.renew_run(spec, n_models, n_slots, n_rows);
             out
         }
         None => Box::new(ChunkOut::new(spec, n_models, n_slots, n_rows)),
@@ -1144,12 +1145,38 @@ type Filled<'s> = Vec<(usize, Sink<'s>)>;
 /// What `process` returns: each task's runs, with its spec's index, the
 /// rows the streams closed with, the filled sinks, and the run buffers a
 /// task was given or emptied into a sink and did not keep.
-type Processed<'s> = (
-    Vec<Vec<(usize, StreamRows)>>,
-    Vec<ClosedRow>,
-    Filled<'s>,
-    Vec<Box<ChunkOut>>,
-);
+type Processed<'s> = (Vec<Runs>, Vec<ClosedRow>, Filled<'s>, Vec<Box<ChunkOut>>);
+
+/// The runs one task hands back, each with its spec's index: usually one,
+/// which is held in the task's result, not in a list of its own (an
+/// allocation for every group of every chunk).
+#[derive(Default)]
+struct Runs {
+    first: Option<(usize, StreamRows)>,
+    more: Vec<(usize, StreamRows)>,
+}
+
+impl Runs {
+    fn push(&mut self, run: (usize, StreamRows)) {
+        if self.first.is_none() {
+            self.first = Some(run);
+        } else {
+            self.more.push(run);
+        }
+    }
+}
+
+impl IntoIterator for Runs {
+    type Item = (usize, StreamRows);
+    type IntoIter = std::iter::Chain<
+        std::option::IntoIter<(usize, StreamRows)>,
+        std::vec::IntoIter<(usize, StreamRows)>,
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.first.into_iter().chain(self.more)
+    }
+}
 
 /// Run one phase of a chunk through its streams, learning: every `(spec,
 /// group)` task in parallel, each in runs of [`ChunkOut::run_rows`] rows
@@ -1178,7 +1205,7 @@ fn process<'s>(
     spares: &mut Spares,
 ) -> Processed<'s> {
     type TaskOut<'s> = (
-        Vec<(usize, StreamRows)>,
+        Runs,
         Vec<ClosedRow>,
         Option<(usize, Sink<'s>)>,
         Option<Box<ChunkOut>>,
@@ -1210,7 +1237,7 @@ fn process<'s>(
             threads_tests::probe_gram(&spec.name, gram_threads);
             let sc = &cols[si];
             let formula_targets = formulas[si].as_ref().map(|b| b.targets(key));
-            let mut outs: Vec<(usize, StreamRows)> = Vec::with_capacity(1);
+            let mut outs = Runs::default();
             let mut closed: Vec<ClosedRow> = Vec::new();
             // A session close splits the run: the rows before the boundary
             // are the span, the stream emits its row and starts over, and
@@ -1227,7 +1254,7 @@ fn process<'s>(
             // The run's features as rows, copied from the columns just before
             // the run is learned and read from cache, one buffer reused run
             // after run (docs/records/PERFORMANCE-LOG.md §42).
-            let mut rows = FeatureRows::default();
+            let mut rows = FeatureRows::pooled();
             // Each segment's first row: 0, then each boundary.
             let start_of = |seg: usize| if seg == 0 { 0 } else { bounds[seg - 1] };
             // A run learned and waiting for its sink.
@@ -1327,6 +1354,7 @@ fn process<'s>(
             // stream's runs are done (task 265): taken after each run, they
             // were a solve against the identity a run, about `k³`, and a
             // chunk of a wide spec is many cache-sized runs.
+            rows.keep();
             stream.settle_readiness();
             if let (Some(sink), Some(prev)) = (sink.as_mut(), pending.as_mut()) {
                 sink.absorb(std::slice::from_mut(prev));
@@ -5482,3 +5510,6 @@ mod threads_tests;
 
 #[cfg(test)]
 mod notices_tests;
+
+#[cfg(test)]
+mod kept_buffers_tests;

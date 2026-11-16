@@ -378,6 +378,36 @@ pub struct FeatureRows {
     n: usize,
 }
 
+thread_local! {
+    /// The buffer of the last [`FeatureRows`] a thread gave back, for the next.
+    static ROWS: std::cell::Cell<Vec<f64>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// The most values a thread keeps a buffer for between runs: a run of a few
+/// rows of a few features is what a bank of many small groups makes for each
+/// group of each chunk, where allocating its buffer was a call of its own.
+const ROWS_KEPT: usize = 1 << 15;
+
+impl FeatureRows {
+    /// Rows with the buffer this thread kept, if it kept one: [`Self::default`]
+    /// otherwise. Every value of a buffer is written before it is read
+    /// (`fill`), so what it held is not read.
+    pub fn pooled() -> Self {
+        Self {
+            data: ROWS.take(),
+            ..Self::default()
+        }
+    }
+
+    /// Keep the buffer for the next [`Self::pooled`] on this thread, if it
+    /// holds at most [`ROWS_KEPT`] values.
+    pub fn keep(self) {
+        if self.data.capacity() <= ROWS_KEPT {
+            ROWS.set(self.data);
+        }
+    }
+}
+
 /// The transpose's row tile, the unit of parallelism. A tile is copied one
 /// of two ways, by the row's width, both measured (docs/records/PERFORMANCE-LOG.md §42).
 /// Up to [`WIDE`] features, [`by_groups`]: each column read for the tile's

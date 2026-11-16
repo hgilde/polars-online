@@ -499,8 +499,27 @@ impl DataSummary {
     ///
     /// Returns how many rows took the path across the columns, which only
     /// a test reads.
+    #[cfg(test)]
     pub(crate) fn feed_rows(
         &mut self,
+        rows: impl IntoIterator<Item = Fed>,
+        features: &FeatureRows,
+        targets: &[Vec<f64>],
+        weight: Option<&[f64]>,
+        clock: Option<&ClockCol>,
+    ) -> usize {
+        self.feed_rows_over(0, rows, features, targets, weight, clock)
+    }
+
+    /// [`Self::feed_rows`], with the path across the columns taken only by a
+    /// run of `min_run` rows or more, by the most rows the iterator can
+    /// give: the path copies the columns out and back, four lists of one
+    /// value a feature that are made and freed for each run, which a run of
+    /// a group's few rows does not earn back. The bits are the same on
+    /// either path.
+    pub(crate) fn feed_rows_over(
+        &mut self,
+        min_run: usize,
         rows: impl IntoIterator<Item = Fed>,
         features: &FeatureRows,
         targets: &[Vec<f64>],
@@ -514,7 +533,9 @@ impl DataSummary {
         let mut counts = RunCounts::new(self.weight_sum);
         let mut across = 0;
         let mut first_slow = None;
-        if nf >= Self::ACROSS_COLUMNS_FROM
+        let long = rows.size_hint().1.is_none_or(|most| most >= min_run);
+        if long
+            && nf >= Self::ACROSS_COLUMNS_FROM
             && nf + has_w <= n_cols
             && self.columns[..nf].iter().all(|c| c.count == self.rows_fed)
         {
@@ -577,6 +598,11 @@ impl DataSummary {
 
     /// The fewest features [`Self::feed_rows`] steps across the columns.
     pub(crate) const ACROSS_COLUMNS_FROM: usize = 8;
+
+    /// The fewest rows a run has for the stream to step them across the
+    /// columns ([`Self::feed_rows_over`]): the copies out and back cost
+    /// about what the loop saves over 20 to 30 rows, at 20 to 50 features.
+    pub(crate) const ACROSS_RUN_FROM: usize = 32;
 
     /// What the clock schedule found at the row just fed.
     #[inline]
@@ -1256,6 +1282,43 @@ mod tests {
         let mut got = fresh(k);
         assert_eq!(by_runs(&mut got, &r, 0..n, 64), vec![0; 5]);
         assert_bits(&want, &got, "narrow");
+    }
+
+    /// A run shorter than [`DataSummary::ACROSS_RUN_FROM`] goes one row at a
+    /// time, a longer one across the columns, and the bits are the same.
+    #[test]
+    fn a_short_run_goes_row_by_row() {
+        let (n, k) = (400, 20);
+        let r = rows(n, k, &|_, _| None);
+        let mut want = fresh(k);
+        by_row(&mut want, &r, 0..n);
+        let from = DataSummary::ACROSS_RUN_FROM;
+        for run in [1, 7, from - 1, from, 100, n] {
+            let mut got = fresh(k);
+            let idx: Vec<usize> = (0..n).collect();
+            let across: Vec<usize> = idx
+                .chunks(run)
+                .map(|c| {
+                    got.feed_rows_over(
+                        from,
+                        c.iter().map(|&i| Fed {
+                            i,
+                            ..Fed::default()
+                        }),
+                        &r.features,
+                        &r.targets,
+                        Some(&r.weight),
+                        Some(&r.clock),
+                    )
+                })
+                .collect();
+            let want_across: Vec<usize> = idx
+                .chunks(run)
+                .map(|c| if c.len() >= from { c.len() } else { 0 })
+                .collect();
+            assert_eq!(across, want_across, "runs of {run}");
+            assert_bits(&want, &got, &format!("runs of {run}"));
+        }
     }
 
     /// A feature that is not usable ends the path at its row, mid-run: the

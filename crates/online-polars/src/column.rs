@@ -28,7 +28,12 @@ use polars_arrow::datatypes::{ArrowDataType, DTYPE_ENUM_VALUES_NEW, IntegerType,
 /// memory (docs/records/PERFORMANCE-LOG.md §13). `n_eff` is the one column reported as it
 /// is, finite or not, so it alone keeps a bit set per row (`set`).
 pub(crate) struct F64Column {
+    /// NaN where no finite value has been set. Shorter than `n` only for a
+    /// column made by [`Self::appending`], whose rows are written as the runs
+    /// arrive: [`Self::complete`] fills the rest with NaN.
     values: Vec<f64>,
+    /// The column's length in rows.
+    n: usize,
     /// `values.len()` bits, packed little-endian as polars keeps them.
     bits: Vec<u8>,
     /// Every set value's bit is in `bits`.
@@ -41,9 +46,33 @@ impl F64Column {
     pub(crate) fn new(n: usize) -> Self {
         Self {
             values: vec![f64::NAN; n],
+            n,
             bits: vec![0u8; n.div_ceil(8)],
             packed: true,
             flags: Vec::new(),
+        }
+    }
+
+    /// A column of `n` rows for runs that arrive in order from row 0, as a
+    /// single stream's do: each run is written where the last ended, with
+    /// no NaN fill first (a fill the runs overwrite in full, a write of the
+    /// whole column an extra time). A run that does not start where the
+    /// last ended, or a read of the rows not yet reached, finds the rest
+    /// filled with NaN, as [`Self::new`]'s are ([`Self::complete`]).
+    pub(crate) fn appending(n: usize) -> Self {
+        Self {
+            values: Vec::with_capacity(n),
+            n,
+            bits: vec![0u8; n.div_ceil(8)],
+            packed: true,
+            flags: Vec::new(),
+        }
+    }
+
+    /// Every row of the column present: the rows no run reached are NaN.
+    pub(crate) fn complete(&mut self) {
+        if self.values.len() < self.n {
+            self.values.resize(self.n, f64::NAN);
         }
     }
 
@@ -52,6 +81,7 @@ impl F64Column {
     /// would hand that to the user.
     #[inline]
     pub(crate) fn set_if_finite(&mut self, i: usize, v: f64) {
+        debug_assert_eq!(self.values.len(), self.n, "`complete` before setting a row");
         if v.is_finite() {
             self.values[i] = v;
             self.packed = false;
@@ -61,6 +91,7 @@ impl F64Column {
     /// Valid whatever the value: `n_eff`, which is reported as it is.
     #[inline]
     pub(crate) fn set(&mut self, i: usize, v: f64) {
+        debug_assert_eq!(self.values.len(), self.n, "`complete` before setting a row");
         self.values[i] = v;
         self.bits[i / 8] |= 1 << (i % 8);
     }
@@ -78,18 +109,33 @@ impl F64Column {
     /// The partial bytes at each end go bit by bit.
     pub(crate) fn run(&mut self, base: usize, vals: &[f64], processed: &[bool]) {
         let n = vals.len();
-        let dst = &mut self.values[base..base + n];
         self.flags.clear();
         self.flags.resize(n, 0);
-        let rows = dst
-            .iter_mut()
-            .zip(vals)
-            .zip(processed)
-            .zip(self.flags.iter_mut());
-        for (((d, &v), &p), f) in rows {
-            let ok = p & v.is_finite();
-            *d = if ok { v } else { f64::NAN };
-            *f = ok as u8;
+        if base == self.values.len() && base + n <= self.n {
+            // The run starts where the column's values end: written as
+            // they are made. A value is `v` when it lands and NaN
+            // otherwise, so it is valid exactly when it is finite.
+            self.values.extend(
+                vals.iter()
+                    .zip(processed)
+                    .map(|(&v, &p)| if p & v.is_finite() { v } else { f64::NAN }),
+            );
+            for (f, d) in self.flags.iter_mut().zip(&self.values[base..]) {
+                *f = d.is_finite() as u8;
+            }
+        } else {
+            self.complete();
+            let dst = &mut self.values[base..base + n];
+            let rows = dst
+                .iter_mut()
+                .zip(vals)
+                .zip(processed)
+                .zip(self.flags.iter_mut());
+            for (((d, &v), &p), f) in rows {
+                let ok = p & v.is_finite();
+                *d = if ok { v } else { f64::NAN };
+                *f = ok as u8;
+            }
         }
         let head = ((8 - base % 8) % 8).min(n);
         let body = head + (n - head) / 8 * 8;
@@ -136,7 +182,8 @@ impl F64Column {
 
     /// The values and their validity as an Arrow array: no copy, since a
     /// primitive array *is* a values buffer and a validity bitmap.
-    pub(crate) fn finish_array(self) -> Float64Array {
+    pub(crate) fn finish_array(mut self) -> Float64Array {
+        self.complete();
         let validity = self.validity();
         PrimitiveArray::new(ArrowDataType::Float64, self.values.into(), validity)
     }
@@ -144,7 +191,8 @@ impl F64Column {
     /// The same column as `i64`, for every integer a model emits (a cluster
     /// label, an id, a count, a state). Every set value is an integer by
     /// construction; the null rows carry NaN and are masked, not cast.
-    pub(crate) fn finish_i64_array(self) -> Int64Array {
+    pub(crate) fn finish_i64_array(mut self) -> Int64Array {
+        self.complete();
         let validity = self.validity();
         let values: Vec<i64> = self
             .values
@@ -161,7 +209,8 @@ impl F64Column {
     /// arbitrary, so `v == 1.0` over every row is right and the mask decides
     /// what is seen. `validity` borrows `bits`, so the two may be built in
     /// either order.
-    pub(crate) fn finish_bool_array(self) -> BooleanArray {
+    pub(crate) fn finish_bool_array(mut self) -> BooleanArray {
+        self.complete();
         let values: Bitmap =
             MutableBitmap::from_trusted_len_iter(self.values.iter().map(|&v| v == 1.0)).into();
         let validity = self.validity();
@@ -173,7 +222,8 @@ impl F64Column {
     /// emits the argmax over its own classes), and the null rows stay null.
     /// A dictionary over the classes in their order, which [`enum_metadata`]
     /// on its field makes polars read as an `Enum` of them (task 244).
-    pub(crate) fn finish_label_array(self, classes: &[String]) -> DictionaryArray<u32> {
+    pub(crate) fn finish_label_array(mut self, classes: &[String]) -> DictionaryArray<u32> {
+        self.complete();
         let keys = self.values.iter().enumerate().map(|(i, &v)| {
             (self.is_valid(i) && v >= 0.0 && (v as usize) < classes.len()).then_some(v as u32)
         });
@@ -370,6 +420,67 @@ mod column_tests {
         let v = col.validity().expect("some rows are null");
         for (i, value) in col.values.iter().enumerate().take(n) {
             assert_eq!(v.get_bit(i), value.is_finite());
+        }
+    }
+
+    /// A column that takes its runs in order, with no NaN fill first, is the
+    /// filled column those runs make, to the bit -- whatever the runs'
+    /// sizes and alignment, with a gap before one (the rest filled), a run
+    /// that starts before the end of what is written, and rows no run
+    /// reached.
+    #[test]
+    fn an_appending_column_matches_a_filled_one() {
+        for n in [0usize, 1, 7, 8, 9, 64, 100, 131] {
+            for cuts in [
+                vec![],
+                vec![3],
+                vec![8, 16],
+                vec![1, 2, 3, 70],
+                vec![64],
+                vec![50, 99],
+            ] {
+                // The runs' starts, then every row from the last start.
+                let mut bounds: Vec<usize> = cuts.iter().copied().filter(|&c| c < n).collect();
+                bounds.insert(0, 0);
+                for stop_early in [false, true] {
+                    for skip in [0usize, 1] {
+                        let vals = values(n, n as u64 * 31 + 5);
+                        let processed: Vec<bool> = (0..n).map(|k| k % 4 != 3).collect();
+                        let mut filled = F64Column::new(n);
+                        let mut appending = F64Column::appending(n);
+                        for (w, &from) in bounds.iter().enumerate() {
+                            let to = bounds.get(w + 1).copied().unwrap_or(n);
+                            // `skip`: leave a gap before every second run.
+                            let from = if skip == 1 && w % 2 == 1 {
+                                (from + 1).min(to)
+                            } else {
+                                from
+                            };
+                            if stop_early && to == n && w > 0 {
+                                continue;
+                            }
+                            for col in [&mut filled, &mut appending] {
+                                col.run(from, &vals[from..to], &processed[from..to]);
+                            }
+                        }
+                        // A write by place, after runs.
+                        if n > 2 {
+                            for col in [&mut filled, &mut appending] {
+                                col.complete();
+                                col.set_if_finite(n - 2, 2.5);
+                            }
+                        }
+                        let (a, b) = (filled.finish_array(), appending.finish_array());
+                        assert_eq!(a.len(), n);
+                        assert_eq!(a.validity(), b.validity(), "n {n} {bounds:?}");
+                        assert_eq!(
+                            a.values().iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                            b.values().iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                            "n {n} {bounds:?}"
+                        );
+                    }
+                }
+            }
         }
     }
 

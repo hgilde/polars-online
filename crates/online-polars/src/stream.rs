@@ -2474,8 +2474,10 @@ fn keep_ungated(keep: bool, kept: &mut bool, ungated: &mut Vec<f64>, pred: &[f64
 
 mod any_restore;
 mod chunk_out;
+mod run_parts;
 use chunk_out::Buffers;
 pub use chunk_out::ChunkOut;
+use run_parts::{build_instances, joined, keep_plans, plan_buffer};
 
 mod last_row;
 pub use last_row::LastRow;
@@ -3053,6 +3055,8 @@ impl Stream {
         coef_at: Option<usize>,
         keep_elapsed: bool,
         restart_fold: &mut Option<ClockState>,
+        // Where the plans are written: empty, with whatever room it has.
+        mut plans: Vec<RowPlan>,
     ) -> Result<Scheduled, ClockRefusal> {
         let n_rows = rows.len();
         let mut clock_state = self.persisted.clock.clone();
@@ -3063,7 +3067,7 @@ impl Stream {
         let mut fed = self.persisted.fed;
         let coef_plan = CoefPlan::of(spec);
         let mut coef_cadence = self.persisted.coef_cadence;
-        let mut plans: Vec<RowPlan> = Vec::with_capacity(n_rows);
+        plans.reserve(n_rows);
         // Each row's place on the elapsed clock, kept only where the
         // `embargo` buffer reads it (task 250: beside the plan rather than
         // in it, which every pass over the plans paid for).
@@ -3227,6 +3231,7 @@ impl Stream {
                 None,
                 self.keeps_elapsed(formulas.is_some()),
                 &mut self.persisted.restart_fold.clone(),
+                Vec::new(),
             )
             .ok()?;
         let mut pending = self.persisted.pending.clone();
@@ -3399,6 +3404,7 @@ impl Stream {
             coef_at,
             self.keeps_elapsed(formulas.is_some()),
             &mut restart_fold,
+            plan_buffer(),
         )?;
         for plan in plans.iter().filter(|p| p.accept) {
             out.processed[plan.ri] = true;
@@ -3427,7 +3433,8 @@ impl Stream {
             // A row the schedule accepted has every feature usable, for any
             // model but an `audit`, which accepts every row.
             let checked = !spec.model.reads_every_row();
-            summary.feed_rows(
+            summary.feed_rows_over(
+                DataSummary::ACROSS_RUN_FROM,
                 plans.iter().filter(|p| p.direct()).map(|p| Fed {
                     i: p.i,
                     usable: checked && p.accept,
@@ -3538,7 +3545,7 @@ impl Stream {
             weighted_autocorr: self.persisted.weighted_autocorr,
             ungated_drift: self.persisted.ungated_drift,
         };
-        let mut insts = build_instances(
+        let mut built = build_instances(
             spec,
             models,
             rings,
@@ -3549,6 +3556,7 @@ impl Stream {
             n_rows,
             rows_before,
         );
+        let insts = built.as_mut_slice();
         // The plans, by position, after which a drift detection restarted
         // the models, in order.
         let mut fired: Vec<usize> = Vec::new();
@@ -3615,7 +3623,7 @@ impl Stream {
                 &places,
             );
         }
-        drop(insts);
+        drop(built);
         self.min_weight = min_weight;
 
         // ---- the clocks a row shows (docs/PLAN.md task 152) ----
@@ -3652,6 +3660,7 @@ impl Stream {
                 };
             }
         }
+        keep_plans(plans);
         Ok(())
     }
 
@@ -3906,7 +3915,7 @@ impl Stream {
             .resid_win
             .iter()
             .map(|r| r.as_ref().map(SpreadRef::Score));
-        let mut insts = build_instances(
+        let mut built = build_instances(
             spec,
             models,
             rings,
@@ -3917,6 +3926,7 @@ impl Stream {
             n_rows,
             self.persisted.rows_seen,
         );
+        let insts = built.as_mut_slice();
         // Scoring holds no row.
         let places: [(u32, u32); 0] = [];
         if insts.len() > 1 {
@@ -4042,136 +4052,6 @@ struct Diagnostics<'a> {
     ungated_spread: bool,
     weighted_autocorr: bool,
     ungated_drift: bool,
-}
-
-/// Split per-instance state and output into disjoint pieces, so instances
-/// can run concurrently. Every `ChunkOut` buffer is laid out model-major,
-/// which is what makes an instance's region one contiguous slice; the
-/// state vectors are already `[mi]`-indexed.
-#[allow(clippy::too_many_arguments)]
-fn build_instances<'a>(
-    spec: &'a Spec,
-    models: impl Iterator<Item = ModelRef<'a>>,
-    mut rings: impl Iterator<Item = Option<SpreadRef<'a>>>,
-    decays: &[Decay],
-    check_cfgs: &'a [CheckCfg],
-    diag: Diagnostics<'a>,
-    out: &'a mut ChunkOut,
-    n_rows: usize,
-    rows_before: u64,
-) -> Vec<Instance<'a>> {
-    let n = decays.len();
-    let block = out.n_slots * n_rows;
-    let n_targets = if n == 0 || n_rows == 0 || out.lam_selected.is_empty() {
-        0
-    } else {
-        out.lam_selected.len() / (n * n_rows)
-    };
-
-    let mut drift = diag.drift.iter_mut();
-    let mut resid_q = diag.resid_q.iter_mut();
-    let mut autocorr = diag.autocorr.iter_mut();
-    let mut metrics = diag.metrics.iter_mut();
-    let mut conformal = diag.conformal.iter_mut();
-    let mut checks = diag.checks.iter_mut();
-    let mut o_pred = out.pred.chunks_mut(block.max(1));
-    let mut o_resid = out.resid.chunks_mut(block.max(1));
-    let mut o_sigma = out.sigma.chunks_mut(block.max(1));
-    let mut o_resid_z = out.zscore.chunks_mut(block.max(1));
-    let mut o_autocorr = out.autocorr.chunks_mut(block.max(1));
-    let mut o_metrics = out.metrics.chunks_mut((3 * block).max(1));
-    let mut o_conformal = out.conformal.chunks_mut((3 * block).max(1));
-    let mut o_checks = out.checks.chunks_mut((out.n_checks * block).max(1));
-    let health_block = if spec.emit_feature_health {
-        2 * spec.k() * n_rows
-    } else {
-        0
-    };
-    let mut o_health = out.health.chunks_mut(health_block.max(1));
-    let mut o_resid_q = out.resid_q.chunks_mut((out.n_levels * block).max(1));
-    let mut o_drift = out.drift.chunks_mut(block.max(1));
-    let mut o_n_eff = out.n_eff.chunks_mut(n_rows.max(1));
-    let mut o_lam = out.lam_selected.chunks_mut((n_targets * n_rows).max(1));
-    let mut o_coef = out.coef.iter_mut();
-    let mut o_settled = out.settled.chunks_mut(n_rows.max(1));
-    let mut o_reason = out.reason.chunks_mut(n_rows.max(1));
-    let mut o_inflation = out.inflation.chunks_mut(block.max(1));
-    let mut o_support_coef = out.support_coef.iter_mut();
-    let mut o_se_coef = out.se_coef.iter_mut();
-    let mut o_se_hc0 = out.se_coef_hc0.iter_mut();
-    let mut o_se_hac = out.se_coef_hac.iter_mut();
-
-    let n_slots = out.n_slots;
-    let mut decays = decays.iter();
-    let mut check_cfgs = check_cfgs.iter();
-    let mut resid_var = diag.resid_var.iter_mut();
-    let mut resid_w = diag.resid_w.iter_mut();
-    let mut scratch = diag.scratch.iter_mut();
-    let mut score_pred = diag.score_pred.iter_mut();
-    let mut decay_time = diag.decay_time.iter_mut();
-    let mut restarted = diag.restarted.iter_mut();
-    let mut pending_clock = diag.pending_clock.iter_mut();
-    let mut notified = diag.notified.iter_mut();
-
-    // Pulled in lockstep: each iterator yields disjoint `&mut`s, so every
-    // Instance owns its own piece of everything.
-    models
-        .map(|model| {
-            let decay = *decays.next().expect("one per instance");
-            Instance {
-                steps: rows_before,
-                spec,
-                shards: marginal_shards(spec, model.get()),
-                model,
-                resid_win: rings.next().expect("one per instance"),
-                decay,
-                check_cfg: check_cfgs.next().expect("one per instance"),
-                residuals: !spec.model.predicts_no_target(),
-                resid_var: resid_var.next().expect("one per instance"),
-                resid_w: resid_w.next().expect("one per instance"),
-                drift: drift.next(),
-                resid_q: resid_q.next(),
-                autocorr: autocorr.next(),
-                metrics: metrics.next(),
-                conformal: conformal.next(),
-                checks: checks.next(),
-                scratch: scratch.next().expect("one per instance"),
-                score_pred: score_pred.next().expect("one per instance"),
-                n_slots,
-                n_rows,
-                o_pred: o_pred.next().unwrap_or_default(),
-                o_resid: o_resid.next().unwrap_or_default(),
-                o_sigma: o_sigma.next().unwrap_or_default(),
-                o_resid_z: o_resid_z.next().unwrap_or_default(),
-                o_autocorr: o_autocorr.next().unwrap_or_default(),
-                o_metrics: o_metrics.next().unwrap_or_default(),
-                o_conformal: o_conformal.next().unwrap_or_default(),
-                o_checks: o_checks.next().unwrap_or_default(),
-                o_health: o_health.next().unwrap_or_default(),
-                o_resid_q: o_resid_q.next().unwrap_or_default(),
-                o_drift: o_drift.next().unwrap_or_default(),
-                o_n_eff: o_n_eff.next().unwrap_or_default(),
-                o_lam: o_lam.next().unwrap_or_default(),
-                o_coef: o_coef.next().expect("one per instance"),
-                o_settled: o_settled.next().unwrap_or_default(),
-                o_reason: o_reason.next().unwrap_or_default(),
-                o_inflation: o_inflation.next().unwrap_or_default(),
-                o_support_coef: o_support_coef.next().expect("one per instance"),
-                o_se_coef: o_se_coef.next().expect("one per instance"),
-                o_se_hc0: o_se_hc0.next().expect("one per instance"),
-                o_se_hac: o_se_hac.next().expect("one per instance"),
-                decay_time: decay_time.next().expect("one per instance"),
-                restarted: restarted.next().expect("one per instance"),
-                notified: notified.next().expect("one per instance"),
-                refit_over_budget: diag.refit_over_budget,
-                ungated_spread: diag.ungated_spread,
-                weighted_autocorr: diag.weighted_autocorr,
-                ungated_drift: diag.ungated_drift,
-                // None without an embargo, which keeps no held rows' clock.
-                pending_clock: pending_clock.next(),
-            }
-        })
-        .collect()
 }
 
 /// The ranges of features a `marginal` splits its pair work into
@@ -5243,6 +5123,24 @@ fn run_instance(
                     inst.o_resid_z[at] = z;
                 }
             }
+            // A step that reports fewer slots than the buffers hold leaves
+            // the rest null: the buffers are not filled with NaN before a
+            // run that writes them in full ([`ChunkOut::renew_run`]).
+            for slot in step.pred.len()..inst.n_slots {
+                inst.o_pred[slot * n_rows + ri] = f64::NAN;
+            }
+            if inst.residuals {
+                for slot in sc.r.len()..inst.n_slots {
+                    inst.o_resid[slot * n_rows + ri] = f64::NAN;
+                }
+            }
+            if !inst.o_sigma.is_empty() {
+                for slot in sc.sig.len()..inst.n_slots {
+                    let at = slot * n_rows + ri;
+                    inst.o_sigma[at] = f64::NAN;
+                    inst.o_resid_z[at] = f64::NAN;
+                }
+            }
         }
 
         // Drift is monitored on |resid| scaled by the slot's own EW residual
@@ -5444,11 +5342,7 @@ fn run_instance(
             // an empty list, so `coef.list.get(i)` -- the documented way to
             // read one coefficient -- raised "index out of bounds" on the
             // warmup rows instead of returning null (IMPROVEMENTS U7).
-            inst.o_coef[ri] = inst
-                .model
-                .get()
-                .coefficients()
-                .map(|c| c.into_iter().flatten().collect());
+            inst.o_coef[ri] = inst.model.get().coefficients().map(joined);
             // Each coefficient's data share rides on the same cadence
             // (§2.2), and a coefficient more ridge than data is named once
             // per instance, here, where the shares are read anyway -- but
@@ -5519,7 +5413,7 @@ fn run_instance(
                     ));
                 }
             }
-            inst.o_support_coef[ri] = support.map(|s| s.into_iter().flatten().collect());
+            inst.o_support_coef[ri] = support.map(joined);
             // Each coefficient's standard error on the same cadence, in
             // `coef`'s units (docs/PLAN.md task 116, F): a variance over the
             // noise times the slot's `sigma` as the row read it -- the EW
