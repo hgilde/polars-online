@@ -42,7 +42,15 @@ fn run(plain: bool, keys: &[i64], chunks: &[usize]) -> Vec<Option<f64>> {
         out.extend(o.column("m").unwrap().f64().unwrap().iter());
         at = to;
     }
-    out.extend(r.finish().unwrap().column("m").unwrap().f64().unwrap().iter());
+    out.extend(
+        r.finish()
+            .unwrap()
+            .column("m")
+            .unwrap()
+            .f64()
+            .unwrap()
+            .iter(),
+    );
     out
 }
 
@@ -56,6 +64,10 @@ fn a_later_block_of_another_key_is_that_keys_not_the_first_rows() {
     let plain = run(true, &keys, &[1100]);
     assert_eq!(plain.len(), general.len());
     for (i, (p, g)) in plain.iter().zip(&general).enumerate() {
-        assert_eq!(p.map(f64::to_bits), g.map(f64::to_bits), "row {i}: {p:?} against {g:?}");
+        assert_eq!(
+            p.map(f64::to_bits),
+            g.map(f64::to_bits),
+            "row {i}: {p:?} against {g:?}"
+        );
     }
 }
