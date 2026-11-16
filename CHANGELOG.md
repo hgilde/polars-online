@@ -178,6 +178,18 @@ returns.
 - `seqtest`, `kmeans` and `micro` choose with selects where they branched
   on data: `kmeans` 1.12 times as fast at k=4 and 1.15 at k=20, `micro`
   1.12, `seqtest` 1.06. Outputs and saved state unchanged to the bit.
+- The window operators run a plain stretch of one group's rows (stamps
+  that step forward or tie, inside the gap cap and the session) through a
+  block loop: `ewm_mean` 2.3 times as fast (64.7 to 28.5 ns a row), four
+  operators 2.2 times, one key 1.8 times, with a `window_size` 1.1 to 1.2
+  times. Outputs and saved state unchanged to the bit.
+- `emit_breaks` forms its Wald products four rows at a time: 1.45 times as
+  fast at 200 features, about 5% at 20. Outputs and saved state unchanged
+  to the bit.
+- `ewridge` writes its per-row shares and the predictions of rows it does
+  not learn from into buffers the bank keeps: one allocation a row fewer;
+  a held formula target 1.06 times as fast. Outputs and saved state
+  unchanged to the bit.
 - `bocpd` with the `gaussian` emission holds the empty run's Cholesky
   factor across rows while its prior is unchanged: 1.04-1.07 times as fast
   at 4 features, 1.22-1.24 at 20. Outputs and saved state unchanged to the
