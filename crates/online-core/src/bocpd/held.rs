@@ -250,9 +250,49 @@ impl PartialEq for HeldBranches {
     }
 }
 
+/// What the full covariance's predictive keeps between runs: the factor
+/// working space, and the empty run's factor. One box, so the diagonal
+/// emission's working space is no larger for either.
+#[derive(Default)]
+pub(super) struct GaussWork {
+    pub(super) work: FactorWork,
+    pub(super) held: Option<Box<HeldPrior>>,
+}
+
+/// The empty run's scale `Σ` -- the prior's `Ψ₀` scaled by `(κ₀+1)/(κ₀ν₀')`,
+/// the same matrix every row until the prior changes -- as its lower
+/// triangle's bits, and the factor of it. A factor is a function of those
+/// bits alone, so a row whose empty run's `Σ` has them reads this one where
+/// it would factorize afresh: the same factor, to the bit. Keyed by the bits
+/// themselves, it is emptied by nothing: a prior that changes (the first rows
+/// setting it) makes a different key, and a clone or a restored model
+/// starts without it, as it does the rest of [`Work`].
+pub(super) struct HeldPrior {
+    key: Vec<u64>,
+    pub(super) factor: SpdFactor,
+}
+
+impl HeldPrior {
+    /// Whether this is the factor of the lower triangle of `sigma` (`d×d`).
+    pub(super) fn is_of(&self, sigma: &[f64], d: usize) -> bool {
+        let mut at = self.key.iter();
+        (0..d).all(|i| (0..=i).all(|j| at.next() == Some(&sigma[i * d + j].to_bits())))
+            && at.next().is_none()
+    }
+
+    pub(super) fn new(sigma: &[f64], d: usize, factor: SpdFactor) -> Box<Self> {
+        let key = (0..d)
+            .flat_map(|i| (0..=i).map(move |j| (i, j)))
+            .map(|(i, j)| sigma[i * d + j].to_bits())
+            .collect();
+        Box::new(Self { key, factor })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::OnlineModel;
     use crate::bocpd::tests::{Normals, cfg};
 
     /// `prune_keeps` is `exp(gap) >= prune_below` for every gap, including
@@ -380,5 +420,102 @@ mod tests {
         }
         // The held total was used: the cases above left it set on rows.
         assert!(used > 1000, "the held total was used {used} times");
+    }
+
+    /// The empty run's held factor is the factor of its scale made afresh,
+    /// to the bit, and every output with it: over several orders, priors
+    /// given whole (a scalar, a full matrix) and set from the first rows,
+    /// `κ₀`, `ν₀`, a shift of level and a change in the middle. A model that
+    /// forgets it before every row is the oracle; the factor it holds is
+    /// compared with the one `SpdFactor::of` makes of the scale written
+    /// longhand; and a restored model starts without it and makes it again.
+    #[test]
+    fn the_held_empty_run_factor_changes_no_bit() {
+        let mut held_rows = 0;
+        for d in [1usize, 2, 3, 5, 8] {
+            for scale in 0..4 {
+                for (kappa, extra) in [(0.5, 1.5), (1.0, 2.0), (7.0, 9.0)] {
+                    let full: Vec<f64> = (0..d * d)
+                        .map(|i| {
+                            let (r, c) = (i / d, i % d);
+                            if r == c {
+                                2.0 + r as f64
+                            } else {
+                                0.3 / (1.0 + (r + c) as f64)
+                            }
+                        })
+                        .collect();
+                    let (mean, psi) = match scale {
+                        0 => (None, None),
+                        1 => (Some(vec![0.5; d]), Some(vec![1.7])),
+                        2 => (Some(vec![-1.0; d]), Some(full)),
+                        _ => (None, Some(vec![0.25])),
+                    };
+                    let c = BocpdCfg {
+                        emission: BocpdEmission::Gaussian,
+                        prior_mean: mean,
+                        prior_scale: psi,
+                        prior_kappa: kappa,
+                        prior_nu: Some(d as f64 + extra),
+                        prune_below: 1e-6,
+                        warm_rows: (scale == 0 || scale == 3).then_some(d + 3),
+                        ..cfg(d)
+                    };
+                    let mut kept = Bocpd::new(c).unwrap();
+                    let mut fresh = kept.clone();
+                    let mut n = Normals::new(7 + d as u64);
+                    let bits = |v: &[f64]| v.iter().map(|p| p.to_bits()).collect::<Vec<_>>();
+                    for t in 0..260 {
+                        let shift = if t < 130 { 0.0 } else { 5.0 };
+                        let x: Vec<f64> = (0..d).map(|_| shift + n.normal()).collect();
+                        fresh.work = Work::default();
+                        held_rows += usize::from(
+                            kept.work
+                                .run
+                                .factor
+                                .as_ref()
+                                .is_some_and(|g| g.held.is_some()),
+                        );
+                        if t == 100 {
+                            // A load starts without it, and makes it again.
+                            let bytes = format!("{:?}", kept.state());
+                            kept = Bocpd::restore(&kept.state()).unwrap();
+                            assert!(kept.work.run.factor.is_none());
+                            assert_eq!(bytes, format!("{:?}", kept.state()));
+                        }
+                        let a = kept.step(&x, &[], 1.0, 1.0);
+                        let b = fresh.step(&x, &[], 1.0, 1.0);
+                        assert_eq!(bits(&a.pred), bits(&b.pred), "d {d} scale {scale} row {t}");
+                        assert_eq!(a.n_eff.to_bits(), b.n_eff.to_bits());
+                    }
+                    if let Some(h) = kept.work.run.factor.as_ref().and_then(|g| g.held.as_ref()) {
+                        let (k0, nu0) = (kept.cfg.prior_kappa, kept.cfg.nu0());
+                        let s = (k0 + 1.0) / (k0 * (nu0 - d as f64 + 1.0));
+                        let psi0 = kept.psi0();
+                        let mut sigma = vec![0.0; d * d];
+                        for i in 0..d {
+                            for j in 0..=i {
+                                sigma[i * d + j] = (psi0[i * d + j] + (0.0 + 0.0)) * s;
+                            }
+                        }
+                        assert!(h.factor == SpdFactor::of(&sigma, d).unwrap(), "d {d}");
+                        assert!(h.is_of(&sigma, d));
+                        // One bit of any entry of the triangle is another key.
+                        for i in 0..d {
+                            for j in 0..=i {
+                                let mut other = sigma.clone();
+                                other[i * d + j] = f64::from_bits(other[i * d + j].to_bits() ^ 1);
+                                assert!(!h.is_of(&other, d), "d {d} at {i},{j}");
+                            }
+                        }
+                    }
+                    assert_eq!(
+                        format!("{:?}", kept.state()),
+                        format!("{:?}", fresh.state())
+                    );
+                }
+            }
+        }
+        assert!(held_rows > 40 * 200, "{held_rows}");
     }
 }
