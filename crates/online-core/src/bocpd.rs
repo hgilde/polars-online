@@ -1022,7 +1022,7 @@ struct Work {
     keep: Vec<bool>,
     /// The bits of `prune_below` and the band of gaps around its logarithm
     /// where [`prune_keeps`] must take the exponential (task 419).
-    prune_band: (u64, Option<(f64, f64)>),
+    prune_band: (u64, (f64, f64)),
     /// Runs dropped from the posterior, each the next row's empty run in
     /// turn ([`Run::reset`]). Runs and these together never outnumber the
     /// most runs the posterior has held, plus one.

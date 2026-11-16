@@ -8,28 +8,27 @@ use super::*;
 /// joint's total: `exp(gap) >= prune_below`, with the exponential taken only
 /// where it can decide: `band` is the gaps within a thousandth of
 /// `ln(prune_below)`, and outside it the answer is the same on every libm,
-/// whose `exp` is within a few last bits (task 419). `None` where
-/// `prune_below` is too near the subnormals for that margin to hold.
+/// whose `exp` is within a few last bits. A band of NaNs (a `prune_below`
+/// too near the subnormals for that margin to hold) decides nothing. The
+/// test is one branch on two compares taken together, which is almost
+/// always the same way, where a branch on each compare followed the data.
 #[inline]
-pub(super) fn prune_keeps(gap: f64, prune_below: f64, band: Option<(f64, f64)>) -> bool {
-    if let Some((lo, hi)) = band {
-        if gap < lo {
-            return false;
-        }
-        if gap > hi {
-            return true;
-        }
+pub(super) fn prune_keeps(gap: f64, prune_below: f64, band: (f64, f64)) -> bool {
+    let (lo, hi) = band;
+    if (gap < lo) | (gap > hi) {
+        gap > hi
+    } else {
+        gap.exp() >= prune_below
     }
-    gap.exp() >= prune_below
 }
 
 /// The band of [`prune_keeps`] for a `prune_below`.
-pub(super) fn prune_band(prune_below: f64) -> Option<(f64, f64)> {
+pub(super) fn prune_band(prune_below: f64) -> (f64, f64) {
     if prune_below >= 1e-290 {
         let at = prune_below.ln();
-        Some((at - 1e-3, at + 1e-3))
+        (at - 1e-3, at + 1e-3)
     } else {
-        None
+        (f64::NAN, f64::NAN)
     }
 }
 
@@ -293,14 +292,15 @@ mod tests {
                     gap.exp() >= pb,
                     "pb {pb:e} gap {gap:e}"
                 );
-                match band {
-                    Some((lo, hi)) if gap < lo || gap > hi => decided += 1,
-                    _ => called += 1,
+                if (gap < band.0) | (gap > band.1) {
+                    decided += 1;
+                } else {
+                    called += 1;
                 }
             }
         }
         assert!(decided > 0 && called > 0, "both paths were taken");
-        assert!(prune_band(1e-310).is_none() && prune_band(1e-6).is_some());
+        assert!(prune_band(1e-310).0.is_nan() && !prune_band(1e-6).0.is_nan());
     }
 
     /// What a model holds across rows -- the joint's `log_sum_exp` -- is
