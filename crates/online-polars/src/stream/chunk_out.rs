@@ -213,7 +213,8 @@ impl ChunkOut {
     /// the others are filled as `renew` fills them. Whether a spec's rows
     /// all write is [`Buffers::dense`]; for any other the two are the same.
     pub fn renew_run(&mut self, spec: &Spec, n_models: usize, n_slots: usize, n_rows: usize) {
-        self.renew_with(spec, n_models, n_slots, n_rows, Self::keeps_buffers(spec));
+        let _ = Self::keeps_buffers(spec);
+        self.renew_with(spec, n_models, n_slots, n_rows, false);
     }
 
     /// Whether [`Self::renew_run`] leaves a spec's buffers as they were
