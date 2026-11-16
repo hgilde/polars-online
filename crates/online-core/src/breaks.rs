@@ -927,46 +927,74 @@ fn mat_mul(a: &[f64], b: &[f64], p: usize) -> Vec<f64> {
 /// [`mat_mul`] into `out`, whose old contents are not read: entry `(i, j)`
 /// is `((0 + a_i0 b_0j) + a_i1 b_1j) + ...`, the products added in `k`'s
 /// order, each rounded as a product and then as a sum (never fused), as the
-/// plain triple loop adds them to a zeroed matrix. Eight columns of a row
-/// are held in registers across the `k` loop, then four, two and one, each
-/// column's sum the same sequence of roundings whatever the block it falls
-/// in.
+/// plain triple loop adds them to a zeroed matrix. A block of four rows (then
+/// two and one) by eight columns (then four, two and one) is held in
+/// registers across the `k` loop, each entry the same sequence of roundings
+/// whatever the block it falls in.
 fn mat_mul_into(a: &[f64], b: &[f64], p: usize, out: &mut Vec<f64>) {
     debug_assert!(a.len() == p * p && b.len() == p * p);
     out.clear();
     out.resize(p * p, 0.0);
-    for (arow, orow) in a.chunks_exact(p).zip(out.chunks_exact_mut(p)) {
-        let mut j = 0;
-        while j + 8 <= p {
-            mat_mul_block::<8>(arow, b, p, j, orow);
-            j += 8;
-        }
-        if j + 4 <= p {
-            mat_mul_block::<4>(arow, b, p, j, orow);
-            j += 4;
-        }
-        if j + 2 <= p {
-            mat_mul_block::<2>(arow, b, p, j, orow);
-            j += 2;
-        }
-        if j < p {
-            mat_mul_block::<1>(arow, b, p, j, orow);
-        }
+    let mut i = 0;
+    while i + 4 <= p {
+        mat_mul_rows::<4>(a, b, p, i, out);
+        i += 4;
+    }
+    if i + 2 <= p {
+        mat_mul_rows::<2>(a, b, p, i, out);
+        i += 2;
+    }
+    if i < p {
+        mat_mul_rows::<1>(a, b, p, i, out);
     }
 }
 
-/// `W` columns from `j` of one row of [`mat_mul_into`]'s product, summed in
-/// registers.
+/// `R` rows from `i` of [`mat_mul_into`]'s product, in blocks of eight, four,
+/// two and one columns.
 #[inline(always)]
-fn mat_mul_block<const W: usize>(arow: &[f64], b: &[f64], p: usize, j: usize, orow: &mut [f64]) {
-    let mut acc = [0.0f64; W];
-    for (aik, brow) in arow.iter().zip(b.chunks_exact(p)) {
+fn mat_mul_rows<const R: usize>(a: &[f64], b: &[f64], p: usize, i: usize, out: &mut [f64]) {
+    let mut j = 0;
+    while j + 8 <= p {
+        mat_mul_block::<R, 8>(a, b, p, i, j, out);
+        j += 8;
+    }
+    if j + 4 <= p {
+        mat_mul_block::<R, 4>(a, b, p, i, j, out);
+        j += 4;
+    }
+    if j + 2 <= p {
+        mat_mul_block::<R, 2>(a, b, p, i, j, out);
+        j += 2;
+    }
+    if j < p {
+        mat_mul_block::<R, 1>(a, b, p, i, j, out);
+    }
+}
+
+/// An `R x W` block of the product, summed in registers: each entry is the
+/// same sequence of rounded products and sums, `k` ascending.
+#[inline(always)]
+fn mat_mul_block<const R: usize, const W: usize>(
+    a: &[f64],
+    b: &[f64],
+    p: usize,
+    i: usize,
+    j: usize,
+    out: &mut [f64],
+) {
+    let mut acc = [[0.0f64; W]; R];
+    for (k, brow) in b.chunks_exact(p).enumerate() {
         let brow: &[f64; W] = brow[j..j + W].try_into().expect("a block of W columns");
-        for (s, bv) in acc.iter_mut().zip(brow) {
-            *s += aik * bv;
+        for (r, row) in acc.iter_mut().enumerate() {
+            let aik = a[(i + r) * p + k];
+            for (s, bv) in row.iter_mut().zip(brow) {
+                *s += aik * bv;
+            }
         }
     }
-    orow[j..j + W].copy_from_slice(&acc);
+    for (r, row) in acc.iter().enumerate() {
+        out[(i + r) * p + j..(i + r) * p + j + W].copy_from_slice(row);
+    }
 }
 
 impl TwinFit {
@@ -3131,21 +3159,31 @@ mod tests {
     }
 
     /// `mat_mul` is the plain triple loop's product to the bit, at every
-    /// order across the register blocks' widths (8, 4, 2, 1) and over
-    /// values that round, cancel and carry signed zeros.
+    /// order from 1 to 40 across the register blocks' heights and widths
+    /// (4, 2, 1 rows; 8, 4, 2, 1 columns, so every tail) and over values that
+    /// round, cancel, carry signed zeros, mix scales, and hold NaN and
+    /// infinities.
     #[test]
     fn mat_mul_is_the_plain_loops_product_to_the_bit() {
         let mut s = 21u64;
-        for p in 1..=21 {
-            for kind in 0..3 {
+        for p in 1..=40 {
+            for kind in 0..4 {
                 let gen_ = |s: &mut u64| match kind {
                     0 => lcg(s),
                     // Magnitudes over a dozen decades, both signs.
                     1 => lcg(s) * 10f64.powi((lcg(s) * 24.0) as i32),
                     // Zeros of both signs among the values.
-                    _ => match (lcg(s) * 8.0) as i32 {
+                    2 => match (lcg(s) * 8.0) as i32 {
                         -4..=-3 => -0.0,
                         -2 => 0.0,
+                        _ => lcg(s),
+                    },
+                    // NaN and both infinities among the values.
+                    _ => match (lcg(s) * 40.0) as i32 {
+                        -20..=-19 => f64::NAN,
+                        -18 => f64::INFINITY,
+                        -17 => f64::NEG_INFINITY,
+                        -16 => 0.0,
                         _ => lcg(s),
                     },
                 };
