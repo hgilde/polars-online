@@ -110,11 +110,13 @@ impl F64Column {
     /// bit, anything else leaves NaN and a clear bit -- exactly what
     /// `set_if_finite` over the same rows gives.
     ///
-    /// A run of which every row is processed and finite -- nearly every run
-    /// of a model that has warmed up -- is one slice copy and a range of set
-    /// bits: the values are checked in a pass that is one vector add a pair
-    /// of values ([`all_finite`]), and the copy and the bits are then written
-    /// without a decision a value.
+    /// A run of [`SHORT_RUN`] rows or more of which every row is processed
+    /// and finite -- nearly every run of a model that has warmed up -- is one
+    /// slice copy and a range of set bits: the values are checked in a pass
+    /// that is one vector add a pair of values ([`all_finite`]), and the copy
+    /// and the bits are then written without a decision a value. A shorter
+    /// run, which a grouped bank's runs mostly are, is written a row at a
+    /// time, since the passes cost more than its rows.
     ///
     /// Any other run takes two passes the compiler vectorizes -- the select
     /// into `values` with a byte flag per row, then the flags packed eight at
@@ -133,6 +135,18 @@ impl F64Column {
             self.complete();
         }
         let dst = &mut self.values[base..base + n];
+        if n < SHORT_RUN {
+            // A grouped bank's runs are a few rows, from one up, and the
+            // passes below cost more than the rows: each row on its own.
+            let rows = dst.iter_mut().zip(vals).zip(processed).enumerate();
+            for (k, ((d, &v), &p)) in rows {
+                let ok = p & v.is_finite();
+                *d = if ok { v } else { f64::NAN };
+                let i = base + k;
+                self.bits[i / 8] |= u8::from(ok) << (i % 8);
+            }
+            return;
+        }
         // `&` over the bytes, not `all`, which stops at the first false and
         // so is not a vector loop.
         if processed.iter().fold(true, |all, &p| all & p) && all_finite(vals) {
@@ -250,6 +264,10 @@ impl F64Column {
         dict_array(keys, &names)
     }
 }
+
+/// Rows below which [`F64Column::run`] takes each row on its own, with no
+/// pass over the run.
+const SHORT_RUN: usize = 16;
 
 /// Whether every value is finite, or, where a finite sum overflowed, not
 /// known to be: `false` is never wrong about a non-finite value and may be
