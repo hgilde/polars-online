@@ -1762,3 +1762,42 @@ fn the_fold_keeps_the_stable_sort_order_on_ties() {
     assert_eq!(bits(&m.centroids), bits(&stable_sort_fold(all)));
     assert!(m.buffer.is_empty());
 }
+
+/// A decrement pass that empties the table leaves a new table of the cap's
+/// size from `FRESH_TABLE_CAP` up, and keeps the table below it: the table
+/// a pass leaves is slower to fill again than a new one, but a table of a
+/// few slots is cheaper to keep than to allocate. Nothing in the counters'
+/// entries tells the two apart, so the table's capacity does: it is made
+/// large first, and the pass either returns it to the cap's or does not.
+#[test]
+fn an_emptied_table_is_replaced_from_the_fresh_table_cap_and_kept_below_it() {
+    for cap in [
+        1,
+        8,
+        FRESH_TABLE_CAP - 1,
+        FRESH_TABLE_CAP,
+        FRESH_TABLE_CAP + 1,
+        100,
+    ] {
+        let mut c = Counts::default();
+        c.counts.reserve(4096);
+        let big = c.counts.capacity();
+        assert!(big >= 4096);
+        // `cap` distinct values fill the table; the next one is a pass that
+        // erases every counter (each is 1).
+        for i in 0..=cap {
+            c.add(1.0 + i as f64, cap);
+        }
+        assert!(c.counts.is_empty(), "cap {cap}");
+        assert_eq!(c.decrements, 1, "cap {cap}");
+        if cap >= FRESH_TABLE_CAP {
+            assert!(
+                c.counts.capacity() >= cap && c.counts.capacity() < big,
+                "cap {cap}: capacity {} should be the cap's, not {big}",
+                c.counts.capacity()
+            );
+        } else {
+            assert_eq!(c.counts.capacity(), big, "cap {cap}: the table is kept");
+        }
+    }
+}
