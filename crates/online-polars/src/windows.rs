@@ -4026,30 +4026,36 @@ mod tests {
         let mut memo = DecayMemo {
             discount: (2.0f64.to_bits(), 123.0),
             mass: (2.0f64.to_bits(), 456.0),
+            held: (2.0f64.to_bits(), 321.0),
             mass_far: (2.0f64.to_bits(), 789.0),
             fwd: None,
         };
         assert_eq!(k.discount_in(2.0, &mut memo), 123.0);
         assert_eq!(k.mass_in(2.0, &mut memo), 456.0);
         assert_eq!(k.mass_far_in(2.0, &mut memo), 789.0);
+        assert_eq!(k.mass_held_in(2.0, &mut memo), 321.0);
         // Another distance is taken, and replaces the one held.
         assert_eq!(k.discount_in(3.0, &mut memo), k.discount(3.0));
         assert_eq!(k.mass_in(3.0, &mut memo), k.mass(3.0));
         assert_eq!(k.mass_far_in(3.0, &mut memo), k.mass(3.0));
+        assert_eq!(k.mass_held_in(3.0, &mut memo), k.mass(3.0));
         assert_eq!(memo.discount, (3.0f64.to_bits(), k.discount(3.0)));
         assert_eq!(memo.mass, (3.0f64.to_bits(), k.mass(3.0)));
         assert_eq!(memo.mass_far, (3.0f64.to_bits(), k.mass(3.0)));
+        assert_eq!(memo.held, (3.0f64.to_bits(), k.mass(3.0)));
         // No distance, and no decay, are answered before the memo.
         let held = memo.clone();
         assert_eq!(k.discount_in(0.0, &mut memo), 1.0);
         assert_eq!(k.mass_in(0.0, &mut memo), 0.0);
         assert_eq!(k.mass_far_in(-1.0, &mut memo), 0.0);
+        assert_eq!(k.mass_held_in(0.0, &mut memo), 0.0);
         assert_eq!(kernel(f64::INFINITY).discount_in(4.0, &mut memo), 1.0);
         assert_eq!(kernel(f64::INFINITY).mass_in(4.0, &mut memo), 4.0);
         assert_eq!(kernel(f64::INFINITY).mass_far_in(4.0, &mut memo), 4.0);
+        assert_eq!(kernel(f64::INFINITY).mass_held_in(4.0, &mut memo), 4.0);
         assert_eq!(
-            (memo.discount, memo.mass, memo.mass_far),
-            (held.discount, held.mass, held.mass_far)
+            (memo.discount, memo.mass, memo.mass_far, memo.held),
+            (held.discount, held.mass, held.mass_far, held.held)
         );
     }
 
