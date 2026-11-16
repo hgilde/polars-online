@@ -268,7 +268,85 @@ fn formulas(float_clock: bool, flavor: usize) -> Vec<Value> {
             );
             add("mean", op("ewm_mean", "x", &h5, json!({})));
         }
-        // A forward kernel beside plain ones: the whole core takes `push`.
+        // Forward kernels alone: every statistic and `closed`, `partial` and
+        // `min_samples`, a window short and long, two inputs.
+        10 | 11 => {
+            let w = |secs: f64| {
+                if float_clock {
+                    json!(secs)
+                } else {
+                    json!(format!("{secs}s"))
+                }
+            };
+            let (c1, c2) = if flavor == 10 {
+                ("right", "both")
+            } else {
+                ("left", "none")
+            };
+            for (c, secs) in [(c1, 7.0), (c2, 2.0)] {
+                let ex = |partial: &str| json!({"window_size": w(secs), "closed": c, "partial": partial});
+                add(&format!("fm_{c}"), op("rewm_mean", "x", &h2, ex("null")));
+                add(&format!("fs_{c}"), op("rewm_sum", "y", &h5, ex("null")));
+                add(&format!("fr_{c}"), op("rewm_rate", "x", &h5, ex("keep")));
+                add(
+                    &format!("fm2_{c}"),
+                    op(
+                        "rewm_mean",
+                        "y",
+                        &h5,
+                        json!({"window_size": w(30.0), "closed": c, "min_samples": 3, "partial": "drop"}),
+                    ),
+                );
+            }
+        }
+        // A forward quantile, a forward sum with no decay, and kernels of both
+        // directions in one core, a plain one among them.
+        12 | 13 => {
+            let w = |secs: f64| {
+                if float_clock {
+                    json!(secs)
+                } else {
+                    json!(format!("{secs}s"))
+                }
+            };
+            add(
+                "fq",
+                op(
+                    "rewm_quantile",
+                    "x",
+                    &h5,
+                    json!({"quantile": 0.5, "window_size": w(20.0)}),
+                ),
+            );
+            add(
+                "fs_inf",
+                op(
+                    "rewm_sum",
+                    "y",
+                    &json!("inf"),
+                    json!({"window_size": w(9.0), "closed": "both"}),
+                ),
+            );
+            if flavor == 13 {
+                add("mean", op("ewm_mean", "x", &h5, json!({})));
+                add("sum", op("ewm_sum", "y", &h2, json!({"closed": "left"})));
+                add(
+                    "wmean",
+                    op(
+                        "ewm_mean",
+                        "x",
+                        &h2,
+                        json!({"window_size": w(12.0), "closed": "both"}),
+                    ),
+                );
+                add("var", op("ewm_var", "y", &h5, json!({})));
+                add(
+                    "ahead",
+                    op("rewm_mean", "x", &h5, json!({"window_size": w(30.0)})),
+                );
+            }
+        }
+        // A forward kernel beside plain ones.
         _ => {
             let w = if float_clock {
                 json!(30.0)
@@ -374,7 +452,7 @@ fn cases() -> Vec<Case> {
         ),
     ];
     for float_clock in [false, true] {
-        for flavor in 0..10 {
+        for flavor in 0..14 {
             for (rname, breaks) in regimes {
                 for (grouped, keys) in [(false, 1), (true, 1), (true, 3), (true, 12)] {
                     let session = breaks.session > 0.0;
@@ -404,14 +482,14 @@ fn cases() -> Vec<Case> {
                         session,
                         breaks,
                         keys,
-                        engages: flavor != 7,
+                        engages: true,
                         essential: !float_clock
                             && matches!(keys, 1 | 12)
                             && matches!(
                                 rname,
                                 "plain" | "everything" | "many nulls and ties" | "a silent key"
                             )
-                            && matches!(flavor, 0 | 1 | 2 | 5 | 6 | 7 | 8 | 9),
+                            && matches!(flavor, 0 | 1 | 2 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13),
                     });
                 }
             }

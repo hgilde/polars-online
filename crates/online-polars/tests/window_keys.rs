@@ -144,16 +144,31 @@ fn frame(
     DataFrame::new_infer_height(cols).unwrap()
 }
 
-fn config(windowed: bool, group: bool, session: bool) -> WindowsConfig {
+/// What the operators of a stream look at: the rows so far, a window of them,
+/// or the rows ahead in a window (`rewm_*`, task 441: a forward kernel is
+/// resolved by a later row, and a variance has none).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Mode {
+    Running,
+    Windowed,
+    Forward,
+}
+
+fn config(mode: Mode, group: bool, session: bool) -> WindowsConfig {
     let op = |name: &str| {
         let mut o = json!({"half_life": "5s"});
-        if windowed {
+        if mode != Mode::Running {
             o["window_size"] = json!("30s");
         }
         json!({"name": name, "tree": [name, ["col", "mid"], o]})
     };
+    let formulas = if mode == Mode::Forward {
+        vec![op("rewm_mean"), op("rewm_sum"), op("rewm_rate")]
+    } else {
+        vec![op("ewm_mean"), op("ewm_std"), op("ewm_sum")]
+    };
     let mut c = json!({
-        "formulas": [op("ewm_mean"), op("ewm_std"), op("ewm_sum")],
+        "formulas": formulas,
         "clock": "ts",
         "gap_cap": "5m",
     });
@@ -187,7 +202,7 @@ fn digest(
         let floats: Vec<&Float64Chunked> = f
             .columns()
             .iter()
-            .filter(|c| c.name().starts_with("ewm_"))
+            .filter(|c| c.name().contains("ewm_"))
             .filter_map(|c| c.f64().ok())
             .collect();
         cols.resize(floats.len(), vec![]);
@@ -220,10 +235,10 @@ fn digest(
     (cols.concat(), run.save_bytes().unwrap())
 }
 
-fn check(keys: usize, null_keys: bool, run: usize, windowed: bool) {
+fn check(keys: usize, null_keys: bool, run: usize, mode: Mode) {
     let n = 5000;
     let d = data(n, keys, null_keys, run);
-    let cfg = config(windowed, true, false);
+    let cfg = config(mode, true, false);
     let (want, _) = digest(&d, &cfg, &[n], false, Some(Kind::Int64), None, keys);
     for kind in KINDS {
         if kind == Kind::UInt8 && keys > 200 {
@@ -245,7 +260,7 @@ fn check(keys: usize, null_keys: bool, run: usize, windowed: bool) {
                 }
                 assert_eq!(
                     got, want,
-                    "{kind:?}, {keys} keys, nulls {null_keys}, runs of {run}, windowed {windowed}, chunks {chunks:?}, reload {reload}"
+                    "{kind:?}, {keys} keys, nulls {null_keys}, runs of {run}, {mode:?}, chunks {chunks:?}, reload {reload}"
                 );
             }
         }
@@ -255,8 +270,10 @@ fn check(keys: usize, null_keys: bool, run: usize, windowed: bool) {
 #[test]
 fn every_dtype_of_key_gives_the_windows_one_answer() {
     // Interleaved keys with nulls among them, keys in runs, and a window.
-    check(7, true, 1, false);
-    check(100, false, 13, true);
+    check(7, true, 1, Mode::Running);
+    check(100, false, 13, Mode::Windowed);
+    check(7, true, 1, Mode::Forward);
+    check(100, false, 13, Mode::Forward);
 }
 
 #[test]
@@ -264,9 +281,9 @@ fn every_dtype_of_key_gives_the_windows_one_answer() {
 fn every_dtype_of_key_gives_the_windows_one_answer_across_the_grid() {
     for keys in [1, 7, 100] {
         for null_keys in [false, true] {
-            for windowed in [false, true] {
-                check(keys, null_keys, 1, windowed);
-                check(keys, null_keys, 13, windowed);
+            for mode in [Mode::Running, Mode::Windowed, Mode::Forward] {
+                check(keys, null_keys, 1, mode);
+                check(keys, null_keys, 13, mode);
             }
         }
     }
@@ -275,8 +292,9 @@ fn every_dtype_of_key_gives_the_windows_one_answer_across_the_grid() {
 #[test]
 #[ignore = "extended: many keys in a test build"]
 fn every_dtype_of_key_gives_the_windows_one_answer_at_two_thousand_keys() {
-    check(2000, false, 1, false);
-    check(2000, true, 5, true);
+    check(2000, false, 1, Mode::Running);
+    check(2000, true, 5, Mode::Windowed);
+    check(2000, true, 5, Mode::Forward);
 }
 
 #[test]
@@ -284,8 +302,8 @@ fn every_dtype_of_session_column_gives_the_windows_one_answer() {
     let n = 5000;
     for keys in [0usize, 1, 7, 100] {
         let d = data(n, keys.max(1), false, 1);
-        for windowed in [false, true] {
-            let cfg = config(windowed, keys > 0, true);
+        for mode in [Mode::Running, Mode::Windowed, Mode::Forward] {
+            let cfg = config(mode, keys > 0, true);
             let group = (keys > 0).then_some(Kind::Int64);
             let (want, _) = digest(&d, &cfg, &[n], false, group, Some(Kind::Int64), 10);
             for kind in [
@@ -308,7 +326,7 @@ fn every_dtype_of_session_column_gives_the_windows_one_answer() {
                         }
                         assert_eq!(
                             got, want,
-                            "{kind:?} session, {keys} keys, windowed {windowed}, {chunks:?}, reload {reload}"
+                            "{kind:?} session, {keys} keys, {mode:?}, {chunks:?}, reload {reload}"
                         );
                     }
                 }

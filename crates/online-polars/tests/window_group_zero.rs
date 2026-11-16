@@ -11,12 +11,17 @@ use online_polars::{WindowsConfig, WindowsRun};
 use polars::prelude::*;
 use serde_json::json;
 
-fn run(plain: bool, keys: &[i64], chunks: &[usize]) -> Vec<Option<f64>> {
+/// The operator: a running mean, or a forward one over a window.
+fn run(plain: bool, forward: bool, keys: &[i64], chunks: &[usize]) -> (Vec<Option<f64>>, u64) {
     let n = keys.len();
     let ts: Vec<i64> = (0..n as i64).map(|i| i * 1_000_000_000).collect();
     let mid: Vec<f64> = (0..n).map(|i| 100.0 + (i % 7) as f64).collect();
     let config: WindowsConfig = serde_json::from_value(json!({
-        "formulas": [{"name": "m", "tree": ["ewm_mean", ["col", "mid"], {"half_life": "5s"}]}],
+        "formulas": [{"name": "m", "tree": if forward {
+            json!(["rewm_mean", ["col", "mid"], {"half_life": "5s", "window_size": "20s"}])
+        } else {
+            json!(["ewm_mean", ["col", "mid"], {"half_life": "5s"}])
+        }}],
         "clock": "ts",
         "gap_cap": "5m",
         "group": "g",
@@ -42,6 +47,7 @@ fn run(plain: bool, keys: &[i64], chunks: &[usize]) -> Vec<Option<f64>> {
         out.extend(o.column("m").unwrap().f64().unwrap().iter());
         at = to;
     }
+    let taken = r.plain_rows();
     out.extend(
         r.finish()
             .unwrap()
@@ -51,7 +57,7 @@ fn run(plain: bool, keys: &[i64], chunks: &[usize]) -> Vec<Option<f64>> {
             .unwrap()
             .iter(),
     );
-    out
+    (out, taken)
 }
 
 #[test]
@@ -60,15 +66,19 @@ fn a_later_block_of_another_key_is_that_keys_not_the_first_rows() {
     // plain loop is the next 1,024 rows, and the second begins at row 1,025:
     // key 0 through row 1,024 and key 1 from row 1,025 on.
     let keys: Vec<i64> = (0..1100).map(|i| i64::from(i >= 1025)).collect();
-    let general = run(false, &keys, &[1100]);
-    let plain = run(true, &keys, &[1100]);
-    assert_eq!(plain.len(), general.len());
-    for (i, (p, g)) in plain.iter().zip(&general).enumerate() {
-        assert_eq!(
-            p.map(f64::to_bits),
-            g.map(f64::to_bits),
-            "row {i}: {p:?} against {g:?}"
-        );
+    for forward in [false, true] {
+        let (general, none) = run(false, forward, &keys, &[1100]);
+        let (plain, taken) = run(true, forward, &keys, &[1100]);
+        assert_eq!(none, 0);
+        assert!(taken > 1000, "the plain loop took {taken} rows");
+        assert_eq!(plain.len(), general.len());
+        for (i, (p, g)) in plain.iter().zip(&general).enumerate() {
+            assert_eq!(
+                p.map(f64::to_bits),
+                g.map(f64::to_bits),
+                "forward {forward}, row {i}: {p:?} against {g:?}"
+            );
+        }
     }
 }
 
@@ -79,15 +89,21 @@ fn a_group_with_thousands_of_rows_in_one_pass_is_taken_in_segments_to_the_bit() 
     let keys: Vec<i64> = (0..24000)
         .map(|i| if i < 18000 { (i / 3000) % 2 } else { i % 2 })
         .collect();
-    for chunks in [vec![24000], vec![5000, 7000, 12000], vec![1000]] {
-        let general = run(false, &keys, &chunks);
-        let plain = run(true, &keys, &chunks);
+    for (forward, chunks) in [false, true].into_iter().flat_map(|f| {
+        [vec![24000], vec![5000, 7000, 12000], vec![1000]]
+            .into_iter()
+            .map(move |c| (f, c))
+    }) {
+        let (general, none) = run(false, forward, &keys, &chunks);
+        let (plain, taken) = run(true, forward, &keys, &chunks);
+        assert_eq!(none, 0);
+        assert!(taken > 500, "the plain loop took {taken} rows");
         assert_eq!(plain.len(), general.len());
         for (i, (p, g)) in plain.iter().zip(&general).enumerate() {
             assert_eq!(
                 p.map(f64::to_bits),
                 g.map(f64::to_bits),
-                "chunks {chunks:?}, row {i}: {p:?} against {g:?}"
+                "forward {forward}, chunks {chunks:?}, row {i}: {p:?} against {g:?}"
             );
         }
     }
