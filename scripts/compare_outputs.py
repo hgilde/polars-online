@@ -107,6 +107,9 @@ CASE_DEFAULTS: dict[str, Any] = {
     "gaps": True,
     "shift": True,
     "save_at": None,
+    "step_ns": None,
+    "jump_ns": 0,
+    "session_s": None,
     "decisions": [],
     "timed": True,
 }
@@ -121,6 +124,9 @@ DATA_KEYS = (
     "extras",
     "gaps",
     "shift",
+    "step_ns",
+    "jump_ns",
+    "session_s",
 )
 
 
@@ -278,6 +284,12 @@ def make_input(case: dict) -> Any:
         for share in (0.3, 0.7):
             steps[int(share * n)] += 15.0 * half_life(case)
     t = np.cumsum(steps)
+    if case["step_ns"]:  # a nanosecond clock: steps (ns) drawn from the list, a jump of `jump_ns` at 30% and 70%
+        steps_ns = rng.choice(np.asarray(case["step_ns"], dtype=np.int64), size=n)
+        if case["gaps"] and n >= 1000:
+            for share in (0.3, 0.7):
+                steps_ns[int(share * n)] += int(case["jump_ns"])
+        t = pl.Series(1_700_000_000_000_000_000 + np.cumsum(steps_ns)).cast(pl.Datetime("ns"))
     w = rng.uniform(0.5, 1.5, n)
     w[rng.random(n) < 0.005] = 0.0
     cols: dict[str, Any] = {"t": t, "w": w}
@@ -299,6 +311,8 @@ def make_input(case: dict) -> Any:
         cols["lab3"] = np.where(v < lo, "down", np.where(v > hi, "up", "flat"))
     if "s" in extras:
         cols["s"] = np.where(np.arange(n) < n // 2, "am", "pm")
+    if case["session_s"]:  # a session column: a new session every `session_s` rows
+        cols["sess"] = np.arange(n) // int(case["session_s"])
     if "block" in extras:
         cols["block"] = np.arange(n) // 1000
     df = pl.DataFrame(cols)

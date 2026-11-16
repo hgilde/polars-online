@@ -470,10 +470,28 @@ impl KernelDef {
         // `h/t = 1e12`, all of it from 1e17, every mean null (task 159,
         // W2). `exp_m1` keeps the small difference whole; `discount`
         // itself has nothing to lose.
+        //
+        // Between `MASS_FROM_DISCOUNT` and `MASS_BELOW_DISCOUNT` of a half-life
+        // the mass is `c (1 − d)` from the very `d = 2^(−x)` the discount is
+        // (task 426 d2): the rate `w` settles at `m / (1 − d)`, and a mass that
+        // is not that function of the same rounded `d` leaves `w` off `c` by
+        // `1e-16 / x`, which the mean inherits. Below the range `1 − d` is too
+        // coarse (a double next to 1 is 1.1e-16 apart); above it both forms are
+        // at rounding and the bits stay as they were.
         let h = self.half_life;
-        -(h / std::f64::consts::LN_2) * (-(t * std::f64::consts::LN_2 / h)).exp_m1()
+        let c = h / std::f64::consts::LN_2;
+        let x = t / h;
+        if (MASS_FROM_DISCOUNT..MASS_BELOW_DISCOUNT).contains(&x) {
+            return c * (1.0 - (-x).exp2());
+        }
+        -c * (-(t * std::f64::consts::LN_2 / h)).exp_m1()
     }
 }
+
+/// The distances, in half-lives, between which a held mass is taken from the
+/// discount's `exp2` instead of `exp_m1`: `1 − d` of about 1e-8 up to 1e-2.
+const MASS_FROM_DISCOUNT: f64 = 1.44e-8;
+const MASS_BELOW_DISCOUNT: f64 = 1e-2;
 
 /// A queue's last discount and last mass, each with the bits of the distance
 /// it is of. Never written to a state and never compared; a queue read back

@@ -74,7 +74,8 @@ fn main() {
     // WB_PLAIN=0 switches the core's plain-run loop off (task 429), to time what it saves.
     let plain = env("WB_PLAIN", "1");
     let temporal = kind == "dt";
-    let hl: Value = if temporal { json!("5s") } else { json!(5.0) };
+    // WB_HL: the half-life's text (d2: a nanosecond clock with a long half-life).
+    let hl: Value = if temporal { json!(env("WB_HL", "5s")) } else { json!(5.0) };
     let wsv: Option<Value> = match ws.as_str() {
         "none" => None,
         s if temporal => Some(json!(s)),
@@ -150,6 +151,9 @@ fn main() {
         let u = r.next();
         let step = match gap.as_str() {
             "reg" => 1.0,
+            // WB_GAP=nsN (exponential, mean N ns) or regN (every gap N ns): a nanosecond clock
+            g if g.starts_with("ns") => -g[2..].parse::<f64>().unwrap() * 1e-9 * u.ln(),
+            g if g.starts_with("reg") => g[3..].parse::<f64>().unwrap() * 1e-9,
             "exp1" => -u.ln(),
             _ => -0.5 * u.ln(),
         };
