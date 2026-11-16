@@ -180,7 +180,11 @@ impl RlsCfg {
 pub struct Rls {
     cfg: RlsCfg,
     /// Cholesky factor of the decayed information matrix, `A = R^T R`: upper
-    /// triangular, row-major `k*k`, lower triangle zero, diagonal `>= 0`.
+    /// triangular, diagonal `>= 0`, kept as the packed upper triangle, row by
+    /// row, `k(k+1)/2` entries (`base`). A saved state holds it as the full
+    /// `k*k` square with a zero lower triangle (`square`), so the file does
+    /// not depend on the packing.
+    #[serde(with = "square")]
     r: Vec<f64>,
     /// `u_j = R^-T b_j` per target, each `k_total`: the rotated right-hand side.
     u: Vec<Vec<f64>>,
@@ -202,6 +206,67 @@ pub struct Rls {
     zbuf: Vec<f64>,
     #[serde(skip)]
     ybuf: Vec<f64>,
+}
+
+/// Where row `i` of the packed upper triangle of a `k x k` factor starts,
+/// shifted so that entry `(i, j)`, `j >= i`, is `r[base(k, i) + j]`: the
+/// rows above it hold `k + (k-1) + ... + (k-i+1)` entries, less the `i`
+/// columns that precede its diagonal.
+#[inline(always)]
+const fn base(k: usize, i: usize) -> usize {
+    i * (2 * k - i - 1) / 2
+}
+
+/// The packed upper triangle's length for a `k x k` factor.
+#[inline]
+const fn packed_len(k: usize) -> usize {
+    k * (k + 1) / 2
+}
+
+/// A factor in a saved state: the full `k*k` row-major square, lower
+/// triangle zero, which is what the model held before it was packed, so the
+/// bytes of a state do not move.
+mod square {
+    use super::{base, packed_len};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn unpack(packed: &[f64], k: usize) -> Vec<f64> {
+        let mut sq = vec![0.0; k * k];
+        for i in 0..k {
+            sq[i * k + i..(i + 1) * k].copy_from_slice(&packed[base(k, i) + i..base(k, i) + k]);
+        }
+        sq
+    }
+
+    pub(super) fn pack(sq: &[f64], k: usize) -> Vec<f64> {
+        let mut packed = Vec::with_capacity(packed_len(k));
+        for i in 0..k {
+            packed.extend_from_slice(&sq[i * k + i..(i + 1) * k]);
+        }
+        packed
+    }
+
+    pub fn serialize<S: Serializer>(r: &[f64], s: S) -> Result<S::Ok, S::Error> {
+        // `k(k+1)/2` entries: `8 len + 1` is the square of `2k + 1`.
+        let k = ((8 * r.len() + 1).isqrt() - 1) / 2;
+        if packed_len(k) != r.len() {
+            return Err(serde::ser::Error::custom(
+                "rls: the factor has the wrong shape",
+            ));
+        }
+        unpack(r, k).serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<f64>, D::Error> {
+        let sq = Vec::<f64>::deserialize(d)?;
+        let k = sq.len().isqrt();
+        if k * k != sq.len() {
+            return Err(serde::de::Error::custom(
+                "rls: its running sums have the wrong shape",
+            ));
+        }
+        Ok(pack(&sq, k))
+    }
 }
 
 /// The 0 a coefficient that came out not finite is set to. A call, so that
@@ -279,11 +344,11 @@ fn solve_columns<const N: usize, const B: usize>(
     let mut b = [[0.0; N]; B];
     for c in 0..B {
         let col = j - 1 - c;
-        let d = r[col * k + col];
+        let d = r[base(k, col) + col];
         for t in 0..N {
             let mut a = if c == 0 { acc[t] } else { betas[t][col] };
             for (q, bq) in b.iter().enumerate().take(c) {
-                a -= r[col * k + (j - 1 - q)] * bq[t];
+                a -= r[base(k, col) + (j - 1 - q)] * bq[t];
             }
             let x = if d > 0.0 { a / d } else { 0.0 };
             b[c][t] = if x.is_finite() { x } else { zero_unseen() };
@@ -298,7 +363,7 @@ fn solve_columns<const N: usize, const B: usize>(
     for t in 0..N {
         let mut a = betas[t][m];
         for (q, bq) in b.iter().enumerate() {
-            a -= r[m * k + (j - 1 - q)] * bq[t];
+            a -= r[base(k, m) + (j - 1 - q)] * bq[t];
         }
         acc[t] = a;
     }
@@ -306,7 +371,7 @@ fn solve_columns<const N: usize, const B: usize>(
         for t in 0..N {
             let mut a = betas[t][m];
             for (q, bq) in b.iter().enumerate() {
-                a -= r[m * k + (j - 1 - q)] * bq[t];
+                a -= r[base(k, m) + (j - 1 - q)] * bq[t];
             }
             betas[t][m] = a;
         }
@@ -336,9 +401,9 @@ impl Rls {
         cfg.validate()?;
         let k = cfg.k_total();
         let root = cfg.delta.sqrt();
-        let mut r = vec![0.0; k * k];
+        let mut r = vec![0.0; packed_len(k)];
         for i in 0..k {
-            r[i * k + i] = root;
+            r[base(k, i) + i] = root;
         }
         let beta = cfg
             .coef_prior
@@ -403,7 +468,7 @@ impl Rls {
         let (r, zbuf) = (&mut self.r, &mut self.zbuf);
         let mut zi = zbuf.first().copied().unwrap_or(0.0);
         for i in 0..k {
-            let row = i * k;
+            let row = base(k, i);
             // The entry the next rotation starts from, as the rotations
             // before this one left it; this rotation replaces it.
             let mut znext = if i + 1 < k { zbuf[i + 1] } else { 0.0 };
@@ -521,9 +586,9 @@ impl Rls {
         for i in 0..k {
             let mut acc = z[i];
             for (m, vm) in v.iter().enumerate().take(i) {
-                acc -= self.r[m * k + i] * vm;
+                acc -= self.r[base(k, m) + i] * vm;
             }
-            let d = self.r[i * k + i];
+            let d = self.r[base(k, i) + i];
             if d > 0.0 {
                 v[i] = acc / d;
             } else if acc != 0.0 {
@@ -620,7 +685,6 @@ impl OnlineModel for Rls {
             return;
         }
         self.ensure_buffers();
-        let k = self.cfg.k_total();
         let lam = self.cfg.decay.factor(d_clock);
 
         if self.cfg.fit_intercept {
@@ -667,10 +731,8 @@ impl OnlineModel for Rls {
             self.solve();
             self.seen = true;
         } else if decays {
-            for i in 0..k {
-                for v in &mut self.r[i * k + i..(i + 1) * k] {
-                    *v *= root;
-                }
+            for v in &mut self.r {
+                *v *= root;
             }
             for u in &mut self.u {
                 for v in u.iter_mut() {
@@ -719,7 +781,7 @@ impl OnlineModel for Rls {
                 // A factor or a per-target vector of the wrong length loaded
                 // and panicked on the first `step`'s indexing (review
                 // 2026-09-18, B3).
-                if m.r.len() != k * k || !rows(&m.u) || !rows(&m.beta) {
+                if m.r.len() != packed_len(k) || !rows(&m.u) || !rows(&m.beta) {
                     return Err(crate::model::damaged(
                         "rls",
                         "its running sums have the wrong shape",
@@ -807,6 +869,38 @@ mod tests {
             assert!(served.iter().all(|p| p.is_nan() == (i < 14)), "row {i}");
         }
         assert_eq!(m.target_weights(), &[5.0, 5.0]);
+    }
+
+    /// The factor is held as a packed triangle and saved as the full square
+    /// with a zero lower triangle: the file is the one the square layout
+    /// wrote, and it loads back to the same bits. A factor whose length is
+    /// no square is refused on load.
+    #[test]
+    fn the_factor_is_saved_as_the_square_it_was() {
+        for k in [2usize, 3, 4, 8, 21] {
+            let mut m = Rls::new(rls_cfg(k - 1, 2, 30.0, 1.0)).unwrap();
+            let mut s = 5u64;
+            for _ in 0..40 {
+                let x: Vec<f64> = (0..k - 1).map(|_| lcg(&mut s)).collect();
+                m.step(&x, &[Some(x.iter().sum()), Some(lcg(&mut s))], 1.0, 1.0);
+            }
+            assert_eq!(m.r.len(), k * (k + 1) / 2);
+            let v = serde_json::to_value(&m).unwrap();
+            let sq: Vec<f64> = serde_json::from_value(v["r"].clone()).unwrap();
+            assert_eq!(sq.len(), k * k);
+            for i in 0..k {
+                for j in 0..k {
+                    let want = if j >= i { m.r[base(k, i) + j] } else { 0.0 };
+                    assert_eq!(sq[i * k + j].to_bits(), want.to_bits(), "k={k} ({i},{j})");
+                }
+            }
+            let back: Rls = serde_json::from_value(v.clone()).unwrap();
+            assert_eq!(bits(&back.r), bits(&m.r), "k={k}");
+            let mut bad = v;
+            bad["r"].as_array_mut().unwrap().pop();
+            let err = serde_json::from_value::<Rls>(bad).unwrap_err().to_string();
+            assert!(err.contains("wrong shape"), "{err}");
+        }
     }
 
     /// A state without target weights is refused, where it loaded with each
@@ -931,21 +1025,23 @@ mod tests {
             for m in [1, 2, 3, 4, 5, 6, 7, 8, 9] {
                 for special in [0.0, 0.03, 0.3] {
                     let mut model = bare(k, m);
+                    let mut sq = vec![0.0; k * k];
                     for i in 0..k {
                         for j in i..k {
-                            model.r[i * k + j] = odd(&mut state, special);
+                            sq[i * k + j] = odd(&mut state, special);
                         }
                         // A pivot that is usually positive.
                         if lcg(&mut state) > -0.5 {
-                            model.r[i * k + i] = 0.5 + lcg(&mut state).abs();
+                            sq[i * k + i] = 0.5 + lcg(&mut state).abs();
                         }
                     }
+                    model.r = square::pack(&sq, k);
                     for u in model.u.iter_mut() {
                         for v in u.iter_mut() {
                             *v = odd(&mut state, special);
                         }
                     }
-                    let want = solve_serial(&model.r, &model.u, k);
+                    let want = solve_serial(&sq, &model.u, k);
                     model.solve();
                     for (t, (got, want)) in model.beta.iter().zip(&want).enumerate() {
                         assert_eq!(
@@ -1026,14 +1122,16 @@ mod tests {
                 for special in [0.0, 0.05, 0.3] {
                     for root in [None, Some(0.973), Some(0.0), Some(1e-170)] {
                         let mut model = bare(k, m);
+                        let mut sq = vec![0.0; k * k];
                         for i in 0..k {
                             for j in i..k {
-                                model.r[i * k + j] = odd(&mut state, special);
+                                sq[i * k + j] = odd(&mut state, special);
                             }
                             if lcg(&mut state) > -0.5 {
-                                model.r[i * k + i] = lcg(&mut state).abs();
+                                sq[i * k + i] = lcg(&mut state).abs();
                             }
                         }
+                        model.r = square::pack(&sq, k);
                         for u in model.u.iter_mut() {
                             for v in u.iter_mut() {
                                 *v = odd(&mut state, special);
@@ -1048,7 +1146,7 @@ mod tests {
                         for y in model.ybuf.iter_mut() {
                             *y = odd(&mut state, special);
                         }
-                        let (mut r, mut u) = (model.r.clone(), model.u.clone());
+                        let (mut r, mut u) = (sq, model.u.clone());
                         let (mut z, mut y) = (model.zbuf.clone(), model.ybuf.clone());
                         fold_serial(&mut r, &mut u, &mut z, &mut y, k, root);
                         match root {
@@ -1056,7 +1154,7 @@ mod tests {
                             None => model.fold_row::<false>(1.0),
                         }
                         let ctx = format!("k={k} m={m} special={special} root={root:?}");
-                        assert_eq!(bits(&model.r), bits(&r), "R, {ctx}");
+                        assert_eq!(bits(&square::unpack(&model.r, k)), bits(&r), "R, {ctx}");
                         assert_eq!(bits(&model.zbuf), bits(&z), "working row, {ctx}");
                         assert_eq!(bits(&model.ybuf), bits(&y), "targets, {ctx}");
                         for (got, want) in model.u.iter().zip(&u) {
@@ -1949,7 +2047,7 @@ mod tests {
             m.row_error_inflation_into(&[0.3, 0.0], 1.0, &mut out);
             without.row_error_inflation_into(&[0.3], 1.0, &mut alone);
             assert_eq!(out, alone, "row {rows}");
-            if m.r[2 * 3 + 2] == 0.0 {
+            if m.r[base(3, 2) + 2] == 0.0 {
                 assert!(v[2].is_infinite(), "{v:?}");
                 break;
             }
