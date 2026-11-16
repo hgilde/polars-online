@@ -3688,3 +3688,32 @@ rows to the same values (an input is element-wise, and an increment is read \
 off the group's own state either way): a chunk of one group gets its inputs \
 either way, and a chunk of several is handed them or evaluates them itself, \
 the same bits (`a_chunk_s_shared_increments_are_each_run_s_own`)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "EwRidge::solve_in"
+mutation = "replace * with + in"
+line_has = "if ready.support.len() != m * nc {"
+why = """the branch only resizes `support` to `m * nc`, and `support` is empty \
+before the first solve and `m * nc` long after every one (`restore` refuses \
+any other length, `fit_has_shape`); the model's `m` and `nc` never change. \
+With `m + nc` the branch is entered on every length but `m + nc`, which \
+`support` never has unless it equals `m * nc`, where the resize is a no-op"""
+
+[[equivalent]]
+file = "crates/online-core/src/rls.rs"
+function = "zero_unseen"
+mutation = "replace zero_unseen -> f64 with 0.0"
+line_has = "std::hint::black_box(0.0)"
+why = """`black_box` is the identity on its argument: the mutant returns the \
+same 0.0, and only the optimizer's view of the value, not any number, differs"""
+
+[[equivalent]]
+file = "crates/online-core/src/rls.rs"
+function = "solve_block"
+mutation = "replace >= with < in solve_block"
+line_has = "if k >= WIDE {"
+why = """the width only picks how many columns `solve_sweep` takes a pass: \
+every coefficient takes off the same products from the same sums in the \
+same order whatever the block (the function's doc), so a 2-wide and a \
+4-wide sweep give the same bits at every `k`"""
