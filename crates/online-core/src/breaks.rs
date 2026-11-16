@@ -949,6 +949,34 @@ fn mat_mul_into(a: &[f64], b: &[f64], p: usize, out: &mut Vec<f64>) {
     }
 }
 
+/// The order from which the Wald products run through faer's matrix multiply
+/// (task 426 (b2), measurement only: `WALD_FAER_FROM` overrides it, read once).
+const FAER_FROM: usize = 24;
+
+fn faer_from() -> usize {
+    static FROM: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *FROM.get_or_init(|| {
+        std::env::var("WALD_FAER_FROM")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(FAER_FROM)
+    })
+}
+
+/// `a b` as [`mat_mul_into`] where `p` is under [`faer_from`], else by faer's
+/// product (sequential): the last bits differ.
+fn mul_into(a: &[f64], b: &[f64], p: usize, out: &mut Vec<f64>) {
+    if p < faer_from() {
+        return mat_mul_into(a, b, p, out);
+    }
+    out.clear();
+    out.resize(p * p, 0.0);
+    let a = faer::MatRef::from_row_major_slice(a, p, p);
+    let b = faer::MatRef::from_row_major_slice(b, p, p);
+    let c = faer::MatMut::from_row_major_slice_mut(out, p, p);
+    faer::linalg::matmul::matmul(c, faer::Accum::Replace, a, b, 1.0, faer::Par::Seq);
+}
+
 /// `R` rows from `i` of [`mat_mul_into`]'s product, in blocks of eight, four,
 /// two and one columns.
 #[inline(always)]
@@ -1187,12 +1215,12 @@ impl TwinFit {
         self.pick(&self.hff, idx, intercept, hff);
         self.pick(&self.hss, idx, intercept, hss);
         self.pick(&self.hfs, idx, intercept, hfs);
-        mat_mul_into(af, hff, k, prod);
-        mat_mul_into(prod, af, k, ff);
-        mat_mul_into(a_s, hss, k, prod);
-        mat_mul_into(prod, a_s, k, ss);
-        mat_mul_into(af, hfs, k, prod);
-        mat_mul_into(prod, a_s, k, fs);
+        mul_into(af, hff, k, prod);
+        mul_into(prod, af, k, ff);
+        mul_into(a_s, hss, k, prod);
+        mul_into(prod, a_s, k, ss);
+        mul_into(af, hfs, k, prod);
+        mul_into(prod, a_s, k, fs);
         var.clear();
         for i in 0..k {
             for j in 0..k {
@@ -3197,11 +3225,9 @@ mod tests {
         }
     }
 
-    /// Past the order a thread keeps buffers for, the distance is the plain
-    /// form's to the bit too.
-    #[test]
-    fn a_wide_distance_is_the_plain_forms_to_the_bit() {
-        let kx = 70;
+    /// The wide-distance streams: `kx` features, the distance of every kind of
+    /// subset against the plain form, as `(got, want)` per row.
+    fn wide_distances(kx: usize, mut check: impl FnMut(&str, Option<f64>, Option<f64>)) {
         let mut t = TwinFit::new(kx);
         let mut s = 71u64;
         let all: Vec<usize> = (0..kx).collect();
@@ -3220,17 +3246,33 @@ mod tests {
                         t.wald(idx, intercept, 1.0),
                         plain::wald(&t, idx, intercept, 1.0),
                     );
-                    assert_eq!(
-                        got.map(f64::to_bits),
-                        want.map(f64::to_bits),
-                        "row {i}, {} features",
-                        idx.len()
-                    );
+                    check(&format!("row {i}, {} features", idx.len()), got, want);
                     seen += usize::from(got.is_some());
                 }
             }
         }
         assert!(seen > 10, "{seen} distances");
+    }
+
+    /// Below the order from which the products run through faer's matrix
+    /// multiply, the distance is the plain form's to the bit.
+    #[test]
+    fn a_distance_under_the_faer_order_is_the_plain_forms_to_the_bit() {
+        wide_distances(FAER_FROM - 2, |at, got, want| {
+            assert_eq!(got.map(f64::to_bits), want.map(f64::to_bits), "{at}");
+        });
+    }
+
+    /// From that order the products are faer's: the plain form's to rounding.
+    #[test]
+    fn a_wide_distance_is_the_plain_forms_to_rounding() {
+        wide_distances(70, |at, got, want| {
+            let (g, w) = (got.map(f64::to_bits), want.map(f64::to_bits));
+            if g != w {
+                let (g, w) = (got.unwrap(), want.unwrap());
+                assert!(((g - w) / w).abs() < 1e-8, "{at}: {g} vs {w}");
+            }
+        });
     }
 
     /// The distance is the plain form's to the bit, over every feature
