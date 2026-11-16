@@ -902,7 +902,7 @@ fn ln_sum_prod(v: &[f64]) -> f64 {
 }
 
 /// Whether the second log is taken as a product too.
-const PROD_Q: bool = false;
+const PROD_Q: bool = true;
 
 /// `ln Σ exp(v)`, about the maximum.
 fn log_sum_exp(v: &[f64]) -> f64 {
