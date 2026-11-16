@@ -145,6 +145,14 @@ impl SeqTest {
     }
 }
 
+/// `a.ln_1p()`, with no call where `a` is a zero: `ln_1p(±0)` is that very
+/// zero (C99 Annex F), and the side that bets nothing is a zero on most
+/// rows, since at most one of the two stakes is positive.
+#[inline]
+fn ln_1p_of(a: f64) -> f64 {
+    if a == 0.0 { a } else { a.ln_1p() }
+}
+
 impl OnlineModel for SeqTest {
     /// The step, into the caller's buffer (task 270, M-4).
     fn step_into(
@@ -169,23 +177,28 @@ impl OnlineModel for SeqTest {
         if weight > 0.0 {
             for (j, yj) in y.iter().enumerate().take(self.cfg.n_targets) {
                 let Some(yj) = *yj else { continue };
-                let s = if yj > 0.0 {
-                    1.0
-                } else if yj < 0.0 {
-                    -1.0
-                } else {
+                // A tie (and anything that is no sign) bets nothing: rare, so
+                // the branch is predictable. The sign itself is a coin the
+                // data flip, so it selects values and never branches.
+                let pos = yj > 0.0;
+                if !(pos || yj < 0.0) {
                     continue;
-                };
+                }
+                let s = if pos { 1.0 } else { -1.0 };
                 let (lam_pos, lam_neg) = self.stakes(j);
                 // `ln_1p` for the tiny stakes early on; `1 − λ ≥ 1/(n + 1)`,
                 // so a losing bet never takes the wealth to zero.
-                self.log_e_pos[j] += (lam_pos * s).ln_1p();
-                self.log_e_neg[j] += (-lam_neg * s).ln_1p();
-                if s > 0.0 {
-                    self.n_pos[j] += 1.0;
-                } else {
-                    self.n_neg[j] += 1.0;
-                }
+                self.log_e_pos[j] += ln_1p_of(lam_pos * s);
+                self.log_e_neg[j] += ln_1p_of(-lam_neg * s);
+                // The side that lost the row adds `-0`, the identity of `+`
+                // for every `x`, `-0` included. Built from the sign by
+                // integer arithmetic: written as an `if`, the compiler kept
+                // the branch, which the coin the data flip mispredicts.
+                const ONE: u64 = 0x3FF0_0000_0000_0000;
+                const NEG_ZERO: u64 = 1 << 63;
+                let (up, down) = (u64::from(pos), u64::from(!pos));
+                self.n_pos[j] += f64::from_bits((up * ONE) | (down * NEG_ZERO));
+                self.n_neg[j] += f64::from_bits((down * ONE) | (up * NEG_ZERO));
             }
             self.w_sum += weight;
         }
@@ -672,6 +685,86 @@ mod tests {
                 found: "holt"
             })
         ));
+    }
+
+    /// The update as it was written with branches on the sign, one `if` per
+    /// output: the oracle the branch-free form is held to, to the bit.
+    fn branching_update(m: &mut SeqTest, y: &[Option<f64>], weight: f64) {
+        if weight > 0.0 {
+            for (j, yj) in y.iter().enumerate().take(m.cfg.n_targets) {
+                let Some(yj) = *yj else { continue };
+                let s = if yj > 0.0 {
+                    1.0
+                } else if yj < 0.0 {
+                    -1.0
+                } else {
+                    continue;
+                };
+                let (lam_pos, lam_neg) = m.stakes(j);
+                m.log_e_pos[j] += (lam_pos * s).ln_1p();
+                m.log_e_neg[j] += (-lam_neg * s).ln_1p();
+                if s > 0.0 {
+                    m.n_pos[j] += 1.0;
+                } else {
+                    m.n_neg[j] += 1.0;
+                }
+            }
+            m.w_sum += weight;
+        }
+    }
+
+    /// Signs, zeros of both signs, NaN, nulls and zero weights, over three
+    /// targets, from a fresh state and from one whose wealth is `-0`: every
+    /// field and every emitted slot equals the branching form's, bit for bit.
+    #[test]
+    fn the_branch_free_update_is_the_branching_one_to_the_bit() {
+        for negative_zero_wealth in [false, true] {
+            let mut a = SeqTest::new(cfg(3)).unwrap();
+            if negative_zero_wealth {
+                a.log_e_pos = vec![-0.0; 3];
+                a.log_e_neg = vec![-0.0; 3];
+                a.n_pos = vec![-0.0; 3];
+                a.n_neg = vec![-0.0; 3];
+            }
+            let mut b = a.clone();
+            let mut seed = 99;
+            for i in 0..4000 {
+                let mut pick = |bias: f64| match (lcg(&mut seed) * 10.0) as u32 {
+                    0 => None,
+                    1 => Some(0.0),
+                    2 => Some(-0.0),
+                    3 => Some(f64::NAN),
+                    4 => Some(1e-300),
+                    5 => Some(-1e-300),
+                    _ => Some(if lcg(&mut seed) < bias { 2.5 } else { -0.5 }),
+                };
+                // One target runs biased, so the clip binds on one side.
+                let y = [pick(0.5), pick(0.9), pick(0.1)];
+                let w = if i % 7 == 3 {
+                    0.0
+                } else {
+                    1.0 + (i % 3) as f64
+                };
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                a.step(&[], &y, d, w);
+                branching_update(&mut b, &y, w);
+                let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                assert_eq!(a.w_sum.to_bits(), b.w_sum.to_bits(), "row {i}");
+                for (u, v) in [
+                    (&a.log_e_pos, &b.log_e_pos),
+                    (&a.log_e_neg, &b.log_e_neg),
+                    (&a.n_pos, &b.n_pos),
+                    (&a.n_neg, &b.n_neg),
+                ] {
+                    assert_eq!(
+                        bits(u),
+                        bits(v),
+                        "row {i}, zero wealth {negative_zero_wealth}"
+                    );
+                }
+                assert_eq!(a.w_sum.to_bits(), b.w_sum.to_bits());
+            }
+        }
     }
 
     /// Streams of `rows` fair or biased coin flips; returns, per stream, the
