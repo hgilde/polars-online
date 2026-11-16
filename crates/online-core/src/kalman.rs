@@ -2328,18 +2328,63 @@ fn diffuse_step(p: &mut [f64], pz: &[f64], s: f64) {
 }
 
 /// `P <- P - g (P z)ᵀ`, once per pair and written to both halves, so `P`
-/// stays symmetric (see `Rls::step` for why that matters).
+/// stays symmetric (see `Rls::step` for why that matters). Pair `(i, j)` with
+/// `i <= j` takes `g_i (P z)_j` at `(i, j)` and at its mirror `(j, i)`, so
+/// each row of `P` is walked along its own memory: row `r` takes `g_c pz_r`
+/// at the columns `c` before the diagonal (the mirrors) and `g_r pz_c` from
+/// the diagonal on. The same subtraction of the same product from each
+/// entry as walking the upper triangle and mirroring each, with no strided
+/// access.
 fn take_the_row(p: &mut [f64], gain: &[f64], pz: &[f64]) {
     let k = gain.len();
-    for i in 0..k {
-        let gi = gain[i];
-        for jj in i..k {
-            let v = gi * pz[jj];
-            p[i * k + jj] -= v;
-            if jj != i {
-                p[jj * k + i] -= v;
-            }
+    if k == 0 {
+        return;
+    }
+    for (i, row) in p.chunks_exact_mut(k).enumerate() {
+        let (below, from) = row.split_at_mut(i);
+        let pi = pz[i];
+        for (pij, gj) in below.iter_mut().zip(gain) {
+            *pij -= gj * pi;
         }
+        let gi = gain[i];
+        for (pij, pj) in from.iter_mut().zip(&pz[i..]) {
+            *pij -= gi * pj;
+        }
+    }
+}
+
+/// `pz = P z`: each entry the row's products summed in column order from 0,
+/// four rows at a time so four chains of adds overlap.
+fn matvec(p: &[f64], z: &[f64], out: &mut [f64]) {
+    let k = z.len();
+    if k == 0 {
+        return;
+    }
+    let mut i = 0;
+    while i + 4 <= out.len() {
+        let (r0, rest) = p[i * k..(i + 4) * k].split_at(k);
+        let (r1, rest) = rest.split_at(k);
+        let (r2, r3) = rest.split_at(k);
+        let (mut a0, mut a1, mut a2, mut a3) = (0.0, 0.0, 0.0, 0.0);
+        for j in 0..k {
+            let zj = z[j];
+            a0 += r0[j] * zj;
+            a1 += r1[j] * zj;
+            a2 += r2[j] * zj;
+            a3 += r3[j] * zj;
+        }
+        out[i] = a0;
+        out[i + 1] = a1;
+        out[i + 2] = a2;
+        out[i + 3] = a3;
+        i += 4;
+    }
+    for (row, o) in p[i * k..].chunks_exact(k).zip(&mut out[i..]) {
+        let mut acc = 0.0;
+        for (pv, zj) in row.iter().zip(z) {
+            acc += pv * zj;
+        }
+        *o = acc;
     }
 }
 
@@ -2632,15 +2677,7 @@ impl OnlineModel for Kalman {
             let open = open_shared || (diffuse && !self.cfg.share_p && self.p[pi][0] == 0.0);
             // pz = P z
             if !shared_pz {
-                let p = &self.p[pi];
-                for i in 0..k {
-                    let row = i * k;
-                    let mut acc = 0.0;
-                    for jj in 0..k {
-                        acc += p[row + jj] * self.zs[jj];
-                    }
-                    self.pz[i] = acc;
-                }
+                matvec(&self.p[pi], &self.zs, &mut self.pz);
                 shared_pz = self.cfg.share_p;
             }
             let zpz: f64 = self.zs.iter().zip(&self.pz).map(|(z, p)| z * p).sum();
@@ -2838,6 +2875,72 @@ mod tests {
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    }
+
+    /// `take_the_row` and `matvec` (task 420) are the loops they replaced, to
+    /// the bit: the upper triangle updated and mirrored, and each row's
+    /// products summed from column 0, at every width up to 40 (the blocks of
+    /// four rows and their remainders), on values of mixed scale with zeros
+    /// and signs.
+    #[test]
+    fn the_covariance_passes_are_the_serial_forms_to_the_bit() {
+        let mut st = 420u64;
+        for k in 1..=40usize {
+            for round in 0..20 {
+                let mut vals = |n: usize| -> Vec<f64> {
+                    (0..n)
+                        .map(|_| {
+                            let u = lcg(&mut st);
+                            match (u * 1e3) as i64 % 7 {
+                                0 => 0.0,
+                                1 => u * 1e-30,
+                                2 => u * 1e30,
+                                _ => u,
+                            }
+                        })
+                        .collect()
+                };
+                // A bit-symmetric `P`, as the filter keeps it, and one that is not.
+                let mut p = vals(k * k);
+                if round % 2 == 0 {
+                    for i in 0..k {
+                        for j in 0..i {
+                            p[i * k + j] = p[j * k + i];
+                        }
+                    }
+                }
+                let (gain, pz, z) = (vals(k), vals(k), vals(k));
+
+                let mut old = p.clone();
+                for i in 0..k {
+                    for jj in i..k {
+                        let v = gain[i] * pz[jj];
+                        old[i * k + jj] -= v;
+                        if jj != i {
+                            old[jj * k + i] -= v;
+                        }
+                    }
+                }
+                let mut new = p.clone();
+                take_the_row(&mut new, &gain, &pz);
+                let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                // Mirrored writes make the old form's lower triangle `P_ji - v`,
+                // which is the new form's on any `P`, symmetric or not.
+                assert_eq!(bits(&old), bits(&new), "take_the_row, k = {k}");
+
+                let mut old_pz = vec![0.0; k];
+                for i in 0..k {
+                    let mut acc = 0.0;
+                    for jj in 0..k {
+                        acc += p[i * k + jj] * z[jj];
+                    }
+                    old_pz[i] = acc;
+                }
+                let mut new_pz = vec![f64::NAN; k];
+                matvec(&p, &z, &mut new_pz);
+                assert_eq!(bits(&old_pz), bits(&new_pz), "matvec, k = {k}");
+            }
+        }
     }
 
     /// The noise basis's median, sorted on the stack (task 250), is the
