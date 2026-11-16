@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import tomllib
 import uuid
 from pathlib import Path
@@ -450,6 +451,27 @@ def test_clear_caches_takes_the_test_data_only_when_asked(tmp_path):
     assert not (repo / ".cache").exists() and not (repo / ".hypothesis").exists()
     rest = [f for f in kept if ".cache" not in f.parts and ".hypothesis" not in f.parts]
     assert all(f.exists() for f in rest)
+
+
+@posix_shell
+def test_clear_caches_stale_removes_only_what_no_build_has_read(tmp_path):
+    repo, env, caches, kept = _sandbox(tmp_path)
+    old = repo / "target" / "debug" / "deps" / "old-test-binary"
+    new = repo / "target" / "debug" / "deps" / "libcurrent.rlib"
+    session = repo / "target" / "debug" / "incremental" / "crate-abc" / "s-1" / "dep-graph.bin"
+    for f in (old, new, session):
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("x", encoding="utf-8")
+    for f in (old, session):
+        os.utime(f, (1_000_000_000, time.time()))  # read long ago, written just now
+    res = _clear(repo, env, "--stale", "3")
+    assert res.returncode == 0, res.stderr
+    assert not old.exists() and not session.exists(), res.stdout
+    assert not session.parent.exists(), "an emptied session directory goes too"
+    assert new.exists(), "a file a build read lately stays"
+    assert all(f.exists() for f in [*caches, *kept]), "--stale touches no whole cache"
+    assert "unread for 3 days" in res.stdout
+    assert not (tmp_path / "sccache-calls").exists(), "--stale stops no server"
 
 
 @posix_shell

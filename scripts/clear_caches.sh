@@ -10,6 +10,10 @@
 #   scripts/clear_caches.sh --slots      also the slots' target/, which keeping them warm is for
 #   scripts/clear_caches.sh --test-data  also .cache/ (downloads) and .hypothesis/
 #   scripts/clear_caches.sh --uv         also `uv cache prune` (uv's own cache, outside the repo)
+#   scripts/clear_caches.sh --stale [N]  instead of removing target/ whole, remove only what no build has
+#                                        read for N days (default 7) from each target/ in the list: the
+#                                        superseded test binaries and rlibs in deps/ and the old
+#                                        incremental/ sessions; sccache and the other flags' caches stay
 #
 # By default it removes nothing but target/ (debug, release, dev-wheel,
 # nextest's files; what `cargo clean` removes) and sccache's cache
@@ -27,14 +31,25 @@ worktrees=
 slots=
 test_data=
 uv_prune=
+stale=
+days=7
+want_days=
 for arg in "$@"; do
+    if [ -n "$want_days" ]; then
+        want_days=
+        case "$arg" in
+            ''|*[!0-9]*) ;;
+            *) days="$arg"; continue ;;
+        esac
+    fi
     case "$arg" in
+        --stale) stale=1; want_days=1 ;;
         --dry-run) dry=1 ;;
         --worktrees) worktrees=1 ;;
         --slots) slots=1 ;;
         --test-data) test_data=1 ;;
         --uv) uv_prune=1 ;;
-        *) echo "usage: scripts/clear_caches.sh [--dry-run] [--worktrees] [--slots] [--test-data] [--uv]" >&2; exit 2 ;;
+        *) echo "usage: scripts/clear_caches.sh [--dry-run] [--worktrees] [--slots] [--test-data] [--uv] [--stale [DAYS]]" >&2; exit 2 ;;
     esac
 done
 
@@ -85,12 +100,41 @@ fi
 size_kb() { du -sk "$1" 2>/dev/null | cut -f1; }
 human() { awk -v k="$1" 'BEGIN { if (k >= 1048576) printf "%.1f GB", k / 1048576; else printf "%.0f MB", k / 1024 }'; }
 
-if [ -z "$dry" ] && command -v sccache >/dev/null; then
+if [ -z "$dry" ] && [ -z "$stale" ] && command -v sccache >/dev/null; then
     sccache --stop-server >/dev/null 2>&1 || true
 fi
 
+# --stale: a file a build has read since the cutoff is in use, whatever its
+# mtime says (cargo reads each artifact it links or fingerprints, so a
+# current Polars rlib is read by every build and survives); a superseded
+# binary nothing reads goes. Cargo rebuilds any file it finds missing.
+prune_stale() {
+    local path=$1 before after
+    before=$(size_kb "$path")
+    if [ -z "$dry" ]; then
+        find "$path" -type f \( -path '*/deps/*' -o -path '*/incremental/*' \) -atime +"$days" -delete 2>/dev/null
+        find "$path" -type d -empty -path '*/incremental/*' -delete 2>/dev/null
+        after=$(size_kb "$path")
+    else
+        after=$((before - $(find "$path" -type f \( -path '*/deps/*' -o -path '*/incremental/*' \) -atime +"$days" -exec du -k {} + 2>/dev/null | awk '{s += $1} END {print s + 0}')))
+    fi
+    echo $((before - after))
+}
+
 total=0
 for path in "${targets[@]}"; do
+    if [ -n "$stale" ]; then
+        case "$path" in */target) ;; *) continue ;; esac
+        [ -e "$path" ] || { echo "absent      $path"; continue; }
+        kb=$(prune_stale "$path")
+        total=$((total + kb))
+        if [ -n "$dry" ]; then
+            printf 'would free  %-9s %s (unread for %s days)\n' "$(human "$kb")" "$path" "$days"
+        else
+            printf 'freed       %-9s %s (unread for %s days)\n' "$(human "$kb")" "$path" "$days"
+        fi
+        continue
+    fi
     if [ ! -e "$path" ]; then
         echo "absent      $path"
         continue
