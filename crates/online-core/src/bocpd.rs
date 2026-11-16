@@ -217,6 +217,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::solve::{FactorWork, QuadWork, SpdFactor};
 
+mod held;
+use held::{HeldBranches, HeldZ, LengthTerms, prune_band, prune_keeps};
+
 /// **Why the reported changepoint probability is `P(r ≤ 1)` and not
 /// `P(r = 0)`.**
 ///
@@ -909,8 +912,12 @@ fn posterior_of(joint: &[f64]) -> Vec<f64> {
 
 /// [`posterior_of`], written over `out`.
 fn posterior_into(joint: &[f64], out: &mut Vec<f64>) {
+    posterior_given(joint, log_sum_exp(joint), out);
+}
+
+/// [`posterior_into`] where `z`, the joint's `log_sum_exp`, is known.
+fn posterior_given(joint: &[f64], z: f64, out: &mut Vec<f64>) {
     out.clear();
-    let z = log_sum_exp(joint);
     if !z.is_finite() {
         let k = joint.len();
         out.resize(k, 1.0 / k as f64);
@@ -1013,6 +1020,9 @@ struct Work {
     run: RunWork,
     /// Which runs [`Bocpd::prune`] keeps.
     keep: Vec<bool>,
+    /// The bits of `prune_below` and the band of gaps around its logarithm
+    /// where [`prune_keeps`] must take the exponential (task 419).
+    prune_band: (u64, Option<(f64, f64)>),
     /// Runs dropped from the posterior, each the next row's empty run in
     /// turn ([`Run::reset`]). Runs and these together never outnumber the
     /// most runs the posterior has held, plus one.
@@ -1121,6 +1131,10 @@ pub struct Bocpd {
     /// A row's working space (task 292). Not state.
     #[serde(skip)]
     work: Work,
+    /// `log_sum_exp(logjoint)`, where the last prune left the joint as the
+    /// row's `log_sum_exp` read it (task 419). Not state.
+    #[serde(skip)]
+    joint_z: HeldZ,
 }
 
 /// The Student-t predictive's gamma terms, `ln Γ((ν+a)/2) − ln Γ(ν/2)`:
@@ -1129,204 +1143,6 @@ pub struct Bocpd {
 /// the value is the one the expression took inline.
 fn gamma_diff(nu: f64, a: f64) -> f64 {
     ln_gamma((nu + a) / 2.0) - ln_gamma(nu / 2.0)
-}
-
-/// What the predictive takes of a run's `ν` alone -- [`gamma_diff`], and
-/// under `gaussian` `ln(ν·π)` beside it -- held by the bits of `ν` and `a`
-/// (tasks 250 and 389). A run's `ν` is the prior's plus its weight, so
-/// under rows of one weight the run of length `r` asks this row for the
-/// values the run of length `r` asked the last row for, and two `ln_gamma`
-/// a run a row -- four logarithms and a Lanczos sum -- become a lookup. An
-/// entry keeps the value the function gave for exactly those bits, so a hit
-/// is the value a miss computes: two `ν` that differ in any bit, `0.0` and
-/// `-0.0` included, never share an entry, and a different `a` empties the
-/// table. Open addressing over a power of two at most a quarter full of the
-/// runs one row asks for, so every `ν` of a row has its own entry: a
-/// direct-mapped table put the 200 keys of a stream of 200 runs in 111
-/// slots and hit 30% of the time. A table that fills up is emptied, which
-/// a stream whose `ν` never repeat (fractional weights) does every few
-/// rows, at the cost of the lookups it could not have answered. Not state:
-/// a state file carries none of it, a restored or cloned model starts
-/// empty, and two models are the same model whatever each has held, so
-/// [`PartialEq`] ignores it.
-#[derive(Debug, Default)]
-struct LengthTerms {
-    /// The bits of the `a` the entries were made for, and whether they hold
-    /// `ln(ν·π)` (the `gaussian` form's) or only the gamma difference.
-    a: u64,
-    with_pi: bool,
-    /// A power of two, or empty before the first lookup. A key that is a
-    /// NaN's bits marks an entry never filled.
-    slots: Vec<LengthSlot>,
-    /// Entries filled.
-    filled: usize,
-    /// Lookups answered from an entry, and computed: the tests read them to
-    /// show the table was used.
-    #[cfg(test)]
-    hits: u64,
-    #[cfg(test)]
-    misses: u64,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct LengthSlot {
-    key: u64,
-    gamma: f64,
-    ln_pi: f64,
-}
-
-impl Clone for LengthTerms {
-    fn clone(&self) -> Self {
-        Self::default()
-    }
-}
-
-impl PartialEq for LengthTerms {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-
-impl LengthTerms {
-    /// The least entries a table has: a row's `runs` runs get four each, so
-    /// the table is at most a quarter full of one row's keys and a half full
-    /// of two rows'.
-    const MIN_SLOTS: usize = 64;
-
-    /// No `ν` asked for here has a NaN's bits, so they mark an entry never
-    /// filled.
-    const EMPTY: u64 = f64::NAN.to_bits();
-
-    /// Ready for a row of `runs` runs asking for the terms of dimension
-    /// `a`, with `ln(ν·π)` beside the gamma difference where `with_pi`. A
-    /// table built for another `a` or form is emptied, and one without room
-    /// for the row's keys grows and starts again.
-    #[inline(never)]
-    fn begin(&mut self, runs: usize, a: f64, with_pi: bool) {
-        if self.a != a.to_bits() || self.with_pi != with_pi {
-            self.a = a.to_bits();
-            self.with_pi = with_pi;
-            self.empty();
-        }
-        let need = 4 * (runs + 1);
-        if self.slots.len() < need.max(Self::MIN_SLOTS) {
-            self.grow(need);
-        }
-    }
-
-    /// A table of room for `need` entries or more, empty.
-    #[cold]
-    fn grow(&mut self, need: usize) {
-        self.slots.clear();
-        self.slots.resize(
-            need.next_power_of_two().max(Self::MIN_SLOTS),
-            LengthSlot {
-                key: Self::EMPTY,
-                gamma: 0.0,
-                ln_pi: 0.0,
-            },
-        );
-        self.filled = 0;
-    }
-
-    /// Empty every entry, keeping the room.
-    fn empty(&mut self) {
-        for slot in self.slots.iter_mut() {
-            slot.key = Self::EMPTY;
-        }
-        self.filled = 0;
-    }
-
-    /// The entry for `ν`'s bits: where they hash to, or the next one along
-    /// that holds them or was never filled. The hash is Fibonacci's, of the
-    /// bits folded onto themselves: the `ν` of a stream's runs differ in the
-    /// exponent and the mantissa's top, which a fold of the halves brings
-    /// down to where the product's top bits, the index, read them.
-    #[inline]
-    fn find(&self, bits: u64) -> usize {
-        let mask = self.slots.len() - 1;
-        let folded = bits ^ (bits >> 32);
-        let mut at = (folded.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize & mask;
-        loop {
-            let key = self.slots[at].key;
-            if key == bits || key == Self::EMPTY {
-                return at;
-            }
-            at = (at + 1) & mask;
-        }
-    }
-
-    /// The entry for `nu`, made if it is not held; the table is emptied
-    /// first where it would hold more than half its entries. After
-    /// [`Self::begin`] for `a`.
-    #[inline]
-    fn entry(&mut self, nu: f64, a: f64) -> LengthSlot {
-        debug_assert!(a.to_bits() == self.a && !self.slots.is_empty());
-        let bits = nu.to_bits();
-        let mut at = self.find(bits);
-        if self.slots[at].key == bits {
-            #[cfg(test)]
-            {
-                self.hits += 1;
-            }
-            return self.slots[at];
-        }
-        #[cfg(test)]
-        {
-            self.misses += 1;
-        }
-        if 2 * (self.filled + 1) > self.slots.len() {
-            self.empty();
-            at = self.find(bits);
-        }
-        let made = LengthSlot {
-            key: bits,
-            gamma: gamma_diff(nu, a),
-            // The `gaussian` form's `ln(ν·π)`, as its expression takes it.
-            ln_pi: if self.with_pi {
-                (nu * std::f64::consts::PI).ln()
-            } else {
-                0.0
-            },
-        };
-        self.slots[at] = made;
-        self.filled += 1;
-        made
-    }
-
-    /// [`gamma_diff`]`(nu, a)`, for the `a` and form [`Self::begin`] was
-    /// given.
-    #[inline]
-    fn gamma(&mut self, nu: f64, a: f64) -> f64 {
-        if nu.is_nan() {
-            return gamma_diff(nu, a);
-        }
-        self.entry(nu, a).gamma
-    }
-
-    /// [`gamma_diff`]`(nu, a)` and `ln(nu·π)`.
-    #[inline]
-    fn gamma_and_ln_pi(&mut self, nu: f64, a: f64) -> (f64, f64) {
-        if nu.is_nan() {
-            return (gamma_diff(nu, a), (nu * std::f64::consts::PI).ln());
-        }
-        let e = self.entry(nu, a);
-        (e.gamma, e.ln_pi)
-    }
-}
-
-/// The chance of a break the last row took, by the bits of what it came
-/// from -- the row's hazard under a per-row hazard, the step under one on
-/// the clock -- so that a stream of one hazard or of regular steps takes the
-/// two logarithms of [`Branches`] once (task 389). Not state, and every
-/// model is equal to every other as to it.
-#[derive(Debug, Clone, Copy, Default)]
-struct HeldBranches(Option<(u64, Branches)>);
-
-impl PartialEq for HeldBranches {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
 }
 
 impl Bocpd {
@@ -1342,6 +1158,7 @@ impl Bocpd {
             gammas: LengthTerms::default(),
             branches: HeldBranches::default(),
             work: Work::default(),
+            joint_z: HeldZ::default(),
             w_mean: 0.0,
             w_rows: 0.0,
             data_prior: None,
@@ -1701,7 +1518,7 @@ impl Bocpd {
         let mut out = Vec::new();
         let mut work = Work::default();
         let update = self
-            .read_into(x, joint, next, rel, cache, &mut work, &mut out)
+            .read_into(x, joint, None, next, rel, cache, &mut work, &mut out)
             .map(|z| (work.new, work.weights, z));
         (out, update)
     }
@@ -1715,6 +1532,7 @@ impl Bocpd {
         &self,
         x: &[f64],
         joint: &[f64],
+        joint_z: Option<f64>,
         next: Option<Branches>,
         rel: f64,
         mut cache: Option<&mut LengthTerms>,
@@ -1769,7 +1587,12 @@ impl Bocpd {
         }
         // The pre-row run posterior, which `run_mode`, `run_mean` and the
         // predictive mean are read from.
-        posterior_into(joint, pre);
+        // Where the joint is the one the last prune left as the recursion
+        // made it, its `log_sum_exp` is the one that row took (task 419).
+        match joint_z {
+            Some(z) => posterior_given(joint, z, pre),
+            None => posterior_into(joint, pre),
+        }
         let mut mode_at = 0;
         for i in 1..r {
             if pre[i] > pre[mode_at] {
@@ -1871,9 +1694,14 @@ impl Bocpd {
         // `read`'s, where it took it of this joint: the same function of
         // the same values.
         let z = z.unwrap_or_else(|| log_sum_exp(&self.logjoint));
+        self.joint_z.0 = None;
         if !z.is_finite() {
             return;
         }
+        // Whether the joint leaves here as it came in, to the bit: then `z`
+        // is its `log_sum_exp`, which the next row reads it against (task
+        // 419).
+        let mut as_made = true;
         // The runs dropped go to the working space, each to be a later
         // row's empty run (task 292). Borrowed in place: taken out and put
         // back, an empty one was made and dropped on every row.
@@ -1881,11 +1709,12 @@ impl Bocpd {
         if self.cfg.prune_below > 0.0 {
             let keep = &mut work.keep;
             keep.clear();
-            keep.extend(
-                self.logjoint
-                    .iter()
-                    .map(|l| (l - z).exp() >= self.cfg.prune_below),
-            );
+            let pb = self.cfg.prune_below;
+            if work.prune_band.0 != pb.to_bits() {
+                work.prune_band = (pb.to_bits(), prune_band(pb));
+            }
+            let band = work.prune_band.1;
+            keep.extend(self.logjoint.iter().map(|l| prune_keeps(l - z, pb, band)));
             // Never drop everything, and never drop `r = 0`: it is the
             // branch a changepoint arrives on.
             if keep.iter().any(|k| *k) {
@@ -1906,6 +1735,7 @@ impl Bocpd {
                         at += 1;
                     }
                 }
+                as_made = at == self.logjoint.len();
                 work.spare.extend(self.runs.drain(at..));
                 self.logjoint.truncate(at);
             }
@@ -1954,8 +1784,15 @@ impl Bocpd {
             self.runs.swap(kept, heaviest);
             work.spare.extend(self.runs.drain(kept + 1..));
             self.runs[kept].shrink_to(cap);
+            // A tail of one run is its own `log_sum_exp`, and the joint is
+            // as it was where that is the bits it held.
+            as_made &= heaviest == kept && self.logjoint.len() == kept + 1;
+            as_made &= tail.to_bits() == self.logjoint[kept].to_bits();
             self.logjoint.truncate(kept + 1);
             self.logjoint[kept] = tail;
+        }
+        if as_made {
+            self.joint_z.0 = Some(z);
         }
     }
 }
@@ -2101,9 +1938,18 @@ impl Bocpd {
         // borrows it.
         let mut gammas = std::mem::take(&mut self.gammas);
         let mut work = std::mem::take(&mut self.work);
+        // The joint's `log_sum_exp`, where the joint is the model's own and
+        // the last prune left it as it was made (`HeldZ`).
+        let joint_z = if moved.is_none() {
+            self.joint_z.0
+        } else {
+            None
+        };
+        self.joint_z.0 = None;
         let extra = self.read_into(
             x,
             joint,
+            joint_z,
             next,
             rel,
             Some(&mut gammas),
@@ -2119,8 +1965,10 @@ impl Bocpd {
             // does not move. Under a per-row hazard the posterior does not
             // move either; on the clock the clock's advance is the step's
             // chance of a break, which applies all the same (hard rule 9).
-            if let Some(moved) = moved {
-                self.logjoint = moved;
+            match moved {
+                Some(moved) => self.logjoint = moved,
+                // The joint is as it was, and so is what was known of it.
+                None => self.joint_z.0 = joint_z,
             }
             self.work = work;
             return;
@@ -2139,8 +1987,10 @@ impl Bocpd {
             // `hmm` ages a failed row as a row of no weight too (review
             // round 4, CE10).
             self.solve_failures += 1;
-            if let Some(moved) = moved {
-                self.logjoint = moved;
+            match moved {
+                Some(moved) => self.logjoint = moved,
+                // The joint is as it was, and so is what was known of it.
+                None => self.joint_z.0 = joint_z,
             }
             self.work = work;
             return;
@@ -2183,6 +2033,7 @@ impl Bocpd {
 
 #[cfg(test)]
 mod tests {
+    use super::held::LengthSlot;
     use super::*;
 
     /// The prior from `d` rows or fewer is diagonal under `gaussian`: they
@@ -2417,7 +2268,7 @@ mod tests {
 
     /// A prior given whole, so no warm-up: the longhand tests read Algorithm
     /// 1 from the first row.
-    fn cfg(d: usize) -> BocpdCfg {
+    pub(super) fn cfg(d: usize) -> BocpdCfg {
         BocpdCfg {
             n_features: d,
             hazard: 100.0,
@@ -2436,16 +2287,16 @@ mod tests {
         }
     }
 
-    struct Normals(crate::SplitMix64);
+    pub(super) struct Normals(crate::SplitMix64);
 
     impl Normals {
-        fn new(seed: u64) -> Self {
+        pub(super) fn new(seed: u64) -> Self {
             Self(crate::SplitMix64::new(seed))
         }
-        fn unit(&mut self) -> f64 {
+        pub(super) fn unit(&mut self) -> f64 {
             ((self.0.next_u64() >> 11) as f64 + 0.5) / (1u64 << 53) as f64
         }
-        fn normal(&mut self) -> f64 {
+        pub(super) fn normal(&mut self) -> f64 {
             let (u, v) = (self.unit(), self.unit());
             (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
         }
