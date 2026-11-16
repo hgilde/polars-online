@@ -5479,7 +5479,10 @@ mod tests {
                 2.0,
             ),
         ] {
-            let with_pi = c.emission == BocpdEmission::Gaussian;
+            let gaussian = c.emission == BocpdEmission::Gaussian;
+            // Two features: the diagonal form holds `ln(π(κₙ+1)/κₙ)` too.
+            let with_pi = true;
+            let (k0, nu0) = (c.prior_kappa, c.nu0());
             let mut m = Bocpd::new(BocpdCfg {
                 max_run: 60,
                 prune_below: 1e-6,
@@ -5509,10 +5512,11 @@ mod tests {
             for e in filled {
                 let nu = f64::from_bits(e.key);
                 assert_eq!(e.gamma.to_bits(), gamma_diff(nu, a).to_bits(), "nu {nu}");
-                let ln_pi = if with_pi {
+                let ln_pi = if gaussian {
                     (nu * std::f64::consts::PI).ln()
                 } else {
-                    0.0
+                    let kn = k0 + (nu - nu0);
+                    (std::f64::consts::PI * (kn + 1.0) / kn).ln()
                 };
                 assert_eq!(e.ln_pi.to_bits(), ln_pi.to_bits(), "nu {nu}");
             }
