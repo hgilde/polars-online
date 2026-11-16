@@ -183,6 +183,11 @@ returns.
   block loop: `ewm_mean` 2.3 times as fast (64.7 to 28.5 ns a row), four
   operators 2.2 times, one key 1.8 times, with a `window_size` 1.1 to 1.2
   times. Outputs and saved state unchanged to the bit.
+- The window operators read group and session columns from their values
+  rather than casting them to text each chunk, and run interleaved groups
+  through the same block loop: 100 keys 1.9 times as fast (96 to 50 ns a
+  row), 10,000 keys up to 2.1 times, one key 1.45 times. Outputs and saved
+  state unchanged to the bit.
 - `emit_breaks` forms its Wald products four rows at a time: 1.45 times as
   fast at 200 features, about 5% at 20. Outputs and saved state unchanged
   to the bit.
