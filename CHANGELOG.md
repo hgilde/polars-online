@@ -189,6 +189,13 @@ returns.
   runs of 8 rows rather than 32: `ew_cov` through the bank at 1,000 and
   10,000 groups about 5% faster on x86, level on arm64. Outputs and saved
   state unchanged to the bit.
+- A grouped bank no longer allocates a list of rows and a key for each
+  group of each chunk: a chunk's groups are one flat list of rows, and a
+  group is looked up by its key's value. `seqtest` at 1,000 and 10,000
+  groups makes 0.06 allocations a row rather than 0.57 and 2.06, and runs
+  1.12 times as fast on arm64 (1.10 through the wheel); `ewridge` at five
+  features 1.02-1.04 times and `ew_cov` 1.00-1.08 times at 1,000 groups.
+  Outputs and saved state unchanged to the bit.
 - The bank writes a run of an output column in one pass again: a run of
   16 or more processed, finite rows is one copy, and the column's unused
   tail is filled where it is completed rather than up front. A wide
