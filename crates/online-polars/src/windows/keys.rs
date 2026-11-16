@@ -430,10 +430,15 @@ pub(crate) fn session_hashes(s: &Series) -> PolarsResult<Vec<u64>> {
 }
 
 fn text_hashes<'s>(values: impl Iterator<Item = Option<&'s str>>, out: &mut Vec<u64>) {
+    // A string past this length is worth a comparison with the row before's: a
+    // run of one session is a run of one hash. A shorter one is hashed as it
+    // comes, which costs about what the comparison does.
+    const LONG: usize = 16;
     let mut last: Option<(&str, u64)> = None;
     for v in values {
         out.push(match v {
             None => session_hash(None),
+            Some(t) if t.len() < LONG => session_hash(Some(t)),
             Some(t) => match last {
                 Some((l, h)) if l == t => h,
                 _ => {
