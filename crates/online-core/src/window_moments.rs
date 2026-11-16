@@ -77,6 +77,28 @@ pub(crate) fn block_rows(k: usize) -> usize {
     k.div_ceil(2) + 3
 }
 
+/// Calls `$layout.$body(..)` with the width a literal for up to eight
+/// columns, where the body is inlined: its loops over the columns and the
+/// triangle then have lengths known at compile time, so they unroll and no
+/// slice is range-checked, as the permutation draws' sums do
+/// (`CorrChange::co_moments_fixed`). Each arm is the same source, so the
+/// same operations in the same order: the same bits.
+macro_rules! fixed_width {
+    ($layout:ident, $body:ident($($arg:expr),*)) => {
+        match $layout.k {
+            1 => Layout { k: 1 }.$body($($arg),*),
+            2 => Layout { k: 2 }.$body($($arg),*),
+            3 => Layout { k: 3 }.$body($($arg),*),
+            4 => Layout { k: 4 }.$body($($arg),*),
+            5 => Layout { k: 5 }.$body($($arg),*),
+            6 => Layout { k: 6 }.$body($($arg),*),
+            7 => Layout { k: 7 }.$body($($arg),*),
+            8 => Layout { k: 8 }.$body($($arg),*),
+            _ => $layout.$body($($arg),*),
+        }
+    };
+}
+
 /// One summary's layout over `k` columns: `[n, α (k), o (k), M (k(k+1)/2)]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Layout {
@@ -102,6 +124,19 @@ impl Layout {
     /// about the first row, the offsets' sums and then the deviations'
     /// products, `dev` holding one row's deviations. No rows, `n = 0`.
     pub(crate) fn leaf<'a>(
+        self,
+        out: &mut [f64],
+        dev: &mut [f64],
+        lo: u64,
+        hi: u64,
+        row: &impl Fn(u64) -> &'a [f64],
+    ) {
+        fixed_width!(self, leaf_body(out, dev, lo, hi, row))
+    }
+
+    /// [`Self::leaf`]'s body, inlined into each width it is dispatched at.
+    #[inline(always)]
+    fn leaf_body<'a>(
         self,
         out: &mut [f64],
         dev: &mut [f64],
@@ -150,6 +185,12 @@ impl Layout {
     /// the larger part's co-moments are added last, so one rounding a
     /// merge is at the scale of the merged rows.
     pub(crate) fn merge(self, acc: &mut [f64], other: &[f64], delta: &mut [f64]) {
+        fixed_width!(self, merge_body(acc, other, delta))
+    }
+
+    /// [`Self::merge`]'s body, inlined into each width it is dispatched at.
+    #[inline(always)]
+    fn merge_body(self, acc: &mut [f64], other: &[f64], delta: &mut [f64]) {
         let k = self.k;
         let (na, nb) = (acc[0], other[0]);
         if nb == 0.0 {
@@ -738,6 +779,79 @@ mod tests {
     fn a_blocks_summary_is_no_larger_than_its_rows() {
         for k in 2..=400 {
             assert!(Layout::new(k).stride() <= block_rows(k) * k, "k {k}");
+        }
+    }
+
+    /// **The widths dispatched at compile time are the generic body**: at
+    /// every width from 1 to 10 (the eight fixed ones and two past them), a
+    /// leaf and a merge in each order of part sizes (the earlier larger, the
+    /// later larger, a tie, either empty) equal, to the bit, the same body
+    /// run with the width as a runtime number, over rows with signed zeros,
+    /// infinities, NaN, overflow and subnormals as well as ordinary values.
+    #[test]
+    fn a_fixed_width_summary_is_the_generic_bodys_to_the_bit() {
+        let mut x = 11u64;
+        let mut next = move || {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (x >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let odd = [
+            0.0,
+            -0.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            1e300,
+            -1e300,
+            5e-324,
+            1e-310,
+        ];
+        for k in 1..=10usize {
+            let (fixed, generic) = (Layout::new(k), Layout::new(std::hint::black_box(k)));
+            let s = fixed.stride();
+            let rows: Vec<Vec<f64>> = (0..30)
+                .map(|i| {
+                    (0..k)
+                        .map(|j| {
+                            let u = next();
+                            if (i * 5 + j) % 13 == 0 {
+                                odd[(u * odd.len() as f64) as usize % odd.len()]
+                            } else {
+                                1e3 * j as f64 + 4.0 * u - 2.0
+                            }
+                        })
+                        .collect()
+                })
+                .collect();
+            let row = |q: u64| rows[q as usize].as_slice();
+            let bits = |v: &[f64]| v.iter().map(|b| b.to_bits()).collect::<Vec<_>>();
+            let (mut dev, mut delta) = (vec![0.0; k], vec![0.0; 2 * k]);
+            let (mut dev2, mut delta2) = (vec![0.0; k], vec![0.0; 2 * k]);
+            for (lo, hi) in [(0u64, 30u64), (3, 4), (5, 5), (0, 1), (2, 19)] {
+                let (mut a, mut b) = (vec![0.0; s], vec![0.0; s]);
+                fixed.leaf(&mut a, &mut dev, lo, hi, &row);
+                generic.leaf_body(&mut b, &mut dev2, lo, hi, &row);
+                assert_eq!(bits(&a), bits(&b), "leaf, k {k}, rows {lo}..{hi}");
+            }
+            for (cut, end) in [
+                (10u64, 30u64),
+                (20, 30),
+                (15, 30),
+                (0, 30),
+                (30, 30),
+                (4, 9),
+            ] {
+                let (mut a, mut b) = (vec![0.0; s], vec![0.0; s]);
+                fixed.leaf(&mut a, &mut dev, 0, cut, &row);
+                fixed.leaf(&mut b, &mut dev, cut, end, &row);
+                let (mut m1, mut m2) = (a.clone(), a.clone());
+                fixed.merge(&mut m1, &b, &mut delta);
+                generic.merge_body(&mut m2, &b, &mut delta2);
+                assert_eq!(bits(&m1), bits(&m2), "merge, k {k}, cut {cut}..{end}");
+                assert_eq!(bits(&delta), bits(&delta2), "delta, k {k}, cut {cut}");
+            }
         }
     }
 }
