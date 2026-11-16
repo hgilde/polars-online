@@ -189,6 +189,13 @@ returns.
   runs of 8 rows rather than 32: `ew_cov` through the bank at 1,000 and
   10,000 groups about 5% faster on x86, level on arm64. Outputs and saved
   state unchanged to the bit.
+- The bank writes a run of an output column in one pass again: a run of
+  16 or more processed, finite rows is one copy, and the column's unused
+  tail is filled where it is completed rather than up front. A wide
+  `ew_cov` row through the bank runs 25% fewer instructions (x86-64,
+  Callgrind), and `ew_cov` at 1,000 and 10,000 groups is 3-12% faster on
+  x86-64 and 6-13% faster on arm64. Outputs and saved state unchanged to
+  the bit.
 - The window operators run a plain stretch of one group's rows (stamps
   that step forward or tie, inside the gap cap and the session) through a
   block loop: `ewm_mean` 2.3 times as fast (64.7 to 28.5 ns a row), four
