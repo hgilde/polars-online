@@ -1478,22 +1478,23 @@ impl CorrChange {
     /// up to eight columns the loops over the pairs have a length known at
     /// compile time, so they unroll and each sum stays in a register.
     fn window_corr_flat(d: usize, pool: &[f64], at: &[usize], buf: &mut [f64]) {
-        let w = at.len();
-        let wf = w as f64;
+        let wf = at.len() as f64;
         buf.fill(0.0);
         let (mean, rest) = buf.split_at_mut(d);
         let (ss, corr) = rest.split_at_mut(d);
-        for &i in at {
-            for (m, x) in mean.iter_mut().zip(&pool[i * d..(i + 1) * d]) {
-                *m += x;
-            }
-        }
-        mean.iter_mut().for_each(|m| *m /= wf);
         macro_rules! fixed {
             ($($n:literal)+) => {
                 match d {
-                    $($n => Self::co_moments_fixed::<$n>(pool, at, mean, ss, corr),)+
-                    _ => Self::co_moments_rows(d, pool, at, mean, ss, corr),
+                    $($n => Self::co_moments_fixed::<$n>(pool, at, wf, mean, ss, corr),)+
+                    _ => {
+                        for &i in at {
+                            for (m, x) in mean.iter_mut().zip(&pool[i * d..(i + 1) * d]) {
+                                *m += x;
+                            }
+                        }
+                        mean.iter_mut().for_each(|m| *m /= wf);
+                        Self::co_moments_rows(d, pool, at, mean, ss, corr);
+                    }
                 }
             };
         }
@@ -1501,31 +1502,46 @@ impl CorrChange {
         Self::normalise_pairs(d, ss, corr);
     }
 
-    /// The sums of squared deviations and of cross products of the rows of
-    /// `pool`, `D` numbers to a row, at the places `at` gives, about `mean`.
+    /// The means, the sums of squared deviations and of cross products of
+    /// the rows of `pool`, `D` numbers to a row, at the places `at` gives
+    /// (`wf` of them): the means first, each a sum in the order of `at`
+    /// over `wf`, then the deviations about them. The pool is read as rows
+    /// of `D`, so a row is one bounds check.
     fn co_moments_fixed<const D: usize>(
         pool: &[f64],
         at: &[usize],
-        mean: &[f64],
+        wf: f64,
+        mean: &mut [f64],
         ss: &mut [f64],
         corr: &mut [f64],
     ) {
-        let mean: [f64; D] = mean.try_into().expect("d means");
+        let rows = pool.as_chunks::<D>().0;
+        let mut m = [0.0f64; D];
+        for &i in at {
+            let r = &rows[i];
+            for a in 0..D {
+                m[a] += r[a];
+            }
+        }
+        for x in &mut m {
+            *x /= wf;
+        }
         // At most 28 pairs, at eight columns.
         let mut s = [0.0f64; D];
         let mut c = [0.0f64; 28];
         for &i in at {
-            let r: &[f64; D] = pool[i * D..(i + 1) * D].try_into().expect("a row");
+            let r = &rows[i];
             let mut p = 0;
             for a in 0..D {
-                let da = r[a] - mean[a];
+                let da = r[a] - m[a];
                 s[a] += da * da;
                 for b in (a + 1)..D {
-                    c[p] += da * (r[b] - mean[b]);
+                    c[p] += da * (r[b] - m[b]);
                     p += 1;
                 }
             }
         }
+        mean.copy_from_slice(&m);
         ss.copy_from_slice(&s);
         corr.copy_from_slice(&c[..D * (D - 1) / 2]);
     }
@@ -1978,6 +1994,48 @@ impl crate::OnlineModel for CorrChange {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `window_corr_flat`'s fixed-width paths (one to eight columns, the
+    /// pool read as rows of `D`) against the sums as the any-width path
+    /// takes them, to the bit: the means over the places in order, then the
+    /// deviations about them; places repeated and out of order, and a pool
+    /// with values of every size.
+    #[test]
+    fn window_corr_flat_is_the_any_width_sums_to_the_bit() {
+        let mut g = SplitMix64::new(451);
+        for d in 1..=10usize {
+            let n = 37;
+            let pool: Vec<f64> = (0..n * d)
+                .map(|_| {
+                    let u = g.uniform() - 0.5;
+                    match g.next_u64() % 4 {
+                        0 => u * 1e8,
+                        1 => u * 1e-8,
+                        _ => u * 3.0,
+                    }
+                })
+                .collect();
+            for w in [1usize, 2, 5, 40] {
+                let at: Vec<usize> = (0..w).map(|_| (g.next_u64() % n as u64) as usize).collect();
+                let len = 2 * d + d * (d - 1) / 2;
+                let mut got = vec![f64::NAN; len];
+                CorrChange::window_corr_flat(d, &pool, &at, &mut got);
+                let mut want = vec![0.0; len];
+                let (mean, rest) = want.split_at_mut(d);
+                let (ss, corr) = rest.split_at_mut(d);
+                for &i in &at {
+                    for (m, x) in mean.iter_mut().zip(&pool[i * d..(i + 1) * d]) {
+                        *m += x;
+                    }
+                }
+                mean.iter_mut().for_each(|m| *m /= w as f64);
+                CorrChange::co_moments_rows(d, &pool, &at, mean, ss, corr);
+                CorrChange::normalise_pairs(d, ss, corr);
+                let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&got), bits(&want), "d {d}, {w} places");
+            }
+        }
+    }
 
     /// The `monitor` kind's span closes into `rows`, and the next span's
     /// rows are copied from there (the allocation test in `online-bench`
