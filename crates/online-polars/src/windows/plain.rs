@@ -644,6 +644,7 @@ impl Windows {
     /// its `bufs` filled with the rows' policy times, new-stamp flags and raw
     /// clocks: run through the group's kernels, and the stream put where the
     /// block's last row leaves it.
+    #[inline(always)]
     fn run_block(&mut self, rows: &PlainRows<'_>, at: usize, mut bufs: Bufs, shape: Shape) {
         let Shape {
             len,
