@@ -1738,7 +1738,7 @@ impl WindowsRun {
                     session: session.as_deref(),
                     values: &values,
                     accepts: &accepts,
-                    keys: codes.codes(),
+                    keys: codes.is_grouped().then_some(&codes),
                 });
                 if taken > 0 {
                     i += taken;

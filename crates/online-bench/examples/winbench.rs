@@ -11,7 +11,9 @@
 //! inputs, WB_TIES=fraction of repeated stamps, WB_SESSION=rows per session (0 none, a
 //! session column with no session_gap), WB_RESTART=1 (restart_after_step_back set, no
 //! step back in the data). Task 431: WB_KEY=int|str|cat (the group column's type, default int),
-//! WB_SESSKEY=int|str|cat (the session column's), WB_RUN=n (the group stays the same for n rows at a time).
+//! WB_SESSKEY=int|str|cat (the session column's), WB_RUN=n (the group stays the same for n rows at a time),
+//! WB_CAPSEC=seconds (the gap_cap, default 300: with 10,000 keys at 0.5 s a row each key is silent
+//! for 5,000 s on average, so every row of it is past the cap; a longer cap keeps the groups alive).
 use std::time::Instant;
 
 use online_polars::{WindowsConfig, WindowsRun};
@@ -66,6 +68,7 @@ fn main() {
     let key_kind = env("WB_KEY", "int");
     let sess_kind = env("WB_SESSKEY", "int");
     let run_len: usize = env("WB_RUN", "1").parse().unwrap();
+    let cap_sec: f64 = env("WB_CAPSEC", "300").parse().unwrap();
     // WB_PLAIN=0 switches the core's plain-run loop off (task 429), to time what it saves.
     let plain = env("WB_PLAIN", "1");
     let temporal = kind == "dt";
@@ -103,7 +106,11 @@ fn main() {
     let mut config = json!({"formulas": formulas});
     if kind != "none" {
         config["clock"] = json!("ts");
-        config["gap_cap"] = if temporal { json!("5m") } else { json!(300.0) };
+        config["gap_cap"] = if temporal {
+            json!(format!("{}s", cap_sec as u64))
+        } else {
+            json!(cap_sec)
+        };
         if restart {
             config["restart_after_step_back"] = if temporal { json!("1s") } else { json!(1.0) };
         }

@@ -152,10 +152,27 @@ impl ChunkKeys {
         Ok(b.done())
     }
 
-    /// The codes, one a row, where there is a group column.
+    /// Whether the chunk has a group column.
     #[inline]
-    pub(crate) fn codes(&self) -> Option<&[u32]> {
-        (!self.ungrouped).then_some(self.codes.as_slice())
+    pub(crate) fn is_grouped(&self) -> bool {
+        !self.ungrouped
+    }
+
+    /// Row `i`'s code: two rows have one exactly when they have one key.
+    #[inline]
+    pub(crate) fn code(&self, i: usize) -> u32 {
+        self.codes[i]
+    }
+
+    /// The group of row `i` if the core has made it.
+    #[inline]
+    pub(crate) fn known(&self, i: usize) -> Option<usize> {
+        let c = self.codes[i];
+        if c < NEW {
+            Some(c as usize)
+        } else {
+            self.fresh[(c - NEW) as usize].group
+        }
     }
 
     /// The group of row `i`: made, if the core has none yet.
