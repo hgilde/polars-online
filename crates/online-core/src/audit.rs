@@ -670,17 +670,42 @@ impl Digest {
         }
     }
 
-    /// Fold the buffer into the centroids: sort every centroid and value
-    /// by value, then merge neighbours while a centroid stays within
-    /// `2n / COMPRESSION` rows.
+    /// Fold the buffer into the centroids: sort the buffered values, merge
+    /// them into the sorted centroids, then merge neighbours while a
+    /// centroid stays within `2n / COMPRESSION` rows.
     fn compress(&mut self) {
-        let mut all: Vec<(f64, f64)> = self.centroids.clone();
-        all.extend(self.buffer.drain(..).map(|v| (v, 1.0)));
-        self.centroids = Self::fold(all);
+        let centroids = std::mem::take(&mut self.centroids);
+        self.centroids = Self::fold(centroids, &mut self.buffer);
+        self.buffer.clear();
     }
 
-    fn fold(mut all: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
-        all.sort_by(|a, b| a.0.total_cmp(&b.0));
+    /// Merge `fresh` (one row each, weight 1) into `centroids`, both ending
+    /// up in the order a stable sort of `centroids` followed by `fresh`
+    /// gives: only `fresh` is sorted, and a tie keeps the centroid first, as
+    /// the stable sort did. Two values that tie under `total_cmp` are the
+    /// same bits and both weigh 1, so the sort of `fresh` cannot show whether
+    /// it was stable. The merge picks its side with a select, not a branch:
+    /// which side is next is as unpredictable as the data.
+    fn fold(mut centroids: Vec<(f64, f64)>, fresh: &mut [f64]) -> Vec<(f64, f64)> {
+        if !centroids
+            .windows(2)
+            .all(|w| w[0].0.total_cmp(&w[1].0).is_le())
+        {
+            centroids.sort_by(|a, b| a.0.total_cmp(&b.0));
+        }
+        fresh.sort_unstable_by(f64::total_cmp);
+        let mut all: Vec<(f64, f64)> = Vec::with_capacity(centroids.len() + fresh.len());
+        let (mut i, mut j) = (0, 0);
+        while i < centroids.len() && j < fresh.len() {
+            let c = centroids[i];
+            let f = fresh[j];
+            let take_centroid = c.0.total_cmp(&f).is_le();
+            all.push(if take_centroid { c } else { (f, 1.0) });
+            i += usize::from(take_centroid);
+            j += usize::from(!take_centroid);
+        }
+        all.extend_from_slice(&centroids[i..]);
+        all.extend(fresh[j..].iter().map(|&v| (v, 1.0)));
         let total: f64 = all.iter().map(|c| c.1).sum();
         let cap = (2.0 * total / COMPRESSION).max(1.0);
         let mut out: Vec<(f64, f64)> = Vec::new();
@@ -698,18 +723,16 @@ impl Digest {
     }
 
     fn merge(&mut self, o: &Digest) {
-        let mut all = self.centroids.clone();
-        all.extend(o.centroids.iter().copied());
-        all.extend(self.buffer.iter().chain(&o.buffer).map(|&v| (v, 1.0)));
+        let mut centroids = self.centroids.clone();
+        centroids.extend(o.centroids.iter().copied());
+        let mut fresh: Vec<f64> = self.buffer.iter().chain(&o.buffer).copied().collect();
         self.buffer.clear();
-        self.centroids = Self::fold(all);
+        self.centroids = Self::fold(centroids, &mut fresh);
     }
 
     /// The centroids with the buffer folded in, the state untouched.
     fn settled(&self) -> Vec<(f64, f64)> {
-        let mut all = self.centroids.clone();
-        all.extend(self.buffer.iter().map(|&v| (v, 1.0)));
-        Self::fold(all)
+        Self::fold(self.centroids.clone(), &mut self.buffer.clone())
     }
 
     fn has_shape(&self) -> bool {
