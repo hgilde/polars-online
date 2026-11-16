@@ -5,7 +5,9 @@
 //! can be compared for speed and for identity. Alternate the two builds'
 //! binaries when timing a change, so that load moves both alike.
 //! WB_KIND=dt|f|none WB_WS=none|60s|60.0 WB_OPS=1|4|8 WB_GROUPS=0|N WB_ROWS=n WB_REPS=n WB_CHUNK=n
-//! WB_OPSET=mean|mixed|quant WB_PLAIN=0 (the plain-run loop off)
+//! WB_OPSET=mean|mixed|quant|msrq WB_PLAIN=0 (the plain-run loop off)
+//! Task 441: WB_REVERSE=1 makes the operators forward (`rewm_*`, which need a WB_WS); WB_OP=mean|sum|rate|quantile|std|var
+//! names the one operator of WB_OPS=1; `msrq` is mean, sum, rate, quantile (what a forward kernel can run).
 //! The features task 429 prices, each off by default: WB_CAP=on|off (a gap_cap is required with a clock; `fire` also
 //! puts a 400 s gap every thousand rows, past the 5 minute cap), WB_CLOSED=right|left|both|none, WB_NULLS=fraction of null
 //! inputs, WB_TIES=fraction of repeated stamps, WB_SESSION=rows per session (0 none, a
@@ -81,15 +83,26 @@ fn main() {
     let names = [
         "ewm_mean", "ewm_std", "ewm_sum", "ewm_var", "ewm_mean", "ewm_sum", "ewm_std", "ewm_var",
     ];
+    let reverse = env("WB_REVERSE", "0") == "1";
+    let one_op = env("WB_OP", "mean");
+    let msrq = ["mean", "sum", "rate", "quantile"];
     let formulas: Vec<Value> = (0..ops)
         .map(|i| {
-            let op = if opset == "quant" {
-                "ewm_quantile"
+            let op: String = if opset == "quant" {
+                "ewm_quantile".into()
             } else if opset == "mixed" {
-                names[i % 8]
+                names[i % 8].into()
+            } else if opset == "msrq" {
+                format!("ewm_{}", msrq[i % 4])
             } else {
-                "ewm_mean"
+                format!("ewm_{one_op}")
             };
+            let op = if reverse {
+                op.replacen("ewm_", "rewm_", 1)
+            } else {
+                op
+            };
+            let op = op.as_str();
             let mut o = json!({"half_life": hl});
             if closed != "right" {
                 o["closed"] = json!(closed);
@@ -97,7 +110,7 @@ fn main() {
             if let Some(w) = &wsv {
                 o["window_size"] = w.clone();
             }
-            if op == "ewm_quantile" {
+            if op.ends_with("ewm_quantile") {
                 o["quantile"] = json!(0.5);
             }
             json!({"name": format!("f{i}"), "tree": [op, ["col", "mid"], o]})

@@ -420,6 +420,37 @@ impl KernelDef {
         v
     }
 
+    /// [`Self::discount`] through one slot of a [`DecayMemo`].
+    #[inline]
+    fn discount_slot(&self, d: f64, slot: &mut (u64, f64)) -> f64 {
+        if self.half_life.is_infinite() || d == 0.0 {
+            return 1.0;
+        }
+        if slot.0 == d.to_bits() {
+            return slot.1;
+        }
+        let v = (-(d / self.half_life)).exp2();
+        *slot = (d.to_bits(), v);
+        v
+    }
+
+    /// [`Self::mass`] through one slot of a [`DecayMemo`].
+    #[inline]
+    fn mass_slot(&self, t: f64, slot: &mut (u64, f64)) -> f64 {
+        if t <= 0.0 {
+            return 0.0;
+        }
+        if self.half_life.is_infinite() {
+            return t;
+        }
+        if slot.0 == t.to_bits() {
+            return slot.1;
+        }
+        let v = self.mass_finite(t);
+        *slot = (t.to_bits(), v);
+        v
+    }
+
     /// `∫_0^T λ^s ds`: the decayed mass of `T` units of time.
     #[inline]
     fn mass(&self, t: f64) -> f64 {
@@ -454,6 +485,28 @@ pub(crate) struct DecayMemo {
     mass: (u64, f64),
     /// The mass at the far end of an interval read in the window's cut.
     mass_far: (u64, f64),
+    /// A forward kernel's close, which a backward kernel's queue never needs.
+    fwd: Option<Box<FwdMemo>>,
+}
+
+/// A forward kernel's close: the mass from the row to its open row, and the
+/// discounts of the window's sums and of its open row, each to the row the
+/// window is of, and a rate's mass of the window's span. A close asks each
+/// operator of a kernel for the same distances, and a regular clock asks them
+/// again at the next row.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FwdMemo {
+    mass_open: (u64, f64),
+    disc_seg: (u64, f64),
+    disc_open: (u64, f64),
+    mass_span: (u64, f64),
+}
+
+impl DecayMemo {
+    #[inline]
+    fn fwd(&mut self) -> &mut FwdMemo {
+        self.fwd.get_or_insert_with(Default::default)
+    }
 }
 
 impl PartialEq for DecayMemo {
@@ -1798,6 +1851,29 @@ fn mass_between_in(k: &KernelDef, memo: &mut DecayMemo, t: f64, a: f64, b: f64) 
     }
 }
 
+/// [`mass_between`] for a forward kernel's interval ending at the next row
+/// `b`, starting at its own row `a = t`: one mass, of the distance to the next
+/// row, through `memo`, which a regular clock asks again at the next row.
+#[inline]
+fn mass_between_fill(k: &KernelDef, memo: &mut DecayMemo, t: f64, a: f64, b: f64) -> f64 {
+    if b <= a {
+        return 0.0;
+    }
+    k.mass_in(b - t, memo) - k.mass(a - t)
+}
+
+/// [`mass_between`] for a forward kernel's close: the open row's interval
+/// `[a, b]` seen from the row `t` being closed, its two masses on slots of
+/// their own beside the one a row's interval to the next row takes
+/// ([`mass_between_in`]), so each repeats where the clock does.
+#[inline]
+fn mass_between_close(k: &KernelDef, memo: &mut DecayMemo, t: f64, a: f64, b: f64) -> f64 {
+    if b <= a {
+        return 0.0;
+    }
+    k.mass_slot(b - t, &mut memo.mass_far) - k.mass_slot(a - t, &mut memo.fwd().mass_open)
+}
+
 /// [`mass_between`] for a backward kernel's interval ending at `t` -- a
 /// value held from `a` to the row's own time -- with `memo` holding the mass
 /// of the distance back to `a` that the last ask was for: where operators of
@@ -2169,7 +2245,7 @@ impl Windows {
     #[inline]
     fn scratch(&mut self) {
         if !self.derived.ready {
-            self.derived = Derived::of(&self.kernels, self.n_forward, self.derived.off);
+            self.derived = Derived::of(&self.kernels, self.derived.off);
         }
         if self.scratch_sum.is_empty() {
             let widest = self.members.iter().map(Vec::len).max().unwrap_or(0);
@@ -2508,97 +2584,43 @@ impl Windows {
         // it is not in them -- with the kernel's open row, the last one,
         // counted up to here; then that row joins the queue, its interval
         // ended by this one, and this row is the open one.
-        for (ki, k) in self.kernels.iter().enumerate() {
-            if k.direction != Direction::Forward {
-                continue;
-            }
-            let w = k.window_size.expect("a forward kernel has a window");
-            // A row exactly a window later is in it under "right" and
-            // "both", so the window closes only past it.
-            while g.closed[ki] < g.waiting.len() && {
-                let t = g.waiting[g.closed[ki]];
-                let d = gap(form, t.off, off).cmp_window(k);
-                if k.closed.far(Direction::Forward) {
-                    d == Ordering::Greater
-                } else {
-                    d != Ordering::Less
-                }
-            } {
-                let t = g.waiting[g.closed[ki]];
-                g.closed[ki] += 1;
-                let held = Held {
-                    first: self.held_first,
-                    n_outputs: self.n_outputs,
-                    values: &mut self.held_values,
-                    meta: &mut self.held_meta,
-                };
-                by_width!(
-                    g.queues[ki].wide(),
-                    close(
-                        k,
-                        &self.ops,
-                        &self.members[ki],
-                        &mut g.queues[ki],
-                        &mut self.scratch_sum,
-                        g.open[ki],
-                        &g.open_x[ki],
-                        &g.open_held[ki],
-                        tau,
-                        t,
-                        End::Complete,
-                        t.tau + w,
-                        form,
-                        held,
-                    )
-                );
-            }
-            if let Some((oseq, otau, ooff)) = g.open[ki].take() {
-                let m = &self.members[ki];
-                let (rw, wide) = (g.queues[ki].row_w(), g.queues[ki].wide());
-                by_width!(
-                    wide,
-                    fill_forward(
-                        k,
-                        &self.ops,
-                        m,
-                        otau,
-                        tau,
-                        &g.open_x[ki],
-                        &g.open_held[ki],
-                        &mut self.scratch_row,
-                    )
-                );
-                g.queues[ki].push_row(
-                    k,
-                    oseq,
-                    otau,
-                    ooff,
+        let mut held = Held {
+            first: self.held_first,
+            n_outputs: self.n_outputs,
+            values: &mut self.held_values,
+            meta: &mut self.held_meta,
+        };
+        for &ki in &self.derived.forward {
+            let ki = ki as usize;
+            let k = &self.kernels[ki];
+            forward_step(
+                k,
+                &self.ops,
+                &self.members[ki],
+                ki,
+                g,
+                &mut self.scratch_row,
+                &mut self.scratch_sum,
+                FwdRow {
+                    seq,
                     tau,
-                    &self.scratch_row[..rw * m.len()],
-                    &mut self.scratch_sum,
-                );
-            }
-            // A value is held until the next: a row with none holds the last.
-            for (j, &o) in self.members[ki].iter().enumerate() {
-                let v = row.values[self.ops[o].input];
-                let v = if usable(v) { v } else { f64::NAN };
-                g.open_x[ki][j] = v;
-                if !v.is_nan() {
-                    g.held[o] = v;
-                }
-                g.open_held[ki][j] = g.held[o];
-            }
-            g.open[ki] = Some((seq, tau, off));
+                    off,
+                    form,
+                },
+                |input| row.values[input],
+                &mut held,
+            );
         }
-        retire(&self.kernels, g);
+        if !self.derived.forward.is_empty() {
+            retire(&self.kernels, g);
+        }
 
         // Backward kernels: under "left" and "none" the stamp's window is
         // read before its rows join; then the row joins; under "right" and
         // "both" the stamp's rows wait for the next stamp.
-        for (ki, k) in self.kernels.iter().enumerate() {
-            if k.direction != Direction::Backward {
-                continue;
-            }
+        for &ki in &self.derived.backward {
+            let ki = ki as usize;
+            let k = &self.kernels[ki];
             let m = &self.members[ki];
             if !k.closed.near(Direction::Backward) && new_stamp {
                 by_width!(
@@ -3006,13 +3028,14 @@ fn fill_forward<const W: bool>(
     x: &[f64],
     held: &[f64],
     row: &mut [f64],
+    memo: &mut DecayMemo,
 ) {
     for (j, &o) in members.iter().enumerate() {
         let (v, h) = (x[j], held[j]);
         let n = f64::from(u8::from(!v.is_nan()));
         let acc = match ops[o].stat {
             Stat::Mean if !h.is_nan() => {
-                let mass = mass_between(k, tau, tau, end);
+                let mass = mass_between_fill(k, memo, tau, tau, end);
                 Acc {
                     s: mass * h,
                     w: mass,
@@ -3281,7 +3304,9 @@ fn close<const W: bool>(
         // value of its own, since the rows before it hold a value from the
         // row itself or from one its stamp excludes.
         let seg = q.sum_op::<W>(k, j);
-        let scaled = |(a, at): (Acc, f64)| a.scaled(k.discount(at - t.tau), false);
+        let scaled = |memo: &mut DecayMemo, (a, at): (Acc, f64)| {
+            a.scaled(k.discount_slot(at - t.tau, &mut memo.fwd().disc_seg), false)
+        };
         let mut a = Acc::default();
         let mut any = seg.is_some();
         let mut first_own: Option<usize> = None;
@@ -3296,12 +3321,12 @@ fn close<const W: bool>(
                     Some(p) => q.sum_after_op::<W>(k, p - 1, j),
                 };
                 if let Some(b) = base {
-                    a = scaled(b);
+                    a = scaled(&mut q.decay, b);
                 }
             }
             Stat::Sum | Stat::Rate | Stat::Quantile => {
                 if let Some(s) = seg {
-                    a = scaled(s);
+                    a = scaled(&mut q.decay, s);
                 }
             }
             Stat::Var | Stat::Std => {}
@@ -3316,7 +3341,7 @@ fn close<const W: bool>(
                     let m = if open_on_edge {
                         0.0
                     } else {
-                        mass_between(k, t.tau, otau, open_end.min(far))
+                        mass_between_close(k, &mut q.decay, t.tau, otau, open_end.min(far))
                     };
                     a = a.plus(
                         Acc {
@@ -3332,7 +3357,7 @@ fn close<const W: bool>(
                 Stat::Sum | Stat::Rate | Stat::Quantile if own => {
                     a = a.plus(
                         Acc {
-                            s: k.discount(otau - t.tau) * x,
+                            s: k.discount_slot(otau - t.tau, &mut q.decay.fwd().disc_open) * x,
                             w: 0.0,
                             n,
                             ..Acc::default()
@@ -3355,10 +3380,133 @@ fn close<const W: bool>(
                 let p = op.quantile.expect("a quantile has a level (`check_op`)");
                 q.quantile(k, j, p, open_value).unwrap_or(f64::NAN)
             }
+        } else if op.stat == Stat::Rate {
+            // `value_of`'s rate, its span's mass on a slot: every window of
+            // a kernel but a cut one has the span of the window.
+            if a.n < f64::from(op.min_samples) {
+                f64::NAN
+            } else {
+                rate_of(a, k.mass_slot(len, &mut q.decay.fwd().mass_span))
+            }
         } else {
             value_of(k, op, a, len)
         };
     }
+}
+
+/// A row as a forward kernel meets it: its place, its policy time and its raw
+/// clock.
+#[derive(Clone, Copy)]
+struct FwdRow {
+    seq: u64,
+    tau: f64,
+    off: i64,
+    form: OffForm,
+}
+
+/// One forward kernel at one row of its group (the forward arm of
+/// [`Windows::push`], and of the plain loop, which takes a kernel over the
+/// rows of a block): the windows the row reaches past close, with the kernel's
+/// open row counted up to here; then the open row joins the queue, its
+/// interval ended by this row, and this row is the open one. `value` is the
+/// row's value of an operator input.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn forward_step(
+    k: &KernelDef,
+    ops: &[OpDef],
+    members: &[usize],
+    ki: usize,
+    g: &mut Group,
+    scratch_row: &mut [f64],
+    scratch_sum: &mut [f64],
+    row: FwdRow,
+    value: impl Fn(usize) -> f64,
+    held: &mut Held<'_>,
+) {
+    let FwdRow {
+        seq,
+        tau,
+        off,
+        form,
+    } = row;
+    let w = k.window_size.expect("a forward kernel has a window");
+    // A row exactly a window later is in it under "right" and
+    // "both", so the window closes only past it.
+    while g.closed[ki] < g.waiting.len() && {
+        let t = g.waiting[g.closed[ki]];
+        let d = gap(form, t.off, off).cmp_window(k);
+        if k.closed.far(Direction::Forward) {
+            d == Ordering::Greater
+        } else {
+            d != Ordering::Less
+        }
+    } {
+        let t = g.waiting[g.closed[ki]];
+        g.closed[ki] += 1;
+        let h = Held {
+            first: held.first,
+            n_outputs: held.n_outputs,
+            values: &mut *held.values,
+            meta: &mut *held.meta,
+        };
+        by_width!(
+            g.queues[ki].wide(),
+            close(
+                k,
+                ops,
+                members,
+                &mut g.queues[ki],
+                scratch_sum,
+                g.open[ki],
+                &g.open_x[ki],
+                &g.open_held[ki],
+                tau,
+                t,
+                End::Complete,
+                t.tau + w,
+                form,
+                h,
+            )
+        );
+    }
+    if let Some((oseq, otau, ooff)) = g.open[ki].take() {
+        let (rw, wide) = (g.queues[ki].row_w(), g.queues[ki].wide());
+        by_width!(
+            wide,
+            fill_forward(
+                k,
+                ops,
+                members,
+                otau,
+                tau,
+                &g.open_x[ki],
+                &g.open_held[ki],
+                scratch_row,
+                &mut g.queues[ki].decay,
+            )
+        );
+        g.queues[ki].push_row(
+            k,
+            oseq,
+            otau,
+            ooff,
+            tau,
+            &scratch_row[..rw * members.len()],
+            scratch_sum,
+        );
+    }
+    // A value is held until the next: a row with none holds the last.
+    for (j, &o) in members.iter().enumerate() {
+        let v = value(ops[o].input);
+        let v = if usable(v) { v } else { f64::NAN };
+        g.open_x[ki][j] = v;
+        if !v.is_nan() {
+            g.held[o] = v;
+        }
+        g.open_held[ki][j] = g.held[o];
+    }
+    g.open[ki] = Some((seq, tau, off));
 }
 
 /// Drop the waiting rows every forward kernel has closed.
@@ -3776,6 +3924,7 @@ mod tests {
                 closed: Closed::Right,
             };
             let mut memo = DecayMemo::default();
+            let mut fwd = FwdMemo::default();
             for pass in 0..2 {
                 for &d in &distances {
                     assert_eq!(
@@ -3793,6 +3942,22 @@ mod tests {
                         k.mass(d).to_bits(),
                         "far mass of {d} at {half_life}, pass {pass}"
                     );
+                    // A forward kernel's close takes each of these on a slot of
+                    // its own (task 441).
+                    for slot in [&mut fwd.mass_open, &mut fwd.mass_span] {
+                        assert_eq!(
+                            k.mass_slot(d, slot).to_bits(),
+                            k.mass(d).to_bits(),
+                            "slot mass of {d} at {half_life}, pass {pass}"
+                        );
+                    }
+                    for slot in [&mut fwd.disc_seg, &mut fwd.disc_open] {
+                        assert_eq!(
+                            k.discount_slot(d, slot).to_bits(),
+                            k.discount(d).to_bits(),
+                            "slot discount of {d} at {half_life}, pass {pass}"
+                        );
+                    }
                 }
             }
         }
@@ -3815,6 +3980,7 @@ mod tests {
             discount: (2.0f64.to_bits(), 123.0),
             mass: (2.0f64.to_bits(), 456.0),
             mass_far: (2.0f64.to_bits(), 789.0),
+            fwd: None,
         };
         assert_eq!(k.discount_in(2.0, &mut memo), 123.0);
         assert_eq!(k.mass_in(2.0, &mut memo), 456.0);

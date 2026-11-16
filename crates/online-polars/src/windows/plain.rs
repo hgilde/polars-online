@@ -18,7 +18,11 @@
 //! the same doubles, so a run of the plain loop and a run of `push` are equal
 //! to the bit in every output and every byte of the saved state; the block
 //! ends at the first row that is not plain, which `push` takes, and the loop
-//! goes on after it. `crates/online-polars/tests/window_plain.rs` holds the
+//! goes on after it. A forward kernel (task 441) is taken the same way: a
+//! row of a block closes the windows it reaches past and joins the kernel's
+//! queue by [`forward_step`], the function `push` calls for it, a row at a
+//! time and a kernel over the whole block (the block's rows wait first, none
+//! closing a window of its own or a later row's), so the two cannot differ. `crates/online-polars/tests/window_plain.rs` holds the
 //! two to it.
 //!
 //! With several groups (task 431) a pass finds the plain rows in any of them,
@@ -79,9 +83,9 @@ pub(super) struct Derived {
     /// Backward windows that wait for the next distinct stamp ([`Closed::near`]):
     /// 1 if any kernel's does, else 0.
     pub(super) n_wait: u32,
-    /// Whether every kernel looks back: a core with a forward kernel takes
-    /// `push` for every row.
-    plain: bool,
+    /// The indices of the forward kernels and of the backward ones.
+    pub(super) forward: Vec<u32>,
+    pub(super) backward: Vec<u32>,
     /// The plain loop is switched off (`Windows::set_plain_run`).
     pub(super) off: bool,
     /// Rows the plain loop has taken since the core was built or read back.
@@ -97,17 +101,23 @@ impl PartialEq for Derived {
 }
 
 impl Derived {
-    pub(super) fn of(kernels: &[KernelDef], n_forward: u32, off: bool) -> Self {
+    pub(super) fn of(kernels: &[KernelDef], off: bool) -> Self {
         let n_wait = u32::from(
             kernels
                 .iter()
                 .any(|k| k.direction == Direction::Backward && k.closed.near(Direction::Backward)),
         );
-        let plain = n_forward == 0 && kernels.iter().all(|k| k.direction == Direction::Backward);
+        let of = |d: Direction| {
+            (0..kernels.len())
+                .filter(|&ki| kernels[ki].direction == d)
+                .map(|ki| ki as u32)
+                .collect::<Vec<_>>()
+        };
         Derived {
             ready: true,
+            forward: of(Direction::Forward),
+            backward: of(Direction::Backward),
             n_wait,
-            plain,
             off,
             taken: 0,
             bufs: Bufs::default(),
@@ -349,6 +359,8 @@ struct Parts<'a> {
     scratch_row: &'a mut Vec<f64>,
     scratch_sum: &'a mut Vec<f64>,
     n_wait: u32,
+    /// Forward kernels: each row of a run waits on them too.
+    n_forward: u32,
 }
 
 /// A group a pass over several has met.
@@ -455,7 +467,7 @@ impl Windows {
     /// before it builds the rows.
     #[inline]
     pub(crate) fn plain_may_run(&self) -> bool {
-        !self.derived.ready || (self.derived.plain && !self.derived.off)
+        !self.derived.ready || !self.derived.off
     }
 
     /// Take as many of `rows`, from its start, as the plain loop runs: each a
@@ -466,7 +478,7 @@ impl Windows {
     /// state `push` would have left.
     pub(crate) fn push_plain(&mut self, rows: &PlainRows<'_>) -> usize {
         self.scratch();
-        if !self.derived.plain || self.derived.off {
+        if self.derived.off {
             return 0;
         }
         let several = self.groups.len() > 1 && rows.keys.is_some();
@@ -575,6 +587,7 @@ impl Windows {
             next_seq,
             scratch_row,
             scratch_sum,
+            n_forward,
             ..
         } = &mut *self;
         let seq0 = *next_seq;
@@ -583,7 +596,7 @@ impl Windows {
         held_values.extend(std::iter::repeat_n(f64::NAN, len * *n_outputs));
         for r in 0..len {
             held_meta.push_back(Meta {
-                open: if r >= final_from { n_wait } else { 0 },
+                open: *n_forward + if r >= final_from { n_wait } else { 0 },
                 accept: rows.accepts.iter().all(|c| usable(c[at + r])),
                 drop: false,
             });
@@ -599,6 +612,7 @@ impl Windows {
             scratch_row,
             scratch_sum,
             n_wait,
+            n_forward: *n_forward,
         };
         let shape = Shape {
             len,
@@ -797,13 +811,14 @@ impl Windows {
             next_seq,
             scratch_row,
             scratch_sum,
+            n_forward,
             ..
         } = &mut *self;
         let seq0 = *next_seq;
         held_values.extend(std::iter::repeat_n(f64::NAN, len * *n_outputs));
         for j in 0..len {
             held_meta.push_back(Meta {
-                open: 0,
+                open: *n_forward,
                 accept: rows.accepts.iter().all(|c| usable(c[at + j])),
                 drop: false,
             });
@@ -819,6 +834,7 @@ impl Windows {
             scratch_row,
             scratch_sum,
             n_wait,
+            n_forward: *n_forward,
         };
         let n_inputs = rows.values.len();
         let mut xg = std::mem::take(&mut m.xg);
@@ -851,7 +867,7 @@ impl Windows {
                 // The rows of the stamp the group's run ends in wait for the next.
                 if n_wait > 0 {
                     for r in final_from..len_g {
-                        parts.held_meta[(bufs.seq[r] - parts.held_first) as usize].open = n_wait;
+                        parts.held_meta[(bufs.seq[r] - parts.held_first) as usize].open += n_wait;
                     }
                 }
                 let last = idx[len_g - 1] as usize;
@@ -915,6 +931,59 @@ fn offset_of(now: ClockValue) -> i64 {
     }
 }
 
+/// A group's run of rows through its forward kernels: the rows wait first, all of
+/// them, and then each kernel is taken over the run a row at a time by
+/// [`forward_step`], the function `push` calls (see [`run_group`]).
+#[inline(never)]
+fn run_forward(
+    p: &mut Parts<'_>,
+    g: &mut Group,
+    cols: Cols<'_>,
+    bufs: &Bufs,
+    form: OffForm,
+    len: usize,
+) {
+    let (n_out, held_first) = (p.n_out, p.held_first);
+    for r in 0..len {
+        g.waiting.push_back(Wait {
+            seq: bufs.seq[r],
+            tau: bufs.tau[r],
+            off: bufs.off[r],
+        });
+    }
+    let mut held = Held {
+        first: held_first,
+        n_outputs: n_out,
+        values: &mut *p.held_values,
+        meta: &mut *p.held_meta,
+    };
+    for (ki, k) in p.kernels.iter().enumerate() {
+        if k.direction != Direction::Forward {
+            continue;
+        }
+        for r in 0..len {
+            forward_step(
+                k,
+                p.ops,
+                &p.members[ki],
+                ki,
+                g,
+                p.scratch_row,
+                p.scratch_sum,
+                FwdRow {
+                    seq: bufs.seq[r],
+                    tau: bufs.tau[r],
+                    off: bufs.off[r],
+                    form,
+                },
+                |input| cols.x(input)[r],
+                &mut held,
+            );
+        }
+    }
+    retire(p.kernels, g);
+}
+
 /// One group's run of rows, in their own order: the windows the rows resolve
 /// are written, every kernel is taken over the whole run, and the group is left
 /// as `push` would leave it. The caller has made the rows' places in the held
@@ -954,7 +1023,7 @@ fn run_group(p: &mut Parts<'_>, g: &mut Group, cols: Cols<'_>, bufs: &mut Bufs, 
     // kernel is taken over the whole block before the next.
     for (ki, k) in p.kernels.iter().enumerate() {
         let m = &p.members[ki];
-        if fast_kernel(k, m, p.ops) {
+        if k.direction == Direction::Forward || fast_kernel(k, m, p.ops) {
             continue;
         }
         let q = &mut g.queues[ki];
@@ -1075,6 +1144,15 @@ fn run_group(p: &mut Parts<'_>, g: &mut Group, cols: Cols<'_>, bufs: &mut Bufs, 
                 write_backward(p.ops, m, seq, &g.stamp_values[ki], complete, held);
             }
         }
+    }
+    // A forward kernel is the queue's too: each row closes the windows it
+    // reaches past and joins the queue as `push` does it, a row at a time, a
+    // kernel over the whole block. The rows wait first, all of them: no row
+    // closes a window of its own or a later row's (a window of a width above
+    // 0 holds the rows after its row, and a row at the stamp is not past it),
+    // and the kernels' queues share nothing.
+    if p.n_forward > 0 {
+        run_forward(p, g, cols, bufs, form, len);
     }
     let out = p.held_values.make_contiguous();
     let rows_at = Rows {
