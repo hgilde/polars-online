@@ -60,6 +60,13 @@ returns.
 
 ### Performance
 
+- `ew_class` with diagonal covariance keeps each class's sum of the log
+  variances between that class's rows instead of taking a logarithm per
+  feature per class on every row: a class's variances and ridge move only
+  when it learns a row. At 20 features and 10 classes the bank takes about
+  0.67 of the time, at 3 classes 0.87, at 2 classes 0.94 (on arm64); with
+  100 groups the gain is 1% to 8%. Under a `window` the sum is not kept. Outputs and
+  saved states unchanged to the bit.
 - `emit_breaks` is about 1.75 times as fast at 4 and 20 features, and the
   model-selection highlight 1.8 times as fast at a million rows: the break
   test's Wald distance no longer allocates, keeps its factors, and forms

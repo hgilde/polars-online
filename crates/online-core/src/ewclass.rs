@@ -207,6 +207,17 @@ enum Cached {
 struct Factors {
     slots: Vec<Cached>,
     work: FactorWork,
+    logs: Vec<DiagLog>,
+}
+
+/// A diagonal class's `Σ ln(v_i + r)` as of the state it was read at: a
+/// class's variances and its ridge move only when it learns a row (a decay
+/// leaves both), so the sum is kept under the learned-row count and the
+/// ridge's bits. Derived state, as the factors are.
+#[derive(Clone, Default)]
+struct DiagLog {
+    key: Option<(u64, u64)>,
+    sum: f64,
 }
 
 /// The factors, as `derive(Debug)` wrote the cache when it held them alone:
@@ -275,6 +286,33 @@ impl Factors {
         for c in 0..self.slots.len() {
             self.invalidate(c);
         }
+        self.logs.iter_mut().for_each(|l| l.key = None);
+    }
+
+    /// `Σ ln(v_i + ridge)` over class `c`'s variances, kept until the class
+    /// learns another row.
+    fn diag_log_det(
+        &mut self,
+        c: usize,
+        n_classes: usize,
+        cov: &EwCovDiag,
+        ridge: f64,
+        k: usize,
+    ) -> f64 {
+        if self.logs.len() != n_classes {
+            self.logs = vec![DiagLog::default(); n_classes];
+        }
+        let slot = &mut self.logs[c];
+        let key = (cov.rows_learned(), ridge.to_bits());
+        if slot.key != Some(key) {
+            let mut log_det = 0.0;
+            for i in 0..k {
+                log_det += (cov.var(i) + ridge).ln();
+            }
+            slot.sum = log_det;
+            slot.key = Some(key);
+        }
+        slot.sum
     }
 }
 
@@ -847,13 +885,22 @@ impl EwClass {
                         continue;
                     }
                     let ridge = self.ridge(c);
+                    let kept = match (factors.as_deref_mut(), view.is_none()) {
+                        (Some(f), true) => Some(f.diag_log_det(c, nc, cov, ridge, k)),
+                        _ => None,
+                    };
                     let mut log_det = 0.0;
                     let mut q = 0.0;
                     for (i, xi) in x.iter().enumerate() {
                         let v = cov.var(i) + ridge;
                         let d = cov.deviation(i, *xi);
-                        log_det += v.ln();
+                        if kept.is_none() {
+                            log_det += v.ln();
+                        }
                         q += d * d / v;
+                    }
+                    if let Some(l) = kept {
+                        log_det = l;
                     }
                     ell[c] = (weights[c] / total).ln() - 0.5 * log_det - 0.5 * q;
                 }
@@ -2293,6 +2340,106 @@ mod tests {
                 assert!(same_bits(&a.pred, &b.pred) && a.n_eff == b.n_eff);
             }
         }
+    }
+
+    /// A diagonal class's kept `Σ ln(v + r)` is the recomputed one to the
+    /// bit: against a twin whose kept sums are dropped before every row (so
+    /// every row recomputes them), over classes 2-10, features 1-40, zero
+    /// weights, non-finite features, a label unseen for a long stretch, a
+    /// save and load mid-stream (the sums are not saved: the loaded model
+    /// rebuilds them) and a clone (which carries them).
+    #[test]
+    fn the_kept_log_variance_sum_is_the_recomputed_one_to_the_bit() {
+        let bits = |v: &[f64]| v.iter().map(|p| p.to_bits()).collect::<Vec<_>>();
+        let mut reused = 0usize;
+        for (case, (nc, k)) in [(2, 1), (2, 4), (3, 7), (5, 20), (7, 3), (10, 40), (10, 5)]
+            .into_iter()
+            .enumerate()
+        {
+            for (seed, halflife) in [(1u64, 30.0), (2, 3.0), (3, 400.0)] {
+                let c = EwClassCfg {
+                    decay: Decay::Halflife(halflife),
+                    ..cfg(k, nc, Covariance::Diagonal)
+                };
+                let mut kept = EwClass::new(c.clone()).unwrap();
+                let mut twin = kept.clone();
+                let mut s = seed * 1000 + case as u64;
+                let n = 360;
+                for i in 0..n {
+                    let u = lcg(&mut s);
+                    // Class `c >= 2` is unseen for the first 200 rows.
+                    let pool = if i < 200 { 2.min(nc) } else { nc };
+                    let class = ((lcg(&mut s) + 1.0) * 0.5 * pool as f64).floor() as usize % pool;
+                    let mut x: Vec<f64> = (0..k)
+                        .map(|j| (class as f64) * (j as f64 + 1.0) + lcg(&mut s))
+                        .collect();
+                    if u > 0.9 {
+                        x[i % k] = f64::NAN;
+                    }
+                    let label = (u < 0.7 || (0.8..0.9).contains(&u)).then_some(class as f64);
+                    let mut w = if u < -0.8 {
+                        0.0
+                    } else {
+                        0.5 + 0.5 * (lcg(&mut s) + 1.0)
+                    };
+                    if (0.8..0.9).contains(&u) {
+                        // So light that the ridge's scale `a` rounds to 1
+                        // while the variance still moves: only the learned-row
+                        // count tells the sum is stale.
+                        w = 1e-17;
+                        x[0] += 1e3;
+                    }
+                    let d = if i == 0 {
+                        0.0
+                    } else {
+                        0.5 + (lcg(&mut s) + 1.0)
+                    };
+                    if i == n / 2 {
+                        // Saved and loaded, the sums rebuilt.
+                        let bytes = rmp_serde::to_vec(&kept.state()).unwrap();
+                        kept = EwClass::restore(&rmp_serde::from_slice(&bytes).unwrap()).unwrap();
+                        assert!(kept.factors.logs.is_empty());
+                    }
+                    let mut copy = (i == 2 * n / 3).then(|| kept.clone());
+                    twin.factors.logs.clear();
+                    reused += kept.factors.logs.iter().filter(|l| l.key.is_some()).count();
+                    let y = [label];
+                    let want = twin.step(&x, &y, d, w);
+                    let a = kept.step(&x, &y, d, w);
+                    assert_eq!(bits(&a.pred), bits(&want.pred), "nc {nc} k {k} row {i}");
+                    assert_eq!(a.n_eff.to_bits(), want.n_eff.to_bits());
+                    if let Some(copy) = copy.as_mut() {
+                        let b = copy.step(&x, &y, d, w);
+                        assert_eq!(bits(&b.pred), bits(&want.pred), "a clone, row {i}");
+                    }
+                    // The kept model's `predict` takes the recomputing path.
+                    let p = kept.predict(&x, d).pred;
+                    let q = twin.predict(&x, d).pred;
+                    assert_eq!(bits(&p), bits(&q), "predict, row {i}");
+                }
+                assert_eq!(
+                    rmp_serde::to_vec(&kept.state()).unwrap(),
+                    rmp_serde::to_vec(&twin.state()).unwrap(),
+                    "nc {nc} k {k}: the saved bytes"
+                );
+            }
+        }
+        assert!(reused > 1000, "the kept sums were read {reused} times");
+    }
+
+    /// Under a window the covariance a class is scored on moves every row,
+    /// so no sum is kept.
+    #[test]
+    fn under_a_window_no_log_variance_sum_is_kept() {
+        let c = EwClassCfg {
+            window: Some(30.0),
+            ..cfg(3, 3, Covariance::Diagonal)
+        };
+        let mut m = EwClass::new(c).unwrap();
+        for r in stream(200, 3, 3, 5) {
+            m.step(&r.x, &[r.label.map(|c| c as f64)], r.d, r.w);
+        }
+        assert!(m.factors.logs.iter().all(|l| l.key.is_none()));
     }
 
     #[test]
