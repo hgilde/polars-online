@@ -20,7 +20,14 @@ publish = false
 unsafe_code = "forbid"
 
 
+[features]
+# Task 426 (k), a measurement: the implementation behind `dmath` (at most one).
+dmath-libm = []
+dmath-pxfm = ["dep:pxfm"]
+dmath-own = []
+
 [dependencies]
+pxfm = { version = "0.1.30", optional = true }
 faer.workspace = true
 # Not used by name: faer's `std` feature less `private-gemm-x86` (the
 # workspace Cargo.toml, task 258). All four are faer's own dependencies,

@@ -46,6 +46,7 @@
 //! shape pools the ridges with the co-moments, `Σ_c π_c r_c`, so it is the
 //! same regularization the `full` shape would apply, averaged.
 
+use crate::dmath::DMath;
 use serde::{Deserialize, Serialize};
 
 use crate::clock::Decay;
@@ -774,7 +775,7 @@ impl EwClass {
                             // `quad_forms(delta, k, 1)[0]` to the bit, in
                             // the kept column.
                             let q = f.quad_form(delta, quad);
-                            ell[c] = (weights[c] / total).ln() - 0.5 * f.log_det() - 0.5 * q;
+                            ell[c] = (weights[c] / total).dln() - 0.5 * f.log_det() - 0.5 * q;
                         }
                         None => {
                             *solve_failed = true;
@@ -832,7 +833,7 @@ impl EwClass {
                         let log_det = f.log_det();
                         factor.give(f);
                         for (j, &c) in seen.iter().enumerate() {
-                            ell[c] = (weights[c] / total).ln() - 0.5 * log_det - 0.5 * q[j];
+                            ell[c] = (weights[c] / total).dln() - 0.5 * log_det - 0.5 * q[j];
                         }
                     }
                     None => {
@@ -852,10 +853,10 @@ impl EwClass {
                     for (i, xi) in x.iter().enumerate() {
                         let v = cov.var(i) + ridge;
                         let d = cov.deviation(i, *xi);
-                        log_det += v.ln();
+                        log_det += v.dln();
                         q += d * d / v;
                     }
-                    ell[c] = (weights[c] / total).ln() - 0.5 * log_det - 0.5 * q;
+                    ell[c] = (weights[c] / total).dln() - 0.5 * log_det - 0.5 * q;
                 }
             }
         }
@@ -882,9 +883,9 @@ impl EwClass {
         out.push(best as f64);
         let mut z = 0.0;
         for &l in ell.iter() {
-            z += (l - top).exp();
+            z += (l - top).dexp();
         }
-        out.extend(ell.iter().map(|&l| (l - top).exp() / z));
+        out.extend(ell.iter().map(|&l| (l - top).dexp() / z));
     }
 }
 

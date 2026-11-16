@@ -112,6 +112,7 @@
 //! Defaults `alpha = 0.1`, `beta = 1.0`, `l1 = 0.0`, `l2 = 1.0` follow the paper's
 //! guidance (docs/PLAN.md marks them [validate]).
 
+use crate::dmath::DMath;
 use serde::{Deserialize, Serialize};
 
 use crate::Decay;
@@ -202,9 +203,9 @@ impl FtrlCfg {
 fn sigmoid(v: f64) -> f64 {
     // Numerically stable both ways.
     if v >= 0.0 {
-        1.0 / (1.0 + (-v).exp())
+        1.0 / (1.0 + (-v).dexp())
     } else {
-        let e = v.exp();
+        let e = v.dexp();
         e / (1.0 + e)
     }
 }

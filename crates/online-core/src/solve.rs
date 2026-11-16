@@ -14,6 +14,7 @@
 //! sequential faer call, on the pool's threads. The eigensolver has no such
 //! cut, and runs at a fixed parallel degree ([`EIGEN_DEGREE`]).
 
+use crate::dmath::DMath;
 use std::cmp::Ordering;
 use std::sync::OnceLock;
 
@@ -741,7 +742,7 @@ impl SpdFactor {
     pub fn log_det(&self) -> f64 {
         *self.log_det.get_or_init(|| {
             let l = &self.l;
-            2.0 * (0..l.nrows()).map(|i| l[(i, i)].ln()).sum::<f64>()
+            2.0 * (0..l.nrows()).map(|i| l[(i, i)].dln()).sum::<f64>()
         })
     }
 

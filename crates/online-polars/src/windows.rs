@@ -68,6 +68,7 @@
 //! windows would hold every later row. Rows leave in input order, each once
 //! every window over it has resolved.
 
+use online_core::dmath::DMath;
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -361,7 +362,7 @@ impl KernelDef {
             1.0
         } else {
             // `exp2(-x)`, as `Decay::factor` spells it, for the same reason.
-            (-(d / self.half_life)).exp2()
+            (-(d / self.half_life)).dexp2()
         }
     }
 
@@ -378,7 +379,7 @@ impl KernelDef {
         if bits == d.to_bits() {
             return v;
         }
-        let v = (-(d / self.half_life)).exp2();
+        let v = (-(d / self.half_life)).dexp2();
         memo.discount = (d.to_bits(), v);
         v
     }
@@ -440,7 +441,7 @@ impl KernelDef {
         // W2). `exp_m1` keeps the small difference whole; `discount`
         // itself has nothing to lose.
         let h = self.half_life;
-        -(h / std::f64::consts::LN_2) * (-(t * std::f64::consts::LN_2 / h)).exp_m1()
+        -(h / std::f64::consts::LN_2) * (-(t * std::f64::consts::LN_2 / h)).dexp_m1()
     }
 }
 

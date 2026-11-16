@@ -3,6 +3,7 @@
 //! and the prune's decision without the call where the call cannot change it.
 
 use super::*;
+use crate::dmath::DMath;
 
 /// Whether [`Bocpd::prune`] keeps a run whose log mass is `gap` below the
 /// joint's total: `exp(gap) >= prune_below`, with the exponential taken only
@@ -18,14 +19,14 @@ pub(super) fn prune_keeps(gap: f64, prune_below: f64, band: (f64, f64)) -> bool 
     if (gap < lo) | (gap > hi) {
         gap > hi
     } else {
-        gap.exp() >= prune_below
+        gap.dexp() >= prune_below
     }
 }
 
 /// The band of [`prune_keeps`] for a `prune_below`.
 pub(super) fn prune_band(prune_below: f64) -> (f64, f64) {
     if prune_below >= 1e-290 {
-        let at = prune_below.ln();
+        let at = prune_below.dln();
         (at - 1e-3, at + 1e-3)
     } else {
         (f64::NAN, f64::NAN)
@@ -205,7 +206,7 @@ impl LengthTerms {
             gamma: gamma_diff(nu, a),
             // The `gaussian` form's `ln(ν·π)`, as its expression takes it.
             ln_pi: if self.with_pi {
-                (nu * std::f64::consts::PI).ln()
+                (nu * std::f64::consts::PI).dln()
             } else {
                 0.0
             },
@@ -229,7 +230,7 @@ impl LengthTerms {
     #[inline]
     pub(super) fn gamma_and_ln_pi(&mut self, nu: f64, a: f64) -> (f64, f64) {
         if nu.is_nan() {
-            return (gamma_diff(nu, a), (nu * std::f64::consts::PI).ln());
+            return (gamma_diff(nu, a), (nu * std::f64::consts::PI).dln());
         }
         let e = self.entry(nu, a);
         (e.gamma, e.ln_pi)

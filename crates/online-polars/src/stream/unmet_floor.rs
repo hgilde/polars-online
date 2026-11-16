@@ -4,6 +4,7 @@
 //! from `stream.rs` to keep it under the repository's file-size cap.
 
 use online_core::Decay;
+use online_core::dmath::DMath;
 
 use super::{Unmet, half_life_need, half_life_of, projected_figure, settled_weight, solve_floor};
 use crate::spec::{ModelKind, Spec};
@@ -276,7 +277,7 @@ fn decay_above(spec: &Spec, decay: Decay, need: f64) -> Option<String> {
         // A factor near 1 keeps the decimals that tell it from 1 (WRITING
         // §11).
         Decay::Lam(_) => {
-            let gap: f64 = three_figures(1.0 - (-1.0 / need).exp2(), Round::Down)
+            let gap: f64 = three_figures(1.0 - (-1.0 / need).dexp2(), Round::Down)
                 .parse()
                 .ok()?;
             let decimals = usize::try_from(2 - gap.log10().floor() as i32).unwrap_or(0);

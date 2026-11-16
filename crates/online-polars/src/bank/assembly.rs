@@ -24,6 +24,7 @@
 //! where it started when every run waited for the end (task 255 (a)).
 
 use super::*;
+use online_core::dmath::DMath;
 
 /// One output field under construction, as its source dictates.
 enum Acc {
@@ -312,7 +313,7 @@ impl<'a> Sink<'a> {
                                     f64::INFINITY
                                 };
                                 let wgt = if excess > 0.0 {
-                                    (-eta * excess).exp()
+                                    (-eta * excess).dexp()
                                 } else {
                                     1.0
                                 };

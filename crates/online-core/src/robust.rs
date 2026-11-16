@@ -196,6 +196,7 @@
 //! this model solves. Taken at each solve, `O(k³)`, and kept per target;
 //! NaN in the intercept's slot, 0 for a column the solve dropped.
 
+use crate::dmath::DMath;
 use serde::{Deserialize, Serialize};
 
 use std::sync::OnceLock;
@@ -1504,7 +1505,7 @@ impl Robust {
                 let Some(scale) = scale else {
                     return least_squares;
                 };
-                let floor = (k / present).powf(0.4);
+                let floor = (k / present).dpowf(0.4);
                 let h = scale * self.cfg.quantile_eps.max(floor);
                 let r = yj - pred;
                 if r.abs() < h {

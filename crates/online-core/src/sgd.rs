@@ -229,6 +229,7 @@
 //! row, and the quantile and epsilon-insensitive steps are a sign times the
 //! rate: neither can grow, and none is gated.
 
+use crate::dmath::DMath;
 use serde::{Deserialize, Serialize};
 
 use crate::huber_refit::{self, RefitBuf, Rows};
@@ -1179,12 +1180,12 @@ impl Sgd {
     /// module docs).
     fn link(&self, eta: f64) -> f64 {
         match self.cfg.loss {
-            SgdLoss::Poisson => eta.clamp(-30.0, 30.0).exp(),
+            SgdLoss::Poisson => eta.clamp(-30.0, 30.0).dexp(),
             SgdLoss::Logistic => {
                 if eta >= 0.0 {
-                    1.0 / (1.0 + (-eta).exp())
+                    1.0 / (1.0 + (-eta).dexp())
                 } else {
-                    let e = eta.exp();
+                    let e = eta.dexp();
                     e / (1.0 + e)
                 }
             }
@@ -2229,7 +2230,7 @@ impl OnlineModel for Sgd {
         let lr_row = match self.cfg.schedule {
             LearningRate::Constant => Some(self.cfg.learning_rate),
             LearningRate::InvScaling { power } => {
-                Some(self.cfg.learning_rate / (1.0 + lam * self.w_sum).powf(power))
+                Some(self.cfg.learning_rate / (1.0 + lam * self.w_sum).dpowf(power))
             }
             LearningRate::AdaGrad => None,
         };

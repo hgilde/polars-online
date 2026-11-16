@@ -89,6 +89,7 @@
 //! such a row, so the row after it forecast one trend step short (review
 //! 2026-09-12, C22).
 
+use crate::dmath::DMath;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
@@ -245,7 +246,7 @@ impl Holt {
             if h.is_infinite() {
                 1.0
             } else {
-                (-(s / h)).exp2()
+                (-(s / h)).dexp2()
             }
         };
         (f(self.cfg.level_half_life), f(self.cfg.trend_half_life))

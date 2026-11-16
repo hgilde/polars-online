@@ -68,6 +68,7 @@
 //! `Πₖₗ(t) = softmaxₗ(Aₖₗ + Bₖₗ·zₜ)` from fixed coefficients, and the
 //! count-based learning is off.
 
+use crate::dmath::DMath;
 use serde::{Deserialize, Serialize};
 
 use crate::cluster::kmeans::seed_centres;
@@ -679,7 +680,7 @@ impl Hmm {
             terms.extend((0..k).map(|c| a[r * k + c] + b[r * k + c] * z));
             let top = terms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
             exps.clear();
-            exps.extend(terms.iter().map(|v| (v - top).exp()));
+            exps.extend(terms.iter().map(|v| (v - top).dexp()));
             let sum: f64 = exps.iter().sum();
             for (c, e) in exps.iter().enumerate() {
                 pi[r * k + c] = e / sum;
@@ -733,7 +734,7 @@ impl Hmm {
     /// whether there is a density.
     fn log_densities_into(&self, x: &[f64], work: &mut RowWork) -> bool {
         let (k, d) = (self.cfg.k, self.cfg.n_features);
-        let base = -0.5 * d as f64 * std::f64::consts::TAU.ln();
+        let base = -0.5 * d as f64 * std::f64::consts::TAU.dln();
         let RowWork {
             logf: out,
             delta,
@@ -755,7 +756,7 @@ impl Hmm {
                     for (i, xi) in x.iter().enumerate() {
                         let v = cov.var(i) + r;
                         let dv = cov.deviation(i, *xi);
-                        log_det += v.ln();
+                        log_det += v.dln();
                         q += dv * dv / v;
                     }
                     *o = base - 0.5 * log_det - 0.5 * q;
@@ -909,7 +910,7 @@ impl Hmm {
         terms.clear();
         terms.extend((0..k).map(|l| {
             if pred[l] > 0.0 {
-                pred[l].ln() + logf[l]
+                pred[l].dln() + logf[l]
             } else {
                 f64::NEG_INFINITY
             }
@@ -920,9 +921,9 @@ impl Hmm {
             return false;
         }
         exps.clear();
-        exps.extend(terms.iter().map(|v| (v - top).exp()));
+        exps.extend(terms.iter().map(|v| (v - top).dexp()));
         let z: f64 = exps.iter().sum();
-        let loglik = top + z.ln();
+        let loglik = top + z.dln();
         post.clear();
         post.extend(exps.iter().map(|e| e / z));
         let mut best = 0;
@@ -1111,7 +1112,7 @@ impl Hmm {
                 } = &mut *work;
                 let top = logf.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
                 scaled.clear();
-                scaled.extend(logf.iter().map(|v| (v - top).exp()));
+                scaled.extend(logf.iter().map(|v| (v - top).dexp()));
                 joint.clear();
                 joint.resize(k * k, 0.0);
                 let mut z = 0.0;

@@ -78,6 +78,7 @@
 //! `P1_l` are kept beside them for `break_wald`, whose twin fits' noise is
 //! the residuals' ([`Breaks::long_run_residuals`]; review round 7, A-2).
 
+use crate::dmath::DMath;
 use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
@@ -439,7 +440,7 @@ impl Breaks {
         if p <= 1.5 * self.s2 / (self.s1 * self.s1) {
             return f64::INFINITY;
         }
-        -4.0 * p.ln()
+        -4.0 * p.dln()
     }
 
     /// The scale's lead on the sums at `elapsed` ([`Self::elapsed`]), `D =
@@ -453,7 +454,7 @@ impl Breaks {
         if !(elapsed > 0.0 && elapsed.is_finite() && self.s1 > 0.0) {
             return 0.0;
         }
-        let (q, m) = ((-elapsed).exp(), -(-elapsed).exp_m1());
+        let (q, m) = ((-elapsed).dexp(), -(-elapsed).dexp_m1());
         (m * self.v1 / self.s1 - m).clamp(0.0, q)
     }
 }
@@ -556,12 +557,12 @@ pub fn cusum_null_window(window: f64, fit_half_life: f64, own_half_life: f64) ->
     if v < 1e-8 {
         return 1.0 + 2.0 * d_absorbed(u);
     }
-    let c = v / -(-v).exp_m1();
+    let c = v / -(-v).dexp_m1();
     // `e^{−2v} F(u − v)`, kept from overflowing where `v > u`.
     let tail = if u >= v {
-        (-2.0 * v).exp() * absorbed(u - v)
+        (-2.0 * v).dexp() * absorbed(u - v)
     } else {
-        (-(u + v)).exp() * absorbed(v - u)
+        (-(u + v)).dexp() * absorbed(v - u)
     };
     1.0 - 2.0 * c * absorbed(u + v) + c * c / v * (absorbed(u + v) - tail)
 }
@@ -569,7 +570,7 @@ pub fn cusum_null_window(window: f64, fit_half_life: f64, own_half_life: f64) ->
 /// `F(a) = (1 − e^{−a}) / a`, 1 at 0: [`cusum_null_window`]'s weight on a
 /// rate `a` over a unit window.
 fn absorbed(a: f64) -> f64 {
-    if a == 0.0 { 1.0 } else { -(-a).exp_m1() / a }
+    if a == 0.0 { 1.0 } else { -(-a).dexp_m1() / a }
 }
 
 /// `F'(u) = e^{−u} / u − (1 − e^{−u}) / u²`, by its series
@@ -586,7 +587,7 @@ fn d_absorbed(u: f64) -> f64 {
         }
         return sum;
     }
-    let q = (-u).exp();
+    let q = (-u).dexp();
     q / u - (1.0 - q) / (u * u)
 }
 
@@ -643,21 +644,21 @@ pub fn cusum_null_at(window: f64, fit_half_life: f64, own_half_life: f64, elapse
         return 1.0;
     }
     let x = elapsed;
-    let p = -(-2.0 * x).exp_m1();
+    let p = -(-2.0 * x).dexp_m1();
     if !(window.is_finite() && window > 0.0) {
         if !fit_half_life.is_finite() {
             return steady;
         }
         let beta = own_half_life / fit_half_life;
         let lead = 2.0 * own_half_life / (fit_half_life + own_half_life);
-        let decay = (-(1.0 + beta.min(1.0)) * x).exp();
+        let decay = (-(1.0 + beta.min(1.0)) * x).dexp();
         return steady + lead * x * decay * absorbed((1.0 - beta).abs() * x) / p;
     }
     let ln2 = std::f64::consts::LN_2;
     let u = ln2 / own_half_life * window;
     let v = ln2 / fit_half_life * window;
     let l = (x / u).min(1.0);
-    let e2 = (-2.0 * x).exp();
+    let e2 = (-2.0 * x).dexp();
     let j_full = window_j(u, v, 1.0, 1.0, 0.0);
     let head = if l < 1.0 {
         window_j(u, v, l, 1.0, 0.0) - j_full
@@ -681,7 +682,7 @@ fn window_j(u: f64, v: f64, l: f64, sigma: f64, scale: f64) -> f64 {
         };
         return -l * l * h;
     }
-    let c = v / -(-v).exp_m1();
+    let c = v / -(-v).dexp_m1();
     let near = scaled_absorbed((v + sigma * u) * l, scale);
     let far = scaled_absorbed((sigma * u - v) * l, scale + 2.0 * v);
     -c * l * near + c * c * l / (2.0 * v) * (near - far)
@@ -691,13 +692,13 @@ fn window_j(u: f64, v: f64, l: f64, sigma: f64, scale: f64) -> f64 {
 /// and a `scale` at least `−a`, so no exponential overflows.
 fn scaled_absorbed(a: f64, scale: f64) -> f64 {
     if a >= 0.0 {
-        return (-scale).exp() * absorbed(a);
+        return (-scale).dexp() * absorbed(a);
     }
     let y = -a;
     if y <= 1.0 {
-        (-scale).exp() * y.exp_m1() / y
+        (-scale).dexp() * y.dexp_m1() / y
     } else {
-        ((y - scale).exp() - (-scale).exp()) / y
+        ((y - scale).dexp() - (-scale).dexp()) / y
     }
 }
 
@@ -714,9 +715,9 @@ fn scaled_h_neg(y: f64, scale: f64) -> f64 {
             sum += pow / (fact * f64::from(n + 2));
             pow *= y;
         }
-        return (-scale).exp() * sum;
+        return (-scale).dexp() * sum;
     }
-    ((-scale).exp() + (y - scale).exp() * (y - 1.0)) / (y * y)
+    ((-scale).dexp() + (y - scale).dexp() * (y - 1.0)) / (y * y)
 }
 
 /// The share of the CUSUM of squares' plain variance its null has after
@@ -750,10 +751,10 @@ pub fn cusum_sq_null_at(own_half_life: f64, elapsed: f64, lead: f64) -> f64 {
     if elapsed <= 0.0 {
         return 1.0;
     }
-    let (q, m) = ((-elapsed).exp(), -(-elapsed).exp_m1());
+    let (q, m) = ((-elapsed).dexp(), -(-elapsed).dexp_m1());
     let d = lead.clamp(0.0, q);
     let tail = if d > 0.0 {
-        d * d * (m / d).ln_1p() / (m * (1.0 + q))
+        d * d * (m / d).dln_1p() / (m * (1.0 + q))
     } else {
         0.0
     };

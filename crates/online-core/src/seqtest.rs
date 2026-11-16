@@ -38,6 +38,7 @@
 //! `E_n = 2^n · B(n⁺ + ½, n⁻ + ½) / B(½, ½)`, which the tests use as the
 //! oracle wherever the clip does not bind.
 
+use crate::dmath::DMath;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
@@ -150,7 +151,7 @@ impl SeqTest {
 /// rows, since at most one of the two stakes is positive.
 #[inline]
 fn ln_1p_of(a: f64) -> f64 {
-    if a == 0.0 { a } else { a.ln_1p() }
+    if a == 0.0 { a } else { a.dln_1p() }
 }
 
 impl OnlineModel for SeqTest {

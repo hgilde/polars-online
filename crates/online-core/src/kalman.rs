@@ -486,6 +486,7 @@
 //! (docs/PLAN.md task 212): standardize the column there and give it to
 //! `kalman` with `standardize=False`.
 
+use crate::dmath::DMath;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
@@ -743,7 +744,7 @@ impl KalmanCfg {
             return d * d;
         }
         let theta = std::f64::consts::LN_2 / r;
-        let g = -(-(theta * d)).exp_m1() / theta;
+        let g = -(-(theta * d)).dexp_m1() / theta;
         g * g
     }
 }

@@ -9,6 +9,7 @@
 //! edge from (docs/PLAN.md task 175); and its place on the elapsed clock held
 //! exactly, which a delay decides its release from (task 176).
 
+use crate::dmath::DMath;
 use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
@@ -65,7 +66,7 @@ impl Decay {
                     // reference in another language (`math.exp2` in
                     // `tests/reference_cluster.py`) reproduce the factor
                     // bit for bit.
-                    (-(d_clock / h)).exp2()
+                    (-(d_clock / h)).dexp2()
                 }
             }
             // A step of one clock unit is `lam` itself, and no step is 1,
@@ -76,7 +77,7 @@ impl Decay {
             // A4). No bit moves where `pow` already returned `x`.
             Decay::Lam(l) if d_clock == 1.0 => l,
             Decay::Lam(_) if d_clock == 0.0 => 1.0,
-            Decay::Lam(l) => l.powf(d_clock),
+            Decay::Lam(l) => l.dpowf(d_clock),
         }
     }
 }

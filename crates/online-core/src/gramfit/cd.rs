@@ -18,6 +18,7 @@
 //! the sum is the full one's but for its order, at `O(nnz)` instead of
 //! `O(k)` a coordinate.
 
+use crate::dmath::DMath;
 /// The path [`cd_path`] walked.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CdPath {
@@ -157,7 +158,7 @@ pub(crate) fn warming_up(
         0.0
     };
     let best = (edge + l2) / (1.0 + l2);
-    let need = (1.0 / tol).ln() / (2.0 * f64::from(max_iter));
+    let need = (1.0 / tol).dln() / (2.0 * f64::from(max_iter));
     need < 1.0 && best < need
 }
 

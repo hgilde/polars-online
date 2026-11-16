@@ -213,6 +213,7 @@
 //! [`Bocpd::prune`]'s rule, from the reverted B4, is against adding one that
 //! no output needs, and every output is read under this chance.
 
+use crate::dmath::DMath;
 use serde::{Deserialize, Serialize};
 
 use crate::solve::{FactorWork, QuadWork, SpdFactor};
@@ -874,7 +875,7 @@ fn ln_gamma(x: f64) -> f64 {
     ];
     if x < 0.5 {
         // Reflection, for completeness; the callers stay above 0.5.
-        return (std::f64::consts::PI / (std::f64::consts::PI * x).sin()).ln() - ln_gamma(1.0 - x);
+        return (std::f64::consts::PI / (std::f64::consts::PI * x).sin()).dln() - ln_gamma(1.0 - x);
     }
     let x = x - 1.0;
     let mut a = C[0];
@@ -882,7 +883,7 @@ fn ln_gamma(x: f64) -> f64 {
     for (i, c) in C.iter().enumerate().skip(1) {
         a += c / (x + i as f64);
     }
-    0.5 * (std::f64::consts::TAU).ln() + (x + 0.5) * t.ln() - t + a.ln()
+    0.5 * (std::f64::consts::TAU).dln() + (x + 0.5) * t.dln() - t + a.dln()
 }
 
 /// `ln Σ exp(v)`, about the maximum.
@@ -891,7 +892,7 @@ fn log_sum_exp(v: &[f64]) -> f64 {
     if !top.is_finite() {
         return top;
     }
-    top + v.iter().map(|x| (x - top).exp()).sum::<f64>().ln()
+    top + v.iter().map(|x| (x - top).dexp()).sum::<f64>().dln()
 }
 
 fn is_zero(v: &u64) -> bool {
@@ -923,7 +924,7 @@ fn posterior_given(joint: &[f64], z: f64, out: &mut Vec<f64>) {
         out.resize(k, 1.0 / k as f64);
         return;
     }
-    out.extend(joint.iter().map(|l| (l - z).exp()));
+    out.extend(joint.iter().map(|l| (l - z).dexp()));
 }
 
 /// The new log joint of Algorithm 1 into `new` -- growth into `r+1`,
@@ -970,8 +971,8 @@ impl Branches {
     fn per_row(hazard: f64) -> Option<Self> {
         let h = 1.0 / hazard;
         (h > 0.0 && h < 1.0).then(|| Self {
-            ln_break: h.ln(),
-            ln_grow: (1.0 - h).ln(),
+            ln_break: h.dln(),
+            ln_grow: (1.0 - h).dln(),
         })
     }
 
@@ -981,7 +982,7 @@ impl Branches {
     fn over(d: f64, tau: f64) -> Option<Self> {
         let x = d / tau;
         (x >= 0.0 && x.is_finite()).then(|| Self {
-            ln_break: (-(-x).exp_m1()).ln(),
+            ln_break: (-(-x).dexp_m1()).dln(),
             ln_grow: -x,
         })
     }
@@ -1425,13 +1426,13 @@ impl Bocpd {
         // (tasks 250 and 389).
         let (gammas, ln_pi) = match cache {
             Some(c) => c.gamma_and_ln_pi(dof, df),
-            None => (gamma_diff(dof, df), (dof * std::f64::consts::PI).ln()),
+            None => (gamma_diff(dof, df), (dof * std::f64::consts::PI).dln()),
         };
         let base = gammas - 0.5 * df * ln_pi - 0.5 * f.log_det();
         if let Some(f) = own {
             factors.give(f);
         }
-        Some((base - 0.5 * (dof + df) * (1.0 + q / dof).ln(), base))
+        Some((base - 0.5 * (dof + df) * (1.0 + q / dof).dln(), base))
     }
 
     /// `(ln π(x), ln π(mode))` for one run: the log posterior predictive of
@@ -1474,8 +1475,8 @@ impl Bocpd {
                     return None;
                 }
                 let z = (x[i] - self.run_mean_at(run, mu0, i)) / var.sqrt();
-                let base = gammas - 0.5 * (nun * std::f64::consts::PI * var).ln();
-                lp += base - 0.5 * (nun + 1.0) * (1.0 + z * z / nun).ln();
+                let base = gammas - 0.5 * (nun * std::f64::consts::PI * var).dln();
+                lp += base - 0.5 * (nun + 1.0) * (1.0 + z * z / nun).dln();
                 mode += base;
             }
             Some((lp, mode))
@@ -1630,7 +1631,7 @@ impl Bocpd {
             };
             logpi.push(lp);
             weights.push(if self.cfg.emission == BocpdEmission::Robust {
-                (self.cfg.robust_beta * (lp - mode)).exp().clamp(0.0, 1.0)
+                (self.cfg.robust_beta * (lp - mode)).dexp().clamp(0.0, 1.0)
             } else {
                 1.0
             });
@@ -1673,7 +1674,7 @@ impl Bocpd {
         mix.clear();
         mix.extend((0..r).map(|i| {
             if pre[i] > 0.0 {
-                pre[i].ln() + logpi[i]
+                pre[i].dln() + logpi[i]
             } else {
                 f64::NEG_INFINITY
             }
@@ -1706,7 +1707,7 @@ impl Bocpd {
         } else {
             new[0]
         };
-        out.push((short - z).exp());
+        out.push((short - z).dexp());
         out.push(self.runs[mode_at].len);
         out.push(run_mean);
         out.extend(anchor.iter().zip(mixed.iter()).map(|(a, o)| a + o));

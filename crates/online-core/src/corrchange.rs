@@ -87,6 +87,7 @@
 //! `n_perm` passes over the `2·window_rows` pooled rows, so held for a
 //! window's length it costs `O(n_perm·k²)` a row whatever the window.
 
+use crate::dmath::DMath;
 use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
@@ -121,7 +122,7 @@ pub fn kolmogorov_cdf(x: f64) -> f64 {
     }
     let mut sum = 0.0;
     for k in 1..200 {
-        let term = (-2.0 * (k * k) as f64 * x * x).exp();
+        let term = (-2.0 * (k * k) as f64 * x * x).dexp();
         sum += if k % 2 == 1 { term } else { -term };
         if term < 1e-18 {
             break;
@@ -141,7 +142,7 @@ fn kolmogorov_sf(x: f64) -> f64 {
     }
     let mut sum = 0.0;
     for k in 1..200 {
-        let term = (-2.0 * (k * k) as f64 * x * x).exp();
+        let term = (-2.0 * (k * k) as f64 * x * x).dexp();
         sum += if k % 2 == 1 { term } else { -term };
         if term <= 0.25 * f64::EPSILON * sum {
             break;
@@ -164,7 +165,7 @@ fn kolmogorov_cdf_theta(x: f64) -> f64 {
     let mut sum = 0.0;
     for k in 1..200u32 {
         let n = f64::from(2 * k - 1);
-        let term = (-(n * n) * a).exp();
+        let term = (-(n * n) * a).dexp();
         sum += term;
         if term <= 0.25 * f64::EPSILON * sum {
             break;
@@ -1022,7 +1023,7 @@ impl CorrChange {
         let gamma = self
             .cfg
             .bandwidth
-            .unwrap_or_else(|| ((tf).ln().floor() as usize).max(1));
+            .unwrap_or_else(|| ((tf).dln().floor() as usize).max(1));
         let sd = Self::scalar_long_run_sd(&u, gamma);
         if sd.is_nan() {
             return (f64::NAN, 0);
@@ -1079,7 +1080,7 @@ impl CorrChange {
         let gamma = self
             .cfg
             .bandwidth
-            .unwrap_or_else(|| ((t as f64).ln().floor() as usize).max(1));
+            .unwrap_or_else(|| ((t as f64).dln().floor() as usize).max(1));
         let sd = Self::long_run_sd(rows, a, b, gamma);
         // NaN or non-positive: no scale to divide by.
         if sd.is_nan() || sd <= 0.0 {
@@ -1167,7 +1168,7 @@ impl CorrChange {
         let gamma = self
             .cfg
             .bandwidth
-            .unwrap_or_else(|| ((m as f64).ln().floor() as usize).max(1));
+            .unwrap_or_else(|| ((m as f64).dln().floor() as usize).max(1));
         let (mut level, mut scale) = (Vec::new(), Vec::new());
         if self.cfg.scalar {
             let u: Vec<f64> = history.iter().map(|r| r[0]).collect();
@@ -1210,7 +1211,7 @@ impl CorrChange {
         let kf = k as f64;
         let m = self.cfg.span_rows as f64;
         let b = kf / m;
-        let w = (1.0 + b) * (b / (1.0 + b)).powf(self.cfg.boundary_gamma);
+        let w = (1.0 + b) * (b / (1.0 + b)).dpowf(self.cfg.boundary_gamma);
         let factor = kf / m.sqrt();
         let width = mon.mean.len();
         let dev: Vec<f64> = (0..width).map(|i| row[i] - mon.mean[i]).collect();

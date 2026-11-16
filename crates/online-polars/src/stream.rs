@@ -1,6 +1,7 @@
 //! One (spec, group) stream: clock state + model instances (one per half-life
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
+use online_core::dmath::DMath;
 use std::collections::VecDeque;
 
 use online_core::{
@@ -1039,7 +1040,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 // log is 0, and the division made it `-inf` (review
                 // 2026-09-12, S30).
                 Decay::Lam(1.0) => f64::INFINITY,
-                Decay::Lam(l) => -std::f64::consts::LN_2 / l.ln(),
+                Decay::Lam(l) => -std::f64::consts::LN_2 / l.dln(),
             };
             let cfg = HoltCfg {
                 n_targets: spec.m(),
@@ -1878,8 +1879,8 @@ fn half_life_of(decay: Decay) -> f64 {
 /// it reads the clock the decay has covered, not a count of rows.
 pub fn settled_frac(decay: Decay, t: f64) -> f64 {
     match decay {
-        Decay::Halflife(h) if h.is_finite() => 1.0 - (-(t / h)).exp2(),
-        Decay::Lam(l) if l < 1.0 => 1.0 - l.powf(t),
+        Decay::Halflife(h) if h.is_finite() => 1.0 - (-(t / h)).dexp2(),
+        Decay::Lam(l) if l < 1.0 => 1.0 - l.dpowf(t),
         _ => f64::NAN,
     }
 }

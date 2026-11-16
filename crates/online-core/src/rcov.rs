@@ -91,6 +91,7 @@
 //! again at the new stretch's own `o`-th return, and a step in progress is
 //! dropped, so no step sums returns across the break.
 
+use crate::dmath::DMath;
 use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
@@ -189,7 +190,7 @@ pub fn phi_22(k: usize) -> f64 {
 
 /// BNHLS's Parzen constant `c* = ((12)²/0.269)^{1/5}`.
 pub fn parzen_c_star() -> f64 {
-    (144.0f64 / 0.269).powf(0.2)
+    (144.0f64 / 0.269).dpowf(0.2)
 }
 
 /// Realised variance and quarticity on a subsampled grid, averaged over the
@@ -454,7 +455,7 @@ impl RcovCfg {
             // bias term (Eq. 17). Read against the paper 2026-09-28
             // (docs/PLAN.md task 114); the ceiling meets Eq. 16's bound.
             // At 2 it is `plain`'s estimate.
-            (self.theta * n.powf(0.6)).ceil().max(2.0)
+            (self.theta * n.dpowf(0.6)).ceil().max(2.0)
         } else {
             // CKP's own floor, and 3 at the least: at 2 the scaled sum of
             // the pre-averaged squares is the bias term, and the estimate
@@ -482,7 +483,7 @@ impl RcovCfg {
             (RcovKind::Kernel, Some(h)) => Some(h as f64),
             (RcovKind::Kernel, None) => {
                 let n = self.block_rows? as f64;
-                Some((parzen_c_star() * n.powf(0.6)).ceil().max(1.0))
+                Some((parzen_c_star() * n.dpowf(0.6)).ceil().max(1.0))
             }
             _ => Some(0.0),
         }
@@ -1152,7 +1153,7 @@ impl Rcov {
             .map(|(w, v)| {
                 if *v > 0.0 && w.is_finite() && *w >= 0.0 {
                     let xi2 = w / v;
-                    c * xi2.sqrt().powf(0.8) * n.powf(0.6)
+                    c * xi2.sqrt().dpowf(0.8) * n.dpowf(0.6)
                 } else {
                     f64::NAN
                 }

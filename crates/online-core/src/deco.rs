@@ -114,6 +114,7 @@
 //! say nothing. One block is never refused there: a `1 × 1` `S` is its
 //! own equilibration, of condition 1.
 
+use crate::dmath::DMath;
 use serde::{Deserialize, Serialize};
 
 use crate::solve::{FactorWork, QuadWork};
@@ -533,7 +534,7 @@ impl Deco {
         for (bi, b) in self.blocks.iter().enumerate() {
             let n = b.len() as f64;
             let d = 1.0 - clamp(rho[bi], n);
-            log_det += n * d.ln();
+            log_det += n * d.dln();
             quad += s2[bi] / d;
             y[bi] = s1[bi] / (n * d).sqrt();
             sqrt_n[bi] = (n / d).sqrt();
@@ -582,7 +583,7 @@ impl Deco {
         factor.give(f);
         quad += sinv - yy;
         // TAU is 2 pi, so `TAU.ln()` is the `ln 2 pi` of the density.
-        let ll = -0.5 * (n_total * std::f64::consts::TAU.ln() + log_det + quad);
+        let ll = -0.5 * (n_total * std::f64::consts::TAU.dln() + log_det + quad);
         // A density below the double's range is no reading, as `hmm`'s is: a
         // row far past the spread under a `ρ` clamped to the edge of
         // singular overflowed the quadratic form and said `-inf` (review

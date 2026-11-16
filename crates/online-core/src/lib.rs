@@ -75,6 +75,8 @@ mod conformal;
 mod constraint;
 mod corrchange;
 mod deco;
+#[doc(hidden)]
+pub mod dmath;
 mod drift;
 mod ewclass;
 mod ewcov;

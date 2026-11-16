@@ -2,6 +2,7 @@
 //! each switch's memory key, and the decay it resolves to.
 
 use online_core::Decay;
+use online_core::dmath::DMath;
 
 use super::Spec;
 use crate::span::Span;
@@ -442,7 +443,7 @@ impl Spec {
             (Decay::Halflife(h), m) => Decay::Halflife(h * f64::from(m)),
             (Decay::Lam(l), 4) => Decay::Lam(l.sqrt().sqrt()),
             (Decay::Lam(l), 2) => Decay::Lam(l.sqrt()),
-            (Decay::Lam(l), m) => Decay::Lam(l.powf(1.0 / f64::from(m))),
+            (Decay::Lam(l), m) => Decay::Lam(l.dpowf(1.0 / f64::from(m))),
         }
     }
 }
@@ -461,7 +462,7 @@ pub const NW_LAG_CAP: usize = 64;
 pub(crate) fn half_life_of(d: Decay) -> f64 {
     match d {
         Decay::Halflife(h) => h,
-        Decay::Lam(l) if l < 1.0 => std::f64::consts::LN_2 / -l.ln(),
+        Decay::Lam(l) if l < 1.0 => std::f64::consts::LN_2 / -l.dln(),
         Decay::Lam(_) => f64::INFINITY,
     }
 }
@@ -474,7 +475,7 @@ pub(crate) fn window_half_life(w: f64, model: Decay, clocked: bool) -> f64 {
     // The decay rate per clock unit, 0 for none.
     let kappa = match model {
         Decay::Halflife(h) if h.is_finite() && h > 0.0 => ln2 / h,
-        Decay::Lam(l) if l > 0.0 && l < 1.0 => -l.ln(),
+        Decay::Lam(l) if l > 0.0 && l < 1.0 => -l.dln(),
         _ => 0.0,
     };
     if !clocked {
@@ -482,12 +483,12 @@ pub(crate) fn window_half_life(w: f64, model: Decay, clocked: bool) -> f64 {
         let n = if kappa == 0.0 {
             w
         } else {
-            let lam = (-kappa).exp();
-            let lw = lam.powf(w);
+            let lam = (-kappa).dexp();
+            let lw = lam.dpowf(w);
             (1.0 + lam) * (1.0 - lw) / ((1.0 - lam) * (1.0 + lw))
         };
         if n > 1.0 {
-            return ln2 / ((n + 1.0) / (n - 1.0)).ln();
+            return ln2 / ((n + 1.0) / (n - 1.0)).dln();
         }
     }
     // The continuous form: the rate whose weights have the window's Kish

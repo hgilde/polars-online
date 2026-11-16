@@ -68,6 +68,7 @@
 //! ([`crate::MarginalLags::update_shared`]). A window is refused: its
 //! subtraction reads each covariance as centred on the pair's own mean.
 
+use crate::dmath::DMath;
 use serde::{Deserialize, Serialize};
 
 use crate::{Decay, OnlineModel, State, StateError, Step};
@@ -732,7 +733,7 @@ fn serial_factor(
                 for (&l, &r) in lags.iter().zip(rho) {
                     if r.is_finite() && r > 0.0 {
                         let l = l as f64;
-                        num += l * r.ln();
+                        num += l * r.dln();
                         den += l * l;
                         used += 1;
                     }
@@ -740,7 +741,7 @@ fn serial_factor(
                 if used < 2 || den <= 0.0 {
                     return f64::NAN;
                 }
-                (num / den).exp()
+                (num / den).dexp()
             };
             let (px, py) = (fit(rho_x), fit(rho_y));
             if !px.is_finite() || !py.is_finite() {

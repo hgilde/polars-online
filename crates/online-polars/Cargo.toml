@@ -17,6 +17,12 @@ description = "Polars-side plumbing for online-core: chunk-fed model bank over D
 # Polars dependency, no `unsafe`, and is exhaustively tested.
 publish = false
 
+[features]
+# Task 426 (k), a measurement: which exponential the models call (online-core's `dmath`).
+dmath-libm = ["online-core/dmath-libm"]
+dmath-pxfm = ["online-core/dmath-pxfm"]
+dmath-own = ["online-core/dmath-own"]
+
 [dependencies]
 online-core.workspace = true
 # `abs`, `log` and `round_series` (clip): the element-wise functions a formula

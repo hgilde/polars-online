@@ -98,6 +98,7 @@
 //! features' own units; a summary's radius is in the metric that was in
 //! force when its rows were absorbed.
 
+use crate::dmath::DMath;
 use serde::{Deserialize, Serialize};
 
 use super::summary::{ClusterSummary, FeatureMoments, StepFactors, merged_radius2};
@@ -653,7 +654,7 @@ impl Micro {
                 if l >= 1.0 {
                     f64::INFINITY
                 } else {
-                    -std::f64::consts::LN_2 / l.ln()
+                    -std::f64::consts::LN_2 / l.dln()
                 }
             }
         }

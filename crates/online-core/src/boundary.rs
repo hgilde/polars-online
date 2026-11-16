@@ -64,6 +64,7 @@
 //! last bits too; it is recomputed when a state loads, never stored (docs
 //! "No libm in the state").
 
+use crate::dmath::DMath;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -79,7 +80,7 @@ pub fn sup_abs_bm_cdf(x: f64) -> f64 {
     let mut sum = 0.0;
     for k in 0..400u32 {
         let n = f64::from(2 * k + 1);
-        let term = (-(n * n) * a).exp() / n;
+        let term = (-(n * n) * a).dexp() / n;
         sum += if k % 2 == 0 { term } else { -term };
         if term < 1e-18 {
             break;
@@ -111,7 +112,7 @@ fn bernoulli(z: f64) -> f64 {
     if z.abs() < 1e-8 {
         1.0 - 0.5 * z
     } else {
-        z / z.exp_m1()
+        z / z.dexp_m1()
     }
 }
 
@@ -145,7 +146,7 @@ pub fn boundary_cdf(c: f64, gamma: f64) -> f64 {
     let mut q: Vec<f64> = (1..m)
         .map(|i| {
             let y = -1.0 + h * i as f64;
-            c * (-0.5 * (c * y) * (c * y)).exp() / (2.0 * std::f64::consts::PI).sqrt()
+            c * (-0.5 * (c * y) * (c * y)).dexp() / (2.0 * std::f64::consts::PI).sqrt()
         })
         .collect();
     // Face j sits between nodes j and j+1, at y = −1 + h(j + 1/2).
@@ -155,11 +156,11 @@ pub fn boundary_cdf(c: f64, gamma: f64) -> f64 {
     let mut rhs = vec![0.0; n];
     let mut cp = vec![0.0; n];
     let spread = (1.0 / (2.0 * c * c * kappa)).sqrt();
-    let t_end = (8.0 * spread).ln().max(0.0) / beta + 4.0 / kappa;
+    let t_end = (8.0 * spread).dln().max(0.0) / beta + 4.0 / kappa;
 
     let mut step = |q: &mut Vec<f64>, t: f64, dt: f64, theta: f64| {
         // The operator at the stage time t + θ·dt.
-        let d = (-2.0 * beta * (t + theta * dt)).exp() / (2.0 * c * c);
+        let d = (-2.0 * beta * (t + theta * dt)).dexp() / (2.0 * c * c);
         for j in 0..m {
             let p = -kappa * faces[j] * h / d;
             a[j] = d / h * bernoulli(-p);
@@ -280,7 +281,7 @@ pub fn sequential_crit(alpha: f64, gamma: f64, ratio: f64) -> f64 {
     if !(ratio > 0.0 && ratio.is_finite()) {
         return f64::NAN;
     }
-    (ratio / (1.0 + ratio)).powf(0.5 - gamma) * boundary_quantile(1.0 - alpha, gamma)
+    (ratio / (1.0 + ratio)).dpowf(0.5 - gamma) * boundary_quantile(1.0 - alpha, gamma)
 }
 
 #[cfg(test)]

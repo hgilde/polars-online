@@ -20,6 +20,12 @@ publish = false
 name = "_polars_online"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Task 426 (k), a measurement: which exponential the models call (online-core's `dmath`).
+dmath-libm = ["online-core/dmath-libm"]
+dmath-pxfm = ["online-core/dmath-pxfm"]
+dmath-own = ["online-core/dmath-own"]
+
 [dependencies]
 online-core.workspace = true
 online-polars.workspace = true
