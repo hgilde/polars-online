@@ -20,6 +20,22 @@
 //! ends at the first row that is not plain, which `push` takes, and the loop
 //! goes on after it. `crates/online-polars/tests/window_plain.rs` holds the
 //! two to it.
+//!
+//! With several groups (task 431) a pass finds the plain rows in any of them,
+//! in row order: the stream's clock steps forward, and each row is a step
+//! forward within the cap and the session of its own group, which already has
+//! a row. A group's rows are its own whatever the rows of the other groups
+//! between them do, so the pass then takes each group over all its rows in it,
+//! as the block does one group's, and leaves the stream as the rows in order
+//! would have left it. Three things `push` does at each row are done once, at
+//! the pass's end, because nothing a row of another group does can change
+//! them: a group's pending windows are read at its stamp when a later stamp
+//! has passed it (a read of a group nothing touches in between is the same
+//! whenever it is made), the groups' places in the silent list follow the
+//! order of their last rows, and the groups the last row's clock shows silent
+//! past the cap are cut (cut sooner, a group's windows would be read and
+//! ended the same, and a row of its own after the cut would have been past
+//! the cap and not in the pass).
 
 use super::*;
 
@@ -277,6 +293,16 @@ fn step_ok(now: ClockValue, last: ClockValue, cap: f64) -> bool {
     }
 }
 
+/// Whether `now` is at or after `last`: no step back.
+#[inline]
+fn not_before(now: ClockValue, last: ClockValue) -> bool {
+    match (now, last) {
+        (ClockValue::Ns(c), ClockValue::Ns(p)) => c >= p,
+        (ClockValue::F64(c), ClockValue::F64(p)) => (0.0..=1e308).contains(&(c - p)),
+        _ => false,
+    }
+}
+
 /// A group's rows of one run, as the fold reads their inputs: each input's
 /// values for the group's rows, in row order.
 #[derive(Clone, Copy)]
@@ -339,6 +365,16 @@ struct Touch {
     waiting: bool,
 }
 
+/// A row of a pass: its group's place in `touched`, whether it begins a
+/// stamp, its policy time and its raw clock.
+#[derive(Debug, Clone, Copy)]
+struct RowRec {
+    tau: f64,
+    off: i64,
+    slot: u32,
+    new: bool,
+}
+
 /// What a pass over several groups keeps: none of it state.
 #[derive(Debug, Clone, Default)]
 pub(super) struct Multi {
@@ -348,19 +384,14 @@ pub(super) struct Multi {
     mark: Vec<u32>,
     slot: Vec<u32>,
     touched: Vec<Touch>,
-    /// Per row of the pass: its group's place in `touched`, whether it begins
-    /// a stamp, its policy time and raw clock.
-    row_slot: Vec<u32>,
-    row_new: Vec<bool>,
-    row_tau: Vec<f64>,
-    row_off: Vec<i64>,
+    /// Per row of the pass.
+    rows: Vec<RowRec>,
     /// The pass's rows by group: positions in the pass, group after group.
     order: Vec<u32>,
     starts: Vec<u32>,
     /// The inputs of the group being run.
     xg: Vec<Vec<f64>>,
     fill: Vec<u32>,
-    links: Vec<(u32, usize)>,
 }
 
 impl Multi {
@@ -375,10 +406,7 @@ impl Multi {
             self.slot.resize(groups, 0);
         }
         self.touched.clear();
-        self.row_slot.clear();
-        self.row_new.clear();
-        self.row_tau.clear();
-        self.row_off.clear();
+        self.rows.clear();
     }
 }
 
@@ -644,7 +672,10 @@ impl Windows {
             let pos = at + j;
             let Some(gi) = keys.known(pos) else { break };
             let now = rows.clock[pos];
-            if !step_ok(now, stream, cap) {
+            // The stream steps forward or stays: within the cap it is by the
+            // group's own step below, the group's last row being at or before
+            // the stream's.
+            if !not_before(now, stream) {
                 break;
             }
             let slot = if m.mark[gi] == m.epoch {
@@ -669,10 +700,12 @@ impl Windows {
             {
                 break;
             }
-            m.row_slot.push(slot as u32);
-            m.row_new.push(new);
-            m.row_tau.push(elapsed(now, t.origin));
-            m.row_off.push(offset_of(now));
+            m.rows.push(RowRec {
+                tau: elapsed(now, t.origin),
+                off: offset_of(now),
+                slot: slot as u32,
+                new,
+            });
             t.last = now;
             t.last_session = session;
             t.count += 1;
@@ -684,7 +717,7 @@ impl Windows {
             let t = m.touched.pop().expect("one");
             m.mark[t.gi] = 0;
         }
-        let len = m.row_slot.len();
+        let len = m.rows.len();
         if len == 0 {
             self.derived.multi = m;
             return 0;
@@ -710,8 +743,8 @@ impl Windows {
         let touched = m.touched.len();
         m.starts.clear();
         m.starts.resize(touched + 1, 0);
-        for &s in &m.row_slot {
-            m.starts[s as usize + 1] += 1;
+        for r in &m.rows {
+            m.starts[r.slot as usize + 1] += 1;
         }
         for k in 0..touched {
             m.starts[k + 1] += m.starts[k];
@@ -720,8 +753,8 @@ impl Windows {
         m.order.resize(len, 0);
         m.fill.clear();
         m.fill.extend_from_slice(&m.starts);
-        for (j, &s) in m.row_slot.iter().enumerate() {
-            let f = &mut m.fill[s as usize];
+        for (j, r) in m.rows.iter().enumerate() {
+            let f = &mut m.fill[r.slot as usize];
             m.order[*f as usize] = j as u32;
             *f += 1;
         }
@@ -774,15 +807,11 @@ impl Windows {
             bufs.new.clear();
             bufs.off.clear();
             bufs.seq.clear();
-            let mut news = 0usize;
-            for &j in idx {
-                let j = j as usize;
-                bufs.tau.push(m.row_tau[j]);
-                bufs.new.push(m.row_new[j]);
-                bufs.off.push(m.row_off[j]);
-                bufs.seq.push(seq0 + j as u64);
-                news += usize::from(m.row_new[j]);
-            }
+            bufs.tau.extend(idx.iter().map(|&j| m.rows[j as usize].tau));
+            bufs.new.extend(idx.iter().map(|&j| m.rows[j as usize].new));
+            bufs.off.extend(idx.iter().map(|&j| m.rows[j as usize].off));
+            bufs.seq.extend(idx.iter().map(|&j| seq0 + u64::from(j)));
+            let news = bufs.new.iter().filter(|&&n| n).count();
             for (i, col) in xg.iter_mut().enumerate() {
                 col.clear();
                 col.extend(idx.iter().map(|&j| rows.values[i][at + j as usize]));
@@ -834,11 +863,13 @@ impl Windows {
                 }
             }
         }
-        m.links.clear();
-        m.links.extend(m.touched.iter().map(|t| (t.last_row, t.gi)));
-        m.links.sort_unstable();
-        for &(_, gi) in &m.links {
-            self.link_back(gi);
+        // The groups' places in the silent list: each group goes to the tail
+        // at its last row, in the order of the rows.
+        for (j, r) in m.rows.iter().enumerate() {
+            let t = &m.touched[r.slot as usize];
+            if t.last_row as usize == j {
+                self.link_back(t.gi);
+            }
         }
         self.end_silent(last_now);
         self.advance_ready();
