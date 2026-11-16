@@ -344,11 +344,12 @@ fn solve_columns<const N: usize, const B: usize>(
     let mut b = [[0.0; N]; B];
     for c in 0..B {
         let col = j - 1 - c;
-        let d = r[base(k, col) + col];
+        let row = base(k, col);
+        let d = r[row + col];
         for t in 0..N {
             let mut a = if c == 0 { acc[t] } else { betas[t][col] };
             for (q, bq) in b.iter().enumerate().take(c) {
-                a -= r[base(k, col) + (j - 1 - q)] * bq[t];
+                a -= r[row + (j - 1 - q)] * bq[t];
             }
             let x = if d > 0.0 { a / d } else { 0.0 };
             b[c][t] = if x.is_finite() { x } else { zero_unseen() };
@@ -360,18 +361,26 @@ fn solve_columns<const N: usize, const B: usize>(
         return;
     }
     let m = top - 1;
+    // Row `m`'s `B` entries, columns `j-B..j`, are one window of the packed
+    // triangle: found once, indexed by constants. The rows above are each
+    // `k - m` entries earlier than the one below (`base`'s difference), so
+    // the offset is carried instead of computed.
+    let mut at = base(k, m) + (j - B);
     for t in 0..N {
+        let w: &[f64; B] = r[at..at + B].try_into().unwrap();
         let mut a = betas[t][m];
         for (q, bq) in b.iter().enumerate() {
-            a -= r[base(k, m) + (j - 1 - q)] * bq[t];
+            a -= w[B - 1 - q] * bq[t];
         }
         acc[t] = a;
     }
     for m in (0..m).rev() {
+        at -= k - (m + 1);
+        let w: &[f64; B] = r[at..at + B].try_into().unwrap();
         for t in 0..N {
             let mut a = betas[t][m];
             for (q, bq) in b.iter().enumerate() {
-                a -= r[base(k, m) + (j - 1 - q)] * bq[t];
+                a -= w[B - 1 - q] * bq[t];
             }
             betas[t][m] = a;
         }
@@ -467,8 +476,13 @@ impl Rls {
         let k = self.cfg.k_total();
         let (r, zbuf) = (&mut self.r, &mut self.zbuf);
         let mut zi = zbuf.first().copied().unwrap_or(0.0);
+        let mut row = 0;
         for i in 0..k {
-            let row = base(k, i);
+            // Row `i` starts where row `i - 1`'s `k - i + 1` entries end,
+            // less the one column further left that `base` shifts by.
+            if i > 0 {
+                row += k - i;
+            }
             // The entry the next rotation starts from, as the rotations
             // before this one left it; this rotation replaces it.
             let mut znext = if i + 1 < k { zbuf[i + 1] } else { 0.0 };
@@ -585,10 +599,14 @@ impl Rls {
         let mut v = vec![0.0; k];
         for i in 0..k {
             let mut acc = z[i];
+            // Column `i` of each row above: `base(k, m) + i`, and `base`
+            // grows by `k - m - 1` from one row to the next.
+            let mut at = i;
             for (m, vm) in v.iter().enumerate().take(i) {
-                acc -= self.r[base(k, m) + i] * vm;
+                acc -= self.r[at] * vm;
+                at += k - m - 1;
             }
-            let d = self.r[base(k, i) + i];
+            let d = self.r[at];
             if d > 0.0 {
                 v[i] = acc / d;
             } else if acc != 0.0 {
