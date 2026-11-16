@@ -15,12 +15,12 @@ use polars_arrow::array::{
 use polars_arrow::bitmap::MutableBitmap;
 use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
 use polars_arrow::offset::OffsetsBuffer;
-use polars_utils::aliases::{PlHashMap, PlIndexMap};
+use polars_utils::aliases::PlIndexMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::arrow::{
-    ArrowChunk, ArrowCol, ClockArray, ClockCol, KeyDtype, KeyForm, LabelTimes, chunk_from_frame_at,
+    ArrowChunk, ClockArray, ClockCol, KeyDtype, KeyForm, LabelTimes, chunk_from_frame_at,
     f64_values,
 };
 use crate::column::F64Column;
@@ -400,36 +400,6 @@ pub(crate) fn gathered<T: Copy>(v: Vec<T>, layout: Layout<'_>) -> Vec<T> {
 /// Where a position in layout order came from, for naming a row in an error.
 fn source_row(layout: Layout<'_>, j: usize) -> usize {
     layout.map_or(j, |perm| perm[j])
-}
-
-/// The layout that puts each spec's groups one after another, in first-seen
-/// order, or `None` when the chunk is already in that order (ungrouped, one
-/// group, or groups that arrive as blocks). A stream then reads its rows as
-/// one contiguous run instead of gathering every column at a stride, twice
-/// per row; with many groups interleaved row by row that stride is a cache
-/// line per value, and cost 14% of `process` on one thread and 38% on
-/// fourteen at k=20 (docs/records/PERFORMANCE-LOG.md P9). The gather here is one pass
-/// per column, and runs per column in parallel.
-fn layout_of(groups: &[(GroupKey, Vec<usize>)], n: usize) -> Option<Vec<usize>> {
-    let mut base = 0;
-    let blocked = groups.iter().all(|(_, idx)| {
-        // Indices are distinct and increasing, so first and last say whether
-        // the group is one run, and `base` whether the runs are in order.
-        let run = idx
-            .first()
-            .is_none_or(|&f| f == base && idx[idx.len() - 1] == base + idx.len() - 1);
-        base += idx.len();
-        run
-    });
-    if blocked {
-        return None;
-    }
-    let mut perm = Vec::with_capacity(n);
-    for (_, idx) in groups {
-        perm.extend_from_slice(idx);
-    }
-    debug_assert_eq!(perm.len(), n);
-    Some(perm)
 }
 
 /// An `ew_class` label column as class indices: each value's position in
@@ -1061,7 +1031,7 @@ fn close_rows(
 /// two `GroupKey`s rather than re-reading the column.
 fn check_monotone(
     spec: &Spec,
-    groups: &[(GroupKey, Vec<usize>)],
+    groups: &Groups<'_>,
     n: usize,
     integer: bool,
     text: bool,
@@ -1072,18 +1042,20 @@ fn check_monotone(
     if groups.is_empty() {
         return Ok(());
     }
-    if let Some((_, idx)) = groups.iter().find(|(k, _)| k.as_str().is_none()) {
+    // Only a monotone close reads the keys as `GroupKey`s.
+    let keys = groups.owned_keys();
+    if let Some(g) = keys.iter().position(|k| k.as_str().is_none()) {
         polars_bail!(ComputeError:
             "spec {:?}: row {} (counting from 0) has a null group key, but group_close = \
              \"monotone\" closes groups in the order of their keys, and a null has no place in \
              that order. Give every row a group key, or set group_close = \"session\" with a \
              session column (session=) whose changes close each group.",
-            spec.name, row_base + idx[0]
+            spec.name, row_base + groups.rows(g)[0]
         );
     }
     let mut slot = vec![usize::MAX; n];
-    for (gi, (_, idx)) in groups.iter().enumerate() {
-        for &r in idx {
+    for gi in 0..groups.len() {
+        for &r in groups.rows(gi) {
             slot[r] = gi;
         }
     }
@@ -1092,10 +1064,7 @@ fn check_monotone(
         if gi == usize::MAX {
             continue;
         }
-        if prev != usize::MAX
-            && gi != prev
-            && key_cmp(&groups[gi].0, &groups[prev].0, integer) == Less
-        {
+        if prev != usize::MAX && gi != prev && key_cmp(&keys[gi], &keys[prev], integer) == Less {
             let column = spec.group.as_deref().unwrap_or("");
             // Polars sorts an integer or a text column in the order the
             // keys are compared in; any other column's keys are compared as
@@ -1113,7 +1082,7 @@ fn check_monotone(
                  group_close = \"monotone\" needs the keys in ascending order, as numbers for an \
                  integer column and as text otherwise. {sort}, or set group_close = \"session\" with \
                  a session column (session=).",
-                spec.name, row_base + r, groups[gi].0, groups[prev].0
+                spec.name, row_base + r, keys[gi], keys[prev]
             );
         }
         prev = gi;
@@ -1135,13 +1104,13 @@ fn check_monotone(
         // The first key of the chunk is the smallest, the walk above having
         // passed; anything below the mark belongs to a group this bank has
         // already emitted and dropped.
-        if key_cmp(&groups[0].0, hw, integer) == Less {
+        if key_cmp(&keys[0], hw, integer) == Less {
             polars_bail!(ComputeError:
                 "spec {:?}: row {} (counting from 0) has group {}, below group {}, the largest the \
                  bank has read, and group_close = \"monotone\" never takes a group below that. \
                  Remove the rows whose group is below {}, or sort the rows by the group column \
                  before the bank's first call.",
-                spec.name, row_base + groups[0].1[0], groups[0].0, hw, hw
+                spec.name, row_base + groups.rows(0)[0], keys[0], hw, hw
             );
         }
     }
@@ -1224,7 +1193,7 @@ impl IntoIterator for Runs {
 /// has some.
 #[allow(clippy::too_many_arguments)]
 fn process<'s>(
-    work: Vec<(usize, &GroupKey, &Vec<usize>, usize, &mut Stream)>,
+    work: Vec<(usize, &GroupKey, &[usize], usize, &mut Stream)>,
     specs: &[Spec],
     cfgs: &[ClockCfg],
     cols: &[SpecColumns],
@@ -1444,7 +1413,7 @@ fn finish_sinks(filled: Filled<'_>, out: &mut [Option<StructArray>]) -> PolarsRe
 
 /// [`process`] without the learning: [`Stream::predict_chunk`] per task.
 fn score(
-    work: Vec<(usize, &Vec<usize>, usize, &Stream)>,
+    work: Vec<(usize, &[usize], usize, &Stream)>,
     specs: &[Spec],
     cfgs: &[ClockCfg],
     cols: &[SpecColumns],
@@ -1685,25 +1654,23 @@ fn forget(states: &mut [Streams], fresh: &[(usize, GroupKey)]) {
 /// never read, every reader sorting the keys.
 type Streams = PlIndexMap<GroupKey, Stream>;
 
-/// The streams of `groups` -- one chunk's groups of one spec, each in the
-/// map -- borrowed at once, in `groups`' order: each found by its place in
-/// the map, and the map's entries split at those places in ascending
-/// order, so the work is the chunk's groups' and not the map's (task 332:
-/// a map of every stream, built to take a call's few out of it, cost a call
-/// of four rows 44 million instructions at 100,000 groups seen). One
-/// allocation, as that map was.
+/// The streams of one chunk's groups of one spec -- `places`, each group's
+/// place in the map, in the groups' order -- borrowed at once, with their
+/// keys: the map's entries split at those places in ascending order, so the
+/// work is the chunk's groups' and not the map's (task 332: a map of every
+/// stream, built to take a call's few out of it, cost a call of four rows 44
+/// million instructions at 100,000 groups seen). One allocation, as that map
+/// was.
 fn chunk_streams<'a>(
     map: &'a mut Streams,
-    groups: &[(GroupKey, Vec<usize>)],
-) -> impl Iterator<Item = &'a mut Stream> {
+    places: &[usize],
+) -> impl Iterator<Item = (&'a GroupKey, &'a mut Stream)> {
     // (place in the map, place in the chunk, the stream once found)
-    let mut found: Vec<(usize, usize, Option<&'a mut Stream>)> = groups
+    type Found<'a> = (usize, usize, Option<(&'a GroupKey, &'a mut Stream)>);
+    let mut found: Vec<Found<'a>> = places
         .iter()
         .enumerate()
-        .map(|(c, (key, _))| {
-            let at = map.get_index_of(key).expect("stream materialized above");
-            (at, c, None)
-        })
+        .map(|(c, &at)| (at, c, None))
         .collect();
     found.sort_unstable_by_key(|f| f.0);
     let mut rest = map.as_mut_slice();
@@ -1712,13 +1679,19 @@ fn chunk_streams<'a>(
         // A chunk's groups are distinct keys, so their places are too, and
         // each lies at or past `from`.
         let (_, tail) = std::mem::take(&mut rest).split_at_mut(f.0 - from);
-        let ((_, stream), tail) = tail.split_first_mut().expect("a place in the map");
-        f.2 = Some(stream);
+        let ((key, stream), tail) = tail.split_first_mut().expect("a place in the map");
+        f.2 = Some((key, stream));
         rest = tail;
         from = f.0 + 1;
     }
     found.sort_unstable_by_key(|f| f.1);
     found.into_iter().map(|f| f.2.expect("every group found"))
+}
+
+/// A group's place in a spec's streams, if it has a stream: found from the
+/// chunk's key, which builds no `GroupKey`.
+fn place_of(streams: &Streams, key: groups::RawKey<'_>) -> Option<usize> {
+    key.with_ref(|r: KeyRef<'_>| streams.get_index_of(&r))
 }
 
 /// A stream's notices, taken and named by its spec and group, and under
@@ -1739,62 +1712,13 @@ fn say_notices(notices: &mut Vec<String>, spec: &Spec, key: &GroupKey, stream: &
     }
 }
 
-/// Row-index partition by group key, in row order.
-///
-/// Keyed on a 64-bit hash of the string value rather than on the string
-/// itself, so the per-row cost is a hash rather than a `String` allocation and
-/// two more clones (docs/records/PERFORMANCE-LOG.md P3). The `GroupKey` is materialized
-/// once per distinct group, not once per row -- and it is still the *value*
-/// that is stored and serialized, so state files are unaffected. A 64-bit
-/// collision would merge two groups; the same 2^-64 exposure the session hash
-/// already documents.
-fn group_indices(chunk: &ArrowChunk, spec: &Spec) -> PolarsResult<Vec<(GroupKey, Vec<usize>)>> {
-    match &spec.group {
-        None => Ok(vec![(GroupKey::ungrouped(), (0..chunk.height()).collect())]),
-        Some(g) => {
-            // An integer key's text is its decimal, which is exactly what the
-            // String cast would produce (`integer_group_keys_match_the_
-            // string_cast` in tests/bank.rs pins the two paths to the same
-            // keys and output), so the value itself is the bucket: no cast, no
-            // hash, and no collision to document (docs/records/PERFORMANCE-LOG.md P11).
-            // Which form a key arrives in is the chunk's choice, not this
-            // function's (`crate::arrow`).
-            match chunk.key(spec, "group", g)? {
-                ArrowCol::U64(a) => Ok(integer_groups(a.iter().map(|v| v.copied()), |v| v)),
-                ArrowCol::I64(a) => Ok(integer_groups(a.iter().map(|v| v.copied()), |v| v as u64)),
-                ArrowCol::Str(a) => {
-                    let mut order: Vec<(GroupKey, Vec<usize>)> = Vec::new();
-                    let mut slot_of: PlHashMap<u64, usize> = PlHashMap::default();
-                    for (i, v) in a.iter().enumerate() {
-                        // `session_hash`, not a copy of it (review 2026-09-12, D7).
-                        let h = session_hash(v);
-                        match slot_of.get(&h) {
-                            Some(&slot) => order[slot].1.push(i),
-                            None => {
-                                slot_of.insert(h, order.len());
-                                order.push((GroupKey(v.map(str::to_string)), vec![i]));
-                            }
-                        }
-                    }
-                    Ok(order)
-                }
-                // `ArrowChunk::key` never returns the numeric form, a clock
-                // or a boolean.
-                ArrowCol::F64(_) | ArrowCol::Num(_) | ArrowCol::Nanos(_) | ArrowCol::Bool(_) => {
-                    unreachable!("a group key is never read as a number, a clock or a boolean")
-                }
-            }
-        }
-    }
-}
-
 /// The order `group_close = "monotone"` reads keys in.
 ///
 /// [`GroupKey`] holds every key as a string and its derived `Ord` is
 /// therefore lexicographic, which puts `"10"` before `"9"` -- a monotone
 /// close on that order would close group 10 before group 9 had arrived. So
 /// the comparison is the *column's*: integer keys compare as integers (the
-/// text is what [`integer_groups`] formatted, so it parses), and everything
+/// text is what [`group_indices`] formatted, so it parses), and everything
 /// else -- String and Categorical, both rendered as strings by [`extract`]
 /// -- compares bytewise, which is what a string column's own sort does.
 ///
@@ -1822,35 +1746,6 @@ pub(crate) fn key_cmp(a: &GroupKey, b: &GroupKey, integer: bool) -> std::cmp::Or
 /// integer dtype, an `Int128` held as its text included (task 160, PA3).
 fn integer_form(forms: &[Option<KeyDtype>; 2]) -> bool {
     matches!(&forms[0], Some(k) if k.form == KeyForm::Integer)
-}
-
-/// [`group_indices`] over an integer column: `bucket` maps a value to its
-/// 64-bit identity (sign extension is a bijection, so `as u64` serves every
-/// signed width), and the key text is formatted once per distinct group.
-fn integer_groups<T>(
-    values: impl Iterator<Item = Option<T>>,
-    bucket: impl Fn(T) -> u64,
-) -> Vec<(GroupKey, Vec<usize>)>
-where
-    T: Copy + std::fmt::Display,
-{
-    let mut order: Vec<(GroupKey, Vec<usize>)> = Vec::new();
-    let mut slot_of: PlHashMap<u64, usize> = PlHashMap::default();
-    let mut null_slot: Option<usize> = None;
-    for (i, v) in values.enumerate() {
-        let slot = match v {
-            None => *null_slot.get_or_insert_with(|| {
-                order.push((GroupKey(None), Vec::new()));
-                order.len() - 1
-            }),
-            Some(v) => *slot_of.entry(bucket(v)).or_insert_with(|| {
-                order.push((GroupKey(Some(v.to_string())), Vec::new()));
-                order.len() - 1
-            }),
-        };
-        order[slot].1.push(i);
-    }
-    order
 }
 
 /// The axes a spec's [`Gram`] is indexed by: its columns (the features,
@@ -4205,7 +4100,7 @@ impl Bank {
         // they run in parallel with each other (docs/records/PERFORMANCE-LOG.md P3). The
         // groups come first because they decide the layout the columns are
         // extracted in (P9).
-        let groups: Vec<Vec<(GroupKey, Vec<usize>)>> =
+        let groups: Vec<Groups<'_>> =
             map_maybe_par::<_, _, PolarsResult<_>>(&self.specs, par(), |s| {
                 group_indices(chunk, s)
             })?;
@@ -4230,19 +4125,13 @@ impl Bank {
                 )?;
             }
         }
-        let layouts: Vec<Option<Vec<usize>>> = groups.iter().map(|g| layout_of(g, n)).collect();
+        let layouts: Vec<Option<&[usize]>> = groups.iter().map(Groups::layout).collect();
         let t_group = t0.elapsed();
         let t1 = std::time::Instant::now();
         let par_transpose = transposes_in_parallel(&self.specs);
         let mut cols: Vec<SpecColumns> =
             map_range_maybe_par::<_, PolarsResult<_>>(self.specs.len(), par(), |i| {
-                extract(
-                    chunk,
-                    &self.specs[i],
-                    false,
-                    layouts[i].as_deref(),
-                    par_transpose,
-                )
+                extract(chunk, &self.specs[i], false, layouts[i], par_transpose)
             })?;
         let t_extract = t1.elapsed();
         let t2 = std::time::Instant::now();
@@ -4261,24 +4150,37 @@ impl Bank {
             noticed: self.refit_noticed.clone(),
             notices: self.notices.len(),
         };
+        // Each group's place in its spec's streams, found once for every use
+        // below: a stream is added at the end, so the places of the others
+        // stay as they are.
+        let mut places: Vec<Vec<usize>> = Vec::with_capacity(self.specs.len());
         for (si, spec) in self.specs.iter().enumerate() {
+            let mut at_of = Vec::with_capacity(groups[si].len());
             // In the order the group's rows first arrive (`group_indices`).
-            for (key, _) in &groups[si] {
-                if !self.states[si].contains_key(key) {
-                    let mut stream =
-                        Stream::new(spec).map_err(|e| polars_err!(ComputeError: "{}", e))?;
-                    reserve_refits(
-                        spec,
-                        key,
-                        &mut stream,
-                        &mut self.refit_reserved[si],
-                        &mut self.refit_noticed[si],
-                        &mut self.notices,
-                    );
-                    self.states[si].insert(key.clone(), stream);
-                    fresh.push((si, key.clone()));
-                }
+            for g in 0..groups[si].len() {
+                let raw = groups[si].key(g);
+                let at = match place_of(&self.states[si], raw) {
+                    Some(at) => at,
+                    None => {
+                        let key = raw.to_key();
+                        let mut stream =
+                            Stream::new(spec).map_err(|e| polars_err!(ComputeError: "{}", e))?;
+                        reserve_refits(
+                            spec,
+                            &key,
+                            &mut stream,
+                            &mut self.refit_reserved[si],
+                            &mut self.refit_noticed[si],
+                            &mut self.notices,
+                        );
+                        let (at, _) = self.states[si].insert_full(key.clone(), stream);
+                        fresh.push((si, key));
+                        at
+                    }
+                };
+                at_of.push(at);
             }
+            places.push(at_of);
         }
 
         // One flat task pool over (spec x group), not a loop of per-spec pools
@@ -4291,10 +4193,11 @@ impl Bank {
         // them pulled out of the maps up front: the chunk's groups' alone,
         // whatever the groups seen. `base` is where the group's run starts in
         // the laid-out columns.
-        let mut work: Vec<(usize, &GroupKey, &Vec<usize>, usize, &mut Stream)> = Vec::new();
+        let mut work: Vec<(usize, &GroupKey, &[usize], usize, &mut Stream)> = Vec::new();
         for (si, hm) in self.states.iter_mut().enumerate() {
             let mut base = 0;
-            for ((key, idx), stream) in groups[si].iter().zip(chunk_streams(hm, &groups[si])) {
+            for (g, (key, stream)) in chunk_streams(hm, &places[si]).enumerate() {
+                let idx = groups[si].rows(g);
                 work.push((si, key, idx, base, stream));
                 base += idx.len();
             }
@@ -4311,7 +4214,7 @@ impl Bank {
         // chunk can be fed. A no-op where nothing can refuse: a row-count
         // clock, or `"reset_state"` with a minimum of 0.
         let check =
-            |(si, _, idx, base, stream): &(usize, &GroupKey, &Vec<usize>, usize, &mut Stream)| {
+            |(si, _, idx, base, stream): &(usize, &GroupKey, &[usize], usize, &mut Stream)| {
                 let sc = &cols[*si];
                 // A step that is not a number of clock units, refused by row as
                 // a clock value that is not a number is (review 2026-10-06, PB7).
@@ -4381,13 +4284,24 @@ impl Bank {
         let formula_specs: Vec<usize> = (0..specs.len())
             .filter(|&si| specs[si].targets.any_formula())
             .collect();
+        // The resolvers take their groups as key and rows pairs: built for
+        // the specs with formula targets alone.
+        let formula_groups: Vec<Vec<(GroupKey, Vec<usize>)>> = (0..specs.len())
+            .map(|si| {
+                if specs[si].targets.any_formula() {
+                    groups[si].pairs()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
         let mut frames: Vec<Option<DataFrame>> = specs.iter().map(|_| None).collect();
         for &si in &formula_specs {
             match prepare_targets(
                 &specs[si],
                 &mut self.resolvers[si],
                 chunk,
-                &groups[si],
+                &formula_groups[si],
                 self.rows_fed,
             ) {
                 Ok(f) => frames[si] = Some(f),
@@ -4421,7 +4335,7 @@ impl Bank {
         let snapshot: Vec<(usize, Vec<(GroupKey, WindowsRun)>)> = if needs_snapshot {
             formula_specs
                 .iter()
-                .map(|&si| (si, self.resolvers[si].snapshot(&groups[si])))
+                .map(|&si| (si, self.resolvers[si].snapshot(&formula_groups[si])))
                 .collect()
         } else {
             Vec::new()
@@ -4432,8 +4346,8 @@ impl Bank {
                 &specs[si],
                 &mut self.resolvers[si],
                 frames[si].as_ref().expect("prepared above"),
-                &groups[si],
-                layouts[si].as_deref(),
+                &formula_groups[si],
+                layouts[si],
                 self.rows_fed,
             ) {
                 Ok(b) => formulas[si] = Some(b),
@@ -4469,7 +4383,7 @@ impl Bank {
             let replay = |(si, key, idx, base, stream): &(
                 usize,
                 &GroupKey,
-                &Vec<usize>,
+                &[usize],
                 usize,
                 &mut Stream,
             )| {
@@ -4507,7 +4421,7 @@ impl Bank {
                 }
                 None
             };
-            let keeps = |(si, ..): &(usize, &GroupKey, &Vec<usize>, usize, &mut Stream)| {
+            let keeps = |(si, ..): &(usize, &GroupKey, &[usize], usize, &mut Stream)| {
                 specs[*si].model.keeps_window_ring()
             };
             let over = if par() {
@@ -4608,8 +4522,7 @@ impl Bank {
             let t4 = std::time::Instant::now();
             for (si, d) in derived.iter().enumerate() {
                 if let Some(ab) = d.compare {
-                    cols[si].targets =
-                        compare_targets(&specs[si], ab, &out, layouts[si].as_deref())?;
+                    cols[si].targets = compare_targets(&specs[si], ab, &out, layouts[si])?;
                 }
             }
             let sinks2 = sinks(work2.iter().map(|w| w.0), specs, derived, n, clock_dtypes);
@@ -4684,8 +4597,8 @@ impl Bank {
                     say_notices(&mut self.notices, spec, key, stream);
                 }
             } else {
-                for (key, _) in &groups[si] {
-                    if let Some(stream) = hm.get_mut(key) {
+                for &at in &places[si] {
+                    if let Some((key, stream)) = hm.get_index_mut(at) {
                         say_notices(&mut self.notices, spec, key, stream);
                     }
                 }
@@ -4706,7 +4619,7 @@ impl Bank {
             let integer = integer_keys[si];
             let starts: Vec<(GroupKey, usize)> = groups[si]
                 .iter()
-                .map(|(k, idx)| (k.clone(), idx[0]))
+                .map(|(k, idx)| (k.to_key(), idx[0]))
                 .collect();
             let max_key = starts.last().expect("the chunk has a group").0.clone();
             let mut closing: Vec<GroupKey> = self.states[si]
@@ -4810,32 +4723,26 @@ impl Bank {
         // A key column of another form names no group the bank holds, and
         // would score every row as a stream never seen (N22).
         self.key_forms(chunk)?;
-        let groups: Vec<Vec<(GroupKey, Vec<usize>)>> =
+        let groups: Vec<Groups<'_>> =
             map_maybe_par::<_, _, PolarsResult<_>>(&self.specs, par(), |s| {
                 group_indices(chunk, s)
             })?;
-        let layouts: Vec<Option<Vec<usize>>> = groups.iter().map(|g| layout_of(g, n)).collect();
+        let layouts: Vec<Option<&[usize]>> = groups.iter().map(Groups::layout).collect();
         let par_transpose = transposes_in_parallel(&self.specs);
         let mut cols: Vec<SpecColumns> =
             map_range_maybe_par::<_, PolarsResult<_>>(self.specs.len(), par(), |i| {
-                extract(
-                    chunk,
-                    &self.specs[i],
-                    true,
-                    layouts[i].as_deref(),
-                    par_transpose,
-                )
+                extract(chunk, &self.specs[i], true, layouts[i], par_transpose)
             })?;
 
         let specs = &self.specs;
         let derived = &self.derived;
         let cfgs = &self.clock_cfgs;
-        let mut work: Vec<(usize, &Vec<usize>, usize, &Stream)> = Vec::new();
+        let mut work: Vec<(usize, &[usize], usize, &Stream)> = Vec::new();
         for (si, hm) in self.states.iter().enumerate() {
             let mut base = 0;
-            for (key, idx) in &groups[si] {
-                if let Some(stream) = hm.get(key) {
-                    work.push((si, idx, base, stream));
+            for (key, idx) in groups[si].iter() {
+                if let Some(at) = place_of(hm, key) {
+                    work.push((si, idx, base, &hm[at]));
                 }
                 base += idx.len();
             }
@@ -4867,8 +4774,7 @@ impl Bank {
         if !work2.is_empty() {
             for (si, d) in derived.iter().enumerate() {
                 if let Some(ab) = d.compare {
-                    cols[si].targets =
-                        compare_targets(&specs[si], ab, &out, layouts[si].as_deref())?;
+                    cols[si].targets = compare_targets(&specs[si], ab, &out, layouts[si])?;
                 }
             }
             for (si, r) in score(work2, specs, cfgs, &cols) {
@@ -5520,7 +5426,9 @@ mod arrays;
 use arrays::{coef_list_array, named_column, named_columns, opt_bool_array, opt_f64_array};
 
 mod assembly;
+mod groups;
 use assembly::{Sink, assemble};
+use groups::{Groups, KeyRef, group_indices};
 
 #[cfg(test)]
 mod over_budget_tests;

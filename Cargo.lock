@@ -2111,6 +2111,7 @@ dependencies = [
 name = "online-polars"
 version = "1.5.0"
 dependencies = [
+ "equivalent",
  "libloading",
  "online-core",
  "polars",

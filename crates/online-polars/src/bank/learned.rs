@@ -80,11 +80,11 @@ impl Learned {
                 continue;
             };
             let clocks = chunk.clock(spec, name)?;
-            for (key, rows) in group_indices(&chunk, spec)? {
-                let Some(last) = lasts.get(&key) else {
+            for (key, rows) in group_indices(&chunk, spec)?.iter() {
+                let Some(last) = lasts.get(&key.to_key()) else {
                     continue;
                 };
-                for i in rows {
+                for &i in rows {
                     let now = match clocks {
                         ClockArray::F64(a) => a.get(i).map(ClockValue::F64),
                         ClockArray::Nanos(a) => a.get(i).map(ClockValue::Ns),
