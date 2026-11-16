@@ -155,7 +155,7 @@ pub(crate) struct PlainRows<'a> {
     pub len: usize,
     pub session: Option<&'a [u64]>,
     /// Per operator input, every row of the chunk (NaN for none).
-    pub values: &'a [Vec<f64>],
+    pub values: &'a [&'a [f64]],
     /// Per `like=` column, as `values`: a row is accepted where all are usable.
     pub accepts: &'a [Vec<f64>],
     /// The rows' group keys, where there is a group column: a block of one
@@ -349,7 +349,7 @@ fn not_before(now: ClockValue, last: ClockValue) -> bool {
 /// values for the group's rows, in row order.
 #[derive(Clone, Copy)]
 struct Cols<'a> {
-    whole: &'a [Vec<f64>],
+    whole: &'a [&'a [f64]],
     from: usize,
     len: usize,
 }
@@ -1272,8 +1272,21 @@ fn run_segment(
         last_session: rows.session.map(|s| s[at + last]),
         first,
     };
+    // The gathered lists as the slices `Cols` reads: on the stack for the
+    // inputs a call has, as a rule.
+    let mut few: [&[f64]; 8] = [&[]; 8];
+    let many: Vec<&[f64]>;
+    let views: &[&[f64]] = if xg.len() <= few.len() {
+        for (view, col) in few.iter_mut().zip(xg.iter()) {
+            *view = col;
+        }
+        &few[..xg.len()]
+    } else {
+        many = xg.iter().map(Vec::as_slice).collect();
+        &many
+    };
     let cols = Cols {
-        whole: xg,
+        whole: views,
         from: 0,
         len: len_g,
     };

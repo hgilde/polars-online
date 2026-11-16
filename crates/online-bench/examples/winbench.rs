@@ -75,7 +75,13 @@ fn main() {
     let plain = env("WB_PLAIN", "1");
     let temporal = kind == "dt";
     let integer = kind == "i";
-    let hl: Value = if temporal {
+    // Task 432: WB_HL=inf gives every operator no decay (a plain rolling window); WB_QUANT=ms|s|step quantizes a
+    // datetime clock: its stamps to a millisecond or a second, or its steps to four levels (10, 20, 50 and 500 ms).
+    let half_life = env("WB_HL", "");
+    let quant = env("WB_QUANT", "");
+    let hl: Value = if half_life == "inf" {
+        json!("inf")
+    } else if temporal {
         json!("5s")
     } else if integer {
         json!(5000.0)
@@ -163,6 +169,11 @@ fn main() {
             "exp1" => -u.ln(),
             _ => -0.5 * u.ln(),
         };
+        let step = if quant == "step" {
+            [0.01, 0.02, 0.05, 0.5][(u * 4.0) as usize % 4]
+        } else {
+            step
+        };
         t += if ties > 0.0 && r2.next() < ties {
             0.0
         } else if cap_fire && i % 1000 == 999 {
@@ -172,7 +183,12 @@ fn main() {
         };
         sess.push(i.checked_div(session_rows).map_or(0, |s| s as i64));
         m += (r.next() - 0.5) * 0.02;
-        ts_ns.push((t * 1e9) as i64);
+        let t_q = match quant.as_str() {
+            "ms" => (t * 1e3).round() / 1e3,
+            "s" => t.round(),
+            _ => t,
+        };
+        ts_ns.push((t_q * 1e9) as i64);
         ts_f.push(((t * 1e9) as i64) as f64 / 1e9);
         ts_ms.push((t * 1e3) as i64);
         mid.push(if nulls > 0.0 && r2.next() < nulls {

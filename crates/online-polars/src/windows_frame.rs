@@ -13,6 +13,7 @@
 //! evaluates the formulas over the held rows with the operators standing
 //! in as hidden columns, and the hidden columns are dropped.
 
+use std::borrow::Cow;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -381,6 +382,25 @@ fn short_cuts() -> bool {
     {
         true
     }
+}
+
+/// An operator's values as a column of doubles, null where the value is NaN:
+/// the list itself, one pass to find a NaN and, only if there is one, a
+/// validity mask built from it (a null's slot reads 0, as a column built from
+/// options leaves it).
+fn nullable_column(name: &str, mut v: Vec<f64>) -> Column {
+    let ca = if v.iter().any(|x| x.is_nan()) {
+        let valid = polars_arrow::bitmap::Bitmap::from_iter(v.iter().map(|x| !x.is_nan()));
+        for x in &mut v {
+            if x.is_nan() {
+                *x = 0.0;
+            }
+        }
+        Float64Chunked::from_vec_validity(name.into(), v, Some(valid))
+    } else {
+        Float64Chunked::from_vec(name.into(), v)
+    };
+    ca.into_column()
 }
 
 /// The hidden column an operator stands in as, in a formula.
@@ -1687,16 +1707,28 @@ impl WindowsRun {
         // engine is tens of microseconds a call, which a bank's group pays
         // every chunk. A bank's resolver evaluates the whole chunk's in one
         // plan, and hands each group its rows' values.
-        let values: Vec<Vec<f64>> = if let Some(values) = given_inputs {
-            values
+        // A column with no null in one piece is read where it lies: the copy
+        // with a NaN for each null is for the column that has one.
+        let values: Vec<Cow<'_, [f64]>> = if let Some(values) = given_inputs {
+            values.into_iter().map(Cow::Owned).collect()
         } else if let Some(columns) = self.bare_inputs(&chunk) {
             columns
                 .iter()
-                .map(|s| Ok(s.f64()?.iter().map(|v| v.unwrap_or(f64::NAN)).collect()))
+                .map(|s| {
+                    let ca = s.f64()?;
+                    Ok(match ca.cont_slice() {
+                        Ok(whole) => Cow::Borrowed(whole),
+                        Err(_) => Cow::Owned(ca.iter().map(|v| v.unwrap_or(f64::NAN)).collect()),
+                    })
+                })
                 .collect::<PolarsResult<_>>()?
         } else {
             self.evaluated_inputs(&chunk)?
+                .into_iter()
+                .map(Cow::Owned)
+                .collect()
         };
+        let slices: Vec<&[f64]> = values.iter().map(|c| &**c).collect();
         let accepts: Vec<Vec<f64>> = self
             .k
             .accept
@@ -1741,7 +1773,7 @@ impl WindowsRun {
                     clock: clock.as_deref(),
                     len: n,
                     session: session.as_deref(),
-                    values: &values,
+                    values: &slices,
                     accepts: &accepts,
                     keys: codes.is_grouped().then_some(&codes),
                 });
@@ -1750,7 +1782,7 @@ impl WindowsRun {
                     continue;
                 }
             }
-            for (k, col) in values.iter().enumerate() {
+            for (k, col) in slices.iter().enumerate() {
                 row_values[k] = col[i];
             }
             let row = RowIn {
@@ -2398,6 +2430,26 @@ impl WindowsRun {
             let keep: BooleanChunked = drop.iter().map(|&d| Some(!d)).collect();
             frame = frame.filter(&keep)?;
         }
+        // A formula that is only an operator's values is its hidden column
+        // under the formula's name: no plan of the lazy engine for it, which
+        // costs 100 to 150 microseconds a chunk whatever the chunk holds.
+        if let Some(ops) = self.bare_formulas() {
+            let mut cols: Vec<Column> = frame
+                .columns()
+                .iter()
+                .filter(|c| self.k.input.contains(c.name().as_str()))
+                .cloned()
+                .collect();
+            for (f, op) in self.k.config.formulas.iter().zip(ops) {
+                cols.push(
+                    frame
+                        .column(hidden(op).as_str())?
+                        .clone()
+                        .with_name(f.name.as_str().into()),
+                );
+            }
+            return DataFrame::new(frame.height(), cols);
+        }
         // Pass four: the formulas, over the rows with their operators.
         let exprs: Vec<Expr> = self
             .k
@@ -2428,7 +2480,7 @@ impl WindowsRun {
 
     /// The emitted rows as one frame: the held input rows with their
     /// increment columns, and each operator's values as its hidden column.
-    fn assemble_rows(&mut self, e: crate::windows::Emitted) -> PolarsResult<DataFrame> {
+    fn assemble_rows(&mut self, mut e: crate::windows::Emitted) -> PolarsResult<DataFrame> {
         let mut out: Option<DataFrame> = None;
         let mut parts = 0;
         let mut left = e.rows;
@@ -2468,11 +2520,7 @@ impl WindowsRun {
         }
         let mut cols: Vec<Column> = Vec::with_capacity(self.k.columns.len());
         for (name, o) in &self.k.columns {
-            let ca: Float64Chunked = e.values[*o]
-                .iter()
-                .map(|&x| (!x.is_nan()).then_some(x))
-                .collect();
-            cols.push(ca.with_name(name.as_str().into()).into_column());
+            cols.push(nullable_column(name, std::mem::take(&mut e.values[*o])));
         }
         frame.hstack_mut(&cols)?;
         Ok(frame)
