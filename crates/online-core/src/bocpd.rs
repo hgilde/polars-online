@@ -885,7 +885,7 @@ fn ln_gamma(x: f64) -> f64 {
     0.5 * (std::f64::consts::TAU).ln() + (x + 0.5) * t.ln() - t + a.ln()
 }
 
-/// Scratch variant 426 (c): `Σ ln vᵢ` as a log of the product of each block
+/// `Σ ln vᵢ` as a log of the product of each block
 /// of 8, where the product is a normal number far from overflow, else the
 /// logs one at a time.
 fn ln_sum_prod(v: &[f64]) -> f64 {
@@ -900,9 +900,6 @@ fn ln_sum_prod(v: &[f64]) -> f64 {
     }
     total
 }
-
-/// Whether the second log is taken as a product too.
-const PROD_Q: bool = true;
 
 /// `ln Σ exp(v)`, about the maximum.
 fn log_sum_exp(v: &[f64]) -> f64 {
@@ -1479,6 +1476,28 @@ impl Bocpd {
             // functions' difference is taken once a run, not once a feature:
             // the same value, `(Γ − Γ) − ½ ln(..)` as the expression groups
             // (task 250).
+            if d == 1 {
+                // One feature: nothing to take a product of, and the single
+                // log of the original form is the cheaper.
+                let gammas = match cache {
+                    Some(c) => c.gamma(nun, 1.0),
+                    None => gamma_diff(nun, 1.0),
+                };
+                let dm = run.mean[0] - mu0[0];
+                let psin = psi0[0] + run.m2[0] + k0 * run.n / kn * dm * dm;
+                let var = psin * (kn + 1.0) / (nun * kn);
+                if var.is_nan() || var <= 0.0 || nun <= 0.0 {
+                    return None;
+                }
+                let z = (x[0] - self.run_mean_at(run, mu0, 0)) / var.sqrt();
+                let base = gammas - 0.5 * (nun * std::f64::consts::PI * var).ln();
+                let lp = base - 0.5 * (nun + 1.0) * (1.0 + z * z / nun).ln();
+                return Some((lp, base));
+            }
+            // Two features or more: `ln(νₙπ var) = ln ψₙ + ln(π(κₙ+1)/κₙ)`,
+            // the second term held once a run, and the features' `ln ψₙ` and
+            // `ln(1 + z²/νₙ)` taken once a block of 8 as the log of a
+            // product, guarded against overflow.
             let (gammas, ln_c) = match cache {
                 Some(c) => c.gamma_and_ln_c(nun, kn),
                 None => (
@@ -1486,13 +1505,13 @@ impl Bocpd {
                     (std::f64::consts::PI * (kn + 1.0) / kn).ln(),
                 ),
             };
-            // Scratch variant 426 (c): the features' `ln ψₙ` (and, where
-            // `PROD_Q`, their `ln(1 + z²/ν)`) taken once a block of 8 features
-            // as the log of a product, guarded against overflow.
-            let RunWork { mun: psins, delta: qs, .. } = work;
+            let RunWork {
+                mun: psins,
+                delta: qs,
+                ..
+            } = work;
             psins.clear();
             qs.clear();
-            let mut sum_ln_q = 0.0;
             for i in 0..d {
                 let dm = run.mean[i] - mu0[i];
                 let psin = psi0[i * d + i] + run.m2[i] + k0 * run.n / kn * dm * dm;
@@ -1502,19 +1521,11 @@ impl Bocpd {
                 }
                 let z = (x[i] - self.run_mean_at(run, mu0, i)) / var.sqrt();
                 psins.push(psin);
-                let q = 1.0 + z * z / nun;
-                if PROD_Q {
-                    qs.push(q);
-                } else {
-                    sum_ln_q += q.ln();
-                }
-            }
-            if PROD_Q {
-                sum_ln_q = ln_sum_prod(qs);
+                qs.push(1.0 + z * z / nun);
             }
             let df = d as f64;
             let mode = df * gammas - 0.5 * (ln_sum_prod(psins) + df * ln_c);
-            let lp = mode - 0.5 * (nun + 1.0) * sum_ln_q;
+            let lp = mode - 0.5 * (nun + 1.0) * ln_sum_prod(qs);
             Some((lp, mode))
         }
     }
@@ -1654,7 +1665,7 @@ impl Bocpd {
         weights.clear();
         if let Some(c) = cache.as_deref_mut() {
             let full = self.full();
-            c.begin(r, if full { d as f64 } else { 1.0 }, true);
+            c.begin(r, if full { d as f64 } else { 1.0 }, full || d >= 2);
         }
         self.mu0_into(mu0);
         self.psi0_into(psi0);

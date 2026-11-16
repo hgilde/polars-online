@@ -234,7 +234,11 @@ impl LengthTerms {
             self.empty();
             at = self.find(bits);
         }
-        let made = LengthSlot { key: bits, gamma: gamma_diff(nu, 1.0), ln_pi: ln_c(kn) };
+        let made = LengthSlot {
+            key: bits,
+            gamma: gamma_diff(nu, 1.0),
+            ln_pi: ln_c(kn),
+        };
         self.slots[at] = made;
         self.filled += 1;
         (made.gamma, made.ln_pi)
