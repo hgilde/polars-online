@@ -199,6 +199,11 @@ returns.
   through the same block loop: 100 keys 1.9 times as fast (96 to 50 ns a
   row), 10,000 keys up to 2.1 times, one key 1.45 times. Outputs and saved
   state unchanged to the bit.
+- Forward windows (`reverse=True`) run through the window operators'
+  block loop and keep their own cache of repeated decays: a forward
+  `ewm_mean` 1.2 times as fast (125 to 104 ns a row), 1.34 times at 100
+  keys, 1.21 at 10,000; backward windows unchanged. Outputs and saved
+  state unchanged to the bit.
 - `emit_breaks` forms its Wald products four rows at a time: 1.45 times as
   fast at 200 features, about 5% at 20. Outputs and saved state unchanged
   to the bit.
