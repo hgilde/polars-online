@@ -162,6 +162,13 @@ returns.
 - `seqtest`, `kmeans` and `micro` choose with selects where they branched
   on data: `kmeans` 1.12 times as fast at k=4 and 1.15 at k=20, `micro`
   1.12, `seqtest` 1.06. Outputs and saved state unchanged to the bit.
+- `audit` on continuous columns is about 1.6 times as fast (1.54 through
+  the bank at 20 columns): the digest's centroid join holds the centroid
+  being grown in registers, and the counters' decrement pass runs once.
+  Outputs and saved state unchanged to the bit.
+- `corrchange(kind="window")`'s summaries at 1 to 8 columns are built at a
+  fixed width: 1.16 times as fast on the benchmark case, up to 1.47 without
+  a permutation redraw. Outputs and saved state unchanged to the bit.
 - `audit`'s quantile digest sorts only the values buffered since its last
   fold and merges them into its sorted centroids, rather than re-sorting
   everything: about 5% faster over 20 columns. Outputs and saved state
