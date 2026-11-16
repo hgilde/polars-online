@@ -1460,9 +1460,12 @@ impl Bocpd {
             // functions' difference is taken once a run, not once a feature:
             // the same value, `(Γ − Γ) − ½ ln(..)` as the expression groups
             // (task 250).
-            let gammas = match cache {
-                Some(c) => c.gamma(nun, 1.0),
-                None => gamma_diff(nun, 1.0),
+            let (gammas, ln_c) = match cache {
+                Some(c) => c.gamma_and_ln_c(nun, kn),
+                None => (
+                    gamma_diff(nun, 1.0),
+                    (std::f64::consts::PI * (kn + 1.0) / kn).ln(),
+                ),
             };
             let mut lp = 0.0;
             let mut mode = 0.0;
@@ -1474,7 +1477,7 @@ impl Bocpd {
                     return None;
                 }
                 let z = (x[i] - self.run_mean_at(run, mu0, i)) / var.sqrt();
-                let base = gammas - 0.5 * (nun * std::f64::consts::PI * var).ln();
+                let base = gammas - 0.5 * (psin.ln() + ln_c);
                 lp += base - 0.5 * (nun + 1.0) * (1.0 + z * z / nun).ln();
                 mode += base;
             }
@@ -1617,7 +1620,7 @@ impl Bocpd {
         weights.clear();
         if let Some(c) = cache.as_deref_mut() {
             let full = self.full();
-            c.begin(r, if full { d as f64 } else { 1.0 }, full);
+            c.begin(r, if full { d as f64 } else { 1.0 }, true);
         }
         self.mu0_into(mu0);
         self.psi0_into(psi0);
