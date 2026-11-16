@@ -1436,6 +1436,130 @@ fn the_digest_folds_its_values_at_the_buffer_size() {
     );
 }
 
+/// The loop that joins neighbouring centroids holds the one it grows in
+/// registers; it is the loop that kept it in the output's last entry, to the
+/// bit, over every list the digest can hold and the ones it cannot: empty,
+/// one, equal means, weights from 1 to 1e9, means of either sign and size,
+/// NaN, infinities, and caps from 1 (nothing joins) to past the total
+/// (everything does) and NaN.
+#[test]
+fn joining_neighbours_in_registers_is_joining_them_in_the_output_to_the_bit() {
+    fn in_the_output(all: &[(f64, f64)], cap: f64) -> Vec<(f64, f64)> {
+        let mut out: Vec<(f64, f64)> = Vec::new();
+        for &(m, w) in all {
+            match out.last_mut() {
+                Some(cur) if cur.1 + w <= cap => {
+                    let s = cur.1 + w;
+                    cur.0 += (m - cur.0) * (w / s);
+                    cur.1 = s;
+                }
+                _ => out.push((m, w)),
+            }
+        }
+        out
+    }
+    let bits = |v: &[(f64, f64)]| -> Vec<(u64, u64)> {
+        v.iter().map(|c| (c.0.to_bits(), c.1.to_bits())).collect()
+    };
+    let mut r = SplitMix64::new(4242);
+    let specials = [
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        0.0,
+        -0.0,
+        1e300,
+        -1e300,
+        f64::MIN_POSITIVE,
+    ];
+    for trial in 0..20_000 {
+        let n = (r.next_u64() % 120) as usize;
+        let all: Vec<(f64, f64)> = (0..n)
+            .map(|_| {
+                let m = match r.next_u64() % 6 {
+                    0 => specials[(r.next_u64() % specials.len() as u64) as usize],
+                    1 => 3.0,
+                    2 => (r.uniform() * 4.0).floor(),
+                    _ => 1e3 * (2.0 * r.uniform() - 1.0),
+                };
+                let w = match r.next_u64() % 4 {
+                    0 => 1.0,
+                    1 => 1.0 + (r.uniform() * 1e9).floor(),
+                    2 => 1.0 + (r.uniform() * 5.0).floor(),
+                    _ => 1.0 + r.uniform() * 100.0,
+                };
+                (m, w)
+            })
+            .collect();
+        let total: f64 = all.iter().map(|c| c.1).sum();
+        for cap in [
+            1.0,
+            2.0,
+            (2.0 * total / COMPRESSION).max(1.0),
+            total / 3.0,
+            total,
+            total * 2.0,
+            f64::NAN,
+            f64::INFINITY,
+        ] {
+            assert_eq!(
+                bits(&Digest::join_neighbours(&all, cap)),
+                bits(&in_the_output(&all, cap)),
+                "trial {trial}, n = {n}, cap = {cap}"
+            );
+        }
+    }
+}
+
+/// The counters' decrement pass is one pass, and a table it empties is
+/// replaced: after every value, over streams of continuous values (every
+/// pass empties the table), few repeated ones, and a mix, at caps from 1 to
+/// 300, the counters, their decrements and their flag are what the pass in
+/// two steps leaves, and so are the bytes of the file.
+#[test]
+fn the_counters_decrement_pass_leaves_the_counters_the_two_step_pass_does() {
+    fn two_steps(c: &mut Counts, v: f64, cap: usize) {
+        use std::collections::hash_map::Entry;
+        let k = key(v);
+        let len = c.counts.len();
+        match c.counts.entry(k) {
+            Entry::Occupied(mut e) => *e.get_mut() += 1,
+            Entry::Vacant(e) if len < cap => {
+                e.insert(1);
+            }
+            Entry::Vacant(_) => {
+                c.over = true;
+                c.decrements += 1;
+                c.counts.values_mut().for_each(|n| *n -= 1);
+                c.counts.retain(|_, n| *n > 0);
+            }
+        }
+    }
+    let mut r = SplitMix64::new(31);
+    for cap in [1, 2, 3, 8, 64, 256, 300] {
+        for kind in 0..4 {
+            let (mut a, mut b) = (Counts::default(), Counts::default());
+            for i in 0..3_000 {
+                let v = match kind {
+                    0 => 2.0 * r.uniform() - 1.0,
+                    1 => (r.uniform() * 12.0).floor(),
+                    2 if i % 3 == 0 => (r.uniform() * 5.0).floor(),
+                    2 => r.uniform(),
+                    _ => (r.uniform() * (cap as f64 + 3.0)).floor() - 1.0,
+                };
+                a.add(v, cap);
+                two_steps(&mut b, v, cap);
+                assert_eq!(a.sorted(), b.sorted(), "cap {cap}, kind {kind}, value {i}");
+                assert_eq!((a.decrements, a.over), (b.decrements, b.over));
+            }
+            assert_eq!(
+                rmp_serde::to_vec(&a).unwrap(),
+                rmp_serde::to_vec(&b).unwrap()
+            );
+        }
+    }
+}
+
 /// A merge keeps each mean's low part, and a merged audit goes on as one
 /// audit of every stream would (the module's doc): at a level of `1e8`,
 /// two columns on the grid of doubles there, a few steps of it apart,
