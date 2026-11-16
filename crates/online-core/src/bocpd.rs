@@ -1676,10 +1676,8 @@ impl Bocpd {
         // predictive mean are read from.
         // Where the joint is the one the last prune left as the recursion
         // made it, its `log_sum_exp` is the one that row took (task 419).
-        match joint_z {
-            Some(z) => posterior_given(joint, z, pre),
-            None => posterior_into(joint, pre),
-        }
+        let zj = joint_z.unwrap_or_else(|| log_sum_exp(joint));
+        posterior_given(joint, zj, pre);
         let mut mode_at = 0;
         for i in 1..r {
             if pre[i] > pre[mode_at] {
@@ -1710,7 +1708,8 @@ impl Bocpd {
         mix.clear();
         mix.extend((0..r).map(|i| {
             if pre[i] > 0.0 {
-                pre[i].ln() + logpi[i]
+                // Scratch variant 426 (c): `ln(exp(l - z))` as `l - z`.
+                (joint[i] - zj) + logpi[i]
             } else {
                 f64::NEG_INFINITY
             }
