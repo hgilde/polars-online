@@ -177,3 +177,209 @@ fn the_scratch_is_bounded() {
         assert!(cap <= KEEP_ENTRIES, "{what}: {cap} entries kept");
     }
 }
+
+// What the pool keeps between solves, held to the capacities and the counts
+// it keeps (task 422): a kept list or space changes no number a solve
+// gives, so these read the pool itself. The thresholds are written as
+// literals (`KEPT_ORDER` is 64, so `KEEP_ENTRIES` is 4096): a test that read
+// the constant would move with a mutation of it.
+
+/// Row-by-row `steps` of a model of `n_targets` targets over `k` features,
+/// a solve on every row; each row's features seeded and spread.
+fn run_model(mut cfg: EwRidgeCfg, rows: usize) -> EwRidge {
+    let (k, m) = (cfg.n_features, cfg.n_targets);
+    cfg.n_targets = m;
+    let mut model = EwRidge::new(cfg).unwrap();
+    let mut s = 17u64;
+    for i in 0..rows {
+        let x: Vec<f64> = (0..k).map(|_| lcg(&mut s)).collect();
+        let y: Vec<Option<f64>> = (0..m).map(|t| Some(x[t % k] + 0.1 * lcg(&mut s))).collect();
+        model.step(&x, &y, if i == 0 { 0.0 } else { 1.0 }, 1.0);
+    }
+    model
+}
+
+#[test]
+fn the_previous_fit_is_kept_up_to_4096_entries() {
+    // The fit's storage is `n_targets` lists of `k_total` entries, kept
+    // for the next solve's while `n_targets * k_total <= 4096`.
+    for (k, m, kept) in [(3usize, 3usize, true), (63, 64, true), (63, 65, false)] {
+        let mut c = cfg(k, (true, false, false), false, None);
+        c.n_targets = m;
+        let mut model = run_model(c, 6);
+        let held = model.spare_fit.get().len();
+        assert_eq!(held, if kept { m } else { 0 }, "k {k}, m {m}");
+    }
+}
+
+/// The shapes a solve keeps a working matrix for: one each, 16 at most,
+/// the 17th emptying the list first.
+#[test]
+fn a_working_matrix_is_made_once_a_shape_and_sixteen_are_kept() {
+    let mut quads = Quads::new();
+    for i in 1..=16 {
+        quad_for(&mut quads, i, 1);
+        quad_for(&mut quads, i, 1);
+        assert_eq!(quads.len(), i);
+    }
+    // A shape held is found, not made again, at any position.
+    let first: *const QuadWork = quad_for(&mut quads, 1, 1);
+    assert_eq!(first, &quads[0].2 as *const QuadWork);
+    assert_eq!(quads.len(), 16);
+    // The same order at another width is another shape.
+    quad_for(&mut quads, 1, 2);
+    assert_eq!(quads.len(), 1);
+    assert_eq!((quads[0].0, quads[0].1), (1, 2));
+    quad_for(&mut quads, 1, 1);
+    assert_eq!(quads.len(), 2);
+}
+
+#[test]
+fn a_solve_keeps_a_working_matrix_up_to_order_64() {
+    // `solve_into` and its kept matrix to the order 64, `solve` past it.
+    for (k, kept) in [(3usize, true), (64, true), (65, false)] {
+        drop(SOLVE_BUFS.take());
+        let mut c = cfg(k, (true, false, false), false, None);
+        c.n_targets = 1;
+        run_model(c, k + 4);
+        let bufs = SOLVE_BUFS.take().expect("the thread keeps its lists");
+        let shapes: Vec<(usize, usize)> = bufs.parts.quads.iter().map(|q| (q.0, q.1)).collect();
+        assert_eq!(shapes, if kept { vec![(k, 1)] } else { vec![] }, "k {k}");
+    }
+}
+
+fn parts_with(back: usize) -> Solved {
+    Solved {
+        sol: Vec::with_capacity(back),
+        factor: None,
+        a: Vec::with_capacity(back),
+        keep: Vec::with_capacity(back),
+        s: Vec::with_capacity(back),
+        mean: Vec::with_capacity(back),
+        centred: false,
+        shift: 0.0,
+        scale: 1.0,
+        ill: false,
+    }
+}
+
+#[test]
+fn reclaim_keeps_the_larger_of_the_list_held_and_the_one_back() {
+    // The storage comes back to a pool that holds none.
+    let mut parts = Parts::default();
+    parts.reclaim(parts_with(10));
+    for (what, cap) in [
+        ("out", parts.out.capacity()),
+        ("a", parts.a.capacity()),
+        ("pos", parts.pos.capacity()),
+        ("kept_s", parts.kept_s.capacity()),
+        ("mean", parts.mean.capacity()),
+    ] {
+        assert!(cap >= 10, "{what}: {cap}");
+    }
+    // A list the reader took the storage of comes back empty, and does not
+    // replace the one held.
+    parts.reclaim(parts_with(0));
+    for (what, cap) in [
+        ("out", parts.out.capacity()),
+        ("a", parts.a.capacity()),
+        ("pos", parts.pos.capacity()),
+        ("kept_s", parts.kept_s.capacity()),
+        ("mean", parts.mean.capacity()),
+    ] {
+        assert!(cap >= 10, "{what}: {cap} after an empty one came back");
+    }
+}
+
+#[test]
+fn release_drops_a_list_past_4096_entries_and_keeps_one_at_it() {
+    let sized = |n: usize| {
+        let (f, u) = (Vec::<f64>::with_capacity(n), Vec::<usize>::with_capacity(n));
+        assert!(f.capacity() == n && u.capacity() == n);
+        (f, u)
+    };
+    for (n, kept) in [(200usize, true), (4096, true), (4097, false)] {
+        let mut parts = Parts::default();
+        let (f, u) = sized(n);
+        let (f2, u2) = sized(n);
+        parts.a = f;
+        parts.b = f2;
+        parts.cols = u;
+        parts.pos = u2;
+        parts.release();
+        let caps = [
+            parts.a.capacity(),
+            parts.b.capacity(),
+            parts.cols.capacity(),
+            parts.pos.capacity(),
+        ];
+        for cap in caps {
+            assert_eq!(cap == n, kept, "{n} entries: {caps:?}");
+            assert!(kept || cap == 0, "{n} entries: {caps:?}");
+        }
+    }
+}
+
+#[test]
+fn a_spare_pending_solve_is_kept_up_to_64() {
+    let mut spare = Spare::default();
+    for i in 1..=70 {
+        let f = spare.take_factor(Arc::new(Pending::hollow()));
+        assert!(f.is_some());
+        assert_eq!(spare.0.len(), i.min(64));
+    }
+    // A solve another slot holds is left to it, and kept by nobody.
+    let held = Arc::new(Pending::hollow());
+    let other = Arc::clone(&held);
+    let mut spare = Spare::default();
+    assert!(spare.take_factor(held).is_none());
+    assert!(spare.0.is_empty());
+    drop(other);
+}
+
+#[test]
+fn a_standardized_fit_through_the_origin_of_all_zero_columns_is_zero_for_every_target() {
+    // No raw second moment is positive, so no column is solved: every
+    // target's `kc` coefficients are 0, `kc * m` entries in all.
+    let mut c = cfg(3, (false, true, false), false, None);
+    c.n_targets = 3;
+    let mut model = EwRidge::new(c).unwrap();
+    for i in 0..8 {
+        let out = model.step(
+            &[0.0; 3],
+            &[Some(1.0), Some(2.0), Some(3.0)],
+            f64::from(i > 0),
+            1.0,
+        );
+        assert_eq!(out.pred.len(), 3);
+    }
+    let beta = model.beta.as_ref().expect("a fit");
+    assert_eq!(beta.0.len(), 3);
+    for b in &beta.0 {
+        assert_eq!(b.len(), 3);
+        assert!(b.iter().all(|&v| v == 0.0), "{b:?}");
+    }
+}
+
+#[test]
+fn a_system_with_no_kept_column_is_kept_empty_beside_one_that_was_solved() {
+    // Two feature sets over one pool: the first system's matrix is left in
+    // the scratch, and the second, whose only feature has no spread, keeps
+    // no column, so the system it keeps for the leverage is empty.
+    let mut c = cfg(2, (true, true, false), true, None);
+    c.n_targets = 1;
+    c.feature_sets = vec![("a".to_string(), vec![0]), ("b".to_string(), vec![1])];
+    c.ridge = vec![1e-3];
+    let mut model = EwRidge::new(c).unwrap();
+    model.set_keep_factor(true);
+    let mut s = 5u64;
+    for i in 0..20 {
+        let x = [lcg(&mut s), 1.0];
+        model.step(&x, &[Some(x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+    }
+    let systems: Vec<&System> = model.ready.systems.iter().flatten().collect();
+    assert_eq!(systems.len(), 2);
+    assert_eq!(systems[0].z.len(), 1);
+    assert!(systems[1].z.is_empty());
+    assert!(systems[1].a.is_empty(), "{:?}", systems[1].a);
+}
