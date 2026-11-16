@@ -519,22 +519,49 @@ impl KMeans {
                 self.clusters[j].dist(z, &self.mw) < self.clusters[bj].dist(z, &self.mw)
             }
         };
+        // `NONE`: no runner-up yet. A finite square is closer exactly when it
+        // is smaller, whatever the best so far, so the common step is a
+        // comparison and selects -- which centre is nearest is a coin the
+        // data flip, and a branch on it mispredicts about once a row; the
+        // overflowed squares take the branches below.
+        const NONE: usize = usize::MAX;
         let mut best = 0;
         let mut best_d = f64::INFINITY;
         let mut second = f64::INFINITY;
-        let mut second_j = None;
+        let mut second_j = NONE;
         for (j, c) in self.clusters.iter().enumerate() {
             let d = c.dist2(z, &self.mw);
-            if j == 0 || closer(d, j, best_d, best) {
+            if d.is_finite() {
+                let first = j == 0 || d < best_d;
+                let runner = second_j == NONE || d < second;
+                let (prev_best, prev_best_j) = (best_d, best);
+                second = if first {
+                    prev_best
+                } else if runner {
+                    d
+                } else {
+                    second
+                };
+                second_j = if first {
+                    if j > 0 { prev_best_j } else { NONE }
+                } else if runner {
+                    j
+                } else {
+                    second_j
+                };
+                best_d = if first { d } else { best_d };
+                best = if first { j } else { best };
+            } else if j == 0 || closer(d, j, best_d, best) {
                 second = best_d;
-                second_j = (j > 0).then_some(best);
+                second_j = if j > 0 { best } else { NONE };
                 best_d = d;
                 best = j;
-            } else if second_j.is_none_or(|sj| closer(d, j, second, sj)) {
+            } else if second_j == NONE || closer(d, j, second, second_j) {
                 second = d;
-                second_j = Some(j);
+                second_j = j;
             }
         }
+        let mut second_j = (second_j != NONE).then_some(second_j);
         if self.clusters.len() < 2 {
             second = f64::NAN;
             second_j = None;
@@ -1382,6 +1409,83 @@ mod tests {
             "{:?}",
             near.pred
         );
+    }
+
+    /// [`KMeans::nearest2`] as it was written, a branch on every comparison:
+    /// the oracle the select form is held to, to the bit.
+    fn nearest2_branching(m: &KMeans, z: &[f64]) -> Near {
+        let closer = |d: f64, j: usize, bd: f64, bj: usize| {
+            if d.is_finite() || bd.is_finite() {
+                d < bd
+            } else {
+                m.clusters[j].dist(z, &m.mw) < m.clusters[bj].dist(z, &m.mw)
+            }
+        };
+        let mut best = 0;
+        let mut best_d = f64::INFINITY;
+        let mut second = f64::INFINITY;
+        let mut second_j = None;
+        for (j, c) in m.clusters.iter().enumerate() {
+            let d = c.dist2(z, &m.mw);
+            if j == 0 || closer(d, j, best_d, best) {
+                second = best_d;
+                second_j = (j > 0).then_some(best);
+                best_d = d;
+                best = j;
+            } else if second_j.is_none_or(|sj| closer(d, j, second, sj)) {
+                second = d;
+                second_j = Some(j);
+            }
+        }
+        if m.clusters.len() < 2 {
+            second = f64::NAN;
+            second_j = None;
+        }
+        (best, best_d, second, second_j)
+    }
+
+    /// The nearest and the runner-up, for one to eight centres, under metrics
+    /// that tie every centre, overflow every square, make them NaN or leave
+    /// them ordinary, and rows that tie, overflow and sit at `-0`: the same
+    /// answer as the branching search, bit for bit.
+    #[test]
+    fn the_select_search_is_the_branching_one_to_the_bit() {
+        use crate::OnlineModel;
+        let metrics: [[f64; 2]; 7] = [
+            [1.0, 1.0],
+            [0.0, 0.0],
+            [2.5e199, 2.5e199],
+            [f64::NAN, 1.0],
+            [f64::INFINITY, 1.0],
+            [1e-300, 1e300],
+            [1.0, 1e200],
+        ];
+        for k in 1..=8 {
+            let mut c = cfg(k);
+            c.warm_rows = 8;
+            let mut m = KMeans::new(c).unwrap();
+            let mut s = 11u64 + k as u64;
+            for i in 0..40 {
+                let x = [lcg(&mut s) + f64::from(i % 5) * 3.0, lcg(&mut s)];
+                m.step(&x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            assert!(m.seeded());
+            let mut rows = vec![[0.0, 0.0], [-0.0, -0.0], [1e100, -1e100], [1e200, 1e200]];
+            rows.extend((0..300).map(|_| [20.0 * lcg(&mut s) - 2.0, 20.0 * lcg(&mut s) - 2.0]));
+            // A row on a centre, and on every centre twice over, ties.
+            rows.extend(m.clusters.iter().map(|c| [c.centre()[0], c.centre()[1]]));
+            for mw in metrics {
+                m.mw = mw.to_vec();
+                for z in &rows {
+                    let (a, b) = (m.nearest2(z), nearest2_branching(&m, z));
+                    assert_eq!(
+                        (a.0, a.1.to_bits(), a.2.to_bits(), a.3),
+                        (b.0, b.1.to_bits(), b.2.to_bits(), b.3),
+                        "k {k}, metric {mw:?}, row {z:?}"
+                    );
+                }
+            }
+        }
     }
 
     fn cfg(k: usize) -> KMeansCfg {

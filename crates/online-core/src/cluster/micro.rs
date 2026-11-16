@@ -456,21 +456,30 @@ impl Micro {
     /// that all overflowed the norms decide, so the nearest is still the
     /// nearest (review 2026-09-26, G1).
     fn nearest(&self, z: &[f64], potential: bool) -> Option<(usize, f64, f64)> {
-        let mut best: Option<(usize, f64)> = None;
+        // A finite square is closer exactly when it is smaller, whatever the
+        // best so far (and the first is always closer), so the common step
+        // selects; which summary is nearest is a coin the data flip, and a
+        // branch on it mispredicts. The overflowed squares take the match.
+        let (mut found, mut bj, mut bd) = (false, 0, 0.0);
         for (j, m) in self.mc.iter().enumerate() {
             if m.potential != potential {
                 continue;
             }
             let d = m.s.dist2(z, &self.mw);
-            let closer = match best {
-                None => true,
-                Some((_, bd)) if d.is_finite() || bd.is_finite() => d < bd,
-                Some((bj, _)) => m.s.dist(z, &self.mw) < self.mc[bj].s.dist(z, &self.mw),
+            let closer = if d.is_finite() {
+                !found || d < bd
+            } else {
+                match found.then_some((bj, bd)) {
+                    None => true,
+                    Some((_, bd)) if d.is_finite() || bd.is_finite() => d < bd,
+                    Some((bj, _)) => m.s.dist(z, &self.mw) < self.mc[bj].s.dist(z, &self.mw),
+                }
             };
-            if closer {
-                best = Some((j, d));
-            }
+            bj = if closer { j } else { bj };
+            bd = if closer { d } else { bd };
+            found = true;
         }
+        let best = found.then_some((bj, bd));
         best.map(|(j, d2)| {
             let d = if d2.is_finite() {
                 d2.sqrt()
@@ -972,6 +981,81 @@ mod tests {
         let u1 = lcg(state).max(1e-300);
         let u2 = lcg(state);
         (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+    }
+
+    /// [`Micro::nearest`] as it was written, a branch on every
+    /// comparison: the oracle the select form is held to, to the bit.
+    fn nearest_branching(m: &Micro, z: &[f64], potential: bool) -> Option<(usize, f64, f64)> {
+        let mut best: Option<(usize, f64)> = None;
+        for (j, mc) in m.mc.iter().enumerate() {
+            if mc.potential != potential {
+                continue;
+            }
+            let d = mc.s.dist2(z, &m.mw);
+            let closer = match best {
+                None => true,
+                Some((_, bd)) if d.is_finite() || bd.is_finite() => d < bd,
+                Some((bj, _)) => mc.s.dist(z, &m.mw) < m.mc[bj].s.dist(z, &m.mw),
+            };
+            if closer {
+                best = Some((j, d));
+            }
+        }
+        best.map(|(j, d2)| {
+            let d = if d2.is_finite() {
+                d2.sqrt()
+            } else {
+                m.mc[j].s.dist(z, &m.mw)
+            };
+            (j, d2, d)
+        })
+    }
+
+    /// Both kinds of summary, under metrics that tie every summary, overflow
+    /// every square, make them NaN or leave them ordinary, and rows that tie,
+    /// overflow and sit at `-0`: the same answer as the branching search.
+    #[test]
+    fn the_select_search_is_the_branching_one_to_the_bit() {
+        let mut m = Micro::new(cfg()).unwrap();
+        let mut s = 5u64;
+        for i in 0..400 {
+            let x = [
+                gauss(&mut s) + f64::from(i % 4) * 2.0,
+                gauss(&mut s) + f64::from(i % 3),
+            ];
+            m.step(&x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        assert!(m.mc.iter().any(|c| c.potential) && m.mc.iter().any(|c| !c.potential));
+        let metrics: [[f64; 2]; 7] = [
+            [1.0, 1.0],
+            [0.0, 0.0],
+            [2.5e199, 2.5e199],
+            [f64::NAN, 1.0],
+            [f64::INFINITY, 1.0],
+            [1e-300, 1e300],
+            [1.0, 1e200],
+        ];
+        let mut rows = vec![[0.0, 0.0], [-0.0, -0.0], [1e100, -1e100], [1e200, 1e200]];
+        rows.extend((0..300).map(|_| [10.0 * gauss(&mut s), 10.0 * gauss(&mut s)]));
+        rows.extend(m.mc.iter().map(|c| [c.s.centre()[0], c.s.centre()[1]]));
+        for mw in metrics {
+            m.mw = mw.to_vec();
+            for z in &rows {
+                for potential in [true, false] {
+                    let bits = |r: Option<(usize, f64, f64)>| {
+                        r.map(|(j, a, b)| (j, a.to_bits(), b.to_bits()))
+                    };
+                    assert_eq!(
+                        bits(m.nearest(z, potential)),
+                        bits(nearest_branching(&m, z, potential)),
+                        "metric {mw:?}, row {z:?}, potential {potential}"
+                    );
+                }
+            }
+        }
+        // No summary of a kind: nothing.
+        m.mc.clear();
+        assert!(m.nearest(&[0.0, 0.0], true).is_none());
     }
 
     fn cfg() -> MicroCfg {

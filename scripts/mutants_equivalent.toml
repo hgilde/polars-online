@@ -241,14 +241,14 @@ why = """`err.signum()` is ±1 here (an `err` of 0 has no loss, `eps >= 0` being
 file = "crates/online-core/src/seqtest.rs"
 function = "<impl OnlineModel for SeqTest>::step_into"
 mutation = "replace * with /"
-line_has = "self.log_e_pos[j] += (lam_pos * s).ln_1p();"
+line_has = "self.log_e_pos[j] += ln_1p_of(lam_pos * s);"
 why = """`s` is the target's sign, ±1 (a zero continues above), and `x / ±1` is `x * ±1` exactly"""
 
 [[equivalent]]
 file = "crates/online-core/src/seqtest.rs"
 function = "<impl OnlineModel for SeqTest>::step_into"
 mutation = "replace * with /"
-line_has = "self.log_e_neg[j] += (-lam_neg * s).ln_1p();"
+line_has = "self.log_e_neg[j] += ln_1p_of(-lam_neg * s);"
 why = """as the line above: `s` is ±1, and `x / ±1` is `x * ±1` exactly"""
 
 [[equivalent]]
