@@ -926,3 +926,60 @@ fn a_windowed_row_reads_its_window_in_kept_buffers() {
         check(&format!("windowed {what}, 4 features"), got, bound, before);
     }
 }
+
+/// `ewridge`'s read of a row before its update (`predict_into`) and of the
+/// coefficients' data shares (`support_coef_into`), each into a buffer the
+/// caller keeps: the same numbers, to the bit, as the allocating forms
+/// (`predict`, whose `Step` holds a new `pred` list, and `support_coef`,
+/// a list of lists), and no allocation a row once the buffers are sized. The
+/// bank reads both on every row of a stream (task 436: 1.0 and 2.1 a row of
+/// the grouped and the held-target cases).
+#[test]
+fn ewridge_reads_its_prediction_and_shares_into_kept_buffers() {
+    let (k, m) = (5, 2);
+    let mut model = model(json!({
+        "name": "m", "model": {"type": "ewridge"}, "targets": names("y", m),
+        "features": names("x", k), "clock": "t", "half_life": 300.0, "gap_cap": 100.0,
+        "min_weight": 5.0,
+    }));
+    let mut s = 9u64;
+    let mut kept = online_polars::online_core::Step::default();
+    let mut shares = Vec::new();
+    let (mut reads, mut allocated) = (0usize, 0usize);
+    for i in 0..WARM {
+        let x: Vec<f64> = (0..k).map(|_| draw(&mut s)).collect();
+        let y: Vec<Option<f64>> = (0..m).map(|j| Some(x[j] + draw(&mut s))).collect();
+        let d = if i == 0 { 0.0 } else { 1.0 };
+        if i >= 200 {
+            // A solve's shares are formed on the first read after it, inside
+            // the model; that read is not the buffer's, so it is made first.
+            model.support_coef_into(&mut shares);
+            let before = calls();
+            model.predict_into(&x, &y, d, &mut kept);
+            let got = model.support_coef_into(&mut shares);
+            allocated += calls() - before;
+            reads += 1;
+            assert_eq!(kept, model.predict(&x, &y, d), "row {i}: predict_into");
+            let want = model.support_coef();
+            assert_eq!(got, want.is_some(), "row {i}: share presence");
+            let flat: Vec<f64> = want.into_iter().flatten().flatten().collect();
+            let same = |a: &[f64], b: &[f64]| {
+                a.len() == b.len() && a.iter().zip(b).all(|(p, q)| p.to_bits() == q.to_bits())
+            };
+            assert!(same(&shares, &flat), "row {i}: support_coef_into");
+            assert!(
+                got && !shares.is_empty(),
+                "row {i}: a solved fit has shares"
+            );
+        }
+        model.step(&x, &y, d, 1.0);
+    }
+    // The first read sizes the two buffers; no read after it allocates.
+    assert!(
+        allocated <= 2,
+        "{allocated} allocations over {reads} reads into kept buffers"
+    );
+    eprintln!(
+        "ewridge predict_into and support_coef_into: {allocated} allocations over {reads} reads"
+    );
+}

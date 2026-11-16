@@ -874,6 +874,15 @@ pub trait OnlineModel: Sized {
         self.predict(x, d_clock)
     }
 
+    /// [`Self::predict_with`] into the caller's buffer, which it overwrites
+    /// in full: the same `pred`, `n_eff` and `extra`, bit for bit. The
+    /// default forms the step and moves it in, so only a model that fills
+    /// the buffer in place (`ewridge`) keeps the buffer's `pred` list
+    /// between rows.
+    fn predict_with_into(&self, x: &[f64], y: &[Option<f64>], d_clock: f64, out: &mut Step) {
+        *out = self.predict_with(x, y, d_clock);
+    }
+
     /// [`Self::predict_with`] as the same model built with `min_weight =
     /// floor` and no target's own floor gives it, from the state as it
     /// stands: at `floor = 0`, the model's own prediction for the row, which
@@ -1097,6 +1106,22 @@ pub trait OnlineModel: Sized {
     /// matrix, and `ew_cov` no coefficients.
     fn support_coef(&self) -> Option<Vec<Vec<f64>>> {
         None
+    }
+
+    /// [`Self::support_coef`] as one list, slot after slot, written over
+    /// `out`; `false` (and `out` cleared) where it is `None`. The default
+    /// forms the lists and joins them; a model that holds its shares in
+    /// one place (`ewridge`) writes them straight in, so a caller that
+    /// reads them every row forms no list of lists.
+    fn support_coef_into(&self, out: &mut Vec<f64>) -> bool {
+        out.clear();
+        match self.support_coef() {
+            Some(slots) => {
+                out.extend(slots.into_iter().flatten());
+                true
+            }
+            None => false,
+        }
     }
 
     fn state(&self) -> State;
