@@ -546,6 +546,10 @@ fn key(v: f64) -> u64 {
     if v == 0.0 { 0 } else { v.to_bits() }
 }
 
+/// The counters' cap from which a table a decrement pass emptied is replaced
+/// by a new one rather than kept.
+const FRESH_TABLE_CAP: usize = 32;
+
 impl Counts {
     fn add(&mut self, v: f64, cap: usize) {
         let k = key(v);
@@ -558,8 +562,23 @@ impl Counts {
             Entry::Vacant(_) => {
                 self.over = true;
                 self.decrements += 1;
-                self.counts.values_mut().for_each(|c| *c -= 1);
-                self.counts.retain(|_, c| *c > 0);
+                self.counts.retain(|_, c| {
+                    *c -= 1;
+                    *c > 0
+                });
+                // On a continuous column every counter is 1, and every
+                // pass erases every entry. The table that leaves is slower
+                // to fill again than a new one of the same size (a pass
+                // over its slots in `reserve` and `erase`, measured at 860
+                // against 600 ns a row over 20 such columns at the default
+                // cap), and `clear` returns at once on a table with no
+                // entries. A table of a few slots is cheaper to keep than
+                // to allocate. Entries and bits are the same; only the
+                // slots' order, which nothing reads, can differ.
+                if self.counts.is_empty() && cap >= FRESH_TABLE_CAP {
+                    self.counts =
+                        HashMap::with_capacity_and_hasher(cap, BuildHasherDefault::default());
+                }
             }
         }
     }
@@ -708,17 +727,32 @@ impl Digest {
         all.extend(fresh[j..].iter().map(|&v| (v, 1.0)));
         let total: f64 = all.iter().map(|c| c.1).sum();
         let cap = (2.0 * total / COMPRESSION).max(1.0);
-        let mut out: Vec<(f64, f64)> = Vec::new();
-        for (m, w) in all {
-            match out.last_mut() {
-                Some(cur) if cur.1 + w <= cap => {
-                    let s = cur.1 + w;
-                    cur.0 += (m - cur.0) * (w / s);
-                    cur.1 = s;
-                }
-                _ => out.push((m, w)),
+        Self::join_neighbours(&all, cap)
+    }
+
+    /// Fold each centroid of `all` into the one before it while the one
+    /// before stays within `cap` rows: `m ← m + (m' − m) · w' / (w + w')`.
+    /// The centroid being grown is held in two locals, written to `out`
+    /// when the next one starts, where it was `out`'s last entry, loaded and
+    /// stored on every centroid: that round trip through memory was the
+    /// chain the loop waited on (each centroid's mean needs the last one's
+    /// stored). The same operations on the same numbers in the same order.
+    fn join_neighbours(all: &[(f64, f64)], cap: f64) -> Vec<(f64, f64)> {
+        let mut out: Vec<(f64, f64)> = Vec::with_capacity(all.len());
+        let Some((&(mut mean, mut weight), rest)) = all.split_first() else {
+            return out;
+        };
+        for &(m, w) in rest {
+            if weight + w <= cap {
+                let s = weight + w;
+                mean += (m - mean) * (w / s);
+                weight = s;
+            } else {
+                out.push((mean, weight));
+                (mean, weight) = (m, w);
             }
         }
+        out.push((mean, weight));
         out
     }
 
