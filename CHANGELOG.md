@@ -162,6 +162,16 @@ returns.
 - `seqtest`, `kmeans` and `micro` choose with selects where they branched
   on data: `kmeans` 1.12 times as fast at k=4 and 1.15 at k=20, `micro`
   1.12, `seqtest` 1.06. Outputs and saved state unchanged to the bit.
+- `bocpd` at the default prune is about 5% faster (10% at one feature):
+  it keeps the joint's log-sum-exp from the previous row's prune, and
+  decides the prune without an `exp` where the answer cannot depend on it.
+  Outputs and saved state unchanged to the bit.
+- The bank's per-group cost fell: at 1,000 and 10,000 groups `seqtest`
+  runs 1.09-1.11 times as fast, `ew_cov` 1.08 and `ewridge` 1.05-1.07,
+  with 30-60% fewer allocations a row (row plans and buffers kept across
+  chunks, one model's instance held inline, no NaN fill of columns every
+  row writes). Ungrouped rows are unchanged. Outputs and saved state
+  unchanged to the bit.
 - `audit` on continuous columns is about 1.6 times as fast (1.54 through
   the bank at 20 columns): the digest's centroid join holds the centroid
   being grown in registers, and the counters' decrement pass runs once.
