@@ -75,6 +75,10 @@ fn names(prefix: &str, n: usize) -> Vec<String> {
     (0..n).map(|i| format!("{prefix}{i}")).collect()
 }
 
+fn model_of(value: Value) -> AnyModel {
+    model(value)
+}
+
 fn model(value: Value) -> AnyModel {
     let mut spec: Spec = serde_json::from_value(value).expect("a spec");
     spec.check().expect("a valid spec");
@@ -566,7 +570,7 @@ fn ewridge_reads_its_kish_sizes_in_place() {
 #[test]
 fn corrchange_reads_its_rows_where_they_are() {
     for (id, bound, before) in [
-        ("corrchange_monitor_w2500", 1.008, 4.508),
+        ("corrchange_monitor_w2500", 0.55, 4.508),
         ("corrchange_window_w100", 0.0, 3.812),
     ] {
         let mut run = online_bench::model_setup(id);
@@ -574,6 +578,84 @@ fn corrchange_reads_its_rows_where_they_are() {
         std::hint::black_box(online_bench::polars_online_budget_model_rows(&mut run));
         let got = (calls() - start) as f64 / online_bench::ROWS as f64;
         check(id, got, bound, before);
+    }
+}
+
+/// The `monitor` kind let go every row of a span at its close and copied each
+/// row of the next into a new vector: one allocation a row, 1.04 in its case's
+/// block (task 425). The rows go to a list the next span's rows are copied
+/// from, so after the first span a row allocates nothing: a stream of 1,000
+/// rows over spans of 250 (4 closes), each in its own model, after a warm-up of
+/// two spans, at one column and at seven; and the same of a model that has
+/// not closed a span yet, which has nothing to take (1 a row, as before). What
+/// is left is each close's own statistic, which forms its lists once a span
+/// (22 at seven columns: 0.088 a row here).
+#[test]
+fn the_monitor_kind_copies_a_spans_rows_into_the_last_spans() {
+    for (k, scalar) in [(2, false), (7, false), (3, true)] {
+        let mut model = json!({"type": "corrchange", "kind": "monitor", "window_rows": 250});
+        let mut spec = json!({"name": "m", "features": names("x", k)});
+        if scalar {
+            model["scalar"] = json!(true);
+            spec["half_life"] = json!(300.0);
+        }
+        spec["model"] = model;
+        let got = per_row_with(spec.clone(), k, 0, true);
+        check(
+            &format!("corrchange monitor, {k} columns, scalar {scalar}"),
+            got,
+            0.1,
+            1.0,
+        );
+        // Before the first close nothing is held to take: a row a row.
+        let mut m = model_of(spec);
+        let mut s = 3u64;
+        let x: Vec<Vec<f64>> = (0..100)
+            .map(|_| (0..k).map(|_| draw(&mut s)).collect())
+            .collect();
+        let mut kept = online_polars::online_core::Step::default();
+        m.step_into(&x[0], &[], 0.0, 1.0, &mut kept);
+        let before = calls();
+        for r in &x[1..] {
+            m.step_into(r, &[], 1.0, 1.0, &mut kept);
+        }
+        let first = (calls() - before) as f64 / 99.0;
+        assert!(first >= 0.99, "a first span's rows are new: {first} a row");
+    }
+}
+
+/// `rcov` made a new vector of every return its rings took in -- `kernel`'s
+/// tail and `preavg`'s ring -- and let go the oldest of its final returns at
+/// each: one allocation a row, in steady state (task 425). The row the rings
+/// let go last is the next row's copy, so a stream's rows allocate nothing
+/// once the rings are full, under `kernel` at any jitter and bandwidth
+/// (including none to keep: the lagged products read the row and drop it)
+/// and under `preavg`. A block's close is not in this count (the bank reads
+/// `estimate` at the group's close).
+#[test]
+fn rcov_copies_a_return_into_the_one_its_rings_let_go() {
+    for (kind, extra) in [
+        ("kernel", json!({"jitter": 2})),
+        ("kernel", json!({"jitter": 3, "max_bandwidth": 6})),
+        ("kernel", json!({"jitter": 1, "bandwidth": 3})),
+        ("preavg", json!({"preavg_rows": 8})),
+    ] {
+        let mut value = serde_json::to_value(online_bench::spec("rcov")).expect("a spec");
+        value["model"]["kind"] = json!(kind);
+        if kind == "preavg" {
+            value["model"]
+                .as_object_mut()
+                .expect("a model")
+                .remove("jitter");
+        }
+        for (a, b) in extra.as_object().expect("an object") {
+            value["model"][a] = b.clone();
+        }
+        let spec: Spec = serde_json::from_value(value).expect("a spec");
+        let (k, m) = (spec.k(), spec.m());
+        let value = serde_json::to_value(&spec).expect("a spec serializes");
+        let got = per_row_with(value, k, m, true);
+        check(&format!("rcov {kind} {extra}"), got, 0.0, 1.0);
     }
 }
 

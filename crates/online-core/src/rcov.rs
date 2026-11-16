@@ -724,6 +724,67 @@ pub struct RcovEstimate {
     pub psd_repaired: Option<bool>,
 }
 
+/// The return row the rings let go last, kept for the next return to be
+/// copied into, so a row of the stream allocates nothing once the rings are
+/// full. Not state: two models with the same state are the same model
+/// whatever is held here, a copy keeps none of it, and a state file carries
+/// none.
+#[derive(Default)]
+struct SpareRow(Vec<f64>, Vec<f64>);
+
+impl Clone for SpareRow {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for SpareRow {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for SpareRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SpareRow")
+    }
+}
+
+impl SpareRow {
+    /// `x` in a row of its own: the spare's buffer where it is as long as
+    /// `x`, else a new one of `x`'s length, as `to_vec` makes it.
+    fn take_copy(&mut self, x: &[f64]) -> Vec<f64> {
+        if self.0.capacity() < x.len() {
+            return x.to_vec();
+        }
+        let mut row = std::mem::take(&mut self.0);
+        row.clear();
+        row.extend_from_slice(x);
+        row
+    }
+
+    /// A zeroed list of `k`, `preavg`'s pre-averaged return: the one the
+    /// last row left, or a new one.
+    fn zeroed(&mut self, k: usize) -> Vec<f64> {
+        let mut y = std::mem::take(&mut self.1);
+        y.clear();
+        y.resize(k, 0.0);
+        y
+    }
+
+    /// The list [`Self::zeroed`] gave, back for the next row.
+    fn put_zeroed(&mut self, y: Vec<f64>) {
+        self.1 = y;
+    }
+
+    /// A row the rings let go, kept for the next [`Self::take_copy`].
+    fn keep(&mut self, row: Vec<f64>) {
+        if row.capacity() > self.0.capacity() {
+            self.0 = row;
+        }
+    }
+}
+
 /// The block estimator; see the module docs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Rcov {
@@ -754,6 +815,9 @@ pub struct Rcov {
     /// The noise and sparse-variance accumulators.
     dense: StridedRv,
     sparse: StridedRv,
+    /// The row the rings let go last ([`SpareRow`]).
+    #[serde(skip)]
+    spare: SpareRow,
 }
 
 impl Rcov {
@@ -776,6 +840,7 @@ impl Rcov {
             pre_count: 0,
             dense: StridedRv::new(k, cfg.noise_stride),
             sparse: StridedRv::new(k, cfg.iv_stride),
+            spare: SpareRow::default(),
             cfg,
         })
     }
@@ -840,10 +905,14 @@ impl Rcov {
         let max_bandwidth = self.cfg.ring_for().unwrap_or(0);
         add_lagged_products(&mut self.gamma, &y, &self.fin, k);
         if max_bandwidth > 0 {
-            if self.fin.len() == max_bandwidth {
-                self.fin.pop_front();
+            if self.fin.len() == max_bandwidth
+                && let Some(old) = self.fin.pop_front()
+            {
+                self.spare.keep(old);
             }
             self.fin.push_back(y);
+        } else {
+            self.spare.keep(y);
         }
         self.emitted += 1;
     }
@@ -883,13 +952,15 @@ impl Rcov {
                     let y = self.tail.pop_front().expect("m kept");
                     self.emit(y);
                 }
-                self.tail.push_back(x.to_vec());
+                let row = self.spare.take_copy(x);
+                self.tail.push_back(row);
             }
         }
         if self.cfg.kind == RcovKind::Preavg {
             let kn = self.cfg.window_for().unwrap_or(0);
             if kn >= 2 {
-                self.pre_ring.push_back(x.to_vec());
+                let row = self.spare.take_copy(x);
+                self.pre_ring.push_back(row);
                 if self.pre_ring.len() == kn - 1 {
                     // `Ȳ_i = Σ_{j=1}^{kn−1} g(j/kn)·Δ_{i+j}` for `i = 0..=n−kn+1`
                     // (CKP 2010, Eq. 9): `kn − 1` consecutive returns, the
@@ -898,7 +969,7 @@ impl Rcov {
                     // after its oldest, so `Ȳ_0` was never formed: each
                     // stretch was one term short, while the scale counted it
                     // (task 159, D1).
-                    let mut y = vec![0.0; k];
+                    let mut y = self.spare.zeroed(k);
                     for j in 1..kn {
                         let w = preavg_g(j as f64 / kn as f64);
                         for (o, v) in y.iter_mut().zip(&self.pre_ring[j - 1]) {
@@ -912,7 +983,10 @@ impl Rcov {
                         }
                     }
                     self.pre_count += 1;
-                    self.pre_ring.pop_front();
+                    self.spare.put_zeroed(y);
+                    if let Some(old) = self.pre_ring.pop_front() {
+                        self.spare.keep(old);
+                    }
                 }
             }
         }
@@ -1934,6 +2008,110 @@ mod tests {
             let mut b = Rcov::restore(&rmp_serde::from_slice(&bytes).unwrap()).unwrap();
             feed(&mut b, &rows[50..]);
             assert_eq!(a.estimate(), b.estimate(), "{kind:?}");
+        }
+    }
+
+    /// The row the rings let go last is the next row's copy: held here
+    /// because the allocation test lives in `online-bench`, which mutation
+    /// testing does not run.
+    #[test]
+    fn a_spare_row_is_taken_when_it_is_long_enough_and_the_larger_is_kept() {
+        let x = [1.0, 2.0, 3.0];
+        let mut spare = SpareRow::default();
+        // Nothing held: a row of the row's own length.
+        let row = spare.take_copy(&x);
+        assert_eq!((row.as_slice(), row.capacity()), (&x[..], 3));
+        // One short is left alone; the held buffer is the next row's.
+        spare.keep(Vec::with_capacity(2));
+        let (at, room) = (spare.0.as_ptr(), spare.0.capacity());
+        let row = spare.take_copy(&x);
+        assert_eq!(row, x);
+        assert_ne!(row.as_ptr(), at);
+        assert_eq!((spare.0.as_ptr(), spare.0.capacity()), (at, room));
+        // Exactly as long is taken, and a longer one is kept over a shorter.
+        spare.keep(Vec::with_capacity(3));
+        let at = spare.0.as_ptr();
+        assert_eq!(spare.0.capacity(), 3, "the longer was kept");
+        let taken = spare.take_copy(&x);
+        assert_eq!(taken.as_ptr(), at);
+        assert_eq!(spare.0.capacity(), 0, "taken");
+        spare.keep(Vec::with_capacity(8));
+        spare.keep(Vec::with_capacity(5));
+        assert_eq!(spare.0.capacity(), 8, "a shorter row does not replace it");
+        // The pre-averaged return's list: zeroed to `k`, the same buffer back.
+        let mut y = spare.zeroed(4);
+        assert_eq!(y, [0.0; 4]);
+        y.iter_mut().for_each(|v| *v = 7.0);
+        let at = y.as_ptr();
+        spare.put_zeroed(y);
+        let y = spare.zeroed(3);
+        assert_eq!((y.as_slice(), y.as_ptr()), (&[0.0; 3][..], at));
+    }
+
+    /// A model that keeps the rows its rings let go is one that does not, in
+    /// every kind, with a break in the clock that clears the rings
+    /// part-way: its state and its estimate at every row.
+    #[test]
+    fn a_model_that_keeps_a_spare_row_is_one_that_does_not() {
+        for (kind, jitter, band, kn) in [
+            (RcovKind::Kernel, 2usize, Some(3usize), None),
+            (RcovKind::Kernel, 3, None, None),
+            (RcovKind::Kernel, 1, Some(5), None),
+            (RcovKind::Preavg, 2, None, Some(8usize)),
+            (RcovKind::Plain, 2, None, None),
+        ] {
+            let k = 3;
+            let rows = returns(150, k, 23, 0.3);
+            let c = RcovCfg {
+                jitter,
+                bandwidth: band,
+                preavg_rows: kn,
+                ..cfg(k, kind)
+            };
+            let (mut kept, mut fresh) = (Rcov::new(c.clone()).unwrap(), Rcov::new(c).unwrap());
+            let mut held = false;
+            for (i, x) in rows.iter().enumerate() {
+                fresh.spare = SpareRow::default();
+                let d = if i == 90 { 1e9 } else { 1.0 };
+                kept.step(x, &[], d, 1.0);
+                fresh.step(x, &[], d, 1.0);
+                // `preavg` ends a row holding the one its ring let go; a
+                // `kernel` row takes the one its final returns let go in
+                // the same row (`emit` is tested below).
+                held |= kept.spare.0.capacity() >= k;
+                // Bytes and `Debug`, not `==`: a NaN is not itself.
+                assert_eq!(
+                    rmp_serde::to_vec(&kept.state()).unwrap(),
+                    rmp_serde::to_vec(&fresh.state()).unwrap(),
+                    "{kind:?} row {i}"
+                );
+                if i % 10 == 0 {
+                    assert_eq!(
+                        format!("{:?}", kept.estimate()),
+                        format!("{:?}", fresh.estimate()),
+                        "{kind:?} row {i}"
+                    );
+                }
+            }
+            assert_eq!(
+                rmp_serde::to_vec(&kept.state()).unwrap(),
+                rmp_serde::to_vec(&fresh.state()).unwrap()
+            );
+            if kind == RcovKind::Preavg {
+                assert!(held, "a row was let go");
+            }
+            if kind == RcovKind::Kernel {
+                // A full ring of final returns lets one go to the spare, and
+                // a model with no ring keeps the return it was given.
+                let ring = kept.cfg.ring_for().unwrap_or(0);
+                let (len, before) = (kept.fin.len(), kept.spare.0.capacity());
+                kept.emit(vec![0.5; k]);
+                assert_eq!(
+                    kept.spare.0.capacity() >= k,
+                    before >= k || ring == 0 || len == ring,
+                    "{jitter} {band:?}: emit keeps the row it lets go"
+                );
+            }
         }
     }
 
