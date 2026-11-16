@@ -58,6 +58,7 @@ the main checkout is using.
 | `--slots` | the worktree slots' `target/` |
 | `--test-data` | `.cache/` and `.hypothesis/` |
 | `--uv` | `uv cache prune` |
+| `--stale [DAYS]` | instead of removing each `target/` whole, only the files in its `deps/` and `incremental/` that no build has read for DAYS days (default 7) |
 | `--dry-run` | prints what it would remove, and removes nothing |
 
 It touches nothing outside the repository and sccache's own directory

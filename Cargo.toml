@@ -123,3 +123,30 @@ lto = false
 codegen-units = 256
 incremental = true
 strip = "none"
+
+# The debug and test builds (`cargo test`, `cargo nextest`, the gate's tests;
+# docs/PLAN.md task 279). Measured on the Rust tests' build (macOS arm64,
+# 53 test binaries, one cold build; `cargo nextest run --no-run`): a slot's
+# `target/` 35.4 GB, of which 21 GB were the test binaries, each linking
+# Polars: 163 MB of code, 330 MB of symbol table and unwind data, and, kept
+# beside them, the debug info of every dependency.
+# - `package."*".debug = false`: no debug info for the dependencies (35.4 ->
+#   28.6 GB). Our crates keep line tables (`debug = "line-tables-only"`), so a
+#   panic's backtrace still names each of our frames with its file and line
+#   (the function name loses its module path; a dependency's frame names its
+#   function without a line).
+# - `incremental = false`: the gate builds once, and each session directory is
+#   up to 1 GB (27.7 -> 25.9 GB; no slower on an edit of `online-core`).
+# - `package."*".opt-level = 1`: Polars' code at opt-level 0 is most of the
+#   binary; at 1 the binaries are 211 MB, the target 11.4 GB, and a rebuild
+#   after an edit to `online-core` 91 s where it was 158 s (the cold build is
+#   the same, 244 s against 245 s). No float result changes: Rust does not
+#   contract or reassociate, and overflow checks and debug assertions stay on.
+# The release profile, `dev-wheel` and the wheel are untouched.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
+opt-level = 1
