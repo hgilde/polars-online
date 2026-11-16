@@ -415,6 +415,8 @@ struct Touch {
     tau: f64,
     /// The group's windows are ended (cut) and its next row starts them over.
     cut: bool,
+    /// Rows of the pass that start the group's windows over.
+    restarts: u32,
 }
 
 /// A row of a pass: its group's place in `touched`, whether it begins a
@@ -836,6 +838,7 @@ impl Windows {
                     waiting: false,
                     tau: g.tau,
                     cut: false,
+                    restarts: 0,
                 };
                 m.mark[gi] = m.epoch;
                 m.slot[gi] = m.touched.len() as u32;
@@ -921,6 +924,7 @@ impl Windows {
             waiting: !g.restart && n_wait > 0 && !g.pending.is_empty(),
             tau: 0.0,
             cut: g.restart,
+            restarts: 0,
         })
     }
 
@@ -1001,6 +1005,14 @@ impl Windows {
             // its own: the group's windows are cut where its last row left
             // them (unless they are cut already) and start again there.
             let order = &ms.order[lo..hi];
+            if ms.touched[t_slot].restarts == 0 {
+                for idx in order.chunks(BLOCK) {
+                    run_segment(
+                        &mut parts, g, &mut bufs, &mut xg, &ms.rows, idx, rows, at, seq0, false,
+                    );
+                }
+                continue;
+            }
             let mut k = 0;
             while k < order.len() {
                 let j = order[k] as usize;
@@ -1114,6 +1126,7 @@ impl Windows {
                 });
                 t.origin = now;
                 t.cut = false;
+                t.restarts += 1;
             } else {
                 // A group whose pending rows a later stamp resolved does not
                 // begin on a tie of its own stamp.
@@ -1207,6 +1220,7 @@ fn offset_of(now: ClockValue) -> i64 {
 /// the run is a single row that starts the group's windows over (the caller
 /// has restarted the group).
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 fn run_segment(
     parts: &mut Parts<'_>,
     g: &mut Group,
