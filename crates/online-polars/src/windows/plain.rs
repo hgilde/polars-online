@@ -293,6 +293,11 @@ impl Windows {
         if self.groups.len() != 1 || rows.group != 0 {
             return 0;
         }
+        // The group is the first row's: a later block begins where its key may
+        // be another's, and a group not yet made is not group 0.
+        if rows.keys.is_some_and(|k| k[at] != k[rows.start]) {
+            return 0;
+        }
         let n_rows = (rows.clock.len() - at).min(BLOCK);
         let cap = self.clock_cfg.gap_cap;
         let grouped = self.grouped;
