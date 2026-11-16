@@ -55,67 +55,133 @@ struct Shape {
     k: usize,
 }
 
-impl Shape {
-    /// Where field `src`'s `nr` values start in a run of `nr` rows, the
-    /// buffer they are in, and whether every processed row is valid whatever
-    /// its value (`n_eff`, which is reported as it is). `None` for a field
-    /// that is not one `f64` a row.
-    fn flat<'c>(&self, src: &Source, ch: &'c ChunkOut) -> Option<(&'c [f64], bool)> {
-        let nr = ch.rows.len();
-        let block = ch.n_slots * nr;
-        // Where field `i`'s run starts in a per-instance buffer.
-        let at = |i: usize| ChunkOut::at(ch.n_slots, nr, i / self.per_model, i % self.per_model, 0);
-        let (buf, start, all): (&[f64], usize, bool) = match *src {
+/// The run buffer a flat field is read from.
+#[derive(Clone, Copy)]
+enum Buf {
+    Pred,
+    Resid,
+    Sigma,
+    ResidZ,
+    Autocorr,
+    Metrics,
+    Conformal,
+    Health,
+    Checks,
+    ResidQ,
+    NEff,
+    Settled,
+    Inflation,
+    LamSelected,
+}
+
+/// Where one flat field's values start in a run's buffers, found once for
+/// the field and the spec's shape rather than for each run of each chunk:
+/// a grouped bank copies a run of a few rows, or one, into every field, and
+/// the divisions that locate the field cost more than the row.
+///
+/// Every buffer is slot-major, a run's `nr` values a slot, so the field's
+/// values start at `unit * nr`, where `unit` is `row * n_slots + col` with
+/// `row` and `col` fixed by the field (the instance, the metric, the
+/// quantile level and the slot) and `n_slots` the run's; the `n_eff`,
+/// `settled`, feature-health and `lam_selected` buffers are `col` blocks
+/// of `nr`, and the checks' have `k` as well ([`Self::slice`]).
+#[derive(Clone, Copy)]
+struct FlatLoc {
+    buf: Buf,
+    row: usize,
+    col: usize,
+    /// The check, for `Buf::Checks`.
+    k: usize,
+    /// Whether every processed row is valid whatever its value (`n_eff`,
+    /// which is reported as it is).
+    all: bool,
+}
+
+impl FlatLoc {
+    /// `src`'s place, or `None` for a field that is not one `f64` a row.
+    fn of(shape: &Shape, src: &Source) -> Option<Self> {
+        let place = |buf: Buf, row: usize, col: usize| Self {
+            buf,
+            row,
+            col,
+            k: 0,
+            all: false,
+        };
+        // Field `i` of a per-instance buffer: the instance and the slot.
+        let at = |buf: Buf, i: usize| place(buf, i / shape.per_model, i % shape.per_model);
+        Some(match *src {
             Source::Pred(i)
             | Source::Stat(i)
             | Source::Id(i)
             | Source::Flag(i)
-            | Source::Label(i) => (&ch.pred, at(i), false),
-            Source::Resid(i) => (&ch.resid, at(i), false),
-            Source::Sigma(i) => (&ch.sigma, at(i), false),
-            Source::ResidZ(i) => (&ch.zscore, at(i), false),
-            Source::Autocorr(i) => (&ch.autocorr, at(i), false),
+            | Source::Label(i) => at(Buf::Pred, i),
+            Source::Resid(i) => at(Buf::Resid, i),
+            Source::Sigma(i) => at(Buf::Sigma, i),
+            Source::ResidZ(i) => at(Buf::ResidZ, i),
+            Source::Autocorr(i) => at(Buf::Autocorr, i),
             // Model-major: instance mi owns 3 contiguous blocks.
-            Source::Metric(k, i) => {
-                let (mi, slot) = (i / self.per_model, i % self.per_model);
-                (&ch.metrics, mi * 3 * block + k * block + slot * nr, false)
-            }
-            Source::Conformal(k, i) => {
-                let (mi, slot) = (i / self.per_model, i % self.per_model);
-                (&ch.conformal, mi * 3 * block + k * block + slot * nr, false)
-            }
-            Source::Health(which, mi, fi) => (
-                &ch.health,
-                (mi * 2 * self.k + which * self.k + fi) * nr,
-                false,
+            Source::Metric(k, i) => place(
+                Buf::Metrics,
+                (i / shape.per_model) * 3 + k,
+                i % shape.per_model,
             ),
-            Source::Check(k, i) => {
-                let (mi, slot) = (i / self.per_model, i % self.per_model);
-                (
-                    &ch.checks,
-                    mi * ch.n_checks * block + k * block + slot * nr,
-                    false,
-                )
+            Source::Conformal(k, i) => place(
+                Buf::Conformal,
+                (i / shape.per_model) * 3 + k,
+                i % shape.per_model,
+            ),
+            Source::Health(which, mi, fi) => {
+                place(Buf::Health, 0, mi * 2 * shape.k + which * shape.k + fi)
             }
+            Source::Check(k, i) => Self {
+                k,
+                ..at(Buf::Checks, i)
+            },
             Source::Quantile(i) => {
                 // `(li * n_models + mi) * m * nc + slot`, as `output_index`
                 // numbers the quantile fields.
-                let per = self.m * self.nc;
+                let per = shape.m * shape.nc;
                 let slot = i % per;
-                let (li, mi) = ((i / per) / self.n_models, (i / per) % self.n_models);
-                (
-                    &ch.resid_q,
-                    mi * self.n_levels * block + li * block + slot * nr,
-                    false,
-                )
+                let (li, mi) = ((i / per) / shape.n_models, (i / per) % shape.n_models);
+                place(Buf::ResidQ, mi * shape.n_levels + li, slot)
             }
-            Source::NEff(mi) => (&ch.n_eff, mi * nr, true),
-            Source::Settled(mi) => (&ch.settled, mi * nr, false),
-            Source::Inflation(i) => (&ch.inflation, at(i), false),
-            Source::LamSelected(i) => (&ch.lam_selected, i * nr, false),
+            Source::NEff(mi) => Self {
+                all: true,
+                ..place(Buf::NEff, 0, mi)
+            },
+            Source::Settled(mi) => place(Buf::Settled, 0, mi),
+            Source::Inflation(i) => at(Buf::Inflation, i),
+            Source::LamSelected(i) => place(Buf::LamSelected, 0, i),
             _ => return None,
+        })
+    }
+
+    /// The field's values in `ch`: the `nr` of its rows, in row order.
+    #[inline]
+    fn slice<'c>(&self, ch: &'c ChunkOut) -> &'c [f64] {
+        let nr = ch.rows.len();
+        let slots = self.row * ch.n_slots + self.col;
+        let (buf, unit): (&[f64], usize) = match self.buf {
+            Buf::Pred => (&ch.pred, slots),
+            Buf::Resid => (&ch.resid, slots),
+            Buf::Sigma => (&ch.sigma, slots),
+            Buf::ResidZ => (&ch.zscore, slots),
+            Buf::Autocorr => (&ch.autocorr, slots),
+            Buf::Metrics => (&ch.metrics, slots),
+            Buf::Conformal => (&ch.conformal, slots),
+            Buf::ResidQ => (&ch.resid_q, slots),
+            Buf::Inflation => (&ch.inflation, slots),
+            // Instance `row`'s checks, each a block of `n_slots` slots.
+            Buf::Checks => (
+                &ch.checks,
+                (self.row * ch.n_checks + self.k) * ch.n_slots + self.col,
+            ),
+            Buf::Health => (&ch.health, self.col),
+            Buf::NEff => (&ch.n_eff, self.col),
+            Buf::Settled => (&ch.settled, self.col),
+            Buf::LamSelected => (&ch.lam_selected, self.col),
         };
-        Some((&buf[start..][..nr], all))
+        &buf[unit * nr..][..nr]
     }
 }
 
@@ -171,6 +237,9 @@ pub(super) struct Sink<'a> {
     clock_dtype: Option<&'a crate::stream::ClockDtype>,
     shape: Shape,
     fields: Vec<Acc>,
+    /// Where each field reads from a run, for a flat one (`FlatLoc`), by
+    /// field.
+    locs: Vec<Option<FlatLoc>>,
     sel_pred: Vec<Vec<Option<f64>>>,
     /// The selected slot's label, as its index in `slot_labels`.
     sel_name: Vec<Vec<Option<usize>>>,
@@ -215,6 +284,11 @@ impl<'a> Sink<'a> {
                 _ => Acc::Later,
             });
         let m = d.m;
+        let locs = d
+            .schema
+            .iter()
+            .map(|f| FlatLoc::of(&shape, &f.src))
+            .collect();
         Self {
             spec,
             d,
@@ -222,6 +296,7 @@ impl<'a> Sink<'a> {
             clock_dtype,
             shape,
             fields,
+            locs,
             sel_pred: vec![vec![None; n]; if spec.emit_selected { m } else { 0 }],
             sel_name: vec![vec![None; n]; if spec.emit_selected { m } else { 0 }],
             avg_pred: vec![vec![None; n]; if spec.emit_averaged { m } else { 0 }],
@@ -238,9 +313,9 @@ impl<'a> Sink<'a> {
         self.prepare(chunks);
         let (shape, n) = (self.shape, self.n);
         let chunks: &[Box<ChunkOut>] = chunks;
-        let job = |(acc, f): (&mut Acc, &FieldMeta)| {
+        let job = |((acc, f), loc): ((&mut Acc, &FieldMeta), &Option<FlatLoc>)| {
             for ch in chunks {
-                absorb_field(acc, &f.src, ch, shape, n);
+                absorb_field(acc, &f.src, loc.as_ref(), ch, shape, n);
             }
         };
         let rows: usize = chunks.iter().map(|ch| ch.rows.len()).sum();
@@ -248,11 +323,13 @@ impl<'a> Sink<'a> {
             self.fields
                 .par_iter_mut()
                 .zip(self.d.schema.par_iter())
+                .zip(self.locs.par_iter())
                 .for_each(job);
         } else {
             self.fields
                 .iter_mut()
                 .zip(self.d.schema.iter())
+                .zip(self.locs.iter())
                 .for_each(job);
         }
     }
@@ -483,16 +560,21 @@ impl<'a> Sink<'a> {
 }
 
 /// One run into one field that is not a list.
-fn absorb_field(acc: &mut Acc, src: &Source, ch: &ChunkOut, shape: Shape, n: usize) {
+fn absorb_field(
+    acc: &mut Acc,
+    src: &Source,
+    loc: Option<&FlatLoc>,
+    ch: &ChunkOut,
+    shape: Shape,
+    n: usize,
+) {
     if matches!(acc, Acc::Later) {
         *acc = Acc::Flat(F64Column::new(n));
     }
     match acc {
         Acc::Flat(col) => {
-            let (vals, all) = shape
-                .flat(src, ch)
-                .expect("a flat field reads one f64 a row");
-            scatter(col, ch, all, vals);
+            let loc = loc.expect("a flat field reads one f64 a row");
+            scatter(col, ch, loc.all, loc.slice(ch));
         }
         Acc::Codes(codes) => {
             let Source::Reason(mi) = *src else {
@@ -571,9 +653,9 @@ pub(super) fn assemble(
     sink.prepare(chunks);
     let fields = std::mem::take(&mut sink.fields);
     let (sink, chunks): (&Sink<'_>, &[Box<ChunkOut>]) = (&sink, chunks);
-    let job = |(mut acc, f): (Acc, &FieldMeta)| {
+    let job = |((mut acc, f), loc): ((Acc, &FieldMeta), &Option<FlatLoc>)| {
         for ch in chunks {
-            absorb_field(&mut acc, &f.src, ch, sink.shape, n);
+            absorb_field(&mut acc, &f.src, loc.as_ref(), ch, sink.shape, n);
         }
         sink.finish_field(acc, f)
     };
@@ -581,10 +663,16 @@ pub(super) fn assemble(
         fields
             .into_par_iter()
             .zip(d.schema.par_iter())
+            .zip(sink.locs.par_iter())
             .map(job)
             .collect()
     } else {
-        fields.into_iter().zip(d.schema.iter()).map(job).collect()
+        fields
+            .into_iter()
+            .zip(d.schema.iter())
+            .zip(sink.locs.iter())
+            .map(job)
+            .collect()
     };
     Ok(sink.struct_of(arrays))
 }
