@@ -43,6 +43,8 @@ pub(crate) struct HeldSteps {
     /// Whether `c` holds the co-moments: from the first step held to the
     /// merge.
     open: bool,
+    /// The product of the held rows' `a_t`: the held entries are `c / scale`.
+    scale: f64,
     /// One allocation, in four parts ([`Self::parts`]): the co-moments,
     /// padded `ks × ks`, row-major, while open; per held row, `a_t`; per
     /// held row, `d_t`, padded to `ks` with zeros; and per held row,
@@ -68,6 +70,7 @@ impl HeldSteps {
             cp[i * ks..=i * ks + i].copy_from_slice(&c[at..=at + i]);
         }
         self.rows = 0;
+        self.scale = 1.0;
         self.open = true;
     }
 
@@ -111,6 +114,22 @@ impl HeldSteps {
         #[cfg(not(target_arch = "x86_64"))]
         self.take_tiles();
         self.rows = 0;
+        self.unscale();
+    }
+
+    /// Multiply the lower triangle by the held rows' product of decays,
+    /// leaving `scale` 1.
+    fn unscale(&mut self) {
+        let (k, ks, p) = (self.k, self.ks, self.scale);
+        self.scale = 1.0;
+        if p != 1.0 {
+            let (c, ..) = self.parts();
+            for i in 0..k {
+                for x in &mut c[i * ks..=i * ks + i] {
+                    *x *= p;
+                }
+            }
+        }
     }
 
     /// The held rows' steps in tiles, row block by row block
@@ -159,7 +178,7 @@ impl HeldSteps {
         for (r, acc_r) in acc.iter_mut().enumerate() {
             acc_r.copy_from_slice(&c[(p0 + r) * ks + q0..][..C]);
         }
-        for ((&at, abd), d) in a[..n]
+        for ((_, abd), d) in a[..n]
             .iter()
             .zip(abd.chunks_exact(ks))
             .zip(d.chunks_exact(ks))
@@ -168,7 +187,7 @@ impl HeldSteps {
             let d = &d[q0..q0 + C];
             for (acc_r, &e) in acc.iter_mut().zip(abd) {
                 for (s, &dl) in acc_r.iter_mut().zip(d) {
-                    *s = at * *s + e * dl;
+                    *s += e * dl;
                 }
             }
         }
@@ -183,14 +202,14 @@ impl HeldSteps {
     fn take_rows(&mut self) {
         let (k, ks, n) = (self.k, self.ks, self.rows);
         let (c, a, d, abd) = self.parts();
-        for ((&at, d), abd) in a[..n]
+        for ((_, d), abd) in a[..n]
             .iter()
             .zip(d.chunks_exact(ks))
             .zip(abd.chunks_exact(ks))
         {
             for (i, &e) in abd[..k].iter().enumerate() {
                 for (cj, &dj) in c[i * ks..=i * ks + i].iter_mut().zip(d) {
-                    *cj = at * *cj + e * dj;
+                    *cj += e * dj;
                 }
             }
         }
@@ -300,8 +319,7 @@ fn lanes_tile<S: pulp::Simd, const R: usize, const V: usize>(
             *s = load(&c[(p0 + r) * ks + q0 + 4 * v..]);
         }
     }
-    for ((&at, abd), d) in a.iter().zip(abd.chunks_exact(ks)).zip(d.chunks_exact(ks)) {
-        let at = simd.splat_f64s(at);
+    for ((_, abd), d) in a.iter().zip(abd.chunks_exact(ks)).zip(d.chunks_exact(ks)) {
         let mut dv = [simd.splat_f64s(0.0); V];
         for (v, x) in dv.iter_mut().enumerate() {
             *x = load(&d[q0 + 4 * v..]);
@@ -309,7 +327,7 @@ fn lanes_tile<S: pulp::Simd, const R: usize, const V: usize>(
         for (acc_r, &e) in acc.iter_mut().zip(&abd[p0..p0 + R]) {
             let e = simd.splat_f64s(e);
             for (s, &x) in acc_r.iter_mut().zip(&dv) {
-                *s = simd.add_f64s(simd.mul_f64s(at, *s), simd.mul_f64s(e, x));
+                *s = simd.add_f64s(*s, simd.mul_f64s(e, x));
             }
         }
     }
@@ -327,15 +345,34 @@ impl CoStep for HeldSteps {
         if !self.open {
             self.open(c, k);
         }
+        // A decay too small to divide by is applied on its own: the held
+        // rows are taken, and this row's step is written on the entries.
+        let next = self.scale * a;
+        if !(next >= 1e-100) {
+            if self.rows > 0 {
+                self.take();
+            }
+            let (k, ks) = (self.k, self.ks);
+            let (c, ..) = self.parts();
+            let ab = a * b;
+            for (i, &di) in d[..k].iter().enumerate() {
+                let e = ab * di;
+                for (cj, &dj) in c[i * ks..=i * ks + i].iter_mut().zip(d) {
+                    *cj = a * *cj + e * dj;
+                }
+            }
+            return;
+        }
         let (r, ks) = (self.rows, self.ks);
         let (_, at, dt, abd) = self.parts();
         at[r] = a;
-        let ab = a * b;
+        let ab = a * b / next;
         let row = r * ks..r * ks + k;
         for ((dt, e), &di) in dt[row.clone()].iter_mut().zip(&mut abd[row]).zip(d) {
             *dt = di;
             *e = ab * di;
         }
+        self.scale = next;
         self.rows += 1;
         if self.rows == HELD_ROWS {
             self.take();
