@@ -420,6 +420,44 @@ impl KernelDef {
         v
     }
 
+    /// The mass a row holds its value over, `d` units of time, through
+    /// `memo`'s slot for it (task 426 d2).
+    #[inline]
+    fn mass_held_in(&self, d: f64, memo: &mut DecayMemo) -> f64 {
+        if d <= 0.0 {
+            return 0.0;
+        }
+        if self.half_life.is_infinite() {
+            return d;
+        }
+        let (bits, v) = memo.held;
+        if bits == d.to_bits() {
+            return v;
+        }
+        let v = self.mass_held_finite(d, memo);
+        memo.held = (d.to_bits(), v);
+        v
+    }
+
+    /// [`Self::mass_finite`] of the distance a row holds its value over, the
+    /// partner of that row's discount. Between `HELD_MASS_FROM` and
+    /// `HELD_MASS_BELOW` half-lives it is `c (1 - d)` from the very
+    /// `d = 2^(-x)` the discount is: the rate `w` settles at `m / (1 - d)`, and
+    /// a mass that is not that function of the same rounded `d` leaves `w` off
+    /// `c` by `1e-16 / x`, which the mean inherits. Below the range `1 - d` is
+    /// too coarse (doubles next to 1 are 1.1e-16 apart) and above it both forms
+    /// are at rounding, so those keep `exp_m1`.
+    #[inline]
+    fn mass_held_finite(&self, d: f64, memo: &mut DecayMemo) -> f64 {
+        let h = self.half_life;
+        let x = d / h;
+        if (HELD_MASS_FROM..HELD_MASS_BELOW).contains(&x) {
+            // the discount through its own slot: a row's step asks for it too
+            return (h / std::f64::consts::LN_2) * (1.0 - self.discount_in(d, memo));
+        }
+        self.mass_finite(d)
+    }
+
     /// [`Self::discount`] through one slot of a [`DecayMemo`].
     #[inline]
     fn discount_slot(&self, d: f64, slot: &mut (u64, f64)) -> f64 {
@@ -470,28 +508,15 @@ impl KernelDef {
         // `h/t = 1e12`, all of it from 1e17, every mean null (task 159,
         // W2). `exp_m1` keeps the small difference whole; `discount`
         // itself has nothing to lose.
-        //
-        // Between `MASS_FROM_DISCOUNT` and `MASS_BELOW_DISCOUNT` of a half-life
-        // the mass is `c (1 − d)` from the very `d = 2^(−x)` the discount is
-        // (task 426 d2): the rate `w` settles at `m / (1 − d)`, and a mass that
-        // is not that function of the same rounded `d` leaves `w` off `c` by
-        // `1e-16 / x`, which the mean inherits. Below the range `1 − d` is too
-        // coarse (a double next to 1 is 1.1e-16 apart); above it both forms are
-        // at rounding and the bits stay as they were.
         let h = self.half_life;
-        let c = h / std::f64::consts::LN_2;
-        let x = t / h;
-        if (MASS_FROM_DISCOUNT..MASS_BELOW_DISCOUNT).contains(&x) {
-            return c * (1.0 - (-x).exp2());
-        }
-        -c * (-(t * std::f64::consts::LN_2 / h)).exp_m1()
+        -(h / std::f64::consts::LN_2) * (-(t * std::f64::consts::LN_2 / h)).exp_m1()
     }
 }
 
 /// The distances, in half-lives, between which a held mass is taken from the
-/// discount's `exp2` instead of `exp_m1`: `1 − d` of about 1e-8 up to 1e-2.
-const MASS_FROM_DISCOUNT: f64 = 1.44e-8;
-const MASS_BELOW_DISCOUNT: f64 = 1e-2;
+/// discount's `exp2` instead of `exp_m1`: `1 - d` of about 1e-8 up to 1e-2.
+const HELD_MASS_FROM: f64 = 1.44e-8;
+const HELD_MASS_BELOW: f64 = 1e-2;
 
 /// A queue's last discount and last mass, each with the bits of the distance
 /// it is of. Never written to a state and never compared; a queue read back
@@ -501,6 +526,10 @@ const MASS_BELOW_DISCOUNT: f64 = 1e-2;
 pub(crate) struct DecayMemo {
     discount: (u64, f64),
     mass: (u64, f64),
+    /// The mass of the interval a row holds its value over, which takes the
+    /// discount's own `exp2` in the band of [`KernelDef::mass_held_finite`]
+    /// and so is not the cut's mass of the same distance (`mass`).
+    held: (u64, f64),
     /// The mass at the far end of an interval read in the window's cut.
     mass_far: (u64, f64),
     /// A forward kernel's close, which a backward kernel's queue never needs.
@@ -1908,7 +1937,7 @@ fn mass_held_to(k: &KernelDef, t: f64, a: f64, memo: &mut DecayMemo) -> f64 {
         return 0.0;
     }
     match k.direction {
-        Direction::Backward => k.mass_in(t - a, memo) - k.mass(t - b),
+        Direction::Backward => k.mass_held_in(t - a, memo) - k.mass(t - b),
         Direction::Forward => mass_between(k, t, a, b),
     }
 }
