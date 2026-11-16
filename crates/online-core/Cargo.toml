@@ -21,6 +21,7 @@ unsafe_code = "forbid"
 
 
 [features]
+default = ["dmath-own"]
 # Task 426 (k), a measurement: the implementation behind `dmath` (at most one).
 dmath-libm = []
 dmath-pxfm = ["dep:pxfm"]
