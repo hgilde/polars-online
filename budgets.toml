@@ -113,11 +113,11 @@ budget = 2141010
 
 [instructions.seqtest]
 what = "seqtest on one column's sign: AnyModel::step_into, into one kept Step"
-budget = 418958
+budget = 395356
 
 [instructions.bocpd]
 what = "bocpd, 4 features, diagonal, max_run 200, prune below 1e-6: AnyModel::step_into, into one kept Step"
-budget = 12748524
+budget = 12202354
 
 [instructions.kmeans]
 what = "kmeans, 4 features, 8 clusters, standardized: AnyModel::step_into, into one kept Step"
@@ -129,7 +129,7 @@ budget = 1808214
 
 [instructions.kalman]
 what = "kalman, 20 features, coef half-life 2000: AnyModel::step_into, into one kept Step"
-budget = 18698007
+budget = 11552994
 
 [instructions.ew_cov]
 what = "ew_cov, 20 features, mean, std and corr: AnyModel::step_into, into one kept Step"
@@ -145,7 +145,7 @@ budget = 4606713
 
 [instructions.corrchange_window_w100]
 what = "corrchange window, 4 features, two windows of 100 rows, 100 permutations redrawn every 250 rows: AnyModel::step"
-budget = 20008245
+budget = 16819365
 
 [instructions.clock_float]
 what = "ClockState::advance_stamped, a float clock, gap_cap 100"
@@ -169,7 +169,7 @@ budget = 11165143
 
 [instructions.bank_ewridge_k5_groups]
 what = "Bank::fit_predict of one frame of 1,000 groups, one row each, ewridge with 5 features and a solve every 4 rows, on a pool of one thread"
-budget = 17692367
+budget = 16194876
 
 [instructions.bank_ew_cov_wide_t1]
 what = "Bank::fit_predict of one frame of 8,192 rows, ew_cov's 230 statistics, on a pool of one thread: each run copied into the output as it ends, after the next is learned"
@@ -226,11 +226,11 @@ budget = 24375035
 
 [instructions.audit_continuous]
 what = "audit, one continuous column, 256 counters: AnyModel::step_into, into one kept Step, past the cap on nearly every row"
-budget = 915265
+budget = 847018
 
 [instructions.bocpd_full]
 what = "bocpd, 4 features, full covariance, max_run 200, prune below 1e-6: AnyModel::step_into, into one kept Step"
-budget = 20101111
+budget = 19425245
 
 [instructions.ew_cov_lags]
 what = "ew_cov, 20 features, mean and cov, lags 1-5: AnyModel::step_into, into one kept Step"
