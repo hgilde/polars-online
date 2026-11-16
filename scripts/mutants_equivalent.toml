@@ -2035,7 +2035,7 @@ row. `step / 1.0` is `step * 1.0`, both `step` to the bit. The slopes' \
 twin on the next loop is caught"""
 
 [[equivalent]]
-file = "crates/online-core/src/bocpd.rs"
+file = "crates/online-core/src/bocpd/held.rs"
 function = "LengthTerms::find"
 mutation = "replace ^ with |"
 line_has = "let folded = bits ^ (bits >> 32);"
@@ -2047,21 +2047,21 @@ emptied (`the_length_terms_miss_each_length_once` reads them). A worse mix \
 changes only how many entries a lookup steps over. Both `^` of the fold's line"""
 
 [[equivalent]]
-file = "crates/online-core/src/bocpd.rs"
+file = "crates/online-core/src/bocpd/held.rs"
 function = "LengthTerms::find"
 mutation = "replace ^ with &"
 line_has = "let folded = bits ^ (bits >> 32);"
 why = """as `replace ^ with |` on this line: the fold only mixes the bits the index is read from, and `find` walks on from wherever it lands to the key or a free entry"""
 
 [[equivalent]]
-file = "crates/online-core/src/bocpd.rs"
+file = "crates/online-core/src/bocpd/held.rs"
 function = "LengthTerms::find"
 mutation = "replace >> with <<"
 line_has = "let folded = bits ^ (bits >> 32);"
 why = """as `replace ^ with |` on this line: a shift left by 32 cannot overflow into a panic, and the fold only mixes the bits the index is read from"""
 
 [[equivalent]]
-file = "crates/online-core/src/bocpd.rs"
+file = "crates/online-core/src/bocpd/held.rs"
 function = "LengthTerms::find"
 mutation = "replace >> with <<"
 line_has = "let mut at = (folded.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize & mask;"
