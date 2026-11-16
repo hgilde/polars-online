@@ -931,6 +931,59 @@ fn offset_of(now: ClockValue) -> i64 {
     }
 }
 
+/// A group's run of rows through its forward kernels: the rows wait first, all of
+/// them, and then each kernel is taken over the run a row at a time by
+/// [`forward_step`], the function `push` calls (see [`run_group`]).
+#[inline(never)]
+fn run_forward(
+    p: &mut Parts<'_>,
+    g: &mut Group,
+    cols: Cols<'_>,
+    bufs: &Bufs,
+    form: OffForm,
+    len: usize,
+) {
+    let (n_out, held_first) = (p.n_out, p.held_first);
+    for r in 0..len {
+        g.waiting.push_back(Wait {
+            seq: bufs.seq[r],
+            tau: bufs.tau[r],
+            off: bufs.off[r],
+        });
+    }
+    let mut held = Held {
+        first: held_first,
+        n_outputs: n_out,
+        values: &mut *p.held_values,
+        meta: &mut *p.held_meta,
+    };
+    for (ki, k) in p.kernels.iter().enumerate() {
+        if k.direction != Direction::Forward {
+            continue;
+        }
+        for r in 0..len {
+            forward_step(
+                k,
+                p.ops,
+                &p.members[ki],
+                ki,
+                g,
+                p.scratch_row,
+                p.scratch_sum,
+                FwdRow {
+                    seq: bufs.seq[r],
+                    tau: bufs.tau[r],
+                    off: bufs.off[r],
+                    form,
+                },
+                |input| cols.x(input)[r],
+                &mut held,
+            );
+        }
+    }
+    retire(p.kernels, g);
+}
+
 /// One group's run of rows, in their own order: the windows the rows resolve
 /// are written, every kernel is taken over the whole run, and the group is left
 /// as `push` would leave it. The caller has made the rows' places in the held
@@ -1099,44 +1152,7 @@ fn run_group(p: &mut Parts<'_>, g: &mut Group, cols: Cols<'_>, bufs: &mut Bufs, 
     // 0 holds the rows after its row, and a row at the stamp is not past it),
     // and the kernels' queues share nothing.
     if p.n_forward > 0 {
-        for r in 0..len {
-            g.waiting.push_back(Wait {
-                seq: bufs.seq[r],
-                tau: bufs.tau[r],
-                off: bufs.off[r],
-            });
-        }
-        let mut held = Held {
-            first: held_first,
-            n_outputs: n_out,
-            values: &mut *p.held_values,
-            meta: &mut *p.held_meta,
-        };
-        for (ki, k) in p.kernels.iter().enumerate() {
-            if k.direction != Direction::Forward {
-                continue;
-            }
-            for r in 0..len {
-                forward_step(
-                    k,
-                    p.ops,
-                    &p.members[ki],
-                    ki,
-                    g,
-                    p.scratch_row,
-                    p.scratch_sum,
-                    FwdRow {
-                        seq: bufs.seq[r],
-                        tau: bufs.tau[r],
-                        off: bufs.off[r],
-                        form,
-                    },
-                    |input| cols.x(input)[r],
-                    &mut held,
-                );
-            }
-        }
-        retire(p.kernels, g);
+        run_forward(p, g, cols, bufs, form, len);
     }
     let out = p.held_values.make_contiguous();
     let rows_at = Rows {

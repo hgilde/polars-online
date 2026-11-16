@@ -3411,7 +3411,7 @@ struct FwdRow {
 /// interval ended by this row, and this row is the open one. `value` is the
 /// row's value of an operator input.
 #[allow(clippy::too_many_arguments)]
-#[inline(never)]
+#[inline]
 fn forward_step(
     k: &KernelDef,
     ops: &[OpDef],
