@@ -885,6 +885,25 @@ fn ln_gamma(x: f64) -> f64 {
     0.5 * (std::f64::consts::TAU).ln() + (x + 0.5) * t.ln() - t + a.ln()
 }
 
+/// Scratch variant 426 (c): `Σ ln vᵢ` as a log of the product of each block
+/// of 8, where the product is a normal number far from overflow, else the
+/// logs one at a time.
+fn ln_sum_prod(v: &[f64]) -> f64 {
+    let mut total = 0.0;
+    for block in v.chunks(8) {
+        let p: f64 = block.iter().product();
+        total += if (1e-280..1e280).contains(&p) {
+            p.ln()
+        } else {
+            block.iter().map(|x| x.ln()).sum::<f64>()
+        };
+    }
+    total
+}
+
+/// Whether the second log is taken as a product too.
+const PROD_Q: bool = false;
+
 /// `ln Σ exp(v)`, about the maximum.
 fn log_sum_exp(v: &[f64]) -> f64 {
     let top = v.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
@@ -1467,8 +1486,13 @@ impl Bocpd {
                     (std::f64::consts::PI * (kn + 1.0) / kn).ln(),
                 ),
             };
-            let mut lp = 0.0;
-            let mut mode = 0.0;
+            // Scratch variant 426 (c): the features' `ln ψₙ` (and, where
+            // `PROD_Q`, their `ln(1 + z²/ν)`) taken once a block of 8 features
+            // as the log of a product, guarded against overflow.
+            let RunWork { mun: psins, delta: qs, .. } = work;
+            psins.clear();
+            qs.clear();
+            let mut sum_ln_q = 0.0;
             for i in 0..d {
                 let dm = run.mean[i] - mu0[i];
                 let psin = psi0[i * d + i] + run.m2[i] + k0 * run.n / kn * dm * dm;
@@ -1477,10 +1501,20 @@ impl Bocpd {
                     return None;
                 }
                 let z = (x[i] - self.run_mean_at(run, mu0, i)) / var.sqrt();
-                let base = gammas - 0.5 * (psin.ln() + ln_c);
-                lp += base - 0.5 * (nun + 1.0) * (1.0 + z * z / nun).ln();
-                mode += base;
+                psins.push(psin);
+                let q = 1.0 + z * z / nun;
+                if PROD_Q {
+                    qs.push(q);
+                } else {
+                    sum_ln_q += q.ln();
+                }
             }
+            if PROD_Q {
+                sum_ln_q = ln_sum_prod(qs);
+            }
+            let df = d as f64;
+            let mode = df * gammas - 0.5 * (ln_sum_prod(psins) + df * ln_c);
+            let lp = mode - 0.5 * (nun + 1.0) * sum_ln_q;
             Some((lp, mode))
         }
     }
