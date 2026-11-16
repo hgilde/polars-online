@@ -25,6 +25,23 @@
 //! closing a window of its own or a later row's), so the two cannot differ. `crates/online-polars/tests/window_plain.rs` holds the
 //! two to it.
 //!
+//! A clock of integers takes the same loop as a datetime or a float one: its
+//! step is the integers' difference, its cap test the exact one of
+//! [`past_cap`]. A row-count clock (a chunk with no clock column, task 442) is a
+//! stamp of its own at every row, a step of 1 from the row before, and its policy
+//! time the group's plus 1 added row by row as `push` adds it; a backward window
+//! that waits for the next stamp is read as its row joins, the end of `push` for
+//! such a row ([`Windows::count_block`], [`Windows::count_pass`]).
+//!
+//! With several groups, a row that starts its group's windows over -- a step forward
+//! past the cap, or the first row after a cut -- ends a segment of its group's rows
+//! in the pass and begins the next: the group's windows end where its last row left
+//! them (unless they ended already), the group restarts, and the row goes through
+//! every backward kernel's queue as the first row of a group does in `push`,
+//! whatever the kernel. The stream's step must be within the cap, or `push` ends
+//! every group's windows. With one group such a row stays `push`'s: measured, a
+//! block of its own costs what `push` does.
+//!
 //! With several groups (task 431) a pass finds the plain rows in any of them,
 //! in row order: the stream's clock steps forward, and each row is a step
 //! forward within the cap and the session of its own group, which already has
@@ -132,7 +149,10 @@ pub(crate) struct PlainRows<'a> {
     /// The group every row of the chunk is in (from [`Windows::group`]).
     pub group: usize,
     pub start: usize,
-    pub clock: &'a [ClockValue],
+    /// The chunk's clock column; `None` on a row-count clock (task 442).
+    pub clock: Option<&'a [ClockValue]>,
+    /// The chunk's rows.
+    pub len: usize,
     pub session: Option<&'a [u64]>,
     /// Per operator input, every row of the chunk (NaN for none).
     pub values: &'a [Vec<f64>],
@@ -146,11 +166,12 @@ pub(crate) struct PlainRows<'a> {
 
 /// One operator's fold over a block. `NEAR`: its kernel's windows wait for
 /// the next distinct stamp. `TIES`: some row of the block repeats the stamp
-/// before it. `NULLS`: some input of the block is not usable. See
-/// [`Windows::plain_block`].
+/// before it. `NULLS`: some input of the block is not usable. `AFTER`: a row-count
+/// clock under a `NEAR` kernel, where each row's own window is read once the row
+/// has joined (`NEAR` itself is off: no row waits). See [`Windows::plain_block`].
 #[allow(clippy::too_many_arguments)]
 #[inline]
-fn fold_op<const NEAR: bool, const TIES: bool, const NULLS: bool>(
+fn fold_op<const NEAR: bool, const TIES: bool, const NULLS: bool, const AFTER: bool>(
     k: &KernelDef,
     op: &OpDef,
     var: bool,
@@ -208,7 +229,7 @@ fn fold_op<const NEAR: bool, const TIES: bool, const NULLS: bool>(
                 }
                 began = r as isize;
             }
-        } else {
+        } else if !AFTER {
             if is_new {
                 cur = read(scaled, r);
             }
@@ -247,6 +268,11 @@ fn fold_op<const NEAR: bool, const TIES: bool, const NULLS: bool>(
             lv = steps.tau[r];
         }
         acc = scaled.plus(own, var);
+        if AFTER {
+            // Read as the sums stand, a distance of 0 from the row.
+            cur = read(acc, r);
+            out[rows_at.at(r) * n_out + o] = cur;
+        }
     }
     acc.write(total, wide);
     *stamp = cur;
@@ -301,6 +327,9 @@ fn step_ok(now: ClockValue, last: ClockValue, cap: f64) -> bool {
             let raw = c - p;
             (0.0..=1e308).contains(&raw) && raw <= cap
         }
+        // An integer clock's step is the integers' difference, whole, and its
+        // cap test is exact (`past_cap`), as `push`'s clocks take it.
+        (ClockValue::I64(c), ClockValue::I64(p)) => c == p || (c > p && !past_cap(now, last, cap)),
         _ => false,
     }
 }
@@ -311,6 +340,7 @@ fn not_before(now: ClockValue, last: ClockValue) -> bool {
     match (now, last) {
         (ClockValue::Ns(c), ClockValue::Ns(p)) => c >= p,
         (ClockValue::F64(c), ClockValue::F64(p)) => (0.0..=1e308).contains(&(c - p)),
+        (ClockValue::I64(c), ClockValue::I64(p)) => c >= p,
         _ => false,
     }
 }
@@ -342,25 +372,29 @@ struct Shape {
     g_tau: f64,
     g_off: i64,
     form: OffForm,
-    /// The run's last row.
-    last_now: ClockValue,
+    /// The run's last row; `None` on a row-count clock.
+    last_now: Option<ClockValue>,
     last_session: Option<u64>,
+    /// The run is one row that starts the group's windows over: every
+    /// backward kernel takes it through the queue, as `push` does a group's
+    /// first row, whatever the kernel.
+    first: bool,
 }
 
 /// What a run borrows of the core beside the group.
-struct Parts<'a> {
-    kernels: &'a [KernelDef],
-    ops: &'a [OpDef],
-    members: &'a [Vec<usize>],
-    held_values: &'a mut VecDeque<f64>,
-    held_meta: &'a mut VecDeque<Meta>,
-    held_first: u64,
-    n_out: usize,
-    scratch_row: &'a mut Vec<f64>,
-    scratch_sum: &'a mut Vec<f64>,
-    n_wait: u32,
+pub(super) struct Parts<'a> {
+    pub(super) kernels: &'a [KernelDef],
+    pub(super) ops: &'a [OpDef],
+    pub(super) members: &'a [Vec<usize>],
+    pub(super) held_values: &'a mut VecDeque<f64>,
+    pub(super) held_meta: &'a mut VecDeque<Meta>,
+    pub(super) held_first: u64,
+    pub(super) n_out: usize,
+    pub(super) scratch_row: &'a mut Vec<f64>,
+    pub(super) scratch_sum: &'a mut Vec<f64>,
+    pub(super) n_wait: u32,
     /// Forward kernels: each row of a run waits on them too.
-    n_forward: u32,
+    pub(super) n_forward: u32,
 }
 
 /// A group a pass over several has met.
@@ -377,16 +411,25 @@ struct Touch {
     last_row: u32,
     /// Rows pending from before, none or some.
     waiting: bool,
+    /// A row-count clock's policy time as the pass has counted it.
+    tau: f64,
+    /// The group's windows are ended (cut) and its next row starts them over.
+    cut: bool,
+    /// Rows of the pass that start the group's windows over.
+    restarts: u32,
 }
 
 /// A row of a pass: its group's place in `touched`, whether it begins a
-/// stamp, its policy time and its raw clock.
+/// stamp or a stretch, its policy time and its raw clock.
 #[derive(Debug, Clone, Copy)]
 struct RowRec {
     tau: f64,
     off: i64,
     slot: u32,
     new: bool,
+    /// The row starts its group's windows over: the first after a cut, or a
+    /// gap past the cap (its policy time is 0).
+    restart: bool,
 }
 
 /// What a pass over several groups keeps: none of it state.
@@ -483,11 +526,13 @@ impl Windows {
         }
         let several = self.groups.len() > 1 && rows.keys.is_some();
         let mut done = 0;
-        while rows.start + done < rows.clock.len() {
-            let got = if several {
-                self.plain_pass(rows, rows.start + done)
-            } else {
-                self.plain_block(rows, rows.start + done)
+        while rows.start + done < rows.len {
+            let at = rows.start + done;
+            let got = match (rows.clock.is_some(), several) {
+                (true, true) => self.plain_pass(rows, at),
+                (true, false) => self.plain_block(rows, at),
+                (false, true) => self.count_pass(rows, at),
+                (false, false) => self.count_block(rows, at),
             };
             done += got;
             if got < if several { PASS } else { BLOCK } {
@@ -500,6 +545,7 @@ impl Windows {
 
     /// One block of up to [`BLOCK`] plain rows from `at`, in the one group.
     fn plain_block(&mut self, rows: &PlainRows<'_>, at: usize) -> usize {
+        let Some(clock) = rows.clock else { return 0 };
         if self.groups.len() != 1 || rows.group != 0 {
             return 0;
         }
@@ -508,7 +554,7 @@ impl Windows {
         if rows.keys.is_some_and(|k| k.code(at) != k.code(rows.start)) {
             return 0;
         }
-        let n_rows = (rows.clock.len() - at).min(BLOCK);
+        let n_rows = (rows.len - at).min(BLOCK);
         let cap = self.clock_cfg.gap_cap;
         let grouped = self.grouped;
         let n_wait = self.derived.n_wait;
@@ -542,7 +588,7 @@ impl Windows {
         let mut last_session = prev_session;
         let mut news = 0usize;
         for j in 0..n_rows {
-            let now = rows.clock[at + j];
+            let now = clock[at + j];
             // A step forward within the cap, or no step: the same stamp.
             let step_ok = step_ok(now, last, cap);
             let session = rows.session.map(|s| s[at + j]);
@@ -574,7 +620,42 @@ impl Windows {
         } else {
             bufs.new.iter().rposition(|&n| n).unwrap_or(0)
         };
+        let last_now = clock[at + len - 1];
+        self.run_block(
+            rows,
+            at,
+            bufs,
+            Shape {
+                len,
+                news,
+                final_from,
+                g_tau,
+                g_off,
+                form,
+                last_now: Some(last_now),
+                last_session: rows.session.map(|s| s[at + len - 1]),
+                first: false,
+            },
+        );
+        len
+    }
 
+    /// The block [`Windows::plain_block`] or [`Windows::count_block`] found,
+    /// its `bufs` filled with the rows' policy times, new-stamp flags and raw
+    /// clocks: run through the group's kernels, and the stream put where the
+    /// block's last row leaves it.
+    #[inline(always)]
+    fn run_block(&mut self, rows: &PlainRows<'_>, at: usize, mut bufs: Bufs, shape: Shape) {
+        let Shape {
+            len,
+            final_from,
+            last_now,
+            last_session,
+            ..
+        } = shape;
+        let count = last_now.is_none();
+        let grouped = self.grouped;
+        let n_wait = self.derived.n_wait;
         let Windows {
             kernels,
             ops,
@@ -593,10 +674,21 @@ impl Windows {
         let seq0 = *next_seq;
         bufs.seq.clear();
         bufs.seq.extend((0..len).map(|r| seq0 + r as u64));
-        held_values.extend(std::iter::repeat_n(f64::NAN, len * *n_outputs));
+        // One push each for the few values of a short block: `extend` is a call
+        // to a fill routine.
+        if len * *n_outputs <= 8 {
+            for _ in 0..len * *n_outputs {
+                held_values.push_back(f64::NAN);
+            }
+        } else {
+            held_values.extend(std::iter::repeat_n(f64::NAN, len * *n_outputs));
+        }
         for r in 0..len {
+            // A row of a row-count clock waits for nothing: its backward
+            // windows are read as it joins.
+            let waits = !count && r >= final_from;
             held_meta.push_back(Meta {
-                open: *n_forward + if r >= final_from { n_wait } else { 0 },
+                open: *n_forward + if waits { n_wait } else { 0 },
                 accept: rows.accepts.iter().all(|c| usable(c[at + r])),
                 drop: false,
             });
@@ -614,16 +706,6 @@ impl Windows {
             n_wait,
             n_forward: *n_forward,
         };
-        let shape = Shape {
-            len,
-            news,
-            final_from,
-            g_tau,
-            g_off,
-            form,
-            last_now: rows.clock[at + len - 1],
-            last_session: rows.session.map(|s| s[at + len - 1]),
-        };
         let cols = Cols {
             whole: rows.values,
             from: at,
@@ -632,14 +714,170 @@ impl Windows {
         run_group(&mut parts, &mut groups[0], cols, &mut bufs, &shape);
 
         // The stream where the last row leaves it.
-        self.shared.take_plain_run(
-            Some(shape.last_now),
-            if grouped { None } else { shape.last_session },
-        );
+        self.shared
+            .take_plain_run(last_now, if grouped { None } else { last_session });
         self.next_seq += len as u64;
         self.derived.bufs = bufs;
-        self.link_back(0);
+        if !count {
+            self.link_back(0);
+        }
         self.advance_ready();
+    }
+
+    /// Whether the core can take rows of a row-count clock: it has read a row,
+    /// and a step of 1 is within the cap, so no row of the clock is a capped
+    /// one.
+    fn count_ready(&self) -> bool {
+        self.shared.started() && self.clock_cfg.gap_cap >= 1.0
+    }
+
+    /// Whether group `g` is at rest on a row-count clock: it has a row, its
+    /// windows are not cut, and every fast kernel stands at its last row.
+    fn count_at_rest(&self, g: &Group) -> bool {
+        !g.restart
+            && g.clock.started()
+            && g.pending.is_empty()
+            && (self.grouped || self.shared.prev_session() == g.clock.prev_session())
+            && self.queues_at_rest(g)
+    }
+
+    /// [`Windows::plain_block`] for a row-count clock (the chunk has no clock
+    /// column): every row is a stamp of its own, a step of 1 from the row
+    /// before, and its policy time the group's plus 1, added row by row as
+    /// `push` adds it. A backward window that waits for the next stamp is read
+    /// as its row joins, the end of `push` for such a row.
+    fn count_block(&mut self, rows: &PlainRows<'_>, at: usize) -> usize {
+        if rows.clock.is_some() || self.groups.len() != 1 || rows.group != 0 {
+            return 0;
+        }
+        if rows.keys.is_some_and(|k| k.code(at) != k.code(rows.start)) {
+            return 0;
+        }
+        if !self.count_ready() || !self.count_at_rest(&self.groups[0]) {
+            return 0;
+        }
+        let n_rows = (rows.len - at).min(BLOCK);
+        let (g_tau, g_off, form, prev_session) = {
+            let g = &self.groups[0];
+            (g.tau, g.off, g.form, g.clock.prev_session())
+        };
+        let mut bufs = std::mem::take(&mut self.derived.bufs);
+        bufs.tau.clear();
+        bufs.new.clear();
+        bufs.off.clear();
+        let mut tau = g_tau;
+        let mut last_session = prev_session;
+        for j in 0..n_rows {
+            let session = rows.session.map(|s| s[at + j]);
+            let session_ok = match (session, last_session) {
+                (Some(s), Some(q)) => s == q,
+                _ => true,
+            };
+            let keys_ok = rows.keys.is_none_or(|k| k.code(at + j) == k.code(at));
+            if !(session_ok && keys_ok) {
+                break;
+            }
+            tau += 1.0;
+            bufs.new.push(true);
+            bufs.tau.push(tau);
+            bufs.off.push(tau.to_bits() as i64);
+            last_session = session;
+        }
+        let len = bufs.tau.len();
+        if len == 0 {
+            self.derived.bufs = bufs;
+            return 0;
+        }
+        self.run_block(
+            rows,
+            at,
+            bufs,
+            Shape {
+                len,
+                news: len,
+                final_from: len - 1,
+                g_tau,
+                g_off,
+                form,
+                last_now: None,
+                last_session: rows.session.map(|s| s[at + len - 1]),
+                first: false,
+            },
+        );
+        len
+    }
+
+    /// [`Windows::plain_pass`] for a row-count clock: rows of any of the
+    /// groups that have one, each its group's next, run a group at a time.
+    /// Nothing but its own group's rows touches a group here: no silent list,
+    /// no stamp that resolves another group's windows.
+    fn count_pass(&mut self, rows: &PlainRows<'_>, at: usize) -> usize {
+        let Some(keys) = rows.keys else { return 0 };
+        if rows.clock.is_some() || !self.grouped || !self.count_ready() {
+            return 0;
+        }
+        let n_rows = (rows.len - at).min(PASS);
+        let mut m = std::mem::take(&mut self.derived.multi);
+        m.begin(self.groups.len());
+        for j in 0..n_rows {
+            let pos = at + j;
+            let Some(gi) = keys.known(pos) else { break };
+            let slot = if m.mark[gi] == m.epoch {
+                m.slot[gi] as usize
+            } else {
+                let g = &self.groups[gi];
+                if !self.count_at_rest(g) {
+                    break;
+                }
+                let t = Touch {
+                    gi,
+                    last: ClockValue::F64(0.0),
+                    last_session: g.clock.prev_session(),
+                    origin: ClockValue::F64(0.0),
+                    count: 0,
+                    last_row: 0,
+                    waiting: false,
+                    tau: g.tau,
+                    cut: false,
+                    restarts: 0,
+                };
+                m.mark[gi] = m.epoch;
+                m.slot[gi] = m.touched.len() as u32;
+                m.touched.push(t);
+                m.touched.len() - 1
+            };
+            let t = &mut m.touched[slot];
+            let session = rows.session.map(|s| s[pos]);
+            if matches!((session, t.last_session), (Some(s), Some(q)) if s != q) {
+                break;
+            }
+            t.tau += 1.0;
+            let tau = t.tau;
+            t.last_session = session;
+            t.count += 1;
+            t.last_row = j as u32;
+            m.rows.push(RowRec {
+                tau,
+                off: tau.to_bits() as i64,
+                slot: slot as u32,
+                new: true,
+                restart: false,
+            });
+        }
+        while m.touched.last().is_some_and(|t| t.count == 0) {
+            let t = m.touched.pop().expect("one");
+            m.mark[t.gi] = 0;
+        }
+        let len = m.rows.len();
+        if len == 0 {
+            self.derived.multi = m;
+            return 0;
+        }
+        self.run_pass(rows, at, len, &mut m);
+        self.shared.take_plain_run(None, None);
+        self.next_seq += len as u64;
+        self.advance_ready();
+        self.derived.multi = m;
         len
     }
 
@@ -663,12 +901,17 @@ impl Windows {
     fn touch(&self, gi: usize, n_wait: u32) -> Option<Touch> {
         let g = &self.groups[gi];
         let (prev, origin) = (g.stamp?, g.origin?);
-        if g.restart
-            || !g.linked
-            || g.last_raw != Some(prev)
-            || g.clock.last_clock() != Some(prev)
-            || !self.queues_at_rest(g)
-        {
+        if g.last_raw != Some(prev) || g.clock.last_clock() != Some(prev) {
+            return None;
+        }
+        // A group cut is out of the silent list and its next row starts its
+        // windows over, whatever its queues hold; one that is not is in the
+        // list and stands at its last row.
+        if g.restart {
+            if g.linked {
+                return None;
+            }
+        } else if !g.linked || !self.queues_at_rest(g) {
             return None;
         }
         Some(Touch {
@@ -679,105 +922,19 @@ impl Windows {
             count: 0,
             last_row: 0,
             // A group whose pending rows a later stamp has resolved has none.
-            waiting: n_wait > 0 && !g.pending.is_empty(),
+            waiting: !g.restart && n_wait > 0 && !g.pending.is_empty(),
+            tau: 0.0,
+            cut: g.restart,
+            restarts: 0,
         })
     }
 
-    /// One pass of up to [`PASS`] plain rows from `at`, in any of the core's
-    /// groups: found in row order, then run a group at a time. A group's rows
-    /// are its own whatever the other groups' rows between them do, so each
-    /// group is taken over all its rows of the pass, and the stream's end is
-    /// put as the rows in order would have put it: the groups' places in the
-    /// silent list, the windows the new stamps resolve, and the groups whose
-    /// silence the last row's clock shows.
+    /// The rows of a pass over several groups, found and in `m`, taken a group
+    /// at a time through the kernels: the part the clock and the row-count
+    /// passes share. The stream's end is the caller's.
     #[allow(clippy::too_many_lines)]
-    fn plain_pass(&mut self, rows: &PlainRows<'_>, at: usize) -> usize {
-        let Some(keys) = rows.keys else { return 0 };
-        if !self.grouped {
-            return 0;
-        }
-        let Some(first_stream) = self.shared.last_clock() else {
-            return 0;
-        };
-        let n_rows = (rows.clock.len() - at).min(PASS);
-        let cap = self.clock_cfg.gap_cap;
+    fn run_pass(&mut self, rows: &PlainRows<'_>, at: usize, len: usize, m: &mut Multi) {
         let n_wait = self.derived.n_wait;
-        let mut m = std::mem::take(&mut self.derived.multi);
-        m.begin(self.groups.len());
-
-        // The rows: one pass over the clock, the sessions and the keys.
-        let mut stream = first_stream;
-        for j in 0..n_rows {
-            let pos = at + j;
-            let Some(gi) = keys.known(pos) else { break };
-            let now = rows.clock[pos];
-            // The stream steps forward or stays: within the cap it is by the
-            // group's own step below, the group's last row being at or before
-            // the stream's.
-            if !not_before(now, stream) {
-                break;
-            }
-            let slot = if m.mark[gi] == m.epoch {
-                m.slot[gi] as usize
-            } else {
-                let Some(t) = self.touch(gi, n_wait) else {
-                    break;
-                };
-                m.mark[gi] = m.epoch;
-                m.slot[gi] = m.touched.len() as u32;
-                m.touched.push(t);
-                m.touched.len() - 1
-            };
-            let t = &mut m.touched[slot];
-            let session = rows.session.map(|s| s[pos]);
-            let new = now != t.last;
-            if !step_ok(now, t.last, cap)
-                || matches!((session, t.last_session), (Some(s), Some(q)) if s != q)
-                // A group whose pending rows a later stamp resolved does not
-                // begin on a tie of its own stamp.
-                || (t.count == 0 && !new && n_wait > 0 && !t.waiting)
-            {
-                break;
-            }
-            m.rows.push(RowRec {
-                tau: elapsed(now, t.origin),
-                off: offset_of(now),
-                slot: slot as u32,
-                new,
-            });
-            t.last = now;
-            t.last_session = session;
-            t.count += 1;
-            t.last_row = j as u32;
-            stream = now;
-        }
-        // A group met by the row that stopped the pass has none in it.
-        while m.touched.last().is_some_and(|t| t.count == 0) {
-            let t = m.touched.pop().expect("one");
-            m.mark[t.gi] = 0;
-        }
-        let len = m.rows.len();
-        if len == 0 {
-            self.derived.multi = m;
-            return 0;
-        }
-
-        // The groups whose rows were pending at the stream's stamp and are
-        // not in the pass: a later stamp resolves them, where they stand.
-        let last_now = rows.clock[at + len - 1];
-        if n_wait > 0 && is_after(last_now, first_stream) {
-            let mut at_tail = self.tail;
-            while let Some(gi) = at_tail {
-                if self.groups[gi].pending.is_empty() {
-                    break;
-                }
-                at_tail = self.groups[gi].prev_link;
-                if m.mark[gi] != m.epoch {
-                    self.flush_group(gi);
-                }
-            }
-        }
-
         // The pass's rows by group.
         let touched = m.touched.len();
         m.starts.clear();
@@ -839,64 +996,192 @@ impl Windows {
         let n_inputs = rows.values.len();
         let mut xg = std::mem::take(&mut m.xg);
         xg.resize_with(n_inputs, Vec::new);
+        let ms = &*m;
         for t_slot in 0..touched {
-            let (lo, hi) = (m.starts[t_slot] as usize, m.starts[t_slot + 1] as usize);
-            let g = &mut groups[m.touched[t_slot].gi];
-            // A group's rows in segments, as the one-group loop takes its blocks:
-            // its buffers stay a block's.
-            for idx in m.order[lo..hi].chunks(BLOCK) {
-                let len_g = idx.len();
-                bufs.tau.clear();
-                bufs.new.clear();
-                bufs.off.clear();
-                bufs.seq.clear();
-                bufs.tau.extend(idx.iter().map(|&j| m.rows[j as usize].tau));
-                bufs.new.extend(idx.iter().map(|&j| m.rows[j as usize].new));
-                bufs.off.extend(idx.iter().map(|&j| m.rows[j as usize].off));
-                bufs.seq.extend(idx.iter().map(|&j| seq0 + u64::from(j)));
-                let news = bufs.new.iter().filter(|&&n| n).count();
-                for (i, col) in xg.iter_mut().enumerate() {
-                    col.clear();
-                    col.extend(idx.iter().map(|&j| rows.values[i][at + j as usize]));
+            let (lo, hi) = (ms.starts[t_slot] as usize, ms.starts[t_slot + 1] as usize);
+            let g = &mut groups[ms.touched[t_slot].gi];
+            // A group's rows in segments, as the one-group loop takes its
+            // blocks: its buffers stay a block's. A row that starts the
+            // group's windows over ends the segment before it and is a run of
+            // its own: the group's windows are cut where its last row left
+            // them (unless they are cut already) and start again there.
+            let order = &ms.order[lo..hi];
+            if ms.touched[t_slot].restarts == 0 {
+                for idx in order.chunks(BLOCK) {
+                    run_segment(
+                        &mut parts, g, &mut bufs, &mut xg, &ms.rows, idx, rows, at, seq0, false,
+                    );
                 }
-                let final_from = if news == 0 {
-                    0
-                } else {
-                    bufs.new.iter().rposition(|&n| n).unwrap_or(0)
-                };
-                // The rows of the stamp the group's run ends in wait for the next.
-                if n_wait > 0 {
-                    for r in final_from..len_g {
-                        parts.held_meta[(bufs.seq[r] - parts.held_first) as usize].open += n_wait;
+                continue;
+            }
+            let mut k = 0;
+            while k < order.len() {
+                let j = order[k] as usize;
+                if ms.rows[j].restart {
+                    if !g.restart {
+                        end_in(&mut parts, g, End::Cut);
                     }
+                    let clock = rows.clock.expect("a restart is on a clock column");
+                    restart_in(g, Some(clock[at + j]));
+                    run_segment(
+                        &mut parts,
+                        g,
+                        &mut bufs,
+                        &mut xg,
+                        &ms.rows,
+                        &order[k..=k],
+                        rows,
+                        at,
+                        seq0,
+                        true,
+                    );
+                    k += 1;
+                    continue;
                 }
-                let last = idx[len_g - 1] as usize;
-                let shape = Shape {
-                    len: len_g,
-                    news,
-                    final_from,
-                    g_tau: g.tau,
-                    g_off: g.off,
-                    form: g.form,
-                    last_now: rows.clock[at + last],
-                    last_session: rows.session.map(|s| s[at + last]),
-                };
-                let cols = Cols {
-                    whole: &xg,
-                    from: 0,
-                    len: len_g,
-                };
-                run_group(&mut parts, g, cols, &mut bufs, &shape);
+                let run = order[k..]
+                    .iter()
+                    .position(|&j| ms.rows[j as usize].restart)
+                    .unwrap_or(order.len() - k);
+                for idx in order[k..k + run].chunks(BLOCK) {
+                    run_segment(
+                        &mut parts, g, &mut bufs, &mut xg, &ms.rows, idx, rows, at, seq0, false,
+                    );
+                }
+                k += run;
             }
         }
         m.xg = xg;
+        self.derived.bufs = bufs;
+    }
+
+    /// One pass of up to [`PASS`] plain rows from `at`, in any of the core's
+    /// groups: found in row order, then run a group at a time. A group's rows
+    /// are its own whatever the other groups' rows between them do, so each
+    /// group is taken over all its rows of the pass, and the stream's end is
+    /// put as the rows in order would have put it: the groups' places in the
+    /// silent list, the windows the new stamps resolve, and the groups whose
+    /// silence the last row's clock shows.
+    #[allow(clippy::too_many_lines)]
+    fn plain_pass(&mut self, rows: &PlainRows<'_>, at: usize) -> usize {
+        let Some(keys) = rows.keys else { return 0 };
+        if !self.grouped {
+            return 0;
+        }
+        let (Some(first_stream), Some(clock)) = (self.shared.last_clock(), rows.clock) else {
+            return 0;
+        };
+        let n_rows = (rows.len - at).min(PASS);
+        let cap = self.clock_cfg.gap_cap;
+        let n_wait = self.derived.n_wait;
+        let mut m = std::mem::take(&mut self.derived.multi);
+        m.begin(self.groups.len());
+
+        // The rows: one pass over the clock, the sessions and the keys.
+        let mut stream = first_stream;
+        for j in 0..n_rows {
+            let pos = at + j;
+            let Some(gi) = keys.known(pos) else { break };
+            let now = clock[pos];
+            // The stream steps forward or stays: within the cap it is by the
+            // group's own step below, the group's last row being at or before
+            // the stream's.
+            if !not_before(now, stream) {
+                break;
+            }
+            let slot = if m.mark[gi] == m.epoch {
+                m.slot[gi] as usize
+            } else {
+                let Some(t) = self.touch(gi, n_wait) else {
+                    break;
+                };
+                m.mark[gi] = m.epoch;
+                m.slot[gi] = m.touched.len() as u32;
+                m.touched.push(t);
+                m.touched.len() - 1
+            };
+            let t = &mut m.touched[slot];
+            let session = rows.session.map(|s| s[pos]);
+            let new = now != t.last;
+            if matches!((session, t.last_session), (Some(s), Some(q)) if s != q) {
+                break;
+            }
+            // A row that starts its group's windows over: the first after a
+            // cut, or a step forward past the cap -- the stream's own step
+            // within it, or the cap would end every group's windows.
+            let ok = step_ok(now, t.last, cap);
+            let restart = if t.cut {
+                not_before(now, t.last)
+            } else {
+                !ok && cap.is_finite() && not_before(now, t.last)
+            };
+            if restart {
+                if !step_ok(now, stream, cap) {
+                    break;
+                }
+                m.rows.push(RowRec {
+                    tau: 0.0,
+                    off: offset_of(now),
+                    slot: slot as u32,
+                    new: true,
+                    restart: true,
+                });
+                t.origin = now;
+                t.cut = false;
+                t.restarts += 1;
+            } else {
+                // A group whose pending rows a later stamp resolved does not
+                // begin on a tie of its own stamp.
+                if !ok || (t.count == 0 && !new && n_wait > 0 && !t.waiting) {
+                    break;
+                }
+                m.rows.push(RowRec {
+                    tau: elapsed(now, t.origin),
+                    off: offset_of(now),
+                    slot: slot as u32,
+                    new,
+                    restart: false,
+                });
+            }
+            t.last = now;
+            t.last_session = session;
+            t.count += 1;
+            t.last_row = j as u32;
+            stream = now;
+        }
+        // A group met by the row that stopped the pass has none in it.
+        while m.touched.last().is_some_and(|t| t.count == 0) {
+            let t = m.touched.pop().expect("one");
+            m.mark[t.gi] = 0;
+        }
+        let len = m.rows.len();
+        if len == 0 {
+            self.derived.multi = m;
+            return 0;
+        }
+
+        // The groups whose rows were pending at the stream's stamp and are
+        // not in the pass: a later stamp resolves them, where they stand.
+        let last_now = clock[at + len - 1];
+        if n_wait > 0 && is_after(last_now, first_stream) {
+            let mut at_tail = self.tail;
+            while let Some(gi) = at_tail {
+                if self.groups[gi].pending.is_empty() {
+                    break;
+                }
+                at_tail = self.groups[gi].prev_link;
+                if m.mark[gi] != m.epoch {
+                    self.flush_group(gi);
+                }
+            }
+        }
+
+        self.run_pass(rows, at, len, &mut m);
 
         // The stream, and the groups' ends: the rows' last clock, the groups
         // that stamp left behind resolved, the silent list as the rows in order
         // leave it, the groups the clock shows silent.
         self.shared.take_plain_run(Some(last_now), None);
         self.next_seq += len as u64;
-        self.derived.bufs = bufs;
         if n_wait > 0 {
             for t in &m.touched {
                 if is_after(
@@ -929,6 +1214,70 @@ fn offset_of(now: ClockValue) -> i64 {
         ClockValue::Ns(c) | ClockValue::I64(c) => c,
         ClockValue::F64(c) => c.to_bits() as i64,
     }
+}
+
+/// One segment of a group's rows in a pass: `idx` are positions in the pass,
+/// in the group's order, run through the group's kernels as one run. `first`:
+/// the run is a single row that starts the group's windows over (the caller
+/// has restarted the group).
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn run_segment(
+    parts: &mut Parts<'_>,
+    g: &mut Group,
+    bufs: &mut Bufs,
+    xg: &mut [Vec<f64>],
+    recs: &[RowRec],
+    idx: &[u32],
+    rows: &PlainRows<'_>,
+    at: usize,
+    seq0: u64,
+    first: bool,
+) {
+    let len_g = idx.len();
+    bufs.tau.clear();
+    bufs.new.clear();
+    bufs.off.clear();
+    bufs.seq.clear();
+    bufs.tau.extend(idx.iter().map(|&j| recs[j as usize].tau));
+    bufs.new.extend(idx.iter().map(|&j| recs[j as usize].new));
+    bufs.off.extend(idx.iter().map(|&j| recs[j as usize].off));
+    bufs.seq.extend(idx.iter().map(|&j| seq0 + u64::from(j)));
+    let news = bufs.new.iter().filter(|&&n| n).count();
+    for (i, col) in xg.iter_mut().enumerate() {
+        col.clear();
+        col.extend(idx.iter().map(|&j| rows.values[i][at + j as usize]));
+    }
+    let final_from = if news == 0 {
+        0
+    } else {
+        bufs.new.iter().rposition(|&n| n).unwrap_or(0)
+    };
+    let count = rows.clock.is_none();
+    // The rows of the stamp the group's run ends in wait for the next.
+    if parts.n_wait > 0 && !count {
+        for r in final_from..len_g {
+            parts.held_meta[(bufs.seq[r] - parts.held_first) as usize].open += parts.n_wait;
+        }
+    }
+    let last = idx[len_g - 1] as usize;
+    let shape = Shape {
+        len: len_g,
+        news,
+        final_from,
+        g_tau: g.tau,
+        g_off: g.off,
+        form: g.form,
+        last_now: rows.clock.map(|c| c[at + last]),
+        last_session: rows.session.map(|s| s[at + last]),
+        first,
+    };
+    let cols = Cols {
+        whole: xg,
+        from: 0,
+        len: len_g,
+    };
+    run_group(parts, g, cols, bufs, &shape);
 }
 
 /// A group's run of rows through its forward kernels: the rows wait first, all of
@@ -999,10 +1348,14 @@ fn run_group(p: &mut Parts<'_>, g: &mut Group, cols: Cols<'_>, bufs: &mut Bufs, 
         form,
         last_now,
         last_session,
+        first,
     } = *sh;
     let n_out = p.n_out;
     let n_wait = p.n_wait;
     let held_first = p.held_first;
+    // A row-count clock: every row is a stamp of its own, and a backward
+    // window that waits for the next stamp is read as its row joins.
+    let count = last_now.is_none();
     // The rows pending from before, as held indices; a new stamp's read goes to
     // them. A kernel without a wait has none.
     let mut pending = std::mem::take(&mut bufs.pending);
@@ -1023,7 +1376,7 @@ fn run_group(p: &mut Parts<'_>, g: &mut Group, cols: Cols<'_>, bufs: &mut Bufs, 
     // kernel is taken over the whole block before the next.
     for (ki, k) in p.kernels.iter().enumerate() {
         let m = &p.members[ki];
-        if k.direction == Direction::Forward || fast_kernel(k, m, p.ops) {
+        if k.direction == Direction::Forward || (!first && fast_kernel(k, m, p.ops)) {
             continue;
         }
         let q = &mut g.queues[ki];
@@ -1035,7 +1388,7 @@ fn run_group(p: &mut Parts<'_>, g: &mut Group, cols: Cols<'_>, bufs: &mut Bufs, 
         for r in 0..len {
             let (tau, off, new) = (bufs.tau[r], bufs.off[r], bufs.new[r]);
             let seq = bufs.seq[r];
-            if new && near {
+            if new && near && !count && !first {
                 // The stamp before this one is complete: its rows are
                 // read at its own time.
                 let (ptau, poff) = if r == 0 {
@@ -1077,7 +1430,10 @@ fn run_group(p: &mut Parts<'_>, g: &mut Group, cols: Cols<'_>, bufs: &mut Bufs, 
                 }
                 began = r as isize;
             }
-            if new && !near {
+            if new && !near && first {
+                // The first row of a stretch reads an empty queue: no value.
+                g.stamp_values[ki].fill(f64::NAN);
+            } else if new && !near {
                 by_width!(
                     wide,
                     read_backward(
@@ -1133,7 +1489,25 @@ fn run_group(p: &mut Parts<'_>, g: &mut Group, cols: Cols<'_>, bufs: &mut Bufs, 
                 &p.scratch_row[..rw * m.len()],
                 p.scratch_sum,
             );
-            if !near {
+            if near && count {
+                // The row's own windows, as `flush_group` reads them at its
+                // end.
+                by_width!(
+                    wide,
+                    read_backward(
+                        k,
+                        p.ops,
+                        m,
+                        q,
+                        p.scratch_sum,
+                        tau,
+                        off,
+                        form,
+                        &mut g.stamp_values[ki],
+                    )
+                );
+            }
+            if !near || count {
                 let complete = k.window_size.is_none_or(|w| tau >= w);
                 let held = Held {
                     first: held_first,
@@ -1162,7 +1536,7 @@ fn run_group(p: &mut Parts<'_>, g: &mut Group, cols: Cols<'_>, bufs: &mut Bufs, 
     };
 
     for (ki, k) in p.kernels.iter().enumerate() {
-        if !fast_kernel(k, &p.members[ki], p.ops) {
+        if first || !fast_kernel(k, &p.members[ki], p.ops) {
             continue;
         }
         let q = &mut g.queues[ki];
@@ -1185,7 +1559,7 @@ fn run_group(p: &mut Parts<'_>, g: &mut Group, cols: Cols<'_>, bufs: &mut Bufs, 
             if has_rate {
                 // The read at this step: the previous stamp's under "right"
                 // and "both", the row's own before it joins otherwise.
-                let span = match (near, r) {
+                let span = match (near && !count, r) {
                     (true, 0) => g_tau,
                     (true, _) => bufs.tau[r - 1],
                     (false, _) => t,
@@ -1221,8 +1595,8 @@ fn run_group(p: &mut Parts<'_>, g: &mut Group, cols: Cols<'_>, bufs: &mut Bufs, 
                 m0,
             };
             macro_rules! fold {
-                ($near:literal, $ties:literal, $nulls:literal) => {
-                    fold_op::<$near, $ties, $nulls>(
+                ($near:literal, $ties:literal, $nulls:literal, $after:literal) => {
+                    fold_op::<$near, $ties, $nulls, $after>(
                         k,
                         op,
                         var,
@@ -1240,15 +1614,21 @@ fn run_group(p: &mut Parts<'_>, g: &mut Group, cols: Cols<'_>, bufs: &mut Bufs, 
                     )
                 };
             }
-            match (near, ties, nulls) {
-                (true, false, false) => fold!(true, false, false),
-                (true, false, true) => fold!(true, false, true),
-                (true, true, false) => fold!(true, true, false),
-                (true, true, true) => fold!(true, true, true),
-                (false, false, false) => fold!(false, false, false),
-                (false, false, true) => fold!(false, false, true),
-                (false, true, false) => fold!(false, true, false),
-                (false, true, true) => fold!(false, true, true),
+            match (near, ties, nulls, count) {
+                (true, false, false, false) => fold!(true, false, false, false),
+                (true, false, true, false) => fold!(true, false, true, false),
+                (true, true, false, false) => fold!(true, true, false, false),
+                (true, true, true, false) => fold!(true, true, true, false),
+                (false, false, false, false) => fold!(false, false, false, false),
+                (false, false, true, false) => fold!(false, false, true, false),
+                (false, true, false, false) => fold!(false, true, false, false),
+                (false, true, true, false) => fold!(false, true, true, false),
+                // A row-count clock: no stamp repeats, and a window that waits
+                // for the next stamp is read after its row joins.
+                (true, _, false, true) => fold!(false, false, false, true),
+                (true, _, true, true) => fold!(false, false, true, true),
+                (false, _, false, true) => fold!(false, false, false, false),
+                (false, _, true, true) => fold!(false, false, true, false),
             }
         }
         q.total_at = bufs.tau[len - 1];
@@ -1256,19 +1636,25 @@ fn run_group(p: &mut Parts<'_>, g: &mut Group, cols: Cols<'_>, bufs: &mut Bufs, 
 
     // The group where the last row leaves it.
     g.tau = bufs.tau[len - 1];
-    (g.off, g.form) = match last_now {
-        ClockValue::Ns(c) => (c, OffForm::Ns),
-        ClockValue::I64(c) => (c, OffForm::Int),
-        ClockValue::F64(c) => (c.to_bits() as i64, OffForm::Bits),
-    };
-    g.stamp = Some(last_now);
-    g.last_raw = Some(last_now);
-    if n_wait > 0 {
-        if news > 0 {
-            g.pending.clear();
+    match last_now {
+        Some(last_now) => {
+            (g.off, g.form) = match last_now {
+                ClockValue::Ns(c) => (c, OffForm::Ns),
+                ClockValue::I64(c) => (c, OffForm::Int),
+                ClockValue::F64(c) => (c.to_bits() as i64, OffForm::Bits),
+            };
+            g.stamp = Some(last_now);
+            g.last_raw = Some(last_now);
+            if n_wait > 0 {
+                if news > 0 {
+                    g.pending.clear();
+                }
+                g.pending.extend((final_from..len).map(|r| bufs.seq[r]));
+            }
         }
-        g.pending.extend((final_from..len).map(|r| bufs.seq[r]));
+        // No clock column: the policy time's bits, and no stamp.
+        None => (g.off, g.form) = (bufs.off[len - 1], OffForm::Bits),
     }
-    g.clock.take_plain_run(Some(last_now), last_session);
+    g.clock.take_plain_run(last_now, last_session);
     bufs.pending = pending;
 }

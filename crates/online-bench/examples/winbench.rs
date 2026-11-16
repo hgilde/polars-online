@@ -4,7 +4,7 @@
 //! winbench`; it prints a digest of the outputs beside the time, so two builds
 //! can be compared for speed and for identity. Alternate the two builds'
 //! binaries when timing a change, so that load moves both alike.
-//! WB_KIND=dt|f|none WB_WS=none|60s|60.0 WB_OPS=1|4|8 WB_GROUPS=0|N WB_ROWS=n WB_REPS=n WB_CHUNK=n
+//! WB_KIND=dt|f|i|none (`i`: an integer clock in milliseconds, so WB_WS and the half-life are in milliseconds: 60000) WB_WS=none|60s|60.0 WB_OPS=1|4|8 WB_GROUPS=0|N WB_ROWS=n WB_REPS=n WB_CHUNK=n
 //! WB_OPSET=mean|mixed|quant|msrq WB_PLAIN=0 (the plain-run loop off)
 //! Task 441: WB_REVERSE=1 makes the operators forward (`rewm_*`, which need a WB_WS); WB_OP=mean|sum|rate|quantile|std|var
 //! names the one operator of WB_OPS=1; `msrq` is mean, sum, rate, quantile (what a forward kernel can run).
@@ -74,7 +74,14 @@ fn main() {
     // WB_PLAIN=0 switches the core's plain-run loop off (task 429), to time what it saves.
     let plain = env("WB_PLAIN", "1");
     let temporal = kind == "dt";
-    let hl: Value = if temporal { json!("5s") } else { json!(5.0) };
+    let integer = kind == "i";
+    let hl: Value = if temporal {
+        json!("5s")
+    } else if integer {
+        json!(5000.0)
+    } else {
+        json!(5.0)
+    };
     let wsv: Option<Value> = match ws.as_str() {
         "none" => None,
         s if temporal => Some(json!(s)),
@@ -121,6 +128,8 @@ fn main() {
         config["clock"] = json!("ts");
         config["gap_cap"] = if temporal {
             json!(format!("{}s", cap_sec as u64))
+        } else if integer {
+            json!(cap_sec * 1000.0)
         } else {
             json!(cap_sec)
         };
@@ -141,6 +150,7 @@ fn main() {
     let mut m = 100.0f64;
     let mut ts_ns = Vec::with_capacity(rows);
     let mut ts_f = Vec::with_capacity(rows);
+    let mut ts_ms: Vec<i64> = Vec::with_capacity(rows);
     let mut mid: Vec<Option<f64>> = Vec::with_capacity(rows);
     let mut g = Vec::with_capacity(rows);
     let mut sess = Vec::with_capacity(rows);
@@ -164,6 +174,7 @@ fn main() {
         m += (r.next() - 0.5) * 0.02;
         ts_ns.push((t * 1e9) as i64);
         ts_f.push(((t * 1e9) as i64) as f64 / 1e9);
+        ts_ms.push((t * 1e3) as i64);
         mid.push(if nulls > 0.0 && r2.next() < nulls {
             None
         } else {
@@ -191,6 +202,8 @@ fn main() {
             );
         } else if kind == "f" {
             cols.push(Column::new("ts".into(), &ts_f[at..to]));
+        } else if integer {
+            cols.push(Column::new("ts".into(), &ts_ms[at..to]));
         }
         cols.push(Column::new("mid".into(), &mid[at..to]));
         if groups > 0 {
