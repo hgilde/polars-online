@@ -1330,30 +1330,32 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       after an edit to `online-core/src/solve.rs`, then the link after an edit
       to one test file. Probe: a test calling `solve_spd` with mismatched
       lengths (a `debug_assert` at `solve.rs:467`), `RUST_BACKTRACE=1`.
-      | option | `target/` | cold | edit core | edit test | backtrace |
-      |---|---|---|---|---|---|
-      | main as it was | 35.4 GB | 245 s | 165 s | 169 s | module path, file:line |
-      | (a) dependencies `debug = false` | 28.6 GB | 239 s | 155 s | 149 s | same |
-      | (a) + ours `line-tables-only` | 27.7 GB | 214 s | 151 s | 142 s | file:line; function without its module path |
-      | + `incremental = false` (c) | 25.9 GB | 216 s | 158 s | 152 s | same |
-      | (a) + ours lines + `split-debuginfo = "off"` (b) | 27.7 GB | 203 s | 149 s | 157 s | same |
-      | (a)+(c)+ dependencies `opt-level = 1` | **11.4 GB** | 244 s | **91 s** | **90 s** | same |
-      (b): macOS's default is already `unpacked`, and `off` changes the size by
-      4 MB. The finding behind the numbers: 53 test binaries are 21 GB, each of
-      them 163 MB of code and 330 MB of symbol table and unwind data (Polars
-      at opt-level 0); debug info was 9 GB of the 35, so (a) alone cannot reach
-      the 130 GB slots, which are superseded builds. Those go by (d):
-      `cargo-sweep` is not installed, so `scripts/clear_caches.sh --stale [DAYS]`
-      removes the files of each `target/`'s `deps/` and `incremental/` that no
-      build has read (atime; APFS updates it) for DAYS days, default 7;
-      cargo rebuilds a missing file; a test holds it. Built: `[profile.dev]`
-      with the three settings in the last row of the table, and the `--stale`
-      flag. The release profile, `dev-wheel` and the wheel are untouched:
-      `cargo build --release -p online-cli` runs rustc with opt-level 3, thin
-      LTO, one codegen unit and `strip=symbols`, as before. *Not done*: fewer
-      test binaries (each integration-test file is one 211 MB binary: moving
-      them into fewer targets would cut the 21 GB again, at the cost of the
-      per-file link parallelism).
+
+  | option | `target/` | cold | edit core | edit test | backtrace |
+  |---|---|---|---|---|---|
+  | main as it was | 35.4 GB | 245 s | 165 s | 169 s | module path, file:line |
+  | (a) dependencies `debug = false` | 28.6 GB | 239 s | 155 s | 149 s | same |
+  | (a) + ours `line-tables-only` | 27.7 GB | 214 s | 151 s | 142 s | file:line; function without its module path |
+  | + `incremental = false` (c) | 25.9 GB | 216 s | 158 s | 152 s | same |
+  | (a) + ours lines + `split-debuginfo = "off"` (b) | 27.7 GB | 203 s | 149 s | 157 s | same |
+  | (a)+(c)+ dependencies `opt-level = 1` | **11.4 GB** | 244 s | **91 s** | **90 s** | same |
+
+  (b): macOS's default is already `unpacked`, and `off` changes the size by
+  4 MB. The finding behind the numbers: 53 test binaries are 21 GB, each of
+  them 163 MB of code and 330 MB of symbol table and unwind data (Polars
+  at opt-level 0); debug info was 9 GB of the 35, so (a) alone cannot reach
+  the 130 GB slots, which are superseded builds. Those go by (d):
+  `cargo-sweep` is not installed, so `scripts/clear_caches.sh --stale [DAYS]`
+  removes the files of each `target/`'s `deps/` and `incremental/` that no
+  build has read (atime; APFS updates it) for DAYS days, default 7;
+  cargo rebuilds a missing file; a test holds it. Built: `[profile.dev]`
+  with the three settings in the last row of the table, and the `--stale`
+  flag. The release profile, `dev-wheel` and the wheel are untouched:
+  `cargo build --release -p online-cli` runs rustc with opt-level 3, thin
+  LTO, one codegen unit and `strip=symbols`, as before. *Not done*: fewer
+  test binaries (each integration-test file is one 211 MB binary: moving
+  them into fewer targets would cut the 21 GB again, at the cost of the
+  per-file link parallelism).
 - [x] 280. **An oracle ledger: no drift from the oracles and datasets, no longer gate** -- [part 5](records/PLAN-ARCHIVE-5.md#task-280)
 - [ ] 281. **Task 278's follow-ups, after 1.4.0** -- recorded 2026-10-26.
       (1) The stream's own anchored MAD sketch is anchored at its first
