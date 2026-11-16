@@ -7,7 +7,7 @@ time. What the Python surfaces add on top is their own per-call work: the
 chunked :class:`~polars_online.ModelBank` call, and the IO source behind
 ``LazyFrame.online.fit_predict``, which reads the plan's batches and builds
 each output frame. Each case here times one workload at two sizes, the least
-of several runs interleaved, and holds the ratio of the time per row to the
+of several rounds interleaved, in CPU time, and holds the ratio of the time per row to the
 growth declared for it, times ``STEP ** 0.5``: time is the coarse measure,
 and a wrong growth is a whole power of the step past the declared one.
 """
@@ -32,6 +32,10 @@ pytestmark = pytest.mark.extended(reason="timing: each case runs two sizes five 
 STEP = 8
 SLACK = STEP**0.5
 RUNS = 5
+#: A case that reads over its bound after ``RUNS`` rounds takes more, up to
+#: this many: the least only falls with more rounds, so a busy machine's
+#: noise washes out, while a wrong growth stays past the bound however many.
+MAX_RUNS = 20
 
 
 def _frame(n: int, k: int = 4, t: int = 1, seed: int = 7) -> pl.DataFrame:
@@ -59,9 +63,12 @@ def _specs(n: int) -> list[dict[str, Any]]:
 
 
 def _seconds(fn: Callable[[], object]) -> float:
-    at = time.perf_counter()
+    """The CPU time ``fn`` took, all this process's threads: on a busy machine
+    the wall clock also counts the time a run spent waiting for a core, which
+    differs between a short run and a long one and read as growth."""
+    at = time.process_time()
     fn()
-    return time.perf_counter() - at
+    return time.process_time() - at
 
 
 def _hold(
@@ -74,11 +81,15 @@ def _hold(
     """The least time per row of ``large`` over ``small``'s, within ``bound``
     times the slack."""
     best_s, best_l = float("inf"), float("inf")
-    for _ in range(RUNS):
+    allowed = bound * SLACK
+    ratio = float("inf")
+    for run in range(MAX_RUNS):
+        # One round: both sizes back to back, so a change in load meets both.
         best_s = min(best_s, _seconds(small) / rows[0])
         best_l = min(best_l, _seconds(large) / rows[1])
-    ratio = best_l / best_s
-    allowed = bound * SLACK
+        ratio = best_l / best_s
+        if run + 1 >= RUNS and ratio <= allowed:
+            break
     print(f"{name}: {ratio:.2f}x per row (allowed {allowed:.2f}x)")
     assert ratio <= allowed, f"{name}: a row's time grew {ratio:.2f}x, past {allowed:.2f}x"
 
@@ -91,7 +102,7 @@ def test_a_chunked_bank_costs_each_spec_the_same(small: int, chunk: int) -> None
     what a call costs a spec -- its columns looked up, its output built --
     is the cost."""
     rows = 4096 if chunk > 4 else 512
-    df = _frame(2048 + RUNS * rows)
+    df = _frame(2048 + MAX_RUNS * rows)
     warm = df.head(2048)
     banks = {}
     for n in (small, STEP * small):
@@ -99,7 +110,7 @@ def test_a_chunked_bank_costs_each_spec_the_same(small: int, chunk: int) -> None
         bank.fit_predict(warm)
         banks[n] = bank
     # Each run feeds the next block of the stream, so a bank's clock moves on.
-    blocks = [df.slice(2048 + r * rows, rows) for r in range(RUNS)]
+    blocks = [df.slice(2048 + r * rows, rows) for r in range(MAX_RUNS)]
     at = {n: 0 for n in banks}
 
     def run(n: int) -> Callable[[], object]:
