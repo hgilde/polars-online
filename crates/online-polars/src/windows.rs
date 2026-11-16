@@ -858,6 +858,17 @@ impl Stack {
         self.at.push(at);
     }
 
+    /// Room for `more` rows, in every arena.
+    fn reserve(&mut self, more: usize) {
+        self.seq.reserve(more);
+        self.tau.reserve(more);
+        self.off.reserve(more);
+        self.end.reserve(more);
+        self.vals.reserve(more * self.row_w() * self.n);
+        self.sums.reserve(more * self.sum_w() * self.n);
+        self.at.reserve(more);
+    }
+
     fn pop(&mut self) {
         let i = self.len() - 1;
         self.seq.truncate(i);
@@ -1149,7 +1160,11 @@ impl Queue {
         }
         let (n, rw) = (self.n, row_w::<W>());
         let scratch = &mut scratch[..sum_w::<W>() * n];
-        while let Some(i) = self.back.len().checked_sub(1) {
+        // Every row of `back` moves, the newest first: `front` takes room for
+        // them at once and `back` is emptied once, after the last.
+        let moved = self.back.len();
+        self.front.reserve(moved);
+        for i in (0..moved).rev() {
             let (seq, tau, off, end) = (
                 self.back.seq[i],
                 self.back.tau[i],
@@ -1182,7 +1197,7 @@ impl Queue {
                     }
                 }
             }
-            let (front, back) = (&mut self.front, &mut self.back);
+            let (front, back) = (&mut self.front, &self.back);
             front.push(
                 seq,
                 tau,
@@ -1192,8 +1207,8 @@ impl Queue {
                 scratch,
                 at,
             );
-            back.pop();
         }
+        self.back.clear();
     }
 
     /// Pop the rows `stale` says have left the window, oldest first.
