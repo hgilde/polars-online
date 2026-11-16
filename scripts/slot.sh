@@ -88,7 +88,14 @@ case "$cmd" in
                     echo "slot: $dir has uncommitted work; finish or discard it there first" >&2
                     exit 1
                 fi
-                git -C "$dir" checkout --quiet -B "$branch" "$base" >&2
+                # A branch that exists keeps its commits: it is checked out
+                # where it stands, never reset to the base (a retaken task
+                # lost its commits to `-B` on 2026-11-16).
+                if git -C "$main" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null; then
+                    git -C "$dir" checkout --quiet "$branch" >&2
+                else
+                    git -C "$dir" checkout --quiet -b "$branch" "$base" >&2
+                fi
                 echo "$dir"
                 exit 0
             fi

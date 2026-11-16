@@ -539,6 +539,25 @@ def test_a_slot_is_taken_on_its_branch_given_back_and_reused_warm(tmp_path):
 
 
 @posix_shell
+def test_a_branch_taken_again_keeps_its_commits(tmp_path):
+    """A task resumed in a slot after its slot was given back gets its
+    branch where it stands, not reset to the base (2026-11-16: `-B` reset a
+    retaken branch to main and its commits had to be recovered)."""
+    repo = _slot_repo(tmp_path)
+    one = Path(_slot(repo, "take", "task-a", "main~1").stdout.strip())
+    (one / "b.txt").write_text("work\n", encoding="utf-8")
+    _git(one, "add", "-A")
+    _git(one, "commit", "-q", "-m", "work")
+    work = _git(one, "rev-parse", "HEAD")
+    assert _slot(repo, "give", "1").returncode == 0
+    again = _slot(repo, "take", "task-a", "main")
+    assert again.returncode == 0, again.stderr
+    there = Path(again.stdout.strip())
+    assert _git(there, "rev-parse", "--abbrev-ref", "HEAD") == "task-a"
+    assert _git(there, "rev-parse", "HEAD") == work
+
+
+@posix_shell
 def test_a_slot_with_uncommitted_work_is_neither_given_back_nor_taken_over(tmp_path):
     repo = _slot_repo(tmp_path)
     one = Path(_slot(repo, "take", "task-a").stdout.strip())
