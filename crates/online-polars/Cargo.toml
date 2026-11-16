@@ -40,6 +40,10 @@ polars-utils = "=0.55.2"
 # neither library (CLAUDE.md rule 12), and the user named it when deciding
 # the task.
 libloading = "0.9"
+# The trait `PlIndexMap::get_index_of` takes a key by reference through: a group
+# key found from the chunk's own text, with no `GroupKey` built. Already in
+# `polars`' tree (indexmap's); nothing new is linked.
+equivalent = "1.0"
 rayon.workspace = true
 rmp-serde.workspace = true
 serde.workspace = true
