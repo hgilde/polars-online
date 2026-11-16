@@ -2738,6 +2738,7 @@ impl Windows {
 
     /// The kernels, the held rows and the buffers a group's windows are read
     /// and written with, borrowed apart from the groups.
+    #[inline(always)]
     fn split(&mut self) -> (Parts<'_>, &mut Vec<Group>) {
         let Windows {
             kernels,
@@ -3447,6 +3448,7 @@ fn forward_step(
 /// Resolve the pending backward windows of group `g` at its stamp: every
 /// kernel that waits for the next stamp is read as the group stands, and the
 /// pending rows are written.
+#[inline(always)]
 fn flush_in(p: &mut Parts<'_>, g: &mut Group) {
     if g.pending.is_empty() {
         return;
@@ -3495,6 +3497,7 @@ fn flush_in(p: &mut Parts<'_>, g: &mut Group) {
 /// pending backward windows are read as they stand, its forward windows
 /// closed at the last row the group saw, and its queues emptied; its next row
 /// starts every window over.
+#[inline(always)]
 fn end_in(p: &mut Parts<'_>, g: &mut Group, how: End) {
     flush_in(p, g);
     g.restart = true;
@@ -3557,6 +3560,7 @@ fn end_in(p: &mut Parts<'_>, g: &mut Group, how: End) {
 /// A group's row that starts its windows over -- the first after a cut or a
 /// reset -- finds nothing of the old stretch: every window ended already or
 /// before, so the policy time starts again at 0 from this row's clock.
+#[inline(always)]
 fn restart_in(g: &mut Group, origin: Option<ClockValue>) {
     for q in &mut g.queues {
         q.clear();
