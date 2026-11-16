@@ -203,6 +203,10 @@ returns.
   Callgrind), and `ew_cov` at 1,000 and 10,000 groups is 3-12% faster on
   x86-64 and 6-13% faster on arm64. Outputs and saved state unchanged to
   the bit.
+- `corrchange` with `kind="window"` reads its permutation pool a row at a
+  time and takes the means in the same loop nest as the moments: 10.6% fewer
+  instructions on x86-64 and 16% fewer on arm64 for a windowed change test.
+  Outputs and saved state unchanged to the bit.
 - The window operators' block loop now also takes integer and row-count
   clocks, and rows that restart a group's windows: one operator over an
   integer clock runs 4 times as fast and over a row count 3.5 times (2.0-2.4
