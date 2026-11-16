@@ -44,8 +44,10 @@ use super::*;
 const BLOCK: usize = 1024;
 
 /// Rows a pass over several groups holds: its buffers are a few doubles a
-/// row, and a group's rows in it are the more the longer it is.
-const PASS: usize = 1 << 18;
+/// row, and a group's rows in it are the more the longer it is; this keeps
+/// the scratch of a core about 2 MB (3 MB at 10,000 groups), where 2^18 rows
+/// held 7 to 20 MB, and the groups' rows are run in segments of a block.
+const PASS: usize = 1 << 16;
 
 /// What the plain loop keeps between blocks, none of it state.
 #[derive(Debug, Clone, Default)]
@@ -425,6 +427,29 @@ impl Windows {
         self.derived.taken
     }
 
+    /// Bytes the plain loop's buffers hold: what the loop costs in memory.
+    #[doc(hidden)]
+    pub fn plain_scratch_bytes(&self) -> usize {
+        let d = &self.derived;
+        let b = &d.bufs;
+        let m = &d.multi;
+        let f = std::mem::size_of::<f64>();
+        (b.tau.capacity() + b.f.capacity() + b.m.capacity() + b.rate.capacity() + b.off.capacity())
+            * f
+            + b.new.capacity()
+            + b.seq.capacity() * 8
+            + b.pending.capacity() * std::mem::size_of::<usize>()
+            + m.rows.capacity() * std::mem::size_of::<RowRec>()
+            + (m.order.capacity()
+                + m.starts.capacity()
+                + m.fill.capacity()
+                + m.mark.capacity()
+                + m.slot.capacity())
+                * 4
+            + m.touched.capacity() * std::mem::size_of::<Touch>()
+            + m.xg.iter().map(|v| v.capacity() * f).sum::<usize>()
+    }
+
     /// Whether [`Windows::push_plain`] could take a row now: a plain core
     /// (or one not yet worked out) with the plain loop on. A caller asks this
     /// before it builds the rows.
@@ -800,50 +825,53 @@ impl Windows {
         xg.resize_with(n_inputs, Vec::new);
         for t_slot in 0..touched {
             let (lo, hi) = (m.starts[t_slot] as usize, m.starts[t_slot + 1] as usize);
-            let idx = &m.order[lo..hi];
-            let len_g = hi - lo;
             let g = &mut groups[m.touched[t_slot].gi];
-            bufs.tau.clear();
-            bufs.new.clear();
-            bufs.off.clear();
-            bufs.seq.clear();
-            bufs.tau.extend(idx.iter().map(|&j| m.rows[j as usize].tau));
-            bufs.new.extend(idx.iter().map(|&j| m.rows[j as usize].new));
-            bufs.off.extend(idx.iter().map(|&j| m.rows[j as usize].off));
-            bufs.seq.extend(idx.iter().map(|&j| seq0 + u64::from(j)));
-            let news = bufs.new.iter().filter(|&&n| n).count();
-            for (i, col) in xg.iter_mut().enumerate() {
-                col.clear();
-                col.extend(idx.iter().map(|&j| rows.values[i][at + j as usize]));
-            }
-            let final_from = if news == 0 {
-                0
-            } else {
-                bufs.new.iter().rposition(|&n| n).unwrap_or(0)
-            };
-            // The rows of the stamp the group's run ends in wait for the next.
-            if n_wait > 0 {
-                for r in final_from..len_g {
-                    parts.held_meta[(bufs.seq[r] - parts.held_first) as usize].open = n_wait;
+            // A group's rows in segments, as the one-group loop takes its blocks:
+            // its buffers stay a block's.
+            for idx in m.order[lo..hi].chunks(BLOCK) {
+                let len_g = idx.len();
+                bufs.tau.clear();
+                bufs.new.clear();
+                bufs.off.clear();
+                bufs.seq.clear();
+                bufs.tau.extend(idx.iter().map(|&j| m.rows[j as usize].tau));
+                bufs.new.extend(idx.iter().map(|&j| m.rows[j as usize].new));
+                bufs.off.extend(idx.iter().map(|&j| m.rows[j as usize].off));
+                bufs.seq.extend(idx.iter().map(|&j| seq0 + u64::from(j)));
+                let news = bufs.new.iter().filter(|&&n| n).count();
+                for (i, col) in xg.iter_mut().enumerate() {
+                    col.clear();
+                    col.extend(idx.iter().map(|&j| rows.values[i][at + j as usize]));
                 }
+                let final_from = if news == 0 {
+                    0
+                } else {
+                    bufs.new.iter().rposition(|&n| n).unwrap_or(0)
+                };
+                // The rows of the stamp the group's run ends in wait for the next.
+                if n_wait > 0 {
+                    for r in final_from..len_g {
+                        parts.held_meta[(bufs.seq[r] - parts.held_first) as usize].open = n_wait;
+                    }
+                }
+                let last = idx[len_g - 1] as usize;
+                let shape = Shape {
+                    len: len_g,
+                    news,
+                    final_from,
+                    g_tau: g.tau,
+                    g_off: g.off,
+                    form: g.form,
+                    last_now: rows.clock[at + last],
+                    last_session: rows.session.map(|s| s[at + last]),
+                };
+                let cols = Cols {
+                    whole: &xg,
+                    from: 0,
+                    len: len_g,
+                };
+                run_group(&mut parts, g, cols, &mut bufs, &shape);
             }
-            let last = idx[len_g - 1] as usize;
-            let shape = Shape {
-                len: len_g,
-                news,
-                final_from,
-                g_tau: g.tau,
-                g_off: g.off,
-                form: g.form,
-                last_now: rows.clock[at + last],
-                last_session: rows.session.map(|s| s[at + last]),
-            };
-            let cols = Cols {
-                whole: &xg,
-                from: 0,
-                len: len_g,
-            };
-            run_group(&mut parts, g, cols, &mut bufs, &shape);
         }
         m.xg = xg;
 

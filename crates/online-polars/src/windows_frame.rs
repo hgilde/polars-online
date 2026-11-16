@@ -1264,6 +1264,12 @@ impl WindowsRun {
         self.core.plain_rows()
     }
 
+    /// Bytes the core's plain-run loop keeps between rows, for a measurement.
+    #[doc(hidden)]
+    pub fn plain_scratch_bytes(&self) -> usize {
+        self.core.plain_scratch_bytes()
+    }
+
     pub fn schema(&self) -> Schema {
         self.k.output.clone()
     }

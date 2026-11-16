@@ -192,6 +192,7 @@ fn main() {
     let mut best = f64::MAX;
     let mut digest = 0u64;
     let mut plain_rows = 0u64;
+    let mut scratch_kb = 0usize;
     for rep in 0..reps {
         let mut run = WindowsRun::new(config.clone(), frames[0].schema()).expect("run");
         if plain == "0" {
@@ -221,6 +222,7 @@ fn main() {
             }
             digest = h;
             plain_rows = run.plain_rows();
+            scratch_kb = run.plain_scratch_bytes() / 1024;
             // the saved state's bytes too
             let bytes = run.save_bytes().expect("save");
             let mut sh = 0xcbf29ce484222325u64;
@@ -231,7 +233,7 @@ fn main() {
         }
     }
     println!(
-        "RESULT kind={kind} ws={ws} ops={ops} opset={opset} groups={groups} rows={rows} best={best:.4}s ns_row={:.1} digest={digest:016x} plain_rows={plain_rows}",
+        "RESULT kind={kind} ws={ws} ops={ops} opset={opset} groups={groups} rows={rows} best={best:.4}s ns_row={:.1} digest={digest:016x} plain_rows={plain_rows} scratch_kb={scratch_kb}",
         best * 1e9 / rows as f64
     );
 }
