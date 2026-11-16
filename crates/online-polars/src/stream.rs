@@ -3452,8 +3452,7 @@ impl Stream {
             // A row the schedule accepted has every feature usable, for any
             // model but an `audit`, which accepts every row.
             let checked = !spec.model.reads_every_row();
-            summary.feed_rows_over(
-                DataSummary::ACROSS_RUN_FROM,
+            summary.feed_rows(
                 plans.iter().filter(|p| p.direct()).map(|p| Fed {
                     i: p.i,
                     usable: checked && p.accept,
