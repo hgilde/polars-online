@@ -680,6 +680,10 @@ pub struct CorrChange {
 struct Work {
     report: Vec<f64>,
     spare: Vec<f64>,
+    /// The rows a `monitor` span's close let go, for the next span's rows
+    /// to be copied into: a span of rows is allocated once, not at each of
+    /// its rows.
+    rows: Vec<Vec<f64>>,
     stats: Vec<f64>,
     order: Vec<usize>,
     /// The pooled rows, `d` numbers to a row, one after another, in the
@@ -700,7 +704,12 @@ impl Work {
     /// arm64), and gave a one-column ring's row room for four (task 345).
     fn ring_row(&mut self, r: &[f64]) -> Vec<f64> {
         if self.spare.capacity() < r.len() {
-            return r.to_vec();
+            let Some(mut row) = self.rows.pop() else {
+                return r.to_vec();
+            };
+            row.clear();
+            row.extend_from_slice(r);
+            return row;
         }
         let mut row = std::mem::take(&mut self.spare);
         row.clear();
@@ -1831,7 +1840,8 @@ impl crate::OnlineModel for CorrChange {
                 if self.ring.len() >= self.cfg.span_rows {
                     // Spans are disjoint by construction: the next row
                     // starts a new one, so `reset` has nothing to add here.
-                    self.ring.clear();
+                    // The span's rows are kept for the next span's.
+                    self.work.rows.extend(self.ring.drain(..));
                 }
             }
             CorrChangeKind::Window => {
@@ -1968,6 +1978,98 @@ impl crate::OnlineModel for CorrChange {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `monitor` kind's span closes into `rows`, and the next span's
+    /// rows are copied from there (the allocation test in `online-bench`
+    /// holds the count; mutation testing does not run it, so the buffers'
+    /// identity is held here): a row takes the last one in the list when the
+    /// spare is short, keeping the list's others, and allocates a row of its
+    /// own only where the list is empty.
+    #[test]
+    fn ring_row_takes_a_row_a_closed_span_let_go_when_the_spare_is_short() {
+        let r = [1.0, 2.0, 3.0];
+        let (first, second) = (vec![9.0; 3], vec![8.0; 5]);
+        let at = second.as_ptr();
+        let mut work = Work {
+            rows: vec![first, second],
+            ..Work::default()
+        };
+        let row = work.ring_row(&r);
+        assert_eq!(row, r);
+        assert_eq!(row.as_ptr(), at, "the list's last row is the row");
+        assert_eq!(work.rows.len(), 1, "one row taken");
+        let row = work.ring_row(&r);
+        assert_eq!(row, r);
+        assert!(work.rows.is_empty());
+        // Nothing to take: a row of its own, of the row's length.
+        let row = work.ring_row(&r);
+        assert_eq!((row.as_slice(), row.capacity()), (&r[..], r.len()));
+        // The spare is taken before the list.
+        let mut work = Work {
+            spare: Vec::with_capacity(3),
+            rows: vec![vec![0.0; 3]],
+            ..Work::default()
+        };
+        let at = work.spare.as_ptr();
+        let row = work.ring_row(&r);
+        assert_eq!(row.as_ptr(), at);
+        assert_eq!(work.rows.len(), 1);
+    }
+
+    /// A `monitor` span's close puts its rows in the list, whole, and a
+    /// model that keeps them is the model that does not, row by row: its
+    /// state (which holds no spare), its reports and its saved bytes.
+    #[test]
+    fn a_monitor_that_keeps_its_spans_rows_is_one_that_does_not() {
+        for (d, span, scalar) in [(2usize, 17usize, false), (4, 30, false), (3, 25, true)] {
+            let mut c = CorrChangeCfg {
+                span_rows: span,
+                ..cfg(d, CorrChangeKind::Monitor)
+            };
+            c.scalar = scalar;
+            let (mut kept, mut fresh) = (
+                CorrChange::new(c.clone()).unwrap(),
+                CorrChange::new(c).unwrap(),
+            );
+            let mut seed = 11u64;
+            let mut step = crate::Step::default();
+            let mut other = crate::Step::default();
+            let mut closed = false;
+            for i in 0..5 * span + 3 {
+                let x: Vec<f64> = (0..d)
+                    .map(|j| {
+                        seed = seed
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407);
+                        ((seed >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0 + j as f64 * 0.1
+                    })
+                    .collect();
+                // Every second row of zero weight and every seventh of a gap.
+                let (dt, w) = (
+                    if i % 7 == 6 { 3.0 } else { 1.0 },
+                    if i % 2 == 1 { 0.0 } else { 1.0 },
+                );
+                fresh.work.rows.clear();
+                fresh.work.spare = Vec::new();
+                kept.step_into(&x, &[], dt, w, &mut step);
+                fresh.step_into(&x, &[], dt, w, &mut other);
+                let bits = |s: &crate::Step| s.pred.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&step), bits(&other), "d {d} row {i}");
+                // Bytes, not `==`: a NaN is not itself.
+                assert_eq!(
+                    rmp_serde::to_vec(&kept.state()).unwrap(),
+                    rmp_serde::to_vec(&fresh.state()).unwrap(),
+                    "d {d} row {i}"
+                );
+                closed |= !kept.work.rows.is_empty();
+            }
+            assert!(closed, "d {d}: a span closed, its rows kept");
+            assert_eq!(
+                rmp_serde::to_vec(&kept.state()).unwrap(),
+                rmp_serde::to_vec(&fresh.state()).unwrap()
+            );
+        }
+    }
 
     /// The window kind's spare row is a ring row the window let go, so its
     /// room is exactly the next row's length: `ring_row` reuses it there,
