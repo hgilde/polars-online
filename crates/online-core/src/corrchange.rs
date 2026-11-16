@@ -740,6 +740,23 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
+/// A uniform draw below `n` (Lemire 2019): the high word of `x·n`, with a
+/// draw whose low word falls in the biased sliver redrawn, so it is exactly
+/// uniform; the one division is paid only in that sliver, which is `n / 2^64`
+/// of the draws.
+#[inline]
+fn below(rng: &mut SplitMix64, n: u64) -> u64 {
+    debug_assert!(n > 0);
+    let mut m = u128::from(rng.next_u64()) * u128::from(n);
+    if (m as u64) < n {
+        let threshold = n.wrapping_neg() % n;
+        while (m as u64) < threshold {
+            m = u128::from(rng.next_u64()) * u128::from(n);
+        }
+    }
+    (m >> 64) as u64
+}
+
 impl CorrChange {
     pub fn new(cfg: CorrChangeCfg) -> Result<Self, String> {
         cfg.validate()?;
@@ -1611,7 +1628,7 @@ impl CorrChange {
             // Fisher-Yates over the blocks, from the state's own generator
             // so the draws are a function of the data alone.
             for i in (1..nblocks).rev() {
-                let j = (self.rng.next_u64() % (i as u64 + 1)) as usize;
+                let j = below(&mut self.rng, i as u64 + 1) as usize;
                 order.swap(i, j);
             }
             shuffled.clear();
@@ -3091,7 +3108,7 @@ mod tests {
         let mut order: Vec<usize> = (0..nblocks).collect();
         for _ in 0..m.cfg.n_perm {
             for i in (1..nblocks).rev() {
-                let j = (m.rng.next_u64() % (i as u64 + 1)) as usize;
+                let j = below(&mut m.rng, i as u64 + 1) as usize;
                 order.swap(i, j);
             }
             let mut shuffled: Vec<Vec<f64>> = Vec::new();
