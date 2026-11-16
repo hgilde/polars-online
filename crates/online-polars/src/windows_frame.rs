@@ -3072,10 +3072,7 @@ mod tests {
         };
         let shapes: Vec<(&str, Vec<String>)> = vec![
             ("one", vec![op("ewm_mean", "x", "")]),
-            (
-                "drop",
-                vec![op("ewm_mean", "x", r#", "partial": "drop""#)],
-            ),
+            ("drop", vec![op("ewm_mean", "x", r#", "partial": "drop""#)]),
             (
                 "aliased, two inputs, one shared",
                 vec![
@@ -3084,7 +3081,10 @@ mod tests {
                     op("ewm_sum", "x", ""),
                 ],
             ),
-            ("no window", vec![r#"["ewm_mean", ["col", "y"], {"half_life": 1.5}]"#.into()]),
+            (
+                "no window",
+                vec![r#"["ewm_mean", ["col", "y"], {"half_life": 1.5}]"#.into()],
+            ),
             ("forward", vec![op("rewm_sum", "x", "")]),
             (
                 "one not bare",
@@ -3183,7 +3183,11 @@ mod tests {
                 let rows: usize = lazy.iter().map(DataFrame::height).sum();
                 assert!(rows > 30, "{what}, {how}: {rows} rows out");
                 assert_eq!(bits(&fast), bits(&lazy), "{what}, {how}");
-                let names: Vec<&str> = fast[0].get_column_names().iter().map(|n| n.as_str()).collect();
+                let names: Vec<&str> = fast[0]
+                    .get_column_names()
+                    .iter()
+                    .map(|n| n.as_str())
+                    .collect();
                 assert!(names.contains(&"f0") && names.contains(&"t"), "{names:?}");
             }
         }
@@ -3199,13 +3203,12 @@ mod tests {
             vec![1.5, -0.0, 3.25],
             vec![f64::NAN, f64::NAN],
             vec![f64::NAN, 2.0, f64::NAN, -4.5, f64::NAN],
-            (0..130).map(|i| if i % 3 == 0 { f64::NAN } else { f64::from(i) }).collect(),
+            (0..130)
+                .map(|i| if i % 3 == 0 { f64::NAN } else { f64::from(i) })
+                .collect(),
         ] {
             let column = nullable_column("v", values.clone());
-            let want: Float64Chunked = values
-                .iter()
-                .map(|&x| (!x.is_nan()).then_some(x))
-                .collect();
+            let want: Float64Chunked = values.iter().map(|&x| (!x.is_nan()).then_some(x)).collect();
             let got = column.f64().unwrap();
             assert_eq!(got.name().as_str(), "v");
             assert_eq!(got.null_count(), want.null_count());
@@ -3214,8 +3217,14 @@ mod tests {
                 want.iter().map(|v| v.map(f64::to_bits)).collect::<Vec<_>>()
             );
             // The slot under a null reads 0, as the options' column leaves it.
-            let raw: Vec<u64> = got.downcast_iter().flat_map(|a| a.values().iter().map(|x| x.to_bits())).collect();
-            let raw_want: Vec<u64> = want.downcast_iter().flat_map(|a| a.values().iter().map(|x| x.to_bits())).collect();
+            let raw: Vec<u64> = got
+                .downcast_iter()
+                .flat_map(|a| a.values().iter().map(|x| x.to_bits()))
+                .collect();
+            let raw_want: Vec<u64> = want
+                .downcast_iter()
+                .flat_map(|a| a.values().iter().map(|x| x.to_bits()))
+                .collect();
             assert_eq!(raw, raw_want);
         }
     }

@@ -6671,7 +6671,10 @@ mod tests {
         assert_eq!((q.front.len(), q.back.len()), (rows, 0));
         assert!(q.back.vals.is_empty() && q.back.sums.is_empty());
         // The oldest row is on top: the newest at the bottom.
-        assert_eq!((q.front.seq[0], q.front.seq[rows - 1]), (rows as u64 - 1, 0));
+        assert_eq!(
+            (q.front.seq[0], q.front.seq[rows - 1]),
+            (rows as u64 - 1, 0)
+        );
         // Room for the whole stack in every arena, made at once (a row-by-row
         // growth would have doubled past it, to 64 for 50 rows).
         let n = rows;
