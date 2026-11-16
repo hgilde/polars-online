@@ -208,11 +208,6 @@ returns.
   integer clock runs 4 times as fast and over a row count 3.5 times (2.0-2.4
   and 1.1-1.6 times through the wheel), and restarts at 100 to 1,000 keys
   1.4-1.5 times. Outputs and saved state unchanged to the bit.
-- `rls` keeps its square-root factor as a packed upper triangle: half the
-  memory (162 KB less a model at 200 features), and with many groups,
-  where the factor no longer fits in cache, 1.07-1.32 times as fast a row
-  at 8 to 200 features on arm64; a single group is unchanged. Outputs and
-  saved state unchanged to the bit.
 - The window operators run a plain stretch of one group's rows (stamps
   that step forward or tie, inside the gap cap and the session) through a
   block loop: `ewm_mean` 2.3 times as fast (64.7 to 28.5 ns a row), four
