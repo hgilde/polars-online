@@ -602,7 +602,7 @@ impl DataSummary {
     /// The fewest rows a run has for the stream to step them across the
     /// columns ([`Self::feed_rows_over`]): the copies out and back cost
     /// about what the loop saves over 20 to 30 rows, at 20 to 50 features.
-    pub(crate) const ACROSS_RUN_FROM: usize = 32;
+    pub(crate) const ACROSS_RUN_FROM: usize = 0;
 
     /// What the clock schedule found at the row just fed.
     #[inline]
