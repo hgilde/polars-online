@@ -1719,7 +1719,7 @@ impl Bocpd {
         mix.clear();
         mix.extend((0..r).map(|i| {
             if pre[i] > 0.0 {
-                // Scratch variant 426 (c): `ln(exp(l - z))` as `l - z`.
+                // `ln(exp(l - z))` as `l - z`.
                 (joint[i] - zj) + logpi[i]
             } else {
                 f64::NEG_INFINITY

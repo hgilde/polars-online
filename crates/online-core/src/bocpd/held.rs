@@ -217,7 +217,7 @@ impl LengthTerms {
 
     /// The diagonal form's per-length constants with the product split: the
     /// gamma difference and `ln(pi (kn+1)/kn)`, held by `nu`'s bits (a table
-    /// begun with `with_pi`). Scratch variant 426 (c).
+    /// begun with `with_pi`). Task 426 (c3).
     #[inline]
     pub(super) fn gamma_and_ln_c(&mut self, nu: f64, kn: f64) -> (f64, f64) {
         let ln_c = |kn: f64| (std::f64::consts::PI * (kn + 1.0) / kn).ln();
@@ -227,8 +227,16 @@ impl LengthTerms {
         let bits = nu.to_bits();
         let mut at = self.find(bits);
         if self.slots[at].key == bits {
+            #[cfg(test)]
+            {
+                self.hits += 1;
+            }
             let e = self.slots[at];
             return (e.gamma, e.ln_pi);
+        }
+        #[cfg(test)]
+        {
+            self.misses += 1;
         }
         if 2 * (self.filled + 1) > self.slots.len() {
             self.empty();
