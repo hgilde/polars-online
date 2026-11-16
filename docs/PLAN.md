@@ -76,7 +76,7 @@ input order; no allocation in the hot path after warmup (preallocate buffers in 
 ## 3. Common parameters (all entry points, same names)
 
 | param | type | notes |
-    |---|---|---|
+|---|---|---|
 | `targets` | list[str] | ≥1; shared X'X, per-target X'y / coefficients |
 | `features` | list[str] | f64 columns |
 | `add_intercept` | bool | default true |
