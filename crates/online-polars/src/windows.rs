@@ -514,9 +514,9 @@ impl KernelDef {
 }
 
 /// The distances, in half-lives, between which a held mass is taken from the
-/// discount's `exp2` instead of `exp_m1`: `1 - d` of about 1e-8 up to 1e-2.
-const HELD_MASS_FROM: f64 = 1.44e-8;
-const HELD_MASS_BELOW: f64 = 1e-2;
+/// discount's `exp2` instead of `exp_m1`: from a hundredth of a half-life up.
+const HELD_MASS_FROM: f64 = 1e-2;
+const HELD_MASS_BELOW: f64 = f64::INFINITY;
 
 /// A queue's last discount and last mass, each with the bits of the distance
 /// it is of. Never written to a state and never compared; a queue read back
