@@ -155,6 +155,17 @@ returns.
   branched around it): the 20-feature model 1.4 times as fast, 1.6 at 50,
   1.7 for `lag_corr` with 5 lags, about 1.2 through the bank. Outputs
   unchanged to the bit.
+- `kalman` forms `P z` as four independent sums at a time and updates
+  each row of `P` along its own memory: 1.37 times as fast per row at 20
+  features, 1.29 with a revert. Outputs and saved state unchanged to the
+  bit.
+- `seqtest`, `kmeans` and `micro` choose with selects where they branched
+  on data: `kmeans` 1.12 times as fast at k=4 and 1.15 at k=20, `micro`
+  1.12, `seqtest` 1.06. Outputs and saved state unchanged to the bit.
+- `audit`'s quantile digest sorts only the values buffered since its last
+  fold and merges them into its sorted centroids, rather than re-sorting
+  everything: about 5% faster over 20 columns. Outputs and saved state
+  unchanged to the bit.
 
 ## [1.5.0] — 2026-11-10
 
