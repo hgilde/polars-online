@@ -32,6 +32,9 @@ struct Breaks {
     cap: f64,
     session: f64,
     back: f64,
+    /// A key of its own that a row has now and then: it falls silent past the
+    /// cap between its rows, which cuts its windows while the stream goes on.
+    rare: f64,
 }
 
 struct Data {
@@ -76,7 +79,11 @@ fn data(n: usize, seed: u64, b: Breaks, keys: u32) -> Data {
         d.ts_f.push(((t * 1e9) as i64) as f64 / 1e9);
         d.x.push((r.next() >= b.null).then_some(m));
         d.y.push((r.next() >= b.null).then_some(m * 0.5 + r.next()));
-        d.g.push((r.next() * f64::from(keys)) as i64);
+        d.g.push(if r.next() < b.rare {
+            i64::from(keys)
+        } else {
+            (r.next() * f64::from(keys)) as i64
+        });
         d.s.push(sess);
     }
     d
@@ -295,7 +302,7 @@ struct Case {
 
 fn cases() -> Vec<Case> {
     let mut cases = vec![];
-    let regimes: [(&str, Breaks); 9] = [
+    let regimes: [(&str, Breaks); 10] = [
         ("plain", Breaks::default()),
         (
             "nulls",
@@ -348,6 +355,13 @@ fn cases() -> Vec<Case> {
             },
         ),
         (
+            "a silent key",
+            Breaks {
+                rare: 0.004,
+                ..Breaks::default()
+            },
+        ),
+        (
             "everything",
             Breaks {
                 null: 0.004,
@@ -355,13 +369,14 @@ fn cases() -> Vec<Case> {
                 cap: 0.002,
                 session: 0.002,
                 back: 0.001,
+                rare: 0.003,
             },
         ),
     ];
     for float_clock in [false, true] {
         for flavor in 0..10 {
             for (rname, breaks) in regimes {
-                for (grouped, keys) in [(false, 1), (true, 1), (true, 3)] {
+                for (grouped, keys) in [(false, 1), (true, 1), (true, 3), (true, 12)] {
                     let session = breaks.session > 0.0;
                     let mut config = json!({
                         "formulas": formulas(float_clock, flavor),
@@ -389,10 +404,13 @@ fn cases() -> Vec<Case> {
                         session,
                         breaks,
                         keys,
-                        engages: flavor != 7 && keys == 1,
+                        engages: flavor != 7,
                         essential: !float_clock
-                            && keys == 1
-                            && matches!(rname, "plain" | "everything" | "many nulls and ties")
+                            && matches!(keys, 1 | 12)
+                            && matches!(
+                                rname,
+                                "plain" | "everything" | "many nulls and ties" | "a silent key"
+                            )
                             && matches!(flavor, 0 | 1 | 2 | 5 | 6 | 7 | 8 | 9),
                     });
                 }

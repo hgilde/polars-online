@@ -1493,8 +1493,12 @@ pub struct Windows {
     groups: Vec<Group>,
     /// Group keys, as text, to their index in `groups`; the null key apart.
     #[serde(with = "sorted_map")]
-    index: HashMap<String, usize>,
+    index: KeyMap,
     null_group: Option<usize>,
+    /// Integer group keys to their groups, beside `index`: what a chunk of
+    /// integer keys is looked up in, never saved.
+    #[serde(skip)]
+    int_groups: IntGroups,
     /// The stream's own clock, in input order across groups.
     shared: ClockState,
     /// Whether the rows carry a group column: then a session is each
@@ -1531,18 +1535,22 @@ pub struct Windows {
 /// hasher.
 mod sorted_map {
     use std::collections::HashMap;
+    use std::hash::BuildHasher;
 
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    pub fn serialize<S: Serializer>(m: &HashMap<String, usize>, s: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer, H>(
+        m: &HashMap<String, usize, H>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
         let mut v: Vec<(&String, &usize)> = m.iter().collect();
         v.sort();
         v.serialize(s)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(
+    pub fn deserialize<'de, D: Deserializer<'de>, H: BuildHasher + Default>(
         d: D,
-    ) -> Result<HashMap<String, usize>, D::Error> {
+    ) -> Result<HashMap<String, usize, H>, D::Error> {
         Ok(Vec::<(String, usize)>::deserialize(d)?
             .into_iter()
             .collect())
@@ -1853,10 +1861,17 @@ macro_rules! by_width {
 }
 
 // After `by_width!`, which it uses.
+mod keys;
 mod plain;
 
+use keys::IntGroups;
+pub(crate) use keys::{ChunkKeys, session_hashes};
 use plain::Derived;
 pub(crate) use plain::PlainRows;
+
+/// Group keys, as text, to their groups: hashed with a fixed, fast hasher,
+/// which the saved state never sees ([`sorted_map`]).
+type KeyMap = HashMap<String, usize, polars_utils::aliases::PlFixedStateQuality>;
 
 /// The rows not yet emitted, borrowed apart from the groups.
 struct Held<'a> {
@@ -1931,8 +1946,9 @@ impl Windows {
             clock_cfg,
             members: Arc::new(members),
             groups: Vec::new(),
-            index: HashMap::new(),
+            index: KeyMap::default(),
             null_group: None,
+            int_groups: IntGroups::default(),
             shared: ClockState::new(),
             grouped: false,
             head: None,

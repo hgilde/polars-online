@@ -71,3 +71,24 @@ fn a_later_block_of_another_key_is_that_keys_not_the_first_rows() {
         );
     }
 }
+
+#[test]
+fn a_group_with_thousands_of_rows_in_one_pass_is_taken_in_segments_to_the_bit() {
+    // Two keys in runs of 3,000 rows, then interleaved: a pass over both groups
+    // holds a group's rows by the thousand, which are run in segments.
+    let keys: Vec<i64> = (0..24000)
+        .map(|i| if i < 18000 { (i / 3000) % 2 } else { i % 2 })
+        .collect();
+    for chunks in [vec![24000], vec![5000, 7000, 12000], vec![1000]] {
+        let general = run(false, &keys, &chunks);
+        let plain = run(true, &keys, &chunks);
+        assert_eq!(plain.len(), general.len());
+        for (i, (p, g)) in plain.iter().zip(&general).enumerate() {
+            assert_eq!(
+                p.map(f64::to_bits),
+                g.map(f64::to_bits),
+                "chunks {chunks:?}, row {i}: {p:?} against {g:?}"
+            );
+        }
+    }
+}

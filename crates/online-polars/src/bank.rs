@@ -227,11 +227,13 @@ fn default_format_version() -> u32 {
 }
 
 /// Stable, platform-independent 64-bit hash for session-change detection.
-fn fnv1a(bytes: &[u8]) -> u64 {
+const fn fnv1a(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
-    for &b in bytes {
-        h ^= u64::from(b);
+    let mut i = 0;
+    while i < bytes.len() {
+        h ^= bytes[i] as u64;
         h = h.wrapping_mul(0x100000001b3);
+        i += 1;
     }
     h
 }
@@ -240,8 +242,10 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// sentinel string so that saved states resume with no spurious session change
 /// -- `prev_session` stores these hashes, and a resumed stream compares its
 /// next row against the stored value.
+const NULL_SESSION_HASH: u64 = fnv1a(b"\0<null>");
+
 fn null_session_hash() -> u64 {
-    fnv1a(b"\0<null>")
+    NULL_SESSION_HASH
 }
 
 /// Session values are compared by 64-bit hash (`ClockState.prev_session`). A
@@ -253,11 +257,36 @@ fn null_session_hash() -> u64 {
 pub(crate) fn session_hash(v: Option<&str>) -> u64 {
     match v {
         None => null_session_hash(),
-        Some(s) => {
-            let h = fnv1a(s.as_bytes());
-            if h == null_session_hash() { h ^ 1 } else { h }
+        Some(s) => nudged(fnv1a(s.as_bytes())),
+    }
+}
+
+/// [`session_hash`] of an integer's decimal text (what a cast to String
+/// gives), the digits written to the stack: no cast of the column and no
+/// allocation a row.
+pub(crate) fn session_hash_int(v: i64) -> u64 {
+    let mut buf = [0u8; 20];
+    let mut at = buf.len();
+    let mut u = v.unsigned_abs();
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (u % 10) as u8;
+        u /= 10;
+        if u == 0 {
+            break;
         }
     }
+    if v < 0 {
+        at -= 1;
+        buf[at] = b'-';
+    }
+    nudged(fnv1a(&buf[at..]))
+}
+
+/// A hash that is not the null session's.
+#[inline]
+fn nudged(h: u64) -> u64 {
+    if h == NULL_SESSION_HASH { h ^ 1 } else { h }
 }
 
 /// Columns extracted once per (spec, chunk).

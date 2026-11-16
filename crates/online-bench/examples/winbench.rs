@@ -10,7 +10,10 @@
 //! puts a 400 s gap every thousand rows, past the 5 minute cap), WB_CLOSED=right|left|both|none, WB_NULLS=fraction of null
 //! inputs, WB_TIES=fraction of repeated stamps, WB_SESSION=rows per session (0 none, a
 //! session column with no session_gap), WB_RESTART=1 (restart_after_step_back set, no
-//! step back in the data).
+//! step back in the data). Task 431: WB_KEY=int|str|cat (the group column's type, default int),
+//! WB_SESSKEY=int|str|cat (the session column's), WB_RUN=n (the group stays the same for n rows at a time),
+//! WB_CAPSEC=seconds (the gap_cap, default 300: with 10,000 keys at 0.5 s a row each key is silent
+//! for 5,000 s on average, so every row of it is past the cap; a longer cap keeps the groups alive).
 use std::time::Instant;
 
 use online_polars::{WindowsConfig, WindowsRun};
@@ -31,6 +34,21 @@ fn env(k: &str, d: &str) -> String {
     std::env::var(k).unwrap_or_else(|_| d.to_string())
 }
 
+/// A key column of the given kind from integers: as they are, as their text, or categorical.
+fn key_column(name: &str, v: &[i64], kind: &str) -> Column {
+    let ints = Column::new(name.into(), v);
+    match kind {
+        "int" => ints,
+        "str" => ints.cast(&DataType::String).unwrap(),
+        "cat" => ints
+            .cast(&DataType::String)
+            .unwrap()
+            .cast(&DataType::from_categories(Categories::global()))
+            .unwrap(),
+        k => panic!("WB_KEY {k}"),
+    }
+}
+
 fn main() {
     let kind = env("WB_KIND", "dt");
     let ws = env("WB_WS", "none");
@@ -47,6 +65,10 @@ fn main() {
     let ties: f64 = env("WB_TIES", "0").parse().unwrap();
     let session_rows: usize = env("WB_SESSION", "0").parse().unwrap();
     let restart = env("WB_RESTART", "0") == "1";
+    let key_kind = env("WB_KEY", "int");
+    let sess_kind = env("WB_SESSKEY", "int");
+    let run_len: usize = env("WB_RUN", "1").parse().unwrap();
+    let cap_sec: f64 = env("WB_CAPSEC", "300").parse().unwrap();
     // WB_PLAIN=0 switches the core's plain-run loop off (task 429), to time what it saves.
     let plain = env("WB_PLAIN", "1");
     let temporal = kind == "dt";
@@ -84,7 +106,11 @@ fn main() {
     let mut config = json!({"formulas": formulas});
     if kind != "none" {
         config["clock"] = json!("ts");
-        config["gap_cap"] = if temporal { json!("5m") } else { json!(300.0) };
+        config["gap_cap"] = if temporal {
+            json!(format!("{}s", cap_sec as u64))
+        } else {
+            json!(cap_sec)
+        };
         if restart {
             config["restart_after_step_back"] = if temporal { json!("1s") } else { json!(1.0) };
         }
@@ -106,6 +132,7 @@ fn main() {
     let mut g = Vec::with_capacity(rows);
     let mut sess = Vec::with_capacity(rows);
     let mut r2 = Rng(0xD1B54A32D192ED03);
+    let mut cur_g = 0i64;
     for i in 0..rows {
         let u = r.next();
         let step = match gap.as_str() {
@@ -129,11 +156,14 @@ fn main() {
         } else {
             Some(m)
         });
-        g.push(if groups > 0 {
-            (r.next() * groups as f64) as i64
-        } else {
-            0
-        });
+        if i % run_len.max(1) == 0 {
+            cur_g = if groups > 0 {
+                (r.next() * groups as f64) as i64
+            } else {
+                0
+            };
+        }
+        g.push(cur_g);
     }
     let mut frames = Vec::new();
     let mut at = 0;
@@ -151,10 +181,10 @@ fn main() {
         }
         cols.push(Column::new("mid".into(), &mid[at..to]));
         if groups > 0 {
-            cols.push(Column::new("g".into(), &g[at..to]));
+            cols.push(key_column("g", &g[at..to], &key_kind));
         }
         if session_rows > 0 {
-            cols.push(Column::new("s".into(), &sess[at..to]));
+            cols.push(key_column("s", &sess[at..to], &sess_kind));
         }
         frames.push(DataFrame::new_infer_height(cols).unwrap());
         at = to;
@@ -162,6 +192,7 @@ fn main() {
     let mut best = f64::MAX;
     let mut digest = 0u64;
     let mut plain_rows = 0u64;
+    let mut scratch_kb = 0usize;
     for rep in 0..reps {
         let mut run = WindowsRun::new(config.clone(), frames[0].schema()).expect("run");
         if plain == "0" {
@@ -191,6 +222,7 @@ fn main() {
             }
             digest = h;
             plain_rows = run.plain_rows();
+            scratch_kb = run.plain_scratch_bytes() / 1024;
             // the saved state's bytes too
             let bytes = run.save_bytes().expect("save");
             let mut sh = 0xcbf29ce484222325u64;
@@ -201,7 +233,7 @@ fn main() {
         }
     }
     println!(
-        "RESULT kind={kind} ws={ws} ops={ops} opset={opset} groups={groups} rows={rows} best={best:.4}s ns_row={:.1} digest={digest:016x} plain_rows={plain_rows}",
+        "RESULT kind={kind} ws={ws} ops={ops} opset={opset} groups={groups} rows={rows} best={best:.4}s ns_row={:.1} digest={digest:016x} plain_rows={plain_rows} scratch_kb={scratch_kb}",
         best * 1e9 / rows as f64
     );
 }
