@@ -218,7 +218,7 @@ use serde::{Deserialize, Serialize};
 use crate::solve::{FactorWork, QuadWork, SpdFactor};
 
 mod held;
-use held::{HeldBranches, HeldZ, LengthTerms, prune_band, prune_keeps};
+use held::{GaussWork, HeldBranches, HeldPrior, HeldZ, LengthTerms, prune_band, prune_keeps};
 
 /// **Why the reported changepoint probability is `P(r ≤ 1)` and not
 /// `P(r = 0)`.**
@@ -1056,7 +1056,7 @@ struct RunWork {
     sigma: Vec<f64>,
     delta: Vec<f64>,
     quad: QuadWork,
-    factor: Option<Box<FactorWork>>,
+    factor: Option<Box<GaussWork>>,
 }
 
 /// Every field as `derive(Debug)` wrote it before the factor's working
@@ -1334,6 +1334,106 @@ impl Bocpd {
         mu0[i] + run.n / kn * (run.mean[i] - mu0[i])
     }
 
+    /// [`Self::log_predictive`] under the full covariance, its own function
+    /// so the diagonal emission's code is laid out as it was without it.
+    #[inline(never)]
+    fn log_predictive_full(
+        &self,
+        run: &Run,
+        x: &[f64],
+        mu0: &[f64],
+        psi0: &[f64],
+        cache: Option<&mut LengthTerms>,
+        work: &mut RunWork,
+    ) -> Option<(f64, f64)> {
+        let d = self.cfg.n_features;
+        let (k0, nu0) = (self.cfg.prior_kappa, self.cfg.nu0());
+        let kn = k0 + run.n;
+        let nun = nu0 + run.n;
+        let RunWork {
+            mun,
+            sigma,
+            delta,
+            quad,
+            factor,
+        } = work;
+        mun.clear();
+        mun.extend((0..d).map(|i| self.run_mean_at(run, mu0, i)));
+        // `Ψₙ = Ψ₀ + S + (κ₀n/κₙ)(x̄ − μ₀)(x̄ − μ₀)'`, every term centred.
+        // Its lower triangle alone, scaled to `Σ`: the factor reads
+        // nothing else, and nothing else reads `Σ` (task 287). The
+        // strict upper triangle keeps `Ψ₀`'s entries, unread.
+        let dof = nun - d as f64 + 1.0;
+        if dof <= 0.0 {
+            return None;
+        }
+        let scale = (kn + 1.0) / (kn * dof);
+        sigma.clear();
+        sigma.extend_from_slice(psi0);
+        for i in 0..d {
+            for j in 0..=i {
+                let g = k0 * run.n / kn * (run.mean[i] - mu0[i]) * (run.mean[j] - mu0[j]);
+                let psi = sigma[i * d + j] + (run.m2[i * d + j] + g);
+                sigma[i * d + j] = psi * scale;
+            }
+        }
+        // The empty run's `Σ` is the prior's, the same every row: its
+        // factor is held, where `run.n` is 0 (the bits of `Σ` decide
+        // whether it is the held one).
+        let GaussWork {
+            work: factors,
+            held,
+        } = &mut **factor.get_or_insert_with(Box::default);
+        let prior = run.n == 0.0;
+        let own = if prior && held.as_ref().is_some_and(|h| h.is_of(sigma, d)) {
+            None
+        } else {
+            let f = factors.factor(sigma, d)?;
+            if prior {
+                if let Some(old) = held.replace(HeldPrior::new(sigma, d, f)) {
+                    factors.give(old.factor);
+                }
+                None
+            } else {
+                Some(f)
+            }
+        };
+        let f = match &own {
+            Some(f) => f,
+            None => &held.as_ref().expect("held above").factor,
+        };
+        delta.clear();
+        delta.extend(x.iter().zip(mun.iter()).map(|(a, b)| a - b));
+        // A row that is not a number has no density. `step` and
+        // `predict_with` refuse one before it gets here (`OnlineModel`,
+        // task 183); the check stays beside the form, whose clamp once
+        // took a NaN to 0, so the row read as sitting on the mean and
+        // was learned (task 179), and which keeps the NaN now (task 181),
+        // rather than leave it to how `log_sum_exp`'s `f64::max` reads a
+        // NaN density.
+        if delta.iter().any(|v| v.is_nan()) {
+            if let Some(f) = own {
+                factors.give(f);
+            }
+            return None;
+        }
+        // `quad_forms(delta, d, 1)[0]` to the bit, in a kept column.
+        let q = f.quad_form(delta, quad);
+        let df = d as f64;
+        // `(Γ − Γ) − ..` as the expression groups, so the held
+        // difference is the same value, and `ln(dof·π)` the same call
+        // (tasks 250 and 389).
+        let (gammas, ln_pi) = match cache {
+            Some(c) => c.gamma_and_ln_pi(dof, df),
+            None => (gamma_diff(dof, df), (dof * std::f64::consts::PI).ln()),
+        };
+        let base = gammas - 0.5 * df * ln_pi - 0.5 * f.log_det();
+        if let Some(f) = own {
+            factors.give(f);
+        }
+        Some((base - 0.5 * (dof + df) * (1.0 + q / dof).ln(), base))
+    }
+
     /// `(ln π(x), ln π(mode))` for one run: the log posterior predictive of
     /// the row, and of the predictive's own mode, which is what the
     /// `robust` weight is relative to. `mu0` and `psi0` are the prior's
@@ -1353,57 +1453,7 @@ impl Bocpd {
         let kn = k0 + run.n;
         let nun = nu0 + run.n;
         if self.full() {
-            let mun = &mut work.mun;
-            mun.clear();
-            mun.extend((0..d).map(|i| self.run_mean_at(run, mu0, i)));
-            // `Ψₙ = Ψ₀ + S + (κ₀n/κₙ)(x̄ − μ₀)(x̄ − μ₀)'`, every term centred.
-            // Its lower triangle alone, scaled to `Σ`: the factor reads
-            // nothing else, and nothing else reads `Σ` (task 287). The
-            // strict upper triangle keeps `Ψ₀`'s entries, unread.
-            let dof = nun - d as f64 + 1.0;
-            if dof <= 0.0 {
-                return None;
-            }
-            let scale = (kn + 1.0) / (kn * dof);
-            let sigma = &mut work.sigma;
-            sigma.clear();
-            sigma.extend_from_slice(psi0);
-            for i in 0..d {
-                for j in 0..=i {
-                    let g = k0 * run.n / kn * (run.mean[i] - mu0[i]) * (run.mean[j] - mu0[j]);
-                    let psi = sigma[i * d + j] + (run.m2[i * d + j] + g);
-                    sigma[i * d + j] = psi * scale;
-                }
-            }
-            let factors = work.factor.get_or_insert_with(Box::default);
-            let f = factors.factor(sigma, d)?;
-            let delta = &mut work.delta;
-            delta.clear();
-            delta.extend(x.iter().zip(mun.iter()).map(|(a, b)| a - b));
-            // A row that is not a number has no density. `step` and
-            // `predict_with` refuse one before it gets here (`OnlineModel`,
-            // task 183); the check stays beside the form, whose clamp once
-            // took a NaN to 0, so the row read as sitting on the mean and
-            // was learned (task 179), and which keeps the NaN now (task 181),
-            // rather than leave it to how `log_sum_exp`'s `f64::max` reads a
-            // NaN density.
-            if delta.iter().any(|v| v.is_nan()) {
-                factors.give(f);
-                return None;
-            }
-            // `quad_forms(delta, d, 1)[0]` to the bit, in a kept column.
-            let q = f.quad_form(delta, &mut work.quad);
-            let df = d as f64;
-            // `(Γ − Γ) − ..` as the expression groups, so the held
-            // difference is the same value, and `ln(dof·π)` the same call
-            // (tasks 250 and 389).
-            let (gammas, ln_pi) = match cache {
-                Some(c) => c.gamma_and_ln_pi(dof, df),
-                None => (gamma_diff(dof, df), (dof * std::f64::consts::PI).ln()),
-            };
-            let base = gammas - 0.5 * df * ln_pi - 0.5 * f.log_det();
-            factors.give(f);
-            Some((base - 0.5 * (dof + df) * (1.0 + q / dof).ln(), base))
+            self.log_predictive_full(run, x, mu0, psi0, cache, work)
         } else {
             // Per feature, a normal-inverse-gamma: `t_{νₙ}` with scale²
             // `ψₙ(κₙ+1)/(νₙκₙ)`. The features share `νₙ`, so the gamma
@@ -3230,7 +3280,7 @@ mod tests {
             let f = n.normal();
             let x: Vec<f64> = (0..3).map(|_| shift + 0.7 * f + 0.7 * n.normal()).collect();
             fresh.work = Work::default();
-            written_over += kept.work.run.factor.as_ref().map_or(0, |f| f.kept());
+            written_over += kept.work.run.factor.as_ref().map_or(0, |f| f.work.kept());
             let a = kept.step(&x, &[], 1.0, 1.0);
             let b = fresh.step(&x, &[], 1.0, 1.0);
             let bits = |v: &[f64]| v.iter().map(|p| p.to_bits()).collect::<Vec<_>>();
