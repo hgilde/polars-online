@@ -927,10 +927,10 @@ fn mat_mul(a: &[f64], b: &[f64], p: usize) -> Vec<f64> {
 /// [`mat_mul`] into `out`, whose old contents are not read: entry `(i, j)`
 /// is `((0 + a_i0 b_0j) + a_i1 b_1j) + ...`, the products added in `k`'s
 /// order, each rounded as a product and then as a sum (never fused), as the
-/// plain triple loop adds them to a zeroed matrix. Eight columns of a row
-/// are held in registers across the `k` loop, then four, two and one, each
-/// column's sum the same sequence of roundings whatever the block it falls
-/// in.
+/// plain triple loop adds them to a zeroed matrix. A block of four rows (then
+/// two and one) by eight columns (then four, two and one) is held in
+/// registers across the `k` loop, each entry the same sequence of roundings
+/// whatever the block it falls in.
 fn mat_mul_into(a: &[f64], b: &[f64], p: usize, out: &mut Vec<f64>) {
     debug_assert!(a.len() == p * p && b.len() == p * p);
     out.clear();
@@ -3159,21 +3159,31 @@ mod tests {
     }
 
     /// `mat_mul` is the plain triple loop's product to the bit, at every
-    /// order across the register blocks' widths (8, 4, 2, 1) and over
-    /// values that round, cancel and carry signed zeros.
+    /// order from 1 to 40 across the register blocks' heights and widths
+    /// (4, 2, 1 rows; 8, 4, 2, 1 columns, so every tail) and over values that
+    /// round, cancel, carry signed zeros, mix scales, and hold NaN and
+    /// infinities.
     #[test]
     fn mat_mul_is_the_plain_loops_product_to_the_bit() {
         let mut s = 21u64;
-        for p in 1..=21 {
-            for kind in 0..3 {
+        for p in 1..=40 {
+            for kind in 0..4 {
                 let gen_ = |s: &mut u64| match kind {
                     0 => lcg(s),
                     // Magnitudes over a dozen decades, both signs.
                     1 => lcg(s) * 10f64.powi((lcg(s) * 24.0) as i32),
                     // Zeros of both signs among the values.
-                    _ => match (lcg(s) * 8.0) as i32 {
+                    2 => match (lcg(s) * 8.0) as i32 {
                         -4..=-3 => -0.0,
                         -2 => 0.0,
+                        _ => lcg(s),
+                    },
+                    // NaN and both infinities among the values.
+                    _ => match (lcg(s) * 40.0) as i32 {
+                        -20..=-19 => f64::NAN,
+                        -18 => f64::INFINITY,
+                        -17 => f64::NEG_INFINITY,
+                        -16 => 0.0,
                         _ => lcg(s),
                     },
                 };
