@@ -28,12 +28,18 @@ use polars_arrow::datatypes::{ArrowDataType, DTYPE_ENUM_VALUES_NEW, IntegerType,
 /// memory (docs/records/PERFORMANCE-LOG.md §13). `n_eff` is the one column reported as it
 /// is, finite or not, so it alone keeps a bit set per row (`set`).
 pub(crate) struct F64Column {
-    /// NaN where no finite value has been set. Shorter than `n` only for a
-    /// column made by [`Self::appending`], whose rows are written as the runs
-    /// arrive: [`Self::complete`] fills the rest with NaN.
+    /// NaN where no finite value has been set, for the first `filled` rows;
+    /// always `n` long. The rows past `filled` are zeros, never read: a
+    /// column made by [`Self::appending`] is allocated already zeroed (the
+    /// allocator hands zeroed memory over without writing it), its rows are
+    /// written as the runs arrive, and [`Self::complete`] fills the rest
+    /// with NaN.
     values: Vec<f64>,
     /// The column's length in rows.
     n: usize,
+    /// The rows from 0 that are written: `n` for a column made by
+    /// [`Self::new`], and for an appending one where its last run ended.
+    filled: usize,
     /// `values.len()` bits, packed little-endian as polars keeps them.
     bits: Vec<u8>,
     /// Every set value's bit is in `bits`.
@@ -47,6 +53,7 @@ impl F64Column {
         Self {
             values: vec![f64::NAN; n],
             n,
+            filled: n,
             bits: vec![0u8; n.div_ceil(8)],
             packed: true,
             flags: Vec::new(),
@@ -61,8 +68,9 @@ impl F64Column {
     /// filled with NaN, as [`Self::new`]'s are ([`Self::complete`]).
     pub(crate) fn appending(n: usize) -> Self {
         Self {
-            values: Vec::with_capacity(n),
+            values: vec![0.0; n],
             n,
+            filled: 0,
             bits: vec![0u8; n.div_ceil(8)],
             packed: true,
             flags: Vec::new(),
@@ -71,8 +79,9 @@ impl F64Column {
 
     /// Every row of the column present: the rows no run reached are NaN.
     pub(crate) fn complete(&mut self) {
-        if self.values.len() < self.n {
-            self.values.resize(self.n, f64::NAN);
+        if self.filled < self.n {
+            self.values[self.filled..].fill(f64::NAN);
+            self.filled = self.n;
         }
     }
 
@@ -81,7 +90,7 @@ impl F64Column {
     /// would hand that to the user.
     #[inline]
     pub(crate) fn set_if_finite(&mut self, i: usize, v: f64) {
-        debug_assert_eq!(self.values.len(), self.n, "`complete` before setting a row");
+        debug_assert_eq!(self.filled, self.n, "`complete` before setting a row");
         if v.is_finite() {
             self.values[i] = v;
             self.packed = false;
@@ -91,7 +100,7 @@ impl F64Column {
     /// Valid whatever the value: `n_eff`, which is reported as it is.
     #[inline]
     pub(crate) fn set(&mut self, i: usize, v: f64) {
-        debug_assert_eq!(self.values.len(), self.n, "`complete` before setting a row");
+        debug_assert_eq!(self.filled, self.n, "`complete` before setting a row");
         self.values[i] = v;
         self.bits[i / 8] |= 1 << (i % 8);
     }
@@ -101,52 +110,62 @@ impl F64Column {
     /// bit, anything else leaves NaN and a clear bit -- exactly what
     /// `set_if_finite` over the same rows gives.
     ///
-    /// Two passes the compiler vectorizes -- the select into `values` with a
-    /// byte flag per row, then the flags packed eight at a time by the
-    /// multiply that gathers the low bit of each byte into one byte -- rather
-    /// than one pass that shifts each flag into place, which it compiles a
-    /// lane at a time: 0.5 ns a value against 0.3, measured in isolation.
-    /// The partial bytes at each end go bit by bit.
+    /// A run of which every row is processed and finite -- nearly every run
+    /// of a model that has warmed up -- is one slice copy and a range of set
+    /// bits: the values are checked in a pass that is one vector add a pair
+    /// of values ([`all_finite`]), and the copy and the bits are then written
+    /// without a decision a value.
+    ///
+    /// Any other run takes two passes the compiler vectorizes -- the select
+    /// into `values` with a byte flag per row, then the flags packed eight at
+    /// a time by the multiply that gathers the low bit of each byte into one
+    /// byte -- rather than one pass that shifts each flag into place, which
+    /// it compiles a lane at a time: 0.5 ns a value against 0.3, measured in
+    /// isolation. The partial bytes at each end go bit by bit.
+    ///
+    /// A run that starts where the written rows end is written in place, and
+    /// any other first fills the rows no run has reached with NaN.
     pub(crate) fn run(&mut self, base: usize, vals: &[f64], processed: &[bool]) {
         let n = vals.len();
-        self.flags.clear();
-        self.flags.resize(n, 0);
-        if base == self.values.len() && base + n <= self.n {
-            // The run starts where the column's values end: written as
-            // they are made. A value is `v` when it lands and NaN
-            // otherwise, so it is valid exactly when it is finite.
-            self.values.extend(
-                vals.iter()
-                    .zip(processed)
-                    .map(|(&v, &p)| if p & v.is_finite() { v } else { f64::NAN }),
-            );
-            for (f, d) in self.flags.iter_mut().zip(&self.values[base..]) {
-                *f = d.is_finite() as u8;
-            }
+        if base == self.filled && base + n <= self.n {
+            self.filled = base + n;
         } else {
             self.complete();
-            let dst = &mut self.values[base..base + n];
-            let rows = dst
-                .iter_mut()
-                .zip(vals)
-                .zip(processed)
-                .zip(self.flags.iter_mut());
-            for (((d, &v), &p), f) in rows {
-                let ok = p & v.is_finite();
-                *d = if ok { v } else { f64::NAN };
-                *f = ok as u8;
-            }
+        }
+        let dst = &mut self.values[base..base + n];
+        // `&` over the bytes, not `all`, which stops at the first false and
+        // so is not a vector loop.
+        if processed.iter().fold(true, |all, &p| all & p) && all_finite(vals) {
+            dst.copy_from_slice(vals);
+            set_bits(&mut self.bits, base, n);
+            return;
+        }
+        // Only the first `n` flags are read, and every one of them is
+        // written below: the buffer is grown, not cleared.
+        if self.flags.len() < n {
+            self.flags.resize(n, 0);
+        }
+        let flags = &mut self.flags[..n];
+        let rows = dst
+            .iter_mut()
+            .zip(vals)
+            .zip(processed)
+            .zip(flags.iter_mut());
+        for (((d, &v), &p), f) in rows {
+            let ok = p & v.is_finite();
+            *d = if ok { v } else { f64::NAN };
+            *f = ok as u8;
         }
         let head = ((8 - base % 8) % 8).min(n);
         let body = head + (n - head) / 8 * 8;
         for k in (0..head).chain(body..n) {
-            if self.flags[k] != 0 {
+            if flags[k] != 0 {
                 self.bits[(base + k) / 8] |= 1 << ((base + k) % 8);
             }
         }
         let bytes = &mut self.bits[(base + head) / 8..];
         // `body - head` is a whole number of eights, so nothing remains.
-        let (eights, _) = self.flags[head..body].as_chunks::<8>();
+        let (eights, _) = flags[head..body].as_chunks::<8>();
         for (f, byte) in eights.iter().zip(bytes) {
             let x = u64::from_le_bytes(*f);
             *byte = (x.wrapping_mul(0x0102_0408_1020_4080) >> 56) as u8;
@@ -229,6 +248,47 @@ impl F64Column {
         });
         let names: Vec<&str> = classes.iter().map(String::as_str).collect();
         dict_array(keys, &names)
+    }
+}
+
+/// Whether every value is finite, or, where a finite sum overflowed, not
+/// known to be: `false` is never wrong about a non-finite value and may be
+/// wrong about a finite run, which then takes the exact path. A NaN or an
+/// infinity anywhere makes the sum NaN or infinite (they do not cancel: an
+/// infinity and its negative sum to NaN), and the sum is a vector add a
+/// pair of values where a test of each is several instructions each.
+///
+/// Sixteen partial sums, which the compiler holds in vector registers and
+/// adds a lane at a time, never in an order that matters: only whether the
+/// total is finite is read.
+#[inline]
+fn all_finite(vals: &[f64]) -> bool {
+    let mut partial = [0.0f64; 16];
+    let (blocks, tail) = vals.as_chunks::<16>();
+    for block in blocks {
+        for (p, v) in partial.iter_mut().zip(block) {
+            *p += v;
+        }
+    }
+    // Apart from `partial`, so that the loop above stays a vector loop.
+    let rest: f64 = tail.iter().sum();
+    (partial.iter().sum::<f64>() + rest).is_finite()
+}
+
+/// Bits `base..base + n` of `bits` set, the others as they were.
+fn set_bits(bits: &mut [u8], base: usize, n: usize) {
+    let Some(end) = (base + n).checked_sub(1).filter(|_| n > 0) else {
+        return;
+    };
+    let (first_byte, last_byte) = (base / 8, end / 8);
+    let head = 0xFFu8 << (base % 8);
+    let tail = 0xFFu8 >> (7 - end % 8);
+    if first_byte == last_byte {
+        bits[first_byte] |= head & tail;
+    } else {
+        bits[first_byte] |= head;
+        bits[first_byte + 1..last_byte].fill(0xFF);
+        bits[last_byte] |= tail;
     }
 }
 
@@ -399,6 +459,103 @@ mod column_tests {
                 }
                 let (fv, sv) = (fast.validity(), slow.validity());
                 assert_eq!(fv, sv, "validity: base {base} len {len}");
+            }
+        }
+    }
+
+    /// A run of which every row is processed and finite is one copy and a
+    /// range of bits; one flaw anywhere in it -- a NaN, either infinity, a
+    /// row not processed -- sends it down the exact path, and a finite run
+    /// whose sum overflows is not mistaken for a flawed one's opposite. Each
+    /// is the column `set_if_finite` over the same rows gives, to the bit,
+    /// whatever the run's length (the sum goes sixteen values at a time),
+    /// its place in the column and where the flaw falls.
+    #[test]
+    fn a_clean_run_and_a_run_with_one_flaw_match_the_scatter() {
+        enum Flaw {
+            None,
+            Nan,
+            Inf,
+            NegInf,
+            Unprocessed,
+            // Finite values whose sum is infinite.
+            Overflow,
+            // Negative zero and a subnormal: finite, kept as they are.
+            Odd,
+        }
+        for base in [0usize, 1, 5, 8, 13] {
+            for len in [1usize, 2, 7, 8, 15, 16, 17, 31, 32, 33, 47, 100, 257] {
+                for at in [0, len / 2, len - 1] {
+                    for flaw in [
+                        Flaw::None,
+                        Flaw::Nan,
+                        Flaw::Inf,
+                        Flaw::NegInf,
+                        Flaw::Unprocessed,
+                        Flaw::Overflow,
+                        Flaw::Odd,
+                    ] {
+                        let n = base + len + 3;
+                        let mut vals: Vec<f64> = (0..len).map(|k| k as f64 * 0.25 - 7.0).collect();
+                        let mut processed = vec![true; len];
+                        match flaw {
+                            Flaw::None => {}
+                            Flaw::Nan => vals[at] = f64::NAN,
+                            Flaw::Inf => vals[at] = f64::INFINITY,
+                            Flaw::NegInf => vals[at] = f64::NEG_INFINITY,
+                            Flaw::Unprocessed => processed[at] = false,
+                            Flaw::Overflow => {
+                                for v in vals.iter_mut() {
+                                    *v = f64::MAX;
+                                }
+                            }
+                            Flaw::Odd => {
+                                vals[at] = -0.0;
+                                vals[len - 1 - at] = f64::MIN_POSITIVE / 4.0;
+                            }
+                        }
+                        let mut fast = F64Column::appending(n);
+                        fast.run(base, &vals, &processed);
+                        fast.complete();
+                        let mut slow = F64Column::new(n);
+                        for (k, (&v, &p)) in vals.iter().zip(&processed).enumerate() {
+                            if p {
+                                slow.set_if_finite(base + k, v);
+                            }
+                        }
+                        let ctx = format!("base {base} len {len} at {at}");
+                        assert!(fast.packed, "{ctx}");
+                        for i in 0..n {
+                            assert_eq!(
+                                fast.values[i].to_bits(),
+                                slow.values[i].to_bits(),
+                                "value at {i}: {ctx}"
+                            );
+                            assert_eq!(fast.is_valid(i), slow.is_valid(i), "bit at {i}: {ctx}");
+                        }
+                        assert_eq!(fast.validity(), slow.validity(), "{ctx}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// `set_bits` sets exactly the bits it is given, leaving the rest.
+    #[test]
+    fn set_bits_sets_its_range_and_no_other() {
+        for base in 0..20usize {
+            for n in 0..40usize {
+                let mut bits = vec![0b0101_0101u8; 8];
+                super::set_bits(&mut bits, base, n);
+                for i in 0..64 {
+                    let before = i % 2 == 0;
+                    let inside = (base..base + n).contains(&i);
+                    assert_eq!(
+                        bits[i / 8] >> (i % 8) & 1 == 1,
+                        before || inside,
+                        "bit {i}: base {base} n {n}"
+                    );
+                }
             }
         }
     }
