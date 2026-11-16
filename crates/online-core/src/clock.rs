@@ -1181,6 +1181,24 @@ impl ClockState {
         }
     }
 
+    /// Where this clock stands after a run of rows that were each a plain
+    /// step forward ([`Self::plain_forward`]) with no cap passed, the run's
+    /// last row being `clock` in `session`: what [`Self::take_plain_forward`]
+    /// leaves behind row after row, written once. A plain step reads only the
+    /// previous clock value and session and leaves the rest as it sets it
+    /// (the skipped-row folds at zero), so the state after the run is this
+    /// whatever the steps in it were. The caller has checked every step of the
+    /// run; a step this was not told of is not taken into account.
+    #[inline]
+    pub fn take_plain_run(&mut self, clock: Option<ClockValue>, session: Option<u64>) {
+        self.prev_clock = clock;
+        self.prev_session = session;
+        self.started = true;
+        self.pending = 0.0;
+        self.pending_int = Ticks::ZERO;
+        self.skipped_elapsed = 0.0;
+    }
+
     /// The row almost every stamped row of a float clock is -- a step forward
     /// within its session, learned, past the stream's first -- taken as
     /// [`Self::step_any`] takes it, with the same expressions in the same
@@ -3511,6 +3529,56 @@ mod finite_steps {
                 .is_some();
             assert_eq!(taken, i > 0, "row {i}");
             c.advance(&cfg, None, None, true);
+        }
+    }
+
+    /// A run of plain steps forward taken at once leaves the state the steps
+    /// taken one at a time do, with and without a session, on a temporal and
+    /// a float clock, from a fresh state and from one that has stepped.
+    #[test]
+    fn a_plain_run_taken_at_once_is_its_steps_taken_one_by_one() {
+        let cfg = ClockCfg {
+            gap_cap: 30.0,
+            ..ClockCfg::default()
+        };
+        let at = |temporal: bool, i: i64| {
+            if temporal {
+                ClockValue::Ns(1_700_000_000_000_000_000 + i * 400_000_000)
+            } else {
+                ClockValue::F64(i as f64 * 0.4)
+            }
+        };
+        for temporal in [true, false] {
+            for session in [None, Some(7u64)] {
+                for warm in [0, 1, 5] {
+                    let mut by_row = ClockState::new();
+                    for i in 0..warm {
+                        by_row.advance(&cfg, Some(at(temporal, i)), session, true);
+                    }
+                    let mut at_once = by_row.clone();
+                    for i in warm..warm + 9 {
+                        let now = Some(at(temporal, i));
+                        match by_row.plain_forward(now, session, true) {
+                            Some(step) => {
+                                by_row.take_plain_forward(&cfg, now, session, step);
+                            }
+                            // A fresh state has no row to step from.
+                            None => {
+                                assert_eq!(i, 0, "only a stream's first row is not plain");
+                                by_row.advance(&cfg, now, session, true);
+                            }
+                        }
+                    }
+                    if warm == 0 {
+                        at_once.advance(&cfg, Some(at(temporal, 0)), session, true);
+                    }
+                    at_once.take_plain_run(Some(at(temporal, warm + 8)), session);
+                    assert_eq!(
+                        at_once, by_row,
+                        "temporal {temporal}, session {session:?}, after {warm} rows"
+                    );
+                }
+            }
         }
     }
 

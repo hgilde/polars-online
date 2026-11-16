@@ -1521,6 +1521,10 @@ pub struct Windows {
     scratch_row: Vec<f64>,
     #[serde(skip)]
     scratch_sum: Vec<f64>,
+    /// What the kernels and operators say once, for the plain loop and the
+    /// row's wait count; derived by [`Windows::scratch`], never saved.
+    #[serde(skip)]
+    derived: Derived,
 }
 
 /// A map as a sorted list, so the state's bytes do not depend on the
@@ -1848,6 +1852,12 @@ macro_rules! by_width {
     };
 }
 
+// After `by_width!`, which it uses.
+mod plain;
+
+use plain::Derived;
+pub(crate) use plain::PlainRows;
+
 /// The rows not yet emitted, borrowed apart from the groups.
 struct Held<'a> {
     first: u64,
@@ -1935,6 +1945,7 @@ impl Windows {
             next_seq: 0,
             scratch_row: vec![0.0; ROW_VAR * widest],
             scratch_sum: vec![0.0; SUM_VAR * widest],
+            derived: Derived::default(),
         })
     }
 
@@ -2139,7 +2150,11 @@ impl Windows {
     }
 
     /// The scratch buffers, which a loaded state lacks.
+    #[inline]
     fn scratch(&mut self) {
+        if !self.derived.ready {
+            self.derived = Derived::of(&self.kernels, self.n_forward, self.derived.off);
+        }
         if self.scratch_sum.is_empty() {
             let widest = self.members.iter().map(Vec::len).max().unwrap_or(0);
             self.scratch_row = vec![0.0; ROW_VAR * widest];
@@ -2419,11 +2434,7 @@ impl Windows {
         // distinct stamp; a row-count clock repeats no stamp, so the row's
         // own windows are read at the end of this push (review R1, C1: they
         // were never read without a clock, and every such output was null).
-        let n_wait = u32::from(
-            self.kernels
-                .iter()
-                .any(|k| k.direction == Direction::Backward && k.closed.near(Direction::Backward)),
-        );
+        let n_wait = self.derived.n_wait;
         self.held_meta.push_back(Meta {
             open: self.n_forward + n_wait,
             accept: row.accept,
@@ -3117,10 +3128,7 @@ fn value_of(k: &KernelDef, op: &OpDef, a: Acc, t: f64) -> f64 {
         Stat::Sum => a.s,
         // Read from the queue's sketches (`read_backward`, `close`).
         Stat::Quantile => f64::NAN,
-        Stat::Rate => {
-            let m = k.mass(t);
-            if m > 0.0 { a.s / m } else { f64::NAN }
-        }
+        Stat::Rate => rate_of(a, k.mass(t)),
         Stat::Var | Stat::Std => {
             if a.w <= 0.0 {
                 return f64::NAN;
@@ -3143,6 +3151,13 @@ fn value_of(k: &KernelDef, op: &OpDef, a: Acc, t: f64) -> f64 {
             }
         }
     }
+}
+
+/// A rate: the decayed sum over the mass `m` of the window's span, null
+/// where there is none.
+#[inline]
+fn rate_of(a: Acc, m: f64) -> f64 {
+    if m > 0.0 { a.s / m } else { f64::NAN }
 }
 
 /// Write a backward kernel's values for row `seq`, under each operator's

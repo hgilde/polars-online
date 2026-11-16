@@ -5,7 +5,12 @@
 //! can be compared for speed and for identity. Alternate the two builds'
 //! binaries when timing a change, so that load moves both alike.
 //! WB_KIND=dt|f|none WB_WS=none|60s|60.0 WB_OPS=1|4|8 WB_GROUPS=0|N WB_ROWS=n WB_REPS=n WB_CHUNK=n
-//! WB_OPSET=mean|mixed|quant
+//! WB_OPSET=mean|mixed|quant WB_PLAIN=0 (the plain-run loop off)
+//! The features task 429 prices, each off by default: WB_CAP=on|off (a gap_cap is required with a clock; `fire` also
+//! puts a 400 s gap every thousand rows, past the 5 minute cap), WB_CLOSED=right|left|both|none, WB_NULLS=fraction of null
+//! inputs, WB_TIES=fraction of repeated stamps, WB_SESSION=rows per session (0 none, a
+//! session column with no session_gap), WB_RESTART=1 (restart_after_step_back set, no
+//! step back in the data).
 use std::time::Instant;
 
 use online_polars::{WindowsConfig, WindowsRun};
@@ -36,6 +41,14 @@ fn main() {
     let chunk: usize = env("WB_CHUNK", "65536").parse().unwrap();
     let opset = env("WB_OPSET", "mean");
     let gap = env("WB_GAP", "exp05");
+    let cap_fire = env("WB_CAP", "on") == "fire";
+    let closed = env("WB_CLOSED", "right");
+    let nulls: f64 = env("WB_NULLS", "0").parse().unwrap();
+    let ties: f64 = env("WB_TIES", "0").parse().unwrap();
+    let session_rows: usize = env("WB_SESSION", "0").parse().unwrap();
+    let restart = env("WB_RESTART", "0") == "1";
+    // WB_PLAIN=0 switches the core's plain-run loop off (task 429), to time what it saves.
+    let plain = env("WB_PLAIN", "1");
     let temporal = kind == "dt";
     let hl: Value = if temporal { json!("5s") } else { json!(5.0) };
     let wsv: Option<Value> = match ws.as_str() {
@@ -56,6 +69,9 @@ fn main() {
                 "ewm_mean"
             };
             let mut o = json!({"half_life": hl});
+            if closed != "right" {
+                o["closed"] = json!(closed);
+            }
             if let Some(w) = &wsv {
                 o["window_size"] = w.clone();
             }
@@ -69,6 +85,12 @@ fn main() {
     if kind != "none" {
         config["clock"] = json!("ts");
         config["gap_cap"] = if temporal { json!("5m") } else { json!(300.0) };
+        if restart {
+            config["restart_after_step_back"] = if temporal { json!("1s") } else { json!(1.0) };
+        }
+    }
+    if session_rows > 0 {
+        config["session"] = json!("s");
     }
     if groups > 0 {
         config["group"] = json!("g");
@@ -80,19 +102,33 @@ fn main() {
     let mut m = 100.0f64;
     let mut ts_ns = Vec::with_capacity(rows);
     let mut ts_f = Vec::with_capacity(rows);
-    let mut mid = Vec::with_capacity(rows);
+    let mut mid: Vec<Option<f64>> = Vec::with_capacity(rows);
     let mut g = Vec::with_capacity(rows);
-    for _ in 0..rows {
+    let mut sess = Vec::with_capacity(rows);
+    let mut r2 = Rng(0xD1B54A32D192ED03);
+    for i in 0..rows {
         let u = r.next();
-        t += match gap.as_str() {
+        let step = match gap.as_str() {
             "reg" => 1.0,
             "exp1" => -u.ln(),
             _ => -0.5 * u.ln(),
         };
+        t += if ties > 0.0 && r2.next() < ties {
+            0.0
+        } else if cap_fire && i % 1000 == 999 {
+            400.0
+        } else {
+            step
+        };
+        sess.push(i.checked_div(session_rows).map_or(0, |s| s as i64));
         m += (r.next() - 0.5) * 0.02;
         ts_ns.push((t * 1e9) as i64);
         ts_f.push(((t * 1e9) as i64) as f64 / 1e9);
-        mid.push(m);
+        mid.push(if nulls > 0.0 && r2.next() < nulls {
+            None
+        } else {
+            Some(m)
+        });
         g.push(if groups > 0 {
             (r.next() * groups as f64) as i64
         } else {
@@ -117,13 +153,20 @@ fn main() {
         if groups > 0 {
             cols.push(Column::new("g".into(), &g[at..to]));
         }
+        if session_rows > 0 {
+            cols.push(Column::new("s".into(), &sess[at..to]));
+        }
         frames.push(DataFrame::new_infer_height(cols).unwrap());
         at = to;
     }
     let mut best = f64::MAX;
     let mut digest = 0u64;
+    let mut plain_rows = 0u64;
     for rep in 0..reps {
         let mut run = WindowsRun::new(config.clone(), frames[0].schema()).expect("run");
+        if plain == "0" {
+            run.set_plain_run(false);
+        }
         let mut h = 0xcbf29ce484222325u64;
         let t0 = Instant::now();
         let mut outs = Vec::new();
@@ -147,6 +190,7 @@ fn main() {
                 }
             }
             digest = h;
+            plain_rows = run.plain_rows();
             // the saved state's bytes too
             let bytes = run.save_bytes().expect("save");
             let mut sh = 0xcbf29ce484222325u64;
@@ -157,7 +201,7 @@ fn main() {
         }
     }
     println!(
-        "RESULT kind={kind} ws={ws} ops={ops} opset={opset} groups={groups} rows={rows} best={best:.4}s ns_row={:.1} digest={digest:016x}",
+        "RESULT kind={kind} ws={ws} ops={ops} opset={opset} groups={groups} rows={rows} best={best:.4}s ns_row={:.1} digest={digest:016x} plain_rows={plain_rows}",
         best * 1e9 / rows as f64
     );
 }
