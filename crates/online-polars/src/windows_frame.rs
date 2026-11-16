@@ -3058,6 +3058,168 @@ mod tests {
         }
     }
 
+    /// `feed` over bare operators is the lazy engine's: the same columns in
+    /// the same order, with the same nulls and bits, for inputs with and
+    /// without a null, in one piece or several, sliced, with an extra column
+    /// the formulas do not read, an operator partial under `"drop"`, and
+    /// chunks that cut anywhere (the rows' dropped and not).
+    #[test]
+    fn a_feed_of_bare_operators_is_the_lazy_engines() {
+        let op = |kind: &str, col: &str, extra: &str| {
+            format!(
+                r#"["{kind}", ["col", "{col}"], {{"half_life": 1.5, "window_size": 4{extra}}}]"#
+            )
+        };
+        let shapes: Vec<(&str, Vec<String>)> = vec![
+            ("one", vec![op("ewm_mean", "x", "")]),
+            (
+                "drop",
+                vec![op("ewm_mean", "x", r#", "partial": "drop""#)],
+            ),
+            (
+                "aliased, two inputs, one shared",
+                vec![
+                    format!(r#"["alias", {}, "a"]"#, op("ewm_sum", "x", "")),
+                    op("ewm_mean", "y", ""),
+                    op("ewm_sum", "x", ""),
+                ],
+            ),
+            ("no window", vec![r#"["ewm_mean", ["col", "y"], {"half_life": 1.5}]"#.into()]),
+            ("forward", vec![op("rewm_sum", "x", "")]),
+            (
+                "one not bare",
+                vec![
+                    op("ewm_sum", "x", ""),
+                    format!(r#"["-", {}, ["col", "x"]]"#, op("ewm_mean", "x", "")),
+                ],
+            ),
+        ];
+        let n = 70;
+        let mut seed = 11u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut t = 0.0;
+        let (mut ts, mut xs, mut ys, mut zs) = (vec![], vec![], vec![], vec![]);
+        for i in 0..n {
+            t += if i % 9 == 4 { 0.0 } else { 0.2 + 1.5 * next() };
+            ts.push(t);
+            xs.push(match i % 11 {
+                3 => None,
+                5 => Some(f64::NAN),
+                _ => Some(next() - 0.5),
+            });
+            ys.push(Some(next() * 3.0));
+            zs.push(i as i64);
+        }
+        let df = df!("t" => ts, "x" => xs, "y" => ys, "z" => zs).unwrap();
+        // The same rows as columns of several pieces.
+        let pieces = {
+            let mut whole = df.slice(0, 23);
+            whole.vstack_mut(&df.slice(23, 30)).unwrap();
+            whole.vstack_mut(&df.slice(53, 17)).unwrap();
+            whole
+        };
+        let run = |formulas: &[String], frames: &[DataFrame], off: bool| -> Vec<DataFrame> {
+            NO_SHORT_CUTS.with(|c| c.set(off));
+            let names: Vec<String> = (0..formulas.len())
+                .map(|i| format!(r#"{{"name": "f{i}", "tree": {}}}"#, formulas[i]))
+                .collect();
+            let mut r = WindowsRun::new(
+                config(&format!(
+                    r#"{{"formulas": [{}], "clock": "t", "gap_cap": 100}}"#,
+                    names.join(",")
+                )),
+                df.schema(),
+            )
+            .unwrap();
+            let mut out: Vec<DataFrame> = frames.iter().map(|f| r.feed(f, None).unwrap()).collect();
+            out.push(r.finish().unwrap());
+            NO_SHORT_CUTS.with(|c| c.set(false));
+            out
+        };
+        let bits = |frames: &[DataFrame]| -> Vec<String> {
+            frames
+                .iter()
+                .flat_map(|f| {
+                    f.columns().iter().map(|c| match c.dtype() {
+                        DataType::Float64 => format!(
+                            "{} {:?}",
+                            c.name(),
+                            c.f64()
+                                .unwrap()
+                                .iter()
+                                .map(|v| v.map(f64::to_bits))
+                                .collect::<Vec<_>>()
+                        ),
+                        d => format!("{} {d:?} {}", c.name(), c.len()),
+                    })
+                })
+                .collect()
+        };
+        let cuts = |sizes: &[usize]| -> Vec<DataFrame> {
+            let mut at = 0;
+            sizes
+                .iter()
+                .map(|&c| {
+                    let part = df.slice(at as i64, c);
+                    at += c;
+                    part
+                })
+                .collect()
+        };
+        for (what, formulas) in &shapes {
+            for (how, frames) in [
+                ("whole", vec![df.clone()]),
+                ("pieces", vec![pieces.clone()]),
+                ("cut", cuts(&[7, 1, 30, 32])),
+                ("one rows", cuts(&[1; 70])),
+            ] {
+                let fast = run(formulas, &frames, false);
+                let lazy = run(formulas, &frames, true);
+                let rows: usize = lazy.iter().map(DataFrame::height).sum();
+                assert!(rows > 30, "{what}, {how}: {rows} rows out");
+                assert_eq!(bits(&fast), bits(&lazy), "{what}, {how}");
+                let names: Vec<&str> = fast[0].get_column_names().iter().map(|n| n.as_str()).collect();
+                assert!(names.contains(&"f0") && names.contains(&"t"), "{names:?}");
+            }
+        }
+    }
+
+    /// An operator's values as a column: null where the value is NaN, the
+    /// rest to the bit, a null's slot 0 (as a column built from options leaves
+    /// it), with and without a NaN.
+    #[test]
+    fn an_operators_values_become_a_column_with_a_null_for_each_nan() {
+        for values in [
+            vec![],
+            vec![1.5, -0.0, 3.25],
+            vec![f64::NAN, f64::NAN],
+            vec![f64::NAN, 2.0, f64::NAN, -4.5, f64::NAN],
+            (0..130).map(|i| if i % 3 == 0 { f64::NAN } else { f64::from(i) }).collect(),
+        ] {
+            let column = nullable_column("v", values.clone());
+            let want: Float64Chunked = values
+                .iter()
+                .map(|&x| (!x.is_nan()).then_some(x))
+                .collect();
+            let got = column.f64().unwrap();
+            assert_eq!(got.name().as_str(), "v");
+            assert_eq!(got.null_count(), want.null_count());
+            assert_eq!(
+                got.iter().map(|v| v.map(f64::to_bits)).collect::<Vec<_>>(),
+                want.iter().map(|v| v.map(f64::to_bits)).collect::<Vec<_>>()
+            );
+            // The slot under a null reads 0, as the options' column leaves it.
+            let raw: Vec<u64> = got.downcast_iter().flat_map(|a| a.values().iter().map(|x| x.to_bits())).collect();
+            let raw_want: Vec<u64> = want.downcast_iter().flat_map(|a| a.values().iter().map(|x| x.to_bits())).collect();
+            assert_eq!(raw, raw_want);
+        }
+    }
+
     /// What a chunk's groups share, evaluated once ([`WindowsRun::share`]),
     /// is what each group's run computes for itself: runs fed their rows with
     /// the chunk's shared inputs give the same rows to the bit and keep the

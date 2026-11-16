@@ -655,20 +655,6 @@ impl Acc {
     /// it is, its masses scale, and their squares with `f²`.
     #[inline]
     fn scaled(self, f: f64, var: bool) -> Acc {
-        // A discount of 1 (no decay, or no distance) multiplies each sum by
-        // 1, which is that sum to the bit.
-        if f == 1.0 {
-            return if var {
-                self
-            } else {
-                Acc {
-                    s: self.s,
-                    w: self.w,
-                    n: self.n,
-                    ..Acc::default()
-                }
-            };
-        }
         if var {
             Acc {
                 s: self.s,
@@ -2992,10 +2978,15 @@ impl Windows {
             values: vec![Vec::with_capacity(rows); n_out],
             drop: Vec::with_capacity(rows),
         };
-        for (r, meta) in self.held_meta.drain(..rows).enumerate() {
+        // The rows' values are one run of `n_out` a row; each operator's are
+        // every `n_out`-th of it.
+        if n_out > 0 {
+            let flat = &self.held_values.make_contiguous()[..rows * n_out];
             for (o, col) in out.values.iter_mut().enumerate() {
-                col.push(self.held_values[r * n_out + o]);
+                col.extend(flat.chunks_exact(n_out).map(|row| row[o]));
             }
+        }
+        for meta in self.held_meta.drain(..rows) {
             out.drop.push(meta.drop);
             self.ready_kept -= usize::from(!meta.drop);
         }

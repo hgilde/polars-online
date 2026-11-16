@@ -349,15 +349,27 @@ fn not_before(now: ClockValue, last: ClockValue) -> bool {
 /// values for the group's rows, in row order.
 #[derive(Clone, Copy)]
 struct Cols<'a> {
-    whole: &'a [&'a [f64]],
+    whole: Whole<'a>,
     from: usize,
     len: usize,
+}
+
+/// The inputs a run reads: the chunk's own columns, or a group's rows
+/// gathered into lists of their own.
+#[derive(Clone, Copy)]
+enum Whole<'a> {
+    Slices(&'a [&'a [f64]]),
+    Lists(&'a [Vec<f64>]),
 }
 
 impl Cols<'_> {
     #[inline(always)]
     fn x(&self, input: usize) -> &[f64] {
-        &self.whole[input][self.from..self.from + self.len]
+        let whole = match self.whole {
+            Whole::Slices(w) => w[input],
+            Whole::Lists(w) => w[input].as_slice(),
+        };
+        &whole[self.from..self.from + self.len]
     }
 }
 
@@ -707,7 +719,7 @@ impl Windows {
             n_forward: *n_forward,
         };
         let cols = Cols {
-            whole: rows.values,
+            whole: Whole::Slices(rows.values),
             from: at,
             len,
         };
@@ -1272,21 +1284,8 @@ fn run_segment(
         last_session: rows.session.map(|s| s[at + last]),
         first,
     };
-    // The gathered lists as the slices `Cols` reads: on the stack for the
-    // inputs a call has, as a rule.
-    let mut few: [&[f64]; 8] = [&[]; 8];
-    let many: Vec<&[f64]>;
-    let views: &[&[f64]] = if xg.len() <= few.len() {
-        for (view, col) in few.iter_mut().zip(xg.iter()) {
-            *view = col;
-        }
-        &few[..xg.len()]
-    } else {
-        many = xg.iter().map(Vec::as_slice).collect();
-        &many
-    };
     let cols = Cols {
-        whole: views,
+        whole: Whole::Lists(xg),
         from: 0,
         len: len_g,
     };
