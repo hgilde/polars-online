@@ -207,6 +207,17 @@ enum Cached {
 struct Factors {
     slots: Vec<Cached>,
     work: FactorWork,
+    logs: Vec<DiagLog>,
+}
+
+/// A diagonal class's `Σ ln(v_i + r)` as of the state it was read at: a
+/// class's variances and its ridge move only when it learns a row (a decay
+/// leaves both), so the sum is kept under the learned-row count and the
+/// ridge's bits. Derived state, as the factors are.
+#[derive(Clone, Default)]
+struct DiagLog {
+    key: Option<(u64, u64)>,
+    sum: f64,
 }
 
 /// The factors, as `derive(Debug)` wrote the cache when it held them alone:
@@ -275,6 +286,26 @@ impl Factors {
         for c in 0..self.slots.len() {
             self.invalidate(c);
         }
+        self.logs.iter_mut().for_each(|l| l.key = None);
+    }
+
+    /// `Σ ln(v_i + ridge)` over class `c`'s variances, kept until the class
+    /// learns another row.
+    fn diag_log_det(&mut self, c: usize, n_classes: usize, cov: &EwCovDiag, ridge: f64, k: usize) -> f64 {
+        if self.logs.len() != n_classes {
+            self.logs = vec![DiagLog::default(); n_classes];
+        }
+        let slot = &mut self.logs[c];
+        let key = (cov.rows_learned(), ridge.to_bits());
+        if slot.key != Some(key) {
+            let mut log_det = 0.0;
+            for i in 0..k {
+                log_det += (cov.var(i) + ridge).ln();
+            }
+            slot.sum = log_det;
+            slot.key = Some(key);
+        }
+        slot.sum
     }
 }
 
@@ -847,13 +878,22 @@ impl EwClass {
                         continue;
                     }
                     let ridge = self.ridge(c);
+                    let kept = match (factors.as_deref_mut(), view.is_none()) {
+                        (Some(f), true) => Some(f.diag_log_det(c, nc, cov, ridge, k)),
+                        _ => None,
+                    };
                     let mut log_det = 0.0;
                     let mut q = 0.0;
                     for (i, xi) in x.iter().enumerate() {
                         let v = cov.var(i) + ridge;
                         let d = cov.deviation(i, *xi);
-                        log_det += v.ln();
+                        if kept.is_none() {
+                            log_det += v.ln();
+                        }
                         q += d * d / v;
+                    }
+                    if let Some(l) = kept {
+                        log_det = l;
                     }
                     ell[c] = (weights[c] / total).ln() - 0.5 * log_det - 0.5 * q;
                 }
