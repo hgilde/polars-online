@@ -26,6 +26,22 @@ returns.
 
 ### Fixed
 
+- A window operator's mean or variance whose only valued row was exactly one
+  window old (under `closed="left"` or `"both"` looking back, `"right"` or
+  `"both"` with `reverse=True`) gave that row's value or null by a rounding
+  in the clock, depending on where the stream's stretch began: with
+  `t = [0, 400, 1500, 1501] ms`, `x = [null, 5, null, null]`,
+  `window_size="1100ms"` and `closed="both"`, row 3 was null, and `5.0` when
+  the first row was at 3 ms. The row counts for `min_samples` and weighs
+  nothing, so the mean is now null whatever the stretch's start, and
+  `ewm_var(bias=True)` is null rather than 0.0. Where another value sat in the
+  window the edge row's mass was about 1e-17 of the window's and is now 0,
+  which moves the last bits of those means and variances. An integer clock
+  and a row-count clock were exact already; a clock of floats had the same
+  rounding. `ewm_var` and `ewm_std` are documented as Polars'
+  `ewm_var(adjust=False)` only on an input with no nulls: with a null they
+  follow `ewm_mean_by`, which holds the last value across the null's longer
+  step.
 - An `OSError` from `ModelBank.save`, `RefreshTime.save`, `Windows.save` or
   a `closed_groups` write now carries `errno`, `strerror` and `filename`, as
   one from Python's own `open` does, so `except OSError as e: e.errno ==
