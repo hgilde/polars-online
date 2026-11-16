@@ -113,6 +113,16 @@ impl Buffers {
         }
     }
 
+    /// Whether every row a stream processes writes every slot of the
+    /// buffers [`ChunkOut::renew_run`] leaves unfilled: a spec with no
+    /// `embargo`, no `label_clock` and no formula target schedules each
+    /// accepted row as one that emits, where any of the three replays held
+    /// rows that do not (`Stream::apply_label_delay` returns the plans as
+    /// they are for a spec with none).
+    pub(super) fn dense(spec: &Spec) -> bool {
+        spec.embargo.is_none() && spec.label_clock.is_none() && !spec.targets.any_formula()
+    }
+
     /// `f64` values one row writes across every buffer, for `n_models`
     /// instances of `n_slots` slots.
     fn per_row(&self, spec: &Spec, n_models: usize, n_slots: usize) -> usize {
@@ -191,9 +201,49 @@ impl ChunkOut {
     /// buffers for every group of every chunk, and allocating and freeing
     /// them was the largest share of such a task (task 270, G-1).
     pub fn renew(&mut self, spec: &Spec, n_models: usize, n_slots: usize, n_rows: usize) {
+        self.renew_with(spec, n_models, n_slots, n_rows, false);
+    }
+
+    /// [`Self::renew`] for a run that `Stream::process_chunk` is about to
+    /// fill: where every row the run learns or scores writes every slot of
+    /// the buffers a row writes in full (`pred`, `resid`, `sigma`,
+    /// `zscore`, `n_eff`, `settled`, `reason`), those are left as they were,
+    /// not filled with NaN again. A row the run does not process leaves its
+    /// values unread -- every reader of a run asks `processed` first -- and
+    /// the others are filled as `renew` fills them. Whether a spec's rows
+    /// all write is [`Buffers::dense`]; for any other the two are the same.
+    pub fn renew_run(&mut self, spec: &Spec, n_models: usize, n_slots: usize, n_rows: usize) {
+        self.renew_with(spec, n_models, n_slots, n_rows, Self::keeps_buffers(spec));
+    }
+
+    /// Whether [`Self::renew_run`] leaves a spec's buffers as they were
+    /// ([`Buffers::dense`]).
+    pub(crate) fn keeps_buffers(spec: &Spec) -> bool {
+        Buffers::dense(spec)
+    }
+
+    fn renew_with(
+        &mut self,
+        spec: &Spec,
+        n_models: usize,
+        n_slots: usize,
+        n_rows: usize,
+        dense: bool,
+    ) {
         fn fill<T: Clone>(v: &mut Vec<T>, n: usize, x: T) {
             v.clear();
             v.resize(n, x);
+        }
+        // A buffer the run writes in full where it processes a row: the
+        // length is set, the old values stay (or, where the buffer is new
+        // or longer, are `x`).
+        fn written<T: Clone>(dense: bool, v: &mut Vec<T>, n: usize, x: T) {
+            if dense {
+                v.truncate(n);
+                v.resize(n, x);
+            } else {
+                fill(v, n, x);
+            }
         }
         fn lists(v: &mut Vec<Vec<Option<Vec<f64>>>>, n_models: usize, n_rows: usize) {
             v.truncate(n_models);
@@ -214,10 +264,10 @@ impl ChunkOut {
         self.rows.clear();
         self.rows.reserve(n_rows);
         fill(&mut self.processed, n_rows, false);
-        fill(&mut self.pred, per, f64::NAN);
-        fill(&mut self.resid, on(residuals), f64::NAN);
-        fill(&mut self.sigma, on(extras), f64::NAN);
-        fill(&mut self.zscore, on(extras), f64::NAN);
+        written(dense, &mut self.pred, per, f64::NAN);
+        written(dense, &mut self.resid, on(residuals), f64::NAN);
+        written(dense, &mut self.sigma, on(extras), f64::NAN);
+        written(dense, &mut self.zscore, on(extras), f64::NAN);
         fill(&mut self.autocorr, on(spec.emit_autocorr), f64::NAN);
         fill(&mut self.metrics, 3 * on(spec.emit_metrics), f64::NAN);
         fill(
@@ -234,7 +284,7 @@ impl ChunkOut {
         fill(&mut self.health, health, f64::NAN);
         fill(&mut self.resid_q, n_levels * per, f64::NAN);
         fill(&mut self.drift, on(spec.emit_drift), false);
-        fill(&mut self.n_eff, n_models * n_rows, f64::NAN);
+        written(dense, &mut self.n_eff, n_models * n_rows, f64::NAN);
         let lam = if per_target {
             n_models * spec.m() * n_rows
         } else {
@@ -242,8 +292,8 @@ impl ChunkOut {
         };
         fill(&mut self.lam_selected, lam, f64::NAN);
         lists(&mut self.coef, n_models, n_rows);
-        fill(&mut self.settled, n_models * n_rows, f64::NAN);
-        fill(&mut self.reason, n_models * n_rows, 0);
+        written(dense, &mut self.settled, n_models * n_rows, f64::NAN);
+        written(dense, &mut self.reason, n_models * n_rows, 0);
         fill(&mut self.inflation, on(spec.emit_error_inflation), f64::NAN);
         lists(&mut self.support_coef, n_models, n_rows);
         lists(&mut self.se_coef, n_models, n_rows);

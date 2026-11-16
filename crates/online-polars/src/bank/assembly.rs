@@ -135,6 +135,8 @@ fn scatter(col: &mut F64Column, ch: &ChunkOut, all: bool, vals: &[f64]) {
     match ch.contiguous() {
         Some(base) if !all => col.run(base, vals, &ch.processed),
         _ => {
+            // Rows are set by place, so every row must be there.
+            col.complete();
             for (ri, &i) in ch.rows.iter().enumerate() {
                 if !ch.processed[ri] {
                     continue;
@@ -177,9 +179,11 @@ pub(super) struct Sink<'a> {
 
 impl<'a> Sink<'a> {
     /// Every field null, over `n` rows. With `prefill`, the output columns
-    /// are allocated and filled here, in parallel from `PAR_MIN_ROWS` rows,
-    /// for a sink that takes its runs one at a time; without, each as its
-    /// field is first written, for one that takes them all at once.
+    /// are allocated here, in parallel from `PAR_MIN_ROWS` rows, to take the
+    /// runs of a sink that takes them one at a time, in order from row 0
+    /// ([`F64Column::appending`]: each run is written where the last ended,
+    /// and the rows no run reached are null); without, each as its field is
+    /// first written, for one that takes them all at once.
     pub(super) fn new(
         spec: &'a Spec,
         d: &'a SpecDerived,
@@ -207,7 +211,7 @@ impl<'a> Sink<'a> {
                 Source::ScoredClock | Source::LearnedClock => Acc::Clocks(vec![None; n]),
                 Source::SelPred(_) | Source::SelName(_) | Source::AvgPred(_) => Acc::Derived,
                 Source::Unset => unreachable!("every field is given a source in output_index"),
-                _ if prefill => Acc::Flat(F64Column::new(n)),
+                _ if prefill => Acc::Flat(F64Column::appending(n)),
                 _ => Acc::Later,
             });
         let m = d.m;

@@ -672,6 +672,7 @@ impl Stream {
             None,
             false,
             &mut self.persisted.restart_fold.clone(),
+            Vec::new(),
         ) else {
             return Ok(());
         };
