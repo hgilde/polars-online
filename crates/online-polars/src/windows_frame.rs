@@ -28,7 +28,8 @@ use crate::span::{Span, format_duration};
 use crate::spec::{ClockPolicy, SessionGapSpec, clock_cfg_of};
 use crate::stream::usable;
 use crate::windows::{
-    Closed, Direction, KernelDef, OpDef, OpKind, Partial, Peek, Refusal, RowIn, Stat, Windows,
+    Closed, Direction, KernelDef, OpDef, OpKind, Partial, Peek, PlainRows, Refusal, RowIn, Stat,
+    Windows,
 };
 use crate::wrong_type::{Refused, wrong_type};
 
@@ -1248,6 +1249,20 @@ impl WindowsRun {
     }
 
     /// The output's schema: the input's columns, then each formula.
+    /// Switch the core's plain-run loop off or on again: for a test that
+    /// holds it to the general row loop, and a timing of what it saves. Not
+    /// state: a run read back from a file has it on.
+    #[doc(hidden)]
+    pub fn set_plain_run(&mut self, on: bool) {
+        self.core.set_plain_run(on);
+    }
+
+    /// Rows the core's plain-run loop has taken, for a test to see that it ran.
+    #[doc(hidden)]
+    pub fn plain_rows(&self) -> u64 {
+        self.core.plain_rows()
+    }
+
     pub fn schema(&self) -> Schema {
         self.k.output.clone()
     }
@@ -1680,15 +1695,14 @@ impl WindowsRun {
         if let Some(rows) = resolving {
             at.resize(self.core.ready(), rows.first().copied().unwrap_or(0));
         }
-        for i in 0..n {
+        let plain_rows = limit.is_none() && resolving.is_none();
+        let mut i = 0;
+        while i < n {
             if let Some(l) = limit
                 && self.core.ready_kept() >= l
             {
                 consumed = i;
                 break;
-            }
-            for (k, col) in values.iter().enumerate() {
-                row_values[k] = col[i];
             }
             // A key is looked up once while it repeats: a chunk of one
             // group, as a bank's resolver is fed, hashed it every row.
@@ -1701,6 +1715,30 @@ impl WindowsRun {
                     g
                 }
             };
+            // The rows the core's plain loop runs, taken by it as one block
+            // after another; the first row that is not plain, and the rows
+            // of a feed that stops at a row count or names the row that
+            // resolved each, are `push`'s one at a time.
+            if let Some(c) = clock.as_deref().filter(|_| plain_rows)
+                && self.core.plain_may_run()
+            {
+                let taken = self.core.push_plain(&PlainRows {
+                    group,
+                    start: i,
+                    clock: c,
+                    session: session.as_deref(),
+                    values: &values,
+                    accepts: &accepts,
+                    keys: groups.is_some().then_some(keys.as_slice()),
+                });
+                if taken > 0 {
+                    i += taken;
+                    continue;
+                }
+            }
+            for (k, col) in values.iter().enumerate() {
+                row_values[k] = col[i];
+            }
             let row = RowIn {
                 group,
                 clock: clock.as_ref().map(|c| c[i]),
@@ -1721,6 +1759,7 @@ impl WindowsRun {
             if let Some(rows) = resolving {
                 at.resize(self.core.ready(), rows[i]);
             }
+            i += 1;
         }
         if consumed > 0 {
             self.held.push_back(Arc::new(chunk.slice(0, consumed)));
