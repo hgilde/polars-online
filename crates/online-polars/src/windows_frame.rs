@@ -1734,13 +1734,12 @@ impl WindowsRun {
             // after another; the first row that is not plain, and the rows
             // of a feed that stops at a row count or names the row that
             // resolved each, are `push`'s one at a time.
-            if let Some(c) = clock.as_deref().filter(|_| plain_rows)
-                && self.core.plain_may_run()
-            {
+            if plain_rows && self.core.plain_may_run() {
                 let taken = self.core.push_plain(&PlainRows {
                     group,
                     start: i,
-                    clock: c,
+                    clock: clock.as_deref(),
+                    len: n,
                     session: session.as_deref(),
                     values: &values,
                     accepts: &accepts,

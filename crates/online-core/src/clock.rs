@@ -856,6 +856,13 @@ impl ClockState {
         self.prev_clock
     }
 
+    /// Whether any row has been seen: what a row-count clock, which has no
+    /// last clock value to show it, steps forward by 1 from
+    /// ([`Self::plain_forward`]).
+    pub fn started(&self) -> bool {
+        self.started
+    }
+
     /// The hash of the last row's session value, `None` before the first row
     /// or on a stream with no session column. A caller that has to know where
     /// a session boundary falls *before* the rows are processed -- the E54
@@ -1672,6 +1679,21 @@ mod tests {
             gap_cap: max,
             ..Default::default()
         }
+    }
+
+    /// A row-count clock has no last clock value to show a row was seen, so
+    /// `started` does, from the first row on, whether or not it was accepted.
+    #[test]
+    fn started_is_whether_any_row_was_seen() {
+        let cfg = cfg(10.0);
+        let mut c = ClockState::new();
+        assert!(!c.started());
+        c.advance(&cfg, None, None, false);
+        assert!(c.started());
+        let mut c = ClockState::new();
+        c.advance(&cfg, Some(ClockValue::F64(1.0)), None, true);
+        assert!(c.started());
+        assert!(!ClockState::default().started());
     }
 
     /// Task 153: `elapsed` is the time that passed, uncapped, beside the

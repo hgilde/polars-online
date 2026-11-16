@@ -2,7 +2,10 @@
 //! 429). A run of distinct, increasing stamps in one group, within the cap and
 //! its session, with a value in every input, is folded a block at a time by a
 //! loop of its own; any other row is the general `push`'s, and the loop goes on
-//! after it. Here every stream below runs twice, once with the plain loop and
+//! after it. The loop takes a datetime, a float and an integer clock and a
+//! row-count clock (no clock column), and a row that starts its group's windows
+//! over: a gap past the cap at one key or many, the first row after a cut
+//! (task 442). Here every stream below runs twice, once with the plain loop and
 //! once with it switched off, as four chunkings (two of them saved and loaded
 //! in the middle), and every output bit, every null and every byte of the saved
 //! state must be equal. The streams are plain for long stretches, broken by the
@@ -35,11 +38,46 @@ struct Breaks {
     /// A key of its own that a row has now and then: it falls silent past the
     /// cap between its rows, which cuts its windows while the stream goes on.
     rare: f64,
+    /// A step of the cap, or a unit either side of it: the edge of "past the
+    /// cap", where an exact test and a rounded one part.
+    edge: f64,
+}
+
+/// The clock a case runs on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Clk {
+    Datetime,
+    Float,
+    /// An integer column, in milliseconds.
+    Int,
+    /// No clock column: each row steps by one.
+    Rows,
+}
+
+impl Clk {
+    /// A time of `secs` seconds in this clock's units, as an operator's
+    /// parameter: a duration string, or a number (a row count on `Rows`).
+    fn t(self, secs: f64) -> Value {
+        match self {
+            Clk::Datetime => json!(format!("{secs}s")),
+            Clk::Float | Clk::Rows => json!(secs),
+            Clk::Int => json!(secs * 1000.0),
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Clk::Datetime => "datetime",
+            Clk::Float => "float",
+            Clk::Int => "integer",
+            Clk::Rows => "row-count",
+        }
+    }
 }
 
 struct Data {
     ts_ns: Vec<i64>,
     ts_f: Vec<f64>,
+    ts_i: Vec<i64>,
     x: Vec<Option<f64>>,
     y: Vec<Option<f64>>,
     g: Vec<i64>,
@@ -52,6 +90,7 @@ fn data(n: usize, seed: u64, b: Breaks, keys: u32) -> Data {
     let mut d = Data {
         ts_ns: vec![],
         ts_f: vec![],
+        ts_i: vec![],
         x: vec![],
         y: vec![],
         g: vec![],
@@ -63,6 +102,8 @@ fn data(n: usize, seed: u64, b: Breaks, keys: u32) -> Data {
             0.0
         } else if r.next() < b.cap {
             400.0
+        } else if r.next() < b.edge {
+            [29.999, 30.0, 30.001][(r.next() * 3.0) as usize % 3]
         } else {
             -0.5 * u.ln()
         };
@@ -77,6 +118,7 @@ fn data(n: usize, seed: u64, b: Breaks, keys: u32) -> Data {
         m += (r.next() - 0.5) * 0.02;
         d.ts_ns.push((t * 1e9) as i64 + 1_700_000_000_000_000_000);
         d.ts_f.push(((t * 1e9) as i64) as f64 / 1e9);
+        d.ts_i.push((t * 1e3) as i64 + 1_700_000_000_000);
         d.x.push((r.next() >= b.null).then_some(m));
         d.y.push((r.next() >= b.null).then_some(m * 0.5 + r.next()));
         d.g.push(if r.next() < b.rare {
@@ -89,21 +131,18 @@ fn data(n: usize, seed: u64, b: Breaks, keys: u32) -> Data {
     d
 }
 
-fn frame(
-    d: &Data,
-    float_clock: bool,
-    grouped: bool,
-    session: bool,
-    a: usize,
-    z: usize,
-) -> DataFrame {
-    let mut cols = vec![if float_clock {
-        Column::new("ts".into(), &d.ts_f[a..z])
-    } else {
-        Column::new("ts".into(), &d.ts_ns[a..z])
-            .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
-            .unwrap()
-    }];
+fn frame(d: &Data, clk: Clk, grouped: bool, session: bool, a: usize, z: usize) -> DataFrame {
+    let mut cols = vec![];
+    match clk {
+        Clk::Float => cols.push(Column::new("ts".into(), &d.ts_f[a..z])),
+        Clk::Datetime => cols.push(
+            Column::new("ts".into(), &d.ts_ns[a..z])
+                .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
+                .unwrap(),
+        ),
+        Clk::Int => cols.push(Column::new("ts".into(), &d.ts_i[a..z])),
+        Clk::Rows => {}
+    }
     cols.push(Column::new("x".into(), &d.x[a..z]));
     cols.push(Column::new("y".into(), &d.y[a..z]));
     if grouped {
@@ -156,12 +195,8 @@ fn op(name: &str, input: &str, hl: &Value, extra: Value) -> Value {
 /// The operators of a case, as formulas: every statistic a plain kernel runs,
 /// under the four `closed` values, two inputs, `min_samples`, and a kernel of
 /// its own for each half-life.
-fn formulas(float_clock: bool, flavor: usize) -> Vec<Value> {
-    let (h5, h2) = if float_clock {
-        (json!(5.0), json!(2.0))
-    } else {
-        (json!("5s"), json!("2s"))
-    };
+fn formulas(clk: Clk, flavor: usize) -> Vec<Value> {
+    let (h5, h2) = (clk.t(5.0), clk.t(2.0));
     let closed = |c: &str| json!({"closed": c});
     let mut f = vec![];
     let mut add = |name: &str, t: Value| f.push(json!({"name": name, "tree": t}));
@@ -198,13 +233,7 @@ fn formulas(float_clock: bool, flavor: usize) -> Vec<Value> {
         // Windows: the queue's reads and pushes, under every `closed` and
         // `partial`, beside a running kernel.
         4 | 5 => {
-            let w = |secs: f64| {
-                if float_clock {
-                    json!(secs)
-                } else {
-                    json!(format!("{secs}s"))
-                }
-            };
+            let w = |secs: f64| clk.t(secs);
             add("mean", op("ewm_mean", "x", &h5, json!({})));
             add(
                 "windowed",
@@ -237,7 +266,7 @@ fn formulas(float_clock: bool, flavor: usize) -> Vec<Value> {
             } else {
                 ("left", "none")
             };
-            let w = if float_clock { json!(7.0) } else { json!("7s") };
+            let w = clk.t(7.0);
             for c in [c1, c2] {
                 let ex = |partial: &str| json!({"window_size": w, "closed": c, "partial": partial});
                 add(&format!("m_{c}"), op("ewm_mean", "x", &h2, ex("null")));
@@ -248,11 +277,7 @@ fn formulas(float_clock: bool, flavor: usize) -> Vec<Value> {
         }
         // Quantiles: a sketch fed beside the queue, running and windowed.
         6 => {
-            let w = if float_clock {
-                json!(20.0)
-            } else {
-                json!("20s")
-            };
+            let w = clk.t(20.0);
             add(
                 "q_running",
                 op("ewm_quantile", "x", &h5, json!({"quantile": 0.5})),
@@ -271,13 +296,7 @@ fn formulas(float_clock: bool, flavor: usize) -> Vec<Value> {
         // Forward kernels alone: every statistic and `closed`, `partial` and
         // `min_samples`, a window short and long, two inputs.
         10 | 11 => {
-            let w = |secs: f64| {
-                if float_clock {
-                    json!(secs)
-                } else {
-                    json!(format!("{secs}s"))
-                }
-            };
+            let w = |secs: f64| clk.t(secs);
             let (c1, c2) = if flavor == 10 {
                 ("right", "both")
             } else {
@@ -302,13 +321,7 @@ fn formulas(float_clock: bool, flavor: usize) -> Vec<Value> {
         // A forward quantile, a forward sum with no decay, and kernels of both
         // directions in one core, a plain one among them.
         12 | 13 => {
-            let w = |secs: f64| {
-                if float_clock {
-                    json!(secs)
-                } else {
-                    json!(format!("{secs}s"))
-                }
-            };
+            let w = |secs: f64| clk.t(secs);
             add(
                 "fq",
                 op(
@@ -348,11 +361,7 @@ fn formulas(float_clock: bool, flavor: usize) -> Vec<Value> {
         }
         // A forward kernel beside plain ones.
         _ => {
-            let w = if float_clock {
-                json!(30.0)
-            } else {
-                json!("30s")
-            };
+            let w = clk.t(30.0);
             add("mean", op("ewm_mean", "x", &h5, json!({})));
             add(
                 "ahead",
@@ -367,20 +376,20 @@ fn formulas(float_clock: bool, flavor: usize) -> Vec<Value> {
 struct Case {
     name: String,
     config: Value,
-    float_clock: bool,
+    clk: Clk,
     grouped: bool,
     session: bool,
     breaks: Breaks,
     keys: u32,
-    /// Whether the plain loop must have taken a good part of the rows.
-    engages: bool,
+    /// The share of the rows the plain loop must have taken, a tenth.
+    engages: u32,
     /// Whether the case is in the essentials tier.
     essential: bool,
 }
 
 fn cases() -> Vec<Case> {
     let mut cases = vec![];
-    let regimes: [(&str, Breaks); 10] = [
+    let regimes: [(&str, Breaks); 12] = [
         ("plain", Breaks::default()),
         (
             "nulls",
@@ -439,6 +448,22 @@ fn cases() -> Vec<Case> {
                 ..Breaks::default()
             },
         ),
+        // A key whose rows are so far apart that most of them start it over.
+        (
+            "restarts",
+            Breaks {
+                rare: 0.012,
+                ..Breaks::default()
+            },
+        ),
+        // Steps at the edge of the cap.
+        (
+            "cap edge",
+            Breaks {
+                edge: 0.03,
+                ..Breaks::default()
+            },
+        ),
         (
             "everything",
             Breaks {
@@ -448,19 +473,54 @@ fn cases() -> Vec<Case> {
                 session: 0.002,
                 back: 0.001,
                 rare: 0.003,
+                edge: 0.002,
             },
         ),
     ];
-    for float_clock in [false, true] {
+    for clk in [Clk::Datetime, Clk::Float, Clk::Int, Clk::Rows] {
         for flavor in 0..14 {
             for (rname, breaks) in regimes {
-                for (grouped, keys) in [(false, 1), (true, 1), (true, 3), (true, 12)] {
+                // A row-count clock has no stamp to tie, no gap to cap and no
+                // step back; a forward window under groups needs a clock column.
+                if clk == Clk::Rows
+                    && (breaks.tie > 0.0
+                        || breaks.cap > 0.0
+                        || breaks.back > 0.0
+                        || breaks.edge > 0.0
+                        || matches!(rname, "restarts"))
+                {
+                    continue;
+                }
+                // The clocks other than the datetime one take the same loop
+                // with another step: a spread of flavors (running, every
+                // `closed`, windows, a quantile, forward, mixed) keeps the
+                // extended run to minutes.
+                if clk != Clk::Datetime && !matches!(flavor, 0 | 1 | 2 | 5 | 6 | 10 | 13) {
+                    continue;
+                }
+                let forward = matches!(flavor, 7 | 10..=13);
+                for (grouped, keys) in [(false, 1), (true, 1), (true, 3), (true, 12), (true, 300)] {
+                    if clk == Clk::Rows && grouped && forward {
+                        continue;
+                    }
+                    // Many keys, every row of a key far from the one before: a
+                    // few flavors and regimes, as each case is long.
+                    if keys == 300
+                        && !(matches!(flavor, 0 | 1 | 4 | 5 | 10 | 13)
+                            && matches!(rname, "plain" | "nulls" | "everything" | "sessions"))
+                    {
+                        continue;
+                    }
                     let session = breaks.session > 0.0;
-                    let mut config = json!({
-                        "formulas": formulas(float_clock, flavor),
-                        "clock": "ts",
-                        "gap_cap": if float_clock { json!(30.0) } else { json!("30s") },
-                    });
+                    let mut config = json!({"formulas": formulas(clk, flavor)});
+                    if clk != Clk::Rows {
+                        config["clock"] = json!("ts");
+                        config["gap_cap"] = match clk {
+                            Clk::Datetime => json!("30s"),
+                            Clk::Int => json!(29999.5),
+                            _ => json!(30.0),
+                        };
+                    }
                     if grouped {
                         config["group"] = json!("g");
                     }
@@ -468,28 +528,43 @@ fn cases() -> Vec<Case> {
                         config["session"] = json!("s");
                     }
                     if breaks.back > 0.0 {
-                        config["restart_after_step_back"] =
-                            if float_clock { json!(1.0) } else { json!("1s") };
+                        config["restart_after_step_back"] = clk.t(1.0);
                     }
+                    let many = keys == 300;
                     cases.push(Case {
                         name: format!(
                             "{} flavor {flavor} {rname} grouped {grouped} keys {keys}",
-                            if float_clock { "float" } else { "datetime" }
+                            clk.name()
                         ),
                         config,
-                        float_clock,
+                        clk,
                         grouped,
                         session,
                         breaks,
                         keys,
-                        engages: true,
-                        essential: !float_clock
-                            && matches!(keys, 1 | 12)
-                            && matches!(
-                                rname,
-                                "plain" | "everything" | "many nulls and ties" | "a silent key"
-                            )
-                            && matches!(flavor, 0 | 1 | 2 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13),
+                        // 300 keys: each key's first row is `push`'s, and with
+                        // a session column each key's row after a change.
+                        engages: if many { 3 } else { 8 },
+                        essential: {
+                            let few = matches!(keys, 1 | 12)
+                                && matches!(
+                                    rname,
+                                    "plain" | "everything" | "many nulls and ties" | "a silent key"
+                                )
+                                && if clk == Clk::Datetime {
+                                    matches!(
+                                        flavor,
+                                        0 | 1 | 2 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13
+                                    )
+                                } else {
+                                    matches!(flavor, 0 | 2 | 5 | 13)
+                                };
+                            let many_keys = many
+                                && clk != Clk::Float
+                                && matches!(flavor, 0 | 5 | 13)
+                                && rname == "plain";
+                            (clk != Clk::Float && few) || many_keys
+                        },
                     });
                 }
             }
@@ -501,9 +576,7 @@ fn cases() -> Vec<Case> {
 /// One run of a case: its outputs and state, and how many rows the plain loop took.
 fn run(c: &Case, d: &Data, n: usize, chunks: &[usize], reload: bool, plain: bool) -> (H, u64) {
     let config: WindowsConfig = serde_json::from_value(c.config.clone()).unwrap();
-    let schema = frame(d, c.float_clock, c.grouped, c.session, 0, 1)
-        .schema()
-        .clone();
+    let schema = frame(d, c.clk, c.grouped, c.session, 0, 1).schema().clone();
     let mut run = WindowsRun::new(config.clone(), &schema).unwrap();
     run.set_plain_run(plain);
     let mut h = H(0xcbf29ce484222325, 0);
@@ -513,7 +586,7 @@ fn run(c: &Case, d: &Data, n: usize, chunks: &[usize], reload: bool, plain: bool
         if at >= to {
             break;
         }
-        let f = frame(d, c.float_clock, c.grouped, c.session, at, to);
+        let f = frame(d, c.clk, c.grouped, c.session, at, to);
         match run.feed(&f, None) {
             Ok(o) => h.frame(&o),
             Err(e) => {
@@ -564,10 +637,10 @@ fn hold_to_push(keep: impl Fn(&Case) -> bool, n: usize) {
                 "{} chunking {k}: the plain loop moved a bit or a state byte",
                 c.name
             );
-            if k == 0 && c.engages {
+            if k == 0 && c.engages > 0 {
                 // Most rows of a stream that is plain mostly.
                 assert!(
-                    taken * 10 >= (n as u64) * 8,
+                    taken * 10 >= (n as u64) * u64::from(c.engages),
                     "{}: the plain loop took {taken} of {n} rows",
                     c.name
                 );
@@ -586,7 +659,7 @@ fn the_plain_loop_gives_push_every_bit_and_every_state_byte() {
 }
 
 #[test]
-#[ignore = "extended: two minutes in a test build"]
+#[ignore = "extended: several minutes in a test build"]
 fn the_plain_loop_gives_push_every_bit_and_every_state_byte_in_every_case() {
     hold_to_push(|_| true, 3000);
 }

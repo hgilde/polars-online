@@ -155,6 +155,12 @@ enum Mode {
 }
 
 fn config(mode: Mode, group: bool, session: bool) -> WindowsConfig {
+    config_with(mode, group, session, "5m")
+}
+
+/// [`config`] with a `gap_cap`: a key whose rows are further apart than the cap
+/// starts its windows over at each of them.
+fn config_with(mode: Mode, group: bool, session: bool, cap: &str) -> WindowsConfig {
     let op = |name: &str| {
         let mut o = json!({"half_life": "5s"});
         if mode != Mode::Running {
@@ -170,7 +176,7 @@ fn config(mode: Mode, group: bool, session: bool) -> WindowsConfig {
     let mut c = json!({
         "formulas": formulas,
         "clock": "ts",
-        "gap_cap": "5m",
+        "gap_cap": cap,
     });
     if group {
         c["group"] = json!("g");
@@ -236,11 +242,22 @@ fn digest(
 }
 
 fn check(keys: usize, null_keys: bool, run: usize, mode: Mode) {
-    let n = 5000;
+    check_with(5000, keys, null_keys, run, mode, "5m", &KINDS);
+}
+
+fn check_with(
+    n: usize,
+    keys: usize,
+    null_keys: bool,
+    run: usize,
+    mode: Mode,
+    cap: &str,
+    kinds: &[Kind],
+) {
     let d = data(n, keys, null_keys, run);
-    let cfg = config(mode, true, false);
+    let cfg = config_with(mode, true, false, cap);
     let (want, _) = digest(&d, &cfg, &[n], false, Some(Kind::Int64), None, keys);
-    for kind in KINDS {
+    for &kind in kinds {
         if kind == Kind::UInt8 && keys > 200 {
             continue;
         }
@@ -260,7 +277,7 @@ fn check(keys: usize, null_keys: bool, run: usize, mode: Mode) {
                 }
                 assert_eq!(
                     got, want,
-                    "{kind:?}, {keys} keys, nulls {null_keys}, runs of {run}, {mode:?}, chunks {chunks:?}, reload {reload}"
+                    "{kind:?}, {keys} keys, nulls {null_keys}, runs of {run}, {mode:?}, cap {cap}, chunks {chunks:?}, reload {reload}"
                 );
             }
         }
@@ -295,6 +312,36 @@ fn every_dtype_of_key_gives_the_windows_one_answer_at_two_thousand_keys() {
     check(2000, false, 1, Mode::Running);
     check(2000, true, 5, Mode::Windowed);
     check(2000, true, 5, Mode::Forward);
+}
+
+#[test]
+fn every_dtype_of_key_gives_the_windows_one_answer_where_rows_restart_their_group() {
+    // A row every half second at 100 keys is 50 s after its key's last: past a
+    // cap of 30 s about half of them restart their key's windows. At one key
+    // a cap of 1 s is passed by one row in seven.
+    for mode in [Mode::Running, Mode::Windowed, Mode::Forward] {
+        let kinds = [Kind::Int64, Kind::Str, Kind::Cat];
+        check_with(5000, 100, false, 1, mode, "30s", &kinds);
+        check_with(5000, 1, false, 1, mode, "1s", &kinds);
+        check_with(5000, 7, true, 1, mode, "2s", &kinds);
+    }
+}
+
+#[test]
+#[ignore = "extended: ten thousand keys in a test build"]
+fn every_dtype_of_key_gives_the_windows_one_answer_where_every_row_restarts_its_group() {
+    // 10,000 keys at 5 minutes: each key's rows are 5,000 s apart.
+    for mode in [Mode::Running, Mode::Windowed, Mode::Forward] {
+        check_with(
+            40_000,
+            10_000,
+            false,
+            1,
+            mode,
+            "5m",
+            &[Kind::Int64, Kind::Str],
+        );
+    }
 }
 
 #[test]

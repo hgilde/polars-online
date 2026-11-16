@@ -1942,8 +1942,8 @@ mod plain;
 
 use keys::IntGroups;
 pub(crate) use keys::{ChunkKeys, session_hashes};
-use plain::Derived;
 pub(crate) use plain::PlainRows;
+use plain::{Derived, Parts};
 
 /// Group keys, as text, to their groups: hashed with a fixed, fast hasher,
 /// which the saved state never sees ([`sorted_map`]).
@@ -2541,17 +2541,7 @@ impl Windows {
         if restarted {
             // Every window of the group was ended above or before: nothing
             // refers to the old policy time, so it starts over at 0.
-            for q in &mut g.queues {
-                q.clear();
-            }
-            g.open.iter_mut().for_each(|o| *o = None);
-            g.last_valued.iter_mut().for_each(|v| *v = f64::NAN);
-            g.held.iter_mut().for_each(|v| *v = f64::NAN);
-            g.tau = 0.0;
-            g.origin = row.clock;
-            g.restart = false;
-            g.stamp = None;
-            g.pending.clear();
+            restart_in(g, row.clock);
         } else if let (Some(now), Some(origin)) = (row.clock, g.origin) {
             // From the stretch's origin in one subtraction (exact in
             // integer nanoseconds), not a sum of rounded steps: summed, a
@@ -2746,6 +2736,42 @@ impl Windows {
         }
     }
 
+    /// The kernels, the held rows and the buffers a group's windows are read
+    /// and written with, borrowed apart from the groups.
+    fn split(&mut self) -> (Parts<'_>, &mut Vec<Group>) {
+        let Windows {
+            kernels,
+            ops,
+            members,
+            groups,
+            held_values,
+            held_meta,
+            held_first,
+            n_outputs,
+            scratch_row,
+            scratch_sum,
+            n_forward,
+            derived,
+            ..
+        } = self;
+        (
+            Parts {
+                kernels: kernels.as_slice(),
+                ops: ops.as_slice(),
+                members: members.as_slice(),
+                held_values,
+                held_meta,
+                held_first: *held_first,
+                n_out: *n_outputs,
+                scratch_row,
+                scratch_sum,
+                n_wait: derived.n_wait,
+                n_forward: *n_forward,
+            },
+            groups,
+        )
+    }
+
     /// Resolve the pending backward windows of group `gi` at its stamp.
     fn flush_group(&mut self, gi: usize) {
         #[cfg(test)]
@@ -2754,48 +2780,11 @@ impl Windows {
             let idle = idle + u64::from(self.groups[gi].pending.is_empty());
             c.set((calls + 1, idle));
         });
-        let g = &mut self.groups[gi];
-        if g.pending.is_empty() {
+        if self.groups[gi].pending.is_empty() {
             return;
         }
-        let (tau, off, form) = (g.tau, g.off, g.form);
-        for (ki, k) in self.kernels.iter().enumerate() {
-            if k.direction != Direction::Backward || !k.closed.near(Direction::Backward) {
-                continue;
-            }
-            let m = &self.members[ki];
-            by_width!(
-                g.queues[ki].wide(),
-                read_backward(
-                    k,
-                    &self.ops,
-                    m,
-                    &mut g.queues[ki],
-                    &mut self.scratch_sum,
-                    tau,
-                    off,
-                    form,
-                    &mut g.stamp_values[ki],
-                )
-            );
-            let complete = k.window_size.is_none_or(|w| tau >= w);
-            for &seq in &g.pending {
-                let held = Held {
-                    first: self.held_first,
-                    n_outputs: self.n_outputs,
-                    values: &mut self.held_values,
-                    meta: &mut self.held_meta,
-                };
-                write_backward(&self.ops, m, seq, &g.stamp_values[ki], complete, held);
-            }
-        }
-        for &seq in &g.pending {
-            let r = usize::try_from(seq - self.held_first).expect("a pending row is held");
-            self.held_meta[r].open -= 1;
-        }
-        // Emptied, not taken: a stamp's rows wait here on every row of a
-        // clock, and the next row's push would make the list again.
-        g.pending.clear();
+        let (mut p, groups) = self.split();
+        flush_in(&mut p, &mut groups[gi]);
     }
 
     /// End every group's open windows `how`; every group starts its windows
@@ -2835,62 +2824,8 @@ impl Windows {
     /// every window over.
     fn end_group(&mut self, gi: usize, how: End) {
         self.flush_group(gi);
-        let g = &mut self.groups[gi];
-        g.restart = true;
-        let end_tau = g.tau;
-        for (ki, k) in self.kernels.iter().enumerate() {
-            if k.direction != Direction::Forward {
-                continue;
-            }
-            let w = k.window_size.expect("a forward kernel has a window");
-            while g.closed[ki] < g.waiting.len() {
-                let t = g.waiting[g.closed[ki]];
-                g.closed[ki] += 1;
-                // Under "right" and "both" a window whose far edge is the
-                // stretch's last row holds every timestamp it can, and a cut
-                // or a reset leaves none of them to come: it is whole, as its
-                // backward mirror is, where a cut cut it short -- null, or
-                // dropped (task 160, PC2) -- and a reset discarded it (task
-                // 173, PC2). Under "left" and "none" a row on the edge closed
-                // it already. A reset discards every other window.
-                let whole = matches!(how, End::Cut | End::Discard)
-                    && k.closed.far(Direction::Forward)
-                    && gap(g.form, t.off, g.off).cmp_window(k) == Ordering::Equal;
-                let (how, far) = if whole {
-                    (End::Complete, t.tau + w)
-                } else {
-                    (how, end_tau)
-                };
-                let held = Held {
-                    first: self.held_first,
-                    n_outputs: self.n_outputs,
-                    values: &mut self.held_values,
-                    meta: &mut self.held_meta,
-                };
-                by_width!(
-                    g.queues[ki].wide(),
-                    close(
-                        k,
-                        &self.ops,
-                        &self.members[ki],
-                        &mut g.queues[ki],
-                        &mut self.scratch_sum,
-                        g.open[ki],
-                        &g.open_x[ki],
-                        &g.open_held[ki],
-                        end_tau,
-                        t,
-                        how,
-                        far,
-                        g.form,
-                        held,
-                    )
-                );
-            }
-            g.open[ki] = None;
-            g.queues[ki].clear();
-        }
-        retire(&self.kernels, g);
+        let (mut p, groups) = self.split();
+        end_in(&mut p, &mut groups[gi], how);
         self.unlink(gi);
     }
 
@@ -3507,6 +3442,133 @@ fn forward_step(
         g.open_held[ki][j] = g.held[o];
     }
     g.open[ki] = Some((seq, tau, off));
+}
+
+/// Resolve the pending backward windows of group `g` at its stamp: every
+/// kernel that waits for the next stamp is read as the group stands, and the
+/// pending rows are written.
+fn flush_in(p: &mut Parts<'_>, g: &mut Group) {
+    if g.pending.is_empty() {
+        return;
+    }
+    let (tau, off, form) = (g.tau, g.off, g.form);
+    for (ki, k) in p.kernels.iter().enumerate() {
+        if k.direction != Direction::Backward || !k.closed.near(Direction::Backward) {
+            continue;
+        }
+        let m = &p.members[ki];
+        by_width!(
+            g.queues[ki].wide(),
+            read_backward(
+                k,
+                p.ops,
+                m,
+                &mut g.queues[ki],
+                p.scratch_sum,
+                tau,
+                off,
+                form,
+                &mut g.stamp_values[ki],
+            )
+        );
+        let complete = k.window_size.is_none_or(|w| tau >= w);
+        for &seq in &g.pending {
+            let held = Held {
+                first: p.held_first,
+                n_outputs: p.n_out,
+                values: &mut *p.held_values,
+                meta: &mut *p.held_meta,
+            };
+            write_backward(p.ops, m, seq, &g.stamp_values[ki], complete, held);
+        }
+    }
+    for &seq in &g.pending {
+        let r = usize::try_from(seq - p.held_first).expect("a pending row is held");
+        p.held_meta[r].open -= 1;
+    }
+    // Emptied, not taken: a stamp's rows wait here on every row of a clock,
+    // and the next row's push would make the list again.
+    g.pending.clear();
+}
+
+/// End group `g`'s open windows `how` (the silent list is the caller's): its
+/// pending backward windows are read as they stand, its forward windows
+/// closed at the last row the group saw, and its queues emptied; its next row
+/// starts every window over.
+fn end_in(p: &mut Parts<'_>, g: &mut Group, how: End) {
+    flush_in(p, g);
+    g.restart = true;
+    let end_tau = g.tau;
+    for (ki, k) in p.kernels.iter().enumerate() {
+        if k.direction != Direction::Forward {
+            continue;
+        }
+        let w = k.window_size.expect("a forward kernel has a window");
+        while g.closed[ki] < g.waiting.len() {
+            let t = g.waiting[g.closed[ki]];
+            g.closed[ki] += 1;
+            // Under "right" and "both" a window whose far edge is the
+            // stretch's last row holds every timestamp it can, and a cut
+            // or a reset leaves none of them to come: it is whole, as its
+            // backward mirror is, where a cut cut it short -- null, or
+            // dropped (task 160, PC2) -- and a reset discarded it (task
+            // 173, PC2). Under "left" and "none" a row on the edge closed
+            // it already. A reset discards every other window.
+            let whole = matches!(how, End::Cut | End::Discard)
+                && k.closed.far(Direction::Forward)
+                && gap(g.form, t.off, g.off).cmp_window(k) == Ordering::Equal;
+            let (how, far) = if whole {
+                (End::Complete, t.tau + w)
+            } else {
+                (how, end_tau)
+            };
+            let held = Held {
+                first: p.held_first,
+                n_outputs: p.n_out,
+                values: &mut *p.held_values,
+                meta: &mut *p.held_meta,
+            };
+            by_width!(
+                g.queues[ki].wide(),
+                close(
+                    k,
+                    p.ops,
+                    &p.members[ki],
+                    &mut g.queues[ki],
+                    p.scratch_sum,
+                    g.open[ki],
+                    &g.open_x[ki],
+                    &g.open_held[ki],
+                    end_tau,
+                    t,
+                    how,
+                    far,
+                    g.form,
+                    held,
+                )
+            );
+        }
+        g.open[ki] = None;
+        g.queues[ki].clear();
+    }
+    retire(p.kernels, g);
+}
+
+/// A group's row that starts its windows over -- the first after a cut or a
+/// reset -- finds nothing of the old stretch: every window ended already or
+/// before, so the policy time starts again at 0 from this row's clock.
+fn restart_in(g: &mut Group, origin: Option<ClockValue>) {
+    for q in &mut g.queues {
+        q.clear();
+    }
+    g.open.iter_mut().for_each(|o| *o = None);
+    g.last_valued.iter_mut().for_each(|v| *v = f64::NAN);
+    g.held.iter_mut().for_each(|v| *v = f64::NAN);
+    g.tau = 0.0;
+    g.origin = origin;
+    g.restart = false;
+    g.stamp = None;
+    g.pending.clear();
 }
 
 /// Drop the waiting rows every forward kernel has closed.
