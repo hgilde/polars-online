@@ -401,6 +401,28 @@ impl KernelDef {
         v
     }
 
+    /// [`Self::mass`] of the distance from a row to the window's far edge,
+    /// through the four entries of `memo.cut`, each the last distance whose
+    /// low two bits it is of: the same function of the same bits, so the same
+    /// bits.
+    #[inline]
+    fn mass_cut_in(&self, t: f64, memo: &mut DecayMemo) -> f64 {
+        if t <= 0.0 {
+            return 0.0;
+        }
+        if self.half_life.is_infinite() {
+            return t;
+        }
+        let bits = t.to_bits();
+        let slot = &mut memo.cut.get_or_insert_with(Default::default)[(bits & 3) as usize];
+        if slot.0 == bits {
+            return slot.1;
+        }
+        let v = self.mass_finite(t);
+        *slot = (bits, v);
+        v
+    }
+
     /// [`Self::mass_in`] on the memo's second slot, for a second distance
     /// asked beside the first.
     #[inline]
@@ -487,6 +509,11 @@ pub(crate) struct DecayMemo {
     mass_far: (u64, f64),
     /// A forward kernel's close, which a backward kernel's queue never needs.
     fwd: Option<Box<FwdMemo>>,
+    /// A windowed backward kernel's cut: the mass of the distance from a
+    /// row to the window's far edge, which is the window up to the rounding
+    /// of `tau - w` against `tau` (a few values, never the one before), made
+    /// where a queue first has it.
+    cut: Option<Box<[(u64, f64); 4]>>,
 }
 
 /// A forward kernel's close: the mass from the row to its open row, and the
@@ -1875,7 +1902,7 @@ fn mass_between_in(k: &KernelDef, memo: &mut DecayMemo, t: f64, a: f64, b: f64) 
         return 0.0;
     }
     match k.direction {
-        Direction::Backward => k.mass_in(t - a, memo) - k.mass_far_in(t - b, memo),
+        Direction::Backward => k.mass_cut_in(t - a, memo) - k.mass_far_in(t - b, memo),
         Direction::Forward => k.mass(b - t) - k.mass(a - t),
     }
 }
@@ -4037,6 +4064,11 @@ mod tests {
                         k.mass(d).to_bits(),
                         "far mass of {d} at {half_life}, pass {pass}"
                     );
+                    assert_eq!(
+                        k.mass_cut_in(d, &mut memo).to_bits(),
+                        k.mass(d).to_bits(),
+                        "cut mass of {d} at {half_life}, pass {pass}"
+                    );
                     // A forward kernel's close takes each of these on a slot of
                     // its own (task 441).
                     for slot in [&mut fwd.mass_open, &mut fwd.mass_span] {
@@ -4076,6 +4108,7 @@ mod tests {
             mass: (2.0f64.to_bits(), 456.0),
             mass_far: (2.0f64.to_bits(), 789.0),
             fwd: None,
+            cut: None,
         };
         assert_eq!(k.discount_in(2.0, &mut memo), 123.0);
         assert_eq!(k.mass_in(2.0, &mut memo), 456.0);
@@ -4099,6 +4132,56 @@ mod tests {
             (memo.discount, memo.mass, memo.mass_far),
             (held.discount, held.mass, held.mass_far)
         );
+    }
+
+    /// The cut's mass keeps the last distance of each of four low-bit
+    /// classes, so the few values `tau - (tau - w)` takes are answered from
+    /// the table, and a distance that is not held is the function's.
+    #[test]
+    fn the_cut_s_mass_holds_the_last_distance_of_each_of_four_classes() {
+        let k = KernelDef {
+            direction: Direction::Backward,
+            half_life: 5.0,
+            window_size: Some(60.0),
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let mut memo = DecayMemo::default();
+        // Four neighbours of 60: one of each class.
+        let near: Vec<f64> = (0..4)
+            .map(|i| f64::from_bits(60.0f64.to_bits() + i))
+            .collect();
+        for &d in &near {
+            assert_eq!(k.mass_cut_in(d, &mut memo).to_bits(), k.mass(d).to_bits());
+        }
+        // Planted values come back for the held distances: the table, not the function.
+        let table = memo.cut.as_mut().expect("made at the first ask");
+        for slot in table.iter_mut() {
+            slot.1 = -1.0;
+        }
+        for &d in &near {
+            assert_eq!(k.mass_cut_in(d, &mut memo), -1.0);
+        }
+        // A distance of a held class replaces that class's, and only it.
+        let other = f64::from_bits(60.0f64.to_bits() + 4);
+        assert_eq!(
+            k.mass_cut_in(other, &mut memo).to_bits(),
+            k.mass(other).to_bits()
+        );
+        assert_eq!(
+            k.mass_cut_in(near[0], &mut memo).to_bits(),
+            k.mass(near[0]).to_bits()
+        );
+        for &d in &near[1..] {
+            assert_eq!(k.mass_cut_in(d, &mut memo), -1.0);
+        }
+        // No distance and no decay are answered before the table.
+        assert_eq!(k.mass_cut_in(0.0, &mut memo), 0.0);
+        let inf = KernelDef {
+            half_life: f64::INFINITY,
+            ..k
+        };
+        assert_eq!(inf.mass_cut_in(7.0, &mut memo), 7.0);
     }
 
     /// A subnormal half-life passed `check`: `mass·x` underflowed to 0 and
