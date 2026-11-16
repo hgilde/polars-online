@@ -178,6 +178,10 @@ returns.
 - `seqtest`, `kmeans` and `micro` choose with selects where they branched
   on data: `kmeans` 1.12 times as fast at k=4 and 1.15 at k=20, `micro`
   1.12, `seqtest` 1.06. Outputs and saved state unchanged to the bit.
+- `rcov` and `corrchange`'s monitor keep the rows their rings let go and
+  reuse them: `corrchange`'s monitor 1.25 times as fast, `rcov` 1.04, with
+  near zero allocations a row. Outputs and saved state unchanged to the
+  bit.
 - `bocpd` at the default prune is about 5% faster (10% at one feature):
   it keeps the joint's log-sum-exp from the previous row's prune, and
   decides the prune without an `exp` where the answer cannot depend on it.
