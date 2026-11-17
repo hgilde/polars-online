@@ -1333,8 +1333,16 @@ fn windows_setup(id: &'static str, n: usize, blocks: usize) -> ScaleRun {
             group_of = Some(Box::new(move |i| i % n));
             vec![sum("x0")]
         }
+        // Every group twice in the warm-up, then a row of the first group
+        // at a later stamp, then blocks of the first 50. Each group has its
+        // own clock, so the warm-up's second pass leaves a row of every group
+        // pending at the stream's last stamp, and the first row at a later
+        // stamp resolves and emits all of them (the groups seen, each a row
+        // held, an output of its own): a cost of the rows held, not of a
+        // block's groups, which the warm-up's last row pays in the setup
+        // where the measured block would.
         "groups_seen" => {
-            warm = 2 * n;
+            warm = 2 * n + 1;
             group_of = Some(Box::new(move |i| if i < 2 * n { i % n } else { i % 50 }));
             vec![sum("x0")]
         }
