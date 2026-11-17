@@ -422,6 +422,10 @@ struct Plan {
     inputs: Vec<Node>,
     /// Distinct window operators: the hidden column and the core output.
     columns: Vec<(String, usize)>,
+    /// Where every formula is nothing but one window operator (or an
+    /// increment), each formula's hidden column: named once here, since
+    /// naming one writes the operator out as JSON.
+    bare: Option<Vec<String>>,
     /// Distinct increments: the hidden column, the input formula and whether
     /// the input is temporal (an increment in seconds).
     increments: Vec<(String, Node, bool)>,
@@ -527,6 +531,7 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, Refused> {
         ops: Vec::new(),
         inputs: Vec::new(),
         columns: Vec::new(),
+        bare: None,
         increments: Vec::new(),
         spans: Vec::new(),
     };
@@ -671,6 +676,11 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, Refused> {
         !(p.ops.is_empty() && p.increments.is_empty()),
         "checked per formula"
     );
+    p.bare = config
+        .formulas
+        .iter()
+        .map(|f| f.tree.bare_operator().map(hidden))
+        .collect();
     Ok(p)
 }
 
@@ -964,6 +974,8 @@ struct Constants {
     config: WindowsConfig,
     inputs: Vec<Node>,
     columns: Vec<(String, usize)>,
+    /// [`Plan::bare`].
+    bare: Option<Vec<String>>,
     increments: Vec<(String, Node, bool)>,
     accept: Vec<String>,
     /// The input's schema, as the call was built against it.
@@ -974,6 +986,20 @@ struct Constants {
     key_dtypes: Vec<(String, String)>,
     /// The output's schema: the input's columns, then each formula.
     output: Schema,
+}
+
+/// A row of a frame by its place in it, sliced out only where it is read: a
+/// chunk is fed far more often than a state is saved sliced.
+#[derive(Clone)]
+struct LastRow {
+    frame: DataFrame,
+    at: usize,
+}
+
+impl LastRow {
+    fn row(&self) -> DataFrame {
+        self.frame.slice(self.at as i64, 1)
+    }
 }
 
 /// One `with_windows` run: the core, its plan, and the input rows it holds.
@@ -1022,7 +1048,7 @@ pub struct WindowsRun {
     /// The last row read, skipped or fed, as the chunk had it (the hidden
     /// columns beside the input's when fed): what a sliced state saves as
     /// its identity beside the rows it holds (review R6, D1).
-    last_row: Option<DataFrame>,
+    last_row: Option<LastRow>,
     /// The first row's clock and session of this run's input, and whether
     /// a row has been seen: what a state saved by this run remembers its
     /// input by (review R4, B3; R7, E2).
@@ -1242,6 +1268,7 @@ impl WindowsRun {
                 config,
                 inputs,
                 columns: p.columns,
+                bare: p.bare,
                 increments: p.increments,
                 accept,
                 input: input.clone(),
@@ -1421,19 +1448,10 @@ impl WindowsRun {
         self.bare_formulas().is_none()
     }
 
-    /// The operator each formula is, where every formula is nothing else
-    /// but one (and the short cuts are on).
-    fn bare_formulas(&self) -> Option<Vec<&OpNode>> {
-        short_cuts()
-            .then(|| {
-                self.k
-                    .config
-                    .formulas
-                    .iter()
-                    .map(|f| f.tree.bare_operator())
-                    .collect()
-            })
-            .flatten()
+    /// The hidden column each formula is, where every formula is nothing else
+    /// but one operator (and the short cuts are on).
+    fn bare_formulas(&self) -> Option<&[String]> {
+        short_cuts().then_some(self.k.bare.as_deref()).flatten()
     }
 
     /// Every operator input over a whole frame, as one plan of the lazy
@@ -1640,7 +1658,10 @@ impl WindowsRun {
             // read; until then the loaded one still is, as `consumed` counts
             // the rows pending (review R6, D1; R7, E4).
             if self.resume_skip == 0 {
-                self.last_row = Some(df.slice(skip as i64 - 1, 1));
+                self.last_row = Some(LastRow {
+                    frame: df.clone(),
+                    at: skip - 1,
+                });
             }
             skipped = df.slice(skip as i64, df.height() - skip);
             df = &skipped;
@@ -1797,7 +1818,10 @@ impl WindowsRun {
                 // increments' state where they end.
                 if i > 0 {
                     self.held.push_back(Arc::new(chunk.slice(0, i)));
-                    self.last_row = Some(chunk.slice(i as i64 - 1, 1));
+                    self.last_row = Some(LastRow {
+                        frame: chunk.clone(),
+                        at: i - 1,
+                    });
                 }
                 self.rewind_increments(snapshot, df, &keys, &clock, session.as_deref(), i)?;
                 return Err(self.refusal(r, chunk_base));
@@ -1808,8 +1832,17 @@ impl WindowsRun {
             i += 1;
         }
         if consumed > 0 {
-            self.held.push_back(Arc::new(chunk.slice(0, consumed)));
-            self.last_row = Some(chunk.slice(consumed as i64 - 1, 1));
+            self.last_row = Some(LastRow {
+                frame: chunk.clone(),
+                at: consumed - 1,
+            });
+            // The whole chunk is held as it is: no slice of every column.
+            let kept = if consumed == chunk.height() {
+                chunk
+            } else {
+                chunk.slice(0, consumed)
+            };
+            self.held.push_back(Arc::new(kept));
         }
         if consumed < n {
             self.rewind_increments(snapshot, df, &keys, &clock, session.as_deref(), consumed)?;
@@ -1857,13 +1890,12 @@ impl WindowsRun {
         // A formula that is only a window operator's values is its hidden
         // column under the formula's name: no plan of the lazy engine for
         // it, which a bank's group would pay every chunk.
-        let bare = self.bare_formulas();
-        if let Some(ops) = bare {
-            let mut cols: Vec<Column> = Vec::with_capacity(ops.len() + 2);
-            for (f, op) in self.k.config.formulas.iter().zip(ops) {
+        if let Some(names) = self.bare_formulas() {
+            let mut cols: Vec<Column> = Vec::with_capacity(names.len() + 2);
+            for (f, name) in self.k.config.formulas.iter().zip(names) {
                 cols.push(
                     frame
-                        .column(hidden(op).as_str())?
+                        .column(name.as_str())?
                         .clone()
                         .with_name(f.name.as_str().into()),
                 );
@@ -2433,17 +2465,17 @@ impl WindowsRun {
         // A formula that is only an operator's values is its hidden column
         // under the formula's name: no plan of the lazy engine for it, which
         // costs 100 to 150 microseconds a chunk whatever the chunk holds.
-        if let Some(ops) = self.bare_formulas() {
+        if let Some(names) = self.bare_formulas() {
             let mut cols: Vec<Column> = frame
                 .columns()
                 .iter()
                 .filter(|c| self.k.input.contains(c.name().as_str()))
                 .cloned()
                 .collect();
-            for (f, op) in self.k.config.formulas.iter().zip(ops) {
+            for (f, name) in self.k.config.formulas.iter().zip(names) {
                 cols.push(
                     frame
-                        .column(hidden(op).as_str())?
+                        .column(name.as_str())?
                         .clone()
                         .with_name(f.name.as_str().into()),
                 );
@@ -2505,14 +2537,15 @@ impl WindowsRun {
                 }
             }
         }
-        let held_schema = {
-            let mut s = self.k.input.clone();
+        // No emitted row: an empty frame of the held rows' schema. Built
+        // only then, not for every chunk.
+        let mut frame = out.unwrap_or_else(|| {
+            let mut held_schema = self.k.input.clone();
             for k in self.hidden_names() {
-                s.insert(k.as_str().into(), DataType::Float64);
+                held_schema.insert(k.as_str().into(), DataType::Float64);
             }
-            s
-        };
-        let mut frame = out.unwrap_or_else(|| DataFrame::empty_with_schema(&held_schema));
+            DataFrame::empty_with_schema(&held_schema)
+        });
         // Many one-row chunks make every later operation slow; a few are
         // what vstack is for.
         if parts > 8 {
@@ -2579,7 +2612,10 @@ impl WindowsRun {
         let mut last_row = Vec::new();
         if let (true, Some(r)) = (skip_on_resume > 0, &self.last_row) {
             let names: Vec<&str> = self.k.input.iter_names().map(|n| n.as_str()).collect();
-            let mut r = r.select(names.iter().copied()).map_err(|e| e.to_string())?;
+            let mut r = r
+                .row()
+                .select(names.iter().copied())
+                .map_err(|e| e.to_string())?;
             compact_views(&mut r).map_err(|e| e.to_string())?;
             IpcWriter::new(&mut last_row)
                 .finish(&mut r)
@@ -2822,7 +2858,7 @@ impl WindowsRun {
                 )
                 .into());
             }
-            run.last_row = Some(last);
+            run.last_row = Some(LastRow { frame: last, at: 0 });
         }
         run.stream_clock = file.stream_clock;
         run.resume_skip = file.resume_skip;
@@ -2854,7 +2890,7 @@ impl WindowsRun {
             if want.height() == 0
                 && let Some(last) = &run.last_row
             {
-                want = last.clone();
+                want = last.row();
             }
             if want.height() == 0 {
                 // This build writes the last row read under every skip, so a
