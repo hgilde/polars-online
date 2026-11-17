@@ -835,6 +835,24 @@ struct Stack {
     at: Vec<f64>,
 }
 
+/// `v.extend_from_slice(s)` with the lengths a row's values and sums have for
+/// one to four operators written out (`ROW`, `SUM` and their wide forms, times
+/// the operators): a copy of a length the compiler knows is a few moves in
+/// place, where the general copy is a call to `memmove`, and a row of a window
+/// core is two of them.
+#[inline(always)]
+fn append(v: &mut Vec<f64>, s: &[f64]) {
+    macro_rules! fixed {
+        ($($n:literal),*) => {
+            match s.len() {
+                $($n => v.extend_from_slice(&s[..$n]),)*
+                _ => v.extend_from_slice(s),
+            }
+        };
+    }
+    fixed!(3, 5, 6, 8, 9, 10, 12, 15, 16, 18, 20, 24, 32)
+}
+
 impl Stack {
     fn new(n: usize, wide: bool) -> Self {
         Stack {
@@ -880,8 +898,8 @@ impl Stack {
         self.tau.push(tau);
         self.off.push(off);
         self.end.push(end);
-        self.vals.extend_from_slice(row);
-        self.sums.extend_from_slice(sums);
+        append(&mut self.vals, row);
+        append(&mut self.sums, sums);
         self.at.push(at);
     }
 
