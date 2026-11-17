@@ -227,3 +227,22 @@ fn a_turn_over_moves_every_row_into_room_made_for_them() {
     q.settle::<false>(&k, &mut scratch);
     assert_eq!((q.front.len(), q.back.len()), (rows, 0));
 }
+
+/// A stack's `append` is `extend_from_slice` at every length, the written-out
+/// ones and the others, onto an empty vector and onto one with values.
+#[test]
+fn append_copies_every_length_as_extend_from_slice_does() {
+    for len in 0..=40usize {
+        let s: Vec<f64> = (0..len)
+            .map(|i| f64::from_bits(0x7ff0_0000_0000_0000 ^ (i as u64 * 0x9e37)))
+            .collect();
+        for before in [0usize, 1, 7] {
+            let mut got: Vec<f64> = (0..before).map(|i| i as f64).collect();
+            let mut want = got.clone();
+            append(&mut got, &s);
+            want.extend_from_slice(&s);
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&got), bits(&want), "{len} after {before}");
+        }
+    }
+}
