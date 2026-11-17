@@ -208,6 +208,12 @@ returns.
   13-19% faster, and a window with one operator 5-6% faster (87 to 82 ns a
   row on arm64); the CI benchmark's window cases run 0.4-1.2% fewer
   instructions on x86-64. Outputs and saved state unchanged to the bit.
+- Window operators: a rolling quantile reads an octave's buckets a row at a
+  time and skips the empty ones, so it runs 10-47% faster (4,716 to 3,006
+  instructions a row at 100 keys on arm64; 19% fewer on the CI benchmark's
+  10,000-row window on x86-64), and a window fed in chunks of 100 rows no
+  longer names its fields or slices its columns per chunk, so it runs
+  13-26% faster. Outputs and saved state unchanged to the bit.
 - Window operators: a chunk's formulas that are bare operators no longer
   run a lazy plan (a fixed cost of about 50 us a chunk), an input column
   without nulls is read where it lies, and an operator's values are handed
