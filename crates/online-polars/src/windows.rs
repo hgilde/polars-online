@@ -1780,6 +1780,11 @@ impl Gap {
             Gap::Secs(s) => ((s - 0.0) - 0.0)
                 .partial_cmp(&span)
                 .unwrap_or(Ordering::Equal),
+            // A gap below 2^53 is a double exactly, and compares with the
+            // span as the exact comparison does (a NaN span is `Equal`).
+            Gap::Int(n) if n.unsigned_abs() < 1 << 53 => {
+                (n as f64).partial_cmp(&span).unwrap_or(Ordering::Equal)
+            }
             Gap::Int(n) => Stamp::Int(n, 0.0).cmp_span_ns(Stamp::Int(0, 0.0), span, None),
         }
     }
@@ -1791,6 +1796,7 @@ impl Gap {
 fn elapsed(now: ClockValue, last: ClockValue) -> f64 {
     match (now, last) {
         (ClockValue::Ns(c), ClockValue::Ns(p)) => seconds_of_ns(i128::from(c) - i128::from(p)),
+        (ClockValue::I64(c), ClockValue::I64(p)) => int_step_f64(c, p),
         (c, p) => match c.int_step(p) {
             Some(step) => step as f64,
             None => c.seconds() - p.seconds(),
@@ -1798,12 +1804,25 @@ fn elapsed(now: ClockValue, last: ClockValue) -> f64 {
     }
 }
 
+/// An integer clock's step `c - p` as a double, rounded once: the 64-bit
+/// difference where it fits, which converts with one instruction, the 128-bit
+/// one where it does not, which is a library call. Both round the same
+/// integer to the nearest double, ties to even.
+#[inline(always)]
+fn int_step_f64(c: i64, p: i64) -> f64 {
+    match c.checked_sub(p) {
+        Some(d) => d as f64,
+        None => (i128::from(c) - i128::from(p)) as f64,
+    }
+}
+
 /// Whether `now` is after `last`: `elapsed(now, last) > 0.0`, the sign of the
-/// step, which between two temporal values is the integers' own.
+/// step, which between two temporal values, or two integer ones, is the
+/// integers' own.
 #[inline]
 fn is_after(now: ClockValue, last: ClockValue) -> bool {
     match (now, last) {
-        (ClockValue::Ns(c), ClockValue::Ns(p)) => c > p,
+        (ClockValue::Ns(c), ClockValue::Ns(p)) | (ClockValue::I64(c), ClockValue::I64(p)) => c > p,
         _ => elapsed(now, last) > 0.0,
     }
 }
@@ -1831,6 +1850,14 @@ fn past_cap(now: ClockValue, last: ClockValue, cap: f64) -> bool {
         }
         // Neither pair has an integer step: `elapsed` is the difference.
         (ClockValue::F64(c), ClockValue::F64(p)) => c - p > cap,
+        // An integer clock's step below 2^53 is a double exactly, and a
+        // double compares with the cap as the exact comparison does
+        // (`cmp_int_f64`: a NaN cap is past by neither); a larger step takes
+        // the exact comparison, out of line.
+        (ClockValue::I64(c), ClockValue::I64(p)) => match c.checked_sub(p) {
+            Some(d) if d.unsigned_abs() < 1 << 53 => d as f64 > cap,
+            _ => past_cap_general(now, last, cap),
+        },
         _ => past_cap_general(now, last, cap),
     }
 }
@@ -1979,6 +2006,8 @@ macro_rules! by_width {
 }
 
 // After `by_width!`, which it uses.
+#[cfg(test)]
+mod int_clock_tests;
 mod keys;
 #[cfg(test)]
 mod memo_tests;
