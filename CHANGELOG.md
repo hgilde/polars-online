@@ -203,6 +203,15 @@ returns.
   Callgrind), and `ew_cov` at 1,000 and 10,000 groups is 3-12% faster on
   x86-64 and 6-13% faster on arm64. Outputs and saved state unchanged to
   the bit.
+- Window operators: a chunk's formulas that are bare operators no longer
+  run a lazy plan (a fixed cost of about 50 us a chunk), an input column
+  without nulls is read where it lies, and an operator's values are handed
+  to Polars as the list itself. The CI benchmark's window cases run 61-85%
+  fewer instructions on x86-64; on arm64 one datetime operator goes from 26.6
+  to 19.7 ns a row, 1,000-row chunks run 2.8 times as fast and 100-row chunks
+  7.6 times, and through the wheel 1.10 times at the default chunk size.
+  A windowed queue's turn-over and far-edge mass are cheaper (1.06-1.10
+  times). Outputs and saved state unchanged to the bit.
 - `corrchange` with `kind="window"` reads its permutation pool a row at a
   time and takes the means in the same loop nest as the moments: 10.6% fewer
   instructions on x86-64 and 16% fewer on arm64 for a windowed change test.
