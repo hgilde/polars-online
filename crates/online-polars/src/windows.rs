@@ -401,6 +401,28 @@ impl KernelDef {
         v
     }
 
+    /// [`Self::mass`] of the distance from a row to the window's far edge,
+    /// through the four entries of `memo.cut`, each the last distance whose
+    /// low two bits it is of: the same function of the same bits, so the same
+    /// bits.
+    #[inline]
+    fn mass_cut_in(&self, t: f64, memo: &mut DecayMemo) -> f64 {
+        if t <= 0.0 {
+            return 0.0;
+        }
+        if self.half_life.is_infinite() {
+            return t;
+        }
+        let bits = t.to_bits();
+        let slot = &mut memo.cut.get_or_insert_with(Default::default)[(bits & 3) as usize];
+        if slot.0 == bits {
+            return slot.1;
+        }
+        let v = self.mass_finite(t);
+        *slot = (bits, v);
+        v
+    }
+
     /// [`Self::mass_in`] on the memo's second slot, for a second distance
     /// asked beside the first.
     #[inline]
@@ -487,6 +509,11 @@ pub(crate) struct DecayMemo {
     mass_far: (u64, f64),
     /// A forward kernel's close, which a backward kernel's queue never needs.
     fwd: Option<Box<FwdMemo>>,
+    /// A windowed backward kernel's cut: the mass of the distance from a
+    /// row to the window's far edge, which is the window up to the rounding
+    /// of `tau - w` against `tau` (a few values, never the one before), made
+    /// where a queue first has it.
+    cut: Option<Box<[(u64, f64); 4]>>,
 }
 
 /// A forward kernel's close: the mass from the row to its open row, and the
@@ -858,6 +885,17 @@ impl Stack {
         self.at.push(at);
     }
 
+    /// Room for `more` rows, in every arena.
+    fn reserve(&mut self, more: usize) {
+        self.seq.reserve(more);
+        self.tau.reserve(more);
+        self.off.reserve(more);
+        self.end.reserve(more);
+        self.vals.reserve(more * self.row_w() * self.n);
+        self.sums.reserve(more * self.sum_w() * self.n);
+        self.at.reserve(more);
+    }
+
     fn pop(&mut self) {
         let i = self.len() - 1;
         self.seq.truncate(i);
@@ -1149,7 +1187,11 @@ impl Queue {
         }
         let (n, rw) = (self.n, row_w::<W>());
         let scratch = &mut scratch[..sum_w::<W>() * n];
-        while let Some(i) = self.back.len().checked_sub(1) {
+        // Every row of `back` moves, the newest first: `front` takes room for
+        // them at once and `back` is emptied once, after the last.
+        let moved = self.back.len();
+        self.front.reserve(moved);
+        for i in (0..moved).rev() {
             let (seq, tau, off, end) = (
                 self.back.seq[i],
                 self.back.tau[i],
@@ -1182,7 +1224,7 @@ impl Queue {
                     }
                 }
             }
-            let (front, back) = (&mut self.front, &mut self.back);
+            let (front, back) = (&mut self.front, &self.back);
             front.push(
                 seq,
                 tau,
@@ -1192,8 +1234,8 @@ impl Queue {
                 scratch,
                 at,
             );
-            back.pop();
         }
+        self.back.clear();
     }
 
     /// Pop the rows `stale` says have left the window, oldest first.
@@ -1846,7 +1888,7 @@ fn mass_between_in(k: &KernelDef, memo: &mut DecayMemo, t: f64, a: f64, b: f64) 
         return 0.0;
     }
     match k.direction {
-        Direction::Backward => k.mass_in(t - a, memo) - k.mass_far_in(t - b, memo),
+        Direction::Backward => k.mass_cut_in(t - a, memo) - k.mass_far_in(t - b, memo),
         Direction::Forward => k.mass(b - t) - k.mass(a - t),
     }
 }
@@ -1938,6 +1980,8 @@ macro_rules! by_width {
 
 // After `by_width!`, which it uses.
 mod keys;
+#[cfg(test)]
+mod memo_tests;
 mod plain;
 
 use keys::IntGroups;
@@ -2936,10 +2980,15 @@ impl Windows {
             values: vec![Vec::with_capacity(rows); n_out],
             drop: Vec::with_capacity(rows),
         };
-        for (r, meta) in self.held_meta.drain(..rows).enumerate() {
+        // The rows' values are one run of `n_out` a row; each operator's are
+        // every `n_out`-th of it.
+        if n_out > 0 {
+            let flat = &self.held_values.make_contiguous()[..rows * n_out];
             for (o, col) in out.values.iter_mut().enumerate() {
-                col.push(self.held_values[r * n_out + o]);
+                col.extend(flat.chunks_exact(n_out).map(|row| row[o]));
             }
+        }
+        for meta in self.held_meta.drain(..rows) {
             out.drop.push(meta.drop);
             self.ready_kept -= usize::from(!meta.drop);
         }
@@ -3951,124 +4000,6 @@ mod tests {
             (got - want).abs() <= 10.0 * f64::EPSILON,
             "{got} vs {want}: {:e} of 2^-52",
             (got - want).abs() / f64::EPSILON
-        );
-    }
-
-    /// A discount or a mass taken through a queue's memo is the one taken
-    /// without it, to the bit, whatever the distances run through it: a
-    /// repeat, a different one between two repeats, 0, a step back, `NaN`,
-    /// an infinity, and a half-life of infinity, which has no decay.
-    #[test]
-    fn a_memoed_discount_and_mass_are_the_unmemoed_ones() {
-        let distances = [
-            0.0,
-            1.0,
-            1.0,
-            0.25,
-            1.0,
-            f64::NAN,
-            f64::NAN,
-            -0.0,
-            -3.0,
-            3.0,
-            3.0,
-            f64::INFINITY,
-            f64::INFINITY,
-            1e-300,
-            1e-300,
-            1e300,
-            0.1 + 0.2,
-            0.1 + 0.2,
-            0.3,
-        ];
-        for half_life in [0.5, 5.0, 1e12, f64::INFINITY] {
-            let k = KernelDef {
-                direction: Direction::Backward,
-                half_life,
-                window_size: Some(5.0),
-                window_ns: None,
-                closed: Closed::Right,
-            };
-            let mut memo = DecayMemo::default();
-            let mut fwd = FwdMemo::default();
-            for pass in 0..2 {
-                for &d in &distances {
-                    assert_eq!(
-                        k.discount_in(d, &mut memo).to_bits(),
-                        k.discount(d).to_bits(),
-                        "discount of {d} at {half_life}, pass {pass}"
-                    );
-                    assert_eq!(
-                        k.mass_in(d, &mut memo).to_bits(),
-                        k.mass(d).to_bits(),
-                        "mass of {d} at {half_life}, pass {pass}"
-                    );
-                    assert_eq!(
-                        k.mass_far_in(d, &mut memo).to_bits(),
-                        k.mass(d).to_bits(),
-                        "far mass of {d} at {half_life}, pass {pass}"
-                    );
-                    // A forward kernel's close takes each of these on a slot of
-                    // its own (task 441).
-                    for slot in [&mut fwd.mass_open, &mut fwd.mass_span] {
-                        assert_eq!(
-                            k.mass_slot(d, slot).to_bits(),
-                            k.mass(d).to_bits(),
-                            "slot mass of {d} at {half_life}, pass {pass}"
-                        );
-                    }
-                    for slot in [&mut fwd.disc_seg, &mut fwd.disc_open] {
-                        assert_eq!(
-                            k.discount_slot(d, slot).to_bits(),
-                            k.discount(d).to_bits(),
-                            "slot discount of {d} at {half_life}, pass {pass}"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    /// The memo is used: a distance it holds is answered from it, and one
-    /// it does not is taken and kept; 0 and an infinite half-life are
-    /// answered before it, and leave it alone.
-    #[test]
-    fn a_queues_memo_answers_the_distance_it_holds_and_keeps_the_last() {
-        let kernel = |half_life: f64| KernelDef {
-            direction: Direction::Backward,
-            half_life,
-            window_size: Some(5.0),
-            window_ns: None,
-            closed: Closed::Right,
-        };
-        let k = kernel(5.0);
-        let mut memo = DecayMemo {
-            discount: (2.0f64.to_bits(), 123.0),
-            mass: (2.0f64.to_bits(), 456.0),
-            mass_far: (2.0f64.to_bits(), 789.0),
-            fwd: None,
-        };
-        assert_eq!(k.discount_in(2.0, &mut memo), 123.0);
-        assert_eq!(k.mass_in(2.0, &mut memo), 456.0);
-        assert_eq!(k.mass_far_in(2.0, &mut memo), 789.0);
-        // Another distance is taken, and replaces the one held.
-        assert_eq!(k.discount_in(3.0, &mut memo), k.discount(3.0));
-        assert_eq!(k.mass_in(3.0, &mut memo), k.mass(3.0));
-        assert_eq!(k.mass_far_in(3.0, &mut memo), k.mass(3.0));
-        assert_eq!(memo.discount, (3.0f64.to_bits(), k.discount(3.0)));
-        assert_eq!(memo.mass, (3.0f64.to_bits(), k.mass(3.0)));
-        assert_eq!(memo.mass_far, (3.0f64.to_bits(), k.mass(3.0)));
-        // No distance, and no decay, are answered before the memo.
-        let held = memo.clone();
-        assert_eq!(k.discount_in(0.0, &mut memo), 1.0);
-        assert_eq!(k.mass_in(0.0, &mut memo), 0.0);
-        assert_eq!(k.mass_far_in(-1.0, &mut memo), 0.0);
-        assert_eq!(kernel(f64::INFINITY).discount_in(4.0, &mut memo), 1.0);
-        assert_eq!(kernel(f64::INFINITY).mass_in(4.0, &mut memo), 4.0);
-        assert_eq!(kernel(f64::INFINITY).mass_far_in(4.0, &mut memo), 4.0);
-        assert_eq!(
-            (memo.discount, memo.mass, memo.mass_far),
-            (held.discount, held.mass, held.mass_far)
         );
     }
 
