@@ -85,6 +85,9 @@ impl Key {
     }
 }
 
+/// An octave with no weight.
+static NO_BUCKETS: [f64; BINS as usize] = [0.0; BINS as usize];
+
 /// The octave a bucket is in.
 #[inline]
 fn octave(k: i32) -> i32 {
@@ -173,6 +176,18 @@ impl Arm {
             return 0.0;
         }
         self.oct.get(i as usize).copied().unwrap_or(0.0)
+    }
+
+    /// The 64 buckets of octave `o`, all 0 where the arm holds none of it:
+    /// [`Arm::bucket`] for each of them at once.
+    #[inline]
+    fn octave_buckets(&self, o: i32) -> &[f64; BINS as usize] {
+        let i = i64::from(o) - i64::from(octave(self.lo));
+        usize::try_from(i)
+            .ok()
+            .and_then(|i| self.w.get(i * BINS as usize..))
+            .and_then(|w| w.first_chunk())
+            .unwrap_or(&NO_BUCKETS)
     }
 
     fn scale(&mut self, f: f64) {
@@ -599,6 +614,22 @@ impl Walk<'_> {
                 .map_or(0.0, |(_, w)| w)
     }
 
+    /// Each part's factor and its buckets of octave `o` on one arm; a second
+    /// part there is none of is a factor 0 over no weight, which adds
+    /// nothing to a sum.
+    fn rows<'p>(
+        parts: &[(&'p Sketch, f64)],
+        neg: bool,
+        o: i32,
+    ) -> [(f64, &'p [f64; BINS as usize]); 2] {
+        debug_assert!(parts.len() <= 2);
+        let mut rows = [(0.0, &NO_BUCKETS); 2];
+        for (row, (s, c)) in rows.iter_mut().zip(parts) {
+            *row = (*c, Self::side(neg, s).octave_buckets(o));
+        }
+        rows
+    }
+
     fn bucket(&self, neg: bool, b: i32) -> f64 {
         self.parts
             .iter()
@@ -636,16 +667,41 @@ impl Walk<'_> {
                 self.last = Some(Last::Octave { neg, o, down });
                 continue;
             }
-            // The target is in this octave: its buckets, in order.
+            // The target is in this octave: its buckets, in order. Each
+            // part's buckets are read as a row, and a bucket no part holds
+            // weight in, which cannot reach the target, is passed over
+            // before its sum is taken: a few at a time, where a window
+            // holds a few rows, and so few buckets of the 64 have weight.
+            let rows = Self::rows(self.parts, neg, o);
+            let (extra_at, extra_w) = self
+                .extra_on(neg)
+                .filter(|(b, _)| octave(*b) == o)
+                .map_or((usize::MAX, 0.0), |(b, w)| ((b - o * BINS) as usize, w));
+            const STEP: usize = 8;
             let mut last = None;
-            for j in 0..BINS {
-                let b = Self::nth(o, j, down);
-                let w = self.bucket(neg, b);
-                if w > 0.0 {
-                    self.cum += w;
-                    last = Some(b);
-                    if self.reached(self.cum) {
-                        return Some(key(b));
+            for c in 0..BINS as usize / STEP {
+                let base = (if down {
+                    BINS as usize / STEP - 1 - c
+                } else {
+                    c
+                }) * STEP;
+                let held = rows.iter().any(|&(_, r)| {
+                    r[base..base + STEP].iter().fold(0, |a, x| a | x.to_bits()) != 0
+                });
+                if !held && !(base..base + STEP).contains(&extra_at) {
+                    continue;
+                }
+                for s in 0..STEP {
+                    let at = base + if down { STEP - 1 - s } else { s };
+                    let ex = if at == extra_at { extra_w } else { 0.0 };
+                    let w = rows.iter().map(|&(c, r)| c * r[at]).sum::<f64>() + ex;
+                    if w > 0.0 {
+                        let b = o * BINS + at as i32;
+                        self.cum += w;
+                        last = Some(b);
+                        if self.reached(self.cum) {
+                            return Some(key(b));
+                        }
                     }
                 }
             }
@@ -755,6 +811,136 @@ mod tests {
         }
         // Folded many times: 7,500 units at a half-life of 3.
         assert!(q.back.anchor > 2000.0 && q.back.scale > RENORM);
+    }
+
+    impl Walk<'_> {
+        /// [`Walk::arm`] as it was before it read an octave's buckets a row
+        /// at a time: each bucket's weight summed over the parts by
+        /// [`Walk::bucket`], every one of the 64 looked at in turn.
+        fn arm_by_buckets(&mut self, neg: bool, down: bool) -> Option<Key> {
+            let (lo, hi) = self.octaves(neg)?;
+            let key = |b: i32| if neg { Key::Neg(b) } else { Key::Pos(b) };
+            for i in 0..=(hi - lo) {
+                let o = if down { hi - i } else { lo + i };
+                let ow = self.octave_weight(neg, o);
+                if ow.is_nan() || ow <= 0.0 {
+                    continue;
+                }
+                if !self.reached(self.cum + ow) {
+                    self.cum += ow;
+                    self.last = Some(Last::Octave { neg, o, down });
+                    continue;
+                }
+                let mut last = None;
+                for j in 0..BINS {
+                    let b = Walk::nth(o, j, down);
+                    let w = self.bucket(neg, b);
+                    if w > 0.0 {
+                        self.cum += w;
+                        last = Some(b);
+                        if self.reached(self.cum) {
+                            return Some(key(b));
+                        }
+                    }
+                }
+                if let Some(b) = last {
+                    return Some(key(b));
+                }
+            }
+            None
+        }
+    }
+
+    /// [`quantile`] over [`Walk::arm_by_buckets`].
+    fn quantile_by_buckets(
+        parts: &[(&Sketch, f64)],
+        extra: Option<(Key, f64)>,
+        p: f64,
+    ) -> Option<f64> {
+        let extra_w = extra.map_or(0.0, |(_, w)| w);
+        let total: f64 = parts.iter().map(|(s, c)| c * s.total).sum::<f64>() + extra_w;
+        if total.is_nan() || total <= 0.0 {
+            return None;
+        }
+        let up = p <= 0.5;
+        let mut walk = Walk {
+            parts,
+            extra,
+            target: if up { p * total } else { (1.0 - p) * total },
+            up,
+            cum: 0.0,
+            last: None,
+        };
+        let found = if up {
+            walk.arm_by_buckets(true, true)
+                .or_else(|| walk.zero())
+                .or_else(|| walk.arm_by_buckets(false, false))
+        } else {
+            walk.arm_by_buckets(false, true)
+                .or_else(|| walk.zero())
+                .or_else(|| walk.arm_by_buckets(true, false))
+        };
+        found.or_else(|| walk.last()).map(Key::value)
+    }
+
+    /// A walk that takes an octave's buckets a row at a time, and passes
+    /// over a run of them no part holds weight in, ends where the walk
+    /// that sums every bucket does, to the bit: over one part and two, with
+    /// and without an extra value, signs mixed, zeros, spans of one octave
+    /// and of many, at every level.
+    #[test]
+    fn a_walk_passing_empty_buckets_ends_where_the_bucket_by_bucket_walk_does() {
+        let k = kernel(Direction::Backward, 3.0, None);
+        let mut seed = 7u64;
+        let mut draw = |n: u64| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) % n
+        };
+        let levels = [0.0, 0.01, 0.25, 0.5, 0.5001, 0.75, 0.99, 1.0];
+        let mut reads = 0;
+        for case in 0..400u64 {
+            let sketch = |draw: &mut dyn FnMut(u64) -> u64| {
+                let mut s = Sketch::default();
+                let n = 1 + draw(6) as usize;
+                let xs = values(n, draw(1 << 20));
+                let mut tau = 0.0;
+                for x in xs {
+                    tau += draw(4) as f64 * 0.5;
+                    // A narrow span of values on some cases: one octave.
+                    let x = if case % 3 == 0 {
+                        1.0 + x.abs() % 0.5
+                    } else {
+                        x
+                    };
+                    s.add_newest(&k, Key::of(x), tau, false);
+                }
+                s
+            };
+            let (a, b) = (sketch(&mut draw), sketch(&mut draw));
+            let parts = [(&a, 1.0), (&b, 0.1 + draw(9) as f64 / 10.0)];
+            let extra = match draw(3) {
+                0 => None,
+                _ => {
+                    let x = values(1, draw(1 << 20))[0];
+                    Some((Key::of(if case % 3 == 0 { 1.2 } else { x }), 0.5))
+                }
+            };
+            for n in [1, 2] {
+                for p in levels {
+                    let got = quantile(&parts[..n], extra, p);
+                    let want = quantile_by_buckets(&parts[..n], extra, p);
+                    assert_eq!(
+                        got.map(f64::to_bits),
+                        want.map(f64::to_bits),
+                        "case {case} parts {n} p {p}"
+                    );
+                    reads += usize::from(got.is_some());
+                }
+            }
+        }
+        assert!(reads > 5000, "{reads} reads with a value");
     }
 
     /// A row leaving `front` puts back its bucket's, octave's and the
