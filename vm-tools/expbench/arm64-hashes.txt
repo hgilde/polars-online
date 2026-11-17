@@ -1,0 +1,25 @@
+# arm64 (Apple M4 Pro, macOS 15.7.3) column hashes of `dump`; std = Apple libm. Compare with `python3 colhash.py OUTDIR` on x86.
+exp2_neg1100 args=0da021b0981703d4 std=59b216dc70a55676 libm=a67d3bcde281b0f5 pxfm=c5c58cb5f818866d own=6acdce6e849fbce7
+exp2_neg4 args=ad173b7ad306b334 std=bd85759814661c4e libm=6d3da6797999a40d pxfm=b1e34fd3db085c3b own=7b951b89fcfe47b3
+exp2_pos args=e8cda4a0a09cf823 std=546156e1e5750686 libm=c653698481daee38 pxfm=79bade973470ae7e own=25cc05a7ed23e0ee
+exp2_tiny args=64ddc39ee7df5fb3 std=f532c4d0a7e749e4 libm=df49f6f0afb399bd pxfm=b0edb45d59ca4f38 own=3d0005690cedb318
+exp_neg20 args=4d18cd69475dea96 std=347a55f6537f2238 libm=9dc04c9f53515a0b pxfm=901a590f605e86fd own=34598f0d7f45c1b1
+exp_neg745 args=43c15945cbf6cf30 std=909d5000e641f11c libm=708aa7115f0bd0c9 pxfm=4fcfb05253506e1e own=155b2c118047a3d5
+exp_pm1 args=b18512f6e8fa08b7 std=3725de5c79552884 libm=cf40f97ed3aed563 pxfm=29af41978c6c38fa own=12eb27a41cf592ba
+exp_pm30 args=d21f8d44a06a0d1e std=2bff81f51c091120 libm=d7a5c1aeaf0a466f pxfm=c386bea852371b3e own=c5fa12dd9fceacad
+exp_tiny args=541a29bc2ce78eb1 std=88295da87dca296c libm=812139351262f2fb pxfm=e0d8e09f29bf7329 own=ca76d318c13e1e50
+expm1_neg3 args=13b7da99dcdab696 std=0572baa37916b9c6 libm=9dbeb7ea14275128 pxfm=55beeb6fc377fa08 own=2290faa9ff4aa974
+expm1_neg40 args=50a244475ee6582f std=7e4333c978f420c7 libm=a8f6616742376e15 pxfm=ab2cd9a422743960 own=e1b2c7e0e2d0806c
+expm1_pm1 args=ef4b48f7b4dc6d5c std=2bb84250c88b56e2 libm=212571b1126ca1d9 pxfm=1ba4564c5031d7a6 own=bf5308c4aa725d37
+expm1_pos5 args=67186fe614a2837e std=79c458f1d3c43e5a libm=6801ca3c8b65107a pxfm=498ade2db675d048 own=3283b0cb7500a9b6
+expm1_tiny args=5470dd86ba998177 std=3266c0bb6f713bab libm=58e7d193e5451bf4 pxfm=2a03046ad2c668b8 own=3c536e3cadb46cb5
+expm1_wide args=0df43d8b73254ff4 std=f15ff6a37ee73ae5 libm=e8d8ba2e97f6ce9c pxfm=90fb9299aace164c own=921d8bdbe7e1980d
+ln1p_neg args=1e773c8740d9b087 std=2def2d53d406d320 libm=a65c9cc33b451e13 pxfm=e415be8dbf84df82 own=170972b3cd3b331f
+ln1p_pos10 args=5f3809fa900f0fb3 std=36eabafc59b2dee2 libm=11e9a6a5365b3af2 pxfm=0a3ab3b5a93155f7 own=b0415cf5341c2e04
+ln1p_pos1e6 args=9b8400a3d5d9b60a std=646db237064053d2 libm=12f4ec4e1423f183 pxfm=c3f4abe1bccc41b7 own=2477c259c39bfedb
+ln1p_tiny args=dc379a87f472ea51 std=fb10373c9e55ea93 libm=ec4795cf7b92f0f5 pxfm=fbb60bab0dee5421 own=93fafd3a4f17f65a
+ln_around1 args=8c222062587f10ac std=c52cc3dfd779fd39 libm=1669d4a3518de02c pxfm=67c2b57b1ca7961f own=1669d4a3518de02c
+ln_logspace args=1c51cbc18200daee std=969e9192701289b7 libm=92c1ff7837fa526e pxfm=450f292fc32f56d6 own=92c1ff7837fa526e
+ln_near1 args=a4c4257bafa0d95f std=022d726aa5166109 libm=022d726aa5166109 pxfm=022d726aa5166109 own=022d726aa5166109
+ln_unit args=dc2b5f16de9f25da std=44789e94296abaa8 libm=52f70ef41d07fa48 pxfm=2e275c39b3d09cf6 own=52f70ef41d07fa48
+ln_wide args=7e78c7e98fe8f3f1 std=bb3cc78df3eb3f1f libm=adb33320bf680b6c pxfm=bb3cc78df3eb3f1f own=adb33320bf680b6c
