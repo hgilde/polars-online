@@ -44,6 +44,8 @@ use crate::windows::{Direction, KernelDef};
 
 /// Buckets per octave, as `EwQuantile`'s.
 const BINS: i32 = 64;
+/// The octaves of buckets an emptied arm keeps its buffers for.
+const RETAIN_OCTAVES: usize = 4;
 /// The decay a running sketch takes before it is folded into its buckets,
 /// `2^-64`, as `EwQuantile`'s.
 const RENORM: f64 = 5.421_010_862_427_522e-20;
@@ -112,9 +114,14 @@ impl Arm {
         let o = octave(k);
         match self.octaves() {
             None => {
+                // An arm that emptied kept its buffers (`prune`): refill them
+                // rather than allocate, which is most of what a short window
+                // spends on a sparse sign.
                 self.lo = o * BINS;
-                self.w = vec![0.0; BINS as usize];
-                self.oct = vec![0.0];
+                self.w.clear();
+                self.w.resize(BINS as usize, 0.0);
+                self.oct.clear();
+                self.oct.push(0.0);
             }
             Some((first, _)) if o < first => {
                 let grow = (first - o) as usize;
@@ -180,7 +187,14 @@ impl Arm {
     /// Drop the end octaves holding at most `floor`.
     fn prune(&mut self, floor: f64) {
         let Some(first) = self.oct.iter().position(|&x| x > floor) else {
-            *self = Arm::default();
+            // Empty: the same state as `Arm::default()`, and the buffers stay
+            // for the arm's next value unless they have grown past a few
+            // octaves, which a quiet group should not hold on to.
+            if self.w.capacity() > RETAIN_OCTAVES * BINS as usize {
+                *self = Arm::default();
+            } else {
+                self.clear();
+            }
             return;
         };
         let last = self.oct.iter().rposition(|&x| x > floor).unwrap_or(first);
@@ -803,6 +817,35 @@ mod tests {
             q.push(&k, f64::from(i), 1.0 + f64::from(i % 7) / 10.0);
         }
         assert!(q.buckets() < 200, "{} buckets", q.buckets());
+    }
+
+    /// An arm that empties is the state of a new one, and its next value
+    /// lands where it would in a new one; its buffers stay for that value
+    /// unless they grew past a few octaves.
+    #[test]
+    fn an_emptied_arm_is_a_new_arm_and_keeps_small_buffers() {
+        let fresh = |k: i32| {
+            let mut a = Arm::default();
+            a.add(k, 2.0);
+            a
+        };
+        let mut a = Arm::default();
+        a.add(70, 1.0);
+        a.add(75, 1.0);
+        a.prune(10.0);
+        assert_eq!(a, Arm::default());
+        assert!(a.w.capacity() >= BINS as usize);
+        // A different octave than before: the same state a new arm gets.
+        a.add(-200, 2.0);
+        assert_eq!(a, fresh(-200));
+        // Grown over many octaves, an emptied arm lets its buffers go.
+        a.add(5000, 1.0);
+        assert!(a.w.capacity() > RETAIN_OCTAVES * BINS as usize);
+        a.prune(10.0);
+        assert_eq!(a, Arm::default());
+        assert_eq!(a.w.capacity(), 0);
+        a.add(5, 2.0);
+        assert_eq!(a, fresh(5));
     }
 
     #[test]
