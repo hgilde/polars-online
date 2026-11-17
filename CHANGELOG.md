@@ -203,6 +203,11 @@ returns.
   Callgrind), and `ew_cov` at 1,000 and 10,000 groups is 3-12% faster on
   x86-64 and 6-13% faster on arm64. Outputs and saved state unchanged to
   the bit.
+- Window operators: a rolling quantile on keys whose windows empty a side
+  (a short window, 100 or 10,000 keys) runs 15-37% faster, an integer clock
+  13-19% faster, and a window with one operator 5-6% faster (87 to 82 ns a
+  row on arm64); the CI benchmark's window cases run 0.4-1.2% fewer
+  instructions on x86-64. Outputs and saved state unchanged to the bit.
 - Window operators: a chunk's formulas that are bare operators no longer
   run a lazy plan (a fixed cost of about 50 us a chunk), an input column
   without nulls is read where it lies, and an operator's values are handed
