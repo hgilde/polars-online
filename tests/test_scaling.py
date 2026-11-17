@@ -14,6 +14,7 @@ and a wrong growth is a whole power of the step past the declared one.
 
 from __future__ import annotations
 
+import sys
 import time
 from collections.abc import Callable
 from typing import Any
@@ -62,14 +63,11 @@ def _specs(n: int) -> list[dict[str, Any]]:
     ]
 
 
-# Windows counts process CPU time in 15.6 ms ticks, so a run shorter than a
-# tick reads as 0 and a ratio of two of them divides by zero; there the wall
-# clock, whose ticks are under a microsecond, is the finer measure.
-_CLOCK = (
-    time.process_time
-    if time.get_clock_info("process_time").resolution <= 1e-3
-    else time.perf_counter
-)
+# Windows counts process CPU time in 15.6 ms ticks (though it reports a
+# 100 ns resolution), so a run shorter than a tick reads as 0 and a ratio of
+# two of them divides by zero; there the wall clock, whose ticks are under a
+# microsecond, is the finer measure.
+_CLOCK = time.perf_counter if sys.platform == "win32" else time.process_time
 
 
 def _seconds(fn: Callable[[], object]) -> float:

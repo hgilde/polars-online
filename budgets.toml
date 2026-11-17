@@ -1385,7 +1385,7 @@ linux = { budget = 161.3399 }
 [rss.ewridge_window]
 windows = { budget = 141.629 }
 darwin = { budget = 127.3907 }
-linux = { budget = 215.918 }
+linux = { budget = 198.3633 }
 
 [rss.bocpd_runs]
 windows = { budget = 17.043 }
