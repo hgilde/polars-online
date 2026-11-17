@@ -62,13 +62,24 @@ def _specs(n: int) -> list[dict[str, Any]]:
     ]
 
 
+# Windows counts process CPU time in 15.6 ms ticks, so a run shorter than a
+# tick reads as 0 and a ratio of two of them divides by zero; there the wall
+# clock, whose ticks are under a microsecond, is the finer measure.
+_CLOCK = (
+    time.process_time
+    if time.get_clock_info("process_time").resolution <= 1e-3
+    else time.perf_counter
+)
+
+
 def _seconds(fn: Callable[[], object]) -> float:
     """The CPU time ``fn`` took, all this process's threads: on a busy machine
     the wall clock also counts the time a run spent waiting for a core, which
-    differs between a short run and a long one and read as growth."""
-    at = time.process_time()
+    differs between a short run and a long one and read as growth. Where the
+    CPU clock is too coarse to time a run (Windows), the wall clock."""
+    at = _CLOCK()
     fn()
-    return time.process_time() - at
+    return _CLOCK() - at
 
 
 def _hold(

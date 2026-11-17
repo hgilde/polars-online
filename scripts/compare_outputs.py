@@ -743,13 +743,19 @@ class Build:
         return json.loads(meta.read_text(encoding="utf-8"))
 
 
+def _load() -> float:
+    """The 1-minute load average, or NaN where the platform has none (Windows)."""
+    getloadavg = getattr(os, "getloadavg", None)
+    return getloadavg()[0] if getloadavg is not None else float("nan")
+
+
 def wait_for_load(limit: float, patience: float) -> float:
     """The 1-minute load once it is under ``limit`` (or after ``patience`` seconds)."""
     start = time.monotonic()
-    load = os.getloadavg()[0]
+    load = _load()
     while load > limit and time.monotonic() - start < patience:
         time.sleep(15)
-        load = os.getloadavg()[0]
+        load = _load()
     return load
 
 
@@ -767,7 +773,7 @@ def abba(
                 return {"error": f"{build.label} failed in the timing run"}
             secs[build.label].append(took)
     a, b = (secs[x.label] for x in builds)
-    loads.append(os.getloadavg()[0])
+    loads.append(_load())
     return {
         "rounds": rounds,
         "seconds": secs,
@@ -1092,7 +1098,7 @@ def main(argv: list[str] | None = None) -> int:
     out, work = Path(args.out), Path(args.work)
     (out / "cases").mkdir(parents=True, exist_ok=True)
     results: list[dict] = []
-    load_start = os.getloadavg()[0]
+    load_start = _load()
     for case in cases:
         done = out / "cases" / (case["name"].replace("/", "__") + ".json")
         if args.resume and done.exists():
@@ -1117,7 +1123,7 @@ def main(argv: list[str] | None = None) -> int:
     header = {
         "when": time.strftime("%Y-%m-%d %H:%M"),
         "load_at_start": load_start,
-        "load_at_end": os.getloadavg()[0],
+        "load_at_end": _load(),
         "argv": sys.argv[1:],
     }
     print(write_reports(out, results, args.floor, builds, header))
