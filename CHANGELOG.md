@@ -138,7 +138,7 @@ returns.
   0.91-0.97 at 5 to 16, 0.86-0.92 at 20 to 24, 0.83-0.85 at 32, 0.77-0.83 at
   48 to 64, 0.73-0.76 at 100 to 150 and 0.70-0.73 at 200, with and without an
   intercept, in the default layout and with functions aligned to 64 bytes
-  alike (every order from 1 to 24 and 17 more to 200, the minimum of 9
+  alike (every order from 1 to 24 and 11 more to 200, the minimum of 9
   interleaved rounds; an identical build timed beside it reads 0.975-1.029,
   and no order is slower than before); a run of one group through the
   bank (4 threads, 5 ABBA rounds) takes 0.98 at 4 features, 0.90 at 20, 0.88

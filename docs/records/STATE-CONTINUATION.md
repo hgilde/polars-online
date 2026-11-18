@@ -186,8 +186,9 @@ and `bocpd_warming` regenerated (their continuations moved by at most
 bump. The kept sets' two cases are held to that bound by `MOVED`
 (`crates/online-core/tests/state_fixtures.rs`).
 
-An eighteenth, the user's (2026-11-18, "Yes option 1", the review of task
-463; built in task 469, which replaces task 463's branch): the break
+An eighteenth, the user's (2026-11-18, "Yes option 1", the review of the
+proposal to take faer's product from order 24; built in task 469, which
+replaces that proposal's branch): the break
 distance `break_wald` (`emit_breaks`) is formed in another way and moves at
 every order. The variance of the two fits' difference was
 `A_f H_ff A_f + A_s H_ss A_s − A_f H_fs A_s − A_s H_fs' A_f`, four terms
@@ -229,10 +230,12 @@ k = 2 1.2e-5 / 6.2e-11 / 2.2e-15, k = 4 8.1e-7 / 6.9e-11 / 4.6e-15, k = 8
 2.3e-5 / 2.4e-10 / 1.6e-14, k = 12 7.7e-4 / 5.2e-10 / 4.1e-14, k = 20
 2.3e-4 / 8.6e-10 / 8.6e-14, k = 24 1.4e-4 / 1.2e-9 / 1.4e-13, k = 32
 7.1e-4 / 2.4e-9 / 3.2e-13, k = 64 1.4e-7 / 1.4e-8 / 1.5e-11, k = 100
-8.5e-6 / 7.0e-8 / 7.5e-11. Native, over 84,000 distances of random designs at
-orders 1 to 24 (a decay with a half-life of 200 rows, 3,000 groups each, the
-first seven rows past the gate) the two forms read the same rows, and the
-four thresholds above flip on none. On designs whose features are
+8.5e-6 / 7.0e-8 / 7.5e-11. Native, over 1,180,000 distances of random designs at
+orders 1 to 48 (a decay with a half-life of 200 rows, 800 to 3,000 groups
+each, the first seven rows past the gate, with and without an intercept, and
+after a gap) D refuses no distance the four-term form reads and the
+four-term form refuses 2 that D reads, and the four thresholds above flip on
+none. On designs whose features are
 collinear (to 1e-4 or 1e-7) the two forms refuse different rows, each where
 its rounding breaks a factorization of a variance whose exact pivots span
 fewer than six digits, in both directions in about equal number (a number
