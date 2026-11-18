@@ -409,7 +409,11 @@ def unpack(
     and 1,469 MiB under Polars' defaults, which read the scan ahead of the
     writing: `Cut what Polars reads ahead
     <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
-    bounds that.
+    bounds that. Those figures hold while the disk keeps up: Polars'
+    writer queues what a slower disk has not taken yet, and the queue
+    grows with the length of the output. Reading the long form in
+    batches, as ``collect_batches`` does, holds the query back to the
+    reader instead.
 
     .. rubric:: Raises
 
