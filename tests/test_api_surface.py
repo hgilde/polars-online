@@ -956,8 +956,9 @@ _PY_READ = re.compile(r"os\.(?:environ\.get|getenv)\(\s*([^,)]*)|os\.environ\[\s
 
 def env_vars() -> list[str]:
     """Every environment variable the shipped code reads at run time: the
-    crates' `src/` (less each file's test module) and the package. An argument that is neither a string
-    literal nor a `const` of one fails here, rather than be left out."""
+    crates' `src/` (less each file's test module) and the package. An
+    argument that is neither a string literal nor a `const` of one fails
+    here, rather than be left out."""
     rust = sorted((REPO / "crates").glob("*/src/**/*.rs"))
     consts: dict[str, str] = {}
     for path in rust:
