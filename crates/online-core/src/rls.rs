@@ -180,7 +180,11 @@ impl RlsCfg {
 pub struct Rls {
     cfg: RlsCfg,
     /// Cholesky factor of the decayed information matrix, `A = R^T R`: upper
-    /// triangular, row-major `k*k`, lower triangle zero, diagonal `>= 0`.
+    /// triangular, diagonal `>= 0`, kept as the packed upper triangle, row by
+    /// row, `k(k+1)/2` entries (`base`). A saved state holds it as the full
+    /// `k*k` square with a zero lower triangle (`square`), so the file does
+    /// not depend on the packing.
+    #[serde(with = "square")]
     r: Vec<f64>,
     /// `u_j = R^-T b_j` per target, each `k_total`: the rotated right-hand side.
     u: Vec<Vec<f64>>,
@@ -202,6 +206,67 @@ pub struct Rls {
     zbuf: Vec<f64>,
     #[serde(skip)]
     ybuf: Vec<f64>,
+}
+
+/// Where row `i` of the packed upper triangle of a `k x k` factor starts,
+/// shifted so that entry `(i, j)`, `j >= i`, is `r[base(k, i) + j]`: the
+/// rows above it hold `k + (k-1) + ... + (k-i+1)` entries, less the `i`
+/// columns that precede its diagonal.
+#[inline(always)]
+const fn base(k: usize, i: usize) -> usize {
+    i * (2 * k - i - 1) / 2
+}
+
+/// The packed upper triangle's length for a `k x k` factor.
+#[inline]
+const fn packed_len(k: usize) -> usize {
+    k * (k + 1) / 2
+}
+
+/// A factor in a saved state: the full `k*k` row-major square, lower
+/// triangle zero, which is what the model held before it was packed, so the
+/// bytes of a state do not move.
+mod square {
+    use super::{base, packed_len};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn unpack(packed: &[f64], k: usize) -> Vec<f64> {
+        let mut sq = vec![0.0; k * k];
+        for i in 0..k {
+            sq[i * k + i..(i + 1) * k].copy_from_slice(&packed[base(k, i) + i..base(k, i) + k]);
+        }
+        sq
+    }
+
+    pub(super) fn pack(sq: &[f64], k: usize) -> Vec<f64> {
+        let mut packed = Vec::with_capacity(packed_len(k));
+        for i in 0..k {
+            packed.extend_from_slice(&sq[i * k + i..(i + 1) * k]);
+        }
+        packed
+    }
+
+    pub fn serialize<S: Serializer>(r: &[f64], s: S) -> Result<S::Ok, S::Error> {
+        // `k(k+1)/2` entries: `8 len + 1` is the square of `2k + 1`.
+        let k = ((8 * r.len() + 1).isqrt() - 1) / 2;
+        if packed_len(k) != r.len() {
+            return Err(serde::ser::Error::custom(
+                "rls: the factor has the wrong shape",
+            ));
+        }
+        unpack(r, k).serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<f64>, D::Error> {
+        let sq = Vec::<f64>::deserialize(d)?;
+        let k = sq.len().isqrt();
+        if k * k != sq.len() {
+            return Err(serde::de::Error::custom(
+                "rls: its running sums have the wrong shape",
+            ));
+        }
+        Ok(pack(&sq, k))
+    }
 }
 
 /// The 0 a coefficient that came out not finite is set to. A call, so that
@@ -242,7 +307,9 @@ fn solve_block<const N: usize>(r: &[f64], k: usize, betas: &mut [Vec<f64>; N], u
     }
 }
 
-/// The columns of `R`, `B` at a time from the last, then what is left.
+/// The columns of `R`, `B` at a time from the last, then what is left. Each
+/// block takes the rows of the factor from the end and gives back what is
+/// before them, which is where the next block's rows end.
 #[inline(always)]
 fn solve_sweep<const N: usize, const B: usize>(
     r: &[f64],
@@ -250,15 +317,16 @@ fn solve_sweep<const N: usize, const B: usize>(
     betas: &mut [Vec<f64>; N],
     acc: &mut [f64; N],
 ) {
+    let mut rest = r;
     let mut j = k;
     while j >= B {
-        solve_columns::<N, B>(r, k, betas, acc, j);
+        rest = solve_columns::<N, B>(rest, k, betas, acc, j);
         j -= B;
     }
     match j {
-        3 => solve_columns::<N, 3>(r, k, betas, acc, j),
-        2 => solve_columns::<N, 2>(r, k, betas, acc, j),
-        1 => solve_columns::<N, 1>(r, k, betas, acc, j),
+        3 => _ = solve_columns::<N, 3>(rest, k, betas, acc, j),
+        2 => _ = solve_columns::<N, 2>(rest, k, betas, acc, j),
+        1 => _ = solve_columns::<N, 1>(rest, k, betas, acc, j),
         _ => {}
     }
 }
@@ -267,49 +335,176 @@ fn solve_sweep<const N: usize, const B: usize>(
 /// each one's sum is finished from the terms of the block's earlier
 /// columns, its division taken, and then every row above the block has the
 /// block's `B` terms taken off in one pass over it, the next coefficient's
-/// row first, kept in `acc`.
+/// row first, kept in `acc`. `rest` is the factor up to the end of row `j-1`;
+/// what it gives back is the factor up to the end of row `j-B-1`.
 #[inline(always)]
-fn solve_columns<const N: usize, const B: usize>(
-    r: &[f64],
+fn solve_columns<'a, const N: usize, const B: usize>(
+    mut rest: &'a [f64],
     k: usize,
     betas: &mut [Vec<f64>; N],
     acc: &mut [f64; N],
     j: usize,
-) {
+) -> &'a [f64] {
+    assert!(B <= j && j <= k);
     let mut b = [[0.0; N]; B];
+    // The block's rows, `j-1` down to `j-B`: row `m` is `k - m` entries, one
+    // more than the row after it, and each is cut off the end of what is left.
+    // `len` is carried, not found from `m` on each row: derived, it costs a
+    // hundred instructions a step of `R^-1 u` at 20 columns (x86-64).
+    let mut len = k - j + 1;
+    #[allow(clippy::explicit_counter_loop)]
     for c in 0..B {
-        let col = j - 1 - c;
-        let d = r[col * k + col];
+        let m = j - 1 - c;
+        let (head, row) = rest.split_at(rest.len() - len);
+        rest = head;
+        len += 1;
+        let d = row[0];
         for t in 0..N {
-            let mut a = if c == 0 { acc[t] } else { betas[t][col] };
+            let mut a = if c == 0 { acc[t] } else { betas[t][m] };
             for (q, bq) in b.iter().enumerate().take(c) {
-                a -= r[col * k + (j - 1 - q)] * bq[t];
+                a -= row[c - q] * bq[t];
             }
             let x = if d > 0.0 { a / d } else { 0.0 };
             b[c][t] = if x.is_finite() { x } else { zero_unseen() };
-            betas[t][col] = b[c][t];
+            betas[t][m] = b[c][t];
         }
     }
     let top = j - B;
     if top == 0 {
-        return;
+        return rest;
     }
+    // The rows above, `top-1` down to 0. Each one's `B` entries, columns
+    // `j-B..j`, are one window of the packed triangle, `back` entries before
+    // the end of its row, and the window of the row above is `k - m` entries
+    // earlier than this one's: carried as an index, which one test against
+    // the last window that fits holds from both sides (an index that
+    // stepped below 0 has wrapped to a number above it).
+    let back = k - j + B;
+    let last = rest.len().checked_sub(B).unwrap();
+    let mut at = rest.len() - back;
+    let bs: [&mut [f64]; N] = betas.each_mut().map(|v| &mut v[..top]);
     let m = top - 1;
+    assert!(at <= last);
+    let w = &rest[at..at + B];
     for t in 0..N {
-        let mut a = betas[t][m];
+        let mut a = bs[t][m];
         for (q, bq) in b.iter().enumerate() {
-            a -= r[m * k + (j - 1 - q)] * bq[t];
+            a -= w[B - 1 - q] * bq[t];
         }
         acc[t] = a;
     }
-    for m in (0..m).rev() {
+    for (stride, m) in (k - m..).zip((0..m).rev()) {
+        at = at.wrapping_sub(stride);
+        assert!(at <= last);
+        let w = &rest[at..at + B];
         for t in 0..N {
-            let mut a = betas[t][m];
+            let mut a = bs[t][m];
             for (q, bq) in b.iter().enumerate() {
-                a -= r[m * k + (j - 1 - q)] * bq[t];
+                a -= w[B - 1 - q] * bq[t];
             }
-            betas[t][m] = a;
+            bs[t][m] = a;
         }
+    }
+    rest
+}
+
+/// Folds the working row (`zbuf`, `ybuf`) into `R` and `u` by the `k`
+/// rotations, taking up the decay (`root = sqrt(lam)`) as each row of
+/// `R` and entry of `u` is read: the same products in the same order as a
+/// pass over `R` and `u` before the rotations. The next rotation's
+/// working entry is the one the rotation just made, kept in a register
+/// instead of being read back from `zbuf`, which is the chain's
+/// critical path.
+#[inline(never)]
+fn fold<const DECAY: bool>(
+    r: &mut [f64],
+    zbuf: &mut [f64],
+    u: &mut [Vec<f64>],
+    ybuf: &mut [f64],
+    root: f64,
+) {
+    let k = zbuf.len();
+    let mut zi = zbuf.first().copied().unwrap_or(0.0);
+    // Row `i` is `k - i` entries, from its diagonal, and the next row
+    // follows it: each is cut off the front of what is left.
+    let mut rest = r;
+    for i in 0..k {
+        let (row, tail) = std::mem::take(&mut rest).split_at_mut(k - i);
+        rest = tail;
+        // The entry the next rotation starts from, as the rotations
+        // before this one left it; this rotation replaces it.
+        let zrow = &mut zbuf[i..];
+        let mut znext = if i + 1 < k { zrow[1] } else { 0.0 };
+        let rotation = 'rotation: {
+            if zi == 0.0 {
+                break 'rotation None;
+            }
+            let mut rii = row[0];
+            if DECAY {
+                rii *= root;
+            }
+            let squares = rii * rii + zi * zi;
+            let mut rho = squares.sqrt();
+            if !(squares >= f64::MIN_POSITIVE && squares.is_finite()) {
+                // Squares that overflowed (inputs beyond 1e154), or that
+                // are subnormal or 0 (below 1e-154), where the plain root
+                // has lost its bits or is 0/0: `hypot` scales internally
+                // (a subnormal sum cost 1.4e-5 of a slope, task 158).
+                rho = rii.hypot(zi);
+                if !(rho > 0.0 && rho.is_finite()) {
+                    break 'rotation None;
+                }
+            }
+            Some((rho, rii / rho, zi / rho))
+        };
+        let Some((rho, c, s)) = rotation else {
+            // Nothing to rotate: the row is only decayed.
+            if DECAY {
+                for v in row.iter_mut() {
+                    *v *= root;
+                }
+                for u in u.iter_mut() {
+                    u[i] *= root;
+                }
+            }
+            zi = znext;
+            continue;
+        };
+        row[0] = rho;
+        zrow[0] = 0.0;
+        if i + 1 < k {
+            // The first entry of the row, apart: its working entry is
+            // the next rotation's.
+            let mut a = row[1];
+            if DECAY {
+                a *= root;
+            }
+            let b = znext;
+            row[1] = c * a + s * b;
+            znext = c * b - s * a;
+            zrow[1] = znext;
+            // Two disjoint slices, so the loop has no bounds checks to
+            // clear and nothing to alias: it vectorizes.
+            let r_rest = &mut row[2..];
+            let z_rest = &mut zrow[2..][..r_rest.len()];
+            for (rij, zj) in r_rest.iter_mut().zip(z_rest.iter_mut()) {
+                let (mut a, b) = (*rij, *zj);
+                if DECAY {
+                    a *= root;
+                }
+                *rij = c * a + s * b;
+                *zj = c * b - s * a;
+            }
+        }
+        for (u, yb) in u.iter_mut().zip(ybuf.iter_mut()) {
+            let mut ui = u[i];
+            if DECAY {
+                ui *= root;
+            }
+            u[i] = c * ui + s * *yb;
+            *yb = c * *yb - s * ui;
+        }
+        zi = znext;
     }
 }
 
@@ -336,9 +531,9 @@ impl Rls {
         cfg.validate()?;
         let k = cfg.k_total();
         let root = cfg.delta.sqrt();
-        let mut r = vec![0.0; k * k];
+        let mut r = vec![0.0; packed_len(k)];
         for i in 0..k {
-            r[i * k + i] = root;
+            r[base(k, i) + i] = root;
         }
         let beta = cfg
             .coef_prior
@@ -391,93 +586,16 @@ impl Rls {
         }
     }
 
-    /// Folds the working row (`zbuf`, `ybuf`) into `R` and `u` by the `k`
-    /// rotations, taking up the decay (`root = sqrt(lam)`) as each row of
-    /// `R` and entry of `u` is read: the same products in the same order as a
-    /// pass over `R` and `u` before the rotations. The next rotation's
-    /// working entry is the one the rotation just made, kept in a register
-    /// instead of being read back from `zbuf`, which is the chain's
-    /// critical path.
+    /// Folds the working row (`zbuf`, `ybuf`) into `R` and `u` ([`fold`]).
     fn fold_row<const DECAY: bool>(&mut self, root: f64) {
         let k = self.cfg.k_total();
-        let (r, zbuf) = (&mut self.r, &mut self.zbuf);
-        let mut zi = zbuf.first().copied().unwrap_or(0.0);
-        for i in 0..k {
-            let row = i * k;
-            // The entry the next rotation starts from, as the rotations
-            // before this one left it; this rotation replaces it.
-            let mut znext = if i + 1 < k { zbuf[i + 1] } else { 0.0 };
-            let rotation = 'rotation: {
-                if zi == 0.0 {
-                    break 'rotation None;
-                }
-                let mut rii = r[row + i];
-                if DECAY {
-                    rii *= root;
-                }
-                let squares = rii * rii + zi * zi;
-                let mut rho = squares.sqrt();
-                if !(squares >= f64::MIN_POSITIVE && squares.is_finite()) {
-                    // Squares that overflowed (inputs beyond 1e154), or that
-                    // are subnormal or 0 (below 1e-154), where the plain root
-                    // has lost its bits or is 0/0: `hypot` scales internally
-                    // (a subnormal sum cost 1.4e-5 of a slope, task 158).
-                    rho = rii.hypot(zi);
-                    if !(rho > 0.0 && rho.is_finite()) {
-                        break 'rotation None;
-                    }
-                }
-                Some((rho, rii / rho, zi / rho))
-            };
-            let Some((rho, c, s)) = rotation else {
-                // Nothing to rotate: the row is only decayed.
-                if DECAY {
-                    for v in &mut r[row + i..row + k] {
-                        *v *= root;
-                    }
-                    for u in &mut self.u {
-                        u[i] *= root;
-                    }
-                }
-                zi = znext;
-                continue;
-            };
-            r[row + i] = rho;
-            zbuf[i] = 0.0;
-            if i + 1 < k {
-                // The first entry of the row, apart: its working entry is
-                // the next rotation's.
-                let mut a = r[row + i + 1];
-                if DECAY {
-                    a *= root;
-                }
-                let b = znext;
-                r[row + i + 1] = c * a + s * b;
-                znext = c * b - s * a;
-                zbuf[i + 1] = znext;
-                // Two disjoint slices, so the loop has no bounds checks to
-                // clear and nothing to alias: it vectorizes.
-                let r_rest = &mut r[row + i + 2..row + k];
-                let z_rest = &mut zbuf[i + 2..k];
-                for (rij, zj) in r_rest.iter_mut().zip(z_rest.iter_mut()) {
-                    let (mut a, b) = (*rij, *zj);
-                    if DECAY {
-                        a *= root;
-                    }
-                    *rij = c * a + s * b;
-                    *zj = c * b - s * a;
-                }
-            }
-            for (u, yb) in self.u.iter_mut().zip(self.ybuf.iter_mut()) {
-                let mut ui = u[i];
-                if DECAY {
-                    ui *= root;
-                }
-                u[i] = c * ui + s * *yb;
-                *yb = c * *yb - s * ui;
-            }
-            zi = znext;
-        }
+        fold::<DECAY>(
+            &mut self.r,
+            &mut self.zbuf[..k],
+            &mut self.u,
+            &mut self.ybuf,
+            root,
+        );
     }
 
     /// `beta_j = R^-1 u_j` by back-substitution. A zero pivot is a direction
@@ -520,10 +638,14 @@ impl Rls {
         let mut v = vec![0.0; k];
         for i in 0..k {
             let mut acc = z[i];
+            // Column `i` of each row above: `base(k, m) + i`, and `base`
+            // grows by `k - m - 1` from one row to the next.
+            let mut at = i;
             for (m, vm) in v.iter().enumerate().take(i) {
-                acc -= self.r[m * k + i] * vm;
+                acc -= self.r[at] * vm;
+                at += k - m - 1;
             }
-            let d = self.r[i * k + i];
+            let d = self.r[at];
             if d > 0.0 {
                 v[i] = acc / d;
             } else if acc != 0.0 {
@@ -620,7 +742,6 @@ impl OnlineModel for Rls {
             return;
         }
         self.ensure_buffers();
-        let k = self.cfg.k_total();
         let lam = self.cfg.decay.factor(d_clock);
 
         if self.cfg.fit_intercept {
@@ -667,10 +788,8 @@ impl OnlineModel for Rls {
             self.solve();
             self.seen = true;
         } else if decays {
-            for i in 0..k {
-                for v in &mut self.r[i * k + i..(i + 1) * k] {
-                    *v *= root;
-                }
+            for v in &mut self.r {
+                *v *= root;
             }
             for u in &mut self.u {
                 for v in u.iter_mut() {
@@ -719,7 +838,7 @@ impl OnlineModel for Rls {
                 // A factor or a per-target vector of the wrong length loaded
                 // and panicked on the first `step`'s indexing (review
                 // 2026-09-18, B3).
-                if m.r.len() != k * k || !rows(&m.u) || !rows(&m.beta) {
+                if m.r.len() != packed_len(k) || !rows(&m.u) || !rows(&m.beta) {
                     return Err(crate::model::damaged(
                         "rls",
                         "its running sums have the wrong shape",
@@ -808,6 +927,38 @@ mod tests {
             assert!(served.iter().all(|p| p.is_nan() == (i < 14)), "row {i}");
         }
         assert_eq!(m.target_weights(), &[5.0, 5.0]);
+    }
+
+    /// The factor is held as a packed triangle and saved as the full square
+    /// with a zero lower triangle: the file is the one the square layout
+    /// wrote, and it loads back to the same bits. A factor whose length is
+    /// no square is refused on load.
+    #[test]
+    fn the_factor_is_saved_as_the_square_it_was() {
+        for k in [2usize, 3, 4, 8, 21] {
+            let mut m = Rls::new(rls_cfg(k - 1, 2, 30.0, 1.0)).unwrap();
+            let mut s = 5u64;
+            for _ in 0..40 {
+                let x: Vec<f64> = (0..k - 1).map(|_| lcg(&mut s)).collect();
+                m.step(&x, &[Some(x.iter().sum()), Some(lcg(&mut s))], 1.0, 1.0);
+            }
+            assert_eq!(m.r.len(), k * (k + 1) / 2);
+            let v = serde_json::to_value(&m).unwrap();
+            let sq: Vec<f64> = serde_json::from_value(v["r"].clone()).unwrap();
+            assert_eq!(sq.len(), k * k);
+            for i in 0..k {
+                for j in 0..k {
+                    let want = if j >= i { m.r[base(k, i) + j] } else { 0.0 };
+                    assert_eq!(sq[i * k + j].to_bits(), want.to_bits(), "k={k} ({i},{j})");
+                }
+            }
+            let back: Rls = serde_json::from_value(v.clone()).unwrap();
+            assert_eq!(bits(&back.r), bits(&m.r), "k={k}");
+            let mut bad = v;
+            bad["r"].as_array_mut().unwrap().pop();
+            let err = serde_json::from_value::<Rls>(bad).unwrap_err().to_string();
+            assert!(err.contains("wrong shape"), "{err}");
+        }
     }
 
     /// A state without target weights is refused, where it loaded with each
@@ -932,21 +1083,23 @@ mod tests {
             for m in [1, 2, 3, 4, 5, 6, 7, 8, 9] {
                 for special in [0.0, 0.03, 0.3] {
                     let mut model = bare(k, m);
+                    let mut sq = vec![0.0; k * k];
                     for i in 0..k {
                         for j in i..k {
-                            model.r[i * k + j] = odd(&mut state, special);
+                            sq[i * k + j] = odd(&mut state, special);
                         }
                         // A pivot that is usually positive.
                         if lcg(&mut state) > -0.5 {
-                            model.r[i * k + i] = 0.5 + lcg(&mut state).abs();
+                            sq[i * k + i] = 0.5 + lcg(&mut state).abs();
                         }
                     }
+                    model.r = square::pack(&sq, k);
                     for u in model.u.iter_mut() {
                         for v in u.iter_mut() {
                             *v = odd(&mut state, special);
                         }
                     }
-                    let want = solve_serial(&model.r, &model.u, k);
+                    let want = solve_serial(&sq, &model.u, k);
                     model.solve();
                     for (t, (got, want)) in model.beta.iter().zip(&want).enumerate() {
                         assert_eq!(
@@ -1027,14 +1180,16 @@ mod tests {
                 for special in [0.0, 0.05, 0.3] {
                     for root in [None, Some(0.973), Some(0.0), Some(1e-170)] {
                         let mut model = bare(k, m);
+                        let mut sq = vec![0.0; k * k];
                         for i in 0..k {
                             for j in i..k {
-                                model.r[i * k + j] = odd(&mut state, special);
+                                sq[i * k + j] = odd(&mut state, special);
                             }
                             if lcg(&mut state) > -0.5 {
-                                model.r[i * k + i] = lcg(&mut state).abs();
+                                sq[i * k + i] = lcg(&mut state).abs();
                             }
                         }
+                        model.r = square::pack(&sq, k);
                         for u in model.u.iter_mut() {
                             for v in u.iter_mut() {
                                 *v = odd(&mut state, special);
@@ -1049,7 +1204,7 @@ mod tests {
                         for y in model.ybuf.iter_mut() {
                             *y = odd(&mut state, special);
                         }
-                        let (mut r, mut u) = (model.r.clone(), model.u.clone());
+                        let (mut r, mut u) = (sq, model.u.clone());
                         let (mut z, mut y) = (model.zbuf.clone(), model.ybuf.clone());
                         fold_serial(&mut r, &mut u, &mut z, &mut y, k, root);
                         match root {
@@ -1057,7 +1212,7 @@ mod tests {
                             None => model.fold_row::<false>(1.0),
                         }
                         let ctx = format!("k={k} m={m} special={special} root={root:?}");
-                        assert_eq!(bits(&model.r), bits(&r), "R, {ctx}");
+                        assert_eq!(bits(&square::unpack(&model.r, k)), bits(&r), "R, {ctx}");
                         assert_eq!(bits(&model.zbuf), bits(&z), "working row, {ctx}");
                         assert_eq!(bits(&model.ybuf), bits(&y), "targets, {ctx}");
                         for (got, want) in model.u.iter().zip(&u) {
@@ -1950,7 +2105,7 @@ mod tests {
             m.row_error_inflation_into(&[0.3, 0.0], 1.0, &mut out);
             without.row_error_inflation_into(&[0.3], 1.0, &mut alone);
             assert_eq!(out, alone, "row {rows}");
-            if m.r[2 * 3 + 2] == 0.0 {
+            if m.r[base(3, 2) + 2] == 0.0 {
                 assert!(v[2].is_infinite(), "{v:?}");
                 break;
             }
