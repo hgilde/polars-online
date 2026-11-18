@@ -433,12 +433,16 @@ impl ScaleRun {
         Ok(())
     }
 
-    /// Drop the rows not yet stepped, so what the allocator holds after is
-    /// the state alone.
+    /// Drop the rows not yet stepped, and a bank's kept run buffers (a cache
+    /// of up to 16 MiB that grows with the chunks fed, not with the state), so
+    /// what the allocator holds after is the state alone.
     pub fn drop_data(&mut self) {
         match &mut self.work {
             Work::Model { rows, .. } => *rows = Rows::empty(),
-            Work::Bank { frames, .. } | Work::Runner { frames, .. } => *frames = Vec::new(),
+            Work::Bank { bank, frames } | Work::Runner { bank, frames, .. } => {
+                *frames = Vec::new();
+                bank.drop_spares();
+            }
             Work::Windows { frames, .. }
             | Work::Refresh { frames, .. }
             | Work::Gbdt { frames, .. } => *frames = Vec::new(),

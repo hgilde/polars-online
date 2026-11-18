@@ -10,7 +10,7 @@ use std::hash::Hash;
 
 use equivalent::Equivalent;
 use polars::prelude::*;
-use polars_utils::aliases::PlHashMap;
+use std::collections::HashMap;
 
 use super::{GroupKey, session_hash};
 use crate::arrow::{ArrowChunk, ArrowCol};
@@ -100,7 +100,7 @@ impl<'c> Groups<'c> {
     /// rows placed. `of` gives a row's key and its identity (equal
     /// identities are one group); a key is kept for a group's first row.
     fn partition(n: usize, mut of: impl FnMut(usize) -> (RawKey<'c>, u64)) -> Self {
-        let mut slot_of: PlHashMap<u64, usize> = PlHashMap::default();
+        let mut slot_of: HashMap<u64, usize, online_core::FixedState> = HashMap::default();
         let mut keys: Vec<RawKey<'c>> = Vec::new();
         let mut ends: Vec<usize> = Vec::new();
         let mut slots: Vec<usize> = Vec::with_capacity(n);
@@ -129,7 +129,7 @@ impl<'c> Groups<'c> {
         // A null's identity cannot be an integer's: every 64-bit value is
         // one, so the null is told apart by a flag taken as a slot of its own.
         let mut null_slot: Option<usize> = None;
-        let mut slot_of: PlHashMap<u64, usize> = PlHashMap::default();
+        let mut slot_of: HashMap<u64, usize, online_core::FixedState> = HashMap::default();
         let mut keys: Vec<RawKey<'c>> = Vec::new();
         let mut ends: Vec<usize> = Vec::new();
         let mut slots: Vec<usize> = Vec::with_capacity(n);
@@ -283,7 +283,6 @@ pub(crate) fn group_indices<'c>(chunk: &'c ArrowChunk, spec: &Spec) -> PolarsRes
 #[cfg(test)]
 mod tests {
     use super::*;
-    use polars_utils::aliases::PlIndexMap;
     use proptest::prelude::*;
 
     /// The groups as the earlier `Vec` of pairs built them: one `Vec` of row
@@ -318,7 +317,8 @@ mod tests {
     #[test]
     fn a_key_found_by_reference_is_the_one_the_map_holds() {
         let keys = ["", "0", "-5", "10", "é", "a\u{0}b", "<null>"];
-        let mut map: PlIndexMap<GroupKey, usize> = PlIndexMap::default();
+        let mut map: indexmap::IndexMap<GroupKey, usize, online_core::FixedState> =
+            Default::default();
         for (i, k) in keys.iter().enumerate() {
             map.insert(GroupKey(Some((*k).to_string())), i);
         }

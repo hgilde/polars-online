@@ -2112,6 +2112,7 @@ name = "online-polars"
 version = "1.5.0"
 dependencies = [
  "equivalent",
+ "indexmap",
  "libloading",
  "online-core",
  "polars",

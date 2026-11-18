@@ -51,6 +51,7 @@
 //! `O(m²)` with `pairs`), and `polars_online.stream.refresh_time` wraps it as a
 //! lazy source the way the bank is wrapped.
 
+use online_core::FixedState;
 use std::collections::HashMap;
 
 use polars::prelude::*;
@@ -143,9 +144,9 @@ pub struct RefreshTime {
     /// for the joint grid over every series.
     pairs: Vec<(usize, usize)>,
     /// Per group key, the joint state or one state per pair.
-    states: HashMap<GroupKey, Vec<GridState>>,
+    states: HashMap<GroupKey, Vec<GridState>, FixedState>,
     /// The last `time` seen per group, so a backwards clock is refused.
-    last_time: HashMap<GroupKey, Instant>,
+    last_time: HashMap<GroupKey, Instant, FixedState>,
     /// Whether the input has a `group` column, once a chunk was fed; a
     /// state resumes only under the grouping it was saved with.
     grouped: Option<bool>,
@@ -333,8 +334,8 @@ impl RefreshTime {
         Ok(Self {
             names,
             pairs,
-            states: HashMap::new(),
-            last_time: HashMap::new(),
+            states: HashMap::default(),
+            last_time: HashMap::default(),
             grouped: None,
             kind: None,
             rows_fed: 0,
