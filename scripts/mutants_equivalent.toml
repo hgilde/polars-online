@@ -3717,3 +3717,12 @@ why = """the width only picks how many columns `solve_sweep` takes a pass: \
 every coefficient takes off the same products from the same sums in the \
 same order whatever the block (the function's doc), so a 2-wide and a \
 4-wide sweep give the same bits at every `k`"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "below_by"
+mutation = "replace < with <="
+line_has = "if (m as u64) < n {"
+why = """a low word of exactly n enters the branch, whose threshold 2^64 mod n \
+is below n, so `(m as u64) < threshold` is false and m is kept: the result is \
+the same as when the branch is skipped (`a_low_word_of_exactly_n_is_kept`)"""

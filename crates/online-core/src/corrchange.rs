@@ -5284,6 +5284,20 @@ mod tests {
     /// A draw whose low word is at or above `n` is taken as it comes, and the
     /// result is the high word of `x·n`, `⌊x·n / 2^64⌋`: the definition spelled
     /// out for 64 values of `x` spread over the whole range and several `n`.
+    /// A low word of exactly `n` is not below the threshold `2^64 mod n < n`,
+    /// so it is kept whether the guard is `<` or `<=`: the guard's boundary
+    /// is the one place the two agree (`x = 1` gives low word `n` for every n
+    /// that is a unit mod 2^64's odd part: `x·n = n`).
+    #[test]
+    fn a_low_word_of_exactly_n_is_kept() {
+        for n in [1u64, 2, 3, 5, 7, 100, 1 << 20, (1 << 32) + 1, u64::MAX] {
+            assert_eq!(low(1, n), n);
+            let (next, taken) = scripted(&[1]);
+            assert_eq!(below_by(n, next), 0, "n {n}");
+            assert_eq!(taken.get(), 1, "n {n}: one value");
+        }
+    }
+
     #[test]
     fn a_draw_past_the_sliver_is_the_high_word_and_takes_one_value() {
         for n in [1u64, 2, 3, 5, 7, 100, 1 << 20, (1 << 32) + 1, u64::MAX] {

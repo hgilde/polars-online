@@ -538,3 +538,94 @@ fn the_loop_fuses_exactly_where_pulps_arch_does() {
     let want = if scalar { u } else { f };
     assert_eq!(m[1][1].to_bits(), want[1][1].to_bits());
 }
+
+/// Task 472: both forms of the loop, on any CPU. The dispatcher runs only the
+/// one this CPU's instruction set picks, so the other form never ran in tests
+/// on a machine of the other kind; each is held here, to the bit, to a plain
+/// loop of the test's own: `s - a*b` with the product rounded on its own for
+/// the unfused form, `a.mul_add(-b, s)` for the fused one.
+fn llt_reference(a: &[Vec<f64>], fused: bool) -> Vec<Vec<f64>> {
+    let n = a.len();
+    // l[j][i]: column j, entry (i, j), as the loop holds it.
+    let mut l = vec![vec![0.0f64; n]; n];
+    for j in 0..n {
+        let mut inv = 0.0;
+        for i in j..n {
+            let mut s = a[i][j];
+            for col in l.iter().take(j) {
+                let (x, y) = (col[j], col[i]);
+                s = if fused {
+                    x.mul_add(-y, s)
+                } else {
+                    let p = std::hint::black_box(x * y);
+                    s - p
+                };
+            }
+            if i == j {
+                inv = 1.0 / s.sqrt();
+            }
+            l[j][i] = s;
+        }
+        for v in &mut l[j][j..] {
+            *v *= inv;
+        }
+    }
+    l
+}
+
+fn check_llt_loops<const N: usize>(seed: u64) {
+    let mut s = seed;
+    let g: Vec<Vec<f64>> = (0..N)
+        .map(|_| (0..N).map(|_| draw(&mut s)).collect())
+        .collect();
+    // G Gᵀ + N I: symmetric positive definite, well away from singular.
+    let a: Vec<Vec<f64>> = (0..N)
+        .map(|i| {
+            (0..N)
+                .map(|j| {
+                    let dot: f64 = (0..N).map(|k| g[i][k] * g[j][k]).sum();
+                    dot + if i == j { N as f64 } else { 0.0 }
+                })
+                .collect()
+        })
+        .collect();
+    for fused in [false, true] {
+        let mut b = [[0.0; N]; N];
+        for j in 0..N {
+            for i in j..N {
+                b[j][i] = a[i][j];
+            }
+        }
+        if fused {
+            llt_loop::<N, true>(&mut b).unwrap();
+        } else {
+            llt_loop::<N, false>(&mut b).unwrap();
+        }
+        let want = llt_reference(&a, fused);
+        for j in 0..N {
+            for i in j..N {
+                assert_eq!(
+                    b[j][i].to_bits(),
+                    want[j][i].to_bits(),
+                    "order {N}, fused {fused}, entry ({i}, {j})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn each_form_of_the_loop_matches_a_plain_reference_to_the_bit() {
+    check_llt_loops::<1>(1);
+    check_llt_loops::<2>(2);
+    check_llt_loops::<3>(3);
+    check_llt_loops::<4>(4);
+    check_llt_loops::<5>(5);
+    check_llt_loops::<6>(6);
+    check_llt_loops::<7>(7);
+    check_llt_loops::<8>(8);
+    check_llt_loops::<9>(9);
+    check_llt_loops::<10>(10);
+    check_llt_loops::<11>(11);
+    check_llt_loops::<12>(12);
+}
