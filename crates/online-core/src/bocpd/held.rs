@@ -566,4 +566,96 @@ mod tests {
         }
         assert!(held_rows > 40 * 200, "{held_rows}");
     }
+
+    /// The terms a run of weight `n` holds, longhand.
+    fn ln_c_of(kn: f64) -> f64 {
+        (std::f64::consts::PI * (kn + 1.0) / kn).ln()
+    }
+
+    /// A NaN weight or a NaN `nu` is computed and never stored: the table is
+    /// not entered, counted or filled, and a finite lookup after it is a
+    /// miss and then a hit, with the right values (task 465).
+    #[test]
+    fn the_length_terms_of_a_nan_are_computed_and_not_held() {
+        let mut t = LengthTerms::default();
+        t.begin(0, 1.0, false);
+        let kn = 2.5;
+        let neg_nan = f64::from_bits(f64::NAN.to_bits() | (1 << 63));
+        for (n, nu) in [
+            (f64::NAN, 7.5),
+            (neg_nan, 7.5),
+            (3.0, f64::NAN),
+            (3.0, neg_nan),
+            (f64::NAN, f64::NAN),
+        ] {
+            let (g, l) = t.gamma_and_ln_c(n, nu, kn);
+            assert_eq!(g.to_bits(), gamma_diff(nu, 1.0).to_bits(), "{n} {nu}");
+            assert_eq!(l.to_bits(), ln_c_of(kn).to_bits(), "{n} {nu}");
+            assert_eq!((t.hits, t.misses, t.filled), (0, 0, 0), "{n} {nu}");
+            assert!(t.slots.iter().all(|s| s.key == LengthTerms::EMPTY));
+        }
+        for (hits, misses) in [(0, 1), (1, 1)] {
+            let (g, l) = t.gamma_and_ln_c(3.0, 5.0, 4.0);
+            assert_eq!(g.to_bits(), gamma_diff(5.0, 1.0).to_bits());
+            assert_eq!(l.to_bits(), ln_c_of(4.0).to_bits());
+            assert_eq!((t.hits, t.misses, t.filled), (hits, misses, 1));
+        }
+    }
+
+    /// The table is emptied when an entry would make it more than half full,
+    /// and not before: 64 slots hold 32 weights, the 33rd empties it and is
+    /// the one entry left, and every value after it is the one made (task
+    /// 465). The insertions are bounded and `filled` is asserted at each
+    /// step, so a table that never empties fails here and does not spin.
+    #[test]
+    fn the_length_terms_empty_at_half_full_and_not_before() {
+        let mut t = LengthTerms::default();
+        t.begin(0, 1.0, false);
+        assert_eq!(t.slots.len(), LengthTerms::MIN_SLOTS);
+        let half = LengthTerms::MIN_SLOTS / 2;
+        let terms = |n: f64| (1.5 + 0.25 * n, 2.0 + 0.5 * n);
+        let ask = |t: &mut LengthTerms, n: f64| {
+            let (nu, kn) = terms(n);
+            let (g, l) = t.gamma_and_ln_c(n, nu, kn);
+            assert_eq!(g.to_bits(), gamma_diff(nu, 1.0).to_bits(), "n {n}");
+            assert_eq!(l.to_bits(), ln_c_of(kn).to_bits(), "n {n}");
+        };
+        for k in 0..half {
+            ask(&mut t, 1.0 + k as f64);
+            assert_eq!(t.filled, k + 1, "insertion {k}");
+            assert_eq!(t.misses, k as u64 + 1);
+        }
+        // Exactly half full: every one is held.
+        for k in 0..half {
+            ask(&mut t, 1.0 + k as f64);
+        }
+        assert_eq!(
+            (t.hits, t.misses, t.filled),
+            (half as u64, half as u64, half)
+        );
+        // One past: emptied, the new one alone, the room kept.
+        ask(&mut t, 1.0 + half as f64);
+        assert_eq!(t.filled, 1);
+        assert_eq!(t.slots.len(), LengthTerms::MIN_SLOTS);
+        assert_eq!(
+            t.slots
+                .iter()
+                .filter(|s| s.key != LengthTerms::EMPTY)
+                .count(),
+            1
+        );
+        let (hits, misses) = (t.hits, t.misses);
+        ask(&mut t, 1.0 + half as f64);
+        assert_eq!((t.hits, t.misses), (hits + 1, misses));
+        // What was held is computed again, correctly.
+        ask(&mut t, 1.0);
+        assert_eq!((t.hits, t.misses), (hits + 1, misses + 1));
+        assert_eq!(t.filled, 2);
+        // And the table goes on filling and emptying, never past half.
+        for k in 0..300 {
+            ask(&mut t, 100.0 + k as f64);
+            assert!(t.filled >= 1 && 2 * t.filled <= t.slots.len(), "{k}");
+        }
+        assert_eq!(t.slots.len(), LengthTerms::MIN_SLOTS);
+    }
 }
