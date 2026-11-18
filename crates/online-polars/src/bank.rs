@@ -798,7 +798,7 @@ pub(crate) struct Spares {
 /// The most bytes of run buffers a bank keeps between chunks.
 const SPARE_BYTES: usize = 16 << 20;
 /// The most bytes one kept run's buffers may hold.
-const SPARE_ONE: usize = 64 << 10;
+const SPARE_ONE: usize = 4 << 20;
 
 impl Spares {
     /// A kept run's buffers, if any are left.
