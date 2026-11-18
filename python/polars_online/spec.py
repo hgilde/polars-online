@@ -817,6 +817,16 @@ The diagnostics add, per slot:
        over the exact variance of their difference, about ``chi2(k)`` with
        no break and null run once. That variance is singular over fewer
        than ``2k`` rows, whatever their weights, so it waits for them.
+       It is formed from the difference of the fits' inverse Grams,
+       ``D = A_f - A_s``, as ``D H_ff D' + A_s E_2 A_s + C + C'`` with
+       ``C = D (H_ff - H_fs) A_s`` and ``E_2 = H_ff + H_ss - H_fs - H_fs'``,
+       where each ``H`` is the sum of ``z z'`` weighted by the squares of
+       the fast weights (``H_ff``), of the slow ones (``H_ss``) and by their
+       products (``H_fs``): the matrix
+       ``A_f H_ff A_f + A_s H_ss A_s - A_f H_fs A_s - A_s H_fs' A_f`` with
+       each term the size of the whole, where those four are 500 times it or
+       more over the first rows past the wait and cancel to it, so that the
+       digits they would cancel are not the distance's.
        Over the slow fit's Gram for both, a feature whose spread fell
        tenfold with nothing broken passed 21.1 on 85% of streams; over the
        exact variance, on none. On 200 streams of
