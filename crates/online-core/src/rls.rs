@@ -307,7 +307,9 @@ fn solve_block<const N: usize>(r: &[f64], k: usize, betas: &mut [Vec<f64>; N], u
     }
 }
 
-/// The columns of `R`, `B` at a time from the last, then what is left.
+/// The columns of `R`, `B` at a time from the last, then what is left. Each
+/// block takes the rows of the factor from the end and gives back what is
+/// before them, which is where the next block's rows end.
 #[inline(always)]
 fn solve_sweep<const N: usize, const B: usize>(
     r: &[f64],
@@ -315,15 +317,16 @@ fn solve_sweep<const N: usize, const B: usize>(
     betas: &mut [Vec<f64>; N],
     acc: &mut [f64; N],
 ) {
+    let mut rest = r;
     let mut j = k;
     while j >= B {
-        solve_columns::<N, B>(r, k, betas, acc, j);
+        rest = solve_columns::<N, B>(rest, k, betas, acc, j);
         j -= B;
     }
     match j {
-        3 => solve_columns::<N, 3>(r, k, betas, acc, j),
-        2 => solve_columns::<N, 2>(r, k, betas, acc, j),
-        1 => solve_columns::<N, 1>(r, k, betas, acc, j),
+        3 => _ = solve_columns::<N, 3>(rest, k, betas, acc, j),
+        2 => _ = solve_columns::<N, 2>(rest, k, betas, acc, j),
+        1 => _ = solve_columns::<N, 1>(rest, k, betas, acc, j),
         _ => {}
     }
 }
@@ -332,58 +335,176 @@ fn solve_sweep<const N: usize, const B: usize>(
 /// each one's sum is finished from the terms of the block's earlier
 /// columns, its division taken, and then every row above the block has the
 /// block's `B` terms taken off in one pass over it, the next coefficient's
-/// row first, kept in `acc`.
+/// row first, kept in `acc`. `rest` is the factor up to the end of row `j-1`;
+/// what it gives back is the factor up to the end of row `j-B-1`.
 #[inline(always)]
-fn solve_columns<const N: usize, const B: usize>(
-    r: &[f64],
+fn solve_columns<'a, const N: usize, const B: usize>(
+    mut rest: &'a [f64],
     k: usize,
     betas: &mut [Vec<f64>; N],
     acc: &mut [f64; N],
     j: usize,
-) {
+) -> &'a [f64] {
+    assert!(B <= j && j <= k);
     let mut b = [[0.0; N]; B];
+    // The block's rows, `j-1` down to `j-B`: row `m` is `k - m` entries, one
+    // more than the row after it, and each is cut off the end of what is left.
+    // `len` is carried, not found from `m` on each row: derived, it costs a
+    // hundred instructions a step of `R^-1 u` at 20 columns (x86-64).
+    let mut len = k - j + 1;
+    #[allow(clippy::explicit_counter_loop)]
     for c in 0..B {
-        let col = j - 1 - c;
-        let row = base(k, col);
-        let d = r[row + col];
+        let m = j - 1 - c;
+        let (head, row) = rest.split_at(rest.len() - len);
+        rest = head;
+        len += 1;
+        let d = row[0];
         for t in 0..N {
-            let mut a = if c == 0 { acc[t] } else { betas[t][col] };
+            let mut a = if c == 0 { acc[t] } else { betas[t][m] };
             for (q, bq) in b.iter().enumerate().take(c) {
-                a -= r[row + (j - 1 - q)] * bq[t];
+                a -= row[c - q] * bq[t];
             }
             let x = if d > 0.0 { a / d } else { 0.0 };
             b[c][t] = if x.is_finite() { x } else { zero_unseen() };
-            betas[t][col] = b[c][t];
+            betas[t][m] = b[c][t];
         }
     }
     let top = j - B;
     if top == 0 {
-        return;
+        return rest;
     }
+    // The rows above, `top-1` down to 0. Each one's `B` entries, columns
+    // `j-B..j`, are one window of the packed triangle, `back` entries before
+    // the end of its row, and the window of the row above is `k - m` entries
+    // earlier than this one's: carried as an index, which one test against
+    // the last window that fits holds from both sides (an index that
+    // stepped below 0 has wrapped to a number above it).
+    let back = k - j + B;
+    let last = rest.len().checked_sub(B).unwrap();
+    let mut at = rest.len() - back;
+    let bs: [&mut [f64]; N] = betas.each_mut().map(|v| &mut v[..top]);
     let m = top - 1;
-    // Row `m`'s `B` entries, columns `j-B..j`, are one window of the packed
-    // triangle: found once, indexed by constants. The rows above are each
-    // `k - m` entries earlier than the one below (`base`'s difference), so
-    // the offset is carried instead of computed.
-    let mut at = base(k, m) + (j - B);
+    assert!(at <= last);
+    let w = &rest[at..at + B];
     for t in 0..N {
-        let w: &[f64; B] = r[at..at + B].try_into().unwrap();
-        let mut a = betas[t][m];
+        let mut a = bs[t][m];
         for (q, bq) in b.iter().enumerate() {
             a -= w[B - 1 - q] * bq[t];
         }
         acc[t] = a;
     }
-    for m in (0..m).rev() {
-        at -= k - (m + 1);
-        let w: &[f64; B] = r[at..at + B].try_into().unwrap();
+    for (stride, m) in (k - m..).zip((0..m).rev()) {
+        at = at.wrapping_sub(stride);
+        assert!(at <= last);
+        let w = &rest[at..at + B];
         for t in 0..N {
-            let mut a = betas[t][m];
+            let mut a = bs[t][m];
             for (q, bq) in b.iter().enumerate() {
                 a -= w[B - 1 - q] * bq[t];
             }
-            betas[t][m] = a;
+            bs[t][m] = a;
         }
+    }
+    rest
+}
+
+/// Folds the working row (`zbuf`, `ybuf`) into `R` and `u` by the `k`
+/// rotations, taking up the decay (`root = sqrt(lam)`) as each row of
+/// `R` and entry of `u` is read: the same products in the same order as a
+/// pass over `R` and `u` before the rotations. The next rotation's
+/// working entry is the one the rotation just made, kept in a register
+/// instead of being read back from `zbuf`, which is the chain's
+/// critical path.
+#[inline(never)]
+fn fold<const DECAY: bool>(
+    r: &mut [f64],
+    zbuf: &mut [f64],
+    u: &mut [Vec<f64>],
+    ybuf: &mut [f64],
+    root: f64,
+) {
+    let k = zbuf.len();
+    let mut zi = zbuf.first().copied().unwrap_or(0.0);
+    // Row `i` is `k - i` entries, from its diagonal, and the next row
+    // follows it: each is cut off the front of what is left.
+    let mut rest = r;
+    for i in 0..k {
+        let (row, tail) = std::mem::take(&mut rest).split_at_mut(k - i);
+        rest = tail;
+        // The entry the next rotation starts from, as the rotations
+        // before this one left it; this rotation replaces it.
+        let zrow = &mut zbuf[i..];
+        let mut znext = if i + 1 < k { zrow[1] } else { 0.0 };
+        let rotation = 'rotation: {
+            if zi == 0.0 {
+                break 'rotation None;
+            }
+            let mut rii = row[0];
+            if DECAY {
+                rii *= root;
+            }
+            let squares = rii * rii + zi * zi;
+            let mut rho = squares.sqrt();
+            if !(squares >= f64::MIN_POSITIVE && squares.is_finite()) {
+                // Squares that overflowed (inputs beyond 1e154), or that
+                // are subnormal or 0 (below 1e-154), where the plain root
+                // has lost its bits or is 0/0: `hypot` scales internally
+                // (a subnormal sum cost 1.4e-5 of a slope, task 158).
+                rho = rii.hypot(zi);
+                if !(rho > 0.0 && rho.is_finite()) {
+                    break 'rotation None;
+                }
+            }
+            Some((rho, rii / rho, zi / rho))
+        };
+        let Some((rho, c, s)) = rotation else {
+            // Nothing to rotate: the row is only decayed.
+            if DECAY {
+                for v in row.iter_mut() {
+                    *v *= root;
+                }
+                for u in u.iter_mut() {
+                    u[i] *= root;
+                }
+            }
+            zi = znext;
+            continue;
+        };
+        row[0] = rho;
+        zrow[0] = 0.0;
+        if i + 1 < k {
+            // The first entry of the row, apart: its working entry is
+            // the next rotation's.
+            let mut a = row[1];
+            if DECAY {
+                a *= root;
+            }
+            let b = znext;
+            row[1] = c * a + s * b;
+            znext = c * b - s * a;
+            zrow[1] = znext;
+            // Two disjoint slices, so the loop has no bounds checks to
+            // clear and nothing to alias: it vectorizes.
+            let r_rest = &mut row[2..];
+            let z_rest = &mut zrow[2..][..r_rest.len()];
+            for (rij, zj) in r_rest.iter_mut().zip(z_rest.iter_mut()) {
+                let (mut a, b) = (*rij, *zj);
+                if DECAY {
+                    a *= root;
+                }
+                *rij = c * a + s * b;
+                *zj = c * b - s * a;
+            }
+        }
+        for (u, yb) in u.iter_mut().zip(ybuf.iter_mut()) {
+            let mut ui = u[i];
+            if DECAY {
+                ui *= root;
+            }
+            u[i] = c * ui + s * *yb;
+            *yb = c * *yb - s * ui;
+        }
+        zi = znext;
     }
 }
 
@@ -465,98 +586,16 @@ impl Rls {
         }
     }
 
-    /// Folds the working row (`zbuf`, `ybuf`) into `R` and `u` by the `k`
-    /// rotations, taking up the decay (`root = sqrt(lam)`) as each row of
-    /// `R` and entry of `u` is read: the same products in the same order as a
-    /// pass over `R` and `u` before the rotations. The next rotation's
-    /// working entry is the one the rotation just made, kept in a register
-    /// instead of being read back from `zbuf`, which is the chain's
-    /// critical path.
+    /// Folds the working row (`zbuf`, `ybuf`) into `R` and `u` ([`fold`]).
     fn fold_row<const DECAY: bool>(&mut self, root: f64) {
         let k = self.cfg.k_total();
-        let (r, zbuf) = (&mut self.r, &mut self.zbuf);
-        let mut zi = zbuf.first().copied().unwrap_or(0.0);
-        let mut row = 0;
-        for i in 0..k {
-            // Row `i` starts where row `i - 1`'s `k - i + 1` entries end,
-            // less the one column further left that `base` shifts by.
-            if i > 0 {
-                row += k - i;
-            }
-            // The entry the next rotation starts from, as the rotations
-            // before this one left it; this rotation replaces it.
-            let mut znext = if i + 1 < k { zbuf[i + 1] } else { 0.0 };
-            let rotation = 'rotation: {
-                if zi == 0.0 {
-                    break 'rotation None;
-                }
-                let mut rii = r[row + i];
-                if DECAY {
-                    rii *= root;
-                }
-                let squares = rii * rii + zi * zi;
-                let mut rho = squares.sqrt();
-                if !(squares >= f64::MIN_POSITIVE && squares.is_finite()) {
-                    // Squares that overflowed (inputs beyond 1e154), or that
-                    // are subnormal or 0 (below 1e-154), where the plain root
-                    // has lost its bits or is 0/0: `hypot` scales internally
-                    // (a subnormal sum cost 1.4e-5 of a slope, task 158).
-                    rho = rii.hypot(zi);
-                    if !(rho > 0.0 && rho.is_finite()) {
-                        break 'rotation None;
-                    }
-                }
-                Some((rho, rii / rho, zi / rho))
-            };
-            let Some((rho, c, s)) = rotation else {
-                // Nothing to rotate: the row is only decayed.
-                if DECAY {
-                    for v in &mut r[row + i..row + k] {
-                        *v *= root;
-                    }
-                    for u in &mut self.u {
-                        u[i] *= root;
-                    }
-                }
-                zi = znext;
-                continue;
-            };
-            r[row + i] = rho;
-            zbuf[i] = 0.0;
-            if i + 1 < k {
-                // The first entry of the row, apart: its working entry is
-                // the next rotation's.
-                let mut a = r[row + i + 1];
-                if DECAY {
-                    a *= root;
-                }
-                let b = znext;
-                r[row + i + 1] = c * a + s * b;
-                znext = c * b - s * a;
-                zbuf[i + 1] = znext;
-                // Two disjoint slices, so the loop has no bounds checks to
-                // clear and nothing to alias: it vectorizes.
-                let r_rest = &mut r[row + i + 2..row + k];
-                let z_rest = &mut zbuf[i + 2..k];
-                for (rij, zj) in r_rest.iter_mut().zip(z_rest.iter_mut()) {
-                    let (mut a, b) = (*rij, *zj);
-                    if DECAY {
-                        a *= root;
-                    }
-                    *rij = c * a + s * b;
-                    *zj = c * b - s * a;
-                }
-            }
-            for (u, yb) in self.u.iter_mut().zip(self.ybuf.iter_mut()) {
-                let mut ui = u[i];
-                if DECAY {
-                    ui *= root;
-                }
-                u[i] = c * ui + s * *yb;
-                *yb = c * *yb - s * ui;
-            }
-            zi = znext;
-        }
+        fold::<DECAY>(
+            &mut self.r,
+            &mut self.zbuf[..k],
+            &mut self.u,
+            &mut self.ybuf,
+            root,
+        );
     }
 
     /// `beta_j = R^-1 u_j` by back-substitution. A zero pivot is a direction
