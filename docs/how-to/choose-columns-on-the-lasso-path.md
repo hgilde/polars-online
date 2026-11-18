@@ -141,11 +141,11 @@ docstring, under *The descent*, measure how many sweeps they take.
 1. **Read `bank.solve_failures()` after a fit.** For `lasso` it counts each
    descent that ran out of `max_iter` sweeps, one per target and penalty.
    It leaves out the descents of a fit's first rows, where too few rows
-   stand behind the features for any data to settle in `max_iter` sweeps
-   (about 2.3 rows a feature at the default; the docstring of
-   `ModelBank.solve_failures` gives the rule), and only while the stream is
-   still growing toward that many: under a decay that settles below it,
-   every one is counted.
+   stand behind the features for any data to settle in `max_iter` sweeps:
+   about 2.3 rows a feature at the default, a rule the docstring of
+   `ModelBank.solve_failures` gives. It leaves them out only while the
+   stream is still growing toward that many. Under a decay that stays below
+   it, every one is counted.
 2. **If it is above 0, give the spec a larger `max_iter`,** and fit again
    until the count is 0.
 
