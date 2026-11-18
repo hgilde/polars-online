@@ -409,8 +409,65 @@ fn solve_in_place(l: &Mat<f64>, rhs: MatMut<'_, f64>) {
     });
 }
 
+/// Orders up to this are solved by [`small_solve`], the rest by faer: faer's
+/// triangular solve takes its base case, without a matrix product, up to here.
+const SMALL_SOLVE: usize = 4;
+
+/// `X ← A⁻¹ X` from the lower factor `L` of `A` of an order up to
+/// [`SMALL_SOLVE`]: faer's two triangular solves where they reach their base
+/// case at once, written out, so that the bits are faer's. Forward, `y_i` is
+/// `x_i · (1/l_ii)`, then `+ (-l_ij · (1/l_ii)) · y_j` for `j = 0, 1, ...` in
+/// turn, a product and a sum each (faer's base case fuses nothing); backward,
+/// faer solves `Lᵀ` as the lower triangle of `Lᵀ` with its rows and columns
+/// reversed, so the same recursion runs from the last row up with `l_ji` in
+/// place of `l_ij`. Each right-hand side is its own column: faer's split of
+/// many columns into halves changes no bit.
+fn small_solve(l: MatRef<'_, f64>, mut x: MatMut<'_, f64>) {
+    let n = l.nrows();
+    debug_assert!(n <= SMALL_SOLVE);
+    let mut inv = [0.0f64; SMALL_SOLVE];
+    for (i, v) in inv.iter_mut().enumerate().take(n) {
+        *v = l[(i, i)].recip();
+    }
+    // `fwd[i][j]`: faer's `-l_ij / l_ii` as the product it forms;
+    // `bwd[p][q]`: the same of the reversed transpose, `-l_{n-1-q, n-1-p}`
+    // times the reciprocal of row `n-1-p`'s pivot.
+    let mut fwd = [[0.0f64; SMALL_SOLVE]; SMALL_SOLVE];
+    let mut bwd = [[0.0f64; SMALL_SOLVE]; SMALL_SOLVE];
+    for i in 0..n {
+        for j in 0..i {
+            fwd[i][j] = (-l[(i, j)]) * inv[i];
+            bwd[i][j] = (-l[(n - 1 - j, n - 1 - i)]) * inv[n - 1 - i];
+        }
+    }
+    for c in 0..x.ncols() {
+        let mut y = [0.0f64; SMALL_SOLVE];
+        for i in 0..n {
+            let mut s = x[(i, c)] * inv[i];
+            for j in 0..i {
+                s += fwd[i][j] * y[j];
+            }
+            y[i] = s;
+        }
+        let mut z = [0.0f64; SMALL_SOLVE];
+        for p in 0..n {
+            let mut s = y[n - 1 - p] * inv[n - 1 - p];
+            for q in 0..p {
+                s += bwd[p][q] * z[q];
+            }
+            z[p] = s;
+        }
+        for (p, &v) in z.iter().enumerate().take(n) {
+            x[(n - 1 - p, c)] = v;
+        }
+    }
+}
+
 /// One band of [`solve_in_place`]: faer's two triangular solves, sequential.
 fn solve_band(l: MatRef<'_, f64>, band: MatMut<'_, f64>) {
+    if l.nrows() <= SMALL_SOLVE {
+        return small_solve(l, band);
+    }
     let mut mem = MemBuffer::new(llt::solve::solve_in_place_scratch::<f64>(
         l.nrows(),
         band.ncols(),
@@ -2074,6 +2131,73 @@ mod tests {
     /// `E·A·E` with `E = diag(e)`, row-major: the matrix a congruence moves to.
     fn rescaled(a: &[f64], k: usize, e: &[f64]) -> Vec<f64> {
         (0..k * k).map(|ij| e[ij / k] * a[ij] * e[ij % k]).collect()
+    }
+
+    /// faer's own sequential Cholesky of the lower triangle of `a`, as
+    /// `cholesky_seq` calls it: the lower triangle it gives and its result,
+    /// `Err` carrying the failing pivot's index.
+    fn faer_seq(a: &Mat<f64>) -> (Mat<f64>, Result<(), usize>) {
+        let n = a.nrows();
+        let mut l = a.clone();
+        let mut mem = MemBuffer::new(llt::factor::cholesky_in_place_scratch::<f64>(
+            n,
+            Par::Seq,
+            Default::default(),
+        ));
+        let r = llt::factor::cholesky_in_place(
+            l.as_mut(),
+            Default::default(),
+            Par::Seq,
+            MemStack::new(&mut mem),
+            Default::default(),
+        )
+        .map(|_| ())
+        .map_err(|llt::factor::LltError::NonPositivePivot { index }| index);
+        (l, r)
+    }
+
+    /// The small solve is faer's `llt::solve` to the bit: every entry of the
+    /// solution, over every order from 1 to `SMALL_SOLVE`, factors of
+    /// matrices conditioned from 1 to `1e14`, and right-hand sides from one
+    /// column to past the 64 at which faer splits the columns in halves.
+    #[test]
+    fn the_small_solve_is_faers_to_the_bit() {
+        let mut s = 13u64;
+        let mut checked = 0;
+        for n in 1..=SMALL_SOLVE {
+            for cond in [1.0, 1e3, 1e8, 1e14] {
+                for m in [1, 2, 3, 7, 70] {
+                    let a = spd(n, cond, &mut s);
+                    let mut l = Mat::from_fn(n, n, |i, j| if i >= j { a[i * n + j] } else { 0.0 });
+                    faer_seq(&l.clone()).1.expect("an SPD matrix factors");
+                    l = faer_seq(&l).0;
+                    let x = Mat::from_fn(n, m, |_, _| draw(&mut s) * 1e3);
+                    let mut want = x.clone();
+                    let mut mem =
+                        MemBuffer::new(llt::solve::solve_in_place_scratch::<f64>(n, m, Par::Seq));
+                    llt::solve::solve_in_place_with_conj(
+                        l.as_ref(),
+                        Conj::No,
+                        want.as_mut(),
+                        Par::Seq,
+                        MemStack::new(&mut mem),
+                    );
+                    let mut got = x.clone();
+                    small_solve(l.as_ref(), got.as_mut());
+                    for j in 0..m {
+                        for i in 0..n {
+                            assert_eq!(
+                                got[(i, j)].to_bits(),
+                                want[(i, j)].to_bits(),
+                                "n {n}, cond {cond:e}, m {m}, entry ({i}, {j})"
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 3000, "{checked}");
     }
 
     /// The factor is `faer`'s own `Mat::llt(Side::Lower)` to the bit, held as
