@@ -94,7 +94,7 @@ to 0.18 against a nominal 0.05, as the paper warns
 
 **The two changepoint detectors are at opposite ends of one trade-off.** On
 the same streams, `corrchange(kind="window")` finds a correlation break in a
-median of 30 rows and flags 45 rows per 1000 quiet ones. `bocpd` takes 121
+median of 29 rows and flags 45 rows per 1000 quiet ones. `bocpd` takes 121
 rows and gives 0.53 alarms per 1000. Neither is better: they answer
 different questions ([§5](#5-two-changepoint-detectors-on-the-same-break)).
 
@@ -352,14 +352,14 @@ MODELS.md](MODELS.md#bocpd--how-long-has-this-regime-lasted)).
 
 | detector           | false alarms / 1000 quiet rows | found the break | median delay | worst delay |
 |--------------------|--------------------------------|-----------------|--------------|-------------|
-| corrchange, `kind="window"` | 44.70                          | 20/20           | 30           | 57          |
+| corrchange, `kind="window"` | 45.35                          | 20/20           | 29           | 56          |
 | bocpd              | 0.53                           | 20/20           | 121          | 351         |
 
 **The two detectors answer different questions, which is why both are
 here.** `corrchange(kind="window")` is a test of one thing: whether the
 correlation matrix has moved between two adjacent windows. It is looking
-straight at this break, so it flags it fast, in a median of 30 rows and 57
-at worst. It also flags 44.70 rows per 1000 quiet ones. Two windows that
+straight at this break, so it flags it fast, in a median of 29 rows and 56
+at worst. It also flags 45.35 rows per 1000 quiet ones. Two windows that
 slide by one row are almost the same windows, so its flags come in runs.
 That rate is nearer a fraction of rows above the quantile than a count of
 events.
