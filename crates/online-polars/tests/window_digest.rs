@@ -224,6 +224,12 @@ fn op2(name: &str, hl: &Value, ws: Option<&Value>, extra: Value) -> Value {
 
 fn op(name: &str, hl: &Value, ws: Option<&Value>, extra: Value) -> Value {
     let mut o = json!({"half_life": hl});
+    // A sum's default is 0 (an empty window sums to 0.0, the empty-sum tests');
+    // here it asks for one value, as it did, so the hashes pin nothing else
+    // moving.
+    if name.ends_with("sum") {
+        o["min_samples"] = json!(1);
+    }
     if let Some(w) = ws {
         o["window_size"] = w.clone();
     }

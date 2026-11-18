@@ -43,7 +43,7 @@ temporal one. Each operator then reads the weighted rows its own way:
 | operator | how it weighs the window's rows | what it is held to |
 |---|---|---|
 | `po.ewm_mean` | each value is held over the interval ending at its row and weighed by that interval's decayed time, so a burst of rows does not outweigh a quiet period, and a row at a repeated clock value moves no mean. Looking ahead, each value is held until the next row | `ewm_mean_by` |
-| `po.ewm_sum` | `Σ 0.5 ** (age / half_life) · x`, each row counted once at its own time. Every row at a repeated clock value carries that value's total | `ewm_sum_by` on distinct clock values, whose sum at a repeated one runs row by row |
+| `po.ewm_sum` | `Σ 0.5 ** (age / half_life) · x`, each row counted once at its own time. Every row at a repeated clock value carries that value's total. A window with no row with a value sums to 0.0 under the default `min_samples=0`, and is null under 1 or more | `ewm_sum_by` on distinct clock values, whose sum at a repeated one runs row by row; `rolling_sum_by`, empty windows included |
 | `po.ewm_rate` | the sum divided by the decayed time the window covers: a quantity per unit of clock | the sum and the decayed time, each as above |
 | `po.ewm_quantile` | each row weighed as `po.ewm_sum` weighs it ([Quantiles and a robust scale](#quantiles-and-a-robust-scale)) | numpy's weighted quantile (`inverted_cdf`), within 0.78% |
 | `po.ewm_var`, `po.ewm_std` | about `po.ewm_mean`, each value weighed as the mean weighs it, and looking back only. With `bias=False`, the default, the variance is corrected for the weights' number and inequality, so a window that one row's weight fills is null. A window that holds one value gives 0 exactly | `ewm_var` and `ewm_std` with `adjust=False`, on a clock that steps by 1 a row with `half_life` in rows and an input with no nulls: a null row moves nothing here and the last value is held across the longer step to the next value, which no `ignore_nulls` setting of Polars' does. Polars before 1.44 gave the first row 0.0 under `bias=False`, where it now gives null, as these do |
@@ -136,7 +136,7 @@ for r in counts.iter_rows(named=True):
 
 ```text
    t  back_right  back_left  ahead_right  ahead_left
- 0.0           1       null            3           3
+ 0.0           1          0            3           3
  1.0           3          1            1           3
  1.0           3          1            1           3
  2.0           3          3         null        null
@@ -146,9 +146,11 @@ for r in counts.iter_rows(named=True):
 Both rows at 1.0 get one window. Looking back under `"right"`, it is
 `(−1, 1]`: the row at 0.0 and both rows at 1.0. Under `"left"` it is
 `[−1, 1)`, the row at 0.0 alone, and the row at 0.0 has an empty window,
-so null. Looking ahead from 0.0 under `"right"`, `(0, 2]` holds both rows
-at 1.0 and the row at 2.0. The last two rows' windows ahead are still open
-when the input ends, so they are null.
+so a sum of 0, as Polars' `rolling_sum_by` gives. A window with fewer rows
+with a value than `min_samples` is null instead, and a sum's default is 0.
+Looking ahead from 0.0 under `"right"`, `(0, 2]` holds both rows at 1.0 and
+the row at 2.0. The last two rows' windows ahead are still open when the
+input ends, so they are null.
 
 **A row is in a window by its stamp, but a mean weighs it by the part of
 its held interval inside the window.** So under `"left"` or `"both"`, a row

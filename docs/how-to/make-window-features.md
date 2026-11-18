@@ -156,7 +156,7 @@ windowed = po.stream.with_windows(
     trades,
     mid_trend=po.ewm_mean("mid", half_life="5s", window_size="1m") - pl.col("mid"),  # the last minute's time-weighted mid, less the mid now
     vwap=po.ewm_sum(notional, **last_minute) / po.ewm_sum("quantity", **last_minute),      # the last minute's trades, weighted most on the latest
-    buy_vwap=po.ewm_sum(buys.then(notional), **last_minute) / po.ewm_sum(buys.then("quantity"), **last_minute),   # the same, buys only
+    buy_vwap=po.ewm_sum(buys.then(notional), min_samples=1, **last_minute) / po.ewm_sum(buys.then("quantity"), min_samples=1, **last_minute),   # the same, buys only; null in a minute with no buy
     clock="ts", gap_cap="5m", group="symbol",
 )
 print(windowed.columns)

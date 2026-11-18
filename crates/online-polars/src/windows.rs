@@ -2028,6 +2028,8 @@ macro_rules! by_width {
 }
 
 // After `by_width!`, which it uses.
+#[cfg(test)]
+mod empty_sum_tests;
 mod held_mass;
 #[cfg(test)]
 mod int_clock_tests;
@@ -2095,8 +2097,8 @@ impl Windows {
                     op.kernel
                 ));
             }
-            if op.min_samples == 0 {
-                return Err("min_samples must be at least 1".into());
+            if op.min_samples == 0 && op.stat != Stat::Sum {
+                return Err("min_samples must be at least 1 (only a sum may take 0)".into());
             }
             let k = &kernels[op.kernel];
             check_op(o, op, k)?;
@@ -3133,7 +3135,7 @@ fn read_backward<const W: bool>(
         let op = &ops[o];
         let var = op.stat.is_var();
         let Some((sum, at)) = q.sum_op::<W>(k, j) else {
-            out[j] = f64::NAN;
+            out[j] = empty_value(op);
             continue;
         };
         if op.stat == Stat::Quantile {
@@ -3188,6 +3190,16 @@ fn read_backward<const W: bool>(
     }
 }
 
+/// A window with no row: 0.0 for a sum with `min_samples` 0 (Polars'
+/// default), null (NaN) for the rest.
+fn empty_value(op: &OpDef) -> f64 {
+    if op.stat == Stat::Sum && op.min_samples == 0 {
+        0.0
+    } else {
+        f64::NAN
+    }
+}
+
 /// An operator's value from its accumulator and the window's span `t`.
 fn value_of(k: &KernelDef, op: &OpDef, a: Acc, t: f64) -> f64 {
     if a.n < f64::from(op.min_samples) {
@@ -3201,6 +3213,8 @@ fn value_of(k: &KernelDef, op: &OpDef, a: Acc, t: f64) -> f64 {
                 f64::NAN
             }
         }
+        // `min_samples` 0 only: no value sums to 0.0, whatever the dust.
+        Stat::Sum if a.n == 0.0 => 0.0,
         Stat::Sum => a.s,
         // Read from the queue's sketches (`read_backward`, `close`).
         Stat::Quantile => f64::NAN,
@@ -3408,6 +3422,8 @@ fn close<const W: bool>(
             }
         }
         if !any {
+            // A closed window with no row in it.
+            held.values[r * held.n_outputs + o] = empty_value(op);
             continue;
         }
         held.values[r * held.n_outputs + o] = if op.stat == Stat::Quantile {
@@ -6184,9 +6200,22 @@ mod tests {
             refused(vec![back()], vec![op(3, 1)]),
             defect("operator 0 names kernel 3, which there is not")
         );
+        // Only a sum takes 0.
+        assert!(
+            Windows::new(
+                vec![back()],
+                vec![op(0, 1), op(0, 0)],
+                cfg(10.0, None, None)
+            )
+            .is_ok()
+        );
+        let mean = OpDef {
+            stat: Stat::Mean,
+            ..op(0, 0)
+        };
         assert_eq!(
-            refused(vec![back()], vec![op(0, 1), op(0, 0)]),
-            defect("min_samples must be at least 1")
+            refused(vec![back()], vec![op(0, 1), mean]),
+            defect("min_samples must be at least 1 (only a sum may take 0)")
         );
         assert_eq!(
             refused(vec![back(), back()], vec![op(1, 1)]),

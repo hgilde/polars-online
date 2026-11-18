@@ -1443,8 +1443,11 @@ fn run_group(p: &mut Parts<'_>, g: &mut Group, cols: Cols<'_>, bufs: &mut Bufs, 
                 began = r as isize;
             }
             if new && !near && first {
-                // The first row of a stretch reads an empty queue: no value.
-                g.stamp_values[ki].fill(f64::NAN);
+                // The first row of a stretch reads an empty queue: no value,
+                // or the sum of nothing for a sum with no minimum.
+                for (j, &o) in m.iter().enumerate() {
+                    g.stamp_values[ki][j] = empty_value(&p.ops[o]);
+                }
             } else if new && !near {
                 by_width!(
                     wide,

@@ -115,12 +115,16 @@ operator gives the window as it stands, where Polars' ``ewm_mean_by`` gives
 null. A row is in a window by its stamp, but a mean weighs it by its held
 interval inside the window. So under ``"left"`` or ``"both"``, a row exactly
 one window old counts for ``min_samples`` and weighs nothing, since its
-interval ends at its row. A mean with no other value in the window is null.
+interval ends at its row. A mean with no other value in the window is null,
+where a sum's default ``min_samples=0`` gives 0.0, as Polars' ``rolling_sum_by``
+does.
 
 **A weighted mean is a ratio of two sums.** A volume-weighted average price
 (VWAP) is decayed notional over decayed volume, and the time mass cancels.
-For one side's VWAP, put ``when/then`` inside both sums. The operators take
-no ``weight=``. This code reads ``trades`` from `Example data
+For one side's VWAP, put ``when/then`` inside both sums, with
+``min_samples=1`` in both: a window with no such trade is then null, where a
+sum of nothing is 0.0 and its ratio NaN. The operators take no ``weight=``.
+This code reads ``trades`` from `Example data
 <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
 .. code-block:: python
@@ -133,8 +137,8 @@ no ``weight=``. This code reads ``trades`` from `Example data
         fwd_vwap_vs_mid=po.ewm_sum(notional, half_life="10s", window_size="1m", reverse=True)
                         / po.ewm_sum("quantity", half_life="10s", window_size="1m", reverse=True)
                         - pl.col("mid"),
-        buy_vwap=po.ewm_sum(buys.then(notional), half_life="10s")
-                 / po.ewm_sum(buys.then("quantity"), half_life="10s"),
+        buy_vwap=po.ewm_sum(buys.then(notional), half_life="10s", min_samples=1)
+                 / po.ewm_sum(buys.then("quantity"), half_life="10s", min_samples=1),
         clock="ts", gap_cap="5m", group="symbol",
     )
 
@@ -440,7 +444,7 @@ def ewm_sum(
     half_life: float | Duration,
     window_size: float | Duration | None = None,
     closed: Literal["right", "left", "both", "none"] = "right",
-    min_samples: int = 1,
+    min_samples: int = 0,
     partial: Literal["keep", "null", "drop"] | None = None,
     reverse: bool = False,
 ) -> pl.Expr:
@@ -475,8 +479,9 @@ def ewm_sum(
         looking back and ahead.
     ``min_samples``
         The fewest rows with a value a window must hold to give a value, as in
-        Polars' rolling functions. Default 1. An integer from 1 to
-        ``2**32 - 1``.
+        Polars' rolling functions. Default 0, as in Polars' ``rolling_sum_by``:
+        a window with no row with a value sums to 0.0. With 1 or more, such a
+        window is null. An integer from 0 to ``2**32 - 1``.
     ``partial``
         What a window cut short gives: one that a gap past ``gap_cap``, a
         session change or the stream's start cuts before its full span.
@@ -495,8 +500,9 @@ def ewm_sum(
     .. rubric:: Returns
 
     A ``pl.Expr`` that :func:`polars_online.stream.with_windows` computes as a
-    column, or that a spec takes as its target. Its value is null where the
-    window holds fewer than ``min_samples`` rows with a value. It is null
+    column, or that a spec takes as its target. Its value is 0.0 where the
+    window holds no row with a value, under the default ``min_samples=0``, and
+    null where it holds fewer than ``min_samples`` rows with a value. It is null
     too where ``partial="null"`` meets a cut window, where a forward window
     is still open at the input's end, and after a reset (the module's
     ``partial`` table). At a row whose
@@ -907,7 +913,7 @@ def _forward(kind: str) -> Callable[..., pl.Expr]:
         half_life: float | Duration,
         window_size: float | Duration,
         closed: Literal["right", "left", "both", "none"] = "right",
-        min_samples: int = 1,
+        min_samples: int = 0 if kind == "sum" else 1,
         partial: Literal["keep", "null", "drop"] | None = None,
     ) -> pl.Expr:
         return new(

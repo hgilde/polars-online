@@ -13,6 +13,26 @@ returns.
 
 ### Changed
 
+- `po.ewm_sum` (and its look-ahead form) gives 0.0, not null, for a window
+  that holds no row with a value, as Polars 2.0's `rolling_sum_by` does: a
+  sum of nothing is zero. That is the window of a row under `closed="left"`
+  or `"none"` with no row before it in range, a window of only nulls, the
+  first row of a stream or stretch, a look-ahead window closed with nothing
+  in it, and a cut window kept with `partial="keep"` that saw nothing. The
+  parameter behind it is Polars' `min_samples`, which a sum now takes from 0
+  (its default, as in Polars) where it took 1 and up: a window with fewer
+  rows with a value than `min_samples` is null as before, so
+  `min_samples=1` restores the null. Windows that are still open when the
+  input ends, a cut window under `partial="null"` and a window after a reset
+  stay null. The other operators need a value to say anything and still take
+  `min_samples` from 1. A ratio of two sums over a window with no such row,
+  such as one side's VWAP, is now 0.0 over 0.0, NaN, where it was null over
+  null (the models read NaN as missing, as they read null); `min_samples=1`
+  in both sums keeps the null, as the documented recipes now say. No saved
+  layout changes, but a state saved by an earlier version under a `po.ewm_sum`
+  with the default is the call with `min_samples=1`: `load_state` refuses it
+  as another call unless the expression says `min_samples=1`, which resumes
+  it with its nulls.
 - `break_wald` (`emit_breaks`) forms the variance of the two fits'
   difference from the difference of their inverse Grams, `D = A_f - A_s`, as
   `D H_ff D' + A_s E_2 A_s + C + C'` with `C = D (H_ff - H_fs) A_s` and
@@ -226,7 +246,7 @@ returns.
   variances between that class's rows instead of taking a logarithm per
   feature per class on every row: a class's variances and ridge move only
   when it learns a row. At 20 features and 10 classes the bank takes about
-  0.67 of the time, at 3 classes 0.87, at 2 classes 0.94 (on arm64); with
+  0.67 of the time, at 3 classes 0.87, at 2 classes 0.95 (on arm64); with
   100 groups the gain is 1% to 8%. Under a `window` the sum is not kept. Outputs and
   saved states unchanged to the bit.
 - `emit_breaks` is about 1.75 times as fast at 4 and 20 features, and the
@@ -256,10 +276,10 @@ returns.
   and 2.8 times at 1,000 (a million rows), up to 12 times with many groups
   in small chunks, and a single group's pass about 8% faster. Outputs
   unchanged to the bit.
-- `emit_specification` and `emit_robust_se` cost about half as much a row
-  once past their readiness gate: the specification statistics at 20
-  features 3.06 to 1.64 µs a row (27.0 to 12.9 µs under a horizon), the
-  robust standard errors 0.68 to 0.53 µs (3.8 to 1.3 µs under a horizon).
+- `emit_specification` costs about half as much a row once past its
+  readiness gate (20 features: 3.06 to 1.64 µs a row, 27.0 to 12.9 µs under
+  a horizon), and `emit_robust_se` 22% less (0.68 to 0.53 µs, 1.28 times as
+  fast; 3.8 to 1.3 µs, about a third of the time, under a horizon).
   The statistics are read in buffers kept between rows, and the robust
   covariance's row folds its decay and its term in one pass. Outputs and
   saved states unchanged to the bit.
@@ -448,6 +468,15 @@ returns.
 
 ### Tests and documents
 
+- The timing tests of how the Python surfaces' cost grows with the specs
+  hold it by three sizes (1, 4 and 16 times the smallest) and the ratio of
+  the cost of the last increment to the first's, which is 4 for a cost
+  linear in the specs whatever fixed cost a call pays, where the two-size
+  ratio against 22.6 passed a cost quadratic in them from a fixed cost of
+  5 specs. A reading under ten ticks of the clock's measured step fails by
+  name, where a coarse clock (Windows' 15.6 ms CPU clock) divided by zero or
+  passed on 0 against 0. Both checks are tested on busy loops of known cost
+  and on a stepped clock.
 - `bocpd`'s documentation says that one feature is the slow case: a row
   takes about 118 µs with one feature against 3.5 µs with two and 1.4 µs with
   four (60,000 independent standard normal rows, the defaults, one thread of an
