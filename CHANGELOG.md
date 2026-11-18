@@ -372,6 +372,13 @@ returns.
 
 ### Tests and documents
 
+- `bocpd`'s documentation says that one feature is the slow case: a row
+  takes about 118 µs with one feature against 3.5 µs with two and 1.4 µs with
+  four (60,000 independent standard normal rows, the defaults, one thread of an
+  Apple M4 Pro), because a row's work is the number of live runs and with one
+  feature the posterior stays spread over many run lengths. The default
+  `prune_below` is not changed; a larger one or a smaller `max_run` brings a
+  one-feature stream down, at the price of the runs it drops.
 - The Rust oracle tests' allowance for the platform's `ln`, `exp`, `exp2`,
   `expm1` and `powf` is three ulps, up from two. Windows' `ucrtbase.dll`
   `expm1` was measured off by up to 3 ulps in 17.7% of calls (both builds of

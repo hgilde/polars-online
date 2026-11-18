@@ -223,6 +223,27 @@ process, the best of two or three runs:
 | `1e-6`, the default | 324,000 |
 | `1e-4` | 687,000 |
 
+**One feature is the slow case: a `bocpd` row at one feature takes about
+thirty times a two-feature row.** With a single feature a row carries
+little evidence about the run length, so the run-length posterior stays
+spread over many run lengths and many keep more than `prune_below` of the
+mass, where with four features a few dozen do. The work a row is the number
+of live runs, so the time follows. On 60,000 independent standard normal
+rows, one thread of an Apple M4 Pro with the defaults (`max_run` 10,000),
+measured on 2026-11-18 at a load average of 4-5, the best of three:
+
+| features | `prune_below` | µs a row |
+|---:|---|---:|
+| 1 | `1e-6`, the default | 118 |
+| 2 | `1e-6`, the default | 3.5 |
+| 4 | `1e-6`, the default | 1.4 |
+| 1 | `1e-4` | 3.9 |
+| 1 | `1e-3` | 0.37 |
+
+The default does not change with the number of features. A stream of one
+feature that needs speed sets a larger `prune_below` or a smaller `max_run`;
+either drops runs, so `p_change` and `run_mode` move.
+
 ### The bank's work around a row
 
 **Around each row the bank clocks it, keeps its schedule, copies its
