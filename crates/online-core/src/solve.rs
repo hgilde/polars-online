@@ -375,32 +375,47 @@ fn cholesky_in_place(
 /// Orders up to this are factorized by [`small_llt`], the rest by faer.
 const SMALL: usize = 12;
 
+// How many times this thread has taken `small_llt` and `small_solve`: the
+// two paths give faer's bits, so the order that sends a call to one or the
+// other (the thresholds' two sides) is read from here.
+#[cfg(test)]
+thread_local! {
+    static SMALL_TAKEN: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
 /// The lower factor of an order-`N` matrix in `b`, held by column (`b[j][i]`
 /// is entry `(i, j)`), the lower triangle read and written: faer's own
 /// sequential Cholesky for one batch of rows (`simd_cholesky`), written as
 /// the loop each of its lanes runs, so that the bits are faer's. Entry
-/// `(i, j)` starts at its own value, takes `fma(-l_jk, l_ik, ·)` for
+/// `(i, j)` starts at its own value, takes `-l_jk * l_ik + ·` for
 /// `k = 0, 1, ...` in turn, and, once the pivot `l_jj² = ·` is known to be
 /// positive, is multiplied by `1 / sqrt(·)` -- the pivot's own entry too, so
 /// that `l_jj` is the pivot times the reciprocal of its root, not the root.
 /// Each lane of faer's vector holds one such entry, so the width of the
-/// vectors changes no bit, and neither does the choice among its instruction
-/// sets, all of which fuse. `Err(j)` at the first pivot that is not
-/// positive, or whose root is zero or not finite, as faer's
+/// vectors and the number of row batches change no bit. What does is
+/// whether that sum is fused, which is faer's instruction set's choice
+/// (`mul_add_e_f64s` in pulp): fused in AVX2 and in NEON, two roundings in
+/// pulp's scalar fallback; `FUSED` says which. `Err(j)` at the first pivot
+/// that is not positive, or whose root is zero or not finite, as faer's
 /// `NonPositivePivot { index: j }`. The order is a constant so that the
 /// loops are unrolled and index nothing out of range.
 #[inline(always)]
-fn llt_fused<const N: usize>(b: &mut [[f64; N]; N]) -> Result<(), usize> {
+fn llt_loop<const N: usize, const FUSED: bool>(b: &mut [[f64; N]; N]) -> Result<(), usize> {
     for j in 0..N {
         for i in j..N {
             let mut s = b[j][i];
             for col in &b[..j] {
-                s = (-col[j]).mul_add(col[i], s);
+                s = if FUSED {
+                    (-col[j]).mul_add(col[i], s)
+                } else {
+                    (-col[j]) * col[i] + s
+                };
             }
             b[j][i] = s;
         }
         let pivot = b[j][j];
-        if pivot.is_nan() || pivot <= 0.0 {
+        // faer's `!(pivot > 0)`: NaN is refused here, at its own pivot.
+        if pivot.partial_cmp(&0.0) != Some(Ordering::Greater) {
             return Err(j);
         }
         let root = pivot.sqrt();
@@ -415,29 +430,43 @@ fn llt_fused<const N: usize>(b: &mut [[f64; N]; N]) -> Result<(), usize> {
     Ok(())
 }
 
-/// [`llt_fused`] in a vector unit's feature context where the CPU has AVX2
-/// and FMA, which is where `mul_add` is one instruction (pulp's check, made
-/// once, and its safe calls: no `unsafe` here); on x86-64 without them it
-/// is a library call and the same bits. Not inlined, so that one copy of the
-/// loop stands whatever the build's target features are.
+/// [`llt_loop`] with the fusing faer's choice of instruction set has on this
+/// CPU, and in a vector unit's feature context where that is AVX2 and FMA,
+/// which is where `mul_add` is one instruction (pulp's check, made once, and
+/// its safe calls: no `unsafe` here). Pulp's own `Arch` picks, in this order,
+/// AVX2 where the CPU has it (fused), else its scalar fallback (two
+/// roundings, so the loop must not fuse: a software `fma` would also be slow)
+/// on x86-64; NEON (fused) on aarch64, where every target has it; the scalar
+/// fallback elsewhere. Not inlined, so that one copy of the loop stands
+/// whatever the build's target features are.
 #[inline(never)]
-fn llt_fused_dispatched<const N: usize>(b: &mut [[f64; N]; N]) -> Result<(), usize> {
+fn llt_dispatched<const N: usize>(b: &mut [[f64; N]; N]) -> Result<(), usize> {
     #[cfg(target_arch = "x86_64")]
-    if let Some(simd) = crate::sgd::x86_v3() {
+    {
         struct Lanes<'a, const N: usize>(&'a mut [[f64; N]; N]);
         impl<const N: usize> pulp::WithSimd for Lanes<'_, N> {
             type Output = Result<(), usize>;
             #[inline(always)]
             fn with_simd<S: pulp::Simd>(self, _: S) -> Self::Output {
-                llt_fused(self.0)
+                llt_loop::<N, true>(self.0)
             }
         }
-        return pulp::Simd::vectorize(simd, Lanes(b));
+        match crate::sgd::x86_v3() {
+            Some(simd) => pulp::Simd::vectorize(simd, Lanes(b)),
+            None => llt_loop::<N, false>(b),
+        }
     }
-    llt_fused(b)
+    #[cfg(target_arch = "aarch64")]
+    {
+        llt_loop::<N, true>(b)
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        llt_loop::<N, false>(b)
+    }
 }
 
-/// `a` of order `N` through [`llt_fused_dispatched`]: the lower triangle
+/// `a` of order `N` through [`llt_dispatched`]: the lower triangle
 /// is copied out and back. The strict upper triangle is left as it was.
 fn llt_of<const N: usize>(a: &mut MatMut<'_, f64>) -> Result<(), llt::factor::LltError> {
     let mut b = [[0.0f64; N]; N];
@@ -446,7 +475,7 @@ fn llt_of<const N: usize>(a: &mut MatMut<'_, f64>) -> Result<(), llt::factor::Ll
             b[j][i] = a[(i, j)];
         }
     }
-    let out = llt_fused_dispatched(&mut b);
+    let out = llt_dispatched(&mut b);
     for j in 0..N {
         for i in j..N {
             a[(i, j)] = b[j][i];
@@ -460,6 +489,8 @@ fn llt_of<const N: usize>(a: &mut MatMut<'_, f64>) -> Result<(), llt::factor::Ll
 /// most of the call. Where faer writes the strict upper triangle with the
 /// lanes of a batch that no reader takes, this leaves it as it was.
 fn small_llt(mut a: MatMut<'_, f64>) -> Result<(), llt::factor::LltError> {
+    #[cfg(test)]
+    SMALL_TAKEN.with(|t| t.set((t.get().0 + 1, t.get().1)));
     macro_rules! by_order {
         ($($n:literal)*) => {
             match a.nrows() {
@@ -526,6 +557,8 @@ const SMALL_SOLVE: usize = 4;
 /// place of `l_ij`. Each right-hand side is its own column: faer's split of
 /// many columns into halves changes no bit.
 fn small_solve(l: MatRef<'_, f64>, mut x: MatMut<'_, f64>) {
+    #[cfg(test)]
+    SMALL_TAKEN.with(|t| t.set((t.get().0, t.get().1 + 1)));
     let n = l.nrows();
     debug_assert!(n <= SMALL_SOLVE);
     let mut inv = [0.0f64; SMALL_SOLVE];
@@ -1514,6 +1547,8 @@ pub(crate) mod condition_switches {
 
 #[cfg(test)]
 mod pool_tests;
+#[cfg(test)]
+mod small_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2234,122 +2269,6 @@ mod tests {
     /// `E·A·E` with `E = diag(e)`, row-major: the matrix a congruence moves to.
     fn rescaled(a: &[f64], k: usize, e: &[f64]) -> Vec<f64> {
         (0..k * k).map(|ij| e[ij / k] * a[ij] * e[ij % k]).collect()
-    }
-
-    /// faer's own sequential Cholesky of the lower triangle of `a`, as
-    /// `cholesky_seq` calls it above [`SMALL`]: the lower triangle it gives
-    /// and its result, `Err` carrying the failing pivot's index.
-    fn faer_seq(a: &Mat<f64>) -> (Mat<f64>, Result<(), usize>) {
-        let n = a.nrows();
-        let mut l = a.clone();
-        let mut mem = MemBuffer::new(llt::factor::cholesky_in_place_scratch::<f64>(
-            n,
-            Par::Seq,
-            Default::default(),
-        ));
-        let r = llt::factor::cholesky_in_place(
-            l.as_mut(),
-            Default::default(),
-            Par::Seq,
-            MemStack::new(&mut mem),
-            Default::default(),
-        )
-        .map(|_| ())
-        .map_err(|llt::factor::LltError::NonPositivePivot { index }| index);
-        (l, r)
-    }
-
-    /// The small kernel is faer's sequential Cholesky to the bit: every
-    /// entry of the lower triangle, over every order from 1 to `SMALL`, over
-    /// matrices conditioned from 1 to `1e14`, and over the ones faer
-    /// refuses -- a zero pivot, a negative one, an infinite one, a NaN, a
-    /// subnormal -- at the same pivot. The matrices are the lower triangle
-    /// only, as a factorization's rung writes them.
-    #[test]
-    fn the_small_kernel_is_faers_to_the_bit() {
-        let mut s = 11u64;
-        let (mut ok, mut refused) = (0, 0);
-        for n in 1..=SMALL {
-            for cond in [1.0, 1e3, 1e8, 1e14] {
-                for rep in 0..10 {
-                    let a = spd(n, cond, &mut s);
-                    let mut m = Mat::from_fn(n, n, |i, j| if i >= j { a[i * n + j] } else { 0.0 });
-                    // Break the matrix at a pivot in the later repeats.
-                    if rep >= 5 {
-                        let j = (rep * 7 + n) % n;
-                        m[(j, j)] = [0.0, -1.0, f64::INFINITY, f64::NAN, 1e-320][rep - 5];
-                    }
-                    let (want, want_r) = faer_seq(&m);
-                    let mut l = m.clone();
-                    let got_r = small_llt(l.as_mut())
-                        .map_err(|llt::factor::LltError::NonPositivePivot { index }| index);
-                    assert_eq!(got_r, want_r, "n {n}, cond {cond:e}, rep {rep}");
-                    if want_r.is_ok() {
-                        ok += 1;
-                        for j in 0..n {
-                            for i in j..n {
-                                assert_eq!(
-                                    l[(i, j)].to_bits(),
-                                    want[(i, j)].to_bits(),
-                                    "n {n}, cond {cond:e}, rep {rep}, entry ({i}, {j})"
-                                );
-                            }
-                        }
-                    } else {
-                        refused += 1;
-                    }
-                }
-            }
-        }
-        // Both kinds are in the run, so that neither half is vacuous.
-        assert!(
-            ok >= 200 && refused >= 200,
-            "{ok} factored, {refused} refused"
-        );
-    }
-
-    /// The small solve is faer's `llt::solve` to the bit: every entry of the
-    /// solution, over every order from 1 to `SMALL_SOLVE`, factors of
-    /// matrices conditioned from 1 to `1e14`, and right-hand sides from one
-    /// column to past the 64 at which faer splits the columns in halves.
-    #[test]
-    fn the_small_solve_is_faers_to_the_bit() {
-        let mut s = 13u64;
-        let mut checked = 0;
-        for n in 1..=SMALL_SOLVE {
-            for cond in [1.0, 1e3, 1e8, 1e14] {
-                for m in [1, 2, 3, 7, 70] {
-                    let a = spd(n, cond, &mut s);
-                    let mut l = Mat::from_fn(n, n, |i, j| if i >= j { a[i * n + j] } else { 0.0 });
-                    faer_seq(&l.clone()).1.expect("an SPD matrix factors");
-                    l = faer_seq(&l).0;
-                    let x = Mat::from_fn(n, m, |_, _| draw(&mut s) * 1e3);
-                    let mut want = x.clone();
-                    let mut mem =
-                        MemBuffer::new(llt::solve::solve_in_place_scratch::<f64>(n, m, Par::Seq));
-                    llt::solve::solve_in_place_with_conj(
-                        l.as_ref(),
-                        Conj::No,
-                        want.as_mut(),
-                        Par::Seq,
-                        MemStack::new(&mut mem),
-                    );
-                    let mut got = x.clone();
-                    small_solve(l.as_ref(), got.as_mut());
-                    for j in 0..m {
-                        for i in 0..n {
-                            assert_eq!(
-                                got[(i, j)].to_bits(),
-                                want[(i, j)].to_bits(),
-                                "n {n}, cond {cond:e}, m {m}, entry ({i}, {j})"
-                            );
-                            checked += 1;
-                        }
-                    }
-                }
-            }
-        }
-        assert!(checked > 3000, "{checked}");
     }
 
     /// The factor is `faer`'s own `Mat::llt(Side::Lower)` to the bit, held as
