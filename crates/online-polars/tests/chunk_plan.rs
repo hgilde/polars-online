@@ -906,12 +906,15 @@ fn run_buffers_kept_between_chunks_change_nothing() {
     assert!(chunks >= 20, "{chunks} chunks");
 }
 
-/// A run's buffers are kept for a later chunk only while they are small
-/// (task 270, R2-1): a bank whose every run is long keeps none, and the
-/// test for that reads the flat buffers' headers and stops there, without
-/// walking the `coef`-like lists of a long run; a bank of one-row runs
-/// keeps them. Fifty groups of 2,000 rows in one 100,000-row chunk, then
-/// forty groups of one row each.
+/// A run's buffers are kept for a later chunk only while they are at most
+/// 4 MiB (task 270, R2-1; task 473 raised the limit from 64 KiB): the test for
+/// that reads the flat buffers' headers and stops there, without walking the
+/// `coef`-like lists of a long run. A run's length is bounded by a 2 MiB cache
+/// budget, so a run passes the limit only where a row is wide: a 150-feature
+/// `ew_cov` (11,175 statistics a row) runs the 80-row floor, 7 MB a run, and
+/// keeps none; a 20-feature one (230 statistics) runs 976 rows, 2 MB a run, and
+/// keeps them, as do a bank of 2,000-row runs of the plain model, which the
+/// first limit did not, and one of one-row runs.
 #[test]
 fn long_runs_are_not_kept_and_one_row_runs_are() {
     fn frame(n_groups: usize, per: usize) -> DataFrame {
@@ -927,13 +930,40 @@ fn long_runs_are_not_kept_and_one_row_runs_are() {
         }
         .unwrap()
     }
+    /// `rows` rows of `k` features `x0..`, and an `ew_cov` over them.
+    fn wide(k: usize, rows: usize) -> (Spec, DataFrame) {
+        let names: Vec<String> = (0..k).map(|j| format!("\"x{j}\"")).collect();
+        let spec: Spec = serde_json::from_str(&format!(
+            r#"{{"name": "c", "model": {{"type": "ew_cov"}}, "targets": ["x0"],
+                "features": [{}], "half_life": 200.0, "min_weight": 2.0}}"#,
+            names.join(", ")
+        ))
+        .unwrap();
+        let cols: Vec<Column> = (0..k)
+            .map(|j| {
+                let v: Vec<f64> = (0..rows)
+                    .map(|i| ((i * (j + 3)) % 17) as f64 / 17.0)
+                    .collect();
+                Column::new(format!("x{j}").into(), v)
+            })
+            .collect();
+        (spec, DataFrame::new(rows, cols).unwrap())
+    }
+    let (wspec, df) = wide(150, 400);
+    let mut bank = Bank::new(vec![wspec]).unwrap();
+    bank.fit_predict(&df).unwrap();
+    assert_eq!(bank.spare_runs(), 0, "a 150-feature ew_cov's run was kept");
+    let (wspec, df) = wide(20, 3_000);
+    let mut bank = Bank::new(vec![wspec]).unwrap();
+    bank.fit_predict(&df).unwrap();
+    assert!(bank.spare_runs() > 0, "no 20-feature ew_cov run was kept");
     let specs = vec![spec("plain", Some("g"), "60.0", r#""session_gap": 10.0,"#)];
-    let long = frame(50, 2_000);
-    assert_eq!(long.height(), 100_000);
     let mut bank = Bank::new(specs.clone()).unwrap();
-    let out = bank.fit_predict(&long).unwrap();
-    assert_eq!(out[0].len(), 100_000);
-    assert_eq!(bank.spare_runs(), 0, "a 2,000-row run's buffers were kept");
+    bank.fit_predict(&frame(40, 2_000)).unwrap();
+    assert!(
+        bank.spare_runs() > 0,
+        "no 2,000-row run's buffers were kept"
+    );
     let mut bank = Bank::new(specs).unwrap();
     bank.fit_predict(&frame(40, 1)).unwrap();
     assert!(bank.spare_runs() > 0, "no one-row run's buffers were kept");

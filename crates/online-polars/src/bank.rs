@@ -15,7 +15,6 @@ use polars_arrow::array::{
 use polars_arrow::bitmap::MutableBitmap;
 use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
 use polars_arrow::offset::OffsetsBuffer;
-use polars_utils::aliases::PlIndexMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -798,7 +797,7 @@ pub(crate) struct Spares {
 /// The most bytes of run buffers a bank keeps between chunks.
 const SPARE_BYTES: usize = 16 << 20;
 /// The most bytes one kept run's buffers may hold.
-const SPARE_ONE: usize = 64 << 10;
+const SPARE_ONE: usize = 4 << 20;
 
 impl Spares {
     /// A kept run's buffers, if any are left.
@@ -1652,7 +1651,7 @@ fn forget(states: &mut [Streams], fresh: &[(usize, GroupKey)]) {
 /// the streams of its chunk's groups at once by their places in it
 /// ([`chunk_streams`]) and walk nothing else: the order of its entries is
 /// never read, every reader sorting the keys.
-type Streams = PlIndexMap<GroupKey, Stream>;
+type Streams = indexmap::IndexMap<GroupKey, Stream, online_core::FixedState>;
 
 /// The streams of one chunk's groups of one spec -- `places`, each group's
 /// place in the map, in the groups' order -- borrowed at once, with their
@@ -2775,7 +2774,7 @@ pub struct Bank {
     /// were signed against whichever group sorted last on day 1, so a
     /// reflection between two groups read as a sign flip in one (review
     /// 2026-09-12, S20).
-    pca_prev: HashMap<(usize, Option<GroupKey>, String), online_core::Pca>,
+    pca_prev: HashMap<(usize, Option<GroupKey>, String), online_core::Pca, online_core::FixedState>,
     /// Per spec, the form of its group and session columns, `[group,
     /// session]`, as the first chunk to carry each gave it (review round 4,
     /// N22), and kept in the state. A key is its value's text, so a column
@@ -3107,7 +3106,7 @@ impl Bank {
             rows_fed: 0,
             closed: Vec::new(),
             high_water,
-            pca_prev: HashMap::new(),
+            pca_prev: HashMap::default(),
             key_dtypes,
             clock_dtypes,
             broken: None,
@@ -3321,6 +3320,13 @@ impl Bank {
     #[doc(hidden)]
     pub fn spare_runs(&self) -> usize {
         self.spares.outs.len()
+    }
+
+    /// Free the run buffers kept between chunks, so that what a bank holds is
+    /// its state alone. For the scaling harness. Not for use.
+    #[doc(hidden)]
+    pub fn drop_spares(&mut self) {
+        self.spares = Spares::default();
     }
 
     /// Jittered/failed factorizations so far, per spec, as `(group, count)`

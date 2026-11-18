@@ -146,6 +146,15 @@ returns.
 
 ### Performance
 
+- A bank keeps the buffers of a run of up to 4 MiB between chunks (it
+  kept those of up to 64 KiB), so the small tasks of a bank of many groups
+  fill them again where they were allocated and freed. On arm64 (Apple M4
+  Pro, through the wheel with jemalloc) an `ew_cov` at 100 groups takes 0.945
+  of the time and the other cases 0.99 to 1.00, with the same peak memory; on
+  x86-64 (a Linux VM, both function layouts) the time differs from before by
+  no more than a repeated identical build does, and the peak memory is
+  within 2%. The output is unchanged.
+
 - `corrchange(kind="window")`'s permutation redraw is 2 to 6% faster on
   arm64 (Apple M4 Pro): the multiply-shift reduction above replaces a 64-bit
   division on each draw. A stream of rows at a window of 20 takes 0.95 of

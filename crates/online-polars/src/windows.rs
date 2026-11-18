@@ -4146,7 +4146,7 @@ mod tests {
         // With groups a session is each group's (review R2, W3).
         let grouped = rows.iter().any(|r| r.group.is_some());
         let mut shared = ClockState::new();
-        let mut groups: HashMap<Option<String>, G> = HashMap::new();
+        let mut groups: HashMap<Option<String>, G, online_core::FixedState> = HashMap::default();
         let mut stretches: Vec<Stretch> = Vec::new();
         let mut live: Vec<bool> = Vec::new();
         let (mut stretch_of, mut tau_of) = (Vec::new(), Vec::new());

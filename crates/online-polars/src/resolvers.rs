@@ -6,6 +6,7 @@
 //! `prepare_targets` for every spec before feeding any (review R2, F1), then
 //! `resolve_targets`, and saves the cores as `SavedResolvers`.
 
+use online_core::FixedState;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -25,7 +26,7 @@ use crate::windows_frame::{Given, WindowsConfig, WindowsRun};
 pub(crate) struct FormulaBundle {
     slots: Vec<usize>,
     seqs: Vec<u64>,
-    groups: HashMap<GroupKey, Resolutions>,
+    groups: HashMap<GroupKey, Resolutions, FixedState>,
 }
 
 impl FormulaBundle {
@@ -51,9 +52,9 @@ impl FormulaBundle {
 /// chunk, which says what the columns are.
 #[derive(Clone, Default)]
 pub(crate) struct TargetWindows {
-    pub(crate) runs: HashMap<GroupKey, WindowsRun>,
+    pub(crate) runs: HashMap<GroupKey, WindowsRun, FixedState>,
     /// A loaded bank's cores, each resumed at its group's first chunk.
-    pub(crate) saved: HashMap<GroupKey, Vec<u8>>,
+    pub(crate) saved: HashMap<GroupKey, Vec<u8>, FixedState>,
     /// A core that has read no row: what every group's core of this spec
     /// shares its call and plan with, so that a copy of the cores (the
     /// bank's, before a chunk that may be refused) and their memory are each
@@ -601,7 +602,7 @@ fn settle(
     groups: &[(GroupKey, Vec<usize>)],
     results: Vec<Resolved>,
     names: &[&str],
-) -> PolarsResult<HashMap<GroupKey, Resolutions>> {
+) -> PolarsResult<HashMap<GroupKey, Resolutions, FixedState>> {
     // A group's own refusal comes after the formulas' refusals of the groups
     // before it, and before those of the groups after it.
     let mut taken: Vec<Option<(GroupKey, Rows)>> = Vec::with_capacity(results.len());
@@ -658,7 +659,8 @@ fn settle(
     if let Some(e) = refusal {
         return Err(e);
     }
-    let mut by_group: HashMap<GroupKey, Resolutions> = HashMap::with_capacity(groups.len());
+    let mut by_group: HashMap<GroupKey, Resolutions, FixedState> =
+        HashMap::with_capacity_and_hasher(groups.len(), FixedState::default());
     for (i, r) in taken.into_iter().enumerate() {
         match r {
             None => {}
