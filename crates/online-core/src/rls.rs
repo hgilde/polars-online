@@ -765,6 +765,7 @@ impl OnlineModel for Rls {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oracle::CanonBits;
 
     /// A state whose vectors are not the cfg's is refused, where it loaded
     /// and panicked on the first `step` (review 2026-09-18, B3).
@@ -916,7 +917,7 @@ mod tests {
     }
 
     fn bits(v: &[f64]) -> Vec<u64> {
-        v.iter().map(|x| x.to_bits()).collect()
+        v.iter().map(|x| x.canon_bits()).collect()
     }
 
     /// The right-looking back-substitution against the serial one, to the

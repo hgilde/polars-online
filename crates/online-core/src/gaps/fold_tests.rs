@@ -242,6 +242,7 @@ fn run(rows: &[Row], block: usize, threads: usize, gaps: TargetGaps) -> Acc {
 /// A named change to a `T`: a damage, or a part changed alone.
 pub(super) type Damage<'a, T> = (&'a str, &'a dyn Fn(&mut T));
 
+use crate::oracle::CanonBits;
 use crate::test_pool::pool;
 
 fn bits(acc: &Acc) -> Vec<u64> {
@@ -253,7 +254,7 @@ fn bits(acc: &Acc) -> Vec<u64> {
         .flatten()
         .chain(&acc.cross.my)
         .chain(&acc.wj)
-        .map(|v| v.to_bits())
+        .map(|v| v.canon_bits())
         .collect()
 }
 

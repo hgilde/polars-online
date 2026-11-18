@@ -2819,8 +2819,8 @@ mod tests {
             let fast = weighted_median(&a, &v);
             let slow = weighted_median_sorted(&a, &v);
             assert_eq!(
-                fast.to_bits(),
-                slow.to_bits(),
+                fast.canon_bits(),
+                slow.canon_bits(),
                 "trial {trial}: {a:?} at {v:?}: {fast} against {slow}"
             );
             let live: Vec<f64> = v.iter().copied().filter(|&w| w > 0.0).collect();

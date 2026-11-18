@@ -3711,16 +3711,30 @@ mod tests {
     }
 
     /// From the faer order the distance is the difference form's by plain
-    /// triple loops within a bound: on every row of a stream of random,
-    /// uneven or zero-weighted features, from three rows before the `2k`
-    /// gate on, within 1e-6 (the first rows past it, where the variance is
-    /// nearly singular; a bank of 2,000 young groups at order 32 moved
-    /// 9.2e-7 at most), within 1e-9 from the sixth row past it, at the
-    /// long-run scales 1 and 2.5, with and without an intercept, at orders
-    /// from the cut to 100; the same refusals where the form is not
-    /// ill-conditioned (random features); and some read differs from the
-    /// plain loops' by a bit at each order, which is faer's product having
-    /// run.
+    /// triple loops within a bound, on every row of a stream of random,
+    /// uneven or zero-weighted features from three rows before the `2k`
+    /// gate on, at the long-run scales 1 and 2.5, with and without an
+    /// intercept, at orders from the cut to 100; the same refusals on these
+    /// well-conditioned designs; and some read differs from the plain
+    /// loops' by a bit at each order, which is faer's product having run.
+    ///
+    /// The bound is what another kernel can move the distance by, and that
+    /// is the rounding of its products (a few `k eps` of each term, whatever
+    /// the order they are added in or the fusing a machine does: NEON here,
+    /// AVX2 on x86) times how much the variance's inverse magnifies it. The
+    /// variance is a sum of one outer product a learned row, so it is
+    /// nearly singular on the first rows past the gate and well conditioned
+    /// after a few more: the rows are counted by the rows the fits
+    /// *learned* (a zero-weight row learns nothing, so by row index the
+    /// gate comes later in the zero-weighted stream). On the first six
+    /// learned rows past the gate the bound is 1e-6 (the plain loops against
+    /// faer measured 1.3e-9 here and 2e-9 on x86 at order 24; a bank of
+    /// 2,000 young groups at order 32 moved 9.2e-7 at most); from the
+    /// seventh, where the variance is well conditioned and the kernels'
+    /// difference is a few hundred `eps` (1e-13), 1e-8: measured at most
+    /// 8.6e-11 here over these streams, so 100 times of margin for another
+    /// machine's order of summation, which moves the result by rounding of
+    /// the same size.
     #[test]
     fn from_the_faer_order_the_distance_is_the_difference_forms_within_a_bound() {
         for order in [CUT, CUT + 1, CUT + 2, 26, 31, 32, 48, 64, 100] {
@@ -3738,7 +3752,11 @@ mod tests {
                             );
                             assert_eq!(got.is_some(), want.is_some(), "{at}");
                             if let (Some(g), Some(w)) = (got, want) {
-                                let bound = if i < 2 * order + 6 { 1e-6 } else { 1e-9 };
+                                // Rows the fits learned: a zero-weight row
+                                // (kind 3, every fifth, the first included)
+                                // learns nothing.
+                                let learned = if kind == 3 { i - i / 5 } else { i };
+                                let bound = if learned < 2 * order + 6 { 1e-6 } else { 1e-8 };
                                 assert!(((g - w) / w).abs() < bound, "{at}: {g} vs {w}");
                                 seen += 1;
                                 differing += usize::from(g.to_bits() != w.to_bits());
