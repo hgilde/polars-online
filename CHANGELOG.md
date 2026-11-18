@@ -25,11 +25,14 @@ returns.
   `min_samples=1` restores the null. Windows that are still open when the
   input ends, a cut window under `partial="null"` and a window after a reset
   stay null. The other operators need a value to say anything and still take
-  `min_samples` from 1. A ratio of sums over an empty window is now 0 over
-  0, not null over null. No saved layout changes, but a state saved by an
-  earlier version under a `po.ewm_sum` with the default is the call with
-  `min_samples=1`: `load_state` refuses it as another call unless the
-  expression says `min_samples=1`, which resumes it with its nulls.
+  `min_samples` from 1. A ratio of two sums over a window with no such row,
+  such as one side's VWAP, is now 0.0 over 0.0, NaN, where it was null over
+  null (the models read NaN as missing, as they read null); `min_samples=1`
+  in both sums keeps the null, as the documented recipes now say. No saved
+  layout changes, but a state saved by an earlier version under a `po.ewm_sum`
+  with the default is the call with `min_samples=1`: `load_state` refuses it
+  as another call unless the expression says `min_samples=1`, which resumes
+  it with its nulls.
 - `break_wald` (`emit_breaks`) forms the variance of the two fits'
   difference from the difference of their inverse Grams, `D = A_f - A_s`, as
   `D H_ff D' + A_s E_2 A_s + C + C'` with `C = D (H_ff - H_fs) A_s` and
@@ -465,6 +468,15 @@ returns.
 
 ### Tests and documents
 
+- The timing tests of how the Python surfaces' cost grows with the specs
+  hold it by three sizes (1, 4 and 16 times the smallest) and the ratio of
+  the cost of the last increment to the first's, which is 4 for a cost
+  linear in the specs whatever fixed cost a call pays, where the two-size
+  ratio against 22.6 passed a cost quadratic in them from a fixed cost of
+  5 specs. A reading under ten ticks of the clock's measured step fails by
+  name, where a coarse clock (Windows' 15.6 ms CPU clock) divided by zero or
+  passed on 0 against 0. Both checks are tested on busy loops of known cost
+  and on a stepped clock.
 - `bocpd`'s documentation says that one feature is the slow case: a row
   takes about 118 µs with one feature against 3.5 µs with two and 1.4 µs with
   four (60,000 independent standard normal rows, the defaults, one thread of an

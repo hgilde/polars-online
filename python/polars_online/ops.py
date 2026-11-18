@@ -121,8 +121,10 @@ does.
 
 **A weighted mean is a ratio of two sums.** A volume-weighted average price
 (VWAP) is decayed notional over decayed volume, and the time mass cancels.
-For one side's VWAP, put ``when/then`` inside both sums. The operators take
-no ``weight=``. This code reads ``trades`` from `Example data
+For one side's VWAP, put ``when/then`` inside both sums, with
+``min_samples=1`` in both: a window with no such trade is then null, where a
+sum of nothing is 0.0 and its ratio NaN. The operators take no ``weight=``.
+This code reads ``trades`` from `Example data
 <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
 
 .. code-block:: python
@@ -135,8 +137,8 @@ no ``weight=``. This code reads ``trades`` from `Example data
         fwd_vwap_vs_mid=po.ewm_sum(notional, half_life="10s", window_size="1m", reverse=True)
                         / po.ewm_sum("quantity", half_life="10s", window_size="1m", reverse=True)
                         - pl.col("mid"),
-        buy_vwap=po.ewm_sum(buys.then(notional), half_life="10s")
-                 / po.ewm_sum(buys.then("quantity"), half_life="10s"),
+        buy_vwap=po.ewm_sum(buys.then(notional), half_life="10s", min_samples=1)
+                 / po.ewm_sum(buys.then("quantity"), half_life="10s", min_samples=1),
         clock="ts", gap_cap="5m", group="symbol",
     )
 

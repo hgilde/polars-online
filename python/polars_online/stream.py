@@ -1124,7 +1124,7 @@ def with_windows(
 
         notional = pl.col("price") * pl.col("quantity")
         buys = pl.when(pl.col("side") == "buy")
-        ahead = {"half_life": "10s", "window_size": "1m", "reverse": True}
+        ahead = {"half_life": "10s", "window_size": "1m", "reverse": True, "min_samples": 1}
         out = po.stream.with_windows(
             trades,
             mid_trend=po.ewm_mean("mid", half_life="5s", window_size="1m") - pl.col("mid"),

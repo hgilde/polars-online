@@ -489,7 +489,8 @@ def trades_and_quotes(n: int, seed: int, quotes_per_trade: int = 2) -> pl.DataFr
 def test_a_vwap_is_a_ratio_of_two_sums_and_a_side_is_a_when_inside_both() -> None:
     """Three forward VWAPs -- all trades, buys, sells -- as ratios of decayed
     sums, equal to the definition's ratio, unchanged by a trade split in two
-    or a zero-volume row, and the buys' null where the window has no buy."""
+    or a zero-volume row, and the buys' null where the window has no buy (with
+    ``min_samples=1``; the default's ratio is NaN there)."""
     df = trades_and_quotes(3000, 7)
     notional = pl.col("price") * pl.col("quantity")
     h = {"half_life": 10.0, "window_size": 60.0}
@@ -497,7 +498,9 @@ def test_a_vwap_is_a_ratio_of_two_sums_and_a_side_is_a_when_inside_both() -> Non
     out = po.stream.with_windows(
         df,
         vwap=po.ewm_sum(notional, **h, reverse=True) / po.ewm_sum("quantity", **h, reverse=True),
-        buy_vwap=po.ewm_sum(buys.then(notional), **h, reverse=True)
+        buy_vwap=po.ewm_sum(buys.then(notional), **h, reverse=True, min_samples=1)
+        / po.ewm_sum(buys.then("quantity"), **h, reverse=True, min_samples=1),
+        buy_vwap_nan=po.ewm_sum(buys.then(notional), **h, reverse=True)
         / po.ewm_sum(buys.then("quantity"), **h, reverse=True),
         sell_vwap=po.ewm_sum(sells.then(notional), **h, reverse=True)
         / po.ewm_sum(sells.then("quantity"), **h, reverse=True),
@@ -517,6 +520,13 @@ def test_a_vwap_is_a_ratio_of_two_sums_and_a_side_is_a_when_inside_both() -> Non
     ]
     assert_close(out["buy_vwap"].to_list(), bwant, "buy vwap")
     assert out["buy_vwap"].null_count() > out["vwap"].null_count()
+    # Under the default `min_samples` of 0 a window with no buy sums to 0.0 on
+    # both sides, and the ratio is NaN where it is null above.
+    nan = out["buy_vwap_nan"]
+    assert nan.is_nan().sum() == out["buy_vwap"].null_count() - nan.null_count()
+    assert_close(
+        nan.fill_nan(None).to_list(), out["buy_vwap"].to_list(), "buy vwap, default min_samples"
+    )
     # A print split in two, and a zero-volume row, change nothing.
     i = next(k for k in range(100, 3000) if df["side"][k] is not None)
     row = df[i]
