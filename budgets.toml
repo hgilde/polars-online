@@ -117,7 +117,7 @@ budget = 395356
 
 [instructions.bocpd]
 what = "bocpd, 4 features, diagonal, max_run 200, prune below 1e-6: AnyModel::step_into, into one kept Step"
-budget = 12202354
+budget = 10838815
 
 [instructions.kmeans]
 what = "kmeans, 4 features, 8 clusters, standardized: AnyModel::step_into, into one kept Step"
