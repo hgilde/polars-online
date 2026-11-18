@@ -24,6 +24,17 @@ returns.
   before. A state saved by an earlier build continues to the bit except for
   this count.
 
+- The window operators' `ewm_mean`, `ewm_std` and `ewm_var` (and a windowed
+  mean or variance) move in the last digits where a row's gap is a hundredth
+  of a half-life or more: a row's held mass now comes from the same `2^-x` as
+  its discount, one `exp2` where it was an `exp2` and an `exp_m1`. Outputs
+  move by at most about 1e-13 relative (a median of a few ulps over the rows
+  that move, and the same accuracy against the exact value), where a gap is
+  below a hundredth of a half-life they are as they were, and `ewm_sum`,
+  `ewm_rate` and `ewm_quantile` do not move. A window run's state saved by an
+  earlier build loads and re-saves the same bytes and continues within that
+  bound, not to the bit.
+
 ### Fixed
 
 - A window operator's mean or variance whose only valued row was exactly one
@@ -60,6 +71,14 @@ returns.
 
 ### Performance
 
+- The window operators take a row's held mass from the discount's own `exp2`
+  from a hundredth of a half-life up, so a row's step and its mass cost one
+  `exp2` between them. On arm64 a window operator on an irregular clock runs
+  0.80 of the time with one operator (a float clock the same), 0.89 with four
+  and 0.90 at 100 keys, and 0.97-0.99 with a window of 60 s or at 10,000 keys;
+  a regular clock, where one `exp2` served already, is unchanged, and so are
+  gaps below a hundredth of a half-life (within 4% either way). On x86 the time
+  is 0.83-0.96 of before. An identical build timed beside them moved -2% to +1%.
 - `ew_class` with diagonal covariance keeps each class's sum of the log
   variances between that class's rows instead of taking a logarithm per
   feature per class on every row: a class's variances and ridge move only

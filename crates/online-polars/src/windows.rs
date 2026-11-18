@@ -505,6 +505,10 @@ impl KernelDef {
 pub(crate) struct DecayMemo {
     discount: (u64, f64),
     mass: (u64, f64),
+    /// The mass of the interval a row holds its value over, which takes the
+    /// discount's own `exp2` from `HELD_MASS_FROM` and so is not the cut's
+    /// mass of the same distance (`mass`).
+    held: (u64, f64),
     /// The mass at the far end of an interval read in the window's cut.
     mass_far: (u64, f64),
     /// A forward kernel's close, which a backward kernel's queue never needs.
@@ -1977,7 +1981,7 @@ fn mass_held_to(k: &KernelDef, t: f64, a: f64, memo: &mut DecayMemo) -> f64 {
         return 0.0;
     }
     match k.direction {
-        Direction::Backward => k.mass_in(t - a, memo) - k.mass(t - b),
+        Direction::Backward => k.mass_held_in(t - a, memo) - k.mass(t - b),
         Direction::Forward => mass_between(k, t, a, b),
     }
 }
@@ -2024,6 +2028,7 @@ macro_rules! by_width {
 }
 
 // After `by_width!`, which it uses.
+mod held_mass;
 #[cfg(test)]
 mod int_clock_tests;
 mod keys;

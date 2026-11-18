@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 /// The digest of every output's null mask (all platforms).
 const MASKS: u64 = 0x7d9052681ddf16a6;
 /// The digest of every output float's bits and every state byte, arm64 macOS.
-const BITS: u64 = 0x6bbfda56b50b27d2;
+const BITS: u64 = 0x162b1609e20133e2;
 /// Rows a case runs over.
 const ROWS: usize = 2000;
 

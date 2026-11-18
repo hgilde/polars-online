@@ -1,6 +1,7 @@
 //! The queue's memos and its turn-over: what a memo answers is the function's
 //! own bits, the cut's table keeps the last distance of each of four classes,
 //! and a turn-over moves every row into room made for them at once.
+use super::held_mass::HELD_MASS_FROM;
 use super::*;
 
 /// A discount or a mass taken through a queue's memo is the one taken
@@ -62,6 +63,19 @@ fn a_memoed_discount_and_mass_are_the_unmemoed_ones() {
                     k.mass(d).to_bits(),
                     "cut mass of {d} at {half_life}, pass {pass}"
                 );
+                // The held mass is the cut's from the lower cut on (a
+                // hundredth of a half-life), and `c (1 - d)` of the
+                // discount from it up.
+                let held = if d > 0.0 && half_life.is_finite() && d / half_life >= HELD_MASS_FROM {
+                    (half_life / std::f64::consts::LN_2) * (1.0 - k.discount(d))
+                } else {
+                    k.mass(d)
+                };
+                assert_eq!(
+                    k.mass_held_in(d, &mut memo).to_bits(),
+                    held.to_bits(),
+                    "held mass of {d} at {half_life}, pass {pass}"
+                );
                 // A forward kernel's close takes each of these on a slot of
                 // its own (task 441).
                 for slot in [&mut fwd.mass_open, &mut fwd.mass_span] {
@@ -99,6 +113,7 @@ fn a_queues_memo_answers_the_distance_it_holds_and_keeps_the_last() {
     let mut memo = DecayMemo {
         discount: (2.0f64.to_bits(), 123.0),
         mass: (2.0f64.to_bits(), 456.0),
+        held: (2.0f64.to_bits(), 321.0),
         mass_far: (2.0f64.to_bits(), 789.0),
         fwd: None,
         cut: None,
@@ -106,10 +121,15 @@ fn a_queues_memo_answers_the_distance_it_holds_and_keeps_the_last() {
     assert_eq!(k.discount_in(2.0, &mut memo), 123.0);
     assert_eq!(k.mass_in(2.0, &mut memo), 456.0);
     assert_eq!(k.mass_far_in(2.0, &mut memo), 789.0);
+    assert_eq!(k.mass_held_in(2.0, &mut memo), 321.0);
     // Another distance is taken, and replaces the one held.
     assert_eq!(k.discount_in(3.0, &mut memo), k.discount(3.0));
     assert_eq!(k.mass_in(3.0, &mut memo), k.mass(3.0));
     assert_eq!(k.mass_far_in(3.0, &mut memo), k.mass(3.0));
+    // The held mass of 0.6 half-lives is the discount's partner, `c (1 - d)`.
+    let held_mass = (5.0 / std::f64::consts::LN_2) * (1.0 - k.discount(3.0));
+    assert_eq!(k.mass_held_in(3.0, &mut memo), held_mass);
+    assert_eq!(memo.held, (3.0f64.to_bits(), held_mass));
     assert_eq!(memo.discount, (3.0f64.to_bits(), k.discount(3.0)));
     assert_eq!(memo.mass, (3.0f64.to_bits(), k.mass(3.0)));
     assert_eq!(memo.mass_far, (3.0f64.to_bits(), k.mass(3.0)));
@@ -118,12 +138,14 @@ fn a_queues_memo_answers_the_distance_it_holds_and_keeps_the_last() {
     assert_eq!(k.discount_in(0.0, &mut memo), 1.0);
     assert_eq!(k.mass_in(0.0, &mut memo), 0.0);
     assert_eq!(k.mass_far_in(-1.0, &mut memo), 0.0);
+    assert_eq!(k.mass_held_in(0.0, &mut memo), 0.0);
     assert_eq!(kernel(f64::INFINITY).discount_in(4.0, &mut memo), 1.0);
     assert_eq!(kernel(f64::INFINITY).mass_in(4.0, &mut memo), 4.0);
     assert_eq!(kernel(f64::INFINITY).mass_far_in(4.0, &mut memo), 4.0);
+    assert_eq!(kernel(f64::INFINITY).mass_held_in(4.0, &mut memo), 4.0);
     assert_eq!(
-        (memo.discount, memo.mass, memo.mass_far),
-        (held.discount, held.mass, held.mass_far)
+        (memo.discount, memo.mass, memo.mass_far, memo.held),
+        (held.discount, held.mass, held.mass_far, held.held)
     );
 }
 
@@ -243,6 +265,57 @@ fn append_copies_every_length_as_extend_from_slice_does() {
             want.extend_from_slice(&s);
             let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
             assert_eq!(bits(&got), bits(&want), "{len} after {before}");
+        }
+    }
+}
+
+/// The held mass is `exp_m1`'s below a hundredth of a half-life and the
+/// discount's `exp2` form from it up: the last distance below the edge and
+/// the first at it are each their form's, to the bit, and the two forms
+/// agree to `2 / (1 - d)` ulps wherever they are both taken.
+#[test]
+fn the_held_mass_changes_form_at_a_hundredth_of_a_half_life() {
+    for half_life in [0.25, 5.0, 3600.0, 1e9] {
+        let k = KernelDef {
+            direction: Direction::Backward,
+            half_life,
+            window_size: None,
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let new_form = |d: f64| (half_life / std::f64::consts::LN_2) * (1.0 - k.discount(d));
+        // The first distance at the edge, and the one before it.
+        let mut at = HELD_MASS_FROM * half_life;
+        while at / half_life >= HELD_MASS_FROM {
+            at = f64::from_bits(at.to_bits() - 1);
+        }
+        while at / half_life < HELD_MASS_FROM {
+            at = f64::from_bits(at.to_bits() + 1);
+        }
+        let below = f64::from_bits(at.to_bits() - 1);
+        assert!(below / half_life < HELD_MASS_FROM && at / half_life >= HELD_MASS_FROM);
+        let mut memo = DecayMemo::default();
+        assert_eq!(
+            k.mass_held_in(below, &mut memo).to_bits(),
+            k.mass(below).to_bits(),
+            "just below the edge at {half_life}"
+        );
+        assert_eq!(
+            k.mass_held_in(at, &mut memo).to_bits(),
+            new_form(at).to_bits(),
+            "at the edge at {half_life}"
+        );
+        // From just under the edge to far above it, the forms agree to
+        // rounding: the mass's `2^-53 / (1 - d)` and the discount's own.
+        let mut d = below;
+        while d < 200.0 * half_life {
+            let (held, old) = (k.mass_held_in(d, &mut memo), k.mass(d));
+            let bound = 2.0 * f64::EPSILON / (1.0 - k.discount(d));
+            assert!(
+                (held - old).abs() <= bound * old,
+                "held mass {held} against {old} at {d} of half-life {half_life}"
+            );
+            d *= 1.37;
         }
     }
 }

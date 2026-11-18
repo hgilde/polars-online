@@ -338,6 +338,7 @@ the change, or in this list:
 | 1.4.0 or earlier | `corrchange(kind="window")` | where its windows span four blocks or more, `stat` continues within 1e-14 of `1 + \|stat\|`. Every other output continues to the bit, and a kept `permute_every_rows` stays as saved |
 | 1.4.0 or earlier | `ew_class` under a hard window and `covariance_type="diag"` | a state below its `window_budget` continues to the bit. One that had reached it thins or refuses its snapshots later than before, and from that row does not continue to the bit |
 | 1.4.0 or earlier | a bank under the default `refit_budget` | the groups it gave up stay given up, every group it holds continues to the bit, and a group it first sees after the load refits until 320 MiB is reserved |
+| 1.5.0 or earlier | a window run's state, or a window formula inside a bank's state | it loads and saves back the same bytes, and continues within 1e-12 relative, not to the bit, once a row after the load has a gap of a hundredth of a half-life or more (a row's held mass is taken from the discount's own `exp2` from there up). A gap below that, and `ewm_sum`, `ewm_rate` and `ewm_quantile`, are as before |
 
 **The two unstable formats are outside that promise:** a window run's
 state, and a formula target inside a bank's state.
