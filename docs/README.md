@@ -216,6 +216,7 @@ out-of-date one, its row here says what became of it.
 | [ARROW-SOURCES.md](ARROW-SOURCES.md) | whether anything that produces Arrow chunks, DuckDB first, can feed a bank. Its status line, dated 2026-10-06, says tier 0, which works through Polars, has shipped, and the native import is parked. Its §4, corrected on 2026-09-22, finds no blocker to that import |
 | **The working rules' detail** | |
 | [AGENT-WORKFLOW.md](records/AGENT-WORKFLOW.md) | how the coordinator and its workers run -- waves, gates, slots, load limits, mutants, caches -- with each rule's reason, moved verbatim out of CLAUDE.md, which keeps the summary |
+| [VM-CHECKS.md](records/VM-CHECKS.md) | the workflow that builds the x86-64 VMs' branch and base wheels on a runner (default, aligned and x86-64-v3 layouts), and optionally compares their outputs and runs a package's tests natively and under qemu as another CPU: what it does and leaves out, the artifact names, and how a VM downloads them with `gh` or with curl |
 | [STATE-CONTINUATION.md](records/STATE-CONTINUATION.md) | the fourteen cases, each the user's decision, where a saved state of an earlier schema continues within a stated tolerance or form rather than to the bit, numbered as code comments cite them, moved verbatim out of CLAUDE.md |
 | [LINKING.md](records/LINKING.md) | the evidence that decided static linking of Polars, and each interface a change can ride on with its stability and the read-ahead measurements, moved verbatim out of CLAUDE.md |
 | **Logs of measurements, tests and releases** | |

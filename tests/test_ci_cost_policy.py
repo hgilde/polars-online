@@ -912,7 +912,7 @@ class TestTheLinuxPrepIsOneAction:
         # Every caller by name, so a new one is a decision: the two NumPy
         # jobs were added on 2026-09-30, the two floor legs on 2026-10-07,
         # the instruction counts (Valgrind) on 2026-10-12, the oracle grids'
-        # shards on 2026-10-25.
+        # shards on 2026-10-25, the VM checks' wheel builds on 2026-11-18.
         assert sorted(callers) == [
             "budgets.yml:instructions",
             "ci.yml:test",
@@ -925,6 +925,7 @@ class TestTheLinuxPrepIsOneAction:
             "release.yml:floor-polars",
             "release.yml:next-numpy",
             "release.yml:next-polars",
+            "vm-checks.yml:checks",
         ], callers
 
     def test_a_local_action_follows_the_checkout(self):

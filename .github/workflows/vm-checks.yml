@@ -1,0 +1,215 @@
+# The x86-64 VMs' build work, done on a runner (docs/records/VM-CHECKS.md).
+#
+# A request to a VM names two commits, a branch and its base, and asks it to
+# time each in one or two code layouts. Building the wheels took the VM 15 to
+# 20 minutes a build, and it restarts often enough that a build was often
+# lost. This workflow builds them instead: Linux x86-64 release wheels of the
+# branch head and of the base, in the layouts asked for, uploaded as artifacts
+# the VM downloads and times without compiling anything. A base wheel an
+# earlier run already uploaded for that sha and layout is reused, not rebuilt.
+#
+# Dispatched by hand, never by a push: a push to a vm/ branch is no request,
+# and a build nobody asked for saves nobody's time. Instruction counts are
+# not measured here: budgets.yml counts them on every push to main.
+#
+# `tests` runs a package's tests matching a filter, the ignored ones included,
+# on the runner's x86-64 (with AVX2) and, with `qemu_cpu`, the same test
+# binaries again under qemu posing as another CPU: a fallback path the runner
+# never takes. A failure fails the run, these being correctness tests.
+#
+# One job, one step after another, so a request holds one runner (a cap on
+# concurrent jobs is shared with CI). `digests` adds, in the same job,
+# scripts/compare_outputs.py over the two default wheels: how far each output
+# column moves between the commits, on x86-64, which an arm64 development
+# machine cannot say.
+name: VM checks
+
+# The branch and layouts in the run's title: a dispatch runs on main, so
+# `gh run list` shows the branch asked for only here.
+run-name: "VM checks ${{ inputs.ref }} (${{ inputs.variants }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "The branch to build (a vm/ branch), a tag or a full commit SHA"
+        required: true
+        type: string
+      variants:
+        description: "Layouts to build, any of default, aligned, v3, comma-separated"
+        required: false
+        type: string
+        default: "default,aligned"
+      base:
+        description: "The base commit or branch (default: the merge-base of the branch with origin/main)"
+        required: false
+        type: string
+        default: ""
+      digests:
+        description: "Also compare the two default wheels' outputs (scripts/compare_outputs.py)"
+        required: false
+        type: boolean
+        default: false
+      tests:
+        description: "A cargo test filter (e.g. solve::small_tests) to run on x86-64; empty skips the step"
+        required: false
+        type: string
+        default: ""
+      test_package:
+        description: "The package the filter's tests are in"
+        required: false
+        type: string
+        default: "online-core"
+      qemu_cpu:
+        description: "Also run those tests under qemu-x86_64 as this CPU (e.g. Nehalem: no AVX2 or FMA); empty skips"
+        required: false
+        type: string
+        default: ""
+
+# Least privilege: the token reads the code, and the artifact listing and
+# download that find an earlier run's base wheel. Nothing else.
+permissions:
+  contents: read
+  actions: read
+
+# Per branch asked for, not per ref the workflow runs on: it is dispatched
+# on main (a vm/ branch cut before this file existed has none), so
+# `github.ref` would make two requests for two branches cancel each other. A
+# second request for the same branch replaces the first.
+concurrency:
+  group: vm-checks-${{ inputs.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  UV_PYTHON: "3.12"
+
+jobs:
+  checks:
+    name: wheels of ${{ inputs.ref }}
+    runs-on: ubuntu-24.04
+    # Cold, one wheel built in about 18 minutes; the default and aligned
+    # layouts of both commits are four builds, all three layouts six, and a
+    # layout's second build reuses the first's compiled dependencies.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # An input is read through the environment, never spliced into a script.
+      VARIANTS: ${{ inputs.variants }}
+      BASE: ${{ inputs.base }}
+      DIGESTS: ${{ inputs.digests && '--digests' || '' }}
+    steps:
+      # The whole history: the merge-base with main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: free disk and use a leaner linker (Linux)
+        uses: ./.github/actions/linux-build-prep
+        with:
+          # qemu-user runs the tests as another CPU, when asked.
+          packages: ${{ inputs.qemu_cpu != '' && 'qemu-user' || '' }}
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          cache-on-failure: true
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      # The two commits, short, for the artifacts' names; a bad layout or an
+      # unknown base fails here, before an hour of building.
+      - name: the commits
+        id: plan
+        run: |
+          # Unquoted on purpose: empty, or one flag.
+          # shellcheck disable=SC2086
+          python3 scripts/vm_checks.py plan --base "$BASE" --variants "$VARIANTS" $DIGESTS
+
+      # Each layout of the branch, then of the base (or the base's from the
+      # artifact an earlier run kept), into dist/<artifact name>/.
+      - name: build the wheels
+        run: |
+          # shellcheck disable=SC2086
+          python3 scripts/vm_checks.py wheels --base "$BASE" --variants "$VARIANTS" $DIGESTS
+
+      # A step a layout and a commit: the artifact's name is the one a VM
+      # looks for. A wheel not built (a layout not asked for, a base reused)
+      # leaves its folder empty and its upload with nothing to do.
+      - name: keep the branch's default wheel
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheel-${{ steps.plan.outputs.head8 }}-default
+          path: dist/wheel-${{ steps.plan.outputs.head8 }}-default/*.whl
+          if-no-files-found: ignore
+      - name: keep the branch's aligned wheel
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheel-${{ steps.plan.outputs.head8 }}-aligned
+          path: dist/wheel-${{ steps.plan.outputs.head8 }}-aligned/*.whl
+          if-no-files-found: ignore
+      - name: keep the branch's v3 wheel
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheel-${{ steps.plan.outputs.head8 }}-v3
+          path: dist/wheel-${{ steps.plan.outputs.head8 }}-v3/*.whl
+          if-no-files-found: ignore
+      - name: keep the base's default wheel
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheel-${{ steps.plan.outputs.base8 }}-default
+          path: dist/wheel-${{ steps.plan.outputs.base8 }}-default/*.whl
+          if-no-files-found: ignore
+      - name: keep the base's aligned wheel
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheel-${{ steps.plan.outputs.base8 }}-aligned
+          path: dist/wheel-${{ steps.plan.outputs.base8 }}-aligned/*.whl
+          if-no-files-found: ignore
+      - name: keep the base's v3 wheel
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheel-${{ steps.plan.outputs.base8 }}-v3
+          path: dist/wheel-${{ steps.plan.outputs.base8 }}-v3/*.whl
+          if-no-files-found: ignore
+
+      # After the wheels are kept: a failure here leaves them to download.
+      # Information only: a column that moved is in the table and the
+      # artifact, and fails nothing.
+      - name: compare the outputs of the two default wheels
+        if: inputs.digests
+        run: python3 scripts/vm_checks.py digests
+      - name: keep the digests
+        if: inputs.digests
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digests-${{ steps.plan.outputs.head8 }}-vs-${{ steps.plan.outputs.base8 }}
+          path: digests/
+          if-no-files-found: error
+
+      # Release mode, as asked, with the debug build's assertions and overflow
+      # checks (cpu-paths.yml does the same): a test that expects one to fire
+      # still passes. Last of the work, so everything above is kept.
+      - name: the tests, natively and under qemu
+        if: inputs.tests != ''
+        env:
+          TESTS: ${{ inputs.tests }}
+          TEST_PACKAGE: ${{ inputs.test_package }}
+          QEMU_CPU: ${{ inputs.qemu_cpu }}
+          CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: "true"
+          CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS: "true"
+        run: |
+          python3 scripts/vm_checks.py tests --package "$TEST_PACKAGE" --filter "$TESTS" \
+            ${QEMU_CPU:+--qemu-cpu "$QEMU_CPU"}
+
+      # The manifest says which wheel is whose, and which base wheels came
+      # from an earlier run (and which run).
+      - name: keep the manifest
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: manifest-${{ steps.plan.outputs.head8 }}
+          path: wheels.json
+          if-no-files-found: ignore
