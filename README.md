@@ -306,7 +306,19 @@ pip install polars-online      # or: uv add polars-online
 | depends on | nothing beyond `polars` at run time: the wheel carries its own copy of Polars' Rust code, so it needs no other native library |
 | numpy | needed only by `ModelBank.gram()`, the `po.gram`, `po.corr`, `po.sim` and `po.gbdt` helpers, and `bank.check()`'s collinearity and leakage checks: to use them, install it with the package, as `pip install "polars-online[numpy]"`. Without it, those calls raise `ModuleNotFoundError`, and `bank.check()` reports one `not_checked` finding for the two checks |
 | wheels | macOS (arm64, x86_64), Windows x64, and Linux (x64 glibc and musl, aarch64 glibc), on PyPI and on each GitHub release beside the command-line binaries. On any other platform, the install builds the package from its source distribution, which needs a stable Rust toolchain ([rustup](https://rustup.rs)) |
+| x86-64 CPUs | the x86-64 wheels are built for CPUs with AVX2 and FMA, which most Intel and AMD processors since about 2013 have (Intel Haswell, AMD Excavator and Zen), as Polars' own default wheels do; some low-end Intel Celeron, Pentium and Atom parts of later years lack them. On an older CPU, or in a virtual machine that hides those features, importing the package warns which feature is missing, and the first model that runs would crash with an illegal instruction. Install `polars-online-compat` there instead (next paragraph). Apple silicon and ARM Linux are not affected; a Python running under Rosetta on an Apple silicon Mac is x86-64, and the warning says so |
 | size | 25 to 31 MB to download and 71 to 102 MB installed, by platform |
+
+**On a CPU without AVX2, install `polars-online-compat` instead of `polars-online`.**
+It is the same source and the same version, built for every x86-64 CPU, and
+it is imported as `polars_online` too, so code does not change. The two
+packages conflict: install one or the other, and uninstall one before
+installing the other (`pip uninstall polars-online`, then `pip install
+polars-online-compat`). Several models run faster on `polars-online`, so use
+it wherever the CPU allows ([What the x86-64 wheels need](docs/VERSIONS.md#what-the-x86-64-wheels-need)).
+`polars-online-compat` has wheels for the ARM platforms too, built as the
+others are. To skip the check, as a deployment that knows its CPU might, set
+`POLARS_ONLINE_SKIP_CPU_CHECK=1`.
 
 To build from a checkout, install uv and a stable Rust toolchain
 ([CONTRIBUTING.md](CONTRIBUTING.md)), then run from its root:

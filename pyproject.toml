@@ -82,6 +82,11 @@ manifest-path = "crates/online-py/Cargo.toml"
 module-name = "polars_online._polars_online"
 python-source = "python"
 features = ["pyo3/extension-module"]
+# The CPU features the build was compiled to need, written by
+# crates/online-py/build.rs and read by the import-time CPU check. It is not
+# committed (.gitignore), and maturin leaves out what git ignores, so the wheel
+# is told to take it; a build that wrote none has nothing to take.
+include = [{ path = "python/polars_online/_build_flags.py", format = "wheel" }]
 
 [dependency-groups]
 # The package depends on polars alone. A test may use any other library it

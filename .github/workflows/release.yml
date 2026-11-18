@@ -33,6 +33,13 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # The CPU features the x86-64 wheels of `polars-online` are built to need:
+  # the set Polars builds its own default runtime for (`BUILD_FEATURE_FLAGS`
+  # of `polars-runtime-32`, the same in its 2.0.0 and 2.1.0 wheels), which is x86-64-v3
+  # less F16C and XSAVE and plus PCLMULQDQ. `polars-online-compat` is built
+  # without them. The import-time CPU check reads every one of these
+  # (python/polars_online/_cpu_check.py); a test holds the two lists equal.
+  X86_FEATURES: "+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,+cmpxchg16b,+avx,+avx2,+fma,+bmi1,+bmi2,+lzcnt,+pclmulqdq,+movbe"
 
 jobs:
   # The version this run would publish, checked before anything is built:
@@ -135,6 +142,24 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
 
+      # The same source under the other name, for a platform with no wheel
+      # that asks for `polars-online-compat`: the checkout renamed in place
+      # (scripts/compat_package.py), then the second sdist into a folder of
+      # its own, so the install below finds one file in `dist`. It is built
+      # and not installed: the first sdist's install above compiles the same
+      # source, and the rename touches the metadata alone.
+      - name: the compat package's source distribution
+        run: |
+          uv run --no-project --python 3.12 python scripts/compat_package.py
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          command: sdist
+          args: --out dist-compat -m crates/online-py/Cargo.toml
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sdist-compat
+          path: dist-compat/*.tar.gz
+
       # The sdist, installed into a fresh environment with its dependencies
       # from PyPI, which builds the extension from the file as a platform
       # with no wheel does, and run as each wheel is (scripts/wheel_smoke.py).
@@ -162,7 +187,7 @@ jobs:
   # `abi3-py312` means one wheel per platform serves 3.12, 3.13, 3.14 and up,
   # rather than one per interpreter version.
   build:
-    name: build (${{ matrix.target }})
+    name: build (${{ matrix.target }}, ${{ matrix.variant }})
     needs: version
     runs-on: ${{ matrix.os }}
     # Cold, the slowest runner (Intel macOS) needs ~40 min for the wheel and
@@ -173,26 +198,45 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Every target is built twice: `default` is `polars-online`, whose
+        # x86-64 wheels need AVX2 and FMA (`X86_FEATURES`), and `compat` is
+        # `polars-online-compat`, the same source under that name, built for
+        # every x86-64 CPU. The ARM targets build alike under both names
+        # (RUSTFLAGS is empty for them), as Polars' own
+        # `polars-runtime-compat` ships ARM wheels too, so that either
+        # package installs wherever the other does. Only `default` builds
+        # the command-line binary.
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+          - x86_64-pc-windows-msvc
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+        variant: [default, compat]
         include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
+          - target: aarch64-apple-darwin
+            os: macos-latest
             bin: polars-online
             cli: true
           # Intel: `macos-13` was retired from the hosted pool; `macos-15-intel`
           # is the label GitHub lists for x64 macOS now (actions/runner-images).
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
             bin: polars-online
             cli: true
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
+            x86: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
             bin: polars-online.exe
             cli: true
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            x86: true
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
             manylinux: auto
             bin: polars-online
             cli: true
+            x86: true
           # Built natively on GitHub's arm64 runner, as polars builds its own.
           # Cross-compiling from x64 uses `manylinux2014-cross:aarch64`, whose
           # GCC 4.8.5 does not define `__ARM_ARCH`, and `ring` 0.17 (reached
@@ -200,15 +244,16 @@ jobs:
           # (briansmith/ring#1728). On an arm64 host maturin-action picks the
           # native `manylinux2014_aarch64` image, with a current GCC, and the
           # wheel keeps the same `manylinux_2_17` tag.
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
             manylinux: auto
             bin: polars-online
             cli: true
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
             manylinux: musllinux_1_2
             bin: polars-online
+            x86: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # First, so a failure names its machine (ci.yml's test job says why).
@@ -220,6 +265,9 @@ jobs:
           # A timed-out or failed job still leaves a valid compile behind;
           # without this the next run starts cold again (same as ci.yml).
           cache-on-failure: true
+          # The two variants of an x86-64 target compile with other flags, so
+          # each keeps a cache of its own instead of replacing the other's.
+          key: ${{ matrix.variant }}
 
       # No `uv sync` here: it builds the extension into a venv nobody uses --
       # maturin-action brings its own Python, and the CLI has no pyo3 in its
@@ -236,14 +284,33 @@ jobs:
       - name: the README's links point at GitHub, at this ref
         run: uv run --no-project --python 3.12 python scripts/pypi_readme.py --ref "${{ needs.version.outputs.readme_ref }}"
 
+      # The compat package: this checkout renamed to `polars-online-compat`
+      # in place, before maturin reads the name, the description and the
+      # README into the wheel's metadata (scripts/compat_package.py). The
+      # import name, `polars_online`, does not change.
+      - name: the project is polars-online-compat
+        if: matrix.variant == 'compat'
+        run: uv run --no-project --python 3.12 python scripts/compat_package.py
+
       # maturin-action supplies the manylinux/musllinux container and the
       # cross-compilation toolchain; on macOS and Windows it is a thin wrapper
       # over the same `maturin build`. `--locked`, here and on every cargo
       # build below: a `Cargo.lock` that no longer matches the manifests is
       # refused, not re-resolved into crates nobody committed (review
       # 2026-10-06, CI12).
+      #
+      # `polars-online`'s x86-64 wheels are built for AVX2, FMA and the rest of
+      # `X86_FEATURES`, through RUSTFLAGS, which maturin-action hands on to
+      # the manylinux and musllinux containers (it forwards every variable
+      # that starts with RUST). Nothing else sets rustflags for this build.
+      # Cargo then hands the same flags to crates/online-py/build.rs, which
+      # records them in the wheel for the import-time CPU check, and the
+      # smoke test below holds the record to `X86_FEATURES`. The compat
+      # wheels and the ARM wheels get no flag: an empty RUSTFLAGS is none.
       - name: build the wheel
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        env:
+          RUSTFLAGS: ${{ matrix.x86 && matrix.variant == 'default' && format('-C target-feature={0}', env.X86_FEATURES) || '' }}
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
@@ -274,7 +341,7 @@ jobs:
       # 16 KiB pages too, as polars' own arm64 builds do. x86-64 kernels use
       # 4 KiB pages alone.
       - name: build the CLI (Linux, in the manylinux2014 image)
-        if: matrix.cli && runner.os == 'Linux'
+        if: matrix.cli && matrix.variant == 'default' && runner.os == 'Linux'
         run: |
           lg_page=()
           if [ "$(uname -m)" = aarch64 ]; then lg_page=(-e JEMALLOC_SYS_WITH_LG_PAGE=16); fi
@@ -304,7 +371,7 @@ jobs:
       # still stops the loader, which is how 0.11.1's `pidfd_*` set 2.39.
       # Before any upload: the publish job needs this one.
       - name: the Linux CLI needs glibc 2.17 at most
-        if: matrix.cli && runner.os == 'Linux'
+        if: matrix.cli && matrix.variant == 'default' && runner.os == 'Linux'
         run: python3 scripts/glibc_floor.py target-cli/release/${{ matrix.bin }} --max 2.17
 
       # macOS and Windows build the CLI on the runner, which is what their
@@ -316,18 +383,18 @@ jobs:
       # (the first rehearsal failed exactly there). An empty wrapper is treated
       # as none — measured on cargo 1.98, the stable this workflow installs.
       - name: build the CLI
-        if: matrix.cli && runner.os != 'Linux'
+        if: matrix.cli && matrix.variant == 'default' && runner.os != 'Linux'
         env:
           RUSTC_WRAPPER: ""
         run: cargo build --release --locked -p online-cli
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: wheel-${{ matrix.target }}
+          name: wheel-${{ matrix.target }}-${{ matrix.variant }}
           path: dist/*.whl
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: matrix.cli
+        if: matrix.cli && matrix.variant == 'default'
         with:
           name: cli-${{ matrix.target }}
           path: ${{ runner.os == 'Linux' && 'target-cli' || 'target' }}/release/${{ matrix.bin }}
@@ -342,23 +409,34 @@ jobs:
       # own `musllinux_1_2_x86_64` runtime wheel installs without a build.
       # Last, so a failed run leaves the artifacts to look at; `publish`
       # needs this job either way.
+      #
+      # Each wheel is also held to its package and its build: the
+      # distribution installed is `polars-online` or `polars-online-compat`,
+      # the features the build recorded are `X86_FEATURES` for the default
+      # x86-64 wheels and none for the rest, and the runner's CPU (GitHub's
+      # have AVX2 and FMA) has every one of them, which also runs the CPU
+      # check's own machine code on each x86-64 OS.
       - name: install the wheel and run it
         if: matrix.manylinux != 'musllinux_1_2'
         shell: bash
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          DISTRIBUTION: ${{ matrix.variant == 'compat' && 'polars-online-compat' || 'polars-online' }}
+          FEATURES: ${{ matrix.x86 && matrix.variant == 'default' && env.X86_FEATURES || '' }}
         run: |
           uv venv --python 3.12 smoke
           uv pip install --python smoke dist/*.whl
-          uv run --no-project --python smoke python scripts/wheel_smoke.py --version "$VERSION"
+          uv run --no-project --python smoke python scripts/wheel_smoke.py --version "$VERSION" --distribution "$DISTRIBUTION" --features "$FEATURES"
       - name: install the wheel and run it (musl, in Alpine)
         if: matrix.manylinux == 'musllinux_1_2'
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          DISTRIBUTION: ${{ matrix.variant == 'compat' && 'polars-online-compat' || 'polars-online' }}
+          FEATURES: ${{ matrix.x86 && matrix.variant == 'default' && env.X86_FEATURES || '' }}
         run: |
-          docker run --rm -e VERSION -v "$PWD":/io -w /io python:3.12-alpine sh -euxc '
+          docker run --rm -e VERSION -e DISTRIBUTION -e FEATURES -v "$PWD":/io -w /io python:3.12-alpine sh -euxc '
             pip install --no-cache-dir --root-user-action=ignore dist/*.whl
-            python scripts/wheel_smoke.py --version "$VERSION"
+            python scripts/wheel_smoke.py --version "$VERSION" --distribution "$DISTRIBUTION" --features "$FEATURES"
           '
 
   # docs/PLAN.md §9 class 7: a state written on macOS must load on Windows.
@@ -676,6 +754,10 @@ jobs:
   # Registered on PyPI on 2026-09-03 as a pending trusted publisher for
   # `polars-online` (owner hgilde, repository polars-online, workflow
   # release.yml, environment pypi); the first publish claimed the name.
+  # `polars-online-compat` is a second PyPI project, uploaded from this job
+  # as well, and needs the same trusted publisher registered on it (a
+  # pending one, before its first upload: docs/contributing/cut-a-release.md,
+  # Prerequisites).
   publish:
     name: publish to PyPI
     needs:
@@ -702,14 +784,30 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artifacts
+      # Two projects, so two folders: the files of `polars-online-compat`
+      # are `polars_online_compat-*` and the others `polars_online-*`, and
+      # each upload step names the one folder, so a file goes to the project
+      # its name says. The compat package goes first: it is the one whose
+      # PyPI setup is newest, and a refusal there should leave nothing of
+      # this version on PyPI. `skip-existing` lets the job run again, after
+      # a failure between the two, and finish what it began: PyPI refuses a
+      # file name used before, and this version's files are all this run's.
       - name: collect the wheels
         run: |
-          mkdir -p dist
-          find artifacts \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp {} dist/ \;
-          ls -la dist
-      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+          mkdir -p dist dist-compat
+          find artifacts \( -name 'polars_online_compat-*.whl' -o -name 'polars_online_compat-*.tar.gz' \) -exec cp {} dist-compat/ \;
+          find artifacts \( -name '*.whl' -o -name '*.tar.gz' \) ! -name 'polars_online_compat-*' -exec cp {} dist/ \;
+          ls -la dist dist-compat
+      - name: upload polars-online-compat
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+        with:
+          packages-dir: dist-compat
+          skip-existing: true
+      - name: upload polars-online
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
         with:
           packages-dir: dist
+          skip-existing: true
 
   # The tag, once what it names is on PyPI: on the sha every job above
   # tested, never a moving `HEAD`. Annotated, with the CHANGELOG's section,
@@ -839,7 +937,7 @@ jobs:
   # the upload is done -- and reports: a failure here is a release to fix
   # with the next version.
   verify:
-    name: verify from PyPI (${{ matrix.os }})
+    name: verify from PyPI (${{ matrix.distribution }}, ${{ matrix.os }})
     needs: [version, publish]
     if: inputs.publish
     runs-on: ${{ matrix.os }}
@@ -850,6 +948,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        distribution: [polars-online, polars-online-compat]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # First, so a failure names its machine (ci.yml's test job says why).
@@ -861,14 +960,15 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
           SCHEMA: ${{ needs.version.outputs.schema }}
+          DISTRIBUTION: ${{ matrix.distribution }}
         run: |
           uv venv --python 3.12 fresh
           deadline=$((SECONDS + 600))
-          until uv pip install --python fresh --no-cache "polars-online==$VERSION"; do
+          until uv pip install --python fresh --no-cache "$DISTRIBUTION==$VERSION"; do
             if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "::error::polars-online $VERSION did not install from PyPI in ten minutes"
+              echo "::error::$DISTRIBUTION $VERSION did not install from PyPI in ten minutes"
               exit 1
             fi
             sleep 30
           done
-          uv run --no-project --python fresh python -I scripts/verify_release.py --version "$VERSION" --schema "$SCHEMA"
+          uv run --no-project --python fresh python -I scripts/verify_release.py --version "$VERSION" --schema "$SCHEMA" --distribution "$DISTRIBUTION"

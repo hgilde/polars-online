@@ -124,6 +124,25 @@ returns.
   continues to the bit until its next redraw of the critical value, then
   takes the new draws; the `"monitor"` and `"sequential"` kinds draw nothing
   and are unchanged.
+- **The x86-64 wheels of `polars-online` need a CPU with AVX2 and FMA, and a
+  second package, `polars-online-compat`, is the same source for every x86-64
+  CPU.** The Linux (glibc and musl), Windows and macOS Intel wheels are built
+  for the 14 features of Polars' default runtime (`sse3`, `ssse3`, `sse4.1`,
+  `sse4.2`, `popcnt`, `cmpxchg16b`, `avx`, `avx2`, `fma`, `bmi1`, `bmi2`,
+  `lzcnt`, `pclmulqdq`, `movbe`: x86-64-v3 less `f16c` and `xsave` and plus
+  `pclmulqdq`), which Intel's Haswell (2013) and AMD's Excavator (2015) and Zen
+  have, and which some low-end Intel parts and some virtual machines lack.
+  `import polars_online` now reads the CPU's features before the extension
+  module loads and, if one is missing, warns (a `RuntimeWarning`) which one,
+  and to install `polars-online-compat`, where it used to be an illegal
+  instruction at the first model that ran; `POLARS_ONLINE_SKIP_CPU_CHECK`
+  skips the check. `polars-online-compat` is built from the same source at the
+  same version as today's x86-64 wheels (baseline x86-64, no check), is
+  imported as `polars_online`, and has wheels for every platform
+  `polars-online` has, ARM ones included. The two packages conflict: uninstall
+  one before installing the other. The ARM wheels, the source distribution
+  (built for baseline x86-64) and the command-line binaries are unchanged;
+  outputs and saved states are unchanged to the bit (see *Performance*).
 
 ### Fixed
 
@@ -472,6 +491,19 @@ returns.
   fold and merges them into its sorted centroids, rather than re-sorting
   everything: about 5% faster over 20 columns. Outputs and saved state
   unchanged to the bit.
+- The x86-64 wheels of `polars-online`, built for AVX2 and FMA, run several
+  models faster than the baseline build did. Measured on an Intel Xeon with
+  one commit built twice, for baseline x86-64 and for x86-64-v3: the
+  instructions the benchmark cases execute, a median 4.3% fewer (from 39% fewer
+  in `rcov`, 28% in `ew_cov` with lags, 23% in `ewridge` at 200 features, to
+  2.7% more in one case), and the time of the benchmark bodies, v3 over
+  baseline: `ew_class` 0.84, `ewridge` at 200 features 0.87 and at 20 0.94, a
+  bank of every `ew_cov` moment 0.95, a window sum 0.96, `bocpd` 1.01 and a
+  window mean 1.02; `hmm`, which ran 1.07 slower on that build, runs at about
+  0.93 of the baseline's time since its factorization of small matrices is the
+  library's own. The outputs and saved states of five models matched the baseline
+  build's bit for bit. No AMD machine was measured. The Budgets run counts the
+  baseline build, not these wheels.
 
 ### Tests and documents
 

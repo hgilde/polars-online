@@ -111,6 +111,14 @@ as it was, apart from the two cases :meth:`ModelBank.fit_predict` names.
   four use cases run end to end.
 """
 
+# ruff: noqa: E402  (the imports below follow the CPU check on purpose)
+# First, before anything loads the compiled module: a CPU that lacks a feature
+# the wheel was built for gets a warning here, where the alternative is an
+# illegal instruction with no Python frame to say why (polars_online._cpu_check).
+from polars_online import _cpu_check
+
+_cpu_check.run()
+
 from polars_online import (
     _frame,  # noqa: F401  (registers the frame namespaces)
     corr,

@@ -542,14 +542,14 @@ def test_the_linux_cli_is_built_in_the_wheels_manylinux2014_image():
     the runner's glibc, 2.39. In the image the wheels come from, it is 2.17;
     the image is chosen by the runner's architecture, so arm64 stays native."""
     _, linux = _step("build the CLI (Linux")
-    assert linux["if"] == "matrix.cli && runner.os == 'Linux'"
+    assert linux["if"] == "matrix.cli && matrix.variant == 'default' && runner.os == 'Linux'"
     run = linux["run"]
     assert '"quay.io/pypa/manylinux2014_$(uname -m)"' in run
     assert "cargo build --release --locked -p online-cli" in run
     assert "CARGO_TARGET_DIR=/io/target-cli" in run
     # The runner's own build is for macOS and Windows alone.
     host = next(s for s in _build_steps() if s.get("name") == "build the CLI")
-    assert host["if"] == "matrix.cli && runner.os != 'Linux'"
+    assert host["if"] == "matrix.cli && matrix.variant == 'default' && runner.os != 'Linux'"
 
 
 def test_the_linux_cli_is_held_to_glibc_2_17_before_it_is_uploaded():
@@ -870,12 +870,18 @@ def test_the_release_is_installed_from_pypi_and_run_on_every_os():
     assert step["env"] == {
         "VERSION": "${{ needs.version.outputs.version }}",
         "SCHEMA": "${{ needs.version.outputs.schema }}",
+        "DISTRIBUTION": "${{ matrix.distribution }}",
     }
+    # Both PyPI projects, on every OS.
+    assert job["strategy"]["matrix"]["distribution"] == ["polars-online", "polars-online-compat"]
     run = step["run"]
     assert "uv venv --python 3.12 fresh" in run
-    assert 'uv pip install --python fresh --no-cache "polars-online==$VERSION"' in run
+    assert 'uv pip install --python fresh --no-cache "$DISTRIBUTION==$VERSION"' in run
     assert "deadline=$((SECONDS + 600))" in run and "sleep 30" in run
-    assert 'python -I scripts/verify_release.py --version "$VERSION" --schema "$SCHEMA"' in run
+    assert (
+        'python -I scripts/verify_release.py --version "$VERSION" --schema "$SCHEMA" '
+        '--distribution "$DISTRIBUTION"'
+    ) in run
     assert JOBS["version"]["outputs"]["schema"] == "${{ steps.v.outputs.schema }}"
     assert not any("verify" in _needs(j) for j in JOBS)
 
