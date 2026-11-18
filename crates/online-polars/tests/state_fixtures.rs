@@ -1833,6 +1833,19 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                 && (sketches(&kept, "anchor") > 0 || holds_for_a_refit(&unhex(current.state)));
             if old_scale {
                 kept_scale_rule(&kind, &kept, &again, &from_ipc(f.input), &what);
+            } else if moved_by_the_held_mass(f.name) {
+                // Rule 5's fifteenth exception: the queue's sums hold the old
+                // form's bits for the rows before the save, so the state this
+                // build saves after the continued rows is not the current
+                // fixture's (the same bytes where no row after the load has a
+                // gap of a hundredth of a half-life): it saves bytes that load
+                // back the same.
+                let (resaved, _) = (kind.run)(&again, &from_ipc(f.input))
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert!(
+                    again == unhex(current.state) || resaved == again,
+                    "{what}: saved, loaded, saved"
+                );
             } else if !windowed {
                 assert!(
                     again == unhex(current.state),
@@ -1863,7 +1876,11 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                         CONTINUES_WITHIN,
                     );
                 }
-                let tol = if windowed { tol.max(TOL) } else { tol };
+                let tol = if windowed || moved_by_the_held_mass(f.name) {
+                    tol.max(TOL)
+                } else {
+                    tol
+                };
                 same_within(
                     &format!("{what}: {name}"),
                     got,
@@ -1874,6 +1891,16 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
             }
         }
     }
+}
+
+/// The window-run fixtures whose continuation a later change moved within the
+/// golden tolerance (rule 5's fifteenth exception, the user's, 2026-11-17,
+/// task 457): a row's held mass is taken from the discount's `exp2` from a
+/// hundredth of a half-life up, so a kept state continues, after its load,
+/// within about 1e-13 relative of the frames it was frozen with, not to the
+/// bit. The current set is held to the bit as ever.
+fn moved_by_the_held_mass(name: &str) -> bool {
+    name.starts_with("with_windows")
 }
 
 /// The maps in `v`, at any depth, that hold the key `key`: the sketches a
