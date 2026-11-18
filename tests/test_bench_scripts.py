@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -77,3 +78,40 @@ def test_the_memory_measure_runs_on_this_platform():
         assert peak_gb > 0, peak_gb
     else:
         assert math.isnan(peak_gb), peak_gb
+
+
+def test_memory_bench_measures_a_childs_peak_memory_wall_and_cpu_on_this_platform():
+    """`scripts/memory_bench.py`'s `measure` reads each platform's own
+    high-water mark (macOS footprint, Linux resident set, Windows working
+    set) for the command line's cases on CI's Windows and Linux runners."""
+    mb = _load("memory_bench")
+    code = "import time; b = bytearray(b'x' * 300_000_000); time.sleep(0.3)"
+    m = mb.measure([sys.executable, "-c", code], dict(os.environ))
+    assert 0.3 < m["peak_gb"] < 1.5, m
+    assert m["wall_s"] >= 0.3 and m["cpu_s"] >= 0, m
+    assert m["metric"] in {"footprint", "peak resident set", "peak working set"}
+    if sys.platform.startswith("linux"):
+        assert 0.3 < m["peak_anon_gb"] <= m["peak_gb"] * 1.05, m
+    if sys.platform == "win32":
+        assert m["peak_commit_gb"] >= 0.3, m
+
+
+def test_memory_bench_a_failing_command_raises_and_sizes_are_multiples_of_3m():
+    import subprocess
+
+    mb = _load("memory_bench")
+    with pytest.raises(subprocess.CalledProcessError):
+        mb.measure([sys.executable, "-c", "raise SystemExit(3)"], dict(os.environ))
+    assert [mb._parts(s) for s in ("3m", "12m", "24m")] == [1, 4, 8]
+    for bad in ("4m", "12", "0m", "m"):
+        with pytest.raises(ValueError):
+            mb._parts(bad)
+
+
+def test_memory_bench_config_paths_survive_toml_on_windows(tmp_path):
+    import tomllib
+
+    mb = _load("memory_bench")
+    cfg = tomllib.loads(mb._config(tmp_path, "3m").read_text(encoding="utf-8"))
+    assert cfg["input"] == (tmp_path / "r3m.parquet").as_posix()
+    assert "\\" not in cfg["output"]

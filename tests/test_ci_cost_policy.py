@@ -224,6 +224,7 @@ class TestWindowsIsTwoImagesAndEveryJobNamesItsMachine:
             assert "if" not in steps[1], (name, job)
         assert sorted(found) == [
             "ci.yml:test",
+            "cli-memory.yml:measure",
             "cpu-paths.yml:oracles",
             "cpu-paths.yml:sde",
             "release.yml:build",
@@ -916,6 +917,7 @@ class TestTheLinuxPrepIsOneAction:
         assert sorted(callers) == [
             "budgets.yml:instructions",
             "ci.yml:test",
+            "cli-memory.yml:measure",
             "leakcheck.yml:native",
             "mutants.yml:changed",
             "oracles.yml:grid",

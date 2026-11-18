@@ -1,0 +1,136 @@
+name: CLI memory
+
+# The command line's peak memory on the two allocators it ships with, on the
+# machines CI has: jemalloc off Windows, bounded to one arena (`narenas:1`),
+# held at 0.75 / 0.85 / 0.86 GB at 3M / 12M / 24M rows on a 14-core Mac; and
+# mimalloc on Windows, unmeasured there (a macOS stand-in grew 0.86 to 1.01 GB
+# from 3M to 12M). A peak that grows with the rows is the allocator holding
+# pages, not the bank, so each job runs scripts/memory_bench.py's `cli` cases
+# at several sizes and writes every run's peak, wall time and CPU time to a
+# JSON file (the `cli-memory-<OS>` artifact) and to the job summary.
+#
+# By hand only: it builds the binary in release and writes parquet files of up
+# to 4 GB, which no push needs. Dispatch it from a branch that carries this
+# file and name another branch to measure with `ref`; the bench script comes
+# from that ref too.
+#
+# Which machines. A free runner of a public repository has four cores
+# (`ubuntu-latest`, `windows-latest`); GitHub's larger runners, with more
+# cores, are a paid feature of Team and Enterprise plans, and this
+# repository's plan has none, so no job here can answer how one jemalloc arena
+# behaves on a machine with many more than 14 cores. The Linux job reports the
+# cores it had (`cpus` in the JSON) so a figure is read against them. The
+# metric is each platform's own high-water mark, which scripts/memory_bench.py
+# names per run: Windows' peak working set beside its peak commit, Linux's
+# peak resident set beside the peak of `RssAnon`. Compare a platform's sizes
+# with one another, and a platform with another only through the caveats
+# docs/PERFORMANCE.md gives for resident sets.
+on:
+  workflow_dispatch:
+    inputs:
+      rows:
+        description: "Sizes to run, comma-separated multiples of 3M rows (as 3m,12m,24m)"
+        type: string
+        default: "3m,12m,24m"
+      repeats:
+        description: "Runs of each case at each size"
+        type: string
+        default: "2"
+      ref:
+        description: "Branch, tag or sha to build and measure (default: the dispatched ref)"
+        type: string
+        default: ""
+      windows_variants:
+        description: >-
+          Extra Windows cases, one per semicolon-separated entry of
+          comma-separated NAME=VALUE environment variables, each run beside the plain
+          binary (a stock build reads MIMALLOC_* itself)
+        type: string
+        default: "MIMALLOC_PURGE_DELAY=0"
+      linux_variants:
+        description: >-
+          Extra Linux cases, in the same form (a stock build reads
+          _RJEM_MALLOC_CONF itself)
+        type: string
+        default: ""
+
+# Least privilege: no token scope by default, granted per job.
+permissions: {}
+
+concurrency:
+  group: cli-memory-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  UV_PYTHON: "3.12"
+
+jobs:
+  measure:
+    name: the command line's memory (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # A release build from a cold cache took 33 to 78 minutes on a Windows
+    # runner in CI's test legs; the runs themselves are minutes (the Mac read
+    # 12M rows in 25 s of CPU on 14 cores, so a few times that on four).
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - name: the machine this job ran on
+        uses: ./.github/actions/machine-report
+      - name: free disk and use a leaner linker (Linux)
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/linux-build-prep
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      # As in ci.yml: real-time scanning inspects every file a cargo build
+      # writes, and every parquet file the runs write. Best-effort.
+      - name: exclude the build and the data from Defender (Windows)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        run: |
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE","$env:RUNNER_TEMP","$env:USERPROFILE\.cargo","$env:USERPROFILE\.rustup"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          cache-on-failure: true
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      - name: build the command line (release)
+        shell: bash
+        run: cargo build --release --locked -p online-cli
+
+      - name: measure
+        shell: bash
+        env:
+          ROWS: ${{ inputs.rows }}
+          REPEATS: ${{ inputs.repeats }}
+          VARIANTS: ${{ runner.os == 'Windows' && inputs.windows_variants || inputs.linux_variants }}
+          EXE: ${{ runner.os == 'Windows' && 'target/release/polars-online.exe' || 'target/release/polars-online' }}
+          DATA: ${{ runner.temp }}/memory
+        run: |
+          args=()
+          IFS=';' read -ra vs <<< "$VARIANTS"
+          for v in "${vs[@]}"; do
+            [ -n "$v" ] && args+=(--variant "$v")
+          done
+          {
+            echo "### ${RUNNER_OS}: command line, release build, ref ${GITHUB_SHA}"
+            echo
+            uv run --no-project --with "polars>=1.37.0,<3" --with numpy \
+              python scripts/memory_bench.py cli "$DATA" --online "$EXE" \
+              --sizes "$ROWS" --repeats "$REPEATS" --json cli-memory.json "${args[@]}"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: the figures
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cli-memory-${{ runner.os }}
+          path: cli-memory.json
+          if-no-files-found: error
