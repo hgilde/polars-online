@@ -37,7 +37,9 @@ machines, and the threads of several specs from a build without LTO.
 **Memory is the most memory the process held at once, not the resident
 set size (RSS), unless a figure says otherwise.** It is the number
 `/usr/bin/time -l` prints as "peak memory footprint", which
-`scripts/memory_bench.py` reads, so that script runs on macOS only. RSS is the wrong ruler
+`scripts/memory_bench.py` reads, so its python cases run on macOS only (its
+`cli` cases, the command line's, also run on Linux and Windows, where the figure is
+the platform's peak resident set or working set). RSS is the wrong ruler
 for a bank's memory. Polars has memory-mapped a local parquet file, in
 py-polars 1.x and in the command line's build of 2026-09-02, and the
 file's clean pages count in RSS, though the system drops them under
