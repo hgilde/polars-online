@@ -920,6 +920,7 @@ impl OnlineModel for Micro {
 mod tests {
     use super::super::summary::{LONG_HALFLIVES, dist, dist2};
     use super::*;
+    use crate::oracle::CanonBits;
 
     /// A state whose vectors are not the cfg's is refused, where it loaded
     /// and panicked on the first `step` (review 2026-09-18, B3).
@@ -1043,7 +1044,7 @@ mod tests {
             for z in &rows {
                 for potential in [true, false] {
                     let bits = |r: Option<(usize, f64, f64)>| {
-                        r.map(|(j, a, b)| (j, a.to_bits(), b.to_bits()))
+                        r.map(|(j, a, b)| (j, a.canon_bits(), b.canon_bits()))
                     };
                     assert_eq!(
                         bits(m.nearest(z, potential)),

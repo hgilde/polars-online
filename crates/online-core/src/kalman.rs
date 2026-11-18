@@ -2869,6 +2869,7 @@ impl OnlineModel for Kalman {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oracle::CanonBits;
 
     fn lcg(state: &mut u64) -> f64 {
         *state = state
@@ -2923,7 +2924,7 @@ mod tests {
                 }
                 let mut new = p.clone();
                 take_the_row(&mut new, &gain, &pz);
-                let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                let bits = |v: &[f64]| v.iter().map(|x| x.canon_bits()).collect::<Vec<_>>();
                 // Mirrored writes make the old form's lower triangle `P_ji - v`,
                 // which is the new form's on any `P`, symmetric or not.
                 assert_eq!(bits(&old), bits(&new), "take_the_row, k = {k}");

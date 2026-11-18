@@ -1317,6 +1317,7 @@ impl OnlineModel for KMeans {
 mod tests {
     use super::super::summary::{LONG_HALFLIVES, dist};
     use super::*;
+    use crate::oracle::CanonBits;
 
     /// A state whose vectors are not the cfg's is refused, where it loaded
     /// and panicked on the first `step` (review 2026-09-18, B3).
@@ -1479,8 +1480,8 @@ mod tests {
                 for z in &rows {
                     let (a, b) = (m.nearest2(z), nearest2_branching(&m, z));
                     assert_eq!(
-                        (a.0, a.1.to_bits(), a.2.to_bits(), a.3),
-                        (b.0, b.1.to_bits(), b.2.to_bits(), b.3),
+                        (a.0, a.1.canon_bits(), a.2.canon_bits(), a.3),
+                        (b.0, b.1.canon_bits(), b.2.canon_bits(), b.3),
                         "k {k}, metric {mw:?}, row {z:?}"
                     );
                 }

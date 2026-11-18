@@ -1575,6 +1575,23 @@ mod tests {
     /// out so that moving [`FAER_FROM`] fails the tests below.
     const CUT: usize = 22;
 
+    /// Two floats are the same bits, except that any NaN is any NaN: IEEE
+    /// leaves a NaN's sign unspecified, and another target's code
+    /// generation picks another operand order, so no test may pin it.
+    /// Every other value, infinities and signed zeros included, is
+    /// compared by its bits.
+    fn same_bits(a: f64, b: f64) -> bool {
+        a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
+    }
+
+    /// [`same_bits`] over a distance that may be refused.
+    fn same_bits_opt(a: Option<f64>, b: Option<f64>) -> bool {
+        match (a, b) {
+            (Some(a), Some(b)) => same_bits(a, b),
+            (a, b) => a.is_none() && b.is_none(),
+        }
+    }
+
     fn lcg(state: &mut u64) -> f64 {
         *state = state
             .wrapping_mul(6364136223846793005)
@@ -3479,7 +3496,10 @@ mod tests {
                 let b: Vec<f64> = (0..p * p).map(|_| gen_(&mut s)).collect();
                 let (got, want) = (mat_mul(&a, &b, p), plain::mat_mul(&a, &b, p));
                 for (n, (g, w)) in got.iter().zip(&want).enumerate() {
-                    assert_eq!(g.to_bits(), w.to_bits(), "p {p}, kind {kind}, entry {n}");
+                    assert!(
+                        same_bits(*g, *w),
+                        "p {p}, kind {kind}, entry {n}: {g} vs {w}"
+                    );
                 }
             }
         }
@@ -3523,10 +3543,10 @@ mod tests {
                     };
                     let (got, old) = (out[n].to_bits(), if ADD { base[n] } else { f64::NAN });
                     if asked {
-                        assert_eq!(got, want.to_bits(), "p {p}, ({i}, {j})");
+                        assert!(same_bits(out[n], want), "p {p}, ({i}, {j})");
                     } else {
                         assert!(
-                            got == want.to_bits() || got == old.to_bits(),
+                            same_bits(out[n], want) || same_bits(out[n], old),
                             "p {p}, ({i}, {j}) is {}",
                             out[n]
                         );
@@ -3612,9 +3632,8 @@ mod tests {
                                 t.wald(idx, intercept, long_run),
                                 plain::wald(t, idx, intercept, long_run),
                             );
-                            assert_eq!(
-                                got.map(f64::to_bits),
-                                want.map(f64::to_bits),
+                            assert!(
+                                same_bits_opt(got, want),
                                 "order {order}, intercept {intercept}, kind {kind}, row {i}"
                             );
                             seen += usize::from(got.is_some());
@@ -3676,12 +3695,7 @@ mod tests {
                         plain::wald(&t, idx, intercept, 1.0),
                     );
                     if idx.len() + usize::from(intercept) < CUT {
-                        assert_eq!(
-                            got.map(f64::to_bits),
-                            want.map(f64::to_bits),
-                            "row {i}, {} features",
-                            idx.len()
-                        );
+                        assert!(same_bits_opt(got, want), "row {i}, {} features", idx.len());
                     } else if let (Some(g), Some(w)) = (got, want) {
                         assert!(((g - w) / w).abs() < 1e-8, "row {i}: {g} vs {w}");
                         differing += usize::from(g.to_bits() != w.to_bits());
@@ -3786,7 +3800,7 @@ mod tests {
                 plain::wald(t, &idx, *intercept, 1.0).expect("a distance"),
             );
             if order < CUT {
-                assert_eq!(g.to_bits(), w.to_bits(), "order {order}");
+                assert!(same_bits(g, w), "order {order}");
             } else {
                 assert!(((g - w) / w).abs() < 1e-8, "order {order}: {g} vs {w}");
                 differing[order - CUT] += usize::from(g.to_bits() != w.to_bits());
@@ -4015,9 +4029,8 @@ mod tests {
                             t.wald(idx, intercept, long_run),
                             plain::wald(&t, idx, intercept, long_run),
                         );
-                        assert_eq!(
-                            got.map(f64::to_bits),
-                            want.map(f64::to_bits),
+                        assert!(
+                            same_bits_opt(got, want),
                             "row {i}, {idx:?}, intercept {intercept}, long run {long_run}"
                         );
                         if long_run == 1.0 {

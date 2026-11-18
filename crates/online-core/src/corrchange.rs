@@ -1994,6 +1994,7 @@ impl crate::OnlineModel for CorrChange {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oracle::CanonBits;
 
     /// `window_corr_flat`'s fixed-width paths (one to eight columns, the
     /// pool read as rows of `D`) against the sums as the any-width path
@@ -2031,7 +2032,7 @@ mod tests {
                 mean.iter_mut().for_each(|m| *m /= w as f64);
                 CorrChange::co_moments_rows(d, &pool, &at, mean, ss, corr);
                 CorrChange::normalise_pairs(d, ss, corr);
-                let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                let bits = |v: &[f64]| v.iter().map(|x| x.canon_bits()).collect::<Vec<_>>();
                 assert_eq!(bits(&got), bits(&want), "d {d}, {w} places");
             }
         }

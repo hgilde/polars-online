@@ -1358,6 +1358,7 @@ mod pool_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oracle::CanonBits;
 
     /// [`SpdFactor::solve_into`] is [`SpdFactor::solve`] to the bit, in one
     /// kept matrix and one kept output across shapes it returns to, and the
@@ -1384,8 +1385,8 @@ mod tests {
             f.solve_into(&b, k, m, &mut work, &mut out);
             let want = f.solve(&b, k, m);
             assert_eq!(
-                out.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-                want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                out.iter().map(|v| v.canon_bits()).collect::<Vec<_>>(),
+                want.iter().map(|v| v.canon_bits()).collect::<Vec<_>>(),
                 "order {k}, {m} columns"
             );
             assert_eq!(f.inverse_is_finite_in(&mut z), f.inverse_is_finite());
@@ -2313,7 +2314,7 @@ mod tests {
                 }
                 let want = f.quad_forms(&d, k, m);
                 f.quad_forms_into(&d, k, m, &mut work, &mut out);
-                let bits = |v: &[f64]| v.iter().map(|q| q.to_bits()).collect::<Vec<_>>();
+                let bits = |v: &[f64]| v.iter().map(|q| q.canon_bits()).collect::<Vec<_>>();
                 assert_eq!(bits(&out), bits(&want), "k {k}, m {m}, cond {cond}");
             }
         }

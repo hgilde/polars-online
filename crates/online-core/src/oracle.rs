@@ -794,6 +794,32 @@ pub(crate) fn propagate(f: impl Fn(&[f64]) -> f64, x: &[f64], dx: &[f64]) -> f64
         * (1.0 + 1e-3)
 }
 
+/// A float's bits, with every NaN the one NaN: IEEE leaves the sign and
+/// payload of a NaN that arithmetic makes unspecified, and another target's
+/// code generation orders the operands another way, so a test that compares
+/// two ways of computing over data that can make a NaN (`inf - inf`,
+/// `0 * inf`, two NaNs met) compares these. Every other value, infinities
+/// and signed zeros included, keeps its bits.
+pub(crate) trait CanonBits {
+    fn canon_bits(self) -> u64;
+}
+
+impl CanonBits for f64 {
+    fn canon_bits(self) -> u64 {
+        if self.is_nan() {
+            f64::NAN.to_bits()
+        } else {
+            self.to_bits()
+        }
+    }
+}
+
+impl CanonBits for &f64 {
+    fn canon_bits(self) -> u64 {
+        (*self).canon_bits()
+    }
+}
+
 /// Asserts `|got − want| ≤ bound`, a bound the caller derived, naming what
 /// was compared and the share of the bound the error took.
 #[track_caller]
