@@ -118,7 +118,7 @@ fn merge_lower_cut(
     let runs = runs_of(c, k, &at);
     let items: Vec<_> = at.into_iter().zip(runs).collect();
     spread(items, threads, |(at, runs)| {
-        TILE_BUF.with_borrow_mut(|buf| {
+        crate::scratch::with_borrow_mut(&TILE_BUF, |buf| {
             let len = at.rows * at.cols;
             if buf.len() < len {
                 buf.resize(len, 0.0);

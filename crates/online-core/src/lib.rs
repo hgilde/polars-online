@@ -110,6 +110,7 @@ mod rls;
 mod robust;
 mod runs;
 mod sandwich;
+mod scratch;
 mod seqtest;
 mod sgd;
 mod since;

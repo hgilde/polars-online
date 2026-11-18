@@ -339,6 +339,22 @@ fn the_cases_reach_the_paths_they_are_for() {
     );
 }
 
+/// Task 458: the fold's sums are cut into bands of columns from
+/// `2 * FOLD_BAND_MIN` features and not below. Each side of it, on a pool,
+/// the same bits at every thread count.
+#[test]
+fn the_fold_is_the_same_bits_each_side_of_the_band_cut() {
+    let pool = pool(4);
+    for k in [2 * FOLD_BAND_MIN - 1, 2 * FOLD_BAND_MIN] {
+        let rows = stream(Kind::Decays, k, 2, 24, 1e3, 13);
+        let one = pool.install(|| run(&rows, 8, 1, TargetGaps::OwnRows));
+        for threads in [2usize, 4] {
+            let many = pool.install(|| run(&rows, 8, threads, TargetGaps::OwnRows));
+            assert!(bits(&many) == bits(&one), "k = {k}, {threads} threads");
+        }
+    }
+}
+
 /// The moments are the same bits at every thread count, wide enough that
 /// the fold's sums are cut into bands of columns, and the same whichever
 /// other targets share the block: a target's sums are its own, row by row.

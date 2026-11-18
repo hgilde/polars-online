@@ -28,7 +28,9 @@
 
 use std::cell::Cell;
 use std::ops::Deref;
-use std::sync::{Condvar, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 /// The most threads a test pool has, and all test pools hold together.
 #[cfg(all(windows, target_arch = "x86_64"))]
@@ -73,6 +75,11 @@ pub(crate) fn size(n: usize) -> usize {
 /// A pool of [`size`]`(n)` threads, once the test pools' threads leave room
 /// for them.
 pub(crate) fn pool(n: usize) -> TestPool {
+    pool_gated(n, None)
+}
+
+/// [`pool`], its threads gated by `gate` where there is one ([`before_item`]).
+fn pool_gated(n: usize, gate: Option<Arc<Gate>>) -> TestPool {
     assert!(
         !HOLDING.with(Cell::get),
         "a thread holds one test pool at a time: drop the first before building the next"
@@ -87,6 +94,7 @@ pub(crate) fn pool(n: usize) -> TestPool {
     }
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(n)
+        .start_handler(move |_| GATE.set(gate.clone()))
         .exit_handler(|_| {
             *LIVE.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
             EXITED.notify_all();
@@ -95,6 +103,109 @@ pub(crate) fn pool(n: usize) -> TestPool {
         .expect("a test pool");
     HOLDING.with(|h| h.set(true));
     TestPool { pool }
+}
+
+thread_local! {
+    /// The gate of the pool this thread belongs to, if it has one.
+    static GATE: Cell<Option<Arc<Gate>>> = const { Cell::new(None) };
+}
+
+/// What [`read_met_by_a_read`] holds two threads of a pool with: the one
+/// that runs the first read (the owner) waits, at its first piece of a
+/// parallel section, until the pool's other thread has taken a piece of that
+/// section too; that thread stops there, holding it, until the second read
+/// is done. So the owner cannot finish the section: it waits for the piece
+/// the other holds, and takes other work meanwhile.
+#[derive(Default)]
+struct Gate {
+    owner: AtomicUsize,
+    arrived: AtomicBool,
+    release: AtomicBool,
+    /// The owner gave up waiting for the other thread.
+    timed_out: AtomicBool,
+}
+
+/// Called by `pieces::spread` before each thread takes an item: a no-op
+/// except on the threads of a gated pool.
+pub(crate) fn before_item() {
+    let held = GATE.take();
+    GATE.set(held.clone());
+    let Some(gate) = held else {
+        return;
+    };
+    let (me, owner) = (rayon::current_thread_index(), gate.owner.load(SeqCst));
+    if gate.release.load(SeqCst) || owner == usize::MAX {
+        return;
+    }
+    if me == Some(owner) {
+        let start = Instant::now();
+        while !gate.arrived.load(SeqCst) {
+            if start.elapsed() > Duration::from_secs(20) {
+                gate.timed_out.store(true, SeqCst);
+                gate.release.store(true, SeqCst);
+                return;
+            }
+            std::thread::yield_now();
+        }
+    } else {
+        gate.arrived.store(true, SeqCst);
+        while !gate.release.load(SeqCst) {
+            std::thread::yield_now();
+        }
+    }
+}
+
+/// `read` run twice on a pool of two threads, the second time on the thread
+/// that is inside the first, waiting in a rayon scope the first opened, and
+/// the two results: what a thread-local buffer held across such a wait
+/// meets, a panic ("RefCell already borrowed") or a shared buffer.
+///
+/// Deterministic, not a race for a steal. The first read's first parallel
+/// section is held open by the pool's other thread ([`Gate`]); the second
+/// read is queued then, on the pool's global queue, where the only thread
+/// free to take it is the first's, waiting in the section. A `read` that
+/// opens no parallel section on two threads (below the sizes at which the
+/// solves split) makes the owner wait out the time-out and fail.
+pub(crate) fn read_met_by_a_read<T: Send>(read: impl Fn() -> T + Sync) -> (T, T) {
+    /// Lets the held thread go, however the read ends.
+    struct Release<'a>(&'a Gate);
+    impl Drop for Release<'_> {
+        fn drop(&mut self) {
+            self.0.release.store(true, SeqCst);
+        }
+    }
+    let gate = Arc::new(Gate {
+        owner: AtomicUsize::new(usize::MAX),
+        ..Gate::default()
+    });
+    let pool = pool_gated(2, Some(gate.clone()));
+    let (first, second) = (Mutex::new(None), Mutex::new(None));
+    pool.in_place_scope(|s| {
+        s.spawn(|_| {
+            let _release = Release(&gate);
+            gate.owner.store(
+                rayon::current_thread_index().expect("a pool thread"),
+                SeqCst,
+            );
+            *first.lock().unwrap_or_else(|e| e.into_inner()) = Some(read());
+        });
+        while !gate.arrived.load(SeqCst) && !gate.release.load(SeqCst) {
+            std::thread::yield_now();
+        }
+        s.spawn(|_| {
+            let _release = Release(&gate);
+            *second.lock().unwrap_or_else(|e| e.into_inner()) = Some(read());
+        });
+    });
+    assert!(
+        !gate.timed_out.load(SeqCst),
+        "the first read opened no parallel section the pool's other thread took part in"
+    );
+    let take = |m: Mutex<Option<T>>| m.into_inner().unwrap_or_else(|e| e.into_inner());
+    (
+        take(first).expect("the first read"),
+        take(second).expect("the second read"),
+    )
 }
 
 #[cfg(test)]

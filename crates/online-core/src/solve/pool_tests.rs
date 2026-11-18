@@ -265,3 +265,61 @@ fn seq_bits(k: usize) -> Vec<u64> {
     cholesky_seq(l.as_mut(), None).expect("positive definite");
     lower_bits(&l)
 }
+
+/// Task 458: a solve's right-hand sides are cut into bands for the pool's
+/// threads from 256 of them (`2 * TILE`: below it one band, solved where it
+/// is), and the factor is cut from past 64 (faer's recursion) and again
+/// past 128 and 256. Each side of every one of those thresholds, in pools
+/// of 1, 2 and 3 threads: the same bits. The cases elsewhere in this file
+/// start at 512; these are the sizes just under and over each cut, which
+/// are cheap.
+#[test]
+fn the_solve_and_the_factor_are_the_same_in_a_pool_across_every_cut() {
+    let pools = [1usize, 2, 3];
+    // `k = 40` right-hand sides' count across `2 * TILE`.
+    let k = 40;
+    let a = spd(k, 5);
+    let f = SpdFactor::of(&a, k).expect("positive definite");
+    for m in [
+        1usize,
+        2,
+        2 * TILE - 1,
+        2 * TILE,
+        2 * TILE + 1,
+        3 * TILE,
+        4 * TILE,
+    ] {
+        let mut s = 9 + m as u64;
+        let b: Vec<f64> = (0..k * m).map(|_| lcg(&mut s)).collect();
+        let run = |n: usize| {
+            crate::test_pool::pool(n).install(|| {
+                (
+                    bits(&f.solve(&b, k, m)),
+                    bits(&solve_spd(&a, &b, k, m).unwrap().0),
+                )
+            })
+        };
+        let one = run(1);
+        for n in pools {
+            assert_eq!(run(n), one, "{m} right-hand sides, pool of {n}");
+        }
+    }
+    // The factor of `k` features across 64, 128 and 256.
+    for k in [
+        RECURSION_THRESHOLD - 1,
+        RECURSION_THRESHOLD,
+        RECURSION_THRESHOLD + 1,
+        BLOCK,
+        BLOCK + 1,
+        2 * TILE - 1,
+        2 * TILE,
+        2 * TILE + 1,
+        300,
+    ] {
+        let one = crate::test_pool::pool(1).install(|| factor_bits(k, 1, (LEAF, TILE)));
+        for n in pools {
+            let got = crate::test_pool::pool(n).install(|| factor_bits(k, n, (LEAF, TILE)));
+            assert_eq!(got, one, "factor of {k}, pool of {n}");
+        }
+    }
+}

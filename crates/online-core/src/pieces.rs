@@ -215,6 +215,7 @@ pub(crate) fn syrk_lower_cut(
 /// which item does not matter: the items are disjoint and each is done
 /// whole by one call to `f`.
 pub(crate) fn spread<T: Send>(items: Vec<T>, threads: usize, f: impl Fn(T) + Sync) {
+    crate::scratch::assert_none_borrowed();
     let workers = threads.min(items.len());
     if workers <= 1 {
         items.into_iter().for_each(f);
@@ -225,6 +226,8 @@ pub(crate) fn spread<T: Send>(items: Vec<T>, threads: usize, f: impl Fn(T) + Syn
     let queue = Mutex::new(items);
     let work = || {
         loop {
+            #[cfg(test)]
+            crate::test_pool::before_item();
             let next = queue.lock().unwrap_or_else(PoisonError::into_inner).pop();
             match next {
                 Some(item) => f(item),
