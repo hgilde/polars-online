@@ -1,0 +1,20 @@
+--- /Users/hgilde/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pulp-0.22.3/src/core_arch/mod.rs	2006-07-23 21:21:28
++++ src/core_arch/mod.rs	2026-11-17 21:49:51
+@@ -363,7 +363,7 @@
+                 #[inline(always)]
+                 pub fn vectorize<F: $crate::NullaryFnOnce>(self, f: F) -> F::Output {
+                     $(#[target_feature(enable = $feature)])*
+-                    #[inline]
++                    #[inline(never)]
+                 	#[allow(clippy::too_many_arguments)]
+                     unsafe fn imp_fastcall<F: $crate::NullaryFnOnce>(
+                         f0: ::core::mem::MaybeUninit<::core::primitive::usize>,
+@@ -380,7 +380,7 @@
+                     }
+ 
+                     $(#[target_feature(enable = $feature)])*
+-                    #[inline]
++                    #[inline(never)]
+                     unsafe fn imp<F: $crate::NullaryFnOnce>(f: F) -> F::Output {
+                         f.call()
+                     }
