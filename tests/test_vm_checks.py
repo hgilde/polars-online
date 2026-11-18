@@ -562,6 +562,14 @@ def _fake_tools(tmp_path: Path, monkeypatch, passed: int) -> list[str]:
     return [str(log)]
 
 
+_POSIX_TOOLS = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the fake cargo and qemu are /bin/sh scripts; "
+    "the workflow they stand in for runs on Linux only",
+)
+
+
+@_POSIX_TOOLS
 def test_the_tests_run_natively_and_under_qemu_with_the_same_filter(tmp_path, monkeypatch):
     (log,) = _fake_tools(tmp_path, monkeypatch, passed=4)
     rows = vm.run_tests(tmp_path, "online-core", ["solve::"], "Nehalem")
@@ -572,6 +580,7 @@ def test_the_tests_run_natively_and_under_qemu_with_the_same_filter(tmp_path, mo
     assert ran.startswith("-cpu Nehalem ") and "solve:: --include-ignored" in ran
 
 
+@_POSIX_TOOLS
 def test_a_filter_that_matches_nothing_fails_the_step(tmp_path, monkeypatch, capsys):
     _fake_tools(tmp_path, monkeypatch, passed=0)
     args = vm.argparse.Namespace(

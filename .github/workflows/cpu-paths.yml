@@ -93,9 +93,10 @@ jobs:
       # without AVX2, runs their fallback paths. tests/test_cpu_paths.py
       # fails when a module that does any of these is missing here.
       SDE_TESTS: >-
-        bocpd:: breaks:: calibration:: corrchange:: deco:: ewclass:: ewcov:: ewdiag:: ewridge::
-        gaps:: gramfit:: hmm:: holt:: huber_refit:: kalman:: lasso:: oracle:: pieces::
-        rcov:: rls:: robust:: sandwich:: sgd:: solve:: specification::
+        audit:: bocpd:: breaks:: calibration:: cluster:: corrchange:: deco:: ewclass:: ewcov::
+        ewdiag:: ewridge:: gaps:: gramfit:: hmm:: holt:: huber_refit:: kalman:: lasso::
+        margbins:: oracle:: pieces:: rcov:: rls:: robust:: sandwich:: seqtest:: sgd:: solve::
+        specification:: window_moments::
       # A release build, ten or more times faster than the debug build CI
       # tests, which matters under an emulator; with the debug build's
       # assertions and overflow checks, so the tests that expect one to
