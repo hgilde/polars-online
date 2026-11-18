@@ -1071,10 +1071,12 @@ IO_KINDS: dict[str, Kind] = {
         "small filesystem to mount; the kind has no subclass, so it reaches Python by "
         "the `_ => OSError` arm that the `InvalidInput` case holds",
     ),
-    "<an interrupted write>": Kind(
+    "Interrupted": Kind(
         "InterruptedError",
-        gap="std retries `Interrupted` writes, so a save's call never returns it; "
-        "an error raised while a save encodes keeps its kind in the task 388 Rust test",
+        gap="std retries `Interrupted` writes, so a save's call never returns it; the "
+        "save's error stash names the kind only to skip it, keeping the error that "
+        "ended the save (task 460's Rust test `a_retried_interruption_is_not_the_error_a_"
+        "later_failure_is_reported_as`)",
     ),
     "<others pyo3 maps>": Kind(
         "AlreadyExists, BrokenPipe, Connection*, WouldBlock, TimedOut, OutOfMemory",
