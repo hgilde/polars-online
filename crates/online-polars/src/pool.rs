@@ -237,19 +237,28 @@ pub fn inline() -> bool {
 /// check it. Handing a call to the pool and waking a parked worker costs
 /// about 13 us on the Mac, a third of a one-row call. Only the thread
 /// differs, never the arithmetic, so the output is the same to the bit.
-pub struct Inline(bool);
+pub struct Inline {
+    /// What [`inline`] was before this guard.
+    before: bool,
+    /// Keeps the matrix work of the call on this thread too, as long as the
+    /// guard lives.
+    _sequential: online_core::Sequential,
+}
 
 impl Inline {
     /// Marks this thread inline; the guard puts back what it found.
     #[must_use]
     pub fn enter() -> Self {
-        Self(INLINE.with(|c| c.replace(true)))
+        Self {
+            before: INLINE.with(|c| c.replace(true)),
+            _sequential: online_core::Sequential::enter(),
+        }
     }
 }
 
 impl Drop for Inline {
     fn drop(&mut self) {
-        INLINE.with(|c| c.set(self.0));
+        INLINE.with(|c| c.set(self.before));
     }
 }
 

@@ -46,7 +46,7 @@ const JITTER: [f64; 5] = [0.0, 1e-12, 1e-9, 1e-6, 1e-3];
 /// [`SpdFactor::updated`] can move it in place, which `faer`'s `Llt` does
 /// not allow.
 fn factorize(a: &[f64], k: usize) -> Option<(Mat<f64>, u32, f64)> {
-    let threads = rayon::current_num_threads();
+    let threads = crate::pieces::degree();
     for (attempts, jitter) in rungs(a, k) {
         let mut l = Mat::from_fn(k, k, move |i, j| rung_entry(a, k, jitter, i, j));
         if cholesky_in_place(l.as_mut(), threads, (LEAF, TILE), None).is_ok() {
@@ -76,7 +76,7 @@ fn factorize_into(
     l: &mut Mat<f64>,
     work: &mut CholWork,
 ) -> Option<(u32, f64)> {
-    let threads = rayon::current_num_threads();
+    let threads = crate::pieces::degree();
     for (attempts, jitter) in rungs(a, k) {
         if l.nrows() == k && l.ncols() == k {
             for j in 0..k {
@@ -114,7 +114,7 @@ fn factorize_ridged_into(
     let diag = |i: usize| c[crate::ewcov::row_at(i) + i] + ridge;
     let trace: f64 = (0..k).map(diag).sum();
     let base = if trace > 0.0 { trace / k as f64 } else { 1.0 };
-    let threads = rayon::current_num_threads();
+    let threads = crate::pieces::degree();
     for (attempts, &eps) in JITTER.iter().enumerate() {
         let jitter = base * eps;
         if l.nrows() == k && l.ncols() == k {
@@ -404,7 +404,7 @@ fn solve_in_place(l: &Mat<f64>, rhs: MatMut<'_, f64>) {
     if rhs.ncols() < 2 * TILE {
         return solve_band(l, rhs);
     }
-    spread(col_parts(rhs, TILE), rayon::current_num_threads(), |band| {
+    spread(col_parts(rhs, TILE), crate::pieces::degree(), |band| {
         solve_band(l, band)
     });
 }
@@ -608,7 +608,7 @@ pub(crate) fn solve_spd_ridged(
     let diag = |i: usize| c[crate::ewcov::row_at(i) + i] + ridge;
     let trace: f64 = (0..k).map(diag).sum();
     let base = if trace > 0.0 { trace / k as f64 } else { 1.0 };
-    let threads = rayon::current_num_threads();
+    let threads = crate::pieces::degree();
     for (attempts, &eps) in JITTER.iter().enumerate() {
         let jitter = base * eps;
         let mut l = Mat::from_fn(k, k, |i, j| match i.cmp(&j) {

@@ -27,7 +27,46 @@
 use faer::linalg::matmul::matmul as gemm;
 use faer::linalg::matmul::triangular::{BlockStructure, matmul as tri};
 use faer::{Accum, MatMut, MatRef, Par};
+use std::cell::Cell;
 use std::sync::{Mutex, PoisonError};
+
+thread_local! {
+    static SEQUENTIAL: Cell<bool> = const { Cell::new(false) };
+}
+
+/// While the guard lives, the matrix work started on this thread runs on
+/// this thread, in order, whatever the rayon pool the thread belongs to or
+/// does not: a call that is small enough not to be handed to a pool
+/// (`online-polars`' inline call) must not reach rayon's global pool by
+/// way of a wide solve, where it would ignore the `threads` the bank was
+/// given and wake threads the caller never asked for. The bands and pieces
+/// are the same, cut by shape alone, so the bits do not change; only the
+/// thread that makes each call.
+pub struct Sequential(bool);
+
+impl Sequential {
+    /// Marks this thread; the guard puts back what it found.
+    #[must_use]
+    pub fn enter() -> Self {
+        Self(SEQUENTIAL.with(|c| c.replace(true)))
+    }
+}
+
+impl Drop for Sequential {
+    fn drop(&mut self) {
+        SEQUENTIAL.with(|c| c.set(self.0));
+    }
+}
+
+/// The parallel degree of matrix work started here: the current pool's
+/// size, or one under a [`Sequential`] guard.
+pub(crate) fn degree() -> usize {
+    if SEQUENTIAL.with(Cell::get) {
+        1
+    } else {
+        rayon::current_num_threads()
+    }
+}
 
 /// A diagonal block this wide or narrower is one triangular product, so a
 /// matrix of 256 columns or fewer is one piece. Measured with [`TILE`]
@@ -246,6 +285,60 @@ mod oracle_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The degree is the pool's size, one under a [`Sequential`] guard on
+    /// any thread of any pool, and the guard puts back what it found.
+    #[test]
+    fn a_sequential_guard_takes_the_degree_to_one_and_back() {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(3)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            assert_eq!(degree(), 3);
+            let outer = Sequential::enter();
+            assert_eq!(degree(), 1);
+            let inner = Sequential::enter();
+            drop(inner);
+            assert_eq!(degree(), 1, "the inner guard leaves the outer's");
+            drop(outer);
+            assert_eq!(degree(), 3);
+        });
+    }
+
+    /// Bands of right-hand sides are solved the same, bit for bit, under the
+    /// guard as spread over a pool.
+    #[test]
+    fn a_wide_solve_is_the_same_to_the_bit_under_the_guard() {
+        let k = 6;
+        let a: Vec<f64> = (0..k * k)
+            .map(|i| {
+                let (r, c) = (i / k, i % k);
+                if r == c {
+                    4.0 + r as f64
+                } else {
+                    1.0 / (1.0 + (r + c) as f64)
+                }
+            })
+            .collect();
+        let m = 300;
+        let b: Vec<f64> = (0..k * m).map(|i| ((i * 31) % 17) as f64 - 8.0).collect();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(3)
+            .build()
+            .unwrap();
+        let spread = pool.install(|| crate::solve_spd(&a, &b, k, m).unwrap().0);
+        let seq = pool.install(|| {
+            let _g = Sequential::enter();
+            crate::solve_spd(&a, &b, k, m).unwrap().0
+        });
+        assert!(
+            spread
+                .iter()
+                .zip(&seq)
+                .all(|(x, y)| x.to_bits() == y.to_bits())
+        );
+    }
 
     /// [`places`] are where [`pieces`] cuts, piece for piece, in order, at
     /// every side up to past four leaves and at a fine cut.

@@ -5443,6 +5443,9 @@ mod readiness_settle_tests;
 mod damaged_file_tests;
 
 #[cfg(test)]
+mod ring_restore_tests;
+
+#[cfg(test)]
 mod threads_tests;
 
 #[cfg(test)]
