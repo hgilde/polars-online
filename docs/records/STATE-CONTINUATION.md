@@ -185,3 +185,53 @@ and `bocpd_warming` regenerated (their continuations moved by at most
 1.4e-15 relative, each saved state by the last bit of one float); no schema
 bump. The kept sets' two cases are held to that bound by `MOVED`
 (`crates/online-core/tests/state_fixtures.rs`).
+
+A seventeenth, the user's (2026-11-17, task 457: "keep the corrchange
+improvement", after the per-seed difference below was put to them; built in
+task 464): `corrchange(kind = "window")` draws the swaps of its permutation
+critical value by Lemire's multiply-shift reduction (the high word of a
+64-bit draw times the bound, with a draw whose low word is under
+`2^64 mod n` redrawn, so it is exactly uniform) where it took the draw
+modulo the bound (`x % n`, a 64-bit division a draw, biased by up to
+`n / 2^64`). The generator is called once a draw as before, and a redraw has
+probability under `n / 2^64`, so a state's saved generator is the old
+build's after the same draws and nothing about the layout changes. What
+moves is which permutations a seed visits: for a given `seed` and rows, every
+redrawn critical value is a different draw from the same distribution, so it
+parts from the old build's, and a flag whose statistic sits near the old or
+the new critical value can differ. A window-kind state saved by an earlier
+build loads with every stored number as it was, including the critical value
+it holds until its next redraw, and its next redraw, from its saved
+generator, takes the new draws; so it continues to the bit until that
+redraw and parts from the old build's critical values from there, and the
+state it re-saves is not the old build's. `corrchange` with `kind = "monitor"`
+or `"sequential"`, which draw nothing, and every other model continue to
+the bit. Measured against the build before (2026-11-18, arm64, the harness of
+task 452: a window of 20, 100 and 400 rows, 4
+columns, `n_perm = 200`, `perm_block` 1 and 10, 8 pools of correlated
+Gaussian rows with 2,000 seeds each, 16,000 critical values a case): the
+distribution of the critical value over seeds is the same (two-sample
+Kolmogorov-Smirnov distance median 0.020-0.030 and at most 0.044 where the
+5% critical value at 2,000 and 2,000 draws is 0.043; mean difference at most
+0.076 of a standard deviation; standard deviation ratio 0.96-1.05; each
+0.13-0.15 standard deviations above the critical value of 20,000 draws, the
+bias of an order statistic of 200 draws, equal for both); a given seed's
+critical value, paired against the old build's, moves by a median of 3.6% to
+4.1% of its value (none identical), p99 15% to 16%, at most 32%. Over 3,000
+streams of 3,000 rows (3 columns, correlation 0.3, and 0.8 from the middle for
+the alternative): per-row flag rate 0.0511 against 0.0512 at window 100 (null,
+standard error 0.0005), 0.0935 against 0.0933 (alternative); 0.0522 against
+0.0522 and 0.0685 against 0.0685 at window 50; 0.0566 against 0.0567 and
+0.0928 against 0.0928 at window 100 with `perm_block` 10; the median delay to
+the first flag after the change 33 against 33 rows (22 against 22, 32 against
+31). 1.60% to 1.71% of rows carry another `flag` than the old build gave in
+the same stream; no stream changes whether it ever flags. The current fixtures
+`corrchange_window` (core) and `bank_diagnosed` (bank), whose saved critical
+values and redrawn ones moved, regenerated, with the two oracle hash guards
+`corrchange.n_perm` and `truth_recovery.corrchange_break` re-run and
+re-pinned; no schema bump. The kept sets are held by bounds: core's
+`corrchange_window` in `v65/` and `v66/` is in `MOVED` at 0.25 of `1 + |x|`
+(measured: the saved `perm_crit` 0.115, the redrawn `crit` 0.140; a flipped
+`flag` would read 0.5, so none may), and the bank's `corr_window` `crit` in
+`v65/` and `v66/` `bank_diagnosed` is in `CONTINUES_WITHIN` at 0.25 (measured
+0.063), every other field staying to the bit.

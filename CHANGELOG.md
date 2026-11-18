@@ -52,6 +52,25 @@ returns.
   earlier build loads and re-saves the same bytes and continues within that
   bound, not to the bit.
 
+- `corrchange(kind="window")` draws the swaps of its permutation critical
+  value with an unbiased multiply-shift reduction (Lemire's) where it took a
+  remainder, so **a given `seed` gives other critical values than earlier
+  releases**: the generator is the same and is called once a draw, but each
+  swap lands elsewhere. The distribution of the critical value over seeds is
+  the same (two-sample Kolmogorov-Smirnov distance at most 0.044 over windows
+  of 20, 100 and 400 rows, 2,000 seeds and 8 pools of rows each), and a
+  given seed's value moves by a median of 4% (99th percentile 16%, at most
+  32% in 16,000 draws per window). The test's size and power are the same:
+  over 3,000 streams of 3,000 rows at a window of 100, the per-row flag rate
+  is 0.0511 against 0.0512 under no change and 0.0935 against 0.0933 after a
+  change in correlation, and the delay to the first flag after the change has
+  the same median (33 rows). About 1.6% of rows carry another `flag` than an
+  earlier release gave in the same stream, and no stream changes whether it
+  ever flags. A window-kind state saved by an earlier release loads and
+  continues to the bit until its next redraw of the critical value, then
+  takes the new draws; the `"monitor"` and `"sequential"` kinds draw nothing
+  and are unchanged.
+
 ### Fixed
 
 - A bank running on two or more threads with two or more groups no longer
@@ -100,6 +119,15 @@ returns.
 
 ### Performance
 
+- `corrchange(kind="window")`'s permutation redraw is 2 to 6% faster on
+  arm64 (Apple M4 Pro): the multiply-shift reduction above replaces a 64-bit
+  division on each draw. A stream of rows at a window of 20 takes 0.95 of
+  its time, 100 rows 0.96 (0.94 with every function aligned to 64 bytes),
+  1,000 rows 0.96 to 0.97, and 2,500 rows 1.00 (few redraws in the
+  stream); a second copy of the old binary run in the same rounds read
+  within 0.3% of the first in the default layout and within 2.7% in the
+  aligned one (the timer's resolution is 0.1 ms). An earlier measurement on an Intel Xeon (x86-64) read 0.87 to 0.89 of the
+  time.
 - The window operators take a row's held mass from the discount's own `exp2`
   from a hundredth of a half-life up, so a row's step and its mass cost one
   `exp2` between them. On arm64 a window operator on an irregular clock runs
@@ -358,6 +386,23 @@ returns.
   fold and merges them into its sorted centroids, rather than re-sorting
   everything: about 5% faster over 20 columns. Outputs and saved state
   unchanged to the bit.
+
+### Tests and documents
+
+- `bocpd`'s documentation says that one feature is the slow case: a row
+  takes about 118 µs with one feature against 3.5 µs with two and 1.4 µs with
+  four (60,000 independent standard normal rows, the defaults, one thread of an
+  Apple M4 Pro), because a row's work is the number of live runs and with one
+  feature the posterior stays spread over many run lengths. The default
+  `prune_below` is not changed; a larger one or a smaller `max_run` brings a
+  one-feature stream down, at the price of the runs it drops.
+- The Rust oracle tests' allowance for the platform's `ln`, `exp`, `exp2`,
+  `expm1` and `powf` is three ulps, up from two. Windows' `ucrtbase.dll`
+  `expm1` was measured off by up to 3 ulps in 17.7% of calls (both builds of
+  CI's Windows runners, 24 argument sets of 400,000 values against a
+  correctly rounded reference), past the old bound. Apple's and glibc's stay
+  within one ulp; the bounds on a library's output loosen, and none on the
+  models' own rounding.
 
 ## [1.5.0] — 2026-11-10
 

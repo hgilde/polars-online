@@ -286,12 +286,17 @@ pub(crate) fn dot3(triples: impl IntoIterator<Item = (f64, f64, f64)>) -> f64 {
 /// the exact result times `1 + δ`, `|δ| ≤ u`, to nearest (Higham (2.4)).
 pub(crate) const U: f64 = f64::EPSILON / 2.0;
 
-/// The units of `u` a call to the platform's `ln`, `exp`, `exp2` or `powf`
-/// may be off its exact result, relative: two ulps, an ulp being at most
-/// `2u` of the result. Apple's and glibc's are within one ulp; Windows'
-/// `ucrtbase.dll` changes with the build and has not been measured to the
-/// ulp (docs/PLAN.md §25), so the bounds leave it a second.
-pub(crate) const LIBM: f64 = 4.0;
+/// The units of `u` a call to the platform's `ln`, `exp`, `exp2`, `expm1` or
+/// `powf` may be off its exact result, relative: three ulps, an ulp being at
+/// most `2u` of the result. Apple's and glibc's are within one ulp. Windows'
+/// `ucrtbase.dll` (Server 2025, 10.0.26100.33648, and Server 2022,
+/// 10.0.20348.5756, on CI's `windows-latest` and `windows-2022`) was measured
+/// against a correctly rounded `expm1` over 24 argument sets of 400,000 values
+/// each: `expm1` is off by up to 3 ulps in 17.7% of calls on both builds,
+/// `ln_1p` by 1 ulp in 9%, and Server 2022's `exp2` by up to 2 ulps in 39.7%.
+/// So the bound is the 3-ulp `expm1`, `6u`; it was two ulps (`4u`) before
+/// that measurement, a figure never taken on Windows.
+pub(crate) const LIBM: f64 = 6.0;
 
 /// `γ_m = m·u / (1 − m·u)`: a product of `m` factors `(1 + δᵢ)^(±1)`, each
 /// `|δᵢ| ≤ u`, is `1 + θ` with `|θ| ≤ γ_m` (Higham, Lemma 3.1). So `m`

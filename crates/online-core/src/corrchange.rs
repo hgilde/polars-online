@@ -740,6 +740,37 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
+/// A uniform draw below `n` (Lemire 2019, "Fast random integer generation in
+/// an interval"): the high word of `x·n` for a 64-bit `x` from `next`.
+/// Outcome `j` owns the `x` with `x·n` in `[j·2^64, (j+1)·2^64)`, which is
+/// `⌊2^64/n⌋` of them, or one more when the low word of `x·n` falls below the
+/// threshold `2^64 mod n`. A draw with its low word below the threshold is
+/// redrawn, so every outcome keeps exactly `⌊2^64/n⌋` values of `x` and the
+/// draw is exactly uniform. The threshold's division is paid only when the low
+/// word is below `n`, in `n / 2^64` of the draws, and a redraw happens in
+/// `(2^64 mod n) / 2^64` of them, so the generator is called once a draw to
+/// within that. The remainder this replaces, `x % n`, was a 64-bit division on
+/// every draw and biased by up to `n / 2^64`.
+#[inline]
+fn below_by(n: u64, mut next: impl FnMut() -> u64) -> u64 {
+    debug_assert!(n > 0);
+    let mut m = u128::from(next()) * u128::from(n);
+    if (m as u64) < n {
+        let threshold = n.wrapping_neg() % n;
+        while (m as u64) < threshold {
+            m = u128::from(next()) * u128::from(n);
+        }
+    }
+    (m >> 64) as u64
+}
+
+/// [`below_by`] over the model's own generator, one call a draw but for a
+/// redraw.
+#[inline]
+fn below(rng: &mut SplitMix64, n: u64) -> u64 {
+    below_by(n, || rng.next_u64())
+}
+
 impl CorrChange {
     pub fn new(cfg: CorrChangeCfg) -> Result<Self, String> {
         cfg.validate()?;
@@ -1627,7 +1658,7 @@ impl CorrChange {
             // Fisher-Yates over the blocks, from the state's own generator
             // so the draws are a function of the data alone.
             for i in (1..nblocks).rev() {
-                let j = (self.rng.next_u64() % (i as u64 + 1)) as usize;
+                let j = below(&mut self.rng, i as u64 + 1) as usize;
                 order.swap(i, j);
             }
             shuffled.clear();
@@ -3149,7 +3180,7 @@ mod tests {
         let mut order: Vec<usize> = (0..nblocks).collect();
         for _ in 0..m.cfg.n_perm {
             for i in (1..nblocks).rev() {
-                let j = (m.rng.next_u64() % (i as u64 + 1)) as usize;
+                let j = below(&mut m.rng, i as u64 + 1) as usize;
                 order.swap(i, j);
             }
             let mut shuffled: Vec<Vec<f64>> = Vec::new();
@@ -5219,6 +5250,140 @@ mod tests {
                 .map(|&a| crit_at(seed, a))
                 .collect();
             assert!(at.windows(2).all(|p| p[1] < p[0]), "seed {seed}: {at:?}");
+        }
+    }
+
+    // --- Lemire's bounded draw (task 457, rule 5's seventeenth exception) ----
+
+    /// The draw's source as a script: each value in turn, and the count taken.
+    fn scripted(
+        values: &[u64],
+    ) -> (
+        impl FnMut() -> u64 + use<>,
+        std::rc::Rc<std::cell::Cell<usize>>,
+    ) {
+        let values = values.to_vec();
+        let taken = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let t = taken.clone();
+        (
+            move || {
+                let i = t.get();
+                t.set(i + 1);
+                values[i]
+            },
+            taken,
+        )
+    }
+
+    /// The low word of `x·n`, which the draw compares with `n` and then with
+    /// the threshold `2^64 mod n`.
+    fn low(x: u64, n: u64) -> u64 {
+        (u128::from(x) * u128::from(n)) as u64
+    }
+
+    /// A draw whose low word is at or above `n` is taken as it comes, and the
+    /// result is the high word of `x·n`, `⌊x·n / 2^64⌋`: the definition spelled
+    /// out for 64 values of `x` spread over the whole range and several `n`.
+    #[test]
+    fn a_draw_past_the_sliver_is_the_high_word_and_takes_one_value() {
+        for n in [1u64, 2, 3, 5, 7, 100, 1 << 20, (1 << 32) + 1, u64::MAX] {
+            for i in 0..64u64 {
+                let x = i.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(i << 58);
+                if low(x, n) < n {
+                    continue;
+                }
+                let (next, taken) = scripted(&[x]);
+                let want = ((u128::from(x) * u128::from(n)) >> 64) as u64;
+                assert_eq!(below_by(n, next), want, "n {n}, x {x}");
+                assert_eq!(taken.get(), 1, "n {n}, x {x}: one value");
+                assert!(want < n);
+            }
+        }
+    }
+
+    /// Both sides of the redraw threshold, exactly. For `n = 5` the threshold
+    /// is `2^64 mod 5 = 1`: the one `x` whose low word is 0 (`x = 0`) is
+    /// redrawn, and the `x` whose low word is 1 -- `x = 5⁻¹ mod 2^64`, at the
+    /// threshold, inside the `n` zone that triggers the division -- is not.
+    /// For `n = 3·2^62` (threshold `2^62`) low words are 0, `2^62`, `2^63`
+    /// and `n` itself by `x mod 4`: 0 is redrawn, `2^62` (at the threshold)
+    /// and `2^63` are kept, `n` (at the `n` bound, not under it) is kept
+    /// without the division.
+    #[test]
+    fn the_redraw_threshold_is_held_on_both_sides() {
+        // n = 5.
+        let n = 5u64;
+        assert_eq!(n.wrapping_neg() % n, 1);
+        let mut inv = 1u64; // Newton: 5⁻¹ mod 2^64
+        for _ in 0..7 {
+            inv = inv.wrapping_mul(2u64.wrapping_sub(n.wrapping_mul(inv)));
+        }
+        assert_eq!(low(inv, n), 1, "x at the threshold");
+        assert_eq!(low(0, n), 0, "x one under it");
+        let kept = 0x1234_5678_9abc_def0u64;
+        assert!(low(kept, n) >= n);
+        // Under the threshold: redrawn, the second value answers.
+        let (next, taken) = scripted(&[0, kept]);
+        assert_eq!(below_by(n, next), ((u128::from(kept) * 5) >> 64) as u64);
+        assert_eq!(taken.get(), 2, "a low word of 0 is under the threshold 1");
+        // At the threshold: kept, and its high word answers.
+        let (next, taken) = scripted(&[inv, kept]);
+        assert_eq!(below_by(n, next), ((u128::from(inv) * 5) >> 64) as u64);
+        assert_eq!(taken.get(), 1, "a low word of 1 is at the threshold 1");
+        // Two redraws in a row.
+        let (next, taken) = scripted(&[0, 0, kept]);
+        assert_eq!(below_by(n, next), ((u128::from(kept) * 5) >> 64) as u64);
+        assert_eq!(taken.get(), 3);
+
+        // n = 3·2^62: x mod 4 = 0, 3, 2, 1 give low words 0, 2^62, 2^63, n.
+        let n = 3u64 << 62;
+        assert_eq!(n.wrapping_neg() % n, 1 << 62);
+        let hi = |x: u64| ((u128::from(x) * u128::from(n)) >> 64) as u64;
+        let (x0, x3, x2, x1) = (4u64, 7, 6, 5);
+        assert_eq!(
+            [low(x0, n), low(x3, n), low(x2, n), low(x1, n)],
+            [0, 1 << 62, 1 << 63, n]
+        );
+        let (next, taken) = scripted(&[x0, x3]);
+        assert_eq!(below_by(n, next), hi(x3));
+        assert_eq!(taken.get(), 2, "0 is under the threshold 2^62");
+        for x in [x3, x2, x1] {
+            let (next, taken) = scripted(&[x]);
+            assert_eq!(below_by(n, next), hi(x), "x {x}");
+            assert_eq!(taken.get(), 1, "x {x}: at or past the threshold");
+        }
+    }
+
+    /// Over the model's generator: every draw is below `n`, `n = 1` is always
+    /// 0 and takes one value, and counts over `n` outcomes are as even as a
+    /// uniform draw gives (a chi-square statistic under its 99.99th
+    /// percentile, so the seeds are fixed and the test does not flake).
+    #[test]
+    fn a_draw_over_the_generator_is_uniform_and_below_n() {
+        let mut rng = SplitMix64::new(457);
+        for _ in 0..100 {
+            assert_eq!(below(&mut rng, 1), 0);
+        }
+        let mut fresh = SplitMix64::new(457);
+        for _ in 0..100 {
+            fresh.next_u64();
+        }
+        assert_eq!(rng, fresh, "n = 1 draws one value each");
+        // 0.9999 quantile of chi-square with 2, 6 and 99 degrees of freedom.
+        for (n, limit) in [(3u64, 18.43), (7, 27.86), (100, 156.0)] {
+            let draws = 200_000usize;
+            let mut counts = vec![0usize; n as usize];
+            for _ in 0..draws {
+                let j = below(&mut rng, n);
+                assert!(j < n);
+                counts[j as usize] += 1;
+            }
+            let expect = draws as f64 / n as f64;
+            let chi: f64 = counts
+                .iter()
+                .map(|&c| (c as f64 - expect).powi(2) / expect)
+                .sum();
+            assert!(chi < limit, "n {n}: chi-square {chi} past {limit}");
         }
     }
 

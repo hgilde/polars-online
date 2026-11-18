@@ -366,7 +366,7 @@ n = 100
 [case."corrchange.n_perm.crit_error_at_20000"]
 ideal = 0.0
 worst = 0.0166479
-p95 = 0.00893663
+p95 = 0.00973919
 n = 100
 
 [case."learning_rate.constant_rate.excess_at_100"]
@@ -7567,3 +7567,11 @@ to = 0.196856
 date = 2026-11-05
 reason = "the MAD scale's warm-up is now the exact weighted median of the refit's held residuals, not a sketch anchored at the first residual, and the oracle's bandwidth is that exact median; these grids run without decay, so the first 500 rows' changed scale persists to the end of each stream. CI's linux-x86_64 run on 31ee42bd (42056482026) read this worst 2-4% over while the same run tightened nine other numbers of the two groups"
 changelog = "no longer takes its sketch's units from the"
+
+[[raised]]
+key = "corrchange.n_perm.crit_error_at_20000.p95"
+from = 0.00893663
+to = 0.00973919
+date = 2026-11-18
+reason = "the permutation shuffle's draws changed with Lemire's multiply-shift reduction in place of a remainder (rule 5's seventeenth exception), so each of the grid's 100 seeds reads another critical value from the same distribution; the 95th percentile of the error at 20,000 draws is a statistic of 100 such values and read 0.00974 on darwin-arm64 against 0.00894 on linux-x86_64 with the old draws (+9%), while on the same run the worst error at 20,000 draws read 0.0134 against 0.0166 and the p95 at 200 and 2,000 draws read lower (0.0864 against 0.0971, 0.0276 against 0.0282): a different sample of the same distribution, not a worse estimate"
+changelog = "draws the swaps of its permutation critical value with an unbiased multiply-shift reduction"

@@ -290,12 +290,24 @@ fn previous_sets() -> Vec<(u32, &'static [&'static Fixture])> {
 ///   `1 + |value|`, measured 2026-11-17 as the set before the change
 ///   against the regenerated one (the kept sets' continuations are the
 ///   former's); the bound is 70 times that.
+/// - `corrchange_window`: the permutation critical value is drawn by Lemire's
+///   multiply-shift reduction in place of a remainder (rule 5's seventeenth
+///   exception, the user's, 2026-11-17), so a state's saved `perm_crit` and
+///   every critical value the continuation redraws part from the old
+///   draws', by a few percent in general and as the rows are few here by
+///   more. On these rows `perm_crit` moved by 0.115 and the redrawn `crit`
+///   by 0.140 of `1 + |crit|` (schemas 65 and 66, over the rows after the save,
+///   measured 2026-11-18 as each kept set against the regenerated one);
+///   no `flag` flipped. The bound, 0.25, is under the 0.5 a flipped flag
+///   would be, so a flip fails the test. A schema-65 state is also
+///   renumbered ([`RENUMBERED`]).
 const MOVED: &[(&str, f64)] = &[
     ("lasso", 1e-9),
     ("lasso_window", 1e-9),
     ("holt", 1e-14),
     ("bocpd", 1e-13),
     ("bocpd_warming", 1e-13),
+    ("corrchange_window", 0.25),
 ];
 
 /// The cases whose state converts exactly but whose continuation a later
@@ -664,11 +676,17 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                 // above, so a windowed case is not held field for field.
                 if let Some(bound) = moved.filter(|_| !windowed) {
                     let decode = |b: &[u8]| rmpv::decode::read_value(&mut &b[..]).unwrap();
-                    same_but_floats(&decode(&saved), &decode(&current.bytes()), bound, &what);
+                    if renumbered.is_some() {
+                        // A schema-65 window's count is the ring's length
+                        // ([`RENUMBERED`]), and its floats are within the bound.
+                        renumbered_rule(&case, &saved, &current.bytes(), bound, &what);
+                    } else {
+                        same_but_floats(&decode(&saved), &decode(&current.bytes()), bound, &what);
+                    }
                 }
             } else if renumbered.is_some() {
                 assert_eq!(schema, 65, "{what}: RENUMBERED is for schema 65's windows");
-                renumbered_rule(&case, &named(&m.state()), &current.bytes(), &what);
+                renumbered_rule(&case, &named(&m.state()), &current.bytes(), 0.0, &what);
             } else {
                 assert!(
                     named(&m.state()) == current.bytes(),
@@ -801,9 +819,10 @@ fn kept_scale_rule(case: &Case, kept: &rmpv::Value, saved: &[u8], what: &str) {
 /// A `corrchange(kind = "window")` state of schema 65, converted to
 /// `saved` ([`RENUMBERED`]): numbered from its ring's oldest row, so its
 /// `ring_rows` is the ring's length, and every other field is the current
-/// fixture's, `current`, exactly; and the state saves bytes that load back
-/// to the same.
-fn renumbered_rule(case: &Case, saved: &[u8], current: &[u8], what: &str) {
+/// fixture's, `current`, exactly -- each float within `bound` of its twin
+/// by [`agree`]'s measure, 0 for the bit -- and the state saves bytes that
+/// load back to the same.
+fn renumbered_rule(case: &Case, saved: &[u8], current: &[u8], bound: f64, what: &str) {
     let decode = |b: &[u8]| rmpv::decode::read_value(&mut &b[..]).unwrap();
     let (got, want) = (decode(saved), decode(current));
     let model = ["model", "CorrChange"];
@@ -823,7 +842,7 @@ fn renumbered_rule(case: &Case, saved: &[u8], current: &[u8], what: &str) {
         "{what}: the current fixture's ring has taken no more rows than it holds"
     );
     // The count aside, the converted state is the current one's.
-    fn same_but_count(got: &rmpv::Value, want: &rmpv::Value, what: &str) {
+    fn same_but_count(got: &rmpv::Value, want: &rmpv::Value, bound: f64, what: &str) {
         use rmpv::Value as V;
         match (got, want) {
             (V::Map(g), V::Map(w)) => {
@@ -831,23 +850,23 @@ fn renumbered_rule(case: &Case, saved: &[u8], current: &[u8], what: &str) {
                 for ((gk, gv), (wk, wv)) in g.iter().zip(w) {
                     assert_eq!(gk, wk, "{what}: another key");
                     if gk.as_str() != Some("ring_rows") {
-                        same_but_count(gv, wv, &format!("{what}.{gk}"));
+                        same_but_count(gv, wv, bound, &format!("{what}.{gk}"));
                     }
                 }
             }
             (V::Array(g), V::Array(w)) => {
                 assert_eq!(g.len(), w.len(), "{what}: an array of another length");
                 for (i, (gv, wv)) in g.iter().zip(w).enumerate() {
-                    same_but_count(gv, wv, &format!("{what}[{i}]"));
+                    same_but_count(gv, wv, bound, &format!("{what}[{i}]"));
                 }
             }
             (V::F64(g), V::F64(w)) => {
-                assert!(agree(*g, *w, 0.0), "{what}: {g:e} against {w:e}");
+                assert!(agree(*g, *w, bound), "{what}: {g:e} against {w:e}");
             }
             _ => assert_eq!(got, want, "{what}"),
         }
     }
-    same_but_count(&got, &want, what);
+    same_but_count(&got, &want, bound, what);
     let again = load(case, saved).unwrap_or_else(|e| panic!("{what}: {e}"));
     assert!(
         named(&again.state()) == saved,

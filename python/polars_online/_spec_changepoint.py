@@ -450,6 +450,18 @@ def bocpd(
     dominates a quiet stream keeps its memory at the cap however many
     younger runs ``prune_below`` drops. After a break, the post-break run
     takes its place once it reaches the cap.
+
+    **One feature is the slow case.** A row's work is the number of live
+    runs times ``d``, and with one feature a row carries little evidence
+    about the run length, so the posterior stays spread over many run
+    lengths and many keep more than ``prune_below`` of the mass. On 60,000
+    independent standard normal rows, with the defaults, one thread of an
+    Apple M4 Pro, a row took about 120 µs with one feature, 3.5 µs with two
+    and 1.4 µs with four. The default does not change with the number of
+    features. A one-feature stream that needs speed sets ``prune_below``
+    larger (``1e-4`` took 4 µs a row and ``1e-3`` 0.4 µs on those rows) or
+    ``max_run`` smaller; either drops runs, so ``p_change`` and ``run_mode``
+    move.
     """
     model: dict[str, Any] = {
         "type": "bocpd",
@@ -565,7 +577,10 @@ def corrchange(
     ``seed``
         ``"window"``: seeds the permutation draws, at least 0, so two runs
         with the same seed report the same critical values. Default 0
-        (``None`` is 0), and nothing draws from the system's entropy.
+        (``None`` is 0), and nothing draws from the system's entropy. The
+        critical values a seed gives hold within one release of the package:
+        a release may draw its permutations another way, from the same
+        distribution, and a seed's critical value then moves by a few percent.
     ``change_action``
         ``"window"``: what a flag does, in the words ``drift_action`` takes:
         ``"flag"`` (the default) flags and carries on, and ``"reset"``
