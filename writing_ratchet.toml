@@ -621,3 +621,9 @@ path = "python/polars_online/_spec.py"
 rule = "remedy"
 text = "is relative to another column, but {_RELATIVE_REMOVED}"
 reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends in the remedy: \"... and name that column in targets.\""
+
+[messages."python/polars_online/_cpu_check.py"]
+"remedy" = 2
+"where" = 2
+
+[vocabulary."python/polars_online/_cpu_check.py#messages"]

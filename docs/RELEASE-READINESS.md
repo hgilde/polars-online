@@ -309,8 +309,8 @@ names, and `polars-online-compat` ships them as Polars' own
 does. [What the x86-64 wheels need](VERSIONS.md#what-the-x86-64-wheels-need)
 has the features, the reason and what a user does.
 
-**The second project is the same tree with its name changed on the runner.**
-Before it builds the compat wheels and sdist, a job runs
+**A job makes the second project from the same tree, renamed on the runner.**
+Before it builds the compat wheels and sdist, it runs
 `scripts/compat_package.py`, which renames the project in `pyproject.toml`
 (the one place maturin reads a distribution's name from), says what the
 package is in its description, and opens the README with a notice. The module
@@ -327,11 +327,11 @@ extension, `polars_online/_cpu_check.py` reads the CPU's features with
 `cpuid` and warns when one of the record's is missing.
 
 **Each wheel is held to this in its own build job, before the upload.** The
-smoke test checks which of the two distributions is installed (and not
-the other), that the recorded features are the workflow's list for a
-`polars-online` x86-64 wheel and empty for every other, and that the runner's
-CPU has all of them, which runs the machine code of the check on Linux,
-Windows and macOS Intel (musl in Alpine). The failing path, a CPU that lacks a
+smoke test checks which of the two distributions is installed, and not the
+other. It checks that the recorded features are the workflow's list for a
+`polars-online` x86-64 wheel and empty for every other. And it checks that the
+runner's CPU has all of them, which runs the machine code of the check on
+Linux, Windows and macOS Intel (musl in Alpine). The failing path, a CPU that lacks a
 feature, cannot be reached on a runner that has them all, so
 `tests/test_cpu_check.py` tests the warning against a faked CPU.
 

@@ -182,11 +182,11 @@ Nothing leaves your checkout before step 13.
     `polars-online-compat==<version>` from PyPI, each into a fresh
     environment, retrying for up to ten minutes while the index
     catches up. It checks that the package came from there, that exactly
-    that one of the two is installed, that the CPU has every feature the
-    wheel was built for, that
-    `po.__version__`, `po.native_version()` and `po.schema_version()` are
-    the release's, and that an `ewridge` fit over a parquet file finds its
-    line's slope (`scripts/verify_release.py`).
+    that one of the two is installed, and that the CPU has every feature the
+    wheel was built for. It checks that `po.__version__`,
+    `po.native_version()` and `po.schema_version()` are the release's, and
+    that an `ewridge` fit over a parquet file finds its line's slope
+    (`scripts/verify_release.py`).
 
 ## Check the result
 

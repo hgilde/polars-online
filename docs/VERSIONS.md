@@ -482,10 +482,10 @@ faster.** The same commit was built twice on an Intel Xeon, once for baseline
 x86-64 and once for x86-64-v3, and its output and saved state matched bit for
 bit in every model compared (Rust fuses no multiply and add of its own). The
 instructions the benchmark cases execute fell by a median of 4.3% (from 39%
-fewer in `rcov` to 2.7% more in one case), and the time of the benchmark
-bodies, v3 over baseline, was 0.84 for `ew_class`, 0.87 for `ewridge` at 200
-features, 0.94 at 20, 0.95 for a bank of every moment of `ew_cov`, 0.96 for a
-window sum, and 1.01 to 1.02 for `bocpd` and a window mean. `hmm` ran about
+fewer in `rcov` to 2.7% more in one case). The time of the benchmark bodies,
+v3 over baseline, was 0.84 for `ew_class`, 0.87 for `ewridge` at 200 features
+and 0.94 at 20, 0.95 for a bank of every moment of `ew_cov`, and 0.96 for a
+window sum. It was 1.01 to 1.02 for `bocpd` and a window mean. `hmm` ran about
 7% slower on that build until its factorization of small matrices was
 written out in the library, after which it ran at about 0.93 of the baseline
 build's time. Only Intel was measured: no AMD machine was available.
