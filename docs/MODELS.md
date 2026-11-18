@@ -3284,6 +3284,22 @@ to the one the `bayesian_changepoint_detection` package computes with
 nothing pruned. Its `p_change` is held to the package's within a bound set
 by the mass pruned.
 
+**Two features or more add their log densities in blocks.** Under
+`covariance_type="diag"`, a row's log predictive is a sum over the features
+of a Student's t log density. Two of its terms are a logarithm of the
+feature's own value: `ln ψₙ` of the scale, and `ln(1 + z²/νₙ)` of the
+squared standardized distance. Those logarithms are most of the work of a
+row. For two features or more, each term's logarithm is taken once for a
+block of 8 features, as the log of the block's product. The term that does
+not depend on the data, `ln(π(κₙ+1)/κₙ)`, is held once for each run length.
+A block whose product would leave the range of normal doubles takes its
+logarithms one at a time. The result differs from adding the features'
+logarithms one at a time by rounding alone, within `8·2⁻⁵²·(1 + Σ|terms|)`
+of the log density. That shows in the last digits of `p_change`, `loglik`
+and the predictions, which are functions of the log posterior. One feature
+takes a single logarithm of each, and `covariance_type="full"` is not
+affected.
+
 **It flags a step up in the spread at once, and dates a step down by the
 run length.** Adams and MacKay's own finance example (a = 1, b = 1e-4,
 hazard = 250) is `degrees_of_freedom_prior=2.0`, `covariance_prior=[2e-4]`

@@ -324,6 +324,14 @@ DECLARED: dict[tuple[str, str], str] = {
             "full_holt",
         )
     },
+    # Task 462 (the next release's Changed, and rule 5's sixteenth
+    # exception, the user's, 2026-11-17): `bocpd` with `covariance_type =
+    # "diag"` and two features or more adds its features' log densities as
+    # the logs of products of blocks of 8. A file of a release holds the
+    # log joint the old arithmetic made, and goes on within rounding of the
+    # release's own continuation (`WITHIN`), not to the bit.
+    ("bocpd", "1.5.0"): "the next release, Changed: `bocpd`'s diagonal form of two "
+    "features or more takes its log densities as the logs of products of blocks of 8",
 }
 
 #: The fields of the conformal interval, which a release's file goes on in
@@ -602,7 +610,13 @@ GOLDEN = 1e-12
 #:   predictions by about 2e-16, and the diagnostics derived from many rows,
 #:   which amplify a last bit (the calibration's Wald, Ramsey's RESET), by up
 #:   to 2.0e-13 here, inside the golden tolerance.
+#: - `bocpd`'s diagonal form of two features or more adds its log densities
+#:   as the logs of products of blocks of 8 (rule 5's sixteenth exception), so
+#:   a file of any release goes on within rounding of that release's own
+#:   continuation, not to the bit: 1.8e-13 at most here (`run_mean`), inside
+#:   the golden tolerance.
 WITHIN: dict[tuple[str, str], float] = {
+    ("bocpd", "1.5.0"): GOLDEN,
     ("full_holt", "1.3.0"): GOLDEN,
     ("holt", "1.3.0"): GOLDEN,
     ("full_lasso", "1.3.0"): 1e-9,
@@ -896,8 +910,15 @@ def test_a_moved_spec_goes_on_as_its_release_did(resumed):
     # release's files read them as this build does and use no exception.
     young_moved = _version(version) <= _version("1.3.0")
     assert used["reset"] == len(set(RESETS) & set(names)), used
-    # Every release's file holds a radius, and its interval moved.
-    assert used["conformal"] > 0 and used["converted"] > 0, used
+    # A file of 1.4.0 or older holds a radius, and its interval moved; one of
+    # 1.5.0 holds the multiplier, so the conformal entry covers none of its
+    # specs.
+    radius = sum(
+        DECLARED.get((n, "1.4.0"), "").endswith("residual spread")
+        and _version(version) <= _version("1.4.0")
+        for n in names
+    )
+    assert used["conformal"] == radius and (used["converted"] > 0) == (radius > 0), used
     assert bool(used["young"]) == young_moved, used
     wrong = {k: v for k, v in wrong.items() if v}
     assert not wrong, "\n".join(f"{k}: {line}" for k, v in sorted(wrong.items()) for line in v)

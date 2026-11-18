@@ -23,6 +23,23 @@ returns.
   unchanged, and a descent that runs out past that point is counted as
   before. A state saved by an earlier build continues to the bit except for
   this count.
+- `bocpd` with `covariance_type="diag"` and two features or more takes each
+  row's log density from fewer logarithms, so its outputs differ from the
+  last release's by rounding. It adds the features' `ln ψₙ` and
+  `ln(1 + z²/νₙ)` as the logs of products of blocks of 8 values (one
+  logarithm for the block, or one each where a product would leave the range
+  of normal doubles) and holds `ln(π(κₙ+1)/κₙ)` once for each run length. The
+  forms are equal in exact arithmetic; the second term's weight `(νₙ+1)/2`
+  scales the rounding. On 16 streams of 2 to 200 features, 1 to 10,000
+  groups and up to a million rows, the predictions moved at most 2.0e-6
+  relative (on a changepoint row; 99.9% of values within 5e-10, the median
+  within 6e-14), `loglik` at most 2.0e-10, `p_change` and `run_mean` at most
+  9.3e-10, and with `robust_beta` the predictions at most 1.1e-7. No
+  `run_mode`, `weight_sum` or withheld reason changed, and no row crossed
+  `p_change` 0.5 or 0.1. A state saved by an earlier build loads and
+  continues under the new arithmetic, not to the bit, and the state it
+  saves is not the earlier build's. One feature, `covariance_type="full"`
+  and every other model are unchanged to the bit.
 
 ### Fixed
 
@@ -72,6 +89,19 @@ returns.
 
 ### Performance
 
+- `bocpd` with `covariance_type="diag"` and two features or more takes fewer
+  logarithms a row (see *Changed*: one for each block of 8 features and one
+  held for each run length, where it took two for each feature of each run).
+  On arm64 (measured) the bank takes 0.91 of the time at 2 features, 0.78 at
+  4, 0.66 at 8, 0.51 at 20 and 0.53 at 200; with 100 groups at 4 features
+  0.86, with 10,000 groups 0.95; with pruning off at 4 features 0.79 and at
+  20 0.62. On x86-64 (the same change timed earlier on a Linux VM) 0.71 at 4
+  features, 0.62 at 20 and 0.69 at 200. One feature is unchanged (a
+  repeated identical build differs by up to 2% here). At 20 features under
+  `covariance_type="full"`, whose code is unchanged, the chunked bank
+  measured 12% slower on arm64 (0.99 through `lf.online.fit_predict`): 64
+  bytes more stack in its caller removes it, so it is where the stack sits
+  and not the arithmetic.
 - `ew_class` with diagonal covariance keeps each class's sum of the log
   variances between that class's rows instead of taking a logarithm per
   feature per class on every row: a class's variances and ridge move only

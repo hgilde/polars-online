@@ -218,6 +218,8 @@ use serde::{Deserialize, Serialize};
 use crate::solve::{FactorWork, QuadWork, SpdFactor};
 
 mod held;
+#[cfg(test)]
+mod product_tests;
 use held::{GaussWork, HeldBranches, HeldPrior, HeldZ, LengthTerms, prune_band, prune_keeps};
 
 /// **Why the reported changepoint probability is `P(r ≤ 1)` and not
@@ -885,6 +887,22 @@ fn ln_gamma(x: f64) -> f64 {
     0.5 * (std::f64::consts::TAU).ln() + (x + 0.5) * t.ln() - t + a.ln()
 }
 
+/// `Σ ln vᵢ` as a log of the product of each block
+/// of 8, where the product is a normal number far from overflow, else the
+/// logs one at a time.
+fn ln_sum_prod(v: &[f64]) -> f64 {
+    let mut total = 0.0;
+    for block in v.chunks(8) {
+        let p: f64 = block.iter().product();
+        total += if (1e-280..1e280).contains(&p) {
+            p.ln()
+        } else {
+            block.iter().map(|x| x.ln()).sum::<f64>()
+        };
+    }
+    total
+}
+
 /// `ln Σ exp(v)`, about the maximum.
 fn log_sum_exp(v: &[f64]) -> f64 {
     let top = v.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
@@ -1460,12 +1478,42 @@ impl Bocpd {
             // functions' difference is taken once a run, not once a feature:
             // the same value, `(Γ − Γ) − ½ ln(..)` as the expression groups
             // (task 250).
-            let gammas = match cache {
-                Some(c) => c.gamma(nun, 1.0),
-                None => gamma_diff(nun, 1.0),
+            if d == 1 {
+                // One feature: nothing to take a product of, and the single
+                // log of the original form is the cheaper.
+                let gammas = match cache {
+                    Some(c) => c.gamma(nun, 1.0),
+                    None => gamma_diff(nun, 1.0),
+                };
+                let dm = run.mean[0] - mu0[0];
+                let psin = psi0[0] + run.m2[0] + k0 * run.n / kn * dm * dm;
+                let var = psin * (kn + 1.0) / (nun * kn);
+                if var.is_nan() || var <= 0.0 || nun <= 0.0 {
+                    return None;
+                }
+                let z = (x[0] - self.run_mean_at(run, mu0, 0)) / var.sqrt();
+                let base = gammas - 0.5 * (nun * std::f64::consts::PI * var).ln();
+                let lp = base - 0.5 * (nun + 1.0) * (1.0 + z * z / nun).ln();
+                return Some((lp, base));
+            }
+            // Two features or more: `ln(νₙπ var) = ln ψₙ + ln(π(κₙ+1)/κₙ)`,
+            // the second term held once a run, and the features' `ln ψₙ` and
+            // `ln(1 + z²/νₙ)` taken once a block of 8 as the log of a
+            // product, guarded against overflow.
+            let (gammas, ln_c) = match cache {
+                Some(c) => c.gamma_and_ln_c(run.n, nun, kn),
+                None => (
+                    gamma_diff(nun, 1.0),
+                    (std::f64::consts::PI * (kn + 1.0) / kn).ln(),
+                ),
             };
-            let mut lp = 0.0;
-            let mut mode = 0.0;
+            let RunWork {
+                mun: psins,
+                delta: qs,
+                ..
+            } = work;
+            psins.clear();
+            qs.clear();
             for i in 0..d {
                 let dm = run.mean[i] - mu0[i];
                 let psin = psi0[i * d + i] + run.m2[i] + k0 * run.n / kn * dm * dm;
@@ -1474,10 +1522,12 @@ impl Bocpd {
                     return None;
                 }
                 let z = (x[i] - self.run_mean_at(run, mu0, i)) / var.sqrt();
-                let base = gammas - 0.5 * (nun * std::f64::consts::PI * var).ln();
-                lp += base - 0.5 * (nun + 1.0) * (1.0 + z * z / nun).ln();
-                mode += base;
+                psins.push(psin);
+                qs.push(1.0 + z * z / nun);
             }
+            let df = d as f64;
+            let mode = df * gammas - 0.5 * (ln_sum_prod(psins) + df * ln_c);
+            let lp = mode - 0.5 * (nun + 1.0) * ln_sum_prod(qs);
             Some((lp, mode))
         }
     }
@@ -1617,7 +1667,7 @@ impl Bocpd {
         weights.clear();
         if let Some(c) = cache.as_deref_mut() {
             let full = self.full();
-            c.begin(r, if full { d as f64 } else { 1.0 }, full);
+            c.begin(r, if full { d as f64 } else { 1.0 }, full || d >= 2);
         }
         self.mu0_into(mu0);
         self.psi0_into(psi0);
@@ -5233,7 +5283,7 @@ mod tests {
     /// own `log_sum_exp` of the joint. A refused row goes back through it,
     /// as `step` goes back through itself. The fast path is held to it to
     /// the bit below.
-    fn learn_reference(
+    pub(super) fn learn_reference(
         m: &mut Bocpd,
         x: &[f64],
         y: &[Option<f64>],
@@ -5286,7 +5336,7 @@ mod tests {
         out
     }
 
-    fn step_bits(s: &crate::Step) -> (Vec<u64>, u64) {
+    pub(super) fn step_bits(s: &crate::Step) -> (Vec<u64>, u64) {
         (
             s.pred.iter().map(|v| v.to_bits()).collect(),
             s.n_eff.to_bits(),
@@ -5432,7 +5482,10 @@ mod tests {
                 2.0,
             ),
         ] {
-            let with_pi = c.emission == BocpdEmission::Gaussian;
+            let gaussian = c.emission == BocpdEmission::Gaussian;
+            // Two features: the diagonal form holds `ln(π(κₙ+1)/κₙ)` too.
+            let with_pi = true;
+            let (k0, nu0) = (c.prior_kappa, c.nu0());
             let mut m = Bocpd::new(BocpdCfg {
                 max_run: 60,
                 prune_below: 1e-6,
@@ -5460,14 +5513,20 @@ mod tests {
             assert_eq!(filled.len(), g.filled);
             assert!(filled.len() >= 30, "{} entries filled", filled.len());
             for e in filled {
-                let nu = f64::from_bits(e.key);
-                assert_eq!(e.gamma.to_bits(), gamma_diff(nu, a).to_bits(), "nu {nu}");
-                let ln_pi = if with_pi {
-                    (nu * std::f64::consts::PI).ln()
+                if gaussian {
+                    let nu = f64::from_bits(e.key);
+                    assert_eq!(e.gamma.to_bits(), gamma_diff(nu, a).to_bits(), "nu {nu}");
+                    let ln_pi = (nu * std::f64::consts::PI).ln();
+                    assert_eq!(e.ln_pi.to_bits(), ln_pi.to_bits(), "nu {nu}");
                 } else {
-                    0.0
-                };
-                assert_eq!(e.ln_pi.to_bits(), ln_pi.to_bits(), "nu {nu}");
+                    // The diagonal form's entries are keyed by the run's
+                    // weight.
+                    let n = f64::from_bits(e.key);
+                    let (nu, kn) = (nu0 + n, k0 + n);
+                    assert_eq!(e.gamma.to_bits(), gamma_diff(nu, a).to_bits(), "n {n}");
+                    let ln_c = (std::f64::consts::PI * (kn + 1.0) / kn).ln();
+                    assert_eq!(e.ln_pi.to_bits(), ln_c.to_bits(), "n {n}");
+                }
             }
         }
     }
