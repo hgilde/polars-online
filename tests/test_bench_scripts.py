@@ -86,7 +86,17 @@ def test_memory_bench_measures_a_childs_peak_memory_wall_and_cpu_on_this_platfor
     set) for the command line's cases on CI's Windows and Linux runners."""
     mb = _load("memory_bench")
     code = "import time; b = bytearray(b'x' * 300_000_000); time.sleep(0.3)"
-    m = mb.measure([sys.executable, "-c", code], dict(os.environ))
+    # In a venv on Windows `sys.executable` is the venv's `python.exe`, a
+    # launcher that starts the base interpreter as a child and waits: the
+    # process `measure` reads is the launcher (3 MB), not the one holding the
+    # bytearray. The base interpreter is the process that does the work. The
+    # command line's cases run a real .exe, which has no launcher in front.
+    python = (
+        getattr(sys, "_base_executable", sys.executable)
+        if sys.platform == "win32"
+        else sys.executable
+    )
+    m = mb.measure([python, "-c", code], dict(os.environ))
     assert 0.3 < m["peak_gb"] < 1.5, m
     assert m["wall_s"] >= 0.3 and m["cpu_s"] >= 0, m
     assert m["metric"] in {"footprint", "peak resident set", "peak working set"}

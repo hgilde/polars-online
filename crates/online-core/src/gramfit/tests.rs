@@ -1339,6 +1339,35 @@ fn the_kish_limit_is_read_from_the_prior_scale() {
     }
 }
 
+/// The ridge lifts the best Gram's smallest eigenvalue from `edge` to
+/// `(edge + l2) / (1 + l2)` (the penalty adds `l2` to the Gram's diagonal,
+/// and the Gram is scaled to unit diagonal: the sweep's contraction is
+/// then `(edge + l2) / (1 + l2)` as a fraction of one). The warm-up holds
+/// while that is under `need = ln(1/tol) / (2 max_iter)`, so the penalty
+/// that sits on the edge solves `(edge + l2) = need (1 + l2)`:
+/// `l2* = (need - edge) / (1 - need)`. Pinned below and above it, with no
+/// edge (rows at most `k`) and with one, from numbers written out by hand.
+#[test]
+fn a_ridge_ends_the_warm_up_at_the_penalty_the_closed_form_gives() {
+    let d = (100u32, 1e-10);
+    // need = ln(1e10) / 200 = 23.02585 / 200 = 0.1151293.
+    let need = 0.115_129_25_f64;
+    // No edge: three rows for 40 features, the Gram singular, so the
+    // penalty alone lifts it: l2* = 0.1151293 / 0.8848707 = 0.130114.
+    for (l2, warm) in [(0.12, true), (0.13, true), (0.131, false), (0.2, false)] {
+        assert_eq!(warming_up(Some(3.0), 40, false, l2, d), warm, "l2 {l2}");
+    }
+    // One mutant arithmetic in the bound is `(edge + l2) * (1 + l2)`: at
+    // l2 = 0.12 that is 0.1344 and the warm-up would end, against 0.1071.
+    assert!(0.12 / 1.12 < need && 0.12 * 1.12 > need);
+    // An edge: 81 Kish rows centred give 80 degrees of freedom for 40
+    // features, edge = (1 - sqrt(1/2))^2 = 0.0857864;
+    // l2* = (0.1151293 - 0.0857864) / 0.8848707 = 0.0331611.
+    for (l2, warm) in [(0.03, true), (0.033, true), (0.034, false), (0.05, false)] {
+        assert_eq!(warming_up(Some(81.0), 40, true, l2, d), warm, "l2 {l2}");
+    }
+}
+
 /// The warm-up is the span in which more rows would cure the descent: under
 /// the bound now and not under it at the size the stream grows to. At the
 /// defaults and 50 features the bound is about 115 Kish rows. No decay
@@ -1375,6 +1404,12 @@ fn a_decay_that_holds_the_size_under_the_bound_is_not_a_warm_up() {
     // Unknown or non-finite sizes excuse nothing, as before.
     assert!(!young(None, 0.5, k, true, 0.0, d));
     assert!(!young(Some(f64::NAN), 0.5, k, true, 0.0, d));
+    // Exactly no decay, and just under it: the first has no limit (the rows
+    // alone decide), the second a limit of 2 / (1 - s) times the size,
+    // far past the bound.
+    assert!(young(Some(60.0), 1.0, k, true, 0.0, d));
+    assert!(young(Some(60.0), 1.0 - 1e-12, k, true, 0.0, d));
+    assert!(!young(Some(200.0), 1.0 - 1e-12, k, true, 0.0, d));
     // A prior scale gone to zero is a stream at its limit.
     assert!(!young(Some(87.0), 0.0, k, true, 0.0, d));
     // A ridge that lifts the best case ends the warm-up as before.
