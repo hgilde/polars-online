@@ -561,7 +561,21 @@ def test_the_whole_frame_cases_are_all_counted(pair):
 
 #: The child: one call over a scan of an output, and the most memory the
 #: process held, sampled, over the baseline, in MiB, with the rows read. A
-#: call that returns a query writes it to a file with ``sink_parquet``.
+#: call that returns a query writes it to a file with ``sink_parquet``,
+#: except ``unpack``, whose long form of 20 slots is 312 MB at a million rows
+#: and 1.25 GB at four, and which a batch reader takes, 50 ms a batch.
+#: Polars' ``sink_parquet`` queues what a disk slower than the query has not
+#: yet taken, and the queue grows with the length: with the 20-slot long
+#: form's file written to a named pipe drained at a set rate (macOS, py-polars
+#: 2.0.0, 2026-11-18), the peak from one million rows to four grew 12 MiB at
+#: 80 MB/s, 59 at 20, and 178 at 8 (a query that only selects two predictions
+#: grew 135 at 2 MB/s). This case, the only one that writes a gigabyte,
+#: failed twice on a Windows CI leg of four, peaks 76 and 187 MiB, 77 and
+#: 199, where the same child read in batches, however slowly (50 ms and 200
+#: ms a batch, macOS), held 109-118 MiB at both lengths. A disk slower than
+#: the query is the cause found, not measured on Windows. A batch reader
+#: measures what this test is for, whether ``unpack``'s plan keeps its rows,
+#: and a slow reader is the case that would show a plan that read ahead.
 CHILD = textwrap.dedent(
     """
     import gc, json, os, sys, threading, time
@@ -596,7 +610,13 @@ CHILD = textwrap.dedent(
     sampler = threading.Thread(target=sample, daemon=True)
     sampler.start()
     got = calls[case]()
-    if isinstance(got, pl.LazyFrame):
+    if case == "unpack":
+        # Read in batches, not written to a file: see the note above CHILD.
+        rows = 0
+        for batch in got.collect_batches(chunk_size=1_000_000, maintain_order=True):
+            rows += batch.height
+            time.sleep(0.05)
+    elif isinstance(got, pl.LazyFrame):
         got.sink_parquet(src + ".out")
         rows = pl.scan_parquet(src + ".out").select(pl.len()).collect().item()
     else:
