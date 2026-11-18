@@ -100,6 +100,16 @@ returns.
 
 ### Performance
 
+- The break-detection Wald distance (`emit_breaks`) forms only the lower
+  triangle of its two quadratic products and of the difference's variance,
+  which is all the factorization reads, so the second product of each of the
+  fast and slow fits' terms stops at the diagonal. Every output is unchanged
+  to the bit (each entry keeps its sum in the same order). On arm64 one
+  distance takes 0.94-0.95 of the time at 20 to 32 coefficients, 0.92-0.93 at
+  64, 0.90-0.92 at 100 and 0.89 at 200, in the default layout and with
+  functions aligned to 64 bytes alike; an identical build timed beside it
+  moves 0.98-1.02.
+
 - The window operators take a row's held mass from the discount's own `exp2`
   from a hundredth of a half-life up, so a row's step and its mass cost one
   `exp2` between them. On arm64 a window operator on an irregular clock runs

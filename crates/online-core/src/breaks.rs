@@ -932,41 +932,65 @@ fn mat_mul(a: &[f64], b: &[f64], p: usize) -> Vec<f64> {
 /// registers across the `k` loop, each entry the same sequence of roundings
 /// whatever the block it falls in.
 fn mat_mul_into(a: &[f64], b: &[f64], p: usize, out: &mut Vec<f64>) {
+    mat_mul_part::<false>(a, b, p, out);
+}
+
+/// [`mat_mul_into`]'s product on and below the diagonal only: every entry
+/// `(i, j)` with `j <= i` is [`mat_mul_into`]'s, to the bit (a block is the
+/// same sequence of roundings wherever it falls), and the entries above it
+/// are 0 where the blocks that hold only them are not formed, or the product's
+/// where a diagonal block spans them. Nothing may read the upper triangle.
+fn mat_mul_lower_into(a: &[f64], b: &[f64], p: usize, out: &mut Vec<f64>) {
+    mat_mul_part::<true>(a, b, p, out);
+}
+
+/// The product by blocks of rows; `LOWER` stops each row block's columns at
+/// the diagonal.
+fn mat_mul_part<const LOWER: bool>(a: &[f64], b: &[f64], p: usize, out: &mut Vec<f64>) {
     debug_assert!(a.len() == p * p && b.len() == p * p);
     out.clear();
     out.resize(p * p, 0.0);
     let mut i = 0;
     while i + 4 <= p {
-        mat_mul_rows::<4>(a, b, p, i, out);
+        mat_mul_rows::<4, LOWER>(a, b, p, i, out);
         i += 4;
     }
     if i + 2 <= p {
-        mat_mul_rows::<2>(a, b, p, i, out);
+        mat_mul_rows::<2, LOWER>(a, b, p, i, out);
         i += 2;
     }
     if i < p {
-        mat_mul_rows::<1>(a, b, p, i, out);
+        mat_mul_rows::<1, LOWER>(a, b, p, i, out);
     }
 }
 
 /// `R` rows from `i` of [`mat_mul_into`]'s product, in blocks of eight, four,
-/// two and one columns.
+/// two and one columns; under `LOWER`, only the blocks that start at or
+/// before the rows' last diagonal entry.
 #[inline(always)]
-fn mat_mul_rows<const R: usize>(a: &[f64], b: &[f64], p: usize, i: usize, out: &mut [f64]) {
+fn mat_mul_rows<const R: usize, const LOWER: bool>(
+    a: &[f64],
+    b: &[f64],
+    p: usize,
+    i: usize,
+    out: &mut [f64],
+) {
+    // Columns at or past `end` hold only entries above the diagonal.
+    let end = if LOWER { i + R } else { p };
     let mut j = 0;
-    while j + 8 <= p {
+    while j + 8 <= p && j < end {
         mat_mul_block::<R, 8>(a, b, p, i, j, out);
         j += 8;
     }
-    if j + 4 <= p {
+    if j + 4 <= p && j < end {
         mat_mul_block::<R, 4>(a, b, p, i, j, out);
         j += 4;
     }
-    if j + 2 <= p {
+    if j + 2 <= p && j < end {
         mat_mul_block::<R, 2>(a, b, p, i, j, out);
         j += 2;
     }
-    if j < p {
+    if j < p && j < end {
         mat_mul_block::<R, 1>(a, b, p, i, j, out);
     }
 }
@@ -1188,16 +1212,19 @@ impl TwinFit {
         self.pick(&self.hss, idx, intercept, hss);
         self.pick(&self.hfs, idx, intercept, hfs);
         mat_mul_into(af, hff, k, prod);
-        mat_mul_into(prod, af, k, ff);
+        mat_mul_lower_into(prod, af, k, ff);
         mat_mul_into(a_s, hss, k, prod);
-        mat_mul_into(prod, a_s, k, ss);
+        mat_mul_lower_into(prod, a_s, k, ss);
         mat_mul_into(af, hfs, k, prod);
         mat_mul_into(prod, a_s, k, fs);
+        // The factorization reads the lower triangle alone; the upper one
+        // is left 0, as `ff` and `ss` leave theirs unformed.
         var.clear();
+        var.resize(k * k, 0.0);
         for i in 0..k {
-            for j in 0..k {
+            for j in 0..=i {
                 let n = i * k + j;
-                var.push(ff[n] + ss[n] - fs[n] - fs[j * k + i]);
+                var[n] = ff[n] + ss[n] - fs[n] - fs[j * k + i];
             }
         }
         // A variance that does not factorize -- the memories coincide, or
@@ -3211,6 +3238,81 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Task 468: the product's lower triangle is the full product's, to the
+    /// bit, at every order across the register blocks' tails, over values
+    /// that round, cancel and mix scales; and the blocks left out are zeros
+    /// or the product's own entries, never stale ones.
+    #[test]
+    fn the_lower_product_is_the_full_products_lower_triangle_to_the_bit() {
+        let mut s = 468u64;
+        for p in (1..=40).chain([48, 64, 100]) {
+            let a: Vec<f64> = (0..p * p)
+                .map(|n| lcg(&mut s) * 10f64.powi((n % 7) as i32 - 3))
+                .collect();
+            let b: Vec<f64> = (0..p * p).map(|_| lcg(&mut s) + 0.3).collect();
+            let full = mat_mul(&a, &b, p);
+            // Old contents are not read.
+            let mut lower = vec![f64::NAN; p * p];
+            mat_mul_lower_into(&a, &b, p, &mut lower);
+            for i in 0..p {
+                for j in 0..p {
+                    let (got, want) = (lower[i * p + j], full[i * p + j]);
+                    if j <= i {
+                        assert_eq!(got.to_bits(), want.to_bits(), "p {p}, ({i}, {j})");
+                    } else {
+                        assert!(
+                            got == 0.0 || got.to_bits() == want.to_bits(),
+                            "p {p}, ({i}, {j}) is {got}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Task 468: the distance, which forms only the lower triangle of the
+    /// difference's variance, is the plain form's full one to the bit, at
+    /// orders 1 to 30 and 48, 64, 100 and 200, with and without an
+    /// intercept, over random and near-singular Grams, from the rows just
+    /// before the `2k` gate through those just past it.
+    #[test]
+    fn the_lower_triangle_distance_is_the_full_forms_to_the_bit() {
+        let mut seen = 0;
+        for k in (1..=30).chain([48, 64, 100, 200]) {
+            for near_singular in [false, true] {
+                for intercept in [true, false] {
+                    let kx = k;
+                    let idx: Vec<usize> = (0..k - usize::from(intercept)).collect();
+                    let mut t = TwinFit::new(kx);
+                    let mut s = 468 + k as u64;
+                    let last = 2 * k + 6;
+                    for i in 0..last {
+                        let mut x: Vec<f64> = (0..kx).map(|_| lcg(&mut s) + 1.0).collect();
+                        if near_singular && kx > 1 {
+                            x[1] = x[0] + 1e-7 * lcg(&mut s);
+                        }
+                        let y = x[0] - 0.5 * x[kx - 1] + 0.3 * lcg(&mut s);
+                        t.update(&x, y, 0.97, 1.0 + 0.5 * lcg(&mut s));
+                        if i + 3 < 2 * k {
+                            continue;
+                        }
+                        let (got, want) = (
+                            t.wald(&idx, intercept, 1.0),
+                            plain::wald(&t, &idx, intercept, 1.0),
+                        );
+                        assert_eq!(
+                            got.map(f64::to_bits),
+                            want.map(f64::to_bits),
+                            "order {k}, intercept {intercept}, near-singular {near_singular}, row {i}"
+                        );
+                        seen += usize::from(got.is_some());
+                    }
+                }
+            }
+        }
+        assert!(seen > 300, "{seen} distances");
     }
 
     /// Task 458: a distance over 256 coefficients or more solves on the
