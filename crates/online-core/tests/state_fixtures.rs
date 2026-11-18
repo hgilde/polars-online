@@ -280,7 +280,23 @@ fn previous_sets() -> Vec<(u32, &'static [&'static Fixture])> {
 ///   predictions by at most 7.5e-17 of `1 + |pred|` (2.3e-16 relative),
 ///   measured 2026-11-01 on all three kept sets; the bound is 133 times
 ///   that.
-const MOVED: &[(&str, f64)] = &[("lasso", 1e-9), ("lasso_window", 1e-9), ("holt", 1e-14)];
+/// - `bocpd`, `bocpd_warming`: two features or more under the diagonal
+///   covariance take the features' `ln ψₙ` and `ln(1 + z²/νₙ)` as the logs of
+///   products of blocks of 8, and `ln(νₙπ var)` as `ln ψₙ + ln(π(κₙ+1)/κₙ)`
+///   (rule 5's sixteenth exception, the user's, 2026-11-17), so a log density
+///   parts from the old arithmetic's in its last bits and a kept state's
+///   log joint, which the rows before its save made, is the old build's.
+///   On these rows that moved 9 and 10 of 112 numbers by at most 1.4e-15 of
+///   `1 + |value|`, measured 2026-11-17 as the set before the change
+///   against the regenerated one (the kept sets' continuations are the
+///   former's); the bound is 70 times that.
+const MOVED: &[(&str, f64)] = &[
+    ("lasso", 1e-9),
+    ("lasso_window", 1e-9),
+    ("holt", 1e-14),
+    ("bocpd", 1e-13),
+    ("bocpd_warming", 1e-13),
+];
 
 /// The cases whose state converts exactly but whose continuation a later
 /// change moved, each with how far it may part from a previous set's

@@ -54,7 +54,10 @@ impl PartialEq for HeldZ {
 
 /// What the predictive takes of a run's `ν` alone -- [`gamma_diff`], and
 /// under `gaussian` `ln(ν·π)` beside it -- held by the bits of `ν` and `a`
-/// (tasks 250 and 389). A run's `ν` is the prior's plus its weight, so
+/// (tasks 250 and 389). The diagonal form of two features or more holds
+/// `ln(π(κₙ+1)/κₙ)` instead, which is a function of the run's weight and not
+/// of `ν` alone, so it is held by the bits of the weight
+/// ([`Self::gamma_and_ln_c`]). A run's `ν` is the prior's plus its weight, so
 /// under rows of one weight the run of length `r` asks this row for the
 /// values the run of length `r` asked the last row for, and two `ln_gamma`
 /// a run a row -- four logarithms and a Lanczos sum -- become a lookup. An
@@ -213,6 +216,51 @@ impl LengthTerms {
         self.slots[at] = made;
         self.filled += 1;
         made
+    }
+
+    /// The diagonal form's per-length constants with the product split: the
+    /// gamma difference `gamma_diff(nu, 1)` and `ln(pi (kn+1)/kn)`, for a
+    /// run of weight `n` (so `nu = nu0 + n` and `kn = k0 + n`), in a table
+    /// begun with `with_pi`.
+    ///
+    /// Held by the bits of `n`, not of `nu`: `nu` and `kn` are each rounded
+    /// from `n`, and two weights tiny beside `nu0` round to one `nu` and two
+    /// `kn` when `k0` is small, so an entry keyed on `nu` would give one run
+    /// the other's `ln(pi (kn+1)/kn)` -- and a restored model, which holds
+    /// nothing, a different one. `nu` and `kn` are functions of `n`, so a
+    /// hit is the value a miss computes.
+    #[inline]
+    pub(super) fn gamma_and_ln_c(&mut self, n: f64, nu: f64, kn: f64) -> (f64, f64) {
+        let ln_c = |kn: f64| (std::f64::consts::PI * (kn + 1.0) / kn).ln();
+        if n.is_nan() || nu.is_nan() {
+            return (gamma_diff(nu, 1.0), ln_c(kn));
+        }
+        let bits = n.to_bits();
+        let mut at = self.find(bits);
+        if self.slots[at].key == bits {
+            #[cfg(test)]
+            {
+                self.hits += 1;
+            }
+            let e = self.slots[at];
+            return (e.gamma, e.ln_pi);
+        }
+        #[cfg(test)]
+        {
+            self.misses += 1;
+        }
+        if 2 * (self.filled + 1) > self.slots.len() {
+            self.empty();
+            at = self.find(bits);
+        }
+        let made = LengthSlot {
+            key: bits,
+            gamma: gamma_diff(nu, 1.0),
+            ln_pi: ln_c(kn),
+        };
+        self.slots[at] = made;
+        self.filled += 1;
+        (made.gamma, made.ln_pi)
     }
 
     /// [`gamma_diff`]`(nu, a)`, for the `a` and form [`Self::begin`] was
