@@ -192,6 +192,21 @@ returns.
 
 ### Performance
 
+- `rls` keeps its square-root factor as the packed upper triangle it reads
+  (it held the full `k x k` square): half the memory a model, 1.72 GB in
+  place of 3.36 GB for 10,000 groups at 200 coefficients. The fold and the
+  back-substitution walk each packed row by a slice taken once, so they run
+  no more instructions than before. On x86-64 (an Intel Xeon, Callgrind) a row
+  costs 5% to 11% fewer instructions at 4 to 200 coefficients, 6.1% at 21.
+  Over 10,000 groups it is 1.58 times as fast at 40 coefficients and 1.34 at
+  200, and within the run-to-run spread at 4 to 20. On arm64 it is 1.17 times
+  as fast at 200 coefficients on one group. The file keeps the square, so a
+  saved state is the same bytes, and every output is unchanged to the bit.
+- On Windows the command line binary returns freed memory to the system at
+  once (mimalloc's purge delay set to 0; the `MIMALLOC_PURGE_DELAY`
+  environment variable still overrides it). Its committed memory over 3 to 24
+  million rows is about 5% lower (0.63 to 0.69 GB, from 0.67 to 0.73 GB) at the
+  same CPU time, measured on GitHub's 4-core Windows runner.
 - A bank keeps the buffers of a run of up to 4 MiB between chunks (it
   kept those of up to 64 KiB), so the small tasks of a bank of many groups
   fill them again where they were allocated and freed. On arm64 (Apple M4
@@ -492,18 +507,19 @@ returns.
   everything: about 5% faster over 20 columns. Outputs and saved state
   unchanged to the bit.
 - The x86-64 wheels of `polars-online`, built for AVX2 and FMA, run several
-  models faster than the baseline build did. Measured on an Intel Xeon with
-  one commit built twice, for baseline x86-64 and for x86-64-v3: the
-  instructions the benchmark cases execute, a median 4.3% fewer (from 39% fewer
-  in `rcov`, 28% in `ew_cov` with lags, 23% in `ewridge` at 200 features, to
-  2.7% more in one case), and the time of the benchmark bodies, v3 over
-  baseline: `ew_class` 0.84, `ewridge` at 200 features 0.87 and at 20 0.94, a
-  bank of every `ew_cov` moment 0.95, a window sum 0.96, `bocpd` 1.01 and a
-  window mean 1.02; `hmm`, which ran 1.07 slower on that build, runs at about
-  0.93 of the baseline's time since its factorization of small matrices is the
-  library's own. The outputs and saved states of five models matched the baseline
-  build's bit for bit. No AMD machine was measured. The Budgets run counts the
-  baseline build, not these wheels.
+  models faster than the baseline build. Measured on an Intel Xeon (a virtual
+  machine) with one commit built both ways, nine rounds in each of two code
+  layouts (as built, and with every function aligned to 64 bytes). The time of
+  the benchmark bodies, the new wheels over the baseline: `ew_class` 0.85 and
+  0.89, `hmm` at 20 features 0.86 and 0.92, `ewridge` at 200 features 0.86 and
+  0.87 (at 20, 0.92 and 0.96), and `rcov` 0.92 and 0.90. `hmm` at 4 features,
+  `bocpd`, `ew_cov` with lags, `ewridge` over 1,000 groups and the window
+  operators are within the spread of two runs of one build (0.95 to 1.07), and
+  no case is slower in both layouts. A build for x86-64-v3 ran a median 4.3%
+  fewer instructions over the benchmark cases, from 39% fewer in `rcov` to 2.7%
+  more in one case. The outputs and saved states of 18 cases match the baseline
+  build's bit for bit, and the wheel is 0.16% larger. No AMD machine was
+  measured. The Budgets run counts the baseline build, not these wheels.
 
 ### Tests and documents
 
