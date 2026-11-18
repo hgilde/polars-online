@@ -2002,6 +2002,16 @@ const MOVED_SINCE: &[&str] = &["cusum_"];
 /// (`breusch_pagan_y` moved by 4.4e-16 and `ramsey_reset_y` by 7.7e-17
 /// on the first row, measured 2026-11-01; the rows after it are the
 /// window's, held to the golden tolerance already).
+///
+/// And the `corr_window` spec's `crit` in the kept `bank_diagnosed` files
+/// (rule 5's seventeenth exception, the user's, 2026-11-17): the permutation
+/// critical value is drawn by Lemire's multiply-shift reduction in place of
+/// a remainder, so a kept state's redraws, from its saved generator, give
+/// other values than the frozen frames', by 0.063 of `1 + |crit|` at most
+/// over the rows after the save (measured 2026-11-18, `v65/` and `v66/`
+/// alike, as the kept set against the regenerated one). The bound, 0.25, is
+/// under the 0.5 a flipped `flag` would read (a field not named here, so
+/// held to the bit): every other field of the spec goes on to the bit.
 const CONTINUES_WITHIN: &[Within] = &[
     ("comoments", &[], 1e-15),
     (
@@ -2021,6 +2031,7 @@ const CONTINUES_WITHIN: &[Within] = &[
     ("uint_clock", COV_FIELDS, 1e-15),
     ("sessioned", COV_FIELDS, 1e-15),
     ("components", COV_FIELDS, 1e-15),
+    ("corr_window", &["crit"], 0.25),
 ];
 
 /// The fields of an `ew_cov` spec that read an upper entry of its

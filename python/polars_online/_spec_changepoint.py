@@ -565,7 +565,10 @@ def corrchange(
     ``seed``
         ``"window"``: seeds the permutation draws, at least 0, so two runs
         with the same seed report the same critical values. Default 0
-        (``None`` is 0), and nothing draws from the system's entropy.
+        (``None`` is 0), and nothing draws from the system's entropy. The
+        critical values a seed gives hold within one release of the package:
+        a release may draw its permutations another way, from the same
+        distribution, and a seed's critical value then moves by a few percent.
     ``change_action``
         ``"window"``: what a flag does, in the words ``drift_action`` takes:
         ``"flag"`` (the default) flags and carries on, and ``"reset"``
