@@ -180,6 +180,7 @@ def test_the_workflow_calls_only_commands_the_script_has():
         [sys.executable, str(REPO / "scripts" / "vm_checks.py"), "--help"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     ).stdout
     for name in subcommands:
@@ -229,19 +230,20 @@ def _git(repo: Path, *args: str) -> str:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     ).stdout.strip()
 
 
 @pytest.fixture
 def repo(tmp_path):
     _git(tmp_path, "init", "-q", "-b", "main")
-    (tmp_path / "f").write_text("0")
+    (tmp_path / "f").write_text("0", encoding="utf-8")
     _git(tmp_path, "add", "f")
     _git(tmp_path, "commit", "-q", "-m", "m0")
     # A remote-tracking `origin/main` without a remote.
     _git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
     _git(tmp_path, "checkout", "-q", "-b", "vm/x")
-    (tmp_path / "f").write_text("1")
+    (tmp_path / "f").write_text("1", encoding="utf-8")
     _git(tmp_path, "commit", "-q", "-am", "m1")
     return tmp_path
 
@@ -297,14 +299,14 @@ def _fake_builds(monkeypatch, tmp_path, kept: dict):
     def build_wheel(repo, layout, target_dir, out):
         out.mkdir(parents=True, exist_ok=True)
         wheel = out / f"polars_online-{layout}.whl"
-        wheel.write_text("")
+        wheel.write_text("", encoding="utf-8")
         built.append((Path(repo).name, layout, Path(target_dir)))
         return wheel
 
     def fetch(name, run, repository, into):
         into.mkdir(parents=True, exist_ok=True)
         wheel = into / "kept.whl"
-        wheel.write_text("")
+        wheel.write_text("", encoding="utf-8")
         return wheel
 
     monkeypatch.setattr(vm, "build_wheel", build_wheel)
@@ -465,7 +467,7 @@ def _fake_tools(tmp_path: Path, monkeypatch, passed: int) -> list[str]:
     bin_dir.mkdir()
     log = tmp_path / "qemu.log"
     exe = tmp_path / "online_core-abc"
-    exe.write_text("")
+    exe.write_text("", encoding="utf-8")
     artifact = json.dumps(
         {
             "reason": "compiler-artifact",
@@ -477,10 +479,11 @@ def _fake_tools(tmp_path: Path, monkeypatch, passed: int) -> list[str]:
     result = f"test result: ok. {passed} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
     cargo = bin_dir / "cargo"
     cargo.write_text(
-        f"#!/bin/sh\ncase \"$*\" in *--no-run*) echo '{artifact}';;\n*) echo '{result}';;\nesac\n"
+        f"#!/bin/sh\ncase \"$*\" in *--no-run*) echo '{artifact}';;\n*) echo '{result}';;\nesac\n",
+        encoding="utf-8",
     )
     qemu = bin_dir / "qemu-x86_64"
-    qemu.write_text(f"#!/bin/sh\necho \"$@\" >> {log}\necho '{result}'\n")
+    qemu.write_text(f"#!/bin/sh\necho \"$@\" >> {log}\necho '{result}'\n", encoding="utf-8")
     for tool in (cargo, qemu):
         tool.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
