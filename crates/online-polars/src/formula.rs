@@ -433,13 +433,16 @@ impl Node {
                         short(&args[1])
                     ));
                 };
+                // A sum's default is Polars' own, 0: a window with no value
+                // sums to 0.0. Every other statistic needs one value.
+                let sum = kind.stat() == Some(Stat::Sum);
                 let mut op = OpNode {
                     kind,
                     input: Box::new(input),
                     half_life: None,
                     window_size: None,
                     closed: Closed::Right,
-                    min_samples: 1,
+                    min_samples: u32::from(!sum),
                     partial: None,
                     bias: false,
                     quantile: None,
@@ -470,11 +473,12 @@ impl Node {
                             op.min_samples = v
                                 .as_u64()
                                 .and_then(|n| u32::try_from(n).ok())
-                                .filter(|&n| n >= 1)
+                                .filter(|&n| n >= u32::from(!sum))
                                 .ok_or_else(|| {
                                     format!(
-                                        "{name}: min_samples must be a whole number from 1 to \
+                                        "{name}: min_samples must be a whole number from {} to \
                                          {}, but it is {}. Set min_samples within that range.",
+                                        u32::from(!sum),
                                         u32::MAX,
                                         short(v)
                                     )
@@ -1147,14 +1151,18 @@ mod tests {
                 "closed must be",
             ),
             (
-                r#"["ewm_sum",["col","a"],{"half_life":1,"min_samples":0}]"#,
-                "min_samples must be a whole number from 1",
+                r#"["ewm_mean",["col","a"],{"half_life":1,"min_samples":0}]"#,
+                "min_samples must be a whole number from 1 to",
+            ),
+            (
+                r#"["rewm_sum",["col","a"],{"half_life":1,"window_size":2,"min_samples":-1}]"#,
+                "min_samples must be a whole number from 0 to",
             ),
             // Review round 4, PD4: past a `u32` the refusal names the
             // ceiling, where it said "at least 1" of a count far above it.
             (
                 r#"["ewm_sum",["col","a"],{"half_life":1,"min_samples":4294967296}]"#,
-                "min_samples must be a whole number from 1 to 4294967295, but it is 4294967296",
+                "min_samples must be a whole number from 0 to 4294967295, but it is 4294967296",
             ),
             (
                 r#"["ewm_sum",["col","a"],{"half_life":1,"partial":"maybe"}]"#,

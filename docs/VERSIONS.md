@@ -339,6 +339,7 @@ the change, or in this list:
 | 1.4.0 or earlier | `ew_class` under a hard window and `covariance_type="diag"` | a state below its `window_budget` continues to the bit. One that had reached it thins or refuses its snapshots later than before, and from that row does not continue to the bit |
 | 1.4.0 or earlier | a bank under the default `refit_budget` | the groups it gave up stay given up, every group it holds continues to the bit, and a group it first sees after the load refits until 320 MiB is reserved |
 | 1.5.0 or earlier | a window run's state, or a window formula inside a bank's state | it loads and saves back the same bytes, and continues within 1e-12 relative, not to the bit, once a row after the load has a gap of a hundredth of a half-life or more (a row's held mass is taken from the discount's own `exp2` from there up). A gap below that, and `ewm_sum`, `ewm_rate` and `ewm_quantile`, are as before |
+| 1.5.0 or earlier | a window run's state, or a window formula inside a bank's state, whose call has a `po.ewm_sum` with the default `min_samples` | it is refused as another call, since the default of a sum is now 0 and the state's call says 1. An expression that says `min_samples=1` resumes it, with its nulls where a window holds no value |
 
 **The two unstable formats are outside that promise:** a window run's
 state, and a formula target inside a bank's state.

@@ -121,7 +121,7 @@ def loop(
     half_life: float,
     window_size: float | None = None,
     closed: str = "right",
-    min_samples: int = 1,
+    min_samples: int | None = None,
     clock: str = "t",
     group: str | None = None,
     bias: bool = False,
@@ -138,6 +138,10 @@ def loop(
     own unequal weights, null where ``V1 ** 2 <= V2``."""
     forward = op.startswith("rewm")
     stat = op.split("_")[1]
+    if min_samples is None:
+        # Polars' defaults: a sum asks for no value, so an empty window sums to
+        # 0.0; every other statistic needs one.
+        min_samples = 0 if stat == "sum" else 1
     weighs_held = stat in ("mean", "var", "std")
     t = df[clock].to_list()
     v = [math.nan if x is None else float(x) for x in df[value].to_list()]
@@ -866,8 +870,8 @@ def test_a_silent_group_holds_the_output_for_at_most_the_cap() -> None:
         group="g",
     )
     # Group a's row 0 was cut once the stream passed t = 10: its window saw
-    # nothing of its own group after it.
-    assert out["f"][0] is None and out["t"].to_list() == df["t"].to_list()
+    # nothing of its own group after it, a sum of no rows: 0.0.
+    assert out["f"][0] == 0.0 and out["t"].to_list() == df["t"].to_list()
 
 
 def test_like_takes_the_specs_clock_and_its_rule() -> None:
@@ -1329,7 +1333,7 @@ def test_a_number_clock_decides_an_edge_from_the_two_rows_clocks() -> None:
     difference of the two rows' clocks, as on a temporal clock since R2-W1."""
     df = pl.DataFrame({"t": [0.1, 0.2, 0.5], "x": [1.0, 1.0, 1.0]})
     left = po.ewm_sum("x", half_life=math.inf, window_size=0.3, closed="left")
-    assert po.stream.with_windows(df, y=left, **CLOCK)["y"].to_list() == [None, 1.0, 1.0]
+    assert po.stream.with_windows(df, y=left, **CLOCK)["y"].to_list() == [0.0, 1.0, 1.0]
     both = po.ewm_sum("x", half_life=math.inf, window_size=0.3, closed="both")
     assert po.stream.with_windows(df, y=both, **CLOCK)["y"].to_list() == [1.0, 2.0, 2.0]
     right = po.ewm_sum("x", half_life=math.inf, window_size=0.3, closed="right")
@@ -1356,12 +1360,11 @@ def test_a_row_exactly_one_window_from_another_lands_as_in_polars(base: int) -> 
         return po.ewm_sum("x", half_life=math.inf, window_size="300ms", closed=closed)
 
     # Backward "left": the row 300 ms older is at the far edge, in. Row 0's
-    # window is empty: null here under ``min_samples``, where Polars sums
-    # nothing to 0.
+    # window is empty: a sum of nothing, 0, here as in Polars.
     df = _ms([base, base + 100, base + 400])
     got = po.stream.with_windows(df, y=back("left"), **clock)["y"].to_list()
     want = df.select(pl.col("x").rolling_sum_by("t", "300ms", closed="left"))["x"].to_list()
-    assert got[1:] == want[1:] == [1.0, 1.0] and got[0] is None
+    assert got == want == [0.0, 1.0, 1.0]
     # Backward "right": the row 300 ms older is at the far edge, out.
     df = _ms([base, base + 400, base + 700])
     got = po.stream.with_windows(df, y=back("right"), **clock)["y"].to_list()
@@ -1369,8 +1372,8 @@ def test_a_row_exactly_one_window_from_another_lands_as_in_polars(base: int) -> 
     assert got == want == [1.0, 1.0, 1.0]
     # Forward "right": the row 300 ms later is at the far edge, in. A
     # forward window closes only at a stamp past its far edge, so a fourth
-    # row is there to close row 1's; rows 2 and 3 are null, one closed
-    # empty, one unresolved at the end. Polars has no look-ahead; the
+    # row is there to close row 1's; row 2's closed window is empty, 0.0, and
+    # row 3's is unresolved at the end, null. Polars has no look-ahead; the
     # mirror is a backward "left" window on the negated clock.
     df = _ms([base, base + 100, base + 400, base + 800])
     fwd = po.ewm_sum("x", half_life=math.inf, window_size="300ms", closed="right", reverse=True)
@@ -1381,7 +1384,8 @@ def test_a_row_exactly_one_window_from_another_lands_as_in_polars(base: int) -> 
         .select(pl.col("x").rolling_sum_by("u", "300i", closed="left"))["x"]
         .to_list()[::-1]
     )
-    assert got[:2] == mirror[:2] == [1.0, 1.0] and got[2:] == [None, None]
+    assert got[:2] == mirror[:2] == [1.0, 1.0] and got[2:] == [0.0, None]
+    assert mirror[2] == 0.0
 
 
 def test_with_groups_a_session_is_each_groups() -> None:
@@ -2236,7 +2240,7 @@ def test_min_samples_takes_an_integer_of_any_kind_up_to_its_ceiling() -> None:
     """Review round 4 (PD4): ``min_samples=2**40`` passed here and was refused
     later with the message for a count below 1, and a numpy integer, which
     Polars' ``rolling_*_by`` takes, was refused. Any integer from 1 to the
-    ceiling, 4294967295, is taken; past it the refusal names the ceiling, on
+    ceiling, 4294967295, is taken (0 too, by a sum); past it the refusal names the ceiling, on
     both sides."""
     df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0], "x": [1.0, None, 2.0, 3.0]})
     for n in (2, np.int64(2), np.int32(2), np.uint8(2)):
@@ -2246,13 +2250,22 @@ def test_min_samples_takes_an_integer_of_any_kind_up_to_its_ceiling() -> None:
     for bad in (2**32, 2**40, np.int64(2**40)):
         with pytest.raises(ValueError, match=r"^po\.ewm_sum: min_samples must be .*4294967295"):
             po.ewm_sum("x", half_life=2.0, min_samples=bad)
-    for bad in (0, -1, True, 2.0, "2"):
+    for bad in (-1, True, 2.0, "2"):
         with pytest.raises(ValueError, match=r"^po\.ewm_sum: min_samples must be an integer"):
             po.ewm_sum("x", half_life=2.0, min_samples=bad)  # type: ignore[arg-type]
+    # A sum takes 0 (Polars' default for `rolling_sum_by`), every other
+    # operator needs at least 1.
+    po.ewm_sum("x", half_life=2.0, min_samples=0)
+    for make in (po.ewm_mean, po.ewm_rate, po.ewm_std, po.ewm_var):
+        with pytest.raises(ValueError, match=r"min_samples must be an integer of at least 1 "):
+            make("x", half_life=2.0, min_samples=0)
+    tree = '@po:["ewm_mean",["col","x"],{"half_life":2.0,"min_samples":0}]'
+    with pytest.raises(ValueError, match="min_samples must be a whole number from 1 to"):
+        po.stream.with_windows(df, s=pl.col(tree), **CLOCK)
     # A tree written elsewhere -- by hand, in TOML, in a state file -- meets
     # the Rust side's check, which names the ceiling too.
     tree = '@po:["ewm_sum",["col","x"],{"half_life":2.0,"min_samples":1099511627776}]'
-    with pytest.raises(ValueError, match="min_samples must be a whole number from 1 to 4294967295"):
+    with pytest.raises(ValueError, match="min_samples must be a whole number from 0 to 4294967295"):
         po.stream.with_windows(df, s=pl.col(tree), **CLOCK)
 
 
@@ -3407,7 +3420,8 @@ def test_a_silent_group_is_cut_only_once_the_stream_is_past_the_cap() -> None:
         return out["y"].to_list()
 
     assert run(10.5) == [None] * 4
-    assert run(math.nextafter(10.5, math.inf)) == [2.0, None, None, None]
+    # Row 0's cut window keeps the row at 0.5; row 1's holds none, a sum of 0.0.
+    assert run(math.nextafter(10.5, math.inf)) == [2.0, 0.0, None, None]
 
 
 @pytest.mark.parametrize(("closed", "seed"), _rel_grid())

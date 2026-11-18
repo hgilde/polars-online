@@ -623,10 +623,13 @@ def operator(
     # Any integer Polars' `rolling_*_by` takes, a numpy one included, up to
     # the core's ceiling, named; past it the refusal came later and said "at
     # least 1" (review round 4, PD4).
+    # A sum may ask for no minimum: with 0, as in Polars' `rolling_sum_by`, a
+    # window with no value sums to 0.0 where every other window gives null.
+    least = 0 if name in ("ewm_sum", "rewm_sum") else 1
     wrong_type = isinstance(min_samples, bool) or not isinstance(min_samples, numbers.Integral)
-    if wrong_type or not 1 <= min_samples <= MAX_MIN_SAMPLES:
+    if wrong_type or not least <= min_samples <= MAX_MIN_SAMPLES:
         msg = (
-            f"{who}: min_samples must be an integer of at least 1 and at most "
+            f"{who}: min_samples must be an integer of at least {least} and at most "
             f"{MAX_MIN_SAMPLES}, but it is {min_samples!r}. Set min_samples to a whole number "
             f"of rows in that range."
         )

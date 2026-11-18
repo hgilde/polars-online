@@ -4654,7 +4654,7 @@ mod tests {
     fn increment_formula(input: &str, half_life: &str, window: &str) -> String {
         format!(
             r#"{{"name": "d", "tree": ["ewm_sum", ["increment", {input}],
-            {{"half_life": {half_life}, "window_size": {window}}}]}}"#
+            {{"half_life": {half_life}, "window_size": {window}, "min_samples": 1}}]}}"#
         )
     }
 

@@ -13,6 +13,23 @@ returns.
 
 ### Changed
 
+- `po.ewm_sum` (and its look-ahead form) gives 0.0, not null, for a window
+  that holds no row with a value, as Polars 2.0's `rolling_sum_by` does: a
+  sum of nothing is zero. That is the window of a row under `closed="left"`
+  or `"none"` with no row before it in range, a window of only nulls, the
+  first row of a stream or stretch, a look-ahead window closed with nothing
+  in it, and a cut window kept with `partial="keep"` that saw nothing. The
+  parameter behind it is Polars' `min_samples`, which a sum now takes from 0
+  (its default, as in Polars) where it took 1 and up: a window with fewer
+  rows with a value than `min_samples` is null as before, so
+  `min_samples=1` restores the null. Windows that are still open when the
+  input ends, a cut window under `partial="null"` and a window after a reset
+  stay null. The other operators need a value to say anything and still take
+  `min_samples` from 1. A ratio of sums over an empty window is now 0 over
+  0, not null over null. No saved layout changes, but a state saved by an
+  earlier version under a `po.ewm_sum` with the default is the call with
+  `min_samples=1`: `load_state` refuses it as another call unless the
+  expression says `min_samples=1`, which resumes it with its nulls.
 - `break_wald` (`emit_breaks`) forms the variance of the two fits'
   difference from the difference of their inverse Grams, `D = A_f - A_s`, as
   `D H_ff D' + A_s E_2 A_s + C + C'` with `C = D (H_ff - H_fs) A_s` and
