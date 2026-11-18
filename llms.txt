@@ -6,7 +6,7 @@
 > command line over files. Memory grows with the models' state and the rows a delay or
 > window holds, never with the rows passed, so a model fits a stream larger than RAM.
 
-Python 3.12+, `polars>=1.37.0,<3`. `pip install polars-online`. `numpy` is an optional
+Python 3.12+, `polars>=1.37.0,<3`. `pip install polars-online` (its x86-64 wheels need a CPU with AVX2 and FMA; on one without, `pip install polars-online-compat` instead, the same package, imported as `polars_online`). `numpy` is an optional
 extra, needed only by `ModelBank.gram()`, by `po.gram`, `po.corr`, `po.sim` and
 `po.gbdt`, and by `bank.check()`'s collinearity and leakage checks, which report
 `not_checked` without it. No pandas.

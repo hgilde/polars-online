@@ -233,7 +233,7 @@ warnings Python's, so a handler you already have catches them.
 
 ## Versions and the environment
 
-The library reports its versions, and reads three environment variables.
+The library reports its versions, and reads four environment variables.
 
 | feature | what it is | shown in |
 |---|---|---|
@@ -241,6 +241,7 @@ The library reports its versions, and reads three environment variables.
 | [`po.schema_version`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.schema_version) | the version of the state file's layout this build writes | [Resume from a saved state](how-to/resume-from-a-saved-state.md) · [A bank's state and resuming it](explanation/state-and-resuming.md) |
 | `POLARS_ONLINE_MAX_THREADS` | the number of threads a bank runs on when it is given no `threads` | [Use more cores](how-to/use-more-cores.md) |
 | `POLARS_ONLINE_TIMING` | prints where a run's time went, stage by stage | [PERFORMANCE.md](PERFORMANCE.md) |
+| `POLARS_ONLINE_SKIP_CPU_CHECK` | skips the import-time check that an x86-64 CPU has the features the wheel was built for | [What the x86-64 wheels need](VERSIONS.md#what-the-x86-64-wheels-need) |
 | `POLARS_ONLINE_WARN_UNSTABLE` | turns on an `UnstableWarning` for each use of an unstable part of the API | [VERSIONS.md](VERSIONS.md) |
 
 ## The command line

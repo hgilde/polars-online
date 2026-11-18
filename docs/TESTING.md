@@ -1299,6 +1299,16 @@ and then `cargo bench -p online-bench --bench instructions` prints the
 counts. Elsewhere, a Linux container with Valgrind installed runs the same
 two commands. The workflow keeps each run's counts as an artifact.
 
+**The counts are of the baseline x86-64 build, not of the `polars-online`
+wheel that runs on an x86-64 CPU with AVX2.** Valgrind counts the
+`online-bench` cases built with no `target-feature` flag, which is the build
+`polars-online-compat` and every build from source are. The x86-64 wheels of
+`polars-online` are built for AVX2 and FMA, and execute fewer instructions (a
+median 4.3% fewer, [What the x86-64 wheels
+need](VERSIONS.md#what-the-x86-64-wheels-need)). No budget holds that build's
+counts, so a change that costs instructions only there is not caught by them.
+`.github/workflows/vm-checks.yml` builds the `v3` layout for a VM to time.
+
 ## Where it is thin, and what is left
 
 **Case-insensitive file names on Windows have no test, and the newest

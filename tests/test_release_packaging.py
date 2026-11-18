@@ -43,6 +43,10 @@ TARGETS = {
     "x86_64-unknown-linux-gnu": "polars-online",
 }
 WHEEL = "polars_online-0.1.0-cp312-abi3-macosx_11_0_arm64.whl"
+#: The same platform's wheel of the other PyPI project, and its sdist.
+COMPAT_WHEEL = "polars_online_compat-0.1.0-cp312-abi3-macosx_11_0_arm64.whl"
+SDIST = "polars_online-0.1.0.tar.gz"
+COMPAT_SDIST = "polars_online_compat-0.1.0.tar.gz"
 
 
 def _step_script(name: str) -> str:
@@ -67,6 +71,10 @@ def staged(tmp_path):
     wheels = tmp_path / "artifacts" / "wheels"
     wheels.mkdir(parents=True)
     (wheels / WHEEL).write_bytes(b"PK fake wheel")
+    (wheels / COMPAT_WHEEL).write_bytes(b"PK fake compat wheel")
+    for name in (SDIST, COMPAT_SDIST):
+        (tmp_path / "artifacts" / f"sdist-{name}").mkdir(parents=True)
+        (tmp_path / "artifacts" / f"sdist-{name}" / name).write_bytes(b"fake sdist")
     # The budgets baseline is a release asset too; the wheels' sizes go
     # into the notes, not the assets.
     baseline = tmp_path / "artifacts" / "budgets-baseline"
@@ -98,6 +106,9 @@ def test_every_artifact_is_collected_and_named_by_target(staged):
         "polars-online-x86_64-pc-windows-msvc.exe",
         "polars-online-x86_64-unknown-linux-gnu",
         WHEEL,
+        SDIST,
+        COMPAT_WHEEL,
+        COMPAT_SDIST,
     ]
 
 
@@ -126,7 +137,7 @@ def test_it_does_not_collapse_two_targets_onto_one_name(staged):
     assert len([n for n in names if n.startswith("polars-online-")]) == len(TARGETS)
 
 
-def test_the_publish_job_collects_only_wheels(staged):
+def test_the_publish_job_collects_only_wheels_and_sdists_each_project_in_its_own_folder(staged):
     res = subprocess.run(
         ["bash", "-euo", "pipefail", "-c", _step_script("collect the wheels")],
         cwd=str(staged),
@@ -136,10 +147,14 @@ def test_the_publish_job_collects_only_wheels(staged):
         check=False,
     )
     assert res.returncode == 0, res.stderr
-    assert sorted(p.name for p in (staged / "dist").iterdir()) == [WHEEL], (
-        "the PyPI job must upload wheels only -- a CLI binary in dist/ would "
-        "be rejected by the index"
+    assert sorted(p.name for p in (staged / "dist").iterdir()) == [WHEEL, SDIST], (
+        "the PyPI job must upload wheels and sdists only -- a CLI binary in dist/ would "
+        "be rejected by the index -- and polars-online's folder holds none of the compat package's"
     )
+    assert sorted(p.name for p in (staged / "dist-compat").iterdir()) == [
+        COMPAT_WHEEL,
+        COMPAT_SDIST,
+    ], "polars-online-compat's files go to the project of their own name"
 
 
 # --- the tag and the release, retried (task 317) ---------------------------------

@@ -23,7 +23,32 @@ A release needs these before step 1:
   environment holds.
 - The `gh` command line, signed in with the right to dispatch a workflow.
 - The approval of the `Pypi` environment's required reviewer, the owner,
-  for step 15.
+  for step 15. One approval covers both uploads: the release publishes two
+  PyPI projects from the one job.
+- **The second PyPI project, `polars-online-compat`, set up once, before the
+  first release that publishes it.** A release uploads the same source under
+  two names, `polars-online` and `polars-online-compat` (the build for x86-64
+  CPUs without AVX2; [What the x86-64 wheels
+  need](../VERSIONS.md#what-the-x86-64-wheels-need)). Only the maintainer can
+  create the project, and the workflow cannot. On pypi.org, signed in as the
+  project's owner:
+  1. Open *Your account*, then *Publishing*, and under *Add a new pending
+     publisher* choose *GitHub*.
+  2. Enter the PyPI project name `polars-online-compat`, the owner `hgilde`,
+     the repository `polars-online`, the workflow name `release.yml` and the
+     environment name `pypi`. These are the values `polars-online`'s own
+     publisher has, with only the project's name different, so the one
+     `Pypi` environment and its reviewer gate both uploads.
+  3. Save. A pending publisher reserves the name and creates the project at
+     the first upload, as `polars-online`'s did, and it needs no API token
+     and no change to the repository's settings. The name was free on
+     2026-11-18; register it before anyone else does.
+  4. After the first release, open the new project's *Publishing* page and
+     check that the publisher is now listed as active, and that both
+     projects name the same repository, workflow and environment.
+  Without it, the compat upload is refused, and since it goes first, that
+  stops the release before anything of the version reaches PyPI; fix the
+  setup and dispatch again.
 - A network connection: step 1 installs the last release from PyPI.
 - The version number, chosen by [What each kind of release may
   change](../VERSIONS.md#what-each-kind-of-release-may-change). Widening
@@ -103,7 +128,7 @@ Nothing leaves your checkout before step 13.
    series.
 9. **If a wheel's size moved out of the README's install *size* row,
    correct the row.** The release's `wheel-size` job holds every wheel it
-   builds to the row, and stops before the upload if one is outside ([The
+   builds, of both projects, to the row, and stops before the upload if one is outside ([The
    README's size row](../RELEASE-READINESS.md#the-readmes-size-row)). To
    read this platform's wheel before then, build it with
    `uv run maturin build --release` and run
@@ -149,12 +174,16 @@ Nothing leaves your checkout before step 13.
     differ from `main`'s.
 15. **Approve the `publish to PyPI` job,** in the `Pypi` environment, once
     every blocking job is green ([The release
-    gate](../RELEASE-READINESS.md#the-release-gate)). The tag and the
+    gate](../RELEASE-READINESS.md#the-release-gate)). It uploads
+    `polars-online-compat` and then `polars-online`. The tag and the
     GitHub release follow the upload.
-16. **Read the `verify` job's three legs.** After the upload, on Linux,
-    macOS and Windows, it installs `polars-online==<version>` from PyPI into
-    a fresh environment, retrying for up to ten minutes while the index
-    catches up. It checks that the package came from there, that
+16. **Read the `verify` job's six legs.** After the upload, on Linux,
+    macOS and Windows, it installs `polars-online==<version>` and
+    `polars-online-compat==<version>` from PyPI, each into a fresh
+    environment, retrying for up to ten minutes while the index
+    catches up. It checks that the package came from there, that exactly
+    that one of the two is installed, that the CPU has every feature the
+    wheel was built for, that
     `po.__version__`, `po.native_version()` and `po.schema_version()` are
     the release's, and that an `ewridge` fit over a parquet file finds its
     line's slope (`scripts/verify_release.py`).
@@ -163,15 +192,24 @@ Nothing leaves your checkout before step 13.
 
 The release is done when these hold:
 
-- The three `verify` legs are green.
-- The GitHub release carries the wheels, the sdist, the binaries and
-  `budgets-baseline.json`, with the wheels' exact sizes under the
+- The six `verify` legs are green.
+- The GitHub release carries the wheels and the sdist of both projects, the
+  binaries and `budgets-baseline.json`, with the wheels' exact sizes under the
   CHANGELOG's section in its notes.
+- Both `polars-online` and `polars-online-compat` show the version on
+  PyPI.
 
 ## If a job fails
 
 **Before the approval, fix the cause on `main` and dispatch again.** No
 version is used up, and no tag exists.
+
+**A `publish` job that failed after one upload is run again, and finishes
+the other.** It uploads with `skip-existing`, so the files PyPI already has
+are passed over and the rest go up. The usual cause is the compat project's
+publisher, which the first release needs set up ([Prerequisites](#prerequisites));
+the compat upload goes first, so a refusal there leaves nothing of the
+version on PyPI, and the setup is fixed before the next dispatch.
 
 **After the upload, re-run a failed `release` job whatever `main` holds,
 and a failed `tag` job unless `main`'s workflow files have changed since

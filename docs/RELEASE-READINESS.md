@@ -41,16 +41,16 @@ page, and GitHub emails when one is waiting.
 | `ci` | the whole of `ci.yml`, called: lint, and the Rust and Python suites on Linux, macOS and Windows | yes |
 | `budgets` | the whole of `budgets.yml`, called: every instruction count against its budget, and each case's drift since the last release against the sign-off | yes |
 | `baseline` | the run's instruction counts and each OS's floor-Python memory, merged into `budgets-baseline.json` for the release's assets; refused if a budgeted quantity is missing or two legs disagree ([The budgets baseline](#the-budgets-baseline)) | yes |
-| `sdist` | the source distribution | yes |
-| `build` | all six wheels, and the command-line binaries on the five targets that build one, all but musl. The Linux binaries are built in the wheels' manylinux2014 image, and refused above glibc 2.17 | yes |
-| `wheel-size` | every wheel against the README's install *size* row, and their exact sizes for the release's notes ([The README's size row](#the-readmes-size-row)) | yes |
+| `sdist` | the source distribution of `polars-online`, installed and run, and the same source's distribution under the name `polars-online-compat`, built | yes |
+| `build` | the six wheels of each of the two projects, `polars-online` and `polars-online-compat`, twelve in all, each installed and run; the x86-64 wheels of `polars-online` are built for AVX2 and FMA and the rest are not ([Two projects, one source](#two-projects-one-source)); and the command-line binaries on the five targets that build one, all but musl, from the `polars-online` legs alone. The Linux binaries are built in the wheels' manylinux2014 image, and refused above glibc 2.17 | yes |
+| `wheel-size` | every wheel of both projects against the README's install *size* row, and their exact sizes for the release's notes ([The README's size row](#the-readmes-size-row)) | yes |
 | `write-state`, then `read-state` | the cross-OS state hand-off: a state written on macOS is loaded, and its stream continued, on Windows and Linux | yes |
 | `next-polars` | the Python suite, less its `soak`, `pins` and `oracle_grid` tests, in two legs: on the newest Polars the declared range admits, and on the next major | only the first leg (the second is advisory) |
 | `floor-polars` | the same suite on the floor, 1.37.0, of the declared range: exactly the py-polars and runtime package that `pyproject.toml`'s floor names, read by `scripts/polars_floor.py`. A test that needs a newer Polars skips there by version (`tests/polars_version.py`) | yes |
 | `next-numpy` | the same suite in two legs, with only NumPy upgraded: on the newest NumPy, which the optional extra's `numpy>=1.26` admits, and on NumPy's next release candidate | only the first leg (the second is advisory) |
-| `publish to PyPI` | the upload | it is the gate |
+| `publish to PyPI` | the upload of `polars-online-compat`, then of `polars-online` | it is the gate |
 | `tag`, then `release` | the tag `v<version>` on the tested sha, annotated with the CHANGELOG's section, then the GitHub release page with the wheels, the sdist, the command-line binaries and `budgets-baseline.json`, its notes the CHANGELOG's section and the wheels' exact sizes | no: they run after the upload |
-| `verify` | `polars-online==<version>` installed from PyPI on Linux, macOS and Windows, its versions and schema checked and one fit run ([the last step](contributing/cut-a-release.md#steps)) | no: it reports on what was uploaded |
+| `verify` | `polars-online==<version>` and `polars-online-compat==<version>` each installed from PyPI on Linux, macOS and Windows, its versions and schema checked and one fit run ([the last step](contributing/cut-a-release.md#steps)) | no: it reports on what was uploaded |
 
 **The legs that move a dependency leave out three pytest markers.** `soak`
 marks the opt-in long runs over millions of rows. `pins` marks the tests
@@ -112,7 +112,7 @@ fail:**
 |---|---|
 | `version` | the version's checks, as publishing asks them |
 | `sdist` | the source distribution |
-| `build` | every wheel and the command-line binaries |
+| `build` | every wheel of both projects and the command-line binaries |
 | `wheel-size` | the wheels' sizes |
 | `write-state`, `read-state` | the state written on one OS and read on the others |
 | `next-polars`, `floor-polars`, `next-numpy` | the suite on the newest Polars, on the floor of the Polars range and on the newest NumPy |
@@ -293,6 +293,61 @@ they are worth:**
 | freeze the API to prevent change | the snapshot test is for detecting change, not preventing it |
 | add `cargo semver-checks` | it is the right tool for a published Rust API, and pure overhead otherwise. The Rust crates carry `publish = false` in their `Cargo.toml` and are not API; add it only if they are ever published |
 
+## Two projects, one source
+
+**A release uploads two PyPI projects built from the one source and the one
+version: `polars-online` and `polars-online-compat`.** They are imported as
+`polars_online` alike. The x86-64 wheels of `polars-online` (Linux glibc and
+musl, Windows, macOS Intel) are built with
+`-C target-feature=<the 14 features of Polars' default runtime>`, the
+workflow's `X86_FEATURES`, through `RUSTFLAGS`, which maturin-action hands on
+to its manylinux and musllinux containers. `polars-online-compat` is built
+without them, for baseline x86-64, which is what `polars-online` was before the
+split. The ARM wheels (macOS arm64, Linux aarch64) are built alike under both
+names, and `polars-online-compat` ships them as Polars' own
+`polars-runtime-compat` does, so that either installs wherever the other
+does. [What the x86-64 wheels need](VERSIONS.md#what-the-x86-64-wheels-need)
+has the features, the reason and what a user does.
+
+**The second project is the same tree with its name changed on the runner.**
+Before it builds the compat wheels and sdist, a job runs
+`scripts/compat_package.py`, which renames the project in `pyproject.toml`
+(the one place maturin reads a distribution's name from), says what the
+package is in its description, and opens the README with a notice. The module
+and everything else stay.
+
+**The features a wheel needs are recorded from the flags the compiler was
+given.** `crates/online-py/build.rs` reads the `target-feature` flags from
+cargo and writes them to `python/polars_online/_build_flags.py`, a file git
+ignores and the wheel takes (`pyproject.toml`'s `include`), so a wheel cannot
+name one set of features and be compiled for another. The record is empty
+for ARM, for the compat build and for a build from source. First thing in
+`__init__`, before any of the package's other modules, so before the
+extension, `polars_online/_cpu_check.py` reads the CPU's features with
+`cpuid` and warns when one of the record's is missing.
+
+**Each wheel is held to this in its own build job, before the upload.** The
+smoke test checks which of the two distributions is installed (and not
+the other), that the recorded features are the workflow's list for a
+`polars-online` x86-64 wheel and empty for every other, and that the runner's
+CPU has all of them, which runs the machine code of the check on Linux,
+Windows and macOS Intel (musl in Alpine). The failing path, a CPU that lacks a
+feature, cannot be reached on a runner that has them all, so
+`tests/test_cpu_check.py` tests the warning against a faked CPU.
+
+**The Budgets run and its instruction counts are of the baseline build, not
+the `polars-online` wheel a user installs on an x86-64 CPU.** They count the
+workspace's `cargo test -p online-bench` cases under Valgrind with no
+`target-feature` flag, which is what `polars-online-compat` and every build
+from source are. The x86-64 wheel's instruction counts differ (a median 4.3%
+fewer in the measurement [VERSIONS.md](VERSIONS.md#what-the-x86-64-wheels-need)
+gives), and no budget holds them.
+
+**The setup the second project needs on PyPI** is the maintainer's, and
+once: a pending trusted publisher for `polars-online-compat` with the
+repository's own workflow and environment ([Cut a
+release](contributing/cut-a-release.md#prerequisites)).
+
 ## The README's links on PyPI
 
 **The workflow rewrites the README's relative links for PyPI.** PyPI shows
@@ -345,7 +400,7 @@ no baseline and the budgets are held as ever.
 
 ## The tests that hold the workflow
 
-**Three test files hold the workflows' shape, and they run in the suite.**
+**Five test files hold the workflows' shape and what they build, and they run in the suite.**
 So a change to a workflow that breaks the shape fails before it reaches a
 release:
 
@@ -353,6 +408,8 @@ release:
 |---|---|
 | `tests/test_release_workflow.py` | a dispatch is the only trigger, with `publish` off unless asked; the version is checked before the wheels and the sdist are built; CI runs inside the release on every OS, and its Pages grant is inert; the upload waits for every job, and the tag for the upload, on the tested sha; the NumPy legs; the floor leg, read from `pyproject.toml`, and the canary's monthly run of it; the floor Python in every leg that moves a dependency; the Linux command-line binaries built in the manylinux2014 image and held to glibc 2.17; the budgets baseline merged and attached; every wheel held to the README's size row; the tag and the release each tried three times; the `verify` job's install from PyPI on every OS; only the release jobs write; `scripts/release_version.py`'s rules, its refusal of a version older than an `INTRODUCED` or `PARAMETER_INTRODUCED` entry among them; and the throughput table's date, no older than the previous release |
 | `tests/test_release_packaging.py` | the release job's steps run for real: the files it collects, each binary named by its target, the Windows `.exe` suffix kept, and no binary sent to PyPI; the tag's push against a local remote, which lands once, succeeds when the tag is there on the tested sha, fails when it is on another and gives up after three tries; the release's creation against a stand-in for `gh`, finished rather than repeated when an attempt landed; and its notes |
+| `tests/test_compat_package.py` | the rename to `polars-online-compat` and its refusal of a tree it already changed; every target built under both names, the `RUSTFLAGS` expression giving the feature list to the default x86-64 legs and to no other, the compat project renamed after the README's links and before the build, only the default legs building the command-line binary, the smoke test's arguments, the compat sdist, both projects uploaded from folders of their own, compat first, and both verified from PyPI; the smoke test's refusals of the other project, another feature record and a runner without a feature; and the package running its CPU check before any other import |
+| `tests/test_cpu_check.py` | `build.rs`, compiled and run for real, recording exactly the `target-feature` flags in every spelling cargo passes them, and nothing off x86; the CPU check's comparison, its warning and `POLARS_ONLINE_SKIP_CPU_CHECK` against a faked CPU; the real reader against `/proc/cpuinfo` on an x86-64 Linux host; and, in a fresh interpreter, the order in which the package's modules are asked for |
 | `tests/test_ci_cost_policy.py` | every workflow bounded by timeouts and a concurrency group, releases queueing rather than canceling, and the rest of the CI policy ([The policy, as the test holds it](TESTING.md#the-policy-as-the-test-holds-it)) |
 
 ## Compare with the last release, bit for bit

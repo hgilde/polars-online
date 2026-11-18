@@ -452,3 +452,65 @@ runs the advisory leg too. Only NumPy moves in these
 runs, so a red one names it. With no ceiling, a NumPy that breaks this
 library blocks every release until it is fixed or capped, the same trade
 the Polars range makes.
+
+## What the x86-64 wheels need
+
+**The x86-64 wheels of `polars-online` need a CPU with AVX2, FMA and the
+rest of Polars' default feature set, and `polars-online-compat` is the same
+package for every x86-64 CPU.** Both are built from one source at one
+version, and both are imported as `polars_online`. A Linux (glibc and musl),
+Windows or macOS Intel wheel of `polars-online` is compiled for the features
+below, which are the ones Polars builds its own default runtime
+(`polars-runtime-32`) for, as its wheels record them in
+`BUILD_FEATURE_FLAGS`:
+
+| group | features |
+|---|---|
+| SSE and basics | `sse3`, `ssse3`, `sse4.1`, `sse4.2`, `popcnt`, `cmpxchg16b` |
+| AVX | `avx`, `avx2`, `fma` |
+| bit manipulation | `bmi1`, `bmi2`, `lzcnt`, `movbe`, `pclmulqdq` |
+
+That is the x86-64-v3 level of the instruction set, less `f16c` and `xsave`
+and plus `pclmulqdq`. Intel's Haswell (2013) and AMD's Excavator (2015) and
+Zen have all of them; some low-end Intel Celeron, Pentium and Atom parts of
+later years do not, and neither do some virtual machines, which hide features
+from the guest. The ARM wheels, macOS arm64 and Linux aarch64, are unchanged
+and need nothing: they are built for ARM's baseline, with its vector unit.
+
+**Why: the compiler may use the features anywhere, and several models run
+faster.** The same commit was built twice on an Intel Xeon, once for baseline
+x86-64 and once for x86-64-v3, and its output and saved state matched bit for
+bit in every model compared (Rust fuses no multiply and add of its own). The
+instructions the benchmark cases execute fell by a median of 4.3% (from 39%
+fewer in `rcov` to 2.7% more in one case), and the time of the benchmark
+bodies, v3 over baseline, was 0.84 for `ew_class`, 0.87 for `ewridge` at 200
+features, 0.94 at 20, 0.95 for a bank of every moment of `ew_cov`, 0.96 for a
+window sum, and 1.01 to 1.02 for `bocpd` and a window mean. `hmm` ran about
+7% slower on that build until its factorization of small matrices was
+written out in the library, after which it ran at about 0.93 of the baseline
+build's time. Only Intel was measured: no AMD machine was available.
+
+**A CPU that lacks a feature gets a warning at import, before the extension
+loads.** `import polars_online` reads the CPU's features with the `cpuid`
+instruction, in pure Python, and compares them with the list the wheel was
+built for. A feature missing from the CPU issues a `RuntimeWarning` that
+names it and says to install `polars-online-compat`; going on would end in an
+illegal instruction at the first model that used one. The check does nothing
+on ARM, in `polars-online-compat`, in a package built from the source
+distribution (which is built for baseline x86-64), and when the environment
+variable `POLARS_ONLINE_SKIP_CPU_CHECK` is set to anything. A CPU the check
+cannot read, because the system refuses executable memory, is not a reason to
+refuse the import: it warns of nothing.
+
+**To change from one package to the other, uninstall the first.** The two
+install the same files under `polars_online/`, so pip does not stop both being
+installed, and the second install's files replace the first's; uninstalling
+either then removes files the other needs. Run `pip uninstall polars-online`
+before `pip install polars-online-compat`, and the reverse. Both have wheels
+for macOS (arm64, x86_64), Windows x64 and Linux (x64 glibc and musl, aarch64
+glibc), and an sdist for the rest, so either installs wherever the other
+does; on ARM they are the same build.
+
+**The two share a version number and a state file format, so a state saved by
+one loads in the other.** Nothing in a state file records the instruction set
+the build used.
