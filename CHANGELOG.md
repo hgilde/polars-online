@@ -26,6 +26,18 @@ returns.
 
 ### Fixed
 
+- A bank running on two or more threads with two or more groups no longer
+  panics ("RefCell already borrowed") with `emit_robust_se` or the breaks
+  Wald distance at 256 or more coefficients, or with the specification tests
+  (Breusch-Pagan and RESET with Newey-West lags) at 256 or more features: each
+  held a per-thread scratch buffer across a parallel solve, and a job taken
+  up on the same thread borrowed it again. Outputs unchanged to the bit.
+- A call small enough to run on the calling thread keeps a model with 256 or
+  more targets on that thread, as `threads=` asks, where its solves went to
+  rayon's global pool (and could wait on it when that pool was busy). Outputs
+  unchanged to the bit.
+- A save that met a full disk or a permission error after a retried
+  interruption reports that error, not `Interrupted`.
 - A window operator's mean or variance whose only valued row was exactly one
   window old (under `closed="left"` or `"both"` looking back, `"right"` or
   `"both"` with `reverse=True`) gave that row's value or null by a rounding
