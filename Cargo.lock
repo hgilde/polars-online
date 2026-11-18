@@ -2100,7 +2100,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "online-bench"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "faer",
  "gungraun",
@@ -2115,7 +2115,7 @@ dependencies = [
 
 [[package]]
 name = "online-cli"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "clap",
  "mimalloc",
@@ -2128,7 +2128,7 @@ dependencies = [
 
 [[package]]
 name = "online-core"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "dashu-float",
  "faer",
@@ -2148,7 +2148,7 @@ dependencies = [
 
 [[package]]
 name = "online-polars"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "equivalent",
  "indexmap",
@@ -2171,7 +2171,7 @@ dependencies = [
 
 [[package]]
 name = "online-py"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "online-core",
  "online-polars",

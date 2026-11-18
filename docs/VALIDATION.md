@@ -11,7 +11,7 @@ uv run python scripts/validate.py > docs/VALIDATION.md
 
 - Data: public intraday (BTCUSDT 1m, Binance public dump, 2024-01-02..2024-01-11, 10 days)
 - Rows: 14335, features: ['x0', 'x1', 'x2', 'x3'], targets: ['y0', 'y1']
-- Polars 2.0.0, polars-online 1.5.0
+- Polars 2.0.0, polars-online 1.6.0
 
 ## How the runs are set
 
@@ -29,7 +29,7 @@ Every prediction is out-of-sample: each row is predicted before the model learns
 
 ## 1. Solve schedule (`solve_every` default = by weight, half_life/50 in steady state)
 
-Solving every `half_life/d` clock units, half_life = 500.0, on `y0`. The 7 schedules run as 7 specs in one pass over the rows (0.04s).
+Solving every `half_life/d` clock units, half_life = 500.0, on `y0`. The 7 schedules run as 7 specs in one pass over the rows (0.05s).
 
 | divisor | n | r2 | ic | hit_rate | mse |
 |---|---|---|---|---|---|
@@ -71,7 +71,7 @@ Lasso path [0.01, 0.001, 0.0001, 0.0]. `l1_ratio` = 1 is pure lasso; below 1 the
 
 ## 4. Kalman `share_p` approximation
 
-Two targets (`y0` and `y1`) with very different noise levels. One spec holds both, so both wait the longer embargo. `P` is held in units of the noise, so with both targets on every row the shared `P` is each target's own and the two specs score the same: sharing saves work and changes no prediction. Both specs run in 0.01s total.
+Two targets (`y0` and `y1`) with very different noise levels. One spec holds both, so both wait the longer embargo. `P` is held in units of the noise, so with both targets on every row the shared `P` is each target's own and the two specs score the same: sharing saves work and changes no prediction. Both specs run in 0.02s total.
 
 | spec | slot | target | n | r2 | ic | mse |
 |---|---|---|---|---|---|---|
