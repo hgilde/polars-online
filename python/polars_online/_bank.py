@@ -3501,7 +3501,11 @@ class ModelBank:
             says nothing about the data, and the fit is where the descent
             stopped. At 100 sweeps and the default ``tol`` that is under about
             2.3 rows a feature, at 1,000 sweeps 1.25. Past it every cap hit
-            counts, so nearly dependent features show here. A ``max_iter``
+            counts, so nearly dependent features show here. So does every
+            cap hit under a decay whose Kish size settles below that bound
+            (about ``(1 + lam) / (1 - lam)`` rows for ``lam`` the decay a
+            row), which no more rows would lift: the stream is then never
+            out of its warm-up. A ``max_iter``
             below ``ln(1/tol) / 2``, about 12, is never excused: no number of
             rows would settle it.
         ``kmeans``

@@ -143,7 +143,9 @@ docstring, under *The descent*, measure how many sweeps they take.
    It leaves out the descents of a fit's first rows, where too few rows
    stand behind the features for any data to settle in `max_iter` sweeps
    (about 2.3 rows a feature at the default; the docstring of
-   `ModelBank.solve_failures` gives the rule).
+   `ModelBank.solve_failures` gives the rule), and only while the stream is
+   still growing toward that many: under a decay that settles below it,
+   every one is counted.
 2. **If it is above 0, give the spec a larger `max_iter`,** and fit again
    until the count is 0.
 

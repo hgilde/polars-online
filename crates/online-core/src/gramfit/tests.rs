@@ -1311,6 +1311,87 @@ fn the_warm_up_rule_holds_at_its_edges() {
     assert!(!warming_up(Some(80.0 + 1.0), 40, true, 0.05, d));
 }
 
+/// The size a decaying stream grows to is read from the Gram: after `t`
+/// unit rows at factor `λ`, `n_t · (1 + s)/(1 − s)` with `s = prior_scale`
+/// is Kish's limit `(1 + λ)/(1 − λ)` for every `t`, here through `EwCov`'s
+/// own accumulators.
+#[test]
+fn the_kish_limit_is_read_from_the_prior_scale() {
+    for half_life in [3.0f64, 30.0, 500.0] {
+        let lam = 0.5f64.powf(1.0 / half_life);
+        let limit = (1.0 + lam) / (1.0 - lam);
+        let mut g = crate::EwCov::new(2);
+        let mut s = 3u64;
+        for t in 1..=400 {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let x = [(s >> 40) as f64 / 1e7, (s >> 20 & 0xfffff) as f64 / 1e5];
+            g.update(&x, lam, 1.0);
+            let (n, sc) = (g.n_kish().unwrap(), g.prior_scale());
+            if sc >= 1.0 {
+                continue;
+            }
+            let got = n * (1.0 + sc) / (1.0 - sc);
+            assert!(
+                (got - limit).abs() <= 1e-9 * limit,
+                "half-life {half_life}, row {t}: {got} against {limit}"
+            );
+        }
+    }
+}
+
+/// The warm-up is the span in which more rows would cure the descent: under
+/// the bound now and not under it at the size the stream grows to. At the
+/// defaults and 50 features the bound is about 115 Kish rows. No decay
+/// (`prior_scale` 1) grows without end, so the rows alone decide; a decay
+/// that settles at 87 never leaves, and one that settles above 115 does.
+#[test]
+fn a_decay_that_holds_the_size_under_the_bound_is_not_a_warm_up() {
+    let d = (100u32, 1e-10);
+    let k = 50;
+    let limit = |lam: f64| (1.0 + lam) / (1.0 - lam);
+    // The Kish size after `t` unit rows, and the prior scale.
+    let at = |lam: f64, t: i32| {
+        let s = lam.powi(t);
+        (limit(lam) * (1.0 - s) / (1.0 + s), s)
+    };
+    // No decay: the rows alone, as warming_up.
+    assert!(young(Some(60.0), 1.0, k, true, 0.0, d), "no decay, 60 rows");
+    assert!(!young(Some(200.0), 1.0, k, true, 0.0, d), "no decay, 200");
+    // A half-life of 30 settles at 87: never a warm-up, from the first row.
+    let lam30 = 0.5f64.powf(1.0 / 30.0);
+    assert!((limit(lam30) - 87.0).abs() < 1.0);
+    for t in [1, 10, 50, 200, 2000, 20_000] {
+        let (n, s) = at(lam30, t);
+        assert!(!young(Some(n), s, k, true, 0.0, d), "row {t}, n {n:.1}");
+    }
+    // A half-life of 60 settles at 173: a warm-up until the size passes 115
+    // (about row 65), none after.
+    let lam60 = 0.5f64.powf(1.0 / 60.0);
+    assert!(limit(lam60) > 115.0);
+    let (young_n, young_s) = at(lam60, 10);
+    assert!(young(Some(young_n), young_s, k, true, 0.0, d));
+    let (old_n, old_s) = at(lam60, 400);
+    assert!(!young(Some(old_n), old_s, k, true, 0.0, d), "n {old_n:.1}");
+    // Unknown or non-finite sizes excuse nothing, as before.
+    assert!(!young(None, 0.5, k, true, 0.0, d));
+    assert!(!young(Some(f64::NAN), 0.5, k, true, 0.0, d));
+    // A prior scale gone to zero is a stream at its limit.
+    assert!(!young(Some(87.0), 0.0, k, true, 0.0, d));
+    // A ridge that lifts the best case ends the warm-up as before.
+    assert!(!young(Some(81.0), 1.0, 40, true, 0.05, d));
+}
+
+/// The persisted counter's bound reads `ln(1/tol)` from basic arithmetic,
+/// the same on every platform: the edge it gives is the platform logarithm's
+/// to within the tolerance of the claim it rests on.
+#[test]
+fn the_warm_up_bound_reads_a_logarithm_in_basic_arithmetic() {
+    for tol in [1e-3f64, 1e-6, 1e-10, 1e-12, 1e-15, 0.5] {
+        let (a, b) = (crate::ln_basic(1.0 / tol), (1.0 / tol).ln());
+        assert!((a - b).abs() <= 4.0 * f64::EPSILON * b, "{tol:e}: {a} {b}");
+    }
+}
+
 /// The two claims the rule rests on, against faer's eigensolver
 /// (`crate::oracle`) and the descent itself, on Grams of independent
 /// features: the smallest eigenvalue is near the edge `(1 − √(k/n))²`, and
