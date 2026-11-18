@@ -183,6 +183,7 @@ pub use model::{
     all_usable, check_schema, usable,
 };
 pub use pa::{Pa, PaCfg, PaMode};
+pub use pieces::Sequential;
 pub use rcov::{
     Rcov, RcovCfg, RcovEstimate, RcovKind, parzen, parzen_c_star, phi_11, phi_12, phi_22, preavg_g,
     psi1, psi2,

@@ -93,8 +93,11 @@ impl Serialize for LazyStates<'_> {
     }
 }
 
-/// A writer that keeps the first I/O error its target raised, with its kind
-/// and OS code, since the encoder reports a failed write as text.
+/// A writer that keeps the last I/O error its target raised, with its kind
+/// and OS code, since the encoder reports a failed write as text. The encoder
+/// stops at the first error it is handed, so the last one kept is the one
+/// that ended the save; an `Interrupted` is not kept, since `write_all`
+/// retries it and the save goes on.
 pub(super) struct Stash<'a, W: std::io::Write> {
     inner: &'a mut W,
     error: Option<std::io::Error>,
@@ -110,12 +113,13 @@ impl<'a, W: std::io::Write> Stash<'a, W> {
     }
 
     fn keep(&mut self, e: &std::io::Error) {
-        if self.error.is_none() {
-            self.error = Some(match e.raw_os_error() {
-                Some(code) => std::io::Error::from_raw_os_error(code),
-                None => std::io::Error::new(e.kind(), e.to_string()),
-            });
+        if e.kind() == std::io::ErrorKind::Interrupted {
+            return;
         }
+        self.error = Some(match e.raw_os_error() {
+            Some(code) => std::io::Error::from_raw_os_error(code),
+            None => std::io::Error::new(e.kind(), e.to_string()),
+        });
     }
 }
 
@@ -169,6 +173,58 @@ mod tests {
             .write_msgpack_io(&mut Failing(ErrorKind::Other, Some(libc_enospc())))
             .unwrap_err();
         assert_eq!(e.raw_os_error(), Some(libc_enospc()));
+    }
+
+    /// A write that fails and is retried (`write_all` retries `Interrupted`)
+    /// is no error of the save: the one that ends it is. The first error
+    /// kept was the retried one, so a save that then met a full disk said
+    /// it was interrupted.
+    #[test]
+    fn a_retried_interruption_is_not_the_error_a_later_failure_is_reported_as() {
+        /// Writes `ok` buffers, interrupted once before the first, then fails.
+        struct Interrupted {
+            fail_with: ErrorKind,
+            interrupts: u32,
+            writes: u32,
+        }
+        impl Write for Interrupted {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                if self.interrupts > 0 {
+                    self.interrupts -= 1;
+                    return Err(io::Error::new(ErrorKind::Interrupted, "signal"));
+                }
+                self.writes += 1;
+                if self.writes > 3 {
+                    return Err(io::Error::new(self.fail_with, "the disk"));
+                }
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let spec = serde_json::from_str(
+            r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
+                "features": ["x"], "half_life": 10.0}"#,
+        )
+        .unwrap();
+        let bank = Bank::new(vec![spec]).unwrap();
+        let mut w = Interrupted {
+            fail_with: ErrorKind::StorageFull,
+            interrupts: 1,
+            writes: 0,
+        };
+        let e = bank.write_msgpack_io(&mut w).unwrap_err();
+        assert!(w.writes > 3, "the write that fails was reached");
+        assert_eq!(e.kind(), ErrorKind::StorageFull, "{e}");
+        // Interrupted twice in a row, and every other write after: the same.
+        let mut w = Interrupted {
+            fail_with: ErrorKind::PermissionDenied,
+            interrupts: 2,
+            writes: 0,
+        };
+        let e = bank.write_msgpack_io(&mut w).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::PermissionDenied, "{e}");
     }
 
     fn libc_enospc() -> i32 {

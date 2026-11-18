@@ -210,7 +210,7 @@ impl Threads {
     /// The threads the `k²` work runs on here: the count set, capped at
     /// the current pool's size.
     fn workers(self) -> usize {
-        self.0.min(rayon::current_num_threads()).max(1)
+        self.0.min(crate::pieces::degree()).max(1)
     }
 }
 
