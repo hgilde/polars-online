@@ -44,13 +44,12 @@ fn required_features(encoded: &str) -> Vec<String> {
             flag.strip_prefix("-C")
         };
         if let Some(list) = value.and_then(|v| v.strip_prefix("target-feature=")) {
-            for feature in list.split(',') {
-                if let Some(name) = feature.strip_prefix('+') {
-                    if !name.is_empty() && name != "crt-static" {
-                        out.push(name.to_string());
-                    }
-                }
-            }
+            out.extend(
+                list.split(',')
+                    .filter_map(|feature| feature.strip_prefix('+'))
+                    .filter(|name| !name.is_empty() && *name != "crt-static")
+                    .map(str::to_string),
+            );
         }
         i += 1;
     }
@@ -102,9 +101,8 @@ fn main() {
     };
     // Only when it differs, so a build that records the same flags leaves the
     // file's time alone and cargo does not run this again for it.
-    if fs::read_to_string(&target).map_or(true, |old| old != text) {
-        if let Err(e) = fs::write(dir.join("_build_flags.py"), text) {
-            panic!("could not write {}: {e}", target.display());
-        }
+    if !fs::read_to_string(&target).is_ok_and(|old| old == text) {
+        fs::write(dir.join("_build_flags.py"), text)
+            .unwrap_or_else(|e| panic!("could not write {}: {e}", target.display()));
     }
 }

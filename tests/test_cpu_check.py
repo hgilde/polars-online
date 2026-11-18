@@ -53,7 +53,7 @@ def build_script(tmp_path_factory) -> Path:
         pytest.fail("rustc is not on PATH; `source scripts/env.sh` first")
     out = tmp_path_factory.mktemp("build-rs") / ("build.exe" if os.name == "nt" else "build")
     res = subprocess.run(
-        [rustc, "--edition", "2021", "-o", str(out), str(BUILD_RS)],
+        [rustc, "--edition", "2024", "-o", str(out), str(BUILD_RS)],
         capture_output=True,
         text=True,
         encoding="utf-8",
