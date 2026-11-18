@@ -345,8 +345,10 @@ pub struct Lasso {
     /// the descent stopped (review 2026-09-12, S11: nothing wrote this).
     /// A descent on a Gram whose effective rows are too few for its
     /// features to settle in `max_iter` sweeps even on the best data of
-    /// that many rows is not counted: it is the warm-up
-    /// (`gramfit::warming_up`), and the fit is still where it stopped.
+    /// that many rows, while the stream is still growing toward that many,
+    /// is not counted: it is the warm-up (`gramfit::young`), and the fit is
+    /// still where it stopped. A decay that holds the Kish size under that
+    /// number for good is no warm-up.
     pub solve_failures: u64,
     /// Whether the explicit cadence's first period runs on the default
     /// weight-share schedule (`since::FirstPeriod`; task 278): set by a
@@ -1056,13 +1058,16 @@ impl Lasso {
                     // descent stopped, and it is counted (review 2026-09-12,
                     // S11: nothing wrote `solve_failures`) -- unless the
                     // Gram's rows are too few for its features, where no
-                    // data could have settled in the sweeps allowed
-                    // (`gramfit::warming_up`, which gives the argument).
-                    // Asked only of a descent that failed: a solve past its
-                    // warm-up pays nothing for it.
+                    // data could have settled in the sweeps allowed, and
+                    // the stream is still growing toward enough of them
+                    // (`gramfit::young`, which gives the argument; a decay
+                    // that holds the Kish size under the bound for good
+                    // is no warm-up). Asked only of a descent that failed:
+                    // a solve past its warm-up pays nothing for it.
                     if !converged
-                        && !crate::gramfit::warming_up(
+                        && !crate::gramfit::young(
                             gram.n_kish(),
+                            self.acc.grams.grams[g].prior_scale(),
                             s.iter().filter(|&&v| v > 0.0).count(),
                             self.cfg.fit_intercept,
                             l2,
@@ -2731,6 +2736,65 @@ mod tests {
         assert_eq!(before, 0, "no failure before the pair");
         assert!(after > 0, "the near-collinear pair was not counted");
         assert_eq!(run(false), (0, 0), "and without the pair nothing is");
+    }
+
+    /// The warm-up ends with the stream's youth, not at a row count a decay
+    /// keeps from being reached (task 475). 50 features correlated through a
+    /// common factor, a half-life of 30 rows (a Kish size that settles near
+    /// 87, under the 115 the defaults' 100 sweeps need), 5,000 rows: the
+    /// Kish size is below the bound on every row and no more rows raise it,
+    /// so the sweeps run out for good, and every cap hit counts. Before the
+    /// fix none did, on any row: the whole stream was excused.
+    #[test]
+    fn a_decay_too_short_for_the_features_is_not_a_warm_up() {
+        let k = 50;
+        let mut c = cfg(k, 1, vec![0.01, 0.001, 0.0]);
+        c.decay = Decay::Halflife(30.0);
+        c.max_iter = 100;
+        c.tol = 1e-10;
+        let mut m = Lasso::new(c).unwrap();
+        let mut s = 13u64;
+        let mut at_row_1000 = 0;
+        for i in 0..5000 {
+            let common = lcg(&mut s);
+            let x: Vec<f64> = (0..k).map(|_| 0.7 * common + lcg(&mut s)).collect();
+            let y = x[0] - 0.5 * x[1] + 0.25 * x[2] + 0.5 * lcg(&mut s);
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            if i == 999 {
+                at_row_1000 = m.solve_failures;
+            }
+        }
+        let kish = m.acc.grams.grams[0].n_kish().unwrap();
+        assert!(kish < 115.0 && kish > 80.0, "the Kish size is {kish}");
+        // Counted from the first rows on, and on most rows after the
+        // thousandth (one cap hit at least on a row, over three path points).
+        assert!(at_row_1000 > 0, "none counted in the first 1,000 rows");
+        let later = m.solve_failures - at_row_1000;
+        assert!(later >= 3000, "{later} counted on the 4,000 rows after");
+    }
+
+    /// The same stream at a half-life of 2,000, a Kish size that grows past
+    /// the bound at about row 115 and on to 2,885: the first rows' cap hits
+    /// are the warm-up and none is counted, as without a decay.
+    #[test]
+    fn a_long_half_life_is_still_a_warm_up() {
+        let k = 50;
+        let mut c = cfg(k, 1, vec![0.01, 0.001, 0.0]);
+        c.decay = Decay::Halflife(2000.0);
+        c.max_iter = 100;
+        c.tol = 1e-10;
+        let mut m = Lasso::new(c).unwrap();
+        let mut s = 13u64;
+        let mut kish_at_100 = 0.0;
+        for i in 0..100 {
+            let common = lcg(&mut s);
+            let x: Vec<f64> = (0..k).map(|_| 0.7 * common + lcg(&mut s)).collect();
+            let y = x[0] - 0.5 * x[1] + 0.25 * x[2] + 0.5 * lcg(&mut s);
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            kish_at_100 = m.acc.grams.grams[0].n_kish().unwrap();
+        }
+        assert!(kish_at_100 > 90.0 && kish_at_100 < 115.0, "{kish_at_100}");
+        assert_eq!(m.solve_failures, 0, "the young fit is not a failure");
     }
 
     /// The stopping rule is dimensionless (task 278, D3): the target scaled

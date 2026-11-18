@@ -35,8 +35,10 @@ mod trisolve_tests;
 #[cfg(test)]
 mod within_tests;
 
+#[cfg(test)]
+pub(crate) use cd::warming_up;
 pub use cd::{CdPath, cd_path, sweep_tol, target_spread};
-pub(crate) use cd::{settled, warming_up};
+pub(crate) use cd::{settled, young};
 pub use lars::{
     CorrRows, DenseRows, LarsLimits, LarsPath, LarsStop, lars_lasso, lars_lasso_rows,
     lars_lasso_weighted,

@@ -43,13 +43,18 @@ returns.
 - `lasso`: `solve_failures` no longer counts a coordinate descent that runs
   out of `max_iter` sweeps while the fit has too few effective rows for its
   features to settle in that many sweeps on any data (below about 2.3 rows
-  a feature at the defaults of 100 sweeps and `tol` 1e-10). The bound comes
-  from the smallest eigenvalue that many rows can give, not from a measured
-  data set. A wide `lasso` no longer warns from its first rows; the fit is
-  still where the descent stopped, predictions and coefficients are
-  unchanged, and a descent that runs out past that point is counted as
-  before. A state saved by an earlier build continues to the bit except for
-  this count.
+  a feature at the defaults of 100 sweeps and `tol` 1e-10) and its rows are
+  still growing toward that many. The bound comes from the smallest
+  eigenvalue that many rows can give, not from a measured data set. Under a
+  decay the effective rows settle at about `(1 + lam) / (1 - lam)` however
+  long the stream, read from the Gram itself; a stream that settles below the
+  bound (50 features at a half-life of 30 rows settle near 87 against about
+  115) is never out of its warm-up, and every cap hit on it is counted from
+  its first row. A wide `lasso` no longer warns from its first rows when its
+  rows can reach the bound; the fit is still where the descent stopped,
+  predictions and coefficients are unchanged, and a descent that runs out
+  past that point is counted as before. A state saved by an earlier build
+  continues to the bit except for this count.
 - `bocpd` with `covariance_type="diag"` and two features or more takes each
   row's log density from fewer logarithms, so its outputs differ from the
   last release's by rounding. It adds the features' `ln ψₙ` and

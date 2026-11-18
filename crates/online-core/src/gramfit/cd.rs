@@ -157,8 +157,54 @@ pub(crate) fn warming_up(
         0.0
     };
     let best = (edge + l2) / (1.0 + l2);
-    let need = (1.0 / tol).ln() / (2.0 * f64::from(max_iter));
+    // `ln` from basic arithmetic: this decides a persisted counter, so it
+    // is the same on every platform (the platform's `ln` is not).
+    let need = crate::ln_basic(1.0 / tol) / (2.0 * f64::from(max_iter));
     need < 1.0 && best < need
+}
+
+/// Whether a descent that ran out of sweeps is in its warm-up: the Gram's
+/// rows are too few for its features ([`warming_up`]) *and* more rows would
+/// cure it. Under a decay Kish's size stops growing: unit rows, `d` clock
+/// units apart, settle it at `(1 + λ) / (1 − λ)`, `λ = decay^d`, however
+/// long the stream, and a stream that settles below the bound is never out
+/// of its warm-up, so the sweeps run out for good and the user is to be
+/// told. The size the stream is growing to is read from the Gram itself:
+/// after `t` unit rows `n_t = (1 + λ)(1 − λᵗ) / ((1 − λ)(1 + λᵗ))` and
+/// `prior_scale = λᵗ` (the product of every decay factor, which
+/// [`crate::EwCov::prior_scale`] holds), so
+///
+/// ```text
+/// n_∞ = n_t · (1 + prior_scale) / (1 − prior_scale)
+/// ```
+///
+/// with no decay (`prior_scale` 1, the limit unbounded) and a `prior_scale`
+/// that has run to 0 (the Gram has forgotten its first row, so it is at its
+/// limit: `n_∞ = n_t`) as the two ends. The warm-up is the span while `n_t`
+/// is under the bound and `n_∞` is not. Exact for unit rows at one spacing;
+/// for other weights and spacings the same quantity estimated: a gap, or
+/// rows of weight zero, take `prior_scale` down and leave Kish's size where
+/// it was, so the Gram reads as at its limit and a cap hit counts.
+///
+/// Costs O(k) on a cap hit and a few flops; a converged descent pays
+/// nothing. No state: `prior_scale` is the Gram's own.
+pub(crate) fn young(
+    n_kish: Option<f64>,
+    prior_scale: f64,
+    features: usize,
+    centred: bool,
+    l2: f64,
+    descent: (u32, f64),
+) -> bool {
+    if !warming_up(n_kish, features, centred, l2, descent) {
+        return false;
+    }
+    // `warming_up` held, so the size is known and finite.
+    let limit = match n_kish {
+        Some(n) if prior_scale < 1.0 => n * (1.0 + prior_scale) / (1.0 - prior_scale),
+        _ => return true,
+    };
+    !warming_up(Some(limit), features, centred, l2, descent)
 }
 
 /// The path at each penalty in the basis of `R` (row-major `k × k`) and
