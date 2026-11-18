@@ -65,7 +65,7 @@ rss = 0.30
 
 [instructions.ewridge_k5]
 what = "ewridge, 5 features, 1 target, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 2179712
+budget = 2119477
 
 [instructions.ewridge_k20]
 what = "ewridge, 20 features, 1 target, half-life 1000: AnyModel::step_into, into one kept Step"
@@ -214,11 +214,11 @@ budget = 41581252
 
 [instructions.deco]
 what = "deco, 20 features, ew dynamics: AnyModel::step_into, into one kept Step"
-budget = 3508026
+budget = 3006026
 
 [instructions.hmm]
 what = "hmm, 4 features, 2 states, full covariance, precision prior 1: AnyModel::step_into, into one kept Step"
-budget = 8034026
+budget = 6764026
 
 [instructions.rcov]
 what = "rcov, 4 features, kernel, the rows a block takes in: AnyModel::step_into, into one kept Step"
@@ -230,7 +230,7 @@ budget = 847018
 
 [instructions.bocpd_full]
 what = "bocpd, 4 features, full covariance, max_run 200, prune below 1e-6: AnyModel::step_into, into one kept Step"
-budget = 18192900
+budget = 16362446
 
 [instructions.ew_cov_lags]
 what = "ew_cov, 20 features, mean and cov, lags 1-5: AnyModel::step_into, into one kept Step"

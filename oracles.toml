@@ -347,25 +347,25 @@ n = 50
 
 [case."corrchange.n_perm.crit_error_at_20"]
 ideal = 0.0
-worst = 0.575856
+worst = 0.524215
 p95 = 0.319728
 n = 100
 
 [case."corrchange.n_perm.crit_error_at_200"]
 ideal = 0.0
-worst = 0.167572
-p95 = 0.0970894
+worst = 0.135589
+p95 = 0.0863516
 n = 100
 
 [case."corrchange.n_perm.crit_error_at_2000"]
 ideal = 0.0
 worst = 0.0379665
-p95 = 0.0282154
+p95 = 0.0275749
 n = 100
 
 [case."corrchange.n_perm.crit_error_at_20000"]
 ideal = 0.0
-worst = 0.0166479
+worst = 0.0133799
 p95 = 0.00973919
 n = 100
 
@@ -1080,15 +1080,15 @@ tolerance = 0.0
 
 [case."truth_recovery.corrchange_break.delay"]
 ideal = 0.0
-worst = 81.0
+worst = 77.0
 p95 = 63.0
 n = 50
 tolerance = 0.0
 
 [case."truth_recovery.corrchange_break.quiet_share_flagged"]
 ideal = 0.0
-worst = 0.098049
-p95 = 0.094047
+worst = 0.101551
+p95 = 0.0870435
 n = 50
 
 [case."truth_recovery.corrchange_break.quiet_share_flagged_mean"]
@@ -7574,4 +7574,12 @@ from = 0.00893663
 to = 0.00973919
 date = 2026-11-18
 reason = "the permutation shuffle's draws changed with Lemire's multiply-shift reduction in place of a remainder (rule 5's seventeenth exception), so each of the grid's 100 seeds reads another critical value from the same distribution; the 95th percentile of the error at 20,000 draws is a statistic of 100 such values and read 0.00974 on darwin-arm64 against 0.00894 on linux-x86_64 with the old draws (+9%), while on the same run the worst error at 20,000 draws read 0.0134 against 0.0166 and the p95 at 200 and 2,000 draws read lower (0.0864 against 0.0971, 0.0276 against 0.0282): a different sample of the same distribution, not a worse estimate"
+changelog = "draws the swaps of its permutation critical value with an unbiased multiply-shift reduction"
+
+[[raised]]
+key = "truth_recovery.corrchange_break.quiet_share_flagged.worst"
+from = 0.098049
+to = 0.101551
+date = 2026-11-18
+reason = "the permutation shuffle's draws changed with Lemire's multiply-shift reduction in place of a remainder (rule 5's seventeenth exception), so each of the grid's 50 streams flags its quiet rows against another critical value drawn from the same distribution; the worst stream's share of flagged quiet rows read 0.1016 on CI's linux-x86_64 run on 053d5b46 (44309732453) against 0.0980 with the old draws (+3.6%), while the same run tightened this case's p95 (0.0940 to 0.0870) and its worst detection delay (81 to 77) and six crit_error figures of corrchange.n_perm: another sample of the same false-alarm distribution, not a worse detector"
 changelog = "draws the swaps of its permutation critical value with an unbiased multiply-shift reduction"
