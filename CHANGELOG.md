@@ -342,6 +342,16 @@ returns.
   everything: about 5% faster over 20 columns. Outputs and saved state
   unchanged to the bit.
 
+### Tests and documents
+
+- The Rust oracle tests' allowance for the platform's `ln`, `exp`, `exp2`,
+  `expm1` and `powf` is three ulps, up from two. Windows' `ucrtbase.dll`
+  `expm1` was measured off by up to 3 ulps in 17.7% of calls (both builds of
+  CI's Windows runners, 24 argument sets of 400,000 values against a
+  correctly rounded reference), past the old bound. Apple's and glibc's stay
+  within one ulp; the bounds on a library's output loosen, and none on the
+  models' own rounding.
+
 ## [1.5.0] — 2026-11-10
 
 ### Added

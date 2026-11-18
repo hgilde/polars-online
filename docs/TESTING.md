@@ -979,7 +979,7 @@ still passes. The helpers are the standard results from Higham's
 
 | helper | the bound |
 |---|---|
-| `U`, `LIBM` | the unit roundoff `2⁻⁵³`, and the four units of it a call to the platform's `ln`, `exp`, `exp2` or `powf` may be off: two ulps. Apple's and glibc's are within one, and the second is left for `ucrtbase.dll`, which has not been measured to the ulp |
+| `U`, `LIBM` | the unit roundoff `2⁻⁵³`, and the six units of it a call to the platform's `ln`, `exp`, `exp2`, `expm1` or `powf` may be off: three ulps. Apple's and glibc's are within one; `ucrtbase.dll`'s `expm1` was measured off by up to 3 ulps (in 17.7% of calls, both Windows builds) and sets the bound |
 | `gamma(m)` | `γ_m = m·u / (1 − m·u)`, what `m` roundings in a row can move a result by, relative |
 | `dot_error`, `running_dot` | the most a dot product's rounding can move it: a priori from the terms, or read off the run from its partial sums, which is smaller where the terms cancel |
 | `condition` | the 2-norm condition number of a symmetric positive definite matrix, each eigenvalue moved by its own error bound the way that makes it larger |
