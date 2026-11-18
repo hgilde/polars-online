@@ -118,6 +118,23 @@ returns.
   features, 0.62 at 20 and 0.69 at 200. One feature is unchanged (a
   repeated identical build differs by up to 2% here), and so is
   `covariance_type="full"`.
+- A model that factorizes a matrix of 12 or fewer features each row (`hmm`,
+  `ew_class`, `ewridge`, `deco` and others that solve through the same
+  factor) skips faer's scratch and dispatch for the small Cholesky factor,
+  and for the triangular solves of 4 or fewer: the same arithmetic in the
+  same order, written out, so every output and saved state is unchanged to
+  the bit. `hmm` at 4 features and 2 states takes 0.86 of the time on arm64
+  (358 to 308 ns a row); the factor alone at orders 4 to 12 takes 0.55 to
+  0.77 of the time, and at 13 and above is unchanged. On an x86-64 CPU with
+  AVX2 (detected when the library runs) the own loop is used to order 8 only,
+  since faer's AVX2 kernel is faster from order 11 (built for `x86-64-v3`, the
+  loop takes 0.65 to 0.89 of faer's time at orders 1 to 8, 0.99 to 1.00 at 9
+  and 10, 1.11 and 1.14 at 11 and 12); in the default build it wins at every
+  order to 12 (0.63 to 0.975). On x86-64, `hmm` takes
+  0.843 of the time in the default build and 0.898 built for
+  `x86-64-v3` (instructions down 16.0% and 12.5%); this also removes most of the
+  slowdown `hmm` had under `x86-64-v3`. A CPU without AVX2 or FMA keeps
+  faer's unfused arithmetic there too.
 - `ew_class` with diagonal covariance keeps each class's sum of the log
   variances between that class's rows instead of taking a logarithm per
   feature per class on every row: a class's variances and ridge move only
