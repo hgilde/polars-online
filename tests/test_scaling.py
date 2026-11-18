@@ -153,9 +153,13 @@ GROWTH = (1, 4, 16)
 #: ``(16 - 4) / (4 - 1)`` = 4 whatever the fixed cost; quadratic gives 16.
 INCREMENT_SLACK = 1.5
 #: The smaller increment counts at least this share of the smallest run, so
-#: that where a spec costs nothing beside the fixed cost, noise in the two
-#: smallest readings does not make a ratio of it.
-INCREMENT_FLOOR = 0.05
+#: that where a spec costs little beside the fixed cost, noise in the two
+#: smallest readings does not make a ratio of it. At 5% the bank's case of one
+#: spec at 4 rows a call read 7 to 11 on a loaded machine (load 15 to 50),
+#: and 4.8 to 5.0 on a quiet one. A quadratic cost still reads 16 at a fixed
+#: cost of 0, 5 or 50 specs, since its first increment is past a quarter of
+#: the smallest run there.
+INCREMENT_FLOOR = 0.25
 
 
 def _hold_linear(name: str, runs: tuple[Callable[[], object], ...]) -> None:
