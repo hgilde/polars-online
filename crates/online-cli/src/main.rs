@@ -55,6 +55,35 @@ static MALLOC_CONF: Option<&std::ffi::c_char> = Some(
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// mimalloc's `purge_delay` option, by its index in mimalloc 3's option
+/// table (`mi_option_purge_delay`; `libmimalloc-sys` 0.1.49 names the options
+/// up to `max_warnings` and not this one), and the milliseconds it waits
+/// before returning freed pages to the system: 1000 by default, 0 here, so a
+/// page a buffer freed goes back at once and the peak does not grow with the
+/// rows as jemalloc's did on four arenas a core. `MIMALLOC_PURGE_DELAY`
+/// still overrides it: `mi_option_set_default` sets a value only where the
+/// environment has not. The test below holds the index.
+#[cfg(target_os = "windows")]
+const MI_OPTION_PURGE_DELAY: std::ffi::c_int = 15;
+
+#[cfg(target_os = "windows")]
+unsafe extern "C" {
+    // Symbols of the mimalloc already linked as the global allocator, as the
+    // test below declares jemalloc's `mallctl`: no dependency is added.
+    fn mi_option_set_default(option: std::ffi::c_int, value: std::ffi::c_long);
+}
+
+/// Bound the peak on Windows: see `MI_OPTION_PURGE_DELAY`. Called first in
+/// `main`, before the reader's threads allocate.
+#[cfg(target_os = "windows")]
+fn bound_allocator() {
+    // SAFETY: `mi_option_set_default` takes an option's index and a value and
+    // changes nothing but that option's default.
+    unsafe { mi_option_set_default(MI_OPTION_PURGE_DELAY, 0) };
+}
+#[cfg(not(target_os = "windows"))]
+fn bound_allocator() {}
+
 /// A `--input-format` / `--output-format` value: one of `Format::ALL` by name.
 fn parse_format(s: &str) -> Result<Format, String> {
     Format::ALL
@@ -479,6 +508,7 @@ fn relative_to(cfg: &mut RunConfig, dir: &Path) {
 }
 
 fn main() -> ExitCode {
+    bound_allocator();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -762,6 +792,49 @@ mod tests {
             performance.contains("`narenas:1`"),
             "docs/PERFORMANCE.md names `narenas:1`"
         );
+    }
+
+    /// The index `MI_OPTION_PURGE_DELAY` names is mimalloc's purge delay: a
+    /// child of this test binary, with `MIMALLOC_PURGE_DELAY=777` in its
+    /// environment, reads 777 from that index (mimalloc parses the
+    /// environment where it first reads an option, so the child alone, with
+    /// no earlier read, sees it), and the bound's default does not override
+    /// the environment.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn the_purge_delay_index_is_the_purge_delay() {
+        unsafe extern "C" {
+            fn mi_option_get(option: std::ffi::c_int) -> std::ffi::c_long;
+        }
+        const TEST: &str = "tests::the_purge_delay_index_is_the_purge_delay";
+        if std::env::var_os("ONLINE_CLI_MI_CHILD").is_some() {
+            super::bound_allocator();
+            // SAFETY: reads one option.
+            let got = unsafe { mi_option_get(super::MI_OPTION_PURGE_DELAY) };
+            assert_eq!(
+                got, 777,
+                "the index is not the purge delay, or the bound overrode the environment"
+            );
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("ONLINE_CLI_MI_CHILD", "1")
+            .env("MIMALLOC_PURGE_DELAY", "777")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "{text}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(text.contains("1 passed"), "the child ran no test: {text}");
+        // Without the environment the bound's value is the one read.
+        // SAFETY: reads one option, after setting its default.
+        super::bound_allocator();
+        let default = unsafe { mi_option_get(super::MI_OPTION_PURGE_DELAY) };
+        assert_eq!(default, 0);
     }
 
     /// A relative path is read from the config's directory, an absolute one
