@@ -13,6 +13,33 @@ returns.
 
 ### Changed
 
+- `break_wald` (`emit_breaks`) forms the variance of the two fits'
+  difference from the difference of their inverse Grams, `D = A_f - A_s`, as
+  `D H_ff D' + A_s E_2 A_s + C + C'` with `C = D (H_ff - H_fs) A_s` and
+  `E_2 = H_ff + H_ss - H_fs - H_fs'`, where it summed four terms that are 500
+  times the variance or more over the first rows past the `2k` wait and cancel
+  to it. The matrix is the same and each term is its size, so the distance is
+  nearer the exact one: against the exact distance of the same sums (to a
+  thousand bits), the 12 rows that moved most among 14,000 at 32 coefficients
+  have a relative error whose geometric mean falls from 1.4e-5 to 2.3e-7 and
+  whose largest falls from 2.5e-4 to 1.6e-5, and ordinary rows' from 3.4e-11
+  to 2.7e-12 (after a long gap, and at 2 coefficients, it gains little). The
+  products also run through faer's matrix multiply from 22 coefficients, which
+  adds in blocks and fuses where the machine does, so from there the last
+  digits depend on the platform's kernel. So `break_wald` moves at every
+  order, and no other output does: over 42 cases (1 to 200 features, 1 to
+  1,000 groups, a million rows, nulls, gaps, a save and load) the relative
+  movement is at most 1.8e-11 to 6.8e-5 on one group of 10,000 rows to a
+  million (k 4 to 200), a median of 5e-16 to 1.4e-13 over the rows, and up
+  to 7.7e-4 on the first rows past the wait of 1,000 young groups, where the
+  old form's own error is of that size; no `break_wald` threshold at `chi2(k+1)`'s 0.9,
+  0.99, 0.999 and 0.9999 values, no `zscore`, `drift`, `cusum` or `cusum_sq`
+  decision flips, and no value turns to or from null. Over designs whose
+  features are collinear the old and new forms refuse different rows, each
+  where its rounding breaks the factorization of a nearly singular variance,
+  about as often one way as the other. A state saved by an earlier build
+  continues to the bit except for the `break_wald` it emits and keeps for its
+  last row.
 - `lasso`: `solve_failures` no longer counts a coordinate descent that runs
   out of `max_iter` sweeps while the fit has too few effective rows for its
   features to settle in that many sweeps on any data (below about 2.3 rows
@@ -100,15 +127,23 @@ returns.
 
 ### Performance
 
-- The break-detection Wald distance (`emit_breaks`) forms only the lower
-  triangle of its two quadratic products and of the difference's variance,
-  which is all the factorization reads, so the second product of each of the
-  fast and slow fits' terms stops at the diagonal. Every output is unchanged
-  to the bit (each entry keeps its sum in the same order). On arm64 one
-  distance takes 0.94-0.95 of the time at 20 to 32 coefficients, 0.92-0.93 at
-  64, 0.90-0.92 at 100 and 0.89 at 200, in the default layout and with
-  functions aligned to 64 bytes alike; an identical build timed beside it
-  moves 0.98-1.02.
+- The break-detection Wald distance (`emit_breaks`) forms the difference's
+  variance from `D = A_f - A_s` (see Changed) as three full products and
+  three on and below or on and above the diagonal, where it formed six full
+  ones, of which the factorization read half; it picks the sums it differences
+  in one pass, keeps one more buffer a thread (one `k x k` matrix of the
+  orders under 64, 32 KB at most) and no longer allocates. From 22
+  coefficients the three full products run through faer's matrix multiply.
+  On arm64 one distance takes 0.91-0.99 of the time at 1 to 4 coefficients,
+  0.91-0.97 at 5 to 16, 0.86-0.92 at 20 to 24, 0.83-0.85 at 32, 0.77-0.83 at
+  48 to 64, 0.73-0.76 at 100 to 150 and 0.70-0.73 at 200, with and without an
+  intercept, in the default layout and with functions aligned to 64 bytes
+  alike (every order from 1 to 24 and 17 more to 200, the minimum of 9
+  interleaved rounds; an identical build timed beside it reads 0.975-1.029,
+  and no order is slower than before); a run of one group through the
+  bank (4 threads, 5 ABBA rounds) takes 0.98 at 4 features, 0.90 at 20, 0.88
+  at 32, 0.81 at 64 and 0.71 at 200 of its time (the same wheel against
+  itself 1.00 at each).
 
 - The window operators take a row's held mass from the discount's own `exp2`
   from a hundredth of a half-life up, so a row's step and its mass cost one
