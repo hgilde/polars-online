@@ -3726,3 +3726,24 @@ line_has = "if (m as u64) < n {"
 why = """a low word of exactly n enters the branch, whose threshold 2^64 mod n \
 is below n, so `(m as u64) < threshold` is false and m is kept: the result is \
 the same as when the branch is skipped (`a_low_word_of_exactly_n_is_kept`)"""
+
+# Task 480: the survivors of run on main 2332d24c in `young` (task 475).
+
+[[equivalent]]
+file = "crates/online-core/src/gramfit/cd.rs"
+function = "young"
+mutation = "replace match guard `prior_scale < 1.0` with true"
+line_has = "Some(n) if prior_scale < 1.0 =>"
+why = """`prior_scale` is a product of decay factors in (0, 1], so it is never \
+above 1, and at exactly 1 the mutant's limit is `n * 2 / 0`, ±inf (NaN for \
+`n = 0`): `warming_up` reads a non-finite size as not warming, so `young` \
+returns true, as the guard's other arm does"""
+
+[[equivalent]]
+file = "crates/online-core/src/gramfit/cd.rs"
+function = "young"
+mutation = "replace < with <="
+line_has = "Some(n) if prior_scale < 1.0 =>"
+why = """at `prior_scale = 1` the mutant's limit is `n * 2 / 0`, ±inf (NaN for \
+`n = 0`); `warming_up` reads a non-finite size as not warming, so `young` \
+returns true, as the guard's other arm does"""
