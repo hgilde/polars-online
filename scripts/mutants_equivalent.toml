@@ -779,9 +779,9 @@ the 0 the original gives"""
 
 [[equivalent]]
 file = "crates/online-core/src/rls.rs"
-function = "Rls::fold_row"
+function = "fold"
 mutation = "replace > with >="
-line_has = "                    if !(rho > 0.0 && rho.is_finite()) {"
+line_has = "                if !(rho > 0.0 && rho.is_finite()) {"
 why = """the inner check, after `hypot`: `zi` is not 0 there (a zero entry \
 skips the rotation above), so `hypot(rii, zi) >= |zi| > 0` and `>= 0` \
 admits nothing `> 0` refuses; a NaN fails both alike"""

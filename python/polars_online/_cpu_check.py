@@ -147,7 +147,7 @@ class _Cpuid:
                 None, len(code), mem_commit_reserve, page_execute_readwrite
             )
             if not address:
-                raise MemoryError("no memory for the CPU check")
+                raise OSError("no memory for the CPU check")
             ctypes.memmove(address, code, len(code))
             self._release = lambda: kernel32.VirtualFree(address, 0, mem_release)
         else:
