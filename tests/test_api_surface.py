@@ -956,7 +956,7 @@ _PY_READ = re.compile(r"os\.(?:environ\.get|getenv)\(\s*([^,)]*)|os\.environ\[\s
 
 def env_vars() -> list[str]:
     """Every environment variable the shipped code reads at run time: the
-    crates' `src/` and the package. An argument that is neither a string
+    crates' `src/` (less each file's test module) and the package. An argument that is neither a string
     literal nor a `const` of one fails here, rather than be left out."""
     rust = sorted((REPO / "crates").glob("*/src/**/*.rs"))
     consts: dict[str, str] = {}
@@ -970,7 +970,13 @@ def env_vars() -> list[str]:
         (p, _PY_READ) for p in sorted((REPO / "python" / "polars_online").glob("*.py"))
     ]
     for path, pattern in sources:
-        for m in pattern.finditer(path.read_text(encoding="utf-8")):
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".rs":
+            # A file's `#[cfg(test)] mod tests` is not shipped: a variable
+            # only a test reads (a child process's marker) is no part of the
+            # surface.
+            text = re.split(r"\n#\[cfg\(test\)\]\s*\nmod tests\b", text)[0]
+        for m in pattern.finditer(text):
             arg = next(g for g in m.groups() if g is not None).strip()
             literal = re.fullmatch(r"""["']([^"']*)["']""", arg)
             ident = arg.rsplit("::", 1)[-1]

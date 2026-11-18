@@ -151,7 +151,10 @@ def _hold(
 GROWTH = (1, 4, 16)
 #: How far past linear the ratio of the increments may read. Linear gives
 #: ``(16 - 4) / (4 - 1)`` = 4 whatever the fixed cost; quadratic gives 16.
-INCREMENT_SLACK = 1.5
+#: Twice linear, 8: the bank's case of one spec at 4 rows a call read 4.6 to
+#: 5.0 quiet and past 6 under a full gate's load (14 workers), while a
+#: quadratic cost reads 16.
+INCREMENT_SLACK = 2.0
 #: The smaller increment counts at least this share of the smallest run, so
 #: that where a spec costs little beside the fixed cost, noise in the two
 #: smallest readings does not make a ratio of it. At 5% the bank's case of one
