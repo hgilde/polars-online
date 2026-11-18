@@ -903,6 +903,19 @@ fn ln_sum_prod(v: &[f64]) -> f64 {
     total
 }
 
+/// A stack slot that puts the frame holding it at a multiple of 4096, so
+/// that every frame the full predictive calls sits at the same offset in a
+/// page whichever stack it is called from. At 20 features the quadratic
+/// form's triangular solve, called from this function, ran 12% slower
+/// (0.50 s against 0.445 s for 50,000 rows through the chunked bank, on
+/// arm64) in a build where this frame happened to fall at one offset and not
+/// at others: the cost sat in one load after a store in the solve's
+/// set-up, which a shift of the frame by any of a dozen sizes removed. The
+/// arithmetic is untouched; the slot is never read.
+#[repr(align(4096))]
+#[allow(dead_code)]
+struct PageAligned([u8; 1]);
+
 /// `ln Σ exp(v)`, about the maximum.
 fn log_sum_exp(v: &[f64]) -> f64 {
     let top = v.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
@@ -1364,6 +1377,10 @@ impl Bocpd {
         cache: Option<&mut LengthTerms>,
         work: &mut RunWork,
     ) -> Option<(f64, f64)> {
+        // Where this function's frame falls on the stack decides how fast
+        // the solve below runs (see `PageAligned`).
+        let pin = PageAligned([0]);
+        std::hint::black_box(&pin);
         let d = self.cfg.n_features;
         let (k0, nu0) = (self.cfg.prior_kappa, self.cfg.nu0());
         let kn = k0 + run.n;

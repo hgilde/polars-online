@@ -97,11 +97,8 @@ returns.
   0.86, with 10,000 groups 0.95; with pruning off at 4 features 0.79 and at
   20 0.62. On x86-64 (the same change timed earlier on a Linux VM) 0.71 at 4
   features, 0.62 at 20 and 0.69 at 200. One feature is unchanged (a
-  repeated identical build differs by up to 2% here). At 20 features under
-  `covariance_type="full"`, whose code is unchanged, the chunked bank
-  measured 12% slower on arm64 (0.99 through `lf.online.fit_predict`): 64
-  bytes more stack in its caller removes it, so it is where the stack sits
-  and not the arithmetic.
+  repeated identical build differs by up to 2% here), and so is
+  `covariance_type="full"`.
 - `ew_class` with diagonal covariance keeps each class's sum of the log
   variances between that class's rows instead of taking a logarithm per
   feature per class on every row: a class's variances and ridge move only
