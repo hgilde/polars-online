@@ -103,10 +103,18 @@ jobs:
       BASE: ${{ inputs.base }}
       DIGESTS: ${{ inputs.digests && '--digests' || '' }}
     steps:
-      # The whole history: the merge-base with main.
+      # Two checkouts. The workspace root is the commit the workflow runs
+      # from (main, when dispatched there): the tools below, the build-prep
+      # action and compare_outputs.py come from it, because a vm/ branch is
+      # cut from an older main and often predates them. The branch under test
+      # is built from its own tree, in branch/, with the whole history for the
+      # merge-base with main. Cargo finds the root's .cargo/config.toml (the
+      # linker) from branch/ by walking up.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
+          path: branch
           fetch-depth: 0
       - name: free disk and use a leaner linker (Linux)
         uses: ./.github/actions/linux-build-prep
@@ -116,6 +124,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
+          workspaces: branch
           cache-on-failure: true
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
@@ -126,14 +135,14 @@ jobs:
         run: |
           # Unquoted on purpose: empty, or one flag.
           # shellcheck disable=SC2086
-          python3 scripts/vm_checks.py plan --base "$BASE" --variants "$VARIANTS" $DIGESTS
+          python3 scripts/vm_checks.py plan --repo branch --base "$BASE" --variants "$VARIANTS" $DIGESTS
 
       # Each layout of the branch, then of the base (or the base's from the
       # artifact an earlier run kept), into dist/<artifact name>/.
       - name: build the wheels
         run: |
           # shellcheck disable=SC2086
-          python3 scripts/vm_checks.py wheels --base "$BASE" --variants "$VARIANTS" $DIGESTS
+          python3 scripts/vm_checks.py wheels --repo branch --base "$BASE" --variants "$VARIANTS" $DIGESTS
 
       # A step a layout and a commit: the artifact's name is the one a VM
       # looks for. A wheel not built (a layout not asked for, a base reused)
@@ -201,7 +210,7 @@ jobs:
           CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: "true"
           CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS: "true"
         run: |
-          python3 scripts/vm_checks.py tests --package "$TEST_PACKAGE" --filter "$TESTS" \
+          python3 scripts/vm_checks.py tests --repo branch --package "$TEST_PACKAGE" --filter "$TESTS" \
             ${QEMU_CPU:+--qemu-cpu "$QEMU_CPU"}
 
       # The manifest says which wheel is whose, and which base wheels came

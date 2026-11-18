@@ -54,8 +54,9 @@ The three layouts, all release wheels of the same source:
 - `v3`: `RUSTFLAGS="-C target-cpu=x86-64-v3"`, the instruction set of PLAN
   task 448's measurement.
 
-Every build also names lld in `RUSTFLAGS` (the checkout's `.cargo/config.toml`
-is replaced by that variable, and the base's worktree has none), so the only
+Every build also names lld in `RUSTFLAGS` (the build-prep action's
+`.cargo/config.toml` is replaced by that variable; the tests, which set no
+`RUSTFLAGS`, find it by cargo's walk up from `branch/` to the workspace root), so the only
 difference between layouts is the flag under test.
 
 A second dispatch for the same `ref` cancels the first (`cancel-in-progress`,
@@ -66,9 +67,16 @@ group `vm-checks-<ref>`); dispatches for different branches run side by side.
 One job, `checks`, 120 minutes at most, on `ubuntu-24.04` (the image
 `budgets.yml` names). In order:
 
-1. checks out `ref` with its whole history, frees the runner's disk and
-   installs lld (`.github/actions/linux-build-prep`, plus `qemu-user` when
-   `qemu_cpu` is set), the toolchain, a cargo cache and `uv`;
+1. checks out the commit the workflow runs from (`github.sha`, main when
+   dispatched there) at the workspace root, and `ref` with its whole history
+   in `branch/`. The tools (`scripts/vm_checks.py`, `compare_outputs.py`, the
+   build-prep action) come from the first, because a `vm/` branch is cut from
+   an older main and may predate them (run 44309746665 died on that: the
+   script was not in the branch); the second is what is built, merge-based
+   and tested, each `vm_checks.py` command taking `--repo branch`. Then it
+   frees the runner's disk and installs lld (`.github/actions/linux-build-prep`, plus `qemu-user` when
+   `qemu_cpu` is set), the toolchain, a cargo cache (of `branch/`'s workspace)
+   and `uv`;
 2. `scripts/vm_checks.py plan`: the branch's head sha and the base's, short
    (8 hex digits) for the artifact names; an unknown variant or base fails
    here, before any building;

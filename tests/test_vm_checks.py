@@ -152,6 +152,60 @@ def test_the_digest_and_test_steps_are_conditional_and_follow_the_uploads():
     assert "scripts/vm_checks.py tests" in tests["run"]
 
 
+def test_the_tools_come_from_the_workflows_commit_and_the_branch_is_a_subdirectory():
+    """A vm/ branch predates the tools: the workspace root is the commit the
+    workflow runs from (a checkout with no `ref`), the branch is checked out in
+    `branch/` with its history, and every command that touches the branch
+    is pointed at it."""
+    steps = JOB["steps"]
+    checkouts = [s for s in steps if s.get("uses", "").startswith("actions/checkout@")]
+    assert len(checkouts) == 2
+    tools, branch = checkouts
+    assert "ref" not in tools.get("with", {}) and "path" not in tools.get("with", {})
+    assert branch["with"]["ref"] == "${{ inputs.ref }}"
+    assert branch["with"]["path"] == "branch"
+    assert branch["with"]["fetch-depth"] == 0
+    # The tools' checkout comes first, and before the local action it carries.
+    names = [s.get("uses", s.get("name")) for s in steps]
+    assert (
+        steps.index(tools) < steps.index(branch) < names.index("./.github/actions/linux-build-prep")
+    )
+    cache = next(s for s in steps if s.get("uses", "").startswith("Swatinem/rust-cache"))
+    assert cache["with"]["workspaces"] == "branch"
+    for s in steps:
+        run = s.get("run", "")
+        for sub in ("plan", "wheels", "tests"):
+            if f"scripts/vm_checks.py {sub}" in run:
+                assert "--repo branch" in run, sub
+        # The script is the root's, never `branch/scripts/...`.
+        assert "branch/scripts" not in run
+
+
+def test_the_script_runs_the_comparison_tool_from_its_own_tree_not_the_branchs():
+    src = (REPO / "scripts" / "vm_checks.py").read_text(encoding="utf-8")
+    assert 'REPO / "scripts" / "compare_outputs.py"' in src
+    assert 'repo / "scripts"' not in src
+
+
+def test_a_build_output_is_absolute_because_the_build_runs_in_the_checkout(
+    repo, monkeypatch, tmp_path
+):
+    seen = {}
+
+    def run(cmd, cwd=None, env=None, check=None):
+        seen["out"] = Path(cmd[cmd.index("--out") + 1])
+        seen["cwd"] = cwd
+        (seen["out"] / "x-py3-none-linux_x86_64.whl").write_bytes(b"")
+
+    monkeypatch.setattr(vm, "_run", lambda cmd, **kw: "/usr/bin/python3\n")
+    monkeypatch.setattr(vm, "maturin_requirement", lambda repo: "maturin")
+    monkeypatch.setattr(vm.subprocess, "run", run)
+    monkeypatch.chdir(tmp_path)
+    vm.build_wheel(repo, "default", tmp_path / "t", Path("dist") / "w")
+    assert seen["out"].is_absolute() and seen["out"] == tmp_path / "dist" / "w"
+    assert seen["cwd"] == repo
+
+
 def test_qemu_is_installed_only_when_a_cpu_is_asked_for():
     prep = next(s for s in JOB["steps"] if s.get("uses", "").endswith("linux-build-prep"))
     packages = prep["with"]["packages"]

@@ -4,12 +4,19 @@ The x86-64 VMs time wall-clock; building the release wheels they time, and
 checking that a branch's outputs match its base's, is work a GitHub runner
 does as well. The workflow is dispatched for one branch and one base:
 
-    python scripts/vm_checks.py plan --base BASE --variants default,aligned
-    python scripts/vm_checks.py wheels --variants default,aligned --out dist
+    python scripts/vm_checks.py plan --repo branch --base BASE --variants default,aligned
+    python scripts/vm_checks.py wheels --repo branch --variants default,aligned --out dist
     python scripts/vm_checks.py digests --out digests
-    python scripts/vm_checks.py tests --package online-core --filter solve:: --qemu-cpu Nehalem
+    python scripts/vm_checks.py tests --repo branch --package online-core --filter solve:: \
+        --qemu-cpu Nehalem
 
-``plan`` resolves the branch head (the checkout's ``HEAD``) and its base, by
+This script, `compare_outputs.py` and the build-prep action come from the
+commit the workflow runs from; the branch under test, which usually predates
+them, is a second checkout (``--repo``, ``branch/``) that is built, merge-based
+and tested from its own tree. ``digests`` needs no ``--repo``: it compares two
+wheels.
+
+``plan`` resolves the branch head (the ``--repo`` checkout's ``HEAD``) and its base, by
 default the merge-base with ``origin/main``, and writes both shas, short, to
 ``$GITHUB_OUTPUT`` for the workflow's artifact names. ``wheels`` makes a
 release wheel of each requested layout for the head and for the base, one
@@ -189,6 +196,7 @@ def build_command(repo: Path, out: Path, interpreter: str) -> list[str]:
 
 def build_wheel(repo: Path, layout: str, target_dir: Path, out: Path) -> Path:
     """A release wheel of the checkout at ``repo`` in ``layout``, into ``out``."""
+    out = out.resolve()  # the build runs in ``repo``, a relative ``out`` would move there
     out.mkdir(parents=True, exist_ok=True)
     interpreter = _run(["uv", "python", "find", "3.12"]).strip()
     env = {
@@ -303,15 +311,13 @@ def digest_table(report: dict, head: str, base: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run_digests(
-    repo: Path, head_wheel: Path, base_wheel: Path, out: Path, cases: list[str]
-) -> Path:
+def run_digests(head_wheel: Path, base_wheel: Path, out: Path, cases: list[str]) -> Path:
     work = Path(tempfile.mkdtemp(prefix="digests-"))
     base_python = make_env(work / "base", base_wheel)
     head_python = make_env(work / "branch", head_wheel)
     out.mkdir(parents=True, exist_ok=True)
     cmd = [
-        str(head_python), str(repo / "scripts" / "compare_outputs.py"),
+        str(head_python), str(REPO / "scripts" / "compare_outputs.py"),
         "--a", str(base_python), "--b", str(head_python),
         "--a-label", "base", "--b-label", "branch",
         "--builtin", "--time-rounds", "0",
@@ -456,7 +462,6 @@ def _cmd_digests(args: argparse.Namespace) -> int:
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     wheels = manifest["wheels"]
     report = run_digests(
-        args.repo,
         Path(wheels["branch"]["default"]),
         Path(wheels["base"]["default"]),
         args.out,
@@ -490,7 +495,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def common(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--repo", type=Path, default=REPO, help="the branch's checkout")
+        p.add_argument(
+            "--repo", type=Path, default=REPO, help="the branch's checkout, not this script's"
+        )
         p.add_argument(
             "--base", default="", help="the base: default the merge-base with origin/main"
         )
@@ -508,7 +515,6 @@ def main(argv: list[str] | None = None) -> int:
     w.add_argument("--repository", default="hgilde/polars-online")
     w.set_defaults(fn=_cmd_wheels)
     d = sub.add_parser("digests", help="compare_outputs on the two default wheels")
-    d.add_argument("--repo", type=Path, default=REPO)
     d.add_argument("--manifest", type=Path, default=Path("wheels.json"))
     d.add_argument("--out", type=Path, default=Path("digests"))
     d.add_argument(
@@ -516,7 +522,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     d.set_defaults(fn=_cmd_digests)
     t = sub.add_parser("tests", help="a package's tests by filter, natively and under qemu")
-    t.add_argument("--repo", type=Path, default=REPO)
+    t.add_argument("--repo", type=Path, default=REPO, help="the branch's checkout")
     t.add_argument("--package", default="online-core")
     t.add_argument("--filter", required=True, help="cargo test's filter (words: several filters)")
     t.add_argument("--qemu-cpu", default="", help="also run under qemu-x86_64 -cpu this CPU")
