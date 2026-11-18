@@ -5293,7 +5293,7 @@ mod tests {
                     continue;
                 }
                 let (next, taken) = scripted(&[x]);
-                let want = (u128::from(x) * u128::from(n) >> 64) as u64;
+                let want = ((u128::from(x) * u128::from(n)) >> 64) as u64;
                 assert_eq!(below_by(n, next), want, "n {n}, x {x}");
                 assert_eq!(taken.get(), 1, "n {n}, x {x}: one value");
                 assert!(want < n);
@@ -5324,21 +5324,21 @@ mod tests {
         assert!(low(kept, n) >= n);
         // Under the threshold: redrawn, the second value answers.
         let (next, taken) = scripted(&[0, kept]);
-        assert_eq!(below_by(n, next), (u128::from(kept) * 5 >> 64) as u64);
+        assert_eq!(below_by(n, next), ((u128::from(kept) * 5) >> 64) as u64);
         assert_eq!(taken.get(), 2, "a low word of 0 is under the threshold 1");
         // At the threshold: kept, and its high word answers.
         let (next, taken) = scripted(&[inv, kept]);
-        assert_eq!(below_by(n, next), (u128::from(inv) * 5 >> 64) as u64);
+        assert_eq!(below_by(n, next), ((u128::from(inv) * 5) >> 64) as u64);
         assert_eq!(taken.get(), 1, "a low word of 1 is at the threshold 1");
         // Two redraws in a row.
         let (next, taken) = scripted(&[0, 0, kept]);
-        assert_eq!(below_by(n, next), (u128::from(kept) * 5 >> 64) as u64);
+        assert_eq!(below_by(n, next), ((u128::from(kept) * 5) >> 64) as u64);
         assert_eq!(taken.get(), 3);
 
         // n = 3·2^62: x mod 4 = 0, 3, 2, 1 give low words 0, 2^62, 2^63, n.
         let n = 3u64 << 62;
         assert_eq!(n.wrapping_neg() % n, 1 << 62);
-        let hi = |x: u64| (u128::from(x) * u128::from(n) >> 64) as u64;
+        let hi = |x: u64| ((u128::from(x) * u128::from(n)) >> 64) as u64;
         let (x0, x3, x2, x1) = (4u64, 7, 6, 5);
         assert_eq!(
             [low(x0, n), low(x3, n), low(x2, n), low(x1, n)],
