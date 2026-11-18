@@ -72,6 +72,18 @@ returns.
 
 ### Performance
 
+- A model that factorizes a matrix of 12 or fewer features each row (`hmm`,
+  `ew_class`, `ewridge`, `deco` and others that solve through the same
+  factor) skips faer's scratch and dispatch for the small Cholesky factor,
+  and for the triangular solves of 4 or fewer: the same arithmetic in the
+  same order, written out, so every output and saved state is unchanged to
+  the bit. `hmm` at 4 features and 2 states takes 0.86 of the time on arm64
+  (358 to 308 ns a row); the factor alone at orders 4 to 12 takes 0.55 to
+  0.77 of the time, and at 13 and above is unchanged. On x86-64, `hmm` takes
+  0.82 to 0.86 of the time in the default build and 0.81 to 0.90 built for
+  `x86-64-v3` (instructions down 15% and 13%); this also removes most of the
+  slowdown `hmm` had under `x86-64-v3`. A CPU without AVX2 or FMA keeps
+  faer's unfused arithmetic there too.
 - `ew_class` with diagonal covariance keeps each class's sum of the log
   variances between that class's rows instead of taking a logarithm per
   feature per class on every row: a class's variances and ridge move only
