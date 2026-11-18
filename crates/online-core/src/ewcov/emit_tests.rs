@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::model::OnlineModel;
+use crate::oracle::CanonBits;
 use std::hint::black_box;
 
 fn lcg(state: &mut u64) -> f64 {
@@ -84,8 +85,8 @@ fn the_correlation_is_the_branching_form_to_the_bit() {
                 let want = correlation_by_branch(cij, si, sj);
                 let got = correlation(cij, si, sj);
                 assert_eq!(
-                    got.to_bits(),
-                    want.to_bits(),
+                    got.canon_bits(),
+                    want.canon_bits(),
                     "correlation({cij:e}, {si:e}, {sj:e})"
                 );
                 nan += usize::from(got.is_nan());
@@ -193,8 +194,8 @@ fn the_lagged_correlations_are_the_element_at_a_time_form_to_the_bit() {
                                 f64::NAN
                             };
                             assert_eq!(
-                                got[at].to_bits(),
-                                want.to_bits(),
+                                got[at].canon_bits(),
+                                want.canon_bits(),
                                 "k = {k}, lag {li}, ({a}, {b})"
                             );
                             nan += usize::from(want.is_nan());
@@ -298,7 +299,7 @@ fn the_slots_of_a_row_are_the_stored_moments_read_the_long_way_to_the_bit() {
             "the slots are the stats' widths"
         );
         for (at, (g, w)) in got.iter().zip(&want).enumerate() {
-            assert_eq!(g.to_bits(), w.to_bits(), "k = {k}, slot {at}");
+            assert_eq!(g.canon_bits(), w.canon_bits(), "k = {k}, slot {at}");
         }
         // The stream reached a NaN and a number in the correlations.
         let corr = &got[k..k + pairs];

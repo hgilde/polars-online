@@ -109,7 +109,7 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    current sets to `v<N>/`, ships a loader and regenerates the current sets. The bank
    fixture carries the package version, so it is regenerated at every version bump.
    `ModelState`'s variant names are frozen: they are the file's tags.
-   Seventeen exceptions, each the user's, are numbered and stated in full in
+   Eighteen exceptions, each the user's, are numbered and stated in full in
    `docs/records/STATE-CONTINUATION.md` ("rule 5's Nth exception" means its Nth);
    a new one is added there and counted here.
 6. No `unsafe` in `online-core`. f64 everywhere.

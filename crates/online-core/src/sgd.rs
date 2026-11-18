@@ -2722,6 +2722,7 @@ impl OnlineModel for Sgd {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oracle::CanonBits;
 
     /// The dispatched `standardize_row` (AVX2 lanes where the CPU has them)
     /// against the scalar loop, to the bit: random scalers and rows at every
@@ -3552,7 +3553,7 @@ mod tests {
                         assert_eq!(ok, want_ok, "clip {clip}, l2 {l2}, {bad:?} at {pos}");
                         if ok {
                             let bits =
-                                |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                                |v: &[f64]| v.iter().map(|x| x.canon_bits()).collect::<Vec<_>>();
                             assert_eq!(bits(&next), bits(&want), "clip {clip}, l2 {l2}");
                         }
                         cases += usize::from(!ok);

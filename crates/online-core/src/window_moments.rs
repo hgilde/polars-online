@@ -581,6 +581,7 @@ impl WindowSums {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oracle::CanonBits;
 
     /// Every report's two windows read a run of full blocks that one
     /// suffix, one prefix, or a suffix and a prefix cover, at every window
@@ -826,7 +827,7 @@ mod tests {
                 })
                 .collect();
             let row = |q: u64| rows[q as usize].as_slice();
-            let bits = |v: &[f64]| v.iter().map(|b| b.to_bits()).collect::<Vec<_>>();
+            let bits = |v: &[f64]| v.iter().map(|b| b.canon_bits()).collect::<Vec<_>>();
             let (mut dev, mut delta) = (vec![0.0; k], vec![0.0; 2 * k]);
             let (mut dev2, mut delta2) = (vec![0.0; k], vec![0.0; 2 * k]);
             for (lo, hi) in [(0u64, 30u64), (3, 4), (5, 5), (0, 1), (2, 19)] {

@@ -235,3 +235,71 @@ re-pinned; no schema bump. The kept sets are held by bounds: core's
 `flag` would read 0.5, so none may), and the bank's `corr_window` `crit` in
 `v65/` and `v66/` `bank_diagnosed` is in `CONTINUES_WITHIN` at 0.25 (measured
 0.063), every other field staying to the bit.
+
+An eighteenth, the user's (2026-11-18, "Yes option 1", the review of the
+proposal to take faer's product from order 24; built in task 469, which
+replaces that proposal's branch): the break
+distance `break_wald` (`emit_breaks`) is formed in another way and moves at
+every order. The variance of the two fits' difference was
+`A_f H_ff A_f + A_s H_ss A_s − A_f H_fs A_s − A_s H_fs' A_f`, four terms
+that are 500 times the sum or more over the first rows past the `2k` wait
+and cancel to it. It is now `D H_ff D' + A_s E₂ A_s + C + C'` with
+`D = A_f − A_s`, `E_ff = H_ff − H_fs`, `E₂ = H_ff + H_ss − H_fs − H_fs'` and
+`C = D E_ff A_s`, each term the size of the sum: the same matrix in exact
+arithmetic, nearer the exact one in floating point (against the exact
+distance of the stored Grams and sums, to a thousand bits: the 12 largest
+movers of 14,000 distances at order 32 with an intercept, relative error
+geometric mean 1.4e-5 to 2.3e-7 and largest 2.5e-4 to 1.6e-5; ordinary rows
+3.4e-11 to 2.7e-12; without an intercept 5.3e-5 to 1.1e-5 and 4.1e-10 to
+7.4e-11; the first-row-past-the-gate rows of orders 4 and 20, 6.9e-6 to
+4.7e-7 and 7.2e-6 to 9.9e-8; order 2's 12 largest, geometric mean 9.8e-6 to
+4.3e-6 but largest 9.2e-5 to 1.9e-4, the one case where its largest is
+not smaller; after a 4,000-step gap at order 24 the form gains little).
+The products run as the plain loops' sums to the bit under 22 coefficients
+and through faer's matrix multiply from 22 (the three full products; the
+three half ones stay on the register tile), which add in blocks and fuse
+where the machine does, so from 22 the distance also differs by the kernel
+(about 1e-13 relative on ordinary rows, 1e-6 on the first rows past the
+gate, and more near a singular variance), the same on every thread count
+and chunking, and another platform's kernel can round it differently.
+Measured by `scripts/compare_outputs.py`, main's release wheel against this
+build's (arm64, polars 2.0.0), over 42 cases (1 to 200 features, 1 to
+1,000 groups, 1 and 3 targets, chunks of 1 and 1,000 rows, a million rows,
+nulls, gaps, a shift, a save and load): only `break_wald` moves, in every
+case; 0 flips of its thresholds at `chi2(k+1)`'s 0.9, 0.99, 0.999 and
+0.9999 values and of `zscore`, `drift`, `cusum` and `cusum_sq`, and 0 nulls,
+NaNs or infinities appearing or vanishing. Relative movement, max / p99.9 /
+median over the case's rows: one group of 100,000 to 200,000 rows, k = 4 1.8e-11 / 5.0e-15 /
+5.2e-16, k = 12 8.2e-11 / 4.1e-14 / 1.6e-15, k = 20 1.5e-9 / 1.6e-13 /
+3.6e-15, k = 32 2.3e-10 / 2.0e-13 / 3.8e-15, k = 64 6.6e-9 / 1.2e-11 /
+1.5e-14, k = 100 6.8e-5 / 9.7e-11 / 2.5e-14, k = 200 1.8e-7 / 1.8e-10 /
+1.4e-13, a million rows at k = 32 and 64 1.5e-10 / 1.5e-13 / 3.7e-15 and
+5.1e-10 / 6.4e-13 / 1.2e-14; 1,000 groups of 300 to 400 rows (most rows
+young, the first past the gate large) k = 1 1.7e-6 / 2.8e-11 / 1.2e-15,
+k = 2 1.2e-5 / 6.2e-11 / 2.2e-15, k = 4 8.1e-7 / 6.9e-11 / 4.6e-15, k = 8
+2.3e-5 / 2.4e-10 / 1.6e-14, k = 12 7.7e-4 / 5.2e-10 / 4.1e-14, k = 20
+2.3e-4 / 8.6e-10 / 8.6e-14, k = 24 1.4e-4 / 1.2e-9 / 1.4e-13, k = 32
+7.1e-4 / 2.4e-9 / 3.2e-13, k = 64 1.4e-7 / 1.4e-8 / 1.5e-11, k = 100
+8.5e-6 / 7.0e-8 / 7.5e-11. Native, over 1,180,000 distances of random designs at
+orders 1 to 48 (a decay with a half-life of 200 rows, 800 to 3,000 groups
+each, the first seven rows past the gate, with and without an intercept, and
+after a gap) D refuses no distance the four-term form reads and the
+four-term form refuses 2 that D reads, and the four thresholds above flip on
+none. On designs whose features are
+collinear (to 1e-4 or 1e-7) the two forms refuse different rows, each where
+its rounding breaks a factorization of a variance whose exact pivots span
+fewer than six digits, in both directions in about equal number (a number
+where the four-term form had none, and none where it had a number); where
+the exact variance of the stored sums is not positive definite either form
+can read a number. A saved state of an earlier build loads and continues
+with every field to the bit except `break_wald`; its last row's
+`break_wald`, kept in the state's last-row part, is the new build's, so a
+state saved by the new build after a row with a distance differs from the
+old build's by that float. The current fixture `bank_diagnosed` of
+`online-polars` regenerated (17 lines: its `break_wald_y` fields move by rounding, 1 ulp
+on the first row, within the golden 1e-12 throughout; no schema bump); every other fixture, the whole of
+`online-core`'s, is byte for byte. The kept previous-schema fixtures
+(`v61/` and later `bank_diagnosed`) are held to the golden tolerance
+against their frozen frames in `break_wald_` (`quantiled`'s entry of
+`CONTINUES_WITHIN`, 4.7e-16 relative here) and re-save the current
+fixture's bytes.

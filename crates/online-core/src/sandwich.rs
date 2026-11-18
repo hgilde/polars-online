@@ -435,6 +435,7 @@ pub(crate) mod rounding;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oracle::CanonBits;
 
     /// Whether this thread's covariance scratch holds anything.
     fn cov_kept() -> bool {
@@ -770,7 +771,7 @@ mod tests {
             .chain(&s.meat)
             .chain(s.gammas.iter().flatten())
             .chain(s.ring.iter().flatten())
-            .map(|v| v.to_bits())
+            .map(|v| v.canon_bits())
             .collect()
     }
 

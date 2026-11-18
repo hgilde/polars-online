@@ -262,6 +262,7 @@ impl OnlineModel for SeqTest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oracle::CanonBits;
 
     /// Before `min_weight` a row reports one NaN for each of its four slots
     /// for each target, `SLOTS * n_targets` of them, from `step`, from
@@ -748,8 +749,8 @@ mod tests {
                 let d = if i == 0 { 0.0 } else { 1.0 };
                 a.step(&[], &y, d, w);
                 branching_update(&mut b, &y, w);
-                let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-                assert_eq!(a.w_sum.to_bits(), b.w_sum.to_bits(), "row {i}");
+                let bits = |v: &[f64]| v.iter().map(|x| x.canon_bits()).collect::<Vec<_>>();
+                assert_eq!(a.w_sum.canon_bits(), b.w_sum.canon_bits(), "row {i}");
                 for (u, v) in [
                     (&a.log_e_pos, &b.log_e_pos),
                     (&a.log_e_neg, &b.log_e_neg),
@@ -762,7 +763,7 @@ mod tests {
                         "row {i}, zero wealth {negative_zero_wealth}"
                     );
                 }
-                assert_eq!(a.w_sum.to_bits(), b.w_sum.to_bits());
+                assert_eq!(a.w_sum.canon_bits(), b.w_sum.canon_bits());
             }
         }
     }

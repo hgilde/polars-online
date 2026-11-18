@@ -68,4 +68,6 @@ serde_json.workspace = true
 # Tests only: a state edited in msgpack itself, infinities intact
 # (tests/model_contract.rs, states written before the means' low parts).
 rmpv.workspace = true
+# Tests only: a variance computed to a thousand bits (`src/oracle.rs`).
+dashu-float.workspace = true
 

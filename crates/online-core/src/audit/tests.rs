@@ -5,6 +5,7 @@
 //! (`tests/test_second_opinion.py`).
 
 use super::*;
+use crate::oracle::CanonBits;
 use crate::{OnlineModel, SplitMix64, StateError};
 
 /// Counters read from a file whose pairs are `pairs`, in their order: the
@@ -1459,7 +1460,9 @@ fn joining_neighbours_in_registers_is_joining_them_in_the_output_to_the_bit() {
         out
     }
     let bits = |v: &[(f64, f64)]| -> Vec<(u64, u64)> {
-        v.iter().map(|c| (c.0.to_bits(), c.1.to_bits())).collect()
+        v.iter()
+            .map(|c| (c.0.canon_bits(), c.1.canon_bits()))
+            .collect()
     };
     let mut r = SplitMix64::new(4242);
     let specials = [
@@ -1713,7 +1716,9 @@ fn stable_sort_fold(mut all: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
 }
 
 fn bits(v: &[(f64, f64)]) -> Vec<(u64, u64)> {
-    v.iter().map(|c| (c.0.to_bits(), c.1.to_bits())).collect()
+    v.iter()
+        .map(|c| (c.0.canon_bits(), c.1.canon_bits()))
+        .collect()
 }
 
 /// Ties: values repeated across centroids and buffer, including `-0.0` and

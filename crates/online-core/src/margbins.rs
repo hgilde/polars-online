@@ -2019,6 +2019,7 @@ pub fn edges_from(rule: BinRule, n_bins: usize, values: &mut Vec<(f64, f64)>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oracle::CanonBits;
 
     fn lcg(seed: &mut u64) -> f64 {
         *seed = seed
@@ -2874,14 +2875,14 @@ mod tests {
     }
 
     /// Every number a histogram holds, as bits: a comparison to the bit, and
-    /// one that a `-0.0` or a NaN cannot pass by accident.
+    /// one that a `-0.0` cannot pass by accident (a NaN is any NaN: its sign is unspecified).
     fn bits(b: &MarginalBins) -> Vec<u64> {
         b.w.iter()
             .chain(&b.mean)
             .chain(&b.m2)
             .chain(&b.mean_lo)
             .chain(std::iter::once(&b.scale))
-            .map(|v| v.to_bits())
+            .map(|v| v.canon_bits())
             .chain(std::iter::once(u64::from(b.empty)))
             .collect()
     }

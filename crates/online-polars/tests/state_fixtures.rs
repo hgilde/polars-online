@@ -2026,6 +2026,12 @@ const CONTINUES_WITHIN: &[Within] = &[
         ],
         TOL,
     ),
+    // Rule 5's eighteenth exception (the user's, 2026-11-18, task 469): the
+    // break distance is formed from the difference of the fits' inverse
+    // Grams, so every kept fixture's continuation parts from its frozen
+    // `break_wald_` by rounding (5.5e-16 relative here, on rows well past
+    // the `2k` wait), held to the golden tolerance.
+    ("quantiled", &["break_wald_"], TOL),
     ("closing", COV_FIELDS, 1e-15),
     ("windowed", COV_FIELDS, 1e-15),
     ("uint_clock", COV_FIELDS, 1e-15),

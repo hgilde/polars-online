@@ -615,7 +615,12 @@ Each fit is `β = G⁻¹ Σ ω z y` over `z = (1, x)`. With noise of variance
 ```
 
 where `A = G⁻¹`, and the `H` are the sums of `ω_f² z z'`, `ω_s² z z'`
-and `ω_f ω_s z z'`, which the diagnostic keeps. That variance is a sum
+and `ω_f ω_s z z'`, which the diagnostic keeps. It is formed as
+`D H_ff D + A_s E₂ A_s + C + C'`, with `D = A_f − A_s`,
+`E₂ = H_ff + H_ss − H_fs − H_fs'` and `C = D (H_ff − H_fs) A_s`: the same
+matrix, each of whose terms is the size of the whole, where the four above
+are 500 times it or more over the first rows past the wait and cancel to it.
+That variance is a sum
 of one outer product per row, of `(A_f ω_f − A_s ω_s) z`, and those
 vectors are orthogonal to the design: summed against `z'` they give
 `A_f G_f − A_s G_s`, the identity less itself. So over `n` rows its rank

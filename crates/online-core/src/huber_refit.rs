@@ -1697,6 +1697,7 @@ pub(crate) fn slow_refit_stream(trial: u64) -> Vec<(f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oracle::CanonBits;
 
     /// [`gram_lower`]'s scalar blocks as a function, the same loop, for the
     /// lanes to be held to (`the_blocked_gram_is_the_row_by_row_loop` holds
@@ -2737,15 +2738,15 @@ mod tests {
                         }
                     }
                 }
-                let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                let bits = |v: &[f64]| v.iter().map(|x| x.canon_bits()).collect::<Vec<_>>();
                 assert_eq!(bits(&b), bits(&eb), "nf {nf}, n {n}");
                 assert_eq!(a.len(), nf * nf);
                 for p in 0..nf {
                     for q in 0..nf {
                         let want = if q <= p { ea[p * nf + q] } else { 0.0 };
                         assert_eq!(
-                            a[p * nf + q].to_bits(),
-                            want.to_bits(),
+                            a[p * nf + q].canon_bits(),
+                            want.canon_bits(),
                             "nf {nf}, n {n}, ({p}, {q})"
                         );
                     }
@@ -2818,8 +2819,8 @@ mod tests {
             let fast = weighted_median(&a, &v);
             let slow = weighted_median_sorted(&a, &v);
             assert_eq!(
-                fast.to_bits(),
-                slow.to_bits(),
+                fast.canon_bits(),
+                slow.canon_bits(),
                 "trial {trial}: {a:?} at {v:?}: {fast} against {slow}"
             );
             let live: Vec<f64> = v.iter().copied().filter(|&w| w > 0.0).collect();

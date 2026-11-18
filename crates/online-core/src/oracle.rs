@@ -799,6 +799,32 @@ pub(crate) fn propagate(f: impl Fn(&[f64]) -> f64, x: &[f64], dx: &[f64]) -> f64
         * (1.0 + 1e-3)
 }
 
+/// A float's bits, with every NaN the one NaN: IEEE leaves the sign and
+/// payload of a NaN that arithmetic makes unspecified, and another target's
+/// code generation orders the operands another way, so a test that compares
+/// two ways of computing over data that can make a NaN (`inf - inf`,
+/// `0 * inf`, two NaNs met) compares these. Every other value, infinities
+/// and signed zeros included, keeps its bits.
+pub(crate) trait CanonBits {
+    fn canon_bits(self) -> u64;
+}
+
+impl CanonBits for f64 {
+    fn canon_bits(self) -> u64 {
+        if self.is_nan() {
+            f64::NAN.to_bits()
+        } else {
+            self.to_bits()
+        }
+    }
+}
+
+impl CanonBits for &f64 {
+    fn canon_bits(self) -> u64 {
+        (*self).canon_bits()
+    }
+}
+
 /// Asserts `|got − want| ≤ bound`, a bound the caller derived, naming what
 /// was compared and the share of the bound the error took.
 #[track_caller]
@@ -813,6 +839,169 @@ pub(crate) fn assert_within(got: f64, want: f64, bound: f64, what: impl std::fmt
         "{what}: {got:e} against {want:e}, off by {err:e}, {:.3} times its bound {bound:e}",
         err / bound
     );
+}
+
+/// The break-detection distance from its inputs to a thousand bits, which
+/// no f64 form can check where the terms of its variance cancel.
+///
+/// `A = G⁻¹` for each fit's Gram, the variance
+/// `V = A_f H_ff A_f + A_s H_ss A_s − A_f H_fs A_s − A_s H_fs' A_f` (formed
+/// on and below the diagonal, from the lower triangle of each `G` as the
+/// factorization reads it, and mirrored), and `δ' V⁻¹ δ`, by Gauss-Jordan
+/// on [`dashu_float`]'s floats of 1,024 bits: every input is a dyadic
+/// rational, so the only roundings are 2⁻¹⁰²⁴ relative, which the largest
+/// condition numbers a Gram reaches (about 1e16, squared in `V`) leave
+/// 270 digits to spare. It shares no arithmetic with the code it checks:
+/// no Cholesky, no register block, no faer.
+pub(crate) mod exact {
+    use dashu_float::FBig;
+
+    type Big = FBig;
+    const BITS: usize = 1024;
+
+    fn big(x: f64) -> Big {
+        Big::try_from(x)
+            .expect("a finite input")
+            .with_precision(BITS)
+            .value()
+    }
+
+    fn zero() -> Big {
+        Big::ZERO.with_precision(BITS).value()
+    }
+
+    fn matrix(a: &[f64]) -> Vec<Big> {
+        a.iter().map(|&x| big(x)).collect()
+    }
+
+    /// `a b`, both `n × n` row-major.
+    fn product(a: &[Big], b: &[Big], n: usize) -> Vec<Big> {
+        let mut out = vec![zero(); n * n];
+        for i in 0..n {
+            for k in 0..n {
+                for j in 0..n {
+                    let term = &a[i * n + k] * &b[k * n + j];
+                    out[i * n + j] = &out[i * n + j] + &term;
+                }
+            }
+        }
+        out
+    }
+
+    /// `g⁻¹` for a symmetric positive definite `g`, by Gauss-Jordan without
+    /// pivoting; `None` at a zero pivot.
+    fn inverse(g: &[Big], n: usize) -> Option<Vec<Big>> {
+        let mut m: Vec<Vec<Big>> = (0..n)
+            .map(|i| {
+                let mut row: Vec<Big> = g[i * n..(i + 1) * n].to_vec();
+                row.extend((0..n).map(|j| if i == j { big(1.0) } else { zero() }));
+                row
+            })
+            .collect();
+        for c in 0..n {
+            let pivot = m[c][c].clone();
+            if pivot == zero() {
+                return None;
+            }
+            for x in m[c].iter_mut() {
+                *x = &*x / &pivot;
+            }
+            for r in 0..n {
+                if r != c && m[r][c] != zero() {
+                    let f = m[r][c].clone();
+                    let src = m[c].clone();
+                    for (x, s) in m[r].iter_mut().zip(&src) {
+                        *x = &*x - &(&f * s);
+                    }
+                }
+            }
+        }
+        Some(m.into_iter().flat_map(|row| row[n..].to_vec()).collect())
+    }
+
+    /// The exact distance's pieces.
+    pub(crate) struct Wald {
+        /// `δ' V⁻¹ δ`, rounded to f64.
+        pub quad: f64,
+        /// Whether `V` is positive definite: every pivot of its `LDL'` is
+        /// positive and at least 1e-100 of the largest (a variance that is
+        /// singular in exact arithmetic leaves pivots near 2⁻¹⁰²⁴ of it).
+        pub definite: bool,
+        /// The smallest pivot over the largest.
+        pub pivot_ratio: f64,
+    }
+
+    /// The distance's quadratic form from the fits' Grams `gf` and `gs`
+    /// (row-major, `k × k`, the lower triangle read), the three sums `hff`,
+    /// `hss` and `hfs` as the distance picks them, and the difference
+    /// `delta`. `None` where a Gram is singular.
+    pub(crate) fn wald(
+        gf: &[f64],
+        gs: &[f64],
+        hff: &[f64],
+        hss: &[f64],
+        hfs: &[f64],
+        delta: &[f64],
+        k: usize,
+    ) -> Option<Wald> {
+        let sym = |g: &[f64]| -> Vec<Big> {
+            let mut m = matrix(g);
+            for i in 0..k {
+                for j in i + 1..k {
+                    m[i * k + j] = m[j * k + i].clone();
+                }
+            }
+            m
+        };
+        let (af, a_s) = (inverse(&sym(gf), k)?, inverse(&sym(gs), k)?);
+        let (hff, hss, hfs) = (matrix(hff), matrix(hss), matrix(hfs));
+        let ff = product(&product(&af, &hff, k), &af, k);
+        let ss = product(&product(&a_s, &hss, k), &a_s, k);
+        let fs = product(&product(&af, &hfs, k), &a_s, k);
+        let mut m: Vec<Vec<Big>> = (0..k)
+            .map(|i| {
+                let mut row: Vec<Big> = (0..k).map(|_| zero()).collect();
+                for j in 0..=i {
+                    row[j] =
+                        &(&ff[i * k + j] + &ss[i * k + j]) - &(&fs[i * k + j] + &fs[j * k + i]);
+                }
+                for j in i + 1..k {
+                    row[j] =
+                        &(&ff[j * k + i] + &ss[j * k + i]) - &(&fs[j * k + i] + &fs[i * k + j]);
+                }
+                row.push(big(delta[i]));
+                row
+            })
+            .collect();
+        let (mut quad, mut definite) = (zero(), true);
+        let (mut lo, mut hi) = (f64::INFINITY, 0f64);
+        for c in 0..k {
+            let pivot = m[c][c].clone();
+            let p = pivot.to_f64().value();
+            lo = lo.min(p);
+            hi = hi.max(p);
+            if pivot <= zero() {
+                definite = false;
+                break;
+            }
+            for r in c + 1..k {
+                let f = &m[r][c] / &pivot;
+                let src = m[c].clone();
+                for (x, s) in m[r].iter_mut().zip(&src).skip(c) {
+                    *x = &*x - &(&f * s);
+                }
+            }
+            let y = m[c][k].clone();
+            quad = &quad + &(&(&y * &y) / &pivot);
+        }
+        let pivot_ratio = lo / hi;
+        definite &= pivot_ratio >= 1e-100;
+        Some(Wald {
+            quad: quad.to_f64().value(),
+            definite,
+            pivot_ratio,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1264,6 +1453,75 @@ mod tests {
         assert!((p / ((12e-10 + 18e-10) * 1.001) - 1.0).abs() < 1e-6, "{p}");
         assert_eq!(running_dot([(1.0, 2.0), (3.0, -2.0)]).0, -4.0);
         assert!((condition(&[1.0, 0.0, 0.0, 4.0]) - 4.0).abs() < 1e-14);
+    }
+
+    /// The exact distance on a case by hand (`k = 1`, `G_f = 2`, `G_s = 4`,
+    /// `H = (3, 5, 1)`: `V = 3/4 + 5/16 − 2/8 = 13/16`, so `δ = 2` gives
+    /// `4 / V = 64/13`), against faer's LU on a well-conditioned case of
+    /// order 4 with a lopsided `H`, and the two variances with no
+    /// distance: `V = 0` (all ones) and `V < 0`.
+    #[test]
+    fn the_exact_distance_is_its_definition() {
+        let w = exact::wald(&[2.0], &[4.0], &[3.0], &[5.0], &[1.0], &[2.0], 1).unwrap();
+        assert!(
+            (w.quad - 64.0 / 13.0).abs() < 1e-15 && w.definite,
+            "{}",
+            w.quad
+        );
+        let k = 4;
+        let g = |s: f64| -> Vec<f64> {
+            (0..k * k)
+                .map(|n| {
+                    let (i, j) = (n / k, n % k);
+                    if i == j {
+                        3.0 * s + i as f64
+                    } else {
+                        0.3 / (1.0 + (i + j) as f64)
+                    }
+                })
+                .collect()
+        };
+        let (gf, gs) = (g(1.0), g(2.5));
+        let h = |s: f64| -> Vec<f64> {
+            (0..k * k)
+                .map(|n| {
+                    let (i, j) = (n / k, n % k);
+                    s * (1.0 + 0.1 * ((i * 3 + j * 5) % 7) as f64) * if i == j { 2.0 } else { 0.5 }
+                })
+                .collect()
+        };
+        let (hff, hss, hfs) = (h(1.0), h(0.4), h(0.15));
+        let delta = [1.0, -0.5, 2.0, 0.25];
+        let (af, a_s) = (inverse(&gf), inverse(&gs));
+        let mul = |a: &[f64], b: &[f64]| -> Vec<f64> {
+            (0..k * k)
+                .map(|n| dot((0..k).map(|m| (a[n / k * k + m], b[m * k + n % k]))))
+                .collect()
+        };
+        let ff = mul(&mul(&af, &hff), &af);
+        let ss = mul(&mul(&a_s, &hss), &a_s);
+        let fs = mul(&mul(&af, &hfs), &a_s);
+        let v: Vec<f64> = (0..k * k)
+            .map(|n| ff[n] + ss[n] - fs[n] - fs[n % k * k + n / k])
+            .collect();
+        // The variance of the lower triangle, mirrored.
+        let v: Vec<f64> = (0..k * k)
+            .map(|n| {
+                let (i, j) = (n / k, n % k);
+                if j <= i { v[n] } else { v[j * k + i] }
+            })
+            .collect();
+        let want = quad_form(&v, &delta);
+        let got = exact::wald(&gf, &gs, &hff, &hss, &hfs, &delta, k).unwrap();
+        assert!(
+            got.definite && (got.quad / want - 1.0).abs() < 1e-11,
+            "{} vs {want}",
+            got.quad
+        );
+        let zero = exact::wald(&[1.0], &[1.0], &[1.0], &[1.0], &[1.0], &[1.0], 1).unwrap();
+        assert!(!zero.definite, "V = 0 is not definite");
+        let negative = exact::wald(&[1.0], &[1.0], &[1.0], &[1.0], &[3.0], &[1.0], 1).unwrap();
+        assert!(!negative.definite, "V = -4 is not definite");
     }
 
     #[test]

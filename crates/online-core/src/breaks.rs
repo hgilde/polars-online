@@ -779,6 +779,12 @@ pub fn cusum_sq_null_at(own_half_life: f64, elapsed: f64, lead: f64) -> f64 {
 /// wald   = Δ' Var(Δ)⁻¹ Δ                       ~ χ²(k) under no break
 /// ```
 ///
+/// The distance forms that variance as `D H_ff D + A_s E_2 A_s + C + C'`
+/// with `D = A_f − A_s`, `E_ff = H_ff − H_fs`, `E_2 = H_ff + H_ss − H_fs −
+/// H_fs'` and `C = D E_ff A_s` ([`lower_variance`]): the same matrix, each
+/// of whose terms is the size of the whole, where the four terms above are
+/// 500 times it or more near the gate and cancel to it.
+///
 /// The variance is `σ² Σ_t d_t d_t'`, `d_t = (A_f ω_{f,t} − A_s ω_{s,t})
 /// z_t`, and `Σ_t d_t z_t' = A_f G_f − A_s G_s = I − I = 0`: the `d_t` lie
 /// in the null space of the `k × n` design, so over `n` rows the variance
@@ -927,54 +933,85 @@ fn mat_mul(a: &[f64], b: &[f64], p: usize) -> Vec<f64> {
 /// [`mat_mul`] into `out`, whose old contents are not read: entry `(i, j)`
 /// is `((0 + a_i0 b_0j) + a_i1 b_1j) + ...`, the products added in `k`'s
 /// order, each rounded as a product and then as a sum (never fused), as the
-/// plain triple loop adds them to a zeroed matrix. A block of four rows (then
-/// two and one) by eight columns (then four, two and one) is held in
-/// registers across the `k` loop, each entry the same sequence of roundings
-/// whatever the block it falls in.
+/// plain triple loop adds them to a zeroed matrix.
 fn mat_mul_into(a: &[f64], b: &[f64], p: usize, out: &mut Vec<f64>) {
-    debug_assert!(a.len() == p * p && b.len() == p * p);
-    out.clear();
     out.resize(p * p, 0.0);
+    part_mul::<false, ALL>(a, b, p, out);
+}
+
+/// The entries of a product [`part_mul`] forms: all of them, those on and
+/// below the diagonal, or those on and above it.
+const ALL: u8 = 0;
+const LOWER: u8 = 1;
+const UPPER: u8 = 2;
+
+/// `out (+)= a b` over `PART` of the `p × p` product, in registers: a block
+/// of four rows (then two and one) by eight columns (then four, two and one)
+/// is held across the `k` loop, so an entry is the same sequence of
+/// roundings whatever block it falls in, and whatever `PART` leaves out. It
+/// is [`mat_mul_into`]'s sum when `ADD` is off (the sum starts from 0), and
+/// that sum started from `out`'s entry when it is on. The entries outside
+/// `PART` are not written, except those a block spans on its way to the
+/// diagonal, which get their own sums: nothing may read them.
+///
+/// `LOWER` stops each row block's columns at the block's last row's
+/// diagonal, and `UPPER` starts them at the block's first row's, rounded
+/// down to a multiple of four.
+#[inline(always)]
+fn part_mul<const ADD: bool, const PART: u8>(a: &[f64], b: &[f64], p: usize, out: &mut [f64]) {
+    debug_assert!(a.len() == p * p && b.len() == p * p && out.len() == p * p);
     let mut i = 0;
     while i + 4 <= p {
-        mat_mul_rows::<4>(a, b, p, i, out);
+        part_rows::<4, ADD, PART>(a, b, p, i, out);
         i += 4;
     }
     if i + 2 <= p {
-        mat_mul_rows::<2>(a, b, p, i, out);
+        part_rows::<2, ADD, PART>(a, b, p, i, out);
         i += 2;
     }
     if i < p {
-        mat_mul_rows::<1>(a, b, p, i, out);
+        part_rows::<1, ADD, PART>(a, b, p, i, out);
     }
 }
 
-/// `R` rows from `i` of [`mat_mul_into`]'s product, in blocks of eight, four,
-/// two and one columns.
+/// `R` rows from `i` of [`part_mul`], in blocks of eight, four, two and one
+/// columns.
 #[inline(always)]
-fn mat_mul_rows<const R: usize>(a: &[f64], b: &[f64], p: usize, i: usize, out: &mut [f64]) {
-    let mut j = 0;
-    while j + 8 <= p {
-        mat_mul_block::<R, 8>(a, b, p, i, j, out);
-        j += 8;
-    }
-    if j + 4 <= p {
-        mat_mul_block::<R, 4>(a, b, p, i, j, out);
+fn part_rows<const R: usize, const ADD: bool, const PART: u8>(
+    a: &[f64],
+    b: &[f64],
+    p: usize,
+    i: usize,
+    out: &mut [f64],
+) {
+    let end = if PART == LOWER { i + R } else { p };
+    let mut j = if PART == UPPER { i & !3 } else { 0 };
+    // An upper part that starts a half block in takes one of four first.
+    if j & 4 != 0 && j + 4 <= end {
+        part_block::<R, 4, ADD>(a, b, p, i, j, out);
         j += 4;
     }
-    if j + 2 <= p {
-        mat_mul_block::<R, 2>(a, b, p, i, j, out);
+    while j + 8 <= end {
+        part_block::<R, 8, ADD>(a, b, p, i, j, out);
+        j += 8;
+    }
+    if j + 4 <= end {
+        part_block::<R, 4, ADD>(a, b, p, i, j, out);
+        j += 4;
+    }
+    if j + 2 <= end {
+        part_block::<R, 2, ADD>(a, b, p, i, j, out);
         j += 2;
     }
-    if j < p {
-        mat_mul_block::<R, 1>(a, b, p, i, j, out);
+    if j < end {
+        part_block::<R, 1, ADD>(a, b, p, i, j, out);
     }
 }
 
 /// An `R x W` block of the product, summed in registers: each entry is the
 /// same sequence of rounded products and sums, `k` ascending.
 #[inline(always)]
-fn mat_mul_block<const R: usize, const W: usize>(
+fn part_block<const R: usize, const W: usize, const ADD: bool>(
     a: &[f64],
     b: &[f64],
     p: usize,
@@ -983,6 +1020,11 @@ fn mat_mul_block<const R: usize, const W: usize>(
     out: &mut [f64],
 ) {
     let mut acc = [[0.0f64; W]; R];
+    if ADD {
+        for (r, row) in acc.iter_mut().enumerate() {
+            row.copy_from_slice(&out[(i + r) * p + j..(i + r) * p + j + W]);
+        }
+    }
     for (k, brow) in b.chunks_exact(p).enumerate() {
         let brow: &[f64; W] = brow[j..j + W].try_into().expect("a block of W columns");
         for (r, row) in acc.iter_mut().enumerate() {
@@ -994,6 +1036,116 @@ fn mat_mul_block<const R: usize, const W: usize>(
     }
     for (r, row) in acc.iter().enumerate() {
         out[(i + r) * p + j..(i + r) * p + j + W].copy_from_slice(row);
+    }
+}
+
+// Each of the parts the difference's variance forms, once, out of line.
+#[inline(never)]
+fn lower_set(a: &[f64], b: &[f64], p: usize, out: &mut [f64]) {
+    part_mul::<false, LOWER>(a, b, p, out);
+}
+#[inline(never)]
+fn lower_add(a: &[f64], b: &[f64], p: usize, out: &mut [f64]) {
+    part_mul::<true, LOWER>(a, b, p, out);
+}
+#[inline(never)]
+fn upper_set(a: &[f64], b: &[f64], p: usize, out: &mut [f64]) {
+    part_mul::<false, UPPER>(a, b, p, out);
+}
+#[inline(never)]
+fn all_add(a: &[f64], b: &[f64], p: usize, out: &mut [f64]) {
+    part_mul::<true, ALL>(a, b, p, out);
+}
+
+/// The order (features and intercept) from which the three full products of
+/// the difference's variance run through faer's matrix multiply. Below it
+/// the register blocks above are the faster: faer's product costs more at
+/// the orders it loses at, and from 22 on it gains (the native `wald`,
+/// arm64, min of nine). On x86-64 faer is ahead from a lower order, so one
+/// cut serves both.
+const FAER_FROM: usize = 22;
+
+/// `out (+)= a b` by faer's matrix multiply, run on this thread
+/// (`Par::Seq`: the call is already one of a bank's parallel ones, and
+/// nothing here spreads over the pool). Faer adds the products in blocks and
+/// fuses them where the machine does, so an entry differs from the register
+/// blocks' in its last bits, and from one platform's kernel to another's.
+fn faer_mul(a: &[f64], b: &[f64], p: usize, out: &mut [f64], add: bool) {
+    let a = faer::MatRef::from_row_major_slice(a, p, p);
+    let b = faer::MatRef::from_row_major_slice(b, p, p);
+    let c = faer::MatMut::from_row_major_slice_mut(out, p, p);
+    let acc = if add {
+        faer::Accum::Add
+    } else {
+        faer::Accum::Replace
+    };
+    faer::linalg::matmul::matmul(c, acc, a, b, 1.0, faer::Par::Seq);
+}
+
+/// The buffers of the difference's variance ([`lower_variance`]).
+#[derive(Default)]
+struct DiffBufs {
+    /// `D = A_f − A_s`.
+    diff: Vec<f64>,
+    /// `T = D H_ff`, `P = D E_ff`, `U = A_s E_2 + P`, and `P A_s`'s upper
+    /// triangle.
+    t: Vec<f64>,
+    p: Vec<f64>,
+    u: Vec<f64>,
+    c: Vec<f64>,
+}
+
+/// The lower triangle of the difference's variance into `var` (the rest is
+/// left as it was, and nothing reads it), from the fits' inverses `af` and
+/// `a_s` and the picked sums `hff`, `e2 = H_ff + H_ss − H_fs − H_fs'` and
+/// `eff = H_ff − H_fs`: with `D = A_f − A_s`,
+///
+/// ```text
+/// var = D H_ff D' + A_s E_2 A_s + C + C',   C = D E_ff A_s
+/// ```
+///
+/// which is `A_f H_ff A_f + A_s H_ss A_s − A_f H_fs A_s − A_s H_fs' A_f`
+/// with each term already the size of the sum, where the four terms of that
+/// form cancel against each other, by a factor of 500 or more where the fits
+/// are nearly the same. As `T = D H_ff`, `P = D E_ff` and `U = A_s E_2 + P`,
+/// `lower(var) = lower(T D') + lower(U A_s) + upper(P A_s)'`: three full
+/// products and three halves. `D`'s transpose is `D`, as `A_f` and `A_s` are
+/// symmetric.
+fn lower_variance(
+    k: usize,
+    (af, a_s): (&[f64], &[f64]),
+    (hff, e2, eff): (&[f64], &[f64], &[f64]),
+    bufs: &mut DiffBufs,
+    var: &mut Vec<f64>,
+) {
+    let DiffBufs { diff, t, p, u, c } = bufs;
+    diff.clear();
+    diff.extend(af.iter().zip(a_s).map(|(f, s)| f - s));
+    if k < FAER_FROM {
+        mat_mul_into(diff, hff, k, t);
+        mat_mul_into(diff, eff, k, p);
+        u.clear();
+        u.extend_from_slice(p);
+        all_add(a_s, e2, k, u);
+    } else {
+        for m in [&mut *t, &mut *p] {
+            m.resize(k * k, 0.0);
+        }
+        faer_mul(diff, hff, k, t, false);
+        faer_mul(diff, eff, k, p, false);
+        u.clear();
+        u.extend_from_slice(p);
+        faer_mul(a_s, e2, k, u, true);
+    }
+    var.resize(k * k, 0.0);
+    c.resize(k * k, 0.0);
+    lower_set(t, diff, k, var);
+    lower_add(u, a_s, k, var);
+    upper_set(p, a_s, k, c);
+    for i in 0..k {
+        for (j, v) in var[i * k..i * k + i + 1].iter_mut().enumerate() {
+            *v += c[j * k + i];
+        }
     }
 }
 
@@ -1100,6 +1252,16 @@ impl TwinFit {
     /// `long_run` scales the noise's variance by the residuals' long-run
     /// over short-run variance under a horizon
     /// ([`Breaks::long_run_residuals`]), 1 without one.
+    ///
+    /// The variance is formed from the difference `D = A_f − A_s` of the
+    /// fits' inverse Grams ([`lower_variance`]). Its three full products run
+    /// as the plain loop's sums, in registers, to the bit, under
+    /// [`FAER_FROM`] coefficients (the intercept counted), and as faer's
+    /// from there, which add in blocks and fuse where the machine does: the
+    /// distance is then the same on every thread count and chunking, but
+    /// another platform's kernel can round it differently, by about
+    /// `1e-13` relative on most rows and by up to `1e-6` on the first rows
+    /// past the gate, where the variance is nearly singular.
     pub fn wald(&self, idx: &[usize], intercept: bool, long_run: f64) -> Option<f64> {
         lend_wald(|sc| {
             let distance = self.wald_in(sc, idx, intercept, long_run);
@@ -1152,12 +1314,9 @@ impl TwinFit {
             af,
             a_s,
             hff,
-            hss,
-            hfs,
-            prod,
-            ff,
-            ss,
-            fs,
+            e2,
+            eff,
+            diff,
             var,
             sol,
             ..
@@ -1184,22 +1343,8 @@ impl TwinFit {
         inverse(g, k, ident, solves, af)?;
         self.gram(&self.slow, idx, intercept, g, dev);
         inverse(g, k, ident, solves, a_s)?;
-        self.pick(&self.hff, idx, intercept, hff);
-        self.pick(&self.hss, idx, intercept, hss);
-        self.pick(&self.hfs, idx, intercept, hfs);
-        mat_mul_into(af, hff, k, prod);
-        mat_mul_into(prod, af, k, ff);
-        mat_mul_into(a_s, hss, k, prod);
-        mat_mul_into(prod, a_s, k, ss);
-        mat_mul_into(af, hfs, k, prod);
-        mat_mul_into(prod, a_s, k, fs);
-        var.clear();
-        for i in 0..k {
-            for j in 0..k {
-                let n = i * k + j;
-                var.push(ff[n] + ss[n] - fs[n] - fs[j * k + i]);
-            }
-        }
+        self.picks(idx, intercept, hff, e2, eff);
+        lower_variance(k, (af, a_s), (hff, e2, eff), diff, var);
         // A variance that does not factorize -- the memories coincide, or
         // nothing tells the fits apart -- has no distance to read.
         if solve_in(solves, var, delta, k, 1, sol)? > 0 {
@@ -1285,35 +1430,60 @@ impl TwinFit {
         }
     }
 
-    /// A kept sum over `z = (1, x − c)` in the coefficients' coordinates,
-    /// into `out`: `z` itself under an intercept, `x = c + (x − c)` through
-    /// the origin. Entry `(a, b)` is the sum of `u t h_ij` over the terms
-    /// `(i, u)` of row `a` and `(j, t)` of row `b`, in that order, from 0:
-    /// one term under an intercept, four through the origin.
-    fn pick(&self, h: &[f64], idx: &[usize], intercept: bool, out: &mut Vec<f64>) {
+    /// The three kept sums over `z = (1, x − c)` in the coefficients'
+    /// coordinates, and two differences of them, into `hff`, `e2` and
+    /// `eff`: `H_ff`, `E_2 = (H_ff + H_ss) − (H_fs + H_fs')` and
+    /// `E_ff = H_ff − H_fs`, in one pass. A sum is `z` itself under an
+    /// intercept, `x = c + (x − c)` through the origin: entry `(a, b)` is the
+    /// sum of `u t h_ij` over the terms `(i, u)` of row `a` and `(j, t)` of
+    /// row `b`, in that order, from 0 -- one term under an intercept, four
+    /// through the origin -- and `H_fs'` is read at `(b, a)`.
+    fn picks(
+        &self,
+        idx: &[usize],
+        intercept: bool,
+        hff: &mut Vec<f64>,
+        e2: &mut Vec<f64>,
+        eff: &mut Vec<f64>,
+    ) {
         let d = self.origin.len() + 1;
         let k = idx.len() + usize::from(intercept);
-        out.clear();
+        hff.clear();
+        e2.clear();
+        eff.clear();
         if intercept {
             let at = |a: usize| if a == 0 { 0 } else { 1 + idx[a - 1] };
             for a in 0..k {
                 for b in 0..k {
-                    let mut v = 0.0;
-                    v += 1.0 * 1.0 * h[at(a) * d + at(b)];
-                    out.push(v);
+                    let (n, t) = (at(a) * d + at(b), at(b) * d + at(a));
+                    let (f, c) = (self.hff[n], self.hfs[n]);
+                    hff.push(f);
+                    eff.push(f - c);
+                    e2.push(f + self.hss[n] - (c + self.hfs[t]));
                 }
             }
         } else {
-            let terms = |a: usize| [(0, self.origin[idx[a]]), (1 + idx[a], 1.0)];
-            for a in 0..k {
-                for b in 0..k {
-                    let mut v = 0.0;
-                    for (i, u) in terms(a) {
-                        for (j, t) in terms(b) {
-                            v += u * t * h[i * d + j];
-                        }
-                    }
-                    out.push(v);
+            let sum = |h: &[f64], n: [usize; 4], w: [f64; 4]| {
+                let mut v = 0.0;
+                for (n, w) in n.into_iter().zip(w) {
+                    v += w * h[n];
+                }
+                v
+            };
+            for &a in idx {
+                let (ia, ua) = (1 + a, self.origin[a]);
+                for &b in idx {
+                    let (jb, tb) = (1 + b, self.origin[b]);
+                    let (n, w) = ([0, jb, ia * d, ia * d + jb], [ua * tb, ua, tb, 1.0]);
+                    let (f, c) = (sum(&self.hff, n, w), sum(&self.hfs, n, w));
+                    let ct = sum(
+                        &self.hfs,
+                        [0, ia, jb * d, jb * d + ia],
+                        [tb * ua, tb, ua, 1.0],
+                    );
+                    hff.push(f);
+                    eff.push(f - c);
+                    e2.push(f + sum(&self.hss, n, w) - (c + ct));
                 }
             }
         }
@@ -1343,15 +1513,12 @@ struct WaldScratch {
     ident: Vec<f64>,
     af: Vec<f64>,
     a_s: Vec<f64>,
-    /// The three picked sums, a product's first factor, the three
-    /// products, the variance and its solution.
+    /// The three picked sums `H_ff`, `E_2`, `E_ff`, the variance's products
+    /// ([`lower_variance`]), the variance and its solution.
     hff: Vec<f64>,
-    hss: Vec<f64>,
-    hfs: Vec<f64>,
-    prod: Vec<f64>,
-    ff: Vec<f64>,
-    ss: Vec<f64>,
-    fs: Vec<f64>,
+    e2: Vec<f64>,
+    eff: Vec<f64>,
+    diff: DiffBufs,
     var: Vec<f64>,
     sol: Vec<f64>,
 }
@@ -1403,6 +1570,27 @@ fn inverse(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The order from which the difference's products are faer's, written
+    /// out so that moving [`FAER_FROM`] fails the tests below.
+    const CUT: usize = 22;
+
+    /// Two floats are the same bits, except that any NaN is any NaN: IEEE
+    /// leaves a NaN's sign unspecified, and another target's code
+    /// generation picks another operand order, so no test may pin it.
+    /// Every other value, infinities and signed zeros included, is
+    /// compared by its bits.
+    fn same_bits(a: f64, b: f64) -> bool {
+        a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
+    }
+
+    /// [`same_bits`] over a distance that may be refused.
+    fn same_bits_opt(a: Option<f64>, b: Option<f64>) -> bool {
+        match (a, b) {
+            (Some(a), Some(b)) => same_bits(a, b),
+            (a, b) => a.is_none() && b.is_none(),
+        }
+    }
 
     fn lcg(state: &mut u64) -> f64 {
         *state = state
@@ -3121,7 +3309,30 @@ mod tests {
             out
         }
 
-        pub fn wald(t: &TwinFit, idx: &[usize], intercept: bool, long_run: f64) -> Option<f64> {
+        /// What both forms of the distance read: the order, the fits'
+        /// difference, their inverse Grams, the three picked sums and the
+        /// noise's scale.
+        pub struct Inputs {
+            pub k: usize,
+            pub delta: Vec<f64>,
+            pub gf: Vec<f64>,
+            pub gs: Vec<f64>,
+            pub af: Vec<f64>,
+            pub a_s: Vec<f64>,
+            pub hff: Vec<f64>,
+            pub hss: Vec<f64>,
+            pub hfs: Vec<f64>,
+            pub s2: f64,
+        }
+
+        /// The inputs, `None` where the distance is refused before the
+        /// variance.
+        pub fn inputs(
+            t: &TwinFit,
+            idx: &[usize],
+            intercept: bool,
+            long_run: f64,
+        ) -> Option<Inputs> {
             let kx = t.fast.k() - 1;
             let k = idx.len() + usize::from(intercept);
             if k == 0 || t.origin.len() != kx {
@@ -3143,19 +3354,11 @@ mod tests {
                 delta.push(t.level(&t.fast, idx, &bf) - t.level(&t.slow, idx, &bs));
             }
             delta.extend(bf.iter().zip(&bs).map(|(f, s)| f - s));
-            let (af, a_s) = (
-                inverse(&gram(t, &t.fast, idx, intercept), k)?,
-                inverse(&gram(t, &t.slow, idx, intercept), k)?,
+            let (gf, gs) = (
+                gram(t, &t.fast, idx, intercept),
+                gram(t, &t.slow, idx, intercept),
             );
-            let hff = pick(t, &t.hff, idx, intercept);
-            let hss = pick(t, &t.hss, idx, intercept);
-            let hfs = pick(t, &t.hfs, idx, intercept);
-            let ff = mat_mul(&mat_mul(&af, &hff, k), &af, k);
-            let ss = mat_mul(&mat_mul(&a_s, &hss, k), &a_s, k);
-            let fs = mat_mul(&mat_mul(&af, &hfs, k), &a_s, k);
-            let var: Vec<f64> = (0..k * k)
-                .map(|n| ff[n] + ss[n] - fs[n] - fs[(n % k) * k + n / k])
-                .collect();
+            let (af, a_s) = (inverse(&gf, k)?, inverse(&gs, k)?);
             let fitted: f64 = idx
                 .iter()
                 .zip(&bs)
@@ -3165,12 +3368,98 @@ mod tests {
             if s2.is_nan() || s2 <= 0.0 || long_run.is_nan() || long_run <= 0.0 {
                 return None;
             }
-            let (x, attempts) = crate::solve_spd(&var, &delta, k, 1)?;
+            Some(Inputs {
+                k,
+                delta,
+                gf,
+                gs,
+                af,
+                a_s,
+                hff: pick(t, &t.hff, idx, intercept),
+                hss: pick(t, &t.hss, idx, intercept),
+                hfs: pick(t, &t.hfs, idx, intercept),
+                s2,
+            })
+        }
+
+        /// The distance from a variance, as [`TwinFit::wald_in`] reads it:
+        /// refused where it does not factorize unjittered.
+        fn read(inp: &Inputs, var: &[f64], long_run: f64) -> Option<f64> {
+            let (x, attempts) = crate::solve_spd(var, &inp.delta, inp.k, 1)?;
             if attempts > 0 {
                 return None;
             }
-            let quad: f64 = x.iter().zip(&delta).map(|(a, b)| a * b).sum();
-            quad.is_finite().then(|| quad.max(0.0) / (s2 * long_run))
+            let quad: f64 = x.iter().zip(&inp.delta).map(|(a, b)| a * b).sum();
+            quad.is_finite()
+                .then(|| quad.max(0.0) / (inp.s2 * long_run))
+        }
+
+        /// The variance as the four terms `A_f H_ff A_f + A_s H_ss A_s −
+        /// A_f H_fs A_s − A_s H_fs' A_f`, every product a plain triple loop:
+        /// the form the distance read before the difference form.
+        pub fn sum_variance(inp: &Inputs) -> Vec<f64> {
+            let k = inp.k;
+            let ff = mat_mul(&mat_mul(&inp.af, &inp.hff, k), &inp.af, k);
+            let ss = mat_mul(&mat_mul(&inp.a_s, &inp.hss, k), &inp.a_s, k);
+            let fs = mat_mul(&mat_mul(&inp.af, &inp.hfs, k), &inp.a_s, k);
+            (0..k * k)
+                .map(|n| ff[n] + ss[n] - fs[n] - fs[(n % k) * k + n / k])
+                .collect()
+        }
+
+        /// The variance in the difference form, as [`lower_variance`]
+        /// defines it, by plain triple loops, mirrored to the upper
+        /// triangle: `T = D H_ff`, `P = D E_ff`, `U = P + A_s E_2` (each
+        /// entry's sum started from `P`'s), and entry `(i, j)` the sum of
+        /// `T D` over `k`, continued over `k` by `U A_s`, plus `P A_s` at
+        /// `(j, i)`.
+        pub fn diff_variance(inp: &Inputs) -> Vec<f64> {
+            let k = inp.k;
+            let d: Vec<f64> = inp.af.iter().zip(&inp.a_s).map(|(f, s)| f - s).collect();
+            let eff: Vec<f64> = inp.hff.iter().zip(&inp.hfs).map(|(f, c)| f - c).collect();
+            let e2: Vec<f64> = (0..k * k)
+                .map(|n| inp.hff[n] + inp.hss[n] - (inp.hfs[n] + inp.hfs[(n % k) * k + n / k]))
+                .collect();
+            let t = mat_mul(&d, &inp.hff, k);
+            let pm = mat_mul(&d, &eff, k);
+            let mut u = pm.clone();
+            for i in 0..k {
+                for kk in 0..k {
+                    for j in 0..k {
+                        u[i * k + j] += inp.a_s[i * k + kk] * e2[kk * k + j];
+                    }
+                }
+            }
+            let c = mat_mul(&pm, &inp.a_s, k);
+            let mut var = vec![0.0; k * k];
+            for i in 0..k {
+                for j in 0..=i {
+                    let mut v = 0.0;
+                    for kk in 0..k {
+                        v += t[i * k + kk] * d[kk * k + j];
+                    }
+                    for kk in 0..k {
+                        v += u[i * k + kk] * inp.a_s[kk * k + j];
+                    }
+                    var[i * k + j] = v + c[j * k + i];
+                    var[j * k + i] = var[i * k + j];
+                }
+            }
+            var
+        }
+
+        /// The distance in the difference form by plain triple loops: what
+        /// [`TwinFit::wald`] gives to the bit under [`FAER_FROM`]
+        /// coefficients.
+        pub fn wald(t: &TwinFit, idx: &[usize], intercept: bool, long_run: f64) -> Option<f64> {
+            let inp = inputs(t, idx, intercept, long_run)?;
+            read(&inp, &diff_variance(&inp), long_run)
+        }
+
+        /// The distance in the four-term form by plain triple loops.
+        pub fn wald_sum(t: &TwinFit, idx: &[usize], intercept: bool, long_run: f64) -> Option<f64> {
+            let inp = inputs(t, idx, intercept, long_run)?;
+            read(&inp, &sum_variance(&inp), long_run)
         }
     }
 
@@ -3207,10 +3496,153 @@ mod tests {
                 let b: Vec<f64> = (0..p * p).map(|_| gen_(&mut s)).collect();
                 let (got, want) = (mat_mul(&a, &b, p), plain::mat_mul(&a, &b, p));
                 for (n, (g, w)) in got.iter().zip(&want).enumerate() {
-                    assert_eq!(g.to_bits(), w.to_bits(), "p {p}, kind {kind}, entry {n}");
+                    assert!(
+                        same_bits(*g, *w),
+                        "p {p}, kind {kind}, entry {n}: {g} vs {w}"
+                    );
                 }
             }
         }
+    }
+
+    /// A product's part ([`part_mul`]) is the full product's entries to the
+    /// bit: every entry the part is asked for, set from 0 or added to a
+    /// base, at every order across the register blocks' tails; an entry
+    /// outside it is as it was or its own sum, never another; and the parts
+    /// leave entries alone, so they form fewer than the full product.
+    #[test]
+    fn a_part_of_a_product_is_the_full_products_entries_to_the_bit() {
+        fn check<const ADD: bool, const PART: u8>(p: usize, a: &[f64], b: &[f64], base: &[f64]) {
+            let full = plain::mat_mul(a, b, p);
+            // Old contents are random where they are added to, NaN else:
+            // they are not read.
+            let mut out = if ADD {
+                base.to_vec()
+            } else {
+                vec![f64::NAN; p * p]
+            };
+            part_mul::<ADD, PART>(a, b, p, &mut out);
+            let mut left = 0;
+            for i in 0..p {
+                for j in 0..p {
+                    let n = i * p + j;
+                    let want = if ADD {
+                        // Each entry's sum starts from the base's.
+                        let mut v = base[n];
+                        for k in 0..p {
+                            v += a[i * p + k] * b[k * p + j];
+                        }
+                        v
+                    } else {
+                        full[n]
+                    };
+                    let asked = match PART {
+                        LOWER => j <= i,
+                        UPPER => j >= i,
+                        _ => true,
+                    };
+                    let (got, old) = (out[n].to_bits(), if ADD { base[n] } else { f64::NAN });
+                    if asked {
+                        assert!(same_bits(out[n], want), "p {p}, ({i}, {j})");
+                    } else {
+                        assert!(
+                            same_bits(out[n], want) || same_bits(out[n], old),
+                            "p {p}, ({i}, {j}) is {}",
+                            out[n]
+                        );
+                    }
+                    left += usize::from(got == old.to_bits());
+                }
+            }
+            if PART != ALL && p >= 16 {
+                // The part leaves out a third of the entries or more.
+                assert!(left * 3 >= p * p, "p {p}: {left} entries untouched");
+            }
+            if PART == ALL {
+                assert_eq!(left, 0, "p {p}: entries untouched");
+            }
+        }
+        let mut s = 469u64;
+        for p in (1..=40).chain([48, 64, 100]) {
+            let a: Vec<f64> = (0..p * p)
+                .map(|n| lcg(&mut s) * 10f64.powi((n % 7) as i32 - 3))
+                .collect();
+            let b: Vec<f64> = (0..p * p).map(|_| lcg(&mut s) + 0.3).collect();
+            let base: Vec<f64> = (0..p * p).map(|_| lcg(&mut s) * 3.0).collect();
+            check::<false, ALL>(p, &a, &b, &base);
+            check::<false, LOWER>(p, &a, &b, &base);
+            check::<false, UPPER>(p, &a, &b, &base);
+            check::<true, ALL>(p, &a, &b, &base);
+            check::<true, LOWER>(p, &a, &b, &base);
+            check::<true, UPPER>(p, &a, &b, &base);
+        }
+    }
+
+    /// A stream of `order` coefficients (the intercept counted), fed to
+    /// `read` after each row from three before the `2k` gate through `past`
+    /// rows beyond it: `kind` 0 random features and even weights, 1
+    /// near-singular features (`x_1 = x_0 + 1e-4 noise`), 2 uneven weights,
+    /// 3 a zero weight on every fifth row, the first row's included, 4
+    /// features near-singular to 1e-7, which the fits' Grams mostly refuse.
+    /// The decay is `1 − 1/(4 order + 20)`, a memory of four times the
+    /// coefficients or more.
+    fn gate_stream(
+        order: usize,
+        intercept: bool,
+        kind: usize,
+        past: usize,
+        mut read: impl FnMut(&TwinFit, &[usize], usize),
+    ) {
+        let idx: Vec<usize> = (0..order - usize::from(intercept)).collect();
+        let mut t = TwinFit::new(order);
+        let mut s = 469 + order as u64 + 1000 * kind as u64;
+        for i in 0..2 * order + past + if kind == 3 { order / 2 + 2 } else { 0 } {
+            let mut x: Vec<f64> = (0..order).map(|_| lcg(&mut s) + 1.0).collect();
+            if (kind == 1 || kind == 4) && order > 1 {
+                x[1] = x[0] + if kind == 1 { 1e-4 } else { 1e-7 } * lcg(&mut s);
+            }
+            let y = x[0] - 0.5 * x[order - 1] + 0.3 * lcg(&mut s);
+            let w = match kind {
+                2 => 1.0 + 0.5 * lcg(&mut s) * 1.9,
+                3 if i % 5 == 0 => 0.0,
+                _ => 1.0,
+            };
+            t.update(&x, y, 1.0 - 1.0 / (4.0 * order as f64 + 20.0), w);
+            if i + 3 >= 2 * order {
+                read(&t, &idx, i);
+            }
+        }
+    }
+
+    /// Under the order from which the products are faer's, the distance is
+    /// the difference form's to the bit by plain triple loops, at every
+    /// order from 1 to 21, with and without an intercept, over random,
+    /// near-singular, unevenly weighted and zero-weighted rows (the first
+    /// among them), at the long-run scales 1 and 2.5, from the rows just
+    /// before the `2k` gate through those just past it.
+    #[test]
+    fn under_the_faer_order_the_distance_is_the_difference_forms_to_the_bit() {
+        let mut seen = 0;
+        for order in 1..CUT {
+            for intercept in [true, false] {
+                for kind in 0..5 {
+                    gate_stream(order, intercept, kind, 8, |t, idx, i| {
+                        for long_run in [1.0, 2.5] {
+                            let (got, want) = (
+                                t.wald(idx, intercept, long_run),
+                                plain::wald(t, idx, intercept, long_run),
+                            );
+                            assert!(
+                                same_bits_opt(got, want),
+                                "order {order}, intercept {intercept}, kind {kind}, row {i}"
+                            );
+                            seen += usize::from(got.is_some());
+                        }
+                    });
+                }
+            }
+        }
+        assert!(seen > 2500, "{seen} distances");
     }
 
     /// Task 458: a distance over 256 coefficients or more solves on the
@@ -3236,16 +3668,19 @@ mod tests {
         assert_eq!(b.to_bits(), want.to_bits());
     }
 
-    /// Past the order a thread keeps buffers for, the distance is the plain
-    /// form's to the bit too.
+    /// Past the order a thread keeps buffers for, the distance is the
+    /// difference form's by plain triple loops: to the bit for a subset of
+    /// features under the faer order, within 1e-8 for all 70, whose products
+    /// are faer's (the stream's Gram is well conditioned: it moved by 1e-10
+    /// at most).
     #[test]
-    fn a_wide_distance_is_the_plain_forms_to_the_bit() {
+    fn a_wide_distance_is_the_difference_form_to_the_bit_or_within_a_bound() {
         let kx = 70;
         let mut t = TwinFit::new(kx);
         let mut s = 71u64;
         let all: Vec<usize> = (0..kx).collect();
         let few: Vec<usize> = (0..kx).step_by(11).collect();
-        let mut seen = 0;
+        let (mut seen, mut differing) = (0, 0);
         for i in 0..400 {
             let x: Vec<f64> = (0..kx).map(|_| lcg(&mut s) + 1.0).collect();
             let y = x[0] - x[1] + 0.3 * lcg(&mut s) + if i < 250 { 0.0 } else { x[2] };
@@ -3259,17 +3694,322 @@ mod tests {
                         t.wald(idx, intercept, 1.0),
                         plain::wald(&t, idx, intercept, 1.0),
                     );
-                    assert_eq!(
-                        got.map(f64::to_bits),
-                        want.map(f64::to_bits),
-                        "row {i}, {} features",
-                        idx.len()
-                    );
+                    if idx.len() + usize::from(intercept) < CUT {
+                        assert!(same_bits_opt(got, want), "row {i}, {} features", idx.len());
+                    } else if let (Some(g), Some(w)) = (got, want) {
+                        assert!(((g - w) / w).abs() < 1e-8, "row {i}: {g} vs {w}");
+                        differing += usize::from(g.to_bits() != w.to_bits());
+                    }
                     seen += usize::from(got.is_some());
                 }
             }
         }
-        assert!(seen > 10, "{seen} distances");
+        assert!(
+            seen > 10 && differing > 0,
+            "{seen} distances, {differing} differing"
+        );
+    }
+
+    /// From the faer order the distance is the difference form's by plain
+    /// triple loops within a bound, on every row of a stream of random,
+    /// uneven or zero-weighted features from three rows before the `2k`
+    /// gate on, at the long-run scales 1 and 2.5, with and without an
+    /// intercept, at orders from the cut to 100; the same refusals on these
+    /// well-conditioned designs; and some read differs from the plain
+    /// loops' by a bit at each order, which is faer's product having run.
+    ///
+    /// The bound is what another kernel can move the distance by, and that
+    /// is the rounding of its products (a few `k eps` of each term, whatever
+    /// the order they are added in or the fusing a machine does: NEON here,
+    /// AVX2 on x86) times how much the variance's inverse magnifies it. The
+    /// variance is a sum of one outer product a learned row, so it is
+    /// nearly singular on the first rows past the gate and well conditioned
+    /// after a few more: the rows are counted by the rows the fits
+    /// *learned* (a zero-weight row learns nothing, so by row index the
+    /// gate comes later in the zero-weighted stream). On the first six
+    /// learned rows past the gate the bound is 1e-6 (the plain loops against
+    /// faer measured 1.3e-9 here and 2e-9 on x86 at order 24; a bank of
+    /// 2,000 young groups at order 32 moved 9.2e-7 at most); from the
+    /// seventh, where the variance is well conditioned and the kernels'
+    /// difference is a few hundred `eps` (1e-13), 1e-8: measured at most
+    /// 8.6e-11 here over these streams, so 100 times of margin for another
+    /// machine's order of summation, which moves the result by rounding of
+    /// the same size.
+    #[test]
+    fn from_the_faer_order_the_distance_is_the_difference_forms_within_a_bound() {
+        for order in [CUT, CUT + 1, CUT + 2, 26, 31, 32, 48, 64, 100] {
+            let (mut seen, mut differing) = (0, 0);
+            for intercept in [true, false] {
+                for kind in [0, 2, 3] {
+                    gate_stream(order, intercept, kind, 12, |t, idx, i| {
+                        for long_run in [1.0, 2.5] {
+                            let (got, want) = (
+                                t.wald(idx, intercept, long_run),
+                                plain::wald(t, idx, intercept, long_run),
+                            );
+                            let at = format!(
+                                "order {order}, intercept {intercept}, kind {kind}, row {i}"
+                            );
+                            assert_eq!(got.is_some(), want.is_some(), "{at}");
+                            if let (Some(g), Some(w)) = (got, want) {
+                                // Rows the fits learned: a zero-weight row
+                                // (kind 3, every fifth, the first included)
+                                // learns nothing.
+                                let learned = if kind == 3 { i - i / 5 } else { i };
+                                let bound = if learned < 2 * order + 6 { 1e-6 } else { 1e-8 };
+                                assert!(((g - w) / w).abs() < bound, "{at}: {g} vs {w}");
+                                seen += 1;
+                                differing += usize::from(g.to_bits() != w.to_bits());
+                            }
+                        }
+                    });
+                }
+            }
+            assert!(seen > 100, "order {order}: {seen} distances");
+            assert!(
+                differing * 2 > seen,
+                "order {order}: {differing} of {seen} read differently from the plain loops"
+            );
+        }
+    }
+
+    /// Both sides of the faer order, on one thread and on pools of 1, 2 and
+    /// 4 whose tasks outnumber their threads (so some are stolen): the
+    /// distance at orders 21, 22 and 23, with and without an intercept, is
+    /// the same bits on every one of them; at 21 it is the difference form's
+    /// by plain triple loops to the bit, from 22 within 1e-8 with some read
+    /// differing by a bit.
+    #[test]
+    fn the_distance_changes_hands_at_the_faer_order_on_every_pool() {
+        use rayon::prelude::*;
+        // (features, intercept): orders 21, 21, 22, 22, 23, 23.
+        let reads = [
+            (20, true),
+            (21, false),
+            (21, true),
+            (22, false),
+            (22, true),
+            (23, false),
+        ];
+        let fits: Vec<(usize, bool, TwinFit)> = reads
+            .iter()
+            .map(|&(kx, intercept)| {
+                let mut t = TwinFit::new(kx);
+                let mut s = 469 + kx as u64;
+                for i in 0..8 * kx {
+                    let x: Vec<f64> = (0..kx).map(|_| lcg(&mut s) + 1.0).collect();
+                    let y = x[0] - x[1] + 0.3 * lcg(&mut s) + if i < 5 * kx { 0.0 } else { x[2] };
+                    t.update(&x, y, 0.99, 1.0 + 0.5 * lcg(&mut s));
+                }
+                (kx, intercept, t)
+            })
+            .collect();
+        let read = |(kx, intercept, t): &(usize, bool, TwinFit)| {
+            let idx: Vec<usize> = (0..*kx).collect();
+            t.wald(&idx, *intercept, 1.0)
+        };
+        let serial: Vec<Option<f64>> = fits.iter().map(read).collect();
+        let mut differing = [0; 3];
+        for ((kx, intercept, t), got) in fits.iter().zip(&serial) {
+            let order = kx + usize::from(*intercept);
+            let idx: Vec<usize> = (0..*kx).collect();
+            let (g, w) = (
+                got.expect("a distance"),
+                plain::wald(t, &idx, *intercept, 1.0).expect("a distance"),
+            );
+            if order < CUT {
+                assert!(same_bits(g, w), "order {order}");
+            } else {
+                assert!(((g - w) / w).abs() < 1e-8, "order {order}: {g} vs {w}");
+                differing[order - CUT] += usize::from(g.to_bits() != w.to_bits());
+            }
+        }
+        assert!(
+            differing[0] + differing[1] > 0 && differing[1] > 0,
+            "faer's product did not run from the cut: {differing:?}"
+        );
+        for threads in [1, 2, 4] {
+            let pool = crate::test_pool::pool(threads);
+            let got: Vec<Vec<Option<f64>>> = pool.install(|| {
+                (0..16usize)
+                    .into_par_iter()
+                    .map(|_| fits.iter().map(read).collect())
+                    .collect()
+            });
+            for (task, all) in got.iter().enumerate() {
+                for (n, (g, w)) in all.iter().zip(&serial).enumerate() {
+                    assert_eq!(
+                        g.map(f64::to_bits),
+                        w.map(f64::to_bits),
+                        "{threads} threads, task {task}, read {n}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The exact distance of the inputs a read has: its quadratic form over
+    /// `s2 × long_run`, and whether the exact variance is positive definite.
+    fn exact_read(inp: &plain::Inputs, long_run: f64) -> Option<(f64, bool, f64)> {
+        let w = crate::oracle::exact::wald(
+            &inp.gf, &inp.gs, &inp.hff, &inp.hss, &inp.hfs, &inp.delta, inp.k,
+        )?;
+        Some((
+            w.quad.max(0.0) / (inp.s2 * long_run),
+            w.definite,
+            w.pivot_ratio,
+        ))
+    }
+
+    /// The difference form is nearer the exact distance than the four-term
+    /// form on the first rows past the gate, where its terms cancel: over
+    /// random features at orders 2 to 24 with and without an intercept, the
+    /// geometric mean of the relative error against the exact value (the
+    /// stored Grams and sums, to a thousand bits) is at least 4 times
+    /// smaller, and no row's error is more than 1e-3 where the exact
+    /// variance has a pivot ratio of 1e-7 or more.
+    #[test]
+    fn the_difference_form_is_nearer_the_exact_distance_than_the_four_term_form() {
+        let (mut ln_d, mut ln_s, mut n) = (0.0, 0.0, 0);
+        for order in [2, 3, 4, 8, 12, 20, 22, 24] {
+            for intercept in [true, false] {
+                for kind in [0, 2] {
+                    gate_stream(order, intercept, kind, 4, |t, idx, i| {
+                        let Some(inp) = plain::inputs(t, idx, intercept, 1.0) else {
+                            return;
+                        };
+                        let (Some(d), Some(s), Some((x, definite, ratio))) = (
+                            t.wald(idx, intercept, 1.0),
+                            plain::wald_sum(t, idx, intercept, 1.0),
+                            exact_read(&inp, 1.0),
+                        ) else {
+                            return;
+                        };
+                        assert!(definite, "order {order}, row {i}");
+                        let (ed, es) = ((d - x).abs() / x, (s - x).abs() / x);
+                        if ratio > 1e-7 {
+                            assert!(ed < 1e-3, "order {order}, row {i}: {d} vs exact {x}");
+                        }
+                        ln_d += ed.max(1e-17).ln();
+                        ln_s += es.max(1e-17).ln();
+                        n += 1;
+                    });
+                }
+            }
+        }
+        assert!(n > 100, "{n} rows");
+        let (gd, gs) = ((ln_d / n as f64).exp(), (ln_s / n as f64).exp());
+        assert!(
+            gd * 4.0 < gs,
+            "geometric mean error: difference {gd:e}, four-term {gs:e}"
+        );
+    }
+
+    /// Refusals, at orders 1 to 5 (the first an intercept alone), 8, 12, 20,
+    /// 24 and 32, with and without an intercept, over random, unevenly
+    /// weighted and zero-weighted features and features collinear to 1e-4
+    /// or 1e-7, on every row from three before the gate to six past it:
+    /// where the Grams factorize, the difference form refuses the variance
+    /// where the four-term form does, over every design but the collinear
+    /// ones. Over those the two refuse different rows, each where its
+    /// rounding breaks a factorization of a variance whose exact pivots
+    /// span fewer than six digits (the exact variance of the stored sums,
+    /// to a thousand bits): a form reads where the other refuses, and
+    /// refuses where the other reads, only where the exact variance's
+    /// smallest pivot is under 1e-6 of its largest, and each way it happens
+    /// on some row.
+    #[test]
+    fn the_forms_refuse_alike_unless_the_variance_is_nearly_singular() {
+        let (mut ordinary, mut reads, mut refuses) = (0, 0, 0);
+        for order in [1, 2, 3, 4, 5, 8, 12, 20, 24, 32] {
+            for intercept in [true, false] {
+                for kind in 0..5 {
+                    gate_stream(order, intercept, kind, 6, |t, idx, i| {
+                        let Some(inp) = plain::inputs(t, idx, intercept, 1.0) else {
+                            return;
+                        };
+                        let (d, s) = (
+                            t.wald(idx, intercept, 1.0),
+                            plain::wald_sum(t, idx, intercept, 1.0),
+                        );
+                        let at =
+                            format!("order {order}, intercept {intercept}, kind {kind}, row {i}");
+                        if kind != 1 && kind != 4 {
+                            ordinary += 1;
+                            assert_eq!(d.is_some(), s.is_some(), "{at}");
+                        } else if d.is_some() != s.is_some() {
+                            let (_, _, ratio) = exact_read(&inp, 1.0).expect("Grams");
+                            assert!(ratio < 1e-6, "{at}: pivot ratio {ratio:e}");
+                            if d.is_some() {
+                                reads += 1;
+                            } else {
+                                refuses += 1;
+                            }
+                        }
+                    });
+                }
+            }
+        }
+        assert!(ordinary > 400, "{ordinary} ordinary rows");
+        assert!(
+            reads > 5 && refuses > 5,
+            "{reads} reads, {refuses} refusals"
+        );
+    }
+
+    /// Above the orders the other tests reach, and past 256 coefficients,
+    /// where a distance's solves run on the pool: the distance at 256, 257
+    /// and 300 coefficients (the 256 with and without an intercept) is the
+    /// difference form's by plain triple loops within 1e-8, from a stream
+    /// whose fits are well past the `2k` gate, and the same bits whichever
+    /// thread of a pool of 1, 2 and 4 reads it.
+    #[test]
+    #[ignore = "extended: orders 256 to 300 by plain triple loops in a debug build (about 30 s)"]
+    fn a_distance_past_256_coefficients_is_the_difference_forms_within_a_bound() {
+        use rayon::prelude::*;
+        for (kx, intercept) in [(256, false), (255, true), (256, true), (300, false)] {
+            let order = kx + usize::from(intercept);
+            let mut t = TwinFit::new(kx);
+            let mut s = 469 + kx as u64;
+            for i in 0..3 * order {
+                let x: Vec<f64> = (0..kx).map(|_| lcg(&mut s) + 1.0).collect();
+                let y = x[0] - x[1] + 0.3 * lcg(&mut s) + if i < 2 * order { 0.0 } else { x[2] };
+                t.update(
+                    &x,
+                    y,
+                    1.0 - 1.0 / (4.0 * order as f64),
+                    1.0 + 0.4 * lcg(&mut s),
+                );
+            }
+            let idx: Vec<usize> = (0..kx).collect();
+            let got = t.wald(&idx, intercept, 2.5).expect("a distance");
+            let want = plain::wald(&t, &idx, intercept, 2.5).expect("a distance");
+            assert!(
+                ((got - want) / want).abs() < 1e-8,
+                "order {order}: {got} vs {want}"
+            );
+            assert_ne!(
+                got.to_bits(),
+                want.to_bits(),
+                "order {order}: faer's product did not run"
+            );
+            for threads in [1, 2, 4] {
+                let pool = crate::test_pool::pool(threads);
+                let reads: Vec<Option<f64>> = pool.install(|| {
+                    (0..8usize)
+                        .into_par_iter()
+                        .map(|_| t.wald(&idx, intercept, 2.5))
+                        .collect()
+                });
+                for read in reads {
+                    assert_eq!(
+                        read.map(f64::to_bits),
+                        Some(got.to_bits()),
+                        "order {order}, {threads} threads"
+                    );
+                }
+            }
+        }
     }
 
     /// The distance is the plain form's to the bit, over every feature
@@ -3307,9 +4047,8 @@ mod tests {
                             t.wald(idx, intercept, long_run),
                             plain::wald(&t, idx, intercept, long_run),
                         );
-                        assert_eq!(
-                            got.map(f64::to_bits),
-                            want.map(f64::to_bits),
+                        assert!(
+                            same_bits_opt(got, want),
                             "row {i}, {idx:?}, intercept {intercept}, long run {long_run}"
                         );
                         if long_run == 1.0 {

@@ -459,6 +459,7 @@ impl Specification {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oracle::CanonBits;
 
     /// Task 458: Breusch and Pagan's test at 256 features or more, with
     /// Newey and West's variance, reads a covariance whose solve runs on the
@@ -1743,7 +1744,8 @@ mod tests {
     /// rows that only age and reads that cannot be made.
     #[test]
     fn the_reads_in_kept_buffers_are_the_allocating_reads_to_the_bit() {
-        let same = |a: Option<f64>, b: Option<f64>| a.map(f64::to_bits) == b.map(f64::to_bits);
+        let same =
+            |a: Option<f64>, b: Option<f64>| a.map(|v| v.canon_bits()) == b.map(|v| v.canon_bits());
         // `nw` is 0 or `2 skip`: Newey and West's lags past a horizon.
         for (skip, nw, copy, constant) in [
             (0, 0, false, false),
