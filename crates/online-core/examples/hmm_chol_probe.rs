@@ -2,11 +2,13 @@
 //! and digested, to be built twice (baseline x86-64 and `-C
 //! target-cpu=x86-64-v3`) and compared.
 //!
-//!     cargo run --release -p online-core --example hmm_chol_probe -- [reps]
+//!     cargo run --release -p online-core --example hmm_chol_probe -- [reps] [only]
 //!
 //! Prints one line per case: the best of `reps` timings (default 7) in ns per
 //! call, and an FNV digest of every output's bits, which must be the same in
-//! every build.
+//! every build. `only` (e.g. `hmm` or `spd n=1`) keeps the cases whose name
+//! starts with it. The orders straddle both switches of `solve.rs`'s small
+//! paths: the factor's at 12 and 13, the solve's at 4 and 5.
 //!
 //! * `hmm d=4 k=2`: the bank's `hmm` case through the model alone.
 //! * `spd n=N`: `SpdFactor::of` of an order-`N` matrix, the call `hmm` makes
@@ -169,11 +171,19 @@ fn main() {
         cfg!(target_feature = "avx2"),
         cfg!(target_feature = "fma")
     );
-    hmm_case(reps);
-    for n in [2, 3, 4, 5, 6, 8, 12, 16, 20, 32, 48, 64, 65, 96] {
-        spd_case(n, reps);
+    let only = std::env::args().nth(2).unwrap_or_default();
+    let wanted = |name: &str| name.starts_with(&only);
+    if wanted("hmm") {
+        hmm_case(reps);
     }
-    for n in [2, 4, 5, 8, 16, 32, 64] {
-        llt_case(n, reps);
+    for n in [2, 3, 4, 5, 6, 8, 12, 13, 16, 20, 32, 48, 64, 65, 96] {
+        if wanted(&format!("spd n={n}")) {
+            spd_case(n, reps);
+        }
+    }
+    for n in [2, 4, 5, 8, 12, 13, 16, 32, 64] {
+        if wanted(&format!("llt n={n}")) {
+            llt_case(n, reps);
+        }
     }
 }
