@@ -379,6 +379,66 @@ fn a_small_call_gives_the_bits_the_pool_gives() {
     }
 }
 
+/// Task 458: a chunk is read in parallel from `PAR_MIN_ROWS` rows, or from
+/// as many feature values as `PAR_MIN_CELLS`, which a wide chunk of a few
+/// hundred rows reaches first. A chunk one value short of it and one at it,
+/// of a bank on the pool: the bits of a bank with one thread.
+#[test]
+fn a_wide_chunk_is_read_the_same_each_side_of_the_cell_cut() {
+    let width = 80usize;
+    let features: Vec<String> = (0..width).map(|i| format!("\"x{i}\"")).collect();
+    let spec = || -> Spec {
+        serde_json::from_str(&format!(
+            r#"{{"name": "wide", "model": {{"type": "ewridge"}}, "targets": ["y"],
+                "features": [{}], "half_life": 50.0}}"#,
+            features.join(", ")
+        ))
+        .unwrap()
+    };
+    let frame = |n: usize, seed: u64| {
+        let mut st = seed;
+        let mut next = || {
+            st = st
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (st >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut cols: Vec<Column> = (0..width)
+            .map(|i| {
+                Column::new(
+                    format!("x{i}").into(),
+                    (0..n).map(|_| next()).collect::<Vec<f64>>(),
+                )
+            })
+            .collect();
+        cols.push(Column::new(
+            "y".into(),
+            (0..n).map(|_| next()).collect::<Vec<f64>>(),
+        ));
+        DataFrame::new(n, cols).unwrap()
+    };
+    // `PAR_MIN_CELLS` is not a multiple of the width: the rows either side
+    // of it hold one value short of it and 80 over.
+    let below = (super::PAR_MIN_CELLS - 1) / width;
+    assert!(below * width < super::PAR_MIN_CELLS && (below + 1) * width >= super::PAR_MIN_CELLS);
+    assert!(below + 1 < crate::PAR_MIN_ROWS);
+    for n in [below, below + 1] {
+        let (mut one, mut many) = (
+            Bank::new(vec![spec()]).unwrap(),
+            Bank::new(vec![spec()]).unwrap(),
+        );
+        one.set_threads(Some(1)).unwrap();
+        many.set_threads(Some(3)).unwrap();
+        for seed in [1u64, 2] {
+            let chunk = frame(n, seed + n as u64);
+            let a = one.fit_predict(&chunk).unwrap();
+            let pool = many.threads().clone();
+            let b = pool.install(|| many.fit_predict(&chunk)).unwrap();
+            assert_eq!(format!("{a:?}"), format!("{b:?}"), "{n} rows, chunk {seed}");
+        }
+    }
+}
+
 /// A small call runs on the caller's own stack, which a thread of another
 /// program may have made small: it needs little.
 #[test]

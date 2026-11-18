@@ -2667,7 +2667,7 @@ impl OnlineModel for Sgd {
                 // `&self`, so the standardized row goes into a buffer of
                 // the thread's rather than one of the model's, and not a
                 // fresh vector per row.
-                Some(sc) => PREDICT_Z.with_borrow_mut(|z| {
+                Some(sc) => crate::scratch::with_borrow_mut(&PREDICT_Z, |z| {
                     z.clear();
                     z.extend(standardized(sc, off, x, lam));
                     predict_with(z, &mut pred);

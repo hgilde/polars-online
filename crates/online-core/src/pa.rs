@@ -696,7 +696,7 @@ impl OnlineModel for Pa {
             // The row the step would see, standardized against the moments
             // with it admitted after the step's decay, so `predict` gives
             // the step's number exactly, as `sgd`'s does.
-            Some(sc) => PREDICT_Z.with_borrow_mut(|z| {
+            Some(sc) => crate::scratch::with_borrow_mut(&PREDICT_Z, |z| {
                 let off = usize::from(fit_intercept);
                 let lam = self.cfg.decay.factor(d_clock);
                 z.clear();

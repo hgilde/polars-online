@@ -1057,7 +1057,7 @@ impl TwinFit {
         } else {
             self.fresh_rows.saturating_add(1)
         };
-        WALD_SCRATCH.with_borrow_mut(|sc| {
+        lend_wald(|sc| {
             let row = &mut sc.row;
             row.clear();
             row.extend_from_slice(x);
@@ -1101,7 +1101,7 @@ impl TwinFit {
     /// over short-run variance under a horizon
     /// ([`Breaks::long_run_residuals`]), 1 without one.
     pub fn wald(&self, idx: &[usize], intercept: bool, long_run: f64) -> Option<f64> {
-        WALD_SCRATCH.with_borrow_mut(|sc| {
+        lend_wald(|sc| {
             let distance = self.wald_in(sc, idx, intercept, long_run);
             // A thread keeps buffers for the orders a bank usually reads, not
             // for a thousand features' matrices.
@@ -1357,7 +1357,23 @@ struct WaldScratch {
 }
 
 thread_local! {
-    static WALD_SCRATCH: std::cell::RefCell<WaldScratch> = std::cell::RefCell::new(WaldScratch::default());
+    /// Lent to a call and left here after it ([`lend_wald`]), never
+    /// borrowed: a distance over 256 coefficients or more solves on the
+    /// pool's threads, and a thread waiting there takes other work, another
+    /// distance among it.
+    static WALD_SCRATCH: std::cell::Cell<Option<Box<WaldScratch>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// `f` in this thread's [`WaldScratch`]: taken out of the thread's cell for
+/// the call and set back after it, so nothing is borrowed while `f` runs. A
+/// call that starts on this thread meanwhile finds the cell empty and forms
+/// its own scratch, which the first replaces.
+fn lend_wald<T>(f: impl FnOnce(&mut WaldScratch) -> T) -> T {
+    let mut sc = WALD_SCRATCH.take().unwrap_or_default();
+    let out = f(&mut sc);
+    WALD_SCRATCH.set(Some(sc));
+    out
 }
 
 /// The second moment a fit reads: centred with an intercept, raw through
@@ -3195,6 +3211,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Task 458: a distance over 256 coefficients or more solves on the
+    /// pool's threads, and a thread waiting there takes other work -- a
+    /// distance of its own, which must not find this thread's scratch
+    /// borrowed across the solve ("RefCell already borrowed") or write over
+    /// it.
+    #[test]
+    fn a_wide_distance_on_a_pool_is_not_met_by_one_waiting_in_its_solve() {
+        let kx = 260;
+        let mut t = TwinFit::new(kx);
+        let mut s = 458u64;
+        for i in 0..2 * kx + 100 {
+            let x: Vec<f64> = (0..kx).map(|_| lcg(&mut s) + 1.0).collect();
+            let y = x[0] - x[1] + 0.3 * lcg(&mut s) + if i < kx + 200 { 0.0 } else { x[2] };
+            t.update(&x, y, 0.999, 1.0);
+        }
+        let idx: Vec<usize> = (0..kx).collect();
+        let want = t.wald(&idx, true, 1.0).expect("a distance");
+        let (a, b) =
+            crate::test_pool::read_met_by_a_read(|| t.wald(&idx, true, 1.0).expect("a distance"));
+        assert_eq!(a.to_bits(), want.to_bits());
+        assert_eq!(b.to_bits(), want.to_bits());
     }
 
     /// Past the order a thread keeps buffers for, the distance is the plain

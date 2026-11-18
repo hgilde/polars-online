@@ -108,20 +108,27 @@ struct ReadScratch {
 }
 
 thread_local! {
-    static READ: std::cell::RefCell<ReadScratch> = std::cell::RefCell::new(ReadScratch::default());
+    /// Lent to a read and left here after it ([`with_scratch`]), never
+    /// borrowed: a read of 256 features or more solves on the pool's threads,
+    /// and a thread waiting there takes other work, another read among it.
+    static READ: std::cell::Cell<Option<Box<ReadScratch>>> = const { std::cell::Cell::new(None) };
 }
 
 /// `f` in this thread's [`ReadScratch`], which a read of `order` or more
 /// features leaves empty: a thread keeps buffers for the orders a bank
 /// usually reads, not for a thousand features' matrices.
+///
+/// The scratch is taken out of the thread's cell for the call and set back
+/// after it, so nothing is borrowed while `f` runs: a read that starts on
+/// this thread meanwhile finds the cell empty and forms its own.
 fn with_scratch<T>(order: usize, f: impl FnOnce(&mut ReadScratch) -> T) -> T {
-    READ.with_borrow_mut(|sc| {
-        let out = f(sc);
-        if order >= KEPT_ORDER {
-            *sc = ReadScratch::default();
-        }
-        out
-    })
+    let mut sc = READ.take().unwrap_or_default();
+    let out = f(&mut sc);
+    if order >= KEPT_ORDER {
+        *sc = ReadScratch::default();
+    }
+    READ.set(Some(sc));
+    out
 }
 
 /// The three tests of one slot. See the module docs.
@@ -453,11 +460,39 @@ impl Specification {
 mod tests {
     use super::*;
 
+    /// Task 458: Breusch and Pagan's test at 256 features or more, with
+    /// Newey and West's variance, reads a covariance whose solve runs on the
+    /// pool's threads, and a thread waiting there takes other work -- another
+    /// read of the same kind, which must not find this thread's scratch
+    /// borrowed across it ("RefCell already borrowed") or write over it.
+    #[test]
+    fn a_wide_heteroskedasticity_read_on_a_pool_is_not_met_by_one_waiting_in_its_solve() {
+        let k = 260;
+        let mut st = 458u64;
+        let mut spec = Specification::new(k, 0, 1, 1);
+        for _ in 0..2 * k + 50 {
+            let x: Vec<f64> = (0..k).map(|_| lcg(&mut st)).collect();
+            let e = lcg(&mut st) * (1.0 + x[0].abs());
+            spec.update(&x, 0.0, e, 1.0, 1.0);
+        }
+        let idx: Vec<usize> = (0..k).collect();
+        let want = spec.breusch_pagan(&idx).expect("a statistic");
+        let (a, b) =
+            crate::test_pool::read_met_by_a_read(|| spec.breusch_pagan(&idx).expect("a statistic"));
+        assert_eq!(a.to_bits(), want.to_bits());
+        assert_eq!(b.to_bits(), want.to_bits());
+    }
+
     /// A read of `KEPT_ORDER` features or more leaves this thread's scratch
     /// empty; one of fewer keeps what it used.
     #[test]
     fn the_read_scratch_is_kept_below_the_order_and_released_at_it() {
-        let kept = || READ.with_borrow(|sc| sc.a.capacity() > 0);
+        let kept = || {
+            let sc = READ.take();
+            let kept = sc.as_ref().is_some_and(|sc| sc.a.capacity() > 0);
+            READ.set(sc);
+            kept
+        };
         for (order, want) in [(KEPT_ORDER - 1, true), (KEPT_ORDER, false), (0, true)] {
             with_scratch(order, |sc| sc.a.resize(9, 1.0));
             assert_eq!(kept(), want, "order {order}");

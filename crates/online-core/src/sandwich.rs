@@ -72,20 +72,29 @@ struct CovScratch {
 }
 
 thread_local! {
-    static COV: std::cell::RefCell<CovScratch> = std::cell::RefCell::new(CovScratch::default());
+    /// Lent to a read and left here after it ([`with_cov`]), never borrowed:
+    /// a read of 256 coefficients or more solves on the pool's threads, and
+    /// a thread waiting there takes other work, another read among it.
+    static COV: std::cell::Cell<Option<Box<CovScratch>>> = const { std::cell::Cell::new(None) };
 }
 
 /// `f` in this thread's [`CovScratch`], which a covariance of `order`
 /// coefficients or more leaves empty: a thread keeps buffers for the orders
 /// a bank usually reads, not for a thousand features'.
+///
+/// The scratch is taken out of the thread's cell for the call and set back
+/// after it, so nothing is borrowed while `f` runs: a read that starts on
+/// this thread meanwhile (a pool thread waiting in a parallel solve takes
+/// other work) finds the cell empty and forms its own, which the first then
+/// replaces.
 fn with_cov<T>(order: usize, f: impl FnOnce(&mut CovScratch) -> T) -> T {
-    COV.with_borrow_mut(|sc| {
-        let out = f(sc);
-        if order >= KEPT_ORDER {
-            *sc = CovScratch::default();
-        }
-        out
-    })
+    let mut sc = COV.take().unwrap_or_default();
+    let out = f(&mut sc);
+    if order >= KEPT_ORDER {
+        *sc = CovScratch::default();
+    }
+    COV.set(Some(sc));
+    out
 }
 
 /// The sandwich of one slot's fit. See the module docs.
@@ -191,7 +200,7 @@ impl Sandwich {
             self.origin = x.to_vec();
         }
         let d = self.dim();
-        ROW.with_borrow_mut(|(z, u)| {
+        crate::scratch::with_borrow_mut(&ROW, |(z, u)| {
             z.clear();
             if self.intercept {
                 z.push(1.0);
@@ -429,7 +438,12 @@ mod tests {
 
     /// Whether this thread's covariance scratch holds anything.
     fn cov_kept() -> bool {
-        COV.with_borrow(|sc| !sc.solves.is_empty() || sc.bread.capacity() > 0)
+        let sc = COV.take();
+        let kept = sc
+            .as_ref()
+            .is_some_and(|sc| !sc.solves.is_empty() || sc.bread.capacity() > 0);
+        COV.set(sc);
+        kept
     }
 
     /// A covariance of fewer than `KEPT_ORDER` coefficients leaves its
@@ -464,6 +478,35 @@ mod tests {
         let idx: Vec<usize> = (0..KEPT_ORDER - 2).collect();
         short.covariance(&idx, false);
         assert!(cov_kept(), "{} coefficients", KEPT_ORDER - 1);
+    }
+
+    /// Task 458: a covariance of 256 coefficients or more solves on the
+    /// pool's threads, and a thread waiting there takes other work -- a
+    /// read of its own, which must not find this thread's scratch borrowed
+    /// across the solve ("RefCell already borrowed", a panic in a bank on
+    /// several threads) or write over it.
+    #[test]
+    fn a_covariance_read_on_a_pool_is_not_met_by_one_waiting_in_its_solve() {
+        let k = 260;
+        let mut st = 458u64;
+        let mut s = Sandwich::new(k, false, 0);
+        for _ in 0..2 * k {
+            let x: Vec<f64> = (0..k).map(|_| lcg(&mut st)).collect();
+            s.update(&x, lcg(&mut st), 1.0, 1.0);
+        }
+        let idx: Vec<usize> = (0..k).collect();
+        let want = s.standard_errors(&idx, false).expect("a covariance");
+        let (a, b) = crate::test_pool::read_met_by_a_read(|| {
+            s.standard_errors(&idx, false).expect("a covariance")
+        });
+        for got in [a, b] {
+            assert_eq!(got.len(), want.len());
+            for (g, w) in got.iter().zip(&want) {
+                assert_eq!(g.to_bits(), w.to_bits());
+            }
+        }
+        // Each read leaves nothing behind at this order.
+        assert!(!cov_kept());
     }
 
     /// A sum that the decay brings back under `f64`'s range takes the
