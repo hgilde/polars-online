@@ -222,13 +222,16 @@ fn the_switch_gives_faers_bits_on_both_sides_of_it() {
     }
 }
 
-/// Which path a call takes: an order up to `SMALL` takes the small factor
-/// and 13 takes faer's; an order of 0 takes neither the small factor's
+/// Which path a call takes: an order up to the machine's limit (`SMALL`, 12,
+/// here unless x86-64 has AVX2) takes the small factor and the next takes
+/// faer's; an order of 0 takes neither the small factor's
 /// loops nor faer's scratch. (A threshold moved by one would give the same
 /// bits, so the bits cannot say.)
 #[test]
-fn the_factor_switches_to_faer_after_order_12() {
+fn the_factor_switches_to_faer_after_the_machines_limit() {
     assert_eq!(SMALL, 12);
+    let limit = small_limit();
+    assert!(limit == 12 || limit == 8, "limit {limit}");
     let mut s = 5u64;
     for n in 1..=SMALL + 3 {
         let m = Mat::from_fn(n, n, |i, j| {
@@ -244,9 +247,25 @@ fn the_factor_switches_to_faer_after_order_12() {
         cholesky_seq(m.clone().as_mut(), None).expect("diagonally dominant");
         let after = taken();
         let went_small = after.0 - before.0;
-        assert_eq!(went_small, usize::from(n <= SMALL), "order {n}");
+        assert_eq!(went_small, usize::from(n <= limit), "order {n}");
         assert_eq!(after.1, before.1, "the solve is not taken by a factor");
     }
+}
+
+/// The limit is chosen by the path the loop takes: 8 where it is the fused
+/// AVX2 one, 12 otherwise, so the x86 value is covered from any machine.
+#[test]
+fn the_limit_is_8_for_the_fused_x86_loop_and_12_otherwise() {
+    assert_eq!(small_limit_for(true), 8);
+    assert_eq!(small_limit_for(false), 12);
+    assert_eq!(SMALL_AVX2, 8);
+    #[cfg(target_arch = "x86_64")]
+    assert_eq!(
+        small_limit(),
+        small_limit_for(crate::sgd::x86_v3().is_some())
+    );
+    #[cfg(not(target_arch = "x86_64"))]
+    assert_eq!(small_limit(), 12);
 }
 
 /// The blocked factor's last block is of any order from 1: a matrix of `64 +

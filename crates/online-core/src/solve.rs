@@ -372,8 +372,37 @@ fn cholesky_in_place(
     Ok(())
 }
 
-/// Orders up to this are factorized by [`small_llt`], the rest by faer.
+/// The largest order [`small_llt`] is written for. Orders up to
+/// [`small_limit`] (this, or less) are factorized by it, the rest by faer;
+/// the bits are faer's either way.
 const SMALL: usize = 12;
+
+/// The order up to which [`small_llt`] is taken where its loop runs fused on
+/// an x86-64 CPU with AVX2 and FMA. There faer's own kernel is vectorized
+/// and wins from order 11 up (factor alone, own loop over faer's, x86-64-v3
+/// build: order 8 takes 0.89 of faer's time, 9 and 10 0.99 to 1.00, 11 1.11,
+/// 12 1.14, 13 1.05), so the loop stops at 8, which leaves the margin.
+const SMALL_AVX2: usize = 8;
+
+/// The switch order for a machine: [`SMALL_AVX2`] where the loop is the
+/// fused AVX2 one on x86-64, else [`SMALL`] (the loop wins to 12 on arm64
+/// and in an x86-64 build without AVX2: 0.63 to 0.975 of faer's time at
+/// every order 1 to 12 there).
+fn small_limit_for(fused_x86: bool) -> usize {
+    if fused_x86 { SMALL_AVX2 } else { SMALL }
+}
+
+/// [`small_limit_for`] for the machine this runs on.
+fn small_limit() -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        small_limit_for(crate::sgd::x86_v3().is_some())
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        small_limit_for(false)
+    }
+}
 
 // How many times this thread has taken `small_llt` and `small_solve`: the
 // two paths give faer's bits, so the order that sends a call to one or the
@@ -509,7 +538,7 @@ fn cholesky_seq(
     a: MatMut<'_, f64>,
     work: Option<&mut CholWork>,
 ) -> Result<(), llt::factor::LltError> {
-    if a.nrows() <= SMALL {
+    if a.nrows() <= small_limit() {
         return small_llt(a);
     }
     let req =
