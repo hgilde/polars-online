@@ -182,9 +182,12 @@ pub(crate) fn warming_up(
 /// that has run to 0 (the Gram has forgotten its first row, so it is at its
 /// limit: `n_∞ = n_t`) as the two ends. The warm-up is the span while `n_t`
 /// is under the bound and `n_∞` is not. Exact for unit rows at one spacing;
-/// for other weights and spacings the same quantity estimated: a gap, or
-/// rows of weight zero, take `prior_scale` down and leave Kish's size where
-/// it was, so the Gram reads as at its limit and a cap hit counts.
+/// for other weights and spacings the same quantity estimated. A gap of
+/// many half-lives takes `prior_scale` to 0 while the rows after it start
+/// the Kish size over (the old rows' weight is gone), so the rebuild after
+/// such a gap reads as at its limit and its cap hits are counted: the Gram
+/// does not remember how young it is. A window's Gram is not read this way
+/// (the caller passes a scale of 1, so the rows alone decide).
 ///
 /// Costs O(k) on a cap hit and a few flops; a converged descent pays
 /// nothing. No state: `prior_scale` is the Gram's own.

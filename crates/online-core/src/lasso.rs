@@ -1067,7 +1067,15 @@ impl Lasso {
                     if !converged
                         && !crate::gramfit::young(
                             gram.n_kish(),
-                            self.acc.grams.grams[g].prior_scale(),
+                            // A window's Kish size is of the rows inside
+                            // it, which the live Gram's scale does not
+                            // describe: no limit is read there, and the
+                            // rows alone decide, as before.
+                            if view.is_some() {
+                                1.0
+                            } else {
+                                self.acc.grams.grams[g].prior_scale()
+                            },
                             s.iter().filter(|&&v| v > 0.0).count(),
                             self.cfg.fit_intercept,
                             l2,

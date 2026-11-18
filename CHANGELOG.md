@@ -50,7 +50,9 @@ returns.
   long the stream, read from the Gram itself; a stream that settles below the
   bound (50 features at a half-life of 30 rows settle near 87 against about
   115) is never out of its warm-up, and every cap hit on it is counted from
-  its first row. A wide `lasso` no longer warns from its first rows when its
+  its first row. So are the cap hits of the rebuild after a clock gap of many
+  half-lives, whose Gram has forgotten its age. A `window`'s fit is excused by
+  its rows alone, as before. A wide `lasso` no longer warns from its first rows when its
   rows can reach the bound; the fit is still where the descent stopped,
   predictions and coefficients are unchanged, and a descent that runs out
   past that point is counted as before. A state saved by an earlier build
