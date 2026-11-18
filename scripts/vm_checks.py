@@ -218,6 +218,9 @@ def make_wheels(
     ``target/``, which the job's cache keeps, and the others are removed once
     their pair is built, for the runner's disk."""
     result: dict = {"head": head, "base": base, "wheels": {r: {} for r in ROLES}, "reused": {}}
+    # Absolute: `git -C repo worktree add` reads a relative path from inside
+    # `repo`, so `branch/.vm-checks-base` would land at `branch/branch/...`.
+    repo = repo.resolve()
     worktree = repo / ".vm-checks-base"
     try:
         for layout in layouts:

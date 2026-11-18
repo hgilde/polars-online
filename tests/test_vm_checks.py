@@ -394,6 +394,24 @@ def test_the_base_is_built_unless_an_earlier_run_kept_its_wheel(repo, monkeypatc
     assert _git(repo, "worktree", "list").count("\n") == 0  # the base's worktree is removed
 
 
+def test_a_relative_checkout_puts_the_base_worktree_inside_it_once(repo, monkeypatch, tmp_path):
+    # The workflow passes `--repo branch`, relative to the tools' checkout;
+    # `git -C branch worktree add branch/...` would nest the worktree inside
+    # itself, and the base's build then found no pyproject.toml (the first
+    # dispatch, run 44320126091).
+    head, base = vm.plan(repo)
+    built = _fake_builds(monkeypatch, tmp_path, {})
+    monkeypatch.chdir(repo.parent)
+    vm.make_wheels(
+        Path(repo.name), ["default"], head, base, tmp_path / "dist", tmp_path / "got", "o/r"
+    )
+    bases = [where for who, _, where in built if who == ".vm-checks-base"]
+    assert [who for who, _, _ in built] == [repo.name, ".vm-checks-base"]
+    assert not (repo / repo.name).exists()
+    assert _git(repo, "worktree", "list").count("\n") == 0
+    assert bases
+
+
 def test_a_branch_at_its_base_builds_once(repo, monkeypatch, tmp_path):
     head = _git(repo, "rev-parse", "HEAD")
     built = _fake_builds(monkeypatch, tmp_path, {})
