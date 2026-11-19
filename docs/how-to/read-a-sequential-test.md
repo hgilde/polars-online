@@ -67,7 +67,7 @@ pl.DataFrame({
 
 # 1 to 3. Test both columns' signs.
 sign = po.spec.seqtest("sign", targets=["skewed", "fair"])
-out = pl.scan_parquet("signs.parquet").online.fit_predict([sign]).collect().unnest("sign").with_row_index("row")
+out = pl.scan_parquet("signs.parquet").rheon.fit_predict([sign]).collect().unnest("sign").with_row_index("row")
 
 
 def first(rows):
@@ -111,7 +111,7 @@ data](../EXAMPLE-DATA.md):
 ```python
 import math
 
-signs = lf.online.fit_predict([po.spec.seqtest("signs", targets=["y"], group="stock_id")]).collect().unnest("signs")   # 1
+signs = lf.rheon.fit_predict([po.spec.seqtest("signs", targets=["y"], group="stock_id")]).collect().unnest("signs")   # 1
 rejected = (signs.filter(pl.col("log_e_pos_y") >= math.log(20))         # 2. the rows at the 5% level ...
             .group_by("stock_id", maintain_order=True).first())         # 3. ... and each stock's first
 print(f"stocks whose y tends positive at the 5% level: {rejected.height} of {signs['stock_id'].n_unique()}")

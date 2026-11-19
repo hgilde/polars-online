@@ -1,4 +1,4 @@
-"""``po.gram``'s fits against scikit-learn where it computes the same
+"""``rheon.gram``'s fits against scikit-learn where it computes the same
 quantity (task 278, batch 12): ``solve`` with a ridge above 0, plain and
 standardized, against ``Ridge`` on the same weighted rows, and
 ``lasso_path``'s ``penalty_weights`` against ``enet_path`` on columns
@@ -324,9 +324,9 @@ def test_the_rust_tables_dpocon_numbers_are_scipys():
         assert est <= np.linalg.cond(h, 1) / h_norm * (1.0 + tol), name
 
 
-# ---------------------------------------------------- `po.gram.condition`
+# ---------------------------------------------------- `rheon.gram.condition`
 #
-# Belsley's collinearity diagnostics, which `po.gram.condition` computes
+# Belsley's collinearity diagnostics, which `rheon.gram.condition` computes
 # from the accumulated moments: the eigendecomposition of the unit-length
 # column-scaled second-moment matrix. numpy computes the same quantities
 # from the rows another way, the SVD of the weighted design scaled to unit

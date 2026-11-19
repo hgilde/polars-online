@@ -165,13 +165,13 @@ def describe_api(cli: Path | None = None) -> str:
             w(f"  {name}{sig}{unstable_label(name)}")
     w("")
 
-    w("[frame namespaces]  # lf.online.<method> -> LazyFrame; df.online.<method> -> DataFrame")
+    w("[frame namespaces]  # lf.rheon.<method> -> LazyFrame; df.rheon.<method> -> DataFrame")
     for label, frame in (("LazyFrame", pl.LazyFrame()), ("DataFrame", pl.DataFrame())):
-        for name in sorted(dir(frame.online)):
+        for name in sorted(dir(frame.rheon)):
             if name.startswith("_"):
                 continue
-            sig = inspect.signature(getattr(frame.online, name))
-            w(f"  {label}.online.{name}{sig}")
+            sig = inspect.signature(getattr(frame.rheon, name))
+            w(f"  {label}.rheon.{name}{sig}")
     w("")
 
     out.extend(frame_columns_section())
@@ -535,7 +535,7 @@ def dtype_text(dtype: pl.DataType) -> str:
 
 
 def frame_columns_section() -> list[str]:
-    """The frames a fitted bank returns, and the tables `po.spec` derives
+    """The frames a fitted bank returns, and the tables `rheon.spec` derives
     from a spec, as `column: dtype` in order. `closed_groups()` has its own
     section, and `last_row()` is shown for one spec: its columns after
     `spec` and `group` are that spec's output fields, which the grammar
@@ -574,9 +574,9 @@ def frame_columns_section() -> list[str]:
         ("ModelBank.audit(pooled=True)", bank.audit("audit", pooled=True)),
         ("ModelBank.check()", bank.check()),
         ("ModelBank.solve_failures()", bank.solve_failures()),
-        ("po.spec.output_index()", rp.spec.output_index(ridge)),
-        ("po.spec.coef_index()", rp.spec.coef_index(ridge)),
-        ("po.spec.coef_fields()", rp.spec.coef_fields(ridge)),
+        ("rheon.spec.output_index()", rp.spec.output_index(ridge)),
+        ("rheon.spec.coef_index()", rp.spec.coef_index(ridge)),
+        ("rheon.spec.coef_fields()", rp.spec.coef_fields(ridge)),
     ]
     out = [
         "[frame columns]  # column: dtype, in order: a column renamed, retyped, moved or added"
@@ -803,7 +803,7 @@ def enum_values_section(cli: Path | None) -> list[str]:
                 {"input": "X", "half_life": 10.0, "window_size": 5.0, **extra},
                 key,
             )
-            out.append(f"  po.{label}.{key}: {', '.join(sorted(taken_words(key, refuse)))}")
+            out.append(f"  rp.{label}.{key}: {', '.join(sorted(taken_words(key, refuse)))}")
     reasons = (
         rp.ModelBank([rp.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)])
         .fit_predict(pl.DataFrame({"x": [1.0, 2.0], "y": [1.0, 2.0]}))["m"]
@@ -977,9 +977,16 @@ def env_vars() -> list[str]:
         ):
             consts[m.group(1)] = m.group(2)
     names: set[str] = set()
-    sources = [(p, _RUST_READ) for p in rust] + [
-        (p, _PY_READ) for p in sorted((REPO / "python" / "rheon").rglob("*.py"))
+    sources = [(p, _RUST_READ) for p in rust if p.name != "env.rs"] + [
+        (p, _PY_READ)
+        for p in sorted((REPO / "python" / "rheon").rglob("*.py"))
+        if p.name != "_env.py"
     ]
+    # The two readers of the renamed variables read through a table (`env.rs`'s
+    # `Var`s, `_env.py`'s `RENAMED`), whose entries are the names read.
+    renamed = renamed_env_vars()
+    names.update(renamed)
+    names.update(renamed.values())
     for path, pattern in sources:
         text = path.read_text(encoding="utf-8")
         if path.suffix == ".rs":
@@ -1002,16 +1009,40 @@ def env_vars() -> list[str]:
 
 #: Variables the shipped code reads only to say they were renamed, each
 #: with its new name: they turn nothing on.
-RENAMED_ENV_VARS = {"ONLINE_TIMING": "POLARS_ONLINE_TIMING"}
+RENAMED_ENV_VARS = {"ONLINE_TIMING": "RHEON_TIMING"}
+
+
+def renamed_env_vars() -> dict[str, str]:
+    """The names the two table readers (`crates/rheon-polars/src/env.rs` and
+    `python/rheon/_env.py`) read, as ``{old: new}``: the old name is read while
+    the new one is unset. The Python table must list every pair the Rust side
+    does that Python reads too, and Python's one more (`RHEON_SKIP_CPU_CHECK`)."""
+    rust_text = (REPO / "crates" / "rheon-polars" / "src" / "env.rs").read_text(encoding="utf-8")
+    rust_text = re.split(r"\n#\[cfg\(test\)\]\s*\nmod tests\b", rust_text)[0]
+    rust = dict(
+        (old, new)
+        for new, old in re.findall(
+            r'name:\s*"(RHEON_\w+)",\s*old:\s*"(POLARS_ONLINE_\w+)"', rust_text
+        )
+    )
+    py_text = (REPO / "python" / "rheon" / "_env.py").read_text(encoding="utf-8")
+    py = dict(
+        (old, new) for new, old in re.findall(r'"(RHEON_\w+)":\s*"(POLARS_ONLINE_\w+)"', py_text)
+    )
+    assert rust.items() <= py.items(), f"env.rs reads pairs _env.py does not: {rust} vs {py}"
+    return py
 
 
 def env_vars_section() -> list[str]:
+    old_names = renamed_env_vars()
     return [
         "[env vars]  # read at run time by the shipped code (crates/*/src, the package):"
         " a variable added or renamed is a diff here",
         *(
             f"  {name}  (renamed {RENAMED_ENV_VARS[name]}; read only to say so)"
             if name in RENAMED_ENV_VARS
+            else f"  {name}  (renamed {old_names[name]}; read only while it is unset)"
+            if name in old_names
             else f"  {name}"
             for name in env_vars()
         ),

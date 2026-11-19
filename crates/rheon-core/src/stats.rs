@@ -958,7 +958,7 @@ impl EwAutoCorr {
 /// A regression fit's `pred` and `y` share a sign convention, so agreement
 /// on the sign is informative, and a row with `y = 0` or `pred = 0`
 /// (neither up nor down) is excluded rather than scored either way, as
-/// `po.eval` excludes it (docs/PLAN.md task 195, S6). A Poisson fit has no
+/// `rp.eval` excludes it (docs/PLAN.md task 195, S6). A Poisson fit has no
 /// sign to hit, and its `hit_rate` is `None` ([`HitTest::Undefined`]). A
 /// classifier's `pred` is a
 /// probability in `(0, 1)` and its `y` a 0/1 label: both are positive by
@@ -1084,7 +1084,7 @@ impl SlotMetrics {
             HitTest::Threshold => Some(f64::from((pred > 0.5) == (y > 0.5))),
             // A `y` or a `pred` of exactly zero says neither up nor down.
             // `signum(+0.0)` is 1, so a prediction of exactly 0 was "up", a
-            // hit on every rising row, where `po.eval`, whose `sign(0)` is 0,
+            // hit on every rising row, where `rp.eval`, whose `sign(0)` is 0,
             // scored it a miss (review round 4, YB8; docs/PLAN.md task 195,
             // S6).
             HitTest::Sign if y != 0.0 && pred != 0.0 => {
@@ -1124,7 +1124,7 @@ pub enum HitTest {
     /// construction against a count that is never negative, where the sign
     /// test about zero agreed on every row and read 1.0 whatever the fit
     /// (review round 4, CC5; docs/PLAN.md task 195, S5). `hit_rate` is
-    /// `None`, as `po.eval` nulls a metric that is not defined.
+    /// `None`, as `rp.eval` nulls a metric that is not defined.
     Undefined,
 }
 
@@ -2481,7 +2481,7 @@ mod metric_tests {
     /// says neither up nor down, and the row ages the weight without
     /// scoring. `f64::signum(+0.0)` is 1, so a prediction of exactly 0 was
     /// "up", a hit on every rising row and a miss on every falling one,
-    /// where `po.eval`, whose `sign(0)` is 0, scored it a miss on both
+    /// where `rp.eval`, whose `sign(0)` is 0, scored it a miss on both
     /// (review round 4, YB8; docs/PLAN.md task 195, S6). `-0.0` is zero too.
     /// (Task 201 removed the ratio target, whose test was about 1, so every
     /// test is about zero.)

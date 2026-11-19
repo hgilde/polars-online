@@ -322,7 +322,7 @@ class TestTheSurfaces:
         bank = rp.ModelBank([s]).fit_predict(df)
         # The plan selects only the output, so the label column is read
         # because the spec names it.
-        lazy = df.lazy().online.fit_predict([s]).select("m").collect()
+        lazy = df.lazy().rheon.fit_predict([s]).select("m").collect()
         assert lazy.unnest("m").equals(bank.select("m").unnest("m"), null_equal=True)
 
     def test_the_summary_counts_labels_missing_and_dropped(self):

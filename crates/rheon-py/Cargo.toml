@@ -35,9 +35,9 @@ pyo3 = { workspace = true, features = ["abi3-py312"] }
 # query engine; `rheon-polars` still does, for the runner the CLI uses.
 pyo3-polars = { workspace = true, features = ["dtype-struct"] }
 # Polars' reading of the memory available (`sys::MEMINFO`), for
-# `po.gbdt`'s in-memory choice: the same pin, already in the tree.
+# `rheon.polars._gbdt`'s in-memory choice: the same pin, already in the tree.
 polars-utils = "=0.55.2"
-# The conversion pool `po.gbdt`'s sampler holds (already in the tree).
+# The conversion pool `rheon.polars._gbdt`'s sampler holds (already in the tree).
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true

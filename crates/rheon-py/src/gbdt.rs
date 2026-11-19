@@ -1,4 +1,4 @@
-//! `po.gbdt`'s native engine (docs/PLAN.md task 242): XGBoost's and
+//! `rheon.polars._gbdt`'s native engine (docs/PLAN.md task 242): XGBoost's and
 //! LightGBM's libraries, loaded by the paths their Python packages loaded
 //! them from, build the binned training objects from frames pulled through a
 //! Python iterator, and hand back the handle, which
@@ -36,11 +36,11 @@ fn to_py(e: GbdtError) -> PyErr {
     }
 }
 
-/// A layout no call of `po.gbdt` hands over, since the Python layer builds
+/// A layout no call of `rheon.polars._gbdt` hands over, since the Python layer builds
 /// it: a defect if met, or a direct call of the private native module.
 fn internal(what: String) -> PyErr {
     PyValueError::new_err(format!(
-        "po.gbdt: internal: {what}, which is a defect in polars-online. Open an issue at \
+        "rheon.polars._gbdt: internal: {what}, which is a defect in polars-online. Open an issue at \
          https://github.com/hgilde/polars-online/issues with this message."
     ))
 }

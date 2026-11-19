@@ -98,7 +98,7 @@ def right_way(con: Any, ticks: pl.DataFrame) -> None:
     plans = {}
     for cur, (name, where) in zip(cursors, HALVES.items(), strict=True):
         cur.execute(QUERY.format(where=where))
-        plans[name] = pl.scan_arrow_c_stream(cur.fetch_arrow()).online.fit_predict([SPEC])
+        plans[name] = pl.scan_arrow_c_stream(cur.fetch_arrow()).rheon.fit_predict([SPEC])
 
     with tempfile.TemporaryDirectory() as d:
         # One plan streams straight to a file...
@@ -124,9 +124,9 @@ def the_trap(con: Any, ticks: pl.DataFrame) -> None:
     want = _in_memory(ticks, where)
     cur = con.cursor()
     cur.execute(QUERY.format(where=where))
-    older = pl.scan_arrow_c_stream(cur.fetch_arrow()).online.fit_predict([SPEC])  # not collected
+    older = pl.scan_arrow_c_stream(cur.fetch_arrow()).rheon.fit_predict([SPEC])  # not collected
     cur.execute(QUERY.format(where=where))  # the same cursor, re-executed
-    newer = pl.scan_arrow_c_stream(cur.fetch_arrow()).online.fit_predict([SPEC])
+    newer = pl.scan_arrow_c_stream(cur.fetch_arrow()).rheon.fit_predict([SPEC])
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         got = newer.collect()

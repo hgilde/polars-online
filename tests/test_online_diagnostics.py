@@ -566,12 +566,12 @@ def test_feature_health_is_refused_on_a_model_with_no_features():
 
 def test_unnest_takes_the_robust_standard_errors_apart():
     """``se_coef_hc0`` and ``se_coef_hac`` are laid out like ``coef``, so
-    ``online.unnest`` takes them apart per coefficient as it does
+    ``rheon.unnest`` takes them apart per coefficient as it does
     ``se_coef`` (review round 6, F4)."""
     df = _frame()
     spec = _robust_spec(emit_se_coef=True, coef_every=1)
     out = _run(df, spec)
-    flat = df.lazy().online.fit_predict([spec]).online.unnest([spec]).collect()
+    flat = df.lazy().rheon.fit_predict([spec]).rheon.unnest([spec]).collect()
     for field in ("se_coef", *ROBUST):
         names = [f"{field}_y_{term}" for term in ("intercept", "x0", "x1")]
         assert set(names) <= set(flat.columns), (field, flat.columns)

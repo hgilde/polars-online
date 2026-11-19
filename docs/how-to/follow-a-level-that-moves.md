@@ -98,13 +98,13 @@ runs = {}
 # The level as a feature, at the default c and at c = 10.
 for name, c in [("default", {}), ("c=10", {"c": 10.0})]:
     spec = po.spec.pa("m", targets=["y"], features=["x0", "x1", "level"], **common, **c)
-    out = pl.scan_parquet("falling.parquet").online.fit_predict([spec]).collect()
+    out = pl.scan_parquet("falling.parquet").rheon.fit_predict([spec]).collect()
     runs[name] = out["m"].struct.field("pred_y") - out["y"]
 # The differences, and the level read back as the last row's y plus the predicted change.
 diffs = po.spec.pa("d", targets=["dy"], features=["dx0", "dx1"], **common)
 out = (pl.scan_parquet("falling.parquet")
          .with_columns(dy=pl.col("y").diff(), dx0=pl.col("x0").diff(), dx1=pl.col("x1").diff())   # 1. the differences
-         .online.fit_predict([diffs])                                                              # 2. fitted
+         .rheon.fit_predict([diffs])                                                              # 2. fitted
          .with_columns(read_back=pl.col("y").shift(1) + pl.col("d").struct.field("pred_dy"))      # 3. the level read back
          .collect())
 runs["differenced"] = out["read_back"] - out["y"]
@@ -179,7 +179,7 @@ specs = [po.spec.sgd("squared", loss="squared", **common),
          po.spec.sgd("mad", loss="huber", **common),                                  # the scale's half-life: the fit's 500
          po.spec.sgd("mad_100", loss="huber", huber_scale_half_life=100.0, **common),  # a fifth of the fit's
          po.spec.sgd("mad_20", loss="huber", huber_scale_half_life=20.0, **common)]
-out = pl.scan_parquet("shift.parquet").online.fit_predict(specs).collect()
+out = pl.scan_parquet("shift.parquet").rheon.fit_predict(specs).collect()
 # Each fit's error after the shift, and the rows until every 200-row average stays under 1.0.
 print("fit      rows 0-200  rows 200-400  rows until under 1.0")
 for spec in specs:

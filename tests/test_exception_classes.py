@@ -301,7 +301,7 @@ def test_a_text_clock_of_digits_is_refused_by_with_windows() -> None:
 
 
 def test_the_like_clash_names_the_function_in_full() -> None:
-    pin = r"^po\.stream\.with_windows: like= takes the clock settings from spec \"m\""
+    pin = r"^rp\.stream\.with_windows: like= takes the clock settings from spec \"m\""
     with pytest.raises(rp.RefusedValueError, match=pin):
         _like_clash()
 
@@ -556,4 +556,4 @@ def test_a_missing_output_column_prints_its_message_unquoted() -> None:
     """It is no ``KeyError``, whose ``str`` quotes the text."""
     with pytest.raises(rp.OutputColumnNotFoundError) as caught:
         rp.eval.unpack(_df(), "m")
-    assert str(caught.value).startswith('po.eval.unpack: spec "m" has no output column')
+    assert str(caught.value).startswith('rp.eval.unpack: spec "m" has no output column')

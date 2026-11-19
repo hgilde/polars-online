@@ -24,8 +24,8 @@ TIER = "essential"
 
 
 def test_the_warning_is_a_deprecation_warning_and_exported():
-    assert issubclass(rp.PolarsOnlineDeprecationWarning, DeprecationWarning)
-    assert "PolarsOnlineDeprecationWarning" in rp.__all__
+    assert issubclass(rp.RheonDeprecationWarning, DeprecationWarning)
+    assert "RheonDeprecationWarning" in rp.__all__
 
 
 def test_no_forwarding_table_is_left():
@@ -84,9 +84,9 @@ def test_another_models_key_of_the_same_name_is_plain():
 
 
 def test_the_removed_functions_and_calls_refuse_naming_the_replacement():
-    with pytest.raises(TypeError, match="po.ewm_mean"):
+    with pytest.raises(TypeError, match="rp.ewm_mean"):
         rp.rewm_mean("x", half_life=1.0, window_size=2.0)
-    with pytest.raises(TypeError, match="po.gram.correlation"):
+    with pytest.raises(TypeError, match="rheon.gram.correlation"):
         rp.corr.matrix([[1.0]])
     bank = rp.ModelBank([rp.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)])
     with pytest.raises(AttributeError, match="write_json"):

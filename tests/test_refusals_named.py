@@ -62,8 +62,8 @@ def test_chunk_size_of_the_wrong_type_is_named(size: object) -> None:
     for who, call in [
         ("ModelBank.fit_predict_batches", lambda: bank.fit_predict_batches(df, chunk_size=size)),
         ("ModelBank.fit", lambda: bank.fit(df.lazy(), chunk_size=size)),
-        ("df.online.fit_predict", lambda: df.online.fit_predict([_spec()], chunk_size=size)),
-        ("lf.online.fit_predict", lambda: df.lazy().online.fit_predict([_spec()], chunk_size=size)),
+        ("df.rheon.fit_predict", lambda: df.rheon.fit_predict([_spec()], chunk_size=size)),
+        ("lf.rheon.fit_predict", lambda: df.lazy().rheon.fit_predict([_spec()], chunk_size=size)),
     ]:
         with pytest.raises(rp.WrongTypeError, match=f"^{who}: chunk_size must be a whole number"):
             call()
@@ -115,23 +115,23 @@ def test_drop_groups_reads_a_lone_string_as_one_key() -> None:
     assert bank.drop_groups(["gb"]) == 1
 
 
-# --- po.stream.embargo -----------------------------------------------------------
+# --- rp.stream.embargo -----------------------------------------------------------
 
 
 @pytest.mark.parametrize("delay", [None, [1.0], True])
 def test_embargo_names_a_delay_of_the_wrong_type(delay: object) -> None:
-    with pytest.raises(rp.WrongTypeError, match="^po.stream.embargo: delay must be a number"):
+    with pytest.raises(rp.WrongTypeError, match="^rp.stream.embargo: delay must be a number"):
         rp.stream.embargo(_frame(), clock="t", delay=delay)  # type: ignore[arg-type]
 
 
-# --- po.eval -----------------------------------------------------------------------
+# --- rp.eval -----------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("who", ["diebold_mariano", "clark_west"])
 def test_lags_that_is_not_whole_is_named(scored: pl.DataFrame, who: str) -> None:
     names = {"a": "m", "b": "m2"} if who == "diebold_mariano" else {"big": "m", "small": "m2"}
     fn = getattr(rp.eval, who)
-    with pytest.raises(rp.WrongTypeError, match=f"^po.eval.{who}: lags must be a whole number"):
+    with pytest.raises(rp.WrongTypeError, match=f"^rp.eval.{who}: lags must be a whole number"):
         fn(scored, lags=1.5, **names)
     assert fn(scored, lags=np.int64(2), **names).height == 1
 
@@ -169,13 +169,13 @@ def test_eval_names_a_missing_column_as_this_librarys_class(
     scored: pl.DataFrame, who: str, role: str, call: object
 ) -> None:
     with pytest.raises(
-        rp.ColumnNotFoundError, match=f"^po.eval.{who}: {role} column 'nope' is not in the frame"
+        rp.ColumnNotFoundError, match=f"^rp.eval.{who}: {role} column 'nope' is not in the frame"
     ) as e:
         call(scored)  # type: ignore[operator]
     assert isinstance(e.value, ValueError)
 
 
-# --- po.gbdt -----------------------------------------------------------------------
+# --- rheon.polars._gbdt -----------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
@@ -197,7 +197,7 @@ def parquet(tmp_path_factory: pytest.TempPathFactory) -> str:
 def test_xgboost_matrix_names_a_bad_seed(
     parquet: str, seed: object, kind: type, match: str
 ) -> None:
-    with pytest.raises(kind, match=f"^po.gbdt.xgboost_matrix: {match}"):
+    with pytest.raises(kind, match=f"^rheon.polars._gbdt.xgboost_matrix: {match}"):
         _gbdt.xgboost_matrix(parquet, label="y", features=["x0"], seed=seed)  # type: ignore[arg-type]
 
 
@@ -215,18 +215,18 @@ def test_a_glob_that_matches_nothing_is_file_not_found_for_either_format(
         ("xgboost_matrix", lambda: _gbdt.xgboost_matrix(pattern, label="y")),
         ("lightgbm_dataset", lambda: _gbdt.lightgbm_dataset(pattern, label="y")),
     ]:
-        with pytest.raises(FileNotFoundError, match=f"^po.gbdt.{who}: no file matches"):
+        with pytest.raises(FileNotFoundError, match=f"^rheon.polars._gbdt.{who}: no file matches"):
             call()
 
 
-# --- po.corr and po.gram -----------------------------------------------------------
+# --- rheon.corr and rheon.gram -----------------------------------------------------------
 
 R3 = np.array([[1.0, 0.8, 0.7], [0.8, 1.0, 0.75], [0.7, 0.75, 1.0]])
 
 
 @pytest.mark.parametrize(("k", "kind"), [(0, ValueError), (-1, ValueError), (1.0, TypeError)])
 def test_spectral_refuses_k_below_one(k: object, kind: type) -> None:
-    with pytest.raises(kind, match="^po.corr.spectral: k must be"):
+    with pytest.raises(kind, match="^rheon.corr.spectral: k must be"):
         corr.spectral(R3, k)  # type: ignore[arg-type]
     assert corr.spectral(R3, np.int32(1))[0].shape == (1,)
 
@@ -241,13 +241,13 @@ def test_fisher_se_checks_before_its_floor() -> None:
 
 @pytest.mark.parametrize("rho", [1.5, -1.01, float("nan")])
 def test_fisher_se_refuses_rho_outside_minus_one_to_one(rho: float) -> None:
-    with pytest.raises(ValueError, match="^po.corr.fisher_se: rho must be a correlation"):
+    with pytest.raises(ValueError, match="^rheon.corr.fisher_se: rho must be a correlation"):
         corr.fisher_se(103, rho=rho)
     assert corr.fisher_se(103, rho=1.0) == 0.0
 
 
 def test_from_blocks_refuses_an_asymmetric_table() -> None:
-    with pytest.raises(ValueError, match=r"^po.corr.from_blocks: b must be symmetric, but b\["):
+    with pytest.raises(ValueError, match=r"^rheon.corr.from_blocks: b must be symmetric, but b\["):
         corr.from_blocks(np.array([[0.6, 0.1], [0.2, 0.5]]), ["a", "a", "b", "b"])
 
 
@@ -265,7 +265,7 @@ def test_from_blocks_takes_what_block_means_returns() -> None:
 
 @pytest.mark.parametrize("columns", [["x0", "x0"], ["x0", 1], [1, -2]])
 def test_gram_subset_and_condition_refuse_a_column_named_twice(gram: dict, columns: list) -> None:
-    with pytest.raises(ValueError, match="^po.gram.subset: columns names column 'x0' twice"):
+    with pytest.raises(ValueError, match="^rheon.gram.subset: columns names column 'x0' twice"):
         rp.gram.subset(gram, columns)
-    with pytest.raises(ValueError, match="^po.gram.condition: features names column 'x0' twice"):
+    with pytest.raises(ValueError, match="^rheon.gram.condition: features names column 'x0' twice"):
         rp.gram.condition(gram, features=columns)

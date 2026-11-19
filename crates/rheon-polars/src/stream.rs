@@ -4464,7 +4464,7 @@ fn run_instance(
     };
     // A Poisson fit has no sign to hit: a rate is positive and a count is
     // never negative, so the sign test about zero agreed on every row and
-    // `hit_rate` read 1.0 whatever the fit. It is null, as `po.eval` nulls a
+    // `hit_rate` read 1.0 whatever the fit. It is null, as `rp.eval` nulls a
     // metric that is not defined (review round 4, CC5; docs/PLAN.md task
     // 195, S5). Every other target's test is about zero: task 201 removed
     // the ratio target, whose test was about 1.

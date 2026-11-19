@@ -380,7 +380,7 @@ def test_every_rust_kind_has_exactly_one_builder():
 
 def test_the_builder_list_covers_every_builder():
     """`test_kwargs_typing` parametrises its typed-dict checks on its own list
-    of builders; this holds that list to what `po.spec` exports, so a model
+    of builders; this holds that list to what `rheon.spec` exports, so a model
     added to one cannot be missed by the other."""
     assert set(test_kwargs_typing.BUILDERS) == _builders()
 

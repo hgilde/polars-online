@@ -506,7 +506,7 @@ class TestChunkingAndResume:
 
 
 #: The fields laid out like ``coef``, one value per coefficient, which ride
-#: its cadence (``po.spec.output_index``'s ``kind``); every other field is
+#: its cadence (``rheon.spec.output_index``'s ``kind``); every other field is
 #: computed whatever the cadence.
 RIDES_THE_CADENCE = frozenset({"coef", "support_coef", "se_coef", "se_coef_hc0", "se_coef_hac"})
 

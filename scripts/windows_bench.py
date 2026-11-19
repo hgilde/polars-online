@@ -11,7 +11,7 @@ is generated, seeded, into OUTDIR (default `.cache/windows_bench`, which git
 ignores) and reused by later runs. Each case runs in a fresh process, parquet
 in and `sink_parquet` out, and prints its wall time and peak RSS:
 
-- `with_windows`: `lf.online.with_windows(fwd_vwap=ewm_sum(p q) / ewm_sum(q))`, both
+- `with_windows`: `lf.rheon.with_windows(fwd_vwap=ewm_sum(p q) / ewm_sum(q))`, both
   `reverse=True`;
 - `rolling`: `rolling(period=H, offset="0s", closed="none")`, with each
   window's weights taken from its own anchor;
@@ -83,7 +83,7 @@ def one(out: Path, case: str, n: int, h: str) -> None:
     columns = out / f"windows_{n}_{h}.parquet"
     start = time.perf_counter()
     if case == "with_windows":
-        plan = lf.online.with_windows(fwd_vwap=fwd_vwap, clock="ts", gap_cap="5m")
+        plan = lf.rheon.with_windows(fwd_vwap=fwd_vwap, clock="ts", gap_cap="5m")
         target = columns
     elif case.startswith(("shared", "separate")):
         kind, k = case.split()
@@ -95,10 +95,10 @@ def one(out: Path, case: str, n: int, h: str) -> None:
             )
             for i in range(int(k))
         }
-        plan = lf.online.with_windows(**ops, clock="ts", gap_cap="5m")
+        plan = lf.rheon.with_windows(**ops, clock="ts", gap_cap="5m")
         target = out / "ops.parquet"
     elif case == "embargoed":
-        plan = lf.online.with_windows(fwd_vwap=fwd_vwap, like=spec).online.fit_predict([spec])
+        plan = lf.rheon.with_windows(fwd_vwap=fwd_vwap, like=spec).rheon.fit_predict([spec])
         target = out / "embargoed.parquet"
     elif case == "target":
         native = rp.spec.ewridge(
@@ -110,10 +110,10 @@ def one(out: Path, case: str, n: int, h: str) -> None:
             half_life="30m",
             embargo=h,
         )
-        plan = lf.online.fit_predict([native])
+        plan = lf.rheon.fit_predict([native])
         target = out / "target.parquet"
     elif case == "model alone":
-        plan = pl.scan_parquet(columns).online.fit_predict([spec])
+        plan = pl.scan_parquet(columns).rheon.fit_predict([spec])
         target = out / "model.parquet"
     elif case == "rolling":
         lam = 2.0 ** (-1.0 / 10.0)

@@ -622,7 +622,9 @@ class TestTheSolversCheckTheirNumbers:
 
     @pytest.mark.parametrize("ridge", [-1.0, float("nan"), float("inf"), [0.1, -1e-9]], ids=str)
     def test_solve_refuses_a_ridge_that_is_not_a_penalty(self, g, ridge):
-        with pytest.raises(ValueError, match="^po.gram.solve: ridge must be finite and at least 0"):
+        with pytest.raises(
+            ValueError, match="^rheon.gram.solve: ridge must be finite and at least 0"
+        ):
             pg.solve(g, ridge=ridge)
 
     @pytest.mark.parametrize(
@@ -649,7 +651,7 @@ class TestTheSolversCheckTheirNumbers:
     def test_lasso_path_refuses_what_is_not_its_number(self, g, kw, says):
         args = {"penalties": [0.1], **kw}
         penalties = args.pop("penalties")
-        with pytest.raises(ValueError, match=f"^po.gram.lasso_path: {says}"):
+        with pytest.raises(ValueError, match=f"^rheon.gram.lasso_path: {says}"):
             pg.lasso_path(g, penalties, **args)
 
     def test_the_edges_of_each_range_are_taken(self, g):

@@ -3,7 +3,7 @@
 The claim is that a row is *scored* where it sits and *learned from* only
 once its label would really have been known. Two things have to be earned:
 
-1. It is the doubled stream, not something like it. `po.stream.embargo` builds
+1. It is the doubled stream, not something like it. `rp.stream.embargo` builds
    the recipe E47 names -- every row twice, a zero-weight prediction at `t`
    and a lesson at `t + delay` -- and the native path is held against it
    **bit for bit** on everything it predicts, not approximately. Not on what
@@ -75,7 +75,7 @@ def spec(name="m", *, features=("x",), **kw):
 
 
 def doubled(df, delay, **kw):
-    """The same fit through `po.stream.embargo`: the oracle E47 names."""
+    """The same fit through `rp.stream.embargo`: the oracle E47 names."""
     frame_ = stream.embargo(df, clock="t", delay=delay)
     bank = rp.ModelBank([spec(weight=stream.ROLE + "_weight", **kw)])
     out = bank.fit_predict(frame_)
@@ -665,7 +665,7 @@ class TestTheSurfaces:
         df = frame(n=300, seed=11)
         s = spec(embargo=6.0)
         bank = rp.ModelBank([s]).fit_predict(df)
-        lazy = df.lazy().online.fit_predict([s]).collect()
+        lazy = df.lazy().rheon.fit_predict([s]).collect()
         assert lazy.select("m").unnest("m").equals(bank.select("m").unnest("m"), null_equal=True)
 
     def test_the_cli(self, tmp_path, rheon_cli):
@@ -760,7 +760,7 @@ class TestRefusals:
     def test_a_delay_an_integer_clock_cannot_hold_is_refused_by_name(self):
         df = pl.DataFrame({"t": [0, 1, 2], "x": [1.0, 2.0, 3.0]})
         with pytest.raises(
-            ValueError, match="^po\\.stream\\.embargo: delay 2.5 is not a whole number"
+            ValueError, match="^rp\\.stream\\.embargo: delay 2.5 is not a whole number"
         ) as e:
             stream.embargo(df, clock="t", delay=2.5)
         assert "clock column 't' is Int64" in str(e.value), str(e.value)
@@ -970,12 +970,12 @@ class TestEmbargoItself:
     def test_a_clock_that_is_neither_a_number_nor_a_time_is_refused_by_name(self):
         """Review round 4 (YB15): a String clock failed inside polars
         (``InvalidOperationError: arithmetic on dtypes str and dyn float``)
-        while ``po.eval.window_metrics`` refuses the same clock by name, as
+        while ``rp.eval.window_metrics`` refuses the same clock by name, as
         this now does, before any plan is built."""
         df = pl.DataFrame({"t": ["a", "b"], "x": [1.0, 2.0], "b": [True, False]})
         for clock, delay in (("t", 1.0), ("t", "1s"), ("b", 1.0)):
             with pytest.raises(
-                TypeError, match=f"^po\\.stream\\.embargo: clock column '{clock}' must be numeric"
+                TypeError, match=f"^rp\\.stream\\.embargo: clock column '{clock}' must be numeric"
             ):
                 stream.embargo(df.lazy(), clock=clock, delay=delay)
 
@@ -1008,7 +1008,7 @@ class TestEmbargoItself:
             yield rows
 
         lf = register_io_source(io_source=source, schema=rows.schema)
-        with pytest.warns(rp.ConsumedSourceWarning, match="^po\\.stream\\.embargo: .*input twice"):
+        with pytest.warns(rp.ConsumedSourceWarning, match="^rp\\.stream\\.embargo: .*input twice"):
             plan = stream.embargo(lf, clock="t", delay=1.0)
         # What the warning is about: half the doubled stream is missing.
         assert plan.collect().height == 3

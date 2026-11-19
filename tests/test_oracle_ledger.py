@@ -51,7 +51,7 @@ GROUP_IDS = sorted(ledger.group_id(m, n) for m, names in REGISTERED.items() for 
 MODULE_OF = {ledger.group_id(m, n): m for m, names in REGISTERED.items() for n in names}
 
 #: Set to ``enforce`` or ``report`` to override where the guard fails.
-MODE_VARIABLE = "POLARS_ONLINE_ORACLE_HASHES"
+MODE_VARIABLE = "RHEON_ORACLE_HASHES"
 
 
 def enforced() -> bool:

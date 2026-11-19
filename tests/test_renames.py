@@ -354,8 +354,8 @@ def test_with_windows_takes_an_old_spec_parameter_name_as_an_output_name(name):
     want = rp.stream.with_windows(df, f=window, clock="t", gap_cap=5.0).rename({"f": name})
     got = [
         rp.stream.with_windows(df, **{name: window}, clock="t", gap_cap=5.0),
-        df.online.with_windows(**{name: window}, clock="t", gap_cap=5.0),
-        df.lazy().online.with_windows(**{name: window}, clock="t", gap_cap=5.0).collect(),
+        df.rheon.with_windows(**{name: window}, clock="t", gap_cap=5.0),
+        df.lazy().rheon.with_windows(**{name: window}, clock="t", gap_cap=5.0).collect(),
     ]
     for g in got:
         assert g.equals(want), g
@@ -507,24 +507,24 @@ def _chunk_calls():
             "ModelBank.fit_predict_batches",
             lambda **kw: list(rp.ModelBank([_SPEC]).fit_predict_batches(lf, **kw)),
         ),
-        ("lf.online.fit_predict", lambda **kw: lf.online.fit_predict([_SPEC], **kw).collect()),
-        ("lf.online.predict", lambda **kw: lf.online.predict(fitted, **kw).collect()),
-        ("po.fit_predict", lambda **kw: rp.fit_predict(lf, [_SPEC], **kw).collect()),
-        ("po.predict", lambda **kw: rp.predict(lf, fitted, **kw).collect()),
+        ("lf.rheon.fit_predict", lambda **kw: lf.rheon.fit_predict([_SPEC], **kw).collect()),
+        ("lf.rheon.predict", lambda **kw: lf.rheon.predict(fitted, **kw).collect()),
+        ("rp.fit_predict", lambda **kw: rp.fit_predict(lf, [_SPEC], **kw).collect()),
+        ("rp.predict", lambda **kw: rp.predict(lf, fitted, **kw).collect()),
         (
-            "po.stream.with_windows",
+            "rp.stream.with_windows",
             lambda **kw: rp.stream.with_windows(lf, f=window, clock="t", gap_cap=5.0, **kw),
         ),
         (
-            "lf.online.with_windows",
-            lambda **kw: lf.online.with_windows(f=window, clock="t", gap_cap=5.0, **kw).collect(),
+            "lf.rheon.with_windows",
+            lambda **kw: lf.rheon.with_windows(f=window, clock="t", gap_cap=5.0, **kw).collect(),
         ),
         (
-            "df.online.with_windows",
-            lambda **kw: _FRAME.online.with_windows(f=window, clock="t", gap_cap=5.0, **kw),
+            "df.rheon.with_windows",
+            lambda **kw: _FRAME.rheon.with_windows(f=window, clock="t", gap_cap=5.0, **kw),
         ),
         (
-            "po.stream.refresh_time",
+            "rp.stream.refresh_time",
             lambda **kw: rp.stream.refresh_time(refresh.lazy(), **refresh_kw, **kw).collect(),
         ),
     ]
@@ -543,7 +543,7 @@ def test_chunk_rows_is_refused_naming_chunk_size_and_chunk_size_works(which):
 
 
 def _scored_fit() -> pl.DataFrame:
-    """Two specs over two groups, with a clock: what every ``po.eval``
+    """Two specs over two groups, with a clock: what every ``rp.eval``
     function reads."""
     rng = np.random.default_rng(197)
     n = 200
@@ -562,7 +562,7 @@ def _scored_fit() -> pl.DataFrame:
     ).fit_predict(df)
 
 
-#: Each ``po.eval`` function with a renamed keyword, called with the
+#: Each ``rp.eval`` function with a renamed keyword, called with the
 #: keyword's old name: N3's ``by`` and ``min_obs``, and N4's ``window_size``.
 _OLD_EVAL_KEYWORDS = {
     "metrics by": (lambda o: rp.eval.metrics(o, "m", by=["g"]), "by", "group"),
@@ -606,7 +606,7 @@ def test_an_eval_keyword_renamed_is_refused_naming_the_new_one(case):
     ``group_by_dynamic(every=)``."""
     call, old, new = _OLD_EVAL_KEYWORDS[case]
     with pytest.raises(
-        TypeError, match=f"^po\\.eval\\.[a-z_]+: {old} was renamed {new}\\. Use {new} instead\\.$"
+        TypeError, match=f"^rp\\.eval\\.[a-z_]+: {old} was renamed {new}\\. Use {new} instead\\.$"
     ):
         call(_scored_fit())
 
@@ -657,7 +657,7 @@ def test_rolling_metrics_is_window_metrics_with_every():
     out = _scored_fit()
     with pytest.raises(
         TypeError,
-        match="^po.eval.rolling_metrics: this function was renamed po.eval.window_metrics",
+        match="^rp.eval.rolling_metrics: this function was renamed rp.eval.window_metrics",
     ):
         rp.eval.rolling_metrics(out, "m", clock="t", window_size=50.0)
     assert "rolling_metrics" not in rp.eval.__all__ and "window_metrics" in rp.eval.__all__
@@ -688,8 +688,8 @@ def test_corr_shift_is_absorption_shift():
     fast, slow = np.array([0.5, 0.6, 0.7]), np.array([0.4, 0.4, 0.5])
     with pytest.raises(
         TypeError,
-        match="^po.corr.shift: this function was renamed po.corr.absorption_shift\\. "
-        "Call po.corr.absorption_shift instead\\.$",
+        match="^rheon.corr.shift: this function was renamed rheon.corr.absorption_shift\\. "
+        "Call rheon.corr.absorption_shift instead\\.$",
     ):
         rp.corr.shift(fast, slow)
     assert "shift" not in rp.corr.__all__ and "absorption_shift" in rp.corr.__all__
@@ -710,7 +710,7 @@ def test_lasso_path_takes_penalties():
     assert np.array_equal(rp.gram.lasso_path(g, penalties=[0.1, 0.01]), want)
     with pytest.raises(
         TypeError,
-        match="^po.gram.lasso_path: lambdas was renamed penalties\\. Use penalties instead\\.$",
+        match="^rheon.gram.lasso_path: lambdas was renamed penalties\\. Use penalties instead\\.$",
     ):
         rp.gram.lasso_path(g, lambdas=[0.1, 0.01])
     with pytest.raises(ValueError, match="penalties must be finite and at least 0"):

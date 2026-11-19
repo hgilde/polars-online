@@ -87,7 +87,7 @@ specs = [
     po.spec.ewridge("steady", half_life=2_000.0, **common),
 ]
 # 2. Run the query, from row 9,000: every calibration has started there.
-out = wide.online.fit_predict(specs).slice(9_000).collect()
+out = wide.rheon.fit_predict(specs).slice(9_000).collect()
 
 # 3 and 4. Each fit's calibration, and its error before and after rescaling.
 print(f"{'spec':8} {'slope':>6} {'wald > 5.99':>12} {'mse':>6} {'mse rescaled':>13}")

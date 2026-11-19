@@ -16,6 +16,12 @@ from rheon import _cpu_check
 
 _cpu_check.run()
 
+# An environment variable set by its name from before the rename is read, and
+# warns once here (rheon._env).
+from rheon import _env
+
+_env.warn_old_names()
+
 from rheon import corr, gram, spec
 from rheon._errors import (
     ColumnNotFoundError,
@@ -31,9 +37,9 @@ from rheon._rheon import (
 from rheon._spec import FormulaTarget, Target, target
 from rheon._threads import thread_pool_size
 from rheon._warnings import (
-    PolarsOnlineDeprecationWarning,
-    PolarsOnlineWarning,
     ReadinessWarning,
+    RheonDeprecationWarning,
+    RheonWarning,
     UnstableWarning,
 )
 
@@ -44,8 +50,8 @@ __all__ = [
     "ColumnNotFoundError",
     "FormulaTarget",
     "OutputColumnNotFoundError",
-    "PolarsOnlineDeprecationWarning",
-    "PolarsOnlineWarning",
+    "RheonDeprecationWarning",
+    "RheonWarning",
     "ReadinessWarning",
     "RefusedValueError",
     "Target",

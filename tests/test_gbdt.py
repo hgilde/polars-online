@@ -1,4 +1,4 @@
-"""``po.gbdt``: XGBoost's and LightGBM's training objects built from a stream
+"""``rheon.polars._gbdt``: XGBoost's and LightGBM's training objects built from a stream
 (docs/PLAN.md task 242, docs/GBDT-ADAPTER.md).
 
 Held to each library's own Python route by the hash of the trees it grows:
@@ -640,7 +640,7 @@ def test_training_may_not_change_a_dataset_parameter(data):
 @pytest.mark.parametrize("lib", ["xgboost", "lightgbm"])
 def test_the_tree_hash_sees_a_null_read_as_zero(data, lib):
     """A planted defect: the library's own route with every null of ``x0``
-    read as 0 grows other trees than po.gbdt's, so the hash the tests above
+    read as 0 grows other trees than rheon.polars._gbdt's, so the hash the tests above
     compare would catch a null handed over as 0; and the trees split on
     ``x0`` and on the Boolean, which the hash cannot see otherwise (review 7,
     C-2: with the nulls on a feature the trees never split on, LightGBM's
@@ -1221,7 +1221,7 @@ def big(tmp_path_factory):
 
 
 def _build_peak(big, lib: str, source: str, parts: str = "*") -> int:
-    """The peak resident growth, in bytes, of one ``po.gbdt`` build in a
+    """The peak resident growth, in bytes, of one ``rheon.polars._gbdt`` build in a
     child interpreter, from the module's files ``part-<parts>``."""
     import subprocess
     import sys

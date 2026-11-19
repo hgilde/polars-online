@@ -1770,7 +1770,7 @@ pub(crate) fn gram_axes(spec: &Spec) -> (Vec<String>, Vec<String>) {
 
 /// The upper triangle of a row-major `k * k` symmetric matrix, with the
 /// diagonal, row by row: `k(k+1)/2` numbers instead of `k^2`, which is what
-/// the closed row carries (`po.gram.from_row` expands it). A co-moment
+/// the closed row carries (`rheon.gram.from_row` expands it). A co-moment
 /// matrix is symmetric to 1e-16 and not to the bit (E48), so the half that
 /// is kept is named: the upper one. `ModelBank.gram(layout="packed")`
 /// packs the same way (docs/PLAN.md task 229).
@@ -1871,7 +1871,7 @@ pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Vec<Gram
 /// Values are in the features' original units. `comoments` is **centered**
 /// (E11b, which is what makes it accurate at large offsets). `cross_moments`
 /// is **uncentered**, and `cross_centred` is the same centred at each
-/// target's means, which is what `po.gram.solve` reads: re-centring the raw
+/// target's means, which is what `rheon.gram.solve` reads: re-centring the raw
 /// form kept `L²·ε` of it at a level `L` (review 2026-09-12, N4). The raw
 /// form is bridged to the fit by one identity, and getting it wrong is a
 /// silent wrong answer rather than an error:
@@ -1916,7 +1916,7 @@ pub struct Gram {
     /// at: `means` under `"own_rows"`, its own under `"pairwise"`.
     pub means_by_target: Vec<Vec<f64>>,
     /// Per target, its cross-moments centred at [`Self::means_by_target`] and
-    /// its own mean: what the fit is solved from, and what `po.gram.solve`
+    /// its own mean: what the fit is solved from, and what `rheon.gram.solve`
     /// reads. `cross_moments` less `m_t·ȳ_t` in exact arithmetic; formed in
     /// floating point, that difference keeps `L²·ε` of it at a level `L`
     /// (review 2026-09-12, N4). Empty for `ew_cov`.
@@ -2042,7 +2042,7 @@ pub struct ClosedRow {
     pub gram: Option<Gram>,
     /// The flat `coef` list as of the last solve, for a kind that reports
     /// one; the exact solve on the closed Gram is
-    /// `po.gram.solve(po.gram.from_row(row))`. NaN in a slot no solve has
+    /// `rheon.gram.solve(rheon.gram.from_row(row))`. NaN in a slot no solve has
     /// fit (review round 4, CC1), so the export tags it.
     #[serde(
         default,
@@ -2634,7 +2634,7 @@ pub struct Coef {
 /// One coefficient of a spec's output, from [`coef_fields`]: which `coef`
 /// list it sits in and where, and the flat column name it gets when the
 /// struct is unnested with the coefficients named
-/// (`rheon.spec.coef_fields`, `lf.online.unnest`).
+/// (`rheon.spec.coef_fields`, `lf.rheon.unnest`).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CoefField {
     /// The `coef` field holding the list (`coef`, or `coef@h500` per
@@ -3883,7 +3883,7 @@ impl Bank {
     /// the rows are learned, so the chunk is refused after some of it has
     /// been, and every later `fit_predict`, `predict` and `save_bytes` is
     /// refused rather than go on from there. And, on the first call only, a
-    /// `POLARS_ONLINE_MAX_THREADS` that is not a count of threads.
+    /// `RHEON_MAX_THREADS` that is not a count of threads.
     pub fn fit_predict(&mut self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
         self.fit_predict_from(df, 0)
     }
@@ -4094,7 +4094,7 @@ impl Bank {
         clock_dtypes: &[Option<crate::stream::ClockDtype>],
         key_dtypes: &[[Option<KeyDtype>; 2]],
     ) -> PolarsResult<Vec<StructArray>> {
-        // Section timings to stderr under POLARS_ONLINE_TIMING=1, read from
+        // Section timings to stderr under RHEON_TIMING=1, read from
         // the environment once a process. This is how docs/PERFORMANCE.md's
         // numbers are made.
         let timing = crate::timing::timing_on();
@@ -4654,7 +4654,7 @@ impl Bank {
         if timing {
             let total = t0.elapsed();
             eprintln!(
-                "POLARS_ONLINE_TIMING rows={n} extract={:.1}ms group={:.1}ms process={:.1}ms \
+                "RHEON_TIMING rows={n} extract={:.1}ms group={:.1}ms process={:.1}ms \
                  assemble={:.1}ms total={:.1}ms ({:.0} rows/s)",
                 t_extract.as_secs_f64() * 1e3,
                 t_group.as_secs_f64() * 1e3,

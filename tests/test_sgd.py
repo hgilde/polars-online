@@ -902,7 +902,7 @@ def test_a_poisson_fits_hit_rate_is_null():
     """docs/PLAN.md task 195 (S5; review round 4, CC5): a rate is positive
     and a count is not negative, so the sign test about zero agreed on every
     row and `hit_rate` read 1.0 whatever the fit. There is no sign to hit, so
-    it is null, as `po.eval` nulls a metric that is not defined; `ic` and
+    it is null, as `rp.eval` nulls a metric that is not defined; `ic` and
     `r2` are still read."""
     rng = np.random.default_rng(3)
     n = 2000

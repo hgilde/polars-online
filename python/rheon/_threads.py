@@ -13,8 +13,8 @@ def _threads_refusal(shown: str) -> str:
     word (``rheon_polars::threads_refusal``), so either side says the same."""
     return (
         f"threads: {shown} is not a number of threads, and 0 is not one thread per core here, "
-        "as it is in POLARS_ONLINE_MAX_THREADS. Give an integer of 1 or more, or leave threads "
-        "out (None in Python) to take the count from POLARS_ONLINE_MAX_THREADS, else one thread "
+        "as it is in RHEON_MAX_THREADS. Give an integer of 1 or more, or leave threads "
+        "out (None in Python) to take the count from RHEON_MAX_THREADS, else one thread "
         "per core."
     )
 
@@ -46,7 +46,7 @@ def thread_pool_size(*, threads: int | None = None) -> int:
     """The number of threads a bank given this ``threads`` argument runs on.
 
     Use it to see how many threads a bank will use before you build one, or
-    what ``POLARS_ONLINE_MAX_THREADS`` gives. Polars' own threads are
+    what ``RHEON_MAX_THREADS`` gives. Polars' own threads are
     separate, set by ``POLARS_MAX_THREADS``, and ``pl.thread_pool_size()``
     reports those.
 
@@ -55,7 +55,7 @@ def thread_pool_size(*, threads: int | None = None) -> int:
     ``threads``
         The count a bank would be given, as :class:`ModelBank` takes it.
         ``None``, the default, names the process's shared threads, which
-        every bank given no ``threads`` runs on. ``POLARS_ONLINE_MAX_THREADS``
+        every bank given no ``threads`` runs on. ``RHEON_MAX_THREADS``
         sets their number when they are first used (unset or ``0``: one
         thread per core), and the number never changes after that. This call
         starts them if nothing has yet. An integer ``n`` names ``n`` threads,
@@ -72,11 +72,11 @@ def thread_pool_size(*, threads: int | None = None) -> int:
     ``ValueError``
         ``threads`` is below 1, or above 1024 (or the machine's core count,
         where that is larger); or ``threads`` is ``None`` and
-        ``POLARS_ONLINE_MAX_THREADS`` is set to anything but a whole number,
+        ``RHEON_MAX_THREADS`` is set to anything but a whole number,
         or to a count past the same bound. More threads than cores run no
         faster, and a pool starts all of its threads at once. A bank refuses
         the same values: a ``threads`` when it is made, and a bad
-        ``POLARS_ONLINE_MAX_THREADS`` at its first call that runs. Both are
+        ``RHEON_MAX_THREADS`` at its first call that runs. Both are
         checked before any thread starts.
 
     .. rubric:: Examples

@@ -129,7 +129,7 @@ learn_from_x = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
 fitted = (
     pl.scan_parquet("ticks.parquet")
     .with_columns(pl.when(pl.col("venue") == "X").then(1.0).otherwise(0.0).alias("w"))  # 1. learn from venue X only
-    .online.fit_predict([learn_from_x])
+    .rheon.fit_predict([learn_from_x])
     .collect()                                                                           # 3.
 )
 # How many rows were predicted, and how much weight was learned.

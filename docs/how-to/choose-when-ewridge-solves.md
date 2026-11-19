@@ -104,7 +104,7 @@ schedules = {
     "solve_every=100": po.spec.ewridge("on_clock", solve_every=100.0, **common),
     "solve_every=inf, a row cap of 2,000": po.spec.ewridge("capped", solve_every=float("inf"), max_rows_between_solves=2000, **common),
 }
-out = pl.scan_parquet("jump.parquet").online.fit_predict(list(schedules.values())).collect()
+out = pl.scan_parquet("jump.parquet").rheon.fit_predict(list(schedules.values())).collect()
 
 # For each schedule: the solves it ran, its gap from the fit of every row, and its error after the jump.
 current = out["every_row"].struct.field("pred_y")

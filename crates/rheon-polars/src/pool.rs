@@ -1,5 +1,5 @@
 //! The bank's thread pools: the process default, sized by
-//! `POLARS_ONLINE_MAX_THREADS`, and a pool per `threads` count asked for.
+//! `RHEON_MAX_THREADS`, and a pool per `threads` count asked for.
 //!
 //! Polars has its own pool, sized by `POLARS_MAX_THREADS`, for its readers
 //! and writers. The bank keeps separate ones so that the two can be set
@@ -35,8 +35,10 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use polars::prelude::*;
 use rayon::ThreadPool;
 
-/// The environment variable that sizes the bank's pool.
-pub const THREADS_VAR: &str = "POLARS_ONLINE_MAX_THREADS";
+/// The environment variable that sizes the bank's pool. The name it had
+/// before the rename, `POLARS_ONLINE_MAX_THREADS`, is read when this one is
+/// not set ([`crate::env`]).
+pub const THREADS_VAR: &str = crate::env::MAX_THREADS.name;
 
 static POOL: OnceLock<ThreadPool> = OnceLock::new();
 
@@ -52,17 +54,22 @@ pub fn pool() -> PolarsResult<&'static ThreadPool> {
     if let Some(pool) = POOL.get() {
         return Ok(pool);
     }
-    let set = std::env::var_os(THREADS_VAR);
-    let n = threads_from_env(set.as_deref()).map_err(|e| polars_err!(ComputeError: "{}", e))?;
+    let read = crate::env::MAX_THREADS.read();
+    let (name, set) = match read {
+        Some((name, v)) => (name, Some(v)),
+        None => (THREADS_VAR, None),
+    };
+    let n = threads_from_env(set.as_deref())
+        .map_err(|e| polars_err!(ComputeError: "{}", e.replace(THREADS_VAR, name)))?;
     let built = spawned(
         n,
         set.as_deref(),
         rayon::ThreadPoolBuilder::new()
             .num_threads(n)
-            .thread_name(|i| format!("polars-online-{i}"))
+            .thread_name(|i| format!("rheon-{i}"))
             .build(),
     )
-    .map_err(|e| polars_err!(ComputeError: "{}", e))?;
+    .map_err(|e| polars_err!(ComputeError: "{}", e.replace(THREADS_VAR, name)))?;
     // Two first calls at once each build a pool; the one set first is kept
     // and the other is dropped, its threads with it.
     let _ = POOL.set(built);
@@ -304,7 +311,7 @@ impl Threads {
             n,
             rayon::ThreadPoolBuilder::new()
                 .num_threads(n)
-                .thread_name(move |i| format!("polars-online-{n}t-{i}"))
+                .thread_name(move |i| format!("rheon-{n}t-{i}"))
                 .build(),
         )
         .map_err(|e| polars_err!(ComputeError: "{}", e))?;
@@ -517,7 +524,7 @@ mod tests {
     /// comes from the registry whichever test built the default first.
     /// Each test takes its own `k`: the registry is shared by the binary.
     fn sized(k: usize) -> usize {
-        let default = threads_from_env(std::env::var_os(THREADS_VAR).as_deref()).unwrap_or(0);
+        let default = threads_from_env(crate::env::MAX_THREADS.value().as_deref()).unwrap_or(0);
         if k == default { k + 64 } else { k }
     }
 
@@ -589,7 +596,7 @@ mod tests {
         let distinct: std::collections::BTreeSet<_> = names.iter().collect();
         assert_eq!(distinct.len(), 1, "{distinct:?}");
         let name = distinct.into_iter().next().unwrap();
-        assert!(name.starts_with("polars-online-"), "{name}");
+        assert!(name.starts_with("rheon-"), "{name}");
     }
 
     #[test]

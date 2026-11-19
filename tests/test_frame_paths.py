@@ -1,5 +1,5 @@
 """The frame namespaces on the paths no other test took (task 252): the
-``closed_groups`` sidecar of ``df.online.fit_predict``, a sidecar whose
+``closed_groups`` sidecar of ``df.rheon.fit_predict``, a sidecar whose
 directory is not there, a join that keeps the right side's order or both
 sides', and a Polars whose ``register_io_source`` takes no ``explain_name``
 (py-polars 1.x, still within the supported range)."""
@@ -40,7 +40,7 @@ def test_the_frame_namespace_writes_the_closed_groups_sidecar(tmp_path):
     format its extension names; the frame's output is the bank's."""
     df = _groups()
     side = tmp_path / "closed.parquet"
-    out = df.online.fit_predict([SPEC], closed_groups=side, chunk_size=25)
+    out = df.rheon.fit_predict([SPEC], closed_groups=side, chunk_size=25)
     driver = rp.ModelBank([SPEC])
     frames, outs = [], []
     for i in range(0, df.height, 25):
@@ -58,7 +58,7 @@ def test_a_closed_groups_sidecar_in_a_missing_directory_is_refused_before_the_fi
         FileNotFoundError,
         match=r"closed_groups names a file in the folder '.*such', which does not exist",
     ):
-        _groups().online.fit_predict([SPEC], closed_groups=side)
+        _groups().rheon.fit_predict([SPEC], closed_groups=side)
     assert not side.parent.exists()
 
 

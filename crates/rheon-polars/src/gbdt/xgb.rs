@@ -36,7 +36,7 @@ use super::{GbdtError, Layout, conversion_pool};
 
 /// The call a message of this module names: the only one that builds
 /// through XGBoost.
-const XGB: &str = "po.gbdt.xgboost_matrix";
+const XGB: &str = "rheon.polars._gbdt.xgboost_matrix";
 
 /// How to build a matrix.
 #[derive(Debug, Clone)]
@@ -102,7 +102,7 @@ impl Drop for Owned<'_> {
 fn cstr(s: &str) -> Result<CString, GbdtError> {
     CString::new(s).map_err(|_| {
         GbdtError::msg(format!(
-            "po.gbdt.xgboost_matrix: `{s}` holds a NUL character, which XGBoost cannot take. \
+            "rheon.polars._gbdt.xgboost_matrix: `{s}` holds a NUL character, which XGBoost cannot take. \
          Rename it without one."
         ))
     })
@@ -247,7 +247,7 @@ impl It<'_> {
     fn end_pass(&mut self) -> Result<(), GbdtError> {
         match self.first_pass_rows {
             None if self.row == 0 => Err(GbdtError::msg(
-                "po.gbdt.xgboost_matrix: the source has no rows. Pass a source with rows.",
+                "rheon.polars._gbdt.xgboost_matrix: the source has no rows. Pass a source with rows.",
             )),
             None => {
                 self.first_pass_rows = Some(self.row);
@@ -320,7 +320,7 @@ fn sample_ref<'a>(
     }
     if s.rows_seen() == 0 {
         return Err(GbdtError::msg(
-            "po.gbdt.xgboost_matrix: the source has no rows. Pass a source with rows.",
+            "rheon.polars._gbdt.xgboost_matrix: the source has no rows. Pass a source with rows.",
         ));
     }
     let (m, rows) = s.ref_matrix(opts.max_bin, pool);
@@ -385,7 +385,7 @@ pub fn xgboost_matrix(
     layout.check()?;
     if opts.max_bin < 2 {
         return Err(GbdtError::msg(format!(
-            "po.gbdt.xgboost_matrix: max_bin must be at least 2, but it is {}. Set max_bin to 2 or \
+            "rheon.polars._gbdt.xgboost_matrix: max_bin must be at least 2, but it is {}. Set max_bin to 2 or \
              more.",
             opts.max_bin
         )));

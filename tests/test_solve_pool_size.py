@@ -4,7 +4,7 @@ task 231).
 faer's solves and eigendecompositions ran at the size of the rayon pool
 they were called in, and from 512 columns their last bits followed it: a
 wide `ewridge` reported other predictions and coefficient standard errors
-under another `POLARS_ONLINE_MAX_THREADS`, and on a machine with another
+under another `RHEON_MAX_THREADS`, and on a machine with another
 core count, and `ew_cov`'s principal components likewise. The pool is
 built once per process, from the variable, so each count runs in a child
 interpreter of its own, and the children's outputs are compared by digest.
@@ -65,7 +65,7 @@ def test_a_wide_fit_is_the_same_whatever_the_pool_size(tmp_path):
             capture_output=True,
             text=True,
             encoding="utf-8",
-            env=child.env(POLARS_ONLINE_MAX_THREADS=str(threads)),
+            env=child.env(RHEON_MAX_THREADS=str(threads)),
             check=True,
         )
         digests[threads] = res.stdout.strip()

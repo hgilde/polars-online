@@ -99,9 +99,9 @@ def test_two_fit_predicts_in_series_give_what_a_loop_over_the_two_banks_gives(
     resid = pl.col("fit").struct.field("resid_y")
     chain = (
         df.lazy()
-        .online.fit_predict([STAGE1], chunk_size=chunk_size)
+        .rheon.fit_predict([STAGE1], chunk_size=chunk_size)
         .with_columns(resid)
-        .online.fit_predict([STAGE2], chunk_size=chunk_size)
+        .rheon.fit_predict([STAGE2], chunk_size=chunk_size)
         .collect()
     )
     # The bound took effect: more slices than either stage had chunks.
@@ -128,14 +128,14 @@ def test_a_window_source_feeding_a_fit_through_unnest_gives_the_eager_result(mon
     def run() -> pl.DataFrame:
         return (
             df.lazy()
-            .online.with_windows(
+            .rheon.with_windows(
                 dev=pl.col("x1") - rp.ewm_mean("x1", half_life=20.0, window_size=60.0),
                 clock="t",
                 gap_cap=10.0,
             )
-            .online.fit_predict([fit], chunk_size=300)
-            .online.unnest([fit])
-            .online.fit_predict([second], chunk_size=300)
+            .rheon.fit_predict([fit], chunk_size=300)
+            .rheon.unnest([fit])
+            .rheon.fit_predict([second], chunk_size=300)
             .collect()
         )
 

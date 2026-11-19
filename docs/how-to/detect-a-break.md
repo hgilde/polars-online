@@ -80,7 +80,7 @@ specs = [
     )
     for kind in streams
 ]
-out = broken.online.fit_predict(specs).collect()
+out = broken.rheon.fit_predict(specs).collect()
 
 # 3. The four flags, each a test on one stream's fields.
 flags = {
@@ -177,7 +177,7 @@ model = po.spec.ewridge(
     "ols", targets=["y"], features=["x0", "x1"], half_life=float("inf"), min_weight=30.0,
     emit_breaks=True,
 )
-out = shift.online.fit_predict([model]).online.unnest([model]).collect()
+out = shift.rheon.fit_predict([model]).rheon.unnest([model]).collect()
 
 # 2 and 3. Brown, Durbin and Evans' path, the running sum of the studentized residuals, against
 # the 5% boundary for a run of T of them.
@@ -298,7 +298,7 @@ for gamma in [0.0, 0.25, 0.45]:
         monitor_rows=1000,  # ... then each of up to 1,000 rows tested as it arrives
         boundary_gamma=gamma,
     )
-    out = pairs.online.fit_predict([watch]).online.unnest([watch]).collect()
+    out = pairs.rheon.fit_predict([watch]).rheon.unnest([watch]).collect()
     print(f"boundary_gamma {gamma}: flags at rows {out.filter(pl.col('flag'))['row'].to_list()}")
 ```
 
@@ -374,7 +374,7 @@ pl.concat(frames).sort("i", "stock").write_parquet("regimes.parquet")
 
 # 1 and 2. One bocpd per stock, a break expected every 500 of its rows, and the query run.
 runs = po.spec.bocpd("regime", features=["ret"], group="stock", hazard=500.0)
-out = pl.scan_parquet("regimes.parquet").online.fit_predict([runs]).online.unnest([runs]).collect()
+out = pl.scan_parquet("regimes.parquet").rheon.fit_predict([runs]).rheon.unnest([runs]).collect()
 # 3 and 4. The row each current run began on, in the stock's own rows and in the stream's.
 out = out.with_columns(
     began=pl.int_range(pl.len()).over("stock") - pl.col("run_mode"),

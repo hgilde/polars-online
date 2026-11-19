@@ -1177,7 +1177,7 @@ GOLDEN: dict[str, float | str | None] = {
 #: row 119 -- ``embargo``'s ``pred`` and ``resid``, ``formula``'s ``pred_fwd``
 #: -- by the change `GOLDEN`'s ``kalman`` took; rows 25 and 60 are inside the
 #: warm-up, which a held row reaches late, and kept their bits. No reference
-#: here replays a ``kalman`` embargo row for row: ``po.stream.embargo``'s
+#: here replays a ``kalman`` embargo row for row: ``rp.stream.embargo``'s
 #: doubled stream through ``kalman_ref`` parts from the native embargo
 #: before the switch too, where nothing moved (row 25: -0.3103 against
 #: -0.2970), so it is no replica of these three. Task 211 (2026-10-08) moved

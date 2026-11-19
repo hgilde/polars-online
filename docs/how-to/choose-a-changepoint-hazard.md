@@ -115,7 +115,7 @@ pl.DataFrame({"x": x}).write_parquet("small.parquet")
 # 1 and 2. The prior left to the first rows, then given at four scales.
 for prior in (None, [1e-6], [1e-3], [1.0], [100.0]):
     cp = po.spec.bocpd("cp", features=["x"], hazard=250.0, degrees_of_freedom_prior=2.0, covariance_prior=prior)
-    out = pl.scan_parquet("small.parquet").online.fit_predict([cp]).collect().unnest("cp")
+    out = pl.scan_parquet("small.parquet").rheon.fit_predict([cp]).collect().unnest("cp")
     print(f"covariance_prior {prior}: at row 299 the regime began at row {299 - out['run_mode'][299]}")
 ```
 
@@ -214,7 +214,7 @@ pl.DataFrame({"x": x}).write_parquet("outlier.parquet")
 # 1 and 3. The diagonal predictive, untempered and at two powers.
 for beta in (None, 0.1, 0.3):
     cp = po.spec.bocpd("cp", features=["x"], hazard=250.0, covariance_type="diag", robust_beta=beta)
-    out = pl.scan_parquet("outlier.parquet").online.fit_predict([cp]).collect().unnest("cp")
+    out = pl.scan_parquet("outlier.parquet").rheon.fit_predict([cp]).collect().unnest("cp")
     began = [row - out["run_mode"][row] for row in (399, 599)]   # the row each current regime began on
     print(f"robust_beta {beta}: p_change {out['p_change'][200]:.2f} on the outlier; "
           f"regime began at row {began[0]} before the shift, at row {began[1]} after it")

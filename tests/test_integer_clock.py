@@ -367,7 +367,7 @@ def test_a_gap_of_exactly_gap_cap_does_not_cut_a_window():
 
 
 def test_an_increment_of_an_integer_input_is_the_integers_step():
-    """``po.increment`` of an ``Int64`` column near 1.79e18 is its step in
+    """``rp.increment`` of an ``Int64`` column near 1.79e18 is its step in
     integers, then converted: 1, 7 and 100, where the doubles of the two
     values gave 0."""
     c = [T0, T0 + 1, T0 + 8, T0 + 108, T0 + 108, T0 + 5]
@@ -433,7 +433,7 @@ def test_the_command_line_reads_an_integer_clock_as_the_bank_does(rheon_cli, tmp
 
 
 def test_embargo_moves_an_integer_clock_in_integers():
-    """``po.stream.embargo`` adds a whole delay in the clock's own dtype,
+    """``rp.stream.embargo`` adds a whole delay in the clock's own dtype,
     which Polars computes on the integers: exact before this task too."""
     df = frame(n=30)
     out = rp.stream.embargo(df, clock="t", delay=7)
@@ -503,7 +503,7 @@ def test_the_command_line_refuses_an_int128_clock_by_name(rheon_cli, tmp_path):
 
 
 def test_an_increment_of_an_int128_input_is_the_integers_step():
-    """``po.increment`` of an ``Int128`` running count past the largest
+    """``rp.increment`` of an ``Int128`` running count past the largest
     ``Int64`` -- ``2**63 + k`` -- is its step in integers, then made a float,
     as a 64-bit one's is: 1, 7, 100, 0 and -103. It was read as doubles,
     which resolve 2048 there, and gave 0.0 for every step (review round 5,
@@ -556,8 +556,8 @@ SURFACES = [
     "fit_predict_batches",
     "fit_predict_arrow",
     "predict_arrow",
-    "lf.online.fit_predict",
-    "lf.online.predict",
+    "lf.rheon.fit_predict",
+    "lf.rheon.predict",
     "with_windows",
     "refresh_time",
 ]
@@ -573,10 +573,10 @@ def _call(surface: str, df: pl.DataFrame):
         return lambda: rp.stream.refresh_time(
             ticks, series="series", names=["a", "b"], clock="t", value="x"
         )
-    if surface == "lf.online.fit_predict":
-        return lambda: df.lazy().online.fit_predict([ridge()]).collect()
-    if surface == "lf.online.predict":
-        return lambda: df.lazy().online.predict(rp.ModelBank([ridge()])).collect()
+    if surface == "lf.rheon.fit_predict":
+        return lambda: df.lazy().rheon.fit_predict([ridge()]).collect()
+    if surface == "lf.rheon.predict":
+        return lambda: df.lazy().rheon.predict(rp.ModelBank([ridge()])).collect()
     if surface == "fit_predict_batches":
         return lambda: list(rp.ModelBank([ridge()]).fit_predict_batches(df))
     bank = rp.ModelBank([ridge()])

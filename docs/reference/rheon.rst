@@ -29,7 +29,7 @@ class a handler may already catch.
 Warnings
 --------
 
-``PolarsOnlineWarning``, and the warnings the library issues, each a subclass
+``RheonWarning``, and the warnings the library issues, each a subclass
 of it.
 
 .. entries:: warnings

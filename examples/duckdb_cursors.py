@@ -88,7 +88,7 @@ def right_way(con: Any) -> None:
 
     cursors = [con.cursor() for _ in HALVES]  # one cursor per plan
     plans = {
-        name: pl.scan_arrow_c_stream(cur.sql(QUERY.format(where=where))).online.fit_predict([SPEC])
+        name: pl.scan_arrow_c_stream(cur.sql(QUERY.format(where=where))).rheon.fit_predict([SPEC])
         for cur, (name, where) in zip(cursors, HALVES.items(), strict=True)
     }
 
@@ -112,9 +112,9 @@ def right_way(con: Any) -> None:
 def the_trap(con: Any) -> None:
     """Without the cursors: two plans on one connection, and the first empties."""
     query = QUERY.format(where="t >= 0")
-    first = pl.scan_arrow_c_stream(con.sql(query)).online.fit_predict([SPEC])
+    first = pl.scan_arrow_c_stream(con.sql(query)).rheon.fit_predict([SPEC])
     # Building this second plan opens its stream, and that closes the first's.
-    second = pl.scan_arrow_c_stream(con.sql(query)).online.fit_predict([SPEC])
+    second = pl.scan_arrow_c_stream(con.sql(query)).rheon.fit_predict([SPEC])
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         n_first = first.collect().height

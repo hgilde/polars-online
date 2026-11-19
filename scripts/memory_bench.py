@@ -17,7 +17,7 @@ spec is ``ewridge`` with a clock, the weight, a minimum weight and the 32
 groups, parquet in and parquet out. The cases:
 
 ``query``
-    ``lf.online.fit_predict([spec]).sink_parquet(..)``
+    ``lf.rheon.fit_predict([spec]).sink_parquet(..)``
 ``after`` and ``before``
     the same with a filter that keeps every row, after the bank and before
     it: a filter before it is held by Polars' reader, which is the worst
@@ -146,10 +146,10 @@ def run(d: Path, case: str, size: str) -> None:
             bank.fit_predict(chunk)
         return
     q = {
-        "query": lambda: lf.online.fit_predict([spec]),
-        "released": lambda: lf.online.fit_predict([spec]),
-        "after": lambda: lf.online.fit_predict([spec]).filter(keep),
-        "before": lambda: lf.filter(keep).online.fit_predict([spec]),
+        "query": lambda: lf.rheon.fit_predict([spec]),
+        "released": lambda: lf.rheon.fit_predict([spec]),
+        "after": lambda: lf.rheon.fit_predict([spec]).filter(keep),
+        "before": lambda: lf.filter(keep).rheon.fit_predict([spec]),
     }[case]()
     q.sink_parquet(out)
 

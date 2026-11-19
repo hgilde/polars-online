@@ -73,7 +73,7 @@ mv = po.spec.ew_cov(
     lags=[1, 2, 3, 4, 5],              # 1. the lags to try, in rows
     stats=["corr", "lag_corr"],        # 2. the correlation on the same row, and at each lag
 )
-last = pl.scan_parquet("leadlag.parquet").online.fit_predict([mv]).unnest("mv").collect().row(-1, named=True)   # 3 to 5.
+last = pl.scan_parquet("leadlag.parquet").rheon.fit_predict([mv]).unnest("mv").collect().row(-1, named=True)   # 3 to 5.
 # 6. Both directions at each lag.
 print(f"on the same row: {last['corr_lead_follow']:+.2f}")
 for lag in [1, 2, 3, 4, 5]:

@@ -85,7 +85,7 @@ policies = [
     po.spec.ewridge("reset", gap_cap="5m", session="session", session_gap="reset", **common),  # a reset there
 ]
 # Each policy's weight_sum around the boundary at row 200.
-fitted = pl.scan_parquet("weekend.parquet").online.fit_predict(policies).collect()
+fitted = pl.scan_parquet("weekend.parquet").rheon.fit_predict(policies).collect()
 print("row" + "".join(f"{p['name']:>12}" for p in policies))
 for row in [199, 200, 201, 202]:
     print(f"{row:<3}" + "".join(f"{fitted[p['name']].struct.field('weight_sum')[row]:>12.2f}" for p in policies))

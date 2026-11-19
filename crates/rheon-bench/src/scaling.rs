@@ -265,7 +265,7 @@ pub const CELLS: &[Cell] = &[
     cell("refresh.pairs", 8, 8, Pow(1), Pow(2)),
     cell("refresh.groups", 100, 8, Const, Pow(1)),
     cell("refresh.history", 1000, 8, Const, Const),
-    // --- po.gbdt's sample of the rows, `Sampler::push_frame` ----------------
+    // --- rheon.polars._gbdt's sample of the rows, `Sampler::push_frame` ----------------
     cell("gbdt.history", 10_000, 8, Const, Const),
     cell("gbdt.sample", 1000, 8, Log, Pow(1)),
 ];
@@ -275,7 +275,7 @@ pub const CELLS: &[Cell] = &[
 /// `budgets.toml`'s `[scaling.cells]` declares: the cells where a count
 /// sees what a timing cannot -- a growth hidden under the cache's, or a
 /// constant only a few percent off -- and that are cheap under Valgrind.
-/// Each runs on the thread Callgrind counts: `po.gbdt`'s sample pushes its
+/// Each runs on the thread Callgrind counts: `rheon.polars._gbdt`'s sample pushes its
 /// rows on a pool of its own, whose thread the count would miss, so it has
 /// none here.
 pub const BENCH_CELLS: &[&str] = &[

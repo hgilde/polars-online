@@ -42,7 +42,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Numbers the temporaries this process creates, so that two writers of one
 /// destination in one process never share one. The pid alone was the name
 /// once, and two threads saving the same state file at the same moment --
-/// which a plan used twice in one query does, `lf.online.fit_predict(..,
+/// which a plan used twice in one query does, `lf.rheon.fit_predict(..,
 /// save_state=)` under a self-join or `collect_all` -- both created and
 /// wrote the same temporary, and the rename published whichever mixture
 /// resulted.
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn a_failed_write_leaves_the_destination_alone() {
-        let dir = std::env::temp_dir().join(format!("po-atomic-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rheon-atomic-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let dest = dir.join("state.msgpack");
         fs::write(&dest, b"the good state").unwrap();
@@ -218,7 +218,7 @@ mod tests {
     /// temporary, and the file could be a mixture.
     #[test]
     fn two_writers_of_one_destination_do_not_share_a_temporary() {
-        let dir = std::env::temp_dir().join(format!("po-atomic-two-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rheon-atomic-two-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let dest = dir.join("state.msgpack");
         let a = vec![b'a'; 200_000];
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn a_save_keeps_the_destinations_mode() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("po-atomic-mode-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rheon-atomic-mode-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let dest = dir.join("state.msgpack");
         let mode = |p: &Path| {
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn a_symlink_is_written_through_not_replaced() {
-        let dir = std::env::temp_dir().join(format!("po-atomic-link-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rheon-atomic-link-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let target = dir.join("real.msgpack");
         let link = dir.join("current.msgpack");

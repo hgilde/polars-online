@@ -119,10 +119,10 @@ stage2 = po.spec.ewridge(
 )
 # 7 and 8. Both stages in one query, unnested and written to a file.
 (pl.scan_parquet("factors.parquet")
-   .online.fit_predict(factors)
+   .rheon.fit_predict(factors)
    .with_columns(residuals)
-   .online.fit_predict([stage2])
-   .online.unnest([*factors, stage2], separator=".")
+   .rheon.fit_predict([stage2])
+   .rheon.unnest([*factors, stage2], separator=".")
    .sink_parquet("fitted.parquet"))
 ```
 
@@ -177,15 +177,15 @@ pipeline](#build-the-pipeline):
 import textwrap
 
 try:
-    pl.scan_parquet("factors.parquet").online.fit_predict(factors).online.unnest(factors)
+    pl.scan_parquet("factors.parquet").rheon.fit_predict(factors).rheon.unnest(factors)
 except pl.exceptions.DuplicateError as err:
     print(textwrap.fill(str(err), 100))
 ```
 
 ```text
-online.unnest: weight_sum, settled_frac and withheld_reason are fields of specs "fac0" and "fac1",
-so the columns unnested would share a name. Pass separator="." to name each column after its spec,
-or take the fields you need with pl.col("fac0").struct.field("weight_sum").
+rheon.unnest: weight_sum, settled_frac and withheld_reason are fields of specs "fac0" and "fac1", so
+the columns unnested would share a name. Pass separator="." to name each column after its spec, or
+take the fields you need with pl.col("fac0").struct.field("weight_sum").
 ```
 
 ## Keep the memory bounded

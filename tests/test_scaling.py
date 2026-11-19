@@ -5,7 +5,7 @@ The Rust cells (``crates/rheon-bench/tests/scaling.rs``) hold the bank, the
 runner and the models by their allocations and saved bytes as well as their
 time. What the Python surfaces add on top is their own per-call work: the
 chunked :class:`~rheon.polars.ModelBank` call, and the IO source behind
-``LazyFrame.online.fit_predict``, which reads the plan's batches and builds
+``LazyFrame.rheon.fit_predict``, which reads the plan's batches and builds
 each output frame. Each case here times one workload at several sizes, the
 least of several rounds interleaved, in CPU time. A stream's length is held
 by the ratio of the time per row at two sizes to 1, times ``STEP ** 0.5``:
@@ -230,7 +230,7 @@ def test_a_chunked_bank_costs_each_spec_the_same(small: int, chunk: int) -> None
 
 @pytest.mark.parametrize(("small", "chunk"), [(1, 2048), (8, 2048), (8, 16)])
 def test_the_io_source_costs_each_spec_the_same(small: int, chunk: int) -> None:
-    """``LazyFrame.online.fit_predict``, collected, with ``small``,
+    """``LazyFrame.rheon.fit_predict``, collected, with ``small``,
     ``4 * small`` and ``16 * small`` specs: the IO source's batches and their output frames,
     linear in the specs, at a large chunk and at a small one."""
     rows = 8192 if chunk > 16 else 1024
@@ -238,7 +238,7 @@ def test_the_io_source_costs_each_spec_the_same(small: int, chunk: int) -> None:
 
     def run(n: int) -> Callable[[], object]:
         specs = _specs(n)
-        return lambda: lf.online.fit_predict(specs, chunk_size=chunk, threads=1).collect()
+        return lambda: lf.rheon.fit_predict(specs, chunk_size=chunk, threads=1).collect()
 
     _hold_linear(
         f"io source specs {small}-{GROWTH[-1] * small}, chunk {chunk}",
@@ -247,14 +247,14 @@ def test_the_io_source_costs_each_spec_the_same(small: int, chunk: int) -> None:
 
 
 def test_the_io_source_costs_a_row_the_same_however_long_the_stream() -> None:
-    """``LazyFrame.online.fit_predict`` over ``n`` and ``8n`` rows: a row's
+    """``LazyFrame.rheon.fit_predict`` over ``n`` and ``8n`` rows: a row's
     time must not grow with the rows before it."""
     n = 16_384
 
     def run(rows: int) -> Callable[[], object]:
         lf = _frame(rows).lazy()
         specs = _specs(1)
-        return lambda: lf.online.fit_predict(specs, chunk_size=2048, threads=1).collect()
+        return lambda: lf.rheon.fit_predict(specs, chunk_size=2048, threads=1).collect()
 
     _hold(f"io source rows {n}->{STEP * n}", run(n), run(STEP * n), 1.0, (n, STEP * n))
 

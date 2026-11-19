@@ -101,13 +101,13 @@ one, so every chunk the bank takes is in order.
        joined = lf.join(pl.scan_parquet("fees.parquet"), on="venue", **({"maintain_order": order} if order else {}))
        with warnings.catch_warnings(record=True) as caught:
            warnings.simplefilter("always")
-           joined.online.fit_predict([priced]).collect()
+           joined.rheon.fit_predict([priced]).collect()
        said = [str(w.message) for w in caught if issubclass(w.category, po.OrderNotGuaranteedWarning)]
        print(f"maintain_order={order!r}:", textwrap.fill(said[0], 100) if said else "no warning")
    ```
 
    ```text
-   maintain_order=None: lf.online.fit_predict: the query's row order is not guaranteed, and an online model learns in row
+   maintain_order=None: lf.rheon.fit_predict: the query's row order is not guaranteed, and an online model learns in row
    order. Its steps that leave the order open (a join without maintain_order) let Polars give the rows
    in another order when it runs the query, so the output can change from run to run. Fix the order
    with maintain_order="left" on a join, maintain_order=True on a group_by, or a sort after a unique()

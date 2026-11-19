@@ -298,7 +298,7 @@ def test_the_sidecar_carries_the_nested_lists(tmp_path):
         group_close="monotone",
     )
     side = tmp_path / "closed.parquet"
-    df.lazy().online.fit_predict([spec], closed_groups=side, chunk_size=25).collect()
+    df.lazy().rheon.fit_predict([spec], closed_groups=side, chunk_size=25).collect()
     driver = rp.ModelBank([spec])
     frames = []
     for i in range(0, df.height, 25):
@@ -467,7 +467,7 @@ def test_predict_closes_nothing():
 
 
 def test_building_a_predict_plan_leaves_the_queue_alone():
-    """``lf.online.predict(bank)`` read its closed-row schema by draining the
+    """``lf.rheon.predict(bank)`` read its closed-row schema by draining the
     caller's bank, so the rows fitted and not yet read were gone before the
     plan ran -- from a call documented to leave the bank as it was (review
     2026-09-12, C4)."""
@@ -476,7 +476,7 @@ def test_building_a_predict_plan_leaves_the_queue_alone():
     bank.fit_predict(df)
     before = bank.closed_groups(drop=False).height
     assert before > 0
-    plan = df.lazy().online.predict(bank)
+    plan = df.lazy().rheon.predict(bank)
     assert bank.closed_groups(drop=False).height == before, "building the plan"
     plan.collect()
     assert bank.closed_groups(drop=False).height == before, "running it"
@@ -631,7 +631,7 @@ def test_the_sidecar_is_the_drained_frames_and_is_chunk_invariant(tmp_path):
     df = frame(["a", "b", "c", "d"], n_per=9)
     df.write_parquet(tmp_path / "in.parquet")
     side = tmp_path / "closed.parquet"
-    df.lazy().online.fit_predict(
+    df.lazy().rheon.fit_predict(
         [cov_spec(group_close="monotone")], closed_groups=side, chunk_size=7
     ).collect()
     driver = rp.ModelBank([cov_spec(group_close="monotone")])
@@ -642,7 +642,7 @@ def test_the_sidecar_is_the_drained_frames_and_is_chunk_invariant(tmp_path):
     assert pl.read_parquet(side).equals(pl.concat(frames))
 
     other = tmp_path / "closed2.parquet"
-    df.lazy().online.fit_predict(
+    df.lazy().rheon.fit_predict(
         [cov_spec(group_close="monotone")], closed_groups=other, chunk_size=2
     ).collect()
     assert pl.read_parquet(other).equals(pl.read_parquet(side))
@@ -708,7 +708,7 @@ def test_the_io_plugin_writes_the_same_sidecar(tmp_path):
     side = tmp_path / "closed.parquet"
     out = (
         df.lazy()
-        .online.fit_predict([cov_spec(group_close="monotone")], closed_groups=side, chunk_size=5)
+        .rheon.fit_predict([cov_spec(group_close="monotone")], closed_groups=side, chunk_size=5)
         .collect()
     )
     assert out.height == df.height
@@ -720,7 +720,7 @@ def test_the_io_plugin_writes_the_same_sidecar(tmp_path):
 def test_a_run_in_which_nothing_closed_writes_the_empty_schema(tmp_path):
     frame(["a"]).write_parquet(tmp_path / "in.parquet")
     side = tmp_path / "closed.parquet"
-    frame(["a"]).lazy().online.fit_predict(
+    frame(["a"]).lazy().rheon.fit_predict(
         [cov_spec(group_close="monotone")], closed_groups=side
     ).collect()
     got = pl.read_parquet(side)
@@ -742,7 +742,7 @@ def test_closed_groups_is_refused_where_nothing_closes_and_with_predict(tmp_path
     )
     assert res.returncode != 0 and "no spec closes groups" in res.stderr, res.stderr
     with pytest.raises(ValueError, match="no spec closes groups"):
-        frame(["a"]).lazy().online.fit_predict([cov_spec()], closed_groups=tmp_path / "c2.parquet")
+        frame(["a"]).lazy().rheon.fit_predict([cov_spec()], closed_groups=tmp_path / "c2.parquet")
     state = tmp_path / "b.state"
     rp.ModelBank([cov_spec(group_close="monotone")]).save(state)
     res = run_online(
@@ -852,9 +852,9 @@ def test_every_surface_writes_closed_groups_as_csv(tmp_path, name):
     assert any(isinstance(dt, pl.List) for dt in want.schema.values()), "a list to write"
 
     eager = tmp_path / "eager.csv"
-    df.online.fit_predict([spec], closed_groups=eager, chunk_size=50)
+    df.rheon.fit_predict([spec], closed_groups=eager, chunk_size=50)
     plan, state = tmp_path / "plan.csv", tmp_path / "plan.state"
-    df.lazy().online.fit_predict(
+    df.lazy().rheon.fit_predict(
         [spec], closed_groups=plan, save_state=state, chunk_size=50
     ).collect()
     batches = tmp_path / "batches.csv"
@@ -888,7 +888,7 @@ def test_the_closed_groups_csv_is_the_cli_s_byte_for_byte(tmp_path, rheon_cli):
         chunk_size=50,
     )
     ours = tmp_path / "ours.csv"
-    df.online.fit_predict([spec], closed_groups=ours, chunk_size=50)
+    df.rheon.fit_predict([spec], closed_groups=ours, chunk_size=50)
     text = cli.read_text(encoding="utf-8")
     # The list of names as JSON text, quoted as CSV quotes a field.
     assert text.count("\n") == 4 and '"[""intercept"",""x0""]"' in text, text
@@ -913,7 +913,7 @@ def test_an_empty_closed_groups_csv_is_the_cli_s_header(tmp_path, rheon_cli):
         closed_groups=cli,
     )
     ours = tmp_path / "ours.csv"
-    df.lazy().online.fit_predict([spec], closed_groups=ours).collect()
+    df.lazy().rheon.fit_predict([spec], closed_groups=ours).collect()
     assert cli.read_text(encoding="utf-8").count("\n") == 1
     assert ours.read_bytes() == cli.read_bytes()
 
@@ -933,9 +933,9 @@ def test_a_closed_groups_file_that_cannot_be_written_still_saves_the_state(tmp_p
     state = tmp_path / "bank.state"
     with pytest.raises((OSError, pl.exceptions.ComputeError)):
         if form == "eager":
-            df.online.fit_predict([spec], closed_groups=side, save_state=state)
+            df.rheon.fit_predict([spec], closed_groups=side, save_state=state)
         else:
-            df.lazy().online.fit_predict([spec], closed_groups=side, save_state=state).collect()
+            df.lazy().rheon.fit_predict([spec], closed_groups=side, save_state=state).collect()
     assert rp.ModelBank.load(state).rows_fed == df.height
 
 

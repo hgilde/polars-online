@@ -1024,9 +1024,9 @@ def _nested_out(n: int, seed: int, beta2: float, groups: int = 1) -> pl.DataFram
 
 
 class TestNestedComparisonsAreTheirPapers:
-    """Task 221 (h). ``po.eval.diebold_mariano`` is Diebold and Mariano's
+    """Task 221 (h). ``rp.eval.diebold_mariano`` is Diebold and Mariano's
     (1995) statistic, the mean squared-error differential over its standard
-    error, and ``po.eval.clark_west`` Clark and West's (2007) adjusted
+    error, and ``rp.eval.clark_west`` Clark and West's (2007) adjusted
     differential, each written here from the paper with Newey and West's
     variance from ``statsmodels``' ``S_hac_simple``; the ``half_life`` form
     is the same at each row's present weight, the scores ``ω (d - m)``."""

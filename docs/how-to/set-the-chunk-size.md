@@ -61,8 +61,8 @@ data](../EXAMPLE-DATA.md):
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0,
                        half_life=50.0, group="stock_id")
 query = pl.scan_parquet("ticks.parquet")
-small = query.online.fit_predict([spec], chunk_size=10).collect()       # read 10 rows at a time
-large = query.online.fit_predict([spec], chunk_size=100_000).collect()  # the whole file at once
+small = query.rheon.fit_predict([spec], chunk_size=10).collect()       # read 10 rows at a time
+large = query.rheon.fit_predict([spec], chunk_size=100_000).collect()  # the whole file at once
 whole = po.ModelBank([spec]).fit_predict(df)                            # a frame: one chunk, whatever its size
 
 # Compare the predictions, and count the rows that carry coef.

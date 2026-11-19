@@ -773,7 +773,7 @@ fn a_bad_cross_lags_is_refused_by_name() {
 /// The lag ring holds `max(lags)` learned rows of `p` features and is sized
 /// before the first row, so a lag has a ceiling, 2^20, refused by name with
 /// the value: `lags = [2^62]` panicked "capacity overflow" inside
-/// `po.spec.marginal` and `[10^11]` reserved 2.4 TB (review 2026-10-06,
+/// `rheon.spec.marginal` and `[10^11]` reserved 2.4 TB (review 2026-10-06,
 /// CD10). At the ceiling it builds.
 #[test]
 fn a_lag_past_the_ceiling_is_refused_by_name() {

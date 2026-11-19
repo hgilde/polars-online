@@ -155,8 +155,8 @@ def test_a_pyarrow_reader_streams_into_a_bank() -> None:
                 table.schema, table.to_batches(max_chunksize=37)
             )
 
-        lazy = pl.scan_arrow_c_stream(reader()).online.fit_predict([SPEC]).collect()
-        result["lf.online.fit_predict"] = same(lazy["m"].struct.unnest(), cadence_too=False)
+        lazy = pl.scan_arrow_c_stream(reader()).rheon.fit_predict([SPEC]).collect()
+        result["lf.rheon.fit_predict"] = same(lazy["m"].struct.unnest(), cadence_too=False)
         chunks = po.ModelBank([SPEC]).fit_predict_batches(
             pl.scan_arrow_c_stream(reader()), chunk_size=23
         )
@@ -164,7 +164,7 @@ def test_a_pyarrow_reader_streams_into_a_bank() -> None:
         result["fit_predict_batches"] = same(batched["m"].struct.unnest(), cadence_too=False)
         """
     )
-    assert got["lf.online.fit_predict"], "the query path over a pyarrow reader moved a number"
+    assert got["lf.rheon.fit_predict"], "the query path over a pyarrow reader moved a number"
     assert got["fit_predict_batches"], "the batch path over a pyarrow reader moved a number"
 
 

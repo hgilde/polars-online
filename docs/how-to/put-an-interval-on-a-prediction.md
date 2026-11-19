@@ -71,7 +71,7 @@ specs = [
     for k in noise
 ]
 # 2 and 3. Run the query, past its first ten half-lives.
-out = streams.online.fit_predict(specs).slice(5_000).collect()
+out = streams.rheon.fit_predict(specs).slice(5_000).collect()
 
 # 4 and 5. Each interval's share of rows covered, and its mean half-width.
 print(f"{'noise':6} {'interval':>20} {'covered':>8} {'half-width':>11}")
@@ -158,7 +158,7 @@ for delay, embargo in (("at once", {}), ("300 units later", {"embargo": 300.0}))
     for rate in (0.05, "auto"):
         # 1 and 2. The same ridge, with the targets at once or 300 units later, at each rate.
         spec = po.spec.ewridge("late", conformal_rate=rate, **embargo, **common)
-        rows = late.online.fit_predict([spec]).slice(10_000).collect().select("y", pl.col("late").struct.unnest())
+        rows = late.rheon.fit_predict([spec]).slice(10_000).collect().select("y", pl.col("late").struct.unnest())
         # 3. The share of rows covered, and the mean half-width.
         covered, width = rows.select(
             covered=pl.col("y").is_between(pl.col("lo_y"), pl.col("hi_y")).mean(),

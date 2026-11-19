@@ -87,7 +87,7 @@ impl Frames for PlanFrames {
         let done = engine
             .join()
             .map_err(|_| GbdtError::msg(
-                    "po.gbdt: internal: Polars panicked while it read the source, which is a defect. \
+                    "rheon.polars._gbdt: internal: Polars panicked while it read the source, which is a defect. \
                      Open an issue at https://github.com/hgilde/polars-online/issues with this message.",
                 ))?;
         if wanted {
@@ -165,7 +165,7 @@ impl Reader {
                     Ok(Ok(())) => Msg::End,
                     Ok(Err(e)) => Msg::Fail(e),
                     Err(p) => Msg::Fail(GbdtError::msg(format!(
-                        "po.gbdt: reading the source panicked ({}), which is a defect in \
+                        "rheon.polars._gbdt: reading the source panicked ({}), which is a defect in \
                          polars-online. Open an issue at \
                          https://github.com/hgilde/polars-online/issues with this message.",
                         panic_message(&p)
@@ -200,7 +200,7 @@ impl Reader {
                 Err(e)
             }
             Err(_) => Err(GbdtError::msg(
-                "po.gbdt: the thread reading the source stopped before the end of its pass, which \
+                "rheon.polars._gbdt: the thread reading the source stopped before the end of its pass, which \
                  is a defect in polars-online. Open an issue at \
                  https://github.com/hgilde/polars-online/issues with this message.",
             )),
@@ -262,7 +262,7 @@ fn check_kinds<'a>(
         width += 1;
         if !column_ok(layout, j, c) {
             return Err(GbdtError::WrongType(format!(
-                "po.gbdt: column `{}` arrived as {dtype}, which is not a numeric column the \
+                "rheon.polars._gbdt: column `{}` arrived as {dtype}, which is not a numeric column the \
                  libraries read. Cast it to a number type before the build.",
                 column_name(layout, j)
             )));
@@ -270,7 +270,7 @@ fn check_kinds<'a>(
     }
     if width != layout.width() {
         return Err(GbdtError::msg(format!(
-            "po.gbdt: a frame of {width} columns arrived where {} were expected, which is a \
+            "rheon.polars._gbdt: a frame of {width} columns arrived where {} were expected, which is a \
              defect in polars-online. Open an issue at \
              https://github.com/hgilde/polars-online/issues with this message.",
             layout.width()
@@ -286,7 +286,7 @@ pub(crate) fn segments(df: &DataFrame, layout: &Layout) -> Result<Vec<Segment>, 
     let width = layout.width();
     if df.width() != width {
         return Err(GbdtError::msg(format!(
-            "po.gbdt: a frame of {} columns arrived where {width} were expected (the features, \
+            "rheon.polars._gbdt: a frame of {} columns arrived where {width} were expected (the features, \
              the label{}{}), which is a defect in polars-online. Open an issue at \
              https://github.com/hgilde/polars-online/issues with this message.",
             df.width(),
@@ -313,7 +313,7 @@ pub(crate) fn segments(df: &DataFrame, layout: &Layout) -> Result<Vec<Segment>, 
         let ok = s.chunks().iter().all(|c| column_ok(layout, j, c.as_ref()));
         if !ok {
             return Err(GbdtError::WrongType(format!(
-                "po.gbdt: column `{name}` arrived as {}, which is not a numeric column the \
+                "rheon.polars._gbdt: column `{name}` arrived as {}, which is not a numeric column the \
                  libraries read. Cast it to a number type before the build.",
                 crate::arrow::dtype_name(s.dtype())
             )));
@@ -673,9 +673,9 @@ pub(crate) fn margin_rows(
     // The call the reader made, told by the name the library gives the
     // training set a margin is matched against.
     let who = if whose == "ref" {
-        "po.gbdt.xgboost_matrix"
+        "rheon.polars._gbdt.xgboost_matrix"
     } else {
-        "po.gbdt.lightgbm_dataset"
+        "rheon.polars._gbdt.lightgbm_dataset"
     };
     let null = |r: u64| {
         GbdtError::msg(format!(

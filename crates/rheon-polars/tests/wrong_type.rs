@@ -276,19 +276,19 @@ fn refresh_time_marks_its_wrong_types() {
     let e = refuse(df(DataType::String, DataType::Float64));
     wrong(
         &e,
-        r#"po.stream.refresh_time: clock column "t" must be a number or temporal"#,
+        r#"rp.stream.refresh_time: clock column "t" must be a number or temporal"#,
     );
     let e = refuse(df(DataType::Int128, DataType::Float64));
-    wrong(&e, r#"po.stream.refresh_time: clock column "t" is Int128"#);
+    wrong(&e, r#"rp.stream.refresh_time: clock column "t" is Int128"#);
     let e = refuse(df(DataType::Int64, DataType::String));
     wrong(
         &e,
-        r#"po.stream.refresh_time: value column "v" must be a number"#,
+        r#"rp.stream.refresh_time: value column "v" must be a number"#,
     );
     let e = refuse(df(DataType::Time, DataType::Float64));
     wrong(
         &e,
-        r#"po.stream.refresh_time: clock column "t" is a time of day"#,
+        r#"rp.stream.refresh_time: clock column "t" is a time of day"#,
     );
 }
 

@@ -98,8 +98,8 @@ local = po.spec.ewridge(
 )
 fitted = (
     pl.scan_parquet("two_days.parquet")            # a query over the file
-    .online.fit_predict([local])                   # adds the bank's output column, "local"
-    .online.unnest([local])                        # one column per field: the coefficient on flow is coef_ret_flow
+    .rheon.fit_predict([local])                   # adds the bank's output column, "local"
+    .rheon.unnest([local])                        # one column per field: the coefficient on flow is coef_ret_flow
     .collect()                                     # runs the query
 )
 
@@ -167,7 +167,7 @@ by_day = po.spec.ewridge(
     session="day",                                 # a new value of day is a new session
     session_gap="reset",                           # the model starts over at each new session
 )
-by_day_fitted = pl.scan_parquet("two_days.parquet").online.fit_predict([by_day]).online.unnest([by_day]).collect()   # as in step 2
+by_day_fitted = pl.scan_parquet("two_days.parquet").rheon.fit_predict([by_day]).rheon.unnest([by_day]).collect()   # as in step 2
 
 # The second day's first half hour, from both fits.
 by_day_open = by_day_fitted.filter(pl.col("ts").is_in(second_open["ts"].implode()))

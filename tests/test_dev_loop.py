@@ -51,7 +51,7 @@ def _env_sh(tmp_path: Path, **env: str) -> str:
     base = {
         k: v
         for k, v in os.environ.items()
-        if k not in {"CI", "RUSTC_WRAPPER", "SCCACHE_CACHE_SIZE", "POLARS_ONLINE_SCCACHE"}
+        if k not in {"CI", "RUSTC_WRAPPER", "SCCACHE_CACHE_SIZE", "RHEON_SCCACHE"}
     }
     base["PATH"] = f"{fake}{os.pathsep}{base['PATH']}"
     script = (
@@ -78,8 +78,8 @@ posix_shell = pytest.mark.skipif(
 
 @posix_shell
 def test_env_sh_turns_sccache_on_when_asked(tmp_path):
-    assert _env_sh(tmp_path, POLARS_ONLINE_SCCACHE="1") == "sccache|10G"
-    capped = _env_sh(tmp_path, POLARS_ONLINE_SCCACHE="1", SCCACHE_CACHE_SIZE="3G")
+    assert _env_sh(tmp_path, RHEON_SCCACHE="1") == "sccache|10G"
+    capped = _env_sh(tmp_path, RHEON_SCCACHE="1", SCCACHE_CACHE_SIZE="3G")
     assert capped == "sccache|3G"
 
 
@@ -88,9 +88,9 @@ def test_env_sh_turns_sccache_on_when_asked(tmp_path):
     ("env", "why"),
     [
         ({}, "off unless asked: from a new worktree's path it is slower than no cache"),
-        ({"POLARS_ONLINE_SCCACHE": "0"}, "the switch, set off"),
-        ({"POLARS_ONLINE_SCCACHE": "1", "CI": "true"}, "every CI service sets CI"),
-        ({"POLARS_ONLINE_SCCACHE": "1", "RUSTC_WRAPPER": ""}, "a wrapper already chosen"),
+        ({"RHEON_SCCACHE": "0"}, "the switch, set off"),
+        ({"RHEON_SCCACHE": "1", "CI": "true"}, "every CI service sets CI"),
+        ({"RHEON_SCCACHE": "1", "RUSTC_WRAPPER": ""}, "a wrapper already chosen"),
     ],
 )
 def test_env_sh_leaves_sccache_off(tmp_path, env, why):
@@ -518,7 +518,7 @@ def _slot(repo: Path, *args: str, slots: int = 4) -> subprocess.CompletedProcess
     return subprocess.run(
         ["bash", str(repo / "scripts" / "slot.sh"), *args],
         cwd=repo,
-        env={**os.environ, "POLARS_ONLINE_SLOTS": str(slots)},
+        env={**os.environ, "RHEON_SLOTS": str(slots)},
         capture_output=True,
         text=True,
         encoding="utf-8",

@@ -1,6 +1,6 @@
 """Window expressions as model targets (docs/PLAN.md task 104).
 
-A target may be a formula of the row's future -- ``po.ewm_mean("mid", ...)
+A target may be a formula of the row's future -- ``rp.ewm_mean("mid", ...)
 - pl.col("mid")`` in a spec's ``targets`` -- and the bank's own window core
 resolves it: each row is scored where it sits and learned from once its
 window has closed and its ``embargo`` has passed. The claim is parity with
@@ -336,7 +336,7 @@ def test_fit_predict_refuses_an_embargo_below_the_window_and_fit_takes_it() -> N
             bank.fit_predict(later)
     # The plan form refuses while the plan is built, before a row moves.
     with pytest.raises(ValueError, match="fit_predict needs an embargo"):
-        df.lazy().online.fit_predict([spec(fwd(), embargo=None)])
+        df.lazy().rheon.fit_predict([spec(fwd(), embargo=None)])
 
 
 def test_groups_keep_their_own_clocks_and_cores() -> None:
@@ -477,7 +477,7 @@ def test_a_target_known_at_its_own_row_is_pointed_to_the_call_that_makes_its_col
     the row alone is Polars' own `with_columns`, which `with_windows` refuses.
     The refusal used to send both to `with_windows` (docs/README-ITERATIONS.md,
     E11), so following it failed for the second."""
-    with pytest.raises(ValueError, match="po.stream.with_windows"):
+    with pytest.raises(ValueError, match="rp.stream.with_windows"):
         spec((rp.ewm_mean("mid", half_life=H) - pl.col("mid")).alias("back"))
     with pytest.raises(ValueError, match="with_columns") as plain:
         spec((pl.col("price") - pl.col("mid")).alias("rel"))
@@ -499,7 +499,7 @@ def test_a_target_known_at_its_own_row_is_pointed_to_the_call_that_makes_its_col
         rp.spec.ftrl("f", targets=[fwd()], features=["x"])  # a probability to a 0/1 target
     with pytest.raises(
         TypeError,
-        match=r"targets must be a list of column names, po\.target tables or formula targets, "
+        match=r"targets must be a list of column names, rheon\.target tables or formula targets, "
         r"but it is list \[3\]",
     ):
         spec(3)  # type: ignore[arg-type]
@@ -593,7 +593,7 @@ def test_the_plan_keeps_the_formulas_columns() -> None:
     target; the bank's output is the same."""
     df = stream(300, 13)
     want = native(df, spec(fwd()))
-    got = df.lazy().online.fit_predict([spec(fwd())], chunk_size=50).select("t", "m").collect()
+    got = df.lazy().rheon.fit_predict([spec(fwd())], chunk_size=50).select("t", "m").collect()
     assert field(got, "pred_fwd") == field(want, "pred_fwd")
     assert got.columns == ["t", "m"]
 

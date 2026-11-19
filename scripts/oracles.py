@@ -49,7 +49,7 @@ tolerance with a ``[[rebased]]`` entry; further needs a ``[[raised]]`` one.
     uv run python scripts/oracles.py datasets [--suite] [--digest]
 
 ``RECORDS`` are directories of the JSON lines ``tests/ledger.py`` writes
-under ``POLARS_ONLINE_ORACLES_OUT``, or a merged file ``check --measured``
+under ``RHEON_ORACLES_OUT``, or a merged file ``check --measured``
 wrote. ``rerun`` is the local command the gate's hash guard names: it runs
 the oracle grids of the groups whose hashes or oracle versions moved (or
 those named), fails if a test fails or a case is past the ledger, and
@@ -86,8 +86,8 @@ CHANGELOG = REPO / "CHANGELOG.md"
 RAISES_MARK = "# --- raises"
 #: The guard's own test, which writes the hashes it computes here.
 GUARD_TEST = "tests/test_oracle_ledger.py::TestTheHashGuard"
-HASHES_OUT = "POLARS_ONLINE_ORACLE_HASHES_OUT"
-OUT_VARIABLE = "POLARS_ONLINE_ORACLES_OUT"
+HASHES_OUT = "RHEON_ORACLE_HASHES_OUT"
+OUT_VARIABLE = "RHEON_ORACLES_OUT"
 
 
 def load(path: Path | None = None) -> dict:

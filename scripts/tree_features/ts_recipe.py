@@ -33,7 +33,7 @@ learn_rows = base.select(
 stream = pl.concat([pred_rows, learn_rows]).sort("c", "role", "rid")
 r0 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 t0 = time.perf_counter()
-out = stream.online.with_windows(
+out = stream.rheon.with_windows(
     S=rp.ewm_sum("y", half_life=hl, closed="left"),
     W=rp.ewm_sum("one", half_life=hl, closed="left"),
     clock="c",

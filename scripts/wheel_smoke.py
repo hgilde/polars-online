@@ -119,7 +119,7 @@ def check(
     if not resumed.fit_predict(df.tail(80)).equals(whole.tail(80)):
         raise SystemExit("a saved and resumed state parts from the unbroken run")
 
-    streamed = df.lazy().online.fit_predict([spec]).collect()
+    streamed = df.lazy().rheon.fit_predict([spec]).collect()
     if not streamed.equals(whole):
         raise SystemExit("the streaming plan parts from ModelBank.fit_predict")
 

@@ -68,7 +68,7 @@ shapes = [po.spec.ew_class(shape, features=["x", "y"], label="kind", classes=["a
           for shape in ("full", "tied", "diag")]
 # 3. The share of the last rows each shape classifies right.
 for data in ("crossed", "shifted"):
-    out = pl.scan_parquet(f"{data}.parquet").online.fit_predict(shapes).collect().tail(5_000)
+    out = pl.scan_parquet(f"{data}.parquet").rheon.fit_predict(shapes).collect().tail(5_000)
     right = {shape: (out[shape].struct.field("class") == out["kind"]).mean() for shape in ("full", "tied", "diag")}
     print(f"{data}: " + ", ".join(f"{shape} {share:.3f}" for shape, share in right.items()))
 ```
@@ -116,7 +116,7 @@ pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1], "kind": np.array(["a", "b"])[label]}
 common = dict(features=["x", "y"], label="kind", classes=["a", "b"], precision_prior=0.1, half_life=float("inf"))
 specs = [po.spec.ew_class("whole", **common), po.spec.ew_class("window", **common, window_size=500.0)]
 # 2 and 3. Add both specs, and run.
-out = pl.scan_parquet("swapped.parquet").online.fit_predict(specs).collect()
+out = pl.scan_parquet("swapped.parquet").rheon.fit_predict(specs).collect()
 # 4. The share of rows each classifies right, before the move, just after it, and from then on.
 for lo, hi in ((2_000, 3_000), (3_000, 3_500), (3_500, 6_000)):
     rows = out.slice(lo, hi - lo)
@@ -157,7 +157,7 @@ that recipe's imports, and learns each row's class 50 rows after the row:
 late = po.spec.ew_class("late", features=["x", "y"], label="kind", classes=["a", "b"],
                         precision_prior=0.1, half_life=float("inf"), embargo=50)
 # 2 and 3. Add the spec, run, and find the first row with a class.
-out = pl.scan_parquet("swapped.parquet").online.fit_predict([late]).collect().unnest("late").with_row_index("row")
+out = pl.scan_parquet("swapped.parquet").rheon.fit_predict([late]).collect().unnest("late").with_row_index("row")
 print(f"first row with a class: {out.filter(pl.col('class').is_not_null())['row'][0]}")
 ```
 

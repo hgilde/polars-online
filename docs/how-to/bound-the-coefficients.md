@@ -105,7 +105,7 @@ pl.DataFrame({"a": a, "b": b, "y": 0.9 * a + 0.6 * b + 0.3 * e}).write_parquet("
 # pa with the slopes at least 0 and summing to 1, at the default c and at a small one, and sgd beside them.
 bounds = dict(targets=["y"], features=["a", "b"], half_life=float("inf"), coef_min=0.0, coef_sum=1.0, coef_every=0)
 specs = [po.spec.pa("pa_c1", **bounds), po.spec.pa("pa_c001", c=0.01, **bounds), po.spec.sgd("sgd", **bounds)]
-out = pl.scan_parquet("weights.parquet").online.fit_predict(specs).collect()
+out = pl.scan_parquet("weights.parquet").rheon.fit_predict(specs).collect()
 
 # The last weights, and how far a's weight wanders over the last 5,000 rows.
 print("closest allowed: a 0.650, b 0.350")

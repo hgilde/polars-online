@@ -25,7 +25,7 @@ def test_the_name_may_be_given_by_keyword():
 
 
 def test_a_target_s_name_must_be_a_string():
-    with pytest.raises(TypeError, match=r"po.target\('y'\): name must be a str, but it is int"):
+    with pytest.raises(TypeError, match=r"rheon.target\('y'\): name must be a str, but it is int"):
         rp.target("y", name=3)  # type: ignore[arg-type]
 
 

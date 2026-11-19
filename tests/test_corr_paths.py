@@ -1,4 +1,4 @@
-"""``po.corr`` on the paths no other test took (task 252): each refusal of
+"""``rheon.corr`` on the paths no other test took (task 252): each refusal of
 an argument of the wrong shape, by name; the summaries that are undefined
 below two series (``nan``, as the docstrings say); a minimum-variance
 weight whose normaliser is zero; and the Epps inversion read from a closed
@@ -25,53 +25,53 @@ R2 = np.array([[1.0, 0.3], [0.3, 1.0]])
     [
         (
             lambda: corr.shrink(R2, x=np.zeros((10, 3))),
-            r"po.corr.shrink: x must have one column for each of the matrix\'s 2 columns, but it "
-            r"has shape \(10, 3\)",
+            r"rheon.corr.shrink: x must have one column for each of the matrix\'s 2 columns, "
+            r"but it has shape \(10, 3\)",
         ),
         (
             lambda: corr.shrink(R2, x=np.zeros(10)),
-            r"po.corr.shrink: x must have one column for each of the matrix\'s 2 columns, but it "
-            r"has shape \(10,\)",
+            r"rheon.corr.shrink: x must have one column for each of the matrix\'s 2 columns, "
+            r"but it has shape \(10,\)",
         ),
         (
             lambda: corr.absorption(R2, 0),
-            "po.corr.absorption: k must be from 1 to the matrix's 2 columns, but it is 0",
+            "rheon.corr.absorption: k must be from 1 to the matrix's 2 columns, but it is 0",
         ),
         (
             lambda: corr.absorption(R2, 3),
-            "po.corr.absorption: k must be from 1 to the matrix's 2 columns, but it is 3",
+            "rheon.corr.absorption: k must be from 1 to the matrix's 2 columns, but it is 3",
         ),
         (
             lambda: corr.absorption_shift(np.zeros(3), np.zeros(4)),
-            r"po.corr.absorption_shift: ar_fast and ar_slow must have the same shape, but they "
+            r"rheon.corr.absorption_shift: ar_fast and ar_slow must have the same shape, but they "
             r"have \(3,\) and \(4,\)",
         ),
         (
             lambda: corr.from_spectral([1.0, 1.0], np.eye(3)),
-            r"po.corr.from_spectral: 2 eigenvalues need 2 eigenvectors, one for each row of vecs, "
-            r"but vecs has shape \(3, 3\)",
+            r"rheon.corr.from_spectral: 2 eigenvalues need 2 eigenvectors, one for each row "
+            r"of vecs, but vecs has shape \(3, 3\)",
         ),
         (
             lambda: corr.from_blocks(np.eye(3), ["a", "a", "b"]),
-            r"po.corr.from_blocks: labels name 2 blocks, so b must be a 2 by 2 matrix, but it has "
-            r"shape \(3, 3\)",
+            r"rheon.corr.from_blocks: labels name 2 blocks, so b must be a 2 by 2 matrix, "
+            r"but it has shape \(3, 3\)",
         ),
         (
             lambda: corr.mp_edge(0, 10),
-            "po.corr.mp_edge: n and m must be above 0, but they are 0 and 10",
+            "rheon.corr.mp_edge: n and m must be above 0, but they are 0 and 10",
         ),
         (
             lambda: corr.mp_edge(10, -1),
-            "po.corr.mp_edge: n and m must be above 0, but they are 10 and -1",
+            "rheon.corr.mp_edge: n and m must be above 0, but they are 10 and -1",
         ),
         (
             lambda: corr.signal_share(np.zeros(3), np.ones(2)),
-            "po.corr.signal_share: n_kish_blocks must hold one sample size for each of the 3 "
+            "rheon.corr.signal_share: n_kish_blocks must hold one sample size for each of the 3 "
             "blocks",
         ),
         (
             lambda: corr.loss(R2, np.eye(3), "qlike"),
-            r"po.corr.loss: fcst and real must have the same shape, but they have \(2, 2\) and "
+            r"rheon.corr.loss: fcst and real must have the same shape, but they have \(2, 2\) and "
             r"\(3, 3\)",
         ),
     ],

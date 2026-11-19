@@ -84,7 +84,7 @@ specs = [
     po.spec.ewridge("fading", coef_prior=yesterday, ridge_scale="sum", ridge=20.0, **common),
     po.spec.ewridge("lasting", coef_prior=yesterday, ridge=20.0, **common),
 ]
-out = pl.scan_parquet("today_prior.parquet").online.fit_predict(specs).collect()
+out = pl.scan_parquet("today_prior.parquet").rheon.fit_predict(specs).collect()
 
 # Each fit's slope as the rows arrive, and its error over the first 20 rows.
 print("today's slope 2.2, yesterday's 2.0")

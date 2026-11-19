@@ -1,7 +1,7 @@
 """The window operators held to Polars itself, on a wider grid than
-``test_windows.py``'s one stream: ``po.ewm_mean`` against ``ewm_mean_by``
+``test_windows.py``'s one stream: ``rp.ewm_mean`` against ``ewm_mean_by``
 over every datetime unit, half-lives from a microsecond to an hour, stamps
-that repeat, nulls and two epochs; and ``po.ewm_sum(half_life=inf,
+that repeat, nulls and two epochs; and ``rp.ewm_sum(half_life=inf,
 window_size=...)`` against ``rolling_sum_by`` under all four values of
 ``closed``. Polars is the reference, so what differs is stated:
 
@@ -9,7 +9,7 @@ window_size=...)`` against ``rolling_sum_by`` under all four values of
   window there, which a null row does not move. The comparison is at rows
   with a value.
 - ``rolling_sum_by`` gives 0 for a window that holds no row with a value, and
-  so does ``po.ewm_sum`` under its default ``min_samples`` of 0, as Polars'
+  so does ``rp.ewm_sum`` under its default ``min_samples`` of 0, as Polars'
   default is; with ``min_samples=1`` or more both give null there.
 """
 

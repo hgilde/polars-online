@@ -79,7 +79,7 @@ mv = po.spec.ew_cov(
     pca_every=50.0,              # 2. refreshed every 50 units of t
     max_rows_between_pcas=100,   # 3. and at least every 100 rows, should rows bunch on the clock
 )
-out = pl.scan_parquet("factor.parquet").online.fit_predict([mv]).unnest("mv").collect()   # 4 to 6. add the spec, unnest pc0_*, run
+out = pl.scan_parquet("factor.parquet").rheon.fit_predict([mv]).unnest("mv").collect()   # 4 to 6. add the spec, unnest pc0_*, run
 last = out.row(-1, named=True)
 print("planted loadings " + " ".join(f"{v:.2f}" for v in loading) + f", share {10 / 13:.2f}")
 print("found loadings   " + " ".join(f"{last[f'pc0_loading_{s}']:.2f}" for s in names) + f", share {last['pc0_share']:.2f}")

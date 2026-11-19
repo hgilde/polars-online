@@ -201,8 +201,8 @@ def _public() -> set[str]:
             for name in getattr(module, "__all__", ()):
                 consider(f"{package.__name__}.{m.name}.{name}", getattr(module, name))
     found |= {
-        "rheon.polars._frame.LazyFrameOnlineNamespace",
-        "rheon.polars._frame.DataFrameOnlineNamespace",
+        "rheon.polars._frame.LazyFrameRheonNamespace",
+        "rheon.polars._frame.DataFrameRheonNamespace",
     }
     return found
 

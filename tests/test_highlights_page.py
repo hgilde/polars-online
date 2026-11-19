@@ -137,7 +137,7 @@ def test_the_signal_task_learns_nothing_from_the_future(tmp_path, monkeypatch):
         features = pl.scan_parquet("features.parquet")
 
         def fit(**spec: object) -> pl.DataFrame:
-            out = features.online.fit_predict(
+            out = features.rheon.fit_predict(
                 [rp.spec.huber("robust", **spec), rp.spec.ewridge("ridge", **spec)]
             ).collect()
             return out.select(

@@ -174,19 +174,19 @@ def _np() -> Any:
         import numpy as np
     except ModuleNotFoundError as e:  # pragma: no cover - exercised by a stub
         msg = (
-            "po.gram: it works in numpy arrays, but numpy is not installed. "
+            "rheon.gram: it works in numpy arrays, but numpy is not installed. "
             "Install it with `pip install numpy` or `pip install polars-online[numpy]`."
         )
         raise ModuleNotFoundError(msg) from e
     return np
 
 
-def _columns(g: Gram, who: str = "po.gram") -> list[str]:
+def _columns(g: Gram, who: str = "rheon.gram") -> list[str]:
     cols = g.get("columns")
     if cols is None:
         msg = (
             f"{who}: a Gram must name its columns, but this mapping has no 'columns' key. "
-            "Pass a Gram that ModelBank.gram() or po.gram.from_row returns."
+            "Pass a Gram that ModelBank.gram() or rheon.gram.from_row returns."
         )
         raise KeyError(msg)
     return list(cols)
@@ -204,7 +204,7 @@ def _as_position(v: Any) -> int | None:
         return None
 
 
-def _col_index(g: Gram, cols: Sequence[str | int], who: str = "po.gram") -> list[int]:
+def _col_index(g: Gram, cols: Sequence[str | int], who: str = "rheon.gram") -> list[int]:
     names = _columns(g, who)
     # Each name's first position, looked up once: `list.index` per name made
     # a subset of 400 of 1,500 columns take 3 ms (task 256).
@@ -236,7 +236,7 @@ def _col_index(g: Gram, cols: Sequence[str | int], who: str = "po.gram") -> list
     return out
 
 
-def _target_index(g: Gram, target: str | int, who: str = "po.gram") -> int:
+def _target_index(g: Gram, target: str | int, who: str = "rheon.gram") -> int:
     names = list(g.get("targets") or [])
     i = _as_position(target)
     if i is not None:
@@ -337,7 +337,7 @@ def _ybar_of(np: Any, g: Gram, icept: int) -> Any:
 
 
 def _feature_slots(
-    g: Gram, features: Sequence[str | int] | None, who: str = "po.gram"
+    g: Gram, features: Sequence[str | int] | None, who: str = "rheon.gram"
 ) -> tuple[list[int], int]:
     """The column positions to regress on, and the intercept's position or -1.
 
@@ -601,7 +601,7 @@ def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
     parts = list(grams)
     if not parts:
         msg = (
-            "po.gram.merge: grams must hold at least one Gram, but it is empty. Pass the Grams "
+            "rheon.gram.merge: grams must hold at least one Gram, but it is empty. Pass the Grams "
             "to pool."
         )
         raise ValueError(msg)
@@ -609,7 +609,7 @@ def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
         # Nothing to pool: the part is its own union, its group, instance and
         # lags included, which the pooled form drops (review 2026-10-05, YB8).
         return parts[0].copy()
-    who = "po.gram.merge"
+    who = "rheon.gram.merge"
     cols = _columns(parts[0], who)
     targets = list(parts[0].get("targets") or [])
     for i, p in enumerate(parts[1:], 1):
@@ -776,7 +776,7 @@ def _centred_rows(np: Any, g: Gram, icept: int, m: int, k: int) -> Any:
     ybar = _ybar_of(np, g, icept)
     if ybar is None:
         msg = (
-            "po.gram.merge: within=True needs each target's cross-moments about its means, but "
+            "rheon.gram.merge: within=True needs each target's cross-moments about its means, but "
             "a Gram has no cross_centered, and no intercept column or target_means to center "
             "them at. Pass the Grams as ModelBank.gram() returns them, which carry "
             "cross_centered."
@@ -871,7 +871,7 @@ def _row_mapping(row: Any) -> dict[str, Any]:
         rows = to_dicts()
         if len(rows) != 1:
             msg = (
-                f"po.gram.from_row: row must be one closed group's row, but the frame has "
+                f"rheon.gram.from_row: row must be one closed group's row, but the frame has "
                 f"{len(rows)} rows. Pass one row, such as closed.row(i, named=True) or "
                 "closed[i]."
             )
@@ -881,7 +881,7 @@ def _row_mapping(row: Any) -> dict[str, Any]:
         return dict(row)
     except (TypeError, ValueError) as e:
         msg = (
-            "po.gram.from_row: row must be a one-row frame of ModelBank.closed_groups(), a "
+            "rheon.gram.from_row: row must be a one-row frame of ModelBank.closed_groups(), a "
             f"row of its iter_rows(named=True), or a mapping, but its type is "
             f"{type(row).__name__}. Pass one of those."
         )
@@ -895,7 +895,7 @@ def _unvech(np: Any, flat: Any, k: int) -> Any:
     want = k * (k + 1) // 2
     if v.size != want:
         msg = (
-            f"po.gram.from_row: comoments must hold {want} entries, the upper triangle of a "
+            f"rheon.gram.from_row: comoments must hold {want} entries, the upper triangle of a "
             f"Gram of {k} columns, but it holds {v.size}. Pass the row as "
             "ModelBank.closed_groups() wrote it."
         )
@@ -990,14 +990,14 @@ def from_row(row: Any) -> Gram:
     np = _np()
     d = _row_mapping(row)
     if "cross_centred" in d:
-        msg = "po.gram.from_row: cross_centred was renamed cross_centered. Use cross_centered."
+        msg = "rheon.gram.from_row: cross_centred was renamed cross_centered. Use cross_centered."
         raise TypeError(msg)
     cols = d.get("columns")
     if cols is None:
         name = d.get("spec")
         whose = "this closed group" if name is None else f"spec {name!r}'s closed group"
         msg = (
-            f"po.gram.from_row: {whose} has no Gram, since only ewridge, lasso and ew_cov keep "
+            f"rheon.gram.from_row: {whose} has no Gram, since only ewridge, lasso and ew_cov keep "
             "one. Pass a row of ModelBank.closed_groups() from one of those specs."
         )
         raise ValueError(msg)
@@ -1064,7 +1064,7 @@ def _target_q(np: Any, g: Gram) -> Any:
     return np.divide(tw * tw, nk, out=np.zeros_like(tw), where=np.isfinite(nk) & (nk > 0.0))
 
 
-@renamed_keywords("po.gram.subset", {"cols": "columns"})
+@renamed_keywords("rheon.gram.subset", {"cols": "columns"})
 def subset(g: Gram, columns: Sequence[str | int]) -> Gram:
     """Keep some of a Gram's columns, in the order given.
 
@@ -1143,9 +1143,9 @@ def subset(g: Gram, columns: Sequence[str | int]) -> Gram:
     for those columns.
     """
     np = _np()
-    idx = _col_index(g, columns, "po.gram.subset")
-    names = _columns(g, "po.gram.subset")
-    _refuse_repeated(names, idx, "po.gram.subset", "columns")
+    idx = _col_index(g, columns, "rheon.gram.subset")
+    names = _columns(g, "rheon.gram.subset")
+    _refuse_repeated(names, idx, "rheon.gram.subset", "columns")
     como = _comoments(np, g)
     cross = np.asarray(g["cross_moments"], dtype=float)
     by_target = g.get("means_by_target")
@@ -1397,15 +1397,15 @@ def solve(
         # A negative ridge solved a different, possibly indefinite, system
         # and returned it as the fit (review round 4, YB12).
         msg = (
-            f"po.gram.solve: ridge must be finite and at least 0, but it is "
+            f"rheon.gram.solve: ridge must be finite and at least 0, but it is "
             f"{float(ridges[0]) if np.ndim(ridge) == 0 else ridges.tolist()!r}. Set "
             "ridge to 0 for no shrinkage, or to a finite positive value."
         )
         raise ValueError(msg)
-    t = _target_index(g, target, "po.gram.solve")
-    slots, icept = _feature_slots(g, features, "po.gram.solve")
+    t = _target_index(g, target, "rheon.gram.solve")
+    slots, icept = _feature_slots(g, features, "rheon.gram.solve")
     scalar = np.ndim(ridge) == 0
-    k = len(_columns(g, "po.gram.solve"))
+    k = len(_columns(g, "rheon.gram.solve"))
 
     means = np.asarray(g["means"], dtype=float)
     cross = np.asarray(g["cross_moments"], dtype=float)[t]
@@ -1500,7 +1500,7 @@ def _ridge_solves(np: Any, a: Any, b: Any, ridges: Any) -> Any:
     return out
 
 
-@renamed_keywords("po.gram.lasso_path", {"lambdas": "penalties"})
+@renamed_keywords("rheon.gram.lasso_path", {"lambdas": "penalties"})
 def lasso_path(
     g: Gram,
     penalties: Sequence[float],
@@ -1660,39 +1660,39 @@ def lasso_path(
     lams = np.asarray(penalties, dtype=float).reshape(-1)
     if not np.all(np.isfinite(lams) & (lams >= 0.0)):
         msg = (
-            "po.gram.lasso_path: penalties must be finite and at least 0, but they are "
+            "rheon.gram.lasso_path: penalties must be finite and at least 0, but they are "
             f"{lams.tolist()!r}. Set each penalty to 0 for no shrinkage, or to a finite "
             "positive value."
         )
         raise ValueError(msg)
     if not 0.0 <= l1_ratio <= 1.0:
         msg = (
-            f"po.gram.lasso_path: l1_ratio must be from 0 to 1, but it is {l1_ratio!r}. Set "
+            f"rheon.gram.lasso_path: l1_ratio must be from 0 to 1, but it is {l1_ratio!r}. Set "
             "l1_ratio from 0 (a ridge) to 1 (the lasso)."
         )
         raise ValueError(msg)
     if max_iter < 1:
         msg = (
-            f"po.gram.lasso_path: max_iter must be at least 1, but it is {max_iter!r}, and "
+            f"rheon.gram.lasso_path: max_iter must be at least 1, but it is {max_iter!r}, and "
             "with no sweep of the descent every coefficient but the intercept stays at 0. Set "
             "max_iter to 1 or more."
         )
         raise ValueError(msg)
     if not (math.isfinite(tol) and tol > 0.0):
         msg = (
-            f"po.gram.lasso_path: tol must be finite and above 0, but it is {tol!r}. Set tol "
+            f"rheon.gram.lasso_path: tol must be finite and above 0, but it is {tol!r}. Set tol "
             "to a small positive value, such as the default, 1e-10."
         )
         raise ValueError(msg)
-    t = _target_index(g, target, "po.gram.lasso_path")
-    slots, icept = _feature_slots(g, features, "po.gram.lasso_path")
-    k = len(_columns(g, "po.gram.lasso_path"))
+    t = _target_index(g, target, "rheon.gram.lasso_path")
+    slots, icept = _feature_slots(g, features, "rheon.gram.lasso_path")
+    k = len(_columns(g, "rheon.gram.lasso_path"))
     pw = (
         np.ones(len(slots)) if penalty_weights is None else np.asarray(penalty_weights, dtype=float)
     )
     if pw.shape != (len(slots),):
         msg = (
-            f"po.gram.lasso_path: penalty_weights must have one entry for each of the "
+            f"rheon.gram.lasso_path: penalty_weights must have one entry for each of the "
             f"{len(slots)} features, but it has shape {pw.shape}. Pass one weight for each "
             "feature, in the order of features, or of the Gram's columns without the intercept "
             "when features is not set."
@@ -1700,7 +1700,7 @@ def lasso_path(
         raise ValueError(msg)
     if not np.all(np.isfinite(pw) & (pw >= 0.0)):
         msg = (
-            "po.gram.lasso_path: penalty_weights must be finite and at least 0, but they are "
+            "rheon.gram.lasso_path: penalty_weights must be finite and at least 0, but they are "
             f"{pw.tolist()!r}. Set each weight to 0 to leave its feature unpenalized, or to a "
             "finite positive value."
         )
@@ -1722,12 +1722,12 @@ def lasso_path(
         # descent left them with nothing to tell them apart.
         warnings.warn(
             ReadinessWarning(
-                f"po.gram.lasso_path: the coordinate descent ran out of sweeps at {len(short)} "
+                f"rheon.gram.lasso_path: the coordinate descent ran out of sweeps at {len(short)} "
                 f"of {len(lams)} penalties, {short}, still moving a coefficient by tol times "
                 f"the target's spread or more after max_iter = {max_iter} sweeps, so the path's "
                 "rows at those penalties are where it stopped, short of the fit. Strongly "
                 "correlated features slow the descent. Increase "
-                "max_iter, or take the path's knots exactly from po.gram.lars_path."
+                "max_iter, or take the path's knots exactly from rheon.gram.lars_path."
             ),
             stacklevel=_user_stacklevel(),
         )
@@ -1826,13 +1826,13 @@ def _lars_weights(
             f"{who}: penalty_weights must be finite and above 0, but they are "
             f"{pw.tolist()!r}, and a path cannot start from the largest penalty with a "
             "feature that no penalty removes. Set each weight above 0, or use "
-            "po.gram.lasso_path for a weight of 0."
+            "rheon.gram.lasso_path for a weight of 0."
         )
         raise ValueError(msg)
     return [float(v) for v in pw]
 
 
-@renamed_keywords("po.gram.lars_path", {"max_steps": "max_iter"})
+@renamed_keywords("rheon.gram.lars_path", {"max_steps": "max_iter"})
 def lars_path(
     g: Gram,
     *,
@@ -2028,11 +2028,11 @@ def lars_path(
         max_active=max_active,
         penalty_weights=penalty_weights,
         threads=threads,
-        who="po.gram.lars_path",
+        who="rheon.gram.lars_path",
     )[0][0]
 
 
-@renamed_keywords("po.gram.lars_paths", {"max_steps": "max_iter"})
+@renamed_keywords("rheon.gram.lars_paths", {"max_steps": "max_iter"})
 def lars_paths(
     grams: Sequence[Gram],
     *,
@@ -2065,7 +2065,7 @@ def lars_paths(
     ``threads``
         How many threads the Grams run on, beside each other: ``None``, the
         default, is the process's threads, which
-        ``POLARS_ONLINE_MAX_THREADS`` sizes, and an integer that many
+        ``RHEON_MAX_THREADS`` sizes, and an integer that many
         threads, as :class:`~rheon.polars.ModelBank` takes it. Refused
         unless an integer of at least 1, or ``None``.
 
@@ -2124,7 +2124,7 @@ def lars_paths(
         max_active=max_active,
         penalty_weights=penalty_weights,
         threads=threads,
-        who="po.gram.lars_paths",
+        who="rheon.gram.lars_paths",
     )
 
 
@@ -2462,7 +2462,7 @@ def solve_subsets(
     np = _np()
     threads = _check_threads(threads)
     parts = list(grams)
-    who = "po.gram.solve_subsets"
+    who = "rheon.gram.solve_subsets"
     if not parts:
         msg = f"{who}: grams must hold at least one Gram, but it is empty. Pass the Grams to fit."
         raise ValueError(msg)
@@ -2522,8 +2522,8 @@ def solve_subsets(
             if m and (v is None or len(v) == 0):
                 msg = (
                     f"{who}: every Gram must carry {key!r}, but Gram {gi} has none. Pass the Grams "
-                    "as ModelBank.gram() returns them, or use po.gram.merge, then "
-                    "po.gram.solve, which form it from cross_moments."
+                    "as ModelBank.gram() returns them, or use rheon.gram.merge, then "
+                    "rheon.gram.solve, which form it from cross_moments."
                 )
                 raise ValueError(msg)
     signs = _target_signs(np, target_signs, len(parts), within)
@@ -2699,7 +2699,7 @@ def _target_signs(np: Any, target_signs: Any, n_grams: int, within: bool) -> lis
         return []
     if not within:
         msg = (
-            "po.gram.solve_subsets: target_signs needs within=True, but within is False, and "
+            "rheon.gram.solve_subsets: target_signs needs within=True, but within is False, and "
             "pooled as a union a Gram's sign would move the gaps between the Grams' means too. "
             "Pass within=True, or leave out target_signs."
         )
@@ -2707,28 +2707,28 @@ def _target_signs(np: Any, target_signs: Any, n_grams: int, within: bool) -> lis
     s = np.asarray(target_signs, dtype=float)
     if s.ndim != 2:
         msg = (
-            "po.gram.solve_subsets: target_signs must be a 2-d array, a row for each Gram and "
+            "rheon.gram.solve_subsets: target_signs must be a 2-d array, a row for each Gram and "
             f"a column for each draw, but it has shape {s.shape}. Pass one row for each Gram, "
             "such as signs[:, None] for one draw."
         )
         raise ValueError(msg)
     if s.shape[0] != n_grams:
         msg = (
-            f"po.gram.solve_subsets: target_signs must have a row for each of the {n_grams} "
+            f"rheon.gram.solve_subsets: target_signs must have a row for each of the {n_grams} "
             f"Grams and a column for each draw, but it has shape {s.shape}. Pass one row for "
             "each Gram."
         )
         raise ValueError(msg)
     if s.shape[1] < 1:
         msg = (
-            "po.gram.solve_subsets: target_signs must have at least one draw, a column of "
+            "rheon.gram.solve_subsets: target_signs must have at least one draw, a column of "
             "signs, but it has none. Pass at least one column."
         )
         raise ValueError(msg)
     if not np.all((s == 1.0) | (s == -1.0)):
         bad = s[~((s == 1.0) | (s == -1.0))][0]
         msg = (
-            f"po.gram.solve_subsets: each entry of target_signs must be 1 or -1, but one is "
+            f"rheon.gram.solve_subsets: each entry of target_signs must be 1 or -1, but one is "
             f"{float(bad)!r}. Set every entry to 1 or -1."
         )
         raise ValueError(msg)
@@ -2771,13 +2771,13 @@ def _subset_jobs(
         pl = sys.modules.get("polars")
         if pl is None or not isinstance(jobs, pl.DataFrame):
             msg = (
-                "po.gram.solve_subsets: jobs must be a list of mappings, one for each fit, or "
+                "rheon.gram.solve_subsets: jobs must be a list of mappings, one for each fit, or "
                 f"a frame of them, but its type is {type(jobs).__name__}. Pass a list of dicts or "
                 "a frame."
             )
             raise WrongTypeError(msg)
         jobs = jobs.to_dicts()
-    names = _columns(g, "po.gram.solve_subsets")
+    names = _columns(g, "rheon.gram.solve_subsets")
     icept = names.index(INTERCEPT) if INTERCEPT in names else -1
     where: dict[str, int] = {}
     for i, name in enumerate(names):
@@ -2788,7 +2788,7 @@ def _subset_jobs(
     set_weights: list[list[float]] = []
     out: list[tuple[int, int, int, int]] = []
     for n, job in enumerate(jobs):
-        who, job_at = "po.gram.solve_subsets", f"jobs[{n}]"
+        who, job_at = "rheon.gram.solve_subsets", f"jobs[{n}]"
         at = f"{who}: {job_at}"
         if not isinstance(job, Mapping):
             msg = (
@@ -3052,22 +3052,22 @@ def coef_stats(
     coefficients, not as a p-value.
     """
     np = _np()
-    t = _target_index(g, target, "po.gram.coef_stats")
-    slots, icept = _feature_slots(g, features, "po.gram.coef_stats")
+    t = _target_index(g, target, "rheon.gram.coef_stats")
+    slots, icept = _feature_slots(g, features, "rheon.gram.coef_stats")
     if g.get("target_vars") is None or g.get("target_n_kish") is None:
         msg = (
-            "po.gram.coef_stats: the standard errors read the target's variance, but the "
+            "rheon.gram.coef_stats: the standard errors read the target's variance, but the "
             "Gram has no target_vars or no target_n_kish. Pass the Gram as ModelBank.gram() "
             "returns it, which carries both."
         )
         raise ValueError(msg)
 
     beta = np.asarray(coef, dtype=float)
-    k = len(_columns(g, "po.gram.coef_stats"))
+    k = len(_columns(g, "rheon.gram.coef_stats"))
     if beta.shape != (k,):
         msg = (
-            f"po.gram.coef_stats: coef must have one entry for each of the Gram's {k} columns, "
-            f"but it has shape {beta.shape}. Pass the coefficients po.gram.solve returns."
+            f"rheon.gram.coef_stats: coef must have one entry for each of the Gram's {k} columns, "
+            f"but it has shape {beta.shape}. Pass the coefficients rheon.gram.solve returns."
         )
         raise ValueError(msg)
     b = beta[slots]
@@ -3088,7 +3088,7 @@ def coef_stats(
         # mean square, not their variance, and an uncentred R^2.
         if g.get("target_means") is None:
             msg = (
-                "po.gram.coef_stats: a fit with no intercept reads the target's mean as well "
+                "rheon.gram.coef_stats: a fit with no intercept reads the target's mean as well "
                 "as its variance, but the Gram has no target_means. Pass the Gram as "
                 "ModelBank.gram() returns it, or keep the intercept column among its columns."
             )
@@ -3235,7 +3235,7 @@ def vif(g: Gram, *, features: Sequence[str | int] | None = None) -> Any:
     read ``inf``.
     """
     np = _np()
-    slots, _ = _feature_slots(g, features, "po.gram.vif")
+    slots, _ = _feature_slots(g, features, "rheon.gram.vif")
     r = correlation(g)[np.ix_(slots, slots)]
     out = np.full(len(slots), np.inf)
     # A constant column's correlations are NaN across its row and its
@@ -3336,13 +3336,13 @@ def condition(g: Gram, *, features: Sequence[str | int] | None = None) -> dict[s
     square roots of the eigenvalues of the scaled second-moment matrix.
     """
     np = _np()
-    names = _columns(g, "po.gram.condition")
+    names = _columns(g, "rheon.gram.condition")
     slots = (
         list(range(len(names)))
         if features is None
-        else _col_index(g, features, "po.gram.condition")
+        else _col_index(g, features, "rheon.gram.condition")
     )
-    _refuse_repeated(names, slots, "po.gram.condition", "features")
+    _refuse_repeated(names, slots, "rheon.gram.condition", "features")
     means = np.asarray(g["means"], dtype=float)
     como = _comoments(np, g)
     raw = (como + np.outer(means, means))[np.ix_(slots, slots)]

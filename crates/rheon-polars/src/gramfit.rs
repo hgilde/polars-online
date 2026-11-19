@@ -46,7 +46,7 @@ pub struct GramPath {
 ///
 /// # Errors
 ///
-/// The pool's, when `POLARS_ONLINE_MAX_THREADS` is set wrong and
+/// The pool's, when `RHEON_MAX_THREADS` is set wrong and
 /// `threads` is the process default, and a weight that is not finite and above 0 on a column that varies.
 pub fn lars_paths(
     grams: &[GramArrays<'_>],
@@ -314,7 +314,7 @@ fn draws_of(pooling: &Pooling) -> Vec<&[f64]> {
 /// `ComputeError` for a job naming a subset, set, draw or target out of
 /// range, a subset naming no Gram or one out of range, a set naming a
 /// column out of range or the intercept, or its weights of another length
-/// than its slots; the pool's, when `POLARS_ONLINE_MAX_THREADS` is set
+/// than its slots; the pool's, when `RHEON_MAX_THREADS` is set
 /// wrong and `threads` is the process default; and a path's weight that is
 /// not finite and above 0 on a column that varies.
 #[allow(clippy::too_many_arguments)]
@@ -368,11 +368,11 @@ pub fn repeated_slot(slots: &[usize]) -> Option<usize> {
 }
 
 /// A refusal the Python calls check before they reach here, said as the
-/// defect it would be: `po.gram` and its native layer resolve every index
+/// defect it would be: `rheon.gram` and its native layer resolve every index
 /// from the names a reader gives and check each count first.
 fn internal(what: String) -> PolarsError {
     polars_err!(ComputeError:
-        "po.gram: internal: {what}, which is a defect in polars-online. Open an issue at \
+        "rheon.gram: internal: {what}, which is a defect in polars-online. Open an issue at \
          https://github.com/hgilde/polars-online/issues with this message."
     )
 }
@@ -390,7 +390,7 @@ fn check_jobs(
     let (k, m) = grams.first().map_or((0, 0), |g| (g.k, g.targets()));
     if let Some(g) = grams.iter().find(|g| g.k != k || g.targets() != m) {
         polars_bail!(ComputeError:
-            "po.gram: every Gram must have the same columns and targets, but one has {k} columns \
+            "rheon.gram: every Gram must have the same columns and targets, but one has {k} columns \
              and {m} targets and another {} and {}. Fit together only Grams of the same columns \
              and targets.",
             g.k, g.targets());

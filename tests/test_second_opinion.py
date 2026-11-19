@@ -1148,7 +1148,7 @@ class TestTheGramIsTheWindowsToo:
     """S19, the review's T-S1 both ways. Under a ``window`` the fit is solved
     from the truncated accumulators, and ``bank.coef()`` reports it -- but
     ``bank.gram()`` and a closed row's Gram read the *live* ones, so
-    ``po.gram.solve`` on them gave the whole history's fit beside a ``coef``
+    ``rheon.gram.solve`` on them gave the whole history's fit beside a ``coef``
     solved on the window: two histories behind one spec. The reference is
     ``numpy.linalg.lstsq`` on the rows the last fit was read from, at
     ``0.5 ** (age / half_life)``: both ``coef()`` and the solve of the Gram must
@@ -1265,7 +1265,7 @@ def _centred_fit(x: np.ndarray, y: np.ndarray) -> np.ndarray:
 class TestTheGramIsCentredToo:
     """N4, found while fixing N1 and half done with task 81. The models solve
     from centred cross-moments, but ``bank.gram()`` exported them raw,
-    ``E[z·y]``, so ``po.gram.solve`` -- and ``lasso_path`` and
+    ``E[z·y]``, so ``rheon.gram.solve`` -- and ``lasso_path`` and
     ``coef_stats`` -- formed the right-hand side as ``E[z·y] − m·ȳ``: the
     subtraction N1 took out of the model, which at a level ``L`` keeps
     ``L²·ε`` of a covariance. The export carries the centred cross-moments
@@ -3685,7 +3685,7 @@ class TestFtrlIsVowpalWabbits:
 
 
 class TestPoEvalIsSklearnsMetrics:
-    """Review round 4 (YB19): ``po.eval``'s metrics were held to numpy
+    """Review round 4 (YB19): ``rp.eval``'s metrics were held to numpy
     formulas re-typed beside them, and ``ic`` and ``mse`` to nothing but
     ``from_sums`` agreeing with ``metrics``. scikit-learn and scipy compute
     every one: ``r2_score``, ``mean_squared_error``, ``scipy.stats.pearsonr``
@@ -4839,7 +4839,7 @@ class TestEwRidgeSeCoefIsStatsmodels:
 
 
 class TestVarianceInflation:
-    """``po.gram.vif`` against statsmodels' ``variance_inflation_factor``, which
+    """``rheon.gram.vif`` against statsmodels' ``variance_inflation_factor``, which
     regresses each column on the rest and the constant (task 223: the
     ``collinear`` check reads it)."""
 
@@ -4862,7 +4862,7 @@ class TestVarianceInflation:
 
 
 class TestLarsPathIsSklearns:
-    """``po.gram.lars_path`` and ``po.gram.lasso_path`` (docs/PLAN.md task
+    """``rheon.gram.lars_path`` and ``rheon.gram.lasso_path`` (docs/PLAN.md task
     226) against scikit-learn, from the raw rows: ``lars_path_gram`` on the
     standardized rows' Gram for the knots and their active sets, and
     ``enet_path`` / ``lasso_path`` for the grid. The rows are standardized
@@ -4954,7 +4954,7 @@ class TestLarsPathIsSklearns:
 
 
 class TestSolveSubsetsIsStatsmodelsOnThePooledRows:
-    """``po.gram.solve_subsets`` (docs/PLAN.md task 227) against statsmodels'
+    """``rheon.gram.solve_subsets`` (docs/PLAN.md task 227) against statsmodels'
     OLS on the rows of each subset of blocks, pooled: the merge, the solve
     and the statistics at once. With every row at weight 1 the Kish size is
     the row count, and ``sigma2 = resid_var * n / (n - p)`` and ``se`` are
@@ -4996,7 +4996,7 @@ class TestSolveSubsetsIsStatsmodelsOnThePooledRows:
 
 
 class TestCoefStatsIsStatsmodelsOls:
-    """``po.gram.coef_stats`` and ``solve_subsets``' ridge statistics against
+    """``rheon.gram.coef_stats`` and ``solve_subsets``' ridge statistics against
     statsmodels' OLS on the rows, with every row at weight 1, so the Kish
     size is the row count. With a constant the intercept has its error, least
     squares' ``(X'X)^-1`` at it, which the Gram's moments hold. Without one

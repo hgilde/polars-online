@@ -1,4 +1,4 @@
-"""``po.ewm_quantile``: the exponentially weighted quantile of a column over
+"""``rp.ewm_quantile``: the exponentially weighted quantile of a column over
 a window of the stream's clock (docs/PLAN.md task 272 (d)).
 
 The operator reads each value as the bucket it falls in, each bucket
@@ -286,7 +286,7 @@ def test_a_quantiles_parameters_are_checked_by_name() -> None:
     ]:
         with pytest.raises(err, match=says):
             rp.ewm_quantile("x", half_life=1.0, **bad)
-    with pytest.raises(ValueError, match="po.ewm_quantile: reverse=True needs window_size"):
+    with pytest.raises(ValueError, match="rp.ewm_quantile: reverse=True needs window_size"):
         rp.ewm_quantile("x", quantile=0.5, half_life=1.0, reverse=True)
     with pytest.raises(ValueError, match="the input holds another window operator"):
         rp.ewm_quantile(rp.ewm_mean("x", half_life=1.0), quantile=0.5, half_life=1.0)

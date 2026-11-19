@@ -41,14 +41,14 @@ INF = float("inf")
 
 
 def _sgd(name: str, **kw) -> dict:
-    """``po.spec.sgd`` taking its step on the raw features, the step the
+    """``rheon.spec.sgd`` taking its step on the raw features, the step the
     replays below write out, unless a test asks for ``standardize``, which
     has been the default since docs/PLAN.md task 195 (U2)."""
     return rp.spec.sgd(name, **{"standardize": False, **kw})
 
 
 def _pa(name: str, **kw) -> dict:
-    """``po.spec.pa`` on the raw features, as :func:`_sgd`."""
+    """``rheon.spec.pa`` on the raw features, as :func:`_sgd`."""
     return rp.spec.pa(name, **{"standardize": False, **kw})
 
 
@@ -981,7 +981,7 @@ class TestEdgeCases:
         df = _frame(X, y, t, w)
         spec = _sgd("m", coef_min=0.0, coef_sum=1.0, **_clocked())
         want = rp.ModelBank([spec]).fit_predict(df)
-        lazy = df.lazy().online.fit_predict([spec]).collect()
+        lazy = df.lazy().rheon.fit_predict([spec]).collect()
         assert want.equals(lazy, null_equal=True)
 
     def test_the_cli_runs_it(self, tmp_path, rheon_cli):

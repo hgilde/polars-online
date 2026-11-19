@@ -68,7 +68,7 @@ spec = po.spec.ewridge(                                   # a ridge regression o
 # Run the query to a file, then read what it wrote.
 (
     pl.scan_parquet("ticks/*.parquet")                    # 1. a query over the files; nothing is read yet
-    .online.fit_predict([spec], chunk_size=100_000)       # 2. a bank with nothing learned yet; every run starts from the same place
+    .rheon.fit_predict([spec], chunk_size=100_000)       # 2. a bank with nothing learned yet; every run starts from the same place
     .filter(pl.col("ridge").struct.field("weight_sum") > 50)   # 3. after the bank: filters what comes out, never what the bank learns from
     .select("t", "stock_id", "ridge")                     # Polars reads only these columns, and those the specs read, from the files
     .sink_parquet("fitted.parquet")                       # 4. runs the query; the bank's memory grows with its state and a few chunks, never with the files
@@ -77,7 +77,7 @@ fitted = pl.read_parquet("fitted.parquet")
 print(f"{fitted.height} rows past the filter; the record's fields: {fitted['ridge'].struct.fields}")
 
 # The same spec, one row per chunk.
-one_row_chunks = pl.scan_parquet("ticks.parquet").online.fit_predict([spec], chunk_size=1).collect()
+one_row_chunks = pl.scan_parquet("ticks.parquet").rheon.fit_predict([spec], chunk_size=1).collect()
 same = one_row_chunks.filter(pl.col("ridge").struct.field("weight_sum") > 50)["ridge"].struct.field("pred_y__r0.1")
 print(f"largest difference, chunks of 100,000 against chunks of 1: {(fitted['ridge'].struct.field('pred_y__r0.1') - same).abs().max()}")
 
@@ -157,7 +157,7 @@ data](../EXAMPLE-DATA.md):
 ```python
 misspelled = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x9"], half_life=100.0)
 try:
-    pl.scan_parquet("ticks.parquet").online.fit_predict([misspelled])   # refused here: the query never runs
+    pl.scan_parquet("ticks.parquet").rheon.fit_predict([misspelled])   # refused here: the query never runs
 except ValueError as e:
     print(e)
 ```
@@ -182,7 +182,7 @@ data](../EXAMPLE-DATA.md):
 
 ```python
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
-fitted = po.fit_predict(lf, [spec], save_state="ridge.state")   # lf.online.fit_predict([spec], save_state="ridge.state")
-columns = po.unnest(fitted, [spec]).collect()                   # fitted.online.unnest([spec]); running it saves the state
-predicted = po.predict(later, "ridge.state").collect()             # later.online.predict("ridge.state")
+fitted = po.fit_predict(lf, [spec], save_state="ridge.state")   # lf.rheon.fit_predict([spec], save_state="ridge.state")
+columns = po.unnest(fitted, [spec]).collect()                   # fitted.rheon.unnest([spec]); running it saves the state
+predicted = po.predict(later, "ridge.state").collect()             # later.rheon.predict("ridge.state")
 ```

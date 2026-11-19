@@ -73,11 +73,11 @@ specs = [po.spec.ewridge(f"h{h}", targets=["y"], features=features, half_life=fl
 
 # The eight in one bank, then one at a time.
 start = time.perf_counter()
-together = pl.scan_parquet("specs.parquet").online.fit_predict(specs).collect()
+together = pl.scan_parquet("specs.parquet").rheon.fit_predict(specs).collect()
 in_one_bank = time.perf_counter() - start
 
 start = time.perf_counter()
-alone = [pl.scan_parquet("specs.parquet").online.fit_predict([s]).collect() for s in specs]
+alone = [pl.scan_parquet("specs.parquet").rheon.fit_predict([s]).collect() for s in specs]
 one_at_a_time = time.perf_counter() - start
 
 # The times, and whether the outputs agree.
@@ -203,7 +203,7 @@ specs = [factor_spec(n, f, s) for (n, f), s in product(factors.items(), [False, 
 
 # One pass over the file fits all six.
 (pl.scan_parquet("ticks.parquet")
-   .online.fit_predict(specs, chunk_size=200_000, save_state="grid.state", threads=8)
+   .rheon.fit_predict(specs, chunk_size=200_000, save_state="grid.state", threads=8)
    .sink_parquet("grid.parquet"))
 
 # Each spec's grid point chosen on the first half of the rows, then scored on the second.
@@ -254,8 +254,8 @@ from rheon import polars as po
 
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t",
                        half_life=600.0, gap_cap=300.0, group="stock_id")
-one = pl.scan_parquet("ticks.parquet").online.fit_predict([spec], threads=1).collect()
-four = pl.scan_parquet("ticks.parquet").online.fit_predict([spec], threads=4).collect()
+one = pl.scan_parquet("ticks.parquet").rheon.fit_predict([spec], threads=1).collect()
+four = pl.scan_parquet("ticks.parquet").rheon.fit_predict([spec], threads=4).collect()
 print("the same output on 1 and 4 threads:", one.equals(four))
 print("threads=4 runs on", po.thread_pool_size(threads=4), "threads")   # reports, starts nothing
 ```

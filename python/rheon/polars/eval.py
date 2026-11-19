@@ -208,8 +208,8 @@ def _spec_of(who: str, spec: str | dict) -> tuple[str, dict | None]:
     if isinstance(spec, dict):
         msg = (
             f"{who}: spec must be a spec's name or the spec itself, but it is a dict with no "
-            f"name, which no po.spec builder returns. Pass a spec built by po.spec, or its name "
-            f"as a str."
+            f"name, which no rheon.spec builder returns. Pass a spec built by rheon.spec, or "
+            f"its name as a str."
         )
         raise TypeError(msg)
     msg = (
@@ -310,7 +310,7 @@ def unpack(
 ) -> pl.LazyFrame: ...
 
 
-@_takes_spec("po.eval.unpack", lazy=True)
+@_takes_spec("rp.eval.unpack", lazy=True)
 def unpack(
     df: pl.DataFrame | pl.LazyFrame,
     spec: str | dict,
@@ -429,8 +429,8 @@ def unpack(
       target and grid point, read from the spec.
     """
     if isinstance(df, pl.LazyFrame):
-        return _unpack(df, spec, targets=targets, who="po.eval.unpack")
-    return _unpack(df, spec, targets=targets, who="po.eval.unpack")
+        return _unpack(df, spec, targets=targets, who="rp.eval.unpack")
+    return _unpack(df, spec, targets=targets, who="rp.eval.unpack")
 
 
 def _unpack[F: (pl.DataFrame, pl.LazyFrame)](
@@ -439,7 +439,7 @@ def _unpack[F: (pl.DataFrame, pl.LazyFrame)](
     *,
     targets: Sequence[str] | None = None,
     columns: Sequence[str] | None = None,
-    who: str = "po.eval.unpack",
+    who: str = "rp.eval.unpack",
 ) -> F:
     """:func:`unpack`, carrying of the input's columns only those in
     ``columns`` (all of them when ``None``). A score reads the key columns
@@ -545,7 +545,7 @@ def _target_value(who: str, slot: str, table: Any, name: str, df: pl.DataFrame) 
             msg = (
                 f"{who}: slot {slot!r} predicts formula target {name!r}, which the bank computes "
                 f"as it learns and does not write out, and the frame has no column {name!r} to "
-                f"score it against. Add the column with po.stream.with_windows before scoring."
+                f"score it against. Add the column with rp.stream.with_windows before scoring."
             )
             raise ColumnNotFoundError(msg)
         return pl.col(name)
@@ -574,7 +574,7 @@ def _target_of(who: str, slot: str, df: pl.DataFrame, targets: Sequence[str] | N
         msg = (
             f"{who}: no column of the frame is named after slot {slot!r}, so its target column "
             "is not known. Add the target column to the frame, or, for a target named with "
-            "po.target(name=), pass the spec itself as spec."
+            "rheon.target(name=), pass the spec itself as spec."
         )
         raise ValueError(msg)
     return max(matches, key=len)
@@ -735,8 +735,8 @@ def _thin(out: pl.DataFrame, min_samples: int, keep: Iterable[str]) -> pl.DataFr
     )
 
 
-@renamed_keywords("po.eval.metrics", _BOTH)
-@_takes_spec("po.eval.metrics", lazy=True)
+@renamed_keywords("rp.eval.metrics", _BOTH)
+@_takes_spec("rp.eval.metrics", lazy=True)
 def metrics(
     df: pl.DataFrame | pl.LazyFrame,
     spec: str | dict,
@@ -939,7 +939,7 @@ def metrics(
     """
     return _metrics(
         df, spec, group=group, targets=targets, min_samples=min_samples, binary=binary,
-        who="po.eval.metrics",
+        who="rp.eval.metrics",
     )  # fmt: skip
 
 
@@ -991,13 +991,13 @@ def _calendar_every(every: str, dtype: pl.DataType, clock: str) -> int:
     text = every.strip()
     if not _EVERY_TEXT.fullmatch(text) or not re.search(r"[1-9]", text):
         msg = (
-            f"po.eval.window_metrics: every must be a duration above 0 in Polars' text, but it "
+            f"rp.eval.window_metrics: every must be a duration above 0 in Polars' text, but it "
             f'is {every!r}. Give every as text such as "1mo", "1q" or "1y2w".'
         )
         raise ValueError(msg)
     fixed = _CALENDAR_PART.sub("", text)
     if fixed and re.search(r"[1-9]", fixed):
-        return int(clock_nanoseconds(fixed, dtype, "po.eval.window_metrics", "every", clock) or 0)
+        return int(clock_nanoseconds(fixed, dtype, "rp.eval.window_metrics", "every", clock) or 0)
     return 0
 
 
@@ -1037,8 +1037,8 @@ def _dynamic_windows(
     return long.join(starts, on=idx, how="left", maintain_order="left").drop(idx)
 
 
-@renamed_keywords("po.eval.window_metrics", _WINDOW)
-@_takes_spec("po.eval.window_metrics", lazy=True)
+@renamed_keywords("rp.eval.window_metrics", _WINDOW)
+@_takes_spec("rp.eval.window_metrics", lazy=True)
 def window_metrics(
     df: pl.DataFrame | pl.LazyFrame,
     spec: str | dict,
@@ -1200,7 +1200,7 @@ def window_metrics(
     with ``ValueError``: sort the query by the clock within each key, or
     pass the collected frame.
     """
-    who = "po.eval.window_metrics"
+    who = "rp.eval.window_metrics"
     spec_name, written = _spec_of(who, spec)
     _check_min_samples(who, min_samples)
     probe = _probe(df)
@@ -1208,7 +1208,7 @@ def window_metrics(
     if dtype is None:
         # Named before the window is checked against it (review R2, P9).
         msg = (
-            f"po.eval.window_metrics: clock column {clock!r} is not in the frame, whose "
+            f"rp.eval.window_metrics: clock column {clock!r} is not in the frame, whose "
             f"columns are {probe.columns}. Name a column of the frame as clock."
         )
         raise ColumnNotFoundError(msg)
@@ -1217,7 +1217,7 @@ def window_metrics(
     # refused for the window, not for itself (task 352).
     if not (dtype.is_numeric() or dtype.is_temporal()):
         msg = (
-            f"po.eval.window_metrics: clock column {clock!r} must be numeric or temporal, but "
+            f"rp.eval.window_metrics: clock column {clock!r} must be numeric or temporal, but "
             f"it is {dtype}. Cast the clock to a number or a Datetime."
         )
         raise WrongTypeError(msg)
@@ -1226,18 +1226,18 @@ def window_metrics(
     if isinstance(dtype, (pl.Datetime, pl.Date)) and isinstance(every, str) and _is_calendar(every):
         ns = _calendar_every(every, dtype, clock)
     else:
-        ns = clock_nanoseconds(every, dtype, "po.eval.window_metrics", "every", clock)
+        ns = clock_nanoseconds(every, dtype, "rp.eval.window_metrics", "every", clock)
     if ns is None and not every > 0:  # type: ignore[operator]
         msg = (
-            f"po.eval.window_metrics: every must be above 0, but it is {every}. Give every a "
+            f"rp.eval.window_metrics: every must be above 0, but it is {every}. Give every a "
             f"positive number of clock units."
         )
         raise ValueError(msg)
     if ns is None and math.isinf(every):  # type: ignore[arg-type]
         # One bucket, whose `window_start` was NaN (review 2026-10-05, YB11).
         msg = (
-            f"po.eval.window_metrics: every must be finite, but it is {every}. Give every a "
-            "finite number of clock units, or use po.eval.metrics for one window over the "
+            f"rp.eval.window_metrics: every must be finite, but it is {every}. Give every a "
+            "finite number of clock units, or use rp.eval.metrics for one window over the "
             "whole frame."
         )
         raise ValueError(msg)
@@ -1248,7 +1248,7 @@ def window_metrics(
         # values (review round 4, YB14).
         if not float(every).is_integer():  # type: ignore[arg-type]
             msg = (
-                f"po.eval.window_metrics: every must be a whole number, since clock column "
+                f"rp.eval.window_metrics: every must be a whole number, since clock column "
                 f"{clock!r} is {dtype}, but it is {every!r}. Give every a whole number, or cast "
                 "the clock to Float64."
             )
@@ -1259,7 +1259,7 @@ def window_metrics(
             # Polars' own cast error, from the supertype the literal took
             # (task 382a, A13).
             msg = (
-                f"po.eval.window_metrics: every is {every!r}, which clock column {clock!r}, "
+                f"rp.eval.window_metrics: every is {every!r}, which clock column {clock!r}, "
                 f"{dtype}, cannot hold, so no window's edge but 0 is a value of the column. Cast "
                 "the clock to Int64, or give a smaller every."
             )
@@ -1335,7 +1335,7 @@ def _windowing(
                 edge = out.select(pl.col("window_start").arg_min()).item()
                 if edge is not None and out["window_start"][edge] < _int_range(narrow)[0]:
                     msg = (
-                        f"po.eval.window_metrics: the window of every={given!r} that holds "
+                        f"rp.eval.window_metrics: the window of every={given!r} that holds "
                         f"clock {out[clock][edge]} starts at {out['window_start'][edge]}, which "
                         f"clock column {clock!r}, {narrow}, cannot hold. Cast the clock to Int64."
                     )
@@ -1389,7 +1389,7 @@ def _check_step_back(
     alone = _dynamic_windows(pair.tail(1), clock, every, keys)["window_start"][0]
     if chained != alone:
         msg = (
-            f"po.eval.window_metrics: clock column {clock!r} steps back to {now} for "
+            f"rp.eval.window_metrics: clock column {clock!r} steps back to {now} for "
             f"{key}, before {was}, where an earlier chunk of the query started its windows of "
             f"{given!r}, and windows of that length on this clock are counted from a key's "
             "first clock, so the chunks' windows would not be the frame's. Sort the query by "
@@ -1401,7 +1401,7 @@ def _check_step_back(
 #: Renamed :func:`window_metrics`, and its ``window_size`` ``every``, before
 #: 1.0: the old names are refused, and the error names the new ones.
 rolling_metrics = renamed_function(
-    "po.eval.rolling_metrics", "po.eval.window_metrics", ", and window_size was renamed every"
+    "rp.eval.rolling_metrics", "rp.eval.window_metrics", ", and window_size was renamed every"
 )
 
 
@@ -1409,7 +1409,7 @@ def _takes_specs[R](fn: Callable[..., R]) -> Callable[..., R]:
     """:func:`compare_specs`' ``spec_names`` and ``specs=`` merged into one
     ``specs``, names or dicts: the old forms are refused naming ``specs``, as
     :func:`_takes_spec` does for one spec."""
-    who = "po.eval.compare_specs"
+    who = "rp.eval.compare_specs"
 
     @functools.wraps(fn)
     def wrapper(df: Any, *args: Any, **kwargs: Any) -> R:
@@ -1428,7 +1428,7 @@ def _takes_specs[R](fn: Callable[..., R]) -> Callable[..., R]:
     return wrapper
 
 
-@renamed_keywords("po.eval.compare_specs", _BOTH)
+@renamed_keywords("rp.eval.compare_specs", _BOTH)
 @_takes_specs
 def compare_specs(
     df: pl.DataFrame | pl.LazyFrame,
@@ -1569,20 +1569,20 @@ def compare_specs(
     errors run from row to row give signs that run, and both bets grow
     (:func:`seqtest`'s Notes give the rates measured).
     """
-    given = [_spec_of("po.eval.compare_specs", s) for s in specs]
+    given = [_spec_of("rp.eval.compare_specs", s) for s in specs]
     if binary is None:
         reads = {_logistic(written) for _, written in given}
         if len(reads) > 1:
             logistic = [name for name, written in given if _logistic(written)]
             others = [name for name, written in given if not _logistic(written)]
             msg = (
-                f'po.eval.compare_specs: specs {logistic} are fits with loss="logistic" and '
+                f'rp.eval.compare_specs: specs {logistic} are fits with loss="logistic" and '
                 f"{others} are not, and the metrics of the two differ in kind. Pass the two sets "
                 "in two calls, or set binary to True or False."
             )
             raise ValueError(msg)
         binary = reads.pop() if reads else False
-    who = "po.eval.compare_specs"
+    who = "rp.eval.compare_specs"
     _check_min_samples(who, min_samples)
     _check_columns(_probe(df), who, group=group, produced=(*_PRODUCED, "spec"))
     if isinstance(df, pl.LazyFrame):
@@ -1615,7 +1615,7 @@ def _compare_query(
     """:func:`compare_specs`' tables over a query, every spec's sums read in
     one pass: each spec checked as :func:`metrics` checks it, in order, in
     :func:`compare_specs`' name."""
-    who = "po.eval.compare_specs"
+    who = "rp.eval.compare_specs"
     probe = _probe(lf)
     jobs = [
         _job(lf, written or name, targets, group, None, binary, who, log_loss=True)
@@ -1660,7 +1660,7 @@ _SEARCH_KINDS = {
 def _points(param_grid: Any) -> list[dict[str, Any]]:
     """``param_grid`` as its list of points, in scikit-learn's
     ``ParameterGrid`` order: the keys sorted, the last key varying fastest."""
-    who = "po.eval.grid_search"
+    who = "rp.eval.grid_search"
     if not isinstance(param_grid, Mapping) or not param_grid:
         msg = (
             f"{who}: param_grid must be a non-empty dict of each keyword's values, but it is "
@@ -1700,7 +1700,7 @@ def _search_specs(
     specs: Any, param_grid: Mapping[str, Sequence[Any]] | None
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """The specs to run, and each one's point of the grid (``{}`` without one)."""
-    who = "po.eval.grid_search"
+    who = "rp.eval.grid_search"
     if callable(specs):
         points = _points(param_grid)
         built = []
@@ -1712,7 +1712,7 @@ def _search_specs(
                 msg = (
                     f"{who}: the spec builder must return a spec named by its first argument, "
                     f"but called with {name!r} it returned {got!r}. Name the spec it returns "
-                    f"by its first argument, as po.spec's builders do."
+                    f"by its first argument, as rheon.spec's builders do."
                 )
                 raise ValueError(msg)
             built.append(spec)
@@ -1720,7 +1720,7 @@ def _search_specs(
     if param_grid is not None:
         msg = (
             f"{who}: param_grid needs a spec builder to call, but specs holds specs already "
-            f"built. Pass a builder, such as po.spec.ewridge, as specs, or leave out param_grid."
+            f"built. Pass a builder, such as rheon.spec.ewridge, as specs, or leave out param_grid."
         )
         raise RefusedValueError(msg)
     given = [specs] if isinstance(specs, dict) else list(specs)
@@ -1743,7 +1743,7 @@ def _time_series_folds(n: int, n_splits: int, gap: int) -> list[tuple[int, int, 
     """Each fold as ``(choose_end, test_start, test_end)``, in rows: scikit-learn's
     ``TimeSeriesSplit(n_splits, gap=gap)`` over ``n`` rows, each fold's choice read
     from the rows before ``choose_end`` and scored on ``test_start:test_end``."""
-    who = "po.eval.grid_search"
+    who = "rp.eval.grid_search"
     # Any whole number, numpy's integers included (task 352), but not a bool.
     wrong_type = isinstance(n_splits, bool) or not isinstance(n_splits, numbers.Integral)
     if wrong_type or operator.index(n_splits) < 1:
@@ -1801,7 +1801,7 @@ def _search_slots(
             rows = idx.filter(pl.col("kind") == "loglik")
             if rows.is_empty():
                 msg = (
-                    f'po.eval.grid_search: spec "{spec["name"]}" writes no loglik field to score '
+                    f'rp.eval.grid_search: spec "{spec["name"]}" writes no loglik field to score '
                     'by scoring="loglik", which only bocpd, hmm and deco write. Use '
                     'scoring="mse" for a spec that predicts a target.'
                 )
@@ -1818,10 +1818,10 @@ def _search_slots(
                     }
                 )
             continue
-        targets = _spec_targets(spec, frame, "po.eval.grid_search")
+        targets = _spec_targets(spec, frame, "rp.eval.grid_search")
         if not targets:
             msg = (
-                f'po.eval.grid_search: spec "{spec["name"]}" makes no prediction of a target to '
+                f'rp.eval.grid_search: spec "{spec["name"]}" makes no prediction of a target to '
                 'score by scoring="mse", and only bocpd, hmm and deco write the loglik that '
                 'scoring="loglik" scores. Pass specs that predict a target, or bocpd, hmm or deco '
                 'specs with scoring="loglik".'
@@ -1860,7 +1860,7 @@ def _check_same_data(
     ranks by the scale alone, and two targets named ``ret`` read from ``y``
     and from a column a thousand times larger got one choice (task 382a,
     C5)."""
-    who = "po.eval.grid_search"
+    who = "rp.eval.grid_search"
     if scoring == "loglik":
         data: dict[frozenset[str], list[str]] = {}
         for spec in specs:
@@ -1886,7 +1886,7 @@ def _check_same_data(
                 f"{who}: target {target!r} is read from different columns by different specs "
                 f"({ways}), so their squared errors are of different quantities and cannot be "
                 "ranked together. Name each target after what it reads, with "
-                "po.target(column, name=...), or score the specs in separate calls."
+                "rheon.target(column, name=...), or score the specs in separate calls."
             )
             raise ValueError(msg)
 
@@ -1993,7 +1993,7 @@ def grid_search(
     ``threads``
         The bank's threads, as :class:`~rheon.polars.ModelBank` takes them.
         ``None``, the default, runs on the threads banks share, one per core
-        unless ``POLARS_ONLINE_MAX_THREADS`` is set.
+        unless ``RHEON_MAX_THREADS`` is set.
 
     .. rubric:: Returns
 
@@ -2204,7 +2204,7 @@ def grid_search(
     """
     from rheon.polars._bank import ModelBank
 
-    who = "po.eval.grid_search"
+    who = "rp.eval.grid_search"
     if scoring not in _SCORINGS:
         msg = (
             f'{who}: scoring must be "mse" or "loglik", but it is {scoring!r}. '
@@ -2447,7 +2447,7 @@ def seqtest(
 ) -> pl.LazyFrame: ...
 
 
-@renamed_keywords("po.eval.seqtest", _GROUP)
+@renamed_keywords("rp.eval.seqtest", _GROUP)
 def seqtest(
     df: pl.DataFrame | pl.LazyFrame,
     *,
@@ -2636,15 +2636,15 @@ def seqtest(
     most memory the process held, about 48 MiB of it Python and Polars
     before the call, measured on macOS (an M4 Pro, py-polars 2.0.0).
     """
-    who = "po.eval.seqtest"
+    who = "rp.eval.seqtest"
     _frame(who, df, lazy=True)
     probe = _probe(df)
-    _check_name("po.eval.seqtest", probe, name)
+    _check_name("rp.eval.seqtest", probe, name)
     _check_columns(probe, who, group=group)
     keys = _group_keys(group)
     if (a is None) != (b is None):
         msg = (
-            "po.eval.seqtest: a and b go together, but only one is given. Name both specs to "
+            "rp.eval.seqtest: a and b go together, but only one is given. Name both specs to "
             "compare them, or neither."
         )
         raise ValueError(msg)
@@ -2682,7 +2682,7 @@ def seqtest(
     else:
         if targets is None:
             msg = (
-                "po.eval.seqtest: targets is required without a and b, but it is not given. "
+                "rp.eval.seqtest: targets is required without a and b, but it is not given. "
                 "Name the columns whose sign is tested in targets, or name two specs as a and b."
             )
             raise ValueError(msg)
@@ -2940,8 +2940,8 @@ def _row_query(
     return register_io_source(source, schema=schema, validate_schema=True, is_pure=True)
 
 
-@renamed_keywords("po.eval.sums", _GROUP)
-@_takes_spec("po.eval.sums", lazy=True)
+@renamed_keywords("rp.eval.sums", _GROUP)
+@_takes_spec("rp.eval.sums", lazy=True)
 def sums(
     df: pl.DataFrame | pl.LazyFrame,
     spec: str | dict,
@@ -3078,16 +3078,16 @@ def sums(
     bit; over many, within the merge's rounding, which :func:`metrics`'
     Notes measure.
     """
-    spec_name, written = _spec_of("po.eval.sums", spec)
-    _check_columns(_probe(df), "po.eval.sums", group=group, weight=weight, produced=_PRODUCED)
+    spec_name, written = _spec_of("rp.eval.sums", spec)
+    _check_columns(_probe(df), "rp.eval.sums", group=group, weight=weight, produced=_PRODUCED)
     binary = _binary(binary, written)
     if isinstance(df, pl.LazyFrame):
-        jobs = [_job(df, written or spec_name, targets, group, weight, binary, "po.eval.sums")]
+        jobs = [_job(df, written or spec_name, targets, group, weight, binary, "rp.eval.sums")]
         merged = _query_sums(df, jobs, keys=_keys(group), weight=weight)[0]
         if merged is not None:
             return merged.select(*_keys(group), *SUM_FIELDS)
         df = _probe(df)
-    job = _job(df, written or spec_name, targets, group, weight, binary, "po.eval.sums")
+    job = _job(df, written or spec_name, targets, group, weight, binary, "rp.eval.sums")
     return _frame_sums(df, job, _keys(group), weight).select(*_keys(group), *SUM_FIELDS)
 
 
@@ -3421,7 +3421,7 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
     as they grow larger, but it grows as a key gets shorter, to 1e-13 at a
     level of 1e4 over 1,000 rows, as :func:`metrics`' Notes measure.
     """
-    who = "po.eval.merge_sums"
+    who = "rp.eval.merge_sums"
     frames = [first, *rest]
     for f in frames:
         _frame(who, f)
@@ -3431,16 +3431,16 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
         other = [c for c in f.columns if c not in SUM_FIELDS]
         if other != keys:
             msg = (
-                f"po.eval.merge_sums: every part must have the same key columns, but one has "
-                f"{keys} and another {other}. Pass parts from po.eval.sums with the same group."
+                f"rp.eval.merge_sums: every part must have the same key columns, but one has "
+                f"{keys} and another {other}. Pass parts from rp.eval.sums with the same group."
             )
             raise ValueError(msg)
         for k in keys:
             if f.schema[k] != frames[0].schema[k]:
                 msg = (
-                    f"po.eval.merge_sums: key column {k!r} is {frames[0].schema[k]} in one part "
+                    f"rp.eval.merge_sums: key column {k!r} is {frames[0].schema[k]} in one part "
                     f"and {f.schema[k]} in another, so their keys cannot be matched. Cast the "
-                    "key to one dtype before po.eval.sums."
+                    "key to one dtype before rp.eval.sums."
                 )
                 raise ValueError(msg)
     return _merge(frames, keys)
@@ -3457,13 +3457,13 @@ def _check_sums(who: str, f: pl.DataFrame) -> None:
     if any(c in f.columns for c in ("r2", "brier_skill")):
         msg = (
             f"{who}: a frame holds scores, not sums: its columns {f.columns} are those "
-            "po.eval.metrics or po.eval.from_sums returns. Pass the frames po.eval.sums returns, "
-            "whose scores po.eval.from_sums reads."
+            "rp.eval.metrics or rp.eval.from_sums returns. Pass the frames rp.eval.sums returns, "
+            "whose scores rp.eval.from_sums reads."
         )
     else:
         msg = (
             f"{who}: a frame lacks {missing} of the sums' columns, {list(SUM_FIELDS)}, so it is "
-            "not a frame po.eval.sums returned. Pass the frames po.eval.sums returns."
+            "not a frame rp.eval.sums returned. Pass the frames rp.eval.sums returns."
         )
     raise ValueError(msg)
 
@@ -3540,7 +3540,7 @@ def _merge(frames: list[pl.DataFrame], keys: list[str], extra: Sequence[str] = (
     )
 
 
-@renamed_keywords("po.eval.from_sums", _MIN_SAMPLES)
+@renamed_keywords("rp.eval.from_sums", _MIN_SAMPLES)
 def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -> pl.DataFrame:
     """Read :func:`metrics`' scores from the sums :func:`sums` made.
 
@@ -3614,9 +3614,9 @@ def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -
     - :func:`sums` and :func:`merge_sums`, which make the sums.
     - :func:`metrics`, the same scores in one call, over a frame or a query.
     """
-    _frame("po.eval.from_sums", s)
-    _check_sums("po.eval.from_sums", s)
-    _check_min_samples("po.eval.from_sums", min_samples)
+    _frame("rp.eval.from_sums", s)
+    _check_sums("rp.eval.from_sums", s)
+    _check_min_samples("rp.eval.from_sums", min_samples)
     keys = [c for c in s.columns if c not in SUM_FIELDS]
     return _thin(_scores(s, keys, binary=binary), min_samples, keys)
 
@@ -4363,7 +4363,7 @@ def diebold_mariano(
 ) -> pl.LazyFrame: ...
 
 
-@renamed_keywords("po.eval.diebold_mariano", _GROUP)
+@renamed_keywords("rp.eval.diebold_mariano", _GROUP)
 def diebold_mariano(
     df: pl.DataFrame | pl.LazyFrame,
     *,
@@ -4646,16 +4646,16 @@ def diebold_mariano(
     spread, 1e16 or more and not the same in a frame and a query, with a
     p-value of 0 either way.
     """
-    _frame("po.eval.diebold_mariano", df, lazy=True)
+    _frame("rp.eval.diebold_mariano", df, lazy=True)
     probe = _probe(df)
-    _check_columns(probe, "po.eval.diebold_mariano", group=group)
+    _check_columns(probe, "rp.eval.diebold_mariano", group=group)
     keys = _group_keys(group)
-    pairs = _paired_residuals(probe, a, b, targets, a_suffix, b_suffix, "po.eval.diebold_mariano")
+    pairs = _paired_residuals(probe, a, b, targets, a_suffix, b_suffix, "rp.eval.diebold_mariano")
     values = {t: rb * rb - ra * ra for t, (ra, rb) in pairs.items()}
-    lags = _lags("po.eval.diebold_mariano", lags)
+    lags = _lags("rp.eval.diebold_mariano", lags)
     if half_life is not None:
-        _check_half_life("po.eval.diebold_mariano", half_life)
-        _check_name("po.eval.diebold_mariano", probe, name)
+        _check_half_life("rp.eval.diebold_mariano", half_life)
+        _check_name("rp.eval.diebold_mariano", probe, name)
         return _ew_test(df, values, keys, lags, half_life, "dm", name, min_samples)
     out = _hac_test(df, values, keys, lags, "dm", min_samples)
     p = [
@@ -4716,7 +4716,7 @@ def clark_west(
 ) -> pl.LazyFrame: ...
 
 
-@renamed_keywords("po.eval.clark_west", _GROUP)
+@renamed_keywords("rp.eval.clark_west", _GROUP)
 def clark_west(
     df: pl.DataFrame | pl.LazyFrame,
     *,
@@ -4846,18 +4846,18 @@ def clark_west(
     freed pages at once, and 241, 425 and 787 MiB under Polars' defaults,
     measured as :func:`diebold_mariano`'s Notes say.
     """
-    _frame("po.eval.clark_west", df, lazy=True)
+    _frame("rp.eval.clark_west", df, lazy=True)
     probe = _probe(df)
-    _check_columns(probe, "po.eval.clark_west", group=group)
+    _check_columns(probe, "rp.eval.clark_west", group=group)
     keys = _group_keys(group)
     pairs = _paired_residuals(
-        probe, big, small, targets, big_suffix, small_suffix, "po.eval.clark_west"
+        probe, big, small, targets, big_suffix, small_suffix, "rp.eval.clark_west"
     )
     values = {t: rs * rs - rb * rb + (rb - rs) * (rb - rs) for t, (rb, rs) in pairs.items()}
-    lags = _lags("po.eval.clark_west", lags)
+    lags = _lags("rp.eval.clark_west", lags)
     if half_life is not None:
-        _check_half_life("po.eval.clark_west", half_life)
-        _check_name("po.eval.clark_west", probe, name)
+        _check_half_life("rp.eval.clark_west", half_life)
+        _check_name("rp.eval.clark_west", probe, name)
         return _ew_test(df, values, keys, lags, half_life, "cw", name, min_samples)
     out = _hac_test(df, values, keys, lags, "cw", min_samples)
     return out.with_columns(

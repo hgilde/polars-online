@@ -586,7 +586,7 @@ class TestPlumbing:
         df, _ = synthetic(seed=112, n_groups=2, n_rows=300, k=3, null_frac=0.0)
         spec = self._spec()
         want = rp.ModelBank([spec]).fit_predict(df)
-        got = df.lazy().online.fit_predict([spec]).collect()
+        got = df.lazy().rheon.fit_predict([spec]).collect()
         assert got.equals(want, null_equal=True)
 
     def test_cli_toml(self, tmp_path, rheon_cli):

@@ -206,7 +206,7 @@ class TestWindowsIsTwoImagesAndEveryJobNamesItsMachine:
         (a2)). `windows-2022` reports its peak and `windows-latest` holds
         it (tests/test_budgets_memory.py, `_rss_held_here`)."""
         (step,) = [s for s in CI["jobs"]["test"]["steps"] if s.get("name") == "pytest"]
-        assert step["env"]["POLARS_ONLINE_RSS_HELD"] == "${{ matrix.os != 'windows-2022' }}"
+        assert step["env"]["RHEON_RSS_HELD"] == "${{ matrix.os != 'windows-2022' }}"
 
     @staticmethod
     def _can_run_on_windows(spec: dict) -> bool:

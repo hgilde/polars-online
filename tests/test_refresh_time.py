@@ -481,7 +481,7 @@ def test_an_unknown_series_and_a_backwards_clock_are_refused_naming_the_row():
         run(back, names=["a", "b"])
 
 
-# --- task 105: the rules of `po.stream` ---------------------------------------
+# --- task 105: the rules of `rp.stream` ---------------------------------------
 
 
 def test_the_same_kind_of_frame_comes_back():

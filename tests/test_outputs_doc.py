@@ -2,7 +2,7 @@
 
 The outputs *are* the product of a model, and until task 64 the only record
 of them per model was a test fixture. The document is generated from
-`po.spec.output_fields` on a canonical spec, with the meanings written in
+`rheon.spec.output_fields` on a canonical spec, with the meanings written in
 `scripts/outputs_doc.py`; this regenerates it and fails on any difference,
 so a new field cannot ship undocumented and a removed one cannot linger.
 """
@@ -81,7 +81,7 @@ def _table(section: str) -> tuple[str, list[list[str]]]:
 def test_every_field_gives_its_dtype_and_where_else_it_is_null():
     """Review 2026-10-06 (DA14): the page gave no field a dtype, and said when
     a field is null for a few only. Each table gives the dtype
-    ``po.spec.output_index`` declares, and fills the *also null* column for
+    ``rheon.spec.output_index`` declares, and fills the *also null* column for
     every field, so no reader has to find out where a field is null by
     running it."""
     from rheon import polars as rp

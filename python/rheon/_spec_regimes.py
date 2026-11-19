@@ -243,7 +243,7 @@ def hmm(
             precision_prior=1e-2,                          # required: a state starts with no spread
             warm_rows=500,                                 # seeds the states from 500 rows
         )
-        out = pl.scan_parquet("regimes.parquet").online.fit_predict([h]).collect()
+        out = pl.scan_parquet("regimes.parquet").rheon.fit_predict([h]).collect()
         found = out["hmm"].struct.field("state")[500:].to_numpy()
         true = out["regime"][500:].to_numpy()
         share = max(np.mean(found == true), np.mean(found != true))   # the states may be swapped

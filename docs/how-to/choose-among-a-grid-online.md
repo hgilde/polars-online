@@ -70,7 +70,7 @@ halves = po.spec.ewridge(
 )
 sharp = po.spec.ewridge("sharp", **common, emit_averaged=True, average_eta=10.0)  # leans harder on the best
 # 2. Run the query.
-out = wander.online.fit_predict([halves, sharp]).collect()
+out = wander.rheon.fit_predict([halves, sharp]).collect()
 
 # 3. Every slot's out-of-sample error over the whole stream, best first.
 scores = pl.concat([

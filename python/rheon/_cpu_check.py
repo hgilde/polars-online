@@ -14,7 +14,7 @@ compiler had already emitted instructions it cannot execute.
 The check does nothing, and loads nothing, where there is nothing to check:
 on ARM, in ``polars-online-compat``, in a build from source with no
 ``target-feature`` flag (all of which record an empty ``BUILD_FEATURE_FLAGS``),
-and when ``POLARS_ONLINE_SKIP_CPU_CHECK`` is set. A CPU it cannot read
+and when ``RHEON_SKIP_CPU_CHECK`` is set. A CPU it cannot read
 (an operating system that refuses executable memory, say) is not a reason to
 fail the import: it reads nothing and says nothing.
 
@@ -37,8 +37,10 @@ import sys
 import warnings
 from collections.abc import Callable
 
+from rheon import _env
+
 #: Set it to anything non-empty to skip the check.
-SKIP_ENV = "POLARS_ONLINE_SKIP_CPU_CHECK"
+SKIP_ENV = "RHEON_SKIP_CPU_CHECK"
 
 #: The other package, built for every x86-64 CPU.
 COMPAT_PACKAGE = "polars-online-compat"
@@ -255,9 +257,7 @@ def message(missing: list[str]) -> str:
 
 def run() -> None:
     """The check: warn if this CPU lacks a feature the build needs."""
-    if os.environ.get(
-        "POLARS_ONLINE_SKIP_CPU_CHECK"
-    ):  # the literal: tests/api_surface.txt reads it
+    if _env.get(SKIP_ENV):
         return
     missing = missing_features()
     if missing:

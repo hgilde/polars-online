@@ -1,7 +1,7 @@
 """Five outputs the user decided (2026-11-07, task 359): a null clock is in
 no window of ``window_metrics``; ``from_sums`` is null, not NaN, where no
 row weighs anything; ``merge_sums`` keeps a lone part's sums to the bit;
-every ``po.corr`` function reads a Gram without its intercept and refuses
+every ``rheon.corr`` function reads a Gram without its intercept and refuses
 a constant feature by name; ``block_means`` counts only the pairs it
 averages."""
 
@@ -130,7 +130,7 @@ def test_merge_sums_of_one_frame_sorts_it(scored: pl.DataFrame) -> None:
     assert rp.eval.merge_sums(s).equals(s.sort(["slot", "target", "g"]))
 
 
-# --- po.corr on a Gram -------------------------------------------------------------
+# --- rheon.corr on a Gram -------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")

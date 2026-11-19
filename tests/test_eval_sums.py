@@ -1,4 +1,4 @@
-"""E49: `po.eval.sums` / `merge_sums` / `from_sums`.
+"""E49: `rp.eval.sums` / `merge_sums` / `from_sums`.
 
 Two claims, and both are held against the thing that already computes the
 answer rather than against a second copy of the formula:

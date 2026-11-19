@@ -104,7 +104,7 @@ specs = [
     spec("curve_fixed", "y_curve", ["x0", "x1", "x0_sq"]),
 ]
 # 2. Run the query, past the fit's first 6,000 rows.
-out = missing.online.fit_predict(specs).slice(6_000).collect()
+out = missing.rheon.fit_predict(specs).slice(6_000).collect()
 
 # 3. Each statistic's median. With nothing missing: chi2(10) has a median of 9.3, and chi2(2), chi2(3)
 # or chi2(5) of 1.4, 2.4 or 4.4.

@@ -56,7 +56,7 @@ for arg in "$@"; do
     esac
 done
 
-# One machine's gates take turns: at most POLARS_ONLINE_GATES of them (default
+# One machine's gates take turns: at most RHEON_GATES of them (default
 # 2) run at once, across the main checkout and every worktree slot, and the
 # rest wait for a token. Gates run side by side do no less work in all, but
 # each one builds and links the release extension with every core, so five at
@@ -71,7 +71,7 @@ if [ -z "${CI:-}" ]; then
     held=
     waited=0
     while [ -z "$held" ]; do
-        for n in $(seq 1 "${POLARS_ONLINE_GATES:-2}"); do
+        for n in $(seq 1 "${RHEON_GATES:-2}"); do
             if mkdir "$tokens/$n" 2>/dev/null; then
                 echo $$ > "$tokens/$n/pid"
                 held="$tokens/$n"
@@ -83,7 +83,7 @@ if [ -z "${CI:-}" ]; then
             fi
         done
         if [ -z "$held" ]; then
-            [ "$waited" -eq 0 ] && echo "gate: waiting for a gate token (scripts/gate.sh runs at most ${POLARS_ONLINE_GATES:-2} at once)"
+            [ "$waited" -eq 0 ] && echo "gate: waiting for a gate token (scripts/gate.sh runs at most ${RHEON_GATES:-2} at once)"
             sleep 10
             waited=$((waited + 10))
         fi

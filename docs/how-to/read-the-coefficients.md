@@ -65,8 +65,8 @@ print(wide.select("group", pl.col("intercept", "x0", "x1").round(2)).rows())
 
 # 2. From the output, as columns: the fit as it moved, one row per row.
 path = (
-    lf.online.fit_predict([ols])
-    .online.unnest([ols])            # pred_y, resid_y, weight_sum, coef_y_intercept, coef_y_x0, coef_y_x1, ...
+    lf.rheon.fit_predict([ols])
+    .rheon.unnest([ols])            # pred_y, resid_y, weight_sum, coef_y_intercept, coef_y_x0, coef_y_x1, ...
     .select("t", "stock_id", "^coef_.*$")
     .collect()
 )
@@ -74,8 +74,8 @@ for t, x0 in path.filter(pl.col("t").is_in([0.0, 4.0, 8.0, 40.0, 200.0, 396.0]))
     print(f"b0 at t {t:>3.0f}: coef on x0 {'null' if x0 is None else f'{x0:.2f}'}")
 
 # 3. From a saved output: unnest takes the specs, a bank, or the path of the state the run saved.
-lf.online.fit_predict([ols], save_state="ols.state").sink_parquet("fitted.parquet")
-saved = pl.scan_parquet("fitted.parquet").online.unnest("ols.state").collect()
+lf.rheon.fit_predict([ols], save_state="ols.state").sink_parquet("fitted.parquet")
+saved = pl.scan_parquet("fitted.parquet").rheon.unnest("ols.state").collect()
 print(saved.select(path.columns).equals(path))
 
 # 4. As a matrix: the rows that carry coef, fixed to the layout's width.
@@ -163,7 +163,7 @@ grid = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], clock="t",
 grid_bank = po.ModelBank([grid])
 out = grid_bank.fit_predict(df)                             # df's columns, plus "m"
 # 1. The blocks spread into columns.
-cols = out.online.unnest([grid])                            # coef@h100 and coef@h500, spread into columns
+cols = out.rheon.unnest([grid])                            # coef@h100 and coef@h500, spread into columns
 print(cols.select("pred_y__r0.5@h500", "coef_y_x0__r0.5@h500").columns)   # each block's columns named the way its pred field is
 # 2. The same blocks from the bank, a row each.
 betas = grid_bank.coef()                                    # target, ridge, feature_set and penalty tell the blocks apart

@@ -13,12 +13,14 @@ import warnings
 from collections.abc import Callable
 from types import FrameType
 
+from rheon import _env
+
 #: The environment variable that turns :class:`UnstableWarning` on, as
 #: ``POLARS_WARN_UNSTABLE`` does Polars' own: ``1`` and nothing else.
-UNSTABLE_VAR = "POLARS_ONLINE_WARN_UNSTABLE"
+UNSTABLE_VAR = "RHEON_WARN_UNSTABLE"
 
 
-class PolarsOnlineWarning(Warning):
+class RheonWarning(Warning):
     """The base class of every warning this library issues.
 
     Filter on it to silence or surface every warning of this library at
@@ -37,7 +39,7 @@ class PolarsOnlineWarning(Warning):
            :class:`~rheon.polars.ConsumedSourceWarning` and
            :class:`~rheon.UnstableWarning`
          - ``UserWarning``
-       * - :class:`~rheon.PolarsOnlineDeprecationWarning`
+       * - :class:`~rheon.RheonDeprecationWarning`
          - ``DeprecationWarning``
 
     .. rubric:: Examples
@@ -46,8 +48,8 @@ class PolarsOnlineWarning(Warning):
 
         import warnings
 
-        warnings.simplefilter("ignore", rp.PolarsOnlineWarning)   # every one of them
-        print(issubclass(rp.ReadinessWarning, rp.PolarsOnlineWarning))
+        warnings.simplefilter("ignore", rp.RheonWarning)   # every one of them
+        print(issubclass(rp.ReadinessWarning, rp.RheonWarning))
 
     .. code-block:: text
 
@@ -55,17 +57,21 @@ class PolarsOnlineWarning(Warning):
     """
 
 
-class PolarsOnlineDeprecationWarning(PolarsOnlineWarning, DeprecationWarning):
+class RheonDeprecationWarning(RheonWarning, DeprecationWarning):
     """A warning that a name still read is on its way out.
 
     The library issues it for a name it still reads under a spelling it will
-    stop reading at the next major version. It reads no name that way at
-    present: a renamed name is refused outright, naming the new one
-    (``TypeError`` from a builder or a function, ``ValueError`` from a spec
-    dict). The class stays so that a filter on it keeps working when one is.
+    stop reading at the next major version. The one it reads that way is an
+    environment variable under its name from before the rename
+    (``POLARS_ONLINE_MAX_THREADS`` for ``RHEON_MAX_THREADS``, and the same for
+    ``RHEON_TIMING``, ``RHEON_WARN_UNSTABLE`` and ``RHEON_SKIP_CPU_CHECK``): it
+    is read while the new name is not set, with this warning once at
+    ``import rheon``, and not at all from the next major version. Any other
+    renamed name is refused outright, naming the new one (``TypeError`` from a
+    builder or a function, ``ValueError`` from a spec dict).
     Python shows a ``DeprecationWarning`` issued from a library only in
     ``__main__`` and under test runners, so to see it everywhere, filter it
-    with ``warnings.simplefilter("default", rheon.PolarsOnlineDeprecationWarning)``,
+    with ``warnings.simplefilter("default", rheon.RheonDeprecationWarning)``,
     and to make it an error, with ``"error"``.
 
     .. rubric:: Examples
@@ -74,8 +80,8 @@ class PolarsOnlineDeprecationWarning(PolarsOnlineWarning, DeprecationWarning):
 
         import warnings
 
-        warnings.simplefilter("error", rp.PolarsOnlineDeprecationWarning)   # an error from here
-        print(issubclass(rp.PolarsOnlineDeprecationWarning, DeprecationWarning))
+        warnings.simplefilter("error", rp.RheonDeprecationWarning)   # an error from here
+        print(issubclass(rp.RheonDeprecationWarning, DeprecationWarning))
 
     .. code-block:: text
 
@@ -83,16 +89,16 @@ class PolarsOnlineDeprecationWarning(PolarsOnlineWarning, DeprecationWarning):
 
     .. rubric:: See also
 
-    - :class:`PolarsOnlineWarning`, the base class every warning of this
+    - :class:`RheonWarning`, the base class every warning of this
       library shares.
     """
 
 
-class UnstableWarning(PolarsOnlineWarning, UserWarning):
+class UnstableWarning(RheonWarning, UserWarning):
     """A warning that a part of the API not yet promised to stay the same was used.
 
     It is issued only when the environment variable
-    ``POLARS_ONLINE_WARN_UNSTABLE`` is ``1``, as Polars issues its own
+    ``RHEON_WARN_UNSTABLE`` is ``1``, as Polars issues its own
     ``UnstableWarning`` under ``POLARS_WARN_UNSTABLE``. Once
     ``rheon.polars`` is imported, the warning issued is
     ``rp.UnstableWarning``, a subclass of this class and of Polars' class,
@@ -117,7 +123,7 @@ class UnstableWarning(PolarsOnlineWarning, UserWarning):
 
     .. code-block:: python
 
-        print(issubclass(rheon.UnstableWarning, rheon.PolarsOnlineWarning))
+        print(issubclass(rheon.UnstableWarning, rheon.RheonWarning))
 
     .. code-block:: text
 
@@ -125,7 +131,7 @@ class UnstableWarning(PolarsOnlineWarning, UserWarning):
 
     .. rubric:: See also
 
-    - :class:`PolarsOnlineWarning`, the base class every warning of this
+    - :class:`RheonWarning`, the base class every warning of this
       library shares.
     """
 
@@ -147,7 +153,7 @@ def _unstable_class() -> type[UnstableWarning]:
 
 
 def _unstable_on() -> bool:
-    return os.environ.get(UNSTABLE_VAR, "") == "1"
+    return _env.get(UNSTABLE_VAR) == "1"
 
 
 def warn_unstable(what: str, *, stacklevel: int = 3) -> None:
@@ -195,10 +201,10 @@ def unstable[**P, R](what: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
 #: The attribute that marks a name kept only to refuse its old spelling: the
 #: API snapshot and the reference leave such a name out, so both show the new
 #: name only (``_renamed.is_renamed`` reads it).
-RENAMED_MARK = "__polars_online_renamed__"
+RENAMED_MARK = "__rheon_renamed__"
 
 
-class ReadinessWarning(PolarsOnlineWarning, UserWarning):
+class ReadinessWarning(RheonWarning, UserWarning):
     """A warning that a model is not ready, or may never become ready.
 
     It points once at a state every row already carries in
@@ -211,7 +217,7 @@ class ReadinessWarning(PolarsOnlineWarning, UserWarning):
 
     The learning calls issue it: :meth:`ModelBank.fit`,
     :meth:`ModelBank.fit_predict`, :meth:`ModelBank.fit_predict_batches` and
-    ``lf.online.fit_predict``. ``predict`` never does. Apart from the two
+    ``lf.rheon.fit_predict``. ``predict`` never does. Apart from the two
     findings about a horizon, it is issued once per spec and group. Its
     message begins with the spec, and the group where the spec has one, as
     ``spec "m" group "g":``. Under ``group_close="session"`` each session
@@ -303,7 +309,7 @@ class ReadinessWarning(PolarsOnlineWarning, UserWarning):
       the gates and what each finding means for the output.
     - :meth:`ModelBank.summary`, whose ``weight_sum_settled`` is the
       ceiling the ``min_weight`` finding names.
-    - :class:`PolarsOnlineWarning`, the base class every warning of this
+    - :class:`RheonWarning`, the base class every warning of this
       library shares.
 
     .. rubric:: Notes

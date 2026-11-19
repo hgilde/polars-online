@@ -80,7 +80,7 @@ class TestARunWithNoOutput:
     def test_the_state_is_the_bytes_a_bank_fed_the_same_chunks_saves(self, tmp_path, rheon_cli):
         """docs/STATE-WORKFLOW.md: a query, the command line and a
         `ModelBank` fed the same chunks write identical bytes (task 269,
-        review 8 F-11, where the page still named the removed `po.run`; the
+        review 8 F-11, where the page still named the removed `rp.run`; the
         query's half is `tests/test_frame.py`'s)."""
         df = frame(seed=2)
         src = tmp_path / "in.parquet"

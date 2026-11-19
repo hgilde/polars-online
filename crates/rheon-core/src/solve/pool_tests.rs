@@ -2,7 +2,7 @@
 //! (docs/PLAN.md task 231). faer's own factorizations run at its global
 //! parallelism, `Par::rayon(0)`, which is the current rayon pool's size, and
 //! from `k = 512` their last bits followed it: a wide `ewridge` gave other
-//! coefficients under another `POLARS_ONLINE_MAX_THREADS`, or on a machine
+//! coefficients under another `RHEON_MAX_THREADS`, or on a machine
 //! with another core count. Each case here runs the same inputs in pools of
 //! 1, 3, 8 and 14 threads (at most four on Windows x86-64, where each
 //! multiplying thread commits a large buffer: `crate::test_pool`) and

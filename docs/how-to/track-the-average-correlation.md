@@ -76,7 +76,7 @@ pl.DataFrame(cols).write_parquet("sectors.parquet")
 eq = po.spec.deco("eq", features=banks + miners, half_life=100.0,       # 1. every series
                   blocks={"banks": banks, "miners": miners})             # 2. one level per sector and per pair
 pairs = po.spec.ew_cov("pairs", features=banks, half_life=100.0, stats=["corr"])   # 3. the banks' every pair
-out = pl.scan_parquet("sectors.parquet").online.fit_predict([eq, pairs]).collect()  # 4 and 5. add both, run; rho read before each row
+out = pl.scan_parquet("sectors.parquet").rheon.fit_predict([eq, pairs]).collect()  # 4 and 5. add both, run; rho read before each row
 rho = out["eq"].struct.unnest()
 mean_corr = out["pairs"].struct.unnest().select(pl.mean_horizontal(pl.selectors.starts_with("corr_"))).to_series()
 for row in (1_999, 3_999):

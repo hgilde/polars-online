@@ -1,4 +1,4 @@
-"""``po.gbdt`` on the paths no other test took (task 252), each held to the
+"""``rheon.polars._gbdt`` on the paths no other test took (task 252), each held to the
 library's own route by the hash of the trees it grows, as
 ``tests/test_gbdt.py`` holds the rest:
 

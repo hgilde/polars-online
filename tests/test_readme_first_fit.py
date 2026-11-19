@@ -135,12 +135,12 @@ def test_the_first_fits_prose_holds(ran):
     assert served["weight_sum"].unique().to_list() == [21_600 / 3]
 
     # "To keep learning from new rows instead, call
-    # `.online.fit_predict(load_state="bank.state")` on a query over them."
+    # `.rheon.fit_predict(load_state="bank.state")` on a query over them."
     kept = (
         ns["prices"]
         .tail(1_800)
         .lazy()
-        .online.fit_predict(load_state=str(tmp / "bank.state"))
+        .rheon.fit_predict(load_state=str(tmp / "bank.state"))
         .collect()
         .unnest("whole")
     )
@@ -190,7 +190,7 @@ def test_the_first_fits_prose_holds(ran):
         embargo="5m",
     )
     with pytest.raises(ValueError, match="needs an embargo of at least 10m"):
-        ns["prices"].lazy().online.fit_predict([short]).collect()
+        ns["prices"].lazy().rheon.fit_predict([short]).collect()
     fitted = rp.ModelBank([short])
     assert fitted.fit(ns["prices"]) is None
     assert (fitted.summary()["weight_sum"] > 0).all()

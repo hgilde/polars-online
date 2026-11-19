@@ -34,7 +34,7 @@ needs numpy, an optional extra of this package
 .. warning::
     This module is considered **unstable**: its keywords, its frames and the
     draws behind them may change in any release without that counting as a
-    breaking change. Under ``POLARS_ONLINE_WARN_UNSTABLE=1`` each call issues
+    breaking change. Under ``RHEON_WARN_UNSTABLE=1`` each call issues
     :class:`rheon.UnstableWarning`.
 """
 
@@ -56,7 +56,7 @@ def _np() -> Any:
         import numpy as np
     except ModuleNotFoundError as e:  # pragma: no cover - exercised by a stub
         msg = (
-            "po.sim: it draws with numpy, but numpy is not installed. "
+            "rp.sim: it draws with numpy, but numpy is not installed. "
             "Install it with `pip install numpy` or `pip install polars-online[numpy]`."
         )
         raise ModuleNotFoundError(msg) from e
@@ -77,7 +77,7 @@ def _states(np: Any, states: Sequence[Any], m: int) -> list[Any]:
                 scale = 10.0 ** (2 - math.floor(math.log10(-low)))
                 shown = math.ceil(low * scale) / scale
                 msg = (
-                    f"po.sim.regimes: states[{i}] is an equicorrelation of {rho}, but for {m} "
+                    f"rp.sim.regimes: states[{i}] is an equicorrelation of {rho}, but for {m} "
                     f"series an equicorrelation must be above {shown:.3g} and below 1 to be a "
                     f"correlation matrix. Give states[{i}] a correlation in that range."
                 )
@@ -88,25 +88,25 @@ def _states(np: Any, states: Sequence[Any], m: int) -> list[Any]:
             r = arr
             if r.shape != (m, m):
                 msg = (
-                    f"po.sim.regimes: states[{i}] must be a {m} by {m} matrix, one row and column "
+                    f"rp.sim.regimes: states[{i}] must be a {m} by {m} matrix, one row and column "
                     f"per series, but its shape is {r.shape}. Give a {m} by {m} matrix."
                 )
                 raise ValueError(msg)
             if not np.allclose(np.diag(r), 1.0):
                 msg = (
-                    f"po.sim.regimes: states[{i}] must be a correlation matrix, but its diagonal "
+                    f"rp.sim.regimes: states[{i}] must be a correlation matrix, but its diagonal "
                     f"is not all 1. Set its diagonal to 1."
                 )
                 raise ValueError(msg)
             if not np.allclose(r, r.T):
                 msg = (
-                    f"po.sim.regimes: states[{i}] must be a correlation matrix, but it is not "
+                    f"rp.sim.regimes: states[{i}] must be a correlation matrix, but it is not "
                     f"symmetric. Give a matrix equal to its transpose."
                 )
                 raise ValueError(msg)
             if np.linalg.eigvalsh(r).min() < -1e-10:
                 msg = (
-                    f"po.sim.regimes: states[{i}] must be a correlation matrix, but it has a "
+                    f"rp.sim.regimes: states[{i}] must be a correlation matrix, but it has a "
                     f"negative eigenvalue. Give a positive semi-definite matrix."
                 )
                 raise ValueError(msg)
@@ -127,14 +127,14 @@ def _chain(
     p = np.asarray(transition, dtype=float)
     if p.shape != (k, k):
         msg = (
-            f"po.sim.regimes: transition must be a {k} by {k} matrix for the {k} entries of "
+            f"rp.sim.regimes: transition must be a {k} by {k} matrix for the {k} entries of "
             f"states, but its shape is {p.shape}. Give one row and one column per state."
         )
         raise ValueError(msg)
     if (p < 0).any() or not np.allclose(p.sum(axis=1), 1.0):
         bad = next(j for j in range(k) if (p[j] < 0).any() or not np.isclose(p[j].sum(), 1.0))
         msg = (
-            f"po.sim.regimes: each row of transition must be probabilities, at least 0 and "
+            f"rp.sim.regimes: each row of transition must be probabilities, at least 0 and "
             f"summing to 1, but row {bad} is {p[bad].tolist()}. Give rows of probabilities "
             f"that sum to 1."
         )
@@ -152,7 +152,7 @@ def _chain(
     d = list(durations)
     if len(d) != k or any(v < 1 for v in d):
         msg = (
-            f"po.sim.regimes: durations must hold one block count of at least 1 for each of "
+            f"rp.sim.regimes: durations must hold one block count of at least 1 for each of "
             f"the {k} states, but it is {d}. Give {k} counts of 1 or more."
         )
         raise ValueError(msg)
@@ -298,7 +298,7 @@ def regimes(
     ``ModuleNotFoundError``
         numpy is not installed.
     :class:`~rheon.UnstableWarning`
-        A warning, under ``POLARS_ONLINE_WARN_UNSTABLE=1``, on each call.
+        A warning, under ``RHEON_WARN_UNSTABLE=1``, on each call.
 
     .. rubric:: Examples
 
@@ -350,17 +350,17 @@ def regimes(
     """
     np = _np()
     if m < 2:
-        msg = f"po.sim.regimes: m must be at least 2, but it is {m}. Set m to 2 or more series."
+        msg = f"rp.sim.regimes: m must be at least 2, but it is {m}. Set m to 2 or more series."
         raise ValueError(msg)
     if design not in ("step", "smooth"):
         msg = (
-            f'po.sim.regimes: design must be "step" or "smooth", but it is {design!r}. '
+            f'rp.sim.regimes: design must be "step" or "smooth", but it is {design!r}. '
             f"Set design to one of those words."
         )
         raise ValueError(msg)
     if n_blocks < 1 or rows_per_block < 1:
         msg = (
-            f"po.sim.regimes: n_blocks and rows_per_block must each be at least 1, but they are "
+            f"rp.sim.regimes: n_blocks and rows_per_block must each be at least 1, but they are "
             f"{n_blocks} and {rows_per_block}. Set both to 1 or more."
         )
         raise ValueError(msg)
@@ -372,20 +372,20 @@ def regimes(
     cycle_len = cycle_rows if cycle_rows is not None else rows_per_block
     if cycle_len < 1:
         msg = (
-            f"po.sim.regimes: cycle_rows must be at least 1, but it is {cycle_len}. "
+            f"rp.sim.regimes: cycle_rows must be at least 1, but it is {cycle_len}. "
             f"Set cycle_rows to 1 or more."
         )
         raise ValueError(msg)
     if cycle_profile is not None and len(cycle_profile) != cycle_len:
         msg = (
-            f"po.sim.regimes: cycle_profile must hold one multiplier per row of the cycle, "
+            f"rp.sim.regimes: cycle_profile must hold one multiplier per row of the cycle, "
             f"{cycle_len}, but it holds {len(cycle_profile)}. Give {cycle_len} multipliers."
         )
         raise ValueError(msg)
     if cycle_profile is not None and not all(0.0 < d <= 1.0 for d in cycle_profile):
         bad = next(j for j, d in enumerate(cycle_profile) if not 0.0 < d <= 1.0)
         msg = (
-            f"po.sim.regimes: each multiplier of cycle_profile must be above 0 and at most 1, "
+            f"rp.sim.regimes: each multiplier of cycle_profile must be above 0 and at most 1, "
             f"but multiplier {bad} is {cycle_profile[bad]}. Give multipliers in that range."
         )
         raise ValueError(msg)
@@ -395,14 +395,14 @@ def regimes(
         phis = np.full(m, phis)
     if phis.shape != (m,):
         msg = (
-            f"po.sim.regimes: phi must be one number or {m} values, one per series, but its "
+            f"rp.sim.regimes: phi must be one number or {m} values, one per series, but its "
             f"shape is {phis.shape}. Give one number or {m}."
         )
         raise ValueError(msg)
     if (np.abs(phis) >= 1.0).any():
         bad = int(np.argmax(np.abs(phis) >= 1.0))
         msg = (
-            f"po.sim.regimes: each phi must be above -1 and below 1 for a stationary series, "
+            f"rp.sim.regimes: each phi must be above -1 and below 1 for a stationary series, "
             f"but series {bad}'s is {phis[bad]}. Give values in that range."
         )
         raise ValueError(msg)
@@ -411,7 +411,7 @@ def regimes(
         vol_exp = vol_exp * np.arange(k, dtype=float)
     elif vol_exp.shape != (k,):
         msg = (
-            f"po.sim.regimes: scale_state must be one number or {k} values, one per state, but "
+            f"rp.sim.regimes: scale_state must be one number or {k} values, one per state, but "
             f"its shape is {vol_exp.shape}. Give one number or {k}."
         )
         raise ValueError(msg)
@@ -487,7 +487,7 @@ def regimes(
         mean, shape = activity
         if mean <= 0.0 or shape <= 0.0:
             msg = (
-                f"po.sim.regimes: activity must be (mean, shape), both above 0, but it is "
+                f"rp.sim.regimes: activity must be (mean, shape), both above 0, but it is "
                 f"{activity!r}. Give two positive numbers."
             )
             raise ValueError(msg)
@@ -499,14 +499,14 @@ def regimes(
         rates = np.asarray(async_rates, dtype=float)
         if rates.shape != (m,):
             msg = (
-                f"po.sim.regimes: async_rates must hold one expected report rate per series, "
+                f"rp.sim.regimes: async_rates must hold one expected report rate per series, "
                 f"{m}, but its shape is {rates.shape}. Give {m} rates."
             )
             raise ValueError(msg)
         if (rates <= 0).any():
             bad = int(np.argmax(rates <= 0))
             msg = (
-                f"po.sim.regimes: each rate of async_rates must be above 0, but series {bad}'s "
+                f"rp.sim.regimes: each rate of async_rates must be above 0, but series {bad}'s "
                 f"is {rates[bad]}. Give positive rates."
             )
             raise ValueError(msg)

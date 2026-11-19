@@ -94,49 +94,49 @@ reason = "its where is the earlier refusal's own, the first sentence the placeho
 check = "messages"
 path = "crates/rheon-polars/src/bank.rs"
 rule = "where"
-text = "POLARS_ONLINE_TIMING rows={n} extract={:.1}ms group={:.1}ms process={:"
-reason = "a timing line a developer turns on with POLARS_ONLINE_TIMING, not a message to a reader"
+text = "RHEON_TIMING rows={n} extract={:.1}ms group={:.1}ms process={:"
+reason = "a timing line a developer turns on with RHEON_TIMING, not a message to a reader"
 
 [[accepted]]
 check = "messages"
 path = "crates/rheon-polars/src/bank.rs"
 rule = "remedy"
-text = "POLARS_ONLINE_TIMING rows={n} extract={:.1}ms group={:.1}ms process={:"
-reason = "a timing line a developer turns on with POLARS_ONLINE_TIMING, not a message to a reader"
+text = "RHEON_TIMING rows={n} extract={:.1}ms group={:.1}ms process={:"
+reason = "a timing line a developer turns on with RHEON_TIMING, not a message to a reader"
 
 [[accepted]]
 check = "messages"
 path = "crates/rheon-polars/src/refresh.rs"
 rule = "remedy"
-text = "po.stream.refresh_time: the state was saved {} a group column, but thi"
+text = "rp.stream.refresh_time: the state was saved {} a group column, but thi"
 reason = "its remedy sentence is a placeholder the code fills (it starts with an imperative), which a static reading cannot see"
 
 [[accepted]]
 check = "messages"
 path = "crates/rheon-polars/src/runner.rs"
 rule = "where"
-text = "POLARS_ONLINE_TIMING run rows={} chunks={} read_wait={:.2}s bank={:.2}"
-reason = "a timing line a developer turns on with POLARS_ONLINE_TIMING, not a message to a reader"
+text = "RHEON_TIMING run rows={} chunks={} read_wait={:.2}s bank={:.2}"
+reason = "a timing line a developer turns on with RHEON_TIMING, not a message to a reader"
 
 [[accepted]]
 check = "messages"
 path = "crates/rheon-polars/src/runner.rs"
 rule = "remedy"
-text = "POLARS_ONLINE_TIMING run rows={} chunks={} read_wait={:.2}s bank={:.2}"
-reason = "a timing line a developer turns on with POLARS_ONLINE_TIMING, not a message to a reader"
+text = "RHEON_TIMING run rows={} chunks={} read_wait={:.2}s bank={:.2}"
+reason = "a timing line a developer turns on with RHEON_TIMING, not a message to a reader"
 
 [[accepted]]
 check = "messages"
 path = "crates/rheon-polars/src/runner.rs"
 rule = "where"
-text = "polars-online: warning: {notice}"
+text = "rheon: warning: {notice}"
 reason = "the command line's prefix in front of a readiness warning read where it is written"
 
 [[accepted]]
 check = "messages"
 path = "crates/rheon-polars/src/runner.rs"
 rule = "remedy"
-text = "polars-online: warning: {notice}"
+text = "rheon: warning: {notice}"
 reason = "the command line's prefix in front of a readiness warning read where it is written"
 
 [[accepted]]
@@ -577,42 +577,42 @@ reason = "wrapped by main's `parsing {path}: ` behind the TOML parse error's fil
 check = "messages"
 path = "crates/rheon-cli/src/main.rs"
 rule = "where"
-text = "polars-online: {e}"
+text = "rheon: {e}"
 reason = "main's prefix in front of a message read where it is written"
 
 [[accepted]]
 check = "messages"
 path = "crates/rheon-cli/src/main.rs"
 rule = "remedy"
-text = "polars-online: {e}"
+text = "rheon: {e}"
 reason = "main's prefix in front of a message read where it is written"
 
 [[accepted]]
 check = "messages"
 path = "crates/rheon-cli/src/main.rs"
 rule = "where"
-text = "polars-online: warning: {notice}"
+text = "rheon: warning: {notice}"
 reason = "main's prefix in front of a message read where it is written"
 
 [[accepted]]
 check = "messages"
 path = "crates/rheon-cli/src/main.rs"
 rule = "remedy"
-text = "polars-online: warning: {notice}"
+text = "rheon: warning: {notice}"
 reason = "main's prefix in front of a message read where it is written"
 
 [[accepted]]
 check = "messages"
 path = "crates/rheon-cli/src/main.rs"
 rule = "where"
-text = "polars-online: {FORMULA_UNSTABLE}"
+text = "rheon: {FORMULA_UNSTABLE}"
 reason = "main's prefix in front of a message read where it is written"
 
 [[accepted]]
 check = "messages"
 path = "crates/rheon-cli/src/main.rs"
 rule = "remedy"
-text = "polars-online: {FORMULA_UNSTABLE}"
+text = "rheon: {FORMULA_UNSTABLE}"
 reason = "main's prefix in front of a message read where it is written"
 
 [[accepted]]
@@ -626,6 +626,8 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "remedy" = 2
 "where" = 2
 
+[messages."python/rheon/_env.py"]
+
 [messages."python/rheon/_spec_fields.py"]
 
 [messages."python/rheon/polars/__init__.py"]
@@ -637,6 +639,8 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 [docstrings."python/rheon/polars/_warnings.py"]
 
 [vocabulary."python/rheon/_cpu_check.py#messages"]
+
+[vocabulary."python/rheon/_env.py#messages"]
 
 [vocabulary."python/rheon/_spec_fields.py#messages"]
 

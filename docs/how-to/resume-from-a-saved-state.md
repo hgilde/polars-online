@@ -111,8 +111,8 @@ data](../EXAMPLE-DATA.md):
 
 ```python
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
-lf.online.fit_predict([spec], save_state="bank.state").sink_parquet("fitted.parquet")   # the stream so far
-(later.online.fit_predict(load_state="bank.state", save_state="bank.state")              # 1 and 2: load, and save at the end
+lf.rheon.fit_predict([spec], save_state="bank.state").sink_parquet("fitted.parquet")   # the stream so far
+(later.rheon.fit_predict(load_state="bank.state", save_state="bank.state")              # 1 and 2: load, and save at the end
       .sink_parquet("more.parquet"))                                                     # 3: run the query
 print(f"rows fed in all: {po.ModelBank.load('bank.state').rows_fed}")
 ```
@@ -221,7 +221,7 @@ kept = bank.skip_learned(pl.scan_parquet("rerun.parquet"))   # 2. a query of the
 print(f"skip_learned keeps {kept.collect().height} of {pl.scan_parquet('rerun.parquet').collect().height} rows")
 
 # 3. Learn on from the kept rows, and compare with one run over the whole stream.
-(kept.online.fit_predict(load_state="ridge.state", save_state="ridge.state")
+(kept.rheon.fit_predict(load_state="ridge.state", save_state="ridge.state")
      .sink_parquet("rerun-fitted.parquet"))
 one_run = po.ModelBank([spec])
 one_run.fit_predict(stream)

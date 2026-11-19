@@ -379,7 +379,7 @@ class TestPlumbing:
         one = ref.fit_predict(df).select("m").unnest("m")
         pairs = ref.marginal("m")
         # Lazy plan.
-        lazy = df.lazy().online.fit_predict([s]).collect().select("m").unnest("m")
+        lazy = df.lazy().rheon.fit_predict([s]).collect().select("m").unnest("m")
         assert lazy.equals(one, null_equal=True)
         # The state the bank saves carries the pairs back.
         src, state = tmp_path / "in.parquet", tmp_path / "s.state"

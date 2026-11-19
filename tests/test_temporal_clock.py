@@ -304,11 +304,11 @@ class TestHowADurationIsWritten:
         [
             (
                 lambda df, v: rp.eval.window_metrics(df, "m", clock="t", every=v),
-                "po.eval.window_metrics: every",
+                "rp.eval.window_metrics: every",
             ),
             (
                 lambda df, v: rp.stream.embargo(df.lazy(), clock="t", delay=v),
-                r"po\.stream\.embargo: delay",
+                r"rp\.stream\.embargo: delay",
             ),
         ],
         ids=["window_metrics", "embargo"],
@@ -928,7 +928,7 @@ class TestNanosecondsAreKept:
     def test_the_query_form_agrees_with_the_bank(self):
         df = _temporal(_frame())
         spec = _ridge("t", session="s", **DURATIONS["pl.duration"])
-        plan = df.lazy().online.fit_predict([spec]).collect()
+        plan = df.lazy().rheon.fit_predict([spec]).collect()
         assert plan["m"].equals(rp.ModelBank([spec]).fit_predict(df)["m"], null_equal=True)
 
     def test_the_previous_instant_survives_a_save_and_load(self, tmp_path):

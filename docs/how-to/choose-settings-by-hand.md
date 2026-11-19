@@ -59,7 +59,7 @@ grid = po.spec.ewridge(
 lf = pl.scan_parquet("wander.parquet")
 
 # 1. Run the query and keep its result.
-out = lf.online.fit_predict([grid]).collect()
+out = lf.rheon.fit_predict([grid]).collect()
 # 2 and 3. Split the output into halves, and score each.
 first = po.eval.metrics(out.head(out.height - out.height // 2), grid)
 second = po.eval.metrics(out.tail(out.height // 2), grid)

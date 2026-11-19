@@ -12,10 +12,7 @@ use rheon_polars::{
 
 fn tmp(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
-    p.push(format!(
-        "polars-online-runner-test-{}-{name}",
-        std::process::id()
-    ));
+    p.push(format!("rheon-runner-test-{}-{name}", std::process::id()));
     p
 }
 

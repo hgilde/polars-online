@@ -33,7 +33,7 @@ fn open(path: &str, what: &str) -> Result<Library, GbdtError> {
     // image is in the process and its initializers have run.
     unsafe { Library::new(path) }.map_err(|e| {
         GbdtError::msg(format!(
-            "po.gbdt: {what} could not be loaded from {path} ({e}). Pass engine=\"python\" to \
+            "rheon.polars._gbdt: {what} could not be loaded from {path} ({e}). Pass engine=\"python\" to \
              build through {what}'s Python package."
         ))
     })
@@ -47,9 +47,9 @@ macro_rules! symbols {
             let $field = *unsafe { $lib.get(concat!($name, "\0").as_bytes()) }.map_err(|_| {
                 // The call the reader made, by the library it builds through.
                 let who = if $what.starts_with("XGBoost") {
-                    "po.gbdt.xgboost_matrix"
+                    "rheon.polars._gbdt.xgboost_matrix"
                 } else {
-                    "po.gbdt.lightgbm_dataset"
+                    "rheon.polars._gbdt.lightgbm_dataset"
                 };
                 GbdtError::msg(format!(
                     "{who}: {} at {} has no `{}`, so it is not a version whose C API the native \
@@ -103,7 +103,7 @@ impl XgbLib {
         let ((lo_a, lo_b), (hi_a, hi_b)) = XGB_VERSIONS;
         if (a, b) < (lo_a, lo_b) || (a, b) >= (hi_a, hi_b) {
             return Err(GbdtError::msg(format!(
-                "po.gbdt.xgboost_matrix: XGBoost {a}.{b}.{c} at {path} is not a version whose C \
+                "rheon.polars._gbdt.xgboost_matrix: XGBoost {a}.{b}.{c} at {path} is not a version whose C \
                  API the native engine calls, which are {lo_a}.{lo_b} up to {hi_a}.{hi_b} (not \
                  included). Pass engine=\"python\" to build through the library's Python API, or \
                  install XGBoost {lo_a}.{lo_b} or later, below {hi_a}.{hi_b}."
@@ -149,7 +149,7 @@ impl XgbLib {
         // until its next call on this thread.
         let msg = unsafe { CStr::from_ptr((self.last_error)()) };
         Err(GbdtError::msg(format!(
-            "po.gbdt.xgboost_matrix: XGBoost refused {doing}: {}. Check the parameters named \
+            "rheon.polars._gbdt.xgboost_matrix: XGBoost refused {doing}: {}. Check the parameters named \
              there, or pass engine=\"python\".",
             first_line(&msg.to_string_lossy()).trim_end_matches('.')
         )))
@@ -227,7 +227,7 @@ impl LgbLib {
             Some(v) if v >= (lo_a, lo_b) && v < (hi_a, hi_b) => {}
             _ => {
                 return Err(GbdtError::msg(format!(
-                    "po.gbdt.lightgbm_dataset: LightGBM {version} is not a version whose C API the \
+                    "rheon.polars._gbdt.lightgbm_dataset: LightGBM {version} is not a version whose C API the \
                      native engine calls, which are {lo_a}.{lo_b} up to {hi_a}.{hi_b} (not \
                      included). Pass engine=\"python\" to build through the library's Python \
                      API, or install LightGBM {lo_a}.{lo_b} or later, below {hi_a}.{hi_b}."
@@ -285,7 +285,7 @@ impl LgbLib {
         // SAFETY: LightGBM returns a NUL-terminated message it owns.
         let msg = unsafe { CStr::from_ptr((self.last_error)()) };
         Err(GbdtError::msg(format!(
-            "po.gbdt.lightgbm_dataset: LightGBM refused {doing}: {}. Check the parameters named \
+            "rheon.polars._gbdt.lightgbm_dataset: LightGBM refused {doing}: {}. Check the parameters named \
              there, or pass engine=\"python\".",
             first_line(&msg.to_string_lossy()).trim_end_matches('.')
         )))

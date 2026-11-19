@@ -778,8 +778,8 @@ def test_predict_reads_no_coefficient_cadence():
     bank = rp.ModelBank([spec])
     bank.fit_predict(df.head(300))
     rows = df.slice(300)
-    eager = rows.online.predict(bank)
-    chunked = rows.online.predict(bank, chunk_size=60)
+    eager = rows.rheon.predict(bank)
+    chunked = rows.rheon.predict(bank, chunk_size=60)
     filled = lambda out: out["m"].struct.field("coef").is_not_null().sum()  # noqa: E731
     assert (filled(eager), filled(chunked)) == (1, 5)
     a, b = eager.select("m").unnest("m"), chunked.select("m").unnest("m")

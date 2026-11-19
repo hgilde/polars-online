@@ -127,10 +127,10 @@ def test_fit_predict_batches_warns_too():
 
 
 def test_the_plan_form_warns():
-    """``lf.online.fit_predict`` consumes the same way, so it reports the same
+    """``lf.rheon.fit_predict`` consumes the same way, so it reports the same
     way -- collected twice, the second gives an empty frame."""
     lf = _single_use()
-    plan = lf.online.fit_predict([SPEC])
+    plan = lf.rheon.fit_predict([SPEC])
     plan.collect()
     with pytest.warns(rp.ConsumedSourceWarning):
         out = plan.collect()
@@ -189,7 +189,7 @@ def test_a_head_zero_on_the_plan_form_does_not_warn():
     lf = _single_use()
     with warnings.catch_warnings():
         warnings.simplefilter("error", rp.ConsumedSourceWarning)
-        out = lf.online.fit_predict([SPEC]).head(0).collect()
+        out = lf.rheon.fit_predict([SPEC]).head(0).collect()
     assert out.height == 0
 
 
@@ -212,7 +212,7 @@ def test_a_python_scan_with_rows_is_recognised_and_a_parquet_scan_is_not(tmp_pat
     path = tmp_path / "rows.parquet"
     _frame().write_parquet(path)
     assert _is_python_scan(_single_use())
-    assert _is_python_scan(_frame().lazy().online.fit_predict([SPEC])), (
+    assert _is_python_scan(_frame().lazy().rheon.fit_predict([SPEC])), (
         "this package's own plan form is a Python scan -- which is why a zero-row "
         "run, not the marker alone, is what the guard keys on"
     )
@@ -397,18 +397,18 @@ def test_a_chain_of_two_plan_forms_over_an_empty_frame_does_not_warn() -> None:
         warnings.simplefilter("always")
         chained = (
             empty.lazy()
-            .online.with_windows(f=rp.ewm_mean(feature, half_life=5.0))
-            .online.fit_predict([SPEC])
+            .rheon.with_windows(f=rp.ewm_mean(feature, half_life=5.0))
+            .rheon.fit_predict([SPEC])
             .collect()
         )
         again = {**SPEC, "name": "again"}  # a second bank's column beside the first's
-        twice = empty.lazy().online.fit_predict([SPEC]).online.fit_predict([again]).collect()
+        twice = empty.lazy().rheon.fit_predict([SPEC]).rheon.fit_predict([again]).collect()
         # A bank's own `fit` and `fit_predict_batches` over one of our plan
         # forms read it the same way, and missed the same counter (review
         # 2026-10-05, YB6).
         fitted = rp.ModelBank([again])
-        fitted.fit(empty.lazy().online.fit_predict([SPEC]))
-        windowed = empty.lazy().online.with_windows(f=rp.ewm_mean(feature, half_life=5.0))
+        fitted.fit(empty.lazy().rheon.fit_predict([SPEC]))
+        windowed = empty.lazy().rheon.with_windows(f=rp.ewm_mean(feature, half_life=5.0))
         batches = list(rp.ModelBank([SPEC]).fit_predict_batches(windowed))
     assert chained.height == 0 and twice.height == 0
     assert fitted.rows_fed == 0 and sum(b.height for b in batches) == 0

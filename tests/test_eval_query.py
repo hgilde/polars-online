@@ -1,10 +1,10 @@
-"""Every `po.eval` call that reads a bank's output, over a query (task 380).
+"""Every `rp.eval` call that reads a bank's output, over a query (task 380).
 
 Given a ``LazyFrame``, the scores (``metrics``, ``sums``, ``window_metrics``,
 ``compare_specs``) read it in one pass a chunk at a time and return what they
 return for the collected frame: every chunk reduced to the ten sums per key
-that :func:`po.eval.sums` keeps, and the chunks merged as
-:func:`po.eval.merge_sums` merges them. The tests of two specs keep their own
+that :func:`rp.eval.sums` keeps, and the chunks merged as
+:func:`rp.eval.merge_sums` merges them. The tests of two specs keep their own
 sums and carry each key's last rows from chunk to chunk. A call whose result
 has a row per row (``unpack``, ``seqtest``, the per-row ``half_life`` tests)
 returns a ``LazyFrame`` that collects to the frame's result. Held here:
@@ -206,7 +206,7 @@ class TestTheQueryGivesTheFramesNumbers:
     def test_a_query_that_runs_a_bank_runs_it_once(self, fitted):
         out, specs = fitted
         source = out.select("x0", "x1", "y", "z", "venue").lazy()
-        query = source.online.fit_predict([specs["grid"]])
+        query = source.rheon.fit_predict([specs["grid"]])
         before = _frame._source_runs()
         got = rp.eval.metrics(query, specs["grid"], group="venue")
         assert _frame._source_runs() == before + 1
@@ -282,7 +282,7 @@ def test_the_cases_are_all_counted(fitted):
 @pytest.mark.parametrize("call", ["metrics", "sums", "unpack"])
 def test_something_that_is_not_a_polars_frame_is_refused_by_name(fitted, call):
     out, _ = fitted
-    with pytest.raises(TypeError, match=f"po.eval.{call}: the frame must be a Polars DataFrame "):
+    with pytest.raises(TypeError, match=f"rp.eval.{call}: the frame must be a Polars DataFrame "):
         getattr(rp.eval, call)(out.to_dict(), "grid")
 
 
@@ -437,7 +437,7 @@ class TestSeveralSpecsOverAQuery:
             rp.spec.ewridge(name, targets=["y"], features=feats, half_life=200.0)
             for name, feats in (("one", ["x0"]), ("two", ["x0", "x1"]))
         ]
-        query = pair.select("x0", "x1", "y").lazy().online.fit_predict(specs)
+        query = pair.select("x0", "x1", "y").lazy().rheon.fit_predict(specs)
         before = _frame._source_runs()
         got = rp.eval.compare_specs(query, specs)
         assert _frame._source_runs() == before + 1
@@ -746,7 +746,7 @@ def test_by_is_refused_by_name_on_every_test_of_two_specs(pair, call):
     """``diebold_mariano``'s refusal of ``by`` decorated a helper of its
     instead, so ``by=`` reached Python's own "unexpected keyword"."""
     names = {"clark_west": {"big": "big", "small": "small"}}.get(call, {"a": "big", "b": "small"})
-    with pytest.raises(TypeError, match=f"po.eval.{call}: by was renamed group"):
+    with pytest.raises(TypeError, match=f"rp.eval.{call}: by was renamed group"):
         getattr(rp.eval, call)(pair.lazy(), by="g", **names)
 
 

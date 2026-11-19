@@ -152,7 +152,7 @@ specs = [
 for step in (1.0, 5.0):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        out = pl.scan_parquet(f"every_{step:g}.parquet").online.fit_predict(specs).collect()
+        out = pl.scan_parquet(f"every_{step:g}.parquet").rheon.fit_predict(specs).collect()
     # Each gate's first predicted row, with the weight behind it.
     for spec in ("halfway", "weighted"):
         rows = out.select("t", pl.col(spec).struct.unnest()).filter(pl.col("pred_y").is_not_null())

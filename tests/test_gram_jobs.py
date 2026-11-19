@@ -1,4 +1,4 @@
-"""``po.gram.solve_subsets(..., jobs=...)`` (docs/PLAN.md task 256): a fit per
+"""``rheon.gram.solve_subsets(..., jobs=...)`` (docs/PLAN.md task 256): a fit per
 job, each job its own subset, target, draw of signs and columns.
 
 Each job is held, to the bit, to the loop it replaces: ``merge`` of its

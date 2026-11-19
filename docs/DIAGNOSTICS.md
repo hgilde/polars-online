@@ -35,7 +35,7 @@ model = po.spec.ewridge(
     emit_calibration=True,  # is it scaled right: calibration_slope_y, _intercept_y, _wald_y
     emit_breaks=True,  # has it broken: studentized_y, cusum_y, cusum_sq_y, break_wald_y
 )
-out = lf.online.fit_predict([model]).online.unnest([model]).collect()
+out = lf.rheon.fit_predict([model]).rheon.unnest([model]).collect()
 
 # Each diagnostic's share of rows past its threshold before and after the flip, and its first row after.
 before, after = pl.col("t").is_between(1_000, at - 1), pl.col("t") >= at
@@ -287,7 +287,7 @@ every = po.spec.ewridge(
     emit_clocks=True,             # scored_clock, learned_clock: every model takes it
 )
 # Fit, and list every field the switches added, six to a line.
-out = lf.online.fit_predict([every]).online.unnest([every]).collect()
+out = lf.rheon.fit_predict([every]).rheon.unnest([every]).collect()
 fields = [c for c in out.columns if c not in ("t", "x0", "x1", "y")]
 for i in range(0, len(fields), 6):
     print(" ".join(fields[i : i + 6]))

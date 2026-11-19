@@ -1,6 +1,6 @@
 """The scores' numbers at their edges, and their refusals (task 382a).
 
-Each test here failed on main at 6befe4e9, from the review of `po.eval` of
+Each test here failed on main at 6befe4e9, from the review of `rp.eval` of
 2026-11-10 (`.claude/coord/review-eval/A-scoring.md` and `C-query-grid.md`,
 finding IDs in each test's docstring). The oracles are scikit-learn's
 `r2_score` and scipy's `pearsonr` where they compute the score, and exact
@@ -383,7 +383,7 @@ def test_a_key_named_like_a_column_the_scores_make_is_refused(name, lazy):
         "compare_specs": lambda: rp.eval.compare_specs(src, ["m"], group=name),
     }
     for call, fn in calls.items():
-        with pytest.raises(ValueError, match=f"po.eval.{call}: group column {name!r} is named"):
+        with pytest.raises(ValueError, match=f"rp.eval.{call}: group column {name!r} is named"):
             fn()
 
 
@@ -411,7 +411,7 @@ def test_a_clock_or_weight_named_like_a_sum_is_read():
 
 def test_a_key_named_spec_is_refused_by_compare_specs():
     df = _labelled("spec")
-    with pytest.raises(ValueError, match="po.eval.compare_specs: group column 'spec' is named"):
+    with pytest.raises(ValueError, match="rp.eval.compare_specs: group column 'spec' is named"):
         rp.eval.compare_specs(df, ["m"], group="spec")
 
 
@@ -431,7 +431,7 @@ def test_an_object_key_is_refused_on_both_paths(lazy):
         "diebold_mariano": lambda: rp.eval.diebold_mariano(src, a="n1", b="n2", group="o"),
         "seqtest": lambda: rp.eval.seqtest(src, a="n1", b="n2", group="o"),
     }.items():
-        with pytest.raises(TypeError, match=f"po.eval.{call}: group column 'o' is an Object"):
+        with pytest.raises(TypeError, match=f"rp.eval.{call}: group column 'o' is an Object"):
             fn()
 
 
@@ -464,7 +464,7 @@ def test_a_narrow_clock_whose_window_edge_it_cannot_hold_is_refused(lazy):
     src = df.lazy() if lazy else df
     with pytest.raises(
         ValueError,
-        match="po.eval.window_metrics: every is 200, which clock column 't', Int8, cannot hold",
+        match="rp.eval.window_metrics: every is 200, which clock column 't', Int8, cannot hold",
     ):
         rp.eval.window_metrics(src, "m", clock="t", every=200)
     with pytest.raises(
@@ -491,12 +491,12 @@ def test_a_metrics_frame_is_not_a_sums_frame():
     s = rp.eval.sums(df, "m")
     for fn in (lambda: rp.eval.merge_sums(scores), lambda: rp.eval.merge_sums(s, scores),
                lambda: rp.eval.from_sums(scores)):  # fmt: skip
-        with pytest.raises(ValueError, match="holds scores, not sums.*po.eval.metrics"):
+        with pytest.raises(ValueError, match="holds scores, not sums.*rp.eval.metrics"):
             fn()
-    with pytest.raises(ValueError, match=r"po.eval.merge_sums: a frame lacks \['hits'\]"):
+    with pytest.raises(ValueError, match=r"rp.eval.merge_sums: a frame lacks \['hits'\]"):
         rp.eval.merge_sums(s, s.drop("hits"))
     other = rp.eval.sums(df.with_columns(pl.col("g").cast(pl.Categorical)), "m", group="g")
-    with pytest.raises(ValueError, match="po.eval.merge_sums: key column 'g' is String in one"):
+    with pytest.raises(ValueError, match="rp.eval.merge_sums: key column 'g' is String in one"):
         rp.eval.merge_sums(rp.eval.sums(df, "m", group="g"), other)
 
 
@@ -513,7 +513,7 @@ def test_min_samples_is_checked_for_kind(value):
         "compare_specs": lambda: rp.eval.compare_specs(df, ["m"], min_samples=value),
         "from_sums": lambda: rp.eval.from_sums(rp.eval.sums(df, "m"), min_samples=value),
     }.items():
-        with pytest.raises((TypeError, ValueError), match=f"po.eval.{call}: min_samples must be"):
+        with pytest.raises((TypeError, ValueError), match=f"rp.eval.{call}: min_samples must be"):
             fn()
 
 
@@ -540,7 +540,7 @@ def test_a_target_that_is_not_0_or_1_is_refused_under_binary(lazy, chunks_of):
             src, "m", clock="t", every=10, binary=True
         ),
     }.items():
-        with pytest.raises(ValueError, match=f"po.eval.{call}: under binary .* is 2.0"):
+        with pytest.raises(ValueError, match=f"rp.eval.{call}: under binary .* is 2.0"):
             fn()
     ok = rp.eval.metrics(df.with_columns(pl.col("y").clip(0.0, 1.0)), "m", binary=True)
     assert ok["log_loss"][0] > 0
@@ -552,10 +552,10 @@ def test_a_target_that_is_not_0_or_1_is_refused_under_binary(lazy, chunks_of):
 @pytest.mark.parametrize("lazy", [False, True])
 def test_compare_specs_refuses_in_its_own_name(lazy):
     df = _sums_frame()
-    with pytest.raises(ValueError, match="po.eval.compare_specs: group column 'nope'"):
+    with pytest.raises(ValueError, match="rp.eval.compare_specs: group column 'nope'"):
         rp.eval.compare_specs(df.lazy() if lazy else df, ["m"], group="nope")
     with pytest.raises(
-        pl.exceptions.ColumnNotFoundError, match='po.eval.compare_specs: spec "nope"'
+        pl.exceptions.ColumnNotFoundError, match='rp.eval.compare_specs: spec "nope"'
     ):
         rp.eval.compare_specs(df.lazy() if lazy else df, ["m", "nope"])
 
@@ -566,7 +566,7 @@ def test_grid_search_refuses_a_chunk_size_in_its_own_name():
     spec = rp.spec.ewridge("r", targets=["y"], features=["x"], half_life=50.0)
     for bad in (0, -3, 2.5, True):
         with pytest.raises(
-            (TypeError, ValueError), match="po.eval.grid_search: chunk_size must be"
+            (TypeError, ValueError), match="rp.eval.grid_search: chunk_size must be"
         ):
             rp.eval.grid_search(df, spec, chunk_size=bad)
 
@@ -603,7 +603,7 @@ def test_loglik_over_specs_of_different_columns_is_refused():
     specs = [rp.spec.bocpd("on_y", features=["y"]), rp.spec.bocpd("on_big", features=["big"]),
              rp.spec.bocpd("on_y_too", features=["y"], hazard=50.0)]  # fmt: skip
     with pytest.raises(
-        ValueError, match=r"po.eval.grid_search: scoring=\"loglik\" .*\['on_big'\] model \['big'\]"
+        ValueError, match=r"rp.eval.grid_search: scoring=\"loglik\" .*\['on_big'\] model \['big'\]"
     ):
         rp.eval.grid_search(df, specs, scoring="loglik", n_splits=2)
     both = [
@@ -614,7 +614,7 @@ def test_loglik_over_specs_of_different_columns_is_refused():
 
 
 def test_one_target_name_read_from_two_columns_is_refused():
-    """C5(b): `po.target("y", name="ret")` and `po.target("big", name="ret")`
+    """C5(b): `rheon.target("y", name="ret")` and `rheon.target("big", name="ret")`
     were ranked as one target, mse 1.06 against 1.04e6."""
     rng = np.random.default_rng(17)
     x = rng.standard_normal(300)
@@ -630,7 +630,7 @@ def test_one_target_name_read_from_two_columns_is_refused():
         ),
     ]
     with pytest.raises(
-        ValueError, match="po.eval.grid_search: target 'ret' is read from different columns"
+        ValueError, match="rp.eval.grid_search: target 'ret' is read from different columns"
     ):
         rp.eval.grid_search(df, specs, n_splits=2)
     also = rp.target("y", name="ret")

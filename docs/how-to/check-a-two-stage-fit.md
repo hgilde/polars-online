@@ -95,7 +95,7 @@ pl.DataFrame({"ts": ts, "mid": p + u, "s1": s[0], "s2": s[1], "s3": s[2]}).write
 # reference series'. Its out-of-sample residual resid_A is the mid less its fair value, known at the row.
 clock = dict(clock="ts", gap_cap="5m")
 back = dict(half_life="10m", window_size="60m")
-windows = pl.scan_parquet("quotes.parquet").online.with_windows(
+windows = pl.scan_parquet("quotes.parquet").rheon.with_windows(
     A=pl.col("mid") - po.ewm_mean("mid", **back),
     x1=pl.col("s1") - po.ewm_mean("s1", **back),
     x2=pl.col("s2") - po.ewm_mean("s2", **back),
@@ -120,9 +120,9 @@ both = po.spec.ewridge("both", features=["resid_A", "x1", "x2", "x3"], **setting
 
 # Run both stages in one pass over the file.
 out = (
-    windows.online.fit_predict([fair])
-    .online.unnest([fair])  # pred_A, resid_A
-    .online.fit_predict([revert, joint, both])
+    windows.rheon.fit_predict([fair])
+    .rheon.unnest([fair])  # pred_A, resid_A
+    .rheon.fit_predict([revert, joint, both])
     .collect()
 )
 

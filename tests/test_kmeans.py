@@ -1237,7 +1237,7 @@ class TestEdgeCases:
         df = pl.DataFrame({"a": X[:, 0], "b": X[:, 1], "c": X[:, 2]})
         s1 = spec(features=("a", "b", "c"), k=2, warm_rows=20)
         bank = rp.ModelBank([s1])
-        flat = bank.fit_predict(df).online.unnest([s1])
+        flat = bank.fit_predict(df).rheon.unnest([s1])
         names = rp.spec.coef_fields(s1)["name"].to_list()
         assert names == [
             "coef_cluster0_a",
@@ -1265,7 +1265,7 @@ class TestEdgeCases:
         df = frame(X)
         s = spec(warm_rows=30)
         bank = rp.ModelBank([s]).fit_predict(df)
-        lazy = df.lazy().online.fit_predict([s]).collect()
+        lazy = df.lazy().rheon.fit_predict([s]).collect()
         assert bank.equals(lazy, null_equal=True)
 
     def test_far_rows_neither_drag_the_centre_nor_widen_its_radius(self):

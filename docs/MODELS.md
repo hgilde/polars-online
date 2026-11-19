@@ -354,7 +354,7 @@ for refused in [
 
 # The venue fitted as a comparison.
 by_venue = po.spec.ewridge("by_venue", targets=["y"], features=["x0", "x1", "is_x"], half_life=float("inf"))
-coded = lf.with_columns(is_x=pl.col("venue") == "X").online.fit_predict([by_venue]).collect()
+coded = lf.with_columns(is_x=pl.col("venue") == "X").rheon.fit_predict([by_venue]).collect()
 print("intercept, x0, x1, venue X:", [round(c, 2) for c in coded["by_venue"].struct.field("coef")[-1]])
 ```
 
@@ -656,7 +656,7 @@ specs = [
     po.spec.ewridge("sum", ridge=2.0, ridge_scale="sum",          # the same prior on ewridge's sum scale ...
                     max_rows_between_solves=1, **common),         # ... solved on every row
 ]
-out = pl.scan_parquet("rls.parquet").online.fit_predict(specs).collect()
+out = pl.scan_parquet("rls.parquet").rheon.fit_predict(specs).collect()
 # The largest gap between their predictions, then rls's fit.
 gap = (out["rls"].struct.field("pred_y") - out["sum"].struct.field("pred_y")).abs().max()
 print(f"the two predictions differ by less than 1e-9 on every row: {gap < 1e-9}")
@@ -897,7 +897,7 @@ specs = [
     po.spec.kalman("kalman", coef_half_life=20.0, **common),            # a coefficient may drift
     po.spec.ewridge("ewridge", max_rows_between_solves=1, **common),    # solved on every row
 ]
-out = pl.scan_parquet("jump.parquet").online.fit_predict(specs).collect()
+out = pl.scan_parquet("jump.parquet").rheon.fit_predict(specs).collect()
 # Each model's slope just before the jump and after it.
 for row in (1_999, 2_010, 2_050, 2_200):
     k = out["kalman"].struct.field("coef")[row][1]     # [intercept, slope] after the row
@@ -1783,7 +1783,7 @@ specs = [
     po.spec.holt("naive", **common),                         # the target's own level and trend alone
     po.spec.seqtest("gain", targets=["y"], a="with_x", b="naive"),   # evidence that with_x predicts closer
 ]
-out = pl.scan_parquet("trend.parquet").online.fit_predict(specs).collect()
+out = pl.scan_parquet("trend.parquet").rheon.fit_predict(specs).collect()
 # Each model's error spread, then when the evidence for with_x is enough.
 for name in ("with_x", "naive"):
     print(f"{name}: sigma_y at the last row {out[name].struct.field('sigma_y')[-1]:.2f}")
@@ -1920,7 +1920,7 @@ pl.DataFrame({"a": a, "b": rho * a + np.sqrt(1 - rho**2) * e}).write_parquet("pa
 
 # Fit, and read corr_a_b around the jump.
 mv = po.spec.ew_cov("mv", features=["a", "b"], half_life=200.0, stats=["corr"])   # no clock: a half-life of 200 rows
-out = pl.scan_parquet("pair.parquet").online.fit_predict([mv]).collect()
+out = pl.scan_parquet("pair.parquet").rheon.fit_predict([mv]).collect()
 corr = out["mv"].struct.field("corr_a_b")
 for row in (1999, 2200, 2400, 3999):                         # before the jump, one and two half-lives after, the end
     print(f"row {row}: corr {corr[row]:.2f}")
@@ -2280,7 +2280,7 @@ pl.DataFrame(dict(zip(names, np.sqrt(rho) * common + np.sqrt(1 - rho) * own))).w
 # deco beside an ew_cov over the same columns.
 eq = po.spec.deco("eq", features=names, half_life=100.0)
 pairs = po.spec.ew_cov("pairs", features=names, half_life=100.0, stats=["corr"])
-out = pl.scan_parquet("ten.parquet").online.fit_predict([eq, pairs]).collect()
+out = pl.scan_parquet("ten.parquet").rheon.fit_predict([eq, pairs]).collect()
 # rho beside the mean pairwise correlation, before and after the rise.
 level = out["eq"].struct.field("rho")
 mean_corr = out["pairs"].struct.unnest().select(pl.mean_horizontal(pl.selectors.starts_with("corr_"))).to_series()
@@ -2636,7 +2636,7 @@ pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1]}).write_parquet("blobs.parquet")
 
 # Label every row, then count each label's rows before the birth and at the end.
 km = po.spec.kmeans("km", features=["x", "y"], half_life=1000.0, n_clusters=4, warm_rows=500)
-label = pl.scan_parquet("blobs.parquet").online.fit_predict([km]).collect()["km"].struct.field("cluster")
+label = pl.scan_parquet("blobs.parquet").rheon.fit_predict([km]).collect()["km"].struct.field("cluster")
 for lo, hi in ((3000, 4000), (7000, 8000)):
     counts = label[lo:hi].value_counts().sort("cluster")
     print(f"rows {lo}-{hi - 1}: " + ", ".join(f"cluster {c}: {k}" for c, k in counts.iter_rows()))
@@ -2754,7 +2754,7 @@ pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1], "ring": ring, "noise": noise}).write
 
 # Fit, and score only the last rows.
 mc = po.spec.micro("mc", features=["x", "y"], half_life=3000.0, eps=0.07)
-out = pl.scan_parquet("rings.parquet").online.fit_predict([mc]).collect().unnest("mc")
+out = pl.scan_parquet("rings.parquet").rheon.fit_predict([mc]).collect().unnest("mc")
 late = out.tail(4000)                                         # once the summaries have formed
 # How many clusters, and how each ring and the noise are labeled.
 print(f"clusters: {late['n_clusters'][-1]}")
@@ -2868,7 +2868,7 @@ pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1], "kind": np.array(["a", "b", "c"])[la
 # Class the last rows, each before its own class is learned.
 cl = po.spec.ew_class("cl", features=["x", "y"], label="kind", classes=["a", "b", "c"],
                       precision_prior=0.1, half_life=float("inf"))
-scored = pl.scan_parquet("classes.parquet").online.fit_predict([cl]).collect().unnest("cl").tail(5000)
+scored = pl.scan_parquet("classes.parquet").rheon.fit_predict([cl]).collect().unnest("cl").tail(5000)
 print(f"classed right, out-of-sample: {(scored['class'] == scored['kind']).mean():.3f}")
 # The Bayes rule that knows the true distributions, on the same rows.
 z = (xy[:, None, :] - means[None]) / spread[None]             # the Bayes rule, from the true means and spreads
@@ -2979,7 +2979,7 @@ pl.DataFrame({
 
 # Test both signs, and find the first row each passes the 5% level.
 sign = po.spec.seqtest("sign", targets=["edge", "none"])
-out = pl.scan_parquet("signs.parquet").online.fit_predict([sign]).collect().unnest("sign")
+out = pl.scan_parquet("signs.parquet").rheon.fit_predict([sign]).collect().unnest("sign")
 for col in ("edge", "none"):
     passed = out.with_row_index("row").filter(pl.col(f"log_e_pos_{col}") >= math.log(20))
     when = f"at row {passed['row'][0]}" if passed.height else "never"
@@ -3109,7 +3109,7 @@ watch = po.spec.corrchange(
     window_rows=500,             # 500 rows of history ...
     monitor_rows=1000,           # ... then up to 1000 rows monitored: a cycle of 1500 rows, the second from row 1500
 )
-out = pl.scan_parquet("break.parquet").online.fit_predict([watch]).collect().unnest("watch")
+out = pl.scan_parquet("break.parquet").rheon.fit_predict([watch]).collect().unnest("watch")
 for r in out.with_row_index("row").filter(pl.col("flag")).iter_rows(named=True):
     print(f"flag at row {r['row']}: stat {r['stat']:.2f} past crit {r['crit']:.2f}")
 ```
@@ -3234,7 +3234,7 @@ pl.DataFrame({"x": rng.standard_normal(n) * scale}).write_parquet("spread.parque
 
 # Fit, and date each row's current run from run_mode.
 runs = po.spec.bocpd("runs", features=["x"], hazard=500.0)    # a break expected every 500 rows
-out = pl.scan_parquet("spread.parquet").online.fit_predict([runs]).collect().unnest("runs")
+out = pl.scan_parquet("spread.parquet").rheon.fit_predict([runs]).collect().unnest("runs")
 out = out.with_row_index("row").with_columns(began=pl.col("row") - pl.col("run_mode"))   # the row the current run began on
 # The dating of the break, and how little p_change moved.
 found = out.filter((pl.col("row") >= 1000) & (pl.col("began") >= 1000)).row(0, named=True)
@@ -3379,7 +3379,7 @@ pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1], "truth": state}).write_parquet("stat
 # Filter the states, then score the last rows against the nearest true center.
 hidden = po.spec.hmm("hidden", features=["x", "y"], n_components=2, precision_prior=1e-2,
                      warm_rows=500, half_life=float("inf"))
-rows = pl.scan_parquet("states.parquet").online.fit_predict([hidden]).collect().unnest("hidden").tail(5000)
+rows = pl.scan_parquet("states.parquet").rheon.fit_predict([hidden]).collect().unnest("hidden").tail(5000)
 right = (rows["state"] == rows["truth"]).mean()               # the states are numbered as seeded, so read either way
 nearest = ((rows["x"] + rows["y"] > 0).cast(pl.Int64) == rows["truth"]).mean()   # the nearest true center
 print(f"rows in their true state: the filter {max(right, 1 - right):.2f}, the nearest true center {nearest:.2f}")

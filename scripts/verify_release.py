@@ -84,7 +84,7 @@ def check(
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "line.parquet"
         pl.DataFrame({"x": xs, "y": ys}).write_parquet(path)
-        out = pl.scan_parquet(path).online.fit_predict([s]).online.unnest([s]).collect()
+        out = pl.scan_parquet(path).rheon.fit_predict([s]).rheon.unnest([s]).collect()
     if out.height != n:
         raise SystemExit(f"the fit returned {out.height} rows of {n}")
     coefs = out["coef_y_x"].drop_nulls()

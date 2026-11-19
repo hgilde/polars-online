@@ -318,7 +318,7 @@ def test_every_count_in_every_frame_is_int64():
     """One integer dtype, ``Int64``, for every count in every frame and
     field the bank returns (task 244, decision 1): ``summary()``,
     ``groups()``, ``describe()`` and ``closed_groups()`` counted in
-    ``UInt64``, ``coef_fields``' positions in ``UInt32`` and ``po.eval``'s
+    ``UInt64``, ``coef_fields``' positions in ``UInt32`` and ``rp.eval``'s
     ``n`` in ``UInt32``, beside the struct's ``Int64``. Walked over every
     kind at its fullest, so a frame or a field added later is held too."""
     found: list[str] = []

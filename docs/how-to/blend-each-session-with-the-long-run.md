@@ -77,7 +77,7 @@ pl.DataFrame({"t": np.arange(days * per_day, dtype=float), "day": day, "x": x, "
 common = dict(targets=["y"], features=["x"], clock="t", gap_cap=10.0, half_life=50.0,
               session="day", session_gap=1.0, max_rows_between_solves=1, coef_every=0)
 blends = {f: po.spec.ewridge(f"blend_{i}", session_shrink=f, long_half_life=3000.0, **common) for i, f in enumerate([0.0, 0.5, 1.0])}
-out = pl.scan_parquet("sessions.parquet").online.fit_predict(list(blends.values())).collect()
+out = pl.scan_parquet("sessions.parquet").rheon.fit_predict(list(blends.values())).collect()
 
 # Each session's first row, and its first 20 rows, after ten sessions of history.
 starts = np.arange(10, days) * per_day

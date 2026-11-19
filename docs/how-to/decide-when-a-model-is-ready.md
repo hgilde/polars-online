@@ -87,7 +87,7 @@ specs = [
     po.spec.ewridge("settled", min_settled_frac=0.5, **common),  # one half-life of history
     po.spec.ewridge("weighted", min_weight=100.0, **common),  # 100 of weight_sum
 ]
-out = ready.online.fit_predict(specs).collect()
+out = ready.rheon.fit_predict(specs).collect()
 
 # 2. Each gate's first prediction, what held it back, and its early error.
 for spec in specs:
@@ -150,7 +150,7 @@ sparse = pl.scan_parquet("sparse.parquet")
 common = dict(targets=["y"], features=["x"], clock="t", gap_cap=10.0)
 with warnings.catch_warnings(record=True) as caught:
     warnings.simplefilter("always")
-    sparse.online.fit_predict([po.spec.ewridge("weighted", half_life=50.0, min_weight=30.0, **common)]).collect()
+    sparse.rheon.fit_predict([po.spec.ewridge("weighted", half_life=50.0, min_weight=30.0, **common)]).collect()
 for w in caught:
     if issubclass(w.category, po.ReadinessWarning):
         print("warning: " + str(w.message).split(". ")[-1])
@@ -159,7 +159,7 @@ for w in caught:
 for name, gates in (("lower", dict(half_life=50.0, min_weight=14.0)), ("longer", dict(half_life=110.0, min_weight=30.0))):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        out = sparse.online.fit_predict([po.spec.ewridge(name, **gates, **common)]).collect()
+        out = sparse.rheon.fit_predict([po.spec.ewridge(name, **gates, **common)]).collect()
     first = out.select("t", pl.col(name).struct.unnest()).filter(pl.col("pred_y").is_not_null()).row(0, named=True)
     left = sum(issubclass(w.category, po.ReadinessWarning) for w in caught)
     print(f"{name}: first predicts at t = {first['t']:g}, weight_sum {first['weight_sum']:.1f}, {left} warnings")

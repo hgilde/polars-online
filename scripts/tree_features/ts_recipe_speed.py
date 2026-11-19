@@ -30,7 +30,7 @@ for g in ("origin", "dest", "tailnum", "flight_id"):
     for lazy in (False, True):
         t0 = time.perf_counter()
         src = s.lazy() if lazy else s
-        o = src.online.with_windows(
+        o = src.rheon.with_windows(
             S=rp.ewm_sum("y", half_life=43200.0, closed="left"),
             W=rp.ewm_sum("one", half_life=43200.0, closed="left"),
             clock="c",

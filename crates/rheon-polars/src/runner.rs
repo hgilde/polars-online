@@ -290,7 +290,7 @@ pub struct RunConfig {
     #[serde(default = "default_chunk_size")]
     pub chunk_size: usize,
     /// Threads the bank runs on: a pool of that many, or, unset, the
-    /// process default (`POLARS_ONLINE_MAX_THREADS`, else one thread per
+    /// process default (`RHEON_MAX_THREADS`, else one thread per
     /// core). The numbers are the same at any count. Not saved with the
     /// state: a resumed run takes the config's.
     #[serde(
@@ -964,7 +964,7 @@ fn run_with(
         Input::Lazy(lf) => Empty::Plan(Box::new(lf.clone().limit(0))),
         Input::Batches { schema, .. } => Empty::Frame(DataFrame::empty_with_schema(schema)),
     };
-    // Where the run's time goes, to stderr under POLARS_ONLINE_TIMING=1: how
+    // Where the run's time goes, to stderr under RHEON_TIMING=1: how
     // long this thread waited for the reader, spent in the bank, and waited
     // for the writer, and how long the writer was busy. The waits are the
     // pipeline's slack -- a run that waits on the reader is read-bound, one
@@ -1149,7 +1149,7 @@ fn run_with(
         };
         if timing {
             eprintln!(
-                "POLARS_ONLINE_TIMING run rows={} chunks={} read_wait={:.2}s bank={:.2}s \
+                "RHEON_TIMING run rows={} chunks={} read_wait={:.2}s bank={:.2}s \
                  write_wait={:.2}s writer_busy={:.2}s total={:.2}s",
                 stats.rows,
                 stats.chunks,
@@ -1286,7 +1286,7 @@ fn augment(
     // §3): a coefficient more ridge than data, or a noise gate that cannot
     // be met. Led as the command line leads every other warning.
     for notice in bank.take_notices() {
-        eprintln!("polars-online: warning: {notice}");
+        eprintln!("rheon: warning: {notice}");
     }
     let mut out = with_columns(chunk, cols)?;
     out.align_chunks_par();

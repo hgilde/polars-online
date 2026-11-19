@@ -1,7 +1,7 @@
 """Relative targets were removed (docs/PLAN.md task 201): a target derived
 from its own row's columns is a column, computed by Polars.
 
-Task 107a's ``po.target("p", relative_to="mid", relative=...)`` learned ``p``
+Task 107a's ``rheon.target("p", relative_to="mid", relative=...)`` learned ``p``
 taken against ``mid`` at the same row. Polars' ``with_columns`` computes the
 same target, in the columns' own type, and before the removal the bank
 learned it to the bit: every field of ten models, under each of the three
@@ -67,7 +67,7 @@ def common(**kw):
     ids=["relative_to", "both", "relative", "named"],
 )
 def test_po_target_refuses_a_relative_target_by_name(kw):
-    """``po.target`` refuses either keyword, naming ``with_columns``."""
+    """``rheon.target`` refuses either keyword, naming ``with_columns``."""
     with pytest.raises(TypeError, match=REMOVED) as err:
         rp.target("p", **kw)
     msg = str(err.value)
@@ -104,7 +104,7 @@ def test_a_builder_refuses_a_relative_table_by_name():
 def test_a_spec_dict_refuses_a_relative_table_by_name(table):
     """A spec dict, read by the Rust side as the command line's TOML and a
     saved state are: refused by name, saying to derive the column upstream.
-    ``po.eval`` reads its ``spec=`` through the same parser, so a spec
+    ``rp.eval`` reads its ``spec=`` through the same parser, so a spec
     holding one is refused there too, rather than scored against the raw
     column."""
     base = rp.spec.ewridge("m", targets=["p"], **common())
@@ -169,7 +169,7 @@ def test_a_target_made_by_with_columns_runs_the_same_on_every_way_in(tmp_path, m
         del opts["features"]  # holt reads its target alone
     spec = getattr(rp.spec, model)("m", targets=["ret"], **opts)
     lazy = pl.scan_parquet(path).with_columns(ret=HOW["log_ratio"])
-    got = lazy.online.fit_predict([spec]).collect()
+    got = lazy.rheon.fit_predict([spec]).collect()
     want = rp.ModelBank([spec]).fit_predict(
         pl.read_parquet(path).with_columns(ret=HOW["log_ratio"])
     )
@@ -236,11 +236,11 @@ def test_the_cli_reads_a_target_made_upstream(tmp_path, rheon_cli):
     assert got["m"].equals(want["m"], null_equal=True)
 
 
-# --- What po.target keeps: a column under a name of its own -------------------
+# --- What rheon.target keeps: a column under a name of its own -------------------
 
 
 def test_po_target_names_a_column():
-    """``po.target(column, name=)`` stays: the column read as it is, its
+    """``rheon.target(column, name=)`` stays: the column read as it is, its
     output fields named apart from it -- the same numbers as the column under
     its own name."""
     df = frame()
@@ -282,12 +282,12 @@ def test_the_lazy_plan_reads_a_renamed_columns_column():
     df = frame()
     spec = rp.spec.ewridge("m", targets=[rp.target("p", name="price")], **common())
     want = rp.ModelBank([spec]).fit_predict(df)["m"]
-    got = df.lazy().online.fit_predict([spec]).select("m").collect()["m"]
+    got = df.lazy().rheon.fit_predict([spec]).select("m").collect()["m"]
     assert got.equals(want, null_equal=True)
     bank = rp.ModelBank([spec])
     bank.fit_predict(df[:400])
     want_scores = bank.predict(df[400:])["m"]
-    scored = df[400:].lazy().online.predict(bank).select("m").collect()["m"]
+    scored = df[400:].lazy().rheon.predict(bank).select("m").collect()["m"]
     assert scored.equals(want_scores, null_equal=True)
 
 

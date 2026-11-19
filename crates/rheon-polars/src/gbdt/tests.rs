@@ -519,7 +519,7 @@ fn a_source_that_panics_is_an_error_naming_the_panic() {
         assert_eq!(
             e,
             format!(
-                "po.gbdt: reading the source panicked ({what}), which is a defect in \
+                "rheon.polars._gbdt: reading the source panicked ({what}), which is a defect in \
                  polars-online. Open an issue at https://github.com/hgilde/polars-online/issues \
                  with this message."
             )
@@ -534,14 +534,14 @@ fn a_frame_of_the_wrong_width_is_refused_naming_the_columns_expected() {
     let e = segments(&df, &layout(2, false)).err().unwrap().to_string();
     assert_eq!(
         e,
-        "po.gbdt: a frame of 2 columns arrived where 3 were expected (the features, the label), \
+        "rheon.polars._gbdt: a frame of 2 columns arrived where 3 were expected (the features, the label), \
          which is a defect in polars-online. Open an issue at \
          https://github.com/hgilde/polars-online/issues with this message."
     );
     let e = segments(&df, &layout(2, true)).err().unwrap().to_string();
     assert_eq!(
         e,
-        "po.gbdt: a frame of 2 columns arrived where 4 were expected (the features, the label, the \
+        "rheon.polars._gbdt: a frame of 2 columns arrived where 4 were expected (the features, the label, the \
          weight), which is a defect in polars-online. Open an issue at \
          https://github.com/hgilde/polars-online/issues with this message."
     );
@@ -556,19 +556,15 @@ fn a_layout_without_features_or_with_a_kind_short_is_refused() {
     };
     assert_eq!(
         none.check().unwrap_err().to_string(),
-        "po.gbdt: no feature columns are named. Name at least one feature."
+        "rheon.polars._gbdt: no feature columns are named. Name at least one feature."
     );
     let short = Layout {
         kinds: vec![Kind::Float],
         ..layout(2, false)
     };
-    assert!(
-        short
-            .check()
-            .unwrap_err()
-            .to_string()
-            .starts_with("po.gbdt: internal: 2 feature names for 1 kinds, which is a defect")
-    );
+    assert!(short.check().unwrap_err().to_string().starts_with(
+        "rheon.polars._gbdt: internal: 2 feature names for 1 kinds, which is a defect"
+    ));
     assert!(layout(2, true).check().is_ok());
 }
 
@@ -598,7 +594,9 @@ fn a_record_batch_of_the_wrong_kind_or_width_or_no_rows() {
     assert!(matches!(e, GbdtError::WrongType(_)), "{e}");
     let e = e.to_string();
     assert!(
-        e.starts_with("po.gbdt: column `x0` arrived as Utf8View, which is not a numeric column"),
+        e.starts_with(
+            "rheon.polars._gbdt: column `x0` arrived as Utf8View, which is not a numeric column"
+        ),
         "{e}"
     );
     let e = segments_of(
@@ -872,7 +870,10 @@ mod ipc {
         let e = read_cat(&path, Kind::Float).err().unwrap();
         assert!(matches!(e, GbdtError::WrongType(_)), "{e}");
         let e = e.to_string();
-        assert!(e.starts_with("po.gbdt: column `cat` is Dictionary("), "{e}");
+        assert!(
+            e.starts_with("rheon.polars._gbdt: column `cat` is Dictionary("),
+            "{e}"
+        );
         assert!(e.contains("in the Arrow IPC file, which is not a column the libraries read"));
         // A dictionary of numbers, which no Enum is.
         let path = dir.join("numbers.arrow");
@@ -882,7 +883,10 @@ mod ipc {
             .err()
             .unwrap()
             .to_string();
-        assert!(e.starts_with("po.gbdt: column `cat` is Dictionary("), "{e}");
+        assert!(
+            e.starts_with("rheon.polars._gbdt: column `cat` is Dictionary("),
+            "{e}"
+        );
         // A label of strings, and one of Booleans, which reads as 0 and 1.
         let path = dir.join("label.arrow");
         let label = Utf8Array::<i32>::from_slice(["1", "2"]).boxed();
@@ -896,7 +900,10 @@ mod ipc {
             .err()
             .unwrap()
             .to_string();
-        assert!(e.starts_with("po.gbdt: column `y` is Utf8"), "{e}");
+        assert!(
+            e.starts_with("rheon.polars._gbdt: column `y` is Utf8"),
+            "{e}"
+        );
         let path = dir.join("bool.arrow");
         let label = BooleanArray::from([Some(true), None]).boxed();
         write_batches(
@@ -966,8 +973,9 @@ fn a_conversion_pool_above_the_bound_is_refused() {
         panic!("a million threads was accepted");
     };
     assert!(
-        err.to_string()
-            .contains("po.gbdt: threads: 1000000 is more threads than one pool may have"),
+        err.to_string().contains(
+            "rheon.polars._gbdt: threads: 1000000 is more threads than one pool may have"
+        ),
         "{err}"
     );
 }

@@ -176,10 +176,10 @@ common = dict(targets=["ret"], features=["signal_a"], clock="t", gap_cap=300.0,
               half_life=float("inf"), coef_every=0)          # the coefficients on every row
 windowed = po.spec.ewridge("windowed", window_size=100.0, **common)
 alone = po.spec.ewridge("alone", **common)
-in_window = pl.scan_parquet("ticks.parquet").online.fit_predict([windowed]).collect()
+in_window = pl.scan_parquet("ticks.parquet").rheon.fit_predict([windowed]).collect()
 last_t = pl.scan_parquet("ticks.parquet").select(pl.col("t").max()).collect().item()
 # A filter before the bank costs memory on a large file; here it chooses the rows to fit, on a small one.
-last_rows = pl.scan_parquet("ticks.parquet").filter(pl.col("t") > last_t - 100.0).online.fit_predict([alone]).collect()
+last_rows = pl.scan_parquet("ticks.parquet").filter(pl.col("t") > last_t - 100.0).rheon.fit_predict([alone]).collect()
 # The last row's [intercept, signal_a] each way.
 a = in_window["windowed"].struct.field("coef")[-1]
 b = last_rows["alone"].struct.field("coef")[-1]

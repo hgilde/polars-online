@@ -1,5 +1,5 @@
-"""Where `po.eval.diebold_mariano` and `po.eval.clark_west` read null, in the
-frame and over a query alike (task 382b, review of `po.eval` B4, B7 and C2).
+"""Where `rp.eval.diebold_mariano` and `rp.eval.clark_west` read null, in the
+frame and over a query alike (task 382b, review of `rp.eval` B4, B7 and C2).
 
 - **B4.** The per-row form (``half_life=``) applies ``min_samples``: a key's
   statistic is null until it has ``min_samples`` rows with a value, 30 by
@@ -322,7 +322,7 @@ class TestAHalfLifeTooLongForADouble:
         _, sides = CALLS[call]
         rng = np.random.default_rng(1)
         df = _two_specs(*rng.normal(size=(2, 50)))
-        with pytest.raises(ValueError, match=f"^po.eval.{call}: half_life must be finite"):
+        with pytest.raises(ValueError, match=f"^rp.eval.{call}: half_life must be finite"):
             getattr(rp.eval, call)(df.lazy() if lazy else df, **sides, half_life=half_life)
 
     def test_the_longest_a_double_tells_from_none_is_taken(self):

@@ -500,7 +500,7 @@ WHERE_PH = re.compile(
 )
 WHERE_WORDS = re.compile(
     r"^(?:spec|target|group|column|feature|clock|session|weight|model|config|(?:po|rp)\.[\w.]+|pl\.[\w.]+"
-    r"|ModelBank(?:\.\w+)?|bank\.\w+|lf\.online\.\w+|df\.online\.\w+|[\w.]+\([^)]*\)|[a-z_][\w.]*)"
+    r"|ModelBank(?:\.\w+)?|bank\.\w+|lf\.rheon\.\w+|df\.rheon\.\w+|[\w.]+\([^)]*\)|[a-z_][\w.]*)"
     r"(?:\s+(?:\{\}|\"[^\"]*\"|'[^']*'|\[[^\]]*\]|[\w.()\[\]-]+)){0,3}$"
 )
 #: Words that make a run of words before a colon a sentence, not a where.
@@ -1255,10 +1255,10 @@ def documented() -> list[Documented]:
                 kind = "model" if first == "name" else None
             add(f"rheon.{mod}.{name}", obj, kind)
     for frame in (pl.LazyFrame(), pl.DataFrame()):
-        ns = type(frame.online)  # type: ignore[attr-defined]
+        ns = type(frame.rheon)  # type: ignore[attr-defined]
         for name, member in vars(ns).items():
             if not name.startswith("_") and callable(member):
-                add(f"{type(frame).__name__}.online.{name}", member, "method")
+                add(f"{type(frame).__name__}.rheon.{name}", member, "method")
     return out
 
 

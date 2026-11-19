@@ -45,7 +45,7 @@ con = duckdb.connect()                                    # an in-memory databas
 sql = "SELECT * FROM 'ticks.parquet' ORDER BY t"          # clock order, sorted by the database
 fitted = (
     pl.scan_arrow_c_stream(con.cursor().sql(sql))         # a DuckDB relation, on a cursor of its own
-    .online.fit_predict([spec])
+    .rheon.fit_predict([spec])
     .collect()
 )
 # With ADBC, on a cursor of its own: cur.execute(sql), then pl.scan_arrow_c_stream(cur.fetch_arrow())
@@ -58,7 +58,7 @@ read directly.** This code uses `spec` and `fitted` from [Read an SQL statement'
 result into a bank](#read-an-sql-statements-result-into-a-bank):
 
 ```python
-direct = pl.scan_parquet("ticks.parquet").online.fit_predict([spec]).collect()   # the file, already in clock order
+direct = pl.scan_parquet("ticks.parquet").rheon.fit_predict([spec]).collect()   # the file, already in clock order
 print("the same predictions as the file's:",
       fitted["ridge"].struct.field("pred_y").equals(direct["ridge"].struct.field("pred_y")))
 ```

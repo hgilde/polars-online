@@ -172,7 +172,7 @@ ValueError for a ridge below 0.
 
 .. code-block:: python
 
-    po.spec.ewridge("m", targets=["y"], features=["x"])
+    rheon.spec.ewridge("m", targets=["y"], features=["x"])
 
 .. rubric:: See also
 
@@ -189,7 +189,7 @@ A section of the Notes.
 
 
 def model(doc):
-    return wc.Documented("po.spec.m", "model", doc, "p.py", 1, params=True, returns=True)
+    return wc.Documented("rheon.spec.m", "model", doc, "p.py", 1, params=True, returns=True)
 
 
 def test_a_docstring_in_the_order_passes():

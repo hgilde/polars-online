@@ -8,10 +8,7 @@ use rheon_polars::{Bank, Format, RunConfig, run_config};
 
 fn tmp(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
-    p.push(format!(
-        "polars-online-cli-test-{}-{name}",
-        std::process::id()
-    ));
+    p.push(format!("rheon-cli-test-{}-{name}", std::process::id()));
     p
 }
 
@@ -209,7 +206,7 @@ fn resume_from_state_continues_the_stream() {
 /// the run writes a struct holding `n_eff` alone, and the saved state carries
 /// the Gram the run accumulated. The same TOML with `stats` missing still
 /// means mean/std/corr -- the empty list is explicit. `targets` mirrors
-/// `features[0]`, as `po.spec.ew_cov` fills it in (`ModelKind::is_unsupervised`);
+/// `features[0]`, as `rheon.spec.ew_cov` fills it in (`ModelKind::is_unsupervised`);
 /// making it optional in TOML is E53.
 #[test]
 fn accumulate_only_ew_cov_writes_n_eff_alone() {
@@ -659,7 +656,7 @@ fn a_dry_run_refuses_what_the_run_refuses_at_its_first_step() {
 /// Review round 4, SF6: a deployment scripts on the exit status, so it is
 /// pinned. 0 for a run that finished; 1 for every refusal and every error
 /// of a run -- a config that does not parse or is not there, an input that
-/// is not there, a chunk the bank refuses -- with `polars-online: <message>` on
+/// is not there, a chunk the bank refuses -- with `rheon: <message>` on
 /// stderr; and 2 for a command line clap refuses, a usage error.
 #[test]
 fn the_exit_status_is_0_for_a_run_1_for_a_refusal_and_2_for_usage() {
@@ -700,7 +697,7 @@ fn the_exit_status_is_0_for_a_run_1_for_a_refusal_and_2_for_usage() {
         let head: Vec<&std::ffi::OsStr> = head.iter().map(|s| s.as_os_str()).collect();
         let (code, _, err) = online_args(&head, &args);
         assert_eq!(code, Some(1), "{label}: {err}");
-        assert!(err.starts_with("polars-online: "), "{label}: {err}");
+        assert!(err.starts_with("rheon: "), "{label}: {err}");
     }
     let usage: [(&str, &[&str]); 4] = [
         ("no --config", &[]),
@@ -720,7 +717,7 @@ fn the_exit_status_is_0_for_a_run_1_for_a_refusal_and_2_for_usage() {
         };
         let (code, _, err) = online_args(&head, args);
         assert_eq!(code, Some(2), "{label}: {err}");
-        // clap's own voice, not the binary's `polars-online: `.
+        // clap's own voice, not the binary's `rheon: `.
         assert!(err.starts_with("error: "), "{label}: {err}");
     }
     std::fs::remove_dir_all(&dir).unwrap();
@@ -1001,7 +998,7 @@ fn skip_learned_keeps_a_nan_clock_for_the_bank_to_refuse() {
 
 /// Task 198 (D5): a formula target's written form -- its tree in the TOML
 /// file and in a saved state -- is labelled unstable. Under
-/// `POLARS_ONLINE_WARN_UNSTABLE=1` the command line says so on stderr, as
+/// `RHEON_WARN_UNSTABLE=1` the command line says so on stderr, as
 /// Polars' `POLARS_WARN_UNSTABLE` does; without it, or for a config with no
 /// formula target, it says nothing.
 #[test]
@@ -1032,9 +1029,9 @@ fn a_formula_target_is_labelled_unstable_under_the_variable() {
         std::fs::write(&cfg, toml).unwrap();
         let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rheon"));
         cmd.args(["--config", cfg.to_str().unwrap(), "--dry-run"]);
-        cmd.env_remove("POLARS_ONLINE_WARN_UNSTABLE");
+        cmd.env_remove("RHEON_WARN_UNSTABLE");
         if let Some(v) = var {
-            cmd.env("POLARS_ONLINE_WARN_UNSTABLE", v);
+            cmd.env("RHEON_WARN_UNSTABLE", v);
         }
         let out = cmd.output().unwrap();
         let err = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -1047,10 +1044,10 @@ fn a_formula_target_is_labelled_unstable_under_the_variable() {
     assert_eq!(
         warned.lines().collect::<Vec<_>>(),
         [
-            "polars-online: warning: a formula target's written form -- its tree in the TOML \
+            "rheon: warning: a formula target's written form -- its tree in the TOML \
              file and in a saved state -- is considered unstable, so it may change in any \
              release without that being considered a breaking change. Set \
-             POLARS_ONLINE_WARN_UNSTABLE=0, or unset it, to silence this warning."
+             RHEON_WARN_UNSTABLE=0, or unset it, to silence this warning."
         ],
         "{warned}"
     );

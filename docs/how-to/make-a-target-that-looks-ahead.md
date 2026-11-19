@@ -72,7 +72,7 @@ uses `trades.parquet` from [Example data](../EXAMPLE-DATA.md):
 ```python
 # Features that look back, on one clock shared with the model.
 clock = dict(clock="ts", gap_cap="5m", group="symbol")             # one clock for the windows and the model
-trends = pl.scan_parquet("trades.parquet").online.with_windows(    # the features: windows that look back
+trends = pl.scan_parquet("trades.parquet").rheon.with_windows(    # the features: windows that look back
     trend_5s=pl.col("mid") - po.ewm_mean("mid", half_life="5s", window_size="2m"),
     trend_30s=pl.col("mid") - po.ewm_mean("mid", half_life="30s", window_size="2m"),
     **clock,
@@ -84,7 +84,7 @@ fwd_edge = (po.ewm_sum(notional, **next_minute) / po.ewm_sum("quantity", **next_
 # 2 to 4. The target in targets, learned two minutes late, once its minute is known.
 edge = po.spec.ewridge("edge", targets=[fwd_edge], features=["trend_5s", "trend_30s"],
                        half_life="30m", embargo="2m", **clock)
-fitted = trends.online.fit_predict([edge]).collect()      # 5. trades, the two trends, and the column edge
+fitted = trends.rheon.fit_predict([edge]).collect()      # 5. trades, the two trends, and the column edge
 expression = fitted["edge"].struct
 print(f"rows {fitted.height}, of which predicted {fitted.height - expression.field('pred_fwd_edge').null_count()}")
 print(f"resid_fwd_edge null on {expression.field('resid_fwd_edge').null_count()} rows")
@@ -92,7 +92,7 @@ print(f"resid_fwd_edge null on {expression.field('resid_fwd_edge').null_count()}
 # An embargo shorter than the target's window is refused.
 short = po.spec.ewridge("short", targets=[fwd_edge], features=["trend_5s"], half_life="30m", embargo="30s", **clock)
 try:
-    trends.online.fit_predict([short])                    # refused when the query is built
+    trends.rheon.fit_predict([short])                    # refused when the query is built
 except ValueError as e:
     print(str(e).split(". ")[0])
 ```
@@ -126,10 +126,10 @@ targets](#give-the-target-as-a-formula-in-the-specs-targets):
 
 ```python
 # The same target as a column, and the same model on it.
-as_column = trends.online.with_windows(fwd_edge, like=edge).collect()   # the target the model learned, as a column
+as_column = trends.rheon.with_windows(fwd_edge, like=edge).collect()   # the target the model learned, as a column
 by_column = po.spec.ewridge("by_column", targets=["fwd_edge"], features=["trend_5s", "trend_30s"],
                             half_life="30m", embargo="2m", **clock)     # the same model, its target named as that column
-column_form = as_column.online.fit_predict([by_column])
+column_form = as_column.rheon.fit_predict([by_column])
 
 # The two forms compared row for row.
 expression, column = fitted["edge"].struct, column_form["by_column"].struct
@@ -182,12 +182,12 @@ fwd_move = (
 ).alias("fwd_move")                                                        # the alias names the target
 ahead_5m = po.spec.ewridge("ahead_5m", targets=[fwd_move], features=["flow"],
                            clock="ts", gap_cap="5m", half_life="30m", embargo="5m", group="symbol")
-moves = flows.online.fit_predict([ahead_5m]).online.unnest([ahead_5m]).collect()   # does buying predict the price rising?
+moves = flows.rheon.fit_predict([ahead_5m]).rheon.unnest([ahead_5m]).collect()   # does buying predict the price rising?
 
 # The same target as a column, made in the query by with_windows on the spec's clock, then named in targets.
 as_column = {**ahead_5m, "targets": ["fwd_move"]}                      # a spec is a dict: a copy with the column as target
-made = po.stream.with_windows(flows, fwd_move, like=ahead_5m).online.fit_predict([as_column])   # like= takes the spec's clock settings, and nulls the target where the spec would not learn
-column = made.online.unnest([as_column]).collect()
+made = po.stream.with_windows(flows, fwd_move, like=ahead_5m).rheon.fit_predict([as_column])   # like= takes the spec's clock settings, and nulls the target where the spec would not learn
+column = made.rheon.unnest([as_column]).collect()
 
 # The two forms side by side.
 same = (moves["pred_fwd_move"] == column["pred_fwd_move"]).sum()
@@ -237,7 +237,7 @@ returns = flows.with_columns(
 )
 vs_mid = po.spec.ewridge("vs_mid", targets=["ratio", "fwd_return", "log_ret", "diff"], features=["flow"],
                          clock="ts", gap_cap="5m", half_life="30m", group="symbol", emit_metrics=True)
-against_mid = returns.online.fit_predict([vs_mid]).online.unnest([vs_mid]).collect()
+against_mid = returns.rheon.fit_predict([vs_mid]).rheon.unnest([vs_mid]).collect()
 # How often each form's prediction had the sign right.
 for target in ["ratio", "fwd_return", "log_ret", "diff"]:
     print(f"hit_rate of {target}: {against_mid[f'hit_rate_{target}'].drop_nulls()[-1]:.2f}")
@@ -268,7 +268,7 @@ skips any row with a null feature. This code uses `trades.parquet` from
 edges = pl.scan_parquet("trades.parquet").with_columns(edge=(pl.col("price") - pl.col("mid")).abs())   # the target as a column, null on the quotes
 by_size = po.spec.ewridge("by_size", targets=["edge"], features=["quantity"],
                           clock="ts", gap_cap="5m", half_life="30m", group="symbol")
-printed = edges.online.fit_predict([by_size]).online.unnest([by_size]).collect()   # does a larger trade print farther from the mid?
+printed = edges.rheon.fit_predict([by_size]).rheon.unnest([by_size]).collect()   # does a larger trade print farther from the mid?
 is_trade = printed["quantity"].is_not_null()
 print(f"trades predicted: {printed.filter(is_trade)['pred_edge'].count()} of {is_trade.sum()}")
 print(f"quotes predicted: {printed.filter(~is_trade)['pred_edge'].count()} of {(~is_trade).sum()}")

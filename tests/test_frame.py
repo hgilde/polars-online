@@ -1,4 +1,4 @@
-"""E33: the bank as a polars source -- `lf.online.fit_predict(specs)`.
+"""E33: the bank as a polars source -- `lf.rheon.fit_predict(specs)`.
 
 A LazyFrame in, a LazyFrame out, streamed through a fresh bank when the plan
 runs, so a query with the bank in it stays O(chunk). Held here to the numbers
@@ -111,7 +111,7 @@ def _no_coef(df: pl.DataFrame) -> pl.DataFrame:
 @pytest.mark.parametrize("engine", ["streaming", "in-memory"])
 def test_the_plan_gives_the_banks_numbers(engine):
     df = _frame()
-    plan = df.lazy().online.fit_predict([_spec()], chunk_size=1000)
+    plan = df.lazy().rheon.fit_predict([_spec()], chunk_size=1000)
     assert isinstance(plan, pl.LazyFrame)
     assert plan.collect(engine=engine).equals(_bank_loop(df, 1000))
     # ... and the whole-frame bank's, up to coef's cadence.
@@ -124,16 +124,16 @@ def test_chunk_size_is_only_a_resource_knob():
     df = _frame(n=3000)
     want = _no_coef(rp.ModelBank([_spec()]).fit_predict(df))
     for chunk_size in (37, 1000, 100_000):
-        got = df.lazy().online.fit_predict([_spec()], chunk_size=chunk_size).collect()
+        got = df.lazy().rheon.fit_predict([_spec()], chunk_size=chunk_size).collect()
         assert _no_coef(got).equals(want), chunk_size
     with pytest.raises(ValueError, match="chunk_size must be at least 1"):
-        df.lazy().online.fit_predict([_spec()], chunk_size=0)
+        df.lazy().rheon.fit_predict([_spec()], chunk_size=0)
 
 
 def test_the_plan_is_pure():
     """Every execution starts from the same state: a fresh bank per run."""
     df = _frame(n=2000)
-    plan = df.lazy().online.fit_predict([_spec()])
+    plan = df.lazy().rheon.fit_predict([_spec()])
     first = plan.collect()
     assert plan.collect().equals(first)
     assert plan.collect(engine="streaming").equals(first)
@@ -147,7 +147,7 @@ def test_pushdowns_are_honoured_after_the_model():
     downstream filter never changes what the bank learns from."""
     df = _frame()
     ref = _bank_loop(df, 1000)
-    plan = df.lazy().online.fit_predict([_spec()], chunk_size=1000)
+    plan = df.lazy().rheon.fit_predict([_spec()], chunk_size=1000)
     weight_sum = pl.col("ridge").struct.field("weight_sum")
     cases = {
         "filter on the model's output": lambda lf: lf.filter(weight_sum > 30.0),
@@ -173,7 +173,7 @@ def test_pushdowns_are_honoured_after_the_model():
             assert got.equals(want), (name, engine)
     # A filter that means to change what the bank learns from goes before it.
     want = _bank_loop(df.filter(pl.col("g") == "a"), 1000)
-    got = df.lazy().filter(pl.col("g") == "a").online.fit_predict([_spec()], chunk_size=1000)
+    got = df.lazy().filter(pl.col("g") == "a").rheon.fit_predict([_spec()], chunk_size=1000)
     assert got.collect().equals(want)
 
 
@@ -187,7 +187,7 @@ def test_the_input_is_read_in_chunks_and_only_as_far_as_needed(engine):
     TA11)."""
     df = _frame(n=50000)
     lf, calls, closed = _counted_source(df, 500)
-    plan = lf.online.fit_predict([_spec()], chunk_size=500)
+    plan = lf.rheon.fit_predict([_spec()], chunk_size=500)
     assert plan.collect(engine=engine).equals(_bank_loop(df, 500))
     assert len(calls) == 100 and closed == [100]
     for n in (10, 2500):
@@ -210,7 +210,7 @@ def test_projection_reaches_the_input():
         return v
 
     lf = df.lazy().with_columns(wide=pl.col("x0").map_elements(expensive, return_dtype=pl.Float64))
-    plan = lf.online.fit_predict([_spec()], chunk_size=1000)
+    plan = lf.rheon.fit_predict([_spec()], chunk_size=1000)
     got = plan.select("t", "ridge").collect()
     assert got.equals(_bank_loop(df, 1000).select("t", "ridge"))
     assert calls == []
@@ -223,16 +223,16 @@ def test_sink_equals_collect(tmp_path):
     src = tmp_path / "in.parquet"
     df.write_parquet(src)
     ran = tmp_path / "run.parquet"
-    pl.scan_parquet(src).online.fit_predict([_spec()], chunk_size=3000).collect().write_parquet(ran)
+    pl.scan_parquet(src).rheon.fit_predict([_spec()], chunk_size=3000).collect().write_parquet(ran)
     sunk = tmp_path / "sink.parquet"
-    pl.scan_parquet(src).online.fit_predict([_spec()], chunk_size=3000).sink_parquet(
+    pl.scan_parquet(src).rheon.fit_predict([_spec()], chunk_size=3000).sink_parquet(
         sunk, engine="streaming"
     )
     assert pl.read_parquet(sunk).equals(pl.read_parquet(ran))
     # ... and composes with polars after the bank, in the streaming engine.
     out = (
         pl.scan_parquet(src)
-        .online.fit_predict([_spec()], chunk_size=3000)
+        .rheon.fit_predict([_spec()], chunk_size=3000)
         .filter(pl.col("ridge").struct.field("weight_sum") > 30.0)
         .group_by("g")
         .agg(pl.col("ridge").struct.field("resid_y").abs().mean().alias("mae"))
@@ -259,15 +259,15 @@ def test_load_state_resumes_the_bank(tmp_path):
     state = tmp_path / "bank.state"
     bank.save(state)
     want = bank.fit_predict(tail)
-    plan = tail.lazy().online.fit_predict(load_state=state)
+    plan = tail.lazy().rheon.fit_predict(load_state=state)
     assert plan.collect().equals(want)
     assert plan.collect().equals(want)  # the plan carries the state; each run starts from it
-    assert tail.lazy().online.fit_predict([_spec()], load_state=state).collect().equals(want)
-    assert tail.online.fit_predict(load_state=state).equals(want)
+    assert tail.lazy().rheon.fit_predict([_spec()], load_state=state).collect().equals(want)
+    assert tail.rheon.fit_predict(load_state=state).equals(want)
     with pytest.raises(
-        ValueError, match="online.fit_predict: neither specs nor load_state is given"
+        ValueError, match="rheon.fit_predict: neither specs nor load_state is given"
     ):
-        tail.lazy().online.fit_predict()
+        tail.lazy().rheon.fit_predict()
 
 
 def test_predict_scores_the_bank_as_it_stands(tmp_path):
@@ -279,25 +279,25 @@ def test_predict_scores_the_bank_as_it_stands(tmp_path):
     today = df.tail(1000)
     want = bank.predict(today)
     for name, b in {"bank": bank, "path": state, "str": str(state)}.items():
-        assert today.lazy().online.predict(b).collect().equals(want), name
-        assert today.lazy().online.predict(b).collect(engine="streaming").equals(want), name
-        assert today.online.predict(b).equals(want), name
+        assert today.lazy().rheon.predict(b).collect().equals(want), name
+        assert today.lazy().rheon.predict(b).collect(engine="streaming").equals(want), name
+        assert today.rheon.predict(b).equals(want), name
         # `predict` reports coef on each chunk's last row, as fit_predict does.
-        chunked = today.lazy().online.predict(b, chunk_size=300).collect()
+        chunked = today.lazy().rheon.predict(b, chunk_size=300).collect()
         assert _no_coef(chunked).equals(_no_coef(want)), name
     assert bank.rows_fed == 3000  # nothing learned
     # The target is optional when scoring.
-    no_target = today.lazy().online.predict(bank).select("t")
+    no_target = today.lazy().rheon.predict(bank).select("t")
     assert no_target.collect().equals(today.select("t"))
     assert (
-        today.drop("y").lazy().online.predict(bank).collect().equals(bank.predict(today.drop("y")))
+        today.drop("y").lazy().rheon.predict(bank).collect().equals(bank.predict(today.drop("y")))
     )
 
 
 def test_the_eager_and_typed_forms_are_the_bank():
     df = _frame(n=1500)
     want = rp.ModelBank([_spec()]).fit_predict(df)
-    assert df.online.fit_predict([_spec()]).equals(want)
+    assert df.rheon.fit_predict([_spec()]).equals(want)
     assert rp.fit_predict(df, [_spec()]).equals(want)
     assert rp.fit_predict(df.lazy(), [_spec()]).collect().equals(want)
     assert isinstance(rp.fit_predict(df.lazy(), [_spec()]), pl.LazyFrame)
@@ -305,16 +305,16 @@ def test_the_eager_and_typed_forms_are_the_bank():
     bank.fit_predict(df)
     assert rp.predict(df, bank).equals(bank.predict(df))
     assert rp.predict(df.lazy(), bank).collect().equals(bank.predict(df))
-    with pytest.raises(TypeError, match="po.fit_predict: it takes a Polars DataFrame or LazyFrame"):
+    with pytest.raises(TypeError, match="rp.fit_predict: it takes a Polars DataFrame or LazyFrame"):
         rp.fit_predict(df.to_dict(), [_spec()])  # type: ignore[call-overload]
-    with pytest.raises(TypeError, match="po.predict: it takes a Polars DataFrame or LazyFrame"):
+    with pytest.raises(TypeError, match="rp.predict: it takes a Polars DataFrame or LazyFrame"):
         rp.predict([1, 2], bank)  # type: ignore[call-overload]
 
 
 def test_an_empty_plan_has_the_schema():
     df = _frame(n=100)
     for plan in (df.clear().lazy(), df.lazy().filter(pl.lit(False))):
-        out = plan.online.fit_predict([_spec()]).collect()
+        out = plan.rheon.fit_predict([_spec()]).collect()
         assert out.height == 0
         assert out.schema == rp.ModelBank([_spec()]).fit_predict(df).schema
 
@@ -334,13 +334,13 @@ def test_errors_name_the_problem():
     # refused while the plan is built, the way polars reports its own schema
     # errors: the output schema comes from the bank run on no rows.
     with pytest.raises(ValueError, match=r'feature column "nope" is not in the input'):
-        df.lazy().online.fit_predict([_spec(features=["nope"])])
+        df.lazy().rheon.fit_predict([_spec(features=["nope"])])
     bad = df.with_columns(pl.col("x0").cast(pl.String))
     with pytest.raises(TypeError, match=r'feature column "x0" must be a number, but it is String'):
-        bad.lazy().online.fit_predict([_spec()])
+        bad.lazy().rheon.fit_predict([_spec()])
     # An error the rows raise surfaces carrying the bank's message -- here a
     # clock that runs backwards -- wrapped or not, by version (`_REFUSAL`).
-    plan = df.reverse().lazy().online.fit_predict([_spec()])
+    plan = df.reverse().lazy().rheon.fit_predict([_spec()])
     with pytest.raises(_REFUSAL, match="clock"):
         plan.collect()
 
@@ -350,7 +350,7 @@ def test_chunks_arrive_in_stream_order():
     plan reaches the bank sorted, and so does a per-group stream."""
     df = _frame(n=3000)
     shuffled = df.sample(fraction=1.0, shuffle=True, seed=1)
-    plan = shuffled.lazy().sort("t").online.fit_predict([_spec()], chunk_size=400)
+    plan = shuffled.lazy().sort("t").rheon.fit_predict([_spec()], chunk_size=400)
     assert plan.collect(engine="streaming").equals(_bank_loop(df, 400))
     n = plan.select(pl.col("ridge").struct.field("weight_sum")).collect()["weight_sum"]
     assert math.isclose(n.max(), _bank_loop(df, 400)["ridge"].struct.field("weight_sum").max())
@@ -374,14 +374,14 @@ def test_save_state_is_the_banks_state_after_the_stream(tmp_path):
     df = _frame(n=4000)
     want = _bank_after(df)
     state = tmp_path / "bank.state"
-    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_size=700)
+    plan = df.lazy().rheon.fit_predict([_spec()], save_state=state, chunk_size=700)
     assert not state.exists()
     for engine in ("streaming", "in-memory"):
         assert plan.collect(engine=engine).equals(_bank_loop(df, 700))
         assert state.read_bytes() == want, engine
         state.unlink()
     for spell in (
-        lambda: df.online.fit_predict([_spec()], save_state=state),
+        lambda: df.rheon.fit_predict([_spec()], save_state=state),
         lambda: rp.fit_predict(df, [_spec()], save_state=state),
         lambda: rp.fit_predict(df.lazy(), [_spec()], save_state=state).collect(),
         lambda: rp.fit_predict(df.lazy(), [_spec()], save_state=str(state)).collect(),
@@ -400,7 +400,7 @@ def test_save_state_follows_head(tmp_path):
     the source (after a `sort`) runs the whole stream, and writes its state."""
     df = _frame(n=4000)
     state = tmp_path / "bank.state"
-    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_size=700)
+    plan = df.lazy().rheon.fit_predict([_spec()], save_state=state, chunk_size=700)
     for n in (1, 699, 700, 701, 2345, 4000, 5000):
         got = plan.head(n).collect()
         assert got.height == min(n, 4000)
@@ -418,7 +418,7 @@ def test_a_plan_used_twice_in_one_query_writes_the_same_state_twice(tmp_path):
     df = _frame(n=4000)
     want = _bank_after(df)
     state = tmp_path / "bank.state"
-    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_size=500)
+    plan = df.lazy().rheon.fit_predict([_spec()], save_state=state, chunk_size=500)
     ref = _bank_loop(df, 500)
     assert pl.concat([plan, plan]).collect().equals(pl.concat([ref, ref]))
     assert state.read_bytes() == want
@@ -444,7 +444,7 @@ def test_a_run_that_does_not_reach_the_end_writes_nothing(tmp_path):
     df = _frame(n=40000)
     state = tmp_path / "bank.state"
     lf, _, closed = _counted_source(df, 500)
-    plan = lf.online.fit_predict([_spec()], save_state=state, chunk_size=500)
+    plan = lf.rheon.fit_predict([_spec()], save_state=state, chunk_size=500)
     batches = plan.collect_batches(chunk_size=500)
     assert next(batches).height == 500
     del batches, plan
@@ -453,7 +453,7 @@ def test_a_run_that_does_not_reach_the_end_writes_nothing(tmp_path):
     # of 80: so it was abandoned, not run to the end.
     assert _until_closed(closed) <= 1 + 2 * READ_AHEAD
     assert not state.exists()
-    plan = df.reverse().lazy().online.fit_predict([_spec()], save_state=state, chunk_size=500)
+    plan = df.reverse().lazy().rheon.fit_predict([_spec()], save_state=state, chunk_size=500)
     with pytest.raises(_REFUSAL, match="clock"):
         plan.collect()
     assert not state.exists()
@@ -470,7 +470,7 @@ def test_a_run_that_does_not_reach_the_end_writes_nothing(tmp_path):
     # version, and the hazard is strictly smaller on 2.0, so this asserts the
     # one the installed polars has rather than pinning either
     # (docs/records/RELEASE-HISTORY.md, "Polars 2.0.0rc1, measured").
-    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_size=500)
+    plan = df.lazy().rheon.fit_predict([_spec()], save_state=state, chunk_size=500)
     with pytest.raises(pl.exceptions.InvalidOperationError):
         plan.with_columns(pl.col("g").cast(pl.Int64, strict=True)).collect()
     if state.exists():
@@ -489,7 +489,7 @@ def test_load_and_save_the_same_path_resumes_in_place(tmp_path):
     parts = [df.slice(0, 900), df.slice(900, 1300), df.slice(2200, 1800)]
     got = []
     for i, part in enumerate(parts):
-        plan = part.lazy().online.fit_predict(
+        plan = part.lazy().rheon.fit_predict(
             [_spec()], load_state=state if i else None, save_state=state, chunk_size=500
         )
         got.append(plan.collect())
@@ -499,19 +499,19 @@ def test_load_and_save_the_same_path_resumes_in_place(tmp_path):
     # file rewritten in between gives the same frame; the same for `predict`.
     # It resumes on the rows after the state's: the ones it has learned
     # would step each group's clock back, which the default refuses.
-    resume = after.lazy().online.fit_predict(load_state=state, chunk_size=500)
-    score = after.lazy().online.predict(state, chunk_size=500)
+    resume = after.lazy().rheon.fit_predict(load_state=state, chunk_size=500)
+    score = after.lazy().rheon.predict(state, chunk_size=500)
     first, scored = resume.collect(), score.collect()
-    parts[0].lazy().online.fit_predict([_spec()], save_state=state).collect()
+    parts[0].lazy().rheon.fit_predict([_spec()], save_state=state).collect()
     assert resume.collect().equals(first)
     assert score.collect().equals(scored)
-    assert not after.lazy().online.predict(state).collect().equals(scored)
+    assert not after.lazy().rheon.predict(state).collect().equals(scored)
     # ... and `load_state=p, save_state=p` used twice in one query resumes
     # from the file's state twice, not from what the first run wrote.
     plan = (
         parts[1]
         .lazy()
-        .online.fit_predict([_spec()], load_state=state, save_state=state, chunk_size=500)
+        .rheon.fit_predict([_spec()], load_state=state, save_state=state, chunk_size=500)
     )
     pl.concat([plan, plan]).collect()
     assert state.read_bytes() == _bank_after(pl.concat(parts[:2]))
@@ -522,18 +522,18 @@ def test_save_state_is_checked_when_the_plan_is_built(tmp_path):
     with pytest.raises(
         FileNotFoundError, match="save_state names a file in the folder .*, which does not exist"
     ):
-        df.lazy().online.fit_predict([_spec()], save_state=tmp_path / "nope" / "bank.state")
+        df.lazy().rheon.fit_predict([_spec()], save_state=tmp_path / "nope" / "bank.state")
     with pytest.raises(
         FileNotFoundError, match="save_state names a file in the folder .*, which does not exist"
     ):
-        df.online.fit_predict([_spec()], save_state=tmp_path / "nope" / "bank.state")
+        df.rheon.fit_predict([_spec()], save_state=tmp_path / "nope" / "bank.state")
     with pytest.raises(FileNotFoundError):
-        df.lazy().online.fit_predict(load_state=tmp_path / "nope.state")
+        df.lazy().rheon.fit_predict(load_state=tmp_path / "nope.state")
     with pytest.raises(FileNotFoundError):
-        df.lazy().online.predict(tmp_path / "nope.state")
+        df.lazy().rheon.predict(tmp_path / "nope.state")
     # `predict` moves no state and so has nothing to save.
     with pytest.raises(TypeError, match="save_state"):
-        df.lazy().online.predict(tmp_path / "nope.state", save_state=tmp_path / "s")  # type: ignore[call-arg]
+        df.lazy().rheon.predict(tmp_path / "nope.state", save_state=tmp_path / "s")  # type: ignore[call-arg]
 
 
 def test_a_save_state_that_is_a_directory_is_refused_before_the_stream(tmp_path):
@@ -545,8 +545,8 @@ def test_a_save_state_that_is_a_directory_is_refused_before_the_stream(tmp_path)
     where = tmp_path / "a_directory"
     where.mkdir()
     for build in (
-        lambda: df.lazy().online.fit_predict([_spec()], save_state=where),
-        lambda: df.lazy().online.with_windows(
+        lambda: df.lazy().rheon.fit_predict([_spec()], save_state=where),
+        lambda: df.lazy().rheon.with_windows(
             f=rp.ewm_mean("x0", half_life=5.0), clock="t", gap_cap=10.0, save_state=where
         ),
     ):

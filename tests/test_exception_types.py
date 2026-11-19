@@ -213,16 +213,16 @@ def _calendar_every_that_is_no_duration(w: SimpleNamespace) -> object:
 def _unnest_twice(w: SimpleNamespace) -> object:
     other = _spec("n", half_life=40.0)
     nested = rp.ModelBank([_spec(), other]).fit_predict(w.df)
-    return nested.online.unnest([_spec(), other])
+    return nested.rheon.unnest([_spec(), other])
 
 
 def _save_state_missing_folder(w: SimpleNamespace) -> object:
-    plan = w.df.lazy().online.fit_predict([_spec()], save_state=w.tmp / "nope" / "s.state")
+    plan = w.df.lazy().rheon.fit_predict([_spec()], save_state=w.tmp / "nope" / "s.state")
     return plan.collect()
 
 
 def _save_state_folder(w: SimpleNamespace) -> object:
-    return w.df.lazy().online.fit_predict([_spec()], save_state=w.tmp).collect()
+    return w.df.lazy().rheon.fit_predict([_spec()], save_state=w.tmp).collect()
 
 
 def _closed_missing_folder(w: SimpleNamespace) -> object:
@@ -796,7 +796,7 @@ def test_the_library_s_own_classes_keep_their_parents_in_the_rule_s_order() -> N
 
 CLI_EXITS = {
     "SUCCESS": "0: a run that finished",
-    "FAILURE": "1: every refusal and every error of a run, as `polars-online: <message>` on stderr",
+    "FAILURE": "1: every refusal and every error of a run, as `rheon: <message>` on stderr",
     "usage": "2: a command line clap refuses, as `error: <message>` (clap's own voice)",
 }
 
@@ -881,7 +881,7 @@ def test_the_command_line_exits_1_with_its_prefix_for_an_io_or_config_error(
 ) -> None:
     done = _run_cli(rheon_cli, *arrange(tmp_path))
     assert done.returncode == 1, f"{label}: {done.stderr}"
-    assert done.stderr.startswith("polars-online: "), f"{label}: {done.stderr}"
+    assert done.stderr.startswith("rheon: "), f"{label}: {done.stderr}"
     assert fragment in done.stderr, f"{label}: {done.stderr}"
 
 
@@ -900,7 +900,7 @@ def test_the_command_line_names_permission_denied_for_a_config_it_cannot_read(
     finally:
         config.chmod(0o600)
     assert done.returncode == 1, done.stderr
-    assert done.stderr.startswith("polars-online: reading "), done.stderr
+    assert done.stderr.startswith("rheon: reading "), done.stderr
     assert "(os error 13)" in done.stderr, done.stderr
 
 

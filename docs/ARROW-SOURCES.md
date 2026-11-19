@@ -159,7 +159,7 @@ takes the same scan, so the pipeline stays lazy from the query to the output:
 
 ```python
 cur.execute("SELECT t, x0, y FROM ticks ORDER BY t")
-plan = pl.scan_arrow_c_stream(cur.fetch_arrow()).online.fit_predict([spec])
+plan = pl.scan_arrow_c_stream(cur.fetch_arrow()).rheon.fit_predict([spec])
 plan.sink_parquet("out.parquet")        # or .collect(), or .collect_batches()
 ```
 
@@ -345,7 +345,7 @@ order and stream them straight into a bank, lazily, through to a sink:
 
 ```python
 rel = con.sql("SELECT t, x0, y FROM ticks ORDER BY t")
-pl.scan_arrow_c_stream(rel).online.fit_predict([spec]).sink_parquet("out.parquet")
+pl.scan_arrow_c_stream(rel).rheon.fit_predict([spec]).sink_parquet("out.parquet")
 ```
 
 - **The order survives the stream.** A table stored in shuffled order came out

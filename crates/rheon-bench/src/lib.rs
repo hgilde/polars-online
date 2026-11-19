@@ -329,7 +329,7 @@ fn names(prefix: &str, n: usize) -> Vec<String> {
     (0..n).map(|j| format!("{prefix}{j}")).collect()
 }
 
-/// A case's spec, as `po.spec` writes it, with the shape of its rows. The
+/// A case's spec, as `rheon.spec` writes it, with the shape of its rows. The
 /// sizes and settings are `scripts/benchmark.py`'s rows of the same names,
 /// so a count and a throughput figure describe one workload.
 fn case_spec(id: &str) -> (Value, Shape) {
@@ -839,7 +839,7 @@ pub struct WindowsCase {
     frame: DataFrame,
 }
 
-/// A window case's formula, as `po.ops` writes it.
+/// A window case's formula, as `rp.ops` writes it.
 fn window_tree(id: &str) -> Value {
     let op = match id {
         "window_ewm_mean_w10k" => "ewm_mean",

@@ -1,4 +1,4 @@
-"""``po.stream`` on the paths no other test took (task 252): ``with_windows``
+"""``rp.stream`` on the paths no other test took (task 252): ``with_windows``
 under a filter Polars pushes into its source and a ``head`` longer than the
 stream, a spent single-use source under ``with_windows``, and the refusals
 of an expression that is not one, a NaN clock quantity, a chunk size below

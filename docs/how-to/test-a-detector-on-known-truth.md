@@ -111,7 +111,7 @@ returns = pl.scan_parquet("known.parquet").with_columns(pl.col("x_1", "x_2").dif
 # 4 and 5. The detector, and the first row of each run of flags.
 watch = po.spec.corrchange("watch", features=["x_1", "x_2"], kind="sequential",
                            window_rows=300, monitor_rows=1_000)
-out = returns.online.fit_predict([watch]).collect().unnest("watch")
+out = returns.rheon.fit_predict([watch]).collect().unnest("watch")
 found = out.filter(pl.col("flag") & ~pl.col("flag").shift(1, fill_value=False))["t"].to_list()
 # 6. Each planted change beside the first flag after it, and the flags no change explains.
 planted = out.filter(pl.col("state") != pl.col("state").shift(1))["t"].to_list()
@@ -148,7 +148,7 @@ flags = 0
 for seed in range(10):
     quiet = po.sim.regimes(2, states=[0.35], transition=[[1.0]], n_blocks=6, rows_per_block=1_000, seed=seed)
     quiet["rows"].write_parquet("quiet.parquet")
-    out = pl.scan_parquet("quiet.parquet").with_columns(pl.col("x_1", "x_2").diff()).online.fit_predict([watch]).collect()
+    out = pl.scan_parquet("quiet.parquet").with_columns(pl.col("x_1", "x_2").diff()).rheon.fit_predict([watch]).collect()
     flags += out["watch"].struct.field("flag").sum()
 print(f"flags on 60,000 rows with no change: {flags}")
 ```

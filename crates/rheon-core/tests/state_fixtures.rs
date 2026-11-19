@@ -572,10 +572,8 @@ fn the_fixtures_cover_the_schemas_this_build_loads() {
 /// refused; a set with fixtures passes and is counted.
 #[test]
 fn a_kept_schema_without_its_set_on_disk_is_refused() {
-    let root = std::env::temp_dir().join(format!(
-        "polars-online-state-fixture-sets-{}",
-        std::process::id()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("rheon-state-fixture-sets-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let missing = set_on_disk(&root, 44).unwrap_err();

@@ -162,7 +162,7 @@ def _toml_value(v: object) -> str:
 
     Infinities go as the strings the spec layer already uses for them
     (`rheon_core::humanfloat`), so a config round-trips a `half_life = inf`
-    the way `po.spec` writes it.
+    the way `rheon.spec` writes it.
     """
     if isinstance(v, bool):  # before int: bool is an int in Python
         return "true" if v else "false"

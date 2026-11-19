@@ -505,8 +505,8 @@ def _input_tree(who: str, value: Any) -> list[Any]:
             raise ValueError(
                 f"{who}: the input holds another window operator, but an operator's input may "
                 f"hold only columns and Polars expressions of the same row (a column "
-                f'computation, such as pl.col("x") + 1), or po.increment. To apply an operator to '
-                f"another's output, add the inner one as a column with po.stream.with_windows "
+                f'computation, such as pl.col("x") + 1), or rp.increment. To apply an operator to '
+                f"another's output, add the inner one as a column with rp.stream.with_windows "
                 f"first, and pass that column."
             )
         return tree
@@ -596,7 +596,7 @@ def operator(
     a variance's alone, ``quantile`` a quantile's. ``who`` is the call a
     message names, ``po.<name>`` unless given: a window looking ahead is
     ``ewm_*(reverse=True)`` to the caller and ``rewm_*`` in the tree."""
-    who = who or f"po.{name}"
+    who = who or f"rp.{name}"
     tree = _input_tree(who, input)
     if name == "increment":
         return operator_column(["increment", tree])

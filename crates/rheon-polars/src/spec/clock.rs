@@ -97,7 +97,7 @@ pub enum ClockScale {
     Durations(&'static str),
 }
 
-/// A clock policy in a caller's own words: a spec's, or `po.stream.with_windows`'
+/// A clock policy in a caller's own words: a spec's, or `rp.stream.with_windows`'
 /// (docs/PLAN.md task 78: one set of clock rules, stated once).
 pub(crate) struct ClockPolicy<'a> {
     /// How a message names the caller: `spec "name"`, or `windows`.

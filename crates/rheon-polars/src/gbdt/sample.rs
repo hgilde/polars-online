@@ -223,7 +223,7 @@ impl Sampler {
                 j,
                 layout,
                 self.seen,
-                "po.gbdt.xgboost_matrix",
+                "rheon.polars._gbdt.xgboost_matrix",
             )?)
         } else {
             None

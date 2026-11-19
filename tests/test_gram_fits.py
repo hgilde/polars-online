@@ -59,7 +59,7 @@ def python_lasso_path(
     max_iter=1000,
     tol=1e-10,
 ):
-    """``po.gram.lasso_path`` as 0.13.0 ran it, in Python: the reference the
+    """``rheon.gram.lasso_path`` as 0.13.0 ran it, in Python: the reference the
     Rust descent is held to. Its defaults follow the Rust function's (``tol``
     1e-10 since 1.0, the ``lasso`` model's; 0.13.0 ran 1e-7), and so does its
     stopping rule since task 278 (D3): a sweep's largest move against ``tol``
@@ -299,7 +299,7 @@ class TestLarsPath:
             (dict(max_active=2.0), "max_active must be a whole number of at least 1"),
             (
                 dict(penalty_weights=[1.0, 0.0, 1.0, 1.0, 1.0]),
-                "use po.gram.lasso_path for a weight of 0",
+                "use rheon.gram.lasso_path for a weight of 0",
             ),
             (dict(penalty_weights=[1.0]), r"one entry for each of the \d+ features"),
             (dict(features=["intercept"]), "constant column"),
@@ -562,7 +562,7 @@ class TestSolveSubsets:
 class TestCompactGram:
     """``bank.gram(dtype="float32")`` and ``layout="packed"`` (docs/PLAN.md
     task 229): the co-moments rounded to float32, or their upper triangle,
-    and every function of ``po.gram`` reading each form in float64."""
+    and every function of ``rheon.gram`` reading each form in float64."""
 
     @staticmethod
     def bank(df=None, **kw):
@@ -842,7 +842,7 @@ class TestLarsPathsTakeLarsPathsArguments:
 
     def test_its_refusals_are_lars_paths(self):
         grams = grouped_grams()
-        with pytest.raises(ValueError, match="use po.gram.lasso_path for a weight of 0"):
+        with pytest.raises(ValueError, match="use rheon.gram.lasso_path for a weight of 0"):
             pg.lars_paths(grams, penalty_weights=[1.0, 0.0, 1.0, 1.0, 1.0, 1.0])
         with pytest.raises(ValueError, match=r"one entry for each of the \d+ features"):
             pg.lars_paths(grams, penalty_weights=[1.0])

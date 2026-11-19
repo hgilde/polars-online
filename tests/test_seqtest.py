@@ -12,7 +12,7 @@ Four kinds of check:
   numpy (nulls, zeros, resets, ``min_weight``) and is held to the bank to
   ``1e-12``; where the clip never binds the wealth has the closed form
   ``2^n B(n_pos + 1/2, n_neg + 1/2) / pi``, held through ``math.lgamma``;
-  and ``po.eval.seqtest`` -- the same computation in polars expressions --
+  and ``rp.eval.seqtest`` -- the same computation in polars expressions --
   is held to the bank bit for bit over a million rows, in both modes.
 - **The guarantee.** Type I error over twenty thousand fair-coin streams,
   and twenty thousand *dependent* streams that are still null (the sign is
@@ -769,9 +769,9 @@ class TestEdgeCases:
         df = frame(n=2000, m=2, seed=36, null_every=5, groups=["p", "q"])
         s = spec(targets=["d0", "d1"], group="g", min_weight=2.0)
         bank = rp.ModelBank([s]).fit_predict(df)
-        lazy = df.lazy().online.fit_predict([s], chunk_size=128).collect()
+        lazy = df.lazy().rheon.fit_predict([s], chunk_size=128).collect()
         assert bank.equals(lazy, null_equal=True)
-        assert df.online.fit_predict([s]).equals(bank, null_equal=True)
+        assert df.rheon.fit_predict([s]).equals(bank, null_equal=True)
 
     def test_determinism(self):
         df = frame(n=3000, seed=38, groups=["p", "q"])
@@ -831,7 +831,7 @@ class TestEdgeCases:
                 ),
             }
         )
-        unnest = rp.ModelBank([s]).fit_predict(frame(n=5, m=2)).online.unnest([s])
+        unnest = rp.ModelBank([s]).fit_predict(frame(n=5, m=2)).rheon.unnest([s])
         assert "n_pos_d1" in unnest.columns and "m" not in unnest.columns
 
     def test_it_has_no_coefficients(self):

@@ -302,7 +302,7 @@ fn kalman_takes_exactly_one_of_coef_half_life_and_q() {
 }
 
 /// YA5: an empty `mahal_quantiles` and an empty target name are refused,
-/// as an empty `resid_quantiles` and `po.target("")` are.
+/// as an empty `resid_quantiles` and `rheon.target("")` are.
 #[test]
 fn the_empties_are_refused() {
     refused(

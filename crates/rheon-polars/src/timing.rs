@@ -1,12 +1,15 @@
 //! Where a run's time goes, printed to standard error under
-//! `POLARS_ONLINE_TIMING=1`.
+//! `RHEON_TIMING=1`.
 //!
 //! The bank prints one line per chunk, its sections in milliseconds, and the
 //! runner one line per run, its waits on the reader and the writer in
 //! seconds. Those lines are for a person reading them: their words and
 //! their order are not promised, and a release may change them.
 //!
-//! The variable is on at `1` and nothing else, as `POLARS_ONLINE_WARN_UNSTABLE`
+//! The variable's name before the rename, `POLARS_ONLINE_TIMING`, is read
+//! while `RHEON_TIMING` is not set (`crate::env`).
+//!
+//! The variable is on at `1` and nothing else, as `RHEON_WARN_UNSTABLE`
 //! is, and as Polars reads its own `POLARS_WARN_UNSTABLE`. Its old name,
 //! `ONLINE_TIMING`, turns nothing on: set, it gets one notice per process,
 //! naming the new one (task 244, C-1).
@@ -20,7 +23,7 @@
 use std::sync::OnceLock;
 
 /// The environment variable that turns the timings on.
-pub const TIMING_VAR: &str = "POLARS_ONLINE_TIMING";
+pub const TIMING_VAR: &str = crate::env::TIMING.name;
 
 /// The variable's old name, read only to say it was renamed.
 const OLD_TIMING_VAR: &str = "ONLINE_TIMING";
@@ -40,9 +43,9 @@ pub fn timing_on() -> bool {
     *ON.get_or_init(|| {
         if std::env::var_os(OLD_TIMING_VAR).is_some() {
             // The command line's where, before the notice's own text.
-            let prefix = "polars-online: warning";
+            let prefix = "rheon: warning";
             eprintln!("{prefix}: {}", renamed_timing_notice());
         }
-        std::env::var(TIMING_VAR).is_ok_and(|v| v == "1")
+        crate::env::TIMING.value().is_some_and(|v| v == "1")
     })
 }

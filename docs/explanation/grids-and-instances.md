@@ -213,7 +213,7 @@ pl.DataFrame({"x0": x0, **{f"z{j}": z[j] for j in range(20)}, "y": x0 + e}).writ
 sets = {f"z{j}": ["x0", f"z{j}"] for j in range(20)}
 features = ["x0", *(f"z{j}" for j in range(20))]
 spec = po.spec.ewridge("sets", targets=["y"], features=features, half_life=50.0, feature_sets=sets)
-out = pl.scan_parquet("noise.parquet").online.fit_predict([spec]).collect()
+out = pl.scan_parquet("noise.parquet").rheon.fit_predict([spec]).collect()
 
 # The set with the lowest error on the first half, against the average of the twenty, on each half.
 first, second = po.eval.metrics(out.head(n // 2), spec), po.eval.metrics(out.tail(n // 2), spec)

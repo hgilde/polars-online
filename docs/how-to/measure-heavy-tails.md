@@ -71,7 +71,7 @@ tails_stream = pl.scan_parquet("tails.parquet").with_row_index("row")
 stable = po.spec.ewridge(
     "m", targets=["y"], features=["x0", "x1"], half_life=200.0, emit_tails=True, emit_sigma=True,
 )
-tails = tails_stream.head(20_000).online.fit_predict([stable]).online.unnest([stable]).collect()
+tails = tails_stream.head(20_000).rheon.fit_predict([stable]).rheon.unnest([stable]).collect()
 kurtosis = tails.filter(pl.col("row") >= 1_000)["kurtosis_y"].mean()
 print(f"excess kurtosis of the residuals: {kurtosis:.1f}")
 
@@ -94,7 +94,7 @@ for value in [20.0, threshold]:
         "m", targets=["y"], features=["x0", "x1"], half_life=200.0,
         emit_drift=True, drift_threshold=value, emit_breaks=True, emit_sigma=True,
     )
-    out = tails_stream.online.fit_predict([spec]).online.unnest([spec]).collect()
+    out = tails_stream.rheon.fit_predict([spec]).rheon.unnest([spec]).collect()
     report(f"drift at {value:.0f}", out, pl.col("drift_y"))
 # Two other detectors, read off the last fit.
 report("|cusum_sq| > 3", out, pl.col("cusum_sq_y").abs() > 3)

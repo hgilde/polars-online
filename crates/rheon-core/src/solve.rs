@@ -6,7 +6,7 @@
 //! calls run at its global parallelism, `Par::rayon(0)`, which is the size
 //! of the current pool, and from `k = 512` a solve with one right-hand side
 //! and an eigendecomposition followed it: a wide `ewridge` gave other
-//! coefficients under another `POLARS_ONLINE_MAX_THREADS`, or on a machine
+//! coefficients under another `RHEON_MAX_THREADS`, or on a machine
 //! with another core count. So the Cholesky factorization walks faer's own
 //! blocked steps with each step's parallel work cut into
 //! [`crate::pieces`], fixed by `k` alone, and the triangular solves take

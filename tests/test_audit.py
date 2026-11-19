@@ -1,4 +1,4 @@
-"""``po.spec.audit`` (docs/PLAN.md task 223 (b)): what a stream's columns hold,
+"""``rheon.spec.audit`` (docs/PLAN.md task 223 (b)): what a stream's columns hold,
 read in one pass.
 
 The statistics are held to scipy, statsmodels and numpy in

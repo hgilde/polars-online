@@ -100,7 +100,7 @@ def _bank_specs():
 @pytest.mark.extended(reason="threads: one thread against many, and run against run")
 class TestThreadDeterminism:
     """T-D3: the bank fans out over (spec x group) on its own pool, sized by
-    `POLARS_ONLINE_MAX_THREADS`, and from 4096 rows a chunk's columns are
+    `RHEON_MAX_THREADS`, and from 4096 rows a chunk's columns are
     also laid out, read and assembled in parallel (`PAR_MIN_ROWS`,
     docs/records/PERFORMANCE-LOG.md P9-P11). Work within one stream is serial, so thread
     count must not change a single number -- in any field, on either side
@@ -124,7 +124,7 @@ print(po.thread_pool_size())
     ]
 
     def _run_with_threads(self, tmp_path, tag, n_threads, n, groups):
-        env = child.env(POLARS_ONLINE_MAX_THREADS=str(n_threads), POLARS_MAX_THREADS="1")
+        env = child.env(RHEON_MAX_THREADS=str(n_threads), POLARS_MAX_THREADS="1")
         path = tmp_path / f"{tag}.arrow"
         code = self.SNIPPET.format(tests=str(REPO / "tests"), n=n, groups=groups, path=str(path))
         res = subprocess.run(
@@ -157,7 +157,7 @@ print(po.thread_pool_size())
 
 
 class TestThreadPoolKnob:
-    """`POLARS_ONLINE_MAX_THREADS` is the bank's knob and the only one: it is
+    """`RHEON_MAX_THREADS` is the bank's knob and the only one: it is
     read when the pool is built, at the first bank call; polars' and rayon's
     own variables do not reach it; a value that is not a count is refused
     by name, and nothing is built, so the process can go on."""
@@ -178,9 +178,9 @@ class TestThreadPoolKnob:
     def test_read_at_the_first_bank_call_and_fixed_after(self):
         out = self._python(
             "import os, polars as pl, rheon.polars as po\n"
-            "os.environ['POLARS_ONLINE_MAX_THREADS'] = '3'\n"  # after import: still in time
+            "os.environ['RHEON_MAX_THREADS'] = '3'\n"  # after import: still in time
             "print(po.thread_pool_size())\n"
-            "os.environ['POLARS_ONLINE_MAX_THREADS'] = '5'\n"  # after the build: too late
+            "os.environ['RHEON_MAX_THREADS'] = '5'\n"  # after the build: too late
             "print(po.thread_pool_size())\n"
         )
         assert out.split() == ["3", "3"]
@@ -211,14 +211,12 @@ class TestThreadPoolKnob:
             "    bank.fit_predict(_frame())\n"
             "except ValueError as e:\n"
             "    print(e)\n"
-            "os.environ['POLARS_ONLINE_MAX_THREADS'] = '2'\n"  # fixed: the same bank goes on
+            "os.environ['RHEON_MAX_THREADS'] = '2'\n"  # fixed: the same bank goes on
             "print(bank.fit_predict(_frame()).height, po.thread_pool_size())\n",
-            POLARS_ONLINE_MAX_THREADS="eight",
+            RHEON_MAX_THREADS="eight",
         )
         first, second = out.split("\n")
-        refused = (
-            'environment variable POLARS_ONLINE_MAX_THREADS: "eight" is not a number of threads'
-        )
+        refused = 'environment variable RHEON_MAX_THREADS: "eight" is not a number of threads'
         assert first.startswith(refused), first
         assert second == f"{_frame().height} 2"
 

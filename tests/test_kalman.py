@@ -226,7 +226,7 @@ def test_a_zero_weight_row_inside_a_gap_moves_no_prediction(build):
 
 @pytest.mark.parametrize("coef_half_life", [20.0, float("inf")])
 def test_the_doubled_stream_is_the_native_embargo_with_gaps(coef_half_life):
-    """`po.stream.embargo`'s doubled stream -- each row predicted at its clock
+    """`rp.stream.embargo`'s doubled stream -- each row predicted at its clock
     at weight 0 and learned ``delay`` later -- agrees with the native
     ``embargo`` to rounding on a stream with clock gaps and no ``gap_cap``:
     its predict rows are rows that observe nothing, and charge no process

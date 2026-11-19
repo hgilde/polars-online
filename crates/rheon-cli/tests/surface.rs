@@ -9,10 +9,7 @@ use polars::prelude::*;
 
 /// A directory of its own for one test, emptied first.
 fn fresh_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "polars-online-cli-surface-{}-{name}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("rheon-cli-surface-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -52,8 +49,10 @@ fn job(dir: &Path, input: &str, output: &str, extra: &str) -> PathBuf {
 fn cli() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rheon"));
     for var in [
-        "POLARS_ONLINE_TIMING",
+        "RHEON_TIMING",
         "ONLINE_TIMING",
+        "RHEON_WARN_UNSTABLE",
+        "POLARS_ONLINE_TIMING",
         "POLARS_ONLINE_WARN_UNSTABLE",
     ] {
         cmd.env_remove(var);
@@ -75,12 +74,12 @@ fn text(p: &Path) -> &str {
     p.to_str().unwrap()
 }
 
-/// C-1: the timings are on at `POLARS_ONLINE_TIMING=1` and at nothing else,
-/// as `POLARS_ONLINE_WARN_UNSTABLE` is. The bank's line per chunk and the
+/// C-1: the timings are on at `RHEON_TIMING=1` and at nothing else,
+/// as `RHEON_WARN_UNSTABLE` is. The bank's line per chunk and the
 /// runner's line per run both print. The old name, `ONLINE_TIMING`, turns
 /// nothing on, and says once what replaced it.
 #[test]
-fn the_timings_are_on_at_polars_online_timing_1_alone() {
+fn the_timings_are_on_at_rheon_timing_1_alone() {
     let dir = fresh_dir("timing");
     let (input, output) = (dir.join("in.parquet"), dir.join("out.parquet"));
     write_input(&input, 50);
@@ -93,28 +92,27 @@ fn the_timings_are_on_at_polars_online_timing_1_alone() {
         assert_eq!(code, Some(0), "{env:?}: {err}");
         err
     };
-    let on = stderr(&[("POLARS_ONLINE_TIMING", "1")]);
+    let on = stderr(&[("RHEON_TIMING", "1")]);
     assert!(
-        on.lines()
-            .any(|l| l.starts_with("POLARS_ONLINE_TIMING rows=50 ")),
+        on.lines().any(|l| l.starts_with("RHEON_TIMING rows=50 ")),
         "{on}"
     );
     assert!(
         on.lines()
-            .any(|l| l.starts_with("POLARS_ONLINE_TIMING run rows=50 chunks=1 ")),
+            .any(|l| l.starts_with("RHEON_TIMING run rows=50 chunks=1 ")),
         "{on}"
     );
     for env in [
         &[][..],
-        &[("POLARS_ONLINE_TIMING", "0")][..],
-        &[("POLARS_ONLINE_TIMING", "true")][..],
+        &[("RHEON_TIMING", "0")][..],
+        &[("RHEON_TIMING", "true")][..],
     ] {
         let off = stderr(env);
         assert!(!off.contains("TIMING"), "{env:?}: {off}");
     }
     let old = stderr(&[("ONLINE_TIMING", "1")]);
-    let notice = "polars-online: warning: ONLINE_TIMING was renamed POLARS_ONLINE_TIMING, so \
-                  it turns no timings on. Set POLARS_ONLINE_TIMING=1 for the timings.";
+    let notice = "rheon: warning: ONLINE_TIMING was renamed RHEON_TIMING, so \
+                  it turns no timings on. Set RHEON_TIMING=1 for the timings.";
     assert_eq!(old.lines().filter(|l| *l == notice).count(), 1, "{old}");
     assert!(
         !old.contains("TIMING rows") && !old.contains("TIMING run"),
@@ -122,6 +120,54 @@ fn the_timings_are_on_at_polars_online_timing_1_alone() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+/// The names the variables had before the library was renamed are read while
+/// the new name is not set, and the command line says once, on standard
+/// error, which name to set instead. Both set: the new one wins and nothing
+/// is said.
+#[test]
+fn a_variable_set_by_its_old_name_is_read_and_noticed_once() {
+    let dir = fresh_dir("old-names");
+    let (input, output) = (dir.join("in.parquet"), dir.join("out.parquet"));
+    write_input(&input, 50);
+    let cfg = job(&dir, text(&input), text(&output), "");
+    let stderr = |env: &[(&str, &str)]| {
+        let mut cmd = cli();
+        cmd.args(["--config", text(&cfg), "-q"])
+            .envs(env.iter().copied());
+        let (code, _, err) = run(&mut cmd);
+        assert_eq!(code, Some(0), "{env:?}: {err}");
+        err
+    };
+    let notice = |old: &str, new: &str| {
+        format!(
+            "rheon: warning: {old} was renamed {new}, and the old name is read for now. \
+             Set {new} instead."
+        )
+    };
+
+    // The old name turns the timings on, and says so once.
+    let old = stderr(&[("POLARS_ONLINE_TIMING", "1")]);
+    let want = notice("POLARS_ONLINE_TIMING", "RHEON_TIMING");
+    assert_eq!(old.lines().filter(|l| *l == want).count(), 1, "{old}");
+    assert!(
+        old.lines().any(|l| l.starts_with("RHEON_TIMING rows=50 ")),
+        "{old}"
+    );
+
+    // Both set: the new name wins, here by being off, and nothing is said.
+    let both = stderr(&[("POLARS_ONLINE_TIMING", "1"), ("RHEON_TIMING", "0")]);
+    assert!(
+        !both.contains("TIMING") && !both.contains("renamed"),
+        "{both}"
+    );
+
+    // The unstable warning's variable: noticed whatever the config holds.
+    let err = stderr(&[("POLARS_ONLINE_WARN_UNSTABLE", "1")]);
+    let want = notice("POLARS_ONLINE_WARN_UNSTABLE", "RHEON_WARN_UNSTABLE");
+    assert_eq!(err.lines().filter(|l| *l == want).count(), 1, "{err}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// C-2: a relative path in the TOML file is read against the file's own
 /// directory, so a config runs the same from anywhere; a path given as a
 /// flag is read against the working directory, as a shell user expects.
@@ -266,7 +312,7 @@ fn a_chunk_size_of_0_is_refused_as_python_refuses_it() {
 /// key, as every flag does; 0 is refused in the words Python uses, from
 /// either; a run on a pool of its own writes the frame the default pool
 /// writes; and given a count, the run never reads
-/// `POLARS_ONLINE_MAX_THREADS`, which still sizes, and so refuses, the
+/// `RHEON_MAX_THREADS`, which still sizes, and so refuses, the
 /// default pool.
 #[test]
 fn threads_from_the_flag_or_the_key_and_the_variable_only_without_them() {
@@ -312,7 +358,7 @@ fn threads_from_the_flag_or_the_key_and_the_variable_only_without_them() {
         let cfg = job(&dir, text(&input), text(&out), "");
         let (code, _, err) = run(cli()
             .args(["--config", text(&cfg), "--threads", n])
-            .env("POLARS_ONLINE_MAX_THREADS", "eight"));
+            .env("RHEON_MAX_THREADS", "eight"));
         assert_eq!(code, Some(0), "--threads {n}: {err}");
         assert!(
             read(&out).equals_missing(&read(&default_out)),
@@ -321,12 +367,9 @@ fn threads_from_the_flag_or_the_key_and_the_variable_only_without_them() {
     }
     let (code, _, err) = run(cli()
         .args(["--config", text(&cfg)])
-        .env("POLARS_ONLINE_MAX_THREADS", "eight"));
+        .env("RHEON_MAX_THREADS", "eight"));
     assert_eq!(code, Some(1), "{err}");
-    assert!(
-        err.contains("POLARS_ONLINE_MAX_THREADS: \"eight\""),
-        "{err}"
-    );
+    assert!(err.contains("RHEON_MAX_THREADS: \"eight\""), "{err}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

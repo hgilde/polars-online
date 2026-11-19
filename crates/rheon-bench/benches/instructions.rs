@@ -43,7 +43,7 @@ fn counted_from(entry: &str) -> LibraryBenchmarkConfig {
     let mut config = LibraryBenchmarkConfig::default();
     config
         .tool(Callgrind::default().entry_point(EntryPoint::Custom(entry.to_owned())))
-        .env("POLARS_ONLINE_MAX_THREADS", "1")
+        .env("RHEON_MAX_THREADS", "1")
         .env("POLARS_MAX_THREADS", "1")
         .pass_through_envs(FAKETIME_ENV);
     config

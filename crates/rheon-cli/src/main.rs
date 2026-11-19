@@ -234,7 +234,7 @@ struct Cli {
 
     /// Threads the bank runs on: a pool of N. Overrides the config's
     /// `threads`; with neither, the process default
-    /// (`POLARS_ONLINE_MAX_THREADS`, else one thread per core). The output is
+    /// (`RHEON_MAX_THREADS`, else one thread per core). The output is
     /// the same at any count.
     #[arg(long, value_name = "N")]
     threads: Option<usize>,
@@ -315,12 +315,10 @@ fn model_key(doc: &toml::Table, msg: &str) -> Option<String> {
     None
 }
 
-/// The environment variable that turns the unstable label's warning on, as
-/// `POLARS_WARN_UNSTABLE` does Polars' own: `1` and nothing else
-/// (docs/PLAN.md task 198, D5).
-const UNSTABLE_VAR: &str = "POLARS_ONLINE_WARN_UNSTABLE";
-
-/// What the command line says of a formula target under [`UNSTABLE_VAR`]:
+/// What the command line says of a formula target under
+/// `RHEON_WARN_UNSTABLE=1` (`rheon_polars::env::WARN_UNSTABLE`), which turns
+/// the unstable label's warning on as `POLARS_WARN_UNSTABLE` does Polars' own:
+/// `1` and nothing else (docs/PLAN.md task 198, D5):
 /// its tree is read from the TOML file and written into the state, and that
 /// written form is not promised.
 /// Worded as Python's `UnstableWarning` is. Each line ends in a `\`, which
@@ -328,7 +326,7 @@ const UNSTABLE_VAR: &str = "POLARS_ONLINE_WARN_UNSTABLE";
 /// spaces inside each sentence (task 244, C-4).
 const FORMULA_UNSTABLE: &str = "warning: a formula target's written form -- its tree in the TOML \
      file and in a saved state -- is considered unstable, so it may change in any release \
-     without that being considered a breaking change. Set POLARS_ONLINE_WARN_UNSTABLE=0, or \
+     without that being considered a breaking change. Set RHEON_WARN_UNSTABLE=0, or \
      unset it, to silence this warning.";
 
 /// What [`read_config`] gives back: the config or TOML's refusal of it,
@@ -378,10 +376,15 @@ fn relative_to(cfg: &mut RunConfig, dir: &Path) {
 
 fn main() -> ExitCode {
     bound_allocator();
+    // A variable set by its name from before the rename is read, and the
+    // process is told once, here, to set the new one.
+    for notice in rheon_polars::env::legacy_notices() {
+        eprintln!("rheon: warning: {notice}");
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("polars-online: {e}");
+            eprintln!("rheon: {e}");
             ExitCode::FAILURE
         }
     }
@@ -496,10 +499,12 @@ fn run() -> Result<(), String> {
     // What a spec may leave out, filled before anything reads it (E53).
     cfg.fill_defaults();
     cfg.validate()?;
-    if std::env::var(UNSTABLE_VAR).is_ok_and(|v| v == "1")
+    if rheon_polars::env::WARN_UNSTABLE
+        .value()
+        .is_some_and(|v| v == "1")
         && cfg.specs.iter().any(|s| s.targets.any_formula())
     {
-        eprintln!("polars-online: {FORMULA_UNSTABLE}");
+        eprintln!("rheon: {FORMULA_UNSTABLE}");
     }
     // `validate` leaves the input to the run; a dry run wants to know now.
     let input_format = cfg.input_format()?;

@@ -151,7 +151,7 @@ def test_coef_marginal_and_closed_groups_carry_the_instance_decay():
 
 def test_cross_centered_is_the_one_spelling():
     """``cross_centred`` was the library's one British spelling: the gram
-    key, the closed column, and what ``po.gram.from_row`` reads, which
+    key, the closed column, and what ``rheon.gram.from_row`` reads, which
     refuses the old key."""
     spec = rp.spec.ewridge(
         "r", targets=["y"], features=["x0"], half_life=50.0, group="g", group_close="monotone"
@@ -281,10 +281,10 @@ def test_coef_is_a_list_wherever_the_bank_writes_it():
     bank.fit_predict(df)
     assert bank.last_row().schema["coef"] == _LIST
     # `unnest` reads the list, and the Array a file written by such a build holds.
-    flat = out.online.unnest([spec])
+    flat = out.rheon.unnest([spec])
     assert flat["coef_y_x1"].equals(out["r"].struct.field("coef").list.get(2).alias("coef_y_x1"))
     as_array = out.with_columns(pl.col("r").struct.with_fields(pl.field("coef").list.to_array(k)))
-    assert as_array.online.unnest([spec])["coef_y_x1"].equals(flat["coef_y_x1"])
+    assert as_array.rheon.unnest([spec])["coef_y_x1"].equals(flat["coef_y_x1"])
 
 
 def test_a_mostly_null_coef_costs_little():

@@ -68,7 +68,7 @@ def test_m1_the_target_predict_and_plan_forms_raise_the_same_class():
         rp.fit_predict(_df().drop("x0"), [rp.spec.ewridge("m", **BASE)])
     lf = _df().drop("x0").lazy()
     with pytest.raises(rp.ColumnNotFoundError, match="x0"):
-        lf.online.fit_predict([rp.spec.ewridge("m", **BASE)])
+        lf.rheon.fit_predict([rp.spec.ewridge("m", **BASE)])
 
 
 # --- M-2 and M-21: one base for every warning ---------------------------------
@@ -81,15 +81,15 @@ def test_m1_the_target_predict_and_plan_forms_raise_the_same_class():
         ("OrderNotGuaranteedWarning", UserWarning),
         ("ConsumedSourceWarning", UserWarning),
         ("UnstableWarning", UserWarning),
-        ("PolarsOnlineDeprecationWarning", DeprecationWarning),
+        ("RheonDeprecationWarning", DeprecationWarning),
     ],
 )
 def test_m2_every_warning_shares_one_exported_base(name, second):
     cls = getattr(rp, name)
-    assert issubclass(cls, rp.PolarsOnlineWarning)
+    assert issubclass(cls, rp.RheonWarning)
     assert issubclass(cls, second)
-    assert "PolarsOnlineWarning" in rp.__all__
-    assert issubclass(rp.PolarsOnlineWarning, Warning)
+    assert "RheonWarning" in rp.__all__
+    assert issubclass(rp.RheonWarning, Warning)
 
 
 def test_m21_unstable_warning_is_also_polars_own():
@@ -125,8 +125,8 @@ def test_m9_fit_predict_batches_returns_an_iterator():
 def test_m10_chunk_size_on_the_frame_forms():
     df = _df()
     specs = [rp.spec.ewridge("m", **BASE)]
-    whole = df.online.fit_predict(specs)
-    chunked = df.online.fit_predict(specs, chunk_size=7)
+    whole = df.rheon.fit_predict(specs)
+    chunked = df.rheon.fit_predict(specs, chunk_size=7)
     pred = pl.col("m").struct.field("pred_y")
     assert whole.select(pred).equals(chunked.select(pred))
     # Chunked, coef is reported at each chunk's last row, as a plan reports it.
@@ -135,11 +135,11 @@ def test_m10_chunk_size_on_the_frame_forms():
     assert rp.fit_predict(df, specs, chunk_size=7).equals(chunked)
     bank = _bank()
     bank.fit_predict(df)
-    scored = df.online.predict(bank, chunk_size=7)
-    assert scored.select(pred).equals(df.online.predict(bank).select(pred))
+    scored = df.rheon.predict(bank, chunk_size=7)
+    assert scored.select(pred).equals(df.rheon.predict(bank).select(pred))
     assert rp.predict(df, bank, chunk_size=7).equals(scored)
     with pytest.raises(ValueError, match="chunk_size must be at least 1"):
-        df.online.fit_predict(specs, chunk_size=0)
+        df.rheon.fit_predict(specs, chunk_size=0)
 
 
 # --- M-25: load_state takes a bank, as predict does ----------------------------
@@ -153,10 +153,10 @@ def test_m25_load_state_takes_a_bank_snapshotted_when_built(tmp_path):
     before = bank.save_bytes()
     path = tmp_path / "b.state"
     bank.save(path)
-    want = rest.online.fit_predict(load_state=path)
-    assert rest.online.fit_predict(load_state=bank).equals(want)
+    want = rest.rheon.fit_predict(load_state=path)
+    assert rest.rheon.fit_predict(load_state=bank).equals(want)
     assert bank.save_bytes() == before, "the caller's bank does not move"
-    plan = rest.lazy().online.fit_predict(load_state=bank)
+    plan = rest.lazy().rheon.fit_predict(load_state=bank)
     bank.fit_predict(rest)  # moving the bank after the plan is built changes nothing
     assert plan.collect().equals(want)
     assert rp.fit_predict(rest, load_state=_reload(before)).equals(want)
@@ -241,7 +241,7 @@ def test_m15_the_call_form_is_refused():
         bank.output_fields()
 
 
-# --- M-5, M-6, M-8, M-19, M-20, M-23: po.eval -----------------------------------
+# --- M-5, M-6, M-8, M-19, M-20, M-23: rp.eval -----------------------------------
 
 
 def _scored(n: int = 120):
@@ -426,7 +426,7 @@ def test_m13_renamed_and_deprecated_members_are_marked():
         assert f"\n  {name}" not in section, name
 
 
-# --- M-24: po.gram --------------------------------------------------------------
+# --- M-24: rheon.gram --------------------------------------------------------------
 
 
 def _gram():
@@ -481,7 +481,7 @@ def test_m24_a_gram_typed_dict():
 
 def test_one_correlation_of_a_gram():
     g = _gram()
-    with pytest.raises(TypeError, match="po.corr.matrix.*renamed po.gram.correlation"):
+    with pytest.raises(TypeError, match="rheon.corr.matrix.*renamed rheon.gram.correlation"):
         rp.corr.matrix(g)
     assert rp.gram.correlation(g).shape[0] == len(g["columns"])
     assert "matrix" not in rp.corr.__all__

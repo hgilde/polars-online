@@ -95,7 +95,7 @@ writes its output to `huber-now.parquet`:
 as_in_1_2_0 = po.spec.huber("robust", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0,
                         huber_scale="rms",          # the scale before huber_scale existed
                         huber_refit_rows=0)         # no refit of the first rows
-pl.scan_parquet("ticks.parquet").online.fit_predict([as_in_1_2_0]).sink_parquet("huber-now.parquet")
+pl.scan_parquet("ticks.parquet").rheon.fit_predict([as_in_1_2_0]).sink_parquet("huber-now.parquet")
 ```
 
 ## Check the result
@@ -122,7 +122,7 @@ same input.**
    from rheon import polars as po
 
    then_spec = po.spec.huber("robust", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
-   pl.scan_parquet("ticks.parquet").online.fit_predict([then_spec]).sink_parquet("huber-1.2.0.parquet")
+   pl.scan_parquet("ticks.parquet").rheon.fit_predict([then_spec]).sink_parquet("huber-1.2.0.parquet")
    ```
 
    Run it with the earlier release's Python, in the directory that holds

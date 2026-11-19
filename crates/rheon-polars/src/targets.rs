@@ -2,7 +2,7 @@
 //! another, or a formula of the row's future.
 //!
 //! On every surface a target is a string or a table: in Python a column's
-//! name or `po.target("p", name="price")`, in the CLI's TOML
+//! name or `rheon.target("p", name="price")`, in the CLI's TOML
 //! `targets = ["ret_5m", { column = "p", name = "price" }]`. A table's
 //! `name`, which the output fields carry, is its `column` unless given. A
 //! spec whose targets are all plain columns writes them as strings, so its
@@ -10,7 +10,7 @@
 //!
 //! A target may also be a **formula of the row's future** (docs/PLAN.md task
 //! 104): a table with a `name` and a `formula`, task 143's compact tree of
-//! window operators -- `po.rewm_mean("mid", half_life="10s",
+//! window operators -- `rp.rewm_mean("mid", half_life="10s",
 //! window_size="1m") - pl.col("mid")` in Python, the same tree in TOML --
 //! holding at least one forward operator. Its value is not known at its row:
 //! the bank's window core resolves it when the window closes, and the row is
@@ -313,7 +313,7 @@ impl<'de> Deserialize<'de> for Targets {
                             let make = if tree.operators().is_empty() {
                                 "Polars' with_columns, since it holds no operator at all"
                             } else {
-                                "po.stream.with_windows"
+                                "rp.stream.with_windows"
                             };
                             return Err(serde::de::Error::custom(format!(
                                 "target {name:?}: a formula target holds at least one operator \
@@ -453,7 +453,7 @@ mod tests {
         // A formula that looks back is a column with_windows makes; one of the
         // row alone is Polars' own with_columns, which with_windows refuses.
         // Each refusal names the call that works.
-        assert!(err.contains("po.stream.with_windows"), "{err}");
+        assert!(err.contains("rp.stream.with_windows"), "{err}");
         let plain = r#"["-", ["col", "price"], ["col", "mid"]]"#;
         let err = json(&format!(r#"[{{"name": "f", "formula": {plain}}}]"#)).unwrap_err();
         assert!(err.contains("looking ahead"), "{err}");

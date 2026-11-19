@@ -239,7 +239,7 @@ def library_names() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
         if n[0] != "_" and callable(obj):
             add(obj, n)
     for n in ("fit_predict", "predict", "unnest", "with_windows"):
-        add(getattr(pl.LazyFrame().online, n), n)
+        add(getattr(pl.LazyFrame().rheon, n), n)
     outputs = (REPO / "docs" / "OUTPUTS.md").read_text(encoding="utf-8")
     stems = {
         re.split(r"<|__|@", f)[0].rstrip("_") for f in re.findall(r"^\| `([^`]+)`", outputs, re.M)

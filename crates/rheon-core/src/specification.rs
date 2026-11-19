@@ -45,7 +45,7 @@
 //! which is the `Q` above when `s = 0`. On a five-row look-ahead
 //! target with nothing missing, the plain `Q` over lags 5-14 passed its 5%
 //! value on 61% of the rows of 200 streams, `Q` over Bartlett's variance
-//! alone on 13-14%, and this one on the figures in `po.spec`'s table
+//! alone on 13-14%, and this one on the figures in `rheon.spec`'s table
 //! (task 221 (d)).
 //!
 //! **Breusch and Pagan (1979)**, in Koenker's (1981) studentized form: the

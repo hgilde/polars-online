@@ -1,4 +1,4 @@
-//! `po.stream.with_windows` over a frame (docs/PLAN.md tasks 78, 143 and
+//! `rp.stream.with_windows` over a frame (docs/PLAN.md tasks 78, 143 and
 //! 144): formulas over the window operators, run a chunk at a time with the
 //! window core, in input order, O(window) memory.
 //!
@@ -45,7 +45,7 @@ pub struct Like {
     pub accept: Vec<String>,
 }
 
-/// One `po.stream.with_windows` call: its formulas and its clock policy, in
+/// One `rp.stream.with_windows` call: its formulas and its clock policy, in
 /// the spec's own words (`spec.rs`), which is how `like=` fills it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -483,7 +483,7 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, Refused> {
         return Err(format!(
             "{WHO}: no expression (a column computation, such as pl.col(\"x\") + 1) was given. \
              Give at least one that holds a window operator or an increment, such as \
-             po.ewm_mean(pl.col(\"x\"), half_life=10)."
+             rp.ewm_mean(pl.col(\"x\"), half_life=10)."
         )
         .into());
     }
@@ -5000,7 +5000,7 @@ mod tests {
         let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
         let mut first = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
         let mut out = first.feed(&df.slice(0, 4), None).unwrap();
-        let dir = std::env::temp_dir().join(format!("po-windows-save-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rheon-windows-save-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("state.msgpack");
         first.save(&path).unwrap();

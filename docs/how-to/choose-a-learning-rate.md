@@ -65,7 +65,7 @@ pl.DataFrame({"x": x, "y": slope * x + 0.3 * e}).write_parquet("jump.parquet")
 rates = [0.003, 0.01, 0.03]
 specs = [po.spec.sgd(f"lr_{r:g}", targets=["y"], features=["x"], half_life=float("inf"),
                      learning_rate=r, coef_every=0) for r in rates]
-out = pl.scan_parquet("jump.parquet").online.fit_predict(specs).collect()
+out = pl.scan_parquet("jump.parquet").rheon.fit_predict(specs).collect()
 
 # The rows after the jump until the slope has covered 1 - 1/e of it.
 for r in rates:
@@ -195,7 +195,7 @@ pl.DataFrame({"t": np.arange(n, dtype=float), "x": x, "y": level + x + 0.3 * e})
 alphas = [0.1, 0.3, 1.0]
 specs = [po.spec.ftrl(f"alpha_{a:g}", targets=["y"], features=["x"], loss="squared", clock="t", gap_cap=10.0,
                       half_life=200.0, alpha=a, coef_every=0) for a in alphas]
-out = pl.scan_parquet("level.parquet").online.fit_predict(specs).collect()
+out = pl.scan_parquet("level.parquet").rheon.fit_predict(specs).collect()
 
 # Rows to cover 90% of the jump, beside the pace's estimate, and the spread at steady state.
 root = math.sqrt(1 - 0.5 ** (1 / 200))                 # √(1 − f), f the decay factor over one row
@@ -268,7 +268,7 @@ specs = [
     po.spec.pa("pa2", mode="pa2", **common),           # damped by 1/(2c) at c=1
     po.spec.pa("pa2_small", mode="pa2", c=0.01, **common),
 ]
-out = pl.scan_parquet("spike.parquet").online.fit_predict(specs).collect()
+out = pl.scan_parquet("spike.parquet").rheon.fit_predict(specs).collect()
 
 # The intercept around the bad row, and the error on the rows after it.
 for s in ("pa", "pa1", "pa2", "pa2_small"):

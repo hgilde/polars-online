@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory() as d:
     lazy = (
         pl.scan_parquet(path)
         .map_batches(add_leaves, streamable=True, schema=schema)
-        .online.fit_predict([spec])
+        .rheon.fit_predict([spec])
         .select(p=pl.col("o").struct.field("pred_y"))
         .collect()
     )

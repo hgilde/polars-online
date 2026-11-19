@@ -1,13 +1,13 @@
 """The surfaces 1.0 does not promise say so (docs/PLAN.md task 198; review
 round 4, D5, N23, AP12, DA4 and YB11): a docstring admonition, and an
-``UnstableWarning`` raised only under ``POLARS_ONLINE_WARN_UNSTABLE=1``, as
+``UnstableWarning`` raised only under ``RHEON_WARN_UNSTABLE=1``, as
 Polars raises its own under ``POLARS_WARN_UNSTABLE``.
 
 The surfaces: the ``with_windows`` state file's format, the formula tree's
 written form (a formula target in a TOML file -- the command line's, in
 ``crates/rheon-cli/tests/run.rs`` -- and in a saved state),
 ``fit_predict_arrow``, ``predict_arrow`` and ``ArrowStruct``, and the modules
-``po.sim``, ``po.corr`` and ``po.gbdt``. Each emits under the variable and is
+``rp.sim``, ``rheon.corr`` and ``rheon.polars._gbdt``. Each emits under the variable and is
 silent without it.
 """
 
@@ -99,13 +99,13 @@ def unstable_calls(tmp_path) -> dict[str, Callable[[], object]]:
         "load a formula target": load_formula,
         "fit_predict_arrow": lambda: rp.ModelBank([ridge()]).fit_predict_arrow(df),
         "predict_arrow": lambda: rp.ModelBank([ridge()]).predict_arrow(df),
-        "po.sim.regimes": lambda: rp.sim.regimes(
+        "rp.sim.regimes": lambda: rp.sim.regimes(
             2, states=[np.eye(2)], transition=[[1.0]], n_blocks=2, rows_per_block=5, seed=1
         ),
-        "po.corr.nearest": lambda: rp.corr.nearest(corr),
-        "po.corr.shrink": lambda: rp.corr.shrink(corr, alpha=0.3),
-        "po.gbdt.xgboost_matrix": lambda: _gbdt.xgboost_matrix(df, label="y"),
-        "po.gbdt.lightgbm_dataset": lambda: _gbdt.lightgbm_dataset(
+        "rheon.corr.nearest": lambda: rp.corr.nearest(corr),
+        "rheon.corr.shrink": lambda: rp.corr.shrink(corr, alpha=0.3),
+        "rheon.polars._gbdt.xgboost_matrix": lambda: _gbdt.xgboost_matrix(df, label="y"),
+        "rheon.polars._gbdt.lightgbm_dataset": lambda: _gbdt.lightgbm_dataset(
             df, label="y", params={"verbose": -1}
         ),
     }
@@ -125,18 +125,18 @@ SURFACES = [
     "load a formula target",
     "fit_predict_arrow",
     "predict_arrow",
-    "po.sim.regimes",
-    "po.corr.nearest",
-    "po.corr.shrink",
-    "po.gbdt.xgboost_matrix",
-    "po.gbdt.lightgbm_dataset",
+    "rp.sim.regimes",
+    "rheon.corr.nearest",
+    "rheon.corr.shrink",
+    "rheon.polars._gbdt.xgboost_matrix",
+    "rheon.polars._gbdt.lightgbm_dataset",
 ]
 
 
 def test_the_warning_is_exported_and_named_as_polars_names_it():
     assert issubclass(rp.UnstableWarning, Warning)
     assert "UnstableWarning" in rp.__all__
-    assert UNSTABLE_VAR == "POLARS_ONLINE_WARN_UNSTABLE"
+    assert UNSTABLE_VAR == "RHEON_WARN_UNSTABLE"
 
 
 @pytest.mark.parametrize("surface", SURFACES)

@@ -219,7 +219,7 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
 
     Use it to reach one coefficient in the nested output without writing
     its field's name or its position by hand, or to read the column names
-    :meth:`~rheon.polars._frame.LazyFrameOnlineNamespace.unnest` gives.
+    :meth:`~rheon.polars._frame.LazyFrameRheonNamespace.unnest` gives.
     For one ``coef`` list's layout alone, use :func:`coef_index`.
 
     .. rubric:: Parameters
@@ -242,7 +242,7 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
         Its index in that list.
     ``name``
         The column
-        :meth:`~rheon.polars._frame.LazyFrameOnlineNamespace.unnest` gives
+        :meth:`~rheon.polars._frame.LazyFrameRheonNamespace.unnest` gives
         it: ``coef_{target}_{term}{combo}{instance}``, so
         ``coef_y_x1__r0.5@h500`` sits beside ``pred_y__r0.5@h500``. The
         ``coef_`` prefix and the target are there because a bare ``x1``
@@ -297,7 +297,7 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
 
     - :func:`coef_index`, one ``coef`` list's layout.
     - :func:`output_index`, every field with the values its name encodes.
-    - :meth:`~rheon.polars._frame.LazyFrameOnlineNamespace.unnest`, which
+    - :meth:`~rheon.polars._frame.LazyFrameRheonNamespace.unnest`, which
       writes these columns.
 
     .. rubric:: Notes

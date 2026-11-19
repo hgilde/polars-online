@@ -55,7 +55,7 @@ from [Example data](../EXAMPLE-DATA.md):
 ```python
 grid = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], clock="t",
                        gap_cap=300.0, half_life=[100.0, 500.0], ridge=[1e-6, 0.5])
-out = df.online.fit_predict([grid])  # df's columns, plus the spec's column "m"
+out = df.rheon.fit_predict([grid])  # df's columns, plus the spec's column "m"
 
 # 1 and 2. A field's name, found from the values it holds.
 idx = po.spec.output_index(grid)     # every field, with the values its name encodes, and its dtype

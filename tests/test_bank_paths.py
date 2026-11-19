@@ -116,7 +116,7 @@ def test_one_spec_or_a_string_in_place_of_the_list_is_refused_by_name():
         rp.ModelBank(spec)  # type: ignore[arg-type]
     with pytest.raises(
         TypeError,
-        match=r"ModelBank: specs must be a list of specs, such as \[po.spec.ewridge\(...\)\], "
+        match=r"ModelBank: specs must be a list of specs, such as \[rheon.spec.ewridge\(...\)\], "
         r"but it is of type str",
     ):
         rp.ModelBank("m")  # type: ignore[arg-type]

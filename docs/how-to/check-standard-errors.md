@@ -78,7 +78,7 @@ model = po.spec.ewridge(
     emit_robust_se=True,  # se_coef_hc0, and se_coef_hac to 2 * embargo = 20 lags
 )
 # 3. Each stream's slope and standard errors at its last row.
-out = overlap.online.fit_predict([model]).collect()
+out = overlap.rheon.fit_predict([model]).collect()
 last = out.group_by("stream", maintain_order=True).last().select(pl.col("m").struct.unnest())
 slope = last.select(
     coef=pl.col("coef").list.get(1),  # [intercept, x]

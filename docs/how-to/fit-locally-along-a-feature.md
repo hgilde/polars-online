@@ -74,7 +74,7 @@ def local(bandwidth):
         min_weight=20.0,
     )
     query = pl.scan_parquet("curve.parquet").sort("x", maintain_order=True)   # 1. sorted by the feature, in the query before the bank
-    return query.online.fit_predict([kernel]).online.unnest([kernel]).collect()   # 5. pred_y: the curve at each row's x
+    return query.rheon.fit_predict([kernel]).rheon.unnest([kernel]).collect()   # 5. pred_y: the curve at each row's x
 
 # Two bandwidths, and the best straight line through every point.
 narrow, wide = local(0.25), local(1.0)

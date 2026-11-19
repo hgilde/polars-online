@@ -1,5 +1,5 @@
 //! XGBoost's and LightGBM's training inputs, built from a stream of frames:
-//! the component behind `po.gbdt` (docs/GBDT-ADAPTER.md §6, docs/PLAN.md
+//! the component behind `rheon.polars._gbdt` (docs/GBDT-ADAPTER.md §6, docs/PLAN.md
 //! task 242).
 //!
 //! Both libraries train in two stages. Binning places each feature's bins and
@@ -155,12 +155,12 @@ impl Layout {
     pub(crate) fn check(&self) -> Result<(), GbdtError> {
         if self.names.is_empty() {
             return Err(GbdtError::msg(
-                "po.gbdt: no feature columns are named. Name at least one feature.",
+                "rheon.polars._gbdt: no feature columns are named. Name at least one feature.",
             ));
         }
         if self.names.len() != self.kinds.len() {
             return Err(GbdtError::msg(format!(
-                "po.gbdt: internal: {} feature names for {} kinds, which is a defect in \
+                "rheon.polars._gbdt: internal: {} feature names for {} kinds, which is a defect in \
                  polars-online. Open an issue at https://github.com/hgilde/polars-online/issues with this message.",
                 self.names.len(),
                 self.kinds.len()
@@ -177,7 +177,7 @@ impl Layout {
 pub fn conversion_pool(threads: usize) -> Result<rayon::ThreadPool, GbdtError> {
     if threads > crate::max_threads() {
         return Err(GbdtError::msg(format!(
-            "po.gbdt: {}",
+            "rheon.polars._gbdt: {}",
             crate::threads_too_many(&threads.to_string())
         )));
     }
@@ -187,7 +187,7 @@ pub fn conversion_pool(threads: usize) -> Result<rayon::ThreadPool, GbdtError> {
     }
     b.build().map_err(|e| {
         GbdtError::msg(format!(
-            "po.gbdt: a thread pool for the conversions could not be started ({e}). Pass fewer \
+            "rheon.polars._gbdt: a thread pool for the conversions could not be started ({e}). Pass fewer \
              threads, or retry."
         ))
     })

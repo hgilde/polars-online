@@ -77,7 +77,7 @@ from [Example data](../EXAMPLE-DATA.md):
 ```python
 # Features that look back, on one clock shared with the model.
 clock = dict(clock="ts", gap_cap="5m", group="symbol")             # one clock for the windows and the model
-trends = pl.scan_parquet("trades.parquet").online.with_windows(    # 1 to 3: the features, windows that look back
+trends = pl.scan_parquet("trades.parquet").rheon.with_windows(    # 1 to 3: the features, windows that look back
     trend_5s=pl.col("mid") - po.ewm_mean("mid", half_life="5s", window_size="2m"),
     trend_30s=pl.col("mid") - po.ewm_mean("mid", half_life="30s", window_size="2m"),
     **clock,
@@ -85,7 +85,7 @@ trends = pl.scan_parquet("trades.parquet").online.with_windows(    # 1 to 3: the
 # 5. A model that reads them: the target, how far from the mid each trade printed, null on a quote.
 by_trend = po.spec.ewridge("by_trend", targets=["edge"], features=["trend_5s", "trend_30s"], half_life="30m", **clock)
 fitted = (trends.with_columns(edge=(pl.col("price") - pl.col("mid")).abs())  # 4. the target column
-                .online.fit_predict([by_trend])
+                .rheon.fit_predict([by_trend])
                 .collect())                                         # 6. run the query
 print(fitted.columns)
 print(f"rows {fitted.height}, of which predicted {fitted['by_trend'].struct.field('pred_edge').count()}")
@@ -110,7 +110,7 @@ uses `trades.parquet` from [Example data](../EXAMPLE-DATA.md):
 aaa = pl.read_parquet("trades.parquet").filter(pl.col("symbol") == "AAA")   # one symbol's quotes and trades
 aaa.write_parquet("aaa.parquet")
 # The running mean and the last minute's volume, by the library.
-ours = pl.scan_parquet("aaa.parquet").online.with_windows(
+ours = pl.scan_parquet("aaa.parquet").rheon.with_windows(
     mean=po.ewm_mean("mid", half_life="5s"),                                 # no window_size: every row of the stretch
     volume=po.ewm_sum("quantity", half_life=float("inf"), window_size="1m"), # evenly weighted: the last minute's volume
     clock="ts", gap_cap="5m",
@@ -173,7 +173,7 @@ print(f"row 1000: {behind.height} trades in the last minute; vwap {row['vwap']:.
 
 # The same column over the file, written to parquet.
 (pl.scan_parquet("trades.parquet")
-    .online.with_windows(vwap=po.ewm_sum(notional, **last_minute) / po.ewm_sum("quantity", **last_minute),
+    .rheon.with_windows(vwap=po.ewm_sum(notional, **last_minute) / po.ewm_sum("quantity", **last_minute),
                          clock="ts", gap_cap="5m", group="symbol")
     .sink_parquet("with_windows.parquet"))     # streams, holding about one window of rows
 ```
@@ -241,11 +241,11 @@ clock = dict(clock="ts", gap_cap="5m", group="symbol")
 volume = (
     pl.scan_parquet("trades.parquet")
     .with_columns(cum_volume=pl.col("quantity").cum_sum().over("symbol"))   # a running volume: null on the quotes
-    .online.with_windows(                                                    # 1. an operator over an increment
+    .rheon.with_windows(                                                    # 1. an operator over an increment
         volume_rate=po.ewm_rate(po.increment("cum_volume"), half_life="30s", window_size="5m"),   # units traded per second
         **clock,
     )
-    .online.with_windows(                                                    # 2. a mean of that rate
+    .rheon.with_windows(                                                    # 2. a mean of that rate
         rate_trend=po.ewm_mean("volume_rate", half_life="2m", window_size="10m"),
         **clock,
     )

@@ -79,8 +79,8 @@ bank.save("bank.state")
 loaded = po.ModelBank.load("bank.state", specs=[spec])
 # Three ways to serve the rows after df's: a frame, then a query given the bank or the path.
 served = loaded.predict(today)                             # every row predicted from the same state: nothing moves
-in_query = later.online.predict(loaded).collect()          # a bank, as it stands when the query runs
-from_file = later.online.predict("bank.state").collect()   # a path, read when the query is built
+in_query = later.rheon.predict(loaded).collect()          # a bank, as it stands when the query runs
+from_file = later.rheon.predict("bank.state").collect()   # a path, read when the query is built
 # Every row saw the same state, and the three agree.
 weights = served["ridge"].struct.field("weight_sum")
 print(f"weight_sum on every row: {weights.min():.4f} to {weights.max():.4f}; the three agree: "

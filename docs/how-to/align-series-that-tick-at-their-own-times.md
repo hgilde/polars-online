@@ -120,7 +120,7 @@ specs = [
     po.spec.ewridge("fit", targets=["AAA"], features=["BBB", "CCC"],
                     clock="time_refresh", gap_cap=10.0, half_life=float("inf")),
 ]
-out = returns.online.fit_predict(specs).collect()         # 3. the refresh grid and the models, one pass
+out = returns.rheon.fit_predict(specs).collect()         # 3. the refresh grid and the models, one pass
 # The correlations and the coefficients on the last refresh time.
 last = out.row(-1, named=True)
 print(f"{out.height} refresh times from {pl.read_parquet('own_times.parquet').height} ticks")

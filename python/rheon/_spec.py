@@ -207,9 +207,9 @@ def _matches(v: Any, hint: Any) -> bool:
 def _describe(hint: Any, plural: bool = False) -> str:
     if hint == TargetList:
         return (
-            "lists of column names, po.target tables or formula targets"
+            "lists of column names, rheon.target tables or formula targets"
             if plural
-            else "a list of column names, po.target tables or formula targets"
+            else "a list of column names, rheon.target tables or formula targets"
         )
     origin = typing.get_origin(hint)
     if origin in (types.UnionType, typing.Union):
@@ -703,7 +703,7 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
         if not isinstance(name, str):
             got = "none is given" if name is None else f"it is {_got(name)}"
             raise TypeError(
-                f"po.spec: a spec's name must be a str, but {got}. "
+                f"rheon.spec: a spec's name must be a str, but {got}. "
                 "Pass the name of the spec's output column as its first argument."
             )
         who = f"spec {quoted(name)}"
@@ -888,7 +888,7 @@ def formula_target(who: str, expr: pl.Expr) -> Target | FormulaTarget:
             raise ValueError(
                 f"{who}: target pl.col({column!r}) is the column itself, with no name of its "
                 f"own. Write the string {column!r} in targets, or name the target with "
-                f'.alias("...") or po.target({column!r}, name="...").'
+                f'.alias("...") or rheon.target({column!r}, name="...").'
             )
         return target(column, name=name)
     if name.startswith(_formula.PREFIX):
@@ -913,7 +913,7 @@ def formula_target(who: str, expr: pl.Expr) -> Target | FormulaTarget:
             raise ValueError(
                 f"{who}: target {quoted(name)} holds no window operator looking ahead (ewm_mean, "
                 "ewm_sum, ewm_rate or ewm_quantile with reverse=True), so it is known at its own "
-                "row. Add it as a column with po.stream.with_windows in the query before the bank, "
+                "row. Add it as a column with rp.stream.with_windows in the query before the bank, "
                 "and name that column in targets."
             )
         raise ValueError(
@@ -924,7 +924,7 @@ def formula_target(who: str, expr: pl.Expr) -> Target | FormulaTarget:
     return {"name": name, "formula": tree}
 
 
-@removed_keywords("po.target", _RELATIVE_KEYS, _RELATIVE_REMOVED)
+@removed_keywords("rheon.target", _RELATIVE_KEYS, _RELATIVE_REMOVED)
 def target(column: str, *, name: str | None = None) -> Target:
     """Name a target column's output fields after a name of your own.
 
@@ -993,24 +993,24 @@ def target(column: str, *, name: str | None = None) -> Target:
     """
     if not isinstance(column, str):
         raise TypeError(
-            f"po.target: column must be a str, but it is {_got(column)}. "
+            f"rheon.target: column must be a str, but it is {_got(column)}. "
             "Pass the name of the target's column."
         )
     if not column:
         raise ValueError(
-            "po.target: column must name a column, but it is empty. "
+            "rheon.target: column must name a column, but it is empty. "
             "Pass the name of the target's column."
         )
     out: Target = {"column": column}
     if name is not None:
         if not isinstance(name, str):
             raise TypeError(
-                f"po.target({column!r}): name must be a str, but it is {_got(name)}. "
+                f"rheon.target({column!r}): name must be a str, but it is {_got(name)}. "
                 "Pass the name the target's fields take, or leave name out."
             )
         if not name:
             raise ValueError(
-                f"po.target({column!r}): name must not be empty, since it names the target's "
+                f"rheon.target({column!r}): name must not be empty, since it names the target's "
                 "fields. Pass a name, or leave name out to use the column's."
             )
         out["name"] = name
@@ -1588,7 +1588,7 @@ def ewridge(
     count above zero points at constant or collinear features, or too few
     rows for the features. A wide solve runs on the bank's threads, and its
     result is the same to the bit whatever their number
-    (``POLARS_ONLINE_MAX_THREADS``, or the machine's cores): at 2,000
+    (``RHEON_MAX_THREADS``, or the machine's cores): at 2,000
     features a factorization and solve took 18 ms on eight threads against
     68 on one.
 
@@ -1763,7 +1763,7 @@ def ewridge(
     up to that many threads: the block's matrix product under
     ``gram_block_rows``, and each row's rank-one update without it. The
     bank's ``threads`` sets how many threads it has
-    (``POLARS_ONLINE_MAX_THREADS``, or one per core, when it is ``None``).
+    (``RHEON_MAX_THREADS``, or one per core, when it is ``None``).
     The option caps how many of them one spec's update may take, so a count
     above the bank's number of threads runs on that number. A solve is not capped by this count: its
     factorization can use every thread the bank has. Each entry of the
@@ -2646,7 +2646,7 @@ def kalman(
             coef_half_life=20.0,                  # how fast a coefficient may drift, in rows
             coef_every=0,                         # write coef on every row
         )
-        out = pl.scan_parquet("step.parquet").online.fit_predict([k]).collect()
+        out = pl.scan_parquet("step.parquet").rheon.fit_predict([k]).collect()
         coef = out["k"].struct.field("coef")
         for row in (1_999, 2_010, 2_100):
             print(f"row {row}: true slope {slope[row]:.0f}, found {coef[row][1]:.2f}")
@@ -3430,7 +3430,7 @@ def ew_cov(
             "mv", features=["x0", "x1"], half_life=float("inf"),
             stats=["std", "corr"],                      # std_x0, std_x1 and corr_x0_x1
         )
-        out = pl.scan_parquet("pair.parquet").online.fit_predict([mv]).collect().unnest("mv")
+        out = pl.scan_parquet("pair.parquet").rheon.fit_predict([mv]).collect().unnest("mv")
         last = out.row(-1, named=True)                  # read before the last row is learned
         print("planted: std_x0 2.00, corr 0.60")
         print(f"found: std_x0 {last['std_x0']:.2f}, corr {last['corr_x0_x1']:.2f}")
@@ -3478,7 +3478,7 @@ def ew_cov(
     refresh, and moves no correlation, share, loading or score.
 
     **Principal components.** The components are the same to the bit
-    whatever the bank's thread count (``POLARS_ONLINE_MAX_THREADS``): the
+    whatever the bank's thread count (``RHEON_MAX_THREADS``): the
     eigensolver runs at a fixed parallel degree of eight. A row of weight
     zero advances both refresh schedules, as the hard window's snapshot
     cadence counts it, and a gap capped at ``gap_cap`` counts as the cap.
@@ -4088,7 +4088,7 @@ def seqtest(
         pl.DataFrame({"fair": fair, "up": up}).write_parquet("signs.parquet")
 
         sign = rp.spec.seqtest("sign", targets=["fair", "up"])
-        out = pl.scan_parquet("signs.parquet").online.fit_predict([sign]).collect()
+        out = pl.scan_parquet("signs.parquet").rheon.fit_predict([sign]).collect()
         out = out.unnest("sign")
         for t in ["fair", "up"]:
             e = out[f"log_e_pos_{t}"]
@@ -4909,7 +4909,7 @@ def deco(
         pl.DataFrame(cols).write_parquet("returns.parquet")
 
         eq = rp.spec.deco("eq", features=list(cols), half_life=500.0)
-        out = pl.scan_parquet("returns.parquet").online.fit_predict([eq]).collect().unnest("eq")
+        out = pl.scan_parquet("returns.parquet").rheon.fit_predict([eq]).collect().unnest("eq")
         print(f"correlation 0.2: rho {out['rho'][9_999]:.2f}")
         print(f"correlation 0.6: rho {out['rho'][-1]:.2f}")
 

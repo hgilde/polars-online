@@ -70,12 +70,9 @@ fn a_bank_of_one_thread_runs_every_task_on_its_one_thread() {
     let names = seen(name);
     assert_eq!(names.len(), 1, "{names:?}");
     let only = names.iter().next().unwrap();
-    // A pool of its own (`polars-online-1t-0`), or the process default
-    // when that has one thread (`polars-online-0`).
-    assert!(
-        only == "polars-online-1t-0" || only == "polars-online-0",
-        "{only}"
-    );
+    // A pool of its own (`rheon-1t-0`), or the process default
+    // when that has one thread (`rheon-0`).
+    assert!(only == "rheon-1t-0" || only == "rheon-0", "{only}");
 }
 
 /// A bank of two runs on two threads of a pool of its size, and on nothing
@@ -93,9 +90,9 @@ fn a_bank_of_two_threads_runs_on_those_two() {
     // A pool of its own, unless the process default has two threads.
     let default = std::ptr::eq(bank.threads().pool().unwrap(), crate::pool::pool().unwrap());
     let want = if default {
-        ["polars-online-0", "polars-online-1"]
+        ["rheon-0", "rheon-1"]
     } else {
-        ["polars-online-2t-0", "polars-online-2t-1"]
+        ["rheon-2t-0", "rheon-2t-1"]
     };
     for n in &names {
         assert!(

@@ -527,7 +527,7 @@ def micro(
             "mc", features=["a", "b"], half_life=1_000.0,
             eps=0.1,                                        # the spread one summary holds
         )
-        out = pl.scan_parquet("blobs3.parquet").online.fit_predict([mc]).collect()
+        out = pl.scan_parquet("blobs3.parquet").rheon.fit_predict([mc]).collect()
         out = out.unnest("mc")
         for row in [2_999, 5_999]:
             print(f"row {row}: {out['n_clusters'][row]} clusters")

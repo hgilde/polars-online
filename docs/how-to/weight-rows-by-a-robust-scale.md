@@ -133,7 +133,7 @@ data](../EXAMPLE-DATA.md):
 doubled = po.stream.embargo(pl.scan_parquet("ticks.parquet"), clock="t", delay=5.0)
 known = pl.when(pl.col("_online_role") == "learn").then(pl.col("ret").abs())   # a target counts once it has arrived
 scaled = (
-    doubled.online.with_windows(
+    doubled.rheon.with_windows(
         ret_scale=po.ewm_quantile(known, quantile=0.5, half_life=20.0) / 0.6744897501960817,
         clock="t", gap_cap=10.0,
     )
@@ -216,7 +216,7 @@ each row of a second model by `1 / huber_scale_y²`. It uses
 robust = po.spec.huber("robust", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=10.0,
                        half_life=100.0, emit_huber_scale=True)
 residual_scale = pl.col("robust").struct.field("huber_scale_y")
-rows = (pl.scan_parquet("ticks.parquet").online.fit_predict([robust])
+rows = (pl.scan_parquet("ticks.parquet").rheon.fit_predict([robust])
           .with_columns(w=1.0 / residual_scale ** 2)               # the weight, null where the scale is
           .collect())
 # A second model, each row weighed by the scale.

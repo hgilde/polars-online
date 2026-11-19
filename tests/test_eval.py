@@ -111,7 +111,7 @@ def test_unpack_is_long_form():
 def test_rejects_non_struct_column():
     out = _fitted(n_groups=1, n_rows=50)
     with pytest.raises(
-        TypeError, match="po.eval.metrics: column 'x0' must be a spec's output column, but it is"
+        TypeError, match="rp.eval.metrics: column 'x0' must be a spec's output column, but it is"
     ):
         rp.eval.metrics(out, "x0")
 
@@ -132,7 +132,7 @@ def test_mistakes_are_named():
     with pytest.raises(TypeError, match="output column 'c' has no prediction fields"):
         rp.eval.unpack(cov, "c")
     with pytest.raises(
-        ValueError, match="po.eval.unpack: no column of the frame is named after slot 'pred_y0'"
+        ValueError, match="rp.eval.unpack: no column of the frame is named after slot 'pred_y0'"
     ):
         rp.eval.unpack(out.drop("y0"), "m")
     with pytest.raises(ValueError, match="every must be above 0, but it is 0"):
@@ -224,13 +224,13 @@ class TestBinary:
 
     def test_streaming_metric_agrees_with_the_frame(self):
         # The same invariant E22 already claims for the regression reading:
-        # `emit_metrics` (O(state), read before each row) and `po.eval.metrics`
+        # `emit_metrics` (O(state), read before each row) and `rp.eval.metrics`
         # (over the collected frame) must land on the same number.
         out, _ = _logistic_fit(emit_metrics=True)
         last = out["m"].struct.field("hit_rate_y0")[-1]
         m = rp.eval.metrics(out, "m", targets=["y0"], binary=True)
         # emit_metrics is exponentially weighted (half_life=inf here, so it is
-        # a plain running mean) and read before the last row; po.eval scores
+        # a plain running mean) and read before the last row; rp.eval scores
         # every row including the last, so compare to that same window.
         pred = out["m"].struct.field("pred_y0").to_numpy().astype(float)
         assert abs(last - m["accuracy"][0]) < 0.01, (
@@ -280,7 +280,7 @@ def test_window_metrics_refuses_a_string_clock_for_itself(every):
     clock is the problem (task 352)."""
     df = pl.DataFrame({"t": ["a", "b"], "m": [{"pred_y": 1.0, "resid_y": 0.5}] * 2})
     with pytest.raises(
-        TypeError, match="^po.eval.window_metrics: clock column 't' must be numeric or temporal"
+        TypeError, match="^rp.eval.window_metrics: clock column 't' must be numeric or temporal"
     ):
         rp.eval.window_metrics(df, "m", clock="t", every=every)
 
@@ -330,7 +330,7 @@ def test_window_metrics_refuses_a_window_that_is_not_finite():
     """Review 2026-10-05 (YB11): ``window_size=inf`` gave one bucket, whose
     ``window_start`` was NaN."""
     out = _fitted(n_groups=1, n_rows=50)
-    with pytest.raises(ValueError, match="^po.eval.window_metrics: every must be finite"):
+    with pytest.raises(ValueError, match="^rp.eval.window_metrics: every must be finite"):
         rp.eval.window_metrics(out, "m", clock="t", every=float("inf"))
 
 
@@ -346,7 +346,7 @@ def _price_frame(n: int = 600, seed: int = 3) -> pl.DataFrame:
     a column, and what the bank cannot use in it: a null, and a value past
     its input bound. The last row's ``ret`` is null: the bank reads its
     metrics before each row, so the last row's are over every row before it,
-    which are the rows ``po.eval`` scores."""
+    which are the rows ``rp.eval`` scores."""
     rng = np.random.default_rng(seed)
     x = rng.standard_normal((n, 2))
     mid = 100.0 + np.cumsum(0.2 * rng.standard_normal(n))
@@ -385,7 +385,7 @@ def test_a_target_is_scored_as_the_bank_scores_it(name):
     bank = out["m"].struct.unnest().tail(1)
     pred = out["m"].struct.field(f"pred_{t}")
     # A prediction exactly at 0 is left out of `hit_rate` by the bank and by
-    # `po.eval` alike (S6, not this test's rule): none may sit there.
+    # `rp.eval` alike (S6, not this test's rule): none may sit there.
     assert pred.is_not_null().sum() > 500 and not (pred == 0.0).any()
 
     def held(frame: pl.DataFrame) -> None:
@@ -486,7 +486,7 @@ def test_window_metrics_keeps_an_integer_clocks_dtype(dtype):
         assert got.with_columns(pl.col("window_start").cast(pl.Float64)).equals(want), window
     with pytest.raises(
         ValueError,
-        match="^po.eval.window_metrics: every must be a whole number, since clock column",
+        match="^rp.eval.window_metrics: every must be a whole number, since clock column",
     ):
         rp.eval.window_metrics(ints, "m", clock="t", every=2.5)
 

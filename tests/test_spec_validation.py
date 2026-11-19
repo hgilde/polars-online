@@ -661,7 +661,7 @@ def test_the_modes_own_parameters_still_build(builder, kw):
 
 def test_an_empty_target_name_is_refused():
     """``targets=[""]`` wrote fields called ``pred_`` and ``resid_``, where
-    ``po.target("")`` is refused (review 2026-10-06, YA5)."""
+    ``rheon.target("")`` is refused (review 2026-10-06, YA5)."""
     with pytest.raises(ValueError, match='spec "m": every target needs a name'):
         rp.spec.ewridge("m", targets=[""], features=["x0"], half_life=10.0)
 

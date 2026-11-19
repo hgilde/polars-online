@@ -35,7 +35,7 @@ class RefreshTime:
     def feed(self, df: pl.DataFrame, limit: int | None = None) -> pl.DataFrame: ...
 
 class Windows:
-    """``po.stream.with_windows``, fed a stream's chunks in order."""
+    """``rp.stream.with_windows``, fed a stream's chunks in order."""
 
     def __init__(self, config: str, input: pl.DataFrame) -> None: ...
     @staticmethod
@@ -57,7 +57,7 @@ class ArrowStruct:
     .. warning::
         The Arrow output is considered **unstable**: it may change in any
         release without that counting as a breaking change. Under
-        ``POLARS_ONLINE_WARN_UNSTABLE=1`` the calls that return one raise
+        ``RHEON_WARN_UNSTABLE=1`` the calls that return one raise
         ``rheon.UnstableWarning``.
     """
 
@@ -275,7 +275,7 @@ def gram_path_jobs(
     threads: int | None = None,
 ) -> list[_PathOut]: ...
 
-# `po.gbdt`'s native engine (python/rheon/polars/_gbdt.py, docs/PLAN.md task
+# `rheon.polars._gbdt`'s native engine (python/rheon/polars/_gbdt.py, docs/PLAN.md task
 # 242). `batches` returns a fresh iterator of frames for each pass; each
 # build returns the library's handle, which the caller owns, and its counts
 # and timings.

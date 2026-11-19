@@ -404,7 +404,7 @@ fn busy(what: &str) -> PyErr {
 ///     without that counting as a breaking change. Its input still arrives
 ///     as a Polars frame, since the path that would take Arrow in is not
 ///     built, so the pair is not yet in its final form. Under
-///     ``POLARS_ONLINE_WARN_UNSTABLE=1``, the calls that return one issue
+///     ``RHEON_WARN_UNSTABLE=1``, the calls that return one issue
 ///     ``rheon.UnstableWarning``.
 ///
 /// .. rubric:: Examples
@@ -414,8 +414,8 @@ fn busy(what: &str) -> PyErr {
 ///
 /// .. code-block:: python
 ///
-///     spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-///     bank = po.ModelBank([spec])
+///     spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+///     bank = rp.ModelBank([spec])
 ///     (struct,) = bank.fit_predict_arrow(df)        # one ArrowStruct per spec
 ///     column = pl.Series(struct.name, struct)        # read once, through __arrow_c_array__
 ///     print(struct.name, column.len())
@@ -1090,16 +1090,16 @@ impl PyRefreshTime {
 /// was the bank's sentence, naming `ModelBank`, unreachable while `feed`
 /// held the GIL (review round 4, SF12).
 fn refresh_busy(what: &str) -> PyErr {
-    // The class is private: its reader called `po.stream.refresh_time`.
+    // The class is private: its reader called `rp.stream.refresh_time`.
     let _ = what;
     PyRuntimeError::new_err(
-        "po.stream.refresh_time: a run of po.stream.refresh_time is one ordered stream, and \
+        "rp.stream.refresh_time: a run of rp.stream.refresh_time is one ordered stream, and \
          this one is in use on another thread, so it cannot be fed from two places at once. \
-         Wait for the call to return, or call po.stream.refresh_time once in each thread.",
+         Wait for the call to return, or call rp.stream.refresh_time once in each thread.",
     )
 }
 
-/// `po.stream.with_windows` (`rheon_polars::WindowsRun`, docs/PLAN.md task 78):
+/// `rp.stream.with_windows` (`rheon_polars::WindowsRun`, docs/PLAN.md task 78):
 /// fed a stream's chunks in order, it returns the rows each chunk resolved,
 /// with every window's columns beside them. The rows a forward window holds
 /// stay here, as the input's own chunks, until their horizons pass.
@@ -1111,7 +1111,7 @@ struct PyWindows {
 /// The error for a run reached from a second thread while a call is on the
 /// first: one stream, fed from one place.
 fn windows_busy(what: &str) -> PyErr {
-    // The class is private: its reader called `po.stream.with_windows`.
+    // The class is private: its reader called `rp.stream.with_windows`.
     let _ = what;
     PyRuntimeError::new_err(
         "with_windows: the window run is in use on another thread, and a window run \
@@ -1122,7 +1122,7 @@ fn windows_busy(what: &str) -> PyErr {
 
 #[pymethods]
 impl PyWindows {
-    /// A run of `config` (the JSON `po.stream.with_windows` writes) over an input
+    /// A run of `config` (the JSON `rp.stream.with_windows` writes) over an input
     /// whose schema is `input`'s, a frame of no rows.
     #[new]
     fn new(config: &str, input: PyDataFrame) -> PyResult<Self> {
@@ -1221,7 +1221,7 @@ impl PyWindows {
 #[pyo3(signature = (path, who="closed_groups"))]
 fn format_of_path(path: &str, who: &str) -> PyResult<&'static str> {
     // Python reads a path's format only for `closed_groups=`; `who` is the
-    // call and its keyword, `lf.online.fit_predict: closed_groups`.
+    // call and its keyword, `lf.rheon.fit_predict: closed_groups`.
     rheon_polars::Format::from_path_named(std::path::Path::new(path), who, "")
         .map(|f| f.name())
         .map_err(PyValueError::new_err)
@@ -1326,7 +1326,7 @@ fn resolved_defaults(spec_json: &str) -> PyResult<String> {
 ///
 /// .. code-block:: python
 ///
-///     print(po.native_version() == po.__version__)
+///     print(rp.native_version() == rp.__version__)
 ///
 /// .. code-block:: text
 ///
@@ -1387,7 +1387,7 @@ fn spec_clock_fields() -> (
 ///
 /// .. code-block:: python
 ///
-///     version = po.schema_version()     # the layout a saved state file has
+///     version = rp.schema_version()     # the layout a saved state file has
 #[pyfunction]
 fn schema_version() -> u32 {
     rheon_core::SCHEMA_VERSION
@@ -1396,7 +1396,7 @@ fn schema_version() -> u32 {
 /// Size of the thread pool a ``threads`` argument names.
 ///
 /// ``threads=None`` is the process default, built at the first call that
-/// uses it from ``POLARS_ONLINE_MAX_THREADS`` (unset or ``0``: one thread
+/// uses it from ``RHEON_MAX_THREADS`` (unset or ``0``: one thread
 /// per core) and never resized; this builds it if nothing has yet. An
 /// integer ``n`` is a pool of ``n`` threads, which this checks and does not
 /// build. Polars' own pool, ``POLARS_MAX_THREADS``, is separate --

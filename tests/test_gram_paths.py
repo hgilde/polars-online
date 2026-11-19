@@ -1,4 +1,4 @@
-"""``po.gram`` on the paths no other test took (task 252): Gram mappings that
+"""``rheon.gram`` on the paths no other test took (task 252): Gram mappings that
 lack the optional target moments (a mapping handed to ``from_row`` may leave
 them out, and the functions say ``None`` for what they cannot form), the
 within-part merge of Grams with no target, the refusals of ``merge``,
@@ -107,7 +107,7 @@ def test_a_within_merge_with_no_way_to_centre_the_cross_moments_is_refused():
     grams = [_bare(r) for r in _closed_rows(fit_intercept=False)]
     with pytest.raises(
         ValueError,
-        match="po.gram.merge: within=True needs each target's cross-moments about its means, "
+        match="rheon.gram.merge: within=True needs each target's cross-moments about its means, "
         "but a Gram has no cross_centered, and no intercept column or target_means to center "
         "them at",
     ):
@@ -117,7 +117,7 @@ def test_a_within_merge_with_no_way_to_centre_the_cross_moments_is_refused():
 def test_merge_refuses_parts_with_other_targets():
     a = rp.gram.from_row(_closed_rows()[0])
     b = dict(a, targets=["z"])
-    with pytest.raises(ValueError, match="po.gram.merge: every Gram must have the same targets"):
+    with pytest.raises(ValueError, match="rheon.gram.merge: every Gram must have the same targets"):
         rp.gram.merge([a, b])
 
 
@@ -126,15 +126,16 @@ def test_from_row_refuses_what_is_not_one_closed_row():
     frame = pl.DataFrame(rows)
     with pytest.raises(
         ValueError,
-        match="po.gram.from_row: row must be one closed group's row, but the frame has 2 rows",
+        match="rheon.gram.from_row: row must be one closed group's row, but the frame has 2 rows",
     ):
         rp.gram.from_row(frame)
     with pytest.raises(ValueError, match="but the frame has 0 rows"):
         rp.gram.from_row(frame.clear())
     with pytest.raises(
         TypeError,
-        match="po.gram.from_row: row must be a one-row frame of ModelBank.closed_groups\\(\\), a "
-        "row of its iter_rows\\(named=True\\), or a mapping, but its type is int",
+        match="rheon.gram.from_row: row must be a one-row frame of "
+        "ModelBank.closed_groups\\(\\), a row of its iter_rows\\(named=True\\), or a mapping, "
+        "but its type is int",
     ):
         rp.gram.from_row(42)
     short = dict(rows[0], comoments=rows[0]["comoments"][:-1])
@@ -168,7 +169,7 @@ def test_coef_stats_through_the_origin_needs_the_target_mean():
     rp.gram.coef_stats(g, coef, target="y")  # with target_means it answers
     with pytest.raises(
         ValueError,
-        match="po.gram.coef_stats: a fit with no intercept reads the target's mean as well as "
+        match="rheon.gram.coef_stats: a fit with no intercept reads the target's mean as well as "
         "its variance, but the Gram has no target_means",
     ):
         rp.gram.coef_stats(dict(g, target_means=None), coef, target="y")

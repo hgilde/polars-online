@@ -70,7 +70,7 @@ model = po.spec.rls(
     coef_every=0,  # the coefficients on every row
     emit_feature_health=True,  # spread_ratio_x0, spread_ratio_x1, mean_shift_x0, mean_shift_x1
 )
-out = feed.online.fit_predict([model]).online.unnest([model]).collect()
+out = feed.rheon.fit_predict([model]).rheon.unnest([model]).collect()
 
 # 3 and 4. When x1's spread collapsed, and when rls's coefficient on it ran away.
 quiet = out.filter((pl.col("t") >= 300) & (pl.col("spread_ratio_x1") < 0.5))["t"].min()

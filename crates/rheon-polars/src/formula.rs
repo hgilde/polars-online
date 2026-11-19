@@ -742,7 +742,7 @@ impl Node {
                 "{who}: its input holds a window operator, but it may read only an expression \
                  (a column computation, such as pl.col(\"x\") + 1) of the row itself, such as \
                  {such_as}. Add the inner operator's result as a column of the input before the \
-                 run, such as with po.stream.with_windows in Python, and read that column."
+                 run, such as with rp.stream.with_windows in Python, and read that column."
             ));
         }
         Ok(())

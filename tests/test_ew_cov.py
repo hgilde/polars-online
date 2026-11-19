@@ -402,7 +402,7 @@ class TestAccumulateOnly:
         many = pl.concat([bank.fit_predict(df.slice(i, 101)) for i in range(0, df.height, 101)])
         assert many.select("c").unnest("c").equals(one)
         assert np.array_equal(bank.gram("c")[0]["comoments"], ref.gram("c")[0]["comoments"])
-        lazy = df.lazy().online.fit_predict([bare]).collect().select("c").unnest("c")
+        lazy = df.lazy().rheon.fit_predict([bare]).collect().select("c").unnest("c")
         assert lazy.equals(one)
         state = tmp_path / "s.state"
         bank.save(state)

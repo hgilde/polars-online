@@ -239,7 +239,7 @@ def frame(n=1500, seed=0):
 SPEC = rp.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=50.0, min_weight=2.0)
 
 
-FRESH = "POLARS_ONLINE_FRESH_INTERPRETER"
+FRESH = "RHEON_FRESH_INTERPRETER"
 
 
 def in_a_fresh_interpreter(test):

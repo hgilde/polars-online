@@ -56,7 +56,7 @@ release as an asset. Every later run reads it from the newest release
 reports each case's drift since; a release fails on a case past
 ``meta.drift_signoff`` with no ``[[signoff]]`` for its version. So nothing
 is committed after a release to record its numbers. ``--baseline`` (or
-``POLARS_ONLINE_BUDGETS_BASELINE``) reads a local file, a directory holding
+``RHEON_BUDGETS_BASELINE``) reads a local file, a directory holding
 one, or another URL instead. A run that cannot read it says so and goes on,
 unless it is told ``--require-baseline``, as CI and a release are.
 """
@@ -97,7 +97,7 @@ REPEAT_SHARE = 0.25
 #: ``m(1+t)/(1-t)``: +86% at the resident memory's 30%. Past a quarter of
 #: it, the ceiling is ``m(1+t)/(1-t/4)``, +41%.
 TIGHTEN_SHARE = {"rss": 0.25}
-MEASURE_VARIABLE = "POLARS_ONLINE_BUDGETS"
+MEASURE_VARIABLE = "RHEON_BUDGETS"
 #: The line that opens the file's last section, the raises and sign-offs.
 RAISES_MARK = "# --- raises and sign-offs"
 #: The release asset that holds a release's own measurements, the baseline
@@ -106,7 +106,7 @@ BASELINE_ASSET = "budgets-baseline.json"
 #: The newest release's copy: GitHub redirects ``latest`` to the newest
 #: release that is not a draft or a prerelease.
 BASELINE_URL = f"https://github.com/hgilde/polars-online/releases/latest/download/{BASELINE_ASSET}"
-BASELINE_VARIABLE = "POLARS_ONLINE_BUDGETS_BASELINE"
+BASELINE_VARIABLE = "RHEON_BUDGETS_BASELINE"
 #: The platforms whose resident memory a baseline must hold.
 BASELINE_PLATFORMS = PLATFORMS
 
@@ -816,7 +816,7 @@ def _fetch(url: str, attempts: int = 3, timeout: float = 30.0) -> str:
 def read_baseline(source: str | Path | None = None) -> Baseline:
     """The last release's measurements, from ``source``: a URL, a file, or a
     directory holding ``budgets-baseline.json``. Unset, from
-    ``POLARS_ONLINE_BUDGETS_BASELINE``, else from the newest GitHub release
+    ``RHEON_BUDGETS_BASELINE``, else from the newest GitHub release
     (``BASELINE_URL``)."""
     source = str(source or os.environ.get(BASELINE_VARIABLE) or BASELINE_URL)
     if source.startswith(("https://", "http://")):

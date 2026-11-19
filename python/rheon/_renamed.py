@@ -25,15 +25,15 @@ from rheon._warnings import RENAMED_MARK
 
 #: The qualified names a decorated function reports, as the reader calls it.
 _READER_NAMES = {
-    "LazyFrameOnlineNamespace.fit_predict()": "lf.online.fit_predict",
-    "LazyFrameOnlineNamespace.predict()": "lf.online.predict",
-    "DataFrameOnlineNamespace.fit_predict()": "df.online.fit_predict",
-    "DataFrameOnlineNamespace.predict()": "df.online.predict",
-    "fit_predict()": "po.fit_predict",
-    "predict()": "po.predict",
-    "refresh_time()": "po.stream.refresh_time",
-    "with_windows()": "po.stream.with_windows",
-    "embargo()": "po.stream.embargo",
+    "LazyFrameRheonNamespace.fit_predict()": "lf.rheon.fit_predict",
+    "LazyFrameRheonNamespace.predict()": "lf.rheon.predict",
+    "DataFrameRheonNamespace.fit_predict()": "df.rheon.fit_predict",
+    "DataFrameRheonNamespace.predict()": "df.rheon.predict",
+    "fit_predict()": "rp.fit_predict",
+    "predict()": "rp.predict",
+    "refresh_time()": "rp.stream.refresh_time",
+    "with_windows()": "rp.stream.with_windows",
+    "embargo()": "rp.stream.embargo",
     "ModelBank.fit_predict_batches()": "ModelBank.fit_predict_batches",
     "ModelBank.fit()": "ModelBank.fit",
 }

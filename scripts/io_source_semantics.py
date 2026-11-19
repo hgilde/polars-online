@@ -1,6 +1,6 @@
 """How polars executes a Python IO source (`register_io_source`), measured.
 
-The plan form, ``lf.online.fit_predict(specs)``, is such a source
+The plan form, ``lf.rheon.fit_predict(specs)``, is such a source
 (``python/rheon/_frame.py``), and whether it can carry state out of
 a query -- ``save_state=`` -- rests on facts about the engine that are not
 documented: how often the source runs per query, whether two runs of it

@@ -84,8 +84,8 @@ window = po.spec.ewridge("window", targets=[y_ahead], features=["x0", "x1"], emb
 specs = [late, window]
 
 # Save part-way, resume on the second file, and compare with one run.
-pl.scan_parquet("2025.parquet").online.fit_predict(specs, save_state="carry.state").sink_parquet("2025_scored.parquet")
-resumed = pl.scan_parquet("2026.parquet").online.fit_predict(load_state="carry.state").collect()
+pl.scan_parquet("2025.parquet").rheon.fit_predict(specs, save_state="carry.state").sink_parquet("2025_scored.parquet")
+resumed = pl.scan_parquet("2026.parquet").rheon.fit_predict(load_state="carry.state").collect()
 one_run = po.ModelBank(specs).fit_predict(stream).tail(500)
 for name, target in [("late", "y"), ("window", "y_ahead")]:
     difference = (resumed[name].struct.field(f"pred_{target}") - one_run[name].struct.field(f"pred_{target}")).abs().max()
@@ -202,7 +202,7 @@ pl.DataFrame({"t": np.arange(2_000.0), "x0": x0, "x1": x1,
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
 
 # A query that saves its state, built but not yet run.
-query = pl.scan_parquet("stream.parquet").online.fit_predict([spec], save_state="run.state")
+query = pl.scan_parquet("stream.parquet").rheon.fit_predict([spec], save_state="run.state")
 print(f"after building the query, the file exists: {Path('run.state').exists()}")
 # Run it twice, then under head(100), reading the file after each.
 query.collect()

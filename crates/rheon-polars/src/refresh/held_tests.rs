@@ -359,7 +359,7 @@ fn a_state_holding_points_is_version_two_and_checked_on_load() {
     file.version = super::REFRESH_VERSION;
     assert_eq!(
         load(&file).err().unwrap(),
-        "po.stream.refresh_time: the state is damaged: its contents do not match its version, \
+        "rp.stream.refresh_time: the state is damaged: its contents do not match its version, \
          1. Load an undamaged copy of the state file, or leave out load_state to start over."
     );
     file.version = super::REFRESH_VERSION_HELD;

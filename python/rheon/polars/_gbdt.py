@@ -83,7 +83,7 @@ noise. Accuracy is the validation RMSE on separate rows from another seed.
     APIs and on how their Python classes hold a native handle. So its
     keywords and what it supports may change in any release without that
     counting as a breaking change, and a new library version may need a new
-    release here. Under ``POLARS_ONLINE_WARN_UNSTABLE=1``, each call issues
+    release here. Under ``RHEON_WARN_UNSTABLE=1``, each call issues
     :class:`rheon.UnstableWarning`.
 """
 
@@ -151,8 +151,9 @@ def _format(path: str | os.PathLike[str], who: str) -> str:
         return "parquet"
     raise ValueError(
         f"{who}: the format of {os.fspath(path)!r} cannot be told from its extension, and "
-        "po.gbdt reads Arrow IPC (.arrow, .ipc, .feather) and Parquet (.parquet, .pq) files. "
-        "Rename the file to one of those extensions, or pass a query that reads it."
+        "rheon.polars._gbdt reads Arrow IPC (.arrow, .ipc, .feather) and Parquet "
+        "(.parquet, .pq) files. Rename the file to one of those extensions, or pass a query "
+        "that reads it."
     )
 
 
@@ -335,9 +336,9 @@ class _Columns:
                 )
             else:
                 raise WrongTypeError(
-                    f"{who}: feature {c!r} is {dt}, but po.gbdt reads integer, float, Boolean "
-                    "and pl.Enum columns. Cast it to Float64 or a pl.Enum, or leave it out of "
-                    "features."
+                    f"{who}: feature {c!r} is {dt}, but rheon.polars._gbdt reads integer, float, "
+                    "Boolean and pl.Enum columns. Cast it to Float64 or a pl.Enum, or leave it "
+                    "out of features."
                 )
             if len(self.categories) < len(self.kinds):
                 self.categories.append(None)
@@ -619,7 +620,7 @@ def _check_common(
     return bins, count
 
 
-def _library_path(lib: Any, who: str = "po.gbdt", what: str = "the library") -> str:
+def _library_path(lib: Any, who: str = "rheon.polars._gbdt", what: str = "the library") -> str:
     """The file a library's Python package loaded it from."""
     path = getattr(lib, "path", None) or getattr(lib, "_name", None)
     if not path:
@@ -814,7 +815,7 @@ def xgboost_matrix(
         Under ``engine="auto"``, the native engine cannot load XGBoost, and
         the Python engine builds the matrix.
     :class:`~rheon.UnstableWarning`
-        Under ``POLARS_ONLINE_WARN_UNSTABLE=1``, on each call (the module's
+        Under ``RHEON_WARN_UNSTABLE=1``, on each call (the module's
         warning says why).
 
     .. rubric:: Examples
@@ -923,7 +924,7 @@ def xgboost_matrix(
     """
     import xgboost as xgb
 
-    who = "po.gbdt.xgboost_matrix"
+    who = "rheon.polars._gbdt.xgboost_matrix"
     max_bin, threads = _check_common(who, max_bin, threads, engine)
     if sample_rows is not None and _whole(sample_rows) is None:
         raise WrongTypeError(
@@ -1037,7 +1038,8 @@ def _xgb_python(
             sampler.push(frame)
         if sampler.rows_seen == 0:
             raise ValueError(
-                "po.gbdt.xgboost_matrix: the source has no rows. Pass a source with rows."
+                "rheon.polars._gbdt.xgboost_matrix: the source has no rows. "
+                "Pass a source with rows."
             )
         data, rows, p = sampler.ref_matrix(max_bin)
         planted = np.frombuffer(data, dtype="<f4").reshape(rows, p)
@@ -1067,11 +1069,12 @@ def _xgb_python(
             if frame is None:
                 if self._row == 0:
                     raise ValueError(
-                        "po.gbdt.xgboost_matrix: the source has no rows. Pass a source with rows."
+                        "rheon.polars._gbdt.xgboost_matrix: the source has no rows. "
+                        "Pass a source with rows."
                     )
                 if self._rows is not None and self._rows != self._row:
                     raise ValueError(
-                        "po.gbdt.xgboost_matrix: the source gave "
+                        "rheon.polars._gbdt.xgboost_matrix: the source gave "
                         f"{self._rows} rows in one pass and "
                         f"{self._row} in another, but XGBoost reads it more than once, and "
                         "every pass must give the same rows. Pass a source that reads the "
@@ -1304,7 +1307,7 @@ def lightgbm_dataset(
         Under ``engine="auto"``, the native engine cannot load LightGBM,
         and the Python engine builds the dataset.
     :class:`~rheon.UnstableWarning`
-        Under ``POLARS_ONLINE_WARN_UNSTABLE=1``, on each call (the module's
+        Under ``RHEON_WARN_UNSTABLE=1``, on each call (the module's
         warning says why).
 
     .. rubric:: Examples
@@ -1391,7 +1394,7 @@ def lightgbm_dataset(
     """
     import lightgbm as lgb
 
-    who = "po.gbdt.lightgbm_dataset"
+    who = "rheon.polars._gbdt.lightgbm_dataset"
     max_bin, threads = _check_common(who, max_bin, threads, engine)
     # By type: `1 in (True, False)` holds, and 1 is not an answer.
     if not isinstance(in_memory, bool) and in_memory != "auto":
@@ -1574,7 +1577,7 @@ def _lgb_python(
             row += frame.height
         if row != rows:
             raise ValueError(
-                "po.gbdt.lightgbm_dataset: the source was counted at "
+                "rheon.polars._gbdt.lightgbm_dataset: the source was counted at "
                 f"{rows} rows and a pass over it gave {row}, "
                 "but the build reads it more than once, to count its rows and then to read "
                 "them, and every pass must give the same rows. Pass a source that reads the "
@@ -1602,7 +1605,7 @@ def _lgb_python(
             row += frame.height
         if row != rows:
             raise ValueError(
-                "po.gbdt.lightgbm_dataset: the source was counted at "
+                "rheon.polars._gbdt.lightgbm_dataset: the source was counted at "
                 f"{rows} rows and a pass over it gave {row}, "
                 "but the build reads it more than once, to count its rows and then to read "
                 "them, and every pass must give the same rows. Pass a source that reads the "
@@ -1656,9 +1659,9 @@ def _lgb_rows(
             start, stop, _ = idx.indices(rows)
             if start != self._at:
                 raise RuntimeError(
-                    "po.gbdt.lightgbm_dataset: LightGBM asked for the rows out of order, and "
-                    "the source can be read only in order. Pass in_memory=True, which holds the "
-                    "rows in memory."
+                    "rheon.polars._gbdt.lightgbm_dataset: LightGBM asked for the rows out of "
+                    "order, and the source can be read only in order. Pass in_memory=True, "
+                    "which holds the rows in memory."
                 )
             if self._it is None:
                 self._it = cols.batches()
@@ -1666,7 +1669,7 @@ def _lgb_rows(
                 frame = next(self._it, None)
                 if frame is None:
                     raise ValueError(
-                        "po.gbdt.lightgbm_dataset: the source was counted at "
+                        "rheon.polars._gbdt.lightgbm_dataset: the source was counted at "
                         f"{rows} rows and a pass over it gave {self._at + self._buf.shape[0]}, "
                         "but the build reads it more than once, and every pass must give the "
                         "same rows. Pass a source that reads the same rows each time, such as "
@@ -1683,7 +1686,7 @@ def _lgb_rows(
                 more = self._buf.shape[0] + sum(f.height for f in self._it)
                 if more:
                     raise ValueError(
-                        "po.gbdt.lightgbm_dataset: the source was counted at "
+                        "rheon.polars._gbdt.lightgbm_dataset: the source was counted at "
                         f"{rows} rows and a pass over it gave {rows + more}, but the build "
                         "reads it more than once, and every pass must give the same rows. Pass "
                         "a source that reads the same rows each time, such as files or a frame."

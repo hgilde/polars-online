@@ -1,4 +1,4 @@
-"""``po.sim.regimes`` on the paths no other test took (task 252): a state on
+"""``rp.sim.regimes`` on the paths no other test took (task 252): a state on
 the boundary of the correlation cone, which Cholesky cannot factor without
 a nudge, and the refusals of a state that is not a correlation matrix and of
 the shape parameters, each by name."""
@@ -33,25 +33,25 @@ def test_a_singular_state_is_factored_with_a_rounding_scale_nudge():
     [
         (
             dict(states=[np.array([[1.0, 0.5], [0.4, 1.0]])]),
-            r"po.sim.regimes: states\[0\] must be a correlation matrix, but it is not symmetric",
+            r"rp.sim.regimes: states\[0\] must be a correlation matrix, but it is not symmetric",
         ),
         (
             dict(states=[np.array([[1.0, 0.9, -0.9], [0.9, 1.0, 0.9], [-0.9, 0.9, 1.0]])]),
-            r"po.sim.regimes: states\[0\] must be a correlation matrix, but it has a negative "
+            r"rp.sim.regimes: states\[0\] must be a correlation matrix, but it has a negative "
             "eigenvalue",
         ),
         (
             dict(states=[0.3], cycle_rows=0),
-            "po.sim.regimes: cycle_rows must be at least 1, but it is 0",
+            "rp.sim.regimes: cycle_rows must be at least 1, but it is 0",
         ),
         (
             dict(states=[0.3], scale_state=[0.0, 1.0]),
-            r"po.sim.regimes: scale_state must be one number or 1 values, one per state, but its "
+            r"rp.sim.regimes: scale_state must be one number or 1 values, one per state, but its "
             r"shape is \(2,\)",
         ),
         (
             dict(states=[0.3], async_rates=[1.0, 0.0]),
-            "po.sim.regimes: each rate of async_rates must be above 0",
+            "rp.sim.regimes: each rate of async_rates must be above 0",
         ),
     ],
 )

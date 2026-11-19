@@ -1,11 +1,11 @@
-"""``po.gbdt``'s margin: ``base_margin=`` on ``xgboost_matrix`` and
+"""``rheon.polars._gbdt``'s margin: ``base_margin=`` on ``xgboost_matrix`` and
 ``init_score=`` on ``lightgbm_dataset`` (docs/PLAN.md task 343,
 docs/records/TREE-FEATURES.md §4).
 
 Held to each library's own in-memory route with the same margin by the hash
 of the trees it grows, as ``tests/test_gbdt.py`` holds the rest: for a
 regression, a binary and a three-class objective, through every route
-``po.gbdt`` has (both engines, LightGBM's two-pass and in-memory routes,
+``rheon.polars._gbdt`` has (both engines, LightGBM's two-pass and in-memory routes,
 the native engine's Arrow IPC reader, Parquet files, a query, a frame in
 many chunks), each at many batch boundaries (``_CHUNK`` is cut to 999 rows
 here, so a Polars source arrives in batches of at most 999 and the Arrow

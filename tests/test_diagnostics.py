@@ -1388,7 +1388,7 @@ class TestMetricsByDefinition:
 
     def test_run_once_the_last_row_is_the_batch_evaluator_exactly(self):
         """No decay, unit weights: the last row's metrics read every scored
-        row before it, which is ``po.eval.metrics`` over those rows. Measured
+        row before it, which is ``rp.eval.metrics`` over those rows. Measured
         2026-10-26: 4.4e-16 at most."""
         rng = np.random.default_rng(24)
         n = 3000

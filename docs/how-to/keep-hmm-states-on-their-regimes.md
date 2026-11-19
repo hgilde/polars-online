@@ -69,7 +69,7 @@ specs = [
     po.spec.hmm("sticky", **common, transition=[0.998, 0.002, 0.002, 0.998], transition_prior=500.0),
 ]
 # 3 to 5. Add both specs, run, and read the share of the rows after seeding each puts in its true regime.
-out = returns.online.fit_predict(specs).collect().filter(pl.col("t") >= 500)
+out = returns.rheon.fit_predict(specs).collect().filter(pl.col("t") >= 500)
 for name in ("default", "sticky"):
     agree = (out[name].struct.field("state") == out["regime"]).mean()
     print(f"{name}: {max(agree, 1 - agree):.0%} of the rows in their true regime")   # read either numbering
@@ -126,7 +126,7 @@ raw = pl.scan_parquet("states.parquet")
 clipped = raw.with_columns(pl.col("x", "y").clip(-5.0, 5.0))
 # 2 to 4. Add the spec, run, and read the last 3,000 rows: the share in their true state, and the rows each state holds.
 for name, query in (("raw", raw), ("clipped", clipped)):
-    rows = query.online.fit_predict([hidden]).collect().unnest("hidden").tail(3_000)
+    rows = query.rheon.fit_predict([hidden]).collect().unnest("hidden").tail(3_000)
     agree = (rows["state"] == rows["truth"]).mean()
     held = [(rows["state"] == s).sum() for s in (0, 1)]
     print(f"{name}: {max(agree, 1 - agree):.0%} in their true state; state 0 holds {held[0]} rows, state 1 {held[1]}")

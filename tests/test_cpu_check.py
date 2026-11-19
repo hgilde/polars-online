@@ -221,13 +221,13 @@ def test_a_missing_feature_warns_with_the_feature_the_remedy_and_the_way_out(cpu
     assert "polars-online-compat" in text
     assert "pip uninstall polars-online" in text
     assert "Rosetta" in text
-    assert "POLARS_ONLINE_SKIP_CPU_CHECK" in text
+    assert "RHEON_SKIP_CPU_CHECK" in text
     assert "crash" in text
     assert warning.category is RuntimeWarning
 
 
 def test_the_variable_is_the_documented_one():
-    assert _cpu_check.SKIP_ENV == "POLARS_ONLINE_SKIP_CPU_CHECK"
+    assert _cpu_check.SKIP_ENV == "RHEON_SKIP_CPU_CHECK"
 
 
 def test_the_variable_skips_the_check(cpu, monkeypatch):
@@ -390,9 +390,10 @@ def test_the_check_runs_before_the_extension_module_is_asked_for():
     )
     assert res.returncode == 0, res.stderr
     asked = res.stdout.split()
-    # The package, then the check, then what the check reads, and only then
-    # anything else of the package: the compiled module among it.
-    assert asked[:3] == ["rheon", "rheon._cpu_check", "rheon._build_flags"]
+    # The package, then the check, its reader of the environment, and what the
+    # check reads, and only then anything else of the package: the compiled
+    # module among it.
+    assert asked[:4] == ["rheon", "rheon._cpu_check", "rheon._env", "rheon._build_flags"]
     assert "rheon._rheon" in asked, asked
 
 

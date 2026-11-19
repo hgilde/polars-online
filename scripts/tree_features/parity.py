@@ -45,16 +45,16 @@ with tempfile.TemporaryDirectory() as d:
     t0 = time.perf_counter()
     first = (
         pl.scan_parquet(a)
-        .online.with_windows(**nowcast, clock="c", gap_cap=1e12, save_state=state)
+        .rheon.with_windows(**nowcast, clock="c", gap_cap=1e12, save_state=state)
         .collect()
     )
     second = (
         pl.scan_parquet(b)
-        .online.with_windows(**nowcast, clock="c", gap_cap=1e12, load_state=state)
+        .rheon.with_windows(**nowcast, clock="c", gap_cap=1e12, load_state=state)
         .collect()
     )
     el = time.perf_counter() - t0
-    one = pl.scan_parquet(full).online.with_windows(**nowcast, clock="c", gap_cap=1e12).collect()
+    one = pl.scan_parquet(full).rheon.with_windows(**nowcast, clock="c", gap_cap=1e12).collect()
 two = pl.concat([first, second])
 
 

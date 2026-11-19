@@ -68,7 +68,7 @@ spec = po.spec.ewridge(
 )
 (
     pl.scan_parquet("past.parquet")              # a query over the past rows: nothing is read yet
-    .online.fit_predict([spec], save_state="ridge.state")   # the bank, which saves its state after the last row
+    .rheon.fit_predict([spec], save_state="ridge.state")   # the bank, which saves its state after the last row
     .sink_parquet("past_fitted.parquet")         # runs the query, writing the predictions to a file
 )
 print(f"the state is saved: {po.ModelBank.load('ridge.state')}")
@@ -121,8 +121,8 @@ from. Compare each prediction with the planted `0.5 + 1.5·x0 − 2·x1`:
 ```python
 served = (
     pl.scan_parquet("new_rows.parquet")          # the new rows, with no target
-    .online.predict("ridge.state")               # serves the new rows from the state
-    .online.unnest("ridge.state")                # the column "ridge" as one column per field: the state names the spec
+    .rheon.predict("ridge.state")               # serves the new rows from the state
+    .rheon.unnest("ridge.state")                # the column "ridge" as one column per field: the state names the spec
     .with_columns(planted=0.5 + 1.5 * pl.col("x0") - 2.0 * pl.col("x1"))   # the answer, to compare
     .collect()
 )

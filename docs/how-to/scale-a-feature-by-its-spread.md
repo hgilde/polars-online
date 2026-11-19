@@ -52,14 +52,14 @@ and the fitted coefficients against the truth. This code uses
 # Each feature in units of its current spread, and a fit on those.
 row_clock = dict(clock="t", gap_cap=10.0)                # one clock for the z-scores and the model; t steps by 1 a row
 spread = dict(half_life=100.0)                           # how fast the mean and the spread forget, in the clock's units
-zscored = pl.scan_parquet("ticks.parquet").online.with_windows(
+zscored = pl.scan_parquet("ticks.parquet").rheon.with_windows(
     z_x0=(pl.col("x0") - po.ewm_mean("x0", **spread)) / po.ewm_std("x0", **spread),   # x0 in units of its current spread
     z_x1=(pl.col("x1") - po.ewm_mean("x1", **spread)) / po.ewm_std("x1", **spread),
     sd_x0=po.ewm_std("x0", **spread), sd_x1=po.ewm_std("x1", **spread),
     **row_clock,
 )
 per_sd = po.spec.ewridge("per_sd", targets=["y"], features=["z_x0", "z_x1"], half_life=100.0, **row_clock)
-fitted = zscored.online.fit_predict([per_sd]).collect()   # the rows, the z-scores, the spreads and the column per_sd
+fitted = zscored.rheon.fit_predict([per_sd]).collect()   # the rows, the z-scores, the spreads and the column per_sd
 
 # The spread against Polars', and the fit against the truth.
 polars_sd = pl.read_parquet("ticks.parquet")["x0"].ewm_std(half_life=100.0, adjust=False)

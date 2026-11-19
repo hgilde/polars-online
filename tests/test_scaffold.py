@@ -28,7 +28,7 @@ def test_native_extension_loads() -> None:
 BUILT_AGAINST = "2.0.0"
 # Measured floor -- see the note in pyproject.toml, docs/VERSIONS.md's
 # *The floor*, and the matrix in docs/records/RELEASE-HISTORY.md. `LazyFrame.collect_batches`, which
-# `lf.online.fit_predict` reads with, arrived in 1.34.0 and first waits for
+# `lf.rheon.fit_predict` reads with, arrived in 1.34.0 and first waits for
 # a slower reader in 1.37.0 (before it, a 1 GB source was held whole).
 SUPPORTED_FLOOR = "1.37.0"
 

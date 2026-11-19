@@ -84,7 +84,7 @@ def test_import_rheon_works_without_polars() -> None:
         names = {
             "spec", "target", "Target", "FormulaTarget", "corr", "gram", "ArrowStruct",
             "ColumnNotFoundError", "OutputColumnNotFoundError", "RefusedValueError",
-            "WrongTypeError", "PolarsOnlineWarning", "PolarsOnlineDeprecationWarning",
+            "WrongTypeError", "RheonWarning", "RheonDeprecationWarning",
             "UnstableWarning", "ReadinessWarning", "native_version", "schema_version",
             "thread_pool_size", "__version__",
         }
@@ -159,7 +159,7 @@ def test_the_errors_raised_without_polars_are_the_neutral_classes() -> None:
         assert _errors.flavoured("WrongTypeError") is rheon.WrongTypeError
         assert rheon.ColumnNotFoundError.__bases__ == (ValueError,)
         assert rheon.OutputColumnNotFoundError.__bases__ == (rheon.ColumnNotFoundError,)
-        assert rheon.UnstableWarning.__bases__ == (rheon.PolarsOnlineWarning, UserWarning)
+        assert rheon.UnstableWarning.__bases__ == (rheon.RheonWarning, UserWarning)
         print("ok")
         """,
     )

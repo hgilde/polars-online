@@ -33,7 +33,7 @@ bank.save("bank.state")
 
 # As a query: the same numbers, streamed by polars, state written when the stream ends
 (pl.scan_parquet("ticks/*.parquet")
-   .online.fit_predict([spec], save_state="bank.state")
+   .rheon.fit_predict([spec], save_state="bank.state")
    .sink_parquet("fitted.parquet"))
 ```
 

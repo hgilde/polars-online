@@ -172,7 +172,7 @@ class ModelBank:
     Use a model bank when you feed the rows yourself, from frames you hold or a
     query you hand it to read in chunks, and when you want to read, save or
     serve what it has learned between chunks. To run the same bank inside a
-    Polars query, use ``lf.online.fit_predict(specs)``, and to run it outside
+    Polars query, use ``lf.rheon.fit_predict(specs)``, and to run it outside
     Python, from a file to a file, use the ``polars-online`` command line.
 
     .. rubric:: Parameters
@@ -184,7 +184,7 @@ class ModelBank:
         output column per spec to each chunk it learns.
     ``threads``
         How many threads the bank's work runs on. ``None``, the default, is the
-        process's shared threads, whose number ``POLARS_ONLINE_MAX_THREADS``
+        process's shared threads, whose number ``RHEON_MAX_THREADS``
         sets when they are first used (unset or ``0``: one thread per core). An
         integer ``n`` is ``n`` threads, which every bank given the same ``n``
         shares and which end with the last of those banks, unless the process's
@@ -204,11 +204,11 @@ class ModelBank:
           spec (the message names the field);
         - a spec's settings are refused, as its builder would refuse them;
         - ``threads`` is below 1 (``None``, not 0, gives the shared threads:
-          one per core unless ``POLARS_ONLINE_MAX_THREADS`` is set), or above
+          one per core unless ``RHEON_MAX_THREADS`` is set), or above
           1024 (or the machine's core count, where that is larger), refused
           before any thread starts;
         - from the bank's first call that runs, with ``threads=None``:
-          ``POLARS_ONLINE_MAX_THREADS`` is not a whole number, or is past
+          ``RHEON_MAX_THREADS`` is not a whole number, or is past
           the same bound.
     :class:`~rheon.WrongTypeError`
         ``specs`` is one spec, a string or bytes, in place of a list of specs. It
@@ -247,7 +247,7 @@ class ModelBank:
       :meth:`summary` and :meth:`describe`, which read what the bank has
       learned without the rows.
     - :meth:`save` and :meth:`load`, which write and read the state file.
-    - ``lf.online.fit_predict``, the same bank inside a query.
+    - ``lf.rheon.fit_predict``, the same bank inside a query.
 
     .. rubric:: Notes
 
@@ -282,7 +282,7 @@ class ModelBank:
             raise WrongTypeError(msg)
         if isinstance(specs, (str, bytes)):
             msg = (
-                "ModelBank: specs must be a list of specs, such as [po.spec.ewridge(...)], but "
+                "ModelBank: specs must be a list of specs, such as [rheon.spec.ewridge(...)], but "
                 f"it is of type {type(specs).__name__}. Pass a list of specs."
             )
             raise WrongTypeError(msg)
@@ -645,7 +645,7 @@ class ModelBank:
 
         Use it for rows held in memory as a frame, when you want the output
         back as one frame. For a query or a stream too large to hold, use
-        ``lf.online.fit_predict`` or :meth:`fit_predict_batches`. To learn
+        ``lf.rheon.fit_predict`` or :meth:`fit_predict_batches`. To learn
         without keeping the output, use :meth:`fit`, and to predict without
         learning, :meth:`predict`.
 
@@ -749,7 +749,7 @@ class ModelBank:
               target that is not 0 or 1, as its builder's docstring says;
             - the bank refused an earlier chunk after learning part of it
               (see Notes);
-            - ``POLARS_ONLINE_MAX_THREADS`` is not a whole number, or is
+            - ``RHEON_MAX_THREADS`` is not a whole number, or is
               above 1024 (or the machine's core count, where that is
               larger), on a bank
               with ``threads=None``, at the first call that runs on the
@@ -784,7 +784,7 @@ class ModelBank:
 
         .. rubric:: See also
 
-        - ``lf.online.fit_predict``, the same over a query, run as the query
+        - ``lf.rheon.fit_predict``, the same over a query, run as the query
           runs.
         - :meth:`fit_predict_batches`, the same over an iterator of chunks.
         - :meth:`fit`, which learns and keeps no output.
@@ -849,7 +849,7 @@ class ModelBank:
         for each request, and feed the same rows to :meth:`fit_predict` later,
         in order, once their targets arrive. The bank is left exactly as it
         was, so any number of threads may call ``predict`` at once, and row
-        order does not matter. For a query, use ``lf.online.predict``.
+        order does not matter. For a query, use ``lf.rheon.predict``.
 
         .. rubric:: Parameters
 
@@ -932,7 +932,7 @@ class ModelBank:
 
         - :meth:`fit_predict`, which predicts each row and then learns it.
         - :meth:`predict_arrow`, the same with the output as Arrow.
-        - ``lf.online.predict``, the same over a query.
+        - ``lf.rheon.predict``, the same over a query.
 
         .. rubric:: Notes
 
@@ -971,7 +971,7 @@ class ModelBank:
             The Arrow output (this method, :meth:`predict_arrow` and
             :class:`~rheon.ArrowStruct`) is **unstable**: it may change
             in any release without that counting as a breaking change. Under
-            ``POLARS_ONLINE_WARN_UNSTABLE=1``, each call issues
+            ``RHEON_WARN_UNSTABLE=1``, each call issues
             :class:`~rheon.UnstableWarning`.
 
         .. rubric:: Parameters
@@ -997,7 +997,7 @@ class ModelBank:
 
         :class:`~rheon.UnstableWarning`
             A warning, not an error: issued by each call under
-            ``POLARS_ONLINE_WARN_UNSTABLE=1``.
+            ``RHEON_WARN_UNSTABLE=1``.
 
         .. rubric:: Examples
 
@@ -1050,7 +1050,7 @@ class ModelBank:
             The Arrow output (:meth:`fit_predict_arrow`, this method and
             :class:`~rheon.ArrowStruct`) is **unstable**: it may change
             in any release without that counting as a breaking change. Under
-            ``POLARS_ONLINE_WARN_UNSTABLE=1``, each call issues
+            ``RHEON_WARN_UNSTABLE=1``, each call issues
             :class:`~rheon.UnstableWarning`.
 
         .. rubric:: Parameters
@@ -1070,7 +1070,7 @@ class ModelBank:
 
         :class:`~rheon.UnstableWarning`
             A warning, not an error: issued by each call under
-            ``POLARS_ONLINE_WARN_UNSTABLE=1``.
+            ``RHEON_WARN_UNSTABLE=1``.
 
         .. rubric:: Examples
 
@@ -1143,7 +1143,7 @@ class ModelBank:
         Use it for a stream too large to hold in memory, when you want the
         output one chunk at a time, as a generator. For a frame in memory, use
         :meth:`fit_predict`. To keep only the state, use :meth:`fit`, and to
-        run the bank as a step of a query, use ``lf.online.fit_predict``.
+        run the bank as a step of a query, use ``lf.rheon.fit_predict``.
 
         .. rubric:: Parameters
 
@@ -1225,7 +1225,7 @@ class ModelBank:
         - :meth:`fit_predict`, the same over one frame.
         - :meth:`fit`, which learns the same rows and keeps no output.
         - :meth:`closed_groups`, which reads the closed groups between chunks.
-        - ``lf.online.fit_predict``, the bank as a step of a query.
+        - ``lf.rheon.fit_predict``, the bank as a step of a query.
 
         .. rubric:: Notes
 
@@ -2848,8 +2848,8 @@ class ModelBank:
                     f"ModelBank.audit: the bank has {len(audits)} audit specs, {names}. Name the "
                     "one to read with spec=."
                     if audits
-                    else "ModelBank.audit: the bank has no audit spec. Add po.spec.audit(...) to "
-                    "its specs."
+                    else "ModelBank.audit: the bank has no audit spec. Add rheon.spec.audit(...) "
+                    "to its specs."
                 )
                 raise ValueError(msg)
             idx = audits[0]
@@ -3550,7 +3550,7 @@ class ModelBank:
             A call that learns is in flight on another thread.
         :class:`~rheon.UnstableWarning`
             A warning, not an error, issued only under
-            ``POLARS_ONLINE_WARN_UNSTABLE=1``: a spec holds a formula target,
+            ``RHEON_WARN_UNSTABLE=1``: a spec holds a formula target,
             whose written form is unstable.
 
         .. rubric:: Examples
@@ -3635,7 +3635,7 @@ class ModelBank:
             A refused chunk left the bank unable to go on
             (:meth:`fit_predict`, Notes).
         :class:`~rheon.UnstableWarning`
-            Under ``POLARS_ONLINE_WARN_UNSTABLE=1``, for a formula target, as
+            Under ``RHEON_WARN_UNSTABLE=1``, for a formula target, as
             :meth:`save` says.
 
         .. rubric:: Examples
@@ -3717,7 +3717,7 @@ class ModelBank:
         ``RuntimeError``
             A call that learns is in flight on another thread.
         :class:`~rheon.UnstableWarning`
-            Under ``POLARS_ONLINE_WARN_UNSTABLE=1``, for a formula target, as
+            Under ``RHEON_WARN_UNSTABLE=1``, for a formula target, as
             :meth:`save` says. The export carries the same written form.
 
         .. rubric:: Examples
@@ -3844,7 +3844,7 @@ class ModelBank:
             - ``threads`` is below 1, or above 1024 (or the machine's core
               count, where that is larger).
         :class:`~rheon.UnstableWarning`
-            Under ``POLARS_ONLINE_WARN_UNSTABLE=1``, for a file holding a
+            Under ``RHEON_WARN_UNSTABLE=1``, for a file holding a
             formula target, as :meth:`save` says.
 
         .. rubric:: Examples
@@ -3943,7 +3943,7 @@ class ModelBank:
             build loads, and for a ``threads`` it refuses. ``TypeError`` also
             when ``data`` is not ``bytes``.
         :class:`~rheon.UnstableWarning`
-            Under ``POLARS_ONLINE_WARN_UNSTABLE=1``, for bytes holding a
+            Under ``RHEON_WARN_UNSTABLE=1``, for bytes holding a
             formula target, as :meth:`save` says.
 
         .. rubric:: Examples

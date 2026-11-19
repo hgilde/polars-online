@@ -127,7 +127,7 @@ from rheon import polars as po
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1", "x2"], clock="t",
                        half_life=600.0, gap_cap=300.0, group="stock_id")
 (pl.scan_parquet("ticks.parquet")                     # written in Example data
-   .online.fit_predict([spec], chunk_size=200_000)   # threads unset: the bank keeps every core
+   .rheon.fit_predict([spec], chunk_size=200_000)   # threads unset: the bank keeps every core
    .sink_parquet("fit.parquet"))
 ```
 

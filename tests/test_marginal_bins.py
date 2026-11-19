@@ -457,7 +457,7 @@ def test_label_delay_is_the_doubled_stream_here_too():
     """A row is learned only once its label has matured, and the rows are
     learned in clock order downstream of the delay buffer: so the warm-up
     counts them there, and the histogram, the edges and the lag ring all
-    agree with the doubled stream `po.stream.embargo` builds, to the bit."""
+    agree with the doubled stream `rp.stream.embargo` builds, to the bit."""
 
     df = stream(n=1200, shape="threshold", seed=9)
     kw = dict(half_life=200.0, bin_warm_rows=300, lags=[1, 2, 3], serial_rule="geometric")

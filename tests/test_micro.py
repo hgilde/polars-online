@@ -1016,7 +1016,7 @@ class TestEdgeCases:
         assert rp.spec.coef_index(s).height == 0
         with pytest.raises(ValueError, match="a micro model keeps a varying number of clusters"):
             rp.ModelBank([s]).coef("m")
-        flat = rp.ModelBank([s]).fit_predict(frame(X)).online.unnest([s])
+        flat = rp.ModelBank([s]).fit_predict(frame(X)).rheon.unnest([s])
         assert "coef" in flat.columns and flat["coef"].dtype == pl.List(pl.Float64)
         assert flat["coef"].to_list() == coef.to_list()
 
@@ -1053,7 +1053,7 @@ class TestEdgeCases:
         df = frame(X)
         s = spec()
         bank = rp.ModelBank([s]).fit_predict(df)
-        lazy = df.lazy().online.fit_predict([s]).collect()
+        lazy = df.lazy().rheon.fit_predict([s]).collect()
         assert bank.equals(lazy, null_equal=True)
 
     def test_a_row_at_the_input_bound_leaves_everything_finite(self):

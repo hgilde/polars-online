@@ -84,7 +84,7 @@ This code uses `lf` from [Example data](../EXAMPLE-DATA.md):
 ```python
 seasonal = po.spec.holt("seasonal", targets=["y"], clock="ts", gap_cap="1h",
                         half_life="2h", group="hour")         # 2. one level and trend per hour of the day
-by_hour = lf.with_columns(hour=pl.col("ts").dt.hour()).online.fit_predict([seasonal]).collect()   # 1 and 3: the phase, as a column
+by_hour = lf.with_columns(hour=pl.col("ts").dt.hour()).rheon.fit_predict([seasonal]).collect()   # 1 and 3: the phase, as a column
 # One model per hour: each hour's rows, and the prediction its own model gave its last row.
 per_hour = by_hour.group_by("hour", maintain_order=True).agg(
     rows=pl.len(), last_pred=pl.col("seasonal").struct.field("pred_y").last())

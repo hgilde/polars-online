@@ -143,7 +143,7 @@ late = po.spec.ewridge(
     label_clock="landed",   # learned at landing; each interval compared with the one given
     conformal=0.9,          # lo_delay and hi_delay: an interval meant to hold 90% of delays
 )
-rows = pl.scan_parquet("flights.parquet").online.fit_predict([late]).unnest("late").collect()   # 3. fit
+rows = pl.scan_parquet("flights.parquet").rheon.fit_predict([late]).unnest("late").collect()   # 3. fit
 # Count the intervals that held the delay each flight was given.
 given = rows.filter(pl.col("lo_delay").is_not_null())
 covered = given.select(((pl.col("delay") - pl.col("pred_delay")).abs() <= pl.col("hi_delay") - pl.col("pred_delay")).mean()).item()
@@ -221,13 +221,13 @@ the predicted copies to the built-in delay of the same five units. It uses
 ```python
 # 1. lf is already in clock order across all rows. 2. Every row twice, in clock order.
 doubled = po.stream.embargo(lf, clock="t", delay=5.0)
-predicted = doubled.online.fit_predict(
+predicted = doubled.rheon.fit_predict(
     [po.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", gap_cap=10.0,
                      half_life=50.0, weight="_online_role_weight")]   # 3. 0 on the copies to predict, 1 on the rest
 ).filter(pl.col("_online_role") == "predict").collect()               # 4. keep the predicted copies
 
 # The built-in delay on the same rows: t is a row apart, so each t + 5 is another row's clock.
-built_in = lf.online.fit_predict(
+built_in = lf.rheon.fit_predict(
     [po.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", gap_cap=10.0, half_life=50.0, embargo=5.0)]
 ).collect()
 for field in ["pred_y", "weight_sum"]:

@@ -340,7 +340,7 @@ online = po.spec.ewridge("online", targets=["y"], features=["x0", "x1"],
                          clock="t", half_life=5, gap_cap=10)          # follows the level within a few steps
 (
     pl.scan_parquet("rows.parquet")
-    .online.fit_predict([online]).online.unnest([online])             # adds pred_y, resid_y, ...
+    .rheon.fit_predict([online]).rheon.unnest([online])             # adds pred_y, resid_y, ...
     # 3. The rows with a prediction: the first rows have none yet.
     .filter(pl.col("pred_y").is_not_null())
     # 4. The prediction again, as a feature.

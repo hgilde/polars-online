@@ -2,9 +2,9 @@
 
 One Rust core, run three ways, with the same numbers from each:
 
-1. inside a Polars query: ``lf.online.fit_predict(specs)`` is a query
+1. inside a Polars query: ``lf.rheon.fit_predict(specs)`` is a query
    that feeds its rows through a bank when it runs, and
-   ``df.online.fit_predict(specs)`` fits a frame already in memory;
+   ``df.rheon.fit_predict(specs)`` fits a frame already in memory;
 2. :class:`ModelBank`, a model bank fed one chunk at a time, whose memory
    grows with the models' state and never with the number of rows that
    have passed. Handed a query, it reads the query a chunk at a time
@@ -128,9 +128,9 @@ from rheon._rheon import (
 from rheon._spec import FormulaTarget, Target, target
 from rheon._threads import thread_pool_size
 from rheon._warnings import (
-    PolarsOnlineDeprecationWarning,
-    PolarsOnlineWarning,
     ReadinessWarning,
+    RheonDeprecationWarning,
+    RheonWarning,
 )
 from rheon.polars import (
     _frame,  # noqa: F401  (registers the frame namespaces)
@@ -179,8 +179,8 @@ __all__ = [
     "ModelBank",
     "OrderNotGuaranteedWarning",
     "OutputColumnNotFoundError",
-    "PolarsOnlineDeprecationWarning",
-    "PolarsOnlineWarning",
+    "RheonDeprecationWarning",
+    "RheonWarning",
     "ReadinessWarning",
     "RefusedValueError",
     "UnstableWarning",

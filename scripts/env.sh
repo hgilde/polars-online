@@ -29,7 +29,7 @@ if [ -x "$_dir/../.venv/bin/python" ]; then
 fi
 unset _dir
 
-# sccache as rustc's wrapper, only when asked: POLARS_ONLINE_SCCACHE=1. It
+# sccache as rustc's wrapper, only when asked: RHEON_SCCACHE=1. It
 # caches each crate rustc compiles, keyed by its inputs, so a build that
 # compiles a crate the same way again takes it from the cache. It changes no
 # output: a hit returns the files rustc wrote for the same inputs.
@@ -53,7 +53,7 @@ unset _dir
 # extension's builds from one checkout took 0.8 GB, so several checkouts,
 # toolchains and Polars versions fit; the oldest entries go first.
 # scripts/clear_caches.sh empties it.
-if [ -z "${CI:-}" ] && [ "${POLARS_ONLINE_SCCACHE:-0}" = 1 ] && [ -z "${RUSTC_WRAPPER+set}" ] \
+if [ -z "${CI:-}" ] && [ "${RHEON_SCCACHE:-0}" = 1 ] && [ -z "${RUSTC_WRAPPER+set}" ] \
     && command -v sccache >/dev/null; then
     export RUSTC_WRAPPER=sccache
     export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-10G}"

@@ -1,7 +1,7 @@
 """`threads`: the pool a bank, a plan or a Gram fit runs on (docs/PLAN.md
 task 253).
 
-``threads=None`` is the process's pool, which ``POLARS_ONLINE_MAX_THREADS``
+``threads=None`` is the process's pool, which ``RHEON_MAX_THREADS``
 sizes when it is first used; an integer is a pool of that many threads,
 shared by every holder of the count. The claims are bits: the output and the
 saved state are the same at every count and every chunking, on a bank of
@@ -289,7 +289,7 @@ def test_a_plan_and_a_frame_take_it(reference):
     want, _ = reference
     df = stream()
     lazy = rp.fit_predict(df.lazy(), specs(), threads=2, chunk_size=10**6).collect()
-    eager = df.online.fit_predict(specs(), threads=1)
+    eager = df.rheon.fit_predict(specs(), threads=1)
     assert lazy.drop(df.columns).equals(want, null_equal=True)
     assert eager.drop(df.columns).equals(want, null_equal=True)
     bank = rp.ModelBank(specs())
@@ -298,13 +298,13 @@ def test_a_plan_and_a_frame_take_it(reference):
     for threads in (1, 3):
         scored = rp.predict(df.tail(300), bank, threads=threads)
         assert scored.equals(plain, null_equal=True)
-        lazy = df.tail(300).lazy().online.predict(bank, threads=threads).collect()
+        lazy = df.tail(300).lazy().rheon.predict(bank, threads=threads).collect()
         assert lazy.equals(plain, null_equal=True)
     # Scored as a copy: the caller's bank keeps its pool.
     assert bank.threads is None
     # A bank given as load_state keeps its count unless one is given.
     eight = rp.ModelBank(specs(), threads=8)
-    assert df.online.fit_predict(load_state=eight, threads=2).height == df.height
+    assert df.rheon.fit_predict(load_state=eight, threads=2).height == df.height
 
 
 def test_the_gram_fits_take_it():
@@ -356,10 +356,10 @@ def test_a_count_that_is_not_one_is_refused_by_name_everywhere(tmp_path, value, 
         "fit_predict(LazyFrame)": lambda: rp.fit_predict(df.lazy(), [spec], threads=value),
         "predict(DataFrame)": lambda: rp.predict(df, bank, threads=value),
         "predict(LazyFrame)": lambda: rp.predict(df.lazy(), bank, threads=value),
-        "df.online.fit_predict": lambda: df.online.fit_predict([spec], threads=value),
-        "df.online.predict": lambda: df.online.predict(path, threads=value),
-        "lf.online.fit_predict": lambda: df.lazy().online.fit_predict([spec], threads=value),
-        "lf.online.predict": lambda: df.lazy().online.predict(path, threads=value),
+        "df.rheon.fit_predict": lambda: df.rheon.fit_predict([spec], threads=value),
+        "df.rheon.predict": lambda: df.rheon.predict(path, threads=value),
+        "lf.rheon.fit_predict": lambda: df.lazy().rheon.fit_predict([spec], threads=value),
+        "lf.rheon.predict": lambda: df.lazy().rheon.predict(path, threads=value),
         "thread_pool_size": lambda: rp.thread_pool_size(threads=value),
         "gram.lars_paths": lambda: rp.gram.lars_paths([], threads=value),
         "gram.lars_path": lambda: rp.gram.lars_path({}, threads=value),
@@ -401,9 +401,9 @@ def test_a_count_above_the_bound_is_refused_everywhere_before_a_pool(tmp_path, v
         "fit_predict(DataFrame)": lambda: rp.fit_predict(df, [spec], threads=value),
         "fit_predict(LazyFrame)": lambda: rp.fit_predict(df.lazy(), [spec], threads=value),
         "predict(DataFrame)": lambda: rp.predict(df, bank, threads=value),
-        "df.online.fit_predict": lambda: df.online.fit_predict([spec], threads=value),
-        "lf.online.fit_predict": lambda: df.lazy().online.fit_predict([spec], threads=value),
-        "lf.online.predict": lambda: df.lazy().online.predict(path, threads=value),
+        "df.rheon.fit_predict": lambda: df.rheon.fit_predict([spec], threads=value),
+        "lf.rheon.fit_predict": lambda: df.lazy().rheon.fit_predict([spec], threads=value),
+        "lf.rheon.predict": lambda: df.lazy().rheon.predict(path, threads=value),
         "thread_pool_size": lambda: rp.thread_pool_size(threads=value),
         "gram.lars_paths": lambda: rp.gram.lars_paths([], threads=value),
         "gram.solve_subsets": lambda: rp.gram.solve_subsets([], [[0]], threads=value),
@@ -438,8 +438,8 @@ def test_a_numpy_integer_is_a_count_everywhere(tmp_path, value):
         "fit_predict(LazyFrame)": lambda: rp.fit_predict(
             df.lazy(), [spec], threads=value
         ).collect(),
-        "df.online.predict": lambda: df.online.predict(path, threads=value),
-        "lf.online.predict": lambda: df.lazy().online.predict(path, threads=value).collect(),
+        "df.rheon.predict": lambda: df.rheon.predict(path, threads=value),
+        "lf.rheon.predict": lambda: df.lazy().rheon.predict(path, threads=value).collect(),
         "thread_pool_size": lambda: rp.thread_pool_size(threads=value),
         "gram.lars_paths": lambda: rp.gram.lars_paths(grams, threads=value),
         "gram.solve_subsets": lambda: rp.gram.solve_subsets(grams, [[0, 1]], threads=value),
@@ -508,7 +508,7 @@ def test_the_variable_sizes_the_default_pool_and_nothing_given_a_count():
         SMALL + "print(po.thread_pool_size(), po.thread_pool_size(threads=2))\n"
         "print(po.ModelBank([spec], threads=5).fit_predict(df).height)\n"
         "print(po.thread_pool_size())\n",
-        POLARS_ONLINE_MAX_THREADS="3",
+        RHEON_MAX_THREADS="3",
     )
     assert out.split() == ["3", "2", "3", "3"]
     # A variable that is not a count refuses the default pool, and a count
@@ -520,9 +520,9 @@ def test_the_variable_sizes_the_default_pool_and_nothing_given_a_count():
         "    po.ModelBank([spec]).fit_predict(df)\n"
         "except ValueError as e:\n"
         "    print(str(e).split(' is ')[0])\n",
-        POLARS_ONLINE_MAX_THREADS="eight",
+        RHEON_MAX_THREADS="eight",
     )
-    assert out.split("\n") == ["3", "4", 'environment variable POLARS_ONLINE_MAX_THREADS: "eight"']
+    assert out.split("\n") == ["3", "4", 'environment variable RHEON_MAX_THREADS: "eight"']
 
 
 # ---------------------------------------------------------------------------

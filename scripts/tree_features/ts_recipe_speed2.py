@@ -21,7 +21,7 @@ for G in (10, 100, 1000, 10000):
             }
         )
         t0 = time.perf_counter()
-        s.online.with_windows(
+        s.rheon.with_windows(
             S=rp.ewm_sum("y", half_life=1000.0, closed="left"), clock="c", gap_cap=1e12, group="g"
         )
         el = time.perf_counter() - t0

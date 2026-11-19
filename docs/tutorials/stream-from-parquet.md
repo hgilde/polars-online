@@ -72,8 +72,8 @@ spec = po.spec.ewridge(
 )
 query = (
     pl.scan_parquet("stream/*.parquet")       # a query over the eight files: nothing is read yet
-    .online.fit_predict([spec])               # a bank that starts with nothing learned, fed 100,000 rows at a time
-    .online.unnest([spec])                    # the column "ridge" the bank adds, as plain columns: one per field, one per coefficient
+    .rheon.fit_predict([spec])               # a bank that starts with nothing learned, fed 100,000 rows at a time
+    .rheon.unnest([spec])                    # the column "ridge" the bank adds, as plain columns: one per field, one per coefficient
 )
 print(query.collect_schema().names())
 ```

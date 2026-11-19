@@ -76,8 +76,8 @@ whole = po.spec.ewridge(
 )
 flat = (
     pl.scan_parquet("prices.parquet").head(21_600)   # a query over the file's rows before 15:30
-    .online.fit_predict([whole], save_state="bank.state")   # adds a column "whole", saves the state
-    .online.unnest([whole])                     # as columns: pred_<target>, resid_<target>, ...
+    .rheon.fit_predict([whole], save_state="bank.state")   # adds a column "whole", saves the state
+    .rheon.unnest([whole])                     # as columns: pred_<target>, resid_<target>, ...
     .collect()                                  # runs the query
 )
 # 3. Read the fit back from the saved state, and serve the last half hour from it.
@@ -87,8 +87,8 @@ saved = (
 )
 served = (
     pl.scan_parquet("prices.parquet").tail(1_800)   # the last half hour, from 15:30
-    .online.predict("bank.state")               # predicts each row from the state, learns nothing
-    .online.unnest([whole])
+    .rheon.predict("bank.state")               # predicts each row from the state, learns nothing
+    .rheon.unnest([whole])
     .collect()
 )
 
@@ -99,7 +99,7 @@ local = po.spec.ewridge(
     gap_cap="5m",                               # and a gap longer than five minutes decays as five
     coef_every=0,                               # the coefficients on every row
 )
-betas = pl.scan_parquet("prices.parquet").online.fit_predict([local]).online.unnest([local]).collect()   # a row of betas per input row
+betas = pl.scan_parquet("prices.parquet").rheon.fit_predict([local]).rheon.unnest([local]).collect()   # a row of betas per input row
 
 # 5. A target that looks ahead: each row's mean return over the next ten minutes.
 fwd_ret = po.ewm_mean("ret", half_life=float("inf"), window_size="10m", reverse=True).alias("fwd_ret")
@@ -108,7 +108,7 @@ ahead = po.spec.ewridge(
     clock="ts", half_life="10m", gap_cap="5m",
     embargo="10m",                              # learn each row once its ten minutes have passed
 )
-ahead_out = pl.scan_parquet("prices.parquet").online.fit_predict([ahead]).online.unnest([ahead]).collect()   # each row's prediction of fwd_ret
+ahead_out = pl.scan_parquet("prices.parquet").rheon.fit_predict([ahead]).rheon.unnest([ahead]).collect()   # each row's prediction of fwd_ret
 ```
 
 **Step 1 makes up the input,** `prices`, and saves it to a parquet file.

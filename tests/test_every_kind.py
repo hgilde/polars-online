@@ -1,6 +1,6 @@
 """Two sweeps over every model kind, where they ran over the regression models
 alone (docs/PLAN.md task 111): the output struct a bank writes is the one
-``po.spec.output_fields`` declares, and a bank saved mid-stream and loaded goes
+``rheon.spec.output_fields`` declares, and a bank saved mid-stream and loaded goes
 on exactly as the one that was not. Parametrised over the registry's
 ``MINIMAL`` itself, so a new kind is in both the day it is registered, and no
 list here can fall behind it. ``rcov``, ``hmm``, ``corrchange`` and ``bocpd``

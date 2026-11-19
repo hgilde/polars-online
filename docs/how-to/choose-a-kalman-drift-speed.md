@@ -159,7 +159,7 @@ specs = [
     po.spec.kalman("walk", **common),
     po.spec.kalman("revert", revert_half_life=[inf, 200.0], **common),   # the intercept's entry stays inf
 ]
-out = pl.scan_parquet("bursts.parquet").online.fit_predict(specs).collect()
+out = pl.scan_parquet("bursts.parquet").rheon.fit_predict(specs).collect()
 
 # The slope's size on the row before each burst, and on each burst's last row.
 for name in ("walk", "revert"):

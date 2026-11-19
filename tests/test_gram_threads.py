@@ -211,7 +211,7 @@ def test_a_save_resumes_under_another_count_to_the_bit(tmp_path, kind):
         assert gram_bits(b) == gram_bits(want), threads
         lazy = (
             pl.scan_parquet(tmp_path / "tail.parquet")
-            .online.fit_predict([make(threads)], load_state=tmp_path / "threads.state")
+            .rheon.fit_predict([make(threads)], load_state=tmp_path / "threads.state")
             .collect()
         )
         assert lazy.select("m").unnest("m").equals(whole.slice(301), null_equal=True), threads

@@ -73,7 +73,7 @@ stocks = pl.scan_parquet("stocks.parquet")
 common = dict(targets=["y"], features=["x0", "x1"], clock="t", gap_cap=5.0, group="stock")
 ridge = po.spec.ewridge("ridge", half_life=500.0, **common)
 kalman = po.spec.kalman("kalman", half_life=500.0, coef_half_life=100.0, **common)  # coefficients that drift
-out = stocks.online.fit_predict([ridge, kalman]).collect()
+out = stocks.rheon.fit_predict([ridge, kalman]).collect()
 
 # 2. One table, many specs: which had the lower error?
 for spec, n_, r2, ic, hit, mse in po.eval.compare_specs(out, [ridge, kalman]).select("spec", "n", "r2", "ic", "hit_rate", "mse").iter_rows():
@@ -158,17 +158,17 @@ far = pl.scan_parquet("far.parquet")
 ridge = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=500.0, group="stock")
 
 # 1 and 2. The bank's query, scored a chunk at a time: one chunk and a few sums per stock are held.
-streamed = po.eval.metrics(far.online.fit_predict([ridge]), ridge, group="stock")
+streamed = po.eval.metrics(far.rheon.fit_predict([ridge]), ridge, group="stock")
 
 # The same metrics from the whole output held in memory, for comparison.
-held = po.eval.metrics(far.online.fit_predict([ridge]).collect(), "ridge", group="stock")
+held = po.eval.metrics(far.rheon.fit_predict([ridge]).collect(), "ridge", group="stock")
 for (stock, n_, r2, mse), (r2_held, mse_held) in zip(
     streamed.select("stock", "n", "r2", "mse").iter_rows(), held.select("r2", "mse").iter_rows()
 ):
     print(f"{stock}: {n_} rows, R² {r2:.6f} streamed and {r2_held:.6f} held, mse {mse:.6f} and {mse_held:.6f}")
 
 # 3. The output written to a file, its two halves reduced apart, as two runs' files would be, and added up.
-far.online.fit_predict([ridge]).sink_parquet("far_out.parquet")
+far.rheon.fit_predict([ridge]).sink_parquet("far_out.parquet")
 written = pl.scan_parquet("far_out.parquet")
 halves = [po.eval.sums(written.head(n // 2), ridge, group="stock"), po.eval.sums(written.tail(n // 2), ridge, group="stock")]
 added = po.eval.from_sums(po.eval.merge_sums(*halves))
@@ -218,7 +218,7 @@ renamed = po.spec.ewridge(
     "renamed", targets=[po.target("y", name="ret")], features=["x0", "x1"], clock="t", gap_cap=5.0, half_life=500.0,
     group="stock",
 )
-out = stocks.online.fit_predict([renamed]).collect()
+out = stocks.rheon.fit_predict([renamed]).collect()
 try:
     po.eval.metrics(out, "renamed")  # by name: no column is named ret
 except ValueError as e:
@@ -229,7 +229,7 @@ print(f"{slot}: {n_} rows, R² {r2:.4f}")
 ```
 
 ```text
-ValueError: po.eval.metrics: no column of the frame is named after slot 'pred_ret', so its target column is not known. Add the target column to the frame, or, for a target named with po.target(name=), pass the spec itself as spec.
+ValueError: rp.eval.metrics: no column of the frame is named after slot 'pred_ret', so its target column is not known. Add the target column to the frame, or, for a target named with rheon.target(name=), pass the spec itself as spec.
 pred_ret: 59988 rows, R² 0.7899
 ```
 

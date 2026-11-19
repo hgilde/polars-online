@@ -1,4 +1,4 @@
-"""``po.stream.with_windows``: formulas over the window operators, one pass
+"""``rp.stream.with_windows``: formulas over the window operators, one pass
 over a stream (docs/PLAN.md tasks 78, 143 and 144).
 
 Each operator is held to its definition: the time-weighted mean to Polars'
@@ -961,7 +961,7 @@ def test_a_state_resumes_only_its_own_call(tmp_path: Any) -> None:
 
 def test_a_slice_and_a_projection_are_honoured() -> None:
     df = ticks(300, 23)
-    plan = df.lazy().online.with_windows(**mixed(), **CLOCK)
+    plan = df.lazy().rheon.with_windows(**mixed(), **CLOCK)
     head = plan.head(50).collect()
     assert head.height == 50 and head.equals(plan.collect().head(50))
     narrow = plan.select("b", "d").collect()
@@ -972,10 +972,10 @@ def test_a_slice_and_a_projection_are_honoured() -> None:
 def test_the_online_namespaces_are_the_same_call() -> None:
     df = ticks(100, 29)
     want = rp.stream.with_windows(df, m=rp.ewm_mean("x", half_life=2.0), **CLOCK)
-    assert df.online.with_windows(m=rp.ewm_mean("x", half_life=2.0), **CLOCK).equals(want)
+    assert df.rheon.with_windows(m=rp.ewm_mean("x", half_life=2.0), **CLOCK).equals(want)
     assert (
         df.lazy()
-        .online.with_windows(m=rp.ewm_mean("x", half_life=2.0), **CLOCK)
+        .rheon.with_windows(m=rp.ewm_mean("x", half_life=2.0), **CLOCK)
         .collect()
         .equals(want)
     )
@@ -985,8 +985,8 @@ def test_window_columns_feed_a_model_in_one_query() -> None:
     df = ticks(400, 31, repeats=False)
     out = (
         df.lazy()
-        .online.with_windows(trend=rp.ewm_mean("x", half_life=5.0) - pl.col("x"), **CLOCK)
-        .online.fit_predict(
+        .rheon.with_windows(trend=rp.ewm_mean("x", half_life=5.0) - pl.col("x"), **CLOCK)
+        .rheon.fit_predict(
             [rp.spec.ewridge("m", targets=["x"], features=["trend"], half_life=50.0)]
         )
         .collect()
@@ -1065,13 +1065,13 @@ def test_a_state_saved_under_a_slice_resumes_alike_at_any_chunk_size(tmp_path: A
     outs = []
     for rows in (1, 10):
         state = tmp_path / f"s{rows}.state"
-        df.lazy().online.with_windows(
+        df.lazy().rheon.with_windows(
             dc=rp.increment("c"), clock="t", gap_cap=100.0, chunk_size=rows, save_state=state
         ).head(2).collect()
         rest = (
             df.slice(2)
             .lazy()
-            .online.with_windows(dc=rp.increment("c"), clock="t", gap_cap=100.0, load_state=state)
+            .rheon.with_windows(dc=rp.increment("c"), clock="t", gap_cap=100.0, load_state=state)
             .collect()
         )
         outs.append(rest["dc"].to_list())
@@ -1454,37 +1454,37 @@ def test_a_state_saved_under_a_slice_resumes_on_the_same_input(tmp_path: Any, ro
         assert one.height > 20, "the dropping leg keeps enough rows to slice"
         for at in (1, 2, 17):
             state = tmp_path / f"h{at}-{cap}.state"
-            head = df.lazy().online.with_windows(**exprs, save_state=state, **kw).head(at).collect()
+            head = df.lazy().rheon.with_windows(**exprs, save_state=state, **kw).head(at).collect()
             assert head.height == at
-            rest = df.lazy().online.with_windows(**exprs, load_state=state, **kw).collect()
+            rest = df.lazy().rheon.with_windows(**exprs, load_state=state, **kw).collect()
             assert pl.concat([head, rest]).equals(one), (at, cap)
         # A chain: six sliced runs, each resumed from the last and saved again,
         # then the rest.
         state = tmp_path / f"chain-{cap}.state"
-        parts = [df.lazy().online.with_windows(**exprs, save_state=state, **kw).head(3).collect()]
+        parts = [df.lazy().rheon.with_windows(**exprs, save_state=state, **kw).head(3).collect()]
         for _ in range(5):
             parts.append(
                 df.lazy()
-                .online.with_windows(**exprs, load_state=state, save_state=state, **kw)
+                .rheon.with_windows(**exprs, load_state=state, save_state=state, **kw)
                 .head(3)
                 .collect()
             )
-        parts.append(df.lazy().online.with_windows(**exprs, load_state=state, **kw).collect())
+        parts.append(df.lazy().rheon.with_windows(**exprs, load_state=state, **kw).collect())
         assert all(p.height == 3 for p in parts[:6]), [p.height for p in parts]
         assert pl.concat(parts).equals(one), cap
         # R5-C2: a chain of slices run until one is not satisfied -- the
         # input ends first -- then the rest. The unsatisfied run consumed
         # every row and saved that, not zero.
         state = tmp_path / f"exhaust-{cap}-{rows}.state"
-        parts = [df.lazy().online.with_windows(**exprs, save_state=state, **kw).head(20).collect()]
+        parts = [df.lazy().rheon.with_windows(**exprs, save_state=state, **kw).head(20).collect()]
         while parts[-1].height == 20:
             parts.append(
                 df.lazy()
-                .online.with_windows(**exprs, load_state=state, save_state=state, **kw)
+                .rheon.with_windows(**exprs, load_state=state, save_state=state, **kw)
                 .head(20)
                 .collect()
             )
-        parts.append(df.lazy().online.with_windows(**exprs, load_state=state, **kw).collect())
+        parts.append(df.lazy().rheon.with_windows(**exprs, load_state=state, **kw).collect())
         assert pl.concat(parts).equals(one), (cap, [p.height for p in parts])
 
 
@@ -1501,11 +1501,11 @@ def test_rows_held_from_an_earlier_input_are_not_this_inputs(tmp_path: Any) -> N
     assert a.height < 30, "file1 ends with rows held for their windows"
     b = (
         file2.lazy()
-        .online.with_windows(**mixed(), load_state=state, save_state=state, **kw)
+        .rheon.with_windows(**mixed(), load_state=state, save_state=state, **kw)
         .head(5)
         .collect()
     )
-    c = file2.lazy().online.with_windows(**mixed(), load_state=state, **kw).collect()
+    c = file2.lazy().rheon.with_windows(**mixed(), load_state=state, **kw).collect()
     assert pl.concat([a, b, c]).equals(one)
 
 
@@ -1517,7 +1517,7 @@ def test_a_state_saved_under_a_slice_skips_nothing_of_another_input(tmp_path: An
     kw: dict[str, Any] = {"clock": "t", "gap_cap": 20.0, "group": "g"}
     file1, file2 = df.slice(0, 30), df.slice(30)
     state = tmp_path / "next.state"
-    file1.lazy().online.with_windows(**mixed(), save_state=state, **kw).head(5).collect()
+    file1.lazy().rheon.with_windows(**mixed(), save_state=state, **kw).head(5).collect()
     out = rp.stream.with_windows(file2, **mixed(), load_state=state, **kw)
     assert out["t"].to_list()[-file2.height :] == file2["t"].to_list()
     assert out["t"][0] < file2["t"][0], "the rows the state held come out first"
@@ -1573,7 +1573,7 @@ def test_a_state_saved_under_a_slice_refuses_another_input(tmp_path: Any) -> Non
     df = ticks(60, 19, groups=2)
     kw: dict[str, Any] = {"clock": "t", "gap_cap": 20.0, "group": "g"}
     state = tmp_path / "sliced.state"
-    df.lazy().online.with_windows(**mixed(), save_state=state, **kw).head(5).collect()
+    df.lazy().rheon.with_windows(**mixed(), save_state=state, **kw).head(5).collect()
     # The same first clock, every later row another: the next day's file on
     # a clock that starts over.
     other = df.with_columns(
@@ -1596,7 +1596,7 @@ def test_a_state_saved_under_a_slice_refuses_another_input(tmp_path: Any) -> Non
     # No clock column: the held rows alone identify the input.
     bare = df.drop("t")
     state = tmp_path / "bare.state"
-    bare.lazy().online.with_windows(
+    bare.lazy().rheon.with_windows(
         f=rp.ewm_sum("x", half_life=2.0, window_size=3.0, reverse=True), save_state=state
     ).head(5).collect()
     one = rp.stream.with_windows(
@@ -1604,7 +1604,7 @@ def test_a_state_saved_under_a_slice_refuses_another_input(tmp_path: Any) -> Non
     )
     head = (
         bare.lazy()
-        .online.with_windows(
+        .rheon.with_windows(
             f=rp.ewm_sum("x", half_life=2.0, window_size=3.0, reverse=True), save_state=state
         )
         .head(5)
@@ -1655,7 +1655,7 @@ def test_a_sliced_run_on_the_next_file_resumes_with_the_first_files_rows_held(
         assert cut - a.height > n, "the first file's held rows outlast the slice"
         b = (
             second.lazy()
-            .online.with_windows(**mixed(), load_state=state, save_state=state, **kw)
+            .rheon.with_windows(**mixed(), load_state=state, save_state=state, **kw)
             .head(n)
             .collect()
         )
@@ -1677,7 +1677,7 @@ def test_a_sliced_state_that_holds_no_rows_knows_its_input_by_its_last_row(
     y = {"y": rp.ewm_mean("x", half_life=1.0, closed="left")}
     one = rp.stream.with_windows(df, **y, **CLOCK)
     state = tmp_path / "left.state"
-    head = df.lazy().online.with_windows(**y, save_state=state, **CLOCK).head(3).collect()
+    head = df.lazy().rheon.with_windows(**y, save_state=state, **CLOCK).head(3).collect()
     assert head.height == 3
     other = pl.DataFrame({"t": [0.0, 1.5, 2.5, 3.5, 4.5], "x": [1.0, 2.0, 4.0, 8.0, 16.0]})
     with pytest.raises(_REFUSAL, match="another input"):
@@ -1690,7 +1690,7 @@ def test_a_sliced_state_that_holds_no_rows_knows_its_input_by_its_last_row(
     y = {"y": rp.ewm_mean("x", half_life=2.0)}
     one = rp.stream.with_windows(bare, **y)
     state = tmp_path / "bare-left.state"
-    head = bare.lazy().online.with_windows(**y, save_state=state).head(4).collect()
+    head = bare.lazy().rheon.with_windows(**y, save_state=state).head(4).collect()
     assert head.height == 4
     # Another input of the same length, differing where the state was cut
     # (R7-E5: a slice shorter than the skip was refused by the count alone).
@@ -1708,7 +1708,7 @@ def test_a_next_file_starts_after_the_last_stamp_the_state_read(tmp_path: Any) -
     y = {"y": rp.ewm_mean("x", half_life=1.0, window_size=2.0, reverse=True)}
     first = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0], "x": [1.0, 2.0, 3.0, 4.0]})
     state = tmp_path / "tie.state"
-    a = first.lazy().online.with_windows(**y, save_state=state, **CLOCK).head(100).collect()
+    a = first.lazy().rheon.with_windows(**y, save_state=state, **CLOCK).head(100).collect()
     assert a.height == 1, "rows 1..4 wait for their windows"
     tied = pl.DataFrame({"t": [3.0, 4.0, 5.0], "x": [5.0, 6.0, 7.0]})
     with pytest.raises(_REFUSAL, match="at the last clock value the state read"):
@@ -1775,7 +1775,7 @@ def test_a_sliced_state_takes_a_new_start_by_the_policys_word_for_the_next_file(
         for extra in ({"restart_after_step_back": 2.0}, {"session": "d"}):
             kw = {**CLOCK, **extra}
             state = tmp_path / f"{next(iter(extra))}-{start}.state"
-            a = day1.lazy().online.with_windows(**y, save_state=state, **kw).head(100).collect()
+            a = day1.lazy().rheon.with_windows(**y, save_state=state, **kw).head(100).collect()
             assert a.height < 7, "the last rows wait for their windows"
             if start == 0.0 and "session" not in extra:
                 with pytest.raises(_REFUSAL, match="another input"):
@@ -1795,7 +1795,7 @@ def test_without_a_clock_the_next_file_begins_with_a_new_session(tmp_path: Any) 
     kw: dict[str, Any] = {"session": "s"}
     y = {"y": rp.ewm_mean("x", half_life=1.0)}
     state = tmp_path / "rows.state"
-    head = df.lazy().online.with_windows(**y, save_state=state, **kw).head(4).collect()
+    head = df.lazy().rheon.with_windows(**y, save_state=state, **kw).head(4).collect()
     assert head.height == 4
     for cut in (3, 5):
         with pytest.raises(_REFUSAL, match="its first row continues the session last read"):
@@ -1951,7 +1951,7 @@ def test_partial_needs_a_window_size() -> None:
     operator without a window is."""
     for op in (rp.ewm_mean, rp.ewm_sum, rp.ewm_rate):
         for partial in ("keep", "null", "drop"):
-            with pytest.raises(ValueError, match=rf"^po\.{op.__name__}: partial needs window_size"):
+            with pytest.raises(ValueError, match=rf"^rp\.{op.__name__}: partial needs window_size"):
                 op("x", half_life=2.0, partial=partial)
     rp.ewm_mean("x", half_life=2.0, window_size=5.0, partial="drop")
 
@@ -2130,9 +2130,9 @@ def test_a_window_looking_ahead_with_group_needs_a_clock_column() -> None:
     with pytest.raises(ValueError, match=msg):
         rp.stream.with_windows(df.lazy(), (fwd - pl.col("x")).alias("f"), group="g")
     with pytest.raises(ValueError, match=msg):
-        df.lazy().online.with_windows(f=fwd, group="g")
+        df.lazy().rheon.with_windows(f=fwd, group="g")
     with pytest.raises(ValueError, match=msg):
-        df.online.with_windows(f=fwd, group="g")
+        df.rheon.with_windows(f=fwd, group="g")
     # like= takes its policy from a spec, groups and no clock here.
     like = rp.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0, group="g")
     with pytest.raises(ValueError, match=msg):
@@ -2141,9 +2141,9 @@ def test_a_window_looking_ahead_with_group_needs_a_clock_column() -> None:
     # past the cap; b's row at t = 1 holds 4 + 8; the rest are open at the end.
     clocked = rp.stream.with_windows(df, f=fwd, group="g", clock="t", gap_cap=1.5)
     assert clocked["f"].to_list() == [None, 12.0, None, None, None]
-    lazy = df.lazy().online.with_windows(f=fwd, group="g", clock="t", gap_cap=1.5).collect()
+    lazy = df.lazy().rheon.with_windows(f=fwd, group="g", clock="t", gap_cap=1.5).collect()
     assert lazy.equals(clocked)
-    assert df.online.with_windows(f=fwd, group="g", clock="t", gap_cap=1.5).equals(clocked)
+    assert df.rheon.with_windows(f=fwd, group="g", clock="t", gap_cap=1.5).equals(clocked)
     like = rp.spec.ewridge(
         "m", targets=["y"], features=["x"], half_life=10.0, group="g", clock="t", gap_cap=1.5
     )
@@ -2269,11 +2269,11 @@ def test_min_samples_takes_an_integer_of_any_kind_up_to_its_ceiling() -> None:
         assert rp.stream.with_windows(df, s=e, **CLOCK)["s"].to_list() == [None, None, 3.0, 5.0]
     rp.ewm_sum("x", half_life=2.0, min_samples=4294967295)
     for bad in (2**32, 2**40, np.int64(2**40)):
-        with pytest.raises(ValueError, match=r"^po\.ewm_sum: min_samples must be .*4294967295"):
+        with pytest.raises(ValueError, match=r"^rp\.ewm_sum: min_samples must be .*4294967295"):
             rp.ewm_sum("x", half_life=2.0, min_samples=bad)
     for bad in (-1, True, 2.0, "2"):
         with pytest.raises(
-            (TypeError, ValueError), match=r"^po\.ewm_sum: min_samples must be an integer"
+            (TypeError, ValueError), match=r"^rp\.ewm_sum: min_samples must be an integer"
         ):
             rp.ewm_sum("x", half_life=2.0, min_samples=bad)  # type: ignore[arg-type]
     # A sum takes 0 (Polars' default for `rolling_sum_by`), every other
@@ -2343,7 +2343,7 @@ def test_a_word_or_a_duration_not_above_zero_is_refused_where_it_is_written(
     serde path ("invalid windows: formulas[0].tree: ..."), where the same
     value as a number is refused at once. Each is refused in ``po.<op>``'s
     voice now, as the number is."""
-    with pytest.raises(ValueError, match=rf"^po\.ewm_sum: {says}"):
+    with pytest.raises(ValueError, match=rf"^rp\.ewm_sum: {says}"):
         rp.ewm_sum("x", **kw)
 
 
@@ -2421,7 +2421,7 @@ def _var_ops(**kw: Any) -> dict[str, pl.Expr]:
 #: Polars' ``ewm_var``/``ewm_std`` under ``bias=False`` give the first row
 #: null from 1.44 (measured: 0.0 on 1.42.0, null on 1.44.1 and 2.0.0; 1.43
 #: does not install on Python 3.12 to narrow it), the definition
-#: ``po.ewm_var`` follows; the canary's floor leg met the old 0.0 on
+#: ``rp.ewm_var`` follows; the canary's floor leg met the old 0.0 on
 #: 2026-10-09.
 NEEDS_UNBIASED_FIRST_NULL = needs_polars(
     "1.44.1", "Polars' ewm_var(bias=False), the reference, gives the first row null from 1.44"
@@ -2433,7 +2433,7 @@ NEEDS_UNBIASED_FIRST_NULL = needs_polars(
 def test_var_and_std_on_a_row_clock_are_polars_ewm_var_and_ewm_std(bias: bool, clock: bool) -> None:
     """On a clock that steps by 1 a row, with ``half_life`` in rows, the
     operators are Polars' ``ewm_var`` and ``ewm_std`` under ``adjust=False``:
-    the form ``po.ewm_mean`` mirrors, since ``ewm_mean_by`` holds a stretch's
+    the form ``rp.ewm_mean`` mirrors, since ``ewm_mean_by`` holds a stretch's
     first value from before it, which gives it the weight ``(1 - alpha) ** (n
     - 1)`` that ``adjust=False`` gives the first row. ``bias`` and
     ``min_samples`` are Polars' own, and so is the null on the first row
@@ -2470,7 +2470,7 @@ def test_var_and_std_on_a_row_clock_are_polars_ewm_var_and_ewm_std(bias: bool, c
 )
 def test_var_and_std_match_the_definition_on_an_irregular_clock(op: str, closed: str) -> None:
     """On an irregular clock -- bursts, gaps, repeated stamps, nulls -- a value
-    weighs what it weighs in ``po.ewm_mean``: its held interval's decayed mass
+    weighs what it weighs in ``rp.ewm_mean``: its held interval's decayed mass
     inside the window. The variance is about that mean, taken in two passes,
     and corrected for the unequal weights as Polars corrects its own
     (``loop``'s docstring)."""
@@ -2533,7 +2533,7 @@ def test_var_and_std_resume_through_a_state_at_any_row(tmp_path: Any) -> None:
 
 
 def test_a_null_row_gives_the_window_as_it_stands_and_the_next_value_its_interval() -> None:
-    """Nulls as ``po.ewm_mean`` takes them: a row with no value gives the
+    """Nulls as ``rp.ewm_mean`` takes them: a row with no value gives the
     window as it stands, where Polars' ``ewm_var`` gives null, and the next
     value is held from the last valued row, as ``ewm_mean_by`` skips a null.
     So row 2's 4.0 is held over ``(0, 2]``, two units at a half-life of 2,
@@ -2735,7 +2735,7 @@ def test_a_numeric_session_gap_is_refused() -> None:
     with pytest.raises(ValueError, match="no longer read"):
         (
             df.lazy()
-            .online.with_windows(**back, clock="t", gap_cap=_CAP, session="s", session_gap=7.0)
+            .rheon.with_windows(**back, clock="t", gap_cap=_CAP, session="s", session_gap=7.0)
             .collect()
         )
 
@@ -2991,7 +2991,7 @@ def test_a_span_keyword_takes_a_duration_expression(key: str) -> None:
     for value in (pl.duration(seconds={"gap_cap": 5, "restart_after_step_back": 4}[key]),):
         got = rp.stream.with_windows(df, y=f, **{**base, key: value})
         assert got.equals(want), got
-        got = df.lazy().online.with_windows(y=f, **{**base, key: value}).collect()
+        got = df.lazy().rheon.with_windows(y=f, **{**base, key: value}).collect()
         assert got.equals(want), got
     for bad in (pl.col("x"), f, pl.lit(5.0)):
         with pytest.raises(TypeError, match=rf"{key} takes a number or a duration, but it is "):
@@ -3320,7 +3320,7 @@ def test_reverse_must_be_a_bool() -> None:
         with pytest.raises(TypeError) as exc:
             getattr(rp, f"ewm_{name}")("x", half_life=1.0, window_size=2.0, reverse=1, **extra)
         assert str(exc.value) == (
-            f"po.ewm_{name}: reverse must be True or False, but it is 1. "
+            f"rp.ewm_{name}: reverse must be True or False, but it is 1. "
             "Pass reverse=True to read the rows after each row, or reverse=False."
         )
 

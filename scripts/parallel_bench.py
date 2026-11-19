@@ -7,13 +7,13 @@ fixed at their first use:
 
 1. the ticks grid: the README's six `ewridge` specs (three factor sets, with
    and without `standardize`) over 2.56M rows in 64 groups, through
-   `lf.online.fit_predict(chunk_size=200_000, save_state=...)` into
-   `sink_parquet`, at `POLARS_ONLINE_MAX_THREADS` 1 and 14;
+   `lf.rheon.fit_predict(chunk_size=200_000, save_state=...)` into
+   `sink_parquet`, at `RHEON_MAX_THREADS` 1 and 14;
 2. eight single-group specs, k=20 over 300k rows, `half_life=1000*j`,
    `gap_cap=10`: one bank, against one bank per spec in turn;
 3. the two knobs: 12M rows over 64 groups, one spec of four features and two
    half-lives, 200k chunks, at (`POLARS_MAX_THREADS`,
-   `POLARS_ONLINE_MAX_THREADS`) of (14, 14) and (4, 14): wall time, and the
+   `RHEON_MAX_THREADS`) of (14, 14) and (4, 14): wall time, and the
    peak memory footprint `/usr/bin/time -l` reports (macOS).
 
 The input is generated, seeded, into OUTDIR (default `.cache/parallel_bench`,
@@ -42,7 +42,7 @@ def spec(name, features, standardize):
                            standardize=standardize)
 specs = [spec(n, f, s) for (n, f), s in product(factors.items(), [False, True])]
 t0 = time.perf_counter()
-(pl.scan_parquet("{src}").online.fit_predict(specs, chunk_size=200_000, save_state="{state}")
+(pl.scan_parquet("{src}").rheon.fit_predict(specs, chunk_size=200_000, save_state="{state}")
    .sink_parquet("{dst}"))
 print(time.perf_counter() - t0)
 """
@@ -75,7 +75,7 @@ import time, polars as pl, rheon.polars as po
 spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1", "x2", "x3"], clock="t",
                        gap_cap=10.0, half_life=[1000.0, 5000.0], group="stock_id")
 t0 = time.perf_counter()
-pl.scan_parquet("{src}").online.fit_predict([spec], chunk_size=200_000).sink_parquet("{dst}")
+pl.scan_parquet("{src}").rheon.fit_predict([spec], chunk_size=200_000).sink_parquet("{dst}")
 print(time.perf_counter() - t0)
 """
 
@@ -143,7 +143,7 @@ def main() -> None:
             float(
                 timed(
                     GRID.format(src=ticks, state=out / "grid.state", dst=out / "grid.parquet"),
-                    {"POLARS_ONLINE_MAX_THREADS": str(threads)},
+                    {"RHEON_MAX_THREADS": str(threads)},
                 )[0]
             )
             for _ in range(3)
@@ -159,7 +159,7 @@ def main() -> None:
     for polars_threads, bank_threads in ((14, 14), (4, 14)):
         env = {
             "POLARS_MAX_THREADS": str(polars_threads),
-            "POLARS_ONLINE_MAX_THREADS": str(bank_threads),
+            "RHEON_MAX_THREADS": str(bank_threads),
         }
         runs = []
         for _ in range(2):

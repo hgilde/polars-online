@@ -61,9 +61,9 @@ uses `lf` and `later` from [Example data](../EXAMPLE-DATA.md):
 
 ```python
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
-lf.online.fit_predict([spec], save_state="bank.state").sink_parquet("fitted.parquet")             # 1 and 2: fit, then save at the last row
-served = later.online.predict("bank.state").collect()                                             # 3: serve from the file
-later.online.fit_predict(load_state="bank.state", save_state="bank.state").sink_parquet("more.parquet")  # 4: the next rows: continue, save again
+lf.rheon.fit_predict([spec], save_state="bank.state").sink_parquet("fitted.parquet")             # 1 and 2: fit, then save at the last row
+served = later.rheon.predict("bank.state").collect()                                             # 3: serve from the file
+later.rheon.fit_predict(load_state="bank.state", save_state="bank.state").sink_parquet("more.parquet")  # 4: the next rows: continue, save again
 bank = po.ModelBank.load_bytes(po.ModelBank.load("bank.state").save_bytes(), specs=[spec])         # 5: bytes load as a file does
 ```
 
@@ -97,9 +97,9 @@ This code runs two days, each with its own state file. It uses `lf` and
 
 ```python
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
-(lf.online.fit_predict([spec], save_state="bank-2024-01-02.state")   # the first day, and a state file of its own
+(lf.rheon.fit_predict([spec], save_state="bank-2024-01-02.state")   # the first day, and a state file of its own
    .sink_parquet("fitted-2024-01-02.parquet"))
-(later.online.fit_predict(load_state="bank-2024-01-02.state",        # the next day loads the one before ...
+(later.rheon.fit_predict(load_state="bank-2024-01-02.state",        # the next day loads the one before ...
                           save_state="bank-2024-01-03.state")        # ... and writes a file of its own,
    .sink_parquet("fitted-2024-01-03.parquet"))                       # so a rerun of it loads bank-2024-01-02 again
 ```

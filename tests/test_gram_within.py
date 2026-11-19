@@ -1,4 +1,4 @@
-"""Pooling Grams within parts (docs/PLAN.md task 240): ``po.gram.merge(...,
+"""Pooling Grams within parts (docs/PLAN.md task 240): ``rheon.gram.merge(...,
 within=True)`` and ``solve_subsets(..., within=True)``.
 
 The within merge is held to the Gram of the rows demeaned part by part, read

@@ -5957,7 +5957,7 @@ fn gram_threads_moves_no_bit() {
 
 /// Docs/PLAN.md task 231: a wide fit's coefficients and predictions are the
 /// same bits in a pool of 1, 3, 8 or 14 threads, so whatever
-/// `POLARS_ONLINE_MAX_THREADS` or the machine's core count. faer's solve
+/// `RHEON_MAX_THREADS` or the machine's core count. faer's solve
 /// with one right-hand side followed the pool's size from `k = 512`, and
 /// this failed on every width here before the solve was cut by shape.
 #[test]

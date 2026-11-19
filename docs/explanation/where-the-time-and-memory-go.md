@@ -69,8 +69,8 @@ query = pl.scan_parquet("rows.parquet")
 bank = po.ModelBank([spec])
 print(f"time to read the file:      {rows_a_second(lambda: query.collect()):.1f} million rows a second")
 print(f"time to learn, no output:   {rows_a_second(lambda: bank.fit(query)):.1f} million rows a second")
-print(f"time to learn and predict:  {rows_a_second(lambda: query.online.fit_predict([spec]).collect()):.1f} million rows a second")
-print(f"time to serve from a state: {rows_a_second(lambda: query.online.predict(bank).collect()):.1f} million rows a second")
+print(f"time to learn and predict:  {rows_a_second(lambda: query.rheon.fit_predict([spec]).collect()):.1f} million rows a second")
+print(f"time to serve from a state: {rows_a_second(lambda: query.rheon.predict(bank).collect()):.1f} million rows a second")
 ```
 
 ```text

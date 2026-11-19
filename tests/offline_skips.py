@@ -32,7 +32,7 @@ import pytest
 from data import OFFLINE_SKIP
 
 #: Set (to ``1``) by a job that restored the datasets before its tests.
-RESTORED = "POLARS_ONLINE_DATASETS_RESTORED"
+RESTORED = "RHEON_DATASETS_RESTORED"
 
 
 def restored() -> bool:

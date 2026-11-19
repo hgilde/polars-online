@@ -157,12 +157,12 @@ fn floats(py: Python<'_>, obj: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<f6
         .map_err(|e| internal(format!("the Gram's {what} is not a float64 buffer ({e})")))
 }
 
-/// A refusal no call of `po.gram` reaches, since the Python layer checks
+/// A refusal no call of `rheon.gram` reaches, since the Python layer checks
 /// and converts first: a defect if met, or a direct call of the private
 /// native module. Said as such, with where to report it.
 pub(crate) fn internal(what: String) -> PyErr {
     PyValueError::new_err(format!(
-        "po.gram: internal: {what}, which is a defect in polars-online. Open an issue at \
+        "rheon.gram: internal: {what}, which is a defect in polars-online. Open an issue at \
          https://github.com/hgilde/polars-online/issues with this message."
     ))
 }
@@ -263,8 +263,8 @@ fn read(py: Python<'_>, g: &GramIn<'_>) -> PyResult<InGram> {
     for (what, got, want) in shapes {
         if got != want {
             return Err(PyValueError::new_err(format!(
-                "po.gram: the Gram's {what} has {got} entries, but a Gram of {k} columns and {m} \
-                 targets has {want}. Pass each Gram as ModelBank.gram() or po.gram.merge() \
+                "rheon.gram: the Gram's {what} has {got} entries, but a Gram of {k} columns and {m} \
+                 targets has {want}. Pass each Gram as ModelBank.gram() or rheon.gram.merge() \
                  returns it, with every array sized to its columns and targets."
             )));
         }

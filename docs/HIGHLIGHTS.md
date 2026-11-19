@@ -150,7 +150,7 @@ regime = po.spec.bocpd("regime", features=factors[:5], hazard=20_000.0)   # a pr
 # 4. One streaming query over every file: the bank's output, with the readings to count, written to a file.
 field = lambda spec, name: pl.col(spec).struct.field(name)   # each spec writes one column of fields, named after it
 (pl.scan_parquet("days/*.parquet")                                # all four days, read in order
-   .online.fit_predict([by_time, by_volume, breaks, regime])     # every spec fitted in one pass over the rows
+   .rheon.fit_predict([by_time, by_volume, breaks, regime])     # every spec fitted in one pass over the rows
    # Keep the two grid specs whole for step 6, and reduce the watchers to the readings counted in step 5.
    .select("ts", "day", "ret_a", "ret_b", "by_time", "by_volume",
            # the grid point the time spec chose on each trade, for each target
@@ -342,14 +342,14 @@ for k in range(3):
 # 2. The feature and the target, bounded EWMAs over five minutes, back and ahead.
 recent = dict(half_life="1m", window_size="5m")                    # weights halve each minute; rows past 5 minutes drop out
 # with_windows adds each expression as a column, computed as the rows stream past.
-windows = pl.scan_parquet("trades/*.parquet").online.with_windows(
+windows = pl.scan_parquet("trades/*.parquet").rheon.with_windows(
     stretch=pl.col("mid") - po.ewm_mean("mid", **recent),                 # the mid against its last five minutes
     fwd=po.ewm_mean("mid", **recent, reverse=True) - pl.col("mid"),       # the next five minutes against the mid
     clock="ts", gap_cap="5m",                                             # the windows' clock, and its longest step
 )
 # 3. The first stage: a ridge of the factor on its inputs, in the same query.
 factor = po.spec.ewridge("factor", targets=["d"], features=["x0", "x1", "x2"], clock="ts", gap_cap="5m", half_life="1h")
-staged = windows.online.fit_predict([factor])                    # still a query: nothing has run yet
+staged = windows.rheon.fit_predict([factor])                    # still a query: nothing has run yet
 # 4 and 5. Its out-of-sample residual as a column, and the columns written to a file, a chunk at a time.
 # resid_d is d minus the ridge's prediction made before learning that row, so it is out-of-sample.
 staged.with_columns(pl.col("factor").struct.field("resid_d")).drop("factor").sink_parquet("features.parquet")
@@ -377,13 +377,13 @@ from rheon import polars as po
 bank = po.ModelBank.load("signal.state")
 kept = bank.skip_learned(pl.scan_parquet("features.parquet"))   # still a query
 # 10. The rest of the rows through the state, which is saved again at the end.
-kept.online.fit_predict(load_state="signal.state", save_state="signal.state").sink_parquet("served.parquet")
+kept.rheon.fit_predict(load_state="signal.state", save_state="signal.state").sink_parquet("served.parquet")
 # Row counts of the two files: the resumed run's rows, and all rows; the difference is what the state had read.
 resumed, read = (pl.scan_parquet(f).select(pl.len()).collect().item() for f in ("served.parquet", "features.parquet"))
 print(f"resumed on {resumed:,} rows, after {read - resumed:,} the state had read")
 
 # 11. One unbroken run over every row, with the same specs, as a query of its own.
-(pl.scan_parquet("features.parquet").online.fit_predict(bank.specs, save_state="whole.state")
+(pl.scan_parquet("features.parquet").rheon.fit_predict(bank.specs, save_state="whole.state")
    .sink_parquet("whole.parquet"))
 # Each spec's prediction from both runs, lined up row for row: the unbroken run's last rows are the resumed run's.
 preds = dict(robust=pl.col("robust").struct.field("pred_fwd"), ridge=pl.col("ridge").struct.field("pred_fwd"))
@@ -527,7 +527,7 @@ watch = po.spec.corrchange("watch", features=["x_1", "x_2"], kind="sequential",
                            monitor_rows=2_000)    # the rows monitored after each history
 # 7. The query, run a chunk at a time, with the readings to count written to a file.
 field = lambda spec, name: pl.col(spec).struct.field(name)   # each spec writes one column of fields, named after it
-(pl.scan_parquet("live.parquet").online.fit_predict([model, fixed, watch])
+(pl.scan_parquet("live.parquet").rheon.fit_predict([model, fixed, watch])
    # Per spec: did the interval [lo_y, hi_y] cover the target, and its half-width.
    .select("t", "block",
            **{f"covered_{s}": pl.col("y").is_between(field(s, "lo_y"), field(s, "hi_y")) for s in ("model", "fixed")},
@@ -642,7 +642,7 @@ refresh = po.stream.refresh_time(pl.scan_parquet("ticks.parquet"), series="symbo
 moves = refresh.select("time_refresh", *(pl.col(f"{s}_value").diff().alias(s) for s in names))
 # The changes' correlations over the whole stream: an infinite half-life weighs every row alike.
 comove = po.spec.ew_cov("comove", features=names, stats=["corr"], clock="time_refresh", gap_cap=10.0, half_life=float("inf"))
-last = moves.online.fit_predict([comove]).select(pl.col("comove").last()).collect().item()   # the last row's struct
+last = moves.rheon.fit_predict([comove]).select(pl.col("comove").last()).collect().item()   # the last row's struct
 pairs = [("AAA", "BBB"), ("AAA", "CCC"), ("BBB", "CCC")]
 print("planted 0.5; on the refresh times: " + ", ".join(f"{last[f'corr_{a}_{b}']:.2f}" for a, b in pairs))
 # 5. Each series' last price every 0.1 clock units, and the correlations of its changes there.

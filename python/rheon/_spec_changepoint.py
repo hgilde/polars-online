@@ -160,7 +160,7 @@ def bocpd(
         so center and scale each feature before a tempered run. In the
         query before the bank, make its z-score ``(pl.col("x") -
         rp.ewm_mean("x", half_life=h)) / rp.ewm_std("x", half_life=h)``
-        with ``lf.online.with_windows``, which runs the window operators
+        with ``lf.rheon.with_windows``, which runs the window operators
         (Polars' ``with_columns`` cannot).
         *Tempering* in Notes gives the measurements.
     ``prune_below``, ``max_run``
@@ -302,7 +302,7 @@ def bocpd(
         pl.DataFrame({"x": x}).write_parquet("step.parquet")
 
         b = rp.spec.bocpd("regime", features=["x"], hazard=250.0)
-        out = pl.scan_parquet("step.parquet").online.fit_predict([b]).collect()
+        out = pl.scan_parquet("step.parquet").rheon.fit_predict([b]).collect()
         out = out.unnest("regime")
         for row in [599, 650, 999]:
             began = row - out["run_mode"][row]        # the row the current run began on
@@ -731,7 +731,7 @@ def corrchange(
             kind="monitor",                                     # constant in each span?
             window_rows=200,                                    # a verdict on each span's last row
         )
-        out = pl.scan_parquet("pair.parquet").online.fit_predict([c]).collect()
+        out = pl.scan_parquet("pair.parquet").rheon.fit_predict([c]).collect()
         due = out.unnest("brk").with_row_index("row").filter(pl.col("stat").is_not_null())
         flags = due.filter("flag")
         print(f"{due.height} spans tested, {flags.height} flagged")

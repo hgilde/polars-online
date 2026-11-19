@@ -262,7 +262,7 @@ def embargo(
     .. code-block:: python
 
         doubled = rp.stream.embargo(lf, clock="t", delay=5.0)
-        scored = doubled.online.fit_predict(
+        scored = doubled.rheon.fit_predict(
             [rp.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", gap_cap=10.0,
                              half_life=50.0, weight="_online_role_weight")]
         ).filter(pl.col("_online_role") == "predict").collect()
@@ -321,7 +321,7 @@ def embargo(
     schema = lazy.collect_schema()
     if clock not in schema:
         msg = (
-            f"po.stream.embargo: the input has no clock column {clock!r}, only {schema.names()}. "
+            f"rp.stream.embargo: the input has no clock column {clock!r}, only {schema.names()}. "
             "Set clock to one of those columns."
         )
         raise ColumnNotFoundError(msg)
@@ -329,7 +329,7 @@ def embargo(
         # Named before the plan is built; a String clock failed inside polars'
         # arithmetic when the plan ran (review round 4, YB15).
         msg = (
-            f"po.stream.embargo: clock column {clock!r} must be numeric or temporal, but it is "
+            f"rp.stream.embargo: clock column {clock!r} must be numeric or temporal, but it is "
             f"{schema[clock]}. Cast it to a number or a Datetime."
         )
         raise WrongTypeError(msg)
@@ -338,23 +338,23 @@ def embargo(
         # an Int128 by name; said here, before the doubled frame is built
         # for a bank that would refuse it (review round 5, B3).
         msg = (
-            f"po.stream.embargo: clock column {clock!r} is {schema[clock]}, wider than the Int64 "
+            f"rp.stream.embargo: clock column {clock!r} is {schema[clock]}, wider than the Int64 "
             "an integer clock is held in. Cast it to Int64 if its values fit, or after "
             "subtracting an origin."
         )
         raise WrongTypeError(msg)
-    ns = clock_nanoseconds(delay, schema[clock], "po.stream.embargo", "delay", clock)
+    ns = clock_nanoseconds(delay, schema[clock], "rp.stream.embargo", "delay", clock)
     if ns is None:
         if isinstance(delay, bool) or not isinstance(delay, numbers.Real):
             msg = (
-                f"po.stream.embargo: delay must be a number on numeric clock column {clock!r}, "
+                f"rp.stream.embargo: delay must be a number on numeric clock column {clock!r}, "
                 f"but its type is {type(delay).__name__}. Set delay to the clock units from "
                 "predicting a row to learning it, such as 5."
             )
             raise WrongTypeError(msg)
         if not (delay > 0.0) or delay == float("inf"):
             msg = (
-                f"po.stream.embargo: delay must be finite and above 0, but it is {delay!r}. Set "
+                f"rp.stream.embargo: delay must be finite and above 0, but it is {delay!r}. Set "
                 "delay to the time from predicting a row to learning it, such as 5 clock units."
             )
             raise ValueError(msg)
@@ -365,7 +365,7 @@ def embargo(
             # example above, did (review 2026-10-05, YB3).
             if not float(delay).is_integer():
                 msg = (
-                    f"po.stream.embargo: delay {delay!r} is not a whole number, but clock column "
+                    f"rp.stream.embargo: delay {delay!r} is not a whole number, but clock column "
                     f"{clock!r} is {schema[clock]}, which holds whole numbers. Give a whole "
                     "delay, or cast the clock to a float."
                 )
@@ -385,13 +385,13 @@ def embargo(
         later = (pl.col(clock) + pl.duration(nanoseconds=ns)).cast(schema[clock])
     if weight is not None and weight not in schema:
         msg = (
-            f"po.stream.embargo: the input has no weight column {weight!r}, only {schema.names()}. "
+            f"rp.stream.embargo: the input has no weight column {weight!r}, only {schema.names()}. "
             "Set weight to one of those columns, or leave it out."
         )
         raise ColumnNotFoundError(msg)
     if role in schema:
         msg = (
-            f"po.stream.embargo: the input already has a column named {role!r}, the name of the "
+            f"rp.stream.embargo: the input already has a column named {role!r}, the name of the "
             "column this adds. Pass another role=."
         )
         raise ValueError(msg)
@@ -401,7 +401,7 @@ def embargo(
         # The weight column added beside the role, which polars refused as a
         # duplicate (review 2026-10-05, YB10).
         msg = (
-            f"po.stream.embargo: the input already has a column named {wcol!r}, the name of the "
+            f"rp.stream.embargo: the input already has a column named {wcol!r}, the name of the "
             "weight column this adds. Pass another role=, or pass that column as weight= to have "
             "it set to 0 on the rows that only predict."
         )
@@ -410,7 +410,7 @@ def embargo(
         # The two copies are two reads of the input (review round 4, YB3).
         warnings.warn(
             ConsumedSourceWarning(
-                "po.stream.embargo: the query reads a source written in Python, and embargo reads "
+                "rp.stream.embargo: the query reads a source written in Python, and embargo reads "
                 "its input twice, once for each copy, so a source that gives its rows once, such "
                 "as `pl.scan_arrow_c_stream` over a DuckDB relation or a pyarrow reader, gives the "
                 "second read nothing and half the doubled stream goes missing with no error. "
@@ -712,20 +712,20 @@ def refresh_time(
     ):
         if col not in in_schema:
             msg = (
-                f"po.stream.refresh_time: the input has no {role} column {col!r}, "
+                f"rp.stream.refresh_time: the input has no {role} column {col!r}, "
                 f"only {in_schema.names()}. Set {role} to one of those columns."
             )
             raise ColumnNotFoundError(msg)
     for col in keep:
         if col not in in_schema:
             msg = (
-                f"po.stream.refresh_time: keep names column {col!r}, but the input does not "
+                f"rp.stream.refresh_time: keep names column {col!r}, but the input does not "
                 f"have it, only {in_schema.names()}. List only those columns in keep."
             )
             raise ColumnNotFoundError(msg)
     # Every column of a chunk crosses to the extension, which cannot take a
     # `UInt128` one in.
-    _refuse_uint128(in_schema, "po.stream.refresh_time", (clock,))
+    _refuse_uint128(in_schema, "rp.stream.refresh_time", (clock,))
     # A number or a temporal column, as a spec's clock is: a boolean or a
     # column of nulls is a number (task 197, PC7's rule). Read through a
     # non-strict cast, text of digits was taken as a clock.
@@ -736,7 +736,7 @@ def refresh_time(
         or clock_dtype in (pl.Boolean, pl.Null)
     ):
         msg = (
-            f"po.stream.refresh_time: clock column {clock!r} must be numeric or temporal, "
+            f"rp.stream.refresh_time: clock column {clock!r} must be numeric or temporal, "
             f"but it is {clock_dtype}. Cast it, such as with pl.col({clock!r}).cast(pl.Float64) or "
             f"pl.col({clock!r}).str.to_datetime()."
         )
@@ -747,16 +747,16 @@ def refresh_time(
     value_dtype = in_schema[value]
     if not (value_dtype.is_numeric() or value_dtype in (pl.Boolean, pl.Null)):
         msg = (
-            f"po.stream.refresh_time: value column {value!r} must be numeric, "
+            f"rp.stream.refresh_time: value column {value!r} must be numeric, "
             f"but it is {value_dtype}. Cast it, such as with pl.col({value!r}).cast(pl.Float64)."
         )
         raise WrongTypeError(msg)
-    checked = _check_chunk_size(chunk_size, "po.stream.refresh_time")
+    checked = _check_chunk_size(chunk_size, "rp.stream.refresh_time")
     rows = checked if checked is not None else _native.default_chunk_size()
     # Read now, as a bank's `load_state` is: a plan collected twice goes on
     # from the same state, whatever the file holds by then.
     loaded = _read_state(load_state) if load_state is not None else None
-    save_path = _save_path(save_state, "po.stream.refresh_time")
+    save_path = _save_path(save_state, "rp.stream.refresh_time")
 
     def build() -> _native.RefreshTime:
         if loaded is not None:
@@ -862,8 +862,8 @@ def _formulas(who: str, exprs: tuple[Any, ...], named: dict[str, Any]) -> list[d
                 f"computation, "
                 f'such as pl.col("x") + 1) over the window operators, but one is of type '
                 f"{type(e).__name__}. "
-                'Pass expressions such as po.ewm_mean("x", half_life=10).alias("m"), or name '
-                'each as a keyword, as in with_windows(m=po.ewm_mean("x", half_life=10)).'
+                'Pass expressions such as rp.ewm_mean("x", half_life=10).alias("m"), or name '
+                'each as a keyword, as in with_windows(m=rp.ewm_mean("x", half_life=10)).'
             )
         tree = _formula.to_tree(e, who)
         name = e.meta.output_name()
@@ -888,7 +888,7 @@ def _formulas(who: str, exprs: tuple[Any, ...], named: dict[str, Any]) -> list[d
             raise TypeError(
                 f"{who}: the keyword {name} names an output column, so it must be a pl.Expr "
                 f"over the window operators, but it is of type {type(e).__name__} ({e!r}). "
-                "Pass an expression such as po.ewm_mean(...)."
+                "Pass an expression such as rp.ewm_mean(...)."
             )
         out.append({"name": name, "tree": _formula.to_tree(e, who)})
     for f in out:
@@ -1069,7 +1069,7 @@ def with_windows(
         a folder raises it too on macOS and Linux, and ``PermissionError`` on
         Windows, where opening a folder fails that way.
     :class:`~rheon.UnstableWarning`
-        A warning, under ``POLARS_ONLINE_WARN_UNSTABLE=1``: a call with
+        A warning, under ``RHEON_WARN_UNSTABLE=1``: a call with
         ``load_state`` or ``save_state``, whose file format is unstable.
     :class:`~rheon.polars.OrderNotGuaranteedWarning`
         A warning: the query before this call does not keep its rows in order,
@@ -1128,8 +1128,8 @@ def with_windows(
 
     - :mod:`rheon.polars.ops`, the operators, and the tables of ``closed`` and
       ``partial``.
-    - ``lf.online.with_windows`` and ``df.online.with_windows``, the same call
-      on a frame's ``online`` namespace.
+    - ``lf.rheon.with_windows`` and ``df.rheon.with_windows``, the same call
+      on a frame's ``rheon`` namespace.
     -
       `Make features that look back over the stream
       <https://github.com/hgilde/polars-online/blob/main/docs/how-to/make-window-features.md>`_,
@@ -1203,7 +1203,7 @@ def with_windows(
         The state file's format is considered **unstable**: it may change in
         any release without that counting as a breaking change, and a state one
         release saved need not load in the next. So is the formula tree it
-        holds. Under ``POLARS_ONLINE_WARN_UNSTABLE=1``, a call with
+        holds. Under ``RHEON_WARN_UNSTABLE=1``, a call with
         ``load_state`` or ``save_state`` issues
         :class:`rheon.UnstableWarning`.
 
@@ -1275,13 +1275,13 @@ def with_windows(
     if like is not None:
         if not (isinstance(like, dict) and isinstance(like.get("features"), list)):
             raise TypeError(
-                f"{who}: like must be a spec, such as po.spec.ewridge(...), but it is "
+                f"{who}: like must be a spec, such as rheon.spec.ewridge(...), but it is "
                 f"{like!r}. Pass a spec."
             )
         clash = [k for k, v in given.items() if v is not None]
         if clash:
             raise RefusedValueError(
-                f'po.stream.with_windows: like= takes the clock settings from spec "'
+                f'rp.stream.with_windows: like= takes the clock settings from spec "'
                 f'{like.get("name")}", but '
                 f"{_and_list(clash)} {'is' if len(clash) == 1 else 'are'} given too. Leave out "
                 f"{_and_list(clash)}, or like=."

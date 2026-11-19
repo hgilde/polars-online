@@ -84,7 +84,7 @@ nested = pl.scan_parquet("nested.parquet")
 common = dict(targets=["y"], half_life=float("inf"), group="stream", min_weight=20.0)
 small = po.spec.ewridge("small", features=["x0"], **common)
 big = po.spec.ewridge("big", features=["x0", "x1"], **common)
-out = nested.online.fit_predict([small, big]).collect()
+out = nested.rheon.fit_predict([small, big]).collect()
 
 # 3 to 6. One test of each kind per stream: does big predict better than small?
 dm = po.eval.diebold_mariano(out, a="big", b="small", group="stream")
@@ -187,7 +187,7 @@ common = dict(targets=["y"], features=["x0", "x1"], clock="t", gap_cap=5.0, grou
 ridge = po.spec.ewridge("ridge", half_life=500.0, **common)
 kalman = po.spec.kalman("kalman", half_life=500.0, coef_half_life=100.0, **common)
 closer = po.spec.seqtest("closer", targets=["y"], a="kalman", b="ridge", group="stock")  # does kalman predict closer?
-out = drift.online.fit_predict([ridge, kalman, closer]).collect()
+out = drift.rheon.fit_predict([ridge, kalman, closer]).collect()
 
 # 4. The first row on which each side's evidence reaches ln 20, the 5% level, on each stock.
 evidence = out.select("t", "stock", pl.col("closer").struct.unnest())  # log_e_a_y, log_e_b_y, wins_a_y, wins_b_y
@@ -200,7 +200,7 @@ for stock in ("moves", "still"):
 # The same test with each model's default min_weight: on "still", the ridge's evidence early on.
 ungated = {k: v for k, v in common.items() if k != "min_weight"}
 early = (
-    drift.online.fit_predict([po.spec.ewridge("ridge", half_life=500.0, **ungated),
+    drift.rheon.fit_predict([po.spec.ewridge("ridge", half_life=500.0, **ungated),
                               po.spec.kalman("kalman", half_life=500.0, coef_half_life=100.0, **ungated), closer])
     .collect().select("t", "stock", pl.col("closer").struct.unnest()).filter(stock="still")
 )

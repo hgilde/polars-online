@@ -2719,7 +2719,7 @@ impl Spec {
             });
         }
         // An empty name names no column and writes fields called `pred_` and
-        // `resid_`; `po.target("")` and an empty table name were refused, a
+        // `resid_`; `rheon.target("")` and an empty table name were refused, a
         // plain `""` was not (review 2026-10-06, YA5).
         if self.targets.defs().iter().any(|t| t.name.is_empty()) {
             no.refuse(format!(
@@ -3623,7 +3623,7 @@ impl Spec {
                     "spec {name:?}: emit_feature_health does not apply to {}, which fits no \
                      coefficients of its features: it watches the features a fit's coefficients \
                      lean on. Leave out emit_feature_health, and use ModelBank.check() or \
-                     po.spec.audit to watch the features themselves.",
+                     rheon.spec.audit to watch the features themselves.",
                     self.model.kind_name()
                 ));
             }

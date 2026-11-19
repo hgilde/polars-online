@@ -150,7 +150,7 @@
 //! must advance the clock and teach nothing (hard rule 9) -- shrank the
 //! gap's noise and moved every later prediction (0.197 at `coef_half_life`
 //! 20 on the review's stream of 2026-10-08), and so did a null target, and
-//! `po.stream.embargo`'s doubled stream, whose predict rows are such rows,
+//! `rp.stream.embargo`'s doubled stream, whose predict rows are such rows,
 //! parted from the native embargo. And a target seen on one row in `n` took
 //! `n` charges of `q d²` where one of `q (n d)²` was due: its memory grew as
 //! `h √n`, 166, 270 and 462 clock units at `n` = 4, 10 and 25 against 74.5

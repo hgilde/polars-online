@@ -23,7 +23,7 @@
 # the workspace root, so two checkouts in one target/ overwrite each other's
 # artifacts.
 #
-# Slots live under .claude/slots/<n>, at most POLARS_ONLINE_SLOTS of them
+# Slots live under .claude/slots/<n>, at most RHEON_SLOTS of them
 # (default 4). A slot stays warm between tasks, so there are more slots than
 # agents building: at most two build at once (docs/TESTING.md, "Keep the
 # machine's load down", the paragraph "At most two agents"). Who holds a
@@ -37,7 +37,7 @@ common="$(cd "$repo" && cd "$(git rev-parse --git-common-dir)" && pwd)"
 # The slots belong to the main checkout, wherever this is run from.
 main="$(dirname "$common")"
 locks="$common/slots"
-max="${POLARS_ONLINE_SLOTS:-4}"
+max="${RHEON_SLOTS:-4}"
 
 usage() {
     echo "usage: scripts/slot.sh take <branch> [<base>] | give <slot> | list | overlap [<branch>...]" >&2

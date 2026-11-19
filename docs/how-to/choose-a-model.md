@@ -89,7 +89,7 @@ This code uses `df` from [Example data](../EXAMPLE-DATA.md):
 ```python
 moves = po.spec.ew_cov("moves", features=["signal_a", "ret"], clock="t", gap_cap=10.0,
                        half_life=50.0, stats=["corr"])
-corr = df.online.fit_predict([moves])["moves"].struct.field("corr_signal_a_ret")
+corr = df.rheon.fit_predict([moves])["moves"].struct.field("corr_signal_a_ret")
 print(f"corr(signal_a, ret) at row 199: {corr[199]:.2f}, at row 399: {corr[399]:.2f}")
 ```
 
@@ -186,7 +186,7 @@ which = po.spec.hmm(                                          # which regime is 
     precision_prior=1e-2, warm_rows=500,
     transition=[0.998, 0.002, 0.002, 0.998], transition_prior=500.0,   # a regime lasts about 500 rows
 )
-out = returns.online.fit_predict([age, which]).collect().with_columns(
+out = returns.rheon.fit_predict([age, which]).collect().with_columns(
     began=pl.col("t") - pl.col("age").struct.field("run_mode"),   # the row the current regime began on
     guess=pl.col("which").struct.field("state"),
 )
@@ -238,7 +238,7 @@ specs = [
     po.spec.holt("holt", **common),                                    # y's own level and trend, no feature
     po.spec.seqtest("closer", targets=["y"], a="ridge", b="holt"),     # does ridge predict closer?
 ]
-out = df.online.fit_predict(specs)
+out = df.rheon.fit_predict(specs)
 passed = out["closer"].struct.field("log_e_a_y") >= math.log(20)    # the 5% level, however often you look
 print(f"ridge predicts closer than holt at the 5% level from row {passed.arg_true()[0]}")
 ```

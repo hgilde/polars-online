@@ -485,7 +485,7 @@ def test_no_public_attribute_escapes_the_api_snapshot():
     """Every public name must be on the class, or ``tests/api_surface.txt``
     never sees it.
 
-    The snapshot walks ``dir(po.ModelBank)``, so an attribute set in
+    The snapshot walks ``dir(rp.ModelBank)``, so an attribute set in
     ``__init__`` is invisible to it -- which is what happened to ``specs``:
     public, documented nowhere, and free to change without the reviewable
     diff the snapshot exists to produce.

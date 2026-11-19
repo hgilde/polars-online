@@ -290,7 +290,7 @@ def test_more_groups_than_threads_under_auto(tmp_path):
         capture_output=True,
         text=True,
         encoding="utf-8",
-        env=child.env(POLARS_ONLINE_MAX_THREADS="2"),
+        env=child.env(RHEON_MAX_THREADS="2"),
         check=True,
     )
     unsplit, auto = res.stdout.split()

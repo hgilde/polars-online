@@ -165,7 +165,7 @@ class RefusedValueError(ValueError):
 
     .. code-block:: text
 
-        RefusedValueError po.ewm_mean: reverse=True needs window_size
+        RefusedValueError rp.ewm_mean: reverse=True needs window_size
 
     .. rubric:: See also
 

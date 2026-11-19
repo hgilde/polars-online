@@ -156,7 +156,7 @@ gives the measured gain. This code reads ``trades.parquet`` from
 
     spread = {"half_life": "30m"}
     z_mid = (pl.col("mid") - rp.ewm_mean("mid", **spread)) / rp.ewm_std("mid", **spread)
-    zscored = pl.scan_parquet("trades.parquet").online.with_windows(
+    zscored = pl.scan_parquet("trades.parquet").rheon.with_windows(
         z_mid=z_mid, clock="ts", gap_cap="5m", group="symbol"
     ).collect()
 
@@ -255,7 +255,7 @@ def _window(
     """The mean, sum, rate or quantile ``name`` names, looking back, or ahead
     under ``reverse``: the operator over the rows after each row, which the
     tree keeps as ``r<name>``."""
-    who = f"po.{name}"
+    who = f"rp.{name}"
     if not isinstance(reverse, bool):
         raise TypeError(
             f"{who}: reverse must be True or False, but it is {reverse!r}. "
@@ -275,7 +275,7 @@ def _window(
         min_samples=min_samples,
         partial=partial,
         quantile=quantile,
-        who=f"po.{name}(reverse=True)" if reverse else None,
+        who=f"rp.{name}(reverse=True)" if reverse else None,
     )
 
 
@@ -902,9 +902,9 @@ def ewm_quantile(
 
 #: The names the reversed operators had, which refuse the call naming the
 #: ``reverse=True`` form that replaced them.
-rewm_mean = renamed_function("po.rewm_mean", "po.ewm_mean(..., reverse=True)")
-rewm_sum = renamed_function("po.rewm_sum", "po.ewm_sum(..., reverse=True)")
-rewm_rate = renamed_function("po.rewm_rate", "po.ewm_rate(..., reverse=True)")
+rewm_mean = renamed_function("rp.rewm_mean", "rp.ewm_mean(..., reverse=True)")
+rewm_sum = renamed_function("rp.rewm_sum", "rp.ewm_sum(..., reverse=True)")
+rewm_rate = renamed_function("rp.rewm_rate", "rp.ewm_rate(..., reverse=True)")
 
 
 def ewm_var(

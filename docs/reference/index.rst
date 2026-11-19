@@ -10,7 +10,7 @@ polars-online``.
 polars-online fits models online for `Polars <https://pola.rs>`_: linear
 models, streaming moments, clustering and regime detection, for data too
 large to hold in memory at once. The Rust core runs three ways: inside a
-Polars query (``lf.online.fit_predict(specs)``), fed chunks by a
+Polars query (``lf.rheon.fit_predict(specs)``), fed chunks by a
 ``ModelBank``, and from the ``polars-online`` command line. Every row is
 predicted before it is learned from, and the numbers are the same whichever
 way the bank runs.
@@ -41,7 +41,7 @@ are in its builder's docstring.
        clustering and classification), the parameters every spec shares, and the fields each
        model writes
    * - :doc:`namespaces`
-     - ``lf.online`` and ``df.online``: a bank run inside a query, or on a
+     - ``lf.rheon`` and ``df.rheon``: a bank run inside a query, or on a
        frame in memory
    * - :doc:`stream`
      - transforms of a stream before a bank: windows as columns, targets whose

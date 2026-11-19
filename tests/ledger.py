@@ -24,7 +24,7 @@ and in the test, each quantity it bounds, one value a seed::
 A group's id is the module's name without ``test_``, a dot, and the name
 given: ``truth_recovery.kmeans_blobs``. A case is judged on its *gap*,
 ``|value - ideal|``: ``ideal`` is 0 for an error and 1 for a score such as
-an ARI, a share or an F1. With ``POLARS_ONLINE_ORACLES_OUT`` naming a
+an ARI, a share or an F1. With ``RHEON_ORACLES_OUT`` naming a
 directory, ``record`` appends what it measured there as JSON lines, one
 file a process, for ``scripts/oracles.py check`` and ``apply``; otherwise
 it only checks its arguments.
@@ -54,7 +54,7 @@ TESTS = Path(__file__).resolve().parent
 REPO = TESTS.parent
 
 #: The directory ``record`` writes to, when set.
-OUT_VARIABLE = "POLARS_ONLINE_ORACLES_OUT"
+OUT_VARIABLE = "RHEON_ORACLES_OUT"
 
 #: The significant bits a float keeps in a hash (``canonical``).
 BITS = 24

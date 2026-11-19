@@ -46,7 +46,7 @@ use super::{GbdtError, Layout, conversion_pool};
 
 /// The call a message of this module names: the only one that builds
 /// through LightGBM.
-const LGB: &str = "po.gbdt.lightgbm_dataset";
+const LGB: &str = "rheon.polars._gbdt.lightgbm_dataset";
 
 /// `C_API_DTYPE_FLOAT32` (`include/LightGBM/c_api.h`).
 const DTYPE_FLOAT32: c_int = 0;
@@ -123,7 +123,7 @@ impl Drop for Owned<'_> {
 fn cstr(s: &str) -> Result<CString, GbdtError> {
     CString::new(s).map_err(|_| {
         GbdtError::msg(format!(
-            "po.gbdt.lightgbm_dataset: `{s}` holds a NUL character, which LightGBM cannot take. \
+            "rheon.polars._gbdt.lightgbm_dataset: `{s}` holds a NUL character, which LightGBM cannot take. \
          Rename it without one."
         ))
     })
@@ -340,7 +340,7 @@ pub fn lightgbm_dataset(
     layout.check()?;
     if opts.rows == 0 {
         return Err(GbdtError::msg(
-            "po.gbdt.lightgbm_dataset: the source has no rows. Pass a source with rows.",
+            "rheon.polars._gbdt.lightgbm_dataset: the source has no rows. Pass a source with rows.",
         ));
     }
     let n = rows_i32(opts.rows)?;
@@ -350,7 +350,7 @@ pub fn lightgbm_dataset(
     let built = if opts.in_memory {
         let Some(from_arrow) = lib.from_arrow else {
             return Err(GbdtError::msg(
-                "po.gbdt.lightgbm_dataset: in_memory=True hands LightGBM an Arrow stream, which \
+                "rheon.polars._gbdt.lightgbm_dataset: in_memory=True hands LightGBM an Arrow stream, which \
                  it takes only from 4.7.0 on. Upgrade LightGBM to 4.7.0 or later, or set \
                  in_memory=False.",
             ));

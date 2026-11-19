@@ -765,7 +765,7 @@ class TestEdgeCases:
         )
         s1 = spec(features=("u", "v", "w"), classes=("neg", "pos"), half_life=float("inf"))
         bank = rp.ModelBank([s1])
-        flat = bank.fit_predict(df).online.unnest([s1])
+        flat = bank.fit_predict(df).rheon.unnest([s1])
         names = rp.spec.coef_fields(s1)["name"].to_list()
         assert set(names) <= set(flat.columns) and "coef" not in flat.columns
         assert "class" in flat.columns and "p_neg" in flat.columns
@@ -799,7 +799,7 @@ class TestEdgeCases:
         df = frame(X, lab, null_every=7)
         s = spec()
         bank = rp.ModelBank([s]).fit_predict(df)
-        lazy = df.lazy().online.fit_predict([s]).collect()
+        lazy = df.lazy().rheon.fit_predict([s]).collect()
         assert bank.equals(lazy, null_equal=True)
 
 

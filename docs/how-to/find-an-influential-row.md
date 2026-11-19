@@ -69,7 +69,7 @@ model = po.spec.ewridge(
     coef_every=0, max_rows_between_solves=1,  # solve and write the coefficients on every row
 )
 # 2. Run the query, from row 1,000: past where influence_y starts.
-out = prints.online.fit_predict([model]).online.unnest([model]).collect().slice(1_000)
+out = prints.rheon.fit_predict([model]).rheon.unnest([model]).collect().slice(1_000)
 moved = out.with_columns(step=pl.col("coef_y_x0").diff().abs())  # how far x0's coefficient moved
 
 # 3 and 4. The rows that moved the fit most, beside the clean rows for scale.

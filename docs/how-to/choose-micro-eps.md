@@ -72,7 +72,7 @@ pl.DataFrame({"a": xy[:, 0], "b": xy[:, 1]}).write_parquet("blobs3.parquet")
 # 2 to 4. Build and fit each eps, and read the last rows' clusters, summaries and outliers.
 for eps, macro_link in ((0.002, None), (0.07, None), (0.3, None), (0.3, 2.0)):
     mc = po.spec.micro("mc", features=["a", "b"], half_life=1_000.0, eps=eps, macro_link=macro_link)
-    late = pl.scan_parquet("blobs3.parquet").online.fit_predict([mc]).collect().unnest("mc").tail(1_000)
+    late = pl.scan_parquet("blobs3.parquet").rheon.fit_predict([mc]).collect().unnest("mc").tail(1_000)
     print(f"eps {eps}, macro_link {macro_link}: clusters {late['n_clusters'][-1]}, "
           f"summaries {late['n_micro'][-1]}, outliers {late['outlier'].mean():.0%}")
 ```

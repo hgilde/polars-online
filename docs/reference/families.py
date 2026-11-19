@@ -69,21 +69,19 @@ FAMILIES: tuple[Family, ...] = (
         "warnings",
         "rheon",
         (
-            f"{_PO}.PolarsOnlineWarning",
+            f"{_PO}.RheonWarning",
             f"{_PO}.ReadinessWarning",
             f"{_RP}.OrderNotGuaranteedWarning",
             f"{_RP}.ConsumedSourceWarning",
-            f"{_PO}.PolarsOnlineDeprecationWarning",
+            f"{_PO}.RheonDeprecationWarning",
             f"{_PO}.UnstableWarning",
         ),
     ),
     Family(
         "namespaces",
         "namespaces",
-        (f"{_FRAME}.LazyFrameOnlineNamespace", f"{_FRAME}.DataFrameOnlineNamespace"),
-        paged=frozenset(
-            {f"{_FRAME}.LazyFrameOnlineNamespace", f"{_FRAME}.DataFrameOnlineNamespace"}
-        ),
+        (f"{_FRAME}.LazyFrameRheonNamespace", f"{_FRAME}.DataFrameRheonNamespace"),
+        paged=frozenset({f"{_FRAME}.LazyFrameRheonNamespace", f"{_FRAME}.DataFrameRheonNamespace"}),
     ),
     Family(
         "regressions",
@@ -228,8 +226,8 @@ def title(name: str) -> str:
     """An entry's page title: its dotted name as a reader calls it, with the
     private module of the frame namespaces read as the namespace."""
     for cls, spelled in (
-        ("LazyFrameOnlineNamespace", "LazyFrame.online"),
-        ("DataFrameOnlineNamespace", "DataFrame.online"),
+        ("LazyFrameRheonNamespace", "LazyFrame.rheon"),
+        ("DataFrameRheonNamespace", "DataFrame.rheon"),
     ):
         if name.startswith(f"{_FRAME}.{cls}"):
             return spelled + name[len(f"{_FRAME}.{cls}") :]

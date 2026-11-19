@@ -54,7 +54,7 @@ SHAPES = [
     (
         rp.spec.ewridge,
         dict(targets="y"),
-        "targets must be a list of column names, po.target tables or formula targets, "
+        "targets must be a list of column names, rheon.target tables or formula targets, "
         "but it is str 'y'",
     ),
     (rp.spec.ewridge, dict(features="x0"), "features must be a list of strs, but it is str 'x0'"),
@@ -102,25 +102,25 @@ SHAPES = [
     (
         rp.spec.ewridge,
         dict(targets=[3]),
-        "targets must be a list of column names, po.target tables or formula targets, "
+        "targets must be a list of column names, rheon.target tables or formula targets, "
         "but it is list [3]",
     ),
     (
         rp.spec.ewridge,
         dict(targets=[{"column": "p", "name": 1}]),
-        "targets must be a list of column names, po.target tables or formula targets, "
+        "targets must be a list of column names, rheon.target tables or formula targets, "
         "but it is list [{'column': 'p', 'name': 1}]",
     ),
     (
         rp.spec.ewridge,
         dict(targets=[{"col": "p"}]),
-        "targets must be a list of column names, po.target tables or formula targets, "
+        "targets must be a list of column names, rheon.target tables or formula targets, "
         "but it is list [{'col': 'p'}]",
     ),
     (
         rp.spec.ewridge,
         dict(targets=[None]),
-        "targets must be a list of column names, po.target tables or formula targets, "
+        "targets must be a list of column names, rheon.target tables or formula targets, "
         "but it is list [None]",
     ),
     (rp.spec.lasso, dict(penalties=0.1), "penalties must be a list of numbers, but it is float"),
@@ -137,7 +137,7 @@ def test_a_wrong_shape_names_the_parameter(builder, kw, msg):
 
 
 def test_a_spec_name_must_be_a_string():
-    with pytest.raises(TypeError, match="po.spec: a spec's name must be a str, but it is int 1"):
+    with pytest.raises(TypeError, match="rheon.spec: a spec's name must be a str, but it is int 1"):
         rp.spec.ewridge(1, **BASE)
 
 
@@ -1113,7 +1113,7 @@ def test_a_decimal_parquet_runs_through_the_cli(tmp_path, rheon_cli):
     """Prices in parquet are commonly ``Decimal`` and small codes ``UInt8``. A
     ``Decimal`` once aborted the process at the boundary (IMPROVEMENTS U5),
     which for the CLI meant a file it could not open at all; its test went
-    with ``po.run`` in task 83, and the ``ModelBank`` test above never reached
+    with ``rp.run`` in task 83, and the ``ModelBank`` test above never reached
     the CLI's parquet reader (docs/PLAN.md task 112). The CLI's output is the
     bank's on the same numbers as ``Float64``, to the bit."""
     n = 400
@@ -1278,7 +1278,7 @@ def test_the_stream_operators_release_the_gil(what):
         "Windows.finish": (fed, lambda o: o.finish()),
     }[what]
     # The classes are private: each refusal names the call its reader made.
-    where = {"RefreshTime": "po.stream.refresh_time: ", "Windows": "with_windows: "}[cls]
+    where = {"RefreshTime": "rp.stream.refresh_time: ", "Windows": "with_windows: "}[cls]
     for e in _overlapping_calls(make, call):
         assert str(e).startswith(where), str(e)
         assert "in use on another thread" in str(e), str(e)

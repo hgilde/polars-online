@@ -73,7 +73,7 @@ mv = po.spec.ew_cov(
     precision_prior=1e-6,                # 2. needed by mahal; fades as rows arrive
     mahal_quantiles=[0.99],              # 3. adds mahal_q0.99
 )
-out = pl.scan_parquet("joint.parquet").with_row_index("row").online.fit_predict([mv]).unnest("mv").collect()   # 4 to 6. add the spec, unnest the fields, run
+out = pl.scan_parquet("joint.parquet").with_row_index("row").rheon.fit_predict([mv]).unnest("mv").collect()   # 4 to 6. add the spec, unnest the fields, run
 flagged = out.filter(pl.col("mahal") > pl.col("mahal_q0.99"))   # 7. the rows far from the mean
 print(f"flagged {flagged.height} of {out.height} rows")
 # Each planted row: its columns in their own standard deviations, and its distance against the threshold.

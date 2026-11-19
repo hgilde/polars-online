@@ -61,7 +61,7 @@ Polars' either. Nothing here needs scipy or scikit-learn.
 .. warning::
     This module is considered **unstable**: its functions' names, keywords
     and results may change in any release without that counting as a
-    breaking change. Under ``POLARS_ONLINE_WARN_UNSTABLE=1`` each call issues
+    breaking change. Under ``RHEON_WARN_UNSTABLE=1`` each call issues
     :class:`rheon.UnstableWarning`, once per call, even when that
     call runs other functions of this module.
 """
@@ -113,14 +113,14 @@ def _np() -> Any:
         import numpy as np
     except ModuleNotFoundError as e:  # pragma: no cover - exercised by a stub
         msg = (
-            "po.corr: it works in numpy arrays, but numpy is not installed. "
+            "rheon.corr: it works in numpy arrays, but numpy is not installed. "
             "Install it with `pip install numpy` or `pip install polars-online[numpy]`."
         )
         raise ModuleNotFoundError(msg) from e
     return np
 
 
-def _matrix(obj: Any, who: str = "po.corr", param: str = "r") -> Any:
+def _matrix(obj: Any, who: str = "rheon.corr", param: str = "r") -> Any:
     """The ``k x k`` correlation matrix of whatever this is, as a float array:
     what every function here reads its matrix argument through.
 
@@ -168,16 +168,16 @@ def _gram_matrix(np: Any, obj: Any, who: str, param: str) -> Any:
         msg = (
             f"{who}: every column of {param}'s Gram but the intercept must vary, so that it "
             f"has a correlation, but {which} no variance. Pass the Gram without those "
-            "columns, as po.gram.subset(g, columns) returns it."
+            "columns, as rheon.gram.subset(g, columns) returns it."
         )
         raise ValueError(msg)
     return x
 
 
 matrix = renamed_function(
-    "po.corr.matrix",
-    "po.gram.correlation",
-    " for a Gram or a closed row's from_row, and every po.corr function takes the array, the "
+    "rheon.corr.matrix",
+    "rheon.gram.correlation",
+    " for a Gram or a closed row's from_row, and every rheon.corr function takes the array, the "
     "Gram or the closed row itself",
 )
 
@@ -371,20 +371,20 @@ def nearest(
     np = _np()
     # A Gram is read without its intercept, and a constant feature refused
     # by name, in `_matrix`.
-    x = _matrix(a, "po.corr.nearest", "a")
+    x = _matrix(a, "rheon.corr.nearest", "a")
     k = x.shape[0]
     # A NaN propagates through the eigendecomposition and comes back as a
     # matrix of NaNs with a NaN distance -- an answer, and a wrong one
     # (docs/REVIEW-E54-E64.md K1).
     if not np.all(np.isfinite(x)):
         msg = (
-            "po.corr.nearest: every entry of a must be finite, but one is NaN or infinite. "
+            "rheon.corr.nearest: every entry of a must be finite, but one is NaN or infinite. "
             "Replace the entries that are not finite before the repair."
         )
         raise ValueError(msg)
     if max_iter < 1:
         msg = (
-            f"po.corr.nearest: max_iter must be at least 1, but it is {max_iter}. "
+            f"rheon.corr.nearest: max_iter must be at least 1, but it is {max_iter}. "
             "Set max_iter to 1 or more."
         )
         raise ValueError(msg)
@@ -395,7 +395,7 @@ def nearest(
         wv = np.asarray(w, dtype=float).reshape(-1)
         if wv.shape != (k,):
             msg = (
-                f"po.corr.nearest: w must hold {k} weights, one for each column, but it "
+                f"rheon.corr.nearest: w must hold {k} weights, one for each column, but it "
                 f"holds {wv.size}. Pass {k} weights, or leave w out to weigh every column "
                 "alike."
             )
@@ -405,7 +405,7 @@ def nearest(
         bad = np.flatnonzero(~(np.isfinite(wv) & (wv > 0.0)))
         if bad.size:
             msg = (
-                "po.corr.nearest: every weight in w must be finite and above 0, but "
+                "rheon.corr.nearest: every weight in w must be finite and above 0, but "
                 f"w[{int(bad[0])}] is {float(wv[bad[0]])!r}. Pass finite weights above 0, or "
                 "leave w out to weigh every column alike."
             )
@@ -576,7 +576,7 @@ def shrink(
     little as possible.
     """
     np = _np()
-    s = _matrix(r, "po.corr.shrink")
+    s = _matrix(r, "rheon.corr.shrink")
     k = s.shape[0]
     off = ~np.eye(k, dtype=bool)
     sd = np.sqrt(np.clip(np.diag(s), 0.0, None))
@@ -591,7 +591,7 @@ def shrink(
         f = np.eye(k) * np.mean(np.diag(s))
     else:
         msg = (
-            f'po.corr.shrink: target must be "constant" or "identity", but it is {target!r}. '
+            f'rheon.corr.shrink: target must be "constant" or "identity", but it is {target!r}. '
             "Set target to one of those words."
         )
         raise ValueError(msg)
@@ -599,7 +599,7 @@ def shrink(
     if alpha is None:
         if x is None:
             msg = (
-                "po.corr.shrink: neither x nor alpha is given, and the shrinkage intensity "
+                "rheon.corr.shrink: neither x nor alpha is given, and the shrinkage intensity "
                 "cannot be estimated from the matrix alone, since it reads the rows' fourth "
                 "moments. Pass x, the sample of rows by columns, or set alpha."
             )
@@ -607,7 +607,7 @@ def shrink(
         xa = np.asarray(x, dtype=float)
         if xa.ndim != 2 or xa.shape[1] != k:
             msg = (
-                f"po.corr.shrink: x must have one column for each of the matrix's {k} "
+                f"rheon.corr.shrink: x must have one column for each of the matrix's {k} "
                 f"columns, but it has shape {xa.shape}. Pass the sample as a 2-d array of "
                 f"rows by {k} columns."
             )
@@ -615,7 +615,7 @@ def shrink(
         t = xa.shape[0]
         if t < 2:
             msg = (
-                f"po.corr.shrink: x needs at least 2 rows to estimate the shrinkage intensity, "
+                f"rheon.corr.shrink: x needs at least 2 rows to estimate the shrinkage intensity, "
                 f"but it has {t}. Pass more rows, or set alpha."
             )
             raise ValueError(msg)
@@ -644,7 +644,7 @@ def shrink(
         alpha = 0.0 if gamma <= 0.0 else max(0.0, min((pi - rho) / gamma / t, 1.0))
     if not 0.0 <= alpha <= 1.0:
         msg = (
-            f"po.corr.shrink: alpha must be from 0 to 1, but it is {alpha}. "
+            f"rheon.corr.shrink: alpha must be from 0 to 1, but it is {alpha}. "
             "Set alpha from 0 (no shrinkage) to 1 (the target alone)."
         )
         raise ValueError(msg)
@@ -700,7 +700,7 @@ def equicorr(r: Any) -> float:
     - :func:`block_means`, a mean correlation per block.
     """
     np = _np()
-    m = _matrix(r, "po.corr.equicorr")
+    m = _matrix(r, "rheon.corr.equicorr")
     k = m.shape[0]
     if k < 2:
         return float("nan")
@@ -862,11 +862,11 @@ def absorption(r: Any, k: int) -> float:
     - :func:`spectral`, the eigenpairs themselves.
     """
     np = _np()
-    vals = np.linalg.eigvalsh(_matrix(r, "po.corr.absorption"))[::-1]
+    vals = np.linalg.eigvalsh(_matrix(r, "rheon.corr.absorption"))[::-1]
     total = float(vals.sum())
     if not 1 <= k <= vals.size:
         msg = (
-            f"po.corr.absorption: k must be from 1 to the matrix's {vals.size} columns, but it "
+            f"rheon.corr.absorption: k must be from 1 to the matrix's {vals.size} columns, but it "
             f"is {k}. Set k to the number of leading eigenvalues to sum, from 1 to {vals.size}."
         )
         raise ValueError(msg)
@@ -925,7 +925,7 @@ def absorption_shift(ar_fast: Any, ar_slow: Any, *, scale: float | None = None) 
     slow = np.asarray(ar_slow, dtype=float)
     if fast.shape != slow.shape:
         msg = (
-            f"po.corr.absorption_shift: ar_fast and ar_slow must have the same shape, but they "
+            f"rheon.corr.absorption_shift: ar_fast and ar_slow must have the same shape, but they "
             f"have {fast.shape} and {slow.shape}. Pass two series aligned row by row."
         )
         raise ValueError(msg)
@@ -935,7 +935,7 @@ def absorption_shift(ar_fast: Any, ar_slow: Any, *, scale: float | None = None) 
 
 #: Renamed :func:`absorption_shift` before 1.0, since Polars' ``shift`` is a
 #: lag: the old name is refused, and the error names the new one.
-shift = renamed_function("po.corr.shift", "po.corr.absorption_shift")
+shift = renamed_function("rheon.corr.shift", "rheon.corr.absorption_shift")
 
 
 def spectral(r: Any, k: int) -> tuple[Any, Any]:
@@ -1002,12 +1002,12 @@ def spectral(r: Any, k: int) -> tuple[Any, Any]:
     wrong_type = isinstance(k, bool) or not isinstance(k, numbers.Integral)
     if wrong_type or operator.index(k) < 1:
         msg = (
-            f"po.corr.spectral: k must be a whole number of at least 1, but it is {k!r}. Set k "
+            f"rheon.corr.spectral: k must be a whole number of at least 1, but it is {k!r}. Set k "
             "to the number of eigenpairs to keep, 1 or more."
         )
         raise WrongTypeError(msg) if wrong_type else ValueError(msg)
     k = operator.index(k)
-    m = _matrix(r, "po.corr.spectral")
+    m = _matrix(r, "rheon.corr.spectral")
     vals, vecs = np.linalg.eigh(m)
     order = np.argsort(vals)[::-1][:k]
     out_vals = vals[order]
@@ -1081,9 +1081,9 @@ def from_spectral(vals: Any, vecs: Any, *, unit_diag: bool = True) -> Any:
     v = np.asarray(vecs, dtype=float)
     if v.ndim != 2 or v.shape[0] != lam.size:
         msg = (
-            f"po.corr.from_spectral: {lam.size} eigenvalues need {lam.size} eigenvectors, one "
+            f"rheon.corr.from_spectral: {lam.size} eigenvalues need {lam.size} eigenvectors, one "
             f"for each row of vecs, but vecs has shape {v.shape}. Pass vecs with one row for "
-            "each entry of vals, as po.corr.spectral returns them."
+            "each entry of vals, as rheon.corr.spectral returns them."
         )
         raise ValueError(msg)
     m = v.T @ (lam[:, None] * v)
@@ -1151,11 +1151,11 @@ def block_means(r: Any, labels: Sequence[Any]) -> tuple[Any, Any]:
     - :func:`equicorr`, one mean over every column.
     """
     np = _np()
-    m = _matrix(r, "po.corr.block_means")
+    m = _matrix(r, "rheon.corr.block_means")
     lab = list(labels)
     if len(lab) != m.shape[0]:
         msg = (
-            f"po.corr.block_means: labels must name a block for each of the matrix's "
+            f"rheon.corr.block_means: labels must name a block for each of the matrix's "
             f"{m.shape[0]} columns, but it holds {len(lab)} labels. Pass one label for each column."
         )
         raise ValueError(msg)
@@ -1238,7 +1238,7 @@ def from_blocks(b: Any, labels: Sequence[Any]) -> Any:
             names.append(value)
     if bm.shape != (len(names), len(names)):
         msg = (
-            f"po.corr.from_blocks: labels name {len(names)} blocks, so b must be a "
+            f"rheon.corr.from_blocks: labels name {len(names)} blocks, so b must be a "
             f"{len(names)} by {len(names)} matrix, but it has shape {bm.shape}. Pass one row "
             "and one column of b for each block, in the order the labels first name them."
         )
@@ -1246,7 +1246,7 @@ def from_blocks(b: Any, labels: Sequence[Any]) -> Any:
     if not np.allclose(bm, bm.T, rtol=0.0, atol=1e-12, equal_nan=True):
         i, j = np.unravel_index(int(np.nanargmax(np.abs(bm - bm.T))), bm.shape)
         msg = (
-            f"po.corr.from_blocks: b must be symmetric, but b[{i}, {j}] is {bm[i, j]:.3g} and "
+            f"rheon.corr.from_blocks: b must be symmetric, but b[{i}, {j}] is {bm[i, j]:.3g} and "
             f"b[{j}, {i}] is {bm[j, i]:.3g}. Pass a symmetric table, such as (b + b.T) / 2."
         )
         raise ValueError(msg)
@@ -1308,7 +1308,7 @@ def mp_edge(n: int, m: int, sigma2: float = 1.0) -> tuple[float, float]:
     - :func:`mp_density`, the curve between the edges.
     - :func:`spectral`, the eigenvalues to compare with them.
     """
-    return _mp_edge(n, m, sigma2, "po.corr.mp_edge")
+    return _mp_edge(n, m, sigma2, "rheon.corr.mp_edge")
 
 
 def _mp_edge(n: int, m: int, sigma2: float, who: str) -> tuple[float, float]:
@@ -1367,7 +1367,7 @@ def mp_density(lam: Any, n: int, m: int, sigma2: float = 1.0) -> Any:
     - :func:`mp_edge`, the edges.
     """
     np = _np()
-    lo, hi = _mp_edge(n, m, sigma2, "po.corr.mp_density")
+    lo, hi = _mp_edge(n, m, sigma2, "rheon.corr.mp_density")
     x = np.asarray(lam, dtype=float)
     q = n / m
     inside = (x > lo) & (x < hi) & (x > 0.0)
@@ -1447,7 +1447,7 @@ def signal_share(z_blocks: Any, n_kish_blocks: Any) -> Any:
     zz = z.reshape(-1, 1) if flat else z
     if zz.shape[0] != n.size:
         msg = (
-            f"po.corr.signal_share: n_kish_blocks must hold one sample size for each of the "
+            f"rheon.corr.signal_share: n_kish_blocks must hold one sample size for each of the "
             f"{zz.shape[0]} blocks (rows) of z_blocks, but it holds {n.size}. Pass one sample "
             "size for each row of z_blocks."
         )
@@ -1536,11 +1536,11 @@ def loss(
     a proper scoring rule for a covariance forecast.
     """
     np = _np()
-    f = _matrix(fcst, "po.corr.loss", "fcst")
-    r = _matrix(real, "po.corr.loss", "real")
+    f = _matrix(fcst, "rheon.corr.loss", "fcst")
+    r = _matrix(real, "rheon.corr.loss", "real")
     if f.shape != r.shape:
         msg = (
-            f"po.corr.loss: fcst and real must have the same shape, but they have {f.shape} "
+            f"rheon.corr.loss: fcst and real must have the same shape, but they have {f.shape} "
             f"and {r.shape}. Pass two matrices of the same columns."
         )
         raise ValueError(msg)
@@ -1560,7 +1560,7 @@ def loss(
     if kind == "z_mse":
         if n is None:
             msg = (
-                'po.corr.loss: kind="z_mse" needs n, the sample size behind the correlations, '
+                'rheon.corr.loss: kind="z_mse" needs n, the sample size behind the correlations, '
                 "but it is not set. Set n to the number of rows the correlations were computed "
                 "from."
             )
@@ -1580,7 +1580,7 @@ def loss(
         w = w / denom
         return float(w @ r @ w)
     msg = (
-        f'po.corr.loss: kind must be "qlike", "z_mse" or "minvar", but it is {kind!r}. '
+        f'rheon.corr.loss: kind must be "qlike", "z_mse" or "minvar", but it is {kind!r}. '
         "Set kind to one of those words."
     )
     raise ValueError(msg)
@@ -1667,7 +1667,7 @@ def epps_invert(gram_or_row: Any, *, L: int) -> Any:  # noqa: N803 - the paper's
     if not (isinstance(g, dict) and "comoments" in g):
         g = _gram.from_row(gram_or_row)
     if L < 1:
-        msg = f"po.corr.epps_invert: L must be at least 1, but it is {L}. Set L to 1 or more."
+        msg = f"rheon.corr.epps_invert: L must be at least 1, but it is {L}. Set L to 1 or more."
         raise ValueError(msg)
     # Whatever form `gram()` handed it over in, packed or float32.
     c0 = _gram._comoments(np, g)
@@ -1678,7 +1678,7 @@ def epps_invert(gram_or_row: Any, *, L: int) -> Any:  # noqa: N803 - the paper's
     missing = [ell for ell in need if ell not in lags]
     if missing:
         msg = (
-            f"po.corr.epps_invert: L = {L} needs the lags {need}, but lag {missing[0]} is not "
+            f"rheon.corr.epps_invert: L = {L} needs the lags {need}, but lag {missing[0]} is not "
             f"in the input, which has {lags or 'none'}. Fit the ew_cov spec with "
             f"lags=list(range(1, {L})), or lower L."
         )
@@ -1694,7 +1694,7 @@ def epps_invert(gram_or_row: Any, *, L: int) -> Any:  # noqa: N803 - the paper's
     np.fill_diagonal(out, np.where(auto > 0.0, 1.0, np.nan))
     assert out.shape == (k, k)
     # Without the intercept, as every function here reads a Gram.
-    cols = _gram._columns(g, "po.corr.epps_invert")
+    cols = _gram._columns(g, "rheon.corr.epps_invert")
     keep = [i for i, c in enumerate(cols) if c != _gram.INTERCEPT]
     return out[np.ix_(keep, keep)]
 
@@ -1767,21 +1767,21 @@ def fisher_se(
     """
     if rho is not None and not -1.0 <= rho <= 1.0:
         msg = (
-            f"po.corr.fisher_se: rho must be a correlation, from -1 to 1, but it is {rho!r}. "
+            f"rheon.corr.fisher_se: rho must be a correlation, from -1 to 1, but it is {rho!r}. "
             "Set rho to the correlation whose error you want, or leave it out for the error "
             "of Fisher's z."
         )
         raise ValueError(msg)
     if (phi_a is None) != (phi_b is None):
         msg = (
-            "po.corr.fisher_se: phi_a and phi_b must be given together, since the inflation "
+            "rheon.corr.fisher_se: phi_a and phi_b must be given together, since the inflation "
             "reads both series, but only one is set. Set both, or neither."
         )
         raise ValueError(msg)
     p = None if phi_a is None or phi_b is None else phi_a * phi_b
     if p is not None and not -1.0 < p < 1.0:
         msg = (
-            f"po.corr.fisher_se: the product of phi_a and phi_b must be above -1 and below "
+            f"rheon.corr.fisher_se: the product of phi_a and phi_b must be above -1 and below "
             f"1, but it is {p:.3g}. Set each to an AR(1) coefficient above -1 and below 1."
         )
         raise ValueError(msg)
@@ -1798,7 +1798,7 @@ def fisher_se(
 def _label_unstable() -> None:
     """Every public function, labelled unstable:
     each call raises :class:`rheon.UnstableWarning` under
-    ``POLARS_ONLINE_WARN_UNSTABLE=1``, once however many of the others it
+    ``RHEON_WARN_UNSTABLE=1``, once however many of the others it
     runs. By name from ``__all__``, so a function added or renamed is
     labelled with the rest; a constant listed there is left as it is."""
     here = globals()

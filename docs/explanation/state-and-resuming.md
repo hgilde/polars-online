@@ -103,7 +103,7 @@ bank = po.ModelBank([spec])
 bank.fit_predict(df)
 bank.save("from_bank.state")                             # from a bank object
 (pl.scan_parquet("ticks.parquet")                        # the same rows, from a query
-   .online.fit_predict([spec], save_state="from_query.state")
+   .rheon.fit_predict([spec], save_state="from_query.state")
    .sink_parquet("fitted.parquet"))
 print(f"the same bytes: {Path('from_bank.state').read_bytes() == Path('from_query.state').read_bytes()}")
 blob = bank.save_bytes()                                 # the same file as bytes, for a store that is not a file

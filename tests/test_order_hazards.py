@@ -1,7 +1,7 @@
 """A plan whose row order is unspecified is warned about before a bank reads it.
 
 An online model learns in row order, so the order a plan delivers *is* the
-model. ``fit(lf)`` and ``lf.online.fit_predict`` run the plan through polars'
+model. ``fit(lf)`` and ``lf.rheon.fit_predict`` run the plan through polars'
 streaming engine, and a join, ``group_by`` or ``unique`` without an order
 guarantee delivers a different stream there than ``lf.collect()`` gives --
 measured on 200k rows: ``collect()`` kept the input order, ``collect_batches()``
@@ -137,12 +137,12 @@ def test_every_plan_entry_point_warns():
     with pytest.warns(rp.OrderNotGuaranteedWarning, match="fit"):
         rp.ModelBank([SPEC]).fit(lf, chunk_size=4)
     # The plan form warns when the plan is built, before anything runs.
-    with pytest.warns(rp.OrderNotGuaranteedWarning, match="online.fit_predict"):
-        lf.online.fit_predict([SPEC])
+    with pytest.warns(rp.OrderNotGuaranteedWarning, match="rheon.fit_predict"):
+        lf.rheon.fit_predict([SPEC])
     bank = rp.ModelBank([SPEC])
     bank.fit(left())
-    with pytest.warns(rp.OrderNotGuaranteedWarning, match="online.predict"):
-        lf.online.predict(bank)
+    with pytest.warns(rp.OrderNotGuaranteedWarning, match="rheon.predict"):
+        lf.rheon.predict(bank)
 
 
 def test_a_frame_and_an_iterator_are_not_inspected():
@@ -184,7 +184,7 @@ def test_a_plan_already_holding_a_bank_still_runs_under_another():
     """A plan with one of this library's own sources in it runs under an
     outer bank, and with no node that reorders it says nothing, whether or
     not polars can serialize the plan."""
-    inner = left().online.fit_predict([SPEC])
+    inner = left().rheon.fit_predict([SPEC])
     outer = rp.spec.ewridge(
         "n",
         targets=["y"],
@@ -217,7 +217,7 @@ def test_a_join_above_a_bank_is_reported_where_polars_serializes_the_plan():
     read."""
     from test_scaffold import BUILT_AGAINST
 
-    lf = left().online.fit_predict([SPEC]).join(right(), on="k")
+    lf = left().rheon.fit_predict([SPEC]).join(right(), on="k")
     outer = {**SPEC, "name": "n"}
     # Measured on the version the wheel is built against, so there the
     # reported branch is the one taken, not the silent one.
@@ -530,7 +530,7 @@ def test_the_same_spec_still_warns_wherever_predictions_are_handed_back():
     with pytest.warns(rp.OrderNotGuaranteedWarning):
         list(rp.ModelBank([FREE]).fit_predict_batches(lf))
     with pytest.warns(rp.OrderNotGuaranteedWarning):
-        lf.online.fit_predict([FREE]).collect()
+        lf.rheon.fit_predict([FREE]).collect()
 
 
 def test_a_disqualified_fit_still_warns():

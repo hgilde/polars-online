@@ -78,7 +78,7 @@ for dead_frac in (0.0, 0.05, 0.25):                           # 0 turns the rule
     km = po.spec.kmeans("km", features=["x", "y"], n_clusters=3, half_life=500.0,
                         dead_frac=dead_frac, coef_every=0)
     # 4 and 5. Run, and unnest the centers into columns.
-    out = pl.scan_parquet("swap.parquet").online.fit_predict([km]).online.unnest([km]).collect()
+    out = pl.scan_parquet("swap.parquet").rheon.fit_predict([km]).rheon.unnest([km]).collect()
     # The center nearest (0, 6) on the row before the cluster vanished, and the first row it sits within 0.5 of (6, 6).
     j = min(range(3), key=lambda j: out.slice(3_999, 1).select(distance(j, 0.0, 6.0)).item())
     after = out.with_row_index("row").filter(pl.col("row") >= 4_000)

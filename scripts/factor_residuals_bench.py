@@ -165,14 +165,14 @@ def one(src: Path, out: Path, case: str, window: str) -> None:
     start = time.perf_counter()
     if case in ("pipeline", "no window", "plain target"):
         plan = (
-            lf.online.fit_predict(factors)
+            lf.rheon.fit_predict(factors)
             .with_columns(resid)
-            .online.fit_predict([stage2], save_state=state)
+            .rheon.fit_predict([stage2], save_state=state)
             .select("ts", "g", *(f"resid_d{f}" for f in range(K_F)), "stage2")
-            .online.unnest([stage2])
+            .rheon.unnest([stage2])
         )
     elif case == "factors":
-        plan = lf.online.fit_predict(factors).select("ts", "g", *resid)
+        plan = lf.rheon.fit_predict(factors).select("ts", "g", *resid)
     else:
         plan = lf
     plan.sink_parquet(out / "out.parquet")

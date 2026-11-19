@@ -15,8 +15,8 @@ MiB, which the allocator's arenas move by a few percent from run to run.
 
 Both are held by ``scripts/budgets.py``'s rules: past the budget by more
 than the tolerance fails, and so does under it, naming the number to
-tighten it to. ``POLARS_ONLINE_BUDGETS=measure`` makes a measuring run,
-which reports and never fails; ``POLARS_ONLINE_BUDGETS_OUT=<dir>`` writes
+tighten it to. ``RHEON_BUDGETS=measure`` makes a measuring run,
+which reports and never fails; ``RHEON_BUDGETS_OUT=<dir>`` writes
 the measurements there as JSON for ``scripts/budgets.py apply`` -- the
 resident memory only on the leg that holds its budget, so no other leg's
 peaks can be applied to it. A run in GitHub Actions writes its table to the
@@ -337,7 +337,7 @@ def _held(kind: str, measured: dict[str, float], measure: bool = False) -> None:
     title = f"{kind} budgets ({sys.platform}, Python {sys.version_info.major}."
     title += f"{sys.version_info.minor})" + (" -- measuring run" if measure else "")
     budgets.write_summary(budgets.report(doc, verdicts, title=title, baseline=found))
-    out = os.environ.get("POLARS_ONLINE_BUDGETS_OUT")
+    out = os.environ.get("RHEON_BUDGETS_OUT")
     # The resident memory only where its budget is held: every leg wrote it
     # under one name per platform, so `apply` could take a 3.14 leg's file.
     if out and (kind != "rss" or _rss_held_here()):
@@ -419,12 +419,12 @@ CHILD = textwrap.dedent(
     sampler = threading.Thread(target=sample, daemon=True)
     sampler.start()
     if case.startswith("streaming"):
-        pl.scan_parquet(src).online.fit_predict([spec]).sink_parquet(dst)
+        pl.scan_parquet(src).rheon.fit_predict([spec]).sink_parquet(dst)
         rows = pl.scan_parquet(dst).select(pl.len()).collect().item()
     elif case.startswith("collect"):
         # The negative control: the source read whole inside the run, and
         # then handed to the same plan.
-        pl.read_parquet(src).lazy().online.fit_predict([spec]).sink_parquet(dst)
+        pl.read_parquet(src).lazy().rheon.fit_predict([spec]).sink_parquet(dst)
         rows = pl.scan_parquet(dst).select(pl.len()).collect().item()
     elif case.startswith("predict"):
         out = bank.predict(df)
@@ -542,7 +542,7 @@ def _floor_python() -> tuple[int, int]:
 #: Set to ``false`` by CI on a leg whose peak is reported but not held: the
 #: second Windows image, `windows-2022`, beside `windows-latest`, which
 #: holds the one ``rss.*.windows`` budget (ci.yml's pytest step says why).
-RSS_HELD_VARIABLE = "POLARS_ONLINE_RSS_HELD"
+RSS_HELD_VARIABLE = "RHEON_RSS_HELD"
 
 
 def _rss_held_here() -> bool:
@@ -630,9 +630,9 @@ CHAIN_CHILD = textwrap.dedent(
     residuals = [pl.col(f"fac{f}").struct.field(f"resid_d{f}") for f in range(3)]
     plan = (
         pl.scan_parquet(src)
-        .online.fit_predict(factors)
+        .rheon.fit_predict(factors)
         .with_columns(residuals)
-        .online.fit_predict([stage2])
+        .rheon.fit_predict([stage2])
     )
     gc.collect()
     if sys.platform.startswith("linux"):
@@ -760,7 +760,7 @@ def test_the_resident_memory_is_written_out_only_where_its_budget_is_held(
     else:
         monkeypatch.setenv(RSS_HELD_VARIABLE, image_held)
     held = floor and image_held != "false"
-    monkeypatch.setenv("POLARS_ONLINE_BUDGETS_OUT", str(tmp_path))
+    monkeypatch.setenv("RHEON_BUDGETS_OUT", str(tmp_path))
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     measured = {f"rss.{case}.{PLATFORM}": 1.0 for case in RSS_CASES}
     _held("rss", measured, measure=True)

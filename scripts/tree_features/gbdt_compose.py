@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory() as td:
     )
     lf = (
         pl.scan_parquet(p)
-        .online.fit_predict([s])
+        .rheon.fit_predict([s])
         .with_columns(enc=pl.col("te").struct.field("pred_y").fill_null(0.0))
         .select("x", "enc", "y")
     )

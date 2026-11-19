@@ -1,4 +1,4 @@
-"""E62: `po.corr` — the arithmetic that comes after a correlation matrix.
+"""E62: `rheon.corr` — the arithmetic that comes after a correlation matrix.
 
 Every function is held against a longhand check: Higham's own published
 examples for `nearest`, Ledoit and Wolf's formulae written out for `shrink`,
@@ -172,7 +172,7 @@ def _ridge_gram(constant: bool = False):
 def test_nearest_repairs_a_gram_over_its_columns_without_the_intercept():
     """Every ewridge Gram with an intercept was refused: the intercept is a
     constant, with nan correlations (task 352). It is left out, as
-    po.gram.vif leaves it out, and the result is the repair of the
+    rheon.gram.vif leaves it out, and the result is the repair of the
     correlation over the other columns."""
     g = _ridge_gram()
     assert g["columns"][0] == rp.gram.INTERCEPT
@@ -650,8 +650,8 @@ def test_fisher_se_is_its_closed_forms():
 
 def test_matrix_reads_an_array_a_gram_and_a_closed_row():
     """Every function here reads its matrix argument through `_matrix`; its
-    public name, `po.corr.matrix`, forwards to it with a deprecation warning,
-    since a Gram's correlation is `po.gram.correlation` (task 244)."""
+    public name, `rheon.corr.matrix`, forwards to it with a deprecation warning,
+    since a Gram's correlation is `rheon.gram.correlation` (task 244)."""
     df = pl.DataFrame({f"x{i}": v for i, v in enumerate(sample(300, 3, 0.5, 15).T)})
     df = df.with_columns(g=pl.int_range(pl.len()) // 150)
     spec = rp.spec.ew_cov(

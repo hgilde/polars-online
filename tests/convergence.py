@@ -25,7 +25,7 @@ every convergence class here follows four rules:
 Each regression model **registers** here (:data:`REGISTRY`): a generator of
 known-truth streams, the oracle, the classes that apply to it, and one
 sentence saying what it converges to. ``tests/test_convergence.py`` holds
-every model ``po.spec`` builds that predicts a target -- and each of its
+every model ``rheon.spec`` builds that predicts a target -- and each of its
 losses, where it takes ``loss=`` -- to have a registration, or an entry in
 :data:`PENDING` or :data:`NOT_REGISTERED` that says why not
 (``docs/EXTENDING.md``, step 12).

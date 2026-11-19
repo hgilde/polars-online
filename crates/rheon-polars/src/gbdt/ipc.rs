@@ -48,12 +48,12 @@ impl IpcFrames {
     ) -> Result<Self, GbdtError> {
         if files.is_empty() {
             return Err(GbdtError::msg(
-                "po.gbdt: no Arrow IPC files were given. Pass at least one file.",
+                "rheon.polars._gbdt: no Arrow IPC files were given. Pass at least one file.",
             ));
         }
         if categories.len() != layout.names.len() {
             return Err(GbdtError::msg(
-                "po.gbdt: internal: the native engine was not given a category list per feature, \
+                "rheon.polars._gbdt: internal: the native engine was not given a category list per feature, \
                  which is a defect in polars-online. Open an issue at https://github.com/hgilde/polars-online/issues with this message.",
             ));
         }
@@ -85,7 +85,7 @@ impl Frames for IpcFrames {
                     Some(i) => at.push(i),
                     None => {
                         return Err(GbdtError::msg(format!(
-                            "po.gbdt: {shown} has no column `{name}`, which the call reads. Pass \
+                            "rheon.polars._gbdt: {shown} has no column `{name}`, which the call reads. Pass \
                              files that each hold every column the call names."
                         )));
                     }
@@ -203,7 +203,7 @@ impl IpcFrames {
 
 fn not_read(name: &str, dtype: &ArrowDataType) -> GbdtError {
     GbdtError::WrongType(format!(
-        "po.gbdt: column `{name}` is {dtype:?} in the Arrow IPC file, which is not a column the \
+        "rheon.polars._gbdt: column `{name}` is {dtype:?} in the Arrow IPC file, which is not a column the \
          libraries read. Write it as a number, a Boolean or an Enum column."
     ))
 }
@@ -211,8 +211,8 @@ fn not_read(name: &str, dtype: &ArrowDataType) -> GbdtError {
 /// An Arrow IPC file that could not be read, named by its path.
 fn unreadable(shown: &impl std::fmt::Display, e: &impl std::fmt::Display) -> GbdtError {
     GbdtError::msg(format!(
-        "po.gbdt: {shown} could not be read as an Arrow IPC file ({e}). Pass files that \
-         po.gbdt can read, written as Arrow IPC."
+        "rheon.polars._gbdt: {shown} could not be read as an Arrow IPC file ({e}). Pass files that \
+         rheon.polars._gbdt can read, written as Arrow IPC."
     ))
 }
 
@@ -240,7 +240,7 @@ fn dict<K: DictionaryKey>(
             Some(&c) => lookup.push(c),
             None => {
                 return Err(GbdtError::msg(format!(
-                    "po.gbdt: column `{name}` holds {v:?}, which is not one of its Enum's \
+                    "rheon.polars._gbdt: column `{name}` holds {v:?}, which is not one of its Enum's \
                      categories. Write the column with the Enum the call was given, or add {v:?} \
                      to its categories."
                 )));

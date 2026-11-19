@@ -23,7 +23,7 @@ class UnstableWarning(_warnings.UnstableWarning, _PolarsUnstableWarning):
     """A warning that a part of the API not yet promised to stay the same was used.
 
     It is issued only when the environment variable
-    ``POLARS_ONLINE_WARN_UNSTABLE`` is ``1``, as Polars issues its own
+    ``RHEON_WARN_UNSTABLE`` is ``1``, as Polars issues its own
     ``UnstableWarning`` under ``POLARS_WARN_UNSTABLE``. It is a subclass of
     :class:`rheon.UnstableWarning` and of Polars' class, so a filter on
     ``polars.exceptions.UnstableWarning`` covers this library's unstable
@@ -41,6 +41,6 @@ class UnstableWarning(_warnings.UnstableWarning, _PolarsUnstableWarning):
 
     .. rubric:: See also
 
-    - :class:`rheon.PolarsOnlineWarning`, the base class every warning of
+    - :class:`rheon.RheonWarning`, the base class every warning of
       this library shares.
     """

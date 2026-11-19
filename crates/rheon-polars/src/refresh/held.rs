@@ -183,13 +183,13 @@ impl Cell {
                 let frame = IpcReader::new(Cursor::new(&b.0)).finish()?;
                 let col = frame.columns().first().ok_or_else(|| {
                     polars_err!(ComputeError:
-                        "po.stream.refresh_time: the state is damaged: a value it holds has no \
+                        "rp.stream.refresh_time: the state is damaged: a value it holds has no \
                          column. Load an undamaged copy of the state file, or leave out \
                          load_state to start over.")
                 })?;
                 if col.len() != 1 {
                     polars_bail!(ComputeError:
-                        "po.stream.refresh_time: the state is damaged: a value it holds has {} \
+                        "rp.stream.refresh_time: the state is damaged: a value it holds has {} \
                          rows. Load an undamaged copy of the state file, or leave out \
                          load_state to start over.", col.len());
                 }
@@ -237,7 +237,7 @@ impl Held {
         for n in names {
             let Some((_, cell)) = self.row.iter().find(|(k, _)| k == n) else {
                 polars_bail!(ComputeError:
-                    "po.stream.refresh_time: the state holds refresh times of a row saved \
+                    "rp.stream.refresh_time: the state holds refresh times of a row saved \
                      without a {:?} column. Give the group and keep columns the state was saved \
                      with ({:?}).",
                     n, self.row.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>()
@@ -250,7 +250,7 @@ impl Held {
             } else {
                 let cast = s.strict_cast(want).map_err(|_| {
                     polars_err!(ComputeError:
-                        "po.stream.refresh_time: the state holds refresh times of a row whose \
+                        "rp.stream.refresh_time: the state holds refresh times of a row whose \
                          {:?} is {}, which this input's {} cannot hold. Resume the state on \
                          columns of the types it was saved with.",
                         n,

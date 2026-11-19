@@ -269,7 +269,7 @@ jobs:
       # ledger's sets (only they are in it: nothing new is published); then
       # `fetch --suite` downloads what is still missing. A set it cannot get
       # warns by name, and its tests fail rather than skip (the pytest
-      # step's POLARS_ONLINE_DATASETS_RESTORED); the cache is saved only
+      # step's RHEON_DATASETS_RESTORED); the cache is saved only
       # once every set is in hand, so an entry is never short of one.
       - name: the datasets' key
         id: data-key
@@ -371,12 +371,12 @@ jobs:
       # The second image is there for its math library, not its memory.
       - name: pytest
         env:
-          POLARS_ONLINE_BUDGETS_OUT: ${{ runner.temp }}/budgets
-          POLARS_ONLINE_RSS_HELD: ${{ matrix.os != 'windows-2022' }}
+          RHEON_BUDGETS_OUT: ${{ runner.temp }}/budgets
+          RHEON_RSS_HELD: ${{ matrix.os != 'windows-2022' }}
           # The datasets were restored above, so a test skipped as offline
           # means every copy failed: it fails, naming the set
           # (tests/offline_skips.py).
-          POLARS_ONLINE_DATASETS_RESTORED: "1"
+          RHEON_DATASETS_RESTORED: "1"
         run: uv run pytest ${{ runner.os == 'Linux' && matrix.python == '3.12' && '--cov=rheon --cov-report=term' || '' }}
 
       - name: keep the memory measurements

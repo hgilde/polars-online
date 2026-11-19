@@ -194,7 +194,7 @@ fn save_load_mid_stream_is_identical() {
 fn save_to_a_file_writes_the_bytes_save_bytes_returns() {
     let mut bank = Bank::new(vec![spec_json("m", true)]).unwrap();
     bank.fit_predict(&make_df(200)).unwrap();
-    let dir = std::env::temp_dir().join(format!("po-save-bytes-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("rheon-save-bytes-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("bank.msgpack");
     bank.save(&path).unwrap();

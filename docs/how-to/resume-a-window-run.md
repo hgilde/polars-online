@@ -61,8 +61,8 @@ one_run = po.stream.with_windows(trades, **vwap, **clock)
 # The same stream as two files.
 trades.head(2000).write_parquet("day1.parquet")
 trades.slice(2000).write_parquet("day2.parquet")
-first = pl.scan_parquet("day1.parquet").online.with_windows(**vwap, **clock, save_state="w.state").collect()   # 1. its last rows wait
-second = pl.scan_parquet("day2.parquet").online.with_windows(**vwap, **clock, load_state="w.state").collect()  # 2. they come out first
+first = pl.scan_parquet("day1.parquet").rheon.with_windows(**vwap, **clock, save_state="w.state").collect()   # 1. its last rows wait
+second = pl.scan_parquet("day2.parquet").rheon.with_windows(**vwap, **clock, load_state="w.state").collect()  # 2. they come out first
 print(f"two files: {first.height} rows, then {second.height}; one run's output: {pl.concat([first, second]).equals(one_run)}")
 ```
 
@@ -93,8 +93,8 @@ This code stops a run at 500 rows and resumes it on the same file. It uses
 `vwap`, `clock` and `one_run` from the recipe before it:
 
 ```python
-head = pl.scan_parquet("trades.parquet").online.with_windows(**vwap, **clock, save_state="h.state").head(500).collect()  # 1
-rest = pl.scan_parquet("trades.parquet").online.with_windows(**vwap, **clock, load_state="h.state").collect()            # 2. it skips the rows read
+head = pl.scan_parquet("trades.parquet").rheon.with_windows(**vwap, **clock, save_state="h.state").head(500).collect()  # 1
+rest = pl.scan_parquet("trades.parquet").rheon.with_windows(**vwap, **clock, load_state="h.state").collect()            # 2. it skips the rows read
 print(f"head(500), then the rest: {head.height} rows, then {rest.height}; one run's output: {pl.concat([head, rest]).equals(one_run)}")
 ```
 
@@ -145,7 +145,7 @@ recipe:
 ```python
 trades.slice(300).write_parquet("overlap.parquet")                   # starts before the last row the state read
 try:
-    pl.scan_parquet("overlap.parquet").online.with_windows(**vwap, **clock, load_state="h.state").collect()
+    pl.scan_parquet("overlap.parquet").rheon.with_windows(**vwap, **clock, load_state="h.state").collect()
 except (ValueError, pl.exceptions.ComputeError) as e:                # ComputeError under py-polars 1.x
     message = str(e)[str(e).index("with_windows"):]
     print(message.split(". ")[0])

@@ -5,10 +5,10 @@
   ColumnNotFoundError
   FormulaTarget
   OutputColumnNotFoundError
-  PolarsOnlineDeprecationWarning
-  PolarsOnlineWarning
   ReadinessWarning
   RefusedValueError
+  RheonDeprecationWarning
+  RheonWarning
   Target
   UnstableWarning
   WrongTypeError
@@ -1024,15 +1024,15 @@
   threads
   write_json(self, file: 'str | os.PathLike[str] | IO[str] | IO[bytes] | None' = None, *, pretty: 'bool' = True) -> 'str | None'
 
-[frame namespaces]  # lf.online.<method> -> LazyFrame; df.online.<method> -> DataFrame
-  LazyFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | ModelBank | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None, threads: 'int | None' = None) -> 'pl.LazyFrame'
-  LazyFrame.online.predict(bank: 'ModelBank | State', *, chunk_size: 'int | None' = None, threads: 'int | None' = None) -> 'pl.LazyFrame'
-  LazyFrame.online.unnest(specs: 'Specs | ModelBank | State', *, separator: 'str | None' = None) -> 'pl.LazyFrame'
-  LazyFrame.online.with_windows(*exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_size: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.LazyFrame'
-  DataFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | ModelBank | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None, threads: 'int | None' = None) -> 'pl.DataFrame'
-  DataFrame.online.predict(bank: 'ModelBank | State', *, chunk_size: 'int | None' = None, threads: 'int | None' = None) -> 'pl.DataFrame'
-  DataFrame.online.unnest(specs: 'Specs | ModelBank | State', *, separator: 'str | None' = None) -> 'pl.DataFrame'
-  DataFrame.online.with_windows(*exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_size: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.DataFrame'
+[frame namespaces]  # lf.rheon.<method> -> LazyFrame; df.rheon.<method> -> DataFrame
+  LazyFrame.rheon.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | ModelBank | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None, threads: 'int | None' = None) -> 'pl.LazyFrame'
+  LazyFrame.rheon.predict(bank: 'ModelBank | State', *, chunk_size: 'int | None' = None, threads: 'int | None' = None) -> 'pl.LazyFrame'
+  LazyFrame.rheon.unnest(specs: 'Specs | ModelBank | State', *, separator: 'str | None' = None) -> 'pl.LazyFrame'
+  LazyFrame.rheon.with_windows(*exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_size: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.LazyFrame'
+  DataFrame.rheon.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | ModelBank | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None, threads: 'int | None' = None) -> 'pl.DataFrame'
+  DataFrame.rheon.predict(bank: 'ModelBank | State', *, chunk_size: 'int | None' = None, threads: 'int | None' = None) -> 'pl.DataFrame'
+  DataFrame.rheon.unnest(specs: 'Specs | ModelBank | State', *, separator: 'str | None' = None) -> 'pl.DataFrame'
+  DataFrame.rheon.with_windows(*exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_size: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.DataFrame'
 
 [frame columns]  # column: dtype, in order: a column renamed, retyped, moved or added is a diff here
   ModelBank.groups():
@@ -1251,7 +1251,7 @@
     spec: String
     group: String
     solve_failures: Int64
-  po.spec.output_index():
+  rheon.spec.output_index():
     field: String
     kind: String
     target: String
@@ -1268,7 +1268,7 @@
     class: String
     columns: List[String]
     dtype: String
-  po.spec.coef_index():
+  rheon.spec.coef_index():
     position: Int64
     target: String
     ridge: Float64
@@ -1278,7 +1278,7 @@
     state: Int64
     class: String
     term: String
-  po.spec.coef_fields():
+  rheon.spec.coef_fields():
     field: String
     position: Int64
     name: String
@@ -2428,26 +2428,26 @@
   sgd.huber_scale: mad, rms
   sgd.loss: epsilon_insensitive, huber, logistic, poisson, quantile, squared
   sgd.schedule: adagrad, constant, inv_scaling
-  po.ewm_mean.closed: both, left, none, right
-  po.ewm_mean.partial: drop, keep, null
-  po.ewm_quantile.closed: both, left, none, right
-  po.ewm_quantile.partial: drop, keep, null
-  po.ewm_rate.closed: both, left, none, right
-  po.ewm_rate.partial: drop, keep, null
-  po.ewm_std.closed: both, left, none, right
-  po.ewm_std.partial: drop, keep, null
-  po.ewm_sum.closed: both, left, none, right
-  po.ewm_sum.partial: drop, keep, null
-  po.ewm_var.closed: both, left, none, right
-  po.ewm_var.partial: drop, keep, null
-  po.ewm_mean(reverse=True).closed: both, left, none, right
-  po.ewm_mean(reverse=True).partial: drop, keep, null
-  po.ewm_quantile(reverse=True).closed: both, left, none, right
-  po.ewm_quantile(reverse=True).partial: drop, keep, null
-  po.ewm_rate(reverse=True).closed: both, left, none, right
-  po.ewm_rate(reverse=True).partial: drop, keep, null
-  po.ewm_sum(reverse=True).closed: both, left, none, right
-  po.ewm_sum(reverse=True).partial: drop, keep, null
+  rp.ewm_mean.closed: both, left, none, right
+  rp.ewm_mean.partial: drop, keep, null
+  rp.ewm_quantile.closed: both, left, none, right
+  rp.ewm_quantile.partial: drop, keep, null
+  rp.ewm_rate.closed: both, left, none, right
+  rp.ewm_rate.partial: drop, keep, null
+  rp.ewm_std.closed: both, left, none, right
+  rp.ewm_std.partial: drop, keep, null
+  rp.ewm_sum.closed: both, left, none, right
+  rp.ewm_sum.partial: drop, keep, null
+  rp.ewm_var.closed: both, left, none, right
+  rp.ewm_var.partial: drop, keep, null
+  rp.ewm_mean(reverse=True).closed: both, left, none, right
+  rp.ewm_mean(reverse=True).partial: drop, keep, null
+  rp.ewm_quantile(reverse=True).closed: both, left, none, right
+  rp.ewm_quantile(reverse=True).partial: drop, keep, null
+  rp.ewm_rate(reverse=True).closed: both, left, none, right
+  rp.ewm_rate(reverse=True).partial: drop, keep, null
+  rp.ewm_sum(reverse=True).closed: both, left, none, right
+  rp.ewm_sum(reverse=True).partial: drop, keep, null
   withheld_reason, in precedence order: below_min_settled_frac, below_min_weight, above_max_error_inflation, below_warm_rows, ill_conditioned, unstable_rate
   toml.input_format: csv, ipc, ndjson, parquet
   toml.output_format: csv, ipc, ndjson, parquet
@@ -2578,8 +2578,12 @@
   -V, --version
 
 [env vars]  # read at run time by the shipped code (crates/*/src, the package): a variable added or renamed is a diff here
-  ONLINE_TIMING  (renamed POLARS_ONLINE_TIMING; read only to say so)
-  POLARS_ONLINE_MAX_THREADS
-  POLARS_ONLINE_SKIP_CPU_CHECK
-  POLARS_ONLINE_TIMING
-  POLARS_ONLINE_WARN_UNSTABLE
+  ONLINE_TIMING  (renamed RHEON_TIMING; read only to say so)
+  POLARS_ONLINE_MAX_THREADS  (renamed RHEON_MAX_THREADS; read only while it is unset)
+  POLARS_ONLINE_SKIP_CPU_CHECK  (renamed RHEON_SKIP_CPU_CHECK; read only while it is unset)
+  POLARS_ONLINE_TIMING  (renamed RHEON_TIMING; read only while it is unset)
+  POLARS_ONLINE_WARN_UNSTABLE  (renamed RHEON_WARN_UNSTABLE; read only while it is unset)
+  RHEON_MAX_THREADS
+  RHEON_SKIP_CPU_CHECK
+  RHEON_TIMING
+  RHEON_WARN_UNSTABLE
