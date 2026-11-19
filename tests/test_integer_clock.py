@@ -599,5 +599,5 @@ def test_a_uint128_column_is_refused_by_name(surface, role):
         df, words = df.with_columns(pl.col("t").cast(pl.UInt128)), WIDE_UNSIGNED
     else:
         df, words = df.with_columns(c=pl.Series([1, 2, 3, 4, 5], dtype=pl.UInt128)), UNSIGNED_128
-    with pytest.raises(ValueError, match=words):
+    with pytest.raises(TypeError, match=words):
         _call(surface, df)()

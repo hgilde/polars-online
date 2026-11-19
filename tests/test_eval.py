@@ -122,7 +122,9 @@ def test_mistakes_are_named():
     # target the frame has lost, a window that would divide by zero, and a
     # clock that is not a number.
     out = _fitted(n_groups=1, n_rows=50)
-    with pytest.raises(KeyError, match='spec "nope" has no output column in the frame'):
+    with pytest.raises(
+        pl.exceptions.ColumnNotFoundError, match='spec "nope" has no output column in the frame'
+    ):
         po.eval.metrics(out, "nope")
     cov = po.ModelBank([po.spec.ew_cov("c", features=["x0", "x1"], half_life=20.0)]).fit_predict(
         out.drop("m")

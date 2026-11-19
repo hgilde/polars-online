@@ -351,7 +351,7 @@ def test_a_second_ipc_file_that_differs_is_refused_by_name(tmp_path):
     stringy = tmp_path / "part-2.arrow"
     df.with_columns(pl.col("x1").cast(pl.String)).write_ipc(stringy)
     with pytest.raises(
-        ValueError,
+        TypeError,
         match=r"column `x1` is Utf8View in the Arrow IPC file, which is not a column the "
         r"libraries read",
     ):

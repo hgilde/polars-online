@@ -1,10 +1,9 @@
 """The bank's surface held to one convention before 1.0 (PLAN task 244, the
 ``task244-bank`` part; review api1, slice M).
 
-Each test names the item it pins. A renamed parameter or function is read
-under its old name with a :class:`polars_online.PolarsOnlineDeprecationWarning`
-naming the new one, so code written against 0.13 keeps working; a renamed
-output column cannot be forwarded, and is pinned under its new name.
+Each test names the item it pins. A renamed parameter or function is refused
+under its old name, naming the new one; a renamed output column is pinned
+under its new name.
 """
 
 from __future__ import annotations
@@ -107,21 +106,12 @@ def test_m3_options_are_keyword_only(method):
     assert params["chunk_size"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
-def test_m3_a_positional_option_is_read_with_the_deprecation_warning():
+def test_m3_a_positional_option_is_refused():
     df = _df()
-    want = _bank()
-    want.fit(df, chunk_size=10)
-    got = _bank()
-    # Both options by position, each warned: closed_groups, then chunk_size.
-    with (
-        pytest.warns(po.PolarsOnlineDeprecationWarning, match="closed_groups.*by keyword"),
-        pytest.warns(po.PolarsOnlineDeprecationWarning, match="chunk_size.*by keyword"),
-    ):
-        got.fit(df, None, 10)
-    assert got.save_bytes() == want.save_bytes()
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="closed_groups"):
-        outs = list(_bank().fit_predict_batches(df, None))
-    assert len(outs) == 1
+    with pytest.raises(TypeError, match="positional"):
+        _bank().fit(df, None, 10)
+    with pytest.raises(TypeError, match="positional"):
+        list(_bank().fit_predict_batches(df, None))
 
 
 def test_m9_fit_predict_batches_returns_an_iterator():
@@ -213,22 +203,20 @@ def test_m14_write_json_returns_the_text_without_a_file(tmp_path):
     assert bio.getvalue().decode("utf-8") == text
 
 
-def test_m14_the_old_json_names_are_forwarded(tmp_path):
+def test_m14_the_old_json_names_are_refused(tmp_path):
     bank = _bank()
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="to_json.*write_json"):
-        assert bank.to_json(pretty=False) == bank.write_json(pretty=False)
-    path = tmp_path / "b.json"
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="save_json.*write_json"):
-        bank.save_json(path)
-    assert path.read_text(encoding="utf-8") == bank.write_json()
+    with pytest.raises(AttributeError, match="ModelBank.to_json.*renamed write_json"):
+        bank.to_json(pretty=False)
+    with pytest.raises(AttributeError, match="ModelBank.save_json.*renamed write_json"):
+        bank.save_json(tmp_path / "b.json")
 
 
-def test_m14_save_and_load_keyword_path_is_forwarded(tmp_path):
+def test_m14_save_and_load_keyword_path_is_refused(tmp_path):
     bank = _bank()
     path = tmp_path / "b.state"
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="path.*file"):
+    with pytest.raises(TypeError, match="ModelBank.save: path was renamed file"):
         bank.save(path=path)
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="path.*source"):
+    with pytest.raises(TypeError, match="ModelBank.load: path was renamed source"):
         po.ModelBank.load(path=path)
 
 
@@ -244,13 +232,13 @@ def test_m15_rows_fed_and_output_fields_are_properties():
     assert bank.output_fields["m"][0] == "pred_y"
 
 
-def test_m15_the_call_form_is_forwarded():
+def test_m15_the_call_form_is_refused():
     bank = _bank()
     bank.fit_predict(_df())
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="rows_fed"):
-        assert bank.rows_fed() == 120
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="output_fields"):
-        assert bank.output_fields() == bank.output_fields
+    with pytest.raises(TypeError, match="ModelBank.rows_fed: it is a property"):
+        bank.rows_fed()
+    with pytest.raises(TypeError, match="ModelBank.output_fields: it is a property"):
+        bank.output_fields()
 
 
 # --- M-5, M-6, M-8, M-19, M-20, M-23: po.eval -----------------------------------
@@ -335,12 +323,12 @@ def test_m20_spec_takes_a_name_or_the_dict():
     by_name = po.eval.metrics(out, "m")
     assert po.eval.metrics(out, spec).equals(by_name)
     assert "spec_name" not in inspect.signature(po.eval.metrics).parameters
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="spec_name"):
-        assert po.eval.metrics(out, spec_name="m").equals(by_name)
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="spec"):
-        assert po.eval.metrics(out, "m", spec=spec).equals(by_name)
+    with pytest.raises(TypeError, match="spec_name was merged into spec"):
+        po.eval.metrics(out, spec_name="m")
+    with pytest.raises(TypeError, match="beside spec= was merged into spec"):
+        po.eval.metrics(out, "m", spec=spec)
     assert po.eval.compare_specs(out, [spec]).equals(po.eval.compare_specs(out, ["m"]))
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="spec_names"):
+    with pytest.raises(TypeError, match="spec_names was merged into specs"):
         po.eval.compare_specs(out, spec_names=["m"])
 
 
@@ -380,12 +368,12 @@ def test_m9_operator_parameters_are_typed():
 @pytest.mark.parametrize("kind", ["mean", "sum", "rate"])
 def test_m17_reverse_is_the_window_looking_ahead(kind):
     new = getattr(po, f"ewm_{kind}")("x0", half_life=2.0, window_size=5.0, reverse=True)
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match=f"rewm_{kind}.*reverse=True"):
-        old = getattr(po, f"rewm_{kind}")("x0", half_life=2.0, window_size=5.0)
-    assert new.meta.eq(old)
+    with pytest.raises(TypeError, match=f"rewm_{kind}.*renamed.*reverse=True"):
+        getattr(po, f"rewm_{kind}")("x0", half_life=2.0, window_size=5.0)
+    assert new.meta.eq(new)
     assert f"rewm_{kind}" not in po.__all__
     assert f"rewm_{kind}" not in po.ops.__all__
-    with pytest.raises(TypeError, match="reverse=True needs window_size"):
+    with pytest.raises(ValueError, match="reverse=True needs window_size"):
         getattr(po, f"ewm_{kind}")("x0", half_life=2.0, reverse=True)
 
 
@@ -449,24 +437,25 @@ def _gram():
     return bank.gram("m")[0]
 
 
-def test_m24_subset_takes_columns_and_forwards_cols():
+def test_m24_subset_takes_columns_and_refuses_cols():
     g = _gram()
     assert list(inspect.signature(po.gram.subset).parameters)[1] == "columns"
     want = po.gram.subset(g, columns=["intercept", "x0"])
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="cols.*columns"):
-        old = po.gram.subset(g, cols=["intercept", "x0"])
-    assert old["columns"] == want["columns"]
+    assert want["columns"] == ["intercept", "x0"]
+    with pytest.raises(TypeError, match="cols was renamed columns"):
+        po.gram.subset(g, cols=["intercept", "x0"])  # type: ignore[call-arg]
 
 
-def test_m24_lars_takes_max_iter_and_forwards_max_steps():
+def test_m24_lars_takes_max_iter_and_refuses_max_steps():
     g = _gram()
     assert "max_iter" in inspect.signature(po.gram.lars_path).parameters
     assert "max_iter" in inspect.signature(po.gram.lars_paths).parameters
-    want = po.gram.lars_path(g, max_iter=1)
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="max_steps.*max_iter"):
-        old = po.gram.lars_path(g, max_steps=1)
-    assert np.array_equal(old["coef"], want["coef"])
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="max_steps.*max_iter"):
+    po.gram.lars_path(g, max_iter=1)
+    with pytest.raises(TypeError, match="max_steps was renamed max_iter"):
+        po.gram.lars_path(g, max_steps=1)  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="max_steps was renamed max_iter"):
+        po.gram.lars_paths([g], max_steps=1)  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="path has max_steps, which was renamed max_iter"):
         po.gram.solve_subsets([g], [[0]], path={"max_steps": 1})
 
 
@@ -492,9 +481,9 @@ def test_m24_a_gram_typed_dict():
 
 def test_one_correlation_of_a_gram():
     g = _gram()
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="po.gram.correlation"):
-        old = po.corr.matrix(g)
-    assert np.array_equal(old, po.gram.correlation(g), equal_nan=True)
+    with pytest.raises(TypeError, match="po.corr.matrix.*renamed po.gram.correlation"):
+        po.corr.matrix(g)
+    assert po.gram.correlation(g).shape[0] == len(g["columns"])
     assert "matrix" not in po.corr.__all__
 
 

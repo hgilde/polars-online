@@ -131,9 +131,9 @@ def test_a_numpy_integer_is_a_whole_number():
     """``n_splits`` and ``gap`` refused ``np.int64`` as not a whole number
     (task 352); a bool is still refused."""
     assert _time_series_folds(500, np.int64(4), np.int32(5)) == _time_series_folds(500, 4, 5)
-    with pytest.raises(ValueError, match="n_splits must be a whole number"):
+    with pytest.raises(TypeError, match="n_splits must be a whole number"):
         _time_series_folds(500, True, 0)
-    with pytest.raises(ValueError, match="gap must be a whole number"):
+    with pytest.raises(TypeError, match="gap must be a whole number"):
         _time_series_folds(500, 4, False)
 
 
@@ -349,7 +349,7 @@ def test_refusals_name_what_to_give(tmp_path):
         po.eval.grid_search(lf, spec, n_splits=0)
     with pytest.raises(ValueError, match="gap must be"):
         po.eval.grid_search(lf, spec, gap=-1)
-    with pytest.raises(TypeError, match="param_grid needs a spec builder"):
+    with pytest.raises(ValueError, match="param_grid needs a spec builder"):
         po.eval.grid_search(lf, spec, {"half_life": [1.0]})
     with pytest.raises(TypeError, match="param_grid must be a non-empty dict"):
         po.eval.grid_search(lf, sgd)

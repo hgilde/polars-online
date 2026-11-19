@@ -381,13 +381,13 @@ class TestEachMixtureIsRefused:
 
     def test_a_time_of_day_is_no_clock(self):
         df = _temporal(_frame()).with_columns(tod=pl.col("t").dt.time())
-        with pytest.raises(ValueError, match="time of day"):
+        with pytest.raises(TypeError, match="time of day"):
             _fit(df, _ridge("tod", half_life="10m", gap_cap="30m"))
 
     def test_a_temporal_clock_is_not_also_a_feature(self):
         df = _temporal(_frame())
         other = po.spec.ewridge("f", targets=["y"], features=["t"], half_life=50.0)
-        with pytest.raises(ValueError, match="can only be a clock"):
+        with pytest.raises(TypeError, match="can only be a clock"):
             po.ModelBank([_ridge("t", half_life="10m", gap_cap="30m"), other]).fit_predict(df)
 
     def test_a_temporal_clock_is_not_a_renamed_target_either(self):
@@ -397,7 +397,7 @@ class TestEachMixtureIsRefused:
         df = _temporal(_frame())
         target = po.target("t", name="tt")
         other = po.spec.ewridge("f", targets=[target], features=["x0"], half_life=50.0)
-        with pytest.raises(ValueError, match="can only be a clock") as exc:
+        with pytest.raises(TypeError, match="can only be a clock") as exc:
             po.ModelBank([_ridge("t", half_life="10m", gap_cap="30m"), other]).fit_predict(df)
         assert "a target" in str(exc.value), str(exc.value)
 

@@ -336,7 +336,7 @@ def test_errors_name_the_problem():
     with pytest.raises(ValueError, match=r'feature column "nope" is not in the input'):
         df.lazy().online.fit_predict([_spec(features=["nope"])])
     bad = df.with_columns(pl.col("x0").cast(pl.String))
-    with pytest.raises(ValueError, match=r'feature column "x0" must be a number, but it is String'):
+    with pytest.raises(TypeError, match=r'feature column "x0" must be a number, but it is String'):
         bad.lazy().online.fit_predict([_spec()])
     # An error the rows raise surfaces carrying the bank's message -- here a
     # clock that runs backwards -- wrapped or not, by version (`_REFUSAL`).

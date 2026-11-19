@@ -79,7 +79,6 @@ from polars_online._bank import _check_threads
 from polars_online._errors import WrongTypeError
 from polars_online._frame import ReadinessWarning, _user_stacklevel
 from polars_online._renamed import renamed_keywords
-from polars_online._warnings import deprecated_keywords, forward_deprecated
 
 if TYPE_CHECKING:
     import polars as pl
@@ -929,7 +928,7 @@ def from_row(row: Any) -> Gram:
         ``iter_rows(named=True)``, or a mapping. A closed group writes one
         row per Gram, so a row's ``targets`` are the targets of that one
         Gram. A row that names ``cross_centered`` by its old British spelling,
-        ``cross_centred``, is read with a warning (see Raises).
+        ``cross_centred``, is refused (see Raises).
 
     .. rubric:: Returns
 
@@ -945,12 +944,8 @@ def from_row(row: Any) -> Gram:
         null), when a frame holds more or fewer than one row, or when
         ``comoments`` does not hold ``k (k + 1) / 2`` entries.
     ``TypeError``
-        When ``row`` is none of the three forms, or names both
-        ``cross_centered`` and ``cross_centred``.
-    :class:`~polars_online.PolarsOnlineDeprecationWarning`
-        A warning, not an error: issued when the row names
-        ``cross_centred``. That spelling is read until the next major
-        version.
+        When ``row`` is none of the three forms, or names ``cross_centred``,
+        the old spelling of ``cross_centered``.
 
     .. rubric:: Examples
 
@@ -992,9 +987,10 @@ def from_row(row: Any) -> Gram:
     size of the whole matrix.
     """
     np = _np()
-    d = forward_deprecated(
-        "po.gram.from_row", _row_mapping(row), {"cross_centred": "cross_centered"}
-    )
+    d = _row_mapping(row)
+    if "cross_centred" in d:
+        msg = "po.gram.from_row: cross_centred was renamed cross_centered. Use cross_centered."
+        raise TypeError(msg)
     cols = d.get("columns")
     if cols is None:
         name = d.get("spec")
@@ -1067,7 +1063,7 @@ def _target_q(np: Any, g: Gram) -> Any:
     return np.divide(tw * tw, nk, out=np.zeros_like(tw), where=np.isfinite(nk) & (nk > 0.0))
 
 
-@deprecated_keywords("po.gram.subset", {"cols": "columns"})
+@renamed_keywords("po.gram.subset", {"cols": "columns"})
 def subset(g: Gram, columns: Sequence[str | int]) -> Gram:
     """Keep some of a Gram's columns, in the order given.
 
@@ -1089,8 +1085,7 @@ def subset(g: Gram, columns: Sequence[str | int]) -> Gram:
         origin**, as a spec with ``fit_intercept=False`` does: :func:`solve`
         and the paths then read the raw moments, ``E[z z']`` and ``E[z y]``,
         and center nothing. Keep it for a fit with an intercept. The
-        keyword's older name, ``cols``, is still read, with a
-        :class:`~polars_online.PolarsOnlineDeprecationWarning`.
+        keyword's older name, ``cols``, is refused, naming ``columns``.
 
     .. rubric:: Returns
 
@@ -1836,7 +1831,7 @@ def _lars_weights(
     return [float(v) for v in pw]
 
 
-@deprecated_keywords("po.gram.lars_path", {"max_steps": "max_iter"})
+@renamed_keywords("po.gram.lars_path", {"max_steps": "max_iter"})
 def lars_path(
     g: Gram,
     *,
@@ -1865,8 +1860,7 @@ def lars_path(
         Stop after this many knots past the path's first, each knot one
         penalty however many columns change at it. Default ``None``, no
         limit. Refused unless a whole number of at least 1. The keyword's
-        older name, ``max_steps``, is still read, with a
-        :class:`~polars_online.PolarsOnlineDeprecationWarning`.
+        older name, ``max_steps``, is refused, naming ``max_iter``.
     ``max_active``
         Stop at the first knot with this many columns active or more (more
         than ``max_active`` where columns tie there). Default ``None``, no
@@ -1925,8 +1919,7 @@ def lars_path(
         named twice among ``features``, as for :func:`solve`.
     ``TypeError``
         ``threads`` that is not an integer or ``None``, such as a bool or a
-        float; or ``max_iter`` and its older name ``max_steps`` given
-        together.
+        float; or ``max_steps``, the older name of ``max_iter``.
     ``KeyError``, ``IndexError``
         As for :func:`solve`.
 
@@ -2038,7 +2031,7 @@ def lars_path(
     )[0][0]
 
 
-@deprecated_keywords("po.gram.lars_paths", {"max_steps": "max_iter"})
+@renamed_keywords("po.gram.lars_paths", {"max_steps": "max_iter"})
 def lars_paths(
     grams: Sequence[Gram],
     *,
@@ -2067,7 +2060,7 @@ def lars_paths(
         ``None``, every target of each Gram.
     ``features``, ``max_iter``, ``max_active``, ``penalty_weights``
         As for :func:`lars_path`, applied to every path, ``max_iter``'s
-        older name ``max_steps`` included.
+        older name ``max_steps`` refused, as for :func:`lars_path`.
     ``threads``
         How many threads the Grams run on, beside each other: ``None``, the
         default, is the process's threads, which
@@ -2242,8 +2235,7 @@ def solve_subsets(
         :func:`solve` and then :func:`coef_stats` give them. Or a dict of
         :func:`lars_path`'s ``max_iter``, ``max_active`` and
         ``penalty_weights`` (``{}`` for none of them) for each target's lasso
-        path instead. The key's older name, ``max_steps``, is read as ``max_iter``,
-        with a :class:`~polars_online.PolarsOnlineDeprecationWarning`. Any
+        path instead. The key's older name, ``max_steps``, is refused, naming ``max_iter``. Any
         other key is refused.
     ``within``
         ``True`` pools each subset within its parts, as :func:`merge` with
@@ -2328,8 +2320,8 @@ def solve_subsets(
         mapping, or a limit in ``path`` is not a whole number. It is both a
         ``TypeError`` and a ``ValueError``.
     ``TypeError``
-        ``threads`` is not an integer or ``None``, or ``path`` gives both
-        ``max_iter`` and its older name ``max_steps``.
+        ``threads`` is not an integer or ``None``, or ``path`` has ``max_steps``,
+        the older name of ``max_iter``.
     ``KeyError``, ``IndexError``
         As for :func:`solve` and :func:`lars_path`: a job's column or target
         the Grams do not have is a ``KeyError``, and its position out of
@@ -2535,9 +2527,9 @@ def solve_subsets(
                 raise ValueError(msg)
     signs = _target_signs(np, target_signs, len(parts), within)
     if path is not None:
-        # `lars_path`'s keyword renamed after 0.13, read under its old name
-        # here too (task 244, M-24).
-        path = forward_deprecated("po.gram.solve_subsets: path", path, {"max_steps": "max_iter"})
+        if "max_steps" in path:
+            msg = f"{who}: path has max_steps, which was renamed max_iter. Use max_iter."
+            raise TypeError(msg)
         unknown = sorted(set(path) - set(_PATH_KEYS))
         if unknown:
             msg = (

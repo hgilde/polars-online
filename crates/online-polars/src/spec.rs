@@ -1681,29 +1681,43 @@ pub const RENAMED: &[(&str, &str)] = &[
     ("level_half_life", "half_life"),
 ];
 
-/// The parameters renamed in one model whose old name another model keeps:
-/// `rls`'s `ridge` is `delta` (docs/PLAN.md task 195, N11), and `ridge` is
-/// still `ewridge`'s, `huber`'s and `quantile`'s. Named only where the
+/// The parameters renamed in one model, or whose old name another model
+/// keeps: `rls`'s `ridge` is `delta` (docs/PLAN.md task 195, N11), and
+/// `ridge` is still `ewridge`'s, `huber`'s and `quantile`'s; `kmeans`' `k` is
+/// `n_clusters` and `hmm`'s `n_components`. The renames made for 1.0 (task
+/// 244), read until 2.0, are refused here since. Named only where the
 /// refused field's model takes the new name -- where serde's list of the
 /// fields it expected holds it -- so a model with neither is told nothing
 /// about another's rename.
-pub const RENAMED_WHERE_EXPECTED: &[(&str, &str)] = &[("ridge", "delta")];
+pub const RENAMED_WHERE_EXPECTED: &[(&str, &str)] = &[
+    ("ridge", "delta"),
+    ("k", "n_clusters"),
+    ("k", "n_components"),
+    ("seed_rule", "init"),
+    ("covariance", "covariance_type"),
+    ("window_every", "snapshot_every"),
+    ("max_rows_between_pca", "max_rows_between_pcas"),
+    ("lasso_path", "penalties"),
+    ("emission", "covariance_type"),
+    ("prior_mean", "mean_prior"),
+    ("prior_kappa", "mean_precision_prior"),
+    ("prior_nu", "degrees_of_freedom_prior"),
+    ("prior_scale", "covariance_prior"),
+    ("span_rows", "window_rows"),
+    ("reset_on_flag", "change_action"),
+];
 
 /// The values task 196 renamed (docs/PLAN.md §18): the model `type` tag
 /// (N1, the builder's, the README's and the core's spelling) and an
 /// `ew_cov` statistic (N10, beside `partial_corr`). A spec naming the old
 /// one is refused naming the new one, as [`RENAMED`] does for a key.
-pub const RENAMED_VALUES: &[(&str, &str)] = &[("ew_ridge", "ewridge"), ("lagcorr", "lag_corr")];
-/// The parameters renamed after 1.0, `(old, new)`: a spec dict, a TOML file
-/// or a windows config naming the old one is read as naming the new one,
-/// with a deprecation notice ([`deprecation_notice`]; in Python a
-/// `polars_online.PolarsOnlineDeprecationWarning`, on the command line a
-/// line on stderr), until the next major version removes the entry and the
-/// name is refused through [`RENAMED`] (docs/PLAN.md task 198; review round
-/// 4, D2). Empty: every rename so far was made before 1.0, and stays
-/// refused by name, task 144's rule. A rename after 1.0 goes here, beside
-/// its twin in `python/polars_online/_warnings.py`'s `_DEPRECATED`.
-pub const DEPRECATED: &[(&str, &str)] = &[];
+pub const RENAMED_VALUES: &[(&str, &str)] = &[
+    ("ew_ridge", "ewridge"),
+    ("lagcorr", "lag_corr"),
+    ("kmeanspp", "k-means++"),
+    ("shared", "tied"),
+    ("diagonal", "diag"),
+];
 
 /// `msg`, a deserialization error, with the rename named when the field it
 /// refuses as unknown is an old name, or the model `type` it refuses as an
@@ -1730,7 +1744,7 @@ pub fn name_renamed(msg: &str) -> String {
         }
     }
     for (old, new) in RENAMED_VALUES {
-        if msg.contains(&format!("unknown variant `{old}`")) {
+        if msg.contains(&format!("unknown variant `{old}`")) && msg.contains(&format!("`{new}`")) {
             return format!("{msg}; {old} was renamed {new}");
         }
     }

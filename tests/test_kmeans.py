@@ -1460,7 +1460,7 @@ class TestRefusals:
                     "min_weight = 5.0",
                     "[specs.model]",
                     'type = "kmeans"',
-                    "k = 3",
+                    "n_clusters = 3",
                     "warm_rows = 30",
                 ]
             ),

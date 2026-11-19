@@ -71,28 +71,22 @@ part of it applies:
        have
      - :class:`OutputColumnNotFoundError`, a :class:`ColumnNotFoundError`
    * - a wrong type
-     - ``TypeError``; where the same refusal once raised ``ValueError``,
+     - ``TypeError``; for a column of a type its role cannot take, or a
+       value of the wrong type in a spec, its subclass
        :class:`WrongTypeError`
-   * - a value out of range, or a combination of settings refused, that
-       once raised ``TypeError``
-     - :class:`RefusedValueError`
+   * - a value out of range, or a combination of settings refused
+     - ``ValueError``; for a combination, its subclass
+       :class:`RefusedValueError`
    * - a spec name or position a bank does not have
      - ``KeyError`` or ``IndexError``
    * - a bank fed from two threads at once
      - ``RuntimeError``
 
-**Classes with two parents.** A refusal that once raised a class the
-table above no longer gives it raises a class of this library's own that
-inherits from both: the class the table gives, and the class it raised
-before. :class:`WrongTypeError` is a ``TypeError`` and a ``ValueError``,
-:class:`RefusedValueError` a ``ValueError`` and a ``TypeError``, and
-:class:`OutputColumnNotFoundError` a :class:`ColumnNotFoundError` and a
-``KeyError``. So a handler written for either class keeps catching the
-refusal, and new code can catch the class that names the problem. Changing
-the class outright would let such a refusal slip past an ``except`` that
-catches it today.
-The older parent is dropped at the next major version: catch ``TypeError``,
-``ValueError`` and ``ColumnNotFoundError`` respectively.
+**Subclasses of this library's own.** :class:`WrongTypeError` is a
+``TypeError``, :class:`RefusedValueError` a ``ValueError`` and
+:class:`OutputColumnNotFoundError` a :class:`ColumnNotFoundError`, each
+with the one parent the table above gives its problem, so catch the class
+the table names.
 
 Inside a running Polars query the same exception arrives wrapped in
 Polars' ``ComputeError`` under py-polars 1.x, carrying its message, and as
@@ -164,8 +158,8 @@ from polars_online.ops import (
     ewm_sum,
     ewm_var,
     increment,
-    # The old names of `ewm_*(reverse=True)`, forwarded with a deprecation
-    # warning and kept out of `__all__`, so the reference shows the new form.
+    # The old names of `ewm_*(reverse=True)`, which refuse a call naming the
+    # new form and are kept out of `__all__`, so the reference shows it alone.
     rewm_mean,  # noqa: F401
     rewm_rate,  # noqa: F401
     rewm_sum,  # noqa: F401

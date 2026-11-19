@@ -418,5 +418,5 @@ class TestRefusals:
 
     def test_a_label_column_of_another_kind_than_the_clock(self):
         df = frame(n=50, seed=7).with_columns(avail=pl.col("avail").cast(pl.String))
-        with pytest.raises(ValueError, match='label_clock column "avail" is String'):
+        with pytest.raises(TypeError, match='label_clock column "avail" is String'):
             po.ModelBank([spec()]).fit_predict(df)

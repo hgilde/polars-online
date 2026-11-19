@@ -753,7 +753,7 @@ def test_a_null_or_non_finite_label_or_weight_is_refused_by_name(data, engine, l
 def test_a_column_the_libraries_do_not_read_is_refused_by_name(data, column, match):
     df = data.with_columns(column)
     for build in (gbdt.xgboost_matrix, gbdt.lightgbm_dataset):
-        with pytest.raises(ValueError, match=match):
+        with pytest.raises(TypeError, match=match):
             build(df, label="y")
 
 
@@ -781,7 +781,7 @@ def test_the_arguments_are_checked_by_name(data):
         gbdt.lightgbm_dataset(data, label="y", params={"max_bin": 63})
     with pytest.raises(ValueError, match="Pass it as categorical= instead"):
         gbdt.lightgbm_dataset(data, label="y", params={"categorical_feature": [0]})
-    with pytest.raises(ValueError, match="categorical names 'x0', a float column"):
+    with pytest.raises(TypeError, match="categorical names 'x0', a float column"):
         gbdt.lightgbm_dataset(data, label="y", categorical=["x0"])
     with pytest.raises(
         ValueError, match="the format of 'data.csv' cannot be told from its extension"
@@ -861,14 +861,14 @@ _BOTH = ("xgboost", "lightgbm")
             _BOTH,
             "with a string",
             dict(label="s"),
-            ValueError,
+            TypeError,
             "the label column 's' is String, but it must be an integer, float or Boolean column",
         ),
         (
             _BOTH,
             "with a string",
             dict(weight="s"),
-            ValueError,
+            TypeError,
             "the weight column 's' is String, but it must be an integer, float or Boolean column",
         ),
         (
@@ -896,28 +896,28 @@ _BOTH = ("xgboost", "lightgbm")
             _BOTH,
             "data",
             dict(threads=True),
-            ValueError,
+            TypeError,
             "threads must be a whole number of at least 1, or None, but it is True",
         ),
         (
             _BOTH,
             "data",
             dict(threads="4"),
-            ValueError,
+            TypeError,
             "threads must be a whole number of at least 1, or None, but it is '4'",
         ),
         (
             _BOTH,
             "data",
             dict(max_bin="8"),
-            ValueError,
+            TypeError,
             "max_bin must be a whole number of at least 2, but it is '8'",
         ),
         (
             _BOTH,
             "data",
             dict(max_bin=True),
-            ValueError,
+            TypeError,
             "max_bin must be a whole number of at least 2, but it is True",
         ),
         (
@@ -931,14 +931,14 @@ _BOTH = ("xgboost", "lightgbm")
             ("xgboost",),
             "data",
             dict(sample_rows=True),
-            ValueError,
+            TypeError,
             "sample_rows must be a whole number of at least 1, or None, but it is True",
         ),
         (
             ("xgboost",),
             "data",
             dict(sample_rows=2.5),
-            ValueError,
+            TypeError,
             r"sample_rows must be a whole number of at least 1, or None, but it is 2\.5",
         ),
         (

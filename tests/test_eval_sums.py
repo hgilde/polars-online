@@ -221,7 +221,7 @@ class TestTheShape:
 
     def test_it_raises_where_unpack_does(self):
         out = fitted(n=300)
-        with pytest.raises(KeyError):
+        with pytest.raises(pl.exceptions.ColumnNotFoundError):
             po.eval.sums(out, "nope")
         with pytest.raises(TypeError, match="must be a spec's output column, but it is"):
             po.eval.sums(out, "x0")

@@ -1,12 +1,11 @@
-"""The refusals whose class changed to the one the problem calls for keep
-the class they raised before as a second parent (task 354; the user chose
-it, 2026-11-07): each site raises its new class, and an ``except`` for the
-old class and one for the new both catch it. Task 355 carried the rule to
-the Rust side's refusals of a column of the wrong type."""
+"""The refusals whose class changed to the one the problem calls for raise
+that class alone (task 354 gave each a second parent, the class it raised
+before, through 1.x; 2.0 drops it): each site raises its class, and an
+``except`` for the one parent the problem names catches it. Task 355 carried
+the rule to the Rust side's refusals of a column of the wrong type."""
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Callable
 from typing import Any
 
@@ -91,9 +90,7 @@ def _builder(name: str, **kw: Any) -> dict[str, Any]:
 
 
 def _rewm_without_window() -> None:
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        po.rewm_mean("x0", half_life=10.0, window_size=None)  # type: ignore[arg-type]
+    po.ewm_mean("x0", half_life=10.0, reverse=True)  # type: ignore[call-arg]
 
 
 def _look_ahead_without_window() -> None:
@@ -224,8 +221,6 @@ def test_each_rust_side_wrong_type_raises_wrong_type_error(call: Callable[[], An
     with pytest.raises(po.WrongTypeError) as caught:
         call()
     assert type(caught.value) is po.WrongTypeError
-    with pytest.raises(ValueError):
-        call()
     with pytest.raises(TypeError):
         call()
 
@@ -310,7 +305,8 @@ def test_the_like_clash_names_the_function_in_full() -> None:
         _like_clash()
 
 
-# (site, call, the new class, the class it raised before, the rule's class)
+# (site, call, the class raised, then two classes the 1.x table gave it, kept as the record
+# of the rule: the class raised before, and the class the rule gives)
 SITES: list[tuple[str, Callable[[], Any], type[Exception], type[Exception], type[Exception]]] = [
     # A value or column of the wrong type: TypeError, once ValueError.
     (
@@ -344,8 +340,8 @@ SITES: list[tuple[str, Callable[[], Any], type[Exception], type[Exception], type
     ),
     # The embargo's two clock refusals raised TypeError; one class with the
     # bank's UInt128 refusal, so the ValueError parent is new there.
-    ("embargo, a text clock", _embargo_text_clock, po.WrongTypeError, TypeError, ValueError),
-    ("embargo, an Int128 clock", _embargo_wide_clock, po.WrongTypeError, TypeError, ValueError),
+    ("embargo, a text clock", _embargo_text_clock, po.WrongTypeError, ValueError, TypeError),
+    ("embargo, an Int128 clock", _embargo_wide_clock, po.WrongTypeError, ValueError, TypeError),
     (
         "window_metrics, a text clock",
         _window_metrics(_df().with_columns(t=pl.col("t").cast(pl.String)), 10.0),
@@ -462,7 +458,7 @@ SITES: list[tuple[str, Callable[[], Any], type[Exception], type[Exception], type
         ValueError,
     ),
     (
-        "rewm_mean without window_size",
+        "ewm_mean(reverse=True) without window_size",
         _rewm_without_window,
         po.RefusedValueError,
         TypeError,
@@ -518,15 +514,13 @@ SITES: list[tuple[str, Callable[[], Any], type[Exception], type[Exception], type
 @pytest.mark.parametrize(
     ("call", "new", "old", "rule"), [s[1:] for s in SITES], ids=[s[0] for s in SITES]
 )
-def test_each_site_raises_its_class_and_both_parents_catch_it(
+def test_each_site_raises_its_class_and_the_rules_class_catches_it(
     call: Callable[[], Any], new: type[Exception], old: type[Exception], rule: type[Exception]
 ) -> None:
     with pytest.raises(new) as caught:
         call()
     assert type(caught.value) is new
-    with pytest.raises(old):
-        call()
-    with pytest.raises(rule):
+    with pytest.raises(new.__bases__[0]):
         call()
 
 
@@ -544,25 +538,21 @@ def test_wrong_kind_inputs_that_are_also_out_of_range_still_split_by_kind() -> N
     assert not isinstance(caught.value, ValueError)
 
 
-def test_each_class_has_both_parents_and_is_exported() -> None:
-    assert issubclass(po.WrongTypeError, TypeError)
-    assert issubclass(po.WrongTypeError, ValueError)
-    assert issubclass(po.RefusedValueError, ValueError)
-    assert issubclass(po.RefusedValueError, TypeError)
+def test_each_class_has_the_one_parent_its_problem_names_and_is_exported() -> None:
+    assert po.WrongTypeError.__bases__ == (TypeError,)
+    assert not issubclass(po.WrongTypeError, ValueError)
+    assert po.RefusedValueError.__bases__ == (ValueError,)
+    assert not issubclass(po.RefusedValueError, TypeError)
     assert issubclass(po.OutputColumnNotFoundError, po.ColumnNotFoundError)
     assert issubclass(po.OutputColumnNotFoundError, pl.exceptions.ColumnNotFoundError)
     assert issubclass(po.OutputColumnNotFoundError, ValueError)
-    assert issubclass(po.OutputColumnNotFoundError, KeyError)
-    # The class the problem calls for comes first in the MRO, so it is the
-    # one a reader of `type(e).__mro__` meets first.
-    assert po.WrongTypeError.__mro__[1] is TypeError
-    assert po.RefusedValueError.__mro__[1] is ValueError
+    assert not issubclass(po.OutputColumnNotFoundError, KeyError)
     for name in ("WrongTypeError", "RefusedValueError", "OutputColumnNotFoundError"):
         assert name in po.__all__
 
 
-def test_a_missing_output_column_keeps_its_message() -> None:
-    """``KeyError``'s own ``str`` quotes the text, as it did before."""
+def test_a_missing_output_column_prints_its_message_unquoted() -> None:
+    """It is no ``KeyError``, whose ``str`` quotes the text."""
     with pytest.raises(po.OutputColumnNotFoundError) as caught:
         po.eval.unpack(_df(), "m")
-    assert str(caught.value).startswith('\'po.eval.unpack: spec "m" has no output column')
+    assert str(caught.value).startswith('po.eval.unpack: spec "m" has no output column')

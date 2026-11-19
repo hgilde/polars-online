@@ -554,7 +554,9 @@ def test_compare_specs_refuses_in_its_own_name(lazy):
     df = _sums_frame()
     with pytest.raises(ValueError, match="po.eval.compare_specs: group column 'nope'"):
         po.eval.compare_specs(df.lazy() if lazy else df, ["m"], group="nope")
-    with pytest.raises(KeyError, match='po.eval.compare_specs: spec "nope"'):
+    with pytest.raises(
+        pl.exceptions.ColumnNotFoundError, match='po.eval.compare_specs: spec "nope"'
+    ):
         po.eval.compare_specs(df.lazy() if lazy else df, ["m", "nope"])
 
 

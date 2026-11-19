@@ -66,10 +66,16 @@ def _bad_word(v: Any, hint: Any) -> tuple[str, tuple[str, ...]] | None:
     return None
 
 
-#: The words renamed before 1.0, refused naming the new one: ``ew_cov``'s
-#: statistic, the twin of the Rust side's ``RENAMED_VALUES`` (whose other
-#: entry is a model ``type``, which no builder takes).
-_RENAMED_WORDS = {"lagcorr": "lag_corr"}
+#: The words renamed, refused naming the new one: ``ew_cov``'s statistic,
+#: and the words of ``init`` and ``covariance_type`` that scikit-learn's
+#: spellings replaced, the twin of the Rust side's ``RENAMED_VALUES`` (whose
+#: other entry is a model ``type``, which no builder takes).
+_RENAMED_WORDS = {
+    "lagcorr": "lag_corr",
+    "kmeanspp": "k-means++",
+    "shared": "tied",
+    "diagonal": "diag",
+}
 
 #: The refusal of a word for a parameter that takes one word alone, where
 #: its model says why, as the Rust side words it (``online_core::RcovCfg``).

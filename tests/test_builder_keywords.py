@@ -147,77 +147,51 @@ def _build(kind: str, kw: dict[str, object]) -> dict:
 
 
 _IDS = [f"{k}.{o[0]}={o[1]}" for k, o, _, _ in RENAMED]
+_KEYS = [r for r in RENAMED if r[1][0] != r[2][0]]
+_WORDS = [r for r in RENAMED if r[1][0] == r[2][0]]
 
 
-@pytest.mark.parametrize(("kind", "old", "new", "extra"), RENAMED, ids=_IDS)
-def test_a_renamed_keyword_is_read_as_the_new_one_with_a_warning(kind, old, new, extra):
-    """The old keyword, or the old word, still builds the same spec, with a
-    ``PolarsOnlineDeprecationWarning`` naming what replaced it; from the next
-    major version it is refused."""
-    want = _build(kind, {new[0]: new[1], **extra})
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="deprecated") as caught:
-        got = _build(kind, {old[0]: old[1], **extra})
-    assert got == want
-    said = " ".join(str(w.message) for w in caught)
-    assert new[0] in said and "next major version" in said, said
-
-
-#: What a ``reset_on_flag`` that is no bool is told, word for word as the
-#: command line tells a TOML file's
-#: (``crates/online-cli/tests/surface.rs``,
-#: ``a_reset_on_flag_that_is_no_bool_is_read_with_python_s_warning``).
-_RESET_WORD_NOTICE = (
-    'reset_on_flag = "reset" is deprecated: it is read as change_action = "reset" until the '
-    'next major version, which refuses it. Write change_action = "reset" or "flag" instead.'
+@pytest.mark.parametrize(
+    ("kind", "old", "new", "extra"), _KEYS, ids=[f"{k}.{o[0]}" for k, o, _, _ in _KEYS]
 )
+def test_a_renamed_keyword_is_refused_naming_the_new_one(kind, old, new, extra):
+    """The old keyword is refused, naming what replaced it: it was read as the
+    new one, with a deprecation warning, through 1.x."""
+    with pytest.raises(TypeError, match=f"{old[0]} was renamed {new[0]}"):
+        _build(kind, {old[0]: old[1], **extra})
+    # The new keyword builds, so the refusal is the old name's alone.
+    _build(kind, {new[0]: new[1], **extra})
 
 
-def test_a_reset_on_flag_that_is_no_bool_says_what_the_command_line_says():
-    """The two sides gave a ``reset_on_flag`` that is no bool different
-    notices: Python's builder one, a TOML file's none (task 352)."""
-    want = po.spec.corrchange(
-        "m", features=["x0", "x1"], kind="window", window_rows=10, change_action="reset"
-    )
-    with pytest.warns(po.PolarsOnlineDeprecationWarning) as caught:
-        got = po.spec.corrchange(
-            "m", features=["x0", "x1"], kind="window", window_rows=10, reset_on_flag="reset"
-        )
-    assert got == want
-    assert [str(w.message) for w in caught] == [f'spec "m": {_RESET_WORD_NOTICE}']
+@pytest.mark.parametrize(
+    ("kind", "old", "new", "extra"), _WORDS, ids=[f"{k}.{o[1]}" for k, o, _, _ in _WORDS]
+)
+def test_a_renamed_word_is_refused_naming_the_new_one(kind, old, new, extra):
+    """A word renamed with a parameter is refused, naming the new word; the
+    spec builds with the new word."""
+    with pytest.raises(ValueError, match=re.escape(f'the old name of "{new[1]}"')):
+        _build(kind, {old[0]: old[1], **extra})
+    _build(kind, {new[0]: new[1], **extra})
 
 
-@pytest.mark.parametrize(("kind", "old", "new", "extra"), RENAMED, ids=_IDS)
-def test_a_spec_dict_with_an_old_key_is_read_as_the_new_one(kind, old, new, extra):
-    """A hand-written dict is forwarded at the bank's door the same way,
-    keyed by the model it is in."""
-    want = _build(kind, {new[0]: new[1], **extra})
-    model = dict(want["model"])
-    model.pop(new[0])
-    model[old[0]] = old[1]
-    with pytest.warns(po.PolarsOnlineDeprecationWarning):
-        bank = po.ModelBank([dict(want, model=model)])
-    assert bank.specs == po.ModelBank([want]).specs
-
-
-def test_a_tempered_emission_is_read_as_robust_beta():
-    """``emission="robust"`` was the tempered per-feature predictive at a
-    default of 0.1: it is ``covariance_type="diag"`` with ``robust_beta``,
-    0.1 where none is given."""
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="robust_beta"):
-        got = _build("bocpd", {"emission": "robust"})
-    assert got == _build("bocpd", {"covariance_type": "diag", "robust_beta": 0.1})
-    with pytest.warns(po.PolarsOnlineDeprecationWarning):
-        given = _build("bocpd", {"emission": "robust", "robust_beta": 0.05})
-    assert given["model"]["robust_beta"] == 0.05
-
-
-def test_hmm_reads_seed_rule_kmeanspp_as_two_renames():
-    """``seed_rule="kmeanspp"`` is a key and a word renamed at once, each
-    warned."""
-    with pytest.warns(po.PolarsOnlineDeprecationWarning) as caught:
-        got = _build("hmm", {"seed_rule": "kmeanspp", "warm_rows": 10})
-    assert got["model"]["init"] == "k-means++"
-    assert len(caught) == 2
+@pytest.mark.parametrize("kind", ["kmeans", "hmm", "bocpd", "corrchange", "lasso", "ewridge"])
+def test_a_spec_dict_with_an_old_key_is_refused_naming_the_new_one(kind):
+    """A hand-written dict is refused at the bank's door the same way."""
+    cases = {
+        "kmeans": ("k", "n_clusters", 3),
+        "hmm": ("k", "n_components", 3),
+        "bocpd": ("prior_nu", "degrees_of_freedom_prior", 5.0),
+        "corrchange": ("span_rows", "window_rows", 30),
+        "lasso": ("lasso_path", "penalties", [0.2, 0.0]),
+        "ewridge": ("window_every", "snapshot_every", 5.0),
+    }
+    old, new, value = cases[kind]
+    extra = {"window_size": 100.0} if kind == "ewridge" else {}
+    want = _build(kind, extra)
+    model = {k: v for k, v in want["model"].items() if k != new}
+    model[old] = value
+    with pytest.raises(ValueError, match=f"{old} was renamed {new}"):
+        po.ModelBank([dict(want, model=model)])
 
 
 def test_an_old_name_is_read_only_in_its_own_model():
@@ -234,10 +208,10 @@ def test_an_old_name_is_read_only_in_its_own_model():
     assert po.ModelBank([kept]).specs[0]["model"]["bin_edges"] == kept["model"]["bin_edges"]
 
 
-def test_an_old_name_beside_its_new_one_is_refused_naming_both():
-    with pytest.raises(TypeError, match="k was renamed n_clusters, and both are given"):
+def test_an_old_name_beside_its_new_one_is_refused_naming_the_new_one():
+    with pytest.raises(TypeError, match="k was renamed n_clusters"):
         po.spec.kmeans("m", features=["x0"], half_life=50.0, k=2, n_clusters=2)
-    with pytest.raises(TypeError, match="emission was renamed covariance_type, and both"):
+    with pytest.raises(TypeError, match="emission was renamed covariance_type"):
         po.spec.bocpd("m", features=["x0"], emission="gaussian", covariance_type="full")
 
 

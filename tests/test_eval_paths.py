@@ -58,32 +58,30 @@ def test_a_spec_that_is_neither_a_name_nor_a_spec_dict_is_refused(fitted):
         po.eval.metrics(out, {"model": {}})  # type: ignore[arg-type]
 
 
-def test_the_merged_spellings_of_a_spec_beside_the_new_one(fitted):
-    """``spec_name`` was merged into ``spec``: both given is refused, and a
-    name beside a spec dict of another name is refused; of the same name it
-    is read, with a deprecation warning."""
+def test_the_merged_spellings_of_a_spec_are_refused(fitted):
+    """``spec_name`` was merged into ``spec``, and ``spec_names`` into
+    ``specs``: each old spelling, and a name beside the spec dict, is refused
+    naming the new one."""
     out, small, big = fitted
-    with pytest.raises(
-        TypeError, match="po.eval.metrics: spec_name was merged into spec, but both are given"
-    ):
+    with pytest.raises(TypeError, match="po.eval.metrics: spec_name was merged into spec"):
+        po.eval.metrics(out, spec_name="big")
+    with pytest.raises(TypeError, match="po.eval.metrics: spec_name was merged into spec"):
         po.eval.metrics(out, "big", spec_name="big")
     with pytest.raises(
-        ValueError,
-        match="po.eval.metrics: the spec name 'big' and the spec named 'small' disagree. Pass "
-        "the spec alone as spec.",
+        TypeError,
+        match="po.eval.metrics: a spec's name beside spec= was merged into spec. Pass the "
+        "spec alone as spec.",
     ):
         po.eval.metrics(out, "big", spec=small)
+    with pytest.raises(TypeError, match="po.eval.compare_specs: spec_names was merged into specs"):
+        po.eval.compare_specs(out, spec_names=["big"])
     with pytest.raises(
-        TypeError,
-        match="po.eval.compare_specs: spec_names was merged into specs, but both are given",
+        TypeError, match="po.eval.compare_specs: a list of names beside specs= was merged"
     ):
-        po.eval.compare_specs(out, ["big"], spec_names=["big"])
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="po.eval.compare_specs"):
-        old = po.eval.compare_specs(out, ["small", "big"], specs=[big])
+        po.eval.compare_specs(out, ["small", "big"], specs=[big])
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        new = po.eval.compare_specs(out, ["small", big])
-    assert old.equals(new)
+        po.eval.compare_specs(out, ["small", big])
 
 
 def test_a_spec_dict_whose_target_column_is_missing_is_refused_by_name(fitted):

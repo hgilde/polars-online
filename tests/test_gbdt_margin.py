@@ -380,9 +380,9 @@ def test_a_margin_that_cannot_be_read_is_refused_by_name(data, valid, lib, engin
             build(df, margin)
     with pytest.raises(ValueError, match=rf"the {role} column 'q' is not in the source"):
         build(data, "q")
-    with pytest.raises(ValueError, match=rf"the {role} column 's' is String, but a margin is"):
+    with pytest.raises(TypeError, match=rf"the {role} column 's' is String, but a margin is"):
         build(data.with_columns(s=pl.lit("a")), "s")
-    with pytest.raises(ValueError, match=rf"the {role} column 'v' is List\(Boolean\)"):
+    with pytest.raises(TypeError, match=rf"the {role} column 'v' is List\(Boolean\)"):
         build(data.with_columns(v=pl.lit([True])), "v")
     with pytest.raises(ValueError, match=rf"'x0' is named as a feature and as the {role}"):
         build(data, "x0")

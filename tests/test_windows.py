@@ -50,7 +50,7 @@ CLOCK = {"clock": "t", "gap_cap": 1e9}
 #: 2.0.0rc2 lets it through unwrapped, so the run's `ValueError` arrives as
 #: itself (the canary of 2026-10-05). Both carry the same message, as in
 #: `test_frame._REFUSAL`.
-_REFUSAL = (pl.exceptions.ComputeError, ValueError)
+_REFUSAL = (pl.exceptions.ComputeError, ValueError, TypeError)
 
 
 # --------------------------------------------------------------------------
@@ -786,14 +786,14 @@ def test_an_operators_parameters_are_checked_by_name() -> None:
     ]:
         with pytest.raises((ValueError, TypeError), match=says):
             po.ewm_mean("x", **kw)  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="window_size"):
+    with pytest.raises(ValueError, match="window_size"):
         po.ewm_mean("x", half_life=2.0, reverse=True)  # type: ignore[call-arg]
     with pytest.raises(TypeError, match="half_life"):
         po.ewm_mean("x")  # type: ignore[call-arg]
     df = ticks(50, 1)
     with pytest.raises(ValueError, match="half_life is inf and window_size is not set"):
         po.stream.with_windows(df, y=po.ewm_mean("x", half_life=math.inf), **CLOCK)
-    with pytest.raises(ValueError, match="input must be a number"):
+    with pytest.raises(TypeError, match="input must be a number"):
         po.stream.with_windows(df, y=po.ewm_mean("g", half_life=2.0), **CLOCK)
     with pytest.raises(ValueError, match="the input column"):
         po.stream.with_windows(df, y=po.ewm_mean("nope", half_life=2.0), **CLOCK)
@@ -902,7 +902,7 @@ def test_like_takes_the_specs_clock_and_its_rule() -> None:
     quotes = (df["price"].is_null()).to_list()
     for a, b, q in zip(out["f"].to_list(), plain["f"].to_list(), quotes, strict=True):
         assert (a is None) if q else (a == b)
-    with pytest.raises(TypeError, match="Leave out clock"):
+    with pytest.raises(ValueError, match="Leave out clock"):
         po.stream.with_windows(
             df,
             f=po.ewm_mean("mid", half_life=5.0, window_size=10.0, reverse=True),
@@ -1082,7 +1082,7 @@ def test_a_cast_is_strict_as_in_polars_unless_told_otherwise() -> None:
     """R1-B2: a formula's ``cast`` was rebuilt non-strict, so an overflow that
     Polars refuses became a silent null."""
     df = pl.DataFrame({"t": [0.0, 1.0], "x": [1000.0, 1.0]})
-    with pytest.raises((pl.exceptions.PolarsError, ValueError), match="conversion from"):
+    with pytest.raises((pl.exceptions.PolarsError, TypeError), match="conversion from"):
         po.stream.with_windows(df, y=po.ewm_sum("x", half_life=1.0).cast(pl.Int8), **CLOCK)
     lax = po.ewm_sum("x", half_life=1.0).cast(pl.Int8, strict=False)
     assert po.stream.with_windows(df, y=lax, **CLOCK)["y"].to_list() == [None, None]
@@ -2272,7 +2272,9 @@ def test_min_samples_takes_an_integer_of_any_kind_up_to_its_ceiling() -> None:
         with pytest.raises(ValueError, match=r"^po\.ewm_sum: min_samples must be .*4294967295"):
             po.ewm_sum("x", half_life=2.0, min_samples=bad)
     for bad in (-1, True, 2.0, "2"):
-        with pytest.raises(ValueError, match=r"^po\.ewm_sum: min_samples must be an integer"):
+        with pytest.raises(
+            (TypeError, ValueError), match=r"^po\.ewm_sum: min_samples must be an integer"
+        ):
             po.ewm_sum("x", half_life=2.0, min_samples=bad)  # type: ignore[arg-type]
     # A sum takes 0 (Polars' default for `rolling_sum_by`), every other
     # operator needs at least 1.
@@ -2646,14 +2648,6 @@ def test_the_readmes_zscore_recipe_runs_and_is_polars_own_on_a_row_clock(
 # session_gap and the call's clock refusals (task 278, batch 2: the user's
 # decision of 2026-10-25 and the inventory's D3)
 
-#: The message a numeric ``session_gap`` warns with, after its value.
-_GAP_IGNORED = (
-    " is deprecated and ignored until the next major version, which refuses it: every window "
-    "ends at a session change, so no window measures the clock's step across one. Leave "
-    'session_gap out, or set it to "reset" to discard the windows still open at a session '
-    "change rather than cut them."
-)
-
 #: The window, the half-life and the gap cap of the session streams below.
 _W, _HL, _CAP = 2.5, 2.0, 100.0
 
@@ -2717,19 +2711,15 @@ def _open_at_a_change(df: pl.DataFrame) -> list[int]:
     return [i for i in range(len(t)) if s[i] != s[-1] and t[last[s[i]]] - t[i] < _W]
 
 
-def test_a_numeric_session_gap_changes_nothing_and_says_so() -> None:
+def test_a_numeric_session_gap_is_refused() -> None:
     """Every window ends at a session change, so no window measures the
     clock's step across one: a number given as ``session_gap`` is never
-    read. Over the seven operators, looking back under each ``closed`` and
-    looking ahead, on a clock that goes on at one change and starts over at
-    the other, any number gives the frame the call without one gives, with
-    one deprecation warning naming the caller's line. Once required beside
-    ``session``, and set to 1.0 in every test here, so nothing showed that
-    no number mattered."""
+    read, and is refused, over the seven operators, looking back under each
+    ``closed`` and looking ahead. The frame the call without one gives
+    shows what a change does: a kept window looking ahead that the change
+    cut gives a value, and the default's is null there."""
     df = _session_stream()
     want = _session_run(df)
-    # Evidence the changes acted: a kept window looking ahead that the
-    # change cut gives a value, and the default's is null there.
     open_rows = _open_at_a_change(df)
     assert len(open_rows) >= 4, open_rows
     kept = [want["ahead_sum_right"][i] for i in open_rows]
@@ -2737,26 +2727,20 @@ def test_a_numeric_session_gap_changes_nothing_and_says_so() -> None:
     assert all(want["ahead_mean_null"][i] is None for i in open_rows)
     assert want["increment"][30] is None and want["increment"][60] is None
     for gap in (0, 1.0, 50, 1e6):
-        with pytest.warns(po.PolarsOnlineDeprecationWarning) as caught:
-            got = _session_run(df, session_gap=gap)
-        assert [str(w.message) for w in caught] == [
-            f"with_windows: session_gap = {gap!r}{_GAP_IGNORED}"
-        ]
-        assert caught[0].filename == __file__, "the warning names the caller's line"
-        assert got.equals(want), gap
-    # Through the frame namespace too, which still names the caller's line.
+        with pytest.raises(ValueError, match="session_gap = " + re.escape(repr(gap))):
+            _session_run(df, session_gap=gap)
+    with pytest.raises(ValueError, match="no longer read"):
+        _session_run(df, session_gap=1.0)
     back, _ = _session_ops()
-    with pytest.warns(po.PolarsOnlineDeprecationWarning) as caught:
-        lazy = (
+    with pytest.raises(ValueError, match="no longer read"):
+        (
             df.lazy()
             .online.with_windows(**back, clock="t", gap_cap=_CAP, session="s", session_gap=7.0)
             .collect()
         )
-    assert len(caught) == 1 and caught[0].filename == __file__
-    assert lazy.equals(want.select(df.columns + list(back)))
 
 
-def test_a_duration_session_gap_changes_nothing_on_a_temporal_clock() -> None:
+def test_a_duration_session_gap_is_refused_on_a_temporal_clock() -> None:
     """A duration is the temporal clock's number: never read either."""
     df = _session_stream().with_columns(
         t=(pl.col("t") * 1e6).cast(pl.Int64).cast(pl.Datetime("us"))
@@ -2772,10 +2756,8 @@ def test_a_duration_session_gap_changes_nothing_on_a_temporal_clock() -> None:
     want = run()
     assert want["ahead"].null_count() < df.height - 10
     for gap in ("1m", timedelta(hours=3), "0s"):
-        with pytest.warns(
-            po.PolarsOnlineDeprecationWarning, match="session_gap = .* is deprecated and ignored"
-        ):
-            assert run(session_gap=gap).equals(want), gap
+        with pytest.raises(ValueError, match="session_gap = .* is no longer read"):
+            run(session_gap=gap)
 
 
 def test_reset_differs_exactly_in_the_windows_looking_ahead_open_at_a_change() -> None:
@@ -2817,27 +2799,6 @@ def test_a_spec_with_a_session_gap_lends_it_without_a_warning() -> None:
     lent = po.stream.with_windows(df, **ahead, like=spec)
     own = po.stream.with_windows(df, **ahead, clock="t", gap_cap=_CAP, session="s")
     assert lent.equals(own)
-
-
-def test_a_state_saved_with_a_numeric_session_gap_resumes_the_call_without_one(
-    tmp_path: Any,
-) -> None:
-    """The number is no part of the call a state resumes: a state saved
-    with one goes on under the call without it, as one run would."""
-    df = _session_stream()
-    back, ahead = _session_ops()
-    kw: dict[str, Any] = {"clock": "t", "gap_cap": _CAP, "session": "s"}
-    state = tmp_path / "gap.state"
-    with pytest.warns(po.PolarsOnlineDeprecationWarning):
-        first = po.stream.with_windows(
-            df.head(45), **back, **ahead, save_state=state, session_gap=1.0, **kw
-        )
-    rest = po.stream.with_windows(df.slice(45), **back, **ahead, load_state=state, **kw)
-    assert pl.concat([first, rest]).equals(po.stream.with_windows(df, **back, **ahead, **kw))
-    with pytest.raises(ValueError, match="saved by another call"):
-        po.stream.with_windows(
-            df.slice(45), **back, **ahead, load_state=state, session_gap="reset", **kw
-        )
 
 
 #: Every clock refusal of ``with_windows``, each in its own words: (the

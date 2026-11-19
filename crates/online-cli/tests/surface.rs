@@ -393,74 +393,51 @@ fn a_config_that_does_not_parse_is_told_what_it_can_be() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// A model key deprecated in one model's table is read as its new name,
-/// with a warning that says so, and the run goes on.
+/// A model key the 1.x series read under its old name is refused, naming
+/// the current one, and the run does not start.
 #[test]
-fn a_deprecated_model_key_is_read_with_a_warning() {
-    let dir = fresh_dir("deprecated-model-key");
+fn a_removed_model_key_is_refused_naming_the_current_one() {
+    let dir = fresh_dir("removed-model-key");
     let input = dir.join("in.parquet");
     write_input(&input, 60);
-    let cfg = dir.join("job.toml");
-    std::fs::write(
-        &cfg,
-        format!(
-            "input = '{}'\noutput = '{}'\n[[specs]]\nname = \"cp\"\nfeatures = [\"x0\"]\n\
-             [specs.model]\ntype = \"bocpd\"\nemission = \"gaussian\"\n",
-            text(&input),
-            text(&dir.join("out.parquet"))
+    for (model, body, old, new) in [
+        (
+            "bocpd",
+            "emission = \"gaussian\"",
+            "emission",
+            "covariance_type",
         ),
-    )
-    .unwrap();
-    let (code, out, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));
-    assert_eq!(code, Some(0), "{err}");
-    assert!(
-        err.contains(
-            "polars-online: warning: emission = \"gaussian\" is deprecated: it is read as \
-             covariance_type = \"full\""
+        (
+            "corrchange",
+            "kind = \"window\"
+window_rows = 10
+reset_on_flag = true",
+            "reset_on_flag",
+            "change_action",
         ),
-        "{err}"
-    );
-    assert!(out.starts_with("config OK: 1 spec(s)"), "{out}");
+    ] {
+        let cfg = dir.join("job.toml");
+        std::fs::write(
+            &cfg,
+            format!(
+                "input = '{}'\noutput = '{}'\n[[specs]]\nname = \"cp\"\nfeatures = [\"x0\", \"y\"]\n\
+                 [specs.model]\ntype = \"{model}\"\n{body}\n",
+                text(&input),
+                text(&dir.join("out.parquet"))
+            ),
+        )
+        .unwrap();
+        let (code, _, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));
+        assert_eq!(code, Some(1), "{err}");
+        assert!(
+            err.contains(&format!("{old} was renamed {new}")),
+            "{old}: {err}"
+        );
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// `reset_on_flag` given a value that is no bool is read as `change_action`
-/// with the notice Python's builder gives it, word for word after the spec
-/// Python names; a TOML file's had none (task 352).
-#[test]
-fn a_reset_on_flag_that_is_no_bool_is_read_with_python_s_warning() {
-    let dir = fresh_dir("reset-on-flag-word");
-    let input = dir.join("in.parquet");
-    write_input(&input, 60);
-    let cfg = dir.join("job.toml");
-    std::fs::write(
-        &cfg,
-        format!(
-            "input = '{}'\noutput = '{}'\n[[specs]]\nname = \"cp\"\nfeatures = [\"x0\", \"y\"]\n\
-             [specs.model]\ntype = \"corrchange\"\nkind = \"window\"\nwindow_rows = 10\n\
-             reset_on_flag = \"reset\"\n",
-            text(&input),
-            text(&dir.join("out.parquet"))
-        ),
-    )
-    .unwrap();
-    let (code, out, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));
-    assert_eq!(code, Some(0), "{err}");
-    // tests/test_builder_keywords.py holds Python's builder to the same text.
-    assert!(
-        err.contains(
-            "polars-online: warning: reset_on_flag = \"reset\" is deprecated: it is read as \
-             change_action = \"reset\" until the next major version, which refuses it. Write \
-             change_action = \"reset\" or \"flag\" instead."
-        ),
-        "{err}"
-    );
-    assert!(out.starts_with("config OK: 1 spec(s)"), "{out}");
-    std::fs::remove_dir_all(&dir).unwrap();
-}
-
-/// `kmeans` reading `x0`, its clusters under the deprecated `k` or as
-/// `n_clusters`, with `half_life = <half_life>` written as given: a config
+/// `kmeans` reading `x0`, its clusters under `n_clusters` or a refused name, with `half_life = <half_life>` written as given: a config
 /// for `input`, writing `output`.
 fn kmeans_job(dir: &Path, input: &Path, output: &Path, clusters: &str, half_life: &str) -> PathBuf {
     let cfg = dir.join("job.toml");
@@ -477,34 +454,21 @@ fn kmeans_job(dir: &Path, input: &Path, output: &Path, clusters: &str, half_life
     cfg
 }
 
-/// Task 269, D-2: a deprecated model key was forwarded by a round trip
-/// through JSON, which has no infinity, so a TOML float `inf` anywhere in
-/// the file became null and the config was refused ("invalid type: null").
-/// Forwarded over TOML's own values, the run reads it as the infinity it
-/// is: the output is the one the new name writes.
+/// Task 269, D-2: a TOML float `inf` anywhere in the file is read as the
+/// infinity it is, not refused as null: the half-life of infinity writes
+/// another frame than a finite one.
 #[test]
-fn a_toml_infinity_beside_a_deprecated_model_key_is_kept() {
-    let dir = fresh_dir("deprecated-inf");
+fn a_toml_infinity_is_kept() {
+    let dir = fresh_dir("toml-inf");
     let input = dir.join("in.parquet");
     write_input(&input, 60);
-    let (old, new) = (dir.join("old.parquet"), dir.join("new.parquet"));
-    let cfg = kmeans_job(&dir, &input, &old, "k", "inf");
+    let (inf, finite) = (dir.join("inf.parquet"), dir.join("finite.parquet"));
+    let cfg = kmeans_job(&dir, &input, &inf, "n_clusters", "inf");
     let (code, out, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));
     assert_eq!(code, Some(0), "{err}");
-    assert!(
-        err.contains("warning: k is deprecated: it was renamed n_clusters"),
-        "{err}"
-    );
     assert!(out.starts_with("config OK: 1 spec(s)"), "{out}");
     let (code, _, err) = run(cli().args(["--config", text(&cfg)]));
     assert_eq!(code, Some(0), "{err}");
-    let cfg = kmeans_job(&dir, &input, &new, "n_clusters", "inf");
-    let (code, _, err) = run(cli().args(["--config", text(&cfg)]));
-    assert_eq!(code, Some(0), "{err}");
-    assert!(!err.contains("deprecated"), "{err}");
-    // And a finite half-life writes another frame, so the two agreeing is
-    // the infinity read, not a half-life ignored.
-    let finite = dir.join("finite.parquet");
     let cfg = kmeans_job(&dir, &input, &finite, "n_clusters", "5.0");
     let (code, _, err) = run(cli().args(["--config", text(&cfg)]));
     assert_eq!(code, Some(0), "{err}");
@@ -513,22 +477,24 @@ fn a_toml_infinity_beside_a_deprecated_model_key_is_kept() {
             .finish()
             .unwrap()
     };
-    assert!(read(&old).equals_missing(&read(&new)));
-    assert!(!read(&old).equals_missing(&read(&finite)));
+    assert!(!read(&inf).equals_missing(&read(&finite)));
+    let cfg = kmeans_job(&dir, &input, &inf, "k", "inf");
+    let (code, _, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("k was renamed n_clusters"), "{err}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// Task 269, D-7: a config with a deprecated key was rewritten, and a parse
-/// error after it quoted the rewritten text's line; it names the file's own
-/// line and quotes it, as it does with nothing to forward.
+/// Task 269, D-7: a parse error names the file's own line and quotes it.
 #[test]
-fn a_parse_error_beside_a_deprecated_key_names_the_files_own_line() {
+fn a_parse_error_names_the_files_own_line() {
     let dir = fresh_dir("deprecated-line");
     let input = dir.join("in.parquet");
     let output = dir.join("out.parquet");
-    for clusters in ["n_clusters", "k"] {
+    {
+        let clusters = "n_clusters";
         let cfg = kmeans_job(&dir, &input, &output, clusters, "\"ten\"");
-        // Two lines of comment above it, which a rewrite drops.
+        // Two lines of comment above it.
         let body = std::fs::read_to_string(&cfg).unwrap();
         std::fs::write(&cfg, format!("# a job\n# of one spec\n{body}")).unwrap();
         let (code, _, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));

@@ -24,7 +24,6 @@ from typing import Any, Literal, NotRequired, TypedDict, Unpack
 
 import polars as pl
 
-from polars_online import _warnings
 from polars_online._duration import Duration, duration_text, infinity_as_number
 from polars_online._kwargs import CommonKwargs
 from polars_online._polars_online import validate_spec
@@ -41,7 +40,6 @@ from polars_online._spec_words import (
     word_reason,
     words_refusal,
 )
-from polars_online._warnings import forward_deprecated, forward_model
 
 
 def _who(name: Any) -> str:
@@ -87,13 +85,6 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
                 return "inf" if v > 0 else "-inf"
             return v
         if isinstance(v, dict):
-            # A key renamed after 1.0 is read as its new name, with a
-            # warning, at any depth -- a model's own keys are a level down --
-            # as the Rust side forwards a TOML file's (`DEPRECATED`).
-            v = forward_deprecated(_who(who), v, _warnings._DEPRECATED, stacklevel=5)
-            # A model table's keys and words renamed in that model alone.
-            if isinstance(v.get("type"), str):
-                v = forward_model(_who(who), v["type"], v, stacklevel=5)
             # The spec's and its model table's keys are parameters; any
             # other dict is one parameter's value.
             if key in ("spec", "model"):
@@ -487,10 +478,30 @@ _NO_FEATURES = {
     "seqtest": "it reads only its targets, or the residuals of the specs a and b name",
 }
 
-#: The parameters renamed in one builder whose old name another keeps
+#: The parameters renamed in one builder, or whose old name another keeps
 #: (docs/PLAN.md task 195, N11): ``rls``'s ``ridge`` is ``delta``, and
-#: ``ridge`` is still :func:`ewridge`'s, :func:`huber`'s and :func:`quantile`'s.
-_RENAMED_IN = {"rls": {"ridge": "delta"}}
+#: ``ridge`` is still :func:`ewridge`'s, :func:`huber`'s and :func:`quantile`'s;
+#: ``kmeans``' ``k`` is ``n_clusters`` and ``hmm``'s ``n_components``. The
+#: names renamed for 1.0 and read until 2.0 are refused here since: the
+#: builder names the new one.
+_RENAMED_IN = {
+    "rls": {"ridge": "delta"},
+    "kmeans": {"k": "n_clusters", "seed_rule": "init"},
+    "hmm": {"k": "n_components", "seed_rule": "init", "covariance": "covariance_type"},
+    "ew_class": {"covariance": "covariance_type", "window_every": "snapshot_every"},
+    "ewridge": {"window_every": "snapshot_every"},
+    "lasso": {"window_every": "snapshot_every", "lasso_path": "penalties"},
+    "ew_cov": {"window_every": "snapshot_every", "max_rows_between_pca": "max_rows_between_pcas"},
+    "marginal": {"window_every": "snapshot_every"},
+    "bocpd": {
+        "emission": "covariance_type",
+        "prior_mean": "mean_prior",
+        "prior_kappa": "mean_precision_prior",
+        "prior_nu": "degrees_of_freedom_prior",
+        "prior_scale": "covariance_prior",
+    },
+    "corrchange": {"span_rows": "window_rows", "reset_on_flag": "change_action"},
+}
 
 #: The keywords of the functions that run a stream that task 196 renamed
 #: (docs/PLAN.md §18, N2): ``chunk_size`` is Polars' name on the call it
@@ -691,11 +702,7 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
                 "Pass the name of the spec's output column as its first argument."
             )
         who = f"spec {quoted(name)}"
-        # A keyword renamed after 1.0, read as its new name with a warning
-        # pointed at the caller's line.
-        given = forward_deprecated(who, kwargs, _warnings._DEPRECATED, stacklevel=3)
-        # And a keyword or a word renamed in this model alone (task 244).
-        given = forward_model(who, fn.__name__, given, stacklevel=3)
+        given = kwargs
         # Every keyword is checked, and every problem raised at once (WRITING
         # §11; task 338's decision 2): one keyword's problem does not hide the
         # next keyword's.

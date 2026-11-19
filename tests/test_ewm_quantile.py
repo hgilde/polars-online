@@ -286,7 +286,7 @@ def test_a_quantiles_parameters_are_checked_by_name() -> None:
     ]:
         with pytest.raises(err, match=says):
             po.ewm_quantile("x", half_life=1.0, **bad)
-    with pytest.raises(TypeError, match="po.ewm_quantile: reverse=True needs window_size"):
+    with pytest.raises(ValueError, match="po.ewm_quantile: reverse=True needs window_size"):
         po.ewm_quantile("x", quantile=0.5, half_life=1.0, reverse=True)
     with pytest.raises(ValueError, match="the input holds another window operator"):
         po.ewm_quantile(po.ewm_mean("x", half_life=1.0), quantile=0.5, half_life=1.0)

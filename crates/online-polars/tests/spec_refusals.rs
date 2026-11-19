@@ -691,89 +691,53 @@ fn a_window_runs_clock_rules_are_said_in_a_windows_words() {
     );
 }
 
-/// A deprecated model key forwarded beside the key it became is refused;
-/// one forwarded alone keeps a value that is not its word for the new key
-/// to read or refuse in its own words, after the notice Python's builders
-/// give the same value (task 352: a TOML file's had none). Inside a spec,
-/// each notice and refusal names it.
+/// A model key the 1.x series forwarded is refused, naming the current one,
+/// where the model takes it; a model that takes neither is told nothing,
+/// and a word renamed with it is told its new spelling.
 #[test]
-fn a_deprecated_model_key_beside_its_new_name_is_refused() {
-    use online_polars::forward_deprecated_in_models;
-    for json in [
-        r#"{"type": "bocpd", "emission": "robust", "covariance_type": "diag"}"#,
-        r#"{"type": "corrchange", "reset_on_flag": true, "change_action": "flag"}"#,
+fn a_removed_model_key_is_refused_naming_the_current_one() {
+    let refused = |model: &str| -> String {
+        let msg = serde_json::from_str::<online_polars::Spec>(&format!(
+            r#"{{"name": "m", "model": {model}, "features": ["x0", "x1"], "half_life": 10.0}}"#
+        ))
+        .unwrap_err()
+        .to_string();
+        online_polars::name_renamed(&msg)
+    };
+    for (model, old, new) in [
+        (r#"{"type": "kmeans", "k": 2}"#, "k", "n_clusters"),
+        (r#"{"type": "hmm", "k": 2}"#, "k", "n_components"),
+        (
+            r#"{"type": "bocpd", "emission": "robust"}"#,
+            "emission",
+            "covariance_type",
+        ),
+        (
+            r#"{"type": "corrchange", "reset_on_flag": true}"#,
+            "reset_on_flag",
+            "change_action",
+        ),
+        (
+            r#"{"type": "ewridge", "window_every": 5}"#,
+            "window_every",
+            "snapshot_every",
+        ),
     ] {
-        let mut v: serde_json::Value = serde_json::from_str(json).unwrap();
-        let e = forward_deprecated_in_models(&mut v).unwrap_err();
-        assert!(
-            e.contains("was renamed") && e.contains("both are given"),
-            "{e}"
-        );
+        let e = refused(model);
+        assert!(e.ends_with(&format!("; {old} was renamed {new}")), "{e}");
     }
-    // A word that never was one goes on as itself, with no robust_beta.
-    let mut v: serde_json::Value =
-        serde_json::from_str(r#"{"type": "bocpd", "emission": "laplace"}"#).unwrap();
-    let notices = forward_deprecated_in_models(&mut v).unwrap();
-    assert_eq!(v["covariance_type"], "laplace");
-    assert!(v.get("robust_beta").is_none(), "{v}");
-    assert_eq!(
-        notices,
-        [
-            "emission = \"laplace\" is deprecated: it is read as covariance_type = \"laplace\" \
-             until the next major version, which refuses it. Write covariance_type = \
-             \"laplace\" instead."
-        ]
-    );
-    // A spec's model table: the notice names the spec, and the value of
-    // robust_beta to write.
-    let mut v: serde_json::Value =
-        serde_json::from_str(r#"{"name": "b", "model": {"type": "bocpd", "emission": "robust"}}"#)
-            .unwrap();
-    let notices = forward_deprecated_in_models(&mut v).unwrap();
-    assert_eq!(
-        notices,
-        [
-            "spec \"b\": emission = \"robust\" is deprecated: it is read as covariance_type = \
-             \"diag\" with robust_beta, 0.1 where none is given, until the next major version, \
-             which refuses it. Write covariance_type = \"diag\" and robust_beta = 0.1 instead."
-        ]
-    );
-    let mut v: serde_json::Value = serde_json::from_str(
-        r#"{"name": "b", "model": {"type": "bocpd", "emission": "robust", "covariance_type": "diag"}}"#,
+    // Another model's `k` is plain: it takes neither new name.
+    let e = refused(r#"{"type": "ewridge", "k": 2}"#);
+    assert!(!e.contains("was renamed"), "{e}");
+    // A word renamed with them is told its new spelling.
+    let mut spec: online_polars::Spec = serde_json::from_str(
+        r#"{"name": "m", "model": {"type": "kmeans", "n_clusters": 2, "init": "kmeanspp"},
+            "features": ["x0", "x1"], "half_life": 10.0}"#,
     )
     .unwrap();
-    let e = forward_deprecated_in_models(&mut v).unwrap_err();
-    assert!(e.starts_with("spec \"b\": emission was renamed"), "{e}");
-    // A value that is not a word at all goes on unchanged, after the notice.
-    let mut v: serde_json::Value =
-        serde_json::from_str(r#"{"type": "bocpd", "emission": 3}"#).unwrap();
-    let notices = forward_deprecated_in_models(&mut v).unwrap();
-    assert_eq!(v["covariance_type"], 3);
-    assert_eq!(
-        notices,
-        [
-            "emission = 3 is deprecated: it is read as covariance_type = 3 until the next major \
-             version, which refuses it. Write covariance_type = 3 instead."
-        ]
-    );
-    // `reset_on_flag = false` is the flag, and a value that is not a
-    // boolean goes on unchanged.
-    let mut v: serde_json::Value =
-        serde_json::from_str(r#"{"type": "corrchange", "reset_on_flag": false}"#).unwrap();
-    forward_deprecated_in_models(&mut v).unwrap();
-    assert_eq!(v["change_action"], "flag");
-    let mut v: serde_json::Value =
-        serde_json::from_str(r#"{"type": "corrchange", "reset_on_flag": "yes"}"#).unwrap();
-    let notices = forward_deprecated_in_models(&mut v).unwrap();
-    assert_eq!(v["change_action"], "yes");
-    assert_eq!(
-        notices,
-        [
-            "reset_on_flag = \"yes\" is deprecated: it is read as change_action = \"yes\" until \
-             the next major version, which refuses it. Write change_action = \"reset\" or \
-             \"flag\" instead."
-        ]
-    );
+    spec.fill_defaults();
+    let e = spec.validate().unwrap_err();
+    assert!(e.contains("the old name of \"k-means++\""), "{e}");
 }
 
 /// A word refusal from serde with an empty list of words is not one this

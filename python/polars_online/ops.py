@@ -218,14 +218,13 @@ variance or a standard deviation, and a window looking ahead under
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal
 
 import polars as pl
 
 from polars_online._errors import RefusedValueError
 from polars_online._formula import operator
-from polars_online._warnings import deprecated_alias
+from polars_online._renamed import renamed_function
 
 if TYPE_CHECKING:
     from polars_online._duration import Duration
@@ -901,42 +900,11 @@ def ewm_quantile(
     )
 
 
-def _forward(kind: str) -> Callable[..., pl.Expr]:
-    """The old name of ``ewm_<kind>(reverse=True)``, forwarded with a
-    deprecation warning."""
-    new = {"mean": ewm_mean, "sum": ewm_sum, "rate": ewm_rate}[kind]
-
-    @deprecated_alias(f"po.rewm_{kind}", f"po.ewm_{kind}(..., reverse=True)")
-    def old(
-        input: str | pl.Expr,
-        *,
-        half_life: float | Duration,
-        window_size: float | Duration,
-        closed: Literal["right", "left", "both", "none"] = "right",
-        min_samples: int = 0 if kind == "sum" else 1,
-        partial: Literal["keep", "null", "drop"] | None = None,
-    ) -> pl.Expr:
-        return new(
-            input,
-            half_life=half_life,
-            window_size=window_size,
-            closed=closed,
-            min_samples=min_samples,
-            partial=partial,
-            reverse=True,
-        )
-
-    old.__name__ = old.__qualname__ = f"rewm_{kind}"
-    old.__doc__ = (
-        f"Renamed :func:`ewm_{kind}` with ``reverse=True``: each call raises a "
-        ":class:`~polars_online.PolarsOnlineDeprecationWarning`, then gives that."
-    )
-    return old
-
-
-rewm_mean = _forward("mean")
-rewm_sum = _forward("sum")
-rewm_rate = _forward("rate")
+#: The names the reversed operators had, which refuse the call naming the
+#: ``reverse=True`` form that replaced them.
+rewm_mean = renamed_function("po.rewm_mean", "po.ewm_mean(..., reverse=True)")
+rewm_sum = renamed_function("po.rewm_sum", "po.ewm_sum(..., reverse=True)")
+rewm_rate = renamed_function("po.rewm_rate", "po.ewm_rate(..., reverse=True)")
 
 
 def ewm_var(

@@ -10,14 +10,14 @@ import os
 import warnings
 from collections.abc import Collection, Iterable, Iterator
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, Literal, overload
+from typing import IO, TYPE_CHECKING, Any, Literal, NoReturn, overload
 
 import polars as pl
 
 from polars_online import _polars_online as _native
 from polars_online._errors import ColumnNotFoundError, WrongTypeError
 from polars_online._polars_online import ArrowStruct
-from polars_online._renamed import renamed_method
+from polars_online._renamed import renamed_keywords, renamed_method
 from polars_online._spec import (
     _coef_index_schema,
     _from_json,
@@ -27,13 +27,7 @@ from polars_online._spec import (
     output_index,
     target_name,
 )
-from polars_online._warnings import (
-    PolarsOnlineDeprecationWarning,
-    deprecated_alias,
-    deprecated_keywords,
-    keyword_only_forwarded,
-    warn_unstable,
-)
+from polars_online._warnings import warn_unstable
 
 if TYPE_CHECKING:
     from polars_online.gram import Gram
@@ -83,30 +77,25 @@ __all__ = ["ModelBank"]
 
 
 class _CalledInt(int):
-    """:attr:`ModelBank.rows_fed`'s value, which still answers the call it
-    was before it became a property, with the deprecation warning."""
+    """:attr:`ModelBank.rows_fed`'s value, which refuses the call it was
+    before it became a property, naming the property."""
 
     def __call__(self) -> int:
-        _warn_called("rows_fed")
-        return int(self)
+        _refuse_called("rows_fed")
 
 
 class _CalledDict(dict[str, list[str]]):
-    """:attr:`ModelBank.output_fields`'s value, which still answers the call
-    it was before it became a property, with the deprecation warning."""
+    """:attr:`ModelBank.output_fields`'s value, which refuses the call it
+    was before it became a property, naming the property."""
 
     def __call__(self) -> dict[str, list[str]]:
-        _warn_called("output_fields")
-        return dict(self)
+        _refuse_called("output_fields")
 
 
-def _warn_called(name: str) -> None:
+def _refuse_called(name: str) -> NoReturn:
     who = f"ModelBank.{name}"
-    warnings.warn(
-        f"{who}: it is a property, so calling it is deprecated, and the call works only until "
-        f"the next major version, which refuses it. Read bank.{name} without the call.",
-        PolarsOnlineDeprecationWarning,
-        stacklevel=3,
+    raise TypeError(
+        f"{who}: it is a property, so it takes no call. Read bank.{name} without the call."
     )
 
 
@@ -439,9 +428,7 @@ class ModelBank:
 
         It is a property, as :attr:`specs` is, and as Polars' ``height`` is:
         a count the bank keeps, read without work. Calling it, as
-        ``bank.rows_fed()``, is deprecated: it still returns the count, with
-        a :class:`~polars_online.PolarsOnlineDeprecationWarning`, until the
-        next major version refuses it.
+        ``bank.rows_fed()``, is refused with a ``TypeError`` that says so.
         """
         return _CalledInt(self._native.rows_fed())
 
@@ -1229,7 +1216,6 @@ class ModelBank:
             )
         raise TypeError(msg)
 
-    @keyword_only_forwarded("ModelBank.fit_predict_batches", ("closed_groups", "chunk_size"))
     @_renamed_keywords
     def fit_predict_batches(
         self,
@@ -1489,7 +1475,6 @@ class ModelBank:
             return batches.iter_slices(n_rows=chunk_size)
         return batches
 
-    @keyword_only_forwarded("ModelBank.fit", ("closed_groups", "chunk_size"))
     @_renamed_keywords
     def fit(
         self,
@@ -3602,16 +3587,14 @@ class ModelBank:
         For each spec, the list is :func:`polars_online.spec.output_fields`
         of that spec. The spec fixes its fields, so this is the output's
         layout before any row is fed. It is a property, as :attr:`specs` is.
-        Calling it, as ``bank.output_fields()``, is deprecated: it still
-        returns the mapping, with a
-        :class:`~polars_online.PolarsOnlineDeprecationWarning`, until the
-        next major version refuses it.
+        Calling it, as ``bank.output_fields()``, is refused with a
+        ``TypeError`` that says so.
         """
         return _CalledDict(
             zip(self._native.spec_names(), self._native.output_fields(), strict=True)
         )
 
-    @deprecated_keywords("ModelBank.save", {"path": "file"})
+    @renamed_keywords("ModelBank.save", {"path": "file"})
     def save(self, file: str | os.PathLike[str] | IO[bytes]) -> None:
         """Write the bank's state to a file that :meth:`load` reads on any supported OS.
 
@@ -3879,27 +3862,11 @@ class ModelBank:
             raise TypeError(msg)
         return None
 
-    @deprecated_alias("ModelBank.to_json", "ModelBank.write_json", ", which returns the same text")
-    def to_json(self, *, pretty: bool = True) -> str:
-        """Return the state as JSON text: the old name of :meth:`write_json`.
-
-        Use :meth:`write_json` without a file, which returns the same text.
-        Each call issues a
-        :class:`~polars_online.PolarsOnlineDeprecationWarning`.
-        """
-        return self.write_json(pretty=pretty)
-
-    @deprecated_alias("ModelBank.save_json", "ModelBank.write_json", ", which takes the same path")
-    def save_json(self, path: str | os.PathLike[str], *, pretty: bool = True) -> None:
-        """Write the state as JSON to a path: the old name of :meth:`write_json`.
-
-        Use :meth:`write_json`, which takes the same path. Each call issues a
-        :class:`~polars_online.PolarsOnlineDeprecationWarning`.
-        """
-        self.write_json(path, pretty=pretty)
+    to_json = renamed_method("ModelBank", "to_json", "write_json")
+    save_json = renamed_method("ModelBank", "save_json", "write_json")
 
     @classmethod
-    @deprecated_keywords("ModelBank.load", {"path": "source"})
+    @renamed_keywords("ModelBank.load", {"path": "source"})
     def load(
         cls,
         source: str | os.PathLike[str] | bytes | IO[bytes],

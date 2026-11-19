@@ -228,9 +228,8 @@ target](GLOSSARY.md#fitting-a-model) reads them from its spec. With `group`, eac
 
 **Unlike a spec, `with_windows` needs no `session_gap` for a session, since
 every window ends at a session change.** So no window measures the clock's
-step across one. A number or a duration given for `session_gap` changes nothing,
-and issues a `PolarsOnlineDeprecationWarning`. Only `session_gap="reset"`
-acts, on the windows looking ahead that a session change leaves open.
+step across one. A number or a duration given for `session_gap` is refused, since
+it would change nothing. Only `session_gap="reset"` acts, on the windows looking ahead that a session change leaves open.
 
 **A gap longer than `gap_cap`, or a session change, ends every window open
 across it, and the operator's `partial` sets what the cut window gives.**

@@ -379,7 +379,7 @@ def test_a_value_column_that_is_not_numeric_is_refused_by_name(value):
     all null and the grid was empty with nothing said, and a ``Date`` was
     read as its day count."""
     df = pl.DataFrame({"series": ["a", "b", "c"], "t": [1.0, 2.0, 3.0], "v": value})
-    with pytest.raises(ValueError, match="value column 'v' must be numeric, but it is"):
+    with pytest.raises(TypeError, match="value column 'v' must be numeric, but it is"):
         run(df)
 
 
@@ -413,7 +413,7 @@ def test_a_clock_column_that_is_neither_numeric_nor_temporal_is_refused_by_name(
     cast without a check: text of digits was read as a clock, and other
     text was refused as a null clock on its first row."""
     df = pl.DataFrame({"series": ["a", "b", "c"], "t": clock, "v": [1.0, 2.0, 3.0]})
-    with pytest.raises(ValueError, match="clock column 't' must be numeric or temporal, but it is"):
+    with pytest.raises(TypeError, match="clock column 't' must be numeric or temporal, but it is"):
         run(df)
 
 

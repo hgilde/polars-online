@@ -151,8 +151,8 @@ def test_coef_marginal_and_closed_groups_carry_the_instance_decay():
 
 def test_cross_centered_is_the_one_spelling():
     """``cross_centred`` was the library's one British spelling: the gram
-    key, the closed column, and what ``po.gram.from_row`` reads, which takes
-    the old key for one release with a deprecation warning."""
+    key, the closed column, and what ``po.gram.from_row`` reads, which
+    refuses the old key."""
     spec = po.spec.ewridge(
         "r", targets=["y"], features=["x0"], half_life=50.0, group="g", group_close="monotone"
     )
@@ -164,10 +164,10 @@ def test_cross_centered_is_the_one_spelling():
     assert "cross_centered" in closed.columns and "cross_centred" not in closed.columns
     row = closed.head(1)
     want = po.gram.from_row(row)
+    assert "cross_centered" in want
     old = row.rename({"cross_centered": "cross_centred"})
-    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="cross_centered"):
-        got = po.gram.from_row(old)
-    np.testing.assert_array_equal(got["cross_centered"], want["cross_centered"])
+    with pytest.raises(TypeError, match="cross_centred was renamed cross_centered"):
+        po.gram.from_row(old)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         po.gram.from_row(row)

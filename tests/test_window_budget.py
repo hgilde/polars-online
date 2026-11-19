@@ -151,7 +151,7 @@ def test_a_broken_bank_names_itself_before_a_bad_column(tmp_path):
         po.ModelBank([_spec()]).save(tmp_path / "nowhere" / "b.state")
     bad = df.head(1).with_columns(pl.col("x0").cast(pl.String))
     # The frame is bad on its own: a healthy bank refuses it for the column.
-    with pytest.raises(ValueError, match='"x0" must be a number, but it is String'):
+    with pytest.raises(TypeError, match='"x0" must be a number, but it is String'):
         po.ModelBank([_spec()]).fit_predict(bad)
     for call in (bank.fit_predict, bank.predict):
         with pytest.raises(ValueError, match="window_budget.*cannot go on"):

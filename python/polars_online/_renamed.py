@@ -11,9 +11,8 @@ is refused by :func:`removed_keywords`, saying what replaces it.
 
 These are the refusals every module uses: the stream functions'
 ``_spec._renamed_keywords`` (``chunk_size``, task 196) is
-:func:`renamed_keywords`. From 1.0 a rename is forwarded instead, with a
-warning, until the next major version refuses it here:
-:mod:`polars_online._warnings` keeps that table and its warning.
+:func:`renamed_keywords`. A rename is never forwarded: every old name is
+refused here, naming the new one.
 """
 
 from __future__ import annotations
@@ -100,8 +99,7 @@ def renamed_function(old: str, new: str, more: str = "") -> Callable[..., NoRetu
 
 def is_renamed(obj: object) -> bool:
     """Whether ``obj`` is kept only under an old name: a refusal stub from
-    :func:`renamed_function` or :func:`renamed_method`, or a forwarding from
-    :func:`polars_online._warnings.deprecated_alias`. The API snapshot and the
+    :func:`renamed_function` or :func:`renamed_method`. The API snapshot and the
     reference leave such a name out, so both show the new name only."""
     target = obj.fget if isinstance(obj, property) else obj
     return getattr(target, RENAMED_MARK, None) is not None

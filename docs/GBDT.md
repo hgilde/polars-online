@@ -194,14 +194,14 @@ print("prediction at x0 = 0:", ", ".join(f"{v} {p:.1f}" for v, p in zip(venues, 
 frame.with_columns(pl.col("venue").cast(pl.String).cast(pl.Categorical)).write_parquet("cat.parquet")
 try:
     po.gbdt.xgboost_matrix("cat.parquet", label="y", features=["venue", "x0"])
-except ValueError:
-    print("a pl.Categorical is refused: ValueError")
+except TypeError:
+    print("a pl.Categorical is refused: TypeError")
 ```
 
 ```text
 feature types: ['c', 'float']
 prediction at x0 = 0: NYSE -0.1, ARCA 1.1, BATS -1.1, IEX 2.1
-a pl.Categorical is refused: ValueError
+a pl.Categorical is refused: TypeError
 ```
 
 ## Train with a Huber loss
@@ -396,7 +396,7 @@ and what to do:
 
 | what you see | what it means | what to do |
 |---|---|---|
-| `ValueError` naming a `pl.Categorical` | its codes depend on the process that made them | cast the column to a `pl.Enum` ([Train with a categorical feature](#train-with-a-categorical-feature)) |
+| `TypeError` naming a `pl.Categorical` | its codes depend on the process that made them | cast the column to a `pl.Enum` ([Train with a categorical feature](#train-with-a-categorical-feature)) |
 | `LightGBMError: Cannot change max_bin after constructed Dataset handle.` | a binning parameter reached `lgb.train`, after the bins were set | pass it to `lightgbm_dataset` ([Set LightGBM's binning parameters when you build](#set-lightgbms-binning-parameters-when-you-build)) |
 | a `UserWarning` that the native engine cannot load a library, under `engine="auto"` | the build fell back to the Python engine, which grows the same trees more slowly | read the cause the warning names in parentheses, or pass `engine="python"` to choose that engine and silence the warning |
 | XGBoost's trees differ from those its own sketch of every row gives | the cuts come from a sample of 200,000 rows | pass `sample_rows=None` to keep XGBoost's own sketch |

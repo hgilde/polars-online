@@ -75,7 +75,7 @@ from typing import Any
 
 from polars_online._errors import WrongTypeError
 from polars_online._renamed import renamed_function
-from polars_online._warnings import deprecated_alias, unstable
+from polars_online._warnings import unstable
 
 __all__ = [
     "Z_CLIP",
@@ -174,26 +174,12 @@ def _gram_matrix(np: Any, obj: Any, who: str, param: str) -> Any:
     return x
 
 
-@deprecated_alias(
+matrix = renamed_function(
     "po.corr.matrix",
     "po.gram.correlation",
     " for a Gram or a closed row's from_row, and every po.corr function takes the array, the "
     "Gram or the closed row itself",
 )
-def matrix(obj: Any) -> Any:
-    """Renamed :func:`polars_online.gram.correlation` for a Gram: each call
-    raises a :class:`~polars_online.PolarsOnlineDeprecationWarning`, then
-    returns what :func:`polars_online.gram.correlation` does for a Gram or a
-    closed group's row, its intercept included, and an array as a float
-    array."""
-    if hasattr(obj, "to_dicts") or (
-        isinstance(obj, dict) and "columns" in obj and "comoments" in obj
-    ):
-        from polars_online import gram as _gram
-
-        g: Any = obj if isinstance(obj, dict) and "means" in obj else _gram.from_row(obj)
-        return _gram.correlation(g)
-    return _matrix(obj, "po.corr.matrix", "obj")
 
 
 # --- Fisher's transform ------------------------------------------------------

@@ -883,28 +883,24 @@ def test_theta_sets_the_window_and_is_the_window_given_outright(psd):
     assert counts == sorted(counts, reverse=True) and len(set(counts)) == 4, counts
 
 
-def test_theta_beside_preavg_rows_is_deprecated_and_changes_nothing():
+def test_theta_beside_preavg_rows_is_refused():
     """``preavg_rows`` fixes the window, which is all ``theta`` sets, so a
     ``theta`` beside it is read by nothing, even at a value whose own window
-    would be past ``block_rows`` and refused alone (theta 13 below). Every
-    other key its configuration does not read is refused by name; this one
-    is deprecated instead, as the user decided (task 278, b11): one warning
-    naming the caller's line, and the block exactly as without it."""
+    would be past ``block_rows`` and refused alone (theta 13 below). The 1.x
+    series accepted it and ignored it, with a deprecation warning; it is
+    refused, naming ``theta``, and ``theta`` alone still sets the window."""
     df = ticks(n=1200)
     base, _ = block(df, kind="preavg", preavg_rows=12)
     for theta in (0.5, 3.0, 13.0):
-        with pytest.warns(po.PolarsOnlineDeprecationWarning) as caught:
-            got, _ = block(df, kind="preavg", preavg_rows=12, theta=theta)
-        assert [str(w.message) for w in caught] == [
-            f'spec "r": theta={theta!r} is ignored beside preavg_rows, which fixes the '
-            "pre-averaging span theta would set. The next major version refuses it. "
-            "Leave theta out."
-        ]
-        assert caught[0].filename == __file__, "the warning names the caller's line"
-        assert got.equals(base), theta
+        with pytest.raises(
+            ValueError,
+            match=f'spec "r": theta={theta!r} has no effect beside preavg_rows, which fixes '
+            "the pre-averaging span theta would set. Leave theta out.",
+        ):
+            block(df, kind="preavg", preavg_rows=12, theta=theta)
     with pytest.raises(ValueError, match="theta = 13 gives a pre-averaging span of 604 returns"):
         spec(kind="preavg", theta=13.0)
-    # theta alone sets the window, and warns of nothing.
+    # theta alone sets the window.
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         alone, _ = block(df, kind="preavg", theta=3.0)

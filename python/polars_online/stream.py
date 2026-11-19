@@ -60,7 +60,7 @@ from typing import Any, overload
 import polars as pl
 from polars.io.plugins import register_io_source
 
-from polars_online import _formula, _warnings
+from polars_online import _formula
 from polars_online import _polars_online as _native
 from polars_online._bank import _refuse_uint128
 from polars_online._duration import Duration, clock_nanoseconds, duration_text
@@ -82,7 +82,7 @@ from polars_online._frame import (
     _warn_if_order_unspecified,
 )
 from polars_online._spec import _RENAMED, _RENAMED_KEYWORDS, _renamed_keywords
-from polars_online._warnings import forward_deprecated, warn_unstable
+from polars_online._warnings import warn_unstable
 
 __all__ = ["ROLE", "embargo", "refresh_time", "with_windows"]
 
@@ -841,20 +841,6 @@ def _clock_value(value: Any, who: str, key: str) -> Any:
     return duration_text(value, who, key)
 
 
-def _warn_session_gap_ignored(who: str, value: Any) -> None:
-    """The :class:`~polars_online.PolarsOnlineDeprecationWarning` for a
-    ``session_gap`` that is a number or a duration, which no window reads,
-    pointed at the first line outside the package."""
-    warnings.warn(
-        f"{who}: session_gap = {value!r} is deprecated and ignored until the next major "
-        "version, which refuses it: every window ends at a session change, so no window "
-        "measures the clock's step across one. Leave session_gap out, or set it to "
-        '"reset" to discard the windows still open at a session change rather than cut them.',
-        _warnings.PolarsOnlineDeprecationWarning,
-        skip_file_prefixes=(_PACKAGE_DIR,),
-    )
-
-
 #: The package's directory: a warning skips its frames, so it names the
 #: caller's line through any wrapper (the frame namespace's method).
 _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -998,7 +984,7 @@ def with_windows(
         A column whose change of value ends every window open across it.
     ``session_gap``
         ``"reset"``, to discard the windows a session change leaves open rather
-        than cut them. Needs ``session``. A number or a duration is deprecated
+        than cut them. Needs ``session``. A number or a duration is refused
         here, since no window reads it (Notes).
     ``group``
         A column whose every value has its own clock, sessions and windows. A
@@ -1081,9 +1067,6 @@ def with_windows(
         ``save_state`` is a folder, on every system. A ``load_state`` that is
         a folder raises it too on macOS and Linux, and ``PermissionError`` on
         Windows, where opening a folder fails that way.
-    :class:`~polars_online.PolarsOnlineDeprecationWarning`
-        A warning, not an error: a ``session_gap`` that is a number or a
-        duration, which no window reads.
     :class:`~polars_online.UnstableWarning`
         A warning, under ``POLARS_ONLINE_WARN_UNSTABLE=1``: a call with
         ``load_state`` or ``save_state``, whose file format is unstable.
@@ -1303,11 +1286,7 @@ def with_windows(
                 f"{_and_list(clash)}, or like=."
             )
         # A hand-written dict with a clock key under its old name would be
-        # read as not setting it (review R1, F1): refused naming the new one,
-        # or, renamed after 1.0, read as it with a warning.
-        like = forward_deprecated(
-            f"{who}: like= spec {like.get('name')!r}", like, _warnings._DEPRECATED
-        )
+        # read as not setting it (review R1, F1): refused naming the new one.
         if old := [k for k in like if k in _RENAMED]:
             raise TypeError(
                 f"{who}: like= spec {like.get('name')!r}: {old[0]} was renamed "
@@ -1367,7 +1346,12 @@ def with_windows(
     # Once the call is known to run, so a gap the run refuses is refused in
     # its own words first (task 278, the user's decision of 2026-10-25).
     if like is None and given["session_gap"] is not None and given["session_gap"] != "reset":
-        _warn_session_gap_ignored(who, given["session_gap"])
+        raise ValueError(
+            f"{who}: session_gap = {given['session_gap']!r} is no longer read: every window ends "
+            "at a session change, so no window measures the clock's step across one. Leave "
+            'session_gap out, or set it to "reset" to discard the windows still open at a '
+            "session change rather than cut them."
+        )
     schema = first.feed(empty).schema
     needed = set(first.needed())
 

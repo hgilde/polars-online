@@ -503,7 +503,7 @@ def test_a_target_known_at_its_own_row_is_pointed_to_the_call_that_makes_its_col
         r"but it is list \[3\]",
     ):
         spec(3)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="temporal column can only be a clock"):
+    with pytest.raises(TypeError, match="temporal column can only be a clock"):
         po.ModelBank([spec(fwd())]).fit_predict(
             stream(20, 1).with_columns(mid=pl.from_epoch(pl.col("t").cast(pl.Int64), time_unit="s"))
         )

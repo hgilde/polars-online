@@ -562,7 +562,7 @@ def test_a_null_key_is_an_ordinary_group_under_session():
 def test_a_key_dtype_that_cannot_be_ordered_is_refused():
     df = pl.DataFrame({"g": [1.5, 2.5], "x0": [1.0, 2.0], "x1": [1.0, 2.0]})
     bank = po.ModelBank([cov_spec(group_close="monotone")])
-    with pytest.raises(ValueError, match="needs a group column it can order"):
+    with pytest.raises(TypeError, match="needs a group column it can order"):
         bank.fit_predict(df)
 
 
@@ -573,7 +573,7 @@ def test_predict_refuses_a_key_dtype_that_cannot_be_ordered_too():
     whichever call reads it (review 2026-09-17, B4)."""
     df = pl.DataFrame({"g": [1.5, 2.5], "x0": [1.0, 2.0], "x1": [1.0, 2.0]})
     bank = po.ModelBank([cov_spec(group_close="monotone")])
-    with pytest.raises(ValueError, match="needs a group column it can order"):
+    with pytest.raises(TypeError, match="needs a group column it can order"):
         bank.predict(df)
 
 

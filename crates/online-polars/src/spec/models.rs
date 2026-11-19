@@ -289,7 +289,9 @@ impl Spec {
                         .filter(|st| !OK.contains(&st.as_str()))
                         .collect();
                     for st in &unknown {
-                        let renamed = RENAMED_VALUES.iter().find(|(old, _)| *old == st.as_str());
+                        let renamed = RENAMED_VALUES
+                            .iter()
+                            .find(|(old, new)| *old == st.as_str() && OK.contains(new));
                         no.refuse(match renamed {
                             Some((old, new)) => format!(
                                 "spec {:?}: stats lists {old:?}, which was renamed {new:?}. \

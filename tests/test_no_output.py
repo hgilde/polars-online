@@ -259,7 +259,7 @@ class TestTargetsAreOptionalWhereThereAreNone:
         src = tmp_path / "in.parquet"
         frame(n=300, seed=4).write_parquet(src)
         state = tmp_path / "b.state"
-        extra = {"ew_cov": "", "kmeans": "k = 3", "micro": "eps = 1.5"}[model]
+        extra = {"ew_cov": "", "kmeans": "n_clusters = 3", "micro": "eps = 1.5"}[model]
         cfg = tmp_path / "c.toml"
         cfg.write_text(
             f"""

@@ -318,10 +318,7 @@ lacks.** A column the input lacks raises `po.ColumnNotFoundError`, a
 subclass of Polars' own `ColumnNotFoundError` and of `ValueError`. A column
 or value of the wrong type, such as a text feature, raises
 `po.WrongTypeError`, a `TypeError`. A refused value raises `ValueError`, or
-`po.RefusedValueError`, a `ValueError`, where a `TypeError` was raised for
-it in an earlier release. Until the next major version, each of these two
-also keeps the other class as a parent, so a handler written for either
-still catches it.
+`po.RefusedValueError`, a `ValueError`.
 
 **A clock column the bank cannot read exactly is refused, by row or by
 name.** A `UInt64` value past the largest `Int64` is refused by row. An

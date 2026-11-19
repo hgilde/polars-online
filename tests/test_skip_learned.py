@@ -146,12 +146,12 @@ def test_what_it_refuses():
     with pytest.raises(ValueError, match="group column 'g' is not in the input"):
         bank.skip_learned(frame().drop("g"))
     temporal = frame().with_columns(t=pl.from_epoch(pl.col("t").cast(pl.Int64), time_unit="s"))
-    with pytest.raises(ValueError, match="temporal in the frame, but it was numeric in the bank"):
+    with pytest.raises(TypeError, match="temporal in the frame, but it was numeric in the bank"):
         bank.skip_learned(temporal)
     # The docstring's third refusal (task 239): a clock column that is
     # neither numeric nor temporal.
     text = frame().with_columns(t=pl.col("t").cast(pl.String))
-    with pytest.raises(ValueError, match="clock column 't' has dtype String, which is not a clock"):
+    with pytest.raises(TypeError, match="clock column 't' has dtype String, which is not a clock"):
         bank.skip_learned(text)
 
 

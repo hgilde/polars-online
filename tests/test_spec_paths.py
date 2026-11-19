@@ -6,7 +6,6 @@ null. Each refusal names the spec and the parameter."""
 
 from __future__ import annotations
 
-import warnings
 from datetime import timedelta
 
 import polars as pl
@@ -50,17 +49,15 @@ def test_bin_edges_naming_a_column_that_is_no_feature_is_refused():
         po.spec.marginal("m", bin_edges={"x": [0.0, 1.0], "z": [0.0, 1.0]}, **BASE)
 
 
-def test_corrchange_s_old_keyword_beside_its_new_name_is_refused():
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", po.PolarsOnlineDeprecationWarning)
-        with pytest.raises(
-            TypeError,
-            match='spec "m": reset_on_flag was renamed change_action, and both are given. '
-            "Give change_action alone.",
-        ):
-            po.spec.corrchange(
-                "m", features=["x", "z"], half_life=10.0, reset_on_flag=True, change_action="flag"
-            )
+def test_corrchange_s_old_keyword_is_refused_naming_the_new_one():
+    with pytest.raises(
+        TypeError,
+        match='spec "m": reset_on_flag was renamed change_action, and corrchange\\(\\) takes only '
+        "the new name. Use change_action.",
+    ):
+        po.spec.corrchange(
+            "m", features=["x", "z"], half_life=10.0, reset_on_flag=True, change_action="flag"
+        )
 
 
 def test_a_null_duration_is_refused_by_name():

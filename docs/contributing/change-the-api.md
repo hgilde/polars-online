@@ -73,58 +73,31 @@ CHANGELOG entry names the release kind the diff needs.
 
 ## Rename a stable name
 
-**A renamed stable name keeps working until the next major, with a
-`PolarsOnlineDeprecationWarning` that names the new spelling.**
-`polars_online.PolarsOnlineDeprecationWarning` is a `DeprecationWarning`.
+**A stable name is renamed in a major release, and the old name is refused,
+naming the new one.** Every spelling renamed before 2.0 is refused this
+way, and none is read under its old name. The forwarding tables 1.x kept
+for a spec parameter and a word of one, and the forwardings of a function,
+a keyword, a method and a call form, were removed at 2.0.
 
-**The renames made up to 2026-10-07 stay refused, naming the new name,** by
-tables such as `_RENAMED` in `python/polars_online/_spec.py` and `RENAMED`
-in `crates/online-polars/src/spec.rs`, among others on both sides. A
-model's own refused name is in `_RENAMED_IN` and `RENAMED_WHERE_EXPECTED`,
-and `tests/test_renames.py` holds the refusals. The spec parameters
-renamed for 1.0 are forwarded by `_DEPRECATED_IN` and
-`_DEPRECATED_WORDS_IN` until 2.0, and the functions and keywords renamed
-then by forwardings of their own (step 2). The output fields and frame
-columns renamed then are not read under their old names. `renamed_function` in
-`python/polars_online/_renamed.py` is the refusing stub a pre-1.0 rename
-keeps, not a forwarding one.
+The refusals are tables and stubs, on both sides:
 
-1. **For a spec parameter, or a word a spec parameter takes, add the old
-   name to the forwarding tables, on both sides.** Each Python table in
-   `python/polars_online/_warnings.py` has a Rust twin in
-   `crates/online-polars/src/spec.rs` and `spec/names.rs`, and
-   `tests/test_deprecation.py` holds each pair equal:
+| the old name was | refused by |
+|---|---|
+| a spec parameter, in every model | `_RENAMED` (`python/polars_online/_spec.py`) and `RENAMED` (`crates/online-polars/src/spec.rs`) |
+| a spec parameter, in one model, or one another model keeps | `_RENAMED_IN` and `RENAMED_WHERE_EXPECTED` |
+| a word of a spec parameter | `_RENAMED_WORDS` (`_spec_words.py`) and `RENAMED_VALUES` |
+| a keyword of a function | the decorator `renamed_keywords` (`python/polars_online/_renamed.py`) |
+| a function | the stub `renamed_function` |
+| a method | the stub `renamed_method` |
 
-   | the rename | Python | Rust |
-   |---|---|---|
-   | a key, in every model | `_DEPRECATED` | `DEPRECATED` |
-   | a key, in one model | `_DEPRECATED_IN` | `DEPRECATED_IN` |
-   | a word of one model's parameter | `_DEPRECATED_WORDS_IN` | `DEPRECATED_WORDS_IN` |
+`tests/test_renames.py` and `tests/test_deprecation.py` hold the refusals.
+Add the old name to the table that fits, with the new name in the message,
+and a test that the refusal names it.
 
-   A model's key has a table of its own because one old name went two
-   ways (`kmeans`' `k` is `n_clusters`, `hmm`'s is `n_components`). It
-   also keeps a name another model still takes from moving.
-
-   The Python tables read a spec builder's keyword and a spec dict's key,
-   `with_windows`' `like=` spec included, and the Rust tables a TOML key,
-   at any depth of a spec. A key whose old words each map to new words
-   and may set a second key, as `bocpd`'s `emission` became
-   `covariance_type` (its `"robust"` also sets `robust_beta`), is in none
-   of the tables. It is forwarded by a case of its own in `forward_model`
-   (`_warnings.py`) and its Rust twin `forward_deprecated_in_models`
-   (`spec/names.rs`).
-2. **For any other name, ship a forwarding of its own.** A keyword of
-   another function, a word another function's parameter takes, a
-   function, a command-line flag, an environment variable, an output field
-   or a frame column does not go through the tables. For a keyword, use
-   the decorator `deprecated_keywords` on its function, which keeps the
-   shown signature to the new names, or `forward_deprecated` at the
-   function's top. For the rest, use a stub that warns and calls the new
-   function, an alias for the word, flag or variable, or a second column
-   beside the new one. Each warns with the same
-   `PolarsOnlineDeprecationWarning`.
-3. **Ship the rename in a minor release,** and remove the old name at the
-   next major.
+A minor release can still read an old name for a release, if it needs to,
+by warning with `PolarsOnlineDeprecationWarning`, a `DeprecationWarning`
+that names the new spelling, and the next major refuses the name as above.
+No name is read that way now.
 
 ## Add a spec parameter
 

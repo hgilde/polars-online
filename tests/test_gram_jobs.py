@@ -312,7 +312,7 @@ class TestRidge:
 @pytest.mark.parametrize(
     ("job", "kw", "error", "match"),
     [
-        ("x", {}, ValueError, r"jobs\[0\] must be a mapping of .*, but its type is str"),
+        ("x", {}, TypeError, r"jobs\[0\] must be a mapping of .*, but its type is str"),
         (
             {"subset": 0, "target": "y", "lag": 1},
             {},
@@ -419,7 +419,7 @@ def test_a_malformed_job_is_refused_by_name(job, kw, error, match):
 
 def test_jobs_that_are_no_list_of_jobs_are_refused():
     grams = blocks(frame(seed=20))
-    with pytest.raises(ValueError, match=r"jobs must be a list of mappings.*but its type is int"):
+    with pytest.raises(TypeError, match=r"jobs must be a list of mappings.*but its type is int"):
         pg.solve_subsets(grams, SUBSETS, within=True, jobs=3)
     with pytest.raises(ValueError, match=r"jobs\[1\] names no 'target'"):
         pg.solve_subsets(

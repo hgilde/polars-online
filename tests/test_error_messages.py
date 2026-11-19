@@ -931,7 +931,7 @@ def test_a_string_column_is_refused_not_cast_to_null(role, kw):
     """A non-strict cast of a String column is all null: every prediction null
     and nothing to say why."""
     bank = po.ModelBank([_spec_dict(**kw)])
-    with pytest.raises(ValueError) as exc:
+    with pytest.raises(TypeError) as exc:
         bank.fit_predict(_df())
     text = str(exc.value)
     assert f'spec "m": {role} column "s" must be a number, but it is String' in text, text
@@ -941,7 +941,7 @@ def test_a_string_column_is_refused_not_cast_to_null(role, kw):
 def test_a_nested_key_column_is_refused():
     df = _df().with_columns(l=pl.concat_list("x0"))
     with pytest.raises(
-        ValueError, match=r'group column "l" is List\(Float64\), which cannot be read as text'
+        TypeError, match=r'group column "l" is List\(Float64\), which cannot be read as text'
     ):
         po.ModelBank([_spec_dict(group="l")]).fit_predict(df)
 
@@ -1091,7 +1091,7 @@ def test_a_feature_of_any_dtype_is_either_used_or_named(name):
     if name in NUMERIC:
         po.ModelBank([spec]).fit_predict(df)
         return
-    with pytest.raises(ValueError) as exc:
+    with pytest.raises(TypeError) as exc:
         po.ModelBank([spec]).fit_predict(df)
     assert 'feature column "c"' in str(exc.value), str(exc.value)
     assert "must be a number, but it is" in str(exc.value), str(exc.value)

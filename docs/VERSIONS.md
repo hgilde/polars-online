@@ -79,7 +79,7 @@ change to one shows as a diff in the snapshot:
 | surface | what is API | how a change would break you |
 |---|---|---|
 | output field names, the largest surface | every field name you read from a spec's output column, as `out["m"].struct.field("pred_y")`: `pred_y__r0.000001@h100`, `resid_y__r0.5@h100`, `abs_resid_q0.95_y0`, `weight_sum@h500`. They are built from ridge values, half-life suffixes, feature-set labels, quantile levels and target names | a new output, a renamed suffix or a float rendered another way fails as a `StructFieldNotFoundError` in your pipeline |
-| the spec constructors | the twenty-two model builders of `po.spec`, every keyword's name and every default. The keywords are keyword-only, so their order is not API | a renamed keyword is refused, or forwarded with a warning ([How a renamed name is still read](#how-a-renamed-name-is-still-read)) |
+| the spec constructors | the twenty-two model builders of `po.spec`, every keyword's name and every default. The keywords are keyword-only, so their order is not API | a renamed keyword is refused, naming the new one ([How an old name is refused](#how-an-old-name-is-refused)) |
 | defaults | every default, whether a builder sets it in Python or the bank resolves it in Rust from a keyword left as `None` | no error: it silently changes your numbers, which is worse than breaking your code |
 | state files and the TOML config | a state file's layout and version, and every key of a run config, a spec and each model type | a file or a config that loaded before is refused |
 
@@ -102,7 +102,7 @@ the model's stated definition, the update equations its docstring gives:
 | a fix to numbers that were wrong | minor, declared in the CHANGELOG with the difference `scripts/compare_release.py` measures from the last release |
 | a change of arithmetic order or kernel that moves last bits within rounding | minor, declared in the CHANGELOG with its measured size |
 | a new model, parameter, output or function | minor |
-| a stable name renamed | minor, and the old name keeps working until the next major. Using it warns with a `PolarsOnlineDeprecationWarning` that names the new one, as [How a renamed name is still read](#how-a-renamed-name-is-still-read) says |
+| a stable name renamed | major: the old name is refused, naming the new one, as [How an old name is refused](#how-an-old-name-is-refused) says |
 | a default or a meaning changed, or a stable name removed | major |
 | a change to an unstable part | minor, declared in the CHANGELOG |
 
@@ -206,23 +206,29 @@ with, given or a default. So a bank saved under the old default goes on
 redrawing every 50 rows, and a group it first sees after the load redraws
 every `window_rows` rows.
 
-### How a renamed name is still read
+### How an old name is refused
 
-**A renamed spec parameter, or a renamed word of one, is forwarded by a
-table, and any other renamed name by a forwarding of its own.** This covers
-the parameters, functions and keywords renamed since 2026-10-11. The
-output fields and frame columns renamed at 1.0.0 are not read under their
-old names, and a spec parameter renamed up to 2026-10-07 is refused, with
-an error that names the new one. The tables
-read a spec builder's old keyword, a spec dict's old key, a TOML file's old
-key and an old word of a spec parameter as the new one, at any depth of a
-spec. A table covers every model, or the one model in which the key or
-word changed. They do not reach another function's keyword or the words
-it takes, a function, a command-line flag, an environment variable, an
-output field or a frame column. Each of those ships its own forwarding in the release that renames
-it: a check at the function's top, a stub, an alias or a second column.
-Both warn with `PolarsOnlineDeprecationWarning`, and both last until the
-next major.
+**2.0 reads no name under an old spelling: a renamed name is refused, and
+the error names the new one.** The 1.x series read the parameters,
+functions, keywords and call forms renamed since 2026-10-11 under their old
+names, with a `PolarsOnlineDeprecationWarning`. 2.0 removes each of those
+forwards. The output fields and frame columns renamed at 1.0.0 were never
+read under their old names, and the spec parameters renamed up to
+2026-10-07 were already refused.
+
+A spec builder's old keyword, a spec dict's old key, a TOML file's old key
+and an old word of a spec parameter fail alike. The error is a
+`TypeError` from a builder or a function, and a `ValueError` from a spec
+dict, a TOML file or a word: `kmeans(k=3)` fails with `k was renamed
+n_clusters`, and `init="kmeanspp"` with `the old name of "k-means++"`. A
+name another model still takes, such as `ewridge`'s `k` as a feature, is
+not touched. A name that has no current spelling to point to, or whose
+model takes none, gets the plain unknown-name error.
+
+**Three error classes lost their older parent.** `po.WrongTypeError` is
+a `TypeError` only, `po.RefusedValueError` a `ValueError` only, and
+`po.OutputColumnNotFoundError` a `po.ColumnNotFoundError` only, not also a
+`KeyError`. Catch the class the problem names.
 
 ### Names that changed
 
@@ -234,11 +240,11 @@ other changes renamed one name each, and four surfaces were removed. A
 spec that passes a parameter renamed on 2026-10-02 is refused, and the
 message names the new one. On 2026-10-11 the parameters took the names they
 keep at 1.0: scikit-learn's for the mixture, clustering and changepoint
-models, and one name for one thing across the models. Those old names are
-still read, with a `PolarsOnlineDeprecationWarning` naming the new one,
-until the next major version. At 1.0.0 the output fields and frame columns
-took one grammar: an old field or column name is no longer written, and a
-function or keyword renamed then is still read, with the same warning.
+models, and one name for one thing across the models. At 1.0.0 the output
+fields and frame columns took one grammar, and a few functions and keywords
+were renamed. The 1.x series read those old names with a
+`PolarsOnlineDeprecationWarning`; 2.0 refuses every one of them, naming the
+new spelling (see [How an old name is refused](#how-an-old-name-is-refused)).
 
 | a dated section or record says | the name now | changed in |
 |---|---|---|

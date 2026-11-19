@@ -9,6 +9,39 @@ order, another kernel), each declared with its size. Before 1.0, the minor
 version carried breaking changes, and any change to the numbers a model
 returns.
 
+## [Unreleased]
+
+### Removed
+
+- **Every deprecated forward of the 1.x series** (task 395, C0; the user,
+  2026-11-19: "No keeping 1.x deprecations"). The names renamed since
+  2026-10-11 were read under their old spelling with a
+  `PolarsOnlineDeprecationWarning`. Each is now refused, and the error names
+  the current spelling: a spec builder's keyword, a spec dict's key and a
+  TOML file's key (`kmeans`' and `hmm`'s `k` and `seed_rule`, `covariance`,
+  `window_every`, `max_rows_between_pca`, `lasso_path`, `bocpd`'s
+  `emission` and `prior_*`, `corrchange`'s `span_rows` and `reset_on_flag`),
+  and the words `"kmeanspp"`, `"shared"` and `"diagonal"`. The tables behind
+  them, `_DEPRECATED`, `_DEPRECATED_IN` and `_DEPRECATED_WORDS_IN` in
+  Python and `DEPRECATED`, `DEPRECATED_IN`, `DEPRECATED_WORDS_IN` and
+  `forward_deprecated*` in `online-polars`, are gone, as is the command
+  line's forwarding of a TOML config. Also refused, naming the replacement:
+  `po.rewm_mean`, `po.rewm_sum` and `po.rewm_rate`; `po.corr.matrix`;
+  `ModelBank.to_json` and `save_json`; `ModelBank.save(path=)` and
+  `load(path=)`; the calls `bank.rows_fed()` and `bank.output_fields()`;
+  `closed_groups` and `chunk_size` given by position to `fit` and
+  `fit_predict_batches`; `po.eval`'s `spec_name` and `spec_names`, and a
+  name beside `spec=`; `po.gram.subset(cols=)`, `lars_path`'s and
+  `lars_paths`' `max_steps` and a `max_steps` in `solve_subsets`' `path`;
+  `cross_centred` in `po.gram.from_row`. Two that were accepted and ignored
+  are refused: a number or a duration as `po.stream.with_windows`'
+  `session_gap`, and `theta` beside `preavg_rows` in `po.spec.rcov` (a spec
+  dict or TOML file naming both is still read, as it was).
+  `po.WrongTypeError`, `po.RefusedValueError` and
+  `po.OutputColumnNotFoundError` lose their second parent: they are a
+  `TypeError`, a `ValueError` and a `ColumnNotFoundError` only. No state
+  layout changes, and no output of a call that uses the current names moves.
+
 ## [1.6.0] — 2026-11-18
 
 ### Changed

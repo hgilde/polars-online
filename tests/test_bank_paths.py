@@ -90,21 +90,16 @@ def test_load_refuses_a_text_mode_file_and_what_is_not_a_source(bank):
     assert back.save_bytes() == bank.save_bytes()
 
 
-def test_a_keyword_once_positional_is_refused_past_its_count_or_given_twice(bank):
-    """``fit``'s ``closed_groups`` and ``chunk_size`` were positional once
-    and are read by position with a deprecation warning; a call with more
-    positional arguments than that, or with one of them given both ways, is
-    refused as Python refuses it for any function."""
+def test_a_keyword_once_positional_is_refused_by_python(bank):
+    """``fit``'s ``closed_groups`` and ``chunk_size`` were read by position
+    through 1.x; they are keyword-only, and a call passing them by position is
+    refused as Python refuses it for any function, before a row is read."""
     df = pl.DataFrame({"x": [1.0, 2.0], "y": [1.0, 2.0]})
     before = bank.save_bytes()
-    with pytest.raises(
-        TypeError, match=r"ModelBank.fit: it takes 2 positional arguments, but 5 were given"
-    ):
+    with pytest.raises(TypeError, match=r"takes 2 positional arguments but 4 were given"):
+        bank.fit(df, None, 10)  # type: ignore[misc]
+    with pytest.raises(TypeError, match=r"takes 2 positional arguments but 5 were given"):
         bank.fit(df, None, 10, "extra")  # type: ignore[misc]
-    with pytest.raises(
-        TypeError, match=r"ModelBank.fit: closed_groups is given both by position and by keyword"
-    ):
-        bank.fit(df, None, closed_groups=None)  # type: ignore[misc]
     assert bank.save_bytes() == before, "neither call read a row"
 
 
@@ -114,13 +109,13 @@ def test_one_spec_or_a_string_in_place_of_the_list_is_refused_by_name():
     refusal now names the mistake and the fix."""
     spec = po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)
     with pytest.raises(
-        ValueError,
+        TypeError,
         match=r"ModelBank: specs must be a list of specs, but it is one spec\. Pass the spec in a "
         r"list, as \[spec\]",
     ):
         po.ModelBank(spec)  # type: ignore[arg-type]
     with pytest.raises(
-        ValueError,
+        TypeError,
         match=r"ModelBank: specs must be a list of specs, such as \[po.spec.ewridge\(...\)\], "
         r"but it is of type str",
     ):

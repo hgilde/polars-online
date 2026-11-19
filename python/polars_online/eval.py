@@ -97,10 +97,8 @@ keywords ``by`` and ``min_obs`` and the function ``rolling_metrics`` are
 refused, and the error names the keyword or function that replaced each:
 ``group``, ``min_samples`` and :func:`window_metrics`. :func:`window_metrics`
 refuses ``window_size`` the same way, naming ``every``. ``spec_name``
-(``spec_names`` in :func:`compare_specs`) is read as ``spec``, with a
-:class:`~polars_online.PolarsOnlineDeprecationWarning`. Given beside a spec
-passed by position, it raises ``TypeError``, and a spec name given beside
-a spec dict whose name differs raises ``ValueError``.
+(``spec_names`` in :func:`compare_specs`) is refused the same way, naming
+``spec`` (``specs``), as is a spec's name given beside the spec dict.
 
 `docs/DIAGNOSTICS.md <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md>`_
 says which question each call and each diagnostic answers, with its
@@ -116,7 +114,6 @@ import numbers
 import operator
 import re
 import sys
-import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from datetime import timedelta
 from typing import Any, Literal, overload
@@ -132,7 +129,6 @@ from polars_online._errors import (
     WrongTypeError,
 )
 from polars_online._renamed import renamed_function, renamed_keywords
-from polars_online._warnings import PolarsOnlineDeprecationWarning
 
 __all__ = [
     "metrics",
@@ -226,49 +222,27 @@ def _spec_of(who: str, spec: str | dict) -> tuple[str, dict | None]:
     raise TypeError(msg)
 
 
-def _warn_merged(who: str, what: str) -> None:
-    warnings.warn(
-        f"{who}: {what} is deprecated, since spec takes the spec's name or the spec itself, "
-        "which carries the name. It is read as before until the next major version, which "
-        "refuses it. Pass the spec alone as spec.",
-        PolarsOnlineDeprecationWarning,
-        stacklevel=3,
-    )
-
-
 def _takes_spec[R](
     who: str, *, lazy: bool = False
 ) -> Callable[[Callable[..., R]], Callable[..., R]]:
     """A decorator for a call whose ``spec_name`` and ``spec=`` became one
     ``spec``, the name or the dict: the old forms, ``spec_name=`` and a name
-    beside ``spec=``, are read as the new one, with a
-    :class:`~polars_online.PolarsOnlineDeprecationWarning`, and a frame
-    that is not a ``DataFrame`` (or a ``LazyFrame``, where ``lazy``) is
-    refused by name."""
+    beside ``spec=``, are refused naming ``spec``, and a frame that is not a
+    ``DataFrame`` (or a ``LazyFrame``, where ``lazy``) is refused by name."""
 
     def decorate(fn: Callable[..., R]) -> Callable[..., R]:
         @functools.wraps(fn)
         def wrapper(df: Any, *args: Any, **kwargs: Any) -> R:
             _frame(who, df, lazy=lazy)
             if "spec_name" in kwargs:
-                if args:
-                    msg = (
-                        f"{who}: spec_name was merged into spec, but both are given. "
-                        f"Pass the spec alone as spec."
-                    )
-                    raise TypeError(msg)
-                _warn_merged(who, "spec_name")
-                args = (kwargs.pop("spec_name"),)
+                msg = f"{who}: spec_name was merged into spec. Pass the name or the spec as spec."
+                raise TypeError(msg)
             if args and isinstance(args[0], str) and isinstance(kwargs.get("spec"), dict):
-                written = kwargs.pop("spec")
-                if written.get("name") != args[0]:
-                    msg = (
-                        f"{who}: the spec name {args[0]!r} and the spec named "
-                        f"{written.get('name')!r} disagree. Pass the spec alone as spec."
-                    )
-                    raise ValueError(msg)
-                _warn_merged(who, "a spec's name beside the spec dict")
-                args = (written, *args[1:])
+                msg = (
+                    f"{who}: a spec's name beside spec= was merged into spec. Pass the spec "
+                    "alone as spec."
+                )
+                raise TypeError(msg)
             return fn(df, *args, **kwargs)
 
         return wrapper
@@ -1436,8 +1410,7 @@ rolling_metrics = renamed_function(
 
 def _takes_specs[R](fn: Callable[..., R]) -> Callable[..., R]:
     """:func:`compare_specs`' ``spec_names`` and ``specs=`` merged into one
-    ``specs``, names or dicts: the old forms read as the new one, with a
-    :class:`~polars_online.PolarsOnlineDeprecationWarning`, as
+    ``specs``, names or dicts: the old forms are refused naming ``specs``, as
     :func:`_takes_spec` does for one spec."""
     who = "po.eval.compare_specs"
 
@@ -1445,18 +1418,14 @@ def _takes_specs[R](fn: Callable[..., R]) -> Callable[..., R]:
     def wrapper(df: Any, *args: Any, **kwargs: Any) -> R:
         _frame(who, df, lazy=True)
         if "spec_names" in kwargs:
-            if args:
-                msg = (
-                    f"{who}: spec_names was merged into specs, but both are given. "
-                    f"Pass the specs alone as specs."
-                )
-                raise TypeError(msg)
-            _warn_merged(who, "spec_names")
-            args = (kwargs.pop("spec_names"),)
+            msg = f"{who}: spec_names was merged into specs. Pass the names or the specs as specs."
+            raise TypeError(msg)
         if args and "specs" in kwargs:
-            written = {s.get("name"): s for s in kwargs.pop("specs") or ()}
-            _warn_merged(who, "a list of names beside specs=")
-            args = ([written.get(s, s) if isinstance(s, str) else s for s in args[0]],)
+            msg = (
+                f"{who}: a list of names beside specs= was merged into specs. Pass the specs "
+                "alone as specs."
+            )
+            raise TypeError(msg)
         return fn(df, *args, **kwargs)
 
     return wrapper

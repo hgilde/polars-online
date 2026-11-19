@@ -307,7 +307,7 @@ class TestLarsPath:
     )
     def test_it_refuses(self, kw, match):
         g = gram(stream(seed=14, n=200))
-        with pytest.raises(ValueError, match=match):
+        with pytest.raises((TypeError, ValueError), match=match):
             pg.lars_path(g, **kw)
 
     def test_a_numpy_integer_is_a_whole_number(self):

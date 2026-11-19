@@ -7,12 +7,10 @@ file. :mod:`polars_online.spec` documents them with the rest.
 from __future__ import annotations
 
 import os
-import warnings
 from typing import Any, Literal, Unpack
 
 from polars_online._kwargs import CommonKwargs
 from polars_online._spec import _checked, _common, _mirror_target, _who
-from polars_online._warnings import PolarsOnlineDeprecationWarning
 
 #: The package's directory: the warning skips its frames, so it names the
 #: caller's line.
@@ -437,10 +435,8 @@ def rcov(
         ``psd = False``, where a window of 2 leaves nothing once the bias is
         subtracted. A window ``theta`` derives is at least 2, at least 3
         under ``psd = False``, and no longer than ``block_rows``. Beside
-        ``preavg_rows``, which fixes the window, ``theta`` has no effect: it
-        is deprecated there, issuing a
-        :class:`~polars_online.PolarsOnlineDeprecationWarning`, and is
-        accepted and ignored until the next major version, which refuses it.
+        ``preavg_rows``, which fixes the window, ``theta`` has no effect, so it
+        is refused there.
     ``noise_stride``, ``iv_stride``
         The strides of two subsampled grids, defaults 1 (every return) and
         20, each at least 1. The dense one gives the noise variance ``rcov_omega2``,
@@ -668,13 +664,10 @@ def rcov(
     targets = _mirror_target(name, "rcov", features, common, "its covariance is of")
     out = _common(name, model, targets=targets, features=features, **common)
     if theta is not None and preavg_rows is not None:
-        # Inert since the window is all `theta` sets: deprecated rather than
-        # refused, as the user decided (task 278, b11).
-        warnings.warn(
-            f"{_who(name)}: theta={theta!r} is ignored beside preavg_rows, which fixes the "
-            "pre-averaging span theta would set. The next major version refuses it. "
-            "Leave theta out.",
-            PolarsOnlineDeprecationWarning,
-            skip_file_prefixes=(_PACKAGE_DIR,),
+        # Inert, since the window is all `theta` sets: it was accepted and
+        # ignored through 1.x, and is refused.
+        raise ValueError(
+            f"{_who(name)}: theta={theta!r} has no effect beside preavg_rows, which fixes the "
+            "pre-averaging span theta would set. Leave theta out."
         )
     return out

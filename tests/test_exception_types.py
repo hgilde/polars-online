@@ -6,7 +6,7 @@ Three parts, each of which fails with the place to add what is missing:
 1. **The cases** (``CASES``): one public call for each class the library
    raises, each asserting ``type(e) is X`` -- not ``isinstance``, which a
    parent satisfies -- the parents a class keeps beside the one the rule gives
-   (``WrongTypeError`` is a ``TypeError`` and a ``ValueError``), and the
+   (``WrongTypeError`` is a ``TypeError`` alone), and the
    ``errno`` where the call carries one. An error that reaches Python as a
    plain ``OSError`` where its kind has a subclass, or as ``ValueError`` where
    a typed class is meant, fails here. A rule for each I/O kind, by platform,
@@ -361,14 +361,14 @@ CASES: list[Case] = [
         lambda w: po.ModelBank(_spec()),
         po.WrongTypeError,
         "specs must be a list of specs",
-        bases=(TypeError, ValueError),
+        bases=(TypeError,),
     ),
     Case(
         "wrong-type-rust-text-feature",
         lambda w: w.bank.fit_predict(w.df.with_columns(x0=pl.col("x0").cast(pl.String))),
         po.WrongTypeError,
         "must be a number, but it is String",
-        bases=(TypeError, ValueError),
+        bases=(TypeError,),
     ),
     Case(
         "wrong-type-rust-refresh-clock",
@@ -381,7 +381,7 @@ CASES: list[Case] = [
         ).collect(),
         po.WrongTypeError,
         "must be numeric or temporal",
-        bases=(TypeError, ValueError),
+        bases=(TypeError,),
     ),
     Case(
         "wrong-type-gbdt-feature",
@@ -390,14 +390,14 @@ CASES: list[Case] = [
         ),
         po.WrongTypeError,
         "is String",
-        bases=(TypeError, ValueError),
+        bases=(TypeError,),
     ),
     Case(
         "refused-value-reverse-without-a-window",
         lambda w: po.ewm_mean("x", half_life=10.0, reverse=True),
         po.RefusedValueError,
         "reverse",
-        bases=(ValueError, TypeError),
+        bases=(ValueError,),
     ),
     Case(
         "column-not-found-rust-feature",
@@ -432,7 +432,7 @@ CASES: list[Case] = [
         lambda w: po.eval.metrics(w.df, "m"),
         po.OutputColumnNotFoundError,
         'spec "m" has no output column',
-        bases=(po.ColumnNotFoundError, pl.exceptions.ColumnNotFoundError, ValueError, KeyError),
+        bases=(po.ColumnNotFoundError, pl.exceptions.ColumnNotFoundError, ValueError),
     ),
     Case(
         "formula-a-shift-reads-other-rows",
@@ -755,14 +755,13 @@ def test_the_savers_refuse_a_state_that_will_not_encode_as_a_value_error_not_an_
 
 
 def test_the_library_s_own_classes_keep_their_parents_in_the_rule_s_order() -> None:
-    """The rule's class first in each MRO, the class the refusal raised
-    before second (the older parent goes at the next major version), and each
-    class exported under its own name."""
+    """The rule's class the one parent of each (the older parent went at
+    2.0), and each class exported under its own name."""
 
-    assert po.WrongTypeError.__bases__ == (TypeError, ValueError)
-    assert po.RefusedValueError.__bases__ == (ValueError, TypeError)
+    assert po.WrongTypeError.__bases__ == (TypeError,)
+    assert po.RefusedValueError.__bases__ == (ValueError,)
     assert po.ColumnNotFoundError.__bases__ == (pl.exceptions.ColumnNotFoundError, ValueError)
-    assert po.OutputColumnNotFoundError.__bases__ == (po.ColumnNotFoundError, KeyError)
+    assert po.OutputColumnNotFoundError.__bases__ == (po.ColumnNotFoundError,)
     assert FormulaError.__bases__ == (ValueError,)
     for cls in (
         po.WrongTypeError,

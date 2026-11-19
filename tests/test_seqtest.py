@@ -1056,7 +1056,9 @@ class TestRefusals:
             po.eval.seqtest(out, a="fast", b="slow", targets=["y"], b_suffix="@h400")
         with pytest.raises(ValueError, match="share no residual field"):
             po.eval.seqtest(out, a="fast", b="slow", a_suffix="@h20")
-        with pytest.raises(KeyError, match='spec "nope" has no output column in the frame'):
+        with pytest.raises(
+            pl.exceptions.ColumnNotFoundError, match='spec "nope" has no output column in the frame'
+        ):
             po.eval.seqtest(out, a="fast", b="nope")
         with pytest.raises(TypeError, match="must be a spec's output column, but it is"):
             po.eval.seqtest(out, a="fast", b="y")
