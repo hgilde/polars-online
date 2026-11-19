@@ -35,8 +35,11 @@ returns.
   `lars_paths`' `max_steps` and a `max_steps` in `solve_subsets`' `path`;
   `cross_centred` in `po.gram.from_row`. Two that were accepted and ignored
   are refused: a number or a duration as `po.stream.with_windows`'
-  `session_gap`, and `theta` beside `preavg_rows` in `po.spec.rcov` (a spec
-  dict or TOML file naming both is still read, as it was).
+  `session_gap`, and `theta` beside `preavg_rows` in `po.spec.rcov`, on every
+  surface: the builder, a spec dict and a TOML file refuse `theta`, and the
+  extension refuses a numeric `session_gap` in a windows call. A windows
+  state saved with a number still loads under the call without one, and a
+  spec's own `session_gap` is unchanged.
   `po.WrongTypeError`, `po.RefusedValueError` and
   `po.OutputColumnNotFoundError` lose their second parent: they are a
   `TypeError`, a `ValueError` and a `ColumnNotFoundError` only. No state

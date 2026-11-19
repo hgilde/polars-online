@@ -437,6 +437,33 @@ reset_on_flag = true",
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// `theta` beside `preavg_rows` in a TOML `rcov` table is refused, as the
+/// Python builder and a spec dict refuse it; `preavg_rows` alone is taken.
+#[test]
+fn a_theta_beside_preavg_rows_is_refused_over_toml() {
+    let dir = fresh_dir("rcov-theta");
+    let input = dir.join("in.parquet");
+    write_input(&input, 60);
+    let table = |extra: &str| {
+        format!(
+            "input = '{}'\noutput = '{}'\n[[specs]]\nname = \"r\"\nfeatures = [\"x0\", \"y\"]\n\
+             group = \"g\"\ngroup_close = \"monotone\"\n[specs.model]\ntype = \"rcov\"\n\
+             kind = \"preavg\"\nblock_rows = 100\npreavg_rows = 12\n{extra}",
+            text(&input),
+            text(&dir.join("out.parquet"))
+        )
+    };
+    let cfg = dir.join("job.toml");
+    std::fs::write(&cfg, table("theta = 0.5\n")).unwrap();
+    let (code, _, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));
+    assert_eq!(code, Some(1), "{err}");
+    assert!(
+        err.contains("theta=0.5 has no effect beside preavg_rows"),
+        "{err}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `kmeans` reading `x0`, its clusters under `n_clusters` or a refused name, with `half_life = <half_life>` written as given: a config
 /// for `input`, writing `output`.
 fn kmeans_job(dir: &Path, input: &Path, output: &Path, clusters: &str, half_life: &str) -> PathBuf {

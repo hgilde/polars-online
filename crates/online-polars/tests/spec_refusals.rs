@@ -245,6 +245,19 @@ fn a_parameter_its_mode_does_not_read_is_refused() {
     accepted(&rcov(
         r#"{"type": "rcov", "kind": "preavg", "block_rows": 100, "theta": 2.0}"#,
     ));
+    // `preavg_rows` fixes the window `theta` would set, so a `theta` beside
+    // it is refused, as Python's builder refuses it; each alone is taken.
+    refused(
+        &rcov(
+            r#"{"type": "rcov", "kind": "preavg", "block_rows": 100, "theta": 0.5, "preavg_rows": 12}"#,
+        ),
+        &[
+            "theta=0.5 has no effect beside preavg_rows, which fixes the pre-averaging span theta would set. Leave theta out.",
+        ],
+    );
+    accepted(&rcov(
+        r#"{"type": "rcov", "kind": "preavg", "block_rows": 100, "preavg_rows": 12}"#,
+    ));
 }
 
 /// A `covariance_type` shape not offered is refused naming the spec, the

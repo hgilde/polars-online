@@ -2727,7 +2727,7 @@ def test_a_numeric_session_gap_is_refused() -> None:
     assert all(want["ahead_mean_null"][i] is None for i in open_rows)
     assert want["increment"][30] is None and want["increment"][60] is None
     for gap in (0, 1.0, 50, 1e6):
-        with pytest.raises(ValueError, match="session_gap = " + re.escape(repr(gap))):
+        with pytest.raises(ValueError, match="session_gap = .* is no longer read"):
             _session_run(df, session_gap=gap)
     with pytest.raises(ValueError, match="no longer read"):
         _session_run(df, session_gap=1.0)

@@ -111,7 +111,7 @@ def test_the_removed_keywords_of_the_functions_refuse_naming_the_new_one():
 
 def test_a_numeric_session_gap_is_refused():
     df = pl.DataFrame({"t": [0.0, 1.0], "s": [0, 0], "x": [1.0, 2.0]})
-    with pytest.raises(ValueError, match="session_gap = 5.0 is no longer read"):
+    with pytest.raises(ValueError, match="session_gap = .* is no longer read"):
         po.stream.with_windows(
             df,
             f=po.ewm_mean("x", half_life=2.0),

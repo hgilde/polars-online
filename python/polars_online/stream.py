@@ -1343,15 +1343,8 @@ def with_windows(
     # Built once now, so a formula or a column that cannot run is reported
     # while the plan is built, as polars reports its own errors.
     first = build()
-    # Once the call is known to run, so a gap the run refuses is refused in
-    # its own words first (task 278, the user's decision of 2026-10-25).
-    if like is None and given["session_gap"] is not None and given["session_gap"] != "reset":
-        raise ValueError(
-            f"{who}: session_gap = {given['session_gap']!r} is no longer read: every window ends "
-            "at a session change, so no window measures the clock's step across one. Leave "
-            'session_gap out, or set it to "reset" to discard the windows still open at a '
-            "session change rather than cut them."
-        )
+    # A number or a duration as `session_gap` is refused by the build above,
+    # once the call's other refusals have had their say.
     schema = first.feed(empty).schema
     needed = set(first.needed())
 

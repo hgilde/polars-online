@@ -1124,21 +1124,27 @@ impl PyWindows {
     /// whose schema is `input`'s, a frame of no rows.
     #[new]
     fn new(config: &str, input: PyDataFrame) -> PyResult<Self> {
-        let config = parse_json(config, "windows").map_err(PyValueError::new_err)?;
-        Ok(Self {
-            inner: online_polars::WindowsRun::new(config, input.0.schema()).map_err(refused_err)?,
-        })
+        let config: online_polars::WindowsConfig =
+            parse_json(config, "windows").map_err(PyValueError::new_err)?;
+        // After the run is built, so the call's other refusals come first.
+        let unread = config.refuse_unread_session_gap();
+        let inner =
+            online_polars::WindowsRun::new(config, input.0.schema()).map_err(refused_err)?;
+        unread.map_err(refused_err)?;
+        Ok(Self { inner })
     }
 
     /// A run that goes on from a saved state, which must have been saved by
     /// the same call.
     #[staticmethod]
     fn load_bytes(state: &[u8], config: &str, input: PyDataFrame) -> PyResult<Self> {
-        let config = parse_json(config, "windows").map_err(PyValueError::new_err)?;
-        Ok(Self {
-            inner: online_polars::WindowsRun::load_bytes(state, config, input.0.schema())
-                .map_err(refused_err)?,
-        })
+        let config: online_polars::WindowsConfig =
+            parse_json(config, "windows").map_err(PyValueError::new_err)?;
+        let unread = config.refuse_unread_session_gap();
+        let inner = online_polars::WindowsRun::load_bytes(state, config, input.0.schema())
+            .map_err(refused_err)?;
+        unread.map_err(refused_err)?;
+        Ok(Self { inner })
     }
 
     /// The state, written to `path` whole or not at all. A run resumed on

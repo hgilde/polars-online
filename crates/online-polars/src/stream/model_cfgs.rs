@@ -482,6 +482,15 @@ pub fn rcov_cfg(spec: &Spec) -> Result<RcovCfg, String> {
             ));
         }
     }
+    // `preavg_rows` fixes the window, which is all `theta` sets: a `theta`
+    // beside it is read by nothing, and is refused, as the Python builder
+    // refuses it.
+    if let (Some(theta), Some(_)) = (theta, preavg_rows) {
+        no.refuse(format!(
+            "rcov: theta={theta:?} has no effect beside preavg_rows, which fixes the \
+             pre-averaging span theta would set. Leave theta out."
+        ));
+    }
     no.finish()?;
     Ok(RcovCfg {
         n_features: spec.k(),

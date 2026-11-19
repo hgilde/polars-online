@@ -67,6 +67,32 @@ pub struct WindowsConfig {
     pub like: Option<Like>,
 }
 
+impl WindowsConfig {
+    /// Refuses a number or a duration as `session_gap`, which no window
+    /// reads, since every window ends at a session change: the call a user
+    /// makes is held to it, as Python's is. Not [`WindowsRun::new`], which a
+    /// spec's formula targets build through with the spec's own
+    /// `session_gap`, which its model does read; and under `like=` the spec's
+    /// is lent. A state saved by 1.x with a number still loads, under the call
+    /// without one.
+    ///
+    /// # Errors
+    ///
+    /// A numeric `session_gap` without `like`.
+    pub fn refuse_unread_session_gap(&self) -> Result<(), Refused> {
+        if let (None, Some(SessionGapSpec::Gap(g))) = (&self.like, &self.session_gap) {
+            return Err(format!(
+                "{WHO}: session_gap = {g} is no longer read: every window ends at a session \
+                 change, so no window measures the clock's step across one. Leave session_gap \
+                 out, or set it to \"reset\" to discard the windows still open at a session \
+                 change rather than cut them."
+            )
+            .into());
+        }
+        Ok(())
+    }
+}
+
 const WHO: &str = "with_windows";
 const WINDOWS_MAGIC: &str = "polars-online windows";
 /// 10 since task 272 (d): a queue keeps a quantile's sketches (`quant`) and
@@ -3512,84 +3538,44 @@ mod tests {
         }
     }
 
-    /// Task 278, the user's decision of 2026-10-25: every window ends at a
-    /// session change, so no window measures the clock's jump across one,
-    /// and a numeric `session_gap` is never read. A session needs none; any
-    /// number gives the run without one, to the bit, backward and forward,
-    /// on a clock that goes on and one that starts over with the session;
-    /// and a state saved with one number resumes the call with another, or
-    /// with none.
+    /// Every window ends at a session change, so no window measures the
+    /// clock's jump across one, and a numeric `session_gap` is never read:
+    /// the call is refused naming it, as Python's is, and `"reset"` is still
+    /// taken. A state saved by 1.x with a number resumes the call without
+    /// one (the comparison of a saved call drops the number).
     #[test]
-    fn a_numeric_session_gap_is_never_read() {
+    fn a_numeric_session_gap_is_refused() {
         const OPS: &str = r#"{"formulas": [
-            {"name": "back", "tree": ["ewm_mean", ["col", "x"], {"half_life": 2, "window_size": 3}]},
-            {"name": "ahead", "tree": ["rewm_sum", ["col", "x"],
-                {"half_life": 2, "window_size": 3, "partial": "keep"}]},
-            {"name": "dx", "tree": ["increment", ["col", "x"]]}],
+            {"name": "back", "tree": ["ewm_mean", ["col", "x"], {"half_life": 2, "window_size": 3}]}],
             "clock": "t", "gap_cap": 4, "session": "s""#;
         let call = |gap: &str| config(&format!("{OPS}{gap}}}"));
-        let goes_on = df!(
-            "t" => [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
-            "x" => [1.0, 3.0, 2.0, 5.0, 4.0, 8.0, 6.0, 7.0],
-            "s" => ["a", "a", "a", "a", "b", "b", "b", "b"],
+        let df = df!(
+            "t" => [0.0, 1.0, 2.0, 3.0],
+            "x" => [1.0, 3.0, 2.0, 5.0],
+            "s" => ["a", "a", "b", "b"],
         )
         .unwrap();
-        let starts_over = df!(
-            "t" => [0.0, 1.0, 2.0, 3.0, 0.5, 1.5, 2.5, 3.5],
-            "x" => [1.0, 3.0, 2.0, 5.0, 4.0, 8.0, 6.0, 7.0],
-            "s" => ["a", "a", "a", "a", "b", "b", "b", "b"],
-        )
-        .unwrap();
-        let run = |cfg: WindowsConfig, df: &DataFrame| {
-            let mut r = WindowsRun::new(cfg, df.schema()).unwrap();
-            let mut out = r.feed(df, None).unwrap();
-            out.vstack_mut(&r.finish().unwrap()).unwrap();
-            out
-        };
-        let bits = |df: &DataFrame| -> Vec<Vec<Option<u64>>> {
-            ["back", "ahead", "dx"]
-                .iter()
-                .map(|c| {
-                    let col = df.column(c).unwrap().f64().unwrap();
-                    col.iter().map(|v| v.map(f64::to_bits)).collect()
-                })
-                .collect()
-        };
-        for df in [&goes_on, &starts_over] {
-            let none = bits(&run(call(""), df));
-            // The forward window open across the change is cut there and
-            // keeps what it saw: the run is not all null.
-            assert!(none[1][1].is_some() && none[1][2].is_some(), "{none:?}");
-            for gap in [
-                r#", "session_gap": 0"#,
-                r#", "session_gap": 1"#,
-                r#", "session_gap": 50"#,
-            ] {
-                assert_eq!(bits(&run(call(gap), df)), none, "{gap}");
-            }
-            // "reset" discards what the change leaves open ahead of it.
-            let reset = bits(&run(call(r#", "session_gap": "reset""#), df));
-            assert_ne!(reset, none);
+        for gap in [0, 1, 50] {
+            let err = call(&format!(r#", "session_gap": {gap}"#))
+                .refuse_unread_session_gap()
+                .expect_err("refused");
+            assert!(
+                err.contains(&format!("with_windows: session_gap = {gap}"))
+                    && err.contains("is no longer read"),
+                "{err}"
+            );
         }
-        let df = &goes_on;
-        let want = bits(&run(call(""), df));
-        let mut first = WindowsRun::new(call(r#", "session_gap": 1"#), df.schema()).unwrap();
-        let head = first.feed(&df.slice(0, 3), None).unwrap();
-        let state = first.save_bytes().unwrap();
-        for gap in ["", r#", "session_gap": 50"#] {
-            let mut next = WindowsRun::load_bytes(&state, call(gap), df.schema()).unwrap();
-            let mut out = head.clone();
-            out.vstack_mut(&next.feed(&df.slice(3, 5), None).unwrap())
-                .unwrap();
-            out.vstack_mut(&next.finish().unwrap()).unwrap();
-            assert_eq!(bits(&out), want, "{gap}");
+        for ok in [r#", "session_gap": "reset""#, ""] {
+            call(ok).refuse_unread_session_gap().unwrap();
+            WindowsRun::new(call(ok), df.schema()).unwrap();
         }
-        // "reset" is part of the call: a state saved without it resumes
-        // only a call without it.
-        let err = WindowsRun::load_bytes(&state, call(r#", "session_gap": "reset""#), df.schema())
-            .err()
-            .expect("refused");
-        assert!(err.contains("another call"), "{err}");
+        // Under `like=` the spec's own is lent, and the run is built.
+        let mut lent = call(r#", "session_gap": 1"#);
+        lent.like = Some(Like {
+            spec: "m".into(),
+            accept: vec!["x".into()],
+        });
+        lent.refuse_unread_session_gap().unwrap();
     }
 
     /// Task 173, PC1: without a clock column each group's clock counts its
@@ -3871,7 +3857,7 @@ mod tests {
         let cfg = config(
             r#"{"formulas": [{"name": "dc", "tree": ["increment", ["col", "c"]]},
                 {"name": "dt", "tree": ["increment", ["col", "t"]]}],
-                "clock": "t", "gap_cap": 100, "session": "s", "session_gap": 1}"#,
+                "clock": "t", "gap_cap": 100, "session": "s"}"#,
         );
         let mut run = WindowsRun::new(cfg, df.schema()).unwrap();
         let mut out = run.feed(&df.slice(0, 2), None).unwrap();
@@ -4207,7 +4193,7 @@ mod tests {
             "restart_after_step_back": 2}"#;
         let session = r#"{"formulas": [{"name": "f", "tree": ["rewm_mean", ["col", "x"],
             {"half_life": 1, "window_size": 2}]}], "clock": "t", "gap_cap": 100,
-            "session": "s", "session_gap": 1}"#;
+            "session": "s"}"#;
         for cfg in [restart, session] {
             let whole = day1.vstack(&day2).unwrap();
             let mut one = WindowsRun::new(config(cfg), whole.schema()).unwrap();
@@ -4463,7 +4449,7 @@ mod tests {
     #[test]
     fn without_a_clock_the_next_file_begins_with_a_new_session() {
         const ROWS: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
-            {"half_life": 1}]}], "session": "s", "session_gap": 1}"#;
+            {"half_life": 1}]}], "session": "s"}"#;
         let rows = |x: &[f64], s: &[&str]| df!("x" => x, "s" => s).unwrap();
         let df = rows(
             &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
@@ -4503,7 +4489,7 @@ mod tests {
     fn a_refused_first_row_carries_the_policys_words() {
         const GROUPED: &str = r#"{"formulas": [{"name": "f", "tree": ["rewm_mean", ["col", "x"],
             {"half_life": 1, "window_size": 2}]}], "clock": "t", "gap_cap": 100,
-            "group": "g", "session": "s", "session_gap": 1}"#;
+            "group": "g", "session": "s"}"#;
         let day = |t: &[f64], s: &str| {
             df!(
                 "t" => t,
