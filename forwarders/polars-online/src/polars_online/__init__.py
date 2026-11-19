@@ -9,8 +9,8 @@ Every ``polars_online.<module>`` is the same module object as its rheon
 counterpart (``polars_online.ModelBank is rheon.polars.ModelBank``), and the
 ``.online`` frame namespace delegates to rheon's ``.rheon`` namespace.
 
-Where a module lives in rheon is set by ``_TARGETS`` and ``_NATIVE`` below:
-nothing else in this file names a rheon module.
+Where a module lives in rheon is set by ``_MODULES`` below, and nowhere else
+in this file: correct the table, not the code.
 """
 
 from __future__ import annotations
@@ -22,20 +22,61 @@ import sys
 import warnings
 from types import ModuleType
 
-#: The packages a ``polars_online.<name>`` module is looked up in, first match
-#: wins. ``rheon.polars`` is the Polars interface; ``rheon`` itself is the
-#: older flat layout, which the same names also resolve in.
-_TARGETS = ("rheon.polars", "rheon")
+#: Old module name (the part after ``polars_online.``) -> the rheon module that
+#: now holds it. A module that imports Polars lives in ``rheon.polars``; the
+#: rest in ``rheon``, which imports without Polars installed. The test for
+#: "imports Polars" is ``grep -l "import polars\|from polars"`` on the 1.6.0
+#: rename; it looks at each file only, not what the file imports in turn.
+_MODULES: dict[str, str] = {
+    # Polars-bound.
+    "_bank": "rheon.polars._bank",
+    "_check": "rheon.polars._check",
+    "_duration": "rheon.polars._duration",
+    "_errors": "rheon.polars._errors",
+    "_formula": "rheon.polars._formula",
+    "_frame": "rheon.polars._frame",
+    "_spec": "rheon.polars._spec",
+    "_spec_fields": "rheon.polars._spec_fields",
+    "_warnings": "rheon.polars._warnings",
+    "eval": "rheon.polars.eval",
+    # TODO(2.0.0): rheon leaves gbdt out until it is fixed. If 2.0.0 does not
+    # ship it, `polars_online.gbdt` is an ImportError; if it ships it, this is
+    # where it is expected.
+    "gbdt": "rheon.polars.gbdt",
+    "gram": "rheon.polars.gram",
+    "ops": "rheon.polars.ops",
+    "sim": "rheon.polars.sim",
+    "stream": "rheon.polars.stream",
+    # No Polars import of their own, by the same test. TODO(2.0.0): each of the
+    # following imports a Polars-bound module above, so rheon's split may have
+    # put it in ``rheon.polars`` instead: _kwargs (_duration), _renamed
+    # (_warnings), corr (_errors, _warnings, gram), spec (_spec), and
+    # _spec_audit/_spec_changepoint/_spec_class/_spec_cluster/_spec_gradient/
+    # _spec_regimes/_spec_robust/_spec_trend (_spec, some _duration).
+    "_cpu_check": "rheon._cpu_check",
+    "_kwargs": "rheon._kwargs",
+    "_renamed": "rheon._renamed",
+    "_spec_audit": "rheon._spec_audit",
+    "_spec_changepoint": "rheon._spec_changepoint",
+    "_spec_class": "rheon._spec_class",
+    "_spec_cluster": "rheon._spec_cluster",
+    "_spec_gradient": "rheon._spec_gradient",
+    "_spec_regimes": "rheon._spec_regimes",
+    "_spec_robust": "rheon._spec_robust",
+    "_spec_trend": "rheon._spec_trend",
+    "_spec_words": "rheon._spec_words",
+    "corr": "rheon.corr",
+    "spec": "rheon.spec",
+    # The compiled module, renamed with the package.
+    "_polars_online": "rheon._rheon",
+}
 
-#: Modules whose rheon name is not ``<target>.<name>``: the compiled module.
-_NATIVE = {"_polars_online": ("rheon._rheon",)}
-
-#: The public modules, aliased as soon as this package is imported. ``gbdt``
-#: is listed so that it follows rheon if rheon ships it, and is simply absent
-#: from ``polars_online`` while it does not.
+#: The public modules, aliased as soon as this package is imported; every other
+#: entry of the table is aliased on first import.
 _PUBLIC_MODULES = ("corr", "eval", "gbdt", "gram", "ops", "sim", "spec", "stream")
 
-#: The ``.online`` frame namespace's target: the namespace rheon registers.
+#: Where the Polars interface lives, and the name of its frame namespace.
+_TARGET = "rheon.polars"
 _NAMESPACE = "rheon"
 
 _PREFIX = f"{__name__}."
@@ -64,17 +105,14 @@ def _exists(name: str) -> bool:
         return False
 
 
-def _candidates(suffix: str) -> tuple[str, ...]:
-    return _NATIVE.get(suffix) or tuple(f"{t}.{suffix}" for t in _TARGETS)
-
-
 def _resolve(suffix: str) -> str | None:
     """The rheon module a ``polars_online.<suffix>`` stands for, or ``None``."""
-    return next((c for c in _candidates(suffix) if _exists(c)), None)
+    real = _MODULES.get(suffix)
+    return real if real is not None and _exists(real) else None
 
 
 class _Alias(importlib.abc.MetaPathFinder, importlib.abc.Loader):
-    """Serves ``polars_online.<anything>`` as the rheon module of that name.
+    """Serves ``polars_online.<name>`` as the rheon module the table names.
 
     The import system would otherwise look for the file in this package's
     directory, which holds none. The module object is rheon's own, so a
@@ -114,13 +152,12 @@ def _install() -> None:
 
 
 def _load_target() -> ModuleType:
-    for name in _TARGETS:
-        if _exists(name):
-            return importlib.import_module(name)
-    raise ImportError(
-        "polars_online 2.x forwards to rheon, which is not installed: "
-        "`pip install 'rheon[polars]'`"
-    )
+    if not _exists(_TARGET):
+        raise ImportError(
+            "polars_online 2.x forwards to rheon, which is not installed: "
+            "`pip install 'rheon[polars]'`"
+        )
+    return importlib.import_module(_TARGET)
 
 
 def _forward(target: ModuleType) -> None:
@@ -167,8 +204,9 @@ def _register_namespace() -> None:
         (pl.LazyFrame, pl.api.register_lazyframe_namespace),
         (pl.DataFrame, pl.api.register_dataframe_namespace),
     ):
-        # Where the target already provides `.online` itself, leave it alone.
-        if not hasattr(frame_type, "online") and hasattr(frame_type, _NAMESPACE):
+        # rheon has no `.online` of its own; if one is there anyway (another
+        # package's, or a second copy of this one), leave it alone.
+        if not hasattr(frame_type, "online"):
             register("online")(_OnlineNamespace)
 
 
