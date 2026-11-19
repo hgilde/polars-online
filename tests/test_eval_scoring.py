@@ -36,7 +36,7 @@ import pytest
 from scipy.stats import pearsonr
 from sklearn.metrics import r2_score
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -78,7 +78,7 @@ def chunks_of(monkeypatch):
     """Read a query ``rows`` rows at a time."""
 
     def set_rows(rows: int) -> None:
-        monkeypatch.setattr(po.eval, "_chunk_rows", lambda: rows)
+        monkeypatch.setattr(rp.eval, "_chunk_rows", lambda: rows)
 
     return set_rows
 
@@ -111,13 +111,13 @@ def test_a_part_of_zero_weight_adds_only_its_rows_to_a_merge(where):
         else [df[: cut[0]], df[cut[0] :]]
     )
     parts = [p for p in parts if p.height]
-    merged = po.eval.merge_sums(*(po.eval.sums(p, "m", weight="w") for p in parts))
-    whole = po.eval.sums(df, "m", weight="w")
+    merged = rp.eval.merge_sums(*(rp.eval.sums(p, "m", weight="w") for p in parts))
+    whole = rp.eval.sums(df, "m", weight="w")
     assert merged["n"].to_list() == whole["n"].to_list()
     for c in ("w", "mean_y", "mean_pred", "m2_y", "m2_pred", "cov", "sse"):
         assert math.isfinite(merged[c][0]), (c, merged[c][0])
         assert merged[c][0] == pytest.approx(whole[c][0], rel=1e-13), c
-    got = po.eval.from_sums(merged).row(0, named=True)
+    got = rp.eval.from_sums(merged).row(0, named=True)
     sk = r2_score(df["y"], df["m"].struct.field("pred_y"), sample_weight=df["w"])
     assert got["r2"] == pytest.approx(sk, rel=1e-13)
     keep = df.filter(pl.col("w") > 0)
@@ -132,18 +132,18 @@ def test_one_weighted_part_beside_zero_weight_parts_keeps_its_sums_to_the_bit():
     """A1: the part that carries the weight is the merge's, as a key in one
     part alone is."""
     df = _weighted(zero=slice(0, 100))
-    weighted = po.eval.sums(df[100:], "m", weight="w")
-    merged = po.eval.merge_sums(po.eval.sums(df[:50], "m", weight="w"), weighted,
-                                po.eval.sums(df[50:100], "m", weight="w"))  # fmt: skip
+    weighted = rp.eval.sums(df[100:], "m", weight="w")
+    merged = rp.eval.merge_sums(rp.eval.sums(df[:50], "m", weight="w"), weighted,
+                                rp.eval.sums(df[50:100], "m", weight="w"))  # fmt: skip
     assert merged.drop("n").equals(weighted.drop("n"))
     assert merged["n"][0] == 200
 
 
 def test_parts_that_all_weigh_nothing_still_read_null():
     df = _weighted(zero=slice(0, 200))
-    merged = po.eval.merge_sums(po.eval.sums(df[:80], "m", weight="w"),
-                                po.eval.sums(df[80:], "m", weight="w"))  # fmt: skip
-    got = po.eval.from_sums(merged, min_samples=1).row(0, named=True)
+    merged = rp.eval.merge_sums(rp.eval.sums(df[:80], "m", weight="w"),
+                                rp.eval.sums(df[80:], "m", weight="w"))  # fmt: skip
+    got = rp.eval.from_sums(merged, min_samples=1).row(0, named=True)
     assert got["n"] == 200
     assert [got[c] for c in ("r2", "ic", "mse", "rmse")] == [None] * 4
 
@@ -153,12 +153,12 @@ def test_a_query_whose_chunk_weighs_nothing_is_the_frame(chunks_of):
     whose first chunk (or one key's rows in it) all weigh 0."""
     chunks_of(50)
     df = _weighted(zero=slice(0, 50), keys=True)
-    got = po.eval.sums(df.lazy(), "m", group="g", weight="w")
-    want = po.eval.sums(df, "m", group="g", weight="w")
+    got = rp.eval.sums(df.lazy(), "m", group="g", weight="w")
+    want = rp.eval.sums(df, "m", group="g", weight="w")
     assert got["n"].to_list() == want["n"].to_list()
     for c in ("w", "mean_y", "mean_pred", "m2_y", "m2_pred", "cov", "sse"):
         assert got[c].to_numpy() == pytest.approx(want[c].to_numpy(), rel=1e-13), c
-    scores = po.eval.from_sums(got)
+    scores = rp.eval.from_sums(got)
     assert scores["r2"].is_not_null().all() and scores["ic"].is_not_null().all()
 
 
@@ -181,16 +181,16 @@ def _constant_cases(seed: int, trials: int):
 def _all_paths(df: pl.DataFrame, k: int) -> dict[str, dict]:
     n = df.height
     weighted = [
-        po.eval.sums(df.head(k), "m", weight="w"),
-        po.eval.sums(df.tail(n - k), "m", weight="w"),
+        rp.eval.sums(df.head(k), "m", weight="w"),
+        rp.eval.sums(df.tail(n - k), "m", weight="w"),
     ]
     return {
-        "metrics": po.eval.metrics(df, "m", min_samples=1).row(0, named=True),
-        "sums": po.eval.from_sums(po.eval.sums(df, "m"), min_samples=1).row(0, named=True),
-        "weighted": po.eval.from_sums(po.eval.sums(df, "m", weight="w"), min_samples=1).row(
+        "metrics": rp.eval.metrics(df, "m", min_samples=1).row(0, named=True),
+        "sums": rp.eval.from_sums(rp.eval.sums(df, "m"), min_samples=1).row(0, named=True),
+        "weighted": rp.eval.from_sums(rp.eval.sums(df, "m", weight="w"), min_samples=1).row(
             0, named=True
         ),
-        "merged": po.eval.from_sums(po.eval.merge_sums(*weighted), min_samples=1).row(
+        "merged": rp.eval.from_sums(rp.eval.merge_sums(*weighted), min_samples=1).row(
             0, named=True
         ),
     }
@@ -220,9 +220,9 @@ def test_a_constant_stays_constant_through_a_query_of_many_chunks(chunks_of):
     rng = np.random.default_rng(3)
     df = _frame([0.35] * 300, rng.standard_normal(300), w=rng.uniform(0.2, 3.0, 300))
     for kw in ({}, {"weight": "w"}):
-        s = po.eval.sums(df.lazy(), "m", **kw)
+        s = rp.eval.sums(df.lazy(), "m", **kw)
         assert s["m2_y"][0] == 0.0 and s["mean_y"][0] == 0.35 and s["cov"][0] == 0.0, kw
-    assert po.eval.metrics(df.lazy(), "m")["r2"][0] is None
+    assert rp.eval.metrics(df.lazy(), "m")["r2"][0] is None
 
 
 def test_equal_means_merge_to_that_mean_exactly():
@@ -232,10 +232,10 @@ def test_equal_means_merge_to_that_mean_exactly():
     rng = np.random.default_rng(4)
     a = _frame([0.1] * 40, rng.standard_normal(40), w=rng.uniform(0.2, 3, 40))
     b = _frame([0.1] * 70, rng.standard_normal(70), w=rng.uniform(0.2, 3, 70))
-    m = po.eval.merge_sums(po.eval.sums(a, "m", weight="w"), po.eval.sums(b, "m", weight="w"))
+    m = rp.eval.merge_sums(rp.eval.sums(a, "m", weight="w"), rp.eval.sums(b, "m", weight="w"))
     assert (m["mean_y"][0], m["m2_y"][0], m["cov"][0]) == (0.1, 0.0, 0.0)
     c = _frame([0.2] * 30, rng.standard_normal(30), w=rng.uniform(0.2, 3, 30))
-    m = po.eval.merge_sums(m, po.eval.sums(c, "m", weight="w"))
+    m = rp.eval.merge_sums(m, rp.eval.sums(c, "m", weight="w"))
     every = pl.concat([a, b, c])
     pred = every["m"].struct.field("pred_y").to_list()
     e = _exact(every["y"].to_list(), pred, every["w"].to_list())
@@ -259,7 +259,7 @@ def test_ic_is_scale_free_inside_the_input_bound(sy, sp):
     z, e = rng.standard_normal((2, 2000))
     ref = pearsonr(z + 0.5 * e, z).statistic
     df = _frame(sy * z, sp * (z + 0.5 * e))
-    for got in (po.eval.metrics(df, "m"), po.eval.from_sums(po.eval.sums(df, "m"))):
+    for got in (rp.eval.metrics(df, "m"), rp.eval.from_sums(rp.eval.sums(df, "m"))):
         assert got["ic"][0] == pytest.approx(ref, rel=1e-13), (sy, sp, got["ic"][0])
         assert got["r2"][0] == pytest.approx(r2_score(sy * z, sp * (z + 0.5 * e)), rel=1e-12)
 
@@ -274,7 +274,7 @@ def test_a_frames_ic_at_a_level_is_the_exact_one(level):
     y, p = level + z, level + z + 0.7 * e
     df = _frame(y, p)
     want = _exact_ic(_exact(list(y), list(p)))
-    got = po.eval.metrics(df, "m")["ic"][0]
+    got = rp.eval.metrics(df, "m")["ic"][0]
     # The centred sums' own rounding, second order in the level over the
     # spread (6e-15 at 1e9 measured); Polars' `corr` is first order.
     eps = 2.0**-52
@@ -291,8 +291,8 @@ def test_ic_never_passes_one():
         a = rng.uniform(0.1, 10)
         for sign in (1.0, -1.0):
             df = _frame(list(y), list(sign * a * y))
-            for got in (po.eval.metrics(df, "m", min_samples=1),
-                        po.eval.from_sums(po.eval.sums(df, "m"), min_samples=1)):  # fmt: skip
+            for got in (rp.eval.metrics(df, "m", min_samples=1),
+                        rp.eval.from_sums(rp.eval.sums(df, "m"), min_samples=1)):  # fmt: skip
                 ic = got["ic"][0]
                 assert -1.0 <= ic <= 1.0, (y, a, ic)
                 worst = max(worst, abs(ic))
@@ -311,9 +311,9 @@ def test_a_float32_target_is_scored_in_double_precision():
     pred = y.astype(np.float64) + 0.5 * rng.standard_normal(3000)
     df = _frame(pl.Series(y, dtype=pl.Float32), pred)
     assert df.schema["y"] == pl.Float32
-    got = po.eval.metrics(df, "m")
-    assert got.equals(po.eval.from_sums(po.eval.sums(df, "m")))
-    assert got.equals(po.eval.metrics(df.lazy(), "m"))
+    got = rp.eval.metrics(df, "m")
+    assert got.equals(rp.eval.from_sums(rp.eval.sums(df, "m")))
+    assert got.equals(rp.eval.metrics(df.lazy(), "m"))
     assert got["r2"][0] == pytest.approx(r2_score(y.astype(np.float64), pred), rel=1e-14)
 
 
@@ -322,8 +322,8 @@ def test_a_float32_prediction_is_scored_in_double_precision():
     y = rng.standard_normal(3000) + 300.0
     pred = (y + 0.5 * rng.standard_normal(3000)).astype(np.float32)
     df = _frame(y, pl.Series(pred, dtype=pl.Float32))
-    got = po.eval.metrics(df, "m")
-    assert got.equals(po.eval.from_sums(po.eval.sums(df, "m")))
+    got = rp.eval.metrics(df, "m")
+    assert got.equals(rp.eval.from_sums(rp.eval.sums(df, "m")))
     assert got["r2"][0] == pytest.approx(r2_score(y, pred.astype(np.float64)), rel=1e-14)
     assert got["ic"][0] == pytest.approx(pearsonr(y, pred.astype(np.float64)).statistic, rel=1e-14)
 
@@ -343,12 +343,12 @@ def test_a_frames_scores_are_a_one_chunk_querys_to_the_bit(binary, group):
         pred = y + rng.standard_normal(n)
     df = _frame(y, pred, g=rng.choice(["a", "b", "c"], n))
     kw = {"group": group, "binary": binary}
-    assert po.eval.metrics(df, "m", **kw).equals(po.eval.metrics(df.lazy(), "m", **kw))
+    assert rp.eval.metrics(df, "m", **kw).equals(rp.eval.metrics(df.lazy(), "m", **kw))
     t = rng.integers(0, 1000, n)
     dfc = df.with_columns(t=pl.Series(np.sort(t)))
     wk = {"clock": "t", "every": 100, **kw}
-    assert po.eval.window_metrics(dfc, "m", **wk).equals(
-        po.eval.window_metrics(dfc.lazy(), "m", **wk)
+    assert rp.eval.window_metrics(dfc, "m", **wk).equals(
+        rp.eval.window_metrics(dfc.lazy(), "m", **wk)
     )
 
 
@@ -377,10 +377,10 @@ def test_a_key_named_like_a_column_the_scores_make_is_refused(name, lazy):
     df = _labelled(name)
     src = df.lazy() if lazy else df
     calls = {
-        "metrics": lambda: po.eval.metrics(src, "m", group=name),
-        "sums": lambda: po.eval.sums(src, "m", group=name),
-        "window_metrics": lambda: po.eval.window_metrics(src, "m", clock="t", every=10, group=name),
-        "compare_specs": lambda: po.eval.compare_specs(src, ["m"], group=name),
+        "metrics": lambda: rp.eval.metrics(src, "m", group=name),
+        "sums": lambda: rp.eval.sums(src, "m", group=name),
+        "window_metrics": lambda: rp.eval.window_metrics(src, "m", clock="t", every=10, group=name),
+        "compare_specs": lambda: rp.eval.compare_specs(src, ["m"], group=name),
     }
     for call, fn in calls.items():
         with pytest.raises(ValueError, match=f"po.eval.{call}: group column {name!r} is named"):
@@ -393,26 +393,26 @@ def test_a_clock_or_weight_named_like_a_column_the_scores_make_is_refused(name):
     replaced by it: the target's value read as the weight."""
     df = _labelled("g").with_columns(pl.col("t").alias(name))
     with pytest.raises(ValueError, match=f"clock column {name!r} is named"):
-        po.eval.window_metrics(df, "m", clock=name, every=10)
+        rp.eval.window_metrics(df, "m", clock=name, every=10)
     if name != "window_start":
         with pytest.raises(ValueError, match=f"weight column {name!r} is named"):
-            po.eval.sums(df.lazy(), "m", weight=name)
+            rp.eval.sums(df.lazy(), "m", weight=name)
 
 
 def test_a_clock_or_weight_named_like_a_sum_is_read():
     """Only a name the long form takes is refused for a clock or a weight:
     neither is a column of the result, so ``w`` or ``n`` reads as it is."""
     df = _labelled("g").with_columns(w=pl.col("wt"), n=pl.col("t"))
-    assert po.eval.sums(df, "m", weight="w").equals(po.eval.sums(df, "m", weight="wt"))
-    assert po.eval.window_metrics(df, "m", clock="n", every=10, min_samples=1).equals(
-        po.eval.window_metrics(df, "m", clock="t", every=10, min_samples=1)
+    assert rp.eval.sums(df, "m", weight="w").equals(rp.eval.sums(df, "m", weight="wt"))
+    assert rp.eval.window_metrics(df, "m", clock="n", every=10, min_samples=1).equals(
+        rp.eval.window_metrics(df, "m", clock="t", every=10, min_samples=1)
     )
 
 
 def test_a_key_named_spec_is_refused_by_compare_specs():
     df = _labelled("spec")
     with pytest.raises(ValueError, match="po.eval.compare_specs: group column 'spec' is named"):
-        po.eval.compare_specs(df, ["m"], group="spec")
+        rp.eval.compare_specs(df, ["m"], group="spec")
 
 
 @pytest.mark.parametrize("lazy", [False, True])
@@ -426,10 +426,10 @@ def test_an_object_key_is_refused_on_both_paths(lazy):
                                       pl.Series("resid_ret", df["ret"] * 0.8)))  # fmt: skip
     src = df.lazy() if lazy else df
     for call, fn in {
-        "metrics": lambda: po.eval.metrics(src, "m", group="o"),
-        "sums": lambda: po.eval.sums(src, "m", group="o"),
-        "diebold_mariano": lambda: po.eval.diebold_mariano(src, a="n1", b="n2", group="o"),
-        "seqtest": lambda: po.eval.seqtest(src, a="n1", b="n2", group="o"),
+        "metrics": lambda: rp.eval.metrics(src, "m", group="o"),
+        "sums": lambda: rp.eval.sums(src, "m", group="o"),
+        "diebold_mariano": lambda: rp.eval.diebold_mariano(src, a="n1", b="n2", group="o"),
+        "seqtest": lambda: rp.eval.seqtest(src, a="n1", b="n2", group="o"),
     }.items():
         with pytest.raises(TypeError, match=f"po.eval.{call}: group column 'o' is an Object"):
             fn()
@@ -447,7 +447,7 @@ def test_a_nan_or_infinite_float_clock_is_in_no_window(lazy, chunks_of):
     t = np.arange(n, dtype=float)
     t[[3, 17, 29]] = [np.nan, np.inf, -np.inf]
     df = _frame(rng.standard_normal(n), rng.standard_normal(n), t=t)
-    got = po.eval.window_metrics(
+    got = rp.eval.window_metrics(
         df.lazy() if lazy else df, "m", clock="t", every=10.0, min_samples=1
     )
     assert got["window_start"].to_list() == [0.0, 10.0, 20.0, 30.0]
@@ -466,12 +466,12 @@ def test_a_narrow_clock_whose_window_edge_it_cannot_hold_is_refused(lazy):
         ValueError,
         match="po.eval.window_metrics: every is 200, which clock column 't', Int8, cannot hold",
     ):
-        po.eval.window_metrics(src, "m", clock="t", every=200)
+        rp.eval.window_metrics(src, "m", clock="t", every=200)
     with pytest.raises(
         ValueError, match="starts at -200, which clock column 't', Int8, cannot hold"
     ):
-        po.eval.window_metrics(src, "m", clock="t", every=100)
-    ok = po.eval.window_metrics(src, "m", clock="t", every=8, min_samples=1)
+        rp.eval.window_metrics(src, "m", clock="t", every=100)
+    ok = rp.eval.window_metrics(src, "m", clock="t", every=8, min_samples=1)
     assert ok.schema["window_start"] == pl.Int8 and ok["window_start"].min() == -120
 
 
@@ -487,17 +487,17 @@ def test_a_metrics_frame_is_not_a_sums_frame():
     """A12: raw Polars errors, `ColumnNotFoundError: w`, or a `ValueError`
     naming the scores as keys."""
     df = _sums_frame()
-    scores = po.eval.metrics(df, "m", min_samples=1)
-    s = po.eval.sums(df, "m")
-    for fn in (lambda: po.eval.merge_sums(scores), lambda: po.eval.merge_sums(s, scores),
-               lambda: po.eval.from_sums(scores)):  # fmt: skip
+    scores = rp.eval.metrics(df, "m", min_samples=1)
+    s = rp.eval.sums(df, "m")
+    for fn in (lambda: rp.eval.merge_sums(scores), lambda: rp.eval.merge_sums(s, scores),
+               lambda: rp.eval.from_sums(scores)):  # fmt: skip
         with pytest.raises(ValueError, match="holds scores, not sums.*po.eval.metrics"):
             fn()
     with pytest.raises(ValueError, match=r"po.eval.merge_sums: a frame lacks \['hits'\]"):
-        po.eval.merge_sums(s, s.drop("hits"))
-    other = po.eval.sums(df.with_columns(pl.col("g").cast(pl.Categorical)), "m", group="g")
+        rp.eval.merge_sums(s, s.drop("hits"))
+    other = rp.eval.sums(df.with_columns(pl.col("g").cast(pl.Categorical)), "m", group="g")
     with pytest.raises(ValueError, match="po.eval.merge_sums: key column 'g' is String in one"):
-        po.eval.merge_sums(po.eval.sums(df, "m", group="g"), other)
+        rp.eval.merge_sums(rp.eval.sums(df, "m", group="g"), other)
 
 
 @pytest.mark.parametrize("value", [None, True, 20.5, "30", -5])
@@ -506,12 +506,12 @@ def test_min_samples_is_checked_for_kind(value):
     20 rows, and "30" raised Polars' ComputeError."""
     df = _sums_frame()
     for call, fn in {
-        "metrics": lambda: po.eval.metrics(df, "m", min_samples=value),
-        "window_metrics": lambda: po.eval.window_metrics(
+        "metrics": lambda: rp.eval.metrics(df, "m", min_samples=value),
+        "window_metrics": lambda: rp.eval.window_metrics(
             df.with_row_index("t"), "m", clock="t", every=10, min_samples=value
         ),
-        "compare_specs": lambda: po.eval.compare_specs(df, ["m"], min_samples=value),
-        "from_sums": lambda: po.eval.from_sums(po.eval.sums(df, "m"), min_samples=value),
+        "compare_specs": lambda: rp.eval.compare_specs(df, ["m"], min_samples=value),
+        "from_sums": lambda: rp.eval.from_sums(rp.eval.sums(df, "m"), min_samples=value),
     }.items():
         with pytest.raises((TypeError, ValueError), match=f"po.eval.{call}: min_samples must be"):
             fn()
@@ -520,8 +520,8 @@ def test_min_samples_is_checked_for_kind(value):
 def test_a_bare_string_of_targets_is_one_target():
     """A14: `targets="ret"` was read letter by letter."""
     df = _labelled("g")
-    assert po.eval.metrics(df, "m", targets="ret").equals(po.eval.metrics(df, "m", targets=["ret"]))
-    assert po.eval.unpack(df, "m", targets="ret").equals(po.eval.unpack(df, "m", targets=["ret"]))
+    assert rp.eval.metrics(df, "m", targets="ret").equals(rp.eval.metrics(df, "m", targets=["ret"]))
+    assert rp.eval.unpack(df, "m", targets="ret").equals(rp.eval.unpack(df, "m", targets=["ret"]))
 
 
 @pytest.mark.parametrize("lazy", [False, True])
@@ -534,15 +534,15 @@ def test_a_target_that_is_not_0_or_1_is_refused_under_binary(lazy, chunks_of):
     df = _frame(y, np.clip(rng.random(40), 0.01, 0.99), t=np.arange(40))
     src = df.lazy() if lazy else df
     for call, fn in {
-        "metrics": lambda: po.eval.metrics(src, "m", binary=True),
-        "sums": lambda: po.eval.sums(src, "m", binary=True),
-        "window_metrics": lambda: po.eval.window_metrics(
+        "metrics": lambda: rp.eval.metrics(src, "m", binary=True),
+        "sums": lambda: rp.eval.sums(src, "m", binary=True),
+        "window_metrics": lambda: rp.eval.window_metrics(
             src, "m", clock="t", every=10, binary=True
         ),
     }.items():
         with pytest.raises(ValueError, match=f"po.eval.{call}: under binary .* is 2.0"):
             fn()
-    ok = po.eval.metrics(df.with_columns(pl.col("y").clip(0.0, 1.0)), "m", binary=True)
+    ok = rp.eval.metrics(df.with_columns(pl.col("y").clip(0.0, 1.0)), "m", binary=True)
     assert ok["log_loss"][0] > 0
 
 
@@ -553,22 +553,22 @@ def test_a_target_that_is_not_0_or_1_is_refused_under_binary(lazy, chunks_of):
 def test_compare_specs_refuses_in_its_own_name(lazy):
     df = _sums_frame()
     with pytest.raises(ValueError, match="po.eval.compare_specs: group column 'nope'"):
-        po.eval.compare_specs(df.lazy() if lazy else df, ["m"], group="nope")
+        rp.eval.compare_specs(df.lazy() if lazy else df, ["m"], group="nope")
     with pytest.raises(
         pl.exceptions.ColumnNotFoundError, match='po.eval.compare_specs: spec "nope"'
     ):
-        po.eval.compare_specs(df.lazy() if lazy else df, ["m", "nope"])
+        rp.eval.compare_specs(df.lazy() if lazy else df, ["m", "nope"])
 
 
 def test_grid_search_refuses_a_chunk_size_in_its_own_name():
     rng = np.random.default_rng(15)
     df = pl.DataFrame({"x": rng.standard_normal(100), "y": rng.standard_normal(100)})
-    spec = po.spec.ewridge("r", targets=["y"], features=["x"], half_life=50.0)
+    spec = rp.spec.ewridge("r", targets=["y"], features=["x"], half_life=50.0)
     for bad in (0, -3, 2.5, True):
         with pytest.raises(
             (TypeError, ValueError), match="po.eval.grid_search: chunk_size must be"
         ):
-            po.eval.grid_search(df, spec, chunk_size=bad)
+            rp.eval.grid_search(df, spec, chunk_size=bad)
 
 
 # --- C3(b), C5: grid_search's choice and what it ranks -------------------------
@@ -582,10 +582,10 @@ def test_the_choice_after_the_first_reads_the_test_spans_as_the_rank_does():
     x0, x1 = rng.standard_normal((2, 257))
     df = pl.DataFrame({"x0": x0, "x1": x1, "y": x0 - 0.3 * x1 + rng.standard_normal(257)})
     specs = [
-        po.spec.ewridge("one", targets=["y"], features=["x0"], half_life=50.0),
-        po.spec.ewridge("two", targets=["y"], features=["x0", "x1"], half_life=50.0),
+        rp.spec.ewridge("one", targets=["y"], features=["x0"], half_life=50.0),
+        rp.spec.ewridge("two", targets=["y"], features=["x0", "x1"], half_life=50.0),
     ]
-    table = po.eval.grid_search(df, specs, n_splits=5)
+    table = rp.eval.grid_search(df, specs, n_splits=5)
     chosen = dict(table.filter(kind="candidate").select("spec", "folds_chosen").iter_rows())
     assert chosen == {"one": 1, "two": 4}, chosen
     rank1 = table.filter(rank=1).row(0, named=True)
@@ -600,17 +600,17 @@ def test_loglik_over_specs_of_different_columns_is_refused():
     rng = np.random.default_rng(16)
     df = pl.DataFrame({"y": rng.standard_normal(300), "big": 1000 * rng.standard_normal(300),
                        "x0": rng.standard_normal(300)})  # fmt: skip
-    specs = [po.spec.bocpd("on_y", features=["y"]), po.spec.bocpd("on_big", features=["big"]),
-             po.spec.bocpd("on_y_too", features=["y"], hazard=50.0)]  # fmt: skip
+    specs = [rp.spec.bocpd("on_y", features=["y"]), rp.spec.bocpd("on_big", features=["big"]),
+             rp.spec.bocpd("on_y_too", features=["y"], hazard=50.0)]  # fmt: skip
     with pytest.raises(
         ValueError, match=r"po.eval.grid_search: scoring=\"loglik\" .*\['on_big'\] model \['big'\]"
     ):
-        po.eval.grid_search(df, specs, scoring="loglik", n_splits=2)
+        rp.eval.grid_search(df, specs, scoring="loglik", n_splits=2)
     both = [
-        po.spec.bocpd("a", features=["y", "x0"]),
-        po.spec.bocpd("b", features=["x0", "y"], hazard=50.0),
+        rp.spec.bocpd("a", features=["y", "x0"]),
+        rp.spec.bocpd("b", features=["x0", "y"], hazard=50.0),
     ]
-    assert po.eval.grid_search(df, both, scoring="loglik", n_splits=2).height == 3
+    assert rp.eval.grid_search(df, both, scoring="loglik", n_splits=2).height == 3
 
 
 def test_one_target_name_read_from_two_columns_is_refused():
@@ -622,17 +622,17 @@ def test_one_target_name_read_from_two_columns_is_refused():
         {"x": x, "y": x + rng.standard_normal(300), "big": 1000 * rng.standard_normal(300)}
     )
     specs = [
-        po.spec.ewridge(
-            "from_y", targets=[po.target("y", name="ret")], features=["x"], half_life=50.0
+        rp.spec.ewridge(
+            "from_y", targets=[rp.target("y", name="ret")], features=["x"], half_life=50.0
         ),
-        po.spec.ewridge(
-            "from_big", targets=[po.target("big", name="ret")], features=["x"], half_life=50.0
+        rp.spec.ewridge(
+            "from_big", targets=[rp.target("big", name="ret")], features=["x"], half_life=50.0
         ),
     ]
     with pytest.raises(
         ValueError, match="po.eval.grid_search: target 'ret' is read from different columns"
     ):
-        po.eval.grid_search(df, specs, n_splits=2)
-    also = po.target("y", name="ret")
-    same = [specs[0], po.spec.ewridge("also_y", targets=[also], features=["x"], half_life=500.0)]
-    assert po.eval.grid_search(df, same, n_splits=2).height == 3
+        rp.eval.grid_search(df, specs, n_splits=2)
+    also = rp.target("y", name="ret")
+    same = [specs[0], rp.spec.ewridge("also_y", targets=[also], features=["x"], half_life=500.0)]
+    assert rp.eval.grid_search(df, same, n_splits=2).height == 3

@@ -45,13 +45,13 @@ def load() -> str:
 def header() -> str:
     import polars as pl
 
-    import rheon as po
+    from rheon import polars as rp
 
     commit = _git("rev-parse", "--short=12", "HEAD") or "unknown"
     if _git("status", "--porcelain", "--untracked-files=no"):
         commit += " (modified)"
     return (
-        f"ran on: commit {commit}; polars-online {po.__version__}; polars {pl.__version__}; "
+        f"ran on: commit {commit}; polars-online {rp.__version__}; polars {pl.__version__}; "
         f"Python {platform.python_version()}; {platform.system()} {platform.machine()}; "
         f"{os.cpu_count()} cpus; load {load()}"
     )

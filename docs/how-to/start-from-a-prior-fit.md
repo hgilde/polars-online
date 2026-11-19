@@ -66,7 +66,7 @@ lets each predict from its first row:
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # Today's truth: y = 0.5 + 2.2 x plus noise. Yesterday's fit was 0.5 + 2.0 x.
 rng = np.random.default_rng(11)

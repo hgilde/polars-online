@@ -18,9 +18,9 @@ import textwrap
 
 import pytest
 
-import rheon as po
 from doc_recipes import differences
 from polars_version import block_marks
+from rheon import polars as rp
 from test_production_hardening import _readme_namespace
 
 TIER = "essential"
@@ -52,8 +52,8 @@ def _blocks(doc: str) -> list[tuple[str, str]]:
 
 def _documented() -> list[tuple[str, object]]:
     """The public objects whose docstrings the API reference is built from."""
-    modules = [po, po.spec, po._bank, po._frame]
-    modules += [po.gram, po.eval, po.corr, po.stream, po.sim, po.gbdt]
+    modules = [rp, rp.spec, rp._bank, rp._frame]
+    modules += [rp.gram, rp.eval, rp.corr, rp.stream, rp.sim]
     seen: set[int] = set()
     out: list[tuple[str, object]] = []
     for mod in modules:

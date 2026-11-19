@@ -39,7 +39,7 @@ from scipy.stats import ks_2samp, kstwo
 from sklearn.cluster import KMeans, kmeans_plusplus
 
 import ledger
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -68,7 +68,7 @@ def states_after(
     n, d = x.shape
     rows = n if rows is None else rows
     features = [f"x{i}" for i in range(d)]
-    spec = po.spec.hmm(
+    spec = rp.spec.hmm(
         "h",
         features=features,
         n_components=k,
@@ -80,7 +80,7 @@ def states_after(
         weight="w",
     )
     frame = pl.DataFrame({f: x[:rows, i] for i, f in enumerate(features)}).with_columns(w=w[:rows])
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(frame)
     model = json.loads(bank.write_json())["states"][0][0][1]["models"][0]["model"]["Hmm"]
     means = np.array([s["m"] for s in model["states"]])

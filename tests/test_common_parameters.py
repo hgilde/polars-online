@@ -58,7 +58,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 from test_model_registry import MINIMAL
 
 TIER = "mixed"
@@ -194,10 +194,10 @@ def spec(variant: str, **kw: Any) -> dict:
     a.update(MINIMAL[kind])
     a.update(extra)
     a.update(kw)
-    return getattr(po.spec, kind)("m", **{k: v for k, v in a.items() if v is not None})
+    return getattr(rp.spec, kind)("m", **{k: v for k, v in a.items() if v is not None})
 
 
-def _state(bank: po.ModelBank, kind: str) -> pl.DataFrame | None:
+def _state(bank: rp.ModelBank, kind: str) -> pl.DataFrame | None:
     """What a kind holds outside its rows: the tables it is read from."""
     if kind == "marginal":
         return bank.marginal("m")
@@ -211,7 +211,7 @@ def _state(bank: po.ModelBank, kind: str) -> pl.DataFrame | None:
 def run(variant: str, df: pl.DataFrame | None = None, **kw: Any):
     """The rows' fields and the state's table, one chunk, one thread."""
     kind = VARIANTS[variant][0]
-    bank = po.ModelBank([spec(variant, **kw)], threads=1)
+    bank = rp.ModelBank([spec(variant, **kw)], threads=1)
     out = bank.fit_predict(frame(variant, df)).select("m").unnest("m")
     return out, _state(bank, kind)
 
@@ -481,8 +481,8 @@ def _reordered(
     given, so it is turned round); a list indexed by position is gathered
     back by ``coef_fields``' names."""
     out = out.rename({c: c.replace("x1_x0", "x0_x1") for c in out.columns})
-    fields = po.spec.coef_fields(forward)
-    rfields = po.spec.coef_fields(backward)
+    fields = rp.spec.coef_fields(forward)
+    rfields = rp.spec.coef_fields(backward)
     for field in fields["field"].unique().to_list():
         names = fields.filter(pl.col("field") == field)["name"].to_list()
         rnames = rfields.filter(pl.col("field") == field)["name"].to_list()
@@ -613,7 +613,7 @@ def test_no_clock_is_the_row_index(variant: str):
 @pytest.mark.parametrize("variant", _params(KINDS))
 def test_fit_leaves_the_same_state_at_every_chunk_size(variant: str):
     def saved(chunk_size: int | None, predict: bool = False) -> bytes:
-        bank = po.ModelBank([spec(variant, clock="t", gap_cap=CAP)], threads=1)
+        bank = rp.ModelBank([spec(variant, clock="t", gap_cap=CAP)], threads=1)
         if predict:
             bank.fit_predict(frame(variant))
         else:
@@ -625,7 +625,7 @@ def test_fit_leaves_the_same_state_at_every_chunk_size(variant: str):
     for k in (None, *sizes):
         assert saved(k) == whole, f"{variant}: fit(chunk_size={k}) left another state"
     # The state is the stream's: a different stream leaves different bytes.
-    other = po.ModelBank([spec(variant, clock="t", gap_cap=CAP)], threads=1)
+    other = rp.ModelBank([spec(variant, clock="t", gap_cap=CAP)], threads=1)
     other.fit(frame(variant).head(N - 37))
     assert other.save_bytes() != whole
 

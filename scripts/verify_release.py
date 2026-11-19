@@ -47,10 +47,10 @@ def check(
     be the first thing a user on this OS saw."""
     import polars as pl
 
-    import rheon as po
     from rheon import _cpu_check
+    from rheon import polars as rp
 
-    where = Path(po.__file__).resolve()
+    where = Path(rp.__file__).resolve()
     if installed and where.is_relative_to(REPO / "python"):
         raise SystemExit(f"rheon came from the checkout ({where}), not from PyPI")
     if installed and distribution is not None:
@@ -69,18 +69,18 @@ def check(
         if missing:
             raise SystemExit(f"this CPU lacks {', '.join(missing)}, which the wheel needs")
     for name, got in (
-        ("__version__", po.__version__),
-        ("native_version()", po.native_version()),
+        ("__version__", rp.__version__),
+        ("native_version()", rp.native_version()),
     ):
         if got != version:
             raise SystemExit(f"rheon.{name} is {got}, not {version}")
-    if po.schema_version() != schema:
-        raise SystemExit(f"rheon.schema_version() is {po.schema_version()}, not {schema}")
+    if rp.schema_version() != schema:
+        raise SystemExit(f"rheon.schema_version() is {rp.schema_version()}, not {schema}")
 
     n = 2000
     xs = [((i * 37) % 101) / 10.0 - 5.0 for i in range(n)]
     ys = [1.0 + SLOPE * x + 0.01 * ((i * 13) % 7 - 3) for i, x in enumerate(xs)]
-    s = po.spec.ewridge("fit", targets=["y"], features=["x"], half_life=500.0)
+    s = rp.spec.ewridge("fit", targets=["y"], features=["x"], half_life=500.0)
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "line.parquet"
         pl.DataFrame({"x": xs, "y": ys}).write_parquet(path)
@@ -94,8 +94,8 @@ def check(
     if abs(slope - SLOPE) > 1e-3:
         raise SystemExit(f"the fit's slope is {slope}, not {SLOPE}")
     return (
-        f"polars-online {po.__version__} (native {po.native_version()}, schema "
-        f"{po.schema_version()}) on polars {pl.__version__}, from {where.parent}: "
+        f"polars-online {rp.__version__} (native {rp.native_version()}, schema "
+        f"{rp.schema_version()}) on polars {pl.__version__}, from {where.parent}: "
         f"slope {slope:.6f}: ok"
     )
 

@@ -45,7 +45,7 @@ import time
 
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # A million rows of 20 features, and a ridge over them.
 rng = np.random.default_rng(9)
@@ -99,7 +99,7 @@ import time
 
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # 200,000 rows of 50 features, on disk.
 rng = np.random.default_rng(1)
@@ -201,7 +201,7 @@ within a few counters' bytes, and it grows with the groups:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # A million rows of 20 features and 64 groups, on disk.
 rng = np.random.default_rng(3)

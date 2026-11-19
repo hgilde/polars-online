@@ -36,10 +36,10 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from doc_recipes import TIMED, differences, shown_outputs, untimed
 from doc_recipes import run as run_recipe
 from polars_version import block_marks
+from rheon import polars as rp
 from test_ffi_memory import run_isolated
 
 TIER = "essential"
@@ -64,7 +64,7 @@ def _spec(**kw):
         max_rows_between_solves=1,
     )
     d.update(kw)
-    return po.spec.ewridge("m", **d)
+    return rp.spec.ewridge("m", **d)
 
 
 class TestLeakageAndDuplicateRejection:
@@ -97,7 +97,7 @@ class TestLeakageAndDuplicateRejection:
             ("ftrl", {}),
         ]:
             with pytest.raises(ValueError, match="both a target and a feature"):
-                getattr(po.spec, name)(
+                getattr(rp.spec, name)(
                     "m", targets=["y0"], features=["y0"], half_life=100.0, **extra
                 )
 
@@ -109,8 +109,8 @@ class TestFeatureOrderInvariance:
 
     def test_spec_feature_order(self):
         df = _df(k=4)
-        a = po.ModelBank([_spec(features=["x0", "x1", "x2", "x3"])]).fit_predict(df)
-        b = po.ModelBank([_spec(features=["x3", "x1", "x0", "x2"])]).fit_predict(df)
+        a = rp.ModelBank([_spec(features=["x0", "x1", "x2", "x3"])]).fit_predict(df)
+        b = rp.ModelBank([_spec(features=["x3", "x1", "x0", "x2"])]).fit_predict(df)
         pa_ = a["m"].struct.field("pred_y0").to_list()
         pb = b["m"].struct.field("pred_y0").to_list()
         for i, (u, v) in enumerate(zip(pa_, pb, strict=True)):
@@ -125,11 +125,11 @@ class TestFeatureOrderInvariance:
         ours is 'extra columns are ignored', by design)."""
         df = _df(k=2)
         spec = _spec()
-        a = po.ModelBank([spec]).fit_predict(df).select("m")
+        a = rp.ModelBank([spec]).fit_predict(df).select("m")
         shuffled = df.select(["y0", "x1", "x0"]).with_columns(
             junk=pl.lit("z"), extra=pl.int_range(0, df.height)
         )
-        b = po.ModelBank([spec]).fit_predict(shuffled).select("m")
+        b = rp.ModelBank([spec]).fit_predict(shuffled).select("m")
         assert a.equals(b, null_equal=True)
 
 
@@ -138,7 +138,7 @@ class TestDegenerateColumns:
 
     def test_all_null_feature_skips_every_row(self):
         df = _df().with_columns(x0=pl.lit(None, dtype=pl.Float64))
-        out = po.ModelBank([_spec()]).fit_predict(df)
+        out = rp.ModelBank([_spec()]).fit_predict(df)
         for f in out.schema["m"].fields:
             vals = out["m"].struct.field(f.name).to_list()
             assert all(v is None for v in vals), f"{f.name} produced a value from no data"
@@ -148,8 +148,8 @@ class TestDegenerateColumns:
         row -- so its whole trajectory must be *identical* to the same frame
         with targets present."""
         df = _df()
-        with_targets = po.ModelBank([_spec()]).fit_predict(df)
-        out = po.ModelBank([_spec()]).fit_predict(
+        with_targets = rp.ModelBank([_spec()]).fit_predict(df)
+        out = rp.ModelBank([_spec()]).fit_predict(
             df.with_columns(y0=pl.lit(None, dtype=pl.Float64))
         )
         assert (
@@ -160,13 +160,13 @@ class TestDegenerateColumns:
 
     def test_all_zero_weight_never_learns_and_never_breaks(self):
         df = _df().with_columns(w=pl.lit(0.0))
-        out = po.ModelBank([_spec(weight="w")]).fit_predict(df)
+        out = rp.ModelBank([_spec(weight="w")]).fit_predict(df)
         preds = out["m"].struct.field("pred_y0").to_list()
         assert all(v is None for v in preds), "nothing carried weight, nothing may predict"
 
     def test_constant_target(self):
         df = _df().with_columns(y0=pl.lit(7.0))
-        out = po.ModelBank([_spec()]).fit_predict(df)
+        out = rp.ModelBank([_spec()]).fit_predict(df)
         preds = [v for v in out["m"].struct.field("pred_y0").to_list() if v is not None]
         assert preds, "a constant target is perfectly learnable"
         assert preds[-1] == pytest.approx(7.0, abs=1e-6)
@@ -183,7 +183,7 @@ class TestFirstRowPathologies:
         rows at half-life 40 is 100 half-lives: recovery must be complete."""
         df = _df(n=4000)
         df = pl.concat([pl.DataFrame({"x0": [1e12], "x1": [-1e12], "y0": [1e12]}), df])
-        out = po.ModelBank([_spec(standardize=standardize, half_life=40.0)]).fit_predict(df)
+        out = rp.ModelBank([_spec(standardize=standardize, half_life=40.0)]).fit_predict(df)
         coef = out["m"].struct.field("coef").to_list()[-1]
         assert coef[1] == pytest.approx(1.0, abs=0.05), f"slope x0: {coef[1]}"
         assert coef[2] == pytest.approx(2.0, abs=0.05), f"slope x1: {coef[2]}"
@@ -194,10 +194,10 @@ class TestFirstRowPathologies:
         df = pl.DataFrame({"y0": y})
         # 80 half-lives of washout for the poisoned trend (the first update
         # sees a slope of -1e9).
-        spec = po.spec.holt(
+        spec = rp.spec.holt(
             "m", targets=["y0"], half_life=50.0, trend_half_life=50.0, min_weight=3.0
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         level, trend = out["m"].struct.field("coef").to_list()[-1]
         assert trend == pytest.approx(0.5, abs=0.05)
         assert level == pytest.approx(3.0 + 0.5 * (n - 1), rel=0.01)
@@ -212,7 +212,7 @@ class TestFirstRowPathologies:
             },
             schema={"x0": pl.Float64, "x1": pl.Float64, "y0": pl.Float64},
         )
-        out = po.ModelBank([_spec()]).fit_predict(pl.concat([nulls, df]))
+        out = rp.ModelBank([_spec()]).fit_predict(pl.concat([nulls, df]))
         coef = out["m"].struct.field("coef").to_list()[-1]
         assert coef[1] == pytest.approx(1.0, abs=0.05)
 
@@ -248,7 +248,7 @@ class TestParameterExtremes:
         if model not in ("rls", "kalman", "ftrl", "sgd", "pa"):
             kw["max_rows_between_solves"] = 8
         kw.update(extra)
-        out = po.ModelBank([getattr(po.spec, model)("m", **kw)]).fit_predict(df)
+        out = rp.ModelBank([getattr(rp.spec, model)("m", **kw)]).fit_predict(df)
         for f in out.schema["m"].fields:
             # `coef`/`support_coef` are lists; `withheld_reason` is an enum.
             if f.name.startswith("coef") or not f.dtype.is_float():
@@ -259,8 +259,8 @@ class TestParameterExtremes:
     def test_lam_is_halflife_by_another_name(self):
         df = _df()
         h = 137.0
-        a = po.ModelBank([_spec(half_life=h)]).fit_predict(df)
-        b = po.ModelBank([_spec(half_life=None, lam=0.5 ** (1.0 / h))]).fit_predict(df)
+        a = rp.ModelBank([_spec(half_life=h)]).fit_predict(df)
+        b = rp.ModelBank([_spec(half_life=None, lam=0.5 ** (1.0 / h))]).fit_predict(df)
         pa_ = a["m"].struct.field("pred_y0").to_numpy().astype(float)
         pb = b["m"].struct.field("pred_y0").to_numpy().astype(float)
         m = np.isfinite(pa_)
@@ -280,7 +280,7 @@ class TestParameterExtremes:
         """`l1_ratio = 0` turns the coordinate descent into pure ridge; at a
         negligible penalty both it and ewridge must land on OLS."""
         df = _df(n=3000)
-        lasso = po.spec.lasso(
+        lasso = rp.spec.lasso(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -290,8 +290,8 @@ class TestParameterExtremes:
             min_weight=5.0,
             max_rows_between_solves=1,
         )
-        a = po.ModelBank([lasso]).fit_predict(df)
-        b = po.ModelBank([_spec(half_life=1e9, ridge=[1e-10])]).fit_predict(df)
+        a = rp.ModelBank([lasso]).fit_predict(df)
+        b = rp.ModelBank([_spec(half_life=1e9, ridge=[1e-10])]).fit_predict(df)
         ca = a["m"].struct.field("coef").to_list()[-1][:3]
         cb = b["m"].struct.field("coef").to_list()[-1]
         np.testing.assert_allclose(ca, cb, rtol=1e-6)
@@ -302,7 +302,7 @@ class TestParameterExtremes:
 #: the second save fail partway through, the way a full disk would.
 SAVE_INTERRUPTED = """
 import os, resource, signal
-import numpy as np, polars as pl, rheon as po
+import numpy as np, polars as pl, rheon.polars as po
 
 path = STATE_PATH
 rng = np.random.default_rng(0)
@@ -343,7 +343,7 @@ class TestScoringWithoutLearning:
     81)."""
 
     def _fitted(self, df, **kw):
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0"],
@@ -356,7 +356,7 @@ class TestScoringWithoutLearning:
             coef_every=0,
             **kw,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         return bank
 
@@ -380,7 +380,7 @@ class TestScoringWithoutLearning:
         before = bank.fit_predict(fit.tail(1))["m"].struct.field("coef").to_list()[-1]
 
         scored = self._frame(60, seed=1, weight=0.0).with_columns(pl.col("t") + 100.0)
-        out = po.ModelBank.load_bytes(bank.save_bytes()).fit_predict(scored)["m"].struct
+        out = rp.ModelBank.load_bytes(bank.save_bytes()).fit_predict(scored)["m"].struct
         after = out.field("coef").to_list()[-1]
         assert after == before, "scoring moved the coefficients"
         assert out.field("pred_y")[0] is not None, "scoring emitted nothing"
@@ -394,7 +394,7 @@ class TestScoringWithoutLearning:
         scored = self._frame(60, seed=1).with_columns(
             pl.col("t") + 100.0, pl.lit(None, dtype=pl.Float64).alias("y")
         )
-        out = po.ModelBank.load_bytes(bank.save_bytes()).fit_predict(scored)["m"].struct
+        out = rp.ModelBank.load_bytes(bank.save_bytes()).fit_predict(scored)["m"].struct
         return before, out.field("coef").to_list()[-1], out.field("weight_sum").to_list()
 
     def test_a_null_target_leaves_its_fit_where_it_was(self):
@@ -428,7 +428,7 @@ class TestScoringWithoutLearning:
         output even though the fit behind it is unchanged."""
         bank = self._fitted(self._frame(100))
         scored = self._frame(200, seed=2, weight=0.0).with_columns(pl.col("t") + 100.0)
-        out = po.ModelBank.load_bytes(bank.save_bytes()).fit_predict(scored)["m"].struct
+        out = rp.ModelBank.load_bytes(bank.save_bytes()).fit_predict(scored)["m"].struct
         weight_sum = out.field("weight_sum").to_list()
         assert weight_sum[0] > 3.0 > weight_sum[-1], (weight_sum[0], weight_sum[-1])
         preds = out.field("pred_y").to_list()
@@ -444,7 +444,7 @@ class TestSerializationRobustness:
     this is the test that a *damaged own* file still fails cleanly.)"""
 
     def _bytes(self):
-        b = po.ModelBank([_spec()])
+        b = rp.ModelBank([_spec()])
         b.fit_predict(_df(n=500))
         return b.save_bytes()
 
@@ -465,7 +465,7 @@ class TestSerializationRobustness:
             new = int(rng.integers(0, 256))
             blob[i] = (new + 1) % 256 if new == old else new
             with pytest.raises(Exception, match="."):
-                po.ModelBank.load_bytes(bytes(blob))
+                rp.ModelBank.load_bytes(bytes(blob))
             blob[i] = old
         detected = 0
         probe = _df(n=3)
@@ -474,7 +474,7 @@ class TestSerializationRobustness:
             old = blob[i]
             blob[i] = int(rng.integers(0, 256))
             try:
-                loaded = po.ModelBank.load_bytes(bytes(blob))
+                loaded = rp.ModelBank.load_bytes(bytes(blob))
             except Exception:
                 detected += 1
             else:
@@ -495,7 +495,7 @@ class TestSerializationRobustness:
         for _ in range(50):
             cut = int(rng.integers(0, len(blob)))
             with pytest.raises(Exception, match="."):
-                po.ModelBank.load_bytes(blob[:cut])
+                rp.ModelBank.load_bytes(blob[:cut])
 
     @pytest.mark.skipif(os.name != "posix", reason="RLIMIT_FSIZE is POSIX")
     def test_an_interrupted_save_keeps_the_last_good_state(self, tmp_path):
@@ -511,7 +511,7 @@ class TestSerializationRobustness:
 
     def test_pickle_and_deepcopy_resume_exactly(self):
         df = _df(n=1000)
-        b = po.ModelBank([_spec()])
+        b = rp.ModelBank([_spec()])
         b.fit_predict(df.slice(0, 500))
         clones = [pickle.loads(pickle.dumps(b)), copy.deepcopy(b)]
         rest = df.slice(500, 500)
@@ -527,7 +527,7 @@ class TestConcurrency:
 
     def test_concurrent_fit_predict_is_safe(self):
         df = _df(n=5000)
-        bank = po.ModelBank([_spec()])
+        bank = rp.ModelBank([_spec()])
         errors: list[BaseException] = []
 
         def work():
@@ -543,7 +543,7 @@ class TestConcurrency:
         for t in threads:
             t.join()
         # Whatever happened above, the object must not be wedged.
-        fresh = po.ModelBank([_spec()])
+        fresh = rp.ModelBank([_spec()])
         again = fresh.fit_predict(df)
         assert again.height == df.height
         for e in errors:
@@ -563,7 +563,7 @@ class TestOddNames:
                 "g": ["α", "β"] * 250,
             }
         ).with_columns((pl.col("价格 Δ") * 2).alias("my target"))
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["my target"],
             features=["价格 Δ"],
@@ -572,18 +572,18 @@ class TestOddNames:
             min_weight=5.0,
             max_rows_between_solves=1,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         out = bank.fit_predict(df)
         names = [f.name for f in out.schema["m"].fields]
         assert "pred_my target" in names, names
         p = tmp_path / "s.state"
         bank.save(p)
-        b2 = po.ModelBank.load(p, specs=[spec])
+        b2 = rp.ModelBank.load(p, specs=[spec])
         assert bank.fit_predict(df).equals(b2.fit_predict(df), null_equal=True)
 
     def test_missing_column_names_the_column(self):
         with pytest.raises(Exception, match="x9"):
-            po.ModelBank([_spec(features=["x0", "x9"])]).fit_predict(_df())
+            rp.ModelBank([_spec(features=["x0", "x9"])]).fit_predict(_df())
 
 
 def _doc_blocks(rel: str, fence: str = "python") -> list[tuple[str, int, str]]:
@@ -802,8 +802,8 @@ def _docstring_blocks() -> list[tuple[str, int, str]]:
     way (docs/WRITING.md, "Every code block runs")."""
     import inspect
 
-    modules = [po, po.spec, po._bank, po._frame]
-    modules += [po.gram, po.eval, po.corr, po.stream, po.sim, po.gbdt]
+    modules = [rp, rp.spec, rp._bank, rp._frame]
+    modules += [rp.gram, rp.eval, rp.corr, rp.stream, rp.sim]
     seen: set[int] = set()
     out: list[tuple[str, int, str]] = []
     for mod in modules:
@@ -832,10 +832,10 @@ DOCSTRING_BLOCKS = _docstring_blocks()
 
 def _closed_rows(df: pl.DataFrame) -> pl.DataFrame:
     """What `bank.closed_groups()` gives for the README's block example."""
-    spec = po.spec.ew_cov(
+    spec = rp.spec.ew_cov(
         "cov", features=["x0", "x1"], lam=1.0, group="block", group_close="monotone"
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df.with_columns(block=pl.int_range(pl.len()) // 100))
     return bank.closed_groups()
 
@@ -871,7 +871,7 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     # `spec` as section 2 shows it, and `grid` as docs/how-to/find-an-output-field.md
     # and read-the-coefficients.md build it (ridge 0.5, half-life 500 are what
     # their blocks filter on).
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "ridge",
         targets=["y"],
         features=["x0", "x1", "x2"],
@@ -882,16 +882,16 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
         ridge=[1e-6, 0.1],
         standardize=True,
     )
-    grid = po.spec.ewridge("m", half_life=[100.0, 500.0], ridge=[1e-6, 0.5], **common)
-    scored = po.ModelBank(
+    grid = rp.spec.ewridge("m", half_life=[100.0, 500.0], ridge=[1e-6, 0.5], **common)
+    scored = rp.ModelBank(
         [
-            po.spec.ewridge("ridge", half_life=500.0, group="stock_id", **common),
-            po.spec.kalman(
+            rp.spec.ewridge("ridge", half_life=500.0, group="stock_id", **common),
+            rp.spec.kalman(
                 "kalman", half_life=500.0, coef_half_life=100.0, group="stock_id", **common
             ),
         ]
     ).fit_predict(df)
-    graded = po.ModelBank([grid]).fit_predict(df)
+    graded = rp.ModelBank([grid]).fit_predict(df)
     out = df.hstack(scored.select("ridge", "kalman")).hstack(graded.select("m"))
     # *Example data* wrote ticks.parquet, today.parquet, trades.parquet and
     # the `ticks/*.parquet` glob; the runner guide's examples read these too.
@@ -900,13 +900,13 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     today.write_csv(tmp_path / "today.csv")
     # `--input-format ipc` names a file whose extension does not say so.
     df.write_ipc(tmp_path / "feed.dat")
-    fed = po.ModelBank([spec])
+    fed = rp.ModelBank([spec])
     fed.fit_predict(df)
     fed.save(tmp_path / "bank.state")  # what section 2's `bank.save` left behind
     # The runner guide's `job.toml`: a name of its own, since the README's
     # `bank.toml` is another configuration (task 238), and a clock, so that
     # its resume recipe drops the rows the state has learned.
-    cli_spec = po.spec.ewridge(
+    cli_spec = rp.spec.ewridge(
         "ridge",
         targets=["y"],
         features=["x0"],
@@ -926,7 +926,7 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     # saved: a state refuses to load under specs it was not saved from, which
     # is the point of that check. `bank.state` belongs to the README, which
     # writes and reads it throughout, so the CLI's gets a name of its own.
-    cli_bank = po.ModelBank([cli_spec])
+    cli_bank = rp.ModelBank([cli_spec])
     cli_bank.fit(df.lazy())
     cli_bank.save(tmp_path / "run.state")
     # The sidecar example needs a spec that closes groups; the config above
@@ -941,11 +941,12 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     return {
         "pl": pl,
         "np": np,
-        "po": po,
+        "po": rp,
+        "rp": rp,
         "df": df,
         # docs/how-to/close-groups.md introduces both, and its check block
         # reuses them.
-        "blocks": po.spec.ew_cov(
+        "blocks": rp.spec.ew_cov(
             "cov",
             features=["x0", "x1"],
             lam=1.0,
@@ -974,7 +975,7 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
         "lf": pl.scan_parquet(tmp_path / "ticks.parquet"),
         "spec": spec,
         "grid": grid,
-        "bank": po.ModelBank([spec]),
+        "bank": rp.ModelBank([spec]),
         "out": out,
         "now": df["t"].max(),
     }
@@ -1238,7 +1239,7 @@ class TestReadmeExamples:
         # on a stream of its own, so no README block builds them any more.
         fields = on_page("grid", self.PAGE_COPIES["grid"])["out"]
         assert ns["out"].select("m").equals(fields.select("m"))
-        assert ns["bank"].save_bytes() == po.ModelBank([ns["spec"]]).save_bytes()
+        assert ns["bank"].save_bytes() == rp.ModelBank([ns["spec"]]).save_bytes()
 
     def test_every_name_a_readme_example_reads_was_built_by_an_earlier_one(self):
         """A reader starts with nothing and runs the examples in order. The
@@ -1405,7 +1406,9 @@ class TestReadmeExamples:
         each block is parsed, not run, and every name it reads must be one
         that *Example data* builds, an earlier block of the same docstring
         or page builds, or the block itself builds."""
-        known = set(dir(builtins)) | _names(_example_data_block())[0]
+        # `rp` is the namespace's alias for `rheon.polars`, which the docstrings
+        # use and *Example data* (still `po`) does not build.
+        known = set(dir(builtins)) | _names(_example_data_block())[0] | {"rp"}
         runner = [b for b in README_BLOCKS if b[0] == "docs/RUNNER.md"]
         unbuilt: dict[str, list[str]] = {}
         for where, group in itertools.groupby(DOCSTRING_BLOCKS + runner, key=lambda b: b[0]):

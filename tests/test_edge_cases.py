@@ -8,7 +8,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -42,11 +42,11 @@ def _spec(model="ewridge", **kw):
     d.update(kw)
     if d.get("features", ()) is None:
         del d["features"]  # a model with no features keyword (holt)
-    return getattr(po.spec, model)("m", **d)
+    return getattr(rp.spec, model)("m", **d)
 
 
 def _run(df, spec=None):
-    return po.ModelBank([spec or _spec()]).fit_predict(df)
+    return rp.ModelBank([spec or _spec()]).fit_predict(df)
 
 
 def _f(out, field, col="m"):
@@ -144,9 +144,9 @@ class TestWeights:
             )
             kw = dict(features=["x0", "x1"], clock="t", weight="w", half_life=1.0, gap_cap=cap)
             spec = (
-                po.spec.ewridge("m", targets=["y0"], max_error_inflation=float("inf"), **kw)
+                rp.spec.ewridge("m", targets=["y0"], max_error_inflation=float("inf"), **kw)
                 if model == "ewridge"
-                else po.spec.ew_cov("m", **kw)
+                else rp.spec.ew_cov("m", **kw)
             )
             weight_sum = _f(_run(df, spec), "weight_sum")
             return weight_sum[n0], weight_sum[n0 + 1]
@@ -196,11 +196,11 @@ class TestGroupKeys:
     def test_group_keys_survive_save_load(self, tmp_path):
         df = pl.DataFrame({"g": [None, "<null>"], "x0": [1.0, 2.0], "y0": [1.0, 2.0]})
         spec = _spec(group="g")
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         p = tmp_path / "b.state"
         bank.save(p)
-        reloaded = po.ModelBank.load(p, specs=[spec])
+        reloaded = rp.ModelBank.load(p, specs=[spec])
         a = bank.fit_predict(df)
         b = reloaded.fit_predict(df)
         assert _f(a, "weight_sum") == pytest.approx(_f(b, "weight_sum"))
@@ -275,7 +275,7 @@ class TestClockOrdering:
         # mis-sorted chunk: the second chunk steps back from the first's last
         # clock (0.5 < 2.0), and the default refuses it, naming the row.
         a, b = self._frames()
-        bank = po.ModelBank([_spec(clock="t", gap_cap=4.0, half_life=1.0)])
+        bank = rp.ModelBank([_spec(clock="t", gap_cap=4.0, half_life=1.0)])
         bank.fit_predict(a)
         before = bank.save_bytes()
         with pytest.raises(ValueError, match="steps back by 1.5 at row 0"):
@@ -286,7 +286,7 @@ class TestClockOrdering:
         a, b = self._frames()
         # As above: the backwards jump is what `reset_state` is being asked about.
         spec = _spec(clock="t", gap_cap=4.0, restart_after_step_back=0.0)
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(a)
         out_b = bank.fit_predict(b)
         assert _f(out_b, "weight_sum")[0] == 0.0
@@ -298,7 +298,7 @@ class TestClockOrdering:
         )
         spec = _spec(clock="t", gap_cap=10.0, half_life=20.0)
         one = _run(df, spec).unnest("m")
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         many = pl.concat([bank.fit_predict(df.slice(i, 17)) for i in range(0, 200, 17)]).unnest("m")
         # coef is emitted on each chunk's last row, so it is chunk-dependent by
         # design (docs/PLAN.md section 3); everything else must match exactly.
@@ -316,7 +316,7 @@ class TestDegenerateSolves:
 
     def _run_counting(self, df, **kw):
         spec = _spec(**kw)
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         out = bank.fit_predict(df)
         return out, bank.solve_failures("m", group="")["solve_failures"].item()
 
@@ -351,7 +351,7 @@ class TestDegenerateSolves:
     def test_non_solving_models_report_zero(self):
         df = pl.DataFrame({"x0": [1.0, 2.0, 3.0], "y0": [1.0, 2.0, 3.0]})
         for model, extra in [("rls", {}), ("kalman", {"coef_half_life": 10.0}), ("ftrl", {})]:
-            bank = po.ModelBank([_spec(model, **extra)])
+            bank = rp.ModelBank([_spec(model, **extra)])
             bank.fit_predict(df)
             assert bank.solve_failures("m", group="")["solve_failures"].item() == 0
 
@@ -389,7 +389,7 @@ class TestDegenerateSolves:
                 "b": [None] * 20 + [float(v) for v in b[20:]],
             }
         )
-        spec = getattr(po.spec, model)(
+        spec = getattr(rp.spec, model)(
             "m",
             targets=["a", "b"],
             features=["x0", "x1"],
@@ -469,7 +469,7 @@ class TestMinimalShapes:
 
     def test_empty_chunk_is_accepted(self):
         spec = _spec()
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         empty = pl.DataFrame({"x0": [], "y0": []}, schema={"x0": pl.Float64, "y0": pl.Float64})
         out = bank.fit_predict(empty)
         assert out.height == 0
@@ -478,9 +478,9 @@ class TestMinimalShapes:
     def test_empty_chunk_between_real_chunks_changes_nothing(self):
         df = pl.DataFrame({"x0": np.arange(20.0), "y0": np.arange(20.0) * 2})
         spec = _spec()
-        straight = po.ModelBank([spec]).fit_predict(df)
+        straight = rp.ModelBank([spec]).fit_predict(df)
 
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         empty = df.head(0)
         parts = [
             bank.fit_predict(df.slice(0, 10)),
@@ -507,7 +507,7 @@ class TestMinimalShapes:
             }
         )
         spec = _spec(group="g")
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         first = bank.fit_predict(df.slice(0, 10))
         second = bank.fit_predict(df.slice(10, 10))
         # group b starts fresh in the second chunk
@@ -810,14 +810,14 @@ class TestPendingDeltaAcrossSaveLoad:
             }
         )
         spec = _spec(clock="t", gap_cap=10.0, half_life=2.0, min_weight=0.0)
-        straight = po.ModelBank([spec]).fit_predict(df)
+        straight = rp.ModelBank([spec]).fit_predict(df)
 
         # Split exactly after the skipped row, so `pending` is nonzero at save.
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         first = bank.fit_predict(df.slice(0, 3))
         p = tmp_path / "pending.state"
         bank.save(p)
-        resumed = po.ModelBank.load(p, specs=[spec]).fit_predict(df.slice(3, 3))
+        resumed = rp.ModelBank.load(p, specs=[spec]).fit_predict(df.slice(3, 3))
         joined = pl.concat([first, resumed]).unnest("m")
 
         a = straight.unnest("m")
@@ -917,7 +917,7 @@ class TestStrictClock:
         a = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x0": [1.0] * 3, "y0": [1.0, 2.0, 3.0]})
         b = pl.DataFrame({"t": [0.5, 1.5], "x0": [1.0] * 2, "y0": [4.0, 5.0]})
         spec = self._spec_for()
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(a)
         with pytest.raises(Exception, match="steps back"):
             bank.fit_predict(b)

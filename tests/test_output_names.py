@@ -28,7 +28,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -50,8 +50,8 @@ def _rows(n: int = 120, seed: int = 0) -> pl.DataFrame:
 
 
 def test_audit_names_its_counts_as_polars_does_and_leads_with_spec():
-    audit = po.spec.audit("a", columns=["x0", "x1"], group="g", clock="t", gap_cap=5.0, pairs=True)
-    bank = po.ModelBank([audit])
+    audit = rp.spec.audit("a", columns=["x0", "x1"], group="g", clock="t", gap_cap=5.0, pairs=True)
+    bank = rp.ModelBank([audit])
     bank.fit_predict(_rows().with_columns(x0=pl.when(pl.col("t") < 3).then(None).otherwise("x0")))
     columns = bank.audit()
     assert columns.columns[:6] == ["spec", "group", "column", "rows_fed", "null_count", "nan_count"]
@@ -76,7 +76,7 @@ def test_audit_names_its_counts_as_polars_does_and_leads_with_spec():
 def test_describe_counts_what_a_model_cannot_learn_from_as_unusable():
     """``null_count`` counted NaN, infinities and out-of-bound values too,
     where Polars' ``null_count`` counts nulls alone."""
-    bank = po.ModelBank([po.spec.ewridge("r", targets=["y"], features=["x0"], half_life=50.0)])
+    bank = rp.ModelBank([rp.spec.ewridge("r", targets=["y"], features=["x0"], half_life=50.0)])
     df = _rows().with_columns(
         x0=pl.when(pl.col("t") < 3).then(float("nan")).otherwise(pl.col("x0"))
     )
@@ -88,10 +88,10 @@ def test_describe_counts_what_a_model_cannot_learn_from_as_unusable():
 
 
 def test_summary_and_groups_name_their_quantity_first():
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "r", targets=["y"], features=["x0"], half_life=50.0, clock="t", gap_cap=10.0, group="g"
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(_rows())
     summary = bank.summary()
     for new, old in (
@@ -107,12 +107,12 @@ def test_summary_and_groups_name_their_quantity_first():
 
 def test_solve_failures_is_a_summary_column_and_a_frame():
     """It was the one reader returning a dict, ``{spec: {group: count}}``."""
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "r", targets=["y"], features=["x0", "x1"], half_life=50.0, group="g", ridge=0.0
     )
     # Two copies of one column and no ridge: every solve needs jitter.
     df = _rows().with_columns(x1=pl.col("x0"))
-    bank = po.ModelBank([spec, po.spec.rls("s", targets=["y"], features=["x0"], half_life=50.0)])
+    bank = rp.ModelBank([spec, rp.spec.rls("s", targets=["y"], features=["x0"], half_life=50.0)])
     bank.fit_predict(df)
     failures = bank.solve_failures()
     assert isinstance(failures, pl.DataFrame)
@@ -130,9 +130,9 @@ def test_coef_marginal_and_closed_groups_carry_the_instance_decay():
     ``coef()``, ``marginal()`` and ``closed_groups()`` the instance and no
     decay. Each now carries both, so a frame joins to another on either."""
     common = dict(targets=["y"], features=["x0", "x1"], half_life=[50.0, 200.0], group="g")
-    ridge = po.spec.ewridge("r", group_close="monotone", **{k: v for k, v in common.items()})
-    pairs = po.spec.marginal("p", lags=[1], **common)
-    bank = po.ModelBank([ridge, pairs])
+    ridge = rp.spec.ewridge("r", group_close="monotone", **{k: v for k, v in common.items()})
+    pairs = rp.spec.marginal("p", lags=[1], **common)
+    bank = rp.ModelBank([ridge, pairs])
     bank.fit_predict(_rows())
     coef = bank.coef()
     assert coef.columns[:6] == ["spec", "group", "instance", "half_life", "lam", "weight_sum"]
@@ -153,33 +153,33 @@ def test_cross_centered_is_the_one_spelling():
     """``cross_centred`` was the library's one British spelling: the gram
     key, the closed column, and what ``po.gram.from_row`` reads, which
     refuses the old key."""
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "r", targets=["y"], features=["x0"], half_life=50.0, group="g", group_close="monotone"
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(_rows())
     g = bank.gram("r")[0]
     assert "cross_centered" in g and "cross_centred" not in g
     closed = bank.closed_groups()
     assert "cross_centered" in closed.columns and "cross_centred" not in closed.columns
     row = closed.head(1)
-    want = po.gram.from_row(row)
+    want = rp.gram.from_row(row)
     assert "cross_centered" in want
     old = row.rename({"cross_centered": "cross_centred"})
     with pytest.raises(TypeError, match="cross_centred was renamed cross_centered"):
-        po.gram.from_row(old)
+        rp.gram.from_row(old)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        po.gram.from_row(row)
+        rp.gram.from_row(row)
 
 
 def test_ramsey_reset_is_named_apart_from_the_clock_rules_resets():
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "r", targets=["y"], features=["x0"], half_life=50.0, emit_specification=True
     )
-    fields = po.spec.output_fields(spec)
+    fields = rp.spec.output_fields(spec)
     assert "ramsey_reset_y" in fields and "reset_y" not in fields
-    idx = po.spec.output_index(spec)
+    idx = rp.spec.output_index(spec)
     assert idx.filter(field="ramsey_reset_y")["kind"].item() == "ramsey_reset"
 
 
@@ -189,7 +189,7 @@ def test_a_word_from_a_fixed_set_is_an_enum():
     class, a selected slot, a column's role, an estimator. ``check()``'s
     ``code`` stays a ``String``: a later release may add a finding, and an
     ``Enum``'s categories are part of its dtype."""
-    cls = po.spec.ew_class(
+    cls = rp.spec.ew_class(
         "c",
         features=["x0", "x1"],
         label="lab",
@@ -197,16 +197,16 @@ def test_a_word_from_a_fixed_set_is_an_enum():
         precision_prior=1.0,
         half_life=50.0,
     )
-    sel = po.spec.ewridge(
+    sel = rp.spec.ewridge(
         "s", targets=["y"], features=["x0", "x1"], half_life=[50.0, 200.0], emit_selected=True
     )
-    rcov = po.spec.rcov(
+    rcov = rp.spec.rcov(
         "r", features=["x0", "x1"], block_rows=20, group="g", group_close="monotone"
     )
     df = _rows().with_columns(
         lab=pl.when(pl.col("y") > 0).then(pl.lit("up")).otherwise(pl.lit("down"))
     )
-    bank = po.ModelBank([cls, sel, rcov])
+    bank = rp.ModelBank([cls, sel, rcov])
     out = bank.fit_predict(df)
     assert out["c"].struct.field("class").dtype == pl.Enum(["up", "down"])
     assert set(out["c"].struct.field("class").drop_nulls().to_list()) == {"up", "down"}
@@ -214,7 +214,7 @@ def test_a_word_from_a_fixed_set_is_an_enum():
     assert selected.dtype == pl.Enum(["@h50", "@h200"])
     assert set(selected.drop_nulls().to_list()) <= {"@h50", "@h200"}
     for spec, field in ((cls, "class"), (sel, "selected_y")):
-        idx = po.spec.output_index(spec)
+        idx = rp.spec.output_index(spec)
         assert idx.filter(field=field)["dtype"].item() == "enum"
     assert bank.describe().schema["role"] == pl.Enum(["feature", "target", "weight"])
     assert bank.closed_groups(drop=False).schema["rcov_kind"] == pl.Enum(
@@ -222,7 +222,7 @@ def test_a_word_from_a_fixed_set_is_an_enum():
     )
     assert bank.check().schema["code"] == pl.String
     # The declared struct is the realized one, the IO plugin's schema too.
-    plan = po.fit_predict(df.lazy(), [cls, sel])
+    plan = rp.fit_predict(df.lazy(), [cls, sel])
     assert plan.collect_schema()["c"] == out.schema["c"]
 
 
@@ -240,7 +240,7 @@ def test_coef_is_a_list_wherever_the_bank_writes_it():
     field is null on most rows. An ``(n, k)`` matrix is a recipe on the rows
     that carry it: ``.list.to_array(k)``, then ``to_numpy()``. ``unnest``
     reads the list, and an ``Array`` of a file a build that wrote one left."""
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "r",
         targets=["y"],
         features=["x0", "x1"],
@@ -250,12 +250,12 @@ def test_coef_is_a_list_wherever_the_bank_writes_it():
         emit_robust_se=True,
         robust_se_lags=2,
     )
-    k = po.spec.coef_index(spec).height
+    k = rp.spec.coef_index(spec).height
     assert k == 3
     df = _rows()
-    out = po.ModelBank([spec]).fit_predict(df)
-    idx = po.spec.output_index(spec)
-    capsule = pl.Series(po.ModelBank([spec]).fit_predict_arrow(df)[0]).struct
+    out = rp.ModelBank([spec]).fit_predict(df)
+    idx = rp.spec.output_index(spec)
+    capsule = pl.Series(rp.ModelBank([spec]).fit_predict_arrow(df)[0]).struct
     for field in _COEF_LIKE:
         assert out["r"].struct.field(field).dtype == _LIST, field
         assert idx.filter(field=field)["dtype"].item() == "list[f64]", field
@@ -271,13 +271,13 @@ def test_coef_is_a_list_wherever_the_bank_writes_it():
     )
     assert matrix.dtype == np.float64 and matrix.shape[1] == k and matrix.shape[0] > 100
     # One chunk or seven: the same lists, to the bit.
-    seven = po.ModelBank([spec])
+    seven = rp.ModelBank([spec])
     chunked = pl.concat(seven.fit_predict(c) for c in df.iter_slices(-(-df.height // 7)))
     for field in _COEF_LIKE:
         assert chunked["r"].struct.field(field).equals(out["r"].struct.field(field)), field
     # The query's declared schema is the realized one.
-    assert po.fit_predict(df.lazy(), [spec]).collect_schema()["r"] == out.schema["r"]
-    bank = po.ModelBank([spec])
+    assert rp.fit_predict(df.lazy(), [spec]).collect_schema()["r"] == out.schema["r"]
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     assert bank.last_row().schema["coef"] == _LIST
     # `unnest` reads the list, and the Array a file written by such a build holds.
@@ -305,10 +305,10 @@ def test_a_mostly_null_coef_costs_little():
     df = pl.DataFrame(
         {**dict(zip(features, x.T, strict=True)), **dict(zip(names, y.T, strict=True))}
     )
-    spec = po.spec.ewridge("r", targets=names, features=features, half_life=1_000.0)
-    k = po.spec.coef_index(spec).height
+    spec = rp.spec.ewridge("r", targets=names, features=features, half_life=1_000.0)
+    k = rp.spec.coef_index(spec).height
     assert k == targets * (p + 1)
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     coef = pl.concat(
         [bank.fit_predict(c)["r"].struct.field("coef") for c in df.iter_slices(50_000)]
     )

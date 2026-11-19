@@ -15,8 +15,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from conftest import run_online
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -25,7 +25,7 @@ HALFLIFE = 40.0
 
 def cov_spec(**kw):
     kw.setdefault("group", "g")
-    return po.spec.ew_cov("c", features=["x0", "x1"], half_life=HALFLIFE, **kw)
+    return rp.spec.ew_cov("c", features=["x0", "x1"], half_life=HALFLIFE, **kw)
 
 
 def frame(keys, n_per=5, seed=0, session=None):
@@ -51,17 +51,17 @@ def test_a_closed_row_is_the_gram_read_at_the_same_point():
     """The acceptance: field for field, and bit for bit on the half the row
     carries. One builder makes both (`gram_of`), so this is a tripwire."""
     df = frame(["a", "b"])
-    closing = po.ModelBank([cov_spec(group_close="monotone")])
+    closing = rp.ModelBank([cov_spec(group_close="monotone")])
     closing.fit_predict(df)
     row = closing.closed_groups()
     assert row.height == 1, "only 'a' is finished; 'b' is still open"
 
     # The same rows, to a bank that does not close: `gram()` for group 'a'.
-    plain = po.ModelBank([cov_spec()])
+    plain = rp.ModelBank([cov_spec()])
     plain.fit_predict(df.filter(pl.col("g") == "a"))
     g = plain.gram("c")[0]
 
-    got = po.gram.from_row(row)
+    got = rp.gram.from_row(row)
     assert got["weight_sum"] == g["weight_sum"]
     assert got["n_kish"] == g["n_kish"]
     assert got["columns"] == g["columns"] == ["x0", "x1"]
@@ -79,7 +79,7 @@ def test_a_closed_row_is_the_gram_read_at_the_same_point():
 
 def test_a_closed_ridge_row_carries_the_target_moments_and_coef():
     df = frame(["a", "b"]).with_columns(y=pl.col("x0") * 2.0 + pl.col("x1"))
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "r",
         targets=["y"],
         features=["x0", "x1"],
@@ -87,14 +87,14 @@ def test_a_closed_ridge_row_carries_the_target_moments_and_coef():
         group="g",
         group_close="monotone",
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     row = bank.closed_groups()
-    got = po.gram.from_row(row)
+    got = rp.gram.from_row(row)
     assert got["columns"] == ["intercept", "x0", "x1"]
     assert got["targets"] == ["y"]
     assert got["cross_moments"].shape == (1, 3)
-    beta = po.gram.solve(got, target=0)
+    beta = rp.gram.solve(got, target=0)
     assert np.allclose(beta[1:], [2.0, 1.0], atol=1e-6)
     # `coef` is as of the last solve, and the exact solve is `from_row`'s.
     assert np.allclose(row["coef"][0].to_list()[1:], [2.0, 1.0], atol=1e-6)
@@ -102,7 +102,7 @@ def test_a_closed_ridge_row_carries_the_target_moments_and_coef():
 
 def test_the_clock_range_and_the_weight_counts_come_from_the_summary():
     df = frame(["a", "b"]).with_columns(w=pl.lit(2.0))
-    bank = po.ModelBank([cov_spec(group_close="monotone", clock="t", gap_cap=1e9, weight="w")])
+    bank = rp.ModelBank([cov_spec(group_close="monotone", clock="t", gap_cap=1e9, weight="w")])
     bank.fit_predict(df)
     row = bank.closed_groups()
     assert row["clock_min"][0] == 0.0 and row["clock_max"][0] == 4.0
@@ -111,7 +111,7 @@ def test_the_clock_range_and_the_weight_counts_come_from_the_summary():
 
 def test_eig_is_the_eigendecomposition_of_the_rows_own_comoments():
     df = frame(["a", "b"], n_per=40)
-    spec = po.spec.ew_cov(
+    spec = rp.spec.ew_cov(
         "c",
         features=["x0", "x1"],
         half_life=HALFLIFE,
@@ -119,10 +119,10 @@ def test_eig_is_the_eigendecomposition_of_the_rows_own_comoments():
         group_close="monotone",
         pca=2,
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     row = bank.closed_groups()
-    g = po.gram.from_row(row)
+    g = rp.gram.from_row(row)
     vals, vecs = np.linalg.eigh(g["comoments"])
     order = np.argsort(vals)[::-1]
     assert np.allclose(row["eig_vals"][0].to_list(), vals[order], rtol=1e-12)
@@ -135,7 +135,7 @@ def test_eig_is_the_eigendecomposition_of_the_rows_own_comoments():
 
 def test_a_marginal_spec_closes_with_its_pairs():
     df = frame(["a", "b"]).with_columns(y=pl.col("x0") * 3.0)
-    spec = po.spec.marginal(
+    spec = rp.spec.marginal(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -143,7 +143,7 @@ def test_a_marginal_spec_closes_with_its_pairs():
         group="g",
         group_close="monotone",
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     row = bank.closed_groups()
     assert row["pair_feature"][0].to_list() == ["x0", "x1"]
@@ -156,7 +156,7 @@ def test_one_bank_gives_one_schema_whatever_closed():
     same columns, so the blocks follow the bank's specs, not the rows."""
     specs = [
         cov_spec(group_close="monotone"),
-        po.spec.marginal(
+        rp.spec.marginal(
             "m",
             targets=["x0"],
             features=["x1"],
@@ -165,7 +165,7 @@ def test_one_bank_gives_one_schema_whatever_closed():
             group_close="monotone",
         ),
     ]
-    bank = po.ModelBank(specs)
+    bank = rp.ModelBank(specs)
     empty = bank.closed_groups()
     bank.fit_predict(frame(["a", "b"]))
     got = bank.closed_groups()
@@ -191,13 +191,13 @@ def test_a_closed_marginal_row_carries_its_lags_and_bins():
         serial_rule="truncated",
         bin_edges=[[0.0], [-0.5, 0.5]],
     )
-    closing = po.ModelBank([po.spec.marginal("m", group="g", group_close="monotone", **kw)])
+    closing = rp.ModelBank([rp.spec.marginal("m", group="g", group_close="monotone", **kw)])
     closing.fit_predict(df)
     closed = closing.closed_groups()
     assert closed.schema["pair_lag_corr_xx"] == pl.List(pl.List(pl.Float64))
     assert closed.schema["pair_bin_n"] == pl.List(pl.List(pl.Float64))
     row = closed.row(0, named=True)
-    plain = po.ModelBank([po.spec.marginal("m", **kw)])
+    plain = rp.ModelBank([rp.spec.marginal("m", **kw)])
     plain.fit_predict(df.filter(pl.col("g") == "a"))
     want = plain.marginal("m")
     assert row["pair_feature"] == want["feature"].to_list() == ["x0", "x1"]
@@ -232,10 +232,10 @@ def test_the_lag_and_bin_blocks_follow_the_specs_that_asked():
         targets=["y"], features=["x0", "x1"], half_life=HALFLIFE, group="g", group_close="monotone"
     )
     specs = [
-        po.spec.marginal("plain", **common),
-        po.spec.marginal("asked", lags=[1], bin_edges=[[0.0], [0.0]], **common),
+        rp.spec.marginal("plain", **common),
+        rp.spec.marginal("asked", lags=[1], bin_edges=[[0.0], [0.0]], **common),
     ]
-    bank = po.ModelBank(specs)
+    bank = rp.ModelBank(specs)
     empty = bank.closed_groups()
     bank.fit_predict(frame(["a", "b"], n_per=20).with_columns(y=pl.col("x0")))
     got = bank.closed_groups()
@@ -247,7 +247,7 @@ def test_the_lag_and_bin_blocks_follow_the_specs_that_asked():
         assert by_spec["asked"][col] is not None, col
     # And a bank whose closing marginals asked for neither has neither
     # block, as `marginal()` has neither column.
-    bare = po.ModelBank([po.spec.marginal("plain", **common)]).closed_groups()
+    bare = rp.ModelBank([rp.spec.marginal("plain", **common)]).closed_groups()
     assert not any(c.startswith(("pair_lag_corr", "pair_bin", "pair_split")) for c in bare.columns)
 
 
@@ -264,10 +264,10 @@ def test_the_cross_terms_follow_the_specs_that_keep_them():
         group_close="monotone",
         lags=[1, 2],
     )
-    bank = po.ModelBank(
+    bank = rp.ModelBank(
         [
-            po.spec.marginal("none", cross_lags=[], **common),
-            po.spec.marginal("one", cross_lags=[2], **common),
+            rp.spec.marginal("none", cross_lags=[], **common),
+            rp.spec.marginal("one", cross_lags=[2], **common),
         ]
     )
     bank.fit_predict(frame(["a", "b"], n_per=20).with_columns(y=pl.col("x0")))
@@ -276,7 +276,7 @@ def test_the_cross_terms_follow_the_specs_that_keep_them():
     assert by_spec["none"]["pair_lag_corr_xx"] is not None
     assert [len(v) for v in by_spec["one"]["pair_lag_corr_xy"]] == [1, 1], "one per cross lag"
     assert [len(v) for v in by_spec["one"]["pair_lag_corr_xx"]] == [2, 2], "one per lag"
-    bare = po.ModelBank([po.spec.marginal("none", cross_lags=[], **common)]).closed_groups()
+    bare = rp.ModelBank([rp.spec.marginal("none", cross_lags=[], **common)]).closed_groups()
     assert "pair_lag_corr_xx" in bare.columns
     assert not {"pair_lag_corr_xy", "pair_lag_corr_yx"} & set(bare.columns)
 
@@ -286,7 +286,7 @@ def test_the_sidecar_carries_the_nested_lists(tmp_path):
     the driver's frames with the blocks in them, as it is without."""
     df = frame(["a", "b", "c"], n_per=30, seed=5).with_columns(y=pl.col("x1") - pl.col("x0"))
     df.write_parquet(tmp_path / "in.parquet")
-    spec = po.spec.marginal(
+    spec = rp.spec.marginal(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -299,7 +299,7 @@ def test_the_sidecar_carries_the_nested_lists(tmp_path):
     )
     side = tmp_path / "closed.parquet"
     df.lazy().online.fit_predict([spec], closed_groups=side, chunk_size=25).collect()
-    driver = po.ModelBank([spec])
+    driver = rp.ModelBank([spec])
     frames = []
     for i in range(0, df.height, 25):
         driver.fit_predict(df[i : i + 25])
@@ -313,7 +313,7 @@ def test_the_sidecar_carries_the_nested_lists(tmp_path):
 
 
 def test_the_last_group_never_closes_and_stays_readable():
-    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    bank = rp.ModelBank([cov_spec(group_close="monotone")])
     bank.fit_predict(frame(["a", "b", "c"]))
     closed = bank.closed_groups()
     assert closed["group"].to_list() == ["a", "b"]
@@ -325,14 +325,14 @@ def test_an_integer_key_closes_in_numeric_order_not_lexicographic():
     """`"10"` sorts before `"9"` as a string; a monotone close on that order
     would emit group 10 before group 9 had arrived."""
     df = frame([9, 10, 11]).with_columns(pl.col("g").cast(pl.Int64))
-    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    bank = rp.ModelBank([cov_spec(group_close="monotone")])
     bank.fit_predict(df)
     assert bank.closed_groups()["group"].to_list() == ["9", "10"]
 
 
 def test_a_categorical_key_closes_bytewise():
     df = frame(["a", "b", "c"]).with_columns(pl.col("g").cast(pl.Categorical))
-    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    bank = rp.ModelBank([cov_spec(group_close="monotone")])
     bank.fit_predict(df)
     assert bank.closed_groups()["group"].to_list() == ["a", "b"]
 
@@ -345,13 +345,13 @@ def test_a_categorical_key_out_of_order_is_refused_and_a_sort_fixes_it():
     text from 1.34.0 on, the floor, so the refusal names the sort alone and
     sorting the Categorical column is enough (task 154)."""
     df = frame(["c", "a", "b"]).with_columns(pl.col("g").cast(pl.Categorical))
-    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    bank = rp.ModelBank([cov_spec(group_close="monotone")])
     with pytest.raises(ValueError, match='Sort the rows by "g"') as e:
         bank.fit_predict(df)
     assert "Categorical" not in str(e.value)
     fixed = df.sort("g", maintain_order=True)
     assert fixed.schema["g"] == pl.Categorical
-    po.ModelBank([cov_spec(group_close="monotone")]).fit_predict(fixed)
+    rp.ModelBank([cov_spec(group_close="monotone")]).fit_predict(fixed)
 
 
 def test_a_high_water_mark_read_under_the_wrong_dtype_is_refused_both_ways():
@@ -364,25 +364,25 @@ def test_a_high_water_mark_read_under_the_wrong_dtype_is_refused_both_ways():
     spec = cov_spec(group_close="monotone")
 
     # Saved under an integer column, resumed under a text one.
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(frame([9, 10, 11]))
-    again = po.ModelBank.load_bytes(bank.save_bytes(), [spec])
+    again = rp.ModelBank.load_bytes(bank.save_bytes(), [spec])
     with pytest.raises(ValueError, match='group column "g" was Int64 and is now String'):
         again.fit_predict(frame(["12", "13"]))
 
     # And the other way.
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(frame(["a", "b", "c"]))
-    again = po.ModelBank.load_bytes(bank.save_bytes(), [spec])
+    again = rp.ModelBank.load_bytes(bank.save_bytes(), [spec])
     with pytest.raises(ValueError, match='group column "g" was String and is now Int64'):
         again.fit_predict(frame([9, 10]))
 
 
 def test_a_group_split_across_chunks_closes_once_and_at_the_same_numbers():
     df = frame(["a", "b", "c"], n_per=7)
-    whole = po.ModelBank([cov_spec(group_close="monotone")])
+    whole = rp.ModelBank([cov_spec(group_close="monotone")])
     whole.fit_predict(df)
-    piecemeal = po.ModelBank([cov_spec(group_close="monotone")])
+    piecemeal = rp.ModelBank([cov_spec(group_close="monotone")])
     for i in range(0, df.height, 3):
         piecemeal.fit_predict(df[i : i + 3])
     assert whole.closed_groups().equals(piecemeal.closed_groups())
@@ -391,7 +391,7 @@ def test_a_group_split_across_chunks_closes_once_and_at_the_same_numbers():
 def test_a_session_close_splits_the_run_and_restarts_the_stream():
     sess = ["m"] * 5 + ["t"] * 5 + ["w"] * 5
     df = frame(["a"], n_per=15, session=sess)
-    bank = po.ModelBank([cov_spec(group_close="session", session="s", clock="t", gap_cap=1e9)])
+    bank = rp.ModelBank([cov_spec(group_close="session", session="s", clock="t", gap_cap=1e9)])
     bank.fit_predict(df)
     closed = bank.closed_groups()
     assert closed["session"].to_list() == ["m", "t"]
@@ -409,9 +409,9 @@ def test_a_session_close_splits_the_run_and_restarts_the_stream():
 def test_a_session_close_is_chunk_invariant(size):
     sess = ["m"] * 4 + ["t"] * 6 + ["w"] * 5
     df = frame(["a", "b"], n_per=15, session=sess * 2)
-    want = po.ModelBank([cov_spec(group_close="session", session="s")])
+    want = rp.ModelBank([cov_spec(group_close="session", session="s")])
     want.fit_predict(df)
-    got = po.ModelBank([cov_spec(group_close="session", session="s")])
+    got = rp.ModelBank([cov_spec(group_close="session", session="s")])
     for i in range(0, df.height, size):
         got.fit_predict(df[i : i + size])
     assert want.closed_groups().equals(got.closed_groups())
@@ -423,7 +423,7 @@ def test_a_closing_streams_live_summary_is_the_current_span():
     before it are in the closed rows."""
     sess = ["m"] * 5 + ["t"] * 7
     df = frame(["a"], n_per=12, session=sess)
-    bank = po.ModelBank([cov_spec(group_close="session", session="s")])
+    bank = rp.ModelBank([cov_spec(group_close="session", session="s")])
     bank.fit_predict(df)
     live = bank.summary()
     assert live["rows_fed"].to_list() == [7], "the second span"
@@ -431,7 +431,7 @@ def test_a_closing_streams_live_summary_is_the_current_span():
 
 
 def test_a_zero_row_chunk_and_an_unseen_group_close_nothing():
-    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    bank = rp.ModelBank([cov_spec(group_close="monotone")])
     bank.fit_predict(frame(["a"]).clear())
     assert bank.closed_groups().height == 0
 
@@ -440,7 +440,7 @@ def test_a_zero_row_chunk_and_an_unseen_group_close_nothing():
 
 
 def test_peeking_twice_gives_the_same_frame_and_draining_empties_it():
-    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    bank = rp.ModelBank([cov_spec(group_close="monotone")])
     bank.fit_predict(frame(["a", "b", "c"]))
     first = bank.closed_groups(drop=False)
     assert first.equals(bank.closed_groups(drop=False))
@@ -451,14 +451,14 @@ def test_peeking_twice_gives_the_same_frame_and_draining_empties_it():
 def test_narrowing_to_one_spec_leaves_the_others_queued():
     specs = [cov_spec(group_close="monotone"), cov_spec(group_close="monotone")]
     specs[1]["name"] = "d"
-    bank = po.ModelBank(specs)
+    bank = rp.ModelBank(specs)
     bank.fit_predict(frame(["a", "b"]))
     assert bank.closed_groups("c")["spec"].to_list() == ["c"]
     assert bank.closed_groups()["spec"].to_list() == ["d"]
 
 
 def test_predict_closes_nothing():
-    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    bank = rp.ModelBank([cov_spec(group_close="monotone")])
     df = frame(["a", "b"])
     bank.fit_predict(df)
     bank.closed_groups()
@@ -471,7 +471,7 @@ def test_building_a_predict_plan_leaves_the_queue_alone():
     caller's bank, so the rows fitted and not yet read were gone before the
     plan ran -- from a call documented to leave the bank as it was (review
     2026-09-12, C4)."""
-    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    bank = rp.ModelBank([cov_spec(group_close="monotone")])
     df = frame(["a", "b", "c"])
     bank.fit_predict(df)
     before = bank.closed_groups(drop=False).height
@@ -490,7 +490,7 @@ def test_predict_scores_a_new_session_as_the_row_after_the_close():
     sess = ["m"] * 20 + ["t"] * 10
     df = frame(["a"], n_per=30, session=sess)
     spec = cov_spec(group_close="session", session="s", min_weight=5.0)
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df.head(20))
     scored = bank.predict(df.tail(10))["c"].struct.unnest()
     assert scored["weight_sum"].to_list() == [0.0] * 10
@@ -499,7 +499,7 @@ def test_predict_scores_a_new_session_as_the_row_after_the_close():
     readiness = ("weight_sum", "settled_frac", "withheld_reason")
     stats = [c for c in scored.columns if c not in readiness]
     assert all(scored[c].null_count() == 10 for c in stats), scored
-    fresh = po.ModelBank([spec]).fit_predict(df)["c"].struct.unnest().tail(10)
+    fresh = rp.ModelBank([spec]).fit_predict(df)["c"].struct.unnest().tail(10)
     assert fresh["weight_sum"][0] == 0.0, "fit_predict restarts at the change"
     assert scored.head(1).equals(fresh.head(1))
 
@@ -530,7 +530,7 @@ def test_a_spec_that_cannot_close_is_refused_by_name(kw, message):
 
 def test_interleaved_keys_are_refused_naming_the_row():
     df = pl.DataFrame({"g": ["a", "b", "a"], "x0": [1.0, 2.0, 3.0], "x1": [1.0, 2.0, 3.0]})
-    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    bank = rp.ModelBank([cov_spec(group_close="monotone")])
     with pytest.raises(ValueError, match=r"row 2 \(counting from 0\) has group a after group b"):
         bank.fit_predict(df)
     # A refused chunk leaves the bank as it was.
@@ -540,7 +540,7 @@ def test_interleaved_keys_are_refused_naming_the_row():
 
 def test_a_null_key_is_refused_under_monotone():
     df = pl.DataFrame({"g": ["a", None], "x0": [1.0, 2.0], "x1": [1.0, 2.0]})
-    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    bank = rp.ModelBank([cov_spec(group_close="monotone")])
     with pytest.raises(ValueError, match="has a null group"):
         bank.fit_predict(df)
 
@@ -554,14 +554,14 @@ def test_a_null_key_is_an_ordinary_group_under_session():
             "x1": [1.0, 2.0, 3.0],
         }
     )
-    bank = po.ModelBank([cov_spec(group_close="session", session="s")])
+    bank = rp.ModelBank([cov_spec(group_close="session", session="s")])
     bank.fit_predict(df)
     assert bank.closed_groups()["group"].to_list() == [None]
 
 
 def test_a_key_dtype_that_cannot_be_ordered_is_refused():
     df = pl.DataFrame({"g": [1.5, 2.5], "x0": [1.0, 2.0], "x1": [1.0, 2.0]})
-    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    bank = rp.ModelBank([cov_spec(group_close="monotone")])
     with pytest.raises(TypeError, match="needs a group column it can order"):
         bank.fit_predict(df)
 
@@ -572,13 +572,13 @@ def test_predict_refuses_a_key_dtype_that_cannot_be_ordered_too():
     spec could never have ordered; a spec invalid for the column is refused
     whichever call reads it (review 2026-09-17, B4)."""
     df = pl.DataFrame({"g": [1.5, 2.5], "x0": [1.0, 2.0], "x1": [1.0, 2.0]})
-    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    bank = rp.ModelBank([cov_spec(group_close="monotone")])
     with pytest.raises(TypeError, match="needs a group column it can order"):
         bank.predict(df)
 
 
 def test_a_key_below_the_high_water_mark_is_refused():
-    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    bank = rp.ModelBank([cov_spec(group_close="monotone")])
     bank.fit_predict(frame(["a", "b"]))
     with pytest.raises(
         ValueError, match="has group a, below group b, the largest the bank has read"
@@ -588,11 +588,11 @@ def test_a_key_below_the_high_water_mark_is_refused():
 
 def test_the_high_water_mark_and_the_queue_survive_a_save_and_load(tmp_path):
     spec = cov_spec(group_close="monotone")
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(frame(["a", "b", "c"]))
     path = tmp_path / "bank.state"
     bank.save(path)
-    again = po.ModelBank.load(path, [spec])
+    again = rp.ModelBank.load(path, [spec])
     assert again.closed_groups(drop=False).equals(bank.closed_groups(drop=False))
     assert again.groups()["group"].to_list() == ["c"], "the open group came back"
     with pytest.raises(ValueError, match="never takes a group below that"):
@@ -634,7 +634,7 @@ def test_the_sidecar_is_the_drained_frames_and_is_chunk_invariant(tmp_path):
     df.lazy().online.fit_predict(
         [cov_spec(group_close="monotone")], closed_groups=side, chunk_size=7
     ).collect()
-    driver = po.ModelBank([cov_spec(group_close="monotone")])
+    driver = rp.ModelBank([cov_spec(group_close="monotone")])
     frames = []
     for i in range(0, df.height, 7):
         driver.fit_predict(df[i : i + 7])
@@ -693,7 +693,7 @@ def test_the_runner_writes_the_sidecar_as_it_goes(tmp_path, chunk_size, batches,
         chunk_size=chunk_size,
     )
     assert _ipc_record_batches(side) == batches
-    driver = po.ModelBank([cov_spec(group_close="monotone")])
+    driver = rp.ModelBank([cov_spec(group_close="monotone")])
     driver.fit_predict(df)
     # No `memory_map=`: polars 2.0 removed the keyword from `read_ipc`, and on
     # 1.x it already defaults to `False` -- so this was passing the default
@@ -712,7 +712,7 @@ def test_the_io_plugin_writes_the_same_sidecar(tmp_path):
         .collect()
     )
     assert out.height == df.height
-    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    bank = rp.ModelBank([cov_spec(group_close="monotone")])
     bank.fit_predict(df)
     assert pl.read_parquet(side).equals(bank.closed_groups())
 
@@ -725,7 +725,7 @@ def test_a_run_in_which_nothing_closed_writes_the_empty_schema(tmp_path):
     ).collect()
     got = pl.read_parquet(side)
     assert got.height == 0
-    empty = po.ModelBank([cov_spec(group_close="monotone")]).closed_groups()
+    empty = rp.ModelBank([cov_spec(group_close="monotone")]).closed_groups()
     assert dict(got.schema) == dict(empty.schema)
 
 
@@ -744,7 +744,7 @@ def test_closed_groups_is_refused_where_nothing_closes_and_with_predict(tmp_path
     with pytest.raises(ValueError, match="no spec closes groups"):
         frame(["a"]).lazy().online.fit_predict([cov_spec()], closed_groups=tmp_path / "c2.parquet")
     state = tmp_path / "b.state"
-    po.ModelBank([cov_spec(group_close="monotone")]).save(state)
+    rp.ModelBank([cov_spec(group_close="monotone")]).save(state)
     res = run_online(
         rheon_cli,
         tmp_path,
@@ -797,7 +797,7 @@ def _closing(name):
     kw = {"targets": ["y"], "features": ["x0"], "half_life": 50.0}
     kw.update({"group": "g", "group_close": "monotone"})
     kw.update(MINIMAL[name])
-    return getattr(po.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
+    return getattr(rp.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
 
 
 def _closing_kinds():
@@ -842,7 +842,7 @@ def test_every_surface_writes_closed_groups_as_csv(tmp_path, name):
 
     spec = _closing(name)
     df = frame_for(name)
-    driver = po.ModelBank([spec])
+    driver = rp.ModelBank([spec])
     drained = []
     for chunk in _chunks(df, 50):
         driver.fit_predict(chunk)
@@ -858,14 +858,14 @@ def test_every_surface_writes_closed_groups_as_csv(tmp_path, name):
         [spec], closed_groups=plan, save_state=state, chunk_size=50
     ).collect()
     batches = tmp_path / "batches.csv"
-    for _ in po.ModelBank([spec]).fit_predict_batches(_chunks(df, 50), closed_groups=batches):
+    for _ in rp.ModelBank([spec]).fit_predict_batches(_chunks(df, 50), closed_groups=batches):
         pass
 
     for path in (eager, plan, batches):
         got = _csv_read_back(path, want)
         assert got.equals(_as_json_says(want), null_equal=True), path.name
     assert eager.read_bytes() == plan.read_bytes() == batches.read_bytes()
-    assert po.ModelBank.load(state).rows_fed == df.height
+    assert rp.ModelBank.load(state).rows_fed == df.height
 
 
 def test_the_closed_groups_csv_is_the_cli_s_byte_for_byte(tmp_path, rheon_cli):
@@ -936,19 +936,19 @@ def test_a_closed_groups_file_that_cannot_be_written_still_saves_the_state(tmp_p
             df.online.fit_predict([spec], closed_groups=side, save_state=state)
         else:
             df.lazy().online.fit_predict([spec], closed_groups=side, save_state=state).collect()
-    assert po.ModelBank.load(state).rows_fed == df.height
+    assert rp.ModelBank.load(state).rows_fed == df.height
 
 
 def test_from_row_refuses_a_row_with_no_accumulators():
-    spec = po.spec.holt("h", targets=["x0"], half_life=HALFLIFE, group="g", group_close="monotone")
-    bank = po.ModelBank([spec])
+    spec = rp.spec.holt("h", targets=["x0"], half_life=HALFLIFE, group="g", group_close="monotone")
+    bank = rp.ModelBank([spec])
     bank.fit_predict(frame(["a", "b"]))
     row = bank.closed_groups()
     assert row.height == 1 and row["weight_sum"][0] > 0
     with pytest.raises(
         ValueError, match="has no Gram, since only ewridge, lasso and ew_cov keep one"
     ):
-        po.gram.from_row(row)
+        rp.gram.from_row(row)
 
 
 def test_schema_version_is_current():
@@ -1058,7 +1058,7 @@ def test_schema_version_is_current():
     the readiness notices a failed call leaves in its streams, saved with
     them, and ``marginal``'s pre-65 mark cleared once its histogram is
     built (task 340)."""
-    assert po.schema_version() == 67
+    assert rp.schema_version() == 67
 
 
 def test_an_integer_key_used_as_both_session_and_group_orders_numerically():
@@ -1076,7 +1076,7 @@ def test_an_integer_key_used_as_both_session_and_group_orders_numerically():
             "t": np.arange(float(n)),
         }
     )
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0"],
@@ -1088,7 +1088,7 @@ def test_an_integer_key_used_as_both_session_and_group_orders_numerically():
         gap_cap=100.0,
         group_close="monotone",
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)  # must not raise "group 10 after group 9"
     keys = [int(k) for k in bank.closed_groups(drop=False)["group"].to_list()]
     assert keys == sorted(keys), keys  # numeric order, not lexical

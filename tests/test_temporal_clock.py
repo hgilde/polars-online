@@ -27,8 +27,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from conftest import run_online
+from rheon import polars as rp
 from rheon._rheon import spec_clock_fields
 from rheon._spec import _takes_duration
 from test_model_registry import MINIMAL
@@ -70,7 +70,7 @@ def _temporal(df: pl.DataFrame, unit: str = "us") -> pl.DataFrame:
 def _ridge(clock: str, **kw) -> dict:
     # The noise gate is off: a window emptied by a long gap would withhold
     # every prediction after it and warn, which is not what these test.
-    return po.spec.ewridge(
+    return rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -125,7 +125,7 @@ DURATIONS = {
 
 
 def _fit(df: pl.DataFrame, spec: dict) -> pl.Series:
-    return po.ModelBank([spec]).fit_predict(df)["m"]
+    return rp.ModelBank([spec]).fit_predict(df)["m"]
 
 
 class TestTheUnitNeverReachesTheFit:
@@ -151,8 +151,8 @@ class TestTheUnitNeverReachesTheFit:
         df = pl.DataFrame({"d": days, "x0": x, "y": 2.0 * x + rng.normal(0.0, 0.1, len(days))})
         df = df.with_columns(n=pl.col("d").cast(pl.Int32).cast(pl.Float64))
         spec = dict(targets=["y"], features=["x0"], ridge=1e-6, max_error_inflation=float("inf"))
-        ref = _fit(df, po.spec.ewridge("m", clock="n", half_life=5.0, gap_cap=10.0, **spec))
-        got = _fit(df, po.spec.ewridge("m", clock="d", half_life="5d", gap_cap="10d", **spec))
+        ref = _fit(df, rp.spec.ewridge("m", clock="n", half_life=5.0, gap_cap=10.0, **spec))
+        got = _fit(df, rp.spec.ewridge("m", clock="d", half_life="5d", gap_cap="10d", **spec))
         assert got.equals(ref, null_equal=True)
         assert ref.struct.field("weight_sum").max() < 10
 
@@ -172,7 +172,7 @@ class TestTheUnitNeverReachesTheFit:
         rng = np.random.default_rng(9)
         x = rng.normal(size=len(utc))
         base = pl.DataFrame({"x0": x, "y": x + rng.normal(0.0, 0.1, len(utc))})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0"],
@@ -207,7 +207,7 @@ class TestTheUnitNeverReachesTheFit:
         ns = (np.cumsum(rng.uniform(0.2, 3.0, n)) * 1e9).astype(np.int64) + START * 10**9
         x = rng.normal(0.0, 1.0, n)
         t = pl.Series("t", ns).cast(pl.Datetime("ns"))
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "m",
             features=["x0"],
             half_life=timedelta(seconds=25),
@@ -217,7 +217,7 @@ class TestTheUnitNeverReachesTheFit:
             stats=["mean"],
             min_weight=0.0,
         )
-        out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"t": t, "x0": x}))
+        out = rp.ModelBank([spec]).fit_predict(pl.DataFrame({"t": t, "x0": x}))
         got = out["m"].struct.field("mean_x0").to_numpy().astype(float)
         # The recursion on the exact gaps: the mean before each row.
         exact, w, s = [], 0.0, 0.0
@@ -249,7 +249,7 @@ class TestHowADurationIsWritten:
     def test_a_grid_is_named_by_its_durations(self):
         spec = _ridge("t", half_life=["5m", timedelta(hours=1)], gap_cap="365d")
         assert spec["half_life"] == ["5m", "1h"]
-        fields = po.spec.output_fields(spec)
+        fields = rp.spec.output_fields(spec)
         assert any("@h5m" in f for f in fields) and any("@h1h" in f for f in fields), fields
 
     @pytest.mark.parametrize("unit", ["ms", "us", "ns"])
@@ -303,11 +303,11 @@ class TestHowADurationIsWritten:
         ("call", "who"),
         [
             (
-                lambda df, v: po.eval.window_metrics(df, "m", clock="t", every=v),
+                lambda df, v: rp.eval.window_metrics(df, "m", clock="t", every=v),
                 "po.eval.window_metrics: every",
             ),
             (
-                lambda df, v: po.stream.embargo(df.lazy(), clock="t", delay=v),
+                lambda df, v: rp.stream.embargo(df.lazy(), clock="t", delay=v),
                 r"po\.stream\.embargo: delay",
             ),
         ],
@@ -352,9 +352,9 @@ class TestEachMixtureIsRefused:
 
     def test_a_rate_per_clock_unit_has_no_duration_form(self):
         with pytest.raises(ValueError, match="lam is a decay over one clock unit"):
-            po.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", lam=0.99, gap_cap="30m")
+            rp.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", lam=0.99, gap_cap="30m")
         with pytest.raises(ValueError, match="q is the noise over one clock unit"):
-            po.spec.kalman(
+            rp.spec.kalman(
                 "m",
                 targets=["y"],
                 features=["x0"],
@@ -369,7 +369,7 @@ class TestEachMixtureIsRefused:
         ) as e:
             _fit(
                 _temporal(_frame()),
-                po.spec.ewridge(
+                rp.spec.ewridge(
                     "m", targets=["y"], features=["x0"], clock="t", lam=0.99, gap_cap=300.0
                 ),
             )
@@ -377,7 +377,7 @@ class TestEachMixtureIsRefused:
 
     def test_a_duration_needs_a_clock(self):
         with pytest.raises(ValueError, match="but the spec has no clock to measure it"):
-            po.spec.ewridge("m", targets=["y"], features=["x0"], half_life="10m")
+            rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life="10m")
 
     def test_a_time_of_day_is_no_clock(self):
         df = _temporal(_frame()).with_columns(tod=pl.col("t").dt.time())
@@ -386,19 +386,19 @@ class TestEachMixtureIsRefused:
 
     def test_a_temporal_clock_is_not_also_a_feature(self):
         df = _temporal(_frame())
-        other = po.spec.ewridge("f", targets=["y"], features=["t"], half_life=50.0)
+        other = rp.spec.ewridge("f", targets=["y"], features=["t"], half_life=50.0)
         with pytest.raises(TypeError, match="can only be a clock"):
-            po.ModelBank([_ridge("t", half_life="10m", gap_cap="30m"), other]).fit_predict(df)
+            rp.ModelBank([_ridge("t", half_life="10m", gap_cap="30m"), other]).fit_predict(df)
 
     def test_a_temporal_clock_is_not_a_renamed_target_either(self):
         """A table target's column is a numeric role too, by its column and
         not its name (review 2026-09-26, D6: the check read the names, so the
         refusal came later, with another message)."""
         df = _temporal(_frame())
-        target = po.target("t", name="tt")
-        other = po.spec.ewridge("f", targets=[target], features=["x0"], half_life=50.0)
+        target = rp.target("t", name="tt")
+        other = rp.spec.ewridge("f", targets=[target], features=["x0"], half_life=50.0)
         with pytest.raises(TypeError, match="can only be a clock") as exc:
-            po.ModelBank([_ridge("t", half_life="10m", gap_cap="30m"), other]).fit_predict(df)
+            rp.ModelBank([_ridge("t", half_life="10m", gap_cap="30m"), other]).fit_predict(df)
         assert "a target" in str(exc.value), str(exc.value)
 
 
@@ -413,12 +413,12 @@ class TestADurationSurvives:
         if half_life is not None:
             durations = {**durations, "half_life": half_life}
         spec = _ridge("t", session="s", **durations)
-        assert po.ModelBank([spec]).specs == [spec]
-        straight = po.ModelBank([spec]).fit_predict(df)
-        bank = po.ModelBank([spec])
+        assert rp.ModelBank([spec]).specs == [spec]
+        straight = rp.ModelBank([spec]).fit_predict(df)
+        bank = rp.ModelBank([spec])
         first = bank.fit_predict(df.slice(0, 150))
         bank.save(tmp_path / "b.state")
-        loaded = po.ModelBank.load(tmp_path / "b.state")
+        loaded = rp.ModelBank.load(tmp_path / "b.state")
         assert loaded.specs == [spec]
         rest = loaded.fit_predict(df.slice(150))
         assert (
@@ -452,7 +452,7 @@ def _tables() -> tuple[dict[str, list[str]], list[tuple[str, str]], dict[str, li
 def _kind(builder: str) -> str:
     kw: dict[str, object] = {"targets": ["y"], "features": ["x0"], "half_life": 50.0}
     kw.update(MINIMAL[builder])
-    spec = getattr(po.spec, builder)("m", **{k: v for k, v in kw.items() if v is not None})
+    spec = getattr(rp.spec, builder)("m", **{k: v for k, v in kw.items() if v is not None})
     return spec["model"]["type"]
 
 
@@ -474,7 +474,7 @@ class TestEveryClockParameterTakesADuration:
         assert shared == set(fields["*"])
         found = 0
         for builder in MINIMAL:
-            fn = getattr(po.spec, builder)
+            fn = getattr(rp.spec, builder)
             hints = typing.get_type_hints(fn.__wrapped__)
             own = {k for k, v in hints.items() if _takes_duration(v)} - shared
             kind = _kind(builder)
@@ -600,9 +600,9 @@ class TestEveryClockParameterTakesADuration:
             assert name in self.VALUES, f"{builder}.{name} needs a value in VALUES"
             value, extra = self.VALUES[name]
             kw = {**self._base(builder), **extra, name: value}
-            fn = getattr(po.spec, builder)
+            fn = getattr(rp.spec, builder)
             spec = fn("m", **{k: v for k, v in kw.items() if v is not None})
-            po.ModelBank([spec]).fit_predict(df)
+            rp.ModelBank([spec]).fit_predict(df)
             # The same parameter as a plain number, with every other clock
             # parameter unit-free, is refused by name at the clock.
             plain = {
@@ -613,7 +613,7 @@ class TestEveryClockParameterTakesADuration:
             plain = {k: v for k, v in plain.items() if v is not None}
             plain[name] = 600.0
             with pytest.raises(ValueError, match=f"{name} is a plain number"):
-                po.ModelBank([fn("m", **plain)]).fit_predict(df)
+                rp.ModelBank([fn("m", **plain)]).fit_predict(df)
             seen += 1
         assert seen >= 20, seen
 
@@ -630,11 +630,11 @@ class TestEveryClockParameterTakesADuration:
             builders = [b for b in MINIMAL if _kind(b) == owner]
             assert builders, owner
             for builder in builders:
-                fn = getattr(po.spec, builder)
+                fn = getattr(rp.spec, builder)
                 kw = {k: v for k, v in self._base(builder).items() if v is not None}
                 for name in names:
-                    po.ModelBank([fn("m", **{**kw, name: "10m"})]).fit_predict(df)
-                    po.ModelBank([fn("m", **{**kw, name: 600.0})]).fit_predict(df)
+                    rp.ModelBank([fn("m", **{**kw, name: "10m"})]).fit_predict(df)
+                    rp.ModelBank([fn("m", **{**kw, name: 600.0})]).fit_predict(df)
                     clockless = {k: v for k, v in kw.items() if k not in ("clock", "gap_cap")}
                     with pytest.raises(
                         ValueError, match=f"{name} is a duration, but the spec has no clock"
@@ -686,7 +686,7 @@ class TestADurationTheDataCannotHold:
         return pl.DataFrame({"d": days, "x0": x, "y": x + rng.normal(0.0, 0.1, len(days))})
 
     def _daily_spec(self, **kw) -> dict:
-        return po.spec.ewridge("m", targets=["y"], features=["x0"], clock="d", half_life="5d", **kw)
+        return rp.spec.ewridge("m", targets=["y"], features=["x0"], clock="d", half_life="5d", **kw)
 
     def test_a_cap_finer_than_a_day_is_refused_on_a_date_clock(self):
         with pytest.raises(ValueError, match="gap_cap is 12h, less than a day") as e:
@@ -724,10 +724,10 @@ class TestTheHelpersMeasureTheClockTheSameWay:
     def test_embargo_takes_a_duration_on_a_temporal_clock(self):
         df = _frame()
         spec = dict(weight="_online_role_weight")
-        numbers = po.stream.embargo(df.lazy(), clock="t_s", delay=300.0).collect()
+        numbers = rp.stream.embargo(df.lazy(), clock="t_s", delay=300.0).collect()
         numbers = _fit(numbers, _ridge("t_s", half_life=600.0, gap_cap=1_800.0, **spec))
         for form in ("5m", timedelta(minutes=5), pl.duration(minutes=5)):
-            doubled = po.stream.embargo(_temporal(df).lazy(), clock="t", delay=form).collect()
+            doubled = rp.stream.embargo(_temporal(df).lazy(), clock="t", delay=form).collect()
             assert doubled["t"].dtype == pl.Datetime("us")
             got = _fit(doubled, _ridge("t", half_life="10m", gap_cap="30m", **spec))
             assert got.equals(numbers, null_equal=True), form
@@ -750,7 +750,7 @@ class TestTheHelpersMeasureTheClockTheSameWay:
             "date": _temporal(df).with_columns(d=pl.col("t").dt.date()),
         }
         with pytest.raises(ValueError, match=says):
-            po.stream.embargo(frames[frame].lazy(), clock=clock, delay=delay)
+            rp.stream.embargo(frames[frame].lazy(), clock=clock, delay=delay)
 
     def test_window_metrics_buckets_a_temporal_clock_by_a_duration(self):
         df = _frame()
@@ -759,8 +759,8 @@ class TestTheHelpersMeasureTheClockTheSameWay:
         durations = durations.hstack(
             _fit(durations, _ridge("t", **DURATIONS["text"] | {"session_gap": None})).to_frame()
         )
-        want = po.eval.window_metrics(numbers, "m", clock="t_s", every=3_600.0, min_samples=5)
-        got = po.eval.window_metrics(durations, "m", clock="t", every="1h", min_samples=5)
+        want = rp.eval.window_metrics(numbers, "m", clock="t_s", every=3_600.0, min_samples=5)
+        got = rp.eval.window_metrics(durations, "m", clock="t", every="1h", min_samples=5)
         assert got["window_start"].dtype == pl.Datetime("us")
         assert want.height > 3
         seconds = got["window_start"].dt.epoch("s").cast(pl.Float64)
@@ -799,7 +799,7 @@ class TestNanosecondsAreKept:
         rng = np.random.default_rng(1)
         x = rng.normal(size=len(ns))
         df = pl.DataFrame({"t": pl.Series(ns).cast(pl.Datetime("ns")), "x0": x, "y": x})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0"],
@@ -808,7 +808,7 @@ class TestNanosecondsAreKept:
             gap_cap="365d",
             max_error_inflation=float("inf"),
         )
-        got = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("weight_sum").to_numpy()
+        got = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("weight_sum").to_numpy()
         # Tolerance (task 252 (b)): libm. The bank decays by `exp2` over
         # irregular gaps and this recursion by Python's `pow`, which differ
         # in the last bits, and by platform.
@@ -817,7 +817,7 @@ class TestNanosecondsAreKept:
         # say this: a double at 1.7e18 resolves 256 ns, so the gaps are
         # rounded and the decay drifts from the exact recursion.
         as_float = df.with_columns(t=pl.col("t").cast(pl.Int64).cast(pl.Float64))
-        loose = po.spec.ewridge(
+        loose = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0"],
@@ -827,7 +827,7 @@ class TestNanosecondsAreKept:
             max_error_inflation=float("inf"),
         )
         drift = (
-            po.ModelBank([loose]).fit_predict(as_float)["m"].struct.field("weight_sum").to_numpy()
+            rp.ModelBank([loose]).fit_predict(as_float)["m"].struct.field("weight_sum").to_numpy()
         )
         assert np.max(np.abs(drift - want)) > 1e-3 * np.max(want)
 
@@ -846,7 +846,7 @@ class TestNanosecondsAreKept:
         rng = np.random.default_rng(3)
         x = rng.normal(size=len(ns))
         df = pl.DataFrame({"t": pl.Series(ns).cast(pl.Datetime("ns")), "x0": x, "y": x})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0"],
@@ -855,7 +855,7 @@ class TestNanosecondsAreKept:
             gap_cap="365d",
             max_error_inflation=float("inf"),
         )
-        got = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("weight_sum").to_numpy()
+        got = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("weight_sum").to_numpy()
         want = self._n_eff(np.concatenate([[0], np.diff(ns)]), 1_000.0)
         # Tolerance (task 252 (b)): libm, `exp2` in the bank against `pow`
         # here, over irregular gaps.
@@ -866,7 +866,7 @@ class TestNanosecondsAreKept:
         # the same integer gaps into the same libm calls on one platform.
         young = np.concatenate([[ns[0]], ns[1:] - ns[1] + ns[0] + 86_400 * 10**9])
         df_young = df.with_columns(t=pl.Series(young).cast(pl.Datetime("ns")))
-        base = po.ModelBank([spec]).fit_predict(df_young)["m"].struct.field("weight_sum")
+        base = rp.ModelBank([spec]).fit_predict(df_young)["m"].struct.field("weight_sum")
         assert got[1:].tobytes() == base.to_numpy()[1:].tobytes()
 
     @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
@@ -878,7 +878,7 @@ class TestNanosecondsAreKept:
         rng = np.random.default_rng(2)
         x = rng.normal(size=len(ns))
         df = pl.DataFrame({"t": pl.Series(ns).cast(pl.Datetime("ns")), "x0": x, "y": x})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0"],
@@ -887,8 +887,8 @@ class TestNanosecondsAreKept:
             gap_cap="365d",
             max_error_inflation=float("inf"),
         )
-        whole = po.ModelBank([spec]).fit_predict(df)["m"]
-        bank = po.ModelBank([spec])
+        whole = rp.ModelBank([spec]).fit_predict(df)["m"]
+        bank = rp.ModelBank([spec])
         chunked = pl.concat([bank.fit_predict(df.slice(i, 37))["m"] for i in range(0, len(df), 37)])
         for field in ("pred_y", "weight_sum"):
             assert whole.struct.field(field).equals(chunked.struct.field(field), null_equal=True)
@@ -901,8 +901,8 @@ class TestNanosecondsAreKept:
             t_s=(START + 60.0 * pl.int_range(pl.len())).cast(pl.Float64)
         ).with_columns(t=pl.from_epoch(pl.col("t_s").cast(pl.Int64), time_unit="s"))
         spec = _ridge("t", half_life="10m", gap_cap="30m")
-        untouched = po.ModelBank([spec]).save_bytes()
-        bank = po.ModelBank([spec])
+        untouched = rp.ModelBank([spec]).save_bytes()
+        bank = rp.ModelBank([spec])
         late = pl.concat([df.slice(0, 5), df.slice(6, 5), df.slice(5, 1)])
         with pytest.raises(ValueError, match="steps back"):
             bank.fit_predict(late)
@@ -919,17 +919,17 @@ class TestNanosecondsAreKept:
     def test_scoring_first_then_learning_changes_nothing(self):
         df = _temporal(_frame())
         spec = _ridge("t", session="s", **DURATIONS["text"])
-        scored_first = po.ModelBank([spec])
+        scored_first = rp.ModelBank([spec])
         assert scored_first.predict(df.slice(0, 20))["m"].struct.field("pred_y").is_null().all()
         a = scored_first.fit_predict(df)
-        b = po.ModelBank([spec]).fit_predict(df)
+        b = rp.ModelBank([spec]).fit_predict(df)
         assert a["m"].equals(b["m"], null_equal=True)
 
     def test_the_query_form_agrees_with_the_bank(self):
         df = _temporal(_frame())
         spec = _ridge("t", session="s", **DURATIONS["pl.duration"])
         plan = df.lazy().online.fit_predict([spec]).collect()
-        assert plan["m"].equals(po.ModelBank([spec]).fit_predict(df)["m"], null_equal=True)
+        assert plan["m"].equals(rp.ModelBank([spec]).fit_predict(df)["m"], null_equal=True)
 
     def test_the_previous_instant_survives_a_save_and_load(self, tmp_path):
         """The previous row's instant is in the state, so a loaded bank takes
@@ -938,11 +938,11 @@ class TestNanosecondsAreKept:
         own dtype, exactly (review round 4, N18)."""
         df = _temporal(_frame())
         spec = _ridge("t", half_life="10m", gap_cap="30m")
-        whole = po.ModelBank([spec]).fit_predict(df)["m"]
-        bank = po.ModelBank([spec])
+        whole = rp.ModelBank([spec]).fit_predict(df)["m"]
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df.slice(0, 100))
         bank.save(tmp_path / "o.state")
-        loaded = po.ModelBank.load(tmp_path / "o.state")
+        loaded = rp.ModelBank.load(tmp_path / "o.state")
         tail = loaded.fit_predict(df.slice(100))["m"]
         for field in ("pred_y", "weight_sum"):
             assert (
@@ -966,7 +966,7 @@ class TestNanosecondsAreKept:
         step = "2d" if dtype == pl.Date else "10m"
         spec = _ridge("t", half_life=step, gap_cap=step)
         with pytest.raises(ValueError, match="row 7.*nanoseconds cannot hold"):
-            po.ModelBank([spec]).fit_predict(late)
+            rp.ModelBank([spec]).fit_predict(late)
 
 
 class TestTheClockColumnInOtherRoles:
@@ -982,7 +982,7 @@ class TestTheClockColumnInOtherRoles:
         rng = np.random.default_rng(6)
         x = rng.normal(size=len(days))
         df = pl.DataFrame({"d": days, "x0": x, "y": 2.0 * x + rng.normal(0.0, 0.1, len(days))})
-        doubled = po.stream.embargo(df.lazy(), clock="d", delay="2d").collect()
+        doubled = rp.stream.embargo(df.lazy(), clock="d", delay="2d").collect()
         assert doubled["d"].dtype == pl.Date
         learn = doubled.filter(pl.col("_online_role") == "learn")
         assert (learn["d"] - df["d"]).unique().to_list() == [timedelta(days=2)]
@@ -991,7 +991,7 @@ class TestTheClockColumnInOtherRoles:
         df = _temporal(_frame()).with_columns(elapsed=pl.col("t") - pl.col("t").first())
         spec = _ridge("elapsed", half_life="10m", gap_cap="30m")
         out = df.hstack(_fit(df, spec).to_frame())
-        got = po.eval.window_metrics(out, "m", clock="elapsed", every="1h", min_samples=5)
+        got = rp.eval.window_metrics(out, "m", clock="elapsed", every="1h", min_samples=5)
         assert got["window_start"].dtype == pl.Duration("us")
         assert got.height > 3
         starts = got["window_start"].dt.total_seconds().to_list()
@@ -1000,7 +1000,7 @@ class TestTheClockColumnInOtherRoles:
     def test_padding_and_spaces_in_duration_text(self):
         spec = _ridge("t", half_life=[" 5m ", "1h"], gap_cap="365d")
         assert spec["half_life"] == ["5m", "1h"]
-        assert any("@h5m" in f for f in po.spec.output_fields(spec))
+        assert any("@h5m" in f for f in rp.spec.output_fields(spec))
         with pytest.raises(ValueError, match="has a space in it"):
             _ridge("t", half_life="1h 30m", gap_cap="365d")
 
@@ -1127,7 +1127,7 @@ class TestEveryUnitAgainstEveryColumn:
         ns = START * 10**9 + np.cumsum(gaps)
         x = rng.normal(size=len(ns))
         df = pl.DataFrame({"t": _column(dtype, ns), "x0": x, "y": x})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0"],
@@ -1136,7 +1136,7 @@ class TestEveryUnitAgainstEveryColumn:
             gap_cap=cap,
             max_error_inflation=float("inf"),
         )
-        got = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("weight_sum").to_numpy()
+        got = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("weight_sum").to_numpy()
         want = _exact_n_eff(np.concatenate([[0], np.diff(ns)]), 7.0 * u)
         # Tolerance (task 252 (b)): libm, `exp2` in the bank against `pow`
         # here, over irregular gaps.
@@ -1160,15 +1160,15 @@ class TestEveryUnitAgainstEveryColumn:
             "restart_after_step_back": "3w",
         }
         for param in ("gap_cap", "restart_after_step_back"):
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "m", targets=["y"], features=["x0"], clock="t", **{**coarse, param: seven}
             )
             with pytest.raises(ValueError, match=f"{param} is 7{unit}, less than .*smallest step"):
-                po.ModelBank([spec]).fit_predict(df)
+                rp.ModelBank([spec]).fit_predict(df)
         # A half-life finer than the step is a setting, not a contradiction:
         # every gap is many half-lives, so each row is fitted on itself, as
         # the exact recursion says.
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0"],
@@ -1176,6 +1176,6 @@ class TestEveryUnitAgainstEveryColumn:
             max_error_inflation=float("inf"),
             **coarse,
         )
-        got = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("weight_sum").to_numpy()
+        got = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("weight_sum").to_numpy()
         want = _exact_n_eff(np.concatenate([[0], np.diff(ns)]), 7.0 * u)
         assert np.array_equal(got, want)

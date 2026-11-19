@@ -24,10 +24,10 @@ The streams are ``tests/test_oracles_lasso_paths.py``'s for ``rls`` and
 import numpy as np
 import pytest
 
-import rheon as po
 from data import synthetic
 from reference import kalman_ref
 from reference_paths import rls_paths_ref
+from rheon import polars as rp
 from test_oracles_lasso_paths import FEATURES, _stream
 
 TIER = "essential"
@@ -61,7 +61,7 @@ def _close(got, exp, tol, what):
 class TestRls:
     @staticmethod
     def _check(df, targets, **kw):
-        spec = po.spec.rls(
+        spec = rp.spec.rls(
             "m",
             targets=targets,
             features=FEATURES,
@@ -71,7 +71,7 @@ class TestRls:
             coef_every=0,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         n = df.height
         dc = np.zeros(n)
         dc[1:] = np.diff(df["t"].to_numpy())
@@ -152,7 +152,7 @@ class TestKalmanSeveralTargetsWithNulls:
             gap_cap=maxd,
             **kw,
         )
-        spec = po.spec.kalman(
+        spec = rp.spec.kalman(
             "m",
             targets=["y0", "y1"],
             features=["x0", "x1", "x2"],
@@ -165,7 +165,7 @@ class TestKalmanSeveralTargetsWithNulls:
             coef_every=0,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         for j, t in enumerate(("y0", "y1")):
             got = out.struct.field(f"pred_{t}").to_numpy().astype(float)
             _close(got, ref["pred"][:, j], TOL, f"pred_{t}")

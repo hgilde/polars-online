@@ -24,7 +24,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -44,15 +44,15 @@ def _rows(n: int, seed: int) -> pl.DataFrame:
 #: The models the limit is held on: ``ewridge`` in the essentials, and two
 #: whose residuals come another way, one with no error inflation.
 MODELS = [
-    pytest.param(po.spec.ewridge, {"emit_error_inflation": True}, id="ewridge"),
+    pytest.param(rp.spec.ewridge, {"emit_error_inflation": True}, id="ewridge"),
     pytest.param(
-        po.spec.rls,
+        rp.spec.rls,
         {"emit_error_inflation": True},
         id="rls",
         marks=pytest.mark.extended(reason="a grid over the models"),
     ),
     pytest.param(
-        po.spec.sgd, {}, id="sgd", marks=pytest.mark.extended(reason="a grid over the models")
+        rp.spec.sgd, {}, id="sgd", marks=pytest.mark.extended(reason="a grid over the models")
     ),
 ]
 
@@ -67,7 +67,7 @@ def _run(build, extra: dict[str, Any], df: pl.DataFrame, **kw: Any) -> pl.DataFr
         **extra,
         **kw,
     )
-    return po.ModelBank([spec]).fit_predict(df).unnest("m")
+    return rp.ModelBank([spec]).fit_predict(df).unnest("m")
 
 
 def _folded(out: pl.DataFrame) -> np.ndarray:
@@ -144,9 +144,9 @@ class TestAnInfiniteMemoryIsTheRunOnceOracle:
     @pytest.mark.parametrize(
         "build",
         [
-            pytest.param(po.spec.ewridge, id="ewridge"),
+            pytest.param(rp.spec.ewridge, id="ewridge"),
             pytest.param(
-                po.spec.rls, id="rls", marks=pytest.mark.extended(reason="a grid over the models")
+                rp.spec.rls, id="rls", marks=pytest.mark.extended(reason="a grid over the models")
             ),
         ],
     )

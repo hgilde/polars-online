@@ -29,9 +29,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from data import synthetic
 from reference import compute_dclock, kalman_ref
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -50,7 +50,7 @@ def _spec(name="m", **kw):
         min_weight=20.0,
     )
     defaults.update(kw)
-    return po.spec.kalman(name, **defaults)
+    return rp.spec.kalman(name, **defaults)
 
 
 def _field(out, field, name="m"):
@@ -94,7 +94,7 @@ class TestOracle:
         x, dc, w = _arrays(df, k)
         y = np.column_stack([df[t].to_numpy() for t in targets])
         ref = kalman_ref(x, y, dc, w, gap_cap=MAXD, **kw)
-        spec = po.spec.kalman(
+        spec = rp.spec.kalman(
             "m",
             targets=list(targets),
             features=[f"x{j}" for j in range(k)],
@@ -112,7 +112,7 @@ class TestOracle:
             fit_intercept=kw.get("fit_intercept", True),
             standardize=kw.get("standardize", True),
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         for j, t in enumerate(targets):
             for field, key in (("pred_", "pred"), ("resid_", "resid")):
                 _close(_field(out, f"{field}{t}"), ref[key][:, j], what=f"{field}{t}")
@@ -237,8 +237,8 @@ class TestLargeData:
             standardize=False,
             coef_every=0,
         )
-        walk = po.ModelBank([po.spec.kalman("m", **common)]).fit_predict(df)
-        rev = po.ModelBank([po.spec.kalman("m", revert_half_life=revert, **common)]).fit_predict(df)
+        walk = rp.ModelBank([rp.spec.kalman("m", **common)]).fit_predict(df)
+        rev = rp.ModelBank([rp.spec.kalman("m", revert_half_life=revert, **common)]).fit_predict(df)
         return walk, rev
 
     def _pred_mse(self, out, df):
@@ -291,9 +291,9 @@ class TestLargeData:
             standardize=False,
             coef_every=0,
         )
-        walk = po.ModelBank([po.spec.kalman("m", **common)]).fit_predict(df)
-        rev = po.ModelBank(
-            [po.spec.kalman("m", revert_half_life=[INF, 30.0], **common)]
+        walk = rp.ModelBank([rp.spec.kalman("m", **common)]).fit_predict(df)
+        rev = rp.ModelBank(
+            [rp.spec.kalman("m", revert_half_life=[INF, 30.0], **common)]
         ).fit_predict(df)
         mse_walk = _track_mse(walk, truth, self.TAIL)
         mse_rev = _track_mse(rev, truth, self.TAIL)
@@ -340,7 +340,7 @@ class TestLargeData:
             )
             got = {}
             for rh in (INF, r):
-                bank = po.ModelBank([po.spec.kalman("m", revert_half_life=rh, **common)])
+                bank = rp.ModelBank([rp.spec.kalman("m", revert_half_life=rh, **common)])
                 bank.fit_predict(head)
                 before = _coef(bank.fit_predict(tail))[-1]
                 after = _coef(bank.fit_predict(probe))[-1]
@@ -368,7 +368,7 @@ class TestExactness:
     def test_inf_is_bit_identical_to_the_default(self):
         df, _ = synthetic(seed=102, n_groups=2, n_rows=600, k=3, null_frac=0.03)
         base = _spec(group="group", clock="t", gap_cap=MAXD, weight="w", coef_every=0)
-        want = po.ModelBank([base]).fit_predict(df)
+        want = rp.ModelBank([base]).fit_predict(df)
         for r in (INF, [INF], [INF, INF, INF, INF]):
             spec = _spec(
                 group="group",
@@ -378,13 +378,13 @@ class TestExactness:
                 coef_every=0,
                 revert_half_life=r,
             )
-            got = po.ModelBank([spec]).fit_predict(df)
+            got = rp.ModelBank([spec]).fit_predict(df)
             assert got.equals(want, null_equal=True), r
 
     def test_scalar_equals_the_list_that_spells_it(self):
         df, _ = synthetic(seed=103, n_groups=1, n_rows=400, k=3, null_frac=0.0)
-        a = po.ModelBank([_spec(revert_half_life=33.0, coef_every=0)]).fit_predict(df)
-        b = po.ModelBank([_spec(revert_half_life=[33.0] * 4, coef_every=0)]).fit_predict(df)
+        a = rp.ModelBank([_spec(revert_half_life=33.0, coef_every=0)]).fit_predict(df)
+        b = rp.ModelBank([_spec(revert_half_life=[33.0] * 4, coef_every=0)]).fit_predict(df)
         assert a.equals(b, null_equal=True)
 
     def test_shrinks_exactly_over_a_run_of_null_targets_on_an_irregular_clock(self):
@@ -414,7 +414,7 @@ class TestExactness:
             q=[0.0] * 4,
             coef_every=0,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         c = _coef(out)
         c_fit = c[n_fit - 1]
         assert np.isfinite(c_fit).all()
@@ -449,7 +449,7 @@ class TestExactness:
             q=[0.0] * 3,
             coef_every=0,
         )
-        c = _coef(po.ModelBank([spec]).fit_predict(df))
+        c = _coef(rp.ModelBank([spec]).fit_predict(df))
         assert c[-1, 1:] == pytest.approx(c[-2, 1:] * 0.5 ** (1.0 / 4.0), rel=1e-12)
         assert c[-1, 0] == c[-2, 0]
 
@@ -474,7 +474,7 @@ class TestExactness:
             standardize=False,
             min_weight=10.0,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         last = bank.groups()["clock_last"][0]
         assert last == t[-1]
@@ -510,13 +510,13 @@ class TestExactness:
         spec = _spec(
             group="group", clock="t", gap_cap=MAXD, revert_half_life=[INF, 30.0, 30.0, 8.0]
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df.head(160))
         later = df.tail(40).with_columns(pl.col("t") + 3.0)
         snap = bank.save_bytes()
         got = bank.predict(later)
         for i in range(later.height):
-            fresh = po.ModelBank.load_bytes(snap, [spec])
+            fresh = rp.ModelBank.load_bytes(snap, [spec])
             want = fresh.fit_predict(later.slice(i, 1))
             a, b = got["m"][i], want["m"][0]
             for key in ("pred_y0", "resid_y0", "weight_sum"):
@@ -544,10 +544,10 @@ class TestPlumbing:
     def test_chunk_invariance(self):
         df, _ = synthetic(seed=108, n_groups=2, n_rows=800, k=3, null_frac=0.03)
         spec = self._spec()
-        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
         keep = [c for c in one.columns if not c.startswith("coef")]
         for size in (1, 7, 97, 500):
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             many = (
                 pl.concat([bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)])
                 .select("m")
@@ -558,12 +558,12 @@ class TestPlumbing:
     def test_save_load_mid_stream(self):
         df, _ = synthetic(seed=109, n_groups=2, n_rows=600, k=3, null_frac=0.03)
         spec = self._spec()
-        want = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        want = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
         keep = [c for c in want.columns if not c.startswith("coef")]
         for cut in (3, 100, 500):
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             head = bank.fit_predict(df.head(cut))
-            bank = po.ModelBank.load_bytes(bank.save_bytes(), [spec])
+            bank = rp.ModelBank.load_bytes(bank.save_bytes(), [spec])
             tail = bank.fit_predict(df.slice(cut))
             got = pl.concat([head, tail]).select("m").unnest("m")
             assert want.select(keep).equals(got.select(keep), null_equal=True), cut
@@ -571,11 +571,11 @@ class TestPlumbing:
     def test_groups_revert_independently(self):
         df, _ = synthetic(seed=110, n_groups=3, n_rows=300, k=3, null_frac=0.0)
         spec = self._spec()
-        both = po.ModelBank([spec]).fit_predict(df).select("group", "m").unnest("m")
+        both = rp.ModelBank([spec]).fit_predict(df).select("group", "m").unnest("m")
         keep = [c for c in both.columns if not c.startswith("coef")]
         for g in ("g0", "g1", "g2"):
             part = df.filter(pl.col("group") == g)
-            alone = po.ModelBank([spec]).fit_predict(part).select("group", "m").unnest("m")
+            alone = rp.ModelBank([spec]).fit_predict(part).select("group", "m").unnest("m")
             assert (
                 both.filter(pl.col("group") == g)
                 .select(keep)
@@ -585,14 +585,14 @@ class TestPlumbing:
     def test_lazy_plan_equals_bank(self):
         df, _ = synthetic(seed=112, n_groups=2, n_rows=300, k=3, null_frac=0.0)
         spec = self._spec()
-        want = po.ModelBank([spec]).fit_predict(df)
+        want = rp.ModelBank([spec]).fit_predict(df)
         got = df.lazy().online.fit_predict([spec]).collect()
         assert got.equals(want, null_equal=True)
 
     def test_cli_toml(self, tmp_path, rheon_cli):
         df, _ = synthetic(seed=113, n_groups=2, n_rows=300, k=3, null_frac=0.0)
         spec = self._spec()
-        want = po.ModelBank([spec]).fit_predict(df)
+        want = rp.ModelBank([spec]).fit_predict(df)
         src = tmp_path / "in.parquet"
         dst = tmp_path / "out.parquet"
         df.write_parquet(src)
@@ -624,7 +624,7 @@ revert_half_life = ["inf", 40.0, 40.0, 10.0]
         assert got.select("m").equals(want.select("m"), null_equal=True)
 
     def test_output_index_is_unchanged(self):
-        assert po.spec.output_index(self._spec()).equals(po.spec.output_index(_spec()))
+        assert rp.spec.output_index(self._spec()).equals(rp.spec.output_index(_spec()))
 
 
 # --- refusals -------------------------------------------------------------------
@@ -668,14 +668,14 @@ class TestRefusals:
         import re
 
         with pytest.raises(exc, match=re.escape(msg)):
-            po.ModelBank([_spec(revert_half_life=value)])
+            rp.ModelBank([_spec(revert_half_life=value)])
 
     def test_inf_is_allowed_in_every_position(self):
-        po.ModelBank([_spec(revert_half_life=INF)])
-        po.ModelBank([_spec(revert_half_life=[INF, INF, 5.0, INF])])
+        rp.ModelBank([_spec(revert_half_life=INF)])
+        rp.ModelBank([_spec(revert_half_life=[INF, INF, 5.0, INF])])
 
     def test_other_models_reject_it(self):
         with pytest.raises(TypeError, match="revert_half_life"):
-            po.spec.rls("r", targets=["y0"], features=["x0"], revert_half_life=10.0)
+            rp.spec.rls("r", targets=["y0"], features=["x0"], revert_half_life=10.0)
         with pytest.raises(TypeError, match="revert_half_life"):
-            po.spec.ewridge("e", targets=["y0"], features=["x0"], revert_half_life=10.0)
+            rp.spec.ewridge("e", targets=["y0"], features=["x0"], revert_half_life=10.0)

@@ -13,7 +13,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 from test_model_registry import MINIMAL, _build
 
 TIER = "essential"
@@ -37,18 +37,18 @@ def frame_for(name: str, n: int = 240) -> pl.DataFrame:
 @pytest.mark.parametrize("name", sorted(MINIMAL))
 def test_every_kind_writes_the_struct_it_declares(name):
     spec = _build(name)
-    out = po.ModelBank([spec]).fit_predict(frame_for(name))
-    assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
+    out = rp.ModelBank([spec]).fit_predict(frame_for(name))
+    assert [f.name for f in out.schema["m"].fields] == rp.spec.output_fields(spec)
 
 
 @pytest.mark.parametrize("name", sorted(MINIMAL))
 def test_every_kind_resumes_mid_stream(name, tmp_path):
     spec = _build(name)
     df = frame_for(name)
-    a = po.ModelBank([spec])
+    a = rp.ModelBank([spec])
     a.fit_predict(df[:120])
     a.save(tmp_path / f"{name}.state")
-    b = po.ModelBank.load(tmp_path / f"{name}.state", specs=[spec])
+    b = rp.ModelBank.load(tmp_path / f"{name}.state", specs=[spec])
     ra, rb = a.fit_predict(df[120:]), b.fit_predict(df[120:])
     assert ra.equals(rb, null_equal=True)
     assert b.specs == a.specs

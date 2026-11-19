@@ -43,7 +43,7 @@ import json, sys, warnings
 sys.path.insert(0, {str(TESTS)!r})
 import polars as pl
 import pyarrow as pa
-import rheon as po
+from rheon import polars as po
 from test_arrow_capsule import SPEC, frame
 
 df = frame(200)

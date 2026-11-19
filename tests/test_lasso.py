@@ -4,8 +4,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from data import synthetic
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -20,12 +20,12 @@ def _spec(path, **kw):
         min_weight=10.0,
     )
     defaults.update(kw)
-    return po.spec.lasso("m", **defaults)
+    return rp.spec.lasso("m", **defaults)
 
 
 def test_output_fields_include_lam_selected():
     spec = _spec([1.0, 0.1, 0.0])
-    fields = po.spec.output_fields(spec)
+    fields = rp.spec.output_fields(spec)
     assert "penalty_selected_y0" in fields
     assert "pred_y0__p1" in fields and "pred_y0__p0" in fields
 
@@ -40,8 +40,8 @@ def test_zero_penalty_matches_ewridge():
         max_rows_between_solves=1,
         min_weight=10.0,
     )
-    a = po.ModelBank([po.spec.lasso("m", penalties=[0.0], **common)]).fit_predict(df)
-    b = po.ModelBank([po.spec.ewridge("m", ridge=1e-12, standardize=True, **common)]).fit_predict(
+    a = rp.ModelBank([rp.spec.lasso("m", penalties=[0.0], **common)]).fit_predict(df)
+    b = rp.ModelBank([rp.spec.ewridge("m", ridge=1e-12, standardize=True, **common)]).fit_predict(
         df
     )
     # a path of one point writes no suffix, as a single ridge writes none
@@ -54,7 +54,7 @@ def test_zero_penalty_matches_ewridge():
 
 def test_heavy_penalty_predicts_the_mean():
     df, _ = synthetic(seed=32, n_groups=1, n_rows=200, k=3, null_frac=0.0)
-    out = po.ModelBank([_spec([1e6, 0.0])]).fit_predict(df)
+    out = rp.ModelBank([_spec([1e6, 0.0])]).fit_predict(df)
     # All slopes zeroed => prediction is the running EW mean of y, so it must be
     # constant across rows with very different x.
     pred = out["m"].struct.field("pred_y0__p1000000").to_numpy().astype(float)
@@ -65,7 +65,7 @@ def test_heavy_penalty_predicts_the_mean():
 def test_lam_selected_is_on_the_path():
     df, _ = synthetic(seed=33, n_groups=2, n_rows=250, k=3, null_frac=0.0)
     path = [1.0, 0.3, 0.1, 0.0]
-    out = po.ModelBank([_spec(path, group="group", half_life=200.0)]).fit_predict(df)
+    out = rp.ModelBank([_spec(path, group="group", half_life=200.0)]).fit_predict(df)
     sel = out["m"].struct.field("penalty_selected_y0").to_numpy().astype(float)
     assert set(np.unique(sel[np.isfinite(sel)])).issubset(set(path))
 
@@ -83,7 +83,7 @@ def test_selection_prefers_penalty_when_features_are_noise():
             "y0": rng.standard_normal(n),
         }
     )
-    out = po.ModelBank([_spec([10.0, 0.0], half_life=300.0)]).fit_predict(df)
+    out = rp.ModelBank([_spec([10.0, 0.0], half_life=300.0)]).fit_predict(df)
     sel = out["m"].struct.field("penalty_selected_y0").to_numpy().astype(float)
     sel = sel[np.isfinite(sel)]
     assert (sel == 10.0).mean() > 0.8
@@ -109,7 +109,7 @@ def test_an_infinite_select_halflife_selects_on_the_plain_mean():
     # (3.5, as the decay of a half-life of 1e9 leaves four rows' weight
     # short of 4.)
     spec = _spec(path, select_half_life=float("inf"), min_weight=3.5)
-    out = po.ModelBank([spec]).fit_predict(df)["m"]
+    out = rp.ModelBank([spec]).fit_predict(df)["m"]
     resid = np.array(
         [out.struct.field(f"resid_y0__p{lab}").to_numpy() for lab in ("1", "0.1", "0")], float
     )
@@ -132,9 +132,9 @@ def test_an_infinite_select_halflife_selects_on_the_plain_mean():
 def test_chunk_invariance():
     df, _ = synthetic(seed=34, n_groups=2, n_rows=180, k=3, null_frac=0.0)
     spec = _spec([0.5, 0.0], group="group", half_life=200.0)
-    one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+    one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
 
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     many = (
         pl.concat([bank.fit_predict(df.slice(i, 25)) for i in range(0, df.height, 25)])
         .select("m")
@@ -174,7 +174,7 @@ class TestEachTargetsSelectionCountsFromTheFloor:
             {"t": np.arange(n, dtype=float), "x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2]}
             | {"y0": y0, "y1": y1}
         )
-        spec = po.spec.lasso(
+        spec = rp.spec.lasso(
             "l",
             targets=["y0", "y1"],
             features=["x0", "x1", "x2"],
@@ -187,7 +187,7 @@ class TestEachTargetsSelectionCountsFromTheFloor:
             solve_every=0.0,
             max_rows_between_solves=1,
         )
-        return po.ModelBank([spec]).fit_predict(df)["l"].struct.unnest()
+        return rp.ModelBank([spec]).fit_predict(df)["l"].struct.unnest()
 
     def test_another_targets_threshold_does_not_move_a_targets_choice(self):
         a, b = (
@@ -238,7 +238,7 @@ def test_on_the_row_clock_solve_every_is_its_row_cap():
     df = pl.DataFrame({"x0": x, "x1": rng.standard_normal(n), "y0": 2.0 * x})
 
     def run(**kw):
-        spec = po.spec.lasso(
+        spec = rp.spec.lasso(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -249,8 +249,8 @@ def test_on_the_row_clock_solve_every_is_its_row_cap():
             **kw,
         )
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", po.ReadinessWarning)
-            return po.ModelBank([spec]).fit_predict(df).unnest("m")
+            warnings.simplefilter("ignore", rp.ReadinessWarning)
+            return rp.ModelBank([spec]).fit_predict(df).unnest("m")
 
     clock = run(solve_every=7.0)
     assert clock.equals(run(solve_every=1e9, max_rows_between_solves=7), null_equal=True)
@@ -297,8 +297,8 @@ _REL = dict(
 _TIGHT = dict(tol=1e-14, max_iter=100_000)
 
 
-def _rel_run(build, df, **kw) -> tuple[pl.DataFrame, po.ModelBank]:
-    bank = po.ModelBank([build("m", **{**_REL, **kw})], threads=1)
+def _rel_run(build, df, **kw) -> tuple[pl.DataFrame, rp.ModelBank]:
+    bank = rp.ModelBank([build("m", **{**_REL, **kw})], threads=1)
     return bank.fit_predict(df).unnest("m"), bank
 
 
@@ -317,8 +317,8 @@ def test_an_elastic_net_with_no_l1_is_the_standardized_ridge(penalty):
     5.3e-15 and 2.0e-14 apart in a prediction for the two penalties, no
     descent short of its rule; held to 1e-12."""
     df = _relations_frame()
-    net, bank = _rel_run(po.spec.lasso, df, penalties=[penalty], l1_ratio=0.0, **_TIGHT)
-    ridge, _ = _rel_run(po.spec.ewridge, df, ridge=penalty, standardize=True)
+    net, bank = _rel_run(rp.spec.lasso, df, penalties=[penalty], l1_ratio=0.0, **_TIGHT)
+    ridge, _ = _rel_run(rp.spec.ewridge, df, ridge=penalty, standardize=True)
     assert int(bank.solve_failures()["solve_failures"].sum()) == 0
     for t in ("y", "z"):
         d = _diff(net[f"pred_{t}"], ridge[f"pred_{t}"])
@@ -336,9 +336,9 @@ def test_a_path_point_is_the_lone_penalty(l1_ratio):
     1e-12."""
     df = _relations_frame()
     kw = dict(l1_ratio=l1_ratio, **_TIGHT)
-    path, _ = _rel_run(po.spec.lasso, df, penalties=[0.5, 0.05], **kw)
-    first, _ = _rel_run(po.spec.lasso, df, penalties=[0.5], **kw)
-    later, _ = _rel_run(po.spec.lasso, df, penalties=[0.05], **kw)
+    path, _ = _rel_run(rp.spec.lasso, df, penalties=[0.5, 0.05], **kw)
+    first, _ = _rel_run(rp.spec.lasso, df, penalties=[0.5], **kw)
+    later, _ = _rel_run(rp.spec.lasso, df, penalties=[0.05], **kw)
     for t in ("y", "z"):
         assert path[f"pred_{t}__p0.5"].equals(first[f"pred_{t}"]), t
         d = _diff(path[f"pred_{t}__p0.05"], later[f"pred_{t}"])
@@ -368,7 +368,7 @@ def test_one_sweep_is_a_failure_for_each_target_point_and_solve():
         }
     )
     points = [0.01, 0.001, 0.0]
-    spec = po.spec.lasso(
+    spec = rp.spec.lasso(
         "m",
         targets=["y", "z"],
         features=["x0", "x1", "x2"],
@@ -379,7 +379,7 @@ def test_one_sweep_is_a_failure_for_each_target_point_and_solve():
         group="g",
         coef_every=0,
     )
-    bank = po.ModelBank([spec], threads=1)
+    bank = rp.ModelBank([spec], threads=1)
     out = bank.fit_predict(df).unnest("m")
     got = dict(bank.solve_failures().select("group", "solve_failures").iter_rows())
     for g in (0, 1):
@@ -399,8 +399,8 @@ def test_select_half_life_given_as_the_half_life_is_the_default():
     is the same model, to the bit; another memory chooses otherwise."""
     df = _relations_frame()
     path = [0.5, 0.05, 0.0]
-    default, _ = _rel_run(po.spec.lasso, df, penalties=path)
-    named, _ = _rel_run(po.spec.lasso, df, penalties=path, select_half_life=200.0)
+    default, _ = _rel_run(rp.spec.lasso, df, penalties=path)
+    named, _ = _rel_run(rp.spec.lasso, df, penalties=path, select_half_life=200.0)
     assert default.equals(named, null_equal=True)
-    other, _ = _rel_run(po.spec.lasso, df, penalties=path, select_half_life=20.0)
+    other, _ = _rel_run(rp.spec.lasso, df, penalties=path, select_half_life=20.0)
     assert not other["penalty_selected_y"].equals(default["penalty_selected_y"])

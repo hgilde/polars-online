@@ -19,7 +19,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -43,11 +43,11 @@ def frame(n: int = 3000, burst: tuple[int, int] | None = None, seed: int = 3) ->
 
 
 def spec(**kw):
-    return po.spec.ewridge("m", targets=["y"], features=["x"], emit_drift=True, **kw)
+    return rp.spec.ewridge("m", targets=["y"], features=["x"], emit_drift=True, **kw)
 
 
 def flags(df: pl.DataFrame, **kw) -> np.ndarray:
-    out = po.ModelBank([spec(**kw)]).fit_predict(df)
+    out = rp.ModelBank([spec(**kw)]).fit_predict(df)
     return out["m"].struct.field("drift_y").fill_null(False).to_numpy()
 
 
@@ -133,10 +133,10 @@ def test_a_bank_resumes_with_its_duration_threshold():
     state, and a bank loaded mid-stream flags what the unbroken run does."""
     df = frame(burst=(2000, 2100))
     s = spec(drift_threshold="20m", **TEMPORAL)
-    whole = po.ModelBank([s]).fit_predict(df)["m"].struct.field("drift_y")
-    first = po.ModelBank([s])
+    whole = rp.ModelBank([s]).fit_predict(df)["m"].struct.field("drift_y")
+    first = rp.ModelBank([s])
     first.fit_predict(df.head(1500))
     assert '"drift_threshold": "20m"' in first.write_json()
-    resumed = po.ModelBank.load_bytes(first.save_bytes(), specs=[s])
+    resumed = rp.ModelBank.load_bytes(first.save_bytes(), specs=[s])
     tail = resumed.fit_predict(df.slice(1500))["m"].struct.field("drift_y")
     assert tail.equals(whole.slice(1500), null_equal=True)

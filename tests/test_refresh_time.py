@@ -14,8 +14,8 @@ import polars as pl
 import pytest
 from hfhd import hf
 
-import rheon as po
-from rheon import stream
+from rheon import polars as rp
+from rheon.polars import stream
 
 TIER = "mixed"
 
@@ -230,7 +230,7 @@ def test_the_readme_example_is_the_grid_it_shows():
             "px": [100.0, 20.0, 100.2, 50.0, 20.1, 100.1, 100.4, 49.9],
         }
     )
-    grid = po.stream.refresh_time(
+    grid = rp.stream.refresh_time(
         ticks, series="symbol", names=["AAA", "BBB", "CCC"], clock="t", value="px"
     )
     assert grid.rows() == [
@@ -444,14 +444,14 @@ def test_the_output_feeds_a_bank_of_the_wide_frame():
     observed at the same time."""
     df = poisson_obs(n=300)
     grid = run(df)
-    spec = po.spec.ew_cov(
+    spec = rp.spec.ew_cov(
         "c",
         features=[f"{s}_value" for s in NAMES],
         half_life=100.0,
         stats=["corr"],
         min_weight=5.0,
     )
-    out = po.ModelBank([spec]).fit_predict(grid)
+    out = rp.ModelBank([spec]).fit_predict(grid)
     assert out["c"].struct.field("corr_a_value_b_value").drop_nulls().len() > 0
 
 

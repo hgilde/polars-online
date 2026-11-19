@@ -32,8 +32,8 @@ import polars as pl
 import pytest
 from sklearn.model_selection import ParameterGrid, TimeSeriesSplit
 
-import rheon as po
-from rheon.eval import _points, _time_series_folds
+from rheon import polars as rp
+from rheon.polars.eval import _points, _time_series_folds
 
 TIER = "essential"
 
@@ -155,7 +155,7 @@ def test_the_points_are_a_parameter_grid_in_its_order():
 @pytest.mark.parametrize(("n_splits", "gap"), [(1, 0), (4, 0), (5, 25)])
 def test_a_grid_in_one_spec_is_scored_as_by_hand(tmp_path, n_splits, gap):
     lf = wander(tmp_path / "w.parquet")
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "g",
         targets=["y"],
         features=["x0", "x1"],
@@ -165,7 +165,7 @@ def test_a_grid_in_one_spec_is_scored_as_by_hand(tmp_path, n_splits, gap):
         ridge=[1e-6, 0.5],
         emit_selected=True,
     )
-    table = po.eval.grid_search(lf, spec, n_splits=n_splits, gap=gap)
+    table = rp.eval.grid_search(lf, spec, n_splits=n_splits, gap=gap)
     want = by_hand(lf.online.fit_predict([spec]).collect(), [spec], n_splits, gap)
     settings = table.filter(kind="candidate")
     assert settings.height == 6
@@ -194,14 +194,14 @@ def test_specs_that_warm_up_apart_are_scored_on_the_rows_they_share(tmp_path):
     where both predict, and a span's choice reads only those rows."""
     lf = wander(tmp_path / "w.parquet")
     builder = functools.partial(
-        po.spec.ewridge,
+        rp.spec.ewridge,
         targets=["y"],
         features=["x0", "x1"],
         clock="t",
         gap_cap=5.0,
         half_life=50.0,
     )
-    table = po.eval.grid_search(lf, builder, {"min_weight": [3.0, 60.0]}, n_splits=3)
+    table = rp.eval.grid_search(lf, builder, {"min_weight": [3.0, 60.0]}, n_splits=3)
     specs = [builder("min_weight=3.0", min_weight=3.0), builder("min_weight=60.0", min_weight=60.0)]
     want = by_hand(lf.online.fit_predict(specs).collect(), specs, 3)
     for row in table.filter(kind="candidate").iter_rows(named=True):
@@ -214,9 +214,9 @@ def test_specs_that_warm_up_apart_are_scored_on_the_rows_they_share(tmp_path):
 
 def test_a_builder_names_each_spec_by_its_point(tmp_path):
     lf = wander(tmp_path / "w.parquet", n=1_200)
-    sgd = functools.partial(po.spec.sgd, targets=["y"], features=["x0", "x1"], half_life=200.0)
+    sgd = functools.partial(rp.spec.sgd, targets=["y"], features=["x0", "x1"], half_life=200.0)
     grid = {"learning_rate": [0.003, 0.03], "l2": [0.0, 0.1]}
-    table = po.eval.grid_search(lf, sgd, grid, n_splits=2)
+    table = rp.eval.grid_search(lf, sgd, grid, n_splits=2)
     points = list(ParameterGrid(grid))
     assert table["spec"].to_list()[:4] == [
         ", ".join(f"{k}={v}" for k, v in p.items()) for p in points
@@ -244,7 +244,7 @@ def test_loglik_is_scored_highest_best(tmp_path):
     pl.DataFrame({"x": x}).write_parquet(tmp_path / "j.parquet")
     lf = pl.scan_parquet(tmp_path / "j.parquet")
     bocpd = functools.partial(
-        po.spec.bocpd,
+        rp.spec.bocpd,
         features=["x"],
         mean_prior=[0.0],
         covariance_prior=[1.0],
@@ -252,7 +252,7 @@ def test_loglik_is_scored_highest_best(tmp_path):
         degrees_of_freedom_prior=2.0,
     )
     hazards = [10.0, 200.0, 5_000.0]
-    table = po.eval.grid_search(lf, bocpd, {"hazard": hazards}, n_splits=3, scoring="loglik")
+    table = rp.eval.grid_search(lf, bocpd, {"hazard": hazards}, n_splits=3, scoring="loglik")
     specs = [bocpd(f"hazard={h}", hazard=h) for h in hazards]
     want = by_hand(lf.online.fit_predict(specs).collect(), specs, 3, loglik=True)
     settings = table.filter(kind="candidate")
@@ -281,8 +281,8 @@ def test_the_choice_reads_only_the_rows_before_its_span(tmp_path):
     b[: n // 2] = 1.0
     pl.DataFrame({"x": x, "y": b * x + e}).write_parquet(tmp_path / "cut.parquet")
     lf = pl.scan_parquet(tmp_path / "cut.parquet")
-    spec = po.spec.ewridge("m", targets=["y"], features=["x"], half_life=[5.0, 2_000.0])
-    table = po.eval.grid_search(lf, spec, n_splits=1)
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x"], half_life=[5.0, 2_000.0])
+    table = rp.eval.grid_search(lf, spec, n_splits=1)
     long, short = (table.filter(slot=s).row(0, named=True) for s in ("pred_y@h2000", "pred_y@h5"))
     assert long["folds_chosen"] == 1 and short["folds_chosen"] == 0
     assert short["rank"] == 1  # best on the span, in hindsight
@@ -305,11 +305,11 @@ def test_the_gap_keeps_the_choice_from_rows_not_yet_known(tmp_path):
     )  # moves in the 150 rows before the span at 1,000
     pl.DataFrame({"x": x, "y": b * x + 0.5 * e}).write_parquet(tmp_path / "g.parquet")
     lf = pl.scan_parquet(tmp_path / "g.parquet")
-    spec = po.spec.ewridge("m", targets=["y"], features=["x"], half_life=[3.0, 1_000.0])
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x"], half_life=[3.0, 1_000.0])
     out = lf.online.fit_predict([spec]).collect()
     picks = {}
     for gap in (0, 150):
-        table = po.eval.grid_search(lf, spec, n_splits=1, gap=gap)
+        table = rp.eval.grid_search(lf, spec, n_splits=1, gap=gap)
         want = by_hand(out, [spec], 1, gap)
         picks[gap] = table.filter(pl.col("folds_chosen") == 1)["slot"].item()
         assert ("m", picks[gap]) == want["picks"][0]
@@ -322,14 +322,14 @@ def test_the_gap_keeps_the_choice_from_rows_not_yet_known(tmp_path):
 
 def test_the_result_is_the_same_for_any_chunk_size_and_for_a_frame(tmp_path):
     lf = wander(tmp_path / "w.parquet", n=900)
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "g", targets=["y"], features=["x0", "x1"], half_life=[10.0, 80.0], ridge=[1e-6, 1.0]
     )
-    whole = po.eval.grid_search(lf, spec, n_splits=4)
+    whole = rp.eval.grid_search(lf, spec, n_splits=4)
     for table in (
-        po.eval.grid_search(lf, spec, n_splits=4, chunk_size=1),
-        po.eval.grid_search(lf, spec, n_splits=4, chunk_size=97),
-        po.eval.grid_search(lf.collect(), spec, n_splits=4),
+        rp.eval.grid_search(lf, spec, n_splits=4, chunk_size=1),
+        rp.eval.grid_search(lf, spec, n_splits=4, chunk_size=97),
+        rp.eval.grid_search(lf.collect(), spec, n_splits=4),
     ):
         assert table.drop("mse").equals(whole.drop("mse"))
         for a, b in zip(table["mse"], whole["mse"], strict=True):
@@ -341,47 +341,47 @@ def test_the_result_is_the_same_for_any_chunk_size_and_for_a_frame(tmp_path):
 
 def test_refusals_name_what_to_give(tmp_path):
     lf = wander(tmp_path / "w.parquet", n=600)
-    spec = po.spec.ewridge("g", targets=["y"], features=["x0"], half_life=[10.0, 80.0])
-    sgd = functools.partial(po.spec.sgd, targets=["y"], features=["x0"], half_life=50.0)
+    spec = rp.spec.ewridge("g", targets=["y"], features=["x0"], half_life=[10.0, 80.0])
+    sgd = functools.partial(rp.spec.sgd, targets=["y"], features=["x0"], half_life=50.0)
     with pytest.raises(ValueError, match='scoring must be "mse" or "loglik", but it is \'r2\''):
-        po.eval.grid_search(lf, spec, scoring="r2")
+        rp.eval.grid_search(lf, spec, scoring="r2")
     with pytest.raises(ValueError, match="n_splits must be"):
-        po.eval.grid_search(lf, spec, n_splits=0)
+        rp.eval.grid_search(lf, spec, n_splits=0)
     with pytest.raises(ValueError, match="gap must be"):
-        po.eval.grid_search(lf, spec, gap=-1)
+        rp.eval.grid_search(lf, spec, gap=-1)
     with pytest.raises(ValueError, match="param_grid needs a spec builder"):
-        po.eval.grid_search(lf, spec, {"half_life": [1.0]})
+        rp.eval.grid_search(lf, spec, {"half_life": [1.0]})
     with pytest.raises(TypeError, match="param_grid must be a non-empty dict"):
-        po.eval.grid_search(lf, sgd)
+        rp.eval.grid_search(lf, sgd)
     with pytest.raises(TypeError, match="list of the values"):
-        po.eval.grid_search(lf, sgd, {"learning_rate": 0.1})
+        rp.eval.grid_search(lf, sgd, {"learning_rate": 0.1})
     with pytest.raises(TypeError, match="list of the values"):
-        po.eval.grid_search(lf, sgd, {"loss": "huber"})
+        rp.eval.grid_search(lf, sgd, {"loss": "huber"})
     for column in ("rank", "kind"):
         with pytest.raises(ValueError, match="one of the result's own columns"):
-            po.eval.grid_search(lf, sgd, {column: [1.0]})
+            rp.eval.grid_search(lf, sgd, {column: [1.0]})
     with pytest.raises(ValueError, match="named by its first argument"):
-        po.eval.grid_search(
+        rp.eval.grid_search(
             lf,
             lambda name, learning_rate: sgd("x", learning_rate=learning_rate),
             {"learning_rate": [0.1]},
         )
     with pytest.raises(TypeError, match="LazyFrame or DataFrame"):
-        po.eval.grid_search({"y": [1.0]}, spec)
+        rp.eval.grid_search({"y": [1.0]}, spec)
     with pytest.raises(TypeError, match="specs must be a spec, a list of specs or a spec builder"):
-        po.eval.grid_search(lf, [])
+        rp.eval.grid_search(lf, [])
     with pytest.raises(ValueError, match='scoring="loglik"'):
-        po.eval.grid_search(lf, po.spec.ew_cov("c", features=["x0", "x1"], half_life=50.0))
+        rp.eval.grid_search(lf, rp.spec.ew_cov("c", features=["x0", "x1"], half_life=50.0))
     with pytest.raises(ValueError, match="writes no loglik"):
-        po.eval.grid_search(lf, spec, scoring="loglik")
-    late = po.spec.ewridge(
+        rp.eval.grid_search(lf, spec, scoring="loglik")
+    late = rp.spec.ewridge(
         "late", targets=["y"], features=["x0"], half_life=[10.0, 80.0], min_weight=1e9
     )
     with pytest.raises(
         ValueError,
         match="None of them has a prediction of target 'y' from every slot with the target present",
     ):
-        po.eval.grid_search(lf, late, n_splits=2)
+        rp.eval.grid_search(lf, late, n_splits=2)
 
 
 def refusal(call):
@@ -393,16 +393,16 @@ def refusal(call):
 
 def test_too_few_rows_names_the_spans_and_the_remedy(tmp_path):
     lf = wander(tmp_path / "w.parquet", n=600)
-    spec = po.spec.ewridge("g", targets=["y"], features=["x0"], half_life=[10.0, 80.0])
-    assert refusal(lambda: po.eval.grid_search(lf.head(4), spec, n_splits=5)) == (
+    spec = rp.spec.ewridge("g", targets=["y"], features=["x0"], half_life=[10.0, 80.0])
+    assert refusal(lambda: rp.eval.grid_search(lf.head(4), spec, n_splits=5)) == (
         "po.eval.grid_search: n_splits=5 cuts the rows into 6 spans of a row or more, but 4 "
         "rows are too few. Give fewer n_splits, 3 at most, or more rows."
     )
-    assert refusal(lambda: po.eval.grid_search(lf.head(1), spec, n_splits=1)) == (
+    assert refusal(lambda: rp.eval.grid_search(lf.head(1), spec, n_splits=1)) == (
         "po.eval.grid_search: n_splits=1 cuts the rows into 2 spans of a row or more, but 1 "
         "row is too few. Give 2 rows at least, or fewer n_splits."
     )
-    assert refusal(lambda: po.eval.grid_search(lf, spec, n_splits=2, gap=200)) == (
+    assert refusal(lambda: rp.eval.grid_search(lf, spec, n_splits=2, gap=200)) == (
         "po.eval.grid_search: the first span, rows 0-199 of 600 at n_splits=2, is 200 rows, "
         "and gap=200 leaves none of them to choose from. Give a smaller gap, below 200, "
         "fewer n_splits, or more rows."
@@ -411,7 +411,7 @@ def test_too_few_rows_names_the_spans_and_the_remedy(tmp_path):
     # first span, fewer splits under the same gap.
     assert len(_time_series_folds(4, 3, 0)) == 3
     for kwargs in ({"n_splits": 2, "gap": 190}, {"n_splits": 1, "gap": 200}):
-        assert po.eval.grid_search(lf, spec, **kwargs).filter(kind="choice")["n"].item() > 0
+        assert rp.eval.grid_search(lf, spec, **kwargs).filter(kind="choice")["n"].item() > 0
 
 
 def test_a_warm_up_that_outlasts_the_first_span_names_it_and_the_remedy(tmp_path):
@@ -420,20 +420,20 @@ def test_a_warm_up_that_outlasts_the_first_span_names_it_and_the_remedy(tmp_path
     span at three splits (rows 0-149) and none of the half at one split."""
     lf = wander(tmp_path / "w.parquet", n=600)
     ridge = functools.partial(
-        po.spec.ewridge, targets=["y"], features=["x0", "x1"], half_life=1_000.0
+        rp.spec.ewridge, targets=["y"], features=["x0", "x1"], half_life=1_000.0
     )
     grid = {"min_weight": [3.0, 200.0]}
     remedy = (
         "Give fewer n_splits, a smaller gap, a shorter warm-up (min_weight, warm_rows) or "
         "more rows."
     )
-    assert refusal(lambda: po.eval.grid_search(lf, ridge, grid, n_splits=3)) == (
+    assert refusal(lambda: rp.eval.grid_search(lf, ridge, grid, n_splits=3)) == (
         "po.eval.grid_search: at n_splits=3, the first choice of a grid point reads rows "
         "0-149, the 150 before the first test span. None of them has a prediction of target 'y' "
         "from every slot with the target present: 'pred_y' of spec \"min_weight=200.0\" "
         "predicts on 0, the fewest, and the target is present on 150. " + remedy
     )
-    assert refusal(lambda: po.eval.grid_search(lf, ridge, grid, n_splits=1, gap=150)) == (
+    assert refusal(lambda: rp.eval.grid_search(lf, ridge, grid, n_splits=1, gap=150)) == (
         "po.eval.grid_search: at n_splits=1, the first choice of a grid point reads rows "
         "0-149, the 150 before the gap of 150 rows ahead of the first test span. None of them "
         "has a prediction of target 'y' from every slot with the target present: 'pred_y' of "
@@ -442,7 +442,7 @@ def test_a_warm_up_that_outlasts_the_first_span_names_it_and_the_remedy(tmp_path
     )
     # The remedy: one split reads the first 300 rows, and the late setting
     # predicts on the last of them.
-    table = po.eval.grid_search(lf, ridge, grid, n_splits=1)
+    table = rp.eval.grid_search(lf, ridge, grid, n_splits=1)
     specs = [ridge(f"min_weight={w}", min_weight=w) for w in grid["min_weight"]]
     want = by_hand(lf.online.fit_predict(specs).collect(), specs, 1)
     assert table.filter(kind="choice")["mse"].item() == pytest.approx(want["honest"], rel=1e-12)
@@ -450,8 +450,8 @@ def test_a_warm_up_that_outlasts_the_first_span_names_it_and_the_remedy(tmp_path
     unseen = lf.with_columns(
         y=pl.when(pl.int_range(pl.len()) < 300).then(None).otherwise(pl.col("y"))
     )
-    spec = po.spec.ewridge("g", targets=["y"], features=["x0"], half_life=[10.0, 80.0])
-    message = refusal(lambda: po.eval.grid_search(unseen, spec, n_splits=2))
+    spec = rp.spec.ewridge("g", targets=["y"], features=["x0"], half_life=[10.0, 80.0])
+    message = refusal(lambda: rp.eval.grid_search(unseen, spec, n_splits=2))
     assert (
         "'pred_y@h10' of spec \"g\" predicts on 0, the fewest, and the target is present on 0. "
         in message
@@ -461,17 +461,17 @@ def test_a_warm_up_that_outlasts_the_first_span_names_it_and_the_remedy(tmp_path
 def test_a_loglik_warm_up_that_outlasts_the_first_span_is_named(tmp_path):
     rng = np.random.default_rng(3)
     frame = pl.DataFrame({"x": rng.standard_normal(600)})
-    bocpd = functools.partial(po.spec.bocpd, features=["x"], warm_rows=250)
+    bocpd = functools.partial(rp.spec.bocpd, features=["x"], warm_rows=250)
     grid = {"hazard": [10.0, 100.0]}
     assert refusal(
-        lambda: po.eval.grid_search(frame, bocpd, grid, n_splits=2, scoring="loglik")
+        lambda: rp.eval.grid_search(frame, bocpd, grid, n_splits=2, scoring="loglik")
     ) == (
         "po.eval.grid_search: at n_splits=2, the first choice of a grid point reads rows "
         "0-199, the 200 before the first test span. None of them has a loglik from every "
         "slot: 'loglik' of spec \"hazard=10.0\" has one on 0, the fewest. Give fewer "
         "n_splits, a smaller gap, a shorter warm-up (min_weight, warm_rows) or more rows."
     )
-    table = po.eval.grid_search(frame, bocpd, grid, n_splits=1, scoring="loglik")
+    table = rp.eval.grid_search(frame, bocpd, grid, n_splits=1, scoring="loglik")
     assert table.filter(kind="choice")["n"].item() == 300
 
 
@@ -489,8 +489,8 @@ def test_a_query_whose_rows_change_between_the_count_and_the_run_is_refused(tmp_
         return frame if len(reads) == 1 else frame.head(280)
 
     lf = pl.defer(read, schema=frame.schema)
-    spec = po.spec.ewridge("g", targets=["y"], features=["x0"], half_life=[10.0, 80.0])
-    assert refusal(lambda: po.eval.grid_search(lf, spec, n_splits=2)) == (
+    spec = rp.spec.ewridge("g", targets=["y"], features=["x0"], half_life=[10.0, 80.0])
+    assert refusal(lambda: rp.eval.grid_search(lf, spec, n_splits=2)) == (
         "po.eval.grid_search: the query gave 300 rows when counted and 280 when run, so the "
         "spans placed by the count do not fit the rows scored. Give a query that returns the "
         "same rows each time it runs, or pass its result as a frame."
@@ -510,7 +510,7 @@ def test_the_kind_column_says_what_each_row_is(tmp_path):
     x0, e0, e1 = rng.standard_normal((3, n))
     pl.DataFrame({"x0": x0, "a": x0 + e0, "b": -x0 + e1}).write_parquet(tmp_path / "two.parquet")
     lf = pl.scan_parquet(tmp_path / "two.parquet")
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "g",
         targets=["a", "b"],
         features=["x0"],
@@ -518,7 +518,7 @@ def test_the_kind_column_says_what_each_row_is(tmp_path):
         emit_selected=True,
         emit_averaged=True,
     )
-    table = po.eval.grid_search(lf, spec, n_splits=2)
+    table = rp.eval.grid_search(lf, spec, n_splits=2)
     assert table.columns[0] == "kind"
     assert table.schema["kind"] == pl.String
     one = ["candidate", "candidate", "selected", "averaged", "choice"]

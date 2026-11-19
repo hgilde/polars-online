@@ -22,7 +22,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -69,7 +69,7 @@ def common(**kw):
 def test_po_target_refuses_a_relative_target_by_name(kw):
     """``po.target`` refuses either keyword, naming ``with_columns``."""
     with pytest.raises(TypeError, match=REMOVED) as err:
-        po.target("p", **kw)
+        rp.target("p", **kw)
     msg = str(err.value)
     assert 'lf.with_columns(ret=pl.col("p") - pl.col("mid"))' in msg, msg
     assert "targets" in msg, msg
@@ -85,7 +85,7 @@ def test_a_builder_refuses_a_relative_table_by_name():
     ]:
         given = "relative_to" if "relative_to" in table else "relative"
         with pytest.raises(TypeError) as err:
-            po.spec.ewridge("m", targets=["x1", table], features=["x0"], half_life=10.0)
+            rp.spec.ewridge("m", targets=["x1", table], features=["x0"], half_life=10.0)
         assert str(err.value) == (
             f'spec "m": target "p" sets {given}, but relative targets were removed. Compute the '
             "target as a column with Polars' with_columns in the query before the bank, such as "
@@ -107,15 +107,15 @@ def test_a_spec_dict_refuses_a_relative_table_by_name(table):
     ``po.eval`` reads its ``spec=`` through the same parser, so a spec
     holding one is refused there too, rather than scored against the raw
     column."""
-    base = po.spec.ewridge("m", targets=["p"], **common())
+    base = rp.spec.ewridge("m", targets=["p"], **common())
     spec = {**base, "targets": [table]}
     with pytest.raises(
         ValueError, match=f"{REMOVED}. Compute the target as a column before the bank reads it"
     ):
-        po.ModelBank([spec])
-    out = po.ModelBank([base]).fit_predict(frame())
+        rp.ModelBank([spec])
+    out = rp.ModelBank([base]).fit_predict(frame())
     with pytest.raises(ValueError, match=REMOVED):
-        po.eval.metrics(out, spec)
+        rp.eval.metrics(out, spec)
 
 
 def test_the_cli_refuses_a_relative_table_by_name(tmp_path, rheon_cli):
@@ -167,10 +167,10 @@ def test_a_target_made_by_with_columns_runs_the_same_on_every_way_in(tmp_path, m
     opts = common(**kw)
     if model == "holt":
         del opts["features"]  # holt reads its target alone
-    spec = getattr(po.spec, model)("m", targets=["ret"], **opts)
+    spec = getattr(rp.spec, model)("m", targets=["ret"], **opts)
     lazy = pl.scan_parquet(path).with_columns(ret=HOW["log_ratio"])
     got = lazy.online.fit_predict([spec]).collect()
-    want = po.ModelBank([spec]).fit_predict(
+    want = rp.ModelBank([spec]).fit_predict(
         pl.read_parquet(path).with_columns(ret=HOW["log_ratio"])
     )
     assert got.equals(want, null_equal=True)
@@ -184,8 +184,8 @@ def test_hit_rate_is_about_zero_so_a_return_is_a_difference_or_a_log_ratio():
     so its ``hit_rate`` reads 1.0 whatever the fit -- which is why the README
     recommends the first two for a return."""
     df = frame().with_columns(**HOW)
-    spec = po.spec.ewridge("m", targets=list(HOW), **common(emit_metrics=True))
-    out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+    spec = rp.spec.ewridge("m", targets=list(HOW), **common(emit_metrics=True))
+    out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
     for t in ("difference", "log_ratio"):
         assert 0.3 < out[f"hit_rate_{t}"][-1] < 0.95, (t, out[f"hit_rate_{t}"][-1])
     assert out["hit_rate_ratio"].drop_nulls().unique().to_list() == [1.0]
@@ -195,12 +195,12 @@ def test_a_saved_bank_resumes_on_a_column_made_upstream(tmp_path):
     """Across a save and load, the same rows as one run, every field, with
     ``coef`` on every row so a chunk boundary adds none."""
     df = frame().with_columns(ret=HOW["log_ratio"])
-    spec = po.spec.ewridge("m", targets=["ret", "x1"], **common(features=["x0"], coef_every=0))
-    whole = po.ModelBank([spec]).fit_predict(df)
-    bank = po.ModelBank([spec])
+    spec = rp.spec.ewridge("m", targets=["ret", "x1"], **common(features=["x0"], coef_every=0))
+    whole = rp.ModelBank([spec]).fit_predict(df)
+    bank = rp.ModelBank([spec])
     first = bank.fit_predict(df[:250])
     bank.save(tmp_path / "r.state")
-    second = po.ModelBank.load(tmp_path / "r.state").fit_predict(df[250:])
+    second = rp.ModelBank.load(tmp_path / "r.state").fit_predict(df[250:])
     assert pl.concat([first, second]).equals(whole, null_equal=True)
 
 
@@ -229,8 +229,8 @@ def test_the_cli_reads_a_target_made_upstream(tmp_path, rheon_cli):
         encoding="utf-8",
     )
     subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
-    spec = po.spec.ewridge("m", targets=["x1", "ret"], **common(emit_sigma=False, features=["x0"]))
-    want = po.ModelBank([spec]).fit_predict(df)
+    spec = rp.spec.ewridge("m", targets=["x1", "ret"], **common(emit_sigma=False, features=["x0"]))
+    want = rp.ModelBank([spec]).fit_predict(df)
     got = pl.read_parquet(dst)
     assert got["m"].struct.fields == want["m"].struct.fields
     assert got["m"].equals(want["m"], null_equal=True)
@@ -244,16 +244,16 @@ def test_po_target_names_a_column():
     output fields named apart from it -- the same numbers as the column under
     its own name."""
     df = frame()
-    renamed = po.ModelBank(
-        [po.spec.ewridge("m", targets=[po.target("p", name="price")], **common())]
+    renamed = rp.ModelBank(
+        [rp.spec.ewridge("m", targets=[rp.target("p", name="price")], **common())]
     )
-    plain = po.ModelBank([po.spec.ewridge("m", targets=["p"], **common())])
+    plain = rp.ModelBank([rp.spec.ewridge("m", targets=["p"], **common())])
     a = renamed.fit_predict(df)["m"].struct.unnest()
     b = plain.fit_predict(df)["m"].struct.unnest()
     assert "pred_price" in a.columns
     assert a.rename({c: c.replace("_price", "_p") for c in a.columns}).equals(b, null_equal=True)
-    assert po.target("p") == {"column": "p"}
-    assert po.target("p", name="price") == {"column": "p", "name": "price"}
+    assert rp.target("p") == {"column": "p"}
+    assert rp.target("p", name="price") == {"column": "p", "name": "price"}
 
 
 def test_a_renamed_column_is_the_name_everywhere():
@@ -262,7 +262,7 @@ def test_a_renamed_column_is_the_name_everywhere():
     column, written back as the string (review 2026-09-26, F6)."""
     i = pl.int_range(pl.len())
     df = frame().with_columns(p=pl.when(i < 5).then(None).otherwise(pl.col("p")))
-    bank = po.ModelBank([po.spec.ewridge("m", targets=[po.target("p", name="ret")], **common())])
+    bank = rp.ModelBank([rp.spec.ewridge("m", targets=[rp.target("p", name="ret")], **common())])
     out = bank.fit_predict(df)
     assert "pred_ret" in out["m"].struct.fields
     assert bank.gram("m")[0]["targets"] == ["ret"]
@@ -271,7 +271,7 @@ def test_a_renamed_column_is_the_name_everywhere():
     assert desc["unusable_count"].to_list() == [5]
     assert bank.summary("m")["rows_learned"].item() == len(df) - 5
     assert bank.specs[0]["targets"] == [{"column": "p", "name": "ret"}]
-    plain = po.ModelBank([po.spec.ewridge("m", targets=[po.target("p", name="p")], **common())])
+    plain = rp.ModelBank([rp.spec.ewridge("m", targets=[rp.target("p", name="p")], **common())])
     assert plain.specs[0]["targets"] == ["p"]
 
 
@@ -280,11 +280,11 @@ def test_the_lazy_plan_reads_a_renamed_columns_column():
     2026-09-26, D1/F1: every LazyFrame path raised ``unhashable type:
     'dict'``)."""
     df = frame()
-    spec = po.spec.ewridge("m", targets=[po.target("p", name="price")], **common())
-    want = po.ModelBank([spec]).fit_predict(df)["m"]
+    spec = rp.spec.ewridge("m", targets=[rp.target("p", name="price")], **common())
+    want = rp.ModelBank([spec]).fit_predict(df)["m"]
     got = df.lazy().online.fit_predict([spec]).select("m").collect()["m"]
     assert got.equals(want, null_equal=True)
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df[:400])
     want_scores = bank.predict(df[400:])["m"]
     scored = df[400:].lazy().online.predict(bank).select("m").collect()["m"]
@@ -296,18 +296,18 @@ def test_a_target_cannot_be_named_nothing():
     no column. Refused by the builder and by the bank (review 2026-09-26, D
     missing 5)."""
     with pytest.raises(ValueError, match="column must name a column, but it is empty"):
-        po.target("")
+        rp.target("")
     with pytest.raises(ValueError, match="name must not be empty"):
-        po.target("p", name="")
+        rp.target("p", name="")
     with pytest.raises(TypeError, match="column must be a str"):
-        po.target(3)  # type: ignore[arg-type]
-    base = po.spec.ewridge("m", targets=["p"], **common())
+        rp.target(3)  # type: ignore[arg-type]
+    base = rp.spec.ewridge("m", targets=["p"], **common())
     for table, what in [
         ({"column": "p", "name": ""}, "name"),
         ({"column": "", "name": "p"}, "column"),
     ]:
         with pytest.raises(ValueError, match=f"{what} must not be empty"):
-            po.ModelBank([{**base, "targets": [table]}])
+            rp.ModelBank([{**base, "targets": [table]}])
 
 
 def test_a_target_named_like_a_feature_is_not_a_leak():
@@ -315,10 +315,10 @@ def test_a_target_named_like_a_feature_is_not_a_leak():
     named like a feature reads another column and builds (review 2026-09-26,
     D7), and a renamed target's column used as a feature is still refused."""
     df = frame()
-    spec = po.spec.ewridge("m", targets=[po.target("p", name="x0")], **common())
-    out = po.ModelBank([spec]).fit_predict(df)
+    spec = rp.spec.ewridge("m", targets=[rp.target("p", name="x0")], **common())
+    out = rp.ModelBank([spec]).fit_predict(df)
     assert "pred_x0" in out["m"].struct.fields
     with pytest.raises(ValueError, match='"p" is both a target and a feature'):
-        po.ModelBank(
-            [po.spec.ewridge("m", targets=[po.target("p", name="ret")], features=["x0", "p"])]
+        rp.ModelBank(
+            [rp.spec.ewridge("m", targets=[rp.target("p", name="ret")], features=["x0", "p"])]
         )

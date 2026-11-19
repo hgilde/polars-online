@@ -19,8 +19,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from rheon import gram as pg
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -44,8 +44,8 @@ def fit(df, **kw):
     kw.setdefault("min_weight", 5.0)
     features = kw.pop("features", [c for c in df.columns if c.startswith("x")])
     targets = kw.pop("targets", ["y"])
-    spec = po.spec.ewridge("m", targets=targets, features=features, **kw)
-    bank = po.ModelBank([spec])
+    spec = rp.spec.ewridge("m", targets=targets, features=features, **kw)
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     return bank
 
@@ -261,7 +261,7 @@ class TestAGramWithGaps:
         and carrying their coefficients and its weight, so `from_row` on each
         row solves to that row's `coef`."""
         df = gappy_stream(n=1200, seed=9).with_columns(g=pl.Series(["a"] * 600 + ["b"] * 600))
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["ya", "yb"],
             features=["x0", "x1", "x2"],
@@ -272,7 +272,7 @@ class TestAGramWithGaps:
             group="g",
             group_close="monotone",
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         closed = bank.closed_groups()
         assert closed["group"].to_list() == ["a", "a"]
@@ -320,7 +320,7 @@ class TestAGramWithGaps:
     @pytest.mark.parametrize("target_gaps", ["own_rows", "pairwise"])
     def test_lasso_path_reproduces_the_lasso_models_coefficients(self, target_gaps):
         lambdas = [0.5, 0.1, 0.0]
-        spec = po.spec.lasso(
+        spec = rp.spec.lasso(
             "m",
             targets=["yb"],
             features=["x0", "x1", "x2"],
@@ -330,7 +330,7 @@ class TestAGramWithGaps:
             target_gaps=target_gaps,
             max_rows_between_solves=1,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(gappy_stream(n=2000, seed=6))
         want = (
             bank.coef("m")
@@ -346,7 +346,7 @@ class TestLassoPathIsTheModelsPath:
     def test_it_reproduces_the_lasso_models_coefficients(self):
         df, _ = stream(n=3000, k=5, seed=2)
         lambdas = [0.5, 0.1, 0.02, 0.0]
-        spec = po.spec.lasso(
+        spec = rp.spec.lasso(
             "m",
             targets=["y"],
             features=[f"x{i}" for i in range(5)],
@@ -355,7 +355,7 @@ class TestLassoPathIsTheModelsPath:
             min_weight=5.0,
             max_rows_between_solves=1,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("m")[0]
         want = (
@@ -374,7 +374,7 @@ class TestLassoPathIsTheModelsPath:
         df, _ = stream(n=2000, k=3, seed=7)
         df = df.with_columns(pl.col("x1") - 1.5)
         lambdas = [0.3, 0.05, 0.0]
-        spec = po.spec.lasso(
+        spec = rp.spec.lasso(
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
@@ -384,7 +384,7 @@ class TestLassoPathIsTheModelsPath:
             fit_intercept=False,
             max_rows_between_solves=1,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         want = (
             bank.coef("m")
@@ -467,10 +467,10 @@ class TestMerge:
         ``lags`` and ``lag_comoments``, which only a pool of several parts has
         reason to lose."""
         df, _ = stream(n=600, k=2, seed=8)
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "c", features=["x0", "x1"], stats=["corr"], lags=[1, 2], half_life=50.0, group="g"
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df.with_columns(g=pl.lit("a")))
         (g,) = bank.gram("c")
         assert g["group"] == "a" and g["lags"] == [1, 2], "what the merge used to drop is there"
@@ -552,10 +552,10 @@ class TestMerge:
         one, without a second pass."""
         df, _ = stream(n=1200, k=2, seed=8)
         df = df.with_columns(gid=pl.Series(["a", "b", "c"] * 400))
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "g", targets=["y"], features=["x0", "x1"], half_life=1e12, min_weight=3.0, group="gid"
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         pooled = pg.merge(bank.gram("g"))
         ungrouped = fit(df.drop("gid")).gram("m")[0]
@@ -580,8 +580,8 @@ class TestMerge:
     def test_an_empty_part_contributes_nothing(self):
         df, _ = stream(n=600, k=2)
         whole = fit(df).gram("m")[0]
-        empty = po.ModelBank(
-            [po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=1e12)]
+        empty = rp.ModelBank(
+            [rp.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=1e12)]
         ).gram("m")
         assert empty == []  # nothing fed, no accumulator
         merged = pg.merge([fit(df).gram("m")[0], fit(df.head(0)).gram("m")[0]])
@@ -655,7 +655,7 @@ class TestTheSolversCheckTheirNumbers:
     def test_the_edges_of_each_range_are_taken(self, g):
         assert np.isfinite(pg.solve(g, ridge=0.0)).all()
         # One sweep is short of the rule here, which is said.
-        with pytest.warns(po.ReadinessWarning, match="ran out of sweeps"):
+        with pytest.warns(rp.ReadinessWarning, match="ran out of sweeps"):
             path = pg.lasso_path(g, [0.0], l1_ratio=0.0, max_iter=1, penalty_weights=[0.0] * 3)
         assert np.isfinite(path).all()
         assert np.isfinite(pg.lasso_path(g, [0.1], l1_ratio=1.0, tol=1e-300)).all()
@@ -741,8 +741,8 @@ class TestReadingTheMatrix:
             for lam in (1.0, 0.999):
                 feats = [*cols, "z"]
                 df = pl.DataFrame({**cols, "z": z, "y": x0 + rng.normal(size=n)})
-                spec = po.spec.ewridge("m", features=feats, targets=["y"], lam=lam)
-                bank = po.ModelBank([spec])
+                spec = rp.spec.ewridge("m", features=feats, targets=["y"], lam=lam)
+                bank = rp.ModelBank([spec])
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
                     bank.fit(df)
@@ -883,8 +883,8 @@ class TestCoefStats:
 class TestItWorksOnEveryGramItIsGiven:
     def test_an_ew_cov_gram_has_no_targets(self):
         df, _ = stream(n=900, k=3)
-        spec = po.spec.ew_cov("c", features=["x0", "x1", "x2"], stats=[], half_life=1e12)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.ew_cov("c", features=["x0", "x1", "x2"], stats=[], half_life=1e12)
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("c")[0]
         assert g["columns"] == ["x0", "x1", "x2"] and g["targets"] == []
@@ -901,7 +901,7 @@ class TestItWorksOnEveryGramItIsGiven:
         df, _ = stream(n=1000, k=3, seed=17)
         bank = fit(df, standardize=False, max_rows_between_solves=1)
         bank.save(tmp_path / "b.state")
-        loaded = po.ModelBank.load(tmp_path / "b.state")
+        loaded = rp.ModelBank.load(tmp_path / "b.state")
         assert pg.solve(loaded.gram("m")[0]) == pytest.approx(pg.solve(bank.gram("m")[0]), rel=0)
 
     @pytest.mark.parametrize(
@@ -927,7 +927,7 @@ class TestItWorksOnEveryGramItIsGiven:
 
     def test_a_lasso_gram_names_its_axes_too(self):
         df, _ = stream(n=800, k=2, seed=20)
-        spec = po.spec.lasso(
+        spec = rp.spec.lasso(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -935,7 +935,7 @@ class TestItWorksOnEveryGramItIsGiven:
             lam=1.0,
             min_weight=3.0,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("m")[0]
         assert g["columns"] == [pg.INTERCEPT, "x0", "x1"]
@@ -947,7 +947,7 @@ class TestItWorksOnEveryGramItIsGiven:
             pg.vif({"comoments": np.eye(2), "means": np.zeros(2)})
 
     def test_the_namespace_is_the_documented_one(self):
-        assert po.gram is pg
+        assert rp.gram is pg
         assert sorted(pg.__all__) == pg.__all__
         for name in pg.__all__:
             assert getattr(pg, name).__doc__, name

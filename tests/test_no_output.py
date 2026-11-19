@@ -14,8 +14,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from conftest import run_online
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -33,11 +33,11 @@ def frame(n=500, seed=0):
 
 
 def cov_spec(name="c", **kw):
-    return po.spec.ew_cov(name, features=["x0", "x1"], stats=[], half_life=200.0, **kw)
+    return rp.spec.ew_cov(name, features=["x0", "x1"], stats=[], half_life=200.0, **kw)
 
 
 def ridge_spec(name="m", **kw):
-    return po.spec.ewridge(
+    return rp.spec.ewridge(
         name, targets=["y"], features=["x0", "x1"], half_life=200.0, min_weight=3.0, **kw
     )
 
@@ -91,7 +91,7 @@ class TestARunWithNoOutput:
             rheon_cli, tmp_path, specs, input=src, save_state=cli, chunk_size=64,
             args=["--no-output"],
         )  # fmt: skip
-        bank = po.ModelBank(specs)
+        bank = rp.ModelBank(specs)
         for chunk in df.iter_slices(64):
             bank.fit(chunk)
         own = tmp_path / "bank.state"
@@ -148,8 +148,8 @@ class TestARunWithNoOutput:
             rheon_cli, tmp_path, [ridge_spec()], input=src, save_state=state, chunk_size=100,
             args=["--no-output"],
         )  # fmt: skip
-        bank = po.ModelBank.load(state)
-        want = po.ModelBank([ridge_spec()])
+        bank = rp.ModelBank.load(state)
+        want = rp.ModelBank([ridge_spec()])
         want.fit_predict(df)
         assert bank.coef("m")["coef"].to_list() == want.coef("m")["coef"].to_list()
 
@@ -277,7 +277,7 @@ type = "{model}"
             encoding="utf-8",
         )
         subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
-        bank = po.ModelBank.load(state)
+        bank = rp.ModelBank.load(state)
         assert bank.specs[0]["targets"] == ["x0"], "filled from features[0]"
 
     def test_the_filled_spec_is_the_one_python_writes(self, tmp_path, rheon_cli):
@@ -306,7 +306,7 @@ stats = []
         )
         subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
         from_python = tmp_path / "py.state"
-        bank = po.ModelBank([cov_spec(name="c")])
+        bank = rp.ModelBank([cov_spec(name="c")])
         for out in bank.fit_predict_batches(df.slice(i, 100) for i in range(0, df.height, 100)):
             del out
         bank.save(from_python)
@@ -317,26 +317,26 @@ stats = []
         treatment, so the two never disagree."""
         spec = dict(cov_spec())
         spec["targets"] = []
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         assert spec["targets"] == []  # the caller's dict is untouched
         # What the bank runs has them filled, before a save as after it; the
         # specs were the caller's dicts until one (review 2026-09-12, S21).
         assert bank.specs[0]["targets"] == ["x0"]
         bank.fit_predict(frame(n=100))
-        assert po.ModelBank.load_bytes(bank.save_bytes()).specs[0]["targets"] == ["x0"]
+        assert rp.ModelBank.load_bytes(bank.save_bytes()).specs[0]["targets"] == ["x0"]
 
     def test_a_model_that_needs_targets_still_says_so(self):
         spec = dict(ridge_spec())
         spec["targets"] = []
         with pytest.raises(ValueError, match="targets must name at least one column"):
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
 
     def test_an_unsupervised_spec_with_no_features_either(self):
         spec = dict(cov_spec())
         spec["targets"] = []
         spec["features"] = []
         with pytest.raises(ValueError, match="features must name at least one column"):
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
 
 
 def test_predict_drops_the_closed_groups_sidecar(rheon_cli, tmp_path):
@@ -345,8 +345,8 @@ def test_predict_drops_the_closed_groups_sidecar(rheon_cli, tmp_path):
     then refused."""
     import polars as pl
 
-    import rheon as po
     from conftest import run_online
+    from rheon import polars as rp
 
     df = pl.DataFrame(
         {
@@ -357,7 +357,7 @@ def test_predict_drops_the_closed_groups_sidecar(rheon_cli, tmp_path):
         }
     )
     df.write_parquet(tmp_path / "in.parquet")
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x"],

@@ -111,7 +111,7 @@ def test_every_table_the_first_fit_prints_is_what_its_code_returns(ran):
 def test_the_first_fits_prose_holds(ran):
     """What the paragraphs around the tables say, beyond the numbers shown."""
     ns, _, tmp = ran
-    po = ns["po"]
+    rp = ns["po"]
     n = ns["prices"].height
     true_a = np.linspace(0.2, 0.8, n)  # the block's beta on signal_a, row by row
 
@@ -151,7 +151,7 @@ def test_the_first_fits_prose_holds(ran):
     # "Step 3 follows the recent rows, with a clock and the `gap_cap` a clock
     # requires."
     with pytest.raises(ValueError, match="gap_cap is required when clock is given"):
-        po.spec.ewridge(
+        rp.spec.ewridge(
             "local",
             targets=["ret"],
             features=["signal_a", "signal_b"],
@@ -179,7 +179,7 @@ def test_the_first_fits_prose_holds(ran):
     # The refusal docs/explanation/out-of-sample.md gives: `fit_predict`
     # requires an `embargo` of at least the target's `window_size`, and
     # `ModelBank.fit`, which keeps no predictions, takes a shorter one.
-    short = po.spec.ewridge(
+    short = rp.spec.ewridge(
         "short",
         targets=[ns["fwd_ret"]],
         features=["signal_a", "signal_b"],
@@ -191,6 +191,6 @@ def test_the_first_fits_prose_holds(ran):
     )
     with pytest.raises(ValueError, match="needs an embargo of at least 10m"):
         ns["prices"].lazy().online.fit_predict([short]).collect()
-    fitted = po.ModelBank([short])
+    fitted = rp.ModelBank([short])
     assert fitted.fit(ns["prices"]) is None
     assert (fitted.summary()["weight_sum"] > 0).all()

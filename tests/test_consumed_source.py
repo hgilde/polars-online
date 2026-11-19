@@ -29,8 +29,8 @@ import polars as pl
 import pytest
 from polars.io.plugins import register_io_source
 
-import rheon as po
 from polars_version import needs_polars
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -38,7 +38,7 @@ TIER = "essential"
 #: which the README says needs py-polars 1.43.0.
 NEEDS_SCAN_ARROW = needs_polars("1.43.0", "pl.scan_arrow_c_stream, which py-polars added in 1.43.0")
 
-SPEC = po.spec.ewridge(
+SPEC = rp.spec.ewridge(
     "m", targets=["y"], features=["x0"], clock="t", half_life=10.0, gap_cap=5.0, min_weight=1.0
 )
 
@@ -77,8 +77,8 @@ def _single_use(frame: pl.DataFrame | None = None) -> pl.LazyFrame:
     return register_io_source(io_source=io_source, schema=frame.schema)
 
 
-def _bank() -> po.ModelBank:
-    return po.ModelBank([SPEC])
+def _bank() -> rp.ModelBank:
+    return rp.ModelBank([SPEC])
 
 
 # --- the hazard itself -------------------------------------------------------
@@ -89,7 +89,7 @@ def test_the_first_run_over_a_single_use_plan_is_quiet():
     merely because the source is a Python scan."""
     lf = _single_use()
     with warnings.catch_warnings():
-        warnings.simplefilter("error", po.ConsumedSourceWarning)
+        warnings.simplefilter("error", rp.ConsumedSourceWarning)
         _bank().fit(lf)
 
 
@@ -99,7 +99,7 @@ def test_the_second_run_over_a_single_use_plan_warns():
     lf = _single_use()
     bank = _bank()
     bank.fit(lf)
-    with pytest.warns(po.ConsumedSourceWarning, match="gives its rows once"):
+    with pytest.warns(rp.ConsumedSourceWarning, match="gives its rows once"):
         bank.fit(lf)
 
 
@@ -110,7 +110,7 @@ def test_the_bank_really_did_learn_nothing_on_the_second_run():
     first, second = _bank(), _bank()
     first.fit(lf)
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", po.ConsumedSourceWarning)
+        warnings.simplefilter("ignore", rp.ConsumedSourceWarning)
         second.fit(lf)
     assert second.coef("m").height == 0 or second.coef("m")["coef"].is_null().all(), (
         "the second bank saw rows, so this test no longer reproduces the hazard"
@@ -122,7 +122,7 @@ def test_fit_predict_batches_warns_too():
     lf = _single_use()
     bank = _bank()
     list(bank.fit_predict_batches(lf))
-    with pytest.warns(po.ConsumedSourceWarning):
+    with pytest.warns(rp.ConsumedSourceWarning):
         list(bank.fit_predict_batches(lf))
 
 
@@ -132,7 +132,7 @@ def test_the_plan_form_warns():
     lf = _single_use()
     plan = lf.online.fit_predict([SPEC])
     plan.collect()
-    with pytest.warns(po.ConsumedSourceWarning):
+    with pytest.warns(rp.ConsumedSourceWarning):
         out = plan.collect()
     assert out.height == 0
 
@@ -144,7 +144,7 @@ def test_an_empty_in_memory_plan_does_not_warn():
     """``.lazy()`` shows ``DF [...]``, not a Python scan. An empty frame is an
     ordinary run, and ``fit`` over one stays an ordinary run."""
     with warnings.catch_warnings():
-        warnings.simplefilter("error", po.ConsumedSourceWarning)
+        warnings.simplefilter("error", rp.ConsumedSourceWarning)
         _bank().fit(_frame().clear().lazy())
 
 
@@ -153,7 +153,7 @@ def test_an_empty_parquet_plan_does_not_warn(tmp_path):
     path = tmp_path / "empty.parquet"
     _frame().clear().write_parquet(path)
     with warnings.catch_warnings():
-        warnings.simplefilter("error", po.ConsumedSourceWarning)
+        warnings.simplefilter("error", rp.ConsumedSourceWarning)
         _bank().fit(pl.scan_parquet(path))
 
 
@@ -165,7 +165,7 @@ def test_a_parquet_plan_is_reusable_and_stays_quiet(tmp_path):
     # A bank per run: one bank fed the same rows twice would refuse the
     # second run's first row, a step back to rows it has learned.
     with warnings.catch_warnings():
-        warnings.simplefilter("error", po.ConsumedSourceWarning)
+        warnings.simplefilter("error", rp.ConsumedSourceWarning)
         _bank().fit(lf)
         _bank().fit(lf)
 
@@ -173,13 +173,13 @@ def test_a_parquet_plan_is_reusable_and_stays_quiet(tmp_path):
 def test_an_empty_frame_is_not_inspected():
     """A ``DataFrame`` is not a plan; there is no source to have spent."""
     with warnings.catch_warnings():
-        warnings.simplefilter("error", po.ConsumedSourceWarning)
+        warnings.simplefilter("error", rp.ConsumedSourceWarning)
         _bank().fit(_frame().clear())
 
 
 def test_an_empty_iterator_is_not_inspected():
     with warnings.catch_warnings():
-        warnings.simplefilter("error", po.ConsumedSourceWarning)
+        warnings.simplefilter("error", rp.ConsumedSourceWarning)
         _bank().fit(iter([]))
 
 
@@ -188,7 +188,7 @@ def test_a_head_zero_on_the_plan_form_does_not_warn():
     for, not a stream that is spent."""
     lf = _single_use()
     with warnings.catch_warnings():
-        warnings.simplefilter("error", po.ConsumedSourceWarning)
+        warnings.simplefilter("error", rp.ConsumedSourceWarning)
         out = lf.online.fit_predict([SPEC]).head(0).collect()
     assert out.height == 0
 
@@ -207,7 +207,7 @@ def test_explain_does_not_consume_the_stream():
 
 def test_a_python_scan_with_rows_is_recognised_and_a_parquet_scan_is_not(tmp_path):
     """The discriminator itself, on the plan shapes it must separate."""
-    from rheon._frame import _is_python_scan
+    from rheon.polars._frame import _is_python_scan
 
     path = tmp_path / "rows.parquet"
     _frame().write_parquet(path)
@@ -237,7 +237,7 @@ def test_both_spellings_of_a_python_scan_are_recognised(line):
     over a DuckDB relation both still read ``PYTHON SCAN``, unnamed, so the
     spent-stream guard went on working there and only our own plan form was
     misread. Pinned as text so both spellings hold without a 2.0 install."""
-    from rheon._frame import _PYTHON_SCAN
+    from rheon.polars._frame import _PYTHON_SCAN
 
     assert _PYTHON_SCAN.search(line)
 
@@ -254,14 +254,14 @@ def test_a_source_that_is_not_a_python_scan_is_not_matched(line):
     """The pattern must not widen into "anything with SCAN in it": an
     in-memory frame and a parquet scan are both reusable, and warning on them
     would be the false positive the guard is built to avoid."""
-    from rheon._frame import _PYTHON_SCAN
+    from rheon.polars._frame import _PYTHON_SCAN
 
     assert not _PYTHON_SCAN.search(line)
 
 
 def test_a_plan_that_cannot_be_explained_is_let_through(monkeypatch):
     """Best-effort: a plan the guard cannot read is never a reason to fail."""
-    from rheon import _frame as frame_mod
+    from rheon.polars import _frame as frame_mod
 
     def boom(self, **kwargs):  # noqa: ANN001, ANN202, ARG001
         raise RuntimeError("no plan for you")
@@ -274,14 +274,14 @@ def test_a_plan_that_cannot_be_explained_is_let_through(monkeypatch):
 
 
 def test_the_warning_is_a_user_warning_shown_by_default():
-    assert issubclass(po.ConsumedSourceWarning, UserWarning)
+    assert issubclass(rp.ConsumedSourceWarning, UserWarning)
 
 
 def test_the_message_names_the_call_and_the_fix():
     lf = _single_use()
     bank = _bank()
     bank.fit(lf)
-    with pytest.warns(po.ConsumedSourceWarning) as caught:
+    with pytest.warns(rp.ConsumedSourceWarning) as caught:
         bank.fit(lf)
     text = str(caught[0].message)
     assert "ModelBank.fit" in text, "the message should name what the caller called"
@@ -325,9 +325,9 @@ def test_a_bank_over_a_reused_duckdb_plan_warns():
     lf = pl.scan_arrow_c_stream(rel)
     bank = _bank()
     with warnings.catch_warnings():
-        warnings.simplefilter("error", po.ConsumedSourceWarning)
+        warnings.simplefilter("error", rp.ConsumedSourceWarning)
         bank.fit(lf)
-    with pytest.warns(po.ConsumedSourceWarning):
+    with pytest.warns(rp.ConsumedSourceWarning):
         bank.fit(lf)
     con.close()
 
@@ -339,7 +339,7 @@ def test_rebuilding_the_plan_per_run_is_the_documented_fix():
 
     con, _ = _duck_rel(duckdb)
     with warnings.catch_warnings():
-        warnings.simplefilter("error", po.ConsumedSourceWarning)
+        warnings.simplefilter("error", rp.ConsumedSourceWarning)
         for _ in range(2):
             rel = con.sql("SELECT t, x0, y FROM ticks ORDER BY t")
             _bank().fit(pl.scan_arrow_c_stream(rel))
@@ -381,7 +381,7 @@ def test_the_warning_points_at_the_caller_not_the_library():
     lf = _single_use()
     bank = _bank()
     bank.fit(lf)
-    with pytest.warns(po.ConsumedSourceWarning) as caught:
+    with pytest.warns(rp.ConsumedSourceWarning) as caught:
         bank.fit(lf)
     assert caught[0].filename == __file__, f"pointed at {caught[0].filename}, not the caller's file"
 
@@ -397,7 +397,7 @@ def test_a_chain_of_two_plan_forms_over_an_empty_frame_does_not_warn() -> None:
         warnings.simplefilter("always")
         chained = (
             empty.lazy()
-            .online.with_windows(f=po.ewm_mean(feature, half_life=5.0))
+            .online.with_windows(f=rp.ewm_mean(feature, half_life=5.0))
             .online.fit_predict([SPEC])
             .collect()
         )
@@ -406,10 +406,10 @@ def test_a_chain_of_two_plan_forms_over_an_empty_frame_does_not_warn() -> None:
         # A bank's own `fit` and `fit_predict_batches` over one of our plan
         # forms read it the same way, and missed the same counter (review
         # 2026-10-05, YB6).
-        fitted = po.ModelBank([again])
+        fitted = rp.ModelBank([again])
         fitted.fit(empty.lazy().online.fit_predict([SPEC]))
-        windowed = empty.lazy().online.with_windows(f=po.ewm_mean(feature, half_life=5.0))
-        batches = list(po.ModelBank([SPEC]).fit_predict_batches(windowed))
+        windowed = empty.lazy().online.with_windows(f=rp.ewm_mean(feature, half_life=5.0))
+        batches = list(rp.ModelBank([SPEC]).fit_predict_batches(windowed))
     assert chained.height == 0 and twice.height == 0
     assert fitted.rows_fed == 0 and sum(b.height for b in batches) == 0
-    assert not [w for w in caught if issubclass(w.category, po.ConsumedSourceWarning)]
+    assert not [w for w in caught if issubclass(w.category, rp.ConsumedSourceWarning)]

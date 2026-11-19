@@ -67,7 +67,7 @@ predictions:
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # The planted stream, cut into two files at row 1,500.
 rng = np.random.default_rng(3)
@@ -192,7 +192,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # The planted stream, saved to one file.
 rng = np.random.default_rng(3)

@@ -14,7 +14,7 @@ import numpy as np
 import polars as pl
 import xgboost as xgb
 
-import rheon as po
+from rheon import polars as rp
 
 fs = sorted(glob.glob(str(C.SLOT / ".cache" / "BTCUSDT-1m-2024-*.parquet")))[:60]
 df = (
@@ -36,7 +36,7 @@ lag = (
 )
 df = df.with_columns(lag).slice(1)
 F = ["z1", "zm5", "zm30", "zm240", "zm1440", "r1", "rm30"]
-spec = po.spec.ewridge(
+spec = rp.spec.ewridge(
     "on",
     targets=["z"],
     features=F,
@@ -46,7 +46,7 @@ spec = po.spec.ewridge(
     ridge=1e-4,
     standardize=True,
 )
-out = po.ModelBank([spec]).fit_predict(df)
+out = rp.ModelBank([spec]).fit_predict(df)
 m = out["on"].struct.field("pred_z").to_numpy()
 ok = ~np.isnan(m)
 df = df.with_columns(m=pl.Series(m)).filter(pl.Series(ok))

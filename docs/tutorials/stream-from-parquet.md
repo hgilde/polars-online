@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # Eight files of 250,000 rows each, made and written one at a time.
 Path("stream").mkdir(exist_ok=True)

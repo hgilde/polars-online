@@ -44,7 +44,7 @@ from filterpy.kalman import KalmanFilter
 from statsmodels.stats.outliers_influence import OLSInfluence
 
 import ledger
-import rheon as po
+from rheon import polars as rp
 
 TIER = "oracle_grid"
 
@@ -92,7 +92,7 @@ def windowed_series(seed: int) -> pl.DataFrame:
 
 #: The three specs, by the name of the test each twins.
 LAG_SPECS: dict[str, dict] = {
-    "truncated": po.spec.marginal(
+    "truncated": rp.spec.marginal(
         "m",
         targets=["y"],
         features=["x"],
@@ -100,7 +100,7 @@ LAG_SPECS: dict[str, dict] = {
         serial_rule="truncated",
         half_life=float("inf"),
     ),
-    "bartlett": po.spec.marginal(
+    "bartlett": rp.spec.marginal(
         "m",
         targets=["y"],
         features=["x"],
@@ -108,7 +108,7 @@ LAG_SPECS: dict[str, dict] = {
         serial_rule="bartlett",
         half_life=float("inf"),
     ),
-    "windowed": po.spec.marginal(
+    "windowed": rp.spec.marginal(
         "m",
         targets=["y"],
         features=["x"],
@@ -124,7 +124,7 @@ LAG_SPECS: dict[str, dict] = {
 
 def lag_row(kind: str, frame: pl.DataFrame) -> dict:
     """``marginal()``'s row after one pass of ``frame`` under ``kind``."""
-    bank = po.ModelBank([LAG_SPECS[kind]])
+    bank = rp.ModelBank([LAG_SPECS[kind]])
     bank.fit_predict(frame)
     return bank.marginal("m").row(0, named=True)
 
@@ -206,7 +206,7 @@ def cross_pair(seed: int) -> pl.DataFrame:
     return pl.DataFrame({"x": x[2:], "y": y})
 
 
-CROSS_SPEC = po.spec.marginal(
+CROSS_SPEC = rp.spec.marginal(
     "m",
     targets=["y"],
     features=["x"],
@@ -217,7 +217,7 @@ CROSS_SPEC = po.spec.marginal(
 
 
 def cross_row(frame: pl.DataFrame) -> dict:
-    bank = po.ModelBank([CROSS_SPEC])
+    bank = rp.ModelBank([CROSS_SPEC])
     bank.fit_predict(frame)
     return bank.marginal("m").row(0, named=True)
 
@@ -292,7 +292,7 @@ def shared_rows(seed: int, n: int = 6000) -> tuple[np.ndarray, dict[str, np.ndar
 
 def shared_se(frame: pl.DataFrame) -> np.ndarray:
     """The bank's ``se_coef`` on every row, both targets' side by side."""
-    spec = po.spec.kalman(
+    spec = rp.spec.kalman(
         "k",
         targets=["y0", "y1"],
         features=["x0", "x1"],
@@ -304,7 +304,7 @@ def shared_se(frame: pl.DataFrame) -> np.ndarray:
         emit_se_coef=True,
         coef_every=1,
     )
-    out = po.ModelBank([spec]).fit_predict(frame)["k"].struct.field("se_coef")
+    out = rp.ModelBank([spec]).fit_predict(frame)["k"].struct.field("se_coef")
     return np.array(out.to_list(), dtype=float)
 
 
@@ -357,7 +357,7 @@ def sandwich_rows(n: int, seed: int) -> pl.DataFrame:
 
 
 def robust_se(frame: pl.DataFrame, lags: int = 3) -> pl.DataFrame:
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -368,7 +368,7 @@ def robust_se(frame: pl.DataFrame, lags: int = 3) -> pl.DataFrame:
         coef_every=0,
         half_life=float("inf"),
     )
-    return po.ModelBank([spec]).fit_predict(frame).unnest("m")
+    return rp.ModelBank([spec]).fit_predict(frame).unnest("m")
 
 
 ledger.guard(
@@ -418,13 +418,13 @@ def gram_rows(seed: int, n: int = 20_000) -> pl.DataFrame:
     return pl.DataFrame({"x": x, "y": y})
 
 
-GRAM_SPEC = po.spec.ewridge(
+GRAM_SPEC = rp.spec.ewridge(
     "g", targets=["y"], features=["x"], half_life=float("inf"), solve_every=1e18
 )
 
 
 def gram_of(frame: Any) -> dict:
-    bank = po.ModelBank([GRAM_SPEC])
+    bank = rp.ModelBank([GRAM_SPEC])
     bank.fit(frame)
     return bank.gram("g")[0]
 
@@ -435,7 +435,7 @@ def algorithm_h(frame: pl.DataFrame, passes: int = 30) -> np.ndarray:
     g = gram_of(frame.lazy())
     m = float(np.asarray(g["means"])[1])
     var = float(np.asarray(g["comoments"])[1, 1])
-    coef = np.asarray(po.gram.solve(g), dtype=float)
+    coef = np.asarray(rp.gram.solve(g), dtype=float)
     for _ in range(passes):
         fit = coef[0] + coef[1] * pl.col("x")
         r = pl.col("y") - fit
@@ -498,14 +498,14 @@ def influence_spec(kind: str) -> dict:
         targets=["y"], features=["x0", "x1"], half_life=float("inf"), emit_influence=True
     )
     if kind == "rls":
-        return po.spec.rls("m", delta=1e-10, min_weight=3.0, **common)
-    return po.spec.kalman(
+        return rp.spec.rls("m", delta=1e-10, min_weight=3.0, **common)
+    return rp.spec.kalman(
         "m", coef_half_life=float("inf"), p0=1e7, obs_var=1.0, standardize=False, **common
     )
 
 
 def influence(kind: str, frame: pl.DataFrame) -> np.ndarray:
-    out = po.ModelBank([influence_spec(kind)]).fit_predict(frame).unnest("m")
+    out = rp.ModelBank([influence_spec(kind)]).fit_predict(frame).unnest("m")
     return out["influence_y"].to_numpy().astype(float)
 
 

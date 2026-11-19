@@ -119,7 +119,7 @@ same input.**
 
    ```python
    import polars as pl
-   import rheon as po
+   from rheon import polars as po
 
    then_spec = po.spec.huber("robust", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
    pl.scan_parquet("ticks.parquet").online.fit_predict([then_spec]).sink_parquet("huber-1.2.0.parquet")

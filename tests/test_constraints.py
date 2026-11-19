@@ -32,8 +32,8 @@ import polars as pl
 import pytest
 
 import reference
-import rheon as po
 from reference_paths import _age_and_learn, _ew_variance
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -44,12 +44,12 @@ def _sgd(name: str, **kw) -> dict:
     """``po.spec.sgd`` taking its step on the raw features, the step the
     replays below write out, unless a test asks for ``standardize``, which
     has been the default since docs/PLAN.md task 195 (U2)."""
-    return po.spec.sgd(name, **{"standardize": False, **kw})
+    return rp.spec.sgd(name, **{"standardize": False, **kw})
 
 
 def _pa(name: str, **kw) -> dict:
     """``po.spec.pa`` on the raw features, as :func:`_sgd`."""
-    return po.spec.pa(name, **{"standardize": False, **kw})
+    return rp.spec.pa(name, **{"standardize": False, **kw})
 
 
 # ------------------------------------------------------------ the projection
@@ -507,7 +507,7 @@ class TestOracle:
             coef_every=0,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(_frame(X, y, t, w))
+        out = rp.ModelBank([spec]).fit_predict(_frame(X, y, t, w))
         want = sgd_replay(
             X,
             y,
@@ -562,7 +562,7 @@ class TestOracle:
             coef_every=0,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(_frame(X, y, t, w))
+        out = rp.ModelBank([spec]).fit_predict(_frame(X, y, t, w))
         want = pa_replay(
             X,
             y,
@@ -587,8 +587,8 @@ class TestOracle:
         base = dict(
             targets=["y"], features=["x0", "x1"], half_life=INF, min_weight=5.0, coef_every=1
         )
-        plain = po.ModelBank([_sgd("m", **base)]).fit_predict(_frame(X, y))
-        explicit = po.ModelBank([_sgd("m", coef_min=-INF, coef_max=INF, **base)]).fit_predict(
+        plain = rp.ModelBank([_sgd("m", **base)]).fit_predict(_frame(X, y))
+        explicit = rp.ModelBank([_sgd("m", coef_min=-INF, coef_max=INF, **base)]).fit_predict(
             _frame(X, y)
         )
         assert plain.equals(explicit, null_equal=True)
@@ -621,7 +621,7 @@ class TestLargeData:
             coef_sum=1.0,
             coef_every=1,
         )
-        out = po.ModelBank([spec]).fit_predict(_frame(X, y))
+        out = rp.ModelBank([spec]).fit_predict(_frame(X, y))
         c = _coefs(out)
         assert c.shape[0] == n
         slopes = c[:, 1:]
@@ -651,8 +651,8 @@ class TestLargeData:
             learning_rate=0.01,
             coef_every=1,
         )
-        free = _coefs(po.ModelBank([_sgd("m", **base)]).fit_predict(_frame(X, y)))
-        signed = _coefs(po.ModelBank([_sgd("m", coef_min=0.0, **base)]).fit_predict(_frame(X, y)))
+        free = _coefs(rp.ModelBank([_sgd("m", **base)]).fit_predict(_frame(X, y)))
+        signed = _coefs(rp.ModelBank([_sgd("m", coef_min=0.0, **base)]).fit_predict(_frame(X, y)))
         assert free[-1, 1:] == pytest.approx(truth, abs=0.02)
         assert (free[:, 1:] < 0).any()
         assert signed[:, 1:].min() >= 0.0
@@ -680,7 +680,7 @@ class TestLargeData:
             coef_sum=1.0,
             coef_every=1,
         )
-        c = _coefs(po.ModelBank([spec]).fit_predict(_frame(X, y)))
+        c = _coefs(rp.ModelBank([spec]).fit_predict(_frame(X, y)))
         assert np.abs(c[:, 1:].sum(axis=1) - 1.0).max() <= 1e-12
         want = truth + (1.0 - truth.sum()) / 3.0
         assert c[-50_000:, 1:].mean(axis=0) == pytest.approx(want, abs=0.01)
@@ -702,7 +702,7 @@ class TestLargeData:
             coef_max=0.25,
             coef_every=1,
         )
-        c = _coefs(po.ModelBank([spec]).fit_predict(_frame(X, y)))
+        c = _coefs(rp.ModelBank([spec]).fit_predict(_frame(X, y)))
         assert c[:, 1:].min() >= -0.25 and c[:, 1:].max() <= 0.25
         tail = c[-50_000:, 1:]
         assert tail.mean(axis=0) == pytest.approx([0.25, -0.25, 0.1], abs=0.02)
@@ -729,7 +729,7 @@ class TestLargeData:
             coef_sum=1.0,
             coef_every=1,
         )
-        c = _coefs(po.ModelBank([spec]).fit_predict(_frame(X, y)))
+        c = _coefs(rp.ModelBank([spec]).fit_predict(_frame(X, y)))
         assert c[:, 1:].min() >= 0.0
         assert np.abs(c[:, 1:].sum(axis=1) - 1.0).max() <= 1e-12
         assert c[-20_000:, 1:].mean(axis=0) == pytest.approx(truth, abs=0.01), schedule
@@ -753,7 +753,7 @@ class TestLargeData:
             coef_sum=1.0,
             coef_every=1,
         )
-        c = _coefs(po.ModelBank([spec]).fit_predict(_frame(X, y)))
+        c = _coefs(rp.ModelBank([spec]).fit_predict(_frame(X, y)))
         assert c[:, 1:].min() >= 0.0
         assert np.abs(c[:, 1:].sum(axis=1) - 1.0).max() <= 1e-12
         assert c[-50_000:, 1:].mean(axis=0) == pytest.approx(truth, abs=0.01)
@@ -778,7 +778,7 @@ class TestLargeData:
             coef_sum=100.0,
             coef_every=1,
         )
-        c = _coefs(po.ModelBank([spec]).fit_predict(_frame(X, y)))
+        c = _coefs(rp.ModelBank([spec]).fit_predict(_frame(X, y)))
         slopes = c[:, 1:]
         assert slopes.min() >= -1e-12 and slopes.max() <= 100.0 + 1e-10
         assert np.abs(slopes.sum(axis=1) - 100.0).max() <= 1e-9
@@ -827,15 +827,15 @@ class TestEdgeCases:
         Only infinite bounds were held to it."""
         X, y, t, w = _stream(1500, 3, seed=21, truth=[0.4, -0.3, 0.2])
         kw = _clocked(standardize=standardize, **extra)
-        plain = po.ModelBank([builder("m", **kw)]).fit_predict(_frame(X, y, t, w))
-        slack = po.ModelBank([builder("m", **bounds, **kw)]).fit_predict(_frame(X, y, t, w))
+        plain = rp.ModelBank([builder("m", **kw)]).fit_predict(_frame(X, y, t, w))
+        slack = rp.ModelBank([builder("m", **bounds, **kw)]).fit_predict(_frame(X, y, t, w))
         assert slack.equals(plain, null_equal=True)
         assert np.abs(_coefs(plain)[-1, 1:]).min() > 0.05, "the fit never moved"
 
     def test_a_pinned_slope_is_exact_on_every_row(self):
         X, y, t, w = _stream(2000, 3, seed=7, truth=[0.4, 0.3, -0.2], missing=False)
         spec = _sgd("m", coef_min=[0.7, -INF, -INF], coef_max=[0.7, INF, INF], **_base())
-        c = _coefs(po.ModelBank([spec]).fit_predict(_frame(X, y)))
+        c = _coefs(rp.ModelBank([spec]).fit_predict(_frame(X, y)))
         assert (c[:, 1] == 0.7).all()
         assert c[-1, 2] == pytest.approx(0.3, abs=0.05)
 
@@ -846,15 +846,15 @@ class TestEdgeCases:
         spec = _sgd(
             "m", coef_min=[0.1, 0.2, 0.3], coef_max=[0.1, 0.2, 0.3], coef_sum=0.6, **_base()
         )
-        c = _coefs(po.ModelBank([spec]).fit_predict(_frame(X, y)))
+        c = _coefs(rp.ModelBank([spec]).fit_predict(_frame(X, y)))
         assert (c[:, 1:] == [0.1, 0.2, 0.3]).all()
 
     def test_a_scalar_bound_is_the_list_of_that_bound(self):
         X, y, t, w = _stream(1000, 3, seed=9)
-        a = po.ModelBank([_sgd("m", coef_min=0.0, coef_max=0.5, **_base())]).fit_predict(
+        a = rp.ModelBank([_sgd("m", coef_min=0.0, coef_max=0.5, **_base())]).fit_predict(
             _frame(X, y)
         )
-        b = po.ModelBank(
+        b = rp.ModelBank(
             [_sgd("m", coef_min=[0.0] * 3, coef_max=[0.5] * 3, **_base())]
         ).fit_predict(_frame(X, y))
         assert a.equals(b, null_equal=True)
@@ -862,9 +862,9 @@ class TestEdgeCases:
     def test_one_sided_bounds(self):
         X, y, t, w = _stream(2000, 3, seed=10, truth=[0.4, -0.6, 0.2], missing=False)
         below = _coefs(
-            po.ModelBank([_sgd("m", coef_min=-0.3, **_base())]).fit_predict(_frame(X, y))
+            rp.ModelBank([_sgd("m", coef_min=-0.3, **_base())]).fit_predict(_frame(X, y))
         )
-        above = _coefs(po.ModelBank([_sgd("m", coef_max=0.3, **_base())]).fit_predict(_frame(X, y)))
+        above = _coefs(rp.ModelBank([_sgd("m", coef_max=0.3, **_base())]).fit_predict(_frame(X, y)))
         assert below[:, 1:].min() >= -0.3 and below[-1, 2] == -0.3
         assert above[:, 1:].max() <= 0.3 and above[-1, 1] == 0.3
 
@@ -875,9 +875,9 @@ class TestEdgeCases:
         )
         df = _frame(X, y, y2=y2)
         kw = dict(coef_min=0.0, coef_sum=1.0)
-        both = po.ModelBank([_sgd("m", **_base(targets=["y", "y2"]), **kw)]).fit_predict(df)
-        one = po.ModelBank([_sgd("m", **_base(), **kw)]).fit_predict(df)
-        two = po.ModelBank([_sgd("m", **_base(targets=["y2"]), **kw)]).fit_predict(df)
+        both = rp.ModelBank([_sgd("m", **_base(targets=["y", "y2"]), **kw)]).fit_predict(df)
+        one = rp.ModelBank([_sgd("m", **_base(), **kw)]).fit_predict(df)
+        two = rp.ModelBank([_sgd("m", **_base(targets=["y2"]), **kw)]).fit_predict(df)
         assert both["m"].struct.field("pred_y").equals(one["m"].struct.field("pred_y"))
         assert both["m"].struct.field("pred_y2").equals(two["m"].struct.field("pred_y2"))
         c = _coefs(both)
@@ -889,7 +889,7 @@ class TestEdgeCases:
     def test_a_zero_weight_or_null_target_row_moves_nothing(self):
         X, y, t, w = _stream(300, 3, seed=13, missing=False)
         spec = _sgd("m", weight="w", coef_min=0.0, coef_sum=1.0, **_base())
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(_frame(X, y, w=np.ones(len(y))))
         before = bank.coef("m")["coef"].to_list()
         bank.fit_predict(
@@ -902,7 +902,7 @@ class TestEdgeCases:
         assert bank.coef("m")["coef"].to_list() == before
         # A zero-weight first row: the clock advances, nothing is learned,
         # and the projected start is what predict sees.
-        fresh = po.ModelBank(
+        fresh = rp.ModelBank(
             [_sgd("m", weight="w", coef_min=0.0, coef_sum=1.0, **_base(min_weight=0.0))]
         )
         out = fresh.fit_predict(
@@ -915,7 +915,7 @@ class TestEdgeCases:
         X, y, t, w = _stream(200, 3, seed=14, missing=False)
         X[100] = [1e101, 0.0, 0.0]
         spec = _sgd("m", coef_min=0.0, coef_sum=1.0, **_base())
-        out = po.ModelBank([spec]).fit_predict(_frame(X, y))
+        out = rp.ModelBank([spec]).fit_predict(_frame(X, y))
         assert out["m"].struct.field("weight_sum")[100] is None
         assert out["m"].struct.field("coef")[100] is None
         assert out["m"].struct.field("weight_sum")[101] == 100.0
@@ -927,9 +927,9 @@ class TestEdgeCases:
             _sgd("m", coef_min=0.0, coef_sum=1.0, **_clocked()),
             _pa("m", coef_min=-0.3, coef_max=0.3, **_clocked()),
         ):
-            one = po.ModelBank([spec]).fit_predict(df)
+            one = rp.ModelBank([spec]).fit_predict(df)
             for size in (1, 7, 97, 500):
-                bank = po.ModelBank([spec])
+                bank = rp.ModelBank([spec])
                 many = pl.concat(
                     [bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)]
                 )
@@ -948,18 +948,18 @@ class TestEdgeCases:
             _pa("m", coef_min=[-0.2, 0.0, -INF], **_clocked()),
         ):
             for cut in (3, 100, 500):
-                a = po.ModelBank([spec])
+                a = rp.ModelBank([spec])
                 a.fit_predict(df.slice(0, cut))
                 path = tmp_path / f"{spec['model']['type']}{cut}.state"
                 a.save(path)
-                b = po.ModelBank.load(path, specs=[spec])
+                b = rp.ModelBank.load(path, specs=[spec])
                 rest = df.slice(cut, df.height - cut)
                 assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True), cut
 
     def test_predict_reads_the_projected_coefficients_and_moves_nothing(self):
         X, y, t, w = _stream(500, 3, seed=17, missing=False)
         spec = _sgd("m", coef_min=0.0, coef_sum=1.0, **_base())
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(_frame(X, y))
         c = np.array(bank.coef("m")["coef"].to_list())
         probe = pl.DataFrame({"x0": [1.0, -1.0], "x1": [0.5, 0.5], "x2": [0.0, 2.0]})
@@ -972,15 +972,15 @@ class TestEdgeCases:
         X, y, t, w = _stream(1000, 3, seed=18, missing=False)
         df = _frame(X, y, g=["p", "q"] * 500)
         spec = _sgd("m", group="g", coef_min=0.0, coef_sum=1.0, **_base())
-        both = po.ModelBank([spec]).fit_predict(df)
-        solo = po.ModelBank([spec]).fit_predict(df.filter(pl.col("g") == "q"))
+        both = rp.ModelBank([spec]).fit_predict(df)
+        solo = rp.ModelBank([spec]).fit_predict(df.filter(pl.col("g") == "q"))
         assert both.filter(pl.col("g") == "q").equals(solo, null_equal=True)
 
     def test_lazy_agrees_with_the_bank(self):
         X, y, t, w = _stream(600, 3, seed=20)
         df = _frame(X, y, t, w)
         spec = _sgd("m", coef_min=0.0, coef_sum=1.0, **_clocked())
-        want = po.ModelBank([spec]).fit_predict(df)
+        want = rp.ModelBank([spec]).fit_predict(df)
         lazy = df.lazy().online.fit_predict([spec]).collect()
         assert want.equals(lazy, null_equal=True)
 
@@ -1014,15 +1014,15 @@ class TestEdgeCases:
             encoding="utf-8",
         )
         subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
-        spec = po.spec.sgd(  # the default step, as the TOML file takes it
+        spec = rp.spec.sgd(  # the default step, as the TOML file takes it
             "m", coef_min=[0.0, 0.0, -0.1], coef_max=INF, coef_sum=1.0, **_clocked(half_life=40.0)
         )
-        want = po.ModelBank([spec]).fit_predict(df)
+        want = rp.ModelBank([spec]).fit_predict(df)
         assert pl.read_parquet(dst).equals(want, null_equal=True)
 
     def test_output_index_is_unchanged_by_a_constraint(self):
         spec = _sgd("m", coef_min=0.0, coef_sum=1.0, **_base())
-        idx = po.spec.output_index(spec)
+        idx = rp.spec.output_index(spec)
         assert idx["field"].to_list() == [
             "pred_y",
             "resid_y",
@@ -1031,7 +1031,7 @@ class TestEdgeCases:
             "withheld_reason",
             "coef",
         ]
-        assert po.spec.coef_fields(spec)["name"].to_list() == [
+        assert rp.spec.coef_fields(spec)["name"].to_list() == [
             "coef_y_intercept",
             "coef_y_x0",
             "coef_y_x1",
@@ -1043,7 +1043,7 @@ class TestEdgeCases:
 
 
 class TestRefusals:
-    @pytest.mark.parametrize("builder", [po.spec.sgd, po.spec.pa])
+    @pytest.mark.parametrize("builder", [rp.spec.sgd, rp.spec.pa])
     def test_shapes_and_values_are_named_in_python(self, builder):
         with pytest.raises(
             TypeError, match="coef_min must be a number or a list of numbers, but it is str 'a'"
@@ -1111,14 +1111,14 @@ class TestRefusals:
             ),
         ],
     )
-    @pytest.mark.parametrize("builder", [po.spec.sgd, po.spec.pa])
+    @pytest.mark.parametrize("builder", [rp.spec.sgd, rp.spec.pa])
     def test_the_rust_side_names_the_offence(self, builder, kw, msg):
         with pytest.raises(ValueError, match=f'spec "m": {msg}'):
-            po.ModelBank([builder("m", **kw, **_base())])
+            rp.ModelBank([builder("m", **kw, **_base())])
 
     def test_other_builders_do_not_take_them(self):
         with pytest.raises(TypeError, match='ewridge\\(\\) takes no parameter "coef_min"'):
-            po.spec.ewridge("m", coef_min=0.0, **_base())
+            rp.spec.ewridge("m", coef_min=0.0, **_base())
 
     def test_a_hand_built_spec_is_parsed_by_path(self):
         # The path names the model's key, where it stopped at `model`
@@ -1130,10 +1130,10 @@ class TestRefusals:
             match=r'model\.coef_min: invalid value: string "0", expected a number or a list of '
             r"numbers",
         ):
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
         spec["model"]["coef_min"] = "-inf"
         spec["model"]["coef_sum"] = "inf"
         with pytest.raises(
             ValueError, match=r'model\.coef_sum: invalid type: string "inf", expected f64'
         ):
-            po.ModelBank([spec])
+            rp.ModelBank([spec])

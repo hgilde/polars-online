@@ -37,8 +37,8 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-import rheon as po
 from rheon import corr, sim, stream
+from rheon import polars as rp
 
 
 def _seed(*parts: object) -> int:
@@ -118,7 +118,7 @@ def recovery(seeds: int = 8) -> None:
                 half_life=4000.0,
             )
             if start == "true":
-                spec = po.spec.hmm(
+                spec = rp.spec.hmm(
                     "h",
                     transition=[0.99, 0.01, 0.02, 0.98],
                     means=[0.0, 0.0, 0.0, 0.0],
@@ -126,8 +126,8 @@ def recovery(seeds: int = 8) -> None:
                     **common,
                 )
             else:
-                spec = po.spec.hmm("h", transition_prior=200.0, warm_rows=500, seed=seed, **common)
-            bank = po.ModelBank([spec])
+                spec = rp.spec.hmm("h", transition_prior=200.0, warm_rows=500, seed=seed, **common)
+            bank = rp.ModelBank([spec])
             got = bank.fit_predict(df)["h"].struct.unnest()
             hot = np.asarray(got["filtered_state1"].fill_null(0.5).to_list()) > 0.5
             scores[name].append(
@@ -211,7 +211,7 @@ def switch(seeds: int = 8) -> None:
         for name, start, learn in setups:
             common = dict(features=["x0", "x1"], n_components=2, learn=learn, half_life=4000.0)
             if start == "true":
-                spec = po.spec.hmm(
+                spec = rp.spec.hmm(
                     "h",
                     transition=[1 - hazard, hazard, hazard, 1 - hazard],
                     means=[0.0] * 4,
@@ -220,7 +220,7 @@ def switch(seeds: int = 8) -> None:
                     **common,
                 )
             else:
-                spec = po.spec.hmm(
+                spec = rp.spec.hmm(
                     "h",
                     transition_prior=200.0,
                     warm_rows=500,
@@ -228,7 +228,7 @@ def switch(seeds: int = 8) -> None:
                     precision_prior=0.01,
                     **common,
                 )
-            got = po.ModelBank([spec]).fit_predict(df)["h"].struct.unnest()
+            got = rp.ModelBank([spec]).fit_predict(df)["h"].struct.unnest()
             p1 = np.asarray(got["filtered_state1"].to_list(), dtype=float)
             hot = np.where(np.isnan(p1), -1, (p1 > 0.5).astype(int))
             # The better of the two ways to match the filter's states to the
@@ -306,10 +306,10 @@ def _draw(t: int, rho: np.ndarray | float, rng: np.random.Generator, dist: str) 
 
 def _monitor_flags(x: np.ndarray, horizon: int, alpha: float) -> list[bool]:
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
-    spec = po.spec.corrchange(
+    spec = rp.spec.corrchange(
         "c", features=["x0", "x1"], window_rows=horizon, alpha=alpha, alpha_adjust="none"
     )
-    out = po.ModelBank([spec]).fit_predict(df)["c"].struct.unnest()
+    out = rp.ModelBank([spec]).fit_predict(df)["c"].struct.unnest()
     return [f for f in out["flag"].to_list() if f is not None]
 
 
@@ -369,10 +369,10 @@ def size(reps: int = 20_000, alpha: float = 0.05) -> None:
 
 def _monitor_stat(x: np.ndarray, horizon: int) -> float:
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
-    spec = po.spec.corrchange(
+    spec = rp.spec.corrchange(
         "c", features=["x0", "x1"], window_rows=horizon, alpha=0.05, alpha_adjust="none"
     )
-    out = po.ModelBank([spec]).fit_predict(df)["c"].struct.unnest()
+    out = rp.ModelBank([spec]).fit_predict(df)["c"].struct.unnest()
     return float(out["stat"].drop_nulls().to_list()[0])
 
 
@@ -508,7 +508,7 @@ def delay(seeds: int = 20) -> None:
     it says the current run began on jumping forward by more than 50.
     """
     _rule("Alarms: false alarms on a quiet stream, and delay on a broken one")
-    win = po.spec.corrchange(
+    win = rp.spec.corrchange(
         "w",
         features=["x0", "x1", "x2"],
         kind="window",
@@ -518,7 +518,7 @@ def delay(seeds: int = 20) -> None:
         alpha=0.05,
         seed=0,
     )
-    boc = po.spec.bocpd(
+    boc = rp.spec.bocpd(
         "b",
         features=["x0", "x1", "x2"],
         hazard=500.0,
@@ -530,11 +530,11 @@ def delay(seeds: int = 20) -> None:
     )
 
     def window_alarms(df: pl.DataFrame) -> list[int]:
-        out = po.ModelBank([win]).fit_predict(df)["w"].struct.unnest()
+        out = rp.ModelBank([win]).fit_predict(df)["w"].struct.unnest()
         return [i for i, f in enumerate(out["flag"].to_list()) if f]
 
     def bocpd_alarms(df: pl.DataFrame) -> list[int]:
-        out = po.ModelBank([boc]).fit_predict(df)["b"].struct.unnest()
+        out = rp.ModelBank([boc]).fit_predict(df)["b"].struct.unnest()
         mode = out["run_mode"].to_list()
         began = [None if m is None else i - m for i, m in enumerate(mode)]
         return [
@@ -650,10 +650,10 @@ def _lag_inversion(truth: float, seeds: int = 5) -> None:
         filled = out["rows"].select(pl.col("x_1", "x_2").forward_fill()).drop_nulls().to_numpy()
         r1 = np.diff(filled, axis=0)
         df = pl.DataFrame({"x0": r1[:, 0], "x1": r1[:, 1]})
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "c", features=["x0", "x1"], lam=1.0, stats=[], lags=list(range(1, top))
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("c")[0]
         curves.append([float(corr.epps_invert(g, L=L)[0, 1]) for L in ls])
@@ -714,8 +714,8 @@ def deco_track(seeds: int = 8) -> None:
         runs = []
         settled: dict[int, list[float]] = {0: [], 1: []}
         for df, want in streams:
-            spec = po.spec.deco("d", features=feats, half_life=half_life)
-            got = po.ModelBank([spec]).fit_predict(df)["d"].struct.unnest()
+            spec = rp.spec.deco("d", features=feats, half_life=half_life)
+            got = rp.ModelBank([spec]).fit_predict(df)["d"].struct.unnest()
             rho = np.asarray(got["rho"].to_list(), dtype=float)
             u = np.asarray(got["u"].to_list(), dtype=float)
             segs = _segments(want)
@@ -852,10 +852,10 @@ def rcov_blocks(seeds: int = 10) -> None:
             for kind, kw in estimators.items():
                 if kind != "plain":
                     kw = dict(kw, block_rows=held)
-                spec = po.spec.rcov(
+                spec = rp.spec.rcov(
                     "r", features=["x0", "x1"], group="block", group_close="monotone", **kw
                 )
-                bank = po.ModelBank([spec])
+                bank = rp.ModelBank([spec])
                 bank.fit_predict(df)
                 closed = bank.closed_groups()
                 for b, rc in zip(closed["group"].to_list(), closed["rcorr"].to_list(), strict=True):
@@ -900,7 +900,7 @@ def _garch_pair(n: int, rng: np.random.Generator, rho: float = 0.5) -> np.ndarra
 
 def _cycles_flagged(x: np.ndarray, m: int, ratio: float, gamma: float) -> tuple[int, int]:
     """Flags and monitoring periods over one stream of back-to-back cycles."""
-    spec = po.spec.corrchange(
+    spec = rp.spec.corrchange(
         "c",
         features=["x0", "x1"],
         kind="sequential",
@@ -910,7 +910,7 @@ def _cycles_flagged(x: np.ndarray, m: int, ratio: float, gamma: float) -> tuple[
         alpha_adjust="none",
     )
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
-    out = po.ModelBank([spec]).fit_predict(df)["c"].struct.unnest()
+    out = rp.ModelBank([spec]).fit_predict(df)["c"].struct.unnest()
     live = out["stat"].is_not_null()
     periods = int((live & ~live.shift(1, fill_value=False)).sum())
     return int(out["flag"].fill_null(False).sum()), periods

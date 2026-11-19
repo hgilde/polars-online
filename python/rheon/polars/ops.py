@@ -5,7 +5,7 @@ gives a window operator an input.
 
 Each operator returns a ``pl.Expr`` that composes with Polars' own
 expressions, in which ``pl.col`` reads the current row.
-:func:`rheon.stream.with_windows` computes the expressions in one
+:func:`rheon.polars.stream.with_windows` computes the expressions in one
 pass, holding one window of rows in memory, or a spec takes one as its
 target. A target that looks ahead is known only once its window has
 closed, so the bank learns it then, under an ``embargo``
@@ -131,14 +131,14 @@ This code reads ``trades`` from `Example data
 
     notional = pl.col("price") * pl.col("quantity")
     buys = pl.when(pl.col("side") == "buy")
-    out = po.stream.with_windows(
+    out = rp.stream.with_windows(
         trades,
-        mid_trend=po.ewm_mean("mid", half_life="5s", window_size="1m") - pl.col("mid"),
-        fwd_vwap_vs_mid=po.ewm_sum(notional, half_life="10s", window_size="1m", reverse=True)
-                        / po.ewm_sum("quantity", half_life="10s", window_size="1m", reverse=True)
+        mid_trend=rp.ewm_mean("mid", half_life="5s", window_size="1m") - pl.col("mid"),
+        fwd_vwap_vs_mid=rp.ewm_sum(notional, half_life="10s", window_size="1m", reverse=True)
+                        / rp.ewm_sum("quantity", half_life="10s", window_size="1m", reverse=True)
                         - pl.col("mid"),
-        buy_vwap=po.ewm_sum(buys.then(notional), half_life="10s", min_samples=1)
-                 / po.ewm_sum(buys.then("quantity"), half_life="10s", min_samples=1),
+        buy_vwap=rp.ewm_sum(buys.then(notional), half_life="10s", min_samples=1)
+                 / rp.ewm_sum(buys.then("quantity"), half_life="10s", min_samples=1),
         clock="ts", gap_cap="5m", group="symbol",
     )
 
@@ -155,7 +155,7 @@ gives the measured gain. This code reads ``trades.parquet`` from
 .. code-block:: python
 
     spread = {"half_life": "30m"}
-    z_mid = (pl.col("mid") - po.ewm_mean("mid", **spread)) / po.ewm_std("mid", **spread)
+    z_mid = (pl.col("mid") - rp.ewm_mean("mid", **spread)) / rp.ewm_std("mid", **spread)
     zscored = pl.scan_parquet("trades.parquet").online.with_windows(
         z_mid=z_mid, clock="ts", gap_cap="5m", group="symbol"
     ).collect()
@@ -210,7 +210,7 @@ durations (``"10s"``, a ``timedelta``, ``pl.duration``) on a temporal one.
 
 An operator checks its own arguments when it is called, and names the one
 it refuses. Each operator's *Raises* lists them.
-:func:`rheon.stream.with_windows` refuses the rest when it builds
+:func:`rheon.polars.stream.with_windows` refuses the rest when it builds
 its query: ``half_life=float("inf")`` with no ``window_size`` for a mean, a
 variance or a standard deviation, and a window looking ahead under
 ``group`` with no clock column.
@@ -223,8 +223,8 @@ from typing import TYPE_CHECKING, Literal
 import polars as pl
 
 from rheon._errors import RefusedValueError
-from rheon._formula import operator
 from rheon._renamed import renamed_function
+from rheon.polars._formula import operator
 
 if TYPE_CHECKING:
     from rheon._duration import Duration
@@ -309,7 +309,7 @@ def ewm_mean(
         (``"10s"``, a ``timedelta``, ``pl.duration(seconds=10)``) on a temporal
         one. Required. ``float("inf")`` weighs every row of the window evenly,
         and for this operator needs ``window_size``:
-        :func:`~rheon.stream.with_windows`, or a spec that takes it in
+        :func:`~rheon.polars.stream.with_windows`, or a spec that takes it in
         a formula target, refuses it without one.
     ``window_size``
         The span of clock time a window covers, in the same units as
@@ -320,7 +320,7 @@ def ewm_mean(
     ``closed``
         Which ends of the window are in: ``"right"`` (the default, as in
         Polars' ``rolling_*_by``), ``"left"``, ``"both"`` or ``"none"``. The
-        module's table of ``closed`` (:mod:`rheon.ops`) gives each end,
+        module's table of ``closed`` (:mod:`rheon.polars.ops`) gives each end,
         looking back and ahead.
     ``min_samples``
         The fewest rows with a value a window must hold to give a value, as in
@@ -343,7 +343,7 @@ def ewm_mean(
 
     .. rubric:: Returns
 
-    A ``pl.Expr`` that :func:`rheon.stream.with_windows` computes as a
+    A ``pl.Expr`` that :func:`rheon.polars.stream.with_windows` computes as a
     column, or that a spec takes as its target. Its value is null where the
     window holds fewer than ``min_samples`` rows with a value. It is null
     too where ``partial="null"`` meets a cut window, where a forward window
@@ -379,7 +379,7 @@ def ewm_mean(
         ``reverse=True`` without ``window_size``. It is both a ``ValueError``
         and a ``TypeError``.
 
-    :func:`rheon.stream.with_windows` refuses the rest when it builds
+    :func:`rheon.polars.stream.with_windows` refuses the rest when it builds
     its query, such as a window looking ahead under ``group`` with no clock
     column.
 
@@ -388,10 +388,10 @@ def ewm_mean(
     .. code-block:: python
 
         rows = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0, 4.0], "x": [1.0, 2.0, 3.0, 4.0, 5.0]})
-        out = po.stream.with_windows(
+        out = rp.stream.with_windows(
             rows,
-            back=po.ewm_mean("x", half_life=1.0),        # the rows at or before each row
-            ahead=po.ewm_mean("x", half_life=1.0, window_size=2.0, reverse=True),   # next 2 units
+            back=rp.ewm_mean("x", half_life=1.0),        # the rows at or before each row
+            ahead=rp.ewm_mean("x", half_life=1.0, window_size=2.0, reverse=True),   # next 2 units
             clock="t", gap_cap=10.0,
         )
         polars = rows.select(pl.col("x").ewm_mean_by(pl.col("t").cast(pl.Int64), half_life="1i"))
@@ -407,7 +407,7 @@ def ewm_mean(
 
     - :func:`ewm_std`, the spread about this mean.
     - :func:`ewm_sum`, for a weighted mean as a ratio of two sums.
-    - :func:`rheon.stream.with_windows`, which computes the operators
+    - :func:`rheon.polars.stream.with_windows`, which computes the operators
       over a stream.
     - `How a window operator weighs the rows near each row
       <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md>`_,
@@ -474,7 +474,7 @@ def ewm_sum(
     ``closed``
         Which ends of the window are in: ``"right"`` (the default, as in
         Polars' ``rolling_*_by``), ``"left"``, ``"both"`` or ``"none"``. The
-        module's table of ``closed`` (:mod:`rheon.ops`) gives each end,
+        module's table of ``closed`` (:mod:`rheon.polars.ops`) gives each end,
         looking back and ahead.
     ``min_samples``
         The fewest rows with a value a window must hold to give a value, as in
@@ -498,7 +498,7 @@ def ewm_sum(
 
     .. rubric:: Returns
 
-    A ``pl.Expr`` that :func:`rheon.stream.with_windows` computes as a
+    A ``pl.Expr`` that :func:`rheon.polars.stream.with_windows` computes as a
     column, or that a spec takes as its target. Its value is 0.0 where the
     window holds no row with a value, under the default ``min_samples=0``, and
     null where it holds fewer than ``min_samples`` rows with a value. It is null
@@ -535,7 +535,7 @@ def ewm_sum(
         ``reverse=True`` without ``window_size``. It is both a ``ValueError``
         and a ``TypeError``.
 
-    :func:`rheon.stream.with_windows` refuses the rest when it builds
+    :func:`rheon.polars.stream.with_windows` refuses the rest when it builds
     its query, such as a window looking ahead under ``group`` with no clock
     column.
 
@@ -544,7 +544,7 @@ def ewm_sum(
     .. code-block:: python
 
         rows = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0, 4.0], "x": [1.0, 2.0, 3.0, 4.0, 5.0]})
-        out = po.stream.with_windows(rows, s=po.ewm_sum("x", half_life=1.0), clock="t", gap_cap=10)
+        out = rp.stream.with_windows(rows, s=rp.ewm_sum("x", half_life=1.0), clock="t", gap_cap=10)
         polars = rows.select(pl.col("x").ewm_sum_by(pl.col("t").cast(pl.Int64), half_life="1i"))
         print(out["s"].round(4).to_list(), polars["x"].round(4).to_list())   # the same as Polars'
 
@@ -556,7 +556,7 @@ def ewm_sum(
 
     - :func:`ewm_rate`, the sum per unit of clock time.
     - :func:`ewm_mean`, the mean weighted by time.
-    - :func:`rheon.stream.with_windows`, which computes the operators
+    - :func:`rheon.polars.stream.with_windows`, which computes the operators
       over a stream.
     - `Make a weighted mean, such as a VWAP
       <https://github.com/hgilde/polars-online/blob/main/docs/how-to/make-window-features.md#make-a-weighted-mean-such-as-a-vwap>`_,
@@ -623,7 +623,7 @@ def ewm_rate(
     ``closed``
         Which ends of the window are in: ``"right"`` (the default, as in
         Polars' ``rolling_*_by``), ``"left"``, ``"both"`` or ``"none"``. The
-        module's table of ``closed`` (:mod:`rheon.ops`) gives each end,
+        module's table of ``closed`` (:mod:`rheon.polars.ops`) gives each end,
         looking back and ahead.
     ``min_samples``
         The fewest rows with a value a window must hold to give a value, as in
@@ -646,7 +646,7 @@ def ewm_rate(
 
     .. rubric:: Returns
 
-    A ``pl.Expr`` that :func:`rheon.stream.with_windows` computes as a
+    A ``pl.Expr`` that :func:`rheon.polars.stream.with_windows` computes as a
     column, or that a spec takes as its target. Its value is null where the
     window holds fewer than ``min_samples`` rows with a value, and where the
     window spans no clock time, such as at a stretch's first stamp. It is
@@ -683,7 +683,7 @@ def ewm_rate(
         ``reverse=True`` without ``window_size``. It is both a ``ValueError``
         and a ``TypeError``.
 
-    :func:`rheon.stream.with_windows` refuses the rest when it builds
+    :func:`rheon.polars.stream.with_windows` refuses the rest when it builds
     its query, such as a window looking ahead under ``group`` with no clock
     column.
 
@@ -693,8 +693,8 @@ def ewm_rate(
 
         rows = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0, 4.0], "x": [1.0, 2.0, 3.0, 4.0, 5.0]})
         # half_life=inf weighs the window evenly: the sum over the last 2 units, per unit.
-        rate = po.ewm_rate("x", half_life=float("inf"), window_size=2.0)
-        out = po.stream.with_windows(rows, r=rate, clock="t", gap_cap=10.0)
+        rate = rp.ewm_rate("x", half_life=float("inf"), window_size=2.0)
+        out = rp.stream.with_windows(rows, r=rate, clock="t", gap_cap=10.0)
         print(out["r"].round(4).to_list())   # null on row 0, whose window spans no time yet
 
     .. code-block:: text
@@ -705,7 +705,7 @@ def ewm_rate(
 
     - :func:`ewm_sum`, the total it divides.
     - :func:`increment`, the steps of a running total.
-    - :func:`rheon.stream.with_windows`, which computes the operators
+    - :func:`rheon.polars.stream.with_windows`, which computes the operators
       over a stream.
     - `How a window operator weighs the rows near each row
       <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md>`_,
@@ -771,7 +771,7 @@ def ewm_quantile(
     ``closed``
         Which ends of the window are in: ``"right"`` (the default, as in
         Polars' ``rolling_*_by``), ``"left"``, ``"both"`` or ``"none"``. The
-        module's table of ``closed`` (:mod:`rheon.ops`) gives each end,
+        module's table of ``closed`` (:mod:`rheon.polars.ops`) gives each end,
         looking back and ahead.
     ``min_samples``
         The fewest rows with a value a window must hold to give a value, as in
@@ -794,7 +794,7 @@ def ewm_quantile(
 
     .. rubric:: Returns
 
-    A ``pl.Expr`` that :func:`rheon.stream.with_windows` computes as a
+    A ``pl.Expr`` that :func:`rheon.polars.stream.with_windows` computes as a
     column, or that a spec takes as its target. Its value is null where the
     window holds fewer than ``min_samples`` rows with a value. It is null
     too where ``partial="null"`` meets a cut window, where a forward window
@@ -832,7 +832,7 @@ def ewm_quantile(
         ``reverse=True`` without ``window_size``. It is both a ``ValueError``
         and a ``TypeError``.
 
-    :func:`rheon.stream.with_windows` refuses the rest when it builds
+    :func:`rheon.polars.stream.with_windows` refuses the rest when it builds
     its query, such as a window looking ahead under ``group`` with no clock
     column.
 
@@ -842,8 +842,8 @@ def ewm_quantile(
 
         rows = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0, 4.0], "x": [1.0, 2.0, 3.0, 4.0, 5.0]})
         # The median of the last 3 units, weighed evenly.
-        med = po.ewm_quantile("x", quantile=0.5, half_life=float("inf"), window_size=3.0)
-        out = po.stream.with_windows(rows, med=med, clock="t", gap_cap=10.0)
+        med = rp.ewm_quantile("x", quantile=0.5, half_life=float("inf"), window_size=3.0)
+        out = rp.stream.with_windows(rows, med=med, clock="t", gap_cap=10.0)
         print(out["med"].round(3).to_list())   # within 0.78% of the exact medians 1, 1, 2, 3, 4
 
     .. code-block:: text
@@ -853,7 +853,7 @@ def ewm_quantile(
     .. rubric:: See also
 
     - :func:`ewm_sum`, which weighs the rows the same way.
-    - :func:`rheon.stream.with_windows`, which computes the operators
+    - :func:`rheon.polars.stream.with_windows`, which computes the operators
       over a stream.
     - `Quantiles and a robust scale
       <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#quantiles-and-a-robust-scale>`_,
@@ -880,7 +880,7 @@ def ewm_quantile(
     while up to half the window is wild, where a root mean square is moved by
     one row. For a residual, which the fit centers on 0::
 
-        mad = po.ewm_quantile(pl.col("resid").abs(), quantile=0.5, half_life=500)
+        mad = rp.ewm_quantile(pl.col("resid").abs(), quantile=0.5, half_life=500)
         scale = mad / 0.6744897501960817
 
     ``closed="left"`` leaves the row's own value out of its window. So a scale
@@ -937,7 +937,7 @@ def ewm_var(
         (``"10s"``, a ``timedelta``, ``pl.duration(seconds=10)``) on a temporal
         one. Required. ``float("inf")`` weighs every row of the window evenly,
         and for this operator needs ``window_size``:
-        :func:`~rheon.stream.with_windows`, or a spec that takes it in
+        :func:`~rheon.polars.stream.with_windows`, or a spec that takes it in
         a formula target, refuses it without one.
     ``window_size``
         The span of clock time a window covers, in the same units as
@@ -946,7 +946,7 @@ def ewm_var(
     ``closed``
         Which ends of the window are in: ``"right"`` (the default, as in
         Polars' ``rolling_*_by``), ``"left"``, ``"both"`` or ``"none"``. The
-        module's table of ``closed`` (:mod:`rheon.ops`) gives each end,
+        module's table of ``closed`` (:mod:`rheon.polars.ops`) gives each end,
         looking back.
     ``min_samples``
         The fewest rows with a value a window must hold to give a value, as in
@@ -966,7 +966,7 @@ def ewm_var(
 
     .. rubric:: Returns
 
-    A ``pl.Expr`` that :func:`rheon.stream.with_windows` computes as a
+    A ``pl.Expr`` that :func:`rheon.polars.stream.with_windows` computes as a
     column, or that a spec takes as its target. Its value is null where the
     window holds fewer than ``min_samples`` rows with a value. It is null
     too where ``partial="null"`` meets a cut window, where a forward window
@@ -1001,7 +1001,7 @@ def ewm_var(
           element-wise, or a column whose name starts with ``@po:``, the prefix
           the operators' own columns carry.
 
-    :func:`rheon.stream.with_windows` refuses the rest when it builds
+    :func:`rheon.polars.stream.with_windows` refuses the rest when it builds
     its query, such as a window looking ahead under ``group`` with no clock
     column.
 
@@ -1010,7 +1010,7 @@ def ewm_var(
     .. code-block:: python
 
         rows = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0, 4.0], "x": [1.0, 2.0, 3.0, 4.0, 5.0]})
-        out = po.stream.with_windows(rows, v=po.ewm_var("x", half_life=1.0), clock="t", gap_cap=10)
+        out = rp.stream.with_windows(rows, v=rp.ewm_var("x", half_life=1.0), clock="t", gap_cap=10)
         polars = rows.select(pl.col("x").ewm_var(half_life=1.0, adjust=False))   # 1 a row
         print(out["v"].round(4).to_list(), polars["x"].round(4).to_list())   # the same as Polars'
 
@@ -1022,7 +1022,7 @@ def ewm_var(
 
     - :func:`ewm_std`, its square root.
     - :func:`ewm_mean`, the mean it is taken about.
-    - :func:`rheon.stream.with_windows`, which computes the operators
+    - :func:`rheon.polars.stream.with_windows`, which computes the operators
       over a stream.
     - `Scale a feature by its spread
       <https://github.com/hgilde/polars-online/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_,
@@ -1096,7 +1096,7 @@ def ewm_std(
         (``"10s"``, a ``timedelta``, ``pl.duration(seconds=10)``) on a temporal
         one. Required. ``float("inf")`` weighs every row of the window evenly,
         and for this operator needs ``window_size``:
-        :func:`~rheon.stream.with_windows`, or a spec that takes it in
+        :func:`~rheon.polars.stream.with_windows`, or a spec that takes it in
         a formula target, refuses it without one.
     ``window_size``
         The span of clock time a window covers, in the same units as
@@ -1105,7 +1105,7 @@ def ewm_std(
     ``closed``
         Which ends of the window are in: ``"right"`` (the default, as in
         Polars' ``rolling_*_by``), ``"left"``, ``"both"`` or ``"none"``. The
-        module's table of ``closed`` (:mod:`rheon.ops`) gives each end,
+        module's table of ``closed`` (:mod:`rheon.polars.ops`) gives each end,
         looking back.
     ``min_samples``
         The fewest rows with a value a window must hold to give a value, as in
@@ -1125,7 +1125,7 @@ def ewm_std(
 
     .. rubric:: Returns
 
-    A ``pl.Expr`` that :func:`rheon.stream.with_windows` computes as a
+    A ``pl.Expr`` that :func:`rheon.polars.stream.with_windows` computes as a
     column, or that a spec takes as its target. Its value is null where the
     window holds fewer than ``min_samples`` rows with a value. It is null
     too where ``partial="null"`` meets a cut window, where a forward window
@@ -1159,7 +1159,7 @@ def ewm_std(
           element-wise, or a column whose name starts with ``@po:``, the prefix
           the operators' own columns carry.
 
-    :func:`rheon.stream.with_windows` refuses the rest when it builds
+    :func:`rheon.polars.stream.with_windows` refuses the rest when it builds
     its query, such as a window looking ahead under ``group`` with no clock
     column.
 
@@ -1168,9 +1168,9 @@ def ewm_std(
     .. code-block:: python
 
         rows = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0, 4.0], "x": [1.0, 2.0, 3.0, 4.0, 5.0]})
-        z = (pl.col("x") - po.ewm_mean("x", half_life=1.0)) / po.ewm_std("x", half_life=1.0)
-        sd = po.ewm_std("x", half_life=1.0)
-        out = po.stream.with_windows(rows, sd=sd, z=z, clock="t", gap_cap=10.0)
+        z = (pl.col("x") - rp.ewm_mean("x", half_life=1.0)) / rp.ewm_std("x", half_life=1.0)
+        sd = rp.ewm_std("x", half_life=1.0)
+        out = rp.stream.with_windows(rows, sd=sd, z=z, clock="t", gap_cap=10.0)
         polars = rows.select(pl.col("x").ewm_std(half_life=1.0, adjust=False))   # 1 a row
         print(out["sd"].round(4).to_list(), polars["x"].round(4).to_list())   # the same as Polars'
         print(out["z"].round(4).to_list())   # x in units of its spread
@@ -1184,7 +1184,7 @@ def ewm_std(
 
     - :func:`ewm_var`, whose square root it is, and whose Notes define it.
     - :func:`ewm_mean`, the mean the spread is taken about.
-    - :func:`rheon.stream.with_windows`, which computes the operators
+    - :func:`rheon.polars.stream.with_windows`, which computes the operators
       over a stream.
     - `Scale a feature by its spread
       <https://github.com/hgilde/polars-online/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_,
@@ -1227,7 +1227,7 @@ def increment(input: str | pl.Expr) -> pl.Expr:
     .. rubric:: Returns
 
     A ``pl.Expr`` of ``x_i - x_{i-1}``, ``x_{i-1}`` the input's last value,
-    that :func:`rheon.stream.with_windows` computes as a column, or
+    that :func:`rheon.polars.stream.with_windows` computes as a column, or
     that a window operator takes as its input. It is a float, in seconds on a
     temporal column. It is null on the first row of each group (of the
     stream, without ``group``) and of each session, on a row whose input is
@@ -1251,7 +1251,7 @@ def increment(input: str | pl.Expr) -> pl.Expr:
     .. code-block:: python
 
         rows = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0], "x": [1.0, None, 3.0, 4.0]})
-        out = po.stream.with_windows(rows, d=po.increment("x"), clock="t", gap_cap=10.0)
+        out = rp.stream.with_windows(rows, d=rp.increment("x"), clock="t", gap_cap=10.0)
         print(out["d"].to_list())   # the null row is skipped: 3 steps from 1, the last value
 
     .. code-block:: text
@@ -1261,7 +1261,7 @@ def increment(input: str | pl.Expr) -> pl.Expr:
     .. rubric:: See also
 
     - :func:`ewm_sum` and :func:`ewm_rate`, which take its steps.
-    - :func:`rheon.stream.with_windows`, which computes the operators
+    - :func:`rheon.polars.stream.with_windows`, which computes the operators
       over a stream.
 
     .. rubric:: Notes

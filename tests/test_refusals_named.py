@@ -10,8 +10,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from rheon import corr
+from rheon import polars as rp
+from rheon.polars import _gbdt
 
 TIER = "essential"
 
@@ -34,19 +35,19 @@ def _frame() -> pl.DataFrame:
 
 def _spec(name: str = "m", **kw: object) -> dict:
     kw.setdefault("half_life", 50.0)
-    return po.spec.ewridge(name, targets=["y"], features=["x0", "x1"], **kw)
+    return rp.spec.ewridge(name, targets=["y"], features=["x0", "x1"], **kw)
 
 
 @pytest.fixture(scope="module")
 def scored() -> pl.DataFrame:
     """Two specs' outputs, for the scoring functions."""
-    bank = po.ModelBank([_spec("m"), _spec("m2", half_life=5.0)])
+    bank = rp.ModelBank([_spec("m"), _spec("m2", half_life=5.0)])
     return bank.fit_predict(_frame())
 
 
 @pytest.fixture(scope="module")
 def gram() -> dict:
-    bank = po.ModelBank([_spec()])
+    bank = rp.ModelBank([_spec()])
     bank.fit_predict(_frame())
     return bank.gram("m")[0]
 
@@ -56,7 +57,7 @@ def gram() -> dict:
 
 @pytest.mark.parametrize("size", [2.5, 2.0, "3", True])
 def test_chunk_size_of_the_wrong_type_is_named(size: object) -> None:
-    bank = po.ModelBank([_spec()])
+    bank = rp.ModelBank([_spec()])
     df = _frame()
     for who, call in [
         ("ModelBank.fit_predict_batches", lambda: bank.fit_predict_batches(df, chunk_size=size)),
@@ -64,17 +65,17 @@ def test_chunk_size_of_the_wrong_type_is_named(size: object) -> None:
         ("df.online.fit_predict", lambda: df.online.fit_predict([_spec()], chunk_size=size)),
         ("lf.online.fit_predict", lambda: df.lazy().online.fit_predict([_spec()], chunk_size=size)),
     ]:
-        with pytest.raises(po.WrongTypeError, match=f"^{who}: chunk_size must be a whole number"):
+        with pytest.raises(rp.WrongTypeError, match=f"^{who}: chunk_size must be a whole number"):
             call()
 
 
 def test_chunk_size_takes_numpy_integers() -> None:
-    out = list(po.ModelBank([_spec()]).fit_predict_batches(_frame(), chunk_size=np.int64(64)))
+    out = list(rp.ModelBank([_spec()]).fit_predict_batches(_frame(), chunk_size=np.int64(64)))
     assert [o.height for o in out] == [64, 64, 64, 8]
 
 
 def test_closed_groups_that_is_not_a_path_is_named() -> None:
-    bank = po.ModelBank([_spec()])
+    bank = rp.ModelBank([_spec()])
     with pytest.raises(TypeError, match="^ModelBank.fit_predict_batches: closed_groups must be"):
         bank.fit_predict_batches(_frame(), closed_groups=5)  # type: ignore[arg-type]
 
@@ -82,8 +83,8 @@ def test_closed_groups_that_is_not_a_path_is_named() -> None:
 # --- skip_learned ----------------------------------------------------------------
 
 
-def _learned_bank() -> po.ModelBank:
-    bank = po.ModelBank([_spec(clock="t", gap_cap=10.0)])
+def _learned_bank() -> rp.ModelBank:
+    bank = rp.ModelBank([_spec(clock="t", gap_cap=10.0)])
     bank.fit_predict(_frame().head(50))
     return bank
 
@@ -96,10 +97,10 @@ def test_skip_learned_names_a_frame_of_the_wrong_type() -> None:
 def test_skip_learned_refuses_a_clock_of_the_wrong_type_as_a_type_error() -> None:
     bank = _learned_bank()
     text = _frame().with_columns(pl.col("t").cast(pl.String))
-    with pytest.raises(po.WrongTypeError, match="which is not a clock"):
+    with pytest.raises(rp.WrongTypeError, match="which is not a clock"):
         bank.skip_learned(text)
     stamped = _frame().with_columns(pl.col("t").cast(pl.Int64).cast(pl.Datetime("us")))
-    with pytest.raises(po.WrongTypeError, match="is temporal in the frame, but it was numeric"):
+    with pytest.raises(rp.WrongTypeError, match="is temporal in the frame, but it was numeric"):
         bank.skip_learned(stamped)
 
 
@@ -107,7 +108,7 @@ def test_skip_learned_refuses_a_clock_of_the_wrong_type_as_a_type_error() -> Non
 
 
 def test_drop_groups_reads_a_lone_string_as_one_key() -> None:
-    bank = po.ModelBank([_spec(group="g")])
+    bank = rp.ModelBank([_spec(group="g")])
     bank.fit_predict(_frame())
     assert bank.drop_groups("ga") == 1  # not the keys "g" and "a"
     assert bank.groups()["group"].to_list() == ["gb"]
@@ -119,8 +120,8 @@ def test_drop_groups_reads_a_lone_string_as_one_key() -> None:
 
 @pytest.mark.parametrize("delay", [None, [1.0], True])
 def test_embargo_names_a_delay_of_the_wrong_type(delay: object) -> None:
-    with pytest.raises(po.WrongTypeError, match="^po.stream.embargo: delay must be a number"):
-        po.stream.embargo(_frame(), clock="t", delay=delay)  # type: ignore[arg-type]
+    with pytest.raises(rp.WrongTypeError, match="^po.stream.embargo: delay must be a number"):
+        rp.stream.embargo(_frame(), clock="t", delay=delay)  # type: ignore[arg-type]
 
 
 # --- po.eval -----------------------------------------------------------------------
@@ -129,8 +130,8 @@ def test_embargo_names_a_delay_of_the_wrong_type(delay: object) -> None:
 @pytest.mark.parametrize("who", ["diebold_mariano", "clark_west"])
 def test_lags_that_is_not_whole_is_named(scored: pl.DataFrame, who: str) -> None:
     names = {"a": "m", "b": "m2"} if who == "diebold_mariano" else {"big": "m", "small": "m2"}
-    fn = getattr(po.eval, who)
-    with pytest.raises(po.WrongTypeError, match=f"^po.eval.{who}: lags must be a whole number"):
+    fn = getattr(rp.eval, who)
+    with pytest.raises(rp.WrongTypeError, match=f"^po.eval.{who}: lags must be a whole number"):
         fn(scored, lags=1.5, **names)
     assert fn(scored, lags=np.int64(2), **names).height == 1
 
@@ -138,29 +139,29 @@ def test_lags_that_is_not_whole_is_named(scored: pl.DataFrame, who: str) -> None
 @pytest.mark.parametrize(
     ("who", "role", "call"),
     [
-        ("metrics", "group", lambda df: po.eval.metrics(df, "m", group="nope")),
-        ("sums", "group", lambda df: po.eval.sums(df, "m", group="nope")),
-        ("sums", "weight", lambda df: po.eval.sums(df, "m", weight="nope")),
+        ("metrics", "group", lambda df: rp.eval.metrics(df, "m", group="nope")),
+        ("sums", "group", lambda df: rp.eval.sums(df, "m", group="nope")),
+        ("sums", "weight", lambda df: rp.eval.sums(df, "m", weight="nope")),
         (
             "window_metrics",
             "clock",
-            lambda df: po.eval.window_metrics(df, "m", clock="nope", every=50.0),
+            lambda df: rp.eval.window_metrics(df, "m", clock="nope", every=50.0),
         ),
         (
             "window_metrics",
             "group",
-            lambda df: po.eval.window_metrics(df, "m", clock="t", every=50.0, group="nope"),
+            lambda df: rp.eval.window_metrics(df, "m", clock="t", every=50.0, group="nope"),
         ),
-        ("seqtest", "group", lambda df: po.eval.seqtest(df, a="m", b="m2", group="nope")),
+        ("seqtest", "group", lambda df: rp.eval.seqtest(df, a="m", b="m2", group="nope")),
         (
             "diebold_mariano",
             "group",
-            lambda df: po.eval.diebold_mariano(df, a="m", b="m2", group="nope"),
+            lambda df: rp.eval.diebold_mariano(df, a="m", b="m2", group="nope"),
         ),
         (
             "clark_west",
             "group",
-            lambda df: po.eval.clark_west(df, big="m", small="m2", group=["nope"]),
+            lambda df: rp.eval.clark_west(df, big="m", small="m2", group=["nope"]),
         ),
     ],
 )
@@ -168,7 +169,7 @@ def test_eval_names_a_missing_column_as_this_librarys_class(
     scored: pl.DataFrame, who: str, role: str, call: object
 ) -> None:
     with pytest.raises(
-        po.ColumnNotFoundError, match=f"^po.eval.{who}: {role} column 'nope' is not in the frame"
+        rp.ColumnNotFoundError, match=f"^po.eval.{who}: {role} column 'nope' is not in the frame"
     ) as e:
         call(scored)  # type: ignore[operator]
     assert isinstance(e.value, ValueError)
@@ -187,8 +188,8 @@ def parquet(tmp_path_factory: pytest.TempPathFactory) -> str:
 @pytest.mark.parametrize(
     ("seed", "kind", "match"),
     [
-        (1.5, po.WrongTypeError, "seed must be a whole number"),
-        ("1", po.WrongTypeError, "seed must be a whole number"),
+        (1.5, rp.WrongTypeError, "seed must be a whole number"),
+        ("1", rp.WrongTypeError, "seed must be a whole number"),
         (-1, ValueError, "seed must be from 0 to 2\\*\\*64 - 1, but it is -1"),
         (2**64, ValueError, "seed must be from 0 to 2\\*\\*64 - 1"),
     ],
@@ -197,11 +198,11 @@ def test_xgboost_matrix_names_a_bad_seed(
     parquet: str, seed: object, kind: type, match: str
 ) -> None:
     with pytest.raises(kind, match=f"^po.gbdt.xgboost_matrix: {match}"):
-        po.gbdt.xgboost_matrix(parquet, label="y", features=["x0"], seed=seed)  # type: ignore[arg-type]
+        _gbdt.xgboost_matrix(parquet, label="y", features=["x0"], seed=seed)  # type: ignore[arg-type]
 
 
 def test_xgboost_matrix_takes_a_numpy_seed(parquet: str) -> None:
-    m = po.gbdt.xgboost_matrix(parquet, label="y", features=["x0"], seed=np.uint64(2**64 - 1))
+    m = _gbdt.xgboost_matrix(parquet, label="y", features=["x0"], seed=np.uint64(2**64 - 1))
     assert m.num_row() == N
 
 
@@ -211,8 +212,8 @@ def test_a_glob_that_matches_nothing_is_file_not_found_for_either_format(
 ) -> None:
     pattern = f"{tmp_path}/none*.{ext}"
     for who, call in [
-        ("xgboost_matrix", lambda: po.gbdt.xgboost_matrix(pattern, label="y")),
-        ("lightgbm_dataset", lambda: po.gbdt.lightgbm_dataset(pattern, label="y")),
+        ("xgboost_matrix", lambda: _gbdt.xgboost_matrix(pattern, label="y")),
+        ("lightgbm_dataset", lambda: _gbdt.lightgbm_dataset(pattern, label="y")),
     ]:
         with pytest.raises(FileNotFoundError, match=f"^po.gbdt.{who}: no file matches"):
             call()
@@ -265,6 +266,6 @@ def test_from_blocks_takes_what_block_means_returns() -> None:
 @pytest.mark.parametrize("columns", [["x0", "x0"], ["x0", 1], [1, -2]])
 def test_gram_subset_and_condition_refuse_a_column_named_twice(gram: dict, columns: list) -> None:
     with pytest.raises(ValueError, match="^po.gram.subset: columns names column 'x0' twice"):
-        po.gram.subset(gram, columns)
+        rp.gram.subset(gram, columns)
     with pytest.raises(ValueError, match="^po.gram.condition: features names column 'x0' twice"):
-        po.gram.condition(gram, features=columns)
+        rp.gram.condition(gram, features=columns)

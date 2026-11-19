@@ -67,7 +67,7 @@ code builds its own data:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Quotes, a row a second, with the three faults planted.
 rng = np.random.default_rng(1)

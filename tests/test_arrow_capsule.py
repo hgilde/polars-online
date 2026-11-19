@@ -17,7 +17,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -62,8 +62,8 @@ def same(got: pl.Series, want: pl.Series) -> None:
 
 def test_the_arrow_output_is_the_polars_output() -> None:
     df = frame()
-    want = po.ModelBank([SPEC]).fit_predict(df)["m"]
-    outs = po.ModelBank([SPEC]).fit_predict_arrow(df)
+    want = rp.ModelBank([SPEC]).fit_predict(df)["m"]
+    outs = rp.ModelBank([SPEC]).fit_predict_arrow(df)
     assert len(outs) == 1
     same(pl.Series(outs[0]), want)
 
@@ -71,14 +71,14 @@ def test_the_arrow_output_is_the_polars_output() -> None:
 def test_the_capsule_carries_the_spec_name() -> None:
     """`pl.Series` does not take a name from the caller here, so the field's
     own name is what arrives -- and it must be the spec's."""
-    outs = po.ModelBank([SPEC]).fit_predict_arrow(frame(40))
+    outs = rp.ModelBank([SPEC]).fit_predict_arrow(frame(40))
     assert outs[0].name == "m"
     assert pl.Series(outs[0]).name == "m"
 
 
 def test_predict_arrow_is_predict() -> None:
     df = frame(160)
-    by_polars, by_arrow = po.ModelBank([SPEC]), po.ModelBank([SPEC])
+    by_polars, by_arrow = rp.ModelBank([SPEC]), rp.ModelBank([SPEC])
     by_polars.fit_predict(df)
     by_arrow.fit_predict_arrow(df)
     want = by_polars.predict(df)["m"]
@@ -89,7 +89,7 @@ def test_predict_arrow_is_predict() -> None:
 def test_a_struct_exports_once() -> None:
     """The interface hands its buffers to the consumer, so a second export
     would give away what has already been given. It refuses instead."""
-    outs = po.ModelBank([SPEC]).fit_predict_arrow(frame(20))
+    outs = rp.ModelBank([SPEC]).fit_predict_arrow(frame(20))
     pl.Series(outs[0])
     with pytest.raises(ValueError, match="already been exported"):
         pl.Series(outs[0])
@@ -98,8 +98,8 @@ def test_a_struct_exports_once() -> None:
 def test_one_struct_per_spec_in_spec_order() -> None:
     second = {**SPEC, "name": "n", "half_life": 10.0}
     df = frame(80)
-    want = po.ModelBank([SPEC, second]).fit_predict(df)
-    outs = po.ModelBank([SPEC, second]).fit_predict_arrow(df)
+    want = rp.ModelBank([SPEC, second]).fit_predict(df)
+    outs = rp.ModelBank([SPEC, second]).fit_predict_arrow(df)
     assert [o.name for o in outs] == ["m", "n"]
     for o in outs:
         same(pl.Series(o), want[o.name])
@@ -109,8 +109,8 @@ def test_the_nested_coef_list_survives() -> None:
     """A null list and a null inside a list are different things; the capsule
     must preserve both, which a flat comparison would not catch."""
     df = frame(120)
-    want = po.ModelBank([SPEC]).fit_predict(df)["m"].struct.unnest()
-    outs = po.ModelBank([SPEC]).fit_predict_arrow(df)
+    want = rp.ModelBank([SPEC]).fit_predict(df)["m"].struct.unnest()
+    outs = rp.ModelBank([SPEC]).fit_predict_arrow(df)
     got = pl.Series(outs[0]).rename("m").struct.unnest()
     assert got["coef"].dtype == pl.List(pl.Float64)
     assert got["coef"].null_count() == want["coef"].null_count()
@@ -120,10 +120,10 @@ def test_the_nested_coef_list_survives() -> None:
 def test_an_empty_frame_gives_an_empty_struct_of_the_right_dtype() -> None:
     """Nothing to feed is not an error, and the schema is still the spec's."""
     df = frame()
-    out = po.ModelBank([SPEC]).fit_predict_arrow(df.clear())
+    out = rp.ModelBank([SPEC]).fit_predict_arrow(df.clear())
     s = pl.Series(out[0])
     assert len(s) == 0
-    assert s.dtype == po.ModelBank([SPEC]).fit_predict(df)["m"].dtype
+    assert s.dtype == rp.ModelBank([SPEC]).fit_predict(df)["m"].dtype
 
 
 def test_a_multi_chunk_frame_equals_the_rechunked_one() -> None:
@@ -132,14 +132,14 @@ def test_a_multi_chunk_frame_equals_the_rechunked_one() -> None:
     df = frame()
     mc = pl.concat([df.slice(0, 50), df.slice(50)], rechunk=False)
     assert mc.n_chunks() > 1
-    got = pl.Series(po.ModelBank([SPEC]).fit_predict_arrow(mc)[0])
-    same(got, po.ModelBank([SPEC]).fit_predict(df.rechunk())["m"])
+    got = pl.Series(rp.ModelBank([SPEC]).fit_predict_arrow(mc)[0])
+    same(got, rp.ModelBank([SPEC]).fit_predict(df.rechunk())["m"])
 
 
 def test_predict_arrow_on_a_bank_that_has_seen_nothing_is_null_throughout() -> None:
     """A group the bank has never learned from scores as null, as ``predict``
     documents -- over the Arrow path too."""
-    out = po.ModelBank([SPEC]).predict_arrow(frame())
+    out = rp.ModelBank([SPEC]).predict_arrow(frame())
     s = pl.Series(out[0]).struct.unnest()
     assert s["pred_y"].null_count() == len(s)
 
@@ -149,11 +149,11 @@ def test_the_arrow_pair_refuses_a_lazyframe_by_name() -> None:
     with pytest.raises(
         TypeError, match="fit_predict_arrow: it takes a frame, but it was given a query"
     ):
-        po.ModelBank([SPEC]).fit_predict_arrow(frame().lazy())  # type: ignore[arg-type]
+        rp.ModelBank([SPEC]).fit_predict_arrow(frame().lazy())  # type: ignore[arg-type]
     with pytest.raises(
         TypeError, match="predict_arrow: it takes a frame, but it was given a query"
     ):
-        po.ModelBank([SPEC]).predict_arrow(frame().lazy())  # type: ignore[arg-type]
+        rp.ModelBank([SPEC]).predict_arrow(frame().lazy())  # type: ignore[arg-type]
 
 
 # --- consumers that are not polars -------------------------------------------
@@ -168,7 +168,7 @@ def test_the_arrow_pair_refuses_a_lazyframe_by_name() -> None:
 def test_the_struct_carries_the_array_dunder_and_not_the_stream_one() -> None:
     """Which dunder a struct carries is what decides the consumers it can reach,
     so it is pinned here rather than inferred from a failure somewhere else."""
-    out = po.ModelBank([SPEC]).fit_predict_arrow(frame(20))[0]
+    out = rp.ModelBank([SPEC]).fit_predict_arrow(frame(20))[0]
     assert hasattr(out, "__arrow_c_array__")
     assert not hasattr(out, "__arrow_c_stream__")
 
@@ -180,7 +180,7 @@ def test_duckdb_refuses_the_struct_directly() -> None:
     support this fails, and the README can promise the direct path again."""
     import duckdb
 
-    out = po.ModelBank([SPEC]).fit_predict_arrow(frame(20))[0]
+    out = rp.ModelBank([SPEC]).fit_predict_arrow(frame(20))[0]
     with pytest.raises(duckdb.InvalidInputException, match="not an accepted Arrow Object"):
         duckdb.from_arrow(out)
 
@@ -191,8 +191,8 @@ def test_duckdb_takes_the_same_values_through_a_series() -> None:
     import duckdb
 
     df = frame(60)
-    want = po.ModelBank([SPEC]).fit_predict(df)["m"].struct.unnest()
-    got = pl.Series(po.ModelBank([SPEC]).fit_predict_arrow(df)[0])
+    want = rp.ModelBank([SPEC]).fit_predict(df)["m"].struct.unnest()
+    got = pl.Series(rp.ModelBank([SPEC]).fit_predict_arrow(df)[0])
 
     rel = duckdb.from_arrow(got)
     assert "pred_y" in rel.columns, "the struct fields should arrive as columns"
@@ -205,7 +205,7 @@ def test_a_struct_handed_to_duckdb_is_still_spent() -> None:
     """The export-once contract is the capsule's, not polars'. Reading through a
     ``Series`` on the way to DuckDB consumes the struct exactly as any other
     consumer would, so a second read refuses rather than double-free."""
-    out = po.ModelBank([SPEC]).fit_predict_arrow(frame(20))[0]
+    out = rp.ModelBank([SPEC]).fit_predict_arrow(frame(20))[0]
     pl.Series(out)
     with pytest.raises(ValueError, match="already been exported"):
         pl.Series(out)

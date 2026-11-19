@@ -16,7 +16,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -81,7 +81,7 @@ def _check(pairs: pl.DataFrame, frame: pl.DataFrame) -> int:
 
 def test_the_pairs_are_numpys_over_the_rows_both_columns_hold():
     frame = _frame()
-    bank = po.ModelBank([po.spec.audit("au", columns=["a", "b", "c", "d"], pairs=True)])
+    bank = rp.ModelBank([rp.spec.audit("au", columns=["a", "b", "c", "d"], pairs=True)])
     bank.fit_predict(frame)
     pairs = bank.audit(table="pairs")
     assert pairs.height == 6
@@ -96,8 +96,8 @@ def test_the_pairs_are_numpys_over_the_rows_both_columns_hold():
 
 def test_each_groups_pairs_and_the_pooled_merge_are_numpys():
     frame = _frame(seed=8)
-    spec = po.spec.audit("au", columns=["a", "b", "c", "d"], pairs=True, group="g")
-    bank = po.ModelBank([spec])
+    spec = rp.spec.audit("au", columns=["a", "b", "c", "d"], pairs=True, group="g")
+    bank = rp.ModelBank([spec])
     for part in frame.iter_slices(700):
         bank.fit_predict(part)
     pairs = bank.audit(table="pairs")

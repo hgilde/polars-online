@@ -21,7 +21,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -45,8 +45,8 @@ B = dict(targets=["y"], features=["x0", "x1"])
 #: One per model family, each with a non-finite value wherever the spec allows
 #: one -- which is what makes this a test of the tagging and not of JSON.
 EVERY_MODEL = {
-    "ewridge": po.spec.ewridge("s", half_life=INF, **B),
-    "ewridge_grid": po.spec.ewridge(
+    "ewridge": rp.spec.ewridge("s", half_life=INF, **B),
+    "ewridge_grid": rp.spec.ewridge(
         "s",
         half_life=[INF, 10.0],
         clock="t",
@@ -57,17 +57,17 @@ EVERY_MODEL = {
         group="g",
         **B,
     ),
-    "rls": po.spec.rls("s", half_life=INF, **B),
-    "lasso": po.spec.lasso("s", half_life=INF, penalties=[0.1, 0.01], **B),
-    "kalman": po.spec.kalman("s", half_life=50.0, coef_half_life=INF, **B),
-    "sgd": po.spec.sgd("s", half_life=INF, clip_gradient=INF, **B),
-    "pa": po.spec.pa("s", half_life=INF, **B),
-    "huber": po.spec.huber("s", half_life=INF, **B),
-    "quantile": po.spec.quantile("s", half_life=INF, quantile=0.5, **B),
-    "ftrl": po.spec.ftrl("s", half_life=INF, **B),
-    "holt": po.spec.holt("s", targets=["y"], half_life=INF, trend_half_life=INF),
-    "ew_cov": po.spec.ew_cov("s", features=["x0", "x1"], stats=["corr"], half_life=INF),
-    "marginal": po.spec.marginal(
+    "rls": rp.spec.rls("s", half_life=INF, **B),
+    "lasso": rp.spec.lasso("s", half_life=INF, penalties=[0.1, 0.01], **B),
+    "kalman": rp.spec.kalman("s", half_life=50.0, coef_half_life=INF, **B),
+    "sgd": rp.spec.sgd("s", half_life=INF, clip_gradient=INF, **B),
+    "pa": rp.spec.pa("s", half_life=INF, **B),
+    "huber": rp.spec.huber("s", half_life=INF, **B),
+    "quantile": rp.spec.quantile("s", half_life=INF, quantile=0.5, **B),
+    "ftrl": rp.spec.ftrl("s", half_life=INF, **B),
+    "holt": rp.spec.holt("s", targets=["y"], half_life=INF, trend_half_life=INF),
+    "ew_cov": rp.spec.ew_cov("s", features=["x0", "x1"], stats=["corr"], half_life=INF),
+    "marginal": rp.spec.marginal(
         "s",
         half_life=INF,
         lags=[1, 2],
@@ -76,12 +76,12 @@ EVERY_MODEL = {
         bin_warm_rows=20,
         **B,
     ),
-    "kmeans": po.spec.kmeans("s", features=["x0", "x1"], n_clusters=2, half_life=INF),
-    "micro": po.spec.micro("s", features=["x0", "x1"], eps=0.5, half_life=INF),
-    "deco": po.spec.deco("s", features=["x0", "x1"], half_life=INF),
-    "seqtest": po.spec.seqtest("s", targets=["y"]),
-    "corrchange": po.spec.corrchange("s", features=["x0", "x1"], window_rows=40),
-    "bocpd": po.spec.bocpd("s", features=["x0"]),
+    "kmeans": rp.spec.kmeans("s", features=["x0", "x1"], n_clusters=2, half_life=INF),
+    "micro": rp.spec.micro("s", features=["x0", "x1"], eps=0.5, half_life=INF),
+    "deco": rp.spec.deco("s", features=["x0", "x1"], half_life=INF),
+    "seqtest": rp.spec.seqtest("s", targets=["y"]),
+    "corrchange": rp.spec.corrchange("s", features=["x0", "x1"], window_rows=40),
+    "bocpd": rp.spec.bocpd("s", features=["x0"]),
 }
 
 
@@ -90,7 +90,7 @@ def test_every_model_exports_without_losing_a_value(name):
     """The export refuses rather than dropping anything, so reaching the end
     of this is the assertion. It is also the audit: a new model with an
     inf-capable config float fails here until its field is annotated."""
-    bank = po.ModelBank([EVERY_MODEL[name]])
+    bank = rp.ModelBank([EVERY_MODEL[name]])
     bank.fit_predict(_df())
     text = bank.write_json()
     json.loads(text)  # and it is strict JSON, not a relaxed dialect
@@ -99,7 +99,7 @@ def test_every_model_exports_without_losing_a_value(name):
 def test_a_non_finite_is_tagged_rather_than_nulled():
     """``half_life=inf`` is the case that made this necessary: it is a
     documented setting, and it lands in the state's own ``decay``."""
-    bank = po.ModelBank([po.spec.ewridge("s", half_life=INF, **B)])
+    bank = rp.ModelBank([rp.spec.ewridge("s", half_life=INF, **B)])
     bank.fit_predict(_df())
     doc = json.loads(bank.write_json())
 
@@ -143,12 +143,12 @@ def test_a_column_that_never_held_a_value_exports(how):
     suite on Python 3.15, 2026-09-29)."""
     df = _df()
     if how == "a target null on every row":
-        spec = po.spec.ewridge("s", half_life=10.0, **B)
+        spec = rp.spec.ewridge("s", half_life=10.0, **B)
         df = df.with_columns(pl.lit(None, dtype=pl.Float64).alias("y"))
     else:
-        spec = po.spec.ewridge("s", half_life=10.0, weight="w", **B)
+        spec = rp.spec.ewridge("s", half_life=10.0, weight="w", **B)
         df = df.with_columns(pl.lit(None, dtype=pl.Float64).alias("w"))
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     doc = json.loads(bank.write_json())
     empty = [c for c in _column_stats(doc) if c["count"] == 0]
@@ -164,7 +164,7 @@ def test_a_coefficient_no_solve_gave_exports_tagged():
     df = _df().with_columns(
         z=pl.when(pl.col("g") == "a").then(None).otherwise(pl.col("y")).cast(pl.Float64)
     )
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "s",
         targets=["y", "z"],
         features=["x0", "x1"],
@@ -172,7 +172,7 @@ def test_a_coefficient_no_solve_gave_exports_tagged():
         group="g",
         group_close="monotone",
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     doc = json.loads(bank.write_json())
     # Group a closed, undrained: one row per Gram, `z`'s on its own.
@@ -185,14 +185,14 @@ def test_the_export_is_the_state_and_not_a_summary():
     """Same envelope, same specs, one entry per (spec, group) as the bank
     holds -- not a digest of them."""
     specs = [
-        po.spec.ewridge("r", group="g", half_life=20.0, **B),
-        po.spec.ew_cov("c", features=["x0", "x1"], stats=["corr"], half_life=20.0, group="g"),
+        rp.spec.ewridge("r", group="g", half_life=20.0, **B),
+        rp.spec.ew_cov("c", features=["x0", "x1"], stats=["corr"], half_life=20.0, group="g"),
     ]
-    bank = po.ModelBank(specs)
+    bank = rp.ModelBank(specs)
     bank.fit_predict(_df())
     doc = json.loads(bank.write_json())
 
-    assert doc["schema_version"] == po.schema_version()
+    assert doc["schema_version"] == rp.schema_version()
     assert doc["specs"] == json.loads(json.dumps(bank.specs))
     assert doc["rows_fed"] == bank.rows_fed
     assert len(doc["states"]) == len(specs), "one block per spec"
@@ -202,7 +202,7 @@ def test_the_export_is_the_state_and_not_a_summary():
 
 
 def test_pretty_and_compact_carry_the_same_thing():
-    bank = po.ModelBank([po.spec.ewridge("s", half_life=INF, **B)])
+    bank = rp.ModelBank([rp.spec.ewridge("s", half_life=INF, **B)])
     bank.fit_predict(_df())
     pretty, compact = bank.write_json(), bank.write_json(pretty=False)
     assert len(compact) < len(pretty)
@@ -210,7 +210,7 @@ def test_pretty_and_compact_carry_the_same_thing():
 
 
 def test_save_json_writes_what_to_json_returns(tmp_path):
-    bank = po.ModelBank([po.spec.ewridge("s", half_life=INF, **B)])
+    bank = rp.ModelBank([rp.spec.ewridge("s", half_life=INF, **B)])
     bank.fit_predict(_df())
     p = tmp_path / "state.json"
     bank.write_json(p)
@@ -220,7 +220,7 @@ def test_save_json_writes_what_to_json_returns(tmp_path):
 def test_the_export_does_not_disturb_the_state(tmp_path):
     """Reading a bank must not change it: the msgpack before and after an
     export is the same bytes, and the bank keeps predicting identically."""
-    bank = po.ModelBank([po.spec.ewridge("s", half_life=INF, group="g", **B)])
+    bank = rp.ModelBank([rp.spec.ewridge("s", half_life=INF, group="g", **B)])
     df = _df()
     bank.fit_predict(df)
     before = bank.save_bytes()
@@ -231,9 +231,9 @@ def test_the_export_does_not_disturb_the_state(tmp_path):
 def test_json_is_an_export_and_not_a_load_format(tmp_path):
     """``load`` takes msgpack. Handing it JSON is refused as what it is --
     not a bank file -- rather than half-read."""
-    bank = po.ModelBank([po.spec.ewridge("s", half_life=20.0, **B)])
+    bank = rp.ModelBank([rp.spec.ewridge("s", half_life=20.0, **B)])
     bank.fit_predict(_df())
     p = tmp_path / "state.json"
     bank.write_json(p)
     with pytest.raises(ValueError, match="not a polars-online bank state file"):
-        po.ModelBank.load(p)
+        rp.ModelBank.load(p)

@@ -1,5 +1,5 @@
 ``rheon.gram``
-======================
+==============
 
 .. automodule:: rheon.gram
    :no-members:

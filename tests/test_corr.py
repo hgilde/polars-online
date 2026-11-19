@@ -10,8 +10,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from rheon import corr
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -163,8 +163,8 @@ def _ridge_gram(constant: bool = False):
     df = pl.DataFrame({f"x{i}": x[:, i] for i in range(3)}).with_columns(
         y=pl.Series(x.sum(axis=1) + rng.standard_normal(n))
     )
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1", "x2"], lam=1.0)
-    bank = po.ModelBank([spec])
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x0", "x1", "x2"], lam=1.0)
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     return bank.gram("m")[0]
 
@@ -175,10 +175,10 @@ def test_nearest_repairs_a_gram_over_its_columns_without_the_intercept():
     po.gram.vif leaves it out, and the result is the repair of the
     correlation over the other columns."""
     g = _ridge_gram()
-    assert g["columns"][0] == po.gram.INTERCEPT
+    assert g["columns"][0] == rp.gram.INTERCEPT
     x, dist, iters = corr.nearest(g)
-    features = [c for c in g["columns"] if c != po.gram.INTERCEPT]
-    want = corr.nearest(po.gram.correlation(po.gram.subset(g, features)))
+    features = [c for c in g["columns"] if c != rp.gram.INTERCEPT]
+    want = corr.nearest(rp.gram.correlation(rp.gram.subset(g, features)))
     assert x.shape == (3, 3)
     assert np.array_equal(x, want[0]) and dist == want[1] and iters == want[2]
     # The weights are one for each column but the intercept.
@@ -191,8 +191,8 @@ def test_nearest_names_a_constant_feature_of_a_gram():
     g = _ridge_gram(constant=True)
     with pytest.raises(ValueError, match=r"but 'x2' has no variance\. Pass the Gram without"):
         corr.nearest(g)
-    features = [c for c in g["columns"] if c not in (po.gram.INTERCEPT, "x2")]
-    x, _, _ = corr.nearest(po.gram.subset(g, features))
+    features = [c for c in g["columns"] if c not in (rp.gram.INTERCEPT, "x2")]
+    x, _, _ = corr.nearest(rp.gram.subset(g, features))
     assert x.shape == (2, 2)
 
 
@@ -556,11 +556,11 @@ def test_epps_invert_recovers_a_lagged_pair():
     b = np.concatenate([[0.0, 0.0], a[:-2]])
     df = pl.DataFrame({"x0": a, "x1": b})
     L = 8
-    spec = po.spec.ew_cov("c", features=["x0", "x1"], lam=1.0, stats=[], lags=list(range(1, L)))
-    bank = po.ModelBank([spec])
+    spec = rp.spec.ew_cov("c", features=["x0", "x1"], lam=1.0, stats=[], lags=list(range(1, L)))
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     g = bank.gram("c")[0]
-    plain = po.gram.correlation(g)[0, 1]
+    plain = rp.gram.correlation(g)[0, 1]
     assert abs(plain) < 0.1, "attenuated to nothing at scale 1"
     got = corr.epps_invert(g, L=L)
     assert got[0, 1] > 0.7, got[0, 1]
@@ -578,8 +578,8 @@ def test_epps_invert_reads_every_form_of_a_gram(dtype, layout):
     rng = np.random.default_rng(1)
     x = rng.normal(size=(3000, 3))
     df = pl.DataFrame({f"x{i}": x[:, i] for i in range(3)})
-    spec = po.spec.ew_cov("c", features=["x0", "x1", "x2"], lam=1.0, lags=[1, 2])
-    bank = po.ModelBank([spec])
+    spec = rp.spec.ew_cov("c", features=["x0", "x1", "x2"], lam=1.0, lags=[1, 2])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     want = corr.epps_invert(bank.gram("c")[0], L=3)
     got = corr.epps_invert(bank.gram("c", dtype=dtype, layout=layout)[0], L=3)
@@ -593,11 +593,11 @@ def test_epps_invert_at_l_one_is_the_plain_correlation():
     requirement: `L = 1` needs no lags at all (docs/REVIEW-E54-E64.md K3)."""
     x = sample(n=400, k=3, rho=0.4, seed=21)
     df = pl.DataFrame({f"x{i}": x[:, i] for i in range(3)})
-    spec = po.spec.ew_cov("c", features=["x0", "x1", "x2"], lam=1.0, stats=[])
-    bank = po.ModelBank([spec])
+    spec = rp.spec.ew_cov("c", features=["x0", "x1", "x2"], lam=1.0, stats=[])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     g = bank.gram("c")[0]
-    assert np.allclose(corr.epps_invert(g, L=1), po.gram.correlation(g))
+    assert np.allclose(corr.epps_invert(g, L=1), rp.gram.correlation(g))
     with pytest.raises(ValueError, match="L must be at least 1"):
         corr.epps_invert(g, L=0)
 
@@ -614,8 +614,8 @@ def test_mp_edges_at_and_below_the_square_case():
 
 def test_epps_invert_names_a_missing_lag():
     df = pl.DataFrame({"x0": [1.0, 2.0, 3.0], "x1": [2.0, 1.0, 4.0]})
-    bank = po.ModelBank(
-        [po.spec.ew_cov("c", features=["x0", "x1"], lam=1.0, stats=[], lags=[1, 3])]
+    bank = rp.ModelBank(
+        [rp.spec.ew_cov("c", features=["x0", "x1"], lam=1.0, stats=[], lags=[1, 3])]
     )
     bank.fit_predict(df)
     with pytest.raises(ValueError, match="lag 2 is not in the input"):
@@ -654,14 +654,14 @@ def test_matrix_reads_an_array_a_gram_and_a_closed_row():
     since a Gram's correlation is `po.gram.correlation` (task 244)."""
     df = pl.DataFrame({f"x{i}": v for i, v in enumerate(sample(300, 3, 0.5, 15).T)})
     df = df.with_columns(g=pl.int_range(pl.len()) // 150)
-    spec = po.spec.ew_cov(
+    spec = rp.spec.ew_cov(
         "c", features=["x0", "x1", "x2"], lam=1.0, stats=[], group="g", group_close="monotone"
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     row = bank.closed_groups()
     from_row = corr._matrix(row)
-    from_gram = corr._matrix(po.gram.from_row(row))
+    from_gram = corr._matrix(rp.gram.from_row(row))
     assert np.allclose(from_row, from_gram)
     assert np.allclose(corr._matrix(from_row), from_row)
     assert np.allclose(np.diag(from_row), 1.0)

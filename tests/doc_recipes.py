@@ -128,12 +128,21 @@ def differences(shown: str, printed: str) -> list[str]:
     return problems
 
 
+def with_private_gbdt(code: str) -> str:
+    """A page's code with ``po.gbdt.`` read as the private ``_gbdt`` module,
+    which the package no longer exports (``rheon.polars._gbdt`` is tested, not
+    exposed), and the module itself in the namespace it runs in."""
+    return code.replace("po.gbdt.", "_gbdt.").replace("rp.gbdt.", "_gbdt.")
+
+
 def run(code: str, page: Path, namespace: dict[str, object] | None = None) -> str:
     """What a recipe prints, run in a namespace of its own: an empty one, or
     a copy of ``namespace`` (the README's recipes run in what its *Example
     data* block builds)."""
-    ns: dict[str, object] = {"__name__": "__recipe__", **(namespace or {})}
+    from rheon.polars import _gbdt
+
+    ns: dict[str, object] = {"__name__": "__recipe__", "_gbdt": _gbdt, **(namespace or {})}
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        exec(compile(code, str(page), "exec"), ns)
+        exec(compile(with_private_gbdt(code), str(page), "exec"), ns)
     return buf.getvalue()

@@ -51,7 +51,7 @@ import numpy as np
 import polars as pl
 import statsmodels.api as sm
 
-import rheon as po
+from rheon import polars as rp
 
 CHUNK = 200_000
 
@@ -92,8 +92,8 @@ def numacc_cycled(values: np.ndarray, rows: int, oracle: bool = True) -> list:
         exact = [Fraction(v) for v in values]
         mean = sum(exact) / n0
         ss = sum((e - mean) ** 2 for e in exact)
-    spec = po.spec.ew_cov("c", features=["x"], half_life=float("inf"), stats=["mean", "std"])
-    bank = po.ModelBank([spec])
+    spec = rp.spec.ew_cov("c", features=["x"], half_life=float("inf"), stats=["mean", "std"])
+    bank = rp.ModelBank([spec])
     per_chunk = max(1, CHUNK // n0)
     block = np.tile(values, per_chunk)
     marks = sorted({max(1, c // n0) * n0 for c in checkpoints(rows, first=10 * n0)})
@@ -158,7 +158,7 @@ def _decayed_weights(t: np.ndarray, now: float, half_life: float) -> np.ndarray:
 
 
 def _feed_to_checkpoints(
-    bank: po.ModelBank, stream: Iterator[pl.DataFrame], rows: int, keep: int, read: Callable
+    bank: rp.ModelBank, stream: Iterator[pl.DataFrame], rows: int, keep: int, read: Callable
 ) -> list:
     """Feed ``stream`` and call ``read(fed, tail_frame, next_row)`` once the
     bank has learned each checkpoint's rows, ``tail_frame`` the last ``keep``
@@ -184,7 +184,7 @@ def _feed_to_checkpoints(
     return out
 
 
-def _slopes(bank: po.ModelBank) -> np.ndarray:
+def _slopes(bank: rp.ModelBank) -> np.ndarray:
     """The first target's slopes after the last row learned, intercept left out."""
     return bank.coef()["coef"].to_numpy()[1:]
 
@@ -202,7 +202,7 @@ def ew_cov_decayed(
     Returns ``(rows, mean's relative error, std's relative error)``."""
     level = 1e6
     kw: dict = {"window_size": window} if window is not None else {}
-    spec = po.spec.ew_cov(
+    spec = rp.spec.ew_cov(
         "c",
         features=["x0"],
         clock="t",
@@ -211,7 +211,7 @@ def ew_cov_decayed(
         stats=["mean", "std"],
         **kw,
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     keep = int(64 * half_life * 1.5) + 100 if oracle else 1
 
     def read(fed, frame, nxt):
@@ -253,14 +253,14 @@ def ewridge_no_decay(rows: int, seed: int = 0, oracle: bool = True) -> list:
     cross-products accumulated per chunk in ``math.fsum``, solved by NumPy.
     Returns ``(rows, the largest relative error of a slope)``."""
     level = 100.0
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1", "x2"],
         half_life=float("inf"),
         ridge=0.0,
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     k = 3
     # Sums of z, y, zz', zy over every row, each a list of fsum partials.
     sums: dict[str, list[float]] = {}
@@ -319,7 +319,7 @@ def ewridge_decayed(
     statsmodels' WLS on the last 64 half-lives at their decayed weights.
     Returns ``(rows, the largest relative error of a slope)``."""
     level = 100.0
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1", "x2"],
@@ -329,7 +329,7 @@ def ewridge_decayed(
         ridge=0.0,
         max_rows_between_solves=1,
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     keep = int(64 * half_life * 1.5) + 100 if oracle else 1
 
     def read(fed, frame, nxt):
@@ -349,7 +349,7 @@ def ewridge_decayed(
 # kalman: P stays positive definite and bounded
 
 
-def _kalman_p(bank: po.ModelBank) -> np.ndarray:
+def _kalman_p(bank: rp.ModelBank) -> np.ndarray:
     state = json.loads(bank.write_json(pretty=False))
     found: list = []
 
@@ -376,7 +376,7 @@ def kalman_p(rows: int, seed: int = 0, oracle: bool = True) -> list:
     the smallest eigenvalue, the largest)``, numpy's ``eigvalsh`` on the
     symmetrised matrix, with the asymmetry checked by the caller through the
     ratio of the two (``oracle=False``: ``(rows, P)``, no eigenvalues)."""
-    spec = po.spec.kalman(
+    spec = rp.spec.kalman(
         "m",
         targets=["y"],
         features=["x0", "x1", "x2"],
@@ -385,7 +385,7 @@ def kalman_p(rows: int, seed: int = 0, oracle: bool = True) -> list:
         half_life=500.0,
         coef_half_life=2000.0,
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     out = []
 
     def read(fed, frame, nxt):
@@ -419,7 +419,7 @@ def clock_steady_state(
     h_ns = int(half_life_rows * step_ns)
     origin_ns = 1_704_067_200 * 10**9  # 2024-01-01T00:00:00Z
     if temporal:
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "c",
             features=["x"],
             clock="t",
@@ -428,10 +428,10 @@ def clock_steady_state(
             stats=["mean"],
         )
     else:
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "c", features=["x"], clock="t", gap_cap=3600.0, half_life=h_ns / 1e9, stats=["mean"]
         )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     keep = int(64 * half_life_rows)
     marks = checkpoints(rows - 1)
     out = []

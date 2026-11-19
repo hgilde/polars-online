@@ -201,7 +201,7 @@ def library_names() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
     the output fields ``docs/OUTPUTS.md`` lists."""
     import polars as pl
 
-    import rheon as po
+    from rheon import polars as rp
 
     params: set[str] = set()
     calls: set[str] = set()
@@ -215,14 +215,14 @@ def library_names() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
         skip = ("self", "args", "kwargs", "common", "named", "exprs")
         params.update(p.name for p in sig.parameters.values() if p.name not in skip)
 
-    for module in (po.spec, po.stream, po.eval, po.gram, po.corr, po.sim, po.ops):
+    for module in (rp.spec, rp.stream, rp.eval, rp.gram, rp.corr, rp.sim, rp.ops):
         names = getattr(module, "__all__", None) or [n for n in dir(module) if n[0] != "_"]
         for n in names:
             obj = getattr(module, n, None)
             if callable(obj):
                 add(obj, n)
     for n in ("target", "fit_predict", "predict", "increment"):
-        add(getattr(po, n), n)
+        add(getattr(rp, n), n)
     for n in (
         "ewm_mean",
         "ewm_sum",
@@ -234,8 +234,8 @@ def library_names() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
         "rewm_sum",
         "rewm_rate",
     ):
-        add(getattr(po, n), n)
-    for n, obj in inspect.getmembers(po.ModelBank):
+        add(getattr(rp, n), n)
+    for n, obj in inspect.getmembers(rp.ModelBank):
         if n[0] != "_" and callable(obj):
             add(obj, n)
     for n in ("fit_predict", "predict", "unnest", "with_windows"):
@@ -251,7 +251,7 @@ def _classify(tok: str) -> tuple[str, str] | None:
     """A backticked span as (name, kind): a parameter, a call, an output
     field or a quoted value; None for anything that is not the library's."""
     params, calls, stems = library_names()
-    t = re.sub(r"^(po|pl|bank|lf|df|self|rheon)\.", "", tok.strip())
+    t = re.sub(r"^(po|rp|pl|bank|lf|df|self|rheon)\.", "", tok.strip())
     t = re.sub(r"^(spec|stream|eval|gram|corr|sim|ops|online)\.", "", t)
     if re.fullmatch(r'"[A-Za-z_][\w./-]*"', t):
         return t, "value"

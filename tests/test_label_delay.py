@@ -26,9 +26,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from conftest import run_online
-from rheon import stream
+from rheon import polars as rp
+from rheon.polars import stream
 from test_model_registry import MINIMAL
 
 TIER = "mixed"
@@ -71,13 +71,13 @@ def spec(name="m", *, features=("x",), **kw):
     kw.setdefault("min_weight", 3.0)
     kw.setdefault("standardize", False)
     kw.setdefault("max_rows_between_solves", 1)
-    return po.spec.ewridge(name, targets=["y"], features=list(features), **kw)
+    return rp.spec.ewridge(name, targets=["y"], features=list(features), **kw)
 
 
 def doubled(df, delay, **kw):
     """The same fit through `po.stream.embargo`: the oracle E47 names."""
     frame_ = stream.embargo(df, clock="t", delay=delay)
-    bank = po.ModelBank([spec(weight=stream.ROLE + "_weight", **kw)])
+    bank = rp.ModelBank([spec(weight=stream.ROLE + "_weight", **kw)])
     out = bank.fit_predict(frame_)
     return out.filter(pl.col(stream.ROLE) == "predict"), bank
 
@@ -86,10 +86,10 @@ class TestItIsTheDoubledStream:
     @pytest.mark.parametrize("delay", [1.0, 5.0, 40.0])
     def test_every_field_matches_the_oracle_to_the_bit(self, delay):
         df = frame()
-        native = po.ModelBank([spec(embargo=delay)]).fit_predict(df)
+        native = rp.ModelBank([spec(embargo=delay)]).fit_predict(df)
         oracle, _ = doubled(df, delay)
         a, b = native["m"].struct, oracle["m"].struct
-        for field in po.spec.output_fields(spec(embargo=delay)):
+        for field in rp.spec.output_fields(spec(embargo=delay)):
             # The lists ride a cadence; the reason is an enum, not a number;
             # and `settled_frac` reads the clock *before* the row, where the
             # embargo frame puts a maturing row's learn copy at the same clock
@@ -128,12 +128,12 @@ class TestItIsTheDoubledStream:
         weight-free half once asserted *disagreement*, for a reason that was
         the diagnostics' defect rather than the oracle's (S28)."""
         df = frame(n=600, seed=1)
-        native = po.ModelBank([spec(embargo=7.0, **kw)]).fit_predict(df)
+        native = rp.ModelBank([spec(embargo=7.0, **kw)]).fit_predict(df)
         oracle, _ = doubled(df, 7.0, **kw)
         a, b = native["m"].struct, oracle["m"].struct
         predicted = {"pred_y", "resid_y", "weight_sum"}
         parted = []
-        for field in po.spec.output_fields(spec(embargo=7.0, **kw)):
+        for field in rp.spec.output_fields(spec(embargo=7.0, **kw)):
             # The lists ride a cadence; the reason is an enum, not a number.
             if field in ("coef", "support_coef", "withheld_reason"):
                 continue
@@ -156,10 +156,10 @@ class TestItIsTheDoubledStream:
         x = np.arange(12, dtype=float)
         x[3] = np.nan
         df = pl.DataFrame({"x": x, "y": 2 * np.nan_to_num(x) + 1})
-        s = po.spec.ewridge(
+        s = rp.spec.ewridge(
             "m", targets=["y"], features=["x"], half_life=1e9, min_weight=0.0, embargo=2
         )
-        weight_sum = po.ModelBank([s]).fit_predict(df)["m"].struct.field("weight_sum").to_list()
+        weight_sum = rp.ModelBank([s]).fit_predict(df)["m"].struct.field("weight_sum").to_list()
         # Row 2 is released at row 4, two rows on, across the skipped row 3.
         assert weight_sum[4] == pytest.approx(3.0, abs=1e-6)
         assert weight_sum[3] is None
@@ -172,9 +172,9 @@ class TestItIsTheDoubledStream:
         not."""
         n, delay = 500, 9
         df = frame(n=n, seed=2)
-        native = po.ModelBank([spec(embargo=float(delay))])
+        native = rp.ModelBank([spec(embargo=float(delay))])
         native.fit_predict(df)
-        matured = po.ModelBank([spec()])
+        matured = rp.ModelBank([spec()])
         matured.fit_predict(df.head(n - delay))
         assert native.coef("m")["coef"].to_list() == matured.coef("m")["coef"].to_list()
         assert native.gram("m")[0]["weight_sum"] == matured.gram("m")[0]["weight_sum"]
@@ -218,7 +218,7 @@ class TestItClosesTheLeak:
 
 
 def _oos_r2(df, s):
-    out = po.ModelBank([s]).fit_predict(df)
+    out = rp.ModelBank([s]).fit_predict(df)
     pred = out[s["name"]].struct.field("pred_y").to_numpy()
     y = df["y"].to_numpy()
     ok = np.isfinite(pred)
@@ -239,8 +239,8 @@ class TestTheStreamContract:
         def fields(frame_):
             return frame_.select("m").unnest("m").drop("coef", "support_coef")
 
-        one = fields(po.ModelBank([s]).fit_predict(df))
-        bank = po.ModelBank([s])
+        one = fields(rp.ModelBank([s]).fit_predict(df))
+        bank = rp.ModelBank([s])
         many = fields(
             pl.concat([bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)])
         )
@@ -249,12 +249,12 @@ class TestTheStreamContract:
     def test_the_buffer_survives_a_save_and_load(self, tmp_path):
         df = frame(n=400, seed=6)
         s = spec(embargo=13.0)
-        whole = po.ModelBank([s]).fit_predict(df)
-        part = po.ModelBank([s])
+        whole = rp.ModelBank([s]).fit_predict(df)
+        part = rp.ModelBank([s])
         part.fit_predict(df.head(200))
         part.save(tmp_path / "b.state")
         # The buffer is not empty at the cut: 13 clock units of rows.
-        resumed = po.ModelBank.load(tmp_path / "b.state")
+        resumed = rp.ModelBank.load(tmp_path / "b.state")
         rest = resumed.fit_predict(df.tail(200))
         assert (
             rest.select("m")
@@ -269,9 +269,9 @@ class TestTheStreamContract:
         counting, not by the name appearing at all. Since schema 15 a delayed
         stream also keeps `pending_clock`, the clock its held rows cover.)"""
         df = frame(n=100)
-        plain = po.ModelBank([spec()])
+        plain = rp.ModelBank([spec()])
         plain.fit_predict(df)
-        delayed = po.ModelBank([spec(embargo=5.0)])
+        delayed = rp.ModelBank([spec(embargo=5.0)])
         delayed.fit_predict(df)
         assert plain.save_bytes().count(b"pending") == 1, "the clock's, and no other"
         assert delayed.save_bytes().count(b"pending") == 3, (
@@ -284,13 +284,13 @@ class TestTheStreamContract:
         labels have not matured, and inventing a deadline would be the leak
         this exists to prevent."""
         df = frame(n=200)
-        plain = po.ModelBank([spec()])
+        plain = rp.ModelBank([spec()])
         plain.fit_predict(df)
-        delayed = po.ModelBank([spec(embargo=30.0)])
+        delayed = rp.ModelBank([spec(embargo=30.0)])
         delayed.fit_predict(df)
         # 30 clock units at one row per unit: the last 30 rows never landed.
         assert delayed.gram("m")[0]["weight_sum"] < plain.gram("m")[0]["weight_sum"]
-        head = po.ModelBank([spec()])
+        head = rp.ModelBank([spec()])
         head.fit_predict(df.head(200 - 30))
         assert delayed.gram("m")[0]["weight_sum"] == pytest.approx(
             head.gram("m")[0]["weight_sum"], rel=1e-12
@@ -304,10 +304,10 @@ class TestTheStreamContract:
         holes = df.with_columns(
             x=pl.when(pl.int_range(pl.len()) % 17 == 3).then(None).otherwise(pl.col("x"))
         )
-        native = po.ModelBank([spec(embargo=8.0)]).fit_predict(holes)
+        native = rp.ModelBank([spec(embargo=8.0)]).fit_predict(holes)
         oracle_frame = stream.embargo(holes, clock="t", delay=8.0)
         oracle = (
-            po.ModelBank([spec(weight=stream.ROLE + "_weight")])
+            rp.ModelBank([spec(weight=stream.ROLE + "_weight")])
             .fit_predict(oracle_frame)
             .filter(pl.col(stream.ROLE) == "predict")
         )
@@ -325,10 +325,10 @@ class TestTheStreamContract:
     def test_groups_each_have_their_own_buffer(self):
         df = frame(n=600, seed=8).with_columns(g=pl.Series([f"g{i % 3}" for i in range(600)]))
         s = spec(embargo=12.0, group="g")
-        together = po.ModelBank([s]).fit_predict(df)
+        together = rp.ModelBank([s]).fit_predict(df)
         for key in ("g0", "g1", "g2"):
             part = df.filter(pl.col("g") == key)
-            alone = po.ModelBank([spec(embargo=12.0)]).fit_predict(part)
+            alone = rp.ModelBank([spec(embargo=12.0)]).fit_predict(part)
             assert (
                 together.filter(pl.col("g") == key)
                 .select("m")
@@ -345,11 +345,11 @@ class TestTheStreamContract:
         # The jump back is what `reset_state` is being asked about: no step
         # back is a late row here.
         s = spec(embargo=10.0, restart_after_step_back=0.0)
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         bank.fit_predict(df)
         # After the reset the stream is the second half alone, minus the
         # rows still waiting at its end.
-        fresh = po.ModelBank([spec(embargo=10.0)])
+        fresh = rp.ModelBank([spec(embargo=10.0)])
         fresh.fit_predict(df.tail(100).with_columns(t=pl.Series(np.arange(100.0))))
         assert bank.gram("m")[0]["weight_sum"] == pytest.approx(
             fresh.gram("m")[0]["weight_sum"], rel=1e-12
@@ -366,11 +366,11 @@ class TestTheStreamContract:
             t=pl.Series(np.concatenate([np.arange(100.0), np.arange(1000.0, 1100.0)])),
         )
         s = spec(embargo=10.0, session="s", session_gap=1.0)
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         bank.fit_predict(df)
         # Every row of the first session was learned from, and every row of
         # the second bar the last ten.
-        no_delay = po.ModelBank([spec(session="s", session_gap=1.0)])
+        no_delay = rp.ModelBank([spec(session="s", session_gap=1.0)])
         no_delay.fit_predict(df.head(190))
         assert bank.gram("m")[0]["weight_sum"] == pytest.approx(
             no_delay.gram("m")[0]["weight_sum"], rel=1e-6
@@ -398,7 +398,7 @@ class TestTheStreamContract:
             # `gap_cap` below the delay: the capped row's own delta is
             # clipped to 2, while the 500 units that passed mature the
             # whole buffer.
-            return po.spec.ew_cov(
+            return rp.spec.ew_cov(
                 "c",
                 features=["x0", "x1"],
                 lags=[1, 2],
@@ -412,16 +412,16 @@ class TestTheStreamContract:
         # The delayed run learns the same rows in the same order as the plain
         # one -- the delay only moves *when* -- so once every row has matured
         # the lagged matrices must agree.
-        plain = po.ModelBank([cov()])
+        plain = rp.ModelBank([cov()])
         plain.fit_predict(df)
-        delayed = po.ModelBank([cov(embargo=delay)])
+        delayed = rp.ModelBank([cov(embargo=delay)])
         delayed.fit_predict(df)
         a = plain.gram("c")[0]
         b = delayed.gram("c")[0]
         # The last few rows of the delayed run are still waiting, so compare
         # the run that stops where its buffer does.
         matured = int(np.searchsorted(t, t[-1] - delay, side="right"))
-        short = po.ModelBank([cov()])
+        short = rp.ModelBank([cov()])
         short.fit_predict(df.head(matured))
         assert np.allclose(b["lag_comoments"], short.gram("c")[0]["lag_comoments"])
         assert not np.allclose(a["lag_comoments"], np.zeros_like(a["lag_comoments"]))
@@ -449,7 +449,7 @@ class TestBreaksCountElapsedTime:
 
     def _learned(self, df, **kw):
         s = spec(embargo=self.DELAY, half_life=1e9, min_weight=0.0, **kw)
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         out = bank.fit_predict(df)
         return np.array(out["m"].struct.field("weight_sum").to_list(), dtype=float), bank
 
@@ -494,11 +494,11 @@ class TestBreaksCountElapsedTime:
         sess = ["a"] * 114 + ["b"] * 6
         df = frame(n=n, seed=24).with_columns(t=pl.Series(t), s=pl.Series(sess))
         kw = dict(half_life=40.0, gap_cap=2.0, session="s", session_gap=1.0, min_weight=0.0)
-        delayed = po.ModelBank([spec(embargo=self.DELAY, **kw)])
+        delayed = rp.ModelBank([spec(embargo=self.DELAY, **kw)])
         delayed.fit_predict(df)
         since = t[-1] - t
         matured = int(np.sum(since >= self.DELAY))
-        plain = po.ModelBank([spec(**kw)])
+        plain = rp.ModelBank([spec(**kw)])
         plain.fit_predict(df.head(matured))
         assert delayed.coef("m")["coef"].to_list() == plain.coef("m")["coef"].to_list()
         assert delayed.gram("m")[0]["weight_sum"] == plain.gram("m")[0]["weight_sum"]
@@ -519,7 +519,7 @@ class TestBreaksCountElapsedTime:
         )
 
         def cov(**kw):
-            return po.spec.ew_cov(
+            return rp.spec.ew_cov(
                 "c",
                 features=["x0", "x1"],
                 lags=[1, 2],
@@ -532,10 +532,10 @@ class TestBreaksCountElapsedTime:
                 **kw,
             )
 
-        delayed = po.ModelBank([cov(embargo=delay)])
+        delayed = rp.ModelBank([cov(embargo=delay)])
         delayed.fit_predict(df)
         matured = int(np.sum(t[-1] - t >= delay))
-        short = po.ModelBank([cov()])
+        short = rp.ModelBank([cov()])
         short.fit_predict(df.head(matured))
         a, b = delayed.gram("c")[0], short.gram("c")[0]
         assert np.allclose(a["lag_comoments"], b["lag_comoments"], rtol=1e-12, atol=1e-15)
@@ -570,8 +570,8 @@ class TestBreaksOnSkippedRows:
     @pytest.mark.parametrize("size", [1, 2, 3, 7, 50, 51, 81])
     def test_chunking_cannot_move_a_break(self, size):
         df = self._df()
-        whole = po.ModelBank([self._spec()]).fit_predict(df)["m"].struct
-        bank = po.ModelBank([self._spec()])
+        whole = rp.ModelBank([self._spec()]).fit_predict(df)["m"].struct
+        bank = rp.ModelBank([self._spec()])
         parts = pl.concat([bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)])[
             "m"
         ].struct
@@ -584,10 +584,10 @@ class TestBreaksOnSkippedRows:
     def test_the_state_is_the_matured_rows(self):
         df = self._df()
         t = df["t"].to_numpy()
-        delayed = po.ModelBank([self._spec(min_weight=0.0)])
+        delayed = rp.ModelBank([self._spec(min_weight=0.0)])
         delayed.fit_predict(df)
         matured = int(np.sum(t[-1] - t >= 6.0))
-        plain = po.ModelBank(
+        plain = rp.ModelBank(
             [spec(gap_cap=2.0, session="s", session_gap=1.0, min_weight=0.0, **self.EVENTS)]
         )
         plain.fit_predict(df.head(matured))
@@ -619,7 +619,7 @@ class TestTheReleaseIsExact:
         df = pl.DataFrame(
             {"t": ns, "x": rng.standard_normal(n), "y": rng.standard_normal(n)}
         ).with_columns(pl.col("t").cast(pl.Datetime("ns")).cast(pl.Datetime(unit)))
-        s = po.spec.ewridge(
+        s = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x"],
@@ -629,7 +629,7 @@ class TestTheReleaseIsExact:
             embargo="2s",
             emit_clocks=True,
         )
-        out = po.ModelBank([s]).fit_predict(df)["m"].struct
+        out = rp.ModelBank([s]).fit_predict(df)["m"].struct
         learned = out.field("learned_clock").cast(pl.Datetime("ns")).cast(pl.Int64).to_list()
         # The newest row at least 2 s before each row, from the integers.
         newest = np.searchsorted(ns, ns - 2_000_000_000, side="right") - 1
@@ -648,7 +648,7 @@ class TestTheReleaseIsExact:
         t = np.arange(n) / 10.0
         df = frame(n=n, seed=13).with_columns(t=pl.Series(t))
         s = spec(embargo=embargo, gap_cap=1.0, emit_clocks=True)
-        learned = po.ModelBank([s]).fit_predict(df)["m"].struct.field("learned_clock").to_list()
+        learned = rp.ModelBank([s]).fit_predict(df)["m"].struct.field("learned_clock").to_list()
         want = []
         for row in range(n):
             back = [u for u in range(row) if t[row] - t[u] >= embargo]
@@ -664,7 +664,7 @@ class TestTheSurfaces:
     def test_the_lazy_plan_and_the_bank_agree(self):
         df = frame(n=300, seed=11)
         s = spec(embargo=6.0)
-        bank = po.ModelBank([s]).fit_predict(df)
+        bank = rp.ModelBank([s]).fit_predict(df)
         lazy = df.lazy().online.fit_predict([s]).collect()
         assert lazy.select("m").unnest("m").equals(bank.select("m").unnest("m"), null_equal=True)
 
@@ -681,7 +681,7 @@ class TestTheSurfaces:
         def fields(frame_):
             return frame_.select("m").unnest("m").drop("coef", "support_coef")
 
-        want = fields(po.ModelBank([s]).fit_predict(df))
+        want = fields(rp.ModelBank([s]).fit_predict(df))
         assert fields(pl.read_parquet(out)).equals(want, null_equal=True)
 
         cli_out = tmp_path / "cli.parquet"
@@ -844,7 +844,7 @@ class TestDriftUnderAnEmbargo:
             drift_action=action,
             half_life=[50.0, 100.0] if grid else 50.0,
         )
-        fields = po.spec.output_fields(spec(**kw))
+        fields = rp.spec.output_fields(spec(**kw))
         drift = [f for f in fields if f.startswith("drift_")]
         weight = [f for f in fields if f.startswith("weight_sum")]
         assert len(drift) == (2 if grid else 1) and len(weight) == len(drift), fields
@@ -855,8 +855,8 @@ class TestDriftUnderAnEmbargo:
             assert rows, "the detector never fired"
             return rows[0]
 
-        plain = po.ModelBank([spec(**kw)]).fit_predict(df)["m"].struct.unnest()
-        held = po.ModelBank([spec(embargo=delay, **kw)]).fit_predict(df)["m"].struct.unnest()
+        plain = rp.ModelBank([spec(**kw)]).fit_predict(df)["m"].struct.unnest()
+        held = rp.ModelBank([spec(embargo=delay, **kw)]).fit_predict(df)["m"].struct.unnest()
         assert first_flag(plain) == 300, "the break is where the data put it"
         # Row 300's label is released by the row `delay` clock units later.
         released_at = 300 + int(delay)
@@ -901,8 +901,8 @@ class TestEmbargoItself:
         assert stream.ROLE not in mine.columns and f"{stream.ROLE}_weight" not in mine.columns
         renamed = default.rename({stream.ROLE: "r", f"{stream.ROLE}_weight": "r_weight"})
         assert mine.equals(renamed)
-        a = po.ModelBank([spec(weight=f"{stream.ROLE}_weight")]).fit_predict(default)
-        b = po.ModelBank([spec(weight="r_weight")]).fit_predict(mine)
+        a = rp.ModelBank([spec(weight=f"{stream.ROLE}_weight")]).fit_predict(default)
+        b = rp.ModelBank([spec(weight="r_weight")]).fit_predict(mine)
         assert a["m"].equals(b["m"], null_equal=True)
         assert a["m"].struct.field("pred_y").drop_nulls().len() > 40
         # Lazily too.
@@ -931,11 +931,11 @@ class TestEmbargoItself:
         out = stream.embargo(by_group, clock="t", delay=3.0)
         assert out.filter(pl.col("g") == "b")["t"].is_sorted() is False
         with pytest.raises(ValueError, match="steps back"):
-            po.ModelBank([s]).fit_predict(out)
+            rp.ModelBank([s]).fit_predict(out)
         fixed = stream.embargo(by_group.sort("t", maintain_order=True), clock="t", delay=3.0)
         for g in ("a", "b"):
             assert fixed.filter(pl.col("g") == g)["t"].is_sorted()
-        assert po.ModelBank([s]).fit_predict(fixed).height == 40
+        assert rp.ModelBank([s]).fit_predict(fixed).height == 40
 
     def test_it_gives_back_the_kind_of_frame_it_was_given(self):
         df = pl.DataFrame({"t": [0.0, 1.0], "x": [1.0, 2.0]})
@@ -965,7 +965,7 @@ class TestEmbargoItself:
         want = [float(v) for v in df["w"].cast(pl.Float64)]
         assert out["w"].to_list() == [0.0, want[0], 0.0, want[1], 0.0, want[2]]
         s = spec(weight="w", gap_cap=5.0)
-        assert po.ModelBank([s]).fit_predict(out.with_columns(y=pl.col("x"))).height == 6
+        assert rp.ModelBank([s]).fit_predict(out.with_columns(y=pl.col("x"))).height == 6
 
     def test_a_clock_that_is_neither_a_number_nor_a_time_is_refused_by_name(self):
         """Review round 4 (YB15): a String clock failed inside polars
@@ -1008,7 +1008,7 @@ class TestEmbargoItself:
             yield rows
 
         lf = register_io_source(io_source=source, schema=rows.schema)
-        with pytest.warns(po.ConsumedSourceWarning, match="^po\\.stream\\.embargo: .*input twice"):
+        with pytest.warns(rp.ConsumedSourceWarning, match="^po\\.stream\\.embargo: .*input twice"):
             plan = stream.embargo(lf, clock="t", delay=1.0)
         # What the warning is about: half the doubled stream is missing.
         assert plan.collect().height == 3
@@ -1016,7 +1016,7 @@ class TestEmbargoItself:
         import warnings
 
         with warnings.catch_warnings():
-            warnings.simplefilter("error", po.ConsumedSourceWarning)
+            warnings.simplefilter("error", rp.ConsumedSourceWarning)
             assert stream.embargo(rows.lazy(), clock="t", delay=1.0).collect().height == 6
         doc = " ".join((stream.embargo.__doc__ or "").split())
         assert "reads its input twice" in doc
@@ -1103,15 +1103,15 @@ def kind_spec(kind: str, **kw) -> dict:
         # Seeded inside the stream's first rows, so most rows are scored.
         a["warm_rows"] = 20
     a.update(kw)
-    return getattr(po.spec, builder)("m", **{k: v for k, v in a.items() if v is not None})
+    return getattr(rp.spec, builder)("m", **{k: v for k, v in a.items() if v is not None})
 
 
 def has_coef(kind: str) -> bool:
-    return "coef" in po.spec.output_fields(kind_spec(kind))
+    return "coef" in rp.spec.output_fields(kind_spec(kind))
 
 
 def unnested(spec: dict, df: pl.DataFrame) -> pl.DataFrame:
-    return po.ModelBank([spec], threads=1).fit_predict(df).select("m").unnest("m")
+    return rp.ModelBank([spec], threads=1).fit_predict(df).select("m").unnest("m")
 
 
 def kind_params(names, essential):
@@ -1301,7 +1301,7 @@ def score_as_matured(
     out. With ``own_step`` the row is scored at the clock one of its own
     steps after the last matured row instead. ``kw`` goes to the spec."""
     t = df["t"].to_numpy()
-    bank = po.ModelBank([matured_case(case, **kw)], threads=1)
+    bank = rp.ModelBank([matured_case(case, **kw)], threads=1)
     fed, got = 0, {}
     for i in range(df.height):
         k = matured_rows(t, i, MATURED_DELAY)
@@ -1404,11 +1404,11 @@ class TestScoredAsTheMaturedRowsWouldScoreIt:
         df = matured_frame(case)
         t = df["t"].to_numpy()
         for m in (60, 150, 240):
-            bank = po.ModelBank([matured_case(case, embargo=MATURED_DELAY)], threads=1)
+            bank = rp.ModelBank([matured_case(case, embargo=MATURED_DELAY)], threads=1)
             bank.fit_predict(df.head(m))
             k = matured_rows(t, m - 1, MATURED_DELAY)
             assert m - k >= 3, (m, k)
-            plain = po.ModelBank([matured_case(case)], threads=1)
+            plain = rp.ModelBank([matured_case(case)], threads=1)
             plain.fit_predict(df.head(k))
             for i in range(m, m + 10):
                 row = df.slice(i, 1)
@@ -1431,15 +1431,15 @@ class TestScoredAsTheMaturedRowsWouldScoreIt:
         spec_ = matured_case(case, embargo=MATURED_DELAY)
         if has_coef(MATURED_CASES[case][0]):
             spec_ = matured_case(case, embargo=MATURED_DELAY, coef_every=0)
-        whole = po.ModelBank([spec_], threads=1).fit_predict(df)
+        whole = rp.ModelBank([spec_], threads=1).fit_predict(df)
         for size in (1, 7, 64):
-            bank = po.ModelBank([spec_], threads=1)
+            bank = rp.ModelBank([spec_], threads=1)
             parts = []
             for start in range(0, df.height, size):
                 parts.append(bank.fit_predict(df.slice(start, size)))
                 if size == 64:
                     bank.save(tmp_path / "b.state")
-                    bank = po.ModelBank.load(tmp_path / "b.state")
+                    bank = rp.ModelBank.load(tmp_path / "b.state")
             assert pl.concat(parts).equals(whole, null_equal=True), size
 
     def test_a_fractional_clock_is_scored_within_rounding(self):
@@ -1450,7 +1450,7 @@ class TestScoredAsTheMaturedRowsWouldScoreIt:
         t = df["t"].to_numpy()
         delay = MATURED_DELAY * 0.1
         held = unnested(matured_case("holt", embargo=delay), df)["pred_y"].to_numpy()
-        plain = po.ModelBank([matured_case("holt")], threads=1)
+        plain = rp.ModelBank([matured_case("holt")], threads=1)
         fed, want = 0, np.full(df.height, np.nan)
         for i in range(df.height):
             k = matured_rows(t, i, delay)
@@ -1558,7 +1558,7 @@ def doubled_against_native(kind: str, delay: float, **kw) -> tuple[pl.DataFrame,
     frame_ = stream.embargo(df, clock="t", delay=delay)
     spec_ = kind_spec(kind, clock="t", gap_cap=1e9, weight=stream.ROLE + "_weight", **kw)
     oracle = (
-        po.ModelBank([spec_], threads=1)
+        rp.ModelBank([spec_], threads=1)
         .fit_predict(frame_)
         .filter(pl.col(stream.ROLE) == "predict")
         .select("m")
@@ -1623,7 +1623,7 @@ QUIET = frozenset({"holt", "ftrl"})
 
 
 def scores_a_target(kind: str) -> bool:
-    return any(f.startswith("pred_y") for f in po.spec.output_fields(kind_spec(kind)))
+    return any(f.startswith("pred_y") for f in rp.spec.output_fields(kind_spec(kind)))
 
 
 def short_frame(kind: str) -> pl.DataFrame:
@@ -1700,7 +1700,7 @@ class TestADelayShorterThanEveryStep:
         plain = unnested(kind_spec(kind, weight="w", **kw), df)
         doubled_ = stream.embargo(df, clock="t", delay=SHORT, weight="w")
         oracle = (
-            po.ModelBank([kind_spec(kind, weight="w", **kw)], threads=1)
+            rp.ModelBank([kind_spec(kind, weight="w", **kw)], threads=1)
             .fit_predict(doubled_)
             .filter(pl.col(stream.ROLE) == "predict")
             .select("m")
@@ -1719,7 +1719,7 @@ class TestADelayShorterThanEveryStep:
         kw = dict(clock="t", gap_cap=1e9, half_life=math.inf, weight="w")
         plain = unnested(kind_spec("holt", **kw), df)
         oracle = (
-            po.ModelBank([kind_spec("holt", **kw)], threads=1)
+            rp.ModelBank([kind_spec("holt", **kw)], threads=1)
             .fit_predict(stream.embargo(df, clock="t", delay=SHORT, weight="w"))
             .filter(pl.col(stream.ROLE) == "predict")
             .select("m")

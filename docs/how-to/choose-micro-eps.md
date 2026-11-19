@@ -60,7 +60,7 @@ fits again with `macro_link=2`. It prints what each finds on the last 1,000 rows
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Three round clusters of spread 0.3, 5 apart.
 rng = np.random.default_rng(6)

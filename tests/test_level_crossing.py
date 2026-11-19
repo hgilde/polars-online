@@ -14,7 +14,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 from test_model_registry import REGRESSIONS
 
 TIER = "essential"
@@ -71,7 +71,7 @@ def build(model: str, extra: dict, **kw) -> dict:
     opts.update(kw)
     if opts.get("features", ()) is None:
         del opts["features"]  # a model with no features keyword (holt)
-    return getattr(po.spec, model)("m", **opts)
+    return getattr(rp.spec, model)("m", **opts)
 
 
 def running_hit_rate(pred: np.ndarray, y: np.ndarray, lam: float) -> np.ndarray:
@@ -98,7 +98,7 @@ def running_hit_rate(pred: np.ndarray, y: np.ndarray, lam: float) -> np.ndarray:
 
 def _fit(model: str, extra: dict, df: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     """The prediction and the running ``hit_rate`` on each row."""
-    out = po.ModelBank([build(model, extra)]).fit_predict(df)["m"].struct.unnest()
+    out = rp.ModelBank([build(model, extra)]).fit_predict(df)["m"].struct.unnest()
     pred = next(c for c in out.columns if c.startswith("pred_"))
     hit = next(c for c in out.columns if c.startswith("hit_rate_"))
     return out[pred].to_numpy().astype(float), out[hit].to_numpy().astype(float)
@@ -173,7 +173,7 @@ def test_a_least_squares_fit_is_numpys_across_the_crossing(model, extra):
     2.6e-13 beside the crossing."""
     df = crossing(n=2400, seed=19)
     rows = range(200, 2400, 50)
-    out = po.ModelBank([build(model, extra)]).fit_predict(df)["m"].struct.unnest()
+    out = rp.ModelBank([build(model, extra)]).fit_predict(df)["m"].struct.unnest()
     pred_field = next(c for c in out.columns if c.startswith("pred_"))
     got = out[pred_field].to_numpy()[list(rows)]
     want = _decayed_least_squares(df, rows)
@@ -195,7 +195,7 @@ def test_a_quantile_fit_is_quantregs_across_the_crossing():
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": level, "y": y})
     z = sm.add_constant(np.column_stack([x, level]))
     for tau in (0.25, 0.75):
-        spec = po.spec.quantile(
+        spec = rp.spec.quantile(
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
@@ -203,7 +203,7 @@ def test_a_quantile_fit_is_quantregs_across_the_crossing():
             half_life=float("inf"),
             max_rows_between_solves=1,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         got = bank.coef("m")["coef"].to_numpy()
         want = np.asarray(sm.QuantReg(y, z).fit(q=tau).params)

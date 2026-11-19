@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
 N = 2000
 FEATURES = ["x0", "x1", "x2"]
@@ -35,21 +35,21 @@ def every_model(features: list[str], half_life: float = 200.0, **kw: Any) -> lis
     plus the three that centre only under ``standardize``, without it."""
     c = dict(targets=["y"], features=features, half_life=half_life, **kw)
     return [
-        po.spec.ewridge("ewridge", **c),
-        po.spec.ewridge("ewridge_std", standardize=True, **c),
-        po.spec.lasso("lasso", penalties=[1e-3], **c),
-        po.spec.huber("huber", **c),
-        po.spec.quantile("quantile", quantile=0.5, **c),
-        po.spec.kalman("kalman", coef_half_life=1e6, **c),
-        po.spec.kalman("kalman_raw", coef_half_life=1e6, standardize=False, **c),
-        po.spec.rls("rls", **c),
-        po.spec.sgd("sgd", **c),
-        po.spec.sgd("sgd_raw", standardize=False, **c),
-        po.spec.pa("pa", **c),
-        po.spec.pa("pa_raw", standardize=False, **c),
-        po.spec.ftrl("ftrl", **c),
-        po.spec.marginal("marginal", **c),
-        po.spec.ew_cov(
+        rp.spec.ewridge("ewridge", **c),
+        rp.spec.ewridge("ewridge_std", standardize=True, **c),
+        rp.spec.lasso("lasso", penalties=[1e-3], **c),
+        rp.spec.huber("huber", **c),
+        rp.spec.quantile("quantile", quantile=0.5, **c),
+        rp.spec.kalman("kalman", coef_half_life=1e6, **c),
+        rp.spec.kalman("kalman_raw", coef_half_life=1e6, standardize=False, **c),
+        rp.spec.rls("rls", **c),
+        rp.spec.sgd("sgd", **c),
+        rp.spec.sgd("sgd_raw", standardize=False, **c),
+        rp.spec.pa("pa", **c),
+        rp.spec.pa("pa_raw", standardize=False, **c),
+        rp.spec.ftrl("ftrl", **c),
+        rp.spec.marginal("marginal", **c),
+        rp.spec.ew_cov(
             "ew_cov", features=features, half_life=half_life, **{k: v for k, v in kw.items()}
         ),
     ]
@@ -441,7 +441,7 @@ def findings(df: pl.DataFrame, specs: list[dict[str, Any]], chunks: int = 1) -> 
     """``check()`` after feeding ``df`` in ``chunks`` slices."""
     import warnings
 
-    bank = po.ModelBank(specs)
+    bank = rp.ModelBank(specs)
     size = max(1, -(-df.height // chunks))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -459,7 +459,7 @@ def audit_spec(df: pl.DataFrame, **kw: Any) -> dict[str, Any]:
     cols = [c for c in df.columns if c not in ("t", "g")]
     if "g" in df.columns:
         kw.setdefault("group", "g")
-    return po.spec.audit("audit", columns=cols, clock="t", gap_cap=10.0, pairs=True, **kw)
+    return rp.spec.audit("audit", columns=cols, clock="t", gap_cap=10.0, pairs=True, **kw)
 
 
 def audit_findings(df: pl.DataFrame, chunks: int = 1, **kw: Any) -> pl.DataFrame:

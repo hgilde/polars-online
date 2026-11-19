@@ -27,7 +27,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -60,14 +60,14 @@ def _spec(kind: str, **kw):
     )
     common.update(kw)
     if kind == "holt":
-        return po.spec.holt("m", **common)
+        return rp.spec.holt("m", **common)
     if kind == "rls":
-        return po.spec.rls("m", features=["x"], delta=1.0, **common)
-    return po.spec.sgd("m", features=["x"], learning_rate=0.02, **common)
+        return rp.spec.rls("m", features=["x"], delta=1.0, **common)
+    return rp.spec.sgd("m", features=["x"], learning_rate=0.02, **common)
 
 
 def _fit(kind: str, df: pl.DataFrame, **kw) -> pl.DataFrame:
-    return po.ModelBank([_spec(kind, **kw)]).fit_predict(df)["m"].struct.unnest()
+    return rp.ModelBank([_spec(kind, **kw)]).fit_predict(df)["m"].struct.unnest()
 
 
 @pytest.mark.parametrize("kind", ["rls", "sgd", "holt"])

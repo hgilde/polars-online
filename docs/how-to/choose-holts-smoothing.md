@@ -66,7 +66,7 @@ weighted mean. This code builds its own data:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # A line of slope 0.05 in noise, one row a clock unit.
 rng = np.random.default_rng(2)
@@ -159,7 +159,7 @@ import functools
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # A local linear trend: the slope wanders, and the level follows it with steps of its own.
 rng = np.random.default_rng(12)

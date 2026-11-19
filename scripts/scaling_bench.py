@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 WORKLOAD = """
-import os, time, numpy as np, polars as pl, rheon as po
+import os, time, numpy as np, polars as pl, rheon.polars as po
 rows, k, groups = {rows}, 20, 64
 rng = np.random.default_rng(0)
 d = {{"t": np.arange(float(rows))}}

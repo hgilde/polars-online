@@ -42,8 +42,8 @@ import polars as pl
 import pytest
 
 import child
-import rheon as po
 from polars_version import needs_polars
+from rheon import polars as rp
 
 TIER = "mixed"
 REPO = Path(__file__).resolve().parent.parent
@@ -315,10 +315,10 @@ def measure_fields() -> dict[str, float]:
     built: dict[str, dict] = {}
     out: dict[str, float] = {}
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", po.ReadinessWarning)
+        warnings.simplefilter("ignore", rp.ReadinessWarning)
         for name, builder, kw, reads in WORKLOAD:
-            built[name] = getattr(po.spec, builder)(name, **kw)
-            result = po.ModelBank([built[r] for r in reads] + [built[name]]).fit_predict(df)
+            built[name] = getattr(rp.spec, builder)(name, **kw)
+            result = rp.ModelBank([built[r] for r in reads] + [built[name]]).fit_predict(df)
             col = result[name]
             for field in col.struct.fields:
                 size = col.struct.field(field).estimated_size()
@@ -394,7 +394,7 @@ PLATFORM = {"linux": "linux", "darwin": "darwin", "win32": "windows"}[sys.platfo
 CHILD = textwrap.dedent(
     """
     import gc, json, sys, threading, time
-    import polars as pl, rheon as po, psutil
+    import polars as pl, rheon.polars as po, psutil
 
     proc = psutil.Process()
     case, src, dst, spec = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4])
@@ -451,36 +451,36 @@ def _frame(rows: int, k: int, m: int, seed: int = 0) -> pl.DataFrame:
 def _spec(case: str) -> tuple[dict, pl.DataFrame]:
     if case == "ewridge_10_targets":
         df = _frame(200_000, 20, 10)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m", targets=[f"y{j}" for j in range(10)], features=[f"x{j}" for j in range(20)],
             clock="t", half_life=1000.0, gap_cap=100.0,
         )  # fmt: skip
     elif case == "ew_cov_wide":
         df = _frame(200_000, 20, 1)
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "m", features=[f"x{j}" for j in range(20)], clock="t", half_life=1000.0, gap_cap=100.0
         )
     elif case == "predict_wide":
         df = _frame(20_000, 1_000, 1)
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m", targets=["y0"], features=[f"x{j}" for j in range(1_000)], clock="t",
             half_life=1000.0, gap_cap=100.0, learning_rate=0.001,
         )  # fmt: skip
     elif case == "ewridge_window":
         df = _frame(200_000, 20, 1)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m", targets=["y0"], features=[f"x{j}" for j in range(20)], clock="t",
             half_life=1000.0, gap_cap=100.0, window_size=20_000.0,
         )  # fmt: skip
     elif case == "bocpd_runs":
         df = _frame(50_000, 4, 1)
-        spec = po.spec.bocpd(
+        spec = rp.spec.bocpd(
             "m", features=[f"x{j}" for j in range(4)], clock="t", gap_cap=100.0,
             prune_below=1e-6, max_run=200,
         )  # fmt: skip
     else:
         df = _frame(STREAMED_ROWS, 5, 1)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m", targets=["y0"], features=[f"x{j}" for j in range(5)], clock="t",
             half_life=1000.0, gap_cap=100.0,
         )  # fmt: skip
@@ -610,7 +610,7 @@ def test_the_peak_memory_of_the_standard_runs_within_its_budget(tmp_path):
 CHAIN_CHILD = textwrap.dedent(
     """
     import gc, json, sys, threading, time
-    import polars as pl, rheon as po, psutil
+    import polars as pl, rheon.polars as po, psutil
 
     proc = psutil.Process()
     src = sys.argv[1]

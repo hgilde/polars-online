@@ -16,7 +16,7 @@ import lightgbm as lgb
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
 
 def train_trees(X, y, tr, va, num_leaves, rounds_cap, obj="l2"):
@@ -65,7 +65,7 @@ def bank(clock, cols: dict, y, spec_fn, learn_clock=None):
                 d.with_columns(c=pl.Series(learn_clock), role=pl.lit(1, pl.Int8)),
             ]
         ).sort("c", "role", "rid")
-    out = po.ModelBank([spec_fn(list(cols))]).fit_predict(d)
+    out = rp.ModelBank([spec_fn(list(cols))]).fit_predict(d)
     out = (
         out.with_columns(p=pl.col("o").struct.field("pred_y"))
         .filter(pl.col("role") == 0)
@@ -87,7 +87,7 @@ def arms(name, clock, X, y, tr, va, te, hl, gap, learn_clock=None, num_leaves=15
     r["trees"] = M
     r["frozen trees"] = rmse(base[te], y[te])
     ew = lambda f, ridge=1e-3: (  # noqa: E731
-        lambda cols: po.spec.ewridge(
+        lambda cols: rp.spec.ewridge(
             "o",
             targets=["y"],
             features=cols,

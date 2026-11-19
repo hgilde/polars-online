@@ -24,7 +24,7 @@ from fractions import Fraction
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -197,12 +197,12 @@ def test_a_backward_window_weighs_its_far_edge_row_at_nothing(closed: str, h: fl
                     # `a`, the offsets as written for the edge row at 0.
                     ts, xs = _stretch(s_ms, a_ms, w_ms, offsets, values)
                     frame = _frame(ts, xs)
-                    got = po.stream.with_windows(
+                    got = rp.stream.with_windows(
                         frame,
-                        mean=po.ewm_mean(
+                        mean=rp.ewm_mean(
                             "x", half_life=h, window_size=f"{w_ms}ms", closed=closed, partial="keep"
                         ),
-                        var=po.ewm_var(
+                        var=rp.ewm_var(
                             "x",
                             half_life=h,
                             window_size=f"{w_ms}ms",
@@ -238,9 +238,9 @@ def test_a_forward_window_weighs_its_far_edge_row_at_nothing(closed: str, h: flo
                     # The edge row is the first after the start: offsets are
                     # from the valued row, so the window opens a window before.
                     ts, xs = _stretch(s_ms, a_ms + w_ms, w_ms, offsets, values)
-                    got = po.stream.with_windows(
+                    got = rp.stream.with_windows(
                         _frame(ts, xs),
-                        mean=po.ewm_mean(
+                        mean=rp.ewm_mean(
                             "x",
                             half_life=h,
                             window_size=f"{w_ms}ms",
@@ -266,9 +266,9 @@ def test_the_reviews_input() -> None:
     exactly a window back. Null, and null when the stretch begins at 3 ms."""
     for start in (0, 3):
         ts = [start * 10**6, 400 * 10**6, 1500 * 10**6, 1501 * 10**6]
-        out = po.stream.with_windows(
+        out = rp.stream.with_windows(
             _frame(ts, [None, 5.0, None, None]),
-            m=po.ewm_mean("x", half_life="1s", window_size="1100ms", closed="both"),
+            m=rp.ewm_mean("x", half_life="1s", window_size="1100ms", closed="both"),
             clock="t",
             gap_cap="1h",
         )
@@ -305,10 +305,10 @@ def test_a_number_clock_weighs_its_far_edge_row_at_nothing() -> None:
                     {"t": [s, a, a + w, a + w + 0.001], "x": [None, 5.0, None, None]},
                     schema_overrides={"x": pl.Float64},
                 )
-                out = po.stream.with_windows(
+                out = rp.stream.with_windows(
                     frame,
-                    m=po.ewm_mean("x", half_life=h, window_size=w, closed=closed, partial="keep"),
-                    v=po.ewm_var(
+                    m=rp.ewm_mean("x", half_life=h, window_size=w, closed=closed, partial="keep"),
+                    v=rp.ewm_var(
                         "x", half_life=h, window_size=w, closed=closed, partial="keep", bias=True
                     ),
                     clock="t",

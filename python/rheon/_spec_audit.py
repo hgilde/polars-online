@@ -29,9 +29,9 @@ def audit(
     ``-999`` on a twentieth of its rows, a feed that stopped with its last
     value carried forward, or a price level where a change was meant. Run
     it alone before choosing a model, or beside the models in the same pass
-    (``po.ModelBank([audit, model])``), and
-    :meth:`rheon.ModelBank.check` reads its counts and says so. Use
-    :meth:`~rheon.ModelBank.describe` for a few statistics of the
+    (``rp.ModelBank([audit, model])``), and
+    :meth:`rheon.polars.ModelBank.check` reads its counts and says so. Use
+    :meth:`~rheon.polars.ModelBank.describe` for a few statistics of the
     columns a model has already been fed.
 
     .. rubric:: Parameters
@@ -60,15 +60,15 @@ def audit(
          - there is no prediction to withhold
        * - ``group_close``
          - a closed group's counts would leave the bank with it, where
-           :meth:`~rheon.ModelBank.audit` and
-           :meth:`~rheon.ModelBank.check` cannot read them
+           :meth:`~rheon.polars.ModelBank.audit` and
+           :meth:`~rheon.polars.ModelBank.check` cannot read them
 
     This model's own:
 
     ``columns``
         The columns to audit, any number, each once. They are a spec's
         ``features`` in the bank's tables
-        (:meth:`~rheon.ModelBank.describe` lists them with role
+        (:meth:`~rheon.polars.ModelBank.describe` lists them with role
         ``"feature"``). Required, and not empty.
     ``pairs``
         Keep each pair of columns' correlation and the rows on which the two
@@ -89,9 +89,9 @@ def audit(
     `docs/OUTPUTS.md#audit
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#audit>`_
     gives its type. An audit predicts nothing, so what it counted is read
-    back with :meth:`rheon.ModelBank.audit`, one row per column (and
+    back with :meth:`rheon.polars.ModelBank.audit`, one row per column (and
     with ``table="pairs"`` and ``table="clock"``), and judged by
-    :meth:`rheon.ModelBank.check`. *What it counts* in Notes defines
+    :meth:`rheon.polars.ModelBank.check`. *What it counts* in Notes defines
     each measurement.
 
     .. rubric:: Raises
@@ -130,7 +130,7 @@ def audit(
     .. rubric:: Example
 
     This code audits a column with ``-999`` planted on about 5% of its rows
-    beside a random walk, and prints what :meth:`~rheon.ModelBank.check`
+    beside a random walk, and prints what :meth:`~rheon.polars.ModelBank.check`
     finds in each:
 
     .. code-block:: python
@@ -143,8 +143,8 @@ def audit(
         level = np.cumsum(rng.standard_normal(10_000))  # a level, where a change was meant
         pl.DataFrame({"x": x, "level": level}).write_parquet("feed.parquet")
 
-        audit = po.spec.audit("audit", columns=["x", "level"])
-        bank = po.ModelBank([audit])
+        audit = rp.spec.audit("audit", columns=["x", "level"])
+        bank = rp.ModelBank([audit])
         bank.fit(pl.scan_parquet("feed.parquet"))      # count every row, keep no output
         for r in bank.check().iter_rows(named=True):
             print(f"{r['column']}: {r['code']} ({r['value']:.3g})")
@@ -157,9 +157,9 @@ def audit(
 
     .. rubric:: See also
 
-    - :meth:`rheon.ModelBank.audit`, the counts, one row per column.
-    - :meth:`rheon.ModelBank.check`, what the counts say is wrong.
-    - :meth:`rheon.ModelBank.describe`, a few statistics of every
+    - :meth:`rheon.polars.ModelBank.audit`, the counts, one row per column.
+    - :meth:`rheon.polars.ModelBank.check`, what the counts say is wrong.
+    - :meth:`rheon.polars.ModelBank.describe`, a few statistics of every
       column each spec has been fed.
 
     .. rubric:: Notes
@@ -176,7 +176,7 @@ def audit(
          - definition
        * - what is not usable
          - nulls, NaNs, ``+inf``, ``-inf`` and finite values past ``1e100``,
-           each counted apart (:meth:`~rheon.ModelBank.describe`'s
+           each counted apart (:meth:`~rheon.polars.ModelBank.describe`'s
            ``null_count`` lumps them together, as the models do)
        * - moments
          - the mean, the standard deviation (``ddof = 1``), the skew
@@ -238,9 +238,9 @@ def audit(
     changes none of its rows or tables. A step back of the clock is refused,
     as for every spec: to count the steps back instead, set
     ``restart_after_step_back`` (``0`` resets at each), and
-    :meth:`~rheon.ModelBank.summary`'s ``clock_backwards`` and
+    :meth:`~rheon.polars.ModelBank.summary`'s ``clock_backwards`` and
     ``check()``'s ``step_back`` count them.
-    :meth:`~rheon.ModelBank.predict` counts nothing, as it learns
+    :meth:`~rheon.polars.ModelBank.predict` counts nothing, as it learns
     nothing. The counts are the same whether the stream comes in one chunk
     or a thousand, and are kept in the state, so an audit saved after one
     file goes on over the next. An audit predicts nothing, so it has no
@@ -267,7 +267,7 @@ def audit(
     again of the table's slack, and a digest of at most about 200 centroids
     and 256 values waiting.
 
-    Measured through :meth:`~rheon.ModelBank.fit_predict` on frames
+    Measured through :meth:`~rheon.polars.ModelBank.fit_predict` on frames
     in memory, of columns drawn from ``N(0, 1)``, the best of seven runs on an
     Apple M4 Pro under a load average of 22 to 24 (polars 2.0.0):
 
@@ -287,7 +287,7 @@ def audit(
          - 4.4
 
     The saved state of those ten columns held 4.8 KB a column
-    (:meth:`~rheon.ModelBank.save_bytes`, 48,625 bytes, of which an
+    (:meth:`~rheon.polars.ModelBank.save_bytes`, 48,625 bytes, of which an
     unfed bank is 996), and 4.7 KB a column at fifty.
     """
     # Every problem at once, where several hold.

@@ -164,13 +164,16 @@ def _generate(app) -> None:
 
 
 def _public() -> set[str]:
-    """Every object the reference must place: the package's exports, each
-    public module's, but modules, constants and names kept only under their
-    old spelling (constants stay on their module's page)."""
+    """Every object the reference must place: the exports of ``rheon`` and of
+    ``rheon.polars`` (which re-exports the first), each public module's, but
+    modules, constants and names kept only under their old spelling
+    (constants stay on their module's page). A name is placed under the
+    public module that defines it, else under the package that exports it."""
     import importlib
     import pkgutil
     import types
 
+    from rheon import polars as rp
     from rheon._renamed import is_renamed
 
     found: set[str] = set()
@@ -179,22 +182,27 @@ def _public() -> set[str]:
         if isinstance(obj, types.ModuleType) or not callable(obj) or is_renamed(obj):
             return
         module = getattr(obj, "__module__", "") or ""
-        if module.startswith("rheon.") and not module.split(".")[1].startswith("_"):
+        parts = module.split(".")
+        if parts[0] == "rheon" and len(parts) > 1 and not any(p.startswith("_") for p in parts):
             where = f"{module}.{obj.__name__}"
         found.add(where)
 
     for name in rheon.__all__:
         if not name.startswith("__"):
             consider(f"rheon.{name}", getattr(rheon, name))
-    for m in pkgutil.iter_modules(rheon.__path__):
-        if m.name.startswith("_"):
-            continue
-        module = importlib.import_module(f"rheon.{m.name}")
-        for name in getattr(module, "__all__", ()):
-            consider(f"rheon.{m.name}.{name}", getattr(module, name))
+    for name in rp.__all__:
+        if not name.startswith("__") and name not in rheon.__all__:
+            consider(f"rheon.polars.{name}", getattr(rp, name))
+    for package in (rheon, rp):
+        for m in pkgutil.iter_modules(package.__path__):
+            if m.name.startswith("_") or m.name == "polars":
+                continue
+            module = importlib.import_module(f"{package.__name__}.{m.name}")
+            for name in getattr(module, "__all__", ()):
+                consider(f"{package.__name__}.{m.name}.{name}", getattr(module, name))
     found |= {
-        "rheon._frame.LazyFrameOnlineNamespace",
-        "rheon._frame.DataFrameOnlineNamespace",
+        "rheon.polars._frame.LazyFrameOnlineNamespace",
+        "rheon.polars._frame.DataFrameOnlineNamespace",
     }
     return found
 

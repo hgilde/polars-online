@@ -234,9 +234,9 @@ def huber(
         pl.DataFrame({"x": x, "y": y}).write_parquet("outliers.parquet")
 
         common = dict(targets=["y"], features=["x"], half_life=float("inf"))
-        bank = po.ModelBank([
-            po.spec.huber("hub", **common),              # the default cut, 1.345 of the scale
-            po.spec.ewridge("ls", **common),             # least squares, for comparison
+        bank = rp.ModelBank([
+            rp.spec.huber("hub", **common),              # the default cut, 1.345 of the scale
+            rp.spec.ewridge("ls", **common),             # least squares, for comparison
         ])
         bank.fit(pl.scan_parquet("outliers.parquet"))    # learn every row, keep no output
         print("the true slope: 2.00")
@@ -633,11 +633,11 @@ def quantile(
         y = 1.0 + 2.0 * x + rng.standard_normal(20_000)   # the 0.9 quantile is 2.28 + 2x
         pl.DataFrame({"x": x, "y": y}).write_parquet("tail.parquet")
 
-        q90 = po.spec.quantile(
+        q90 = rp.spec.quantile(
             "q90", targets=["y"], features=["x"], half_life=float("inf"),
             quantile=0.9,                                  # the level to fit
         )
-        bank = po.ModelBank([q90])
+        bank = rp.ModelBank([q90])
         bank.fit(pl.scan_parquet("tail.parquet"))          # learn every row, keep no output
         print("the true line: intercept 2.28, slope 2.00")
         c = {r["term"]: r["coef"] for r in bank.coef().iter_rows(named=True)}

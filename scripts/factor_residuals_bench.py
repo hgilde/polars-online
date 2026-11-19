@@ -118,14 +118,14 @@ def specs(window: str, case: str = "pipeline") -> tuple[list[dict[str, object]],
     forward window and no embargo."""
     import polars as pl
 
-    import rheon as po
+    from rheon import polars as rp
 
     size, _, every = window.partition("/")
     cadence = {"snapshot_every": every} if every else {}
 
     clock = {"clock": "ts", "gap_cap": "5m", "group": "g"}
     factors = [
-        po.spec.ewridge(
+        rp.spec.ewridge(
             f"fac{f}",
             targets=[f"d{f}"],
             features=[f"x{f}_{j}" for j in range(K_X)],
@@ -134,14 +134,14 @@ def specs(window: str, case: str = "pipeline") -> tuple[list[dict[str, object]],
         )
         for f in range(K_F)
     ]
-    fwd = po.ewm_mean("y", half_life="30s", window_size="150s", reverse=True) - pl.col("y")
+    fwd = rp.ewm_mean("y", half_life="30s", window_size="150s", reverse=True) - pl.col("y")
     target: dict[str, object] = {"targets": [fwd.alias("B")], "embargo": "150s"}
     if case == "plain target":
         target = {"targets": ["y"]}
     fit: dict[str, object] = {"window_size": size, "half_life": float("inf"), **cadence}
     if case == "no window":
         fit = {"half_life": "2h"}
-    stage2 = po.spec.ewridge(
+    stage2 = rp.spec.ewridge(
         "stage2",
         features=[f"resid_d{f}" for f in range(K_F)],
         **target,

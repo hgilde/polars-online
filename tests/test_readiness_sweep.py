@@ -83,7 +83,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 from test_every_kind import frame_for
 from test_model_registry import MINIMAL, REGRESSIONS
 
@@ -186,7 +186,7 @@ def _spec(kind: str, variant: str, gate: dict[str, Any]) -> dict:
     kw["coef_every"] = None if kind in NO_COEF else 0
     kw |= VARIANTS[variant]
     kw |= gate
-    return getattr(po.spec, kind)("m", **{k: v for k, v in kw.items() if v is not None})
+    return getattr(rp.spec, kind)("m", **{k: v for k, v in kw.items() if v is not None})
 
 
 def _key(gate: dict[str, Any]) -> str:
@@ -196,16 +196,16 @@ def _key(gate: dict[str, Any]) -> str:
 @functools.cache
 def _run_cached(kind: str, variant: str, key: str) -> tuple[pl.DataFrame, dict, pl.DataFrame]:
     gate = json.loads(key, parse_constant=lambda c: {"Infinity": math.inf}[c])
-    bank = po.ModelBank([_spec(kind, variant, gate)], threads=1)
+    bank = rp.ModelBank([_spec(kind, variant, gate)], threads=1)
     with warnings.catch_warnings():
         # A floor the stream never meets says so once.
-        warnings.simplefilter("ignore", po.ReadinessWarning)
+        warnings.simplefilter("ignore", rp.ReadinessWarning)
         out = bank.fit_predict(_frame(kind))
     table = _table(kind, bank)
     return out.select("m").unnest("m"), json.loads(bank.write_json()), table
 
 
-def _table(kind: str, bank: po.ModelBank) -> pl.DataFrame:
+def _table(kind: str, bank: rp.ModelBank) -> pl.DataFrame:
     """What a kind with no row of its own reports: ``marginal``'s table,
     ``rcov``'s closed blocks; an empty frame elsewhere."""
     if kind == "marginal":
@@ -620,7 +620,7 @@ def _grid_spec(kind: str, gate: dict[str, Any], **kw: Any) -> dict:
     base: dict[str, Any] = dict(targets=["y"], features=["x0", "x1"], half_life=[20.0, 200.0])
     base |= {k: v for k, v in MINIMAL[kind].items() if k != "half_life"}
     base |= kw | gate
-    return getattr(po.spec, kind)("m", **{k: v for k, v in base.items() if v is not None})
+    return getattr(rp.spec, kind)("m", **{k: v for k, v in base.items() if v is not None})
 
 
 @functools.cache
@@ -667,10 +667,10 @@ def test_a_gate_never_moves_which_slot_is_selected(kind: str, gate: dict[str, An
         kw["learning_rate"] = 0.02
     df = _grid_frame()
     base = (
-        po.ModelBank([_grid_spec(kind, {}, **kw)], threads=1).fit_predict(df)["m"].struct.unnest()
+        rp.ModelBank([_grid_spec(kind, {}, **kw)], threads=1).fit_predict(df)["m"].struct.unnest()
     )
     gated = (
-        po.ModelBank([_grid_spec(kind, gate, **kw)], threads=1).fit_predict(df)["m"].struct.unnest()
+        rp.ModelBank([_grid_spec(kind, gate, **kw)], threads=1).fit_predict(df)["m"].struct.unnest()
     )
     # Evidence: the gate withheld rows the base reports, and the slots'
     # own predictions and the fit are the same (the diagnostic isolation
@@ -747,7 +747,7 @@ def _breaks_frame() -> pl.DataFrame:
 @functools.cache
 def _drift_run(key: str) -> tuple[pl.DataFrame, dict]:
     kw = json.loads(key)
-    s = po.spec.ewridge(
+    s = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -758,9 +758,9 @@ def _drift_run(key: str) -> tuple[pl.DataFrame, dict]:
         coef_every=0,
         **kw,
     )
-    bank = po.ModelBank([s], threads=1)
+    bank = rp.ModelBank([s], threads=1)
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", po.ReadinessWarning)
+        warnings.simplefilter("ignore", rp.ReadinessWarning)
         out = bank.fit_predict(_breaks_frame())["m"].struct.unnest()
     return out, json.loads(bank.write_json())
 

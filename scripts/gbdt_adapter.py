@@ -1017,7 +1017,7 @@ def route_po(
 ) -> dict:
     """The package's own builder over the parts as one query, with the
     research's training parameters, so its trees compare by hash."""
-    import rheon as po
+    from rheon.polars import _gbdt
 
     lib, engine, opts = PO_ROUTES[name]
     feats = features_of(data)
@@ -1028,10 +1028,10 @@ def route_po(
 
     m.phase("bin")
     if lib == "xgb":
-        d = po.gbdt.xgboost_matrix(
+        d = _gbdt.xgboost_matrix(
             lf, label="y", features=feats, threads=threads, engine=engine, **opts
         )
-        out: dict = {"cuts": _xgb_cuts(d), "native": dict(po.gbdt._LAST_STATS)}
+        out: dict = {"cuts": _xgb_cuts(d), "native": dict(_gbdt._LAST_STATS)}
         m.phase("boost")
         bst = xgb.train(_xgb_params(threads), d, num_boost_round=rounds)
         m.phase("score")
@@ -1042,10 +1042,10 @@ def route_po(
         return out
     params = _lgb_params(threads)
     dataset = {k: params[k] for k in ("data_random_seed", "verbose")}
-    d = po.gbdt.lightgbm_dataset(
+    d = _gbdt.lightgbm_dataset(
         lf, label="y", features=feats, params=dataset, threads=threads, engine=engine, **opts
     )
-    native = dict(po.gbdt._LAST_STATS)
+    native = dict(_gbdt._LAST_STATS)
     m.phase("boost")
     bst = lgb.train(params, d, num_boost_round=rounds)
     m.phase("score")

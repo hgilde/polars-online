@@ -432,23 +432,23 @@ def _wheel_smoke():
 
 
 def test_the_wheel_smoke_passes_on_this_build_and_refuses_the_wrong_version():
-    import rheon as po
+    from rheon import polars as rp
 
     smoke = _wheel_smoke()
-    assert smoke.check(po.__version__, installed=False).endswith(": ok")
+    assert smoke.check(rp.__version__, installed=False).endswith(": ok")
     with pytest.raises(SystemExit, match="not 9.9.9"):
         smoke.check("9.9.9", installed=False)
 
 
 def test_the_wheel_smoke_refuses_a_package_imported_from_the_checkout():
-    import rheon as po
+    from rheon import polars as rp
 
     smoke = _wheel_smoke()
-    if Path(po.__file__).resolve().is_relative_to(REPO / "python"):
+    if Path(rp.__file__).resolve().is_relative_to(REPO / "python"):
         with pytest.raises(SystemExit, match="came from the checkout"):
-            smoke.check(po.__version__)
+            smoke.check(rp.__version__)
     else:
-        assert smoke.check(po.__version__).endswith(": ok")
+        assert smoke.check(rp.__version__).endswith(": ok")
 
 
 def test_the_sdist_is_installed_and_run():
@@ -897,23 +897,23 @@ def _verify_release():
 
 
 def test_the_release_check_passes_on_this_build_and_refuses_a_wrong_version_or_schema():
-    import rheon as po
+    from rheon import polars as rp
 
     verify = _verify_release()
-    assert verify.check(po.__version__, po.schema_version(), installed=False).endswith(": ok")
+    assert verify.check(rp.__version__, rp.schema_version(), installed=False).endswith(": ok")
     with pytest.raises(SystemExit, match="__version__ is .*, not 9.9.9"):
-        verify.check("9.9.9", po.schema_version(), installed=False)
+        verify.check("9.9.9", rp.schema_version(), installed=False)
     with pytest.raises(SystemExit, match="schema_version\\(\\) is .*, not 1"):
-        verify.check(po.__version__, 1, installed=False)
-    if Path(po.__file__).resolve().is_relative_to(REPO / "python"):
+        verify.check(rp.__version__, 1, installed=False)
+    if Path(rp.__file__).resolve().is_relative_to(REPO / "python"):
         with pytest.raises(SystemExit, match="came from the checkout"):
-            verify.check(po.__version__, po.schema_version())
+            verify.check(rp.__version__, rp.schema_version())
 
 
 def test_the_version_job_prints_the_schema_the_build_writes():
-    import rheon as po
+    from rheon import polars as rp
 
-    assert release_version.schema() == po.schema_version()
+    assert release_version.schema() == rp.schema_version()
 
 
 def test_publishing_refuses_a_version_older_than_a_spec_it_is_said_to_build(copy):

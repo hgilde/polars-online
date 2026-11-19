@@ -43,8 +43,8 @@ import statsmodels.api as sm
 from sklearn.linear_model import LinearRegression, LogisticRegression, PoissonRegressor
 
 import ledger
-import rheon as po
 from public_benchmarks import libsvm_or_skip
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -84,7 +84,7 @@ def _frame(x: np.ndarray, y: np.ndarray, names: list[str]) -> pl.DataFrame:
 def coefficients(spec: dict, x: np.ndarray, y: np.ndarray, marks: list[int]) -> list[np.ndarray]:
     """The intercept and slopes after each of ``marks`` rows."""
     names = spec["features"]
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     df = _frame(x, y, names)
     out, prev = [], 0
     for m in marks:
@@ -146,11 +146,11 @@ def excess(kind: str, coefs: list[np.ndarray], x, y, marks, tau: float = 0.5) ->
 
 
 def _sgd(**kw) -> dict:
-    return po.spec.sgd("m", targets=["y"], features=FEATURES, half_life=INF, **kw)
+    return rp.spec.sgd("m", targets=["y"], features=FEATURES, half_life=INF, **kw)
 
 
 def _ftrl(**kw) -> dict:
-    return po.spec.ftrl("m", targets=["y"], features=FEATURES, half_life=INF, l1=0.0, l2=0.0, **kw)
+    return rp.spec.ftrl("m", targets=["y"], features=FEATURES, half_life=INF, l1=0.0, l2=0.0, **kw)
 
 
 #: The annealing schedules: ``name -> (spec, loss kind, quantile level,
@@ -341,7 +341,7 @@ def test_pa_reaches_a_realizable_target():
     x = rng.standard_normal((n, K)) * SCALE + SHIFT
     y = 0.3 + x @ BETA
     for mode in ("pa", "pa1", "pa2"):
-        spec = po.spec.pa("m", targets=["y"], features=FEATURES, half_life=INF, mode=mode)
+        spec = rp.spec.pa("m", targets=["y"], features=FEATURES, half_life=INF, mode=mode)
         c = coefficients(spec, x, y, [1_000, n])
         ex = [
             np.mean((y[:m] - ci[0] - x[:m] @ ci[1:]) ** 2)
@@ -352,8 +352,8 @@ def test_pa_reaches_a_realizable_target():
 
 PA_MARKS = [10_000, 100_000]
 PA_SPECS = {
-    "default_c": po.spec.pa("m", targets=["y"], features=FEATURES, half_life=INF),
-    "c_0p01": po.spec.pa("m", targets=["y"], features=FEATURES, half_life=INF, c=0.01),
+    "default_c": rp.spec.pa("m", targets=["y"], features=FEATURES, half_life=INF),
+    "c_0p01": rp.spec.pa("m", targets=["y"], features=FEATURES, half_life=INF, c=0.01),
 }
 
 ledger.guard(
@@ -390,7 +390,7 @@ def test_pas_excess_on_a_noisy_target_holds_where_c_sets_it():
 
 def _passes(spec: dict, x, y, order, epochs: int) -> list[np.ndarray]:
     names = spec["features"]
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     df = _frame(x[order], y[order], names)
     out = []
     for _ in range(epochs):
@@ -426,11 +426,11 @@ def libsvm_case(case: str) -> tuple[np.ndarray, np.ndarray, str, dict]:
     }
     if model == "ftrl":
         loss = "squared" if kind == "squared" else "logistic"
-        spec = po.spec.ftrl(
+        spec = rp.spec.ftrl(
             "m", targets=["y"], features=names, half_life=INF, l1=0.0, l2=0.0, loss=loss
         )
     elif model == "sgd":
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=["y"],
             features=names,
@@ -440,7 +440,7 @@ def libsvm_case(case: str) -> tuple[np.ndarray, np.ndarray, str, dict]:
             schedule="inv_scaling",
         )
     else:
-        spec = po.spec.sgd("m", targets=["y"], features=names, half_life=INF, **specs[model])
+        spec = rp.spec.sgd("m", targets=["y"], features=names, half_life=INF, **specs[model])
     return x, y, kind, spec
 
 
@@ -499,7 +499,7 @@ def _diverged(spec: dict, n: int = 20_000) -> tuple[float, float, list, bool]:
     x, y = stream(0, n, "squared")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        out = po.ModelBank([spec]).fit_predict(_frame(x, y, FEATURES)).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(_frame(x, y, FEATURES)).unnest("m")
     pred = out["pred_y"].to_numpy().astype(float)
     tail = slice(n - 1_000, n)
     # Every row withheld (a gate) leaves no error to read: NaN.
@@ -560,7 +560,7 @@ def test_a_constant_rate_past_its_bound_is_withheld_with_a_notice(rate):
     x, y = stream(0, 2_000, "squared")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        out = po.ModelBank([_sgd(learning_rate=rate)]).fit_predict(_frame(x, y, FEATURES))
+        out = rp.ModelBank([_sgd(learning_rate=rate)]).fit_predict(_frame(x, y, FEATURES))
     out = out.unnest("m")
     reasons = out["withheld_reason"].cast(pl.String)
     counts = reasons.value_counts().sort("withheld_reason").to_dicts()
@@ -577,13 +577,13 @@ def test_a_constant_rate_past_its_bound_is_withheld_with_a_notice(rate):
     [
         # Bounded by construction: a probability, and FTRL's per-coordinate
         # rates, which shrink as the squared gradients add up.
-        po.spec.sgd(
+        rp.spec.sgd(
             "m", targets=["y"], features=FEATURES, half_life=INF, loss="logistic", learning_rate=1e3
         ),
-        po.spec.ftrl(
+        rp.spec.ftrl(
             "m", targets=["y"], features=FEATURES, half_life=INF, loss="squared", alpha=1e6
         ),
-        po.spec.sgd(
+        rp.spec.sgd(
             "m",
             targets=["y"],
             features=FEATURES,
@@ -603,7 +603,7 @@ def test_a_large_rate_that_stays_bounded(spec):
     error is the caller's to see, not hidden behind a number that grows."""
     if spec["model"]["loss"] == "logistic":
         x, y = stream(0, 20_000, "logistic")
-        out = po.ModelBank([spec]).fit_predict(_frame(x, y, FEATURES)).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(_frame(x, y, FEATURES)).unnest("m")
         p = out["pred_y"].drop_nulls().to_numpy()
         assert ((p >= 0) & (p <= 1)).all()
         return

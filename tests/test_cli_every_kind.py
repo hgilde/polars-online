@@ -36,8 +36,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from conftest import _toml_value, spec_toml
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -219,7 +219,7 @@ class Case(NamedTuple):
 
 
 FWD = (
-    po.ewm_mean("y", half_life=dt.timedelta(seconds=10), window_size="8s", reverse=True)
+    rp.ewm_mean("y", half_life=dt.timedelta(seconds=10), window_size="8s", reverse=True)
     - pl.col("y")
 ).alias("fwd")
 SIDE: dict[str, Any] = dict(
@@ -905,8 +905,8 @@ def differences(
 
 
 def build(case: Case) -> list[dict[str, Any]]:
-    specs = [getattr(po.spec, b)(n, **kw) for n, b, kw in case.reads]
-    return [*specs, getattr(po.spec, case.builder)(case.label, **case.kw)]
+    specs = [getattr(rp.spec, b)(n, **kw) for n, b, kw in case.reads]
+    return [*specs, getattr(rp.spec, case.builder)(case.label, **case.kw)]
 
 
 #: The run-level keys, one row per case in turn: chunk size, threads,
@@ -918,7 +918,7 @@ def check_the_cli_writes_what_the_bank_does(case: Case, index: int, exe: Path, t
     df = stream()
     specs = build(case)
     closes = any(s.get("group_close") for s in specs)
-    bank = po.ModelBank(specs, threads=1)
+    bank = rp.ModelBank(specs, threads=1)
     # The warm-up and readiness warnings the fullest specs raise say the
     # same thing to both runs.
     with warnings.catch_warnings():
@@ -1064,7 +1064,7 @@ SAMPLE: dict[str, Any] = {
 def test_every_kind_and_key_is_covered():
     keys, kinds = toml_keys()
     constructors = {
-        n for n in dir(po.spec) if not n.startswith("_") and callable(getattr(po.spec, n))
+        n for n in dir(rp.spec) if not n.startswith("_") and callable(getattr(rp.spec, n))
     }
     helpers = {"coef_fields", "coef_index", "output_fields", "output_index"}
     # Every model the spec builders make is a kind the TOML takes.
@@ -1090,7 +1090,7 @@ def test_every_kind_and_key_is_covered():
             if k == "lam":
                 kw.pop("half_life", None)
             try:
-                getattr(po.spec, kind)("m", **kw)
+                getattr(rp.spec, kind)("m", **kw)
             except (ValueError, TypeError):
                 continue
             missing.append(f"{kind}: takes `{k}`, which no case uses")

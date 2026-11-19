@@ -53,7 +53,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
 # two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
@@ -152,7 +152,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
 # two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
@@ -239,7 +239,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # 40 weeks, a row every 20 minutes. slow is an exponentially weighted mean of noise at a half-life
 # of a week, so its weekly level wanders. y's weekly level wanders apart from it, drawn for each

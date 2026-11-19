@@ -18,7 +18,7 @@ import polars as pl
 import pytest
 from polars.io.plugins import register_io_source
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -47,12 +47,12 @@ def _spec(**kw):
         min_weight=20.0,
     )
     d.update(kw)
-    return po.spec.ewridge("ridge", **d)
+    return rp.spec.ewridge("ridge", **d)
 
 
 def _bank_loop(df: pl.DataFrame, chunk_size: int, **kw) -> pl.DataFrame:
     """The reference: a bank fed the same chunks."""
-    bank = po.ModelBank([_spec(**kw)])
+    bank = rp.ModelBank([_spec(**kw)])
     parts = [bank.fit_predict(df.slice(i, chunk_size)) for i in range(0, df.height, chunk_size)]
     return pl.concat(parts)
 
@@ -116,13 +116,13 @@ def test_the_plan_gives_the_banks_numbers(engine):
     assert plan.collect(engine=engine).equals(_bank_loop(df, 1000))
     # ... and the whole-frame bank's, up to coef's cadence.
     assert _no_coef(plan.collect(engine=engine)).equals(
-        _no_coef(po.ModelBank([_spec()]).fit_predict(df))
+        _no_coef(rp.ModelBank([_spec()]).fit_predict(df))
     )
 
 
 def test_chunk_size_is_only_a_resource_knob():
     df = _frame(n=3000)
-    want = _no_coef(po.ModelBank([_spec()]).fit_predict(df))
+    want = _no_coef(rp.ModelBank([_spec()]).fit_predict(df))
     for chunk_size in (37, 1000, 100_000):
         got = df.lazy().online.fit_predict([_spec()], chunk_size=chunk_size).collect()
         assert _no_coef(got).equals(want), chunk_size
@@ -254,7 +254,7 @@ def test_sink_equals_collect(tmp_path):
 def test_load_state_resumes_the_bank(tmp_path):
     df = _frame(n=4000)
     head, tail = df.head(2500), df.tail(1500)
-    bank = po.ModelBank([_spec()])
+    bank = rp.ModelBank([_spec()])
     bank.fit_predict(head)
     state = tmp_path / "bank.state"
     bank.save(state)
@@ -272,7 +272,7 @@ def test_load_state_resumes_the_bank(tmp_path):
 
 def test_predict_scores_the_bank_as_it_stands(tmp_path):
     df = _frame(n=4000)
-    bank = po.ModelBank([_spec()])
+    bank = rp.ModelBank([_spec()])
     bank.fit_predict(df.head(3000))
     state = tmp_path / "bank.state"
     bank.save(state)
@@ -296,19 +296,19 @@ def test_predict_scores_the_bank_as_it_stands(tmp_path):
 
 def test_the_eager_and_typed_forms_are_the_bank():
     df = _frame(n=1500)
-    want = po.ModelBank([_spec()]).fit_predict(df)
+    want = rp.ModelBank([_spec()]).fit_predict(df)
     assert df.online.fit_predict([_spec()]).equals(want)
-    assert po.fit_predict(df, [_spec()]).equals(want)
-    assert po.fit_predict(df.lazy(), [_spec()]).collect().equals(want)
-    assert isinstance(po.fit_predict(df.lazy(), [_spec()]), pl.LazyFrame)
-    bank = po.ModelBank([_spec()])
+    assert rp.fit_predict(df, [_spec()]).equals(want)
+    assert rp.fit_predict(df.lazy(), [_spec()]).collect().equals(want)
+    assert isinstance(rp.fit_predict(df.lazy(), [_spec()]), pl.LazyFrame)
+    bank = rp.ModelBank([_spec()])
     bank.fit_predict(df)
-    assert po.predict(df, bank).equals(bank.predict(df))
-    assert po.predict(df.lazy(), bank).collect().equals(bank.predict(df))
+    assert rp.predict(df, bank).equals(bank.predict(df))
+    assert rp.predict(df.lazy(), bank).collect().equals(bank.predict(df))
     with pytest.raises(TypeError, match="po.fit_predict: it takes a Polars DataFrame or LazyFrame"):
-        po.fit_predict(df.to_dict(), [_spec()])  # type: ignore[call-overload]
+        rp.fit_predict(df.to_dict(), [_spec()])  # type: ignore[call-overload]
     with pytest.raises(TypeError, match="po.predict: it takes a Polars DataFrame or LazyFrame"):
-        po.predict([1, 2], bank)  # type: ignore[call-overload]
+        rp.predict([1, 2], bank)  # type: ignore[call-overload]
 
 
 def test_an_empty_plan_has_the_schema():
@@ -316,7 +316,7 @@ def test_an_empty_plan_has_the_schema():
     for plan in (df.clear().lazy(), df.lazy().filter(pl.lit(False))):
         out = plan.online.fit_predict([_spec()]).collect()
         assert out.height == 0
-        assert out.schema == po.ModelBank([_spec()]).fit_predict(df).schema
+        assert out.schema == rp.ModelBank([_spec()]).fit_predict(df).schema
 
 
 #: What a bank's refusal arrives as when a plan is collected. py-polars 1.x
@@ -362,7 +362,7 @@ def test_chunks_arrive_in_stream_order():
 
 def _bank_after(df: pl.DataFrame, **kw) -> bytes:
     """The reference: what a bank fed these rows saves."""
-    bank = po.ModelBank([_spec(**kw)])
+    bank = rp.ModelBank([_spec(**kw)])
     bank.fit_predict(df)
     return bank.save_bytes()
 
@@ -382,14 +382,14 @@ def test_save_state_is_the_banks_state_after_the_stream(tmp_path):
         state.unlink()
     for spell in (
         lambda: df.online.fit_predict([_spec()], save_state=state),
-        lambda: po.fit_predict(df, [_spec()], save_state=state),
-        lambda: po.fit_predict(df.lazy(), [_spec()], save_state=state).collect(),
-        lambda: po.fit_predict(df.lazy(), [_spec()], save_state=str(state)).collect(),
+        lambda: rp.fit_predict(df, [_spec()], save_state=state),
+        lambda: rp.fit_predict(df.lazy(), [_spec()], save_state=state).collect(),
+        lambda: rp.fit_predict(df.lazy(), [_spec()], save_state=str(state)).collect(),
     ):
         # Each spelling must write the file itself, not inherit the last
         # one's; `missing_ok` because the engine loop above left none.
         state.unlink(missing_ok=True)
-        assert spell().equals(po.ModelBank([_spec()]).fit_predict(df))
+        assert spell().equals(rp.ModelBank([_spec()]).fit_predict(df))
         assert state.read_bytes() == want
 
 
@@ -547,7 +547,7 @@ def test_a_save_state_that_is_a_directory_is_refused_before_the_stream(tmp_path)
     for build in (
         lambda: df.lazy().online.fit_predict([_spec()], save_state=where),
         lambda: df.lazy().online.with_windows(
-            f=po.ewm_mean("x0", half_life=5.0), clock="t", gap_cap=10.0, save_state=where
+            f=rp.ewm_mean("x0", half_life=5.0), clock="t", gap_cap=10.0, save_state=where
         ),
     ):
         with pytest.raises(IsADirectoryError, match="save_state .* is a folder, not a file"):

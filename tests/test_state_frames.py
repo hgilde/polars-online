@@ -27,7 +27,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -37,7 +37,7 @@ pytestmark = pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
 def ridge(**kw):
     kw.setdefault("half_life", 10.0)
     kw.setdefault("min_weight", 1.0)
-    return po.spec.ewridge("m", targets=["y"], features=["x"], **kw)
+    return rp.spec.ewridge("m", targets=["y"], features=["x"], **kw)
 
 
 def keyed(n=40, seed=0):
@@ -69,7 +69,7 @@ def test_a_group_column_of_another_form_is_refused_by_name(cast, now):
     """Int64 keys then Float64 ones were the groups '1' and '1.0', two
     streams, the second cold (review round 4, PC1, PA7)."""
     df = keyed()
-    bank = po.ModelBank([ridge(group="g")])
+    bank = rp.ModelBank([ridge(group="g")])
     bank.fit_predict(df.head(20))
     before = bank.save_bytes()
     with pytest.raises(ValueError, match=rf'group column "g" was Int64 and is now {now}'):
@@ -83,7 +83,7 @@ def test_a_session_column_of_another_form_is_refused_by_name():
     model (PC-battery2)."""
     df = keyed().with_columns(s=pl.lit(1))
     spec = ridge(session="s", session_gap="reset", clock="t", gap_cap=1e9)
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df.head(20))
     with pytest.raises(ValueError, match=r'session column "s" was Int32 and is now Float64'):
         bank.fit_predict(df.slice(20).with_columns(pl.col("s").cast(pl.Float64)))
@@ -91,9 +91,9 @@ def test_a_session_column_of_another_form_is_refused_by_name():
 
 def test_the_form_is_kept_in_the_state_and_read_by_predict():
     df = keyed()
-    bank = po.ModelBank([ridge(group="g")])
+    bank = rp.ModelBank([ridge(group="g")])
     bank.fit_predict(df.head(20))
-    loaded = po.ModelBank.load_bytes(bank.save_bytes())
+    loaded = rp.ModelBank.load_bytes(bank.save_bytes())
     floats = df.slice(20).with_columns(pl.col("g").cast(pl.Float64))
     with pytest.raises(ValueError, match=r'group column "g" was Int64 and is now Float64'):
         loaded.fit_predict(floats)
@@ -115,8 +115,8 @@ def test_another_dtype_of_the_same_form_continues_the_stream(first, then):
     df = keyed()
     if first == pl.String:
         df = df.with_columns(pl.col("g").cast(pl.String))
-    whole = weight_sums(po.ModelBank([ridge(group="g")]).fit_predict(df))
-    bank = po.ModelBank([ridge(group="g")])
+    whole = weight_sums(rp.ModelBank([ridge(group="g")]).fit_predict(df))
+    bank = rp.ModelBank([ridge(group="g")])
     head = weight_sums(bank.fit_predict(df.head(20)))
     tail = weight_sums(bank.fit_predict(df.slice(20).with_columns(pl.col("g").cast(then))))
     assert head + tail == whole
@@ -126,7 +126,7 @@ def test_a_null_typed_column_carries_no_form():
     """A column of nulls with no type of its own, ``pl.lit(None)``, is the
     null key in any form: neither recorded nor refused."""
     df = keyed()
-    bank = po.ModelBank([ridge(group="g")])
+    bank = rp.ModelBank([ridge(group="g")])
     bank.fit_predict(df.head(20).with_columns(g=pl.lit(None)))
     bank.fit_predict(df.slice(20, 10))
     with pytest.raises(ValueError, match=r'group column "g" was Int64 and is now Float64'):
@@ -182,7 +182,7 @@ DTYPES = [
 @pytest.mark.parametrize("dtype", DTYPES, ids=str)
 def test_summary_and_groups_give_the_clock_in_its_own_dtype_exactly(dtype):
     df = clocked(dtype)
-    bank = po.ModelBank([clock_spec(df)])
+    bank = rp.ModelBank([clock_spec(df)])
     out = bank.fit_predict(df)
     # The dtype `emit_clocks` gives it, the clock's own: an integer clock is
     # held as an integer (task 200).
@@ -205,7 +205,7 @@ def test_summary_and_groups_give_the_clock_in_its_own_dtype_exactly(dtype):
 @pytest.mark.parametrize("dtype", DTYPES, ids=str)
 def test_closed_groups_give_the_clock_in_its_own_dtype_exactly(dtype):
     df = clocked(dtype)
-    bank = po.ModelBank([clock_spec(df, group_close="monotone")])
+    bank = rp.ModelBank([clock_spec(df, group_close="monotone")])
     bank.fit_predict(df)
     closed = bank.closed_groups()
     assert closed["clock_min"].dtype == dtype and closed["clock_max"].dtype == dtype
@@ -216,16 +216,16 @@ def test_closed_groups_give_the_clock_in_its_own_dtype_exactly(dtype):
 
 def test_a_saved_clock_range_keeps_its_nanoseconds():
     df = clocked(pl.Datetime("ns"))
-    bank = po.ModelBank([clock_spec(df, group_close="monotone")])
+    bank = rp.ModelBank([clock_spec(df, group_close="monotone")])
     bank.fit_predict(df.head(9))
-    loaded = po.ModelBank.load_bytes(bank.save_bytes())
+    loaded = rp.ModelBank.load_bytes(bank.save_bytes())
     assert loaded.summary().equals(bank.summary())
     assert loaded.closed_groups().equals(bank.closed_groups())
 
 
 def test_a_row_count_clock_reads_null_in_float64():
     df = keyed()
-    bank = po.ModelBank([ridge(group="g")])
+    bank = rp.ModelBank([ridge(group="g")])
     bank.fit_predict(df)
     s = bank.summary()
     assert s["clock_min"].dtype == pl.Float64 and s["clock_min"].null_count() == s.height
@@ -239,7 +239,7 @@ def test_specs_whose_clocks_differ_are_read_one_at_a_time():
     a = clock_spec(df)
     b = {**ridge(group="g", clock="u", gap_cap=1e12, half_life=1e6), "name": "b"}
     c = {**ridge(group="g"), "name": "c"}
-    bank = po.ModelBank([a, b, c])
+    bank = rp.ModelBank([a, b, c])
     bank.fit_predict(df)
     for read in (bank.summary, bank.groups):
         with pytest.raises(
@@ -249,7 +249,7 @@ def test_specs_whose_clocks_differ_are_read_one_at_a_time():
             read()
         assert read("m")["clock_last"].dtype == pl.Datetime("us")
         assert read("b")["clock_last"].dtype == pl.Float64
-    together = po.ModelBank([a, c])
+    together = rp.ModelBank([a, c])
     together.fit_predict(df)
     assert together.summary()["clock_min"].dtype == pl.Datetime("us")
     assert together.summary("c")["clock_min"].null_count() == 2
@@ -293,7 +293,7 @@ def _each_kind_fitted():
         else:
             # An audit closes no group, and its pairs and clock are tables
             # of their own.
-            spec = po.spec.audit(
+            spec = rp.spec.audit(
                 "m",
                 columns=["x0", "x1"],
                 group="g",
@@ -309,7 +309,7 @@ def _each_kind_fitted():
             df = df.with_columns(
                 y=pl.when(pl.col("y") > 0).then(pl.lit("a")).otherwise(pl.lit("b"))
             )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         out = bank.fit_predict(df)
         yield name, spec, bank, out
 
@@ -333,9 +333,9 @@ def test_every_count_in_every_frame_is_int64():
             "closed_groups()": bank.closed_groups(drop=False),
             "check()": bank.check(),
             "solve_failures()": bank.solve_failures(),
-            "output_index": po.spec.output_index(spec),
-            "coef_fields": po.spec.coef_fields(spec),
-            "coef_index": po.spec.coef_index(spec),
+            "output_index": rp.spec.output_index(spec),
+            "coef_fields": rp.spec.coef_fields(spec),
+            "coef_index": rp.spec.coef_index(spec),
         }
         if name == "marginal":
             frames["marginal()"] = bank.marginal("m")
@@ -344,7 +344,7 @@ def test_every_count_in_every_frame_is_int64():
                 frames[f"audit({table!r})"] = bank.audit(table=table)
             frames["audit(pooled=True)"] = bank.audit(pooled=True)
         if name == "ewridge":
-            from rheon import eval as ev
+            from rheon.polars import eval as ev
 
             frames["eval.metrics"] = ev.metrics(out, spec, min_samples=1)
             frames["eval.sums"] = ev.sums(out, spec)
@@ -359,10 +359,10 @@ def test_every_count_in_every_frame_is_int64():
 
 
 def test_every_rcov_column_carries_the_prefix():
-    spec = po.spec.rcov(
+    spec = rp.spec.rcov(
         "r", features=["x0", "x1"], block_rows=10, group="g", group_close="monotone"
     )
-    cols = po.ModelBank([spec]).closed_groups().columns
+    cols = rp.ModelBank([spec]).closed_groups().columns
     block = [c for c in cols if c.startswith("rcov") or c == "rcorr"]
     assert block == [
         "rcov",
@@ -397,8 +397,8 @@ NUMERIC = [None, "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
 
 
 def test_integer_keys_list_in_numeric_order_the_null_group_first():
-    spec = po.spec.marginal("p", targets=["y"], features=["x"], group="g", half_life=50.0)
-    bank = po.ModelBank([ridge(group="g"), spec])
+    spec = rp.spec.marginal("p", targets=["y"], features=["x"], group="g", half_life=50.0)
+    bank = rp.ModelBank([ridge(group="g"), spec])
     bank.fit_predict(nulls_and_tens())
     assert bank.groups("m")["group"].to_list() == NUMERIC
     assert bank.summary("m")["group"].to_list() == NUMERIC
@@ -412,7 +412,7 @@ def test_integer_keys_list_in_numeric_order_the_null_group_first():
 
 def test_text_keys_list_in_text_order():
     df = nulls_and_tens().with_columns(pl.col("g").cast(pl.String))
-    bank = po.ModelBank([ridge(group="g")])
+    bank = rp.ModelBank([ridge(group="g")])
     bank.fit_predict(df)
     assert bank.groups()["group"].to_list() == [
         None,
@@ -430,8 +430,8 @@ def test_text_keys_list_in_text_order():
 
 
 def test_the_null_group_is_read_alone_with_a_list():
-    spec = po.spec.marginal("p", targets=["y"], features=["x"], group="g", half_life=50.0)
-    bank = po.ModelBank([ridge(group="g"), spec])
+    spec = rp.spec.marginal("p", targets=["y"], features=["x"], group="g", half_life=50.0)
+    bank = rp.ModelBank([ridge(group="g"), spec])
     bank.fit_predict(nulls_and_tens())
     assert bank.summary("m", group=[None])["group"].to_list() == [None]
     assert bank.describe("m", group=[None])["group"].unique().to_list() == [None]
@@ -448,7 +448,7 @@ def test_the_null_group_is_read_alone_with_a_list():
 
 
 def test_a_group_list_takes_strings_and_none_only():
-    bank = po.ModelBank([ridge(group="g")])
+    bank = rp.ModelBank([ridge(group="g")])
     bank.fit_predict(nulls_and_tens())
     with pytest.raises(TypeError, match=r"group.*str, or None.*int"):
         bank.summary("m", group=[1])
@@ -473,13 +473,13 @@ def test_coef_rides_on_the_last_accepted_row_of_a_chunk():
     def coef_rows(out):
         return out["m"].struct.field("coef").is_not_null().arg_true().to_list()
 
-    assert coef_rows(po.ModelBank([spec]).fit_predict(df)) == [n - 1]
-    assert coef_rows(po.ModelBank([spec]).fit_predict(last_null)) == [n - 2]
-    bank = po.ModelBank([spec])
+    assert coef_rows(rp.ModelBank([spec]).fit_predict(df)) == [n - 1]
+    assert coef_rows(rp.ModelBank([spec]).fit_predict(last_null)) == [n - 2]
+    bank = rp.ModelBank([spec])
     assert coef_rows(bank.fit_predict(last_null)) == [n - 2]
     assert coef_rows(bank.fit_predict(df.slice(0, 5))) == [4]
     # The coefficients are the fit as of that row, as `coef()` reads it.
-    fitted = po.ModelBank([spec])
+    fitted = rp.ModelBank([spec])
     out = fitted.fit_predict(last_null)["m"].struct.field("coef")
     assert out[n - 2].to_list() == fitted.coef()["coef"].to_list()
 
@@ -487,7 +487,7 @@ def test_coef_rides_on_the_last_accepted_row_of_a_chunk():
 def test_a_chunk_of_a_group_with_no_accepted_row_writes_no_coef():
     df = keyed()
     spec = ridge(group="g")
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df.head(20))
     holes = df.slice(20, 6).with_columns(
         x=pl.when(pl.col("g") == 0).then(None).otherwise(pl.col("x"))
@@ -519,7 +519,7 @@ def test_predict_under_an_embargo_releases_nothing():
         embargo=10.0,
         emit_clocks=True,
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df.head(100))  # rows 90..99 still held
     state = bank.save_bytes()
     last = bank.last_row()
@@ -528,7 +528,7 @@ def test_predict_under_an_embargo_releases_nothing():
     assert bank.save_bytes() == state
     assert scored["learned_clock"].unique().to_list() == [89.0] == last["learned_clock"].to_list()
     assert scored["weight_sum"].n_unique() == 1
-    learned = po.ModelBank.load_bytes(state).fit_predict(later.head(1))["m"].struct.unnest()
+    learned = rp.ModelBank.load_bytes(state).fit_predict(later.head(1))["m"].struct.unnest()
     assert learned["learned_clock"][0] == 90.0, "fit_predict releases what has matured"
     assert scored["weight_sum"][0] < learned["weight_sum"][0]
 
@@ -538,7 +538,7 @@ def test_predict_under_an_embargo_releases_nothing():
 
 def test_rows_fed_is_the_frames_count_and_rows_seen_names_it():
     df = keyed()
-    bank = po.ModelBank([ridge(group="g")])
+    bank = rp.ModelBank([ridge(group="g")])
     bank.fit_predict(df.head(30))
     bank.drop_groups(["0"])
     assert bank.rows_fed == 30
@@ -550,16 +550,16 @@ def test_rows_fed_is_the_frames_count_and_rows_seen_names_it():
 
 def test_the_t_statistic_is_t_stat_in_both_frames():
     df = keyed().sort("g")
-    spec = po.spec.marginal(
+    spec = rp.spec.marginal(
         "p", targets=["y"], features=["x"], group="g", group_close="monotone", half_life=50.0
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     pairs = bank.marginal("p")
     assert "t_stat" in pairs.columns and "t" not in pairs.columns
     closed = bank.closed_groups()
     assert "pair_t_stat" in closed.columns and "pair_t" not in closed.columns
     # The closed row is `marginal()` read at the close.
-    alone = po.ModelBank([spec])
+    alone = rp.ModelBank([spec])
     alone.fit_predict(df.filter(pl.col("g") == 0))
     assert closed["pair_t_stat"][0].to_list() == alone.marginal("p")["t_stat"].to_list()

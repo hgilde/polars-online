@@ -25,11 +25,11 @@ turns each spec's output column into one column per field, with the
 (:func:`rheon.spec.coef_fields`). ``online.with_windows(*exprs, **named)``
 adds exponentially weighted means, sums, rates, variances and quantiles,
 looking back or ahead, as columns
-(:func:`rheon.stream.with_windows`), so a query can add them and
+(:func:`rheon.polars.stream.with_windows`), so a query can add them and
 fit on them in one chain. Both namespaces are attached when the package is
-imported, which no type checker can see. So :func:`~rheon.fit_predict`,
-:func:`~rheon.predict`, :func:`~rheon.unnest` and
-:func:`rheon.stream.with_windows` are the same calls with the query
+imported, which no type checker can see. So :func:`~rheon.polars.fit_predict`,
+:func:`~rheon.polars.predict`, :func:`~rheon.polars.unnest` and
+:func:`rheon.polars.stream.with_windows` are the same calls with the query
 or the frame as the first argument, visibly typed.
 """
 
@@ -41,21 +41,20 @@ import numbers
 import operator
 import os
 import re
-import sys
 import threading
 import warnings
 from collections.abc import Callable, Iterable, Iterator
-from types import FrameType
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 import polars as pl
 from polars.io.plugins import register_io_source
 
 from rheon import _rheon as _native
-from rheon._bank import ModelBank, _check_threads, _refuse_uint128
 from rheon._errors import WrongTypeError
 from rheon._spec import _renamed_keywords, coef_fields, output_index, target_columns
-from rheon._warnings import PolarsOnlineWarning
+from rheon._threads import _check_threads
+from rheon._warnings import PolarsOnlineWarning, _user_stacklevel
+from rheon.polars._bank import ModelBank, _refuse_uint128
 
 if TYPE_CHECKING:
     from rheon._duration import Duration
@@ -65,7 +64,6 @@ __all__ = [
     "DataFrameOnlineNamespace",
     "LazyFrameOnlineNamespace",
     "OrderNotGuaranteedWarning",
-    "ReadinessWarning",
     "fit_predict",
     "predict",
     "unnest",
@@ -312,13 +310,13 @@ class OrderNotGuaranteedWarning(PolarsOnlineWarning, UserWarning):
     An online model learns in row order, so the order a query delivers is
     part of the model. :meth:`ModelBank.fit`,
     :meth:`ModelBank.fit_predict_batches`, ``lf.online.fit_predict``,
-    ``lf.online.predict``, and :func:`rheon.stream.with_windows` with
+    ``lf.online.predict``, and :func:`rheon.polars.stream.with_windows` with
     its namespace form ``lf.online.with_windows`` have Polars run a query a
     chunk at a time. Each issues this warning when the query has a step
     whose row order Polars may then change. Fix the step it names, or, for
     a query whose order is fixed by other means, filter the warning out
     with
-    ``warnings.simplefilter("ignore", rheon.OrderNotGuaranteedWarning)``.
+    ``warnings.simplefilter("ignore", rheon.polars.OrderNotGuaranteedWarning)``.
 
     The warning names each such step and its fix:
 
@@ -379,7 +377,7 @@ class OrderNotGuaranteedWarning(PolarsOnlineWarning, UserWarning):
 
         import warnings
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
         sides = pl.scan_parquet("ticks.parquet").select("t", "x0", "x1")
         # A join with no maintain_order: Polars may deliver its rows in any order.
         rows = pl.scan_parquet("ticks.parquet").select("t", "y").join(sides, on="t")
@@ -420,148 +418,6 @@ class OrderNotGuaranteedWarning(PolarsOnlineWarning, UserWarning):
     """
 
 
-class ReadinessWarning(PolarsOnlineWarning, UserWarning):
-    """A warning that a model is not ready, or may never become ready.
-
-    It points once at a state every row already carries in
-    ``withheld_reason``, ``settled_frac`` and ``support_coef``, so you can
-    act before reading the output. Where the finding is intended, filter it
-    out with ``warnings.simplefilter("ignore", rheon.ReadinessWarning)``.
-    `Is it ready?
-    <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`_
-    sets each finding beside the gates that withhold a prediction.
-
-    The learning calls issue it: :meth:`ModelBank.fit`,
-    :meth:`ModelBank.fit_predict`, :meth:`ModelBank.fit_predict_batches` and
-    ``lf.online.fit_predict``. ``predict`` never does. Apart from the two
-    findings about a horizon, it is issued once per spec and group. Its
-    message begins with the spec, and the group where the spec has one, as
-    ``spec "m" group "g":``. Under ``group_close="session"`` each session
-    span is a stream of its own, so the warning is issued once per span,
-    which the message names by its session value, as
-    ``spec "m" group "g" session "a":`` (``session null`` for a null value).
-    Two spans with the same finding then give two texts, and Python's
-    default filter, which shows a text once per line of code, shows both.
-
-    It reports five findings:
-
-    - **A coefficient the ridge determined more than the data did**
-      (``support_coef`` below 0.5), named, on a row the gates let through.
-      The features do not determine such a coefficient: a duplicated or
-      constant column, or a ridge as large as the feature's variance does
-      this. While the columns stay collinear, the predictions do not depend
-      on the split. The split among such
-      columns is arbitrary, and it moves the moment the collinearity breaks.
-    - **The ``max_error_inflation`` gate has not been met.** The gate has withheld every row
-      for a further half-life, and at the row rate so far ``error_inflation``
-      stays above ``max_error_inflation``, so predictions stay withheld
-      unless the rows come faster. The message says how far, and gives a
-      half-life above which the gate is met, or a looser ratio. Where the
-      model has not fit at all, its ``weight_sum`` short of a row per
-      coefficient, the message gives where ``weight_sum`` tops out instead.
-      A ``kalman`` never issues it, since its gate reads each row's own
-      value, which a row nearer the design's center reads lower.
-    - **A** ``min_weight`` **has not been met.** The floor has withheld
-      every row for a further half-life, and the weight a target reads tops
-      out below its ``min_weight``. The message names that ceiling
-      (``weight_sum_settled`` in :meth:`ModelBank.summary`), and the
-      ``min_weight`` or ``half_life`` that meets it. A target that no row
-      with a positive weight has given a value has no rate to project from,
-      so its message says that instead. A target whose own weight is below
-      ``weight_sum`` has not been learned from every row, and its weight
-      falls on each row without it. Its message says so, with the ceiling
-      the floor would have if every row carried the target, where that
-      ceiling is below the floor.
-    - **A diagnostic has no horizon.** A spec with a ``clock`` and an
-      ``embargo`` but no ``horizon_rows`` has a diagnostic that reads the
-      target's horizon (``emit_calibration``, ``emit_breaks``,
-      ``emit_specification`` or ``emit_robust_se``). There ``embargo`` is in
-      clock units, so the horizon is 0, and a target that looks ahead flags
-      the test on most rows. The message names ``horizon_rows``, once per
-      diagnostic, on the bank's first learning call.
-    - **The Newey-West lags were capped at 64.** Without a clock,
-      ``embargo`` is in rows and gives the horizon. A diagnostic that reads
-      the horizon takes twice the horizon in Newey-West lags, and at most 64
-      when they are read from ``embargo``. The
-      message gives the lags asked for, and names ``horizon_rows`` (to take
-      them all) and ``robust_se_lags``. It begins with the spec alone, and
-      comes on the bank's first learning call.
-
-    Offline, :func:`rheon.gram.lasso_path` issues it once per call
-    for the penalties whose coordinate descent ran out of its ``max_iter``
-    sweeps before it met its stopping rule, naming them. Each such
-    penalty's row of the path is where its descent stopped. The ``lasso``
-    model counts the same event in :meth:`ModelBank.solve_failures`, except
-    on a Gram with too few rows for its features, its warm-up.
-
-    .. rubric:: Examples
-
-    This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
-
-    .. code-block:: python
-
-        import warnings
-
-        # 400 rows a step apart, with a half-life of 20 steps: the weight tops out near 29.
-        spec = po.spec.ewridge(
-            "ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=20.0,
-            gap_cap=5.0, min_weight=50.0,
-        )
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            po.ModelBank([spec]).fit_predict(df)
-        for w in caught:
-            print(type(w.message).__name__, str(w.message).split(" has not")[0])
-
-    .. code-block:: text
-
-        ReadinessWarning spec "ridge": min_weight = 50
-
-    .. rubric:: See also
-
-    - `Is it ready?
-      <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`_,
-      the gates and what each finding means for the output.
-    - :meth:`ModelBank.summary`, whose ``weight_sum_settled`` is the
-      ceiling the ``min_weight`` finding names.
-    - :class:`PolarsOnlineWarning`, the base class every warning of this
-      library shares.
-
-    .. rubric:: Notes
-
-    The first three findings judge a model only once its ``settled_frac``
-    reaches 0.95, the model within 5% of its steady state. Before then, its
-    early rows still move what the warning would say, and a warning cannot
-    be taken back: the first rows' noisy feature variances, for example,
-    can read a share of the data below 0.5 that later rows do not. Where
-    nothing decays, ``settled_frac`` is null, so the model is never judged,
-    and its ``support_coef``, ``withheld_reason`` and
-    :meth:`ModelBank.summary` carry what it reads.
-
-    The noise-gate and ``min_weight`` findings wait a half-life during which
-    their gate withholds every row, on the clock the learned rows have
-    covered. A row the gate lets through starts the wait again. The wait is
-    in the state file: a bank saved and loaded inside it goes on waiting,
-    and issues its warning on the row an unbroken stream would. Under
-    ``embargo`` both findings read the ``settled_frac`` of the rows the
-    model has learned from, on the clock its weight has covered. The row's
-    own ``settled_frac`` counts the held rows' clock too.
-
-    Both findings project a ceiling from the rows so far, and rows that come
-    faster can beat it, so neither says the gate is unmet for good. At the
-    rows' spacing ``d`` and weight so far, the ``min_weight`` ceiling is
-    ``1 / (1 - 2 ** (-d / half_life))`` times that weight. With a clock,
-    ``d`` is known only from the rows, so the ceiling cannot be read from the spec before
-    the rows arrive. A warning on a row of
-    weight 0, or on rows too uneven to project (one row far heavier than the
-    rest, or a stream whose weight is still its first row's), gives no
-    figure. A target the rows stopped carrying gets no figure where rows
-    that each carried it would meet the floor, since its weight falls
-    toward 0 once the rows stop carrying it.
-    """
-
-
 class ConsumedSourceWarning(PolarsOnlineWarning, UserWarning):
     """A warning that a query whose source is written in Python may give its rows only once.
 
@@ -584,9 +440,9 @@ class ConsumedSourceWarning(PolarsOnlineWarning, UserWarning):
     ``lf.online.fit_predict`` and ``lf.online.predict``) issue it only for a query whose source is
     written in Python and which gave no rows, the shape a consumed stream
     has. A frame's ``.lazy()`` and a ``pl.scan_parquet`` never issue it, and
-    both can be run again. :func:`rheon.stream.with_windows`, and its namespace form
+    both can be run again. :func:`rheon.polars.stream.with_windows`, and its namespace form
     ``lf.online.with_windows``, issue it the same way, for a run that gave no
-    rows. :func:`rheon.stream.embargo` issues it
+    rows. :func:`rheon.polars.stream.embargo` issues it
     earlier, while it builds its query, whenever its input's source is
     written in Python: the query it returns is Polars' own, reads its input
     twice, and runs after the function returns.
@@ -610,8 +466,8 @@ class ConsumedSourceWarning(PolarsOnlineWarning, UserWarning):
 
 
         rows = pl.scan_arrow_c_stream(Once(df))
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        bank = rp.ModelBank([spec])
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             bank.fit(rows)                       # learns all 400 rows
@@ -724,19 +580,6 @@ def _is_python_scan(lf: pl.LazyFrame, plan_text: str | None = None) -> bool:
     if plan_text is None:
         plan_text = _plan_text(lf)
     return bool(plan_text and _PYTHON_SCAN.search(plan_text))
-
-
-def _user_stacklevel() -> int:
-    """The ``stacklevel`` that attributes a warning to the first frame outside
-    this package, so it points at the caller's line and not at the library's.
-    Counted from the function that calls this and then ``warnings.warn``."""
-    here = os.path.dirname(os.path.abspath(__file__)) + os.sep
-    frame: FrameType | None = sys._getframe(1)
-    level = 1
-    while frame is not None and os.path.abspath(frame.f_code.co_filename).startswith(here):
-        frame = frame.f_back
-        level += 1
-    return level
 
 
 def _walk(node: Any, found: list[str]) -> None:
@@ -1079,7 +922,7 @@ def _warn_if_order_unspecified(
         'Fix the order with maintain_order="left" on a join, maintain_order=True on a '
         f"group_by, or a sort after a unique() or before {before}, or, where the order is "
         "fixed by other means, silence this warning with "
-        '`warnings.simplefilter("ignore", rheon.OrderNotGuaranteedWarning)`.'
+        '`warnings.simplefilter("ignore", rheon.polars.OrderNotGuaranteedWarning)`.'
     )
     warnings.warn(OrderNotGuaranteedWarning(msg), stacklevel=_user_stacklevel())
 
@@ -1209,7 +1052,7 @@ def _source(
                     "query again for each run, calling "
                     "`pl.scan_arrow_c_stream(...)` inside the loop, or, if the source "
                     "really is empty, silence this warning with "
-                    '`warnings.simplefilter("ignore", rheon.ConsumedSourceWarning)`.'
+                    '`warnings.simplefilter("ignore", rheon.polars.ConsumedSourceWarning)`.'
                 ),
                 stacklevel=_user_stacklevel(),
             )
@@ -1525,25 +1368,25 @@ class LazyFrameOnlineNamespace:
         query that goes on to filter, join or write the result. For a frame
         already in memory, use ``df.online.fit_predict``. To keep the bank
         and feed it more chunks later, use
-        :meth:`~rheon.ModelBank.fit_predict_batches`, and to learn
-        without keeping the output, :meth:`~rheon.ModelBank.fit`.
+        :meth:`~rheon.polars.ModelBank.fit_predict_batches`, and to learn
+        without keeping the output, :meth:`~rheon.polars.ModelBank.fit`.
 
         .. rubric:: Parameters
 
         ``specs``
             The specs of a model bank that starts with nothing learned, as
-            :class:`~rheon.ModelBank` takes them. Leave it out to
+            :class:`~rheon.polars.ModelBank` takes them. Leave it out to
             resume from ``load_state``. Given with ``load_state``, they are
             checked against the specs the state was saved with.
         ``load_state``
             A bank to resume from: the path of a saved state, or a
-            :class:`~rheon.ModelBank`. The file is read, or the bank
+            :class:`~rheon.polars.ModelBank`. The file is read, or the bank
             copied, when the query is built, so a bank given here never
             moves, and each run of the query starts from the same state.
         ``save_state``
             The path to write the state the run ends in, after the last row
             the query gave the bank. The write is atomic
-            (:meth:`~rheon.ModelBank.save`): the file is the old
+            (:meth:`~rheon.polars.ModelBank.save`): the file is the old
             state or the new one, never half of either, so it may be
             ``load_state``'s path. Nothing is written unless the query gives
             its last row (see Notes). A rerun whose ``load_state`` this
@@ -1551,7 +1394,7 @@ class LazyFrameOnlineNamespace:
             how to name the states so that it does not.
         ``closed_groups``
             The path of a file to write the groups that closed during the
-            run to (:meth:`~rheon.ModelBank.closed_groups`), in the
+            run to (:meth:`~rheon.polars.ModelBank.closed_groups`), in the
             format its extension names. It needs a spec with
             ``group_close``. The bank's queue of closed groups is emptied
             after every chunk, so the bank's memory stays bounded. The file
@@ -1568,7 +1411,7 @@ class LazyFrameOnlineNamespace:
             each chunk.
         ``threads``
             How many threads the bank runs on, as
-            :class:`~rheon.ModelBank` takes it. ``None``, the
+            :class:`~rheon.polars.ModelBank` takes it. ``None``, the
             default, shares the process's threads. A bank given as
             ``load_state`` keeps its own count unless one is given here. The
             output is the same at any count. The threads Polars reads the
@@ -1578,7 +1421,7 @@ class LazyFrameOnlineNamespace:
 
         A query holding the input's rows, in their order, with one output
         column added per spec, named after the spec. Its fields are what
-        :meth:`~rheon.ModelBank.fit_predict` writes, which
+        :meth:`~rheon.polars.ModelBank.fit_predict` writes, which
         :mod:`rheon.spec` describes under *What a spec writes*. The
         rows must arrive in each group's clock order, as for the bank.
 
@@ -1593,19 +1436,19 @@ class LazyFrameOnlineNamespace:
             - ``chunk_size`` or ``threads`` is below 1;
             - the bank refuses a spec;
             - a column a spec reads shares the spec's name, with the
-              message of :meth:`~rheon.ModelBank.fit_predict`;
+              message of :meth:`~rheon.polars.ModelBank.fit_predict`;
             - ``closed_groups``'s extension names no format, or no spec has
               ``group_close``;
             - ``load_state`` is not a state this build loads, or was saved
               with specs other than ``specs``
-              (:meth:`~rheon.ModelBank.load`).
+              (:meth:`~rheon.polars.ModelBank.load`).
         :class:`~rheon.ColumnNotFoundError`
             A column a spec reads is not in the query. It is a
             ``ValueError`` too.
         :class:`~rheon.WrongTypeError`
             A column a spec reads is of a type its role cannot take, such as
             a text feature, with the messages of
-            :meth:`~rheon.ModelBank.fit_predict`, or a column is
+            :meth:`~rheon.polars.ModelBank.fit_predict`, or a column is
             ``UInt128``, which no frame can carry into the bank. It is both
             a ``TypeError`` and a ``ValueError``.
         ``TypeError``
@@ -1615,7 +1458,7 @@ class LazyFrameOnlineNamespace:
             or ``closed_groups`` is not.
         ``IsADirectoryError``
             ``save_state`` is a directory.
-        :class:`~rheon.OrderNotGuaranteedWarning`
+        :class:`~rheon.polars.OrderNotGuaranteedWarning`
             A warning, not an error: the query has a step whose row order
             Polars does not guarantee when it runs a query a chunk at a
             time, which the warning names.
@@ -1635,7 +1478,7 @@ class LazyFrameOnlineNamespace:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             fitted = lf.online.fit_predict([spec], save_state="fit.state").collect()
             # Every field as a column of its own, coef as one column per coefficient.
             flat = lf.online.fit_predict([spec]).online.unnest([spec]).collect()
@@ -1648,11 +1491,11 @@ class LazyFrameOnlineNamespace:
         .. rubric:: See also
 
         - ``df.online.fit_predict``, the same over a frame in memory.
-        - :meth:`~rheon.ModelBank.fit_predict_batches`, the same
+        - :meth:`~rheon.polars.ModelBank.fit_predict_batches`, the same
           with a bank you keep.
         - :meth:`predict`, which predicts and learns nothing.
         - :meth:`unnest`, which turns each field into a column.
-        - :func:`rheon.fit_predict`, this method as a function a
+        - :func:`rheon.polars.fit_predict`, this method as a function a
           type checker can see.
 
         .. rubric:: Notes
@@ -1731,7 +1574,7 @@ class LazyFrameOnlineNamespace:
         .. rubric:: Parameters
 
         ``bank``
-            The bank to predict from: a :class:`~rheon.ModelBank`,
+            The bank to predict from: a :class:`~rheon.polars.ModelBank`,
             read as it stands each time the query runs, or the path of a
             saved state, read once, when the query is built. Predicting
             leaves a bank as it was, so a bank can be shared with the query.
@@ -1743,7 +1586,7 @@ class LazyFrameOnlineNamespace:
             ``max_rows_between_coefs`` say.
         ``threads``
             How many threads to predict on, as
-            :class:`~rheon.ModelBank` takes it. A bank given with a
+            :class:`~rheon.polars.ModelBank` takes it. A bank given with a
             count is predicted from as a copy, so its own threads stay its
             own. Without one, a bank predicts on its own threads, and a path
             on the process's.
@@ -1751,9 +1594,9 @@ class LazyFrameOnlineNamespace:
         .. rubric:: Returns
 
         A query holding the input's rows with one output column per spec:
-        what :meth:`~rheon.ModelBank.predict` gives each row, as the
+        what :meth:`~rheon.polars.ModelBank.predict` gives each row, as the
         next row of its group's stream. Target columns are optional, as they
-        are for :meth:`~rheon.ModelBank.predict`.
+        are for :meth:`~rheon.polars.ModelBank.predict`.
 
         .. rubric:: Raises
 
@@ -1765,7 +1608,7 @@ class LazyFrameOnlineNamespace:
             When:
 
             - the file is not a state this build loads
-              (:meth:`~rheon.ModelBank.load`);
+              (:meth:`~rheon.polars.ModelBank.load`);
             - ``bank`` is ``None``;
             - ``chunk_size`` or ``threads`` is below 1.
         :class:`~rheon.ColumnNotFoundError`
@@ -1779,14 +1622,14 @@ class LazyFrameOnlineNamespace:
         ``TypeError``
             ``bank`` is neither a bank nor a path, or ``threads`` is not an
             integer.
-        :class:`~rheon.OrderNotGuaranteedWarning`
+        :class:`~rheon.polars.OrderNotGuaranteedWarning`
             A warning, not an error: the query has a step whose row order
             Polars does not guarantee when it runs a query a chunk at a
             time, which the warning names.
 
         While the query runs, a value the bank refuses (a null clock, a
         negative weight): under py-polars 1.x it arrives as Polars'
-        ``ComputeError`` carrying :meth:`~rheon.ModelBank.predict`'s
+        ``ComputeError`` carrying :meth:`~rheon.polars.ModelBank.predict`'s
         message, and under 2.0 as its ``ValueError`` itself, since how a
         query wraps an error is Polars' to change.
 
@@ -1797,8 +1640,8 @@ class LazyFrameOnlineNamespace:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-            bank = po.ModelBank([spec])
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = rp.ModelBank([spec])
             bank.fit(lf)                              # learn df's 400 rows
             bank.save("trained.state")
             scored = later.online.predict("trained.state").collect()   # the next 400, unlearned
@@ -1810,10 +1653,10 @@ class LazyFrameOnlineNamespace:
 
         .. rubric:: See also
 
-        - :meth:`~rheon.ModelBank.predict`, which this runs over
+        - :meth:`~rheon.polars.ModelBank.predict`, which this runs over
           each chunk, and the fields it gives.
         - :meth:`fit_predict`, which learns each row after predicting it.
-        - :func:`rheon.predict`, this method as a function a type
+        - :func:`rheon.polars.predict`, this method as a function a type
           checker can see.
         """
         return _predict_lazy(self._lf, bank, chunk_size, threads)
@@ -1834,7 +1677,7 @@ class LazyFrameOnlineNamespace:
 
         ``specs``
             The specs whose output columns to unnest: the spec dicts, a
-            :class:`~rheon.ModelBank` (its specs), or the path of a
+            :class:`~rheon.polars.ModelBank` (its specs), or the path of a
             saved state, which carries them. Each output column takes the
             place of its spec's column. The rest of the query, and the
             output column of a spec not named, are left as they are.
@@ -1876,7 +1719,7 @@ class LazyFrameOnlineNamespace:
               or lacks a field the spec writes;
             - a spec is given twice, or is not valid;
             - ``specs`` is the path of a file that is not a state this build
-              loads (:meth:`~rheon.ModelBank.load`).
+              loads (:meth:`~rheon.polars.ModelBank.load`).
         ``TypeError``
             ``specs`` is none of the three.
         ``FileNotFoundError``
@@ -1892,7 +1735,7 @@ class LazyFrameOnlineNamespace:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             betas = (
                 lf.online.fit_predict([spec])
                 .online.unnest([spec], separator=".")
@@ -1910,7 +1753,7 @@ class LazyFrameOnlineNamespace:
         - :func:`rheon.spec.coef_fields`, each coefficient's column
           name and where it sits in ``coef``.
         - :func:`rheon.spec.output_fields`, the fields a spec writes.
-        - :func:`rheon.unnest`, this method as a function a type
+        - :func:`rheon.polars.unnest`, this method as a function a type
           checker can see.
         """
         return _unnest_lazy(self._lf, specs, separator)
@@ -1932,24 +1775,24 @@ class LazyFrameOnlineNamespace:
     ) -> pl.LazyFrame:
         """Add one column per window operator's expression to a query's rows, as the query runs.
 
-        It is :func:`rheon.stream.with_windows` as a method, so a
+        It is :func:`rheon.polars.stream.with_windows` as a method, so a
         query can add window operators' values and fit on them in one
         chain. For a frame in memory, use ``df.online.with_windows``.
 
         .. rubric:: Parameters
 
         ``*exprs``, ``**named`` and every keyword
-            As :func:`rheon.stream.with_windows` takes them, with the
+            As :func:`rheon.polars.stream.with_windows` takes them, with the
             query as its input.
 
         .. rubric:: Returns
 
         A query holding the input's rows with one column added per
-        expression, as :func:`rheon.stream.with_windows` returns it.
+        expression, as :func:`rheon.polars.stream.with_windows` returns it.
 
         .. rubric:: Raises
 
-        What :func:`rheon.stream.with_windows` raises.
+        What :func:`rheon.polars.stream.with_windows` raises.
 
         .. rubric:: Examples
 
@@ -1961,7 +1804,7 @@ class LazyFrameOnlineNamespace:
             fitted = (
                 pl.scan_parquet("trades.parquet")
                 .online.with_windows(
-                    mid_5s=po.ewm_mean("mid", half_life="5s", window_size="1m"),
+                    mid_5s=rp.ewm_mean("mid", half_life="5s", window_size="1m"),
                     clock="ts", gap_cap="5m", group="symbol",
                 )
                 .collect()
@@ -1974,11 +1817,11 @@ class LazyFrameOnlineNamespace:
 
         .. rubric:: See also
 
-        - :func:`rheon.stream.with_windows`, every parameter and
+        - :func:`rheon.polars.stream.with_windows`, every parameter and
           what it refuses.
-        - :mod:`rheon.ops`, the window operators.
+        - :mod:`rheon.polars.ops`, the window operators.
         """
-        from rheon.stream import with_windows
+        from rheon.polars.stream import with_windows
 
         return with_windows(
             self._lf,
@@ -2019,7 +1862,7 @@ class DataFrameOnlineNamespace:
         It is ``ModelBank(specs).fit_predict(df)`` in one call, from a bank
         that is then dropped. Use it for a frame already in memory, when you
         do not need the bank afterwards. To feed the same bank more rows
-        later, keep a :class:`~rheon.ModelBank` of your own, and for
+        later, keep a :class:`~rheon.polars.ModelBank` of your own, and for
         a query, use ``lf.online.fit_predict``.
 
         .. rubric:: Parameters
@@ -2029,15 +1872,15 @@ class DataFrameOnlineNamespace:
             out to start from ``load_state``.
         ``load_state``
             What to start from in place of the specs: the path of a saved
-            state, or a :class:`~rheon.ModelBank`, which is copied
+            state, or a :class:`~rheon.polars.ModelBank`, which is copied
             and does not move.
         ``save_state``
             The path to save the bank to before it is dropped
-            (:meth:`~rheon.ModelBank.save`).
+            (:meth:`~rheon.polars.ModelBank.save`).
         ``closed_groups``
             The path of a file to write the groups that closed to, in the
             format its extension names, before ``save_state`` is written
-            (:meth:`~rheon.ModelBank.closed_groups`). A CSV holds
+            (:meth:`~rheon.polars.ModelBank.closed_groups`). A CSV holds
             each list column as JSON text, as ``lf.online.fit_predict``
             writes it. A file that cannot be written still leaves the state
             saved before its error is raised.
@@ -2054,14 +1897,14 @@ class DataFrameOnlineNamespace:
         .. rubric:: Returns
 
         The frame with one output column added per spec, as
-        :meth:`~rheon.ModelBank.fit_predict` returns it.
+        :meth:`~rheon.polars.ModelBank.fit_predict` returns it.
 
         .. rubric:: Raises
 
-        What :class:`~rheon.ModelBank`,
-        :meth:`~rheon.ModelBank.fit_predict`,
-        :meth:`~rheon.ModelBank.load` and
-        :meth:`~rheon.ModelBank.save` raise, and:
+        What :class:`~rheon.polars.ModelBank`,
+        :meth:`~rheon.polars.ModelBank.fit_predict`,
+        :meth:`~rheon.polars.ModelBank.load` and
+        :meth:`~rheon.polars.ModelBank.save` raise, and:
 
         ``ValueError``
             Neither ``specs`` nor ``load_state`` is given, ``chunk_size`` is
@@ -2079,7 +1922,7 @@ class DataFrameOnlineNamespace:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             out = df.online.fit_predict([spec], save_state="ridge.state")
             print(out["ridge"].struct.field("pred_y").count(), "of", out.height, "rows predicted")
 
@@ -2091,9 +1934,9 @@ class DataFrameOnlineNamespace:
 
         - :meth:`LazyFrameOnlineNamespace.fit_predict`, the same over a
           query, run as the query runs.
-        - :meth:`~rheon.ModelBank.fit_predict`, the same with a bank
+        - :meth:`~rheon.polars.ModelBank.fit_predict`, the same with a bank
           you keep.
-        - :func:`rheon.fit_predict`, this method as a function a
+        - :func:`rheon.polars.fit_predict`, this method as a function a
           type checker can see.
         """
         chunk_size = _check_chunk_size(chunk_size, "df.online.fit_predict")
@@ -2126,14 +1969,14 @@ class DataFrameOnlineNamespace:
     ) -> pl.DataFrame:
         """Predict a frame's rows from a bank as it stands, learning nothing.
 
-        It is :meth:`~rheon.ModelBank.predict` over the frame, from a
+        It is :meth:`~rheon.polars.ModelBank.predict` over the frame, from a
         bank or a saved state. Use it to serve rows in memory
         from a bank that has learned. For a query, use ``lf.online.predict``.
 
         .. rubric:: Parameters
 
         ``bank``
-            The bank to predict from: a :class:`~rheon.ModelBank`,
+            The bank to predict from: a :class:`~rheon.polars.ModelBank`,
             which does not move, or the path of a saved state.
         ``chunk_size``
             How many rows are predicted at a time, as ``lf.online.predict``
@@ -2148,12 +1991,12 @@ class DataFrameOnlineNamespace:
         .. rubric:: Returns
 
         The frame with one output column added per spec, as
-        :meth:`~rheon.ModelBank.predict` returns it.
+        :meth:`~rheon.polars.ModelBank.predict` returns it.
 
         .. rubric:: Raises
 
-        What :meth:`~rheon.ModelBank.load` (for a path) and
-        :meth:`~rheon.ModelBank.predict` raise, and:
+        What :meth:`~rheon.polars.ModelBank.load` (for a path) and
+        :meth:`~rheon.polars.ModelBank.predict` raise, and:
 
         ``TypeError``
             ``bank`` is neither a bank nor a path, or ``chunk_size`` is not a
@@ -2169,8 +2012,8 @@ class DataFrameOnlineNamespace:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-            bank = po.ModelBank([spec])
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = rp.ModelBank([spec])
             bank.fit(df)                                  # learn df's 400 rows
             scored = today.online.predict(bank)           # the next 400, unlearned
             print(scored["ridge"].struct.field("pred_y").count(), bank.rows_fed)
@@ -2182,7 +2025,7 @@ class DataFrameOnlineNamespace:
         .. rubric:: See also
 
         - :meth:`LazyFrameOnlineNamespace.predict`, the same over a query.
-        - :func:`rheon.predict`, this method as a function a type
+        - :func:`rheon.polars.predict`, this method as a function a type
           checker can see.
         """
         chunk_size = _check_chunk_size(chunk_size, "df.online.predict")
@@ -2228,7 +2071,7 @@ class DataFrameOnlineNamespace:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             flat = df.online.fit_predict([spec]).online.unnest([spec])
             print(flat.select("^coef_.*$").columns)
 
@@ -2240,7 +2083,7 @@ class DataFrameOnlineNamespace:
 
         - :func:`rheon.spec.coef_fields`, each coefficient's column
           name and where it sits in ``coef``.
-        - :func:`rheon.unnest`, this method as a function a type
+        - :func:`rheon.polars.unnest`, this method as a function a type
           checker can see.
         """
         return self._df.select(
@@ -2264,13 +2107,13 @@ class DataFrameOnlineNamespace:
     ) -> pl.DataFrame:
         """Add one column per window operator's expression to a frame's rows.
 
-        It is :func:`rheon.stream.with_windows` as a method, as
+        It is :func:`rheon.polars.stream.with_windows` as a method, as
         :meth:`LazyFrameOnlineNamespace.with_windows` is for a query.
 
         .. rubric:: Parameters
 
         ``*exprs``, ``**named`` and every keyword
-            As :func:`rheon.stream.with_windows` takes them, with the
+            As :func:`rheon.polars.stream.with_windows` takes them, with the
             frame as its input.
 
         .. rubric:: Returns
@@ -2279,7 +2122,7 @@ class DataFrameOnlineNamespace:
 
         .. rubric:: Raises
 
-        What :func:`rheon.stream.with_windows` raises.
+        What :func:`rheon.polars.stream.with_windows` raises.
 
         .. rubric:: Examples
 
@@ -2289,7 +2132,7 @@ class DataFrameOnlineNamespace:
         .. code-block:: python
 
             out = trades.online.with_windows(
-                mid_5s=po.ewm_mean("mid", half_life="5s", window_size="1m"),
+                mid_5s=rp.ewm_mean("mid", half_life="5s", window_size="1m"),
                 clock="ts", gap_cap="5m", group="symbol",
             )
             print(out.columns[-1], out.height)
@@ -2300,10 +2143,10 @@ class DataFrameOnlineNamespace:
 
         .. rubric:: See also
 
-        - :func:`rheon.stream.with_windows`, every parameter and
+        - :func:`rheon.polars.stream.with_windows`, every parameter and
           what it refuses.
         """
-        from rheon.stream import with_windows
+        from rheon.polars.stream import with_windows
 
         return with_windows(
             self._df,
@@ -2370,9 +2213,9 @@ def fit_predict(
 
     ``frame``
         A query or a frame. A query gives a query that learns the rows when
-        it runs (:meth:`~rheon._frame.LazyFrameOnlineNamespace.fit_predict`).
+        it runs (:meth:`~rheon.polars._frame.LazyFrameOnlineNamespace.fit_predict`).
         A frame gives the frame with the bank's columns
-        (:meth:`~rheon._frame.DataFrameOnlineNamespace.fit_predict`).
+        (:meth:`~rheon.polars._frame.DataFrameOnlineNamespace.fit_predict`).
     ``specs``
         The specs of a bank that starts with nothing learned.
     ``load_state``
@@ -2387,7 +2230,7 @@ def fit_predict(
         alike.
     ``threads``
         How many threads the bank runs on, as
-        :class:`~rheon.ModelBank` takes it.
+        :class:`~rheon.polars.ModelBank` takes it.
 
     .. rubric:: Returns
 
@@ -2408,8 +2251,8 @@ def fit_predict(
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        out = po.fit_predict(lf, [spec])     # a LazyFrame to a type checker too
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        out = rp.fit_predict(lf, [spec])     # a LazyFrame to a type checker too
         print(out.collect()["ridge"].struct.field("pred_y").count())
 
     .. code-block:: text
@@ -2418,9 +2261,9 @@ def fit_predict(
 
     .. rubric:: See also
 
-    - :meth:`~rheon._frame.LazyFrameOnlineNamespace.fit_predict`,
+    - :meth:`~rheon.polars._frame.LazyFrameOnlineNamespace.fit_predict`,
       each parameter in full, for a query.
-    - :meth:`~rheon._frame.DataFrameOnlineNamespace.fit_predict`,
+    - :meth:`~rheon.polars._frame.DataFrameOnlineNamespace.fit_predict`,
       the same for a frame.
     """
     if isinstance(frame, pl.LazyFrame):
@@ -2476,11 +2319,11 @@ def predict(
 
     ``frame``
         A query, which gives a query
-        (:meth:`~rheon._frame.LazyFrameOnlineNamespace.predict`), or
+        (:meth:`~rheon.polars._frame.LazyFrameOnlineNamespace.predict`), or
         a frame, which gives a frame
-        (:meth:`~rheon._frame.DataFrameOnlineNamespace.predict`).
+        (:meth:`~rheon.polars._frame.DataFrameOnlineNamespace.predict`).
     ``bank``
-        A :class:`~rheon.ModelBank`, or the path of a saved state.
+        A :class:`~rheon.polars.ModelBank`, or the path of a saved state.
     ``chunk_size``
         How many rows are predicted at a time, from a query or a frame
         alike.
@@ -2506,10 +2349,10 @@ def predict(
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        bank = rp.ModelBank([spec])
         bank.fit(df)
-        scored = po.predict(today, bank)     # a DataFrame to a type checker too
+        scored = rp.predict(today, bank)     # a DataFrame to a type checker too
         print(scored["ridge"].struct.field("pred_y").count())
 
     .. code-block:: text
@@ -2518,9 +2361,9 @@ def predict(
 
     .. rubric:: See also
 
-    - :meth:`~rheon._frame.LazyFrameOnlineNamespace.predict`, each
+    - :meth:`~rheon.polars._frame.LazyFrameOnlineNamespace.predict`, each
       parameter in full.
-    - :meth:`~rheon.ModelBank.predict`, the fields it gives.
+    - :meth:`~rheon.polars.ModelBank.predict`, the fields it gives.
     """
     if isinstance(frame, pl.LazyFrame):
         return _predict_lazy(frame, bank, chunk_size, threads)
@@ -2556,9 +2399,9 @@ def unnest(
 
     ``frame``
         A query, which gives a query
-        (:meth:`~rheon._frame.LazyFrameOnlineNamespace.unnest`), or a
+        (:meth:`~rheon.polars._frame.LazyFrameOnlineNamespace.unnest`), or a
         frame, which gives a frame
-        (:meth:`~rheon._frame.DataFrameOnlineNamespace.unnest`).
+        (:meth:`~rheon.polars._frame.DataFrameOnlineNamespace.unnest`).
     ``specs``
         The specs whose output columns to unnest: the spec dicts, a bank, or
         the path of a saved state.
@@ -2586,8 +2429,8 @@ def unnest(
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        flat = po.unnest(df.online.fit_predict([spec]), [spec], separator=".")
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        flat = rp.unnest(df.online.fit_predict([spec]), [spec], separator=".")
         print(flat.select("^ridge.coef_.*$").columns)
 
     .. code-block:: text
@@ -2596,7 +2439,7 @@ def unnest(
 
     .. rubric:: See also
 
-    - :meth:`~rheon._frame.LazyFrameOnlineNamespace.unnest`, the
+    - :meth:`~rheon.polars._frame.LazyFrameOnlineNamespace.unnest`, the
       columns it writes, in full.
     - :func:`rheon.spec.coef_fields`, each coefficient's column
       name.

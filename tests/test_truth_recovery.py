@@ -34,9 +34,9 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import adjusted_rand_score
 
 import ledger
-import rheon as po
 from public_benchmarks import franti_or_skip, tcpd_or_skip
-from rheon import sim
+from rheon import polars as rp
+from rheon.polars import sim
 from tcpdbench_metrics import f_measure
 
 TIER = "mixed"
@@ -69,7 +69,7 @@ def fit_kmeans(
     order (``predict``: the state as it stands, nothing learned)."""
     names = [f"x{j}" for j in range(points.shape[1])]
     df = pl.DataFrame({n: points[:, j] for j, n in enumerate(names)})
-    bank = po.ModelBank([po.spec.kmeans("m", features=names, n_clusters=k, half_life=INF, **kw)])
+    bank = rp.ModelBank([rp.spec.kmeans("m", features=names, n_clusters=k, half_life=INF, **kw)])
     bank.fit(df if order is None else df[order])
     centres = bank.coef()["coef"].to_numpy().reshape(k, points.shape[1])
     return centres, bank.predict(df).unnest("m")["cluster"].to_numpy()
@@ -152,7 +152,7 @@ def micro_blobs(seed: int) -> pl.DataFrame:
     names = [f"x{j}" for j in range(BLOB_P)]
     x, _, _ = blobs(seed)
     df = pl.DataFrame({n: x[:, j] for j, n in enumerate(names)})
-    bank = po.ModelBank([po.spec.micro("m", features=names, eps=0.1, half_life=INF)])
+    bank = rp.ModelBank([rp.spec.micro("m", features=names, eps=0.1, half_life=INF)])
     bank.fit(df)
     return bank.predict(df).unnest("m").select("cluster", "outlier")
 
@@ -299,7 +299,7 @@ def micro_s1(points: np.ndarray, seed: int) -> pl.DataFrame:
     each point's cluster and whether it is an outlier, in the set's order."""
     order = franti_order(points, seed)
     df = pl.DataFrame({"x0": points[order, 0], "x1": points[order, 1]})
-    bank = po.ModelBank([po.spec.micro("m", features=["x0", "x1"], eps=0.02, half_life=INF)])
+    bank = rp.ModelBank([rp.spec.micro("m", features=["x0", "x1"], eps=0.02, half_life=INF)])
     bank.fit(df)
     out = bank.predict(pl.DataFrame({"x0": points[:, 0], "x1": points[:, 1]})).unnest("m")
     return out.select("cluster", "outlier")
@@ -371,10 +371,10 @@ def _matched(a: np.ndarray, b: np.ndarray) -> float:
 def hmm_fit(x: np.ndarray, **kw) -> tuple[np.ndarray, np.ndarray]:
     """``hmm``'s filtered state on each row (-1 where null) and its learned
     means after the pass."""
-    spec = po.spec.hmm(
+    spec = rp.spec.hmm(
         "h", features=["x0", "x1"], n_components=HMM_K, precision_prior=0.01, half_life=INF, **kw
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     out = bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})).unnest("h")
     means = bank.coef("h")["coef"].to_numpy().reshape(HMM_K, 2)
     return out["state"].fill_null(-1).to_numpy(), means
@@ -469,8 +469,8 @@ def test_hmm_at_its_default_warm_up_recovers_sticky_regimes():
 
 def bocpd_out(x: np.ndarray, **kw) -> pl.DataFrame:
     """``bocpd``'s every field on each row of ``x``."""
-    spec = po.spec.bocpd("b", features=["x"], **kw)
-    return po.ModelBank([spec]).fit_predict(pl.DataFrame({"x": x})).unnest("b")
+    spec = rp.spec.bocpd("b", features=["x"], **kw)
+    return rp.ModelBank([spec]).fit_predict(pl.DataFrame({"x": x})).unnest("b")
 
 
 def bocpd_starts(x: np.ndarray, **kw) -> tuple[list[int], list[int | None]]:
@@ -658,8 +658,8 @@ def run_length_posteriors(y: np.ndarray, **extra: Any) -> tuple[list[np.ndarray]
     ``TCPDBENCH_BOCPD`` and any ``extra`` options. The model emits the
     posterior's mode and mean only, so the whole posterior is read from the
     state the bank writes as JSON, one row at a time."""
-    spec = po.spec.bocpd("b", features=["x"], **TCPDBENCH_BOCPD, **extra)
-    bank = po.ModelBank([spec])
+    spec = rp.spec.bocpd("b", features=["x"], **TCPDBENCH_BOCPD, **extra)
+    bank = rp.ModelBank([spec])
     posts, modes = [], []
     for v in y:
         out = bank.fit_predict(pl.DataFrame({"x": [v]})).unnest("b")
@@ -820,7 +820,7 @@ def corr_stream(seed: int, broken: bool) -> pl.DataFrame:
     return rets.rename({"x_1": "x0", "x_2": "x1", "x_3": "x2"})
 
 
-WINDOW = po.spec.corrchange(
+WINDOW = rp.spec.corrchange(
     "w",
     features=["x0", "x1", "x2"],
     kind="window",
@@ -833,7 +833,7 @@ WINDOW = po.spec.corrchange(
 
 
 def _flags(df: pl.DataFrame) -> np.ndarray:
-    return po.ModelBank([WINDOW]).fit_predict(df).unnest("w")["flag"].fill_null(False).to_numpy()
+    return rp.ModelBank([WINDOW]).fit_predict(df).unnest("w")["flag"].fill_null(False).to_numpy()
 
 
 def test_corrchange_flags_a_correlation_break():
@@ -847,7 +847,7 @@ def test_corrchange_flags_a_correlation_break():
 ledger.guard(
     "corrchange_break",
     lambda: [
-        po.ModelBank([WINDOW]).fit_predict(corr_stream(1_000 + s, broken)).unnest("w")
+        rp.ModelBank([WINDOW]).fit_predict(corr_stream(1_000 + s, broken)).unnest("w")
         for s in range(10)
         for broken in (False, True)
     ],
@@ -902,7 +902,7 @@ def deco_rho(seed: int) -> tuple[np.ndarray, np.ndarray]:
     rets = out["rows"].select(pl.col([f"x_{i + 1}" for i in range(DECO_M)]).diff()).drop_nulls()
     df = rets.rename({f"x_{i + 1}": f"x{i}" for i in range(DECO_M)})
     want = np.asarray(out["truth_rows"]["state"].to_list()[1:], dtype=int)
-    rho = po.ModelBank([po.spec.deco("d", features=feats, half_life=100.0)]).fit_predict(df)
+    rho = rp.ModelBank([rp.spec.deco("d", features=feats, half_life=100.0)]).fit_predict(df)
     return rho.unnest("d")["rho"].to_numpy().astype(float), want
 
 
@@ -985,9 +985,9 @@ def rcov_blocks(seed: int) -> tuple[pl.DataFrame, dict[int, float], dict[int, in
         .select(pl.col("x_1").alias("x0"), pl.col("x_2").alias("x1"), "block")
     )
     sizes = {int(b): n for b, n in rets.group_by("block").len().iter_rows()}
-    bank = po.ModelBank(
+    bank = rp.ModelBank(
         [
-            po.spec.rcov(
+            rp.spec.rcov(
                 "r", features=["x0", "x1"], group="block", group_close="monotone", kind="plain"
             )
         ]

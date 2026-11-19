@@ -156,8 +156,8 @@ def holt(
         y = 10.0 + 0.5 * t + rng.standard_normal(2_000)
         pl.DataFrame({"y": y}).write_parquet("trend.parquet")
 
-        holt = po.spec.holt("holt", targets=["y"], half_life=200.0)  # no features
-        bank = po.ModelBank([holt])
+        holt = rp.spec.holt("holt", targets=["y"], half_life=200.0)  # no features
+        bank = rp.ModelBank([holt])
         bank.fit(pl.scan_parquet("trend.parquet"))  # learn every row, keep no output
         coef = {r["term"]: r["coef"] for r in bank.coef().iter_rows(named=True)}
         print(f"level: true {10.0 + 0.5 * t[-1]:.1f}, found {coef['level']:.1f}")
@@ -173,7 +173,7 @@ def holt(
     - :func:`seqtest`, to test whether a regression predicts closer than
       this baseline.
     - :func:`ewridge`, a regression on features to set against it.
-    - :meth:`rheon.ModelBank.predict`, which extrapolates the level
+    - :meth:`rheon.polars.ModelBank.predict`, which extrapolates the level
       and trend to the row's clock.
 
     .. rubric:: Notes
@@ -221,7 +221,7 @@ def holt(
 
     **Extrapolating over the clock.** The trend is per clock unit, so an
     irregular clock extrapolates the right distance.
-    :meth:`rheon.ModelBank.predict` extrapolates over the clock
+    :meth:`rheon.polars.ModelBank.predict` extrapolates over the clock
     distance from the row the model last learned, capped by ``gap_cap``.
     """
     model: dict[str, Any] = {

@@ -33,7 +33,7 @@ half-life its name encodes, and its dtype. Here a spec with two half-lives
 and two ridge values has four predictions of `y`, one per pair:
 
 ```python
-import rheon as po
+from rheon import polars as po
 
 grid = po.spec.ewridge(
     "ridge", targets=["y"], features=["x0", "x1"],

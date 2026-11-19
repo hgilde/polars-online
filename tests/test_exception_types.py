@@ -49,9 +49,11 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import _errors
 from rheon import _rheon as native
-from rheon._formula import FormulaError
+from rheon import polars as rp
+from rheon.polars import _gbdt
+from rheon.polars._formula import FormulaError
 
 TIER = "essential"
 
@@ -72,12 +74,12 @@ def _df(n: int = 50) -> pl.DataFrame:
 
 def _spec(name: str = "m", **kw: Any) -> dict[str, Any]:
     kw.setdefault("half_life", 50.0)
-    return po.spec.ewridge(name, targets=["y"], features=["x0"], **kw)
+    return rp.spec.ewridge(name, targets=["y"], features=["x0"], **kw)
 
 
 def _closing() -> tuple[dict[str, Any], list[pl.DataFrame]]:
     """A spec that closes groups, and six batches in which each closes."""
-    spec = po.spec.ew_cov(
+    spec = rp.spec.ew_cov(
         "c", features=["x0", "y"], half_life=40.0, group="g", group_close="monotone"
     )
     keys = [f"k{i:02d}" for i in range(12)]
@@ -91,13 +93,13 @@ def _closing() -> tuple[dict[str, Any], list[pl.DataFrame]]:
     return spec, [df.slice(i, 10) for i in range(0, df.height, 10)]
 
 
-def _broken_bank() -> po.ModelBank:
+def _broken_bank() -> rp.ModelBank:
     """A bank a refused chunk broke: the budget refuses after the bank has
     learned part of the chunk, so its state holds rows never returned."""
     rng = np.random.default_rng(3)
     x = rng.standard_normal(300)
     df = pl.DataFrame({"x0": x, "y": 2 * x + 0.1 * rng.standard_normal(300)})
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0"],
@@ -109,7 +111,7 @@ def _broken_bank() -> po.ModelBank:
         emit_drift=True,
         drift_action="reset",
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df.head(1))
     with pytest.raises(ValueError, match="window_budget"):
         bank.fit_predict(df.slice(1))
@@ -120,7 +122,7 @@ def _broken_bank() -> po.ModelBank:
 def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     """What a case's call reads: a frame, a fitted bank, a scratch folder."""
     df = _df()
-    bank = po.ModelBank([_spec()])
+    bank = rp.ModelBank([_spec()])
     bank.fit_predict(df)
     return SimpleNamespace(df=df, bank=bank, tmp=tmp_path, monkeypatch=monkeypatch)
 
@@ -165,17 +167,17 @@ def _gram_call(w: SimpleNamespace) -> object:
 
 def _po_gram_call(w: SimpleNamespace) -> object:
     _no_numpy(w)
-    return po.gram.condition({"columns": ["a"]})
+    return rp.gram.condition({"columns": ["a"]})
 
 
 def _po_corr_call(w: SimpleNamespace) -> object:
     _no_numpy(w)
-    return po.corr.to_z(0.5)
+    return rp.corr.to_z(0.5)
 
 
 def _po_sim_call(w: SimpleNamespace) -> object:
     _no_numpy(w)
-    return po.sim.regimes(2, states=[0.5], transition=[[1.0]], n_blocks=2, rows_per_block=5, seed=0)
+    return rp.sim.regimes(2, states=[0.5], transition=[[1.0]], n_blocks=2, rows_per_block=5, seed=0)
 
 
 def _stub_native(w: SimpleNamespace) -> object:
@@ -203,12 +205,12 @@ def _calendar_every_that_is_no_duration(w: SimpleNamespace) -> object:
             eager=True,
         )
     )
-    return po.eval.window_metrics(out, "m", clock="t", every="1mo foo")
+    return rp.eval.window_metrics(out, "m", clock="t", every="1mo foo")
 
 
 def _unnest_twice(w: SimpleNamespace) -> object:
     other = _spec("n", half_life=40.0)
-    nested = po.ModelBank([_spec(), other]).fit_predict(w.df)
+    nested = rp.ModelBank([_spec(), other]).fit_predict(w.df)
     return nested.online.unnest([_spec(), other])
 
 
@@ -224,7 +226,7 @@ def _save_state_folder(w: SimpleNamespace) -> object:
 def _closed_missing_folder(w: SimpleNamespace) -> object:
     spec, batches = _closing()
     path = w.tmp / "nope" / "closed.parquet"
-    return list(po.ModelBank([spec]).fit_predict_batches(batches, closed_groups=path))
+    return list(rp.ModelBank([spec]).fit_predict_batches(batches, closed_groups=path))
 
 
 def _closed_csv_is_a_folder(w: SimpleNamespace) -> object:
@@ -233,15 +235,15 @@ def _closed_csv_is_a_folder(w: SimpleNamespace) -> object:
     spec, batches = _closing()
     target = w.tmp / "closed.csv"
     target.mkdir()
-    return list(po.ModelBank([spec]).fit_predict_batches(batches, closed_groups=target))
+    return list(rp.ModelBank([spec]).fit_predict_batches(batches, closed_groups=target))
 
 
 def _gbdt_glob(w: SimpleNamespace) -> object:
-    return po.gbdt.xgboost_matrix(str(w.tmp / "none*.parquet"), label="y")
+    return _gbdt.xgboost_matrix(str(w.tmp / "none*.parquet"), label="y")
 
 
 def _gbdt_label(w: SimpleNamespace) -> object:
-    return po.gbdt.xgboost_matrix(w.df.lazy(), label="nope")
+    return _gbdt.xgboost_matrix(w.df.lazy(), label="nope")
 
 
 def _file(w: SimpleNamespace) -> Path:
@@ -280,13 +282,13 @@ CASES: list[Case] = [
     ),
     Case(
         "value-state-is-not-a-state",
-        lambda w: po.ModelBank.load_bytes(b"not a bank"),
+        lambda w: rp.ModelBank.load_bytes(b"not a bank"),
         ValueError,
         "not a polars-online bank state file",
     ),
     Case(
         "value-a-file-that-is-not-a-state",
-        lambda w: po.ModelBank.load(_garbage(w)),
+        lambda w: rp.ModelBank.load(_garbage(w)),
         ValueError,
         "not a polars-online bank state file",
     ),
@@ -310,19 +312,19 @@ CASES: list[Case] = [
     ),
     Case(
         "value-threads-too-few",
-        lambda w: po.ModelBank([_spec()], threads=0),
+        lambda w: rp.ModelBank([_spec()], threads=0),
         ValueError,
         "is not a number of threads",
     ),
     Case(
         "value-threads-too-many",
-        lambda w: po.ModelBank([_spec()], threads=10**9),
+        lambda w: rp.ModelBank([_spec()], threads=10**9),
         ValueError,
         "more threads than one pool may have",
     ),
     Case(
         "value-gbdt-label-is-also-a-margin",
-        lambda w: po.gbdt.xgboost_matrix(w.df.lazy(), label="y", base_margin="y"),
+        lambda w: _gbdt.xgboost_matrix(w.df.lazy(), label="y", base_margin="y"),
         ValueError,
         "is named as the base_margin and as the label",
     ),
@@ -346,97 +348,97 @@ CASES: list[Case] = [
     ),
     Case(
         "type-threads-is-a-bool",
-        lambda w: po.ModelBank([_spec()], threads=True),
+        lambda w: rp.ModelBank([_spec()], threads=True),
         TypeError,
         "is not a number of threads",
     ),
     Case(
         "type-gbdt-features-is-one-name",
-        lambda w: po.gbdt.xgboost_matrix(w.df.lazy(), label="y", features="x0"),
+        lambda w: _gbdt.xgboost_matrix(w.df.lazy(), label="y", features="x0"),
         TypeError,
         "features must be a list of column names",
     ),
     Case(
         "wrong-type-python-one-spec",
-        lambda w: po.ModelBank(_spec()),
-        po.WrongTypeError,
+        lambda w: rp.ModelBank(_spec()),
+        rp.WrongTypeError,
         "specs must be a list of specs",
         bases=(TypeError,),
     ),
     Case(
         "wrong-type-rust-text-feature",
         lambda w: w.bank.fit_predict(w.df.with_columns(x0=pl.col("x0").cast(pl.String))),
-        po.WrongTypeError,
+        rp.WrongTypeError,
         "must be a number, but it is String",
         bases=(TypeError,),
     ),
     Case(
         "wrong-type-rust-refresh-clock",
-        lambda w: po.stream.refresh_time(
+        lambda w: rp.stream.refresh_time(
             pl.DataFrame({"series": ["a"], "t": ["x"], "v": [1.0]}).lazy(),
             series="series",
             names=["a"],
             clock="t",
             value="v",
         ).collect(),
-        po.WrongTypeError,
+        rp.WrongTypeError,
         "must be numeric or temporal",
         bases=(TypeError,),
     ),
     Case(
         "wrong-type-gbdt-feature",
-        lambda w: po.gbdt.xgboost_matrix(
+        lambda w: _gbdt.xgboost_matrix(
             w.df.with_columns(x0=pl.col("x0").cast(pl.String)).lazy(), label="y"
         ),
-        po.WrongTypeError,
+        rp.WrongTypeError,
         "is String",
         bases=(TypeError,),
     ),
     Case(
         "refused-value-reverse-without-a-window",
-        lambda w: po.ewm_mean("x", half_life=10.0, reverse=True),
-        po.RefusedValueError,
+        lambda w: rp.ewm_mean("x", half_life=10.0, reverse=True),
+        rp.RefusedValueError,
         "reverse",
         bases=(ValueError,),
     ),
     Case(
         "column-not-found-rust-feature",
         lambda w: w.bank.fit_predict(w.df.drop("x0")),
-        po.ColumnNotFoundError,
+        rp.ColumnNotFoundError,
         'feature column "x0" is not in the input',
         bases=(pl.exceptions.ColumnNotFoundError, ValueError),
     ),
     Case(
         "column-not-found-python-clock",
-        lambda w: po.stream.embargo(w.df, clock="zz", delay=1.0),
-        po.ColumnNotFoundError,
+        lambda w: rp.stream.embargo(w.df, clock="zz", delay=1.0),
+        rp.ColumnNotFoundError,
         "has no clock column 'zz'",
         bases=(pl.exceptions.ColumnNotFoundError, ValueError),
     ),
     Case(
         "column-not-found-scoring-group",
-        lambda w: po.eval.metrics(w.df, "m", group="zz"),
-        po.ColumnNotFoundError,
+        lambda w: rp.eval.metrics(w.df, "m", group="zz"),
+        rp.ColumnNotFoundError,
         "group column 'zz' is not in the frame",
         bases=(pl.exceptions.ColumnNotFoundError, ValueError),
     ),
     Case(
         "column-not-found-gbdt-label",
         _gbdt_label,
-        po.ColumnNotFoundError,
+        rp.ColumnNotFoundError,
         "the label column 'nope' is not in the source",
         bases=(pl.exceptions.ColumnNotFoundError, ValueError),
     ),
     Case(
         "output-column-not-found",
-        lambda w: po.eval.metrics(w.df, "m"),
-        po.OutputColumnNotFoundError,
+        lambda w: rp.eval.metrics(w.df, "m"),
+        rp.OutputColumnNotFoundError,
         'spec "m" has no output column',
-        bases=(po.ColumnNotFoundError, pl.exceptions.ColumnNotFoundError, ValueError),
+        bases=(rp.ColumnNotFoundError, pl.exceptions.ColumnNotFoundError, ValueError),
     ),
     Case(
         "formula-a-shift-reads-other-rows",
-        lambda w: po.ewm_mean(pl.col("x").shift(1), half_life=5.0),
+        lambda w: rp.ewm_mean(pl.col("x").shift(1), half_life=5.0),
         FormulaError,
         "holds the method shift",
         bases=(ValueError,),
@@ -449,7 +451,7 @@ CASES: list[Case] = [
     ),
     Case(
         "key-error-gram-without-columns",
-        lambda w: po.gram.condition({}),
+        lambda w: rp.gram.condition({}),
         KeyError,
         "a Gram must name its columns",
     ),
@@ -549,21 +551,21 @@ CASES: list[Case] = [
 CASES += [
     Case(
         "io-load-not-found",
-        lambda w: po.ModelBank.load(w.tmp / "nope.state"),
+        lambda w: rp.ModelBank.load(w.tmp / "nope.state"),
         FileNotFoundError,
         "nope.state",
         errno=errno_codes.ENOENT,
     ),
     Case(
         "io-load-a-folder",
-        lambda w: po.ModelBank.load(w.tmp),
+        lambda w: rp.ModelBank.load(w.tmp),
         _the_one_that(PermissionError, IsADirectoryError),
         "",
         errno=errno_codes.EACCES if WINDOWS else errno_codes.EISDIR,
     ),
     Case(
         "io-load-under-a-file",
-        lambda w: po.ModelBank.load(_file(w) / "x.state"),
+        lambda w: rp.ModelBank.load(_file(w) / "x.state"),
         FileNotFoundError if WINDOWS else NotADirectoryError,
         "x.state",
         errno=errno_codes.ENOENT if WINDOWS else errno_codes.ENOTDIR,
@@ -677,11 +679,11 @@ def test_a_call_while_a_fit_runs_is_refused_with_exactly_runtime_error() -> None
         }
     )
     for _ in range(5):
-        bank = po.ModelBank([_spec(half_life=[10.0, 100.0, 1000.0], coef_every=1)])
+        bank = rp.ModelBank([_spec(half_life=[10.0, 100.0, 1000.0], coef_every=1)])
         small = big.head(5)
         done = threading.Event()
 
-        def fit(bank: po.ModelBank = bank, done: threading.Event = done) -> None:
+        def fit(bank: rp.ModelBank = bank, done: threading.Event = done) -> None:
             bank.fit_predict(big)
             done.set()
 
@@ -747,7 +749,7 @@ def test_the_savers_refuse_a_state_that_will_not_encode_as_a_value_error_not_an_
     assert state.read_bytes() == b"the last good state"
     # A filesystem's refusal beside it, from the same method, is the OSError.
     with pytest.raises(OSError) as caught_os:
-        po.ModelBank([_spec()]).save(tmp_path / "nope" / "b.state")
+        rp.ModelBank([_spec()]).save(tmp_path / "nope" / "b.state")
     assert type(caught_os.value) is FileNotFoundError
 
 
@@ -758,21 +760,21 @@ def test_the_library_s_own_classes_keep_their_parents_in_the_rule_s_order() -> N
     """The rule's class the one parent of each (the older parent went at
     2.0), and each class exported under its own name."""
 
-    assert po.WrongTypeError.__bases__ == (TypeError,)
-    assert po.RefusedValueError.__bases__ == (ValueError,)
-    assert po.ColumnNotFoundError.__bases__ == (pl.exceptions.ColumnNotFoundError, ValueError)
-    assert po.OutputColumnNotFoundError.__bases__ == (po.ColumnNotFoundError,)
+    assert rp.WrongTypeError.__bases__ == (TypeError,)
+    assert rp.RefusedValueError.__bases__ == (ValueError,)
+    assert rp.ColumnNotFoundError.__bases__ == (pl.exceptions.ColumnNotFoundError, ValueError)
+    assert rp.OutputColumnNotFoundError.__bases__ == (rp.ColumnNotFoundError,)
     assert FormulaError.__bases__ == (ValueError,)
     for cls in (
-        po.WrongTypeError,
-        po.RefusedValueError,
-        po.ColumnNotFoundError,
-        po.OutputColumnNotFoundError,
+        rp.WrongTypeError,
+        rp.RefusedValueError,
+        rp.ColumnNotFoundError,
+        rp.OutputColumnNotFoundError,
     ):
         assert cls.__module__ == "rheon._errors"
         assert cls.__mro__[1] is cls.__bases__[0]
-        assert getattr(po, cls.__name__) is cls
-        assert cls.__name__ in po._errors.__all__
+        assert getattr(rp, cls.__name__) is cls
+        assert cls.__name__ in _errors.__all__
 
 
 # --- The CLI: an exit code and a message for each kind -------------------------
@@ -1024,7 +1026,7 @@ HELPERS: dict[str, tuple[str, ...]] = {
 
 #: Where a ``raise`` re-raises an exception the code did not build: the name
 #: of what it raises, and the function, so a new one is looked at.
-RERAISES = {("gbdt.py", "_native_or_none")}
+RERAISES = {("_gbdt.py", "_native_or_none")}
 
 
 @dataclass(frozen=True)
@@ -1089,7 +1091,7 @@ IO_KINDS: dict[str, Kind] = {
 
 
 def _python_sources() -> list[Path]:
-    return sorted((REPO / "python" / "rheon").glob("*.py"))
+    return sorted((REPO / "python" / "rheon").rglob("*.py"))
 
 
 def _enclosing(tree: ast.AST) -> dict[ast.AST, ast.AST]:

@@ -166,7 +166,7 @@ dates each switch, and `hmm` says which regime each row is in:
 
 ```python
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Make the data, and save it with its truth.
 sim = po.sim.regimes(                                         # two series, and the regime each row was drawn in

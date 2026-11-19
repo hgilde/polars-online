@@ -16,7 +16,7 @@ import polars as pl
 import polars.testing as plt
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -35,11 +35,11 @@ def _df(n: int = 60, groups: tuple[str, ...] = ("a", "b", "c")) -> pl.DataFrame:
     )
 
 
-def _grouped_bank() -> po.ModelBank:
-    return po.ModelBank(
+def _grouped_bank() -> rp.ModelBank:
+    return rp.ModelBank(
         [
-            po.spec.ewridge("m", group="g", clock="t", gap_cap=1e9, **BASE),
-            po.spec.rls("r", **BASE),
+            rp.spec.ewridge("m", group="g", clock="t", gap_cap=1e9, **BASE),
+            rp.spec.rls("r", **BASE),
         ]
     )
 
@@ -60,7 +60,7 @@ def test_repr_names_the_specs_groups_and_rows():
 def test_rows_fed_counts_fed_rows_and_summary_counts_processed_ones():
     # A null feature skips the row (README, null policy): the bank still saw
     # it, and so did the group, but the group's model did not process it.
-    bank = po.ModelBank([po.spec.ewridge("m", group="g", **BASE)])
+    bank = rp.ModelBank([rp.spec.ewridge("m", group="g", **BASE)])
     df = _df(60).with_columns(
         pl.when(pl.col("t") < 6).then(None).otherwise(pl.col("x0")).alias("x0")
     )
@@ -74,8 +74,8 @@ def test_rows_fed_is_one_specs_summary_count_until_a_group_is_dropped():
     """The docstring (task 239): skipped rows count in both ``rows_fed()``
     and ``summary()``'s ``rows_fed``, each row once however many specs read
     it, and a dropped group's rows stay in ``rows_fed()`` only."""
-    bank = po.ModelBank(
-        [po.spec.ewridge("m", group="g", **BASE), po.spec.rls("r", group="g", **BASE)]
+    bank = rp.ModelBank(
+        [rp.spec.ewridge("m", group="g", **BASE), rp.spec.rls("r", group="g", **BASE)]
     )
     df = _df(60).with_columns(
         pl.when(pl.col("t") < 6).then(None).otherwise(pl.col("x0")).alias("x0")
@@ -137,7 +137,7 @@ def test_groups_counts_the_rows_fed_as_summary_does():
 
 
 def test_groups_keeps_a_null_key_apart_from_the_empty_string():
-    bank = po.ModelBank([po.spec.ewridge("m", group="g", **BASE)])
+    bank = rp.ModelBank([rp.spec.ewridge("m", group="g", **BASE)])
     df = _df(30).with_columns(
         pl.when(pl.col("g") == "a").then(None).otherwise(pl.col("g")).alias("g")
     )
@@ -193,7 +193,7 @@ def test_a_dropped_group_starts_cold_and_the_others_are_untouched():
 # --- specs after load --------------------------------------------------------
 
 ROUNDTRIP_SPECS = [
-    po.spec.ewridge(
+    rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0"],
@@ -207,20 +207,20 @@ ROUNDTRIP_SPECS = [
         session="g",
         session_gap=1e9,
     ),
-    po.spec.ewridge("reset", clock="t", gap_cap=5.0, session="g", session_gap="reset", **BASE),
+    rp.spec.ewridge("reset", clock="t", gap_cap=5.0, session="g", session_gap="reset", **BASE),
     # One or the other since review 2026-10-06 (PC6): each round-trips.
-    po.spec.kalman("k", coef_half_life=[INF, 10.0], **BASE),
-    po.spec.kalman("kq", q=[0.0, 1.0], **BASE),
-    po.spec.holt("h", targets=["y"], half_life=10.0, trend_half_life=INF),
-    po.spec.sgd("s", clip_gradient=INF, **BASE),
-    po.spec.lasso("l", penalties=[0.1, 0.01], **BASE),
+    rp.spec.kalman("k", coef_half_life=[INF, 10.0], **BASE),
+    rp.spec.kalman("kq", q=[0.0, 1.0], **BASE),
+    rp.spec.holt("h", targets=["y"], half_life=10.0, trend_half_life=INF),
+    rp.spec.sgd("s", clip_gradient=INF, **BASE),
+    rp.spec.lasso("l", penalties=[0.1, 0.01], **BASE),
 ]
 
 
 def test_specs_survive_the_state_file_and_pickle():
-    bank = po.ModelBank(ROUNDTRIP_SPECS)
+    bank = rp.ModelBank(ROUNDTRIP_SPECS)
     bank.fit_predict(_df(60))
-    loaded = po.ModelBank.load_bytes(bank.save_bytes())
+    loaded = rp.ModelBank.load_bytes(bank.save_bytes())
     assert loaded.specs == bank.specs
     assert loaded.rows_fed == 60
     assert repr(loaded) == repr(bank)
@@ -229,18 +229,18 @@ def test_specs_survive_the_state_file_and_pickle():
 
 
 def test_specs_survive_save_to_a_path(tmp_path):
-    bank = po.ModelBank(ROUNDTRIP_SPECS)
+    bank = rp.ModelBank(ROUNDTRIP_SPECS)
     bank.fit_predict(_df(60))
     bank.save(tmp_path / "bank.msgpack")
-    assert po.ModelBank.load(tmp_path / "bank.msgpack").specs == bank.specs
+    assert rp.ModelBank.load(tmp_path / "bank.msgpack").specs == bank.specs
 
 
 def test_a_column_literally_named_inf_is_still_a_name():
     df = _df(30).rename({"x0": "inf", "y": "-inf"})
-    spec = po.spec.ewridge("m", targets=["-inf"], features=["inf"], half_life=10.0)
-    bank = po.ModelBank([spec])
+    spec = rp.spec.ewridge("m", targets=["-inf"], features=["inf"], half_life=10.0)
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
-    loaded = po.ModelBank.load_bytes(bank.save_bytes())
+    loaded = rp.ModelBank.load_bytes(bank.save_bytes())
     assert loaded.specs == [spec]
     assert loaded.specs[0]["features"] == ["inf"]
     plt.assert_frame_equal(loaded.fit_predict(df), bank.fit_predict(df))
@@ -252,8 +252,8 @@ def test_the_specs_are_the_banks_before_a_round_trip_as_after_it():
     bank's filled form after it, and ``coef_index``, ``gram`` and ``coef``
     read the unfilled one (review 2026-09-12, S21)."""
     hand = {"name": "b", "model": {"type": "bocpd", "covariance_prior": [1.0]}, "features": ["x0"]}
-    bank = po.ModelBank([hand])
-    assert bank.specs == po.ModelBank.load_bytes(bank.save_bytes()).specs
+    bank = rp.ModelBank([hand])
+    assert bank.specs == rp.ModelBank.load_bytes(bank.save_bytes()).specs
     assert bank.specs[0]["targets"] == ["x0"]
     assert bank.specs[0]["drift_action"] == "flag"
 
@@ -270,7 +270,7 @@ def _stream(n=40, seed=0):
 
 
 def _one(**kw):
-    return po.spec.ewridge(
+    return rp.spec.ewridge(
         "m", targets=["y"], features=["x0"], half_life=float("inf"), min_weight=2.0, **kw
     )
 
@@ -280,10 +280,10 @@ def test_fit_predict_batches_takes_a_plan_and_chunks_it():
     same numbers as feeding the chunks by hand, whatever `chunk_size` is."""
     df = _stream()
     want = pl.concat(
-        po.ModelBank([_one()]).fit_predict_batches(df.slice(i, 7) for i in range(0, 40, 7))
+        rp.ModelBank([_one()]).fit_predict_batches(df.slice(i, 7) for i in range(0, 40, 7))
     )
     for rows in (7, 13, 1000):
-        got = pl.concat(po.ModelBank([_one()]).fit_predict_batches(df.lazy(), chunk_size=rows))
+        got = pl.concat(rp.ModelBank([_one()]).fit_predict_batches(df.lazy(), chunk_size=rows))
         # `coef` rides the chunk cadence; every other field is the same.
         drop = lambda f: f.with_columns(  # noqa: E731
             pl.col("m").struct.with_fields(
@@ -292,12 +292,12 @@ def test_fit_predict_batches_takes_a_plan_and_chunks_it():
         )
         assert drop(got).equals(drop(want), null_equal=True), rows
     with pytest.raises(ValueError, match="chunk_size must be at least 1"):
-        list(po.ModelBank([_one()]).fit_predict_batches(df.lazy(), chunk_size=0))
+        list(rp.ModelBank([_one()]).fit_predict_batches(df.lazy(), chunk_size=0))
 
 
 def test_a_frame_is_one_chunk():
     df = _stream()
-    outs = list(po.ModelBank([_one()]).fit_predict_batches(df))
+    outs = list(rp.ModelBank([_one()]).fit_predict_batches(df))
     assert len(outs) == 1 and outs[0].height == df.height
 
 
@@ -306,10 +306,10 @@ def test_fit_leaves_the_state_fit_predict_batches_leaves():
     it saves is byte-identical, so nothing about the fit depends on who reads
     the frames."""
     df = _stream(seed=1)
-    kept = po.ModelBank([_one()])
+    kept = rp.ModelBank([_one()])
     for _ in kept.fit_predict_batches(df.lazy(), chunk_size=9):
         pass
-    quiet = po.ModelBank([_one()])
+    quiet = rp.ModelBank([_one()])
     assert quiet.fit(df.lazy(), chunk_size=9) is None
     assert quiet.save_bytes() == kept.save_bytes()
     assert quiet.rows_fed == kept.rows_fed == df.height
@@ -320,18 +320,18 @@ def test_a_frame_with_chunk_size_is_fed_in_slices():
     then ignored (review 2026-09-17, B5): the same rows, in bounded pieces, and
     the state the plan route leaves, byte for byte."""
     df = _stream(seed=1)
-    outs = list(po.ModelBank([_one()]).fit_predict_batches(df, chunk_size=9))
+    outs = list(rp.ModelBank([_one()]).fit_predict_batches(df, chunk_size=9))
     assert len(outs) == -(-df.height // 9)
     assert pl.concat(outs).height == df.height
-    sliced = po.ModelBank([_one()])
+    sliced = rp.ModelBank([_one()])
     for _ in sliced.fit_predict_batches(df, chunk_size=9):
         pass
-    planned = po.ModelBank([_one()])
+    planned = rp.ModelBank([_one()])
     for _ in planned.fit_predict_batches(df.lazy(), chunk_size=9):
         pass
     assert sliced.save_bytes() == planned.save_bytes()
     # Without a size, the frame is still one chunk.
-    assert len(list(po.ModelBank([_one()]).fit_predict_batches(df))) == 1
+    assert len(list(rp.ModelBank([_one()]).fit_predict_batches(df))) == 1
 
 
 def test_an_iterator_is_fed_as_it_comes_whatever_chunk_size_says():
@@ -340,7 +340,7 @@ def test_an_iterator_is_fed_as_it_comes_whatever_chunk_size_says():
     one chunk per frame, in the sizes it has."""
     df = _stream(seed=2)
     parts = [df.slice(0, 5), df.slice(5, 23), df.slice(28, 12)]
-    outs = list(po.ModelBank([_one()]).fit_predict_batches(iter(parts), chunk_size=4))
+    outs = list(rp.ModelBank([_one()]).fit_predict_batches(iter(parts), chunk_size=4))
     assert [o.height for o in outs] == [5, 23, 12]
 
 
@@ -348,7 +348,7 @@ def test_the_chunked_runs_name_the_method_the_caller_used():
     """A chunk that is not a frame was refused as ``ModelBank.fit_predict``
     takes, a method the caller had not called (review round 4, SF11)."""
     for method in ("fit_predict_batches", "fit"):
-        call = getattr(po.ModelBank([_one()]), method)
+        call = getattr(rp.ModelBank([_one()]), method)
         with pytest.raises(
             TypeError,
             match=rf"^ModelBank\.{method}: it takes a Polars DataFrame, but it was given a",
@@ -370,15 +370,15 @@ def test_a_bank_needs_a_spec():
     with pytest.raises(
         ValueError, match="the list of specs is empty, and a bank needs at least one"
     ):
-        po.ModelBank([])
+        rp.ModelBank([])
 
 
 def test_fit_over_an_empty_plan_is_not_an_error():
     """Nothing to learn from is a no-op that still leaves a loadable state."""
-    bank = po.ModelBank([_one()])
+    bank = rp.ModelBank([_one()])
     bank.fit(_stream().clear().lazy())
     assert bank.rows_fed == 0
-    assert po.ModelBank.load_bytes(bank.save_bytes()).rows_fed == 0
+    assert rp.ModelBank.load_bytes(bank.save_bytes()).rows_fed == 0
 
 
 def test_fit_predict_batches_drains_the_closed_groups_as_it_goes(tmp_path):
@@ -389,11 +389,11 @@ def test_fit_predict_batches_drains_the_closed_groups_as_it_goes(tmp_path):
     batches run out (review 2026-09-12, P5; the user's decision of
     2026-09-15)."""
     spec, df, batches = _closing_batches()
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     path = tmp_path / "closed.parquet"
     for _ in bank.fit_predict_batches(batches, closed_groups=path):
         assert bank.closed_groups(drop=False).height == 0, "drained as it goes"
-    want = po.ModelBank([spec])
+    want = rp.ModelBank([spec])
     want.fit_predict(df)
     assert pl.read_parquet(path).equals(want.closed_groups())
 
@@ -413,7 +413,7 @@ def test_fit_predict_batches_writes_what_it_drained_however_it_stops(tmp_path, s
             raise RuntimeError("the source failed")
         yield from batches[2:]
 
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     path = tmp_path / "closed.parquet"
     gen = iter(bank.fit_predict_batches(source(), closed_groups=path))
     next(gen)
@@ -423,7 +423,7 @@ def test_fit_predict_batches_writes_what_it_drained_however_it_stops(tmp_path, s
     else:
         with pytest.raises(RuntimeError, match="the source failed"):
             next(gen)
-    want = po.ModelBank([spec])
+    want = rp.ModelBank([spec])
     want.fit_predict(pl.concat(batches[:2]))
     assert pl.read_parquet(path).equals(want.closed_groups())
     assert bank.closed_groups(drop=False).height == 0
@@ -432,7 +432,7 @@ def test_fit_predict_batches_writes_what_it_drained_however_it_stops(tmp_path, s
 def _closing_batches():
     """Twelve groups of five rows, in key order, as six batches of ten: under
     ``monotone`` a group closes when the next key arrives."""
-    spec = po.spec.ew_cov(
+    spec = rp.spec.ew_cov(
         "c", features=["x0", "y"], half_life=40.0, group="g", group_close="monotone"
     )
     keys = [f"k{i:02d}" for i in range(12)]
@@ -456,7 +456,7 @@ def test_specs_cannot_be_assigned():
     a Python-side list can only ever disagree with it. Assignment used to
     succeed and desynchronise the two.
     """
-    bank = po.ModelBank([po.spec.ewridge("m", **BASE)])
+    bank = rp.ModelBank([rp.spec.ewridge("m", **BASE)])
     with pytest.raises(AttributeError):
         bank.specs = []
 
@@ -468,7 +468,7 @@ def test_mutating_what_specs_returns_changes_nothing():
     layout the bank was not running -- an ``AssertionError`` about the number
     of coefficients, blamed on the model rather than on the edit.
     """
-    bank = po.ModelBank([po.spec.ewridge("m", **BASE)])
+    bank = rp.ModelBank([rp.spec.ewridge("m", **BASE)])
     bank.fit_predict(_df(40))
     before = bank.coef("m")["term"].to_list()
 
@@ -490,9 +490,9 @@ def test_no_public_attribute_escapes_the_api_snapshot():
     public, documented nowhere, and free to change without the reviewable
     diff the snapshot exists to produce.
     """
-    bank = po.ModelBank([po.spec.ewridge("m", **BASE)])
+    bank = rp.ModelBank([rp.spec.ewridge("m", **BASE)])
     bank.fit_predict(_df(20))
-    on_class = {n for n in dir(po.ModelBank) if not n.startswith("_")}
+    on_class = {n for n in dir(rp.ModelBank) if not n.startswith("_")}
     on_instance = {n for n in dir(bank) if not n.startswith("_")}
     assert on_instance - on_class == set()
 
@@ -507,14 +507,14 @@ def test_a_state_file_describes_itself(tmp_path):
     dicts the builders made, and every accessor agrees with them.
     """
     specs = [
-        po.spec.ewridge("ridge", targets=["y"], features=["x0"], half_life=50.0, group="g"),
-        po.spec.ew_cov("cov", features=["x0", "y"], stats=["corr"], half_life=INF, group="g"),
+        rp.spec.ewridge("ridge", targets=["y"], features=["x0"], half_life=50.0, group="g"),
+        rp.spec.ew_cov("cov", features=["x0", "y"], stats=["corr"], half_life=INF, group="g"),
     ]
-    bank = po.ModelBank(specs)
+    bank = rp.ModelBank(specs)
     bank.fit_predict(_df(60).with_columns(g=pl.Series(["a"] * 30 + ["b"] * 30)))
     bank.save(tmp_path / "bank.state")
 
-    loaded = po.ModelBank.load(tmp_path / "bank.state")
+    loaded = rp.ModelBank.load(tmp_path / "bank.state")
     assert loaded.specs == specs, "the file carries the specs, defaults included"
 
     names = [s["name"] for s in loaded.specs]

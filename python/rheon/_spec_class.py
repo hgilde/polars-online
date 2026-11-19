@@ -218,13 +218,13 @@ def ew_class(
         x1 = np.where(lab == "a", 0.0, 1.0) + rng.standard_normal(4_000)
         pl.DataFrame({"x0": x0, "x1": x1, "lab": lab}).write_parquet("classes.parquet")
 
-        cl = po.spec.ew_class(
+        cl = rp.spec.ew_class(
             "cl", features=["x0", "x1"], half_life=float("inf"),
             label="lab", classes=["a", "b"],
             covariance_type="tied",               # one shared covariance: a linear boundary
             precision_prior=0.1,                  # lets a class be predicted from its first row
         )
-        bank = po.ModelBank([cl])
+        bank = rp.ModelBank([cl])
         bank.fit(pl.scan_parquet("classes.parquet"))          # learn every row, keep no output
         means = bank.coef().pivot(on="term", index="class", values="coef")
         for r in means.iter_rows(named=True):

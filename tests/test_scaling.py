@@ -4,7 +4,7 @@ the stream's length (docs/PERFORMANCE.md, "How cost grows with size").
 The Rust cells (``crates/rheon-bench/tests/scaling.rs``) hold the bank, the
 runner and the models by their allocations and saved bytes as well as their
 time. What the Python surfaces add on top is their own per-call work: the
-chunked :class:`~rheon.ModelBank` call, and the IO source behind
+chunked :class:`~rheon.polars.ModelBank` call, and the IO source behind
 ``LazyFrame.online.fit_predict``, which reads the plan's batches and builds
 each output frame. Each case here times one workload at several sizes, the
 least of several rounds interleaved, in CPU time. A stream's length is held
@@ -30,7 +30,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "extended"
 pytestmark = pytest.mark.extended(reason="timing: each case runs two sizes five times")
@@ -58,7 +58,7 @@ def _frame(n: int, k: int = 4, t: int = 1, seed: int = 7) -> pl.DataFrame:
 
 def _specs(n: int) -> list[dict[str, Any]]:
     return [
-        po.spec.ewridge(
+        rp.spec.ewridge(
             f"m{s}",
             targets=["y0"],
             features=["x0", "x1", "x2", "x3"],
@@ -207,7 +207,7 @@ def test_a_chunked_bank_costs_each_spec_the_same(small: int, chunk: int) -> None
     warm = df.head(2048)
     banks = {}
     for n in (g * small for g in GROWTH):
-        bank = po.ModelBank(_specs(n), threads=1)
+        bank = rp.ModelBank(_specs(n), threads=1)
         bank.fit_predict(warm)
         banks[n] = bank
     # Each run feeds the next block of the stream, so a bank's clock moves on.

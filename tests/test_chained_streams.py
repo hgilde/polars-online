@@ -15,8 +15,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
-from rheon import _frame, stream
+from rheon import polars as rp
+from rheon.polars import _frame, stream
 
 TIER = "essential"
 
@@ -67,8 +67,8 @@ def test_a_frame_within_the_bound_is_not_sliced():
     assert [p.height for p in _frame._in_morsels(df)] == [100]
 
 
-STAGE1 = po.spec.ewridge("fit", targets=["y"], features=["x0", "x1"], half_life=50.0, group="g")
-STAGE2 = po.spec.ewridge(
+STAGE1 = rp.spec.ewridge("fit", targets=["y"], features=["x0", "x1"], half_life=50.0, group="g")
+STAGE2 = rp.spec.ewridge(
     "second",
     targets=["y"],
     features=["resid_y", "x2"],
@@ -107,7 +107,7 @@ def test_two_fit_predicts_in_series_give_what_a_loop_over_the_two_banks_gives(
     # The bound took effect: more slices than either stage had chunks.
     chunks = -(-df.height // chunk_size)
     assert len(yielded) > 2 * chunks
-    first, second = po.ModelBank([STAGE1]), po.ModelBank([STAGE2])
+    first, second = rp.ModelBank([STAGE1]), rp.ModelBank([STAGE2])
     loop = pl.concat(
         second.fit_predict(first.fit_predict(df[i : i + chunk_size]).with_columns(resid))
         for i in range(0, df.height, chunk_size)
@@ -120,16 +120,16 @@ def test_a_window_source_feeding_a_fit_through_unnest_gives_the_eager_result(mon
     example runs -- windows, a fit, `unnest`, a second fit -- is the same
     under a bound that slices every chunk as under none."""
     df = _frame_of(2_000)
-    fit = po.spec.ewridge(
+    fit = rp.spec.ewridge(
         "fit", targets=["y"], features=["x0", "dev"], half_life=50.0, clock="t", gap_cap=10.0
     )
-    second = po.spec.ewridge("second", targets=["y"], features=["resid_y"], half_life=80.0)
+    second = rp.spec.ewridge("second", targets=["y"], features=["resid_y"], half_life=80.0)
 
     def run() -> pl.DataFrame:
         return (
             df.lazy()
             .online.with_windows(
-                dev=pl.col("x1") - po.ewm_mean("x1", half_life=20.0, window_size=60.0),
+                dev=pl.col("x1") - rp.ewm_mean("x1", half_life=20.0, window_size=60.0),
                 clock="t",
                 gap_cap=10.0,
             )

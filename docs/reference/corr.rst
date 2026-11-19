@@ -1,5 +1,5 @@
 ``rheon.corr``
-======================
+==============
 
 .. automodule:: rheon.corr
    :no-members:

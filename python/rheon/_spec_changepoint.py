@@ -84,7 +84,7 @@ def bocpd(
         after the row, between it and the next. A null, NaN, ±inf or magnitude above
         ``1e100`` falls back to ``hazard``, and any other value of 1 or less
         is refused by every call that reads the column,
-        :meth:`rheon.ModelBank.predict` included, naming the row.
+        :meth:`rheon.polars.ModelBank.predict` included, naming the row.
         Default none. A duration ``hazard`` puts its chance before each row,
         so the two are refused together.
     ``covariance_type``
@@ -159,7 +159,7 @@ def bocpd(
         ``"full"``. The tempered predictive is not free of the data's units,
         so center and scale each feature before a tempered run. In the
         query before the bank, make its z-score ``(pl.col("x") -
-        po.ewm_mean("x", half_life=h)) / po.ewm_std("x", half_life=h)``
+        rp.ewm_mean("x", half_life=h)) / rp.ewm_std("x", half_life=h)``
         with ``lf.online.with_windows``, which runs the window operators
         (Polars' ``with_columns`` cannot).
         *Tempering* in Notes gives the measurements.
@@ -222,7 +222,7 @@ def bocpd(
         the rest of the rows held to set the prior from.
 
     A row whose predictive cannot be evaluated reports nulls and is counted
-    in :meth:`rheon.ModelBank.solve_failures`. It leaves the
+    in :meth:`rheon.polars.ModelBank.solve_failures`. It leaves the
     posterior where it stands, except for a duration ``hazard``'s chance of
     a break over its step, which time passing applies.
 
@@ -301,7 +301,7 @@ def bocpd(
         x[600:] += 4.0                                # the level steps up at row 600
         pl.DataFrame({"x": x}).write_parquet("step.parquet")
 
-        b = po.spec.bocpd("regime", features=["x"], hazard=250.0)
+        b = rp.spec.bocpd("regime", features=["x"], hazard=250.0)
         out = pl.scan_parquet("step.parquet").online.fit_predict([b]).collect()
         out = out.unnest("regime")
         for row in [599, 650, 999]:
@@ -726,7 +726,7 @@ def corrchange(
         b = rho * a + np.sqrt(1 - rho**2) * e
         pl.DataFrame({"a": a, "b": b}).write_parquet("pair.parquet")
 
-        c = po.spec.corrchange(
+        c = rp.spec.corrchange(
             "brk", features=["a", "b"],
             kind="monitor",                                     # constant in each span?
             window_rows=200,                                    # a verdict on each span's last row

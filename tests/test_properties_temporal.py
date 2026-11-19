@@ -43,8 +43,8 @@ import pytest
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
-import rheon as po
 from polars_version import needs_polars
+from rheon import polars as rp
 from rheon._rheon import format_duration, parse_duration
 from test_model_registry import MINIMAL, REGRESSIONS, _build
 from test_temporal_clock import START, UNIT_KEYWORD, UNIT_NS, _column, _kind, _tables
@@ -182,7 +182,7 @@ PARTS = [
 
 def _halflife(value):
     """The text a spec stores for ``value`` given as a half-life."""
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m", targets=["y"], features=["x0"], clock="t", gap_cap="365d", half_life=value
     )
     return spec["half_life"]
@@ -263,7 +263,7 @@ class TestDurationText:
         assert parse_duration(padded) == exact
         other = format_duration(2 if exact == 1 else 1)
         # The Python side strips it ...
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0"],
@@ -272,12 +272,12 @@ class TestDurationText:
             half_life=[padded, other],
         )
         assert spec["half_life"] == [text, other]
-        assert f"pred_y@h{text}" in po.spec.output_fields(spec)
+        assert f"pred_y@h{text}" in rp.spec.output_fields(spec)
         # ... and the Rust side, which a config or a hand-written dict reaches
         # without it, trims it too; the state keeps the trimmed text.
-        bank = po.ModelBank([{**spec, "half_life": [padded, other]}])
+        bank = rp.ModelBank([{**spec, "half_life": [padded, other]}])
         assert f"pred_y@h{text}" in bank.output_fields["m"]
-        assert po.ModelBank.load_bytes(bank.save_bytes()).specs[0]["half_life"] == [text, other]
+        assert rp.ModelBank.load_bytes(bank.save_bytes()).specs[0]["half_life"] == [text, other]
 
     @SPECS
     @given(case=fixed_texts(), space=st.sampled_from(WHITESPACE), data=st.data())
@@ -492,7 +492,7 @@ def clock_specs(draw, model: str, step: int, cap: int):
     else:
         assert model == "rls", model
         kw |= xy | maybe("embargo", 1, 5)
-    return getattr(po.spec, model)("m", **kw)
+    return getattr(rp.spec, model)("m", **kw)
 
 
 @st.composite
@@ -573,8 +573,8 @@ class TestTemporalClockStreams:
     @given(data=st.data())
     def test_chunking_never_changes_the_numbers(self, model, data):
         df, spec = data.draw(temporal_streams(model), label="stream")
-        one = po.ModelBank([spec]).fit_predict(df)["m"]
-        bank = po.ModelBank([spec])
+        one = rp.ModelBank([spec]).fit_predict(df)["m"]
+        bank = rp.ModelBank([spec])
         edges = _edges(data.draw, df.height)
         many = pl.concat([bank.fit_predict(df.slice(a, b - a))["m"] for a, b in pairwise(edges)])
         _assert_same_numbers(one, many)
@@ -586,15 +586,15 @@ class TestTemporalClockStreams:
     def test_a_save_and_load_at_any_row_is_transparent(self, model, data):
         df, spec = data.draw(temporal_streams(model, min_rows=2), label="stream")
         split = data.draw(st.integers(1, df.height - 1), label="split")
-        kept = po.ModelBank([spec])
+        kept = rp.ModelBank([spec])
         head = kept.fit_predict(df.slice(0, split))["m"]
-        loaded = po.ModelBank.load_bytes(kept.save_bytes())
+        loaded = rp.ModelBank.load_bytes(kept.save_bytes())
         assert loaded.specs == kept.specs  # the durations survive as their text
         assert kept.specs == [spec]  # the dicts the builders made (`ModelBank.specs`)
         rest = df.slice(split)
         tail = loaded.fit_predict(rest)["m"]
         assert tail.equals(kept.fit_predict(rest)["m"], null_equal=True)
-        _assert_same_numbers(po.ModelBank([spec]).fit_predict(df)["m"], pl.concat([head, tail]))
+        _assert_same_numbers(rp.ModelBank([spec]).fit_predict(df)["m"], pl.concat([head, tail]))
 
 
 #: What a regression needs beside `MINIMAL`'s arguments on a temporal
@@ -643,7 +643,7 @@ def delayed_streams(draw):
     )
     kw |= DELAYED_MODELS[model]
     # `MINIMAL`'s ``None`` drops an argument, as `test_model_registry._build` reads it.
-    spec = getattr(po.spec, model)("m", **{k: v for k, v in kw.items() if v is not None})
+    spec = getattr(rp.spec, model)("m", **{k: v for k, v in kw.items() if v is not None})
     return df, spec
 
 
@@ -659,8 +659,8 @@ class TestADelayedLabel:
         parameters there, a case that tells came up once in 40 to 370
         examples; here, once in 4 to 50 (measured 2026-09-24)."""
         df, spec = data.draw(delayed_streams(), label="stream")
-        one = po.ModelBank([spec]).fit_predict(df)["m"]
-        bank = po.ModelBank([spec])
+        one = rp.ModelBank([spec]).fit_predict(df)["m"]
+        bank = rp.ModelBank([spec])
         edges = _edges(data.draw, df.height)
         many = pl.concat([bank.fit_predict(df.slice(a, b - a))["m"] for a, b in pairwise(edges)])
         _assert_same_numbers(one, many)
@@ -705,12 +705,12 @@ def test_the_exempt_kinds_refuse_a_half_life(name):
     with pytest.raises(
         ValueError, match=f"half_life does not apply to {name}, {N_EFF_EXEMPT[name]}"
     ):
-        getattr(po.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
+        getattr(rp.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
 
 
 def test_every_kind_emits_weight_sum():
     for name in MINIMAL:
-        assert "weight_sum" in po.spec.output_fields(_build(name)), name
+        assert "weight_sum" in rp.spec.output_fields(_build(name)), name
 
 
 @st.composite
@@ -767,8 +767,8 @@ class TestNanosecondsAreExact:
         # (task 120 took `inf` away).
         span = instants[-1] - instants[0]
         kw["gap_cap"] = format_duration(span if cap is None else cap)
-        spec = getattr(po.spec, model)("m", **{k: v for k, v in kw.items() if v is not None})
-        bank = po.ModelBank([spec])
+        spec = getattr(rp.spec, model)("m", **{k: v for k, v in kw.items() if v is not None})
+        bank = rp.ModelBank([spec])
         edges = _edges(data.draw, n)
         got = pl.concat([bank.fit_predict(df.slice(a, b - a))["m"] for a, b in pairwise(edges)])
         got = got.struct.field("weight_sum").to_numpy()

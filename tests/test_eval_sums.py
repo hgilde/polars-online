@@ -17,7 +17,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -35,10 +35,10 @@ def fitted(n=3000, seed=0, offset=0.0, groups=1, weight=False):
     )
     if weight:
         df = df.with_columns(w=pl.Series(0.5 + rng.random(n)))
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m", targets=["y"], features=["x0", "x1"], half_life=300.0, min_weight=5.0
     )
-    return po.ModelBank([spec]).fit_predict(df)
+    return rp.ModelBank([spec]).fit_predict(df)
 
 
 def close(a: pl.DataFrame, b: pl.DataFrame, *, rel=1e-9):
@@ -56,12 +56,12 @@ class TestItIsTheSameAnswer:
     def test_from_sums_equals_metrics(self, groups):
         out = fitted(groups=groups)
         by = ["venue"] if groups > 1 else []
-        want = po.eval.metrics(out, "m", group=by)
-        got = po.eval.from_sums(po.eval.sums(out, "m", group=by))
+        want = rp.eval.metrics(out, "m", group=by)
+        got = rp.eval.from_sums(rp.eval.sums(out, "m", group=by))
         close(want, got)
 
     def test_rmse_is_the_root_of_mse(self):
-        got = po.eval.from_sums(po.eval.sums(fitted(), "m"))
+        got = rp.eval.from_sums(rp.eval.sums(fitted(), "m"))
         assert got["rmse"].to_numpy() == pytest.approx(np.sqrt(got["mse"].to_numpy()))
 
     def test_min_samples_nulls_a_thin_key_as_metrics_does(self):
@@ -70,8 +70,8 @@ class TestItIsTheSameAnswer:
         dropping a row (task 244, M-6); both forms agree."""
         out = fitted(n=200, groups=2)
         # One venue gets 100 rows; ask for more than that.
-        got = po.eval.from_sums(po.eval.sums(out, "m", group=["venue"]), min_samples=1000)
-        want = po.eval.metrics(out, "m", group=["venue"], min_samples=1000)
+        got = rp.eval.from_sums(rp.eval.sums(out, "m", group=["venue"]), min_samples=1000)
+        want = rp.eval.metrics(out, "m", group=["venue"], min_samples=1000)
         for frame in (got, want):
             assert frame.height == 2
             assert frame["n"].null_count() == 0
@@ -83,11 +83,11 @@ class TestItIsTheSameAnswer:
         """A weighted mean squared error is not the unweighted one, and the
         weighted form is what a weighted stream should be scored by."""
         out = fitted(weight=True)
-        plain = po.eval.from_sums(po.eval.sums(out, "m"))
-        weighted = po.eval.from_sums(po.eval.sums(out, "m", weight="w"))
+        plain = rp.eval.from_sums(rp.eval.sums(out, "m"))
+        weighted = rp.eval.from_sums(rp.eval.sums(out, "m", weight="w"))
         assert weighted["mse"][0] != plain["mse"][0]
         # And it is the weighted average of the squared residuals.
-        long = po.eval.unpack(out, "m").drop_nulls(["pred", "y"])
+        long = rp.eval.unpack(out, "m").drop_nulls(["pred", "y"])
         w = long["w"].to_numpy()
         r = (long["y"] - long["pred"]).to_numpy()
         assert weighted["mse"][0] == pytest.approx((w * r * r).sum() / w.sum(), rel=1e-9)
@@ -95,9 +95,9 @@ class TestItIsTheSameAnswer:
     def test_a_constant_target_has_no_r2_or_ic(self):
         n = 200
         df = pl.DataFrame({"x0": np.arange(float(n)), "y": np.full(n, 3.0)})
-        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=100.0)
-        out = po.ModelBank([spec]).fit_predict(df)
-        got = po.eval.from_sums(po.eval.sums(out, "m"), min_samples=1)
+        spec = rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=100.0)
+        out = rp.ModelBank([spec]).fit_predict(df)
+        got = rp.eval.from_sums(rp.eval.sums(out, "m"), min_samples=1)
         assert got["r2"][0] is None, "no variance to explain"
         assert got["ic"][0] is None
 
@@ -119,8 +119,8 @@ class TestItIsTheSameAnswer:
         out = pl.DataFrame({"y": y}).with_columns(
             m=pl.struct(pl.Series("pred_y", pred), pl.Series("resid_y", [0.0] * len(y)))
         )
-        want = po.eval.from_sums(po.eval.sums(out, "m"), min_samples=1)
-        got = po.eval.metrics(out, "m", min_samples=1)
+        want = rp.eval.from_sums(rp.eval.sums(out, "m"), min_samples=1)
+        got = rp.eval.metrics(out, "m", min_samples=1)
         assert got.columns == want.columns
         undefined = [c for c in ("r2", "ic", "hit_rate") if want[c][0] is None]
         assert undefined, "a case where something is undefined"
@@ -137,38 +137,38 @@ class TestMerging:
     @pytest.mark.parametrize("parts", [2, 5, 97])
     def test_merging_a_split_gives_the_whole(self, parts):
         out = fitted(n=3000, seed=1, groups=3)
-        whole = po.eval.sums(out, "m", group=["venue"])
+        whole = rp.eval.sums(out, "m", group=["venue"])
         pieces = [
-            po.eval.sums(out[chunk.tolist()], "m", group=["venue"])
+            rp.eval.sums(out[chunk.tolist()], "m", group=["venue"])
             for chunk in np.array_split(np.arange(out.height), parts)
         ]
-        close(whole, po.eval.merge_sums(*pieces), rel=1e-9)
+        close(whole, rp.eval.merge_sums(*pieces), rel=1e-9)
 
     def test_the_metrics_survive_the_merge(self):
         out = fitted(n=2400, seed=2)
-        whole = po.eval.from_sums(po.eval.sums(out, "m"))
+        whole = rp.eval.from_sums(rp.eval.sums(out, "m"))
         running = None
         for chunk in out.iter_slices(97):
-            s = po.eval.sums(chunk, "m")
-            running = s if running is None else po.eval.merge_sums(running, s)
-        close(whole, po.eval.from_sums(running), rel=1e-9)
+            s = rp.eval.sums(chunk, "m")
+            running = s if running is None else rp.eval.merge_sums(running, s)
+        close(whole, rp.eval.from_sums(running), rel=1e-9)
 
     def test_merging_one_is_the_identity(self):
-        s = po.eval.sums(fitted(n=400), "m")
-        close(s, po.eval.merge_sums(s), rel=0)
+        s = rp.eval.sums(fitted(n=400), "m")
+        close(s, rp.eval.merge_sums(s), rel=0)
 
     def test_keys_present_in_only_one_part_are_carried_through(self):
         out = fitted(n=1200, seed=3, groups=3)
-        a = po.eval.sums(out.filter(pl.col("venue") != "v2"), "m", group="venue")
-        b = po.eval.sums(out.filter(pl.col("venue") == "v2"), "m", group="venue")
-        merged = po.eval.merge_sums(a, b)
+        a = rp.eval.sums(out.filter(pl.col("venue") != "v2"), "m", group="venue")
+        b = rp.eval.sums(out.filter(pl.col("venue") == "v2"), "m", group="venue")
+        merged = rp.eval.merge_sums(a, b)
         assert sorted(merged["venue"].to_list()) == ["v0", "v1", "v2"]
-        close(merged, po.eval.sums(out, "m", group=["venue"]), rel=1e-9)
+        close(merged, rp.eval.sums(out, "m", group=["venue"]), rel=1e-9)
 
     def test_mismatched_keys_are_refused(self):
         out = fitted(n=400)
         with pytest.raises(ValueError, match="every part must have the same key columns"):
-            po.eval.merge_sums(po.eval.sums(out, "m"), po.eval.sums(out, "m", group=["venue"]))
+            rp.eval.merge_sums(rp.eval.sums(out, "m"), rp.eval.sums(out, "m", group=["venue"]))
 
 
 class TestWhyTheSumsAreCentred:
@@ -178,53 +178,53 @@ class TestWhyTheSumsAreCentred:
         after the subtraction. The centred form is unaffected, which is the
         whole reason for the parallel-axis term in `merge_sums`."""
         out = fitted(n=4000, seed=4, offset=1e8)
-        got = po.eval.from_sums(po.eval.sums(out, "m"))
-        assert got["r2"][0] == pytest.approx(po.eval.metrics(out, "m")["r2"][0], rel=1e-9)
+        got = rp.eval.from_sums(rp.eval.sums(out, "m"))
+        assert got["r2"][0] == pytest.approx(rp.eval.metrics(out, "m")["r2"][0], rel=1e-9)
         assert 0.9 < got["r2"][0] < 1.0, got["r2"][0]
 
         # What the raw form would have given, from the same rows.
-        long = po.eval.unpack(out, "m").drop_nulls(["pred", "y"])
+        long = rp.eval.unpack(out, "m").drop_nulls(["pred", "y"])
         y = long["y"].to_numpy()
         raw_m2 = float((y * y).sum() - y.sum() ** 2 / len(y))
-        centred = float(po.eval.sums(out, "m")["m2_y"][0])
+        centred = float(rp.eval.sums(out, "m")["m2_y"][0])
         assert abs(raw_m2 / centred - 1.0) > 0.01, (
             "the fixture no longer shows the cancellation; raise the offset"
         )
 
     def test_and_it_still_merges_at_that_offset(self):
         out = fitted(n=4000, seed=5, offset=1e8)
-        whole = po.eval.sums(out, "m")
+        whole = rp.eval.sums(out, "m")
         parts = [
-            po.eval.sums(out[c.tolist()], "m") for c in np.array_split(np.arange(out.height), 40)
+            rp.eval.sums(out[c.tolist()], "m") for c in np.array_split(np.arange(out.height), 40)
         ]
-        close(whole, po.eval.merge_sums(*parts), rel=1e-9)
+        close(whole, rp.eval.merge_sums(*parts), rel=1e-9)
 
 
 class TestTheShape:
     def test_the_columns_are_the_documented_ones(self):
-        s = po.eval.sums(fitted(n=500, groups=2), "m", group=["venue"])
-        assert s.columns == ["slot", "target", "venue", *po.eval.SUM_FIELDS]
-        assert len(po.eval.SUM_FIELDS) == 10, "ten doubles per key is the claim"
+        s = rp.eval.sums(fitted(n=500, groups=2), "m", group=["venue"])
+        assert s.columns == ["slot", "target", "venue", *rp.eval.SUM_FIELDS]
+        assert len(rp.eval.SUM_FIELDS) == 10, "ten doubles per key is the claim"
 
     def test_one_row_per_slot(self):
         n = 800
         rng = np.random.default_rng(6)
         df = pl.DataFrame({"x0": rng.standard_normal(n)})
         df = df.with_columns(y=2 * pl.col("x0"), z=-pl.col("x0"))
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m", targets=["y", "z"], features=["x0"], half_life=[50.0, 500.0], min_weight=3.0
         )
-        out = po.ModelBank([spec]).fit_predict(df)
-        s = po.eval.sums(out, spec)
+        out = rp.ModelBank([spec]).fit_predict(df)
+        s = rp.eval.sums(out, spec)
         assert s.height == 4, "two targets x two half_lives"
-        close(po.eval.from_sums(s), po.eval.metrics(out, "m"))
+        close(rp.eval.from_sums(s), rp.eval.metrics(out, "m"))
 
     def test_it_raises_where_unpack_does(self):
         out = fitted(n=300)
         with pytest.raises(pl.exceptions.ColumnNotFoundError):
-            po.eval.sums(out, "nope")
+            rp.eval.sums(out, "nope")
         with pytest.raises(TypeError, match="must be a spec's output column, but it is"):
-            po.eval.sums(out, "x0")
+            rp.eval.sums(out, "x0")
 
 
 def merge_rounding(parts: list[dict], whole: dict, a: str, b: str) -> float:
@@ -307,11 +307,11 @@ def test_merge_sums_rounds_as_its_docstring_measures():
             row = {"slot": "pred_y", "target": "y", "n": e["n"], "w": float(e["n"])}
             row |= {k: float(e[k]) for k in ("mean_y", "mean_pred", "m2_y", "m2_pred", "cov")}
             row |= {"sse": 0.0, "hits": 0.0, "signed": 0.0}
-            frames.append(pl.DataFrame([row]).select("slot", "target", *po.eval.SUM_FIELDS))
-        got = po.eval.merge_sums(*frames).row(0, named=True)
+            frames.append(pl.DataFrame([row]).select("slot", "target", *rp.eval.SUM_FIELDS))
+        got = rp.eval.merge_sums(*frames).row(0, named=True)
         for key, a, b in (("m2_y", "y", "y"), ("m2_pred", "pred", "pred"), ("cov", "y", "pred")):
             err = float(abs(Fraction(got[key]) - whole[key]) / abs(whole[key]))
             bound = merge_rounding(parts, whole, a, b)
             assert err <= bound, (chunks, key, err, bound)
-    doc = " ".join((po.eval.merge_sums.__doc__ or "").split())
+    doc = " ".join((rp.eval.merge_sums.__doc__ or "").split())
     assert "2 chunks merged within 6e-15" in doc and "1,000 chunks within 9e-15" in doc

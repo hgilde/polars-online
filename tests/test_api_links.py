@@ -38,12 +38,15 @@ def _links():
 
 
 def _resolve(dotted: str):
-    """`rheon.ModelBank.load` -> the object, or None if the path breaks."""
+    """`rheon.polars.ModelBank.load` -> the object, or None if the path breaks."""
     parts = dotted.split(".")
     obj = importlib.import_module(parts[0])
-    for part in parts[1:]:
+    for i, part in enumerate(parts[1:], 1):
         if not hasattr(obj, part):
-            return None
+            try:  # a subpackage nothing has imported yet, as `rheon.polars`
+                importlib.import_module(".".join(parts[: i + 1]))
+            except ImportError:
+                return None
         obj = getattr(obj, part)
     return obj
 
@@ -137,16 +140,20 @@ def test_every_name_the_package_exports_is_in_the_reference():
     under the package or under the module that defines it."""
     import types
 
-    import rheon as po
+    from rheon import polars as rp
 
     documented = _documented()
-    assert "rheon.ModelBank" in documented, "the reader found nothing"
+    assert "rheon.polars.ModelBank" in documented, "the reader found nothing"
     missing = []
-    for name in po.__all__:
-        obj = getattr(po, name)
+    for name in rp.__all__:
+        obj = getattr(rp, name)
         if isinstance(obj, types.ModuleType) or name.startswith("__"):
             continue
-        where = {f"rheon.{name}", f"{getattr(obj, '__module__', '')}.{name}"}
+        where = {
+            f"rheon.{name}",
+            f"rheon.polars.{name}",
+            f"{getattr(obj, '__module__', '')}.{name}",
+        }
         if not where & documented:
             missing.append(name)
     assert not missing, missing

@@ -47,7 +47,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -74,33 +74,33 @@ SOLVED: dict[str, Any] = dict(emit_se_coef=True, emit_error_inflation=True, emit
 
 #: name -> (builder, its own keywords, whether it takes the solved switches)
 CASES: dict[str, tuple[Any, dict[str, Any], bool]] = {
-    "ewridge": (po.spec.ewridge, {}, True),
-    "rls": (po.spec.rls, {}, True),
-    "sgd": (po.spec.sgd, {"learning_rate": 0.02}, False),
-    "kalman": (po.spec.kalman, {"coef_half_life": 100.0}, True),
-    "lasso": (po.spec.lasso, {"penalties": [0.01]}, False),
-    "huber": (po.spec.huber, {}, False),
+    "ewridge": (rp.spec.ewridge, {}, True),
+    "rls": (rp.spec.rls, {}, True),
+    "sgd": (rp.spec.sgd, {"learning_rate": 0.02}, False),
+    "kalman": (rp.spec.kalman, {"coef_half_life": 100.0}, True),
+    "lasso": (rp.spec.lasso, {"penalties": [0.01]}, False),
+    "huber": (rp.spec.huber, {}, False),
     # sgd's Huber loss: its refit of the first rows (default 500) runs again
     # on the rebuilt model, 500 learned rows after the reset.
-    "sgd huber": (po.spec.sgd, {"loss": "huber", "learning_rate": 0.02}, False),
-    "quantile": (po.spec.quantile, {"quantile": 0.5}, False),
-    "pa": (po.spec.pa, {}, False),
-    "ftrl": (po.spec.ftrl, {"loss": "squared"}, False),
-    "holt": (po.spec.holt, {}, False),
+    "sgd huber": (rp.spec.sgd, {"loss": "huber", "learning_rate": 0.02}, False),
+    "quantile": (rp.spec.quantile, {"quantile": 0.5}, False),
+    "pa": (rp.spec.pa, {}, False),
+    "ftrl": (rp.spec.ftrl, {"loss": "squared"}, False),
+    "holt": (rp.spec.holt, {}, False),
     # A prior that dominates the first rows: the decay a reset must not add
     # is a factor of 100 on it.
-    "rls delta=100": (po.spec.rls, {"delta": 100.0}, True),
+    "rls delta=100": (rp.spec.rls, {"delta": 100.0}, True),
     # A fixed process noise and observation noise: `P` grows by `q d` on
     # every step, the prior's included.
-    "kalman q": (po.spec.kalman, {"q": [0.01, 0.01, 0.01], "obs_var": 0.04}, True),
+    "kalman q": (rp.spec.kalman, {"q": [0.01, 0.01, 0.01], "obs_var": 0.04}, True),
     # A mean-reverting slot: its transition reads the step too.
-    "kalman revert": (po.spec.kalman, {"coef_half_life": 100.0, "revert_half_life": 50.0}, True),
+    "kalman revert": (rp.spec.kalman, {"coef_half_life": 100.0, "revert_half_life": 50.0}, True),
     # The ridge as a prior in the sums: `rls` by another road.
-    "ewridge sum": (po.spec.ewridge, {"ridge_scale": "sum", "ridge": 1.0}, True),
+    "ewridge sum": (rp.spec.ewridge, {"ridge_scale": "sum", "ridge": 1.0}, True),
     # A half-life grid: a detection in any instance restarts every one, after
     # all have read the row (the coupled path), and each must read the next
     # row at a step of 0.
-    "rls grid": (po.spec.rls, {"half_life": [100.0, 200.0]}, True),
+    "rls grid": (rp.spec.rls, {"half_life": [100.0, 200.0]}, True),
 }
 ESSENTIAL = ("ewridge", "rls", "sgd", "rls grid")
 
@@ -157,7 +157,7 @@ def spec(name: str) -> dict[str, Any]:
         drift_action="reset",
         **DIAGNOSTICS,
     )
-    if build is not po.spec.holt:
+    if build is not rp.spec.holt:
         kw["features"] = ["x0", "x1"]
         kw.update(WITH_FEATURES)
     if solved:
@@ -166,7 +166,7 @@ def spec(name: str) -> dict[str, Any]:
     return build("m", **kw)
 
 
-def run(bank: po.ModelBank, df: pl.DataFrame) -> pl.DataFrame:
+def run(bank: rp.ModelBank, df: pl.DataFrame) -> pl.DataFrame:
     with warnings.catch_warnings():
         # The readiness notices of a fresh start are expected here.
         warnings.simplefilter("ignore")
@@ -197,11 +197,11 @@ def df() -> pl.DataFrame:
 def test_a_reset_is_a_fresh_bank_from_the_next_row(name, df):
     """Every field from ``t + 1`` on equals a fresh bank fed ``t + 1, ...``."""
     s = spec(name)
-    out = run(po.ModelBank([s], threads=1), df)
+    out = run(rp.ModelBank([s], threads=1), df)
     t = first_fire(out)
     weights = [c for c in out.columns if c.startswith("weight_sum")]
     assert all(out[c][t + 1] == 0.0 for c in weights), "the reset did not take effect"
-    fresh = run(po.ModelBank([s], threads=1), df.slice(t + 1))
+    fresh = run(rp.ModelBank([s], threads=1), df.slice(t + 1))
     assert_frame_equal(out.slice(t + 1), fresh, check_exact=True)
 
 
@@ -210,7 +210,7 @@ def test_every_diagnostic_restarts_null(name, df):
     """On row ``t + 1`` every residual diagnostic is null: each restarts with
     the model it describes. So is ``learned_clock``: the rebuilt model has
     learned from no row (it showed row ``t``'s clock until task 278)."""
-    out = run(po.ModelBank([spec(name)], threads=1), df)
+    out = run(rp.ModelBank([spec(name)], threads=1), df)
     t = first_fire(out)
     row = out.row(t + 1, named=True)
     state = {c for c in row if c.startswith(STATE_FIELDS)}
@@ -226,10 +226,10 @@ def test_chunking_and_save_load_across_the_reset(name, df, tmp_path):
     """1, 7 and 600 chunks, a chunk ending on the row that fired, and a save
     and load between ``t`` and ``t + 1``, each equal to one chunk."""
     s = spec(name)
-    one = run(po.ModelBank([s], threads=1), df)
+    one = run(rp.ModelBank([s], threads=1), df)
     t = first_fire(one)
     for parts in (7, 600):
-        bank = po.ModelBank([s], threads=1)
+        bank = rp.ModelBank([s], threads=1)
         edges = np.linspace(0, df.height, parts + 1).astype(int)
         many = pl.concat(
             [run(bank, df.slice(a, b - a)) for a, b in zip(edges[:-1], edges[1:], strict=True)]
@@ -237,11 +237,11 @@ def test_chunking_and_save_load_across_the_reset(name, df, tmp_path):
         assert_frame_equal(many, one, check_exact=True)
     # A chunk that ends on the row that fired, then a save and a load: the
     # rebuilt model crosses both before it sees row t + 1.
-    a = po.ModelBank([s], threads=1)
+    a = rp.ModelBank([s], threads=1)
     head = run(a, df.slice(0, t + 1))
     path = tmp_path / "reset.state"
     a.save(path)
-    b = po.ModelBank.load(path, specs=[s], threads=1)
+    b = rp.ModelBank.load(path, specs=[s], threads=1)
     rest = df.slice(t + 1)
     assert_frame_equal(pl.concat([head, run(b, rest)]), one, check_exact=True)
     assert_frame_equal(run(a, rest), one.slice(t + 1), check_exact=True)
@@ -257,9 +257,9 @@ def test_the_refit_starts_over_after_a_reset(name, df, tmp_path):
     the second refit, and after it, go on to the bit."""
     s = spec(name)
     off = {**s, "model": {**s["model"], "huber_refit_rows": 100_000}}
-    one = run(po.ModelBank([s], threads=1), df)
+    one = run(rp.ModelBank([s], threads=1), df)
     t = first_fire(one)
-    zero = run(po.ModelBank([off], threads=1), df)
+    zero = run(rp.ModelBank([off], threads=1), df)
     p, q = (f["pred_y"].to_numpy() for f in (one, zero))
     differ = np.flatnonzero(~((p == q) | (np.isnan(p) & np.isnan(q))))
     assert differ.size and differ[0] > 499, "the first refit is on the 500th row"
@@ -268,11 +268,11 @@ def test_the_refit_starts_over_after_a_reset(name, df, tmp_path):
     after = differ[differ > t]
     assert after.size and after[0] > t + 500, (t, after[:3])
     for cut in (t + 250, t + 600):
-        a = po.ModelBank([s], threads=1)
+        a = rp.ModelBank([s], threads=1)
         head = run(a, df.slice(0, cut))
         path = tmp_path / f"refit-{cut}.state"
         a.save(path)
-        b = po.ModelBank.load(path, specs=[s], threads=1)
+        b = rp.ModelBank.load(path, specs=[s], threads=1)
         assert_frame_equal(pl.concat([head, run(b, df.slice(cut))]), one, check_exact=True)
 
 
@@ -322,17 +322,17 @@ def test_under_an_embargo_a_reset_is_a_fresh_bank_from_the_next_row(name, df):
     model's own fields equal that fresh bank's, to the bit; through 7
     chunks and a chunk ending on ``t`` too."""
     s = {**spec(name), "embargo": EMBARGO}
-    one = run(po.ModelBank([s], threads=1), df)
+    one = run(rp.ModelBank([s], threads=1), df)
     t, r = embargo_fire(one, df)
     print(f"fired on released row {r}, flagged on row {t}")
-    fresh = run(po.ModelBank([s], threads=1), df.slice(r + 1))
+    fresh = run(rp.ModelBank([s], threads=1), df.slice(r + 1))
     keep = [c for c in one.columns if c.startswith(LEARNED_FIELDS)]
     assert all(any(c.startswith(f) for c in keep) for f in ("pred", "coef")), keep
     assert_frame_equal(
         one.slice(t).select(keep), fresh.slice(t - r - 1).select(keep), check_exact=True
     )
     for edges in ([0, t + 1, df.height], np.linspace(0, df.height, 8).astype(int)):
-        bank = po.ModelBank([s], threads=1)
+        bank = rp.ModelBank([s], threads=1)
         many = pl.concat(
             [run(bank, df.slice(a, b - a)) for a, b in zip(edges[:-1], edges[1:], strict=True)]
         )

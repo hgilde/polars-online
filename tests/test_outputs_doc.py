@@ -84,7 +84,7 @@ def test_every_field_gives_its_dtype_and_where_else_it_is_null():
     ``po.spec.output_index`` declares, and fills the *also null* column for
     every field, so no reader has to find out where a field is null by
     running it."""
-    import rheon as po
+    from rheon import polars as rp
 
     sys.path.insert(0, str(REPO / "tests"))
     from test_model_registry import MINIMAL, _build
@@ -99,7 +99,7 @@ def test_every_field_gives_its_dtype_and_where_else_it_is_null():
     for name, (section, spec) in sections.items():
         header, rows = _table(section)
         assert header == "| field | dtype | what it holds | also null |", (name, header)
-        declared = po.spec.output_index(spec)
+        declared = rp.spec.output_index(spec)
         dtypes = dict(zip(declared["field"], declared["dtype"], strict=True))
         for row in rows:
             assert len(row) == 4 and all(row), (name, row)

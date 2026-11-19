@@ -17,8 +17,8 @@ rows by a glob from the two parquet files that `Example data
     import xgboost as xgb
 
     features = ["x0", "x1", "x2", "signal_a", "signal_b"]
-    train = po.gbdt.xgboost_matrix("ticks/*.parquet", label="y", features=features)
-    valid = po.gbdt.xgboost_matrix("today.parquet", label="y", features=features, ref=train)
+    train = _gbdt.xgboost_matrix("ticks/*.parquet", label="y", features=features)
+    valid = _gbdt.xgboost_matrix("today.parquet", label="y", features=features, ref=train)
     booster = xgb.train({"tree_method": "hist", "max_bin": 256}, train, 500,
                         evals=[(valid, "valid")], early_stopping_rounds=20, verbose_eval=False)
 
@@ -673,7 +673,7 @@ def _native_or_none(
 # ----------------------------------------------------------------- XGBoost
 
 
-@unstable("rheon.gbdt.xgboost_matrix")
+@unstable("rheon.polars._gbdt.xgboost_matrix")
 def xgboost_matrix(
     source: Source,
     *,
@@ -829,8 +829,8 @@ def xgboost_matrix(
         df.head(300).write_ipc("train.arrow")              # the example data, as two Arrow files
         df.tail(100).write_ipc("valid.arrow")
         features = ["x0", "x1", "x2", "signal_a", "signal_b"]
-        train = po.gbdt.xgboost_matrix("train.arrow", label="y", features=features)
-        valid = po.gbdt.xgboost_matrix("valid.arrow", label="y", features=features, ref=train)
+        train = _gbdt.xgboost_matrix("train.arrow", label="y", features=features)
+        valid = _gbdt.xgboost_matrix("valid.arrow", label="y", features=features, ref=train)
         booster = xgb.train({"tree_method": "hist", "max_bin": 256}, train, 500,
                             evals=[(valid, "valid")], early_stopping_rounds=20, verbose_eval=False)
         rows, cols = train.num_row(), train.num_col()
@@ -887,7 +887,7 @@ def xgboost_matrix(
     ``sample_rows=None`` lets XGBoost sketch every row, and grows XGBoost's
     own trees.
 
-    **Measured** as :mod:`rheon.gbdt` describes, on 10 million rows
+    **Measured** as :mod:`rheon.polars._gbdt` describes, on 10 million rows
     of 50 features: the time before the first round, and the peak memory.
     Reading ahead, Polars holds 7.2 GB at the peak on the query route, and
     `Bound a run's memory
@@ -1134,7 +1134,7 @@ def _available_memory() -> int:
     return int(_native.gbdt_available_memory())
 
 
-@unstable("rheon.gbdt.lightgbm_dataset")
+@unstable("rheon.polars._gbdt.lightgbm_dataset")
 def lightgbm_dataset(
     source: Source,
     *,
@@ -1318,9 +1318,9 @@ def lightgbm_dataset(
         import lightgbm as lgb
 
         features = ["x0", "x1", "x2", "signal_a", "signal_b"]
-        train = po.gbdt.lightgbm_dataset("ticks/*.parquet", label="y", features=features,
+        train = _gbdt.lightgbm_dataset("ticks/*.parquet", label="y", features=features,
                                          params={"verbose": -1})
-        valid = po.gbdt.lightgbm_dataset("today.parquet", label="y", features=features,
+        valid = _gbdt.lightgbm_dataset("today.parquet", label="y", features=features,
                                          reference=train)
         booster = lgb.train({"objective": "regression", "verbose": -1}, train, 500,
                             valid_sets=[valid],
@@ -1364,7 +1364,7 @@ def lightgbm_dataset(
     weights as without, 2 of them above 1.0, where 14 of XGBoost's 15 cuts
     are.
 
-    **Measured** as :mod:`rheon.gbdt` describes, on 10 million rows
+    **Measured** as :mod:`rheon.polars._gbdt` describes, on 10 million rows
     of 50 features from Arrow IPC files: the time before the first round,
     and the peak memory.
 

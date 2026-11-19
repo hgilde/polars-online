@@ -17,9 +17,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from conftest import run_online
 from rheon import _spec
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -45,86 +45,86 @@ def _df(n: int = 50) -> pl.DataFrame:
 
 
 def _spec_dict(**kw) -> dict:
-    return po.spec.ewridge("m", **{**BASE, **kw})
+    return rp.spec.ewridge("m", **{**BASE, **kw})
 
 
 # --- the builders: wrong shapes are refused by parameter name ---------------
 
 SHAPES = [
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(targets="y"),
         "targets must be a list of column names, po.target tables or formula targets, "
         "but it is str 'y'",
     ),
-    (po.spec.ewridge, dict(features="x0"), "features must be a list of strs, but it is str 'x0'"),
+    (rp.spec.ewridge, dict(features="x0"), "features must be a list of strs, but it is str 'x0'"),
     # A string is a duration's shape now ("10m", task 88), so a wrong
     # shape for a clock parameter is anything that is neither.
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=True),
         "half_life must be a number or a duration or a list of numbers or durations, "
         "but it is bool",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=[10, None]),
         "half_life must be a number or a duration or a list of numbers or durations, "
         "but it is list",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(session_gap=[1]),
         "session_gap must be a number or a duration, but it is list",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(max_rows_between_coefs=1.5),
         "max_rows_between_coefs must be an int, but it is float 1.5",
     ),
-    (po.spec.ewridge, dict(standardize=1), "standardize must be a bool, but it is int 1"),
+    (rp.spec.ewridge, dict(standardize=1), "standardize must be a bool, but it is int 1"),
     # The common bools, each pinned (task 278: no test matched either).
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(fit_intercept="yes"),
         "fit_intercept must be a bool, but it is str 'yes'",
     ),
-    (po.spec.ewridge, dict(emit_clocks=1), "emit_clocks must be a bool, but it is int 1"),
-    (po.spec.ewridge, dict(coef_prior=[1.0, 2.0]), "coef_prior must be a list of lists of numbers"),
+    (rp.spec.ewridge, dict(emit_clocks=1), "emit_clocks must be a bool, but it is int 1"),
+    (rp.spec.ewridge, dict(coef_prior=[1.0, 2.0]), "coef_prior must be a list of lists of numbers"),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(feature_sets=[("a", ["x0"])]),
         "feature_sets must be a dict from strs to lists of strs",
     ),
-    (po.spec.quantile, dict(quantile=[0.5]), "quantile must be a number, but it is list [0.5]"),
+    (rp.spec.quantile, dict(quantile=[0.5]), "quantile must be a number, but it is list [0.5]"),
     # A table target is a TypedDict, which the check did not read: a wrong
     # entry reached Rust and was named by JSON path (review 2026-09-26, F4).
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(targets=[3]),
         "targets must be a list of column names, po.target tables or formula targets, "
         "but it is list [3]",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(targets=[{"column": "p", "name": 1}]),
         "targets must be a list of column names, po.target tables or formula targets, "
         "but it is list [{'column': 'p', 'name': 1}]",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(targets=[{"col": "p"}]),
         "targets must be a list of column names, po.target tables or formula targets, "
         "but it is list [{'col': 'p'}]",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(targets=[None]),
         "targets must be a list of column names, po.target tables or formula targets, "
         "but it is list [None]",
     ),
-    (po.spec.lasso, dict(penalties=0.1), "penalties must be a list of numbers, but it is float"),
-    (po.spec.ewridge, dict(bogus=1), 'ewridge() takes no parameter "bogus"'),
+    (rp.spec.lasso, dict(penalties=0.1), "penalties must be a list of numbers, but it is float"),
+    (rp.spec.ewridge, dict(bogus=1), 'ewridge() takes no parameter "bogus"'),
 ]
 
 
@@ -138,24 +138,24 @@ def test_a_wrong_shape_names_the_parameter(builder, kw, msg):
 
 def test_a_spec_name_must_be_a_string():
     with pytest.raises(TypeError, match="po.spec: a spec's name must be a str, but it is int 1"):
-        po.spec.ewridge(1, **BASE)
+        rp.spec.ewridge(1, **BASE)
 
 
 def test_ew_cov_has_no_targets():
     with pytest.raises(TypeError, match='spec "m": ew_cov\\(\\) takes no targets'):
-        po.spec.ew_cov("m", features=["x0", "y"], targets=["y"], half_life=10.0)
+        rp.spec.ew_cov("m", features=["x0", "y"], targets=["y"], half_life=10.0)
 
 
 def test_kmeans_has_no_targets():
     with pytest.raises(TypeError, match='spec "m": kmeans\\(\\) takes no targets'):
-        po.spec.kmeans("m", features=["x0", "y"], targets=["y"], n_clusters=2, half_life=10.0)
+        rp.spec.kmeans("m", features=["x0", "y"], targets=["y"], n_clusters=2, half_life=10.0)
 
 
 def test_ew_class_takes_a_label_not_targets():
     with pytest.raises(
         TypeError, match='spec "m": ew_class\\(\\) takes no targets, since label names the column'
     ):
-        po.spec.ew_class(
+        rp.spec.ew_class(
             "m",
             features=["x0"],
             label="y",
@@ -171,92 +171,92 @@ VALUES = [
     # 278: the min_weight NaN had no test, and the others were matched on
     # their names alone).
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(min_weight=float("nan")),
         'spec "m": min_weight must be a number, but it is NaN',
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(min_weight=[float("nan")]),
         'spec "m": min_weight must hold numbers, but one of its values is NaN',
     ),
-    (po.spec.ewridge, dict(half_life=None, lam=INF), 'spec "m": lam must be finite, but it is inf'),
+    (rp.spec.ewridge, dict(half_life=None, lam=INF), 'spec "m": lam must be finite, but it is inf'),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(coef_every=float("nan")),
         'spec "m": coef_every must be a number, but it is NaN',
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(embargo=float("nan")),
         'spec "m": embargo must be a number, but it is NaN',
     ),
     # A list's entries are held to the int floor as a scalar is (review
     # 2026-09-26, F7: a negative lag was named by serde as `model`).
-    (po.spec.marginal, dict(lags=[-1]), "lags must each be at least 1, but one of them is -1"),
+    (rp.spec.marginal, dict(lags=[-1]), "lags must each be at least 1, but one of them is -1"),
     (
-        po.spec.marginal,
+        rp.spec.marginal,
         dict(lags=[1], cross_lags=[-1]),
         "cross_lags must each be at least 1, but one of them is -1",
     ),
     # A clock parameter since task 178: the Rust side's message, in clock
     # units; its row cap is a count of at least one.
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(coef_every=-1),
         "coef_every must be finite and at least 0 clock units, but it is -1. Set "
         "coef_every to 0 to fill the coef field on every row, or to a finite positive "
         "value.",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(max_rows_between_coefs=0),
         "max_rows_between_coefs must be at least 1, but it is 0",
     ),
     # No sweep is no descent: every solve a failure, and coefficients that
     # read like a fit (review 2026-10-05, PB7).
     (
-        po.spec.lasso,
+        rp.spec.lasso,
         dict(penalties=[0.1], max_iter=-1),
         "max_iter must be at least 1, but it is -1",
     ),
-    (po.spec.lasso, dict(penalties=[0.1], max_iter=0), "max_iter must be at least 1, but it is 0"),
-    (po.spec.ewridge, dict(resid_quantiles=[0.5, INF]), "resid_quantiles must hold finite numbers"),
-    (po.spec.rls, dict(delta=-INF), "delta must be finite, but it is -inf"),
-    (po.spec.ewridge, dict(conformal=INF), "conformal must be finite, but it is inf"),
+    (rp.spec.lasso, dict(penalties=[0.1], max_iter=0), "max_iter must be at least 1, but it is 0"),
+    (rp.spec.ewridge, dict(resid_quantiles=[0.5, INF]), "resid_quantiles must hold finite numbers"),
+    (rp.spec.rls, dict(delta=-INF), "delta must be finite, but it is -inf"),
+    (rp.spec.ewridge, dict(conformal=INF), "conformal must be finite, but it is inf"),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(conformal=1.0),
         "conformal must be above 0 and below 1, but it is 1.",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(conformal_rate=0.1),
         "conformal_rate sets how fast the interval adapts, but conformal, its coverage, is not "
         "set.",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(conformal=0.9, conformal_rate=0.0),
         "conformal_rate must be finite and above 0, but it is 0.",
     ),
     (
-        po.spec.ew_cov,
+        rp.spec.ew_cov,
         dict(features=["x0", "y"], targets=None, stats=["mahal"]),
         '"mahal" in stats needs precision_prior',
     ),
     (
-        po.spec.ew_cov,
+        rp.spec.ew_cov,
         dict(features=["x0", "y"], targets=None, mahal_quantiles=[0.5]),
         'mahal_quantiles needs "mahal" in stats',
     ),
     (
-        po.spec.ew_cov,
+        rp.spec.ew_cov,
         dict(features=["x0", "y"], targets=None, pca=3),
         "pca must be at most the number of features (2), but it is 3",
     ),
     (
-        po.spec.ew_cov,
+        rp.spec.ew_cov,
         # Clock units since task 161, 0 for every row, as `solve_every`.
         dict(features=["x0", "y"], targets=None, pca=1, pca_every=-1.0),
         "pca_every must be finite and at least 0 clock units, but it is -1. Set "
@@ -264,32 +264,32 @@ VALUES = [
         "positive value.",
     ),
     (
-        po.spec.ew_cov,
+        rp.spec.ew_cov,
         dict(features=["x0", "y"], targets=None, pca_every=2),
         "pca_every schedules the refreshes of the principal components, but pca",
     ),
     (
-        po.spec.ew_cov,
+        rp.spec.ew_cov,
         dict(features=["x0", "y"], targets=None, max_rows_between_pcas=20),
         "max_rows_between_pcas schedules the refreshes of the principal components, but pca",
     ),
     (
-        po.spec.ew_class,
+        rp.spec.ew_class,
         dict(targets=None, label="y", classes=["a"], precision_prior=1.0),
         "classes must list at least 2 classes, but it lists 1",
     ),
     (
-        po.spec.ew_class,
+        rp.spec.ew_class,
         dict(targets=None, label="y", classes=["a", "b", "a"], precision_prior=1.0),
         'classes must name each class once, but it lists "a" more than once',
     ),
     (
-        po.spec.ew_class,
+        rp.spec.ew_class,
         dict(targets=None, label="y", classes=["a", ""], precision_prior=1.0),
         "classes must name each class, but one of its names is empty",
     ),
     (
-        po.spec.ew_class,
+        rp.spec.ew_class,
         dict(
             targets=None, label="y", classes=["a", "b"], precision_prior=1.0, covariance_type="lda"
         ),
@@ -298,7 +298,7 @@ VALUES = [
     # `hmm`'s named `ew_class` (task 190's find, folded into task 193); now
     # neither names a model, but the parameter and its words (task 244, P-4).
     (
-        po.spec.hmm,
+        rp.spec.hmm,
         dict(
             features=["x0", "y"],
             targets=None,
@@ -309,243 +309,243 @@ VALUES = [
         'covariance_type must be "full", "tied" or "diag", but it is "lda"',
     ),
     (
-        po.spec.ew_class,
+        rp.spec.ew_class,
         dict(targets=None, label="y", classes=["a", "b"], precision_prior=0.0),
         "precision_prior must be finite and above 0, but it is 0",
     ),
     # Every refusal of a value names it (review 2026-10-06, PC11): about
     # thirty named the parameter and not the value.
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(ridge=-1.0),
         "ridge must be finite and at least 0, but it is -1. Set ridge to 0 for no "
         "shrinkage, or to a finite positive value.",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(min_weight=-1.0),
         "min_weight must be finite and at least 0, but it is -1.",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(solve_every=-1.0),
         "solve_every must be at least 0 clock units, but it is -1",
     ),
-    (po.spec.ewridge, dict(half_life=-1.0), "half_life must be above 0, but it is -1"),
+    (rp.spec.ewridge, dict(half_life=-1.0), "half_life must be above 0, but it is -1"),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=None, lam=1.5),
         "lam must be above 0 and at most 1, but it is 1.5",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(emit_drift=True, drift_delta=-1.0),
         "drift_delta must be finite and at least 0, but it is -1. Set drift_delta to 0, "
         "or to a finite positive value.",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(emit_drift=True, drift_threshold=-1.0),
         "drift_threshold must be finite and above 0, but it is -1.",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(emit_drift=True, drift_action="nope"),
         'drift_action must be "flag" or "reset", but it is "nope"',
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(resid_quantiles=[1.5]),
         "resid_quantiles must each be above 0 and below 1, but one of them is 1.5.",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(ridge=[1e-6, 1.0], emit_averaged=True, average_eta=-1.0),
         "average_eta must be above 0, but it is -1.",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(window_size=5.0, snapshot_every=-1.0),
         "snapshot_every must be finite and at least 0 clock units, but it is -1. Set "
         "snapshot_every to 0 to take a snapshot on every row, or to a finite positive "
         "value.",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(session="s", session_gap=0.0, session_shrink=2.0, long_half_life=5.0),
         "session_shrink must be from 0 to 1, but it is 2",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(session="s", session_gap=0.0, session_shrink=0.5, long_half_life=-1.0),
         "long_half_life must be above 0, but it is -1",
     ),
-    (po.spec.pa, dict(c=-1.0), "c must be above 0, but it is -1"),
+    (rp.spec.pa, dict(c=-1.0), "c must be above 0, but it is -1"),
     (
-        po.spec.pa,
+        rp.spec.pa,
         dict(eps=-1.0),
         "eps must be finite and at least 0, but it is -1. Set eps to 0 to move the fit "
         "on every row with a residual other than 0, or to a finite positive value.",
     ),
     (
-        po.spec.sgd,
+        rp.spec.sgd,
         dict(learning_rate=-1.0),
         "learning_rate must be finite and above 0, but it is -1",
     ),
     (
-        po.spec.sgd,
+        rp.spec.sgd,
         dict(loss="huber", huber_delta=-1.0),
         "huber_delta must be above 0, but it is -1. Set huber_delta to a positive cut in units of "
         "the residuals' scale, or to inf for the squared loss.",
     ),
     (
-        po.spec.huber,
+        rp.spec.huber,
         dict(huber_delta=-1.0),
         "huber_delta must be above 0, but it is -1. Set huber_delta to a positive cut in units of "
         "the residuals' scale, or to inf for least squares.",
     ),
     (
-        po.spec.huber,
+        rp.spec.huber,
         dict(ridge=-1.0),
         "ridge must be finite and at least 0, but it is -1. Set ridge to 0 for no "
         "shrinkage, or to a finite positive value.",
     ),
-    (po.spec.quantile, dict(quantile=1.5), "quantile must be above 0 and below 1, but it is 1.5"),
+    (rp.spec.quantile, dict(quantile=1.5), "quantile must be above 0 and below 1, but it is 1.5"),
     (
-        po.spec.quantile,
+        rp.spec.quantile,
         dict(quantile=0.5, quantile_eps=-1.0),
         "quantile_eps must be finite and above 0, but it is -1",
     ),
     (
-        po.spec.ew_cov,
+        rp.spec.ew_cov,
         dict(features=["x0", "y"], targets=None, stats=["mahal"], precision_prior=-1.0),
         "precision_prior must be finite and above 0, but it is -1",
     ),
     (
-        po.spec.holt,
+        rp.spec.holt,
         dict(features=None, half_life=-1.0),
         "half_life must be above 0",
     ),
     (
-        po.spec.holt,
+        rp.spec.holt,
         dict(features=None, trend_half_life=-1.0),
         "trend_half_life must be above 0, but it is -1",
     ),
     (
-        po.spec.lasso,
+        rp.spec.lasso,
         dict(penalties=[0.1], select_half_life=-1.0),
         "select_half_life must be above 0, but it is -1",
     ),
     (
-        po.spec.lasso,
+        rp.spec.lasso,
         dict(penalties=[0.1], tol=-1.0),
         "tol must be finite and above 0, but it is -1",
     ),
     (
-        po.spec.lasso,
+        rp.spec.lasso,
         dict(penalties=[0.1], l1_ratio=2.0),
         "l1_ratio must be from 0 to 1, but it is 2",
     ),
     (
-        po.spec.lasso,
+        rp.spec.lasso,
         dict(penalties=[0.1, 0.2]),
         "penalties must run from the largest to the smallest, each once, but 0.1 comes before 0.2",
     ),
     (
-        po.spec.lasso,
+        rp.spec.lasso,
         dict(penalties=[0.1, -0.1]),
         "penalties must be finite and at least 0, but one of its values is -0.1. Set "
         "that value to 0 or to a finite positive value, different from the other values.",
     ),
     (
-        po.spec.kalman,
+        rp.spec.kalman,
         dict(coef_half_life=-1.0),
         "coef_half_life must be above 0, but it is -1",
     ),
     (
-        po.spec.kalman,
+        rp.spec.kalman,
         dict(coef_half_life=10.0, revert_half_life=-1.0),
         "revert_half_life must be above 0, but it is -1",
     ),
     (
-        po.spec.kalman,
+        rp.spec.kalman,
         dict(q=[-1.0, 0.0]),
         "q must be finite and at least 0, but one of its values is -1. Set that value to "
         "0 for no drift over time, or to a finite positive value.",
     ),
     (
-        po.spec.kalman,
+        rp.spec.kalman,
         dict(q=[0.0]),
         "q must list one value for each of the 2 coefficients, intercept included, but it lists 1",
     ),
     (
-        po.spec.kalman,
+        rp.spec.kalman,
         dict(coef_half_life=10.0, obs_var=-1.0),
         "obs_var must be finite and above 0, but it is -1",
     ),
     (
-        po.spec.kalman,
+        rp.spec.kalman,
         dict(coef_half_life=10.0, p0=-1.0),
         "p0 must be finite and above 0, but it is -1",
     ),
-    (po.spec.ftrl, dict(alpha=-1.0), "alpha must be finite and above 0, but it is -1"),
+    (rp.spec.ftrl, dict(alpha=-1.0), "alpha must be finite and above 0, but it is -1"),
     (
-        po.spec.ftrl,
+        rp.spec.ftrl,
         dict(beta=-1.0),
         "beta must be finite and at least 0, but it is -1. Set beta to 0, or to a finite "
         "positive value.",
     ),
     (
-        po.spec.ftrl,
+        rp.spec.ftrl,
         dict(l1=-1.0),
         "l1 must be finite and at least 0, but it is -1. Set l1 to 0 for no L1 penalty, "
         "or to a finite positive value.",
     ),
     (
-        po.spec.ftrl,
+        rp.spec.ftrl,
         dict(l2=-1.0),
         "l2 must be finite and at least 0, but it is -1. Set l2 to 0 for no L2 penalty, "
         "or to a finite positive value.",
     ),
-    (po.spec.rls, dict(delta=-1.0), "delta must be finite and above 0, but it is -1"),
+    (rp.spec.rls, dict(delta=-1.0), "delta must be finite and above 0, but it is -1"),
     (
-        po.spec.kmeans,
+        rp.spec.kmeans,
         dict(features=["x0", "y"], targets=None, n_clusters=2, split_merge=-1.0),
         "split_merge must be finite and at least 0, but it is -1. Set split_merge to 0 "
         "to learn every row, with no split or merge, or to a finite positive value.",
     ),
     (
-        po.spec.kmeans,
+        rp.spec.kmeans,
         dict(features=["x0", "y"], targets=None, n_clusters=2, dead_frac=-1.0),
         "dead_frac must be at least 0 and below 0.5, but it is -1. Set dead_frac to 0 to "
         "never re-place a center whose weight has decayed, or to a positive value below "
         "0.5.",
     ),
     (
-        po.spec.kmeans,
+        rp.spec.kmeans,
         dict(features=["x0", "y"], targets=None, n_clusters=2, scale_floor=-1.0),
         "scale_floor must be finite and at least 0, but it is -1. Set scale_floor to 0 "
         "to measure distances by each feature's exponentially weighted variance alone, "
         "or to a finite positive value.",
     ),
     (
-        po.spec.micro,
+        rp.spec.micro,
         dict(features=["x0", "y"], targets=None, eps=-1.0),
         "eps must be finite and above 0, but it is -1",
     ),
     (
-        po.spec.micro,
+        rp.spec.micro,
         dict(features=["x0", "y"], targets=None, eps=0.3, beta_mu=-1.0),
         "beta_mu must be finite and above 0, but it is -1",
     ),
     (
-        po.spec.micro,
+        rp.spec.micro,
         dict(features=["x0", "y"], targets=None, eps=0.3, macro_link=-1.0),
         "macro_link must be finite and at least 0, but it is -1. Set macro_link to 0 to "
         "join none of the small clusters the model keeps, or to a finite positive value.",
     ),
     (
-        po.spec.micro,
+        rp.spec.micro,
         dict(features=["x0", "y"], targets=None, eps=0.3, prune_every=-1.0),
         "prune_every must be finite and at least 0 clock units, but it is -1. Set "
         "prune_every to 0 to prune and join, on every row, the small clusters the model "
@@ -563,34 +563,34 @@ def test_a_bad_value_names_the_parameter(builder, kw, msg):
 
 
 def test_numpy_scalars_are_plain_numbers():
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m", targets=["y"], features=["x0"], half_life=np.float64(10.0), coef_every=np.int64(3)
     )
     assert spec["half_life"] == 10.0 and spec["coef_every"] == 3
-    out = po.ModelBank([spec]).fit_predict(_df())
+    out = rp.ModelBank([spec]).fit_predict(_df())
     assert out["m"].struct.field("coef").null_count() < out.height
 
 
 BUILDERS = {
-    po.spec.ewridge: {},
-    po.spec.rls: {},
-    po.spec.lasso: dict(penalties=[0.1]),
-    po.spec.kalman: dict(coef_half_life=10.0),
-    po.spec.huber: {},
-    po.spec.quantile: dict(quantile=0.5),
-    po.spec.ftrl: {},
-    po.spec.ew_cov: dict(features=["x0", "y"], targets=None),
-    po.spec.sgd: {},
-    po.spec.pa: {},
-    po.spec.holt: dict(features=None),
-    po.spec.kmeans: dict(features=["x0", "y"], targets=None, n_clusters=2),
-    po.spec.ew_class: dict(targets=None, label="y", classes=["a", "b"], precision_prior=1.0),
-    po.spec.marginal: {},
+    rp.spec.ewridge: {},
+    rp.spec.rls: {},
+    rp.spec.lasso: dict(penalties=[0.1]),
+    rp.spec.kalman: dict(coef_half_life=10.0),
+    rp.spec.huber: {},
+    rp.spec.quantile: dict(quantile=0.5),
+    rp.spec.ftrl: {},
+    rp.spec.ew_cov: dict(features=["x0", "y"], targets=None),
+    rp.spec.sgd: {},
+    rp.spec.pa: {},
+    rp.spec.holt: dict(features=None),
+    rp.spec.kmeans: dict(features=["x0", "y"], targets=None, n_clusters=2),
+    rp.spec.ew_class: dict(targets=None, label="y", classes=["a", "b"], precision_prior=1.0),
+    rp.spec.marginal: {},
     # The seven the sweeps below never saw until task 111.
-    po.spec.micro: dict(features=["x0", "y"], targets=None, eps=0.3),
-    po.spec.seqtest: dict(features=None, half_life=None),
-    po.spec.deco: dict(features=["x0", "y"], targets=None),
-    po.spec.rcov: dict(
+    rp.spec.micro: dict(features=["x0", "y"], targets=None, eps=0.3),
+    rp.spec.seqtest: dict(features=None, half_life=None),
+    rp.spec.deco: dict(features=["x0", "y"], targets=None),
+    rp.spec.rcov: dict(
         features=["x0", "y"],
         targets=None,
         half_life=None,
@@ -598,24 +598,24 @@ BUILDERS = {
         group_close="monotone",
         block_rows=100,
     ),
-    po.spec.hmm: dict(features=["x0", "y"], targets=None, n_components=2, precision_prior=0.1),
-    po.spec.corrchange: dict(features=["x0", "y"], targets=None, half_life=None, window_rows=20),
-    po.spec.bocpd: dict(features=["x0", "y"], targets=None, half_life=None),
-    po.spec.audit: dict(columns=["x0", "y"], features=None, targets=None, half_life=None),
+    rp.spec.hmm: dict(features=["x0", "y"], targets=None, n_components=2, precision_prior=0.1),
+    rp.spec.corrchange: dict(features=["x0", "y"], targets=None, half_life=None, window_rows=20),
+    rp.spec.bocpd: dict(features=["x0", "y"], targets=None, half_life=None),
+    rp.spec.audit: dict(columns=["x0", "y"], features=None, targets=None, half_life=None),
 }
 
 
 #: The models with no target, whose builders write ``features[0]`` as the
 #: target the plumbing needs.
 NO_TARGET = [
-    po.spec.ew_cov,
-    po.spec.kmeans,
-    po.spec.micro,
-    po.spec.deco,
-    po.spec.bocpd,
-    po.spec.corrchange,
-    po.spec.hmm,
-    po.spec.rcov,
+    rp.spec.ew_cov,
+    rp.spec.kmeans,
+    rp.spec.micro,
+    rp.spec.deco,
+    rp.spec.bocpd,
+    rp.spec.corrchange,
+    rp.spec.hmm,
+    rp.spec.rcov,
 ]
 
 
@@ -633,7 +633,7 @@ def test_an_empty_features_list_is_named_by_a_model_with_no_target(builder):
 
 @pytest.mark.parametrize(
     "builder",
-    [po.spec.deco, po.spec.bocpd, po.spec.corrchange, po.spec.hmm, po.spec.rcov],
+    [rp.spec.deco, rp.spec.bocpd, rp.spec.corrchange, rp.spec.hmm, rp.spec.rcov],
     ids=lambda b: b.__name__,
 )
 def test_a_model_with_no_target_refuses_targets_by_name(builder):
@@ -734,7 +734,7 @@ def test_the_inf_table_matches_the_rust_side(builder):
             inf = ["inf"] * (len(spec["features"]) + 1)
         where[key] = inf
         try:
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
         except ValueError as e:
             msg = str(e)
             if key in allowed:
@@ -779,7 +779,7 @@ def test_nan_is_no_setting_for_any_float_parameter(builder):
         )
         where[key] = _nan_shaped_like(inf)
         with pytest.raises(ValueError) as caught:
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
         msg = str(caught.value)
         assert key in msg or 'string "nan", expected f64' in msg, (key, msg)
         swept += 1
@@ -799,31 +799,31 @@ def _nan_shaped_like(inf):
 #: of 2026-09-15): the builder takes it, and the bank builds with it. Each
 #: entry carries what the parameter needs beside it to be valid at all.
 INF_MEANS_SOMETHING = [
-    (po.spec.huber, "huber_delta", {}),  # least squares
-    (po.spec.sgd, "huber_delta", dict(loss="huber")),  # least squares
-    (po.spec.ewridge, "long_half_life", dict(session="s", session_gap=1.0, session_shrink=0.5)),
-    (po.spec.lasso, "select_half_life", {}),  # selection over the whole history
-    (po.spec.holt, "trend_half_life", {}),  # the whole history's drift (S30)
-    (po.spec.pa, "c", dict(mode="pa1")),  # mode "pa": the step is not capped
-    (po.spec.ewridge, "average_eta", dict(ridge=[1e-6, 1.0], emit_averaged=True)),  # the argmin
+    (rp.spec.huber, "huber_delta", {}),  # least squares
+    (rp.spec.sgd, "huber_delta", dict(loss="huber")),  # least squares
+    (rp.spec.ewridge, "long_half_life", dict(session="s", session_gap=1.0, session_shrink=0.5)),
+    (rp.spec.lasso, "select_half_life", {}),  # selection over the whole history
+    (rp.spec.holt, "trend_half_life", {}),  # the whole history's drift (S30)
+    (rp.spec.pa, "c", dict(mode="pa1")),  # mode "pa": the step is not capped
+    (rp.spec.ewridge, "average_eta", dict(ridge=[1e-6, 1.0], emit_averaged=True)),  # the argmin
 ]
 
 #: Where it means nothing: the builder refuses it, and so does the bank when
 #: the JSON carries ``"inf"``.
 INF_MEANS_NOTHING = [
-    (po.spec.ewridge, "drift_delta", dict(emit_drift=True), math.inf),
-    (po.spec.ewridge, "drift_threshold", dict(emit_drift=True), math.inf),
-    (po.spec.quantile, "quantile_eps", {}, math.inf),
-    (po.spec.pa, "eps", {}, math.inf),
-    (po.spec.ftrl, "alpha", {}, math.inf),
-    (po.spec.ftrl, "beta", {}, math.inf),
-    (po.spec.ftrl, "l1", {}, math.inf),
-    (po.spec.ftrl, "l2", {}, math.inf),
-    (po.spec.sgd, "learning_rate", {}, math.inf),
-    (po.spec.ewridge, "ridge", {}, math.inf),
+    (rp.spec.ewridge, "drift_delta", dict(emit_drift=True), math.inf),
+    (rp.spec.ewridge, "drift_threshold", dict(emit_drift=True), math.inf),
+    (rp.spec.quantile, "quantile_eps", {}, math.inf),
+    (rp.spec.pa, "eps", {}, math.inf),
+    (rp.spec.ftrl, "alpha", {}, math.inf),
+    (rp.spec.ftrl, "beta", {}, math.inf),
+    (rp.spec.ftrl, "l1", {}, math.inf),
+    (rp.spec.ftrl, "l2", {}, math.inf),
+    (rp.spec.sgd, "learning_rate", {}, math.inf),
+    (rp.spec.ewridge, "ridge", {}, math.inf),
     # `q` alone: beside `coef_half_life` the pair is refused first (review
     # 2026-10-06, PC6).
-    (po.spec.kalman, "q", dict(coef_half_life=None, q=[0.0, 0.5]), [math.inf, 0.5]),
+    (rp.spec.kalman, "q", dict(coef_half_life=None, q=[0.0, 0.5]), [math.inf, 0.5]),
 ]
 
 
@@ -841,7 +841,7 @@ def test_inf_is_taken_where_it_means_something(builder, key, extra):
     step that is not capped, weights that are the argmin: the builder takes
     ``inf`` and the bank builds with it. Python refused every one, and so did
     Rust's parser, while its validation let TOML's ``inf`` through."""
-    po.ModelBank([builder("m", **{**_kwargs(builder, extra), key: math.inf})])
+    rp.ModelBank([builder("m", **{**_kwargs(builder, extra), key: math.inf})])
 
 
 @pytest.mark.parametrize(
@@ -864,7 +864,7 @@ def test_inf_is_refused_where_it_means_nothing(builder, key, extra, value):
         [("inf" if math.isinf(v) else v) for v in value] if isinstance(value, list) else "inf"
     )
     with pytest.raises(ValueError):
-        po.ModelBank([spec])
+        rp.ModelBank([spec])
 
 
 # --- hand-built dicts: serde names the path, and the visitors say what fits --
@@ -886,7 +886,7 @@ def test_a_hand_built_dict_is_checked_by_path():
         (dict(half_life=10, targets="y"), "[0].targets: invalid type: string"),
     ]:
         with pytest.raises(ValueError) as exc:
-            po.ModelBank([{**base, **bad}])
+            rp.ModelBank([{**base, **bad}])
         assert str(exc.value).startswith("invalid spec: ")
         assert msg in str(exc.value), str(exc.value)
 
@@ -899,7 +899,7 @@ def test_a_hand_built_dict_is_checked_by_path():
     [
         ("feature", dict(features=["nope"])),
         ("target", dict(targets=["nope"])),
-        ("target", dict(targets=[po.target("nope", name="tt")])),
+        ("target", dict(targets=[rp.target("nope", name="tt")])),
         ("clock", dict(clock="nope", gap_cap=5.0)),
         ("session", dict(session="nope", session_gap=1.0)),
         ("weight", dict(weight="nope")),
@@ -907,7 +907,7 @@ def test_a_hand_built_dict_is_checked_by_path():
     ],
 )
 def test_a_missing_column_names_the_spec_the_role_and_the_frame(role, kw):
-    bank = po.ModelBank([_spec_dict(**kw)])
+    bank = rp.ModelBank([_spec_dict(**kw)])
     with pytest.raises(ValueError) as exc:
         bank.fit_predict(_df())
     text = str(exc.value)
@@ -922,7 +922,7 @@ def test_a_missing_column_names_the_spec_the_role_and_the_frame(role, kw):
     [
         ("feature", dict(features=["s"])),
         ("target", dict(targets=["s"])),
-        ("target", dict(targets=[po.target("s", name="ss")])),
+        ("target", dict(targets=[rp.target("s", name="ss")])),
         ("clock", dict(clock="s", gap_cap=5.0)),
         ("weight", dict(weight="s")),
     ],
@@ -930,7 +930,7 @@ def test_a_missing_column_names_the_spec_the_role_and_the_frame(role, kw):
 def test_a_string_column_is_refused_not_cast_to_null(role, kw):
     """A non-strict cast of a String column is all null: every prediction null
     and nothing to say why."""
-    bank = po.ModelBank([_spec_dict(**kw)])
+    bank = rp.ModelBank([_spec_dict(**kw)])
     with pytest.raises(TypeError) as exc:
         bank.fit_predict(_df())
     text = str(exc.value)
@@ -943,13 +943,13 @@ def test_a_nested_key_column_is_refused():
     with pytest.raises(
         TypeError, match=r'group column "l" is List\(Float64\), which cannot be read as text'
     ):
-        po.ModelBank([_spec_dict(group="l")]).fit_predict(df)
+        rp.ModelBank([_spec_dict(group="l")]).fit_predict(df)
 
 
 def test_boolean_features_and_integer_keys_are_fine():
     df = _df().with_columns(b=pl.col("x0") > 3, g=(pl.col("x0") > 3).cast(pl.Int32))
     spec = _spec_dict(features=["x0", "b"], group="g", session="g", session_gap=1.0)
-    out = po.ModelBank([spec]).fit_predict(df)
+    out = rp.ModelBank([spec]).fit_predict(df)
     assert out["m"].struct.field("pred_y").drop_nulls().len() > 0
 
 
@@ -988,12 +988,12 @@ def test_a_zoned_datetime_group_is_keyed_by_its_instant():
     in -- ``drop_groups``, ``skip_learned`` -- takes it."""
     specs = [
         _spec_dict(group="g", clock="t", gap_cap=10.0),
-        po.spec.ew_cov(
+        rp.spec.ew_cov(
             "c", features=["x0", "y"], group="g", session="s", group_close="session", half_life=5.0
         ),
     ]
     naive = zoned_keys(None)
-    want_bank = po.ModelBank(specs)
+    want_bank = rp.ModelBank(specs)
     want = want_bank.fit_predict(naive)
     want_closed = want_bank.closed_groups()
     assert want_bank.groups().filter(spec="m")["group"].to_list() == [
@@ -1002,7 +1002,7 @@ def test_a_zoned_datetime_group_is_keyed_by_its_instant():
     ]
     for tz in ("Europe/Amsterdam", "America/New_York"):
         df = zoned_keys(tz)
-        bank = po.ModelBank(specs)
+        bank = rp.ModelBank(specs)
         got = bank.fit_predict(df)
         assert got.select("m", "c").equals(want.select("m", "c")), tz
         assert bank.groups().equals(want_bank.groups()), tz
@@ -1011,7 +1011,7 @@ def test_a_zoned_datetime_group_is_keyed_by_its_instant():
         key = bank.groups()["group"][0]
         assert bank.drop_groups([key], spec="m") == 1, tz
         # So does the column itself, matched to the keys by `skip_learned`.
-        half = po.ModelBank(specs)
+        half = rp.ModelBank(specs)
         half.fit_predict(df.head(30))
         assert half.skip_learned(df).equals(df.slice(30)), tz
 
@@ -1077,8 +1077,8 @@ def test_a_column_the_spec_never_names_is_ignored_whatever_its_dtype(name):
     column, on a column the spec never asked for. The dtype features are on
     now (IMPROVEMENTS U5); this table is what keeps them on."""
     df = _two_rows().with_columns(DTYPES[name]().alias("c"))
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=5.0, min_weight=1.0)
-    out = po.ModelBank([spec]).fit_predict(df)
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=5.0, min_weight=1.0)
+    out = rp.ModelBank([spec]).fit_predict(df)
     assert out["m"].struct.field("weight_sum").len() == 2
 
 
@@ -1087,12 +1087,12 @@ def test_a_feature_of_any_dtype_is_either_used_or_named(name):
     """The other half: used as a feature, a dtype either casts to f64 or is
     refused by name. Never a panic, and never silently all-null."""
     df = _two_rows().with_columns(DTYPES[name]().alias("c"))
-    spec = po.spec.ewridge("m", targets=["y"], features=["c"], half_life=5.0, min_weight=1.0)
+    spec = rp.spec.ewridge("m", targets=["y"], features=["c"], half_life=5.0, min_weight=1.0)
     if name in NUMERIC:
-        po.ModelBank([spec]).fit_predict(df)
+        rp.ModelBank([spec]).fit_predict(df)
         return
     with pytest.raises(TypeError) as exc:
-        po.ModelBank([spec]).fit_predict(df)
+        rp.ModelBank([spec]).fit_predict(df)
     assert 'feature column "c"' in str(exc.value), str(exc.value)
     assert "must be a number, but it is" in str(exc.value), str(exc.value)
 
@@ -1103,9 +1103,9 @@ def test_a_narrow_dtype_gives_the_same_answer_as_float64(dtype):
     exactly what the same numbers as `Float64` would."""
     x = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
     df = pl.DataFrame({"y": [2 * v + 1 for v in x], "x0": x})
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=5.0, min_weight=2.0)
-    want = po.ModelBank([spec]).fit_predict(df)
-    got = po.ModelBank([spec]).fit_predict(df.with_columns(pl.col("x0").cast(dtype)))
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=5.0, min_weight=2.0)
+    want = rp.ModelBank([spec]).fit_predict(df)
+    got = rp.ModelBank([spec]).fit_predict(df.with_columns(pl.col("x0").cast(dtype)))
     assert want.equals(got, null_equal=True)
 
 
@@ -1128,10 +1128,10 @@ def test_a_decimal_parquet_runs_through_the_cli(tmp_path, rheon_cli):
         }
     )
     df.write_parquet(src)
-    spec = po.spec.ewridge("m", targets=["y"], features=["price", "code"], half_life=50.0)
+    spec = rp.spec.ewridge("m", targets=["y"], features=["price", "code"], half_life=50.0)
     run_online(rheon_cli, tmp_path, [spec], input=src, output=out)
     plain = df.with_columns(pl.col("price", "code").cast(pl.Float64))
-    want = po.ModelBank([spec]).fit_predict(plain)["m"]
+    want = rp.ModelBank([spec]).fit_predict(plain)["m"]
     got = pl.read_parquet(out)["m"]
     assert got.struct.field("pred_y").drop_nulls().len() > n // 2
     assert got.equals(want, null_equal=True)
@@ -1140,13 +1140,13 @@ def test_a_decimal_parquet_runs_through_the_cli(tmp_path, rheon_cli):
 def test_a_spec_named_like_an_input_column_is_refused():
     """Outputs are attached with `with_column`, which would replace the input."""
     with pytest.raises(ValueError) as exc:
-        po.ModelBank([po.spec.ewridge("y", **BASE)]).fit_predict(_df())
+        rp.ModelBank([rp.spec.ewridge("y", **BASE)]).fit_predict(_df())
     assert 'spec "y": it has the same name as an input column' in str(exc.value)
     assert "Rename the spec" in str(exc.value)
 
 
 def test_a_lazyframe_is_told_to_collect():
-    bank = po.ModelBank([_spec_dict()])
+    bank = rp.ModelBank([_spec_dict()])
     with pytest.raises(
         TypeError,
         match=r"it was given a query \(a LazyFrame\)\. Pass the query's result as a DataFrame",
@@ -1171,7 +1171,7 @@ def test_concurrent_fit_predict_says_so(method):
             "y": np.random.default_rng(1).standard_normal(n),
         }
     )
-    bank = po.ModelBank([_spec_dict(half_life=[10.0, 100.0, 1000.0], coef_every=1)])
+    bank = rp.ModelBank([_spec_dict(half_life=[10.0, 100.0, 1000.0], coef_every=1)])
     call = getattr(bank, method)
 
     def go(start: threading.Barrier, errors: list, done: list) -> None:
@@ -1288,7 +1288,7 @@ def test_ridge_scale_is_checked_by_name():
     """R2-P10: a wrong ``ridge_scale`` was refused by serde as an unknown
     variant with no parameter name."""
     with pytest.raises(ValueError, match="ridge_scale must be"):
-        po.spec.ewridge("m", targets=["y"], features=["x"], ridge_scale="foo")
+        rp.spec.ewridge("m", targets=["y"], features=["x"], ridge_scale="foo")
 
 
 def test_gap_cap_without_a_clock_is_refused_by_name():
@@ -1298,15 +1298,15 @@ def test_gap_cap_without_a_clock_is_refused_by_name():
     AR(0.9) input read ``lag_corr`` 0.0. Refused as ``restart_after_step_back``
     is, in a spec and in ``with_windows``."""
     with pytest.raises(ValueError, match='spec "m": gap_cap needs clock'):
-        po.spec.ewridge("m", **BASE, gap_cap=0.5)
+        rp.spec.ewridge("m", **BASE, gap_cap=0.5)
     with pytest.raises(ValueError, match='spec "c": gap_cap needs clock'):
-        po.spec.ew_cov("c", features=["x0", "y"], half_life=10.0, lags=[1], gap_cap=0.5)
+        rp.spec.ew_cov("c", features=["x0", "y"], half_life=10.0, lags=[1], gap_cap=0.5)
     with pytest.raises(ValueError, match="with_windows: gap_cap needs clock"):
-        po.stream.with_windows(
-            _df(), f=po.ewm_sum("x0", half_life=10.0, window_size=3.0, reverse=True), gap_cap=0.5
+        rp.stream.with_windows(
+            _df(), f=rp.ewm_sum("x0", half_life=10.0, window_size=3.0, reverse=True), gap_cap=0.5
         )
     # With the clock, the same cap is a cap.
-    po.spec.ewridge("m", **BASE, clock="t", gap_cap=0.5)
+    rp.spec.ewridge("m", **BASE, clock="t", gap_cap=0.5)
 
 
 EMPTY_HALF_LIFE = 'spec "m": half_life must list at least one half-life, but it is empty'
@@ -1315,13 +1315,13 @@ EMPTY_HALF_LIFE = 'spec "m": half_life must list at least one half-life, but it 
 @pytest.mark.parametrize(
     ("builder", "kw", "msg"),
     [
-        (po.spec.ewridge, dict(half_life=[]), EMPTY_HALF_LIFE),
-        (po.spec.rls, dict(half_life=[]), EMPTY_HALF_LIFE),
-        (po.spec.sgd, dict(half_life=[]), EMPTY_HALF_LIFE),
+        (rp.spec.ewridge, dict(half_life=[]), EMPTY_HALF_LIFE),
+        (rp.spec.rls, dict(half_life=[]), EMPTY_HALF_LIFE),
+        (rp.spec.sgd, dict(half_life=[]), EMPTY_HALF_LIFE),
         # The other lists that make a grid were refused already, each by name.
-        (po.spec.ewridge, dict(ridge=[]), "ridge must list at least one value, but it lists none"),
+        (rp.spec.ewridge, dict(ridge=[]), "ridge must list at least one value, but it lists none"),
         (
-            po.spec.lasso,
+            rp.spec.lasso,
             dict(penalties=[]),
             'spec "m": penalties must list at least one value, but it is empty',
         ),
@@ -1338,22 +1338,22 @@ def test_an_empty_grid_is_refused_by_name(builder, kw, msg):
 def test_an_empty_half_life_in_a_dict_spec_is_refused():
     """The same through the door JSON and TOML come in by. ``lam`` is one
     number, never a grid, so an empty list is no ``lam`` at either door."""
-    spec = po.spec.ewridge("m", **BASE)
+    spec = rp.spec.ewridge("m", **BASE)
     spec["half_life"] = []
     with pytest.raises(ValueError, match=EMPTY_HALF_LIFE):
-        po.ModelBank([spec])
+        rp.ModelBank([spec])
     with pytest.raises(TypeError, match='spec "m": lam must be a number, but it is list'):
-        po.spec.ewridge("m", targets=["y"], features=["x0"], lam=[])
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], lam=0.99)
+        rp.spec.ewridge("m", targets=["y"], features=["x0"], lam=[])
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x0"], lam=0.99)
     spec["lam"] = []
     with pytest.raises(ValueError, match="lam: invalid type: sequence, expected f64"):
-        po.ModelBank([spec])
+        rp.ModelBank([spec])
 
 
 def test_a_deco_block_refusal_reads_as_one_sentence():
     """Task 160, PB8: two refusals were string literals continued across a
     line without a ``\\``, so each carried a run of 18 spaces."""
-    spec = po.spec.deco("d", features=["x0", "y"], half_life=10.0)
+    spec = rp.spec.deco("d", features=["x0", "y"], half_life=10.0)
     for blocks, want in [
         ([], 'spec "d": blocks must name at least one block, but it names none. Leave blocks out'),
         (
@@ -1363,7 +1363,7 @@ def test_a_deco_block_refusal_reads_as_one_sentence():
     ]:
         spec["model"]["blocks"] = blocks
         with pytest.raises(ValueError) as exc:
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
         assert want in str(exc.value), str(exc.value)
         assert "  " not in str(exc.value), str(exc.value)
 
@@ -1404,7 +1404,7 @@ def test_an_int_past_the_rust_width_is_refused_by_name(builder):
         where = spec if key in spec else spec["model"]
         where[key] = [2**32] if is_list else 2**32
         try:
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
         except ValueError as e:
             assert ("expected u32" in str(e)) == (key in _spec._U32), (key, str(e))
         else:
@@ -1415,29 +1415,29 @@ def test_a_count_past_its_width_is_named_in_python():
     with pytest.raises(
         ValueError, match=r'spec "m": seed must be at most 18446744073709551615, but it is 1'
     ):
-        po.spec.kmeans("m", features=["x0", "y"], n_clusters=2, seed=2**64, half_life=10.0)
+        rp.spec.kmeans("m", features=["x0", "y"], n_clusters=2, seed=2**64, half_life=10.0)
     with pytest.raises(
         ValueError,
         match=r'spec "m": max_rows_between_solves must be at most 4294967295, but it is 4294967296',
     ):
-        po.spec.ewridge("m", max_rows_between_solves=2**32, **BASE)
+        rp.spec.ewridge("m", max_rows_between_solves=2**32, **BASE)
 
 
 @pytest.mark.parametrize(
     ("builder", "kw", "msg"),
     [
         (
-            po.spec.marginal,
+            rp.spec.marginal,
             dict(lags=[1, 2**62]),
             "lags must each be at most 1048576, but one of them is",
         ),
         (
-            po.spec.ew_cov,
+            rp.spec.ew_cov,
             dict(features=["x0", "y"], targets=None, lags=[2**40]),
             "lags must each be at most 1048576, but one of them is",
         ),
         (
-            po.spec.corrchange,
+            rp.spec.corrchange,
             dict(
                 features=["x0", "y"],
                 targets=None,
@@ -1450,34 +1450,34 @@ def test_a_count_past_its_width_is_named_in_python():
             "a pass over the rows",
         ),
         (
-            po.spec.ewridge,
+            rp.spec.ewridge,
             dict(emit_autocorr=True, resid_autocorr_lag=2**21),
             "resid_autocorr_lag must be at most 1048576, but it is 2097152",
         ),
         (
-            po.spec.huber,
+            rp.spec.huber,
             dict(huber_refit_rows=2**32 - 1, refit_budget=float("inf")),
             f"huber_refit_rows must be at most 1048576, but it is 4294967295: {REFIT_ROWS_WHY}",
         ),
         (
-            po.spec.sgd,
+            rp.spec.sgd,
             dict(loss="huber", huber_refit_rows=2**20 + 1),
             f"huber_refit_rows must be at most 1048576, but it is 1048577: {REFIT_ROWS_WHY}",
         ),
         (
-            po.spec.quantile,
+            rp.spec.quantile,
             dict(quantile=0.5, quantile_refit_rows=2**20 + 1),
             f"quantile_refit_rows must be at most 1048576, but it is 1048577: {REFIT_ROWS_WHY}",
         ),
         # Under the RMS the buffer keeps no residual a row, and the reason
         # says that size too (task 335, F2).
         (
-            po.spec.huber,
+            rp.spec.huber,
             dict(huber_scale="rms", huber_refit_rows=2**20 + 1),
             f"huber_refit_rows must be at most 1048576, but it is 1048577: {REFIT_ROWS_WHY}",
         ),
         (
-            po.spec.sgd,
+            rp.spec.sgd,
             dict(loss="huber", huber_scale="rms", huber_refit_rows=2**20 + 1),
             f"huber_refit_rows must be at most 1048576, but it is 1048577: {REFIT_ROWS_WHY}",
         ),
@@ -1519,7 +1519,7 @@ def test_a_count_that_sizes_memory_has_a_ceiling(builder, kw, msg):
     with pytest.raises(
         ValueError, match=f"{key} must (be at most|list lags of at most) 1048576, but"
     ):
-        po.ModelBank([spec])
+        rp.ModelBank([spec])
 
 
 def test_hmm_k_has_a_ceiling():
@@ -1532,15 +1532,15 @@ def test_hmm_k_has_a_ceiling():
     with pytest.raises(
         ValueError, match=re.escape('spec "m": n_components must be at most 1024, but it is 1025')
     ):
-        po.spec.hmm("m", n_components=1025, warm_rows=1025, **kw)
-    spec = po.spec.hmm("m", n_components=2, **kw)
+        rp.spec.hmm("m", n_components=1025, warm_rows=1025, **kw)
+    spec = rp.spec.hmm("m", n_components=2, **kw)
     spec["model"]["n_components"] = spec["model"]["warm_rows"] = 2**62
     with pytest.raises(
         ValueError,
         match=re.escape(f'spec "m": n_components must be at most 1024, but it is {2**62}'),
     ):
-        po.ModelBank([spec])
-    po.ModelBank([po.spec.hmm("m", n_components=1024, warm_rows=1024, **kw)])
+        rp.ModelBank([spec])
+    rp.ModelBank([rp.spec.hmm("m", n_components=1024, warm_rows=1024, **kw)])
 
 
 def test_kmeans_k_and_buffer_have_ceilings_and_micro_needs_none():
@@ -1554,13 +1554,13 @@ def test_kmeans_k_and_buffer_have_ceilings_and_micro_needs_none():
     with pytest.raises(
         ValueError, match=r'spec "m": n_clusters must be at most 65536, but it is 65537'
     ):
-        po.spec.kmeans("m", n_clusters=2**16 + 1, warm_rows=2**16 + 1, **kw)
+        rp.spec.kmeans("m", n_clusters=2**16 + 1, warm_rows=2**16 + 1, **kw)
     with pytest.raises(
         ValueError,
         match=r"the first 5592406 rows, which seed the centers, would take 256\.00003 MiB",
     ):
-        po.spec.kmeans("m", n_clusters=3, warm_rows=5_592_406, **kw)
-    po.spec.micro("m", eps=0.3, max_clusters=10**7, **kw)
+        rp.spec.kmeans("m", n_clusters=3, warm_rows=5_592_406, **kw)
+    rp.spec.micro("m", eps=0.3, max_clusters=10**7, **kw)
 
 
 def test_rcov_lagged_products_have_a_byte_ceiling():
@@ -1570,7 +1570,7 @@ def test_rcov_lagged_products_have_a_byte_ceiling():
     with pytest.raises(
         ValueError, match=r'spec "m": the lagged covariances the model keeps would take 800 MiB'
     ):
-        po.spec.rcov(
+        rp.spec.rcov(
             "m",
             features=[f"x{i}" for i in range(10)],
             group="g",
@@ -1583,7 +1583,7 @@ def test_the_bin_budget_is_said_in_mib():
     """ "would need 0.00 GiB (...), over the 0.000001 MiB" (review 2026-10-06,
     CD16): one unit, and digits enough to read above the budget."""
     with pytest.raises(ValueError) as exc:
-        po.spec.marginal("m", bins=4, bin_warm_rows=8, bin_budget=1e-6, **BASE)
+        rp.spec.marginal("m", bins=4, bin_warm_rows=8, bin_budget=1e-6, **BASE)
     msg = str(exc.value)
     assert "GiB" not in msg and "0.00 " not in msg, msg
     assert re.search(r"would take 0\.000\d+ MiB .*, over the bin_budget of 0\.000001 MiB", msg), msg
@@ -1594,7 +1594,7 @@ def test_a_models_refusal_names_the_spec():
     ``sgd: clip_gradient must be > 0`` did not say which (review 2026-10-06,
     YA4). And ``window_size must be > 0 (got inf)`` was untrue of infinity."""
     with pytest.raises(ValueError) as exc:
-        po.spec.sgd("m", clip_gradient=0.0, **BASE)
+        rp.spec.sgd("m", clip_gradient=0.0, **BASE)
     assert str(exc.value).startswith('spec "m": clip_gradient must be above 0'), str(exc.value)
     for model in (
         {"type": "lasso", "penalties": [0.1], "window_size": "inf"},
@@ -1602,7 +1602,7 @@ def test_a_models_refusal_names_the_spec():
     ):
         spec = {"name": "m", "model": model, "targets": ["y"], "features": ["x0"], "half_life": 10}
         with pytest.raises(ValueError) as exc:
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
         assert str(exc.value) == (
             'spec "m": window_size must be finite and above 0, but it is inf. Set window_size '
             "to a finite positive number of clock units."
@@ -1619,7 +1619,7 @@ def test_a_type_error_inside_the_model_names_the_key():
     ]:
         spec = {"name": "m", "model": model, "targets": ["y"], "features": ["x0"], "half_life": 10}
         with pytest.raises(ValueError) as exc:
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
         assert str(exc.value) == (
             f'invalid spec: [0].model.{key}: invalid type: string "inf", expected f64'
         )
@@ -1630,7 +1630,7 @@ def test_a_renamed_key_cites_nothing_a_wheel_lacks():
     does not have (review 2026-10-06, PC11)."""
     spec = {"name": "m", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0"]}
     with pytest.raises(ValueError) as exc:
-        po.ModelBank([{**spec, "halflife": 10.0}])
+        rp.ModelBank([{**spec, "halflife": 10.0}])
     assert str(exc.value).endswith("; halflife was renamed half_life"), str(exc.value)
     assert "PLAN" not in str(exc.value)
 
@@ -1642,17 +1642,17 @@ def test_a_marginal_and_a_nameless_refusal_name_the_spec_as_every_other():
     with pytest.raises(
         ValueError, match=r'^spec "m": 2 problems\.\n- bin_edges must give edges for every feature'
     ):
-        po.spec.marginal("m", bin_edges={"zz": [0.0]}, **BASE)
+        rp.spec.marginal("m", bin_edges={"zz": [0.0]}, **BASE)
     with pytest.raises(
         ValueError,
         match=r'^spec "m": shards must be an int or "auto", but it is "many"\. Use one of those\.$',
     ):
-        po.spec.marginal("m", shards="many", **BASE)
+        rp.spec.marginal("m", shards="many", **BASE)
     nameless = {"model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0"]}
     with pytest.raises(
         ValueError, match="^a spec with no name: half_life must be a number, but it is NaN"
     ):
-        po.ModelBank([{**nameless, "half_life": math.nan}])
+        rp.ModelBank([{**nameless, "half_life": math.nan}])
 
 
 def test_a_clock_step_past_the_largest_double_is_refused_by_row():
@@ -1661,11 +1661,11 @@ def test_a_clock_step_past_the_largest_double_is_refused_by_row():
     to any span, and ``coef_every`` wrote ``coef`` on every row (review
     2026-10-06, PB7). Refused by row, as a clock value that is not a number
     is, and the bank is left as it was."""
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m", targets=["y"], features=["x0"], half_life=10.0, clock="t", gap_cap=10.0
     )
     frame = pl.DataFrame({"t": [-1e308, 1e308], "x0": [1.0, 2.0], "y": [1.0, 2.0]})
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     with pytest.raises(ValueError) as exc:
         bank.fit_predict(frame)
     assert 'clock column "t" steps from -1e308 to 1e308 at row 1' in str(exc.value)
@@ -1676,17 +1676,17 @@ def test_a_mismatched_spec_on_load_is_named():
     """ "saved specs do not match the bank's specs" named neither the spec nor
     what differs (review 2026-10-06, PA6)."""
     specs = [
-        po.spec.ewridge(n, targets=["y"], features=["x0"], half_life=h)
+        rp.spec.ewridge(n, targets=["y"], features=["x0"], half_life=h)
         for n, h in [("a", 10.0), ("b", 20.0), ("c", 30.0)]
     ]
-    bank = po.ModelBank(specs)
+    bank = rp.ModelBank(specs)
     bank.fit_predict(_df())
-    other = [specs[0], po.spec.ewridge("b", targets=["y"], features=["x0"], half_life=25.0)]
+    other = [specs[0], rp.spec.ewridge("b", targets=["y"], features=["x0"], half_life=25.0)]
     with pytest.raises(ValueError, match="the file holds 3 specs and the bank 2"):
-        po.ModelBank.load_bytes(bank.save_bytes(), other)
+        rp.ModelBank.load_bytes(bank.save_bytes(), other)
     other.append(specs[2])
     with pytest.raises(ValueError) as exc:
-        po.ModelBank.load_bytes(bank.save_bytes(), other)
+        rp.ModelBank.load_bytes(bank.save_bytes(), other)
     assert str(exc.value) == (
         'state file: its specs do not match the bank\'s specs: spec "b" (2 of 3) differs at '
         "half_life: 20.0 in the file, 25.0 in the bank. Load the state with the specs it was "

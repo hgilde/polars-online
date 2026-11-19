@@ -53,7 +53,7 @@ coefficients. This code builds its own data:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Counts with log-rate 1 + 0.4·busy, and one row's count of 2,000.
 rng = np.random.default_rng(21)

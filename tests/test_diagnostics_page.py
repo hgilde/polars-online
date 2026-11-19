@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-import rheon as po
 from doc_recipes import differences, recipes, run
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -50,7 +50,7 @@ def test_a_recipe_prints_what_the_page_shows(line, code, shown, tmp_path, monkey
 def _switches() -> set[str]:
     """Every diagnostic switch a linear model's spec carries: its ``emit_*``
     keys, ``conformal`` and ``resid_quantiles``."""
-    spec = po.spec.ewridge("m", targets=["y"], features=["x"], half_life=1.0)
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x"], half_life=1.0)
     return {k for k in spec if k.startswith("emit_")} | {"conformal", "resid_quantiles"}
 
 

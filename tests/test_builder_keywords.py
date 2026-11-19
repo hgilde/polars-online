@@ -12,8 +12,8 @@ import re
 import polars as pl
 import pytest
 
-import rheon as po
 from rheon import _rheon as native
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -23,7 +23,7 @@ TIER = "essential"
 
 @pytest.mark.parametrize(
     ("builder", "kw"),
-    [(po.spec.kmeans, {"n_clusters": 2}), (po.spec.micro, {"eps": 0.3})],
+    [(rp.spec.kmeans, {"n_clusters": 2}), (rp.spec.micro, {"eps": 0.3})],
     ids=["kmeans", "micro"],
 )
 def test_standardize_says_its_default(builder, kw):
@@ -36,7 +36,7 @@ def test_standardize_says_its_default(builder, kw):
 
 @pytest.mark.parametrize(
     ("builder", "kw"),
-    [(po.spec.kmeans, {"n_clusters": 2}), (po.spec.micro, {"eps": 0.3})],
+    [(rp.spec.kmeans, {"n_clusters": 2}), (rp.spec.micro, {"eps": 0.3})],
     ids=["kmeans", "micro"],
 )
 def test_scale_floor_beside_standardize_false_is_refused(builder, kw):
@@ -57,7 +57,7 @@ def test_scale_floor_beside_standardize_false_is_refused(builder, kw):
 
 @pytest.mark.parametrize(
     ("builder", "kw"),
-    [(po.spec.holt, {"half_life": 10.0}), (po.spec.seqtest, {"half_life": None})],
+    [(rp.spec.holt, {"half_life": 10.0}), (rp.spec.seqtest, {"half_life": None})],
     ids=["holt", "seqtest"],
 )
 def test_a_model_with_no_features_has_no_features_keyword(builder, kw):
@@ -70,7 +70,7 @@ def test_a_model_with_no_features_has_no_features_keyword(builder, kw):
     spec = builder("m", targets=["y"], **kw)
     assert spec["features"] == []
     df = pl.DataFrame({"y": [1.0, 2.0, 3.0, 4.0]})
-    po.ModelBank([spec]).fit_predict(df)
+    rp.ModelBank([spec]).fit_predict(df)
 
 
 # --- P-2, P-3, P-7, P-8, P-9 and the folded renames: forwarded -------------
@@ -143,7 +143,7 @@ def _build(kind: str, kw: dict[str, object]) -> dict:
         if old in kw:
             for new in news:
                 base.pop(new, None)
-    return getattr(po.spec, kind)("m", **base, **kw)
+    return getattr(rp.spec, kind)("m", **base, **kw)
 
 
 _IDS = [f"{k}.{o[0]}={o[1]}" for k, o, _, _ in RENAMED]
@@ -191,34 +191,34 @@ def test_a_spec_dict_with_an_old_key_is_refused_naming_the_new_one(kind):
     model = {k: v for k, v in want["model"].items() if k != new}
     model[old] = value
     with pytest.raises(ValueError, match=f"{old} was renamed {new}"):
-        po.ModelBank([dict(want, model=model)])
+        rp.ModelBank([dict(want, model=model)])
 
 
 def test_an_old_name_is_read_only_in_its_own_model():
     """``k`` is ``kmeans``' and ``hmm``'s old name, and nothing to another
     model: an ``ewridge`` table naming it is refused as an unknown key, and a
     feature called ``k`` in a table keyed by feature stays a feature."""
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=50.0)
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=50.0)
     raw = dict(spec, model={**spec["model"], "k": 2})
     with pytest.raises(ValueError, match="unknown field `k`"):
-        po.ModelBank([raw])
-    kept = po.spec.marginal(
+        rp.ModelBank([raw])
+    kept = rp.spec.marginal(
         "m", targets=["y"], features=["k"], half_life=50.0, bin_edges={"k": [0.0]}
     )
-    assert po.ModelBank([kept]).specs[0]["model"]["bin_edges"] == kept["model"]["bin_edges"]
+    assert rp.ModelBank([kept]).specs[0]["model"]["bin_edges"] == kept["model"]["bin_edges"]
 
 
 def test_an_old_name_beside_its_new_one_is_refused_naming_the_new_one():
     with pytest.raises(TypeError, match="k was renamed n_clusters"):
-        po.spec.kmeans("m", features=["x0"], half_life=50.0, k=2, n_clusters=2)
+        rp.spec.kmeans("m", features=["x0"], half_life=50.0, k=2, n_clusters=2)
     with pytest.raises(TypeError, match="emission was renamed covariance_type"):
-        po.spec.bocpd("m", features=["x0"], emission="gaussian", covariance_type="full")
+        rp.spec.bocpd("m", features=["x0"], emission="gaussian", covariance_type="full")
 
 
 def test_the_new_words_are_scikit_learns():
     """``covariance_type`` takes ``GaussianMixture``'s words, ``init``
     ``KMeans``' spelling of k-means++, and ``ew_class`` says its default."""
-    assert inspect.signature(po.spec.ew_class).parameters["covariance_type"].default == "full"
+    assert inspect.signature(rp.spec.ew_class).parameters["covariance_type"].default == "full"
     for kind, extra in [("kmeans", {}), ("hmm", {"warm_rows": 10})]:
         assert _build(kind, {"init": "k-means++", **extra})["model"]["init"] == "k-means++"
     for shape in ("full", "tied", "diag"):
@@ -264,12 +264,12 @@ def test_a_table_with_a_builder_keyword_is_told_the_tables_key(spec, key, says):
     builder's word is told which key to use, where it read only "unknown
     field"."""
     with pytest.raises(ValueError, match=re.escape(f"`{key}` {says}")):
-        po.ModelBank([spec])
+        rp.ModelBank([spec])
     built = (
-        po.spec.ew_class(
+        rp.spec.ew_class(
             "m", features=["x0"], label="y", classes=["a", "b"], precision_prior=1.0, half_life=10.0
         )
         if key == "label"
-        else po.spec.audit("m", columns=["x0", "x1"])
+        else rp.spec.audit("m", columns=["x0", "x1"])
     )
     assert key not in built and ("targets" if key == "label" else "features") in built

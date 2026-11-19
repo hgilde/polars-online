@@ -21,9 +21,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from rheon import _rheon as native
 from rheon import _spec
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -55,7 +55,7 @@ def build(kind: str, **kw: Any) -> dict:
         base.setdefault("coef_half_life", 30.0)
     if kind == "lasso":
         base.setdefault("penalties", [0.05])
-    return getattr(po.spec, kind)("m", **base)
+    return getattr(rp.spec, kind)("m", **base)
 
 
 def unnest(out: pl.DataFrame) -> pl.DataFrame:
@@ -80,7 +80,7 @@ class TestTheGatesAreOffUnlessSet:
         """D8: no default moves. The gate is off on these models until
         ``max_error_inflation`` is set, and their ``min_weight`` keeps its
         default."""
-        out = po.ModelBank([build(kind)]).fit_predict(frame(200))
+        out = rp.ModelBank([build(kind)]).fit_predict(frame(200))
         assert LIMIT_REASON not in set(reasons(out))
         assert resolved_limit(build(kind)) == "inf"
 
@@ -96,7 +96,7 @@ class TestKalman:
         limit = 1.05
         df = frame(400)
         s = build("kalman", max_error_inflation=limit, emit_error_inflation=True, min_weight=0.0)
-        out = unnest(po.ModelBank([s]).fit_predict(df))
+        out = unnest(rp.ModelBank([s]).fit_predict(df))
         # Infinite -- `P` unsized, no noise yet -- is written as null.
         infl = out["error_inflation_y"].fill_null(math.inf).to_numpy()
         why = out["withheld_reason"].cast(pl.String).to_list()
@@ -124,7 +124,7 @@ class TestKalman:
                 beta = beta + rng.normal(0.0, math.sqrt(q), k1)
             y[i] = beta @ np.array([1.0, *x[i]]) + rng.normal(0.0, math.sqrt(R))
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        s = po.spec.kalman(
+        s = rp.spec.kalman(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -136,7 +136,7 @@ class TestKalman:
             min_weight=0.0,
             emit_error_inflation=True,
         )
-        out = unnest(po.ModelBank([s]).fit_predict(df))
+        out = unnest(rp.ModelBank([s]).fit_predict(df))
         e = out["resid_y"].to_numpy()
         infl = out["error_inflation_y"].to_numpy()
         ok = np.isfinite(e)
@@ -150,7 +150,7 @@ class TestKalman:
         """Without a row to read it at, ``summary`` reports the per-row
         value's mean field, ``sqrt(1 + Σ_i P_ii E[z_i²] / R)``: finite and
         above 1 once the filter has a noise."""
-        bank = po.ModelBank([build("kalman")])
+        bank = rp.ModelBank([build("kalman")])
         bank.fit_predict(frame(300))
         v = bank.summary("m")["error_inflation"][0]
         assert v is not None and 1.0 < v < 1.5
@@ -170,7 +170,7 @@ class TestRls:
 
         want = next(i for i in range(1, 400) if 1.0 + 3.0 / n_kish(i) < limit**2)
         s = build("rls", half_life=h, max_error_inflation=limit, min_weight=0.0)
-        why = reasons(po.ModelBank([s]).fit_predict(frame(200)))
+        why = reasons(rp.ModelBank([s]).fit_predict(frame(200)))
         assert why[:want] == [LIMIT_REASON] * want
         assert all(r is None for r in why[want:]), why[want : want + 5]
 
@@ -182,8 +182,8 @@ class TestRls:
         # A prior of 1e-9: `delta` is in the sums' units, so it scales with
         # nothing and must be negligible for the weights' scale to cancel.
         s = build("rls", max_error_inflation=1.2, emit_error_inflation=True, weight="w", delta=1e-9)
-        a = unnest(po.ModelBank([s]).fit_predict(df))
-        b = unnest(po.ModelBank([s]).fit_predict(df.with_columns(pl.col("w") * 7.0)))
+        a = unnest(rp.ModelBank([s]).fit_predict(df))
+        b = unnest(rp.ModelBank([s]).fit_predict(df.with_columns(pl.col("w") * 7.0)))
         # From the third row, a row per coefficient: before it, a direction
         # no row has excited is the prior's alone, which scales with nothing.
         np.testing.assert_allclose(
@@ -194,7 +194,7 @@ class TestRls:
             pl.when(pl.int_range(pl.len()) == 0).then(50.0).otherwise(1.0).alias("w")
         )
         held = [
-            reasons(po.ModelBank([s]).fit_predict(d)).count(LIMIT_REASON) for d in (unit, heavy)
+            reasons(rp.ModelBank([s]).fit_predict(d)).count(LIMIT_REASON) for d in (unit, heavy)
         ]
         assert held[1] > held[0], held
 
@@ -213,10 +213,10 @@ class TestLasso:
         df = pl.DataFrame({**{f"x{j}": x[:, j] for j in range(k)}, "y": y})
         feats = [f"x{j}" for j in range(k)]
         h = 40.0
-        s = po.spec.lasso(
+        s = rp.spec.lasso(
             "m", targets=["y"], features=feats, half_life=h, penalties=[0.3], coef_every=0
         )
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         out = unnest(bank.fit_predict(df))
         coef = out["coef"][-1].to_list()
         active = sum(1 for c in coef[1:] if c != 0.0)
@@ -232,7 +232,7 @@ class TestLasso:
         h, limit = 20.0, 1.2
         lam = 2.0 ** (-1.0 / h)
         s = build("lasso", half_life=h, max_error_inflation=limit, coef_every=1, min_weight=0.0)
-        out = unnest(po.ModelBank([s]).fit_predict(frame(300)))
+        out = unnest(rp.ModelBank([s]).fit_predict(frame(300)))
         coef = out["coef"].to_list()
         why = out["withheld_reason"].cast(pl.String).to_list()
         for i in range(1, 300):
@@ -256,7 +256,7 @@ class TestRefusals:
         with pytest.raises(
             ValueError, match="its statistics are weighted means and covariances of the columns"
         ):
-            po.spec.ew_cov("m", features=["x0", "x1"], half_life=10.0, max_error_inflation=2.0)
+            rp.spec.ew_cov("m", features=["x0", "x1"], half_life=10.0, max_error_inflation=2.0)
 
     def test_a_gradient_model_has_no_noise_gate(self):
         with pytest.raises(ValueError, match="max_error_inflation"):
@@ -282,7 +282,7 @@ class TestTheHardRules:
         to the bit, nor whether its gate withheld it."""
         df = frame(200)
         s = gated_spec(kind)
-        base = unnest(po.ModelBank([s]).fit_predict(df))
+        base = unnest(rp.ModelBank([s]).fit_predict(df))
         for i in (5, 60, 150):
             moved = df.with_columns(
                 pl.when(pl.int_range(pl.len()) == i)
@@ -290,7 +290,7 @@ class TestTheHardRules:
                 .otherwise(pl.col("y"))
                 .alias("y")
             )
-            got = unnest(po.ModelBank([s]).fit_predict(moved))
+            got = unnest(rp.ModelBank([s]).fit_predict(moved))
             assert got["withheld_reason"][i] == base["withheld_reason"][i], i
             if kind in ROW_FIELD_KINDS:
                 a = base["error_inflation_y"][i]
@@ -306,9 +306,9 @@ class TestTheHardRules:
             pl.when(pl.int_range(pl.len()) % 17 == 9).then(0.0).otherwise(pl.col("w")).alias("w"),
         )
         s = gated_spec(kind)
-        one = unnest(po.ModelBank([s]).fit_predict(df))
+        one = unnest(rp.ModelBank([s]).fit_predict(df))
         for n_chunks in (7, 600):
-            bank = po.ModelBank([s])
+            bank = rp.ModelBank([s])
             step = -(-600 // n_chunks)
             many = unnest(
                 pl.concat([bank.fit_predict(df[i : i + step]) for i in range(0, 600, step)])
@@ -343,8 +343,8 @@ class TestTheHardRules:
             emit_error_inflation=True,
             **extra,
         )
-        a = unnest(po.ModelBank([s]).fit_predict(zero))["error_inflation_y"].to_numpy()
-        b = unnest(po.ModelBank([s]).fit_predict(null))["error_inflation_y"].to_numpy()
+        a = unnest(rp.ModelBank([s]).fit_predict(zero))["error_inflation_y"].to_numpy()
+        b = unnest(rp.ModelBank([s]).fit_predict(null))["error_inflation_y"].to_numpy()
         np.testing.assert_array_equal(a[:52], b[:52])
         assert np.isfinite(a[51])
 
@@ -358,7 +358,7 @@ def robust(kind: str, **kw: Any) -> dict:
     if kind == "quantile":
         base["quantile"] = 0.5
     base.update(kw)
-    return getattr(po.spec, kind)("m", **base)
+    return getattr(rp.spec, kind)("m", **base)
 
 
 class TestRobustSupport:
@@ -370,7 +370,7 @@ class TestRobustSupport:
         all data (WARMUP §2.2)."""
         df = frame(300).with_columns(pl.col("x0").alias("x2"))
         s = robust(kind, features=["x0", "x1", "x2"], ridge=1e-8, coef_every=0)
-        out = unnest(po.ModelBank([s]).fit_predict(df))
+        out = unnest(rp.ModelBank([s]).fit_predict(df))
         support = out["support_coef"][-1].to_list()
         assert support[0] is None, "the intercept is not a share"
         assert support[1:] == pytest.approx([0.5, 1.0, 0.5], abs=1e-3)
@@ -388,7 +388,7 @@ class TestRobustSupport:
         y = 1.0 + x[:, 0] - x[:, 1] + 0.3 * rng.normal(size=n)
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
         s = robust("huber", huber_delta=1e6, ridge=ridge, standardize=standardize, coef_every=0)
-        out = unnest(po.ModelBank([s]).fit_predict(df))
+        out = unnest(rp.ModelBank([s]).fit_predict(df))
         got = out["support_coef"][-1].to_list()
         cov = np.cov(x.T, bias=True)
         if standardize:
@@ -403,11 +403,11 @@ class TestRobustSupport:
         # A ridge of 0.5 puts the duplicated pair at a / (2a + 0.5), clearly
         # below 0.5; at 1e-8 it reads 0.5 to rounding, on either side.
         s = robust("huber", features=["x0", "x1", "x2"], ridge=0.5, half_life=20.0, coef_every=1)
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             bank.fit_predict(df)
-        got = [str(w.message) for w in caught if issubclass(w.category, po.ReadinessWarning)]
+        got = [str(w.message) for w in caught if issubclass(w.category, rp.ReadinessWarning)]
         assert len(got) == 1 and "support_coef" in got[0], got
         summary = bank.summary("m")
         assert summary["support_coef_min"][0] < 0.5
@@ -442,20 +442,20 @@ class TestSeCoef:
     @pytest.mark.parametrize("kind", ["ewridge", "rls", "kalman"])
     def test_rides_on_the_coef_schedule_and_unnests_like_coef(self, kind):
         s = build(kind, emit_se_coef=True)
-        out = po.ModelBank([s]).fit_predict(frame(100))
+        out = rp.ModelBank([s]).fit_predict(frame(100))
         f = unnest(out)
         assert f["se_coef"].null_count() == f["coef"].null_count()
         assert len(f["se_coef"][-1]) == len(f["coef"][-1]) == 3
         assert all(v > 0.0 for v in f["se_coef"][-1].to_list())
-        cols = po.unnest(out, [s]).columns
+        cols = rp.unnest(out, [s]).columns
         assert {"se_coef_y_intercept", "se_coef_y_x0", "se_coef_y_x1"} <= set(cols), cols
 
     @pytest.mark.parametrize("kind", ["ewridge", "rls", "kalman"])
     def test_is_chunk_invariant_on_every_coef_row(self, kind):
         df = frame(210)
         s = build(kind, emit_se_coef=True, coef_every=1)
-        one = unnest(po.ModelBank([s]).fit_predict(df))
-        bank = po.ModelBank([s])
+        one = unnest(rp.ModelBank([s]).fit_predict(df))
+        bank = rp.ModelBank([s])
         many = unnest(pl.concat([bank.fit_predict(df[i : i + 30]) for i in range(0, 210, 30)]))
         assert one["se_coef"].equals(many["se_coef"])
 
@@ -463,7 +463,7 @@ class TestSeCoef:
         """``ewridge``'s and ``rls``'s are ``sigma · sqrt(M_jj)``: no
         ``sigma`` yet, no standard error."""
         f = unnest(
-            po.ModelBank([build("rls", emit_se_coef=True, coef_every=1)]).fit_predict(frame(30))
+            rp.ModelBank([build("rls", emit_se_coef=True, coef_every=1)]).fit_predict(frame(30))
         )
         se = f["se_coef"].to_list()
         assert se[0] is None or all(v is None for v in se[0])
@@ -500,11 +500,11 @@ class TestSeCoef:
             emit_sigma=True,
             coef_every=1,
         )
-        a = unnest(po.ModelBank([po.spec.rls("m", delta=delta, **common)]).fit_predict(df))
+        a = unnest(rp.ModelBank([rp.spec.rls("m", delta=delta, **common)]).fit_predict(df))
         b = unnest(
-            po.ModelBank(
+            rp.ModelBank(
                 [
-                    po.spec.ewridge(
+                    rp.spec.ewridge(
                         "m",
                         ridge=delta,
                         ridge_scale="sum",
@@ -531,11 +531,11 @@ class TestSeCoef:
     def test_survives_a_save_and_load_on_every_coef_row(self, kind, tmp_path):
         df = frame(210)
         s = build(kind, emit_se_coef=True, coef_every=1)
-        one = unnest(po.ModelBank([s]).fit_predict(df))
-        bank = po.ModelBank([s])
+        one = unnest(rp.ModelBank([s]).fit_predict(df))
+        bank = rp.ModelBank([s])
         head = unnest(bank.fit_predict(df[:97]))
         bank.save(tmp_path / "s.state")
-        tail = unnest(po.ModelBank.load(tmp_path / "s.state", specs=[s]).fit_predict(df[97:]))
+        tail = unnest(rp.ModelBank.load(tmp_path / "s.state", specs=[s]).fit_predict(df[97:]))
         both = pl.concat([head, tail])
         assert both["se_coef"].null_count() < 20
         assert both["se_coef"].equals(one["se_coef"])
@@ -545,7 +545,7 @@ class TestSeCoef:
         """Without decay the standard errors fall like one over the root of
         the rows."""
         s = build("ewridge", emit_se_coef=True, coef_every=1, half_life=math.inf)
-        se = unnest(po.ModelBank([s]).fit_predict(frame(1600)))["se_coef"]
+        se = unnest(rp.ModelBank([s]).fit_predict(frame(1600)))["se_coef"]
         ratio = np.array(se[1599].to_list()) / np.array(se[399].to_list())
         np.testing.assert_allclose(ratio, 0.5, rtol=0.15)
 
@@ -570,7 +570,7 @@ class TestTheSupportWarningWaitsForASettledStream:
         through, the first rows' noisy feature variances read it below 0.5,
         and the once-only warning fired, wrongly, in 8 of 12 seeds (task 116,
         G). Raised only on a row at least 95% settled, it is not raised."""
-        sp = po.spec.ewridge(
+        sp = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["a", "b"],
@@ -580,8 +580,8 @@ class TestTheSupportWarningWaitsForASettledStream:
             coef_every=0,
         )
         with warnings.catch_warnings():
-            warnings.simplefilter("error", po.ReadinessWarning)
-            out = unnest(po.ModelBank([sp]).fit_predict(_correlated(2)))
+            warnings.simplefilter("error", rp.ReadinessWarning)
+            out = unnest(rp.ModelBank([sp]).fit_predict(_correlated(2)))
         tail = [min(v[1:]) for v in out["support_coef"][1000:].to_list() if v is not None]
         assert tail and min(tail) > 0.5
 
@@ -591,7 +591,7 @@ class TestTheSupportWarningWaitsForASettledStream:
         ``i`` is ``i − 1``, so at a half-life of 20 that is row 88, where
         ``1 − 2^(−87/20) >= 0.95`` -- and not before."""
         df = frame(300).with_columns(pl.col("x0").alias("x2"))
-        s = po.spec.ewridge(
+        s = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
@@ -599,24 +599,24 @@ class TestTheSupportWarningWaitsForASettledStream:
             half_life=20.0,
             coef_every=1,
         )
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         with warnings.catch_warnings():
-            warnings.simplefilter("error", po.ReadinessWarning)
+            warnings.simplefilter("error", rp.ReadinessWarning)
             bank.fit_predict(df[:88])
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             bank.fit_predict(df[88:89])
-        got = [str(w.message) for w in caught if issubclass(w.category, po.ReadinessWarning)]
+        got = [str(w.message) for w in caught if issubclass(w.category, rp.ReadinessWarning)]
         assert len(got) == 1 and "support_coef" in got[0], got
         with warnings.catch_warnings():
-            warnings.simplefilter("error", po.ReadinessWarning)
+            warnings.simplefilter("error", rp.ReadinessWarning)
             bank.fit_predict(df[89:])
 
     def test_a_stream_that_never_settles_never_warns_and_the_field_says_so(self):
         """Without decay there is no steady state to settle toward, so the
         warning never comes: the field and the summary carry it."""
         df = frame(300).with_columns(pl.col("x0").alias("x2"))
-        s = po.spec.ewridge(
+        s = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
@@ -624,9 +624,9 @@ class TestTheSupportWarningWaitsForASettledStream:
             half_life=math.inf,
             coef_every=0,
         )
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         with warnings.catch_warnings():
-            warnings.simplefilter("error", po.ReadinessWarning)
+            warnings.simplefilter("error", rp.ReadinessWarning)
             out = unnest(bank.fit_predict(df))
         assert min(out["support_coef"][-1].to_list()[1:]) < 0.5
         assert bank.summary("m")["support_coef_min"][0] < 0.5

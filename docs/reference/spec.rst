@@ -1,5 +1,5 @@
 ``rheon.spec``
-======================
+==============
 
 .. automodule:: rheon.spec
    :no-members:

@@ -76,7 +76,7 @@ which every row stays within 3 of its target:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # y falls from 1,000 to -1,000 at 0.5 a row, with noise 0.3; the column level holds the level itself.
 rng = np.random.default_rng(17)
@@ -163,7 +163,7 @@ the one shown, to within 0.06. This code builds its own data:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # y = 2x plus noise, with a shift of +20 at row 10,000; one row a unit of t.
 rng = np.random.default_rng(1)

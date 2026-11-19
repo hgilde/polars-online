@@ -53,7 +53,7 @@ import polars as pl
 import pytest
 
 import ledger
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -306,11 +306,11 @@ def build(model, extra, **kw):
         d["features"] = ["x0", "x1"]
     d.update(extra)
     d.update(kw)
-    return getattr(po.spec, model)("m", **d)
+    return getattr(rp.spec, model)("m", **d)
 
 
 def slots(spec, kind="lo"):
-    idx = po.spec.output_index(spec)
+    idx = rp.spec.output_index(spec)
     return idx.filter(pl.col("kind") == kind)
 
 
@@ -322,12 +322,12 @@ class TestOracle:
     def test_lo_hi_and_coverage_are_the_replayed_recursion(self, model, extra):
         df = messy(n=3000, seed=1)
         spec = build(model, extra)
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         features = spec["features"]
         lam, w, accepted = row_plan(
             df, clock="t", gap_cap=10.0, half_life=200.0, weight="w", features=features
         )
-        idx = po.spec.output_index(spec)
+        idx = rp.spec.output_index(spec)
         lo_rows = idx.filter(pl.col("kind") == "lo").to_dicts()
         assert lo_rows, "no interval fields"
         for row in lo_rows:
@@ -342,7 +342,7 @@ class TestOracle:
     def test_the_rate_and_level_are_honoured(self, model, extra):
         df = messy(n=1500, seed=2)
         spec = build(model, extra, conformal=0.75, conformal_rate=0.2)
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         lam, w, accepted = row_plan(
             df, clock="t", gap_cap=10.0, half_life=200.0, weight="w", features=spec["features"]
         )
@@ -361,7 +361,7 @@ class TestOracleOnTheStreamPlumbing:
     def test_groups_are_independent_streams(self):
         df = messy(n=3000, seed=3, groups=3)
         spec = build("ewridge", {"max_rows_between_solves": 1}, group="g")
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         for g in ("g0", "g1", "g2"):
             mask = (df["g"] == g).to_numpy()
             sub = df.filter(pl.col("g") == g)
@@ -379,7 +379,7 @@ class TestOracleOnTheStreamPlumbing:
 
     def test_row_count_clock_and_a_halflife_grid(self):
         df = messy(n=2000, seed=4).drop("t", "w")
-        spec = po.spec.rls(
+        spec = rp.spec.rls(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -389,7 +389,7 @@ class TestOracleOnTheStreamPlumbing:
             emit_sigma=True,
             conformal=0.95,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         for h in (50.0, 400.0):
             lam, w, accepted = row_plan(
                 df, clock=None, gap_cap=math.inf, half_life=h, weight=None, features=["x0", "x1"]
@@ -439,7 +439,7 @@ def _stream(kind, n=200_000, seed=0):
 
 
 def _fit_large(df, coverage=0.9, rate=0.05, half_life=2000.0):
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -449,7 +449,7 @@ def _fit_large(df, coverage=0.9, rate=0.05, half_life=2000.0):
         conformal=coverage,
         conformal_rate=rate,
     )
-    return po.ModelBank([spec]).fit_predict(df)
+    return rp.ModelBank([spec]).fit_predict(df)
 
 
 class TestTheGuaranteeAtScale:
@@ -502,7 +502,7 @@ class TestTheGuaranteeAtScale:
         y = 2.0 * x0 + 0.5 * x1 + np.where(wild, 3.0, 0.5) * rng.standard_normal(n)
         w = np.where(wild, 5.0, 1.0)
         df = pl.DataFrame({"x0": x0, "x1": x1, "y": y, "w": w})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -513,7 +513,7 @@ class TestTheGuaranteeAtScale:
             conformal_rate=0.05,
             weight="w",
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         lo, hi = field(out, "lo_y"), field(out, "hi_y")
         m = np.isfinite(lo)
         assert m.sum() > 59_000
@@ -584,16 +584,16 @@ def _spec(**kw):
         conformal=0.9,
     )
     d.update(kw)
-    return po.spec.ewridge("m", **d)
+    return rp.spec.ewridge("m", **d)
 
 
 class TestFields:
     def test_absent_by_default(self):
-        fields = po.spec.output_fields(_spec(conformal=None))
+        fields = rp.spec.output_fields(_spec(conformal=None))
         assert not any(f.startswith(("lo_", "hi_", "coverage_")) for f in fields)
 
     def test_present_when_requested_and_placed_after_the_prediction(self):
-        assert po.spec.output_fields(_spec()) == [
+        assert rp.spec.output_fields(_spec()) == [
             "pred_y0",
             "resid_y0",
             "lo_y0",
@@ -607,7 +607,7 @@ class TestFields:
         ]
 
     def test_one_interval_per_slot_in_a_grid(self):
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0", "y1"],
             features=["x0", "x1"],
@@ -616,7 +616,7 @@ class TestFields:
             half_life=[100.0, 500.0],
             conformal=0.9,
         )
-        idx = po.spec.output_index(spec)
+        idx = rp.spec.output_index(spec)
         for kind in ("lo", "hi", "coverage"):
             rows = idx.filter(pl.col("kind") == kind)
             assert rows.height == 2 * 2 * 2 * 2
@@ -630,8 +630,8 @@ class TestFields:
     def test_the_names_are_not_predictions(self):
         """`eval.unpack` finds predictions by the `pred_` prefix, so the
         bounds must not wear it."""
-        out = po.ModelBank([_spec()]).fit_predict(_small())
-        long = po.eval.unpack(out, "m")
+        out = rp.ModelBank([_spec()]).fit_predict(_small())
+        long = rp.eval.unpack(out, "m")
         assert set(long["slot"]) == {"pred_y0"}
 
     def test_the_kwargs_class_mirrors_the_builder(self):
@@ -679,14 +679,14 @@ class TestValidation:
         spec = _spec()
         spec["conformal"] = 2.0
         with pytest.raises(ValueError, match="conformal must be above 0 and below 1, but it is 2"):
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
 
     @pytest.mark.parametrize(
         ("builder", "kw"),
         [
-            (po.spec.ew_cov, {"features": ["x0"], "half_life": 10.0}),
-            (po.spec.kmeans, {"features": ["x0"], "n_clusters": 2, "half_life": 10.0}),
-            (po.spec.micro, {"features": ["x0"], "eps": 0.3, "half_life": 10.0}),
+            (rp.spec.ew_cov, {"features": ["x0"], "half_life": 10.0}),
+            (rp.spec.kmeans, {"features": ["x0"], "n_clusters": 2, "half_life": 10.0}),
+            (rp.spec.micro, {"features": ["x0"], "eps": 0.3, "half_life": 10.0}),
         ],
         ids=["ew_cov", "kmeans", "micro"],
     )
@@ -704,7 +704,7 @@ class TestRowSemantics:
         predictions `min_weight` withheld, which a gate withholds from the
         output alone (task 278, batch 17; until then the interval waited a
         row more, for a `sigma` from the first reported residual)."""
-        out = po.ModelBank([_spec(min_weight=20.0)]).fit_predict(_small())
+        out = rp.ModelBank([_spec(min_weight=20.0)]).fit_predict(_small())
         pred, lo, cov = (
             out["m"].struct.field(k).to_list() for k in ("pred_y0", "lo_y0", "coverage_y0")
         )
@@ -721,7 +721,7 @@ class TestRowSemantics:
         y = df["y0"].to_numpy().copy()
         y[400] += 30.0
         df = df.with_columns(pl.Series("y0", y))
-        out = po.ModelBank([_spec()]).fit_predict(df)
+        out = rp.ModelBank([_spec()]).fit_predict(df)
         q = (field(out, "hi_y0") - field(out, "lo_y0")) / 2
         # Row 400's radius moved from row 399's by one ordinary step at most.
         assert abs(q[400] - q[399]) <= 0.05 * 0.6 * 0.9 + 1e-12
@@ -734,7 +734,7 @@ class TestRowSemantics:
         y = df["y0"].to_list()
         y[200] = None
         df = df.with_columns(pl.Series("y0", y, dtype=pl.Float64))
-        out = po.ModelBank([_spec()]).fit_predict(df)
+        out = rp.ModelBank([_spec()]).fit_predict(df)
         q = (field(out, "hi_y0") - field(out, "lo_y0")) / 2
         cov = field(out, "coverage_y0")
         assert np.isfinite(q[200]), "the prediction and its interval are still emitted"
@@ -745,7 +745,7 @@ class TestRowSemantics:
 
     def test_a_zero_weight_row_learns_nothing(self):
         df = _small().with_columns(pl.Series("w", [0.0 if i == 200 else 1.0 for i in range(400)]))
-        out = po.ModelBank([_spec(weight="w")]).fit_predict(df)
+        out = rp.ModelBank([_spec(weight="w")]).fit_predict(df)
         q = (field(out, "hi_y0") - field(out, "lo_y0")) / 2
         cov = field(out, "coverage_y0")
         assert abs(q[201] - q[200]) < 1e-12 and cov[201] == cov[200]
@@ -753,8 +753,8 @@ class TestRowSemantics:
         # the step reads the weight against the scored rows' EW mean, this
         # row's included, which it lifts just above 1 (task 147). The exact
         # recursion is `replay`'s, held above.
-        one = po.ModelBank([_spec()]).fit_predict(df.drop("w"))
-        two = po.ModelBank([_spec(weight="w")]).fit_predict(
+        one = rp.ModelBank([_spec()]).fit_predict(df.drop("w"))
+        two = rp.ModelBank([_spec(weight="w")]).fit_predict(
             df.with_columns(pl.Series("w", [2.0 if i == 200 else 1.0 for i in range(400)]))
         )
         q1 = (field(one, "hi_y0") - field(one, "lo_y0")) / 2
@@ -770,10 +770,10 @@ class TestRowSemantics:
         x[200] = None
         df = df.with_columns(pl.Series("x0", x, dtype=pl.Float64))
         # On a clock, so dropping the row is the same stream as skipping it.
-        out = po.ModelBank([_spec(clock="t", gap_cap=10.0)]).fit_predict(df)
+        out = rp.ModelBank([_spec(clock="t", gap_cap=10.0)]).fit_predict(df)
         row = out["m"][200]
         assert all(v is None for k, v in row.items() if k != "weight_sum")
-        ref = po.ModelBank([_spec(clock="t", gap_cap=10.0)]).fit_predict(
+        ref = rp.ModelBank([_spec(clock="t", gap_cap=10.0)]).fit_predict(
             _small().filter(pl.arange(0, 400) != 200)
         )
         for k in ("lo_y0", "hi_y0", "coverage_y0"):
@@ -782,7 +782,7 @@ class TestRowSemantics:
 
     def test_a_perfect_fit_gives_a_vanishing_interval(self):
         df = _small().with_columns((2.0 * pl.col("x0")).alias("y0"))
-        out = po.ModelBank([_spec()]).fit_predict(df)
+        out = rp.ModelBank([_spec()]).fit_predict(df)
         q = (field(out, "hi_y0") - field(out, "lo_y0")) / 2
         # The default ridge leaves residuals of ~1e-6; the radius follows.
         assert np.isfinite(q[-1]) and 0.0 <= q[-1] < 1e-4
@@ -791,7 +791,7 @@ class TestRowSemantics:
 
     def test_the_coverage_is_an_ew_mean_on_the_models_clock(self):
         df = _small(n=2000)
-        out = po.ModelBank([_spec(half_life=20.0)]).fit_predict(df)
+        out = rp.ModelBank([_spec(half_life=20.0)]).fit_predict(df)
         cov = field(out, "coverage_y0")
         # With a 20-row half-life the field moves quickly and sits near the
         # target on average, never exactly on it.
@@ -808,8 +808,8 @@ class TestStreamContract:
     def test_chunk_invariance(self):
         df = messy(n=1200, seed=6)
         spec = build("ewridge", {"max_rows_between_solves": 1})
-        whole = po.ModelBank([spec]).fit_predict(df)
-        bank = po.ModelBank([spec])
+        whole = rp.ModelBank([spec]).fit_predict(df)
+        bank = rp.ModelBank([spec])
         parts = [bank.fit_predict(df.slice(i, 7)) for i in range(0, df.height, 7)]
         chunked = pl.concat(parts)
         for k in ("lo_y0", "hi_y0", "coverage_y0", "lo_y1", "hi_y1", "coverage_y1"):
@@ -818,11 +818,11 @@ class TestStreamContract:
     def test_survives_save_load(self, tmp_path):
         df = messy(n=1000, seed=7)
         spec = build("kalman", {"coef_half_life": 100.0})
-        whole = po.ModelBank([spec]).fit_predict(df)
-        bank = po.ModelBank([spec])
+        whole = rp.ModelBank([spec]).fit_predict(df)
+        bank = rp.ModelBank([spec])
         head = bank.fit_predict(df.slice(0, 500))
         bank.save(tmp_path / "state.msgpack")
-        loaded = po.ModelBank.load(tmp_path / "state.msgpack", [spec])
+        loaded = rp.ModelBank.load(tmp_path / "state.msgpack", [spec])
         tail = loaded.fit_predict(df.slice(500))
         got = pl.concat([head, tail])
         for k in ("lo_y0", "hi_y0", "coverage_y0"):
@@ -831,7 +831,7 @@ class TestStreamContract:
     def test_predict_reads_the_radius_and_moves_nothing(self):
         df = messy(n=600, seed=8)
         spec = build("ewridge", {"max_rows_between_solves": 1})
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df.slice(0, 400))
         snap = bank.save_bytes()
         scored = bank.predict(df.slice(400))
@@ -853,7 +853,7 @@ class TestStreamContract:
         x = rng.standard_normal(n)
         y = np.where(np.arange(n) < 600, 2.0, -2.0) * x + 0.3 * rng.standard_normal(n)
         df = pl.DataFrame({"x0": x, "y0": y})
-        out = po.ModelBank(
+        out = rp.ModelBank(
             [_spec(emit_drift=True, drift_action="reset", drift_threshold=5.0)]
         ).fit_predict(df)
         drift = out["m"].struct.field("drift_y0").to_numpy()
@@ -879,7 +879,7 @@ def test_a_tiny_scale_target_gives_a_tiny_finite_radius():
     tiny = base.with_columns(x0=pl.col("x0") * 1e-100, y0=pl.col("y0") * 1e-100)
 
     def width(df):
-        out = po.ModelBank([_spec()]).fit_predict(df)
+        out = rp.ModelBank([_spec()]).fit_predict(df)
         return field(out, "hi_y0") - field(out, "lo_y0")
 
     wt = width(tiny)
@@ -959,11 +959,11 @@ class TestTheKnobsOrder:
     def test_survives_save_load_at_a_rate_and_level_of_its_own(self, tmp_path):
         df = messy(n=1000, seed=10)
         spec = build("rls", {"delta": 1.0}, conformal=0.8, conformal_rate=0.3)
-        whole = po.ModelBank([spec]).fit_predict(df)
-        bank = po.ModelBank([spec])
+        whole = rp.ModelBank([spec]).fit_predict(df)
+        bank = rp.ModelBank([spec])
         head = bank.fit_predict(df.slice(0, 437))
         bank.save(tmp_path / "state.msgpack")
-        tail = po.ModelBank.load(tmp_path / "state.msgpack", [spec]).fit_predict(df.slice(437))
+        tail = rp.ModelBank.load(tmp_path / "state.msgpack", [spec]).fit_predict(df.slice(437))
         got = pl.concat([head, tail])
         for k in ("lo_y0", "hi_y0", "coverage_y0"):
             assert np.isfinite(field(got, k)).sum() > 800, k

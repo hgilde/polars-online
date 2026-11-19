@@ -55,7 +55,7 @@ import math
 
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Gains of 0.1 on 60% of the rows and losses of 1.0 on the rest; and a column with no edge.
 rng = np.random.default_rng(9)

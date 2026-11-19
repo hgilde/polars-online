@@ -133,7 +133,7 @@ import warnings
 
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # The same relation, y = 2x plus noise, with a row every clock unit and with a row every five.
 rng = np.random.default_rng(2)

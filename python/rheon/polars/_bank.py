@@ -27,6 +27,7 @@ from rheon._spec import (
     output_index,
     target_name,
 )
+from rheon._threads import _check_threads
 from rheon._warnings import warn_unstable
 
 if TYPE_CHECKING:
@@ -164,94 +165,6 @@ def _refuse_uint128(schema: pl.Schema, who: str, clocks: Collection[str | None] 
         raise WrongTypeError(msg)
 
 
-def _threads_refusal(shown: str) -> str:
-    """The text that refuses a ``threads`` argument: the Rust side's, word for
-    word (``rheon_polars::threads_refusal``), so either side says the same."""
-    return (
-        f"threads: {shown} is not a number of threads, and 0 is not one thread per core here, "
-        "as it is in POLARS_ONLINE_MAX_THREADS. Give an integer of 1 or more, or leave threads "
-        "out (None in Python) to take the count from POLARS_ONLINE_MAX_THREADS, else one thread "
-        "per core."
-    )
-
-
-def _check_threads(threads: object) -> int | None:
-    """``threads`` checked where it is given, before anything is built: ``None``
-    or an integer of 1 or more -- anything ``operator.index`` reads as one,
-    numpy's integers included (task 269, D-6). A bool, a float or another
-    type is a ``TypeError``, and 0, a negative integer or a count above the
-    bound one pool may have a ``ValueError``, each with the message the
-    native side raises for the same value, and each before any pool is
-    built."""
-    if threads is None:
-        return None
-    if isinstance(threads, bool):
-        raise TypeError(_threads_refusal(repr(threads)))
-    try:
-        count = operator.index(threads)  # type: ignore[arg-type]
-    except TypeError:
-        raise TypeError(_threads_refusal(repr(threads))) from None
-    if count < 1:
-        raise ValueError(_threads_refusal(repr(threads)))
-    if count > _native.max_threads():
-        raise ValueError(_native.threads_too_many(repr(threads)))
-    return count
-
-
-def thread_pool_size(*, threads: int | None = None) -> int:
-    """The number of threads a bank given this ``threads`` argument runs on.
-
-    Use it to see how many threads a bank will use before you build one, or
-    what ``POLARS_ONLINE_MAX_THREADS`` gives. Polars' own threads are
-    separate, set by ``POLARS_MAX_THREADS``, and ``pl.thread_pool_size()``
-    reports those.
-
-    .. rubric:: Parameters
-
-    ``threads``
-        The count a bank would be given, as :class:`ModelBank` takes it.
-        ``None``, the default, names the process's shared threads, which
-        every bank given no ``threads`` runs on. ``POLARS_ONLINE_MAX_THREADS``
-        sets their number when they are first used (unset or ``0``: one
-        thread per core), and the number never changes after that. This call
-        starts them if nothing has yet. An integer ``n`` names ``n`` threads,
-        which this call checks without starting them.
-
-    .. rubric:: Returns
-
-    ``int``: the number of threads.
-
-    .. rubric:: Raises
-
-    ``TypeError``
-        ``threads`` is not an integer, a bool included.
-    ``ValueError``
-        ``threads`` is below 1, or above 1024 (or the machine's core count,
-        where that is larger); or ``threads`` is ``None`` and
-        ``POLARS_ONLINE_MAX_THREADS`` is set to anything but a whole number,
-        or to a count past the same bound. More threads than cores run no
-        faster, and a pool starts all of its threads at once. A bank refuses
-        the same values: a ``threads`` when it is made, and a bad
-        ``POLARS_ONLINE_MAX_THREADS`` at its first call that runs. Both are
-        checked before any thread starts.
-
-    .. rubric:: Examples
-
-    .. code-block:: python
-
-        print(po.thread_pool_size(threads=2))   # 2: checked, and no thread starts
-
-    .. code-block:: text
-
-        2
-
-    .. rubric:: See also
-
-    - :class:`ModelBank`, whose ``threads`` argument this reads.
-    """
-    return int(_native.thread_pool_size(_check_threads(threads)))
-
-
 class ModelBank:
     """A set of models fitted together over the same rows, fed one chunk at a time.
 
@@ -312,8 +225,8 @@ class ModelBank:
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        bank = rp.ModelBank([spec])
         for chunk in df.iter_slices(100):          # chunks in stream order
             out = bank.fit_predict(chunk)          # the chunk, with the output column "ridge" added
         coefs = bank.coef()                        # what it has learned, read without the rows
@@ -489,11 +402,11 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "ridge", targets=["y"], features=["x0"], group="stock_id",
                 clock="ts", gap_cap="5m", half_life="1h",
             )
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             bank.fit_predict(df)
             print(bank.groups())
             # the groups with no row in the last 2 minutes of the stream
@@ -570,10 +483,10 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "ridge", targets=["y"], features=["x0"], group="stock_id", half_life=50.0
             )
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             bank.fit_predict(df)
             print(bank.drop_groups(["b0", "b9"]))   # b9 was never seen, so one model is dropped
 
@@ -647,14 +560,14 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "m", targets=["y"], features=["x0"], clock="t", half_life=50.0, gap_cap=10.0
             )
-            saved = po.ModelBank([spec])
+            saved = rp.ModelBank([spec])
             saved.fit_predict(df.head(300))   # the stream as far as the save
             saved.save("bank.state")
 
-            bank = po.ModelBank.load("bank.state")
+            bank = rp.ModelBank.load("bank.state")
             rerun = df                        # the whole day again: its first 300 rows overlap
             out = bank.fit_predict(bank.skip_learned(rerun))
             print(f"{out.height} rows learned, from t = {out['t'][0]}")
@@ -855,10 +768,10 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0, ridge=[1e-6, 0.1]
             )
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             out = bank.fit_predict(df)                         # df, with the column "ridge" added
             pred = out["ridge"].struct.field("pred_y__r0.1")   # the slot with ridge 0.1
             first = pred.is_not_null().arg_true()[0]           # the first row after its warm-up
@@ -923,7 +836,7 @@ class ModelBank:
         notices = self._native.take_notices()
         if not notices:
             return
-        from rheon._frame import ReadinessWarning, _user_stacklevel
+        from rheon._warnings import ReadinessWarning, _user_stacklevel
 
         for notice in notices:
             warnings.warn(ReadinessWarning(notice), stacklevel=_user_stacklevel())
@@ -1003,8 +916,8 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-            bank = po.ModelBank([spec])
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = rp.ModelBank([spec])
             bank.fit_predict(df)                        # learn df's rows
             served = bank.predict(today.drop("y"))      # the next rows, their targets not yet known
             pred = served["ridge"].struct.field("pred_y")
@@ -1092,8 +1005,8 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-            bank = po.ModelBank([spec])
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = rp.ModelBank([spec])
             structs = bank.fit_predict_arrow(df)            # one per spec, as Arrow
             out = df.with_columns([pl.Series(s) for s in structs])
             print(out["ridge"].struct.field("pred_y").count())
@@ -1165,8 +1078,8 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-            bank = po.ModelBank([spec])
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = rp.ModelBank([spec])
             bank.fit_predict(df.head(300))
             structs = bank.predict_arrow(df.tail(100))      # the bank is not changed
             served = df.tail(100).with_columns([pl.Series(s) for s in structs])
@@ -1272,7 +1185,7 @@ class ModelBank:
             nested column that CSV cannot hold.
         ``FileNotFoundError``
             ``closed_groups`` names a file in a folder that does not exist.
-        :class:`~rheon.OrderNotGuaranteedWarning`
+        :class:`~rheon.polars.OrderNotGuaranteedWarning`
             A warning, not an error: issued when the query holds a step that
             does not keep row order, naming the step (see Notes).
 
@@ -1283,7 +1196,7 @@ class ModelBank:
         Any error :meth:`fit_predict` raises
             For the chunk where it happens. The chunks before it have been
             learned.
-        :class:`~rheon.ConsumedSourceWarning`
+        :class:`~rheon.polars.ConsumedSourceWarning`
             A warning, not an error: the query gave no rows, and it reads a
             source written in Python, which may give its rows only once.
 
@@ -1294,8 +1207,8 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-            bank = po.ModelBank([spec])
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = rp.ModelBank([spec])
             for out in bank.fit_predict_batches(lf, chunk_size=100):
                 print(out.height, out["ridge"].struct.field("pred_y").count())   # each chunk
 
@@ -1349,7 +1262,7 @@ class ModelBank:
         """The run behind :meth:`fit_predict_batches` and :meth:`fit`: the
         arguments checked eagerly, then a generator. ``what`` is the public
         method the caller used, for the messages that name it."""
-        from rheon._frame import (
+        from rheon.polars._frame import (
             _check_chunk_size,
             _check_closed_format,
             _closed_path,
@@ -1385,7 +1298,7 @@ class ModelBank:
         # Arrow stream, which yields nothing the second time and says nothing
         # about it. Decided here, before a row moves, because `explain` must
         # be read off the plan the caller gave.
-        from rheon._frame import _is_python_scan, _source_runs
+        from rheon.polars._frame import _is_python_scan, _source_runs
 
         guard = (
             f"ModelBank.{what}" if plan is not None and _is_python_scan(plan, plan_text) else None
@@ -1417,10 +1330,10 @@ class ModelBank:
         this package's own sources ran since ``started``: then the plan is
         one of its plan forms over an input that was empty. ``what`` names the
         calling method for a chunk that is not a frame."""
-        from rheon._frame import (
+        from rheon._warnings import _user_stacklevel
+        from rheon.polars._frame import (
             ConsumedSourceWarning,
             _sources_ran_since,
-            _user_stacklevel,
             _write_closed,
         )
 
@@ -1451,7 +1364,7 @@ class ModelBank:
                     "query again for each run, calling "
                     "`pl.scan_arrow_c_stream(...)` inside the loop, or, if the source "
                     "really is empty, silence this warning with "
-                    '`warnings.simplefilter("ignore", rheon.ConsumedSourceWarning)`.'
+                    '`warnings.simplefilter("ignore", rheon.polars.ConsumedSourceWarning)`.'
                 ),
                 stacklevel=_user_stacklevel(),
             )
@@ -1511,7 +1424,7 @@ class ModelBank:
 
         What :meth:`fit_predict_batches` raises, with two differences:
 
-        - :class:`~rheon.OrderNotGuaranteedWarning` is not issued
+        - :class:`~rheon.polars.OrderNotGuaranteedWarning` is not issued
           when every spec reaches the same state in any row order (see
           Notes);
         - a spec whose ``embargo`` is shorter than its formula target's
@@ -1527,8 +1440,8 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-            bank = po.ModelBank([spec])
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = rp.ModelBank([spec])
             bank.fit(lf, chunk_size=100)        # learn every row, keep no output
             bank.save("bank.state")
             print(bank.rows_fed)
@@ -1678,8 +1591,8 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-            bank = po.ModelBank([spec])
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = rp.ModelBank([spec])
             bank.fit(df)
             coefs = bank.coef()                                 # one row per coefficient
             for term, value in coefs.select("term", "coef").iter_rows():
@@ -1856,10 +1769,10 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0, group="stock_id"
             )
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             bank.fit(df)
             last = bank.last_row()                              # one row per (spec, group)
             for group, pred in last.select("group", "pred_y").iter_rows():
@@ -1880,7 +1793,7 @@ class ModelBank:
             bank.save("bank.state")                             # one saved bank; list more
             files = ["bank.state"]
             table = pl.concat(
-                [po.ModelBank.load(f).last_row().with_columns(file=pl.lit(f)) for f in files],
+                [rp.ModelBank.load(f).last_row().with_columns(file=pl.lit(f)) for f in files],
                 how="diagonal_relaxed",
             )
 
@@ -2041,11 +1954,11 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0,
                 clock="t", gap_cap=300.0,
             )
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             holes = pl.when(pl.col("t") % 10 == 0).then(None).otherwise(pl.col("x1"))
             bank.fit(df.with_columns(x1=holes))                 # x1 null on every tenth row
             row = bank.summary().row(0, named=True)             # one row: the spec has no groups
@@ -2172,8 +2085,8 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-            bank = po.ModelBank([spec])
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = rp.ModelBank([spec])
             bank.fit(df)
             stats = bank.describe().select("column", "role", "count", "mean")
             for column, role, count, mean in stats.iter_rows():
@@ -2356,13 +2269,13 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0, ridge=1e-6
             )
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             bank.fit(df)
             g = bank.gram("ridge")[0]                           # one dict: one group, one instance
-            coef = po.gram.solve(g, target="y", ridge=1e-6)     # solved again from the Gram
+            coef = rp.gram.solve(g, target="y", ridge=1e-6)     # solved again from the Gram
             print(g["columns"], coef.round(2))
             print(bank.coef()["coef"].round(2).to_list())       # the model's own fit
             var_y = g["target_vars"][0]                         # the target's moments give its R²
@@ -2686,10 +2599,10 @@ class ModelBank:
 
         .. code-block:: python
 
-            pairs = po.spec.marginal(
+            pairs = rp.spec.marginal(
                 "pairs", targets=["y"], features=["x0", "x1", "x2"], half_life=500.0
             )
-            bank = po.ModelBank([pairs])
+            bank = rp.ModelBank([pairs])
             bank.fit(df)
             table = bank.marginal("pairs")
             table = table.sort(pl.col("t_stat").abs(), descending=True)   # strongest first
@@ -2884,10 +2797,10 @@ class ModelBank:
 
         .. code-block:: python
 
-            audit = po.spec.audit(
+            audit = rp.spec.audit(
                 "audit", columns=["x0", "x1"], clock="t", gap_cap=300.0, pairs=True
             )
-            bank = po.ModelBank([audit])
+            bank = rp.ModelBank([audit])
             holes = pl.when(pl.col("t") < 10).then(None).otherwise(pl.col("x1"))
             bank.fit(df.with_columns(x1=holes))                 # x1 null on the first 10 rows
             columns = bank.audit()                              # one row per (group, column)
@@ -3007,7 +2920,7 @@ class ModelBank:
                :func:`rheon.gram.from_row` expands them, and hands
                back exactly what :meth:`gram` would have returned for that
                group, so the exact solve on a closed group is
-               ``po.gram.solve(po.gram.from_row(row))``
+               ``rp.gram.solve(rp.gram.from_row(row))``
            * - an ``ew_cov`` with ``lags``
              - ``lags`` and ``lag_comoments``
              - :meth:`gram`'s, the co-moments at each lag flattened lag by
@@ -3058,15 +2971,15 @@ class ModelBank:
 
         .. code-block:: python
 
-            blocks = po.spec.ew_cov(
+            blocks = rp.spec.ew_cov(
                 "cov", features=["x0", "x1"], lam=1.0, group="block", group_close="monotone"
             )
             by_block = df.with_columns(block=pl.int_range(pl.len()) // 100)   # 4 blocks of 100 rows
-            bank = po.ModelBank([blocks])
+            bank = rp.ModelBank([blocks])
             bank.fit(by_block)
             closed = bank.closed_groups()               # blocks 0 to 2: block 3 is still open
             print(closed.select("group", "rows_fed").rows())
-            g = po.gram.from_row(closed.head(1))        # block 0's sums, as gram() gives them
+            g = rp.gram.from_row(closed.head(1))        # block 0's sums, as gram() gives them
             print(g["comoments"].shape)
 
         .. code-block:: text
@@ -3327,10 +3240,10 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "ridge", targets=["y"], features=["x0", "x1", "x2"], half_life=100.0
             )
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             bank.fit(df.with_columns(x2=pl.lit(1.0)))           # x2 made constant
             problems = bank.check()                             # the worst first
             print(problems.select("severity", "code", "column").rows())
@@ -3427,7 +3340,7 @@ class ModelBank:
         nothing is said about it either: the findings cover the groups still
         open. An ``audit`` refuses ``group_close`` for that reason.
         """
-        from rheon._check import check
+        from rheon.polars._check import check
 
         return check(self, spec, group)
 
@@ -3530,8 +3443,8 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-            bank = po.ModelBank([spec])
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = rp.ModelBank([spec])
             bank.fit(df)
             print(bank.solve_failures().rows())                 # no solve needed help
 
@@ -3604,7 +3517,7 @@ class ModelBank:
 
         .. warning::
             A spec's formula target (an expression in ``targets`` holding a
-            window operator of :mod:`rheon.ops` that looks ahead) is
+            window operator of :mod:`rheon.polars.ops` that looks ahead) is
             written into the file in a form that is
             **unstable**: it may change in any release without that counting
             as a breaking change. The rest of the file's form is kept from
@@ -3646,11 +3559,11 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-            bank = po.ModelBank([spec])
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = rp.ModelBank([spec])
             bank.fit_predict(df)
             bank.save("bank.state")                       # a path, replaced safely
-            print(po.ModelBank.load("bank.state").rows_fed)
+            print(rp.ModelBank.load("bank.state").rows_fed)
 
         .. code-block:: text
 
@@ -3731,11 +3644,11 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-            bank = po.ModelBank([spec])
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = rp.ModelBank([spec])
             bank.fit_predict(df)
             blob = bank.save_bytes()                     # to keep wherever bytes can be kept
-            print(po.ModelBank.load_bytes(blob).rows_fed)
+            print(rp.ModelBank.load_bytes(blob).rows_fed)
 
         .. code-block:: text
 
@@ -3815,8 +3728,8 @@ class ModelBank:
 
             import json
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-            bank = po.ModelBank([spec])
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = rp.ModelBank([spec])
             bank.fit_predict(df)
             state = json.loads(bank.write_json())     # the state, as Python objects
             bank.write_json("bank.json")               # the same text, in a file
@@ -3940,12 +3853,12 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-            saved = po.ModelBank([spec])
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            saved = rp.ModelBank([spec])
             saved.fit_predict(df)
             saved.save("bank.state")
 
-            bank = po.ModelBank.load("bank.state", specs=[spec])   # refused if the specs differ
+            bank = rp.ModelBank.load("bank.state", specs=[spec])   # refused if the specs differ
             bank.fit_predict(today)                                # and the stream goes on
             print(bank.rows_fed)
 
@@ -4039,10 +3952,10 @@ class ModelBank:
 
         .. code-block:: python
 
-            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-            bank = po.ModelBank([spec])
+            spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = rp.ModelBank([spec])
             bank.fit_predict(df)
-            again = po.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
+            again = rp.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
             print(again.rows_fed)
 
         .. code-block:: text

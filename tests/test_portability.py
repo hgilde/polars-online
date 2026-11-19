@@ -19,7 +19,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 import child
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -66,13 +66,13 @@ def _spec(**kw):
         max_rows_between_solves=1,
     )
     d.update(kw)
-    return po.spec.ewridge("m", **d)
+    return rp.spec.ewridge("m", **d)
 
 
 def _bank_specs():
     """The plain spec beside one with a half-life grid, `coef` on every row and
     every optional output on, so that a field of every kind is compared."""
-    grid = po.spec.ewridge(
+    grid = rp.spec.ewridge(
         "grid",
         targets=["y0"],
         features=["x0", "x1"],
@@ -109,7 +109,7 @@ class TestThreadDeterminism:
     SNIPPET = """
 import sys, numpy as np, polars as pl
 sys.path.insert(0, {tests!r})
-import rheon as po
+from rheon import polars as po
 from test_portability import _frame, _bank_specs
 out = po.ModelBank(_bank_specs()).fit_predict(_frame(n={n}, groups={groups}, seed=1))
 out.write_ipc({path!r})
@@ -177,7 +177,7 @@ class TestThreadPoolKnob:
 
     def test_read_at_the_first_bank_call_and_fixed_after(self):
         out = self._python(
-            "import os, polars as pl, rheon as po\n"
+            "import os, polars as pl, rheon.polars as po\n"
             "os.environ['POLARS_ONLINE_MAX_THREADS'] = '3'\n"  # after import: still in time
             "print(po.thread_pool_size())\n"
             "os.environ['POLARS_ONLINE_MAX_THREADS'] = '5'\n"  # after the build: too late
@@ -194,7 +194,7 @@ class TestThreadPoolKnob:
         count = getattr(os, "process_cpu_count", os.cpu_count)
         cores = count() or 1
         out = self._python(
-            "import rheon as po; print(po.thread_pool_size())",
+            "import rheon.polars as po; print(po.thread_pool_size())",
             RAYON_NUM_THREADS="1",
             POLARS_MAX_THREADS="1",
         )
@@ -203,7 +203,7 @@ class TestThreadPoolKnob:
     def test_a_value_that_is_not_a_count_is_refused_by_name(self):
         tests = str(REPO / "tests")
         out = self._python(
-            "import os, sys, rheon as po\n"
+            "import os, sys, rheon.polars as po\n"
             f"sys.path.insert(0, {tests!r})\n"
             "from test_portability import _frame, _spec\n"
             "bank = po.ModelBank([_spec()])\n"
@@ -230,7 +230,7 @@ class TestOutputSchemaStability:
     would silently break `expression == bank`."""
 
     def test_exact_field_names_for_a_grid_spec(self):
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0", "y1"],
             features=["x0", "x1", "x2"],
@@ -239,7 +239,7 @@ class TestOutputSchemaStability:
             half_life=[100.0, 500.0],
             min_weight=5.0,
         )
-        got = po.spec.output_fields(spec)
+        got = rp.spec.output_fields(spec)
         assert got == [
             "pred_y0__fast_r0.000001@h100",
             "resid_y0__fast_r0.000001@h100",
@@ -302,14 +302,14 @@ class TestOutputSchemaStability:
         ]
 
     def test_lasso_field_names(self):
-        spec = po.spec.lasso(
+        spec = rp.spec.lasso(
             "m",
             targets=["y0"],
             features=["x0"],
             penalties=[1.0, 0.01, 0.0],
             half_life=100.0,
         )
-        assert po.spec.output_fields(spec) == [
+        assert rp.spec.output_fields(spec) == [
             "pred_y0__p1",
             "resid_y0__p1",
             "pred_y0__p0.01",
@@ -351,7 +351,7 @@ class TestOutputSchemaStability:
         # output was added to the assembler but not to `output_fields`: a
         # caller that reads the declared schema would then be told one dtype
         # and handed another.
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -361,8 +361,8 @@ class TestOutputSchemaStability:
             max_rows_between_solves=1,
             **extra,
         )
-        out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
-        assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
+        out = rp.ModelBank([spec]).fit_predict(_frame().drop("g"))
+        assert [f.name for f in out.schema["m"].fields] == rp.spec.output_fields(spec)
 
     #: Every model, with whatever it needs to be constructible. `ew_cov` has no
     #: targets and `holt` no features, so both are given explicitly.
@@ -401,7 +401,7 @@ class TestOutputSchemaStability:
         one dtype and handed another.
         `sgd`, `pa`, `holt` and `ew_cov` all postdate that test.
         """
-        spec = getattr(po.spec, model)(
+        spec = getattr(rp.spec, model)(
             "m",
             targets=["y0"],
             half_life=50.0,
@@ -409,8 +409,8 @@ class TestOutputSchemaStability:
             **kw,
             **extra,
         )
-        out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
-        assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
+        out = rp.ModelBank([spec]).fit_predict(_frame().drop("g"))
+        assert [f.name for f in out.schema["m"].fields] == rp.spec.output_fields(spec)
 
     def test_ew_cov_names_match_the_realized_struct(self):
         """`ew_cov` has no targets, so its declared schema is built from the
@@ -419,22 +419,22 @@ class TestOutputSchemaStability:
         ignored; since 0.2.0 an unsupervised spec refuses them by name. And
         over `coef_every`, which it has no `coef` for and refuses now too:
         review 2026-09-12, S22.)"""
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "m",
             features=["x0", "x1"],
             stats=["mean", "var", "std", "cov", "corr"],
             half_life=50.0,
             min_weight=2.0,
         )
-        out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
-        assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
+        out = rp.ModelBank([spec]).fit_predict(_frame().drop("g"))
+        assert [f.name for f in out.schema["m"].fields] == rp.spec.output_fields(spec)
 
     @pytest.mark.parametrize("half_life", [50.0, [20.0, 50.0]], ids=["one", "grid"])
     @pytest.mark.parametrize("coef_every", [0, 7], ids=["plain", "coef_every"])
     def test_kmeans_names_match_the_realized_struct(self, half_life, coef_every):
         """`kmeans` has no targets either: an `i64` assignment, two distances,
         `weight_sum` and the centres as `coef`, per instance."""
-        spec = po.spec.kmeans(
+        spec = rp.spec.kmeans(
             "m",
             features=["x0", "x1"],
             n_clusters=2,
@@ -443,9 +443,9 @@ class TestOutputSchemaStability:
             min_weight=2.0,
             coef_every=coef_every,
         )
-        out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
-        assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
-        idx = po.spec.output_index(spec)
+        out = rp.ModelBank([spec]).fit_predict(_frame().drop("g"))
+        assert [f.name for f in out.schema["m"].fields] == rp.spec.output_fields(spec)
+        idx = rp.spec.output_index(spec)
         names = {
             REASON_DTYPE: "enum",
             pl.Float64: "f64",
@@ -462,7 +462,7 @@ class TestOutputSchemaStability:
         """`micro` has four integer-like outputs -- `i64` ids (`cluster`,
         `micro`), a `bool` flag and `i64` counts -- plus a
         distance, `weight_sum` and the summaries as a ragged `coef` list."""
-        spec = po.spec.micro(
+        spec = rp.spec.micro(
             "m",
             features=["x0", "x1"],
             eps=0.5,
@@ -470,9 +470,9 @@ class TestOutputSchemaStability:
             min_weight=2.0,
             coef_every=coef_every,
         )
-        out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
-        assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
-        idx = po.spec.output_index(spec)
+        out = rp.ModelBank([spec]).fit_predict(_frame().drop("g"))
+        assert [f.name for f in out.schema["m"].fields] == rp.spec.output_fields(spec)
+        idx = rp.spec.output_index(spec)
         names = {
             REASON_DTYPE: "enum",
             pl.Float64: "f64",
@@ -507,7 +507,7 @@ class TestOutputSchemaStability:
                 "x3",
             ]
         )
-        spec = po.spec.deco(
+        spec = rp.spec.deco(
             "m",
             features=features,
             blocks=blocks,
@@ -515,17 +515,17 @@ class TestOutputSchemaStability:
             min_weight=2.0,
         )
         df = _frame().drop("g").with_columns(x2=pl.col("x0") * 0.5, x3=pl.col("x1") * -0.5)
-        out = po.ModelBank([spec]).fit_predict(df)
-        assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
-        idx = po.spec.output_index(spec)
-        assert [f["field"] for f in idx.iter_rows(named=True)] == po.spec.output_fields(spec)
+        out = rp.ModelBank([spec]).fit_predict(df)
+        assert [f.name for f in out.schema["m"].fields] == rp.spec.output_fields(spec)
+        idx = rp.spec.output_index(spec)
+        assert [f["field"] for f in idx.iter_rows(named=True)] == rp.spec.output_fields(spec)
 
     @pytest.mark.parametrize("half_life", [50.0, [20.0, 50.0]], ids=["one", "grid"])
     @pytest.mark.parametrize("coef_every", [0, 7], ids=["plain", "coef_every"])
     def test_ew_class_names_match_the_realized_struct(self, half_life, coef_every):
         """`ew_class` predicts a label: a `str` class, one `f64` posterior per
         class, `weight_sum` and the class means as `coef`, per instance."""
-        spec = po.spec.ew_class(
+        spec = rp.spec.ew_class(
             "m",
             features=["x0", "x1"],
             label="y",
@@ -542,9 +542,9 @@ class TestOutputSchemaStability:
                 pl.when(pl.col("y0") > 0).then(pl.lit("pos")).otherwise(pl.lit("neg")).alias("y")
             )
         )
-        out = po.ModelBank([spec]).fit_predict(df)
-        assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
-        idx = po.spec.output_index(spec)
+        out = rp.ModelBank([spec]).fit_predict(df)
+        assert [f.name for f in out.schema["m"].fields] == rp.spec.output_fields(spec)
+        idx = rp.spec.output_index(spec)
         classes = pl.Enum(["neg", "pos"])
         names = {
             REASON_DTYPE: "enum",
@@ -568,16 +568,16 @@ class TestOutputSchemaStability:
         residuals, so it is realized inside a bank holding them."""
         if compare:
             sides = [
-                po.spec.ewridge("a", targets=["y0"], features=["x0"], half_life=50.0),
-                po.spec.ewridge("b", targets=["y0"], features=["x1"], half_life=50.0),
+                rp.spec.ewridge("a", targets=["y0"], features=["x0"], half_life=50.0),
+                rp.spec.ewridge("b", targets=["y0"], features=["x1"], half_life=50.0),
             ]
-            spec = po.spec.seqtest("m", targets=["y0"], a="a", b="b", min_weight=2.0)
+            spec = rp.spec.seqtest("m", targets=["y0"], a="a", b="b", min_weight=2.0)
         else:
             sides = []
-            spec = po.spec.seqtest("m", targets=["y0", "x0"], min_weight=2.0)
-        out = po.ModelBank([*sides, spec]).fit_predict(_frame().drop("g"))
-        assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
-        idx = po.spec.output_index(spec)
+            spec = rp.spec.seqtest("m", targets=["y0", "x0"], min_weight=2.0)
+        out = rp.ModelBank([*sides, spec]).fit_predict(_frame().drop("g"))
+        assert [f.name for f in out.schema["m"].fields] == rp.spec.output_fields(spec)
+        idx = rp.spec.output_index(spec)
         names = {REASON_DTYPE: "enum", pl.Float64: "f64", pl.Int64: "i64"}
         for f in out.schema["m"].fields:
             declared = idx.filter(pl.col("field") == f.name)["dtype"].item()
@@ -586,7 +586,7 @@ class TestOutputSchemaStability:
         n_targets = len(spec["targets"])
         tail = [pl.Float64, pl.Float64, REASON_DTYPE]  # weight_sum, settled_frac, withheld_reason
         assert [f.dtype for f in out.schema["m"].fields] == per_target * n_targets + tail
-        assert "coef" not in po.spec.output_fields(spec)
+        assert "coef" not in rp.spec.output_fields(spec)
 
 
 class TestConfigParsing:
@@ -827,7 +827,7 @@ class TestStateFilePortability:
     def test_state_bytes_are_deterministic_and_carry_no_paths(self, tmp_path):
         df = _frame(n=200, seed=3)
         spec = _spec()
-        a, b = po.ModelBank([spec]), po.ModelBank([spec])
+        a, b = rp.ModelBank([spec]), rp.ModelBank([spec])
         a.fit_predict(df)
         b.fit_predict(df)
         assert a.save_bytes() == b.save_bytes(), "state bytes are not reproducible"
@@ -840,8 +840,8 @@ class TestStateFilePortability:
     def test_state_survives_a_round_trip_through_bytes(self):
         df = _frame(n=200, seed=4)
         spec = _spec()
-        a = po.ModelBank([spec])
+        a = rp.ModelBank([spec])
         a.fit_predict(df.slice(0, 100))
-        b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
+        b = rp.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
         second = df.slice(100, 100)
         assert a.fit_predict(second).equals(b.fit_predict(second), null_equal=True)

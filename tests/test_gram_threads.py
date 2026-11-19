@@ -26,7 +26,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -82,7 +82,7 @@ def ridge(threads: int | str | None, block: int | None, k: int = K, **kw) -> dic
         gram_threads=threads,
     )
     opts.update(kw)
-    return po.spec.ewridge("m", **opts)
+    return rp.spec.ewridge("m", **opts)
 
 
 def cov(threads: int | str | None, k: int = K, **kw) -> dict:
@@ -96,19 +96,19 @@ def cov(threads: int | str | None, k: int = K, **kw) -> dict:
         gram_threads=threads,
     )
     opts.update(kw)
-    return po.spec.ew_cov("m", **opts)
+    return rp.spec.ew_cov("m", **opts)
 
 
 def run(
     spec: dict, df: pl.DataFrame, chunks: int = 1, threads: int | None = None
-) -> tuple[pl.DataFrame, po.ModelBank]:
-    bank = po.ModelBank([spec], threads=threads)
+) -> tuple[pl.DataFrame, rp.ModelBank]:
+    bank = rp.ModelBank([spec], threads=threads)
     size = -(-df.height // chunks)
     out = pl.concat([bank.fit_predict(c) for c in df.iter_slices(size)])
     return out.select("m").unnest("m"), bank
 
 
-def gram_bits(bank: po.ModelBank) -> list:
+def gram_bits(bank: rp.ModelBank) -> list:
     """Every float array and scalar of every Gram, as its bits."""
     out = []
     for g in bank.gram("m"):
@@ -178,10 +178,10 @@ def test_chunk_invariance_at_each_thread_count(kind, threads):
 def test_a_save_carries_the_setting_and_resumes_to_the_bit(tmp_path):
     df = stream(K, 600)
     whole, _ = run(ridge(8, 64), df)
-    a = po.ModelBank([ridge(8, 64)])
+    a = rp.ModelBank([ridge(8, 64)])
     a.fit_predict(df.slice(0, 301))
     a.save(tmp_path / "threads.state")
-    b = po.ModelBank.load(tmp_path / "threads.state")
+    b = rp.ModelBank.load(tmp_path / "threads.state")
     assert '"gram_threads":8' in b.write_json().replace(" ", "")
     rest = b.fit_predict(df.slice(301)).select("m").unnest("m")
     assert rest.equals(whole.slice(301), null_equal=True)
@@ -199,12 +199,12 @@ def test_a_save_resumes_under_another_count_to_the_bit(tmp_path, kind):
     df = stream(K, 600)
     head, tail = df.slice(0, 301), df.slice(301)
     whole, want = run(make(None), df)
-    a = po.ModelBank([make(8)])
+    a = rp.ModelBank([make(8)])
     a.fit_predict(head)
     a.save(tmp_path / "threads.state")
     tail.write_parquet(tmp_path / "tail.parquet")
     for threads in (2, "auto", None):
-        b = po.ModelBank.load(tmp_path / "threads.state", specs=[make(threads)])
+        b = rp.ModelBank.load(tmp_path / "threads.state", specs=[make(threads)])
         assert b.specs[0]["model"].get("gram_threads") == threads
         rest = b.fit_predict(tail).select("m").unnest("m")
         assert rest.equals(whole.slice(301), null_equal=True), threads
@@ -215,7 +215,7 @@ def test_a_save_resumes_under_another_count_to_the_bit(tmp_path, kind):
             .collect()
         )
         assert lazy.select("m").unnest("m").equals(whole.slice(301), null_equal=True), threads
-    kept = po.ModelBank.load(tmp_path / "threads.state")
+    kept = rp.ModelBank.load(tmp_path / "threads.state")
     assert kept.specs[0]["model"]["gram_threads"] == 8
 
 
@@ -232,16 +232,16 @@ def test_a_spec_without_it_writes_nothing_new():
     """Left out, the key is not written: a state that does not use it has
     the bytes it had before the option existed (no schema change)."""
     for spec in (ridge(None, 64), cov(None)):
-        assert "gram_threads" not in po.ModelBank([spec]).write_json()
+        assert "gram_threads" not in rp.ModelBank([spec]).write_json()
     for spec in (ridge(2, 64), cov(2)):
-        doc = json.loads(po.ModelBank([spec]).write_json())
+        doc = json.loads(rp.ModelBank([spec]).write_json())
         assert '"gram_threads": 2' in json.dumps(doc)
 
 
 @pytest.mark.parametrize("make", [lambda: ridge(0, 64), lambda: cov(0)], ids=["ewridge", "ew_cov"])
 def test_zero_threads_is_refused(make):
     with pytest.raises(ValueError, match="gram_threads must be at least 1, but it is"):
-        po.ModelBank([make()])
+        rp.ModelBank([make()])
 
 
 @pytest.mark.parametrize("build", [ridge, cov], ids=["ewridge", "ew_cov"])
@@ -252,7 +252,7 @@ def test_auto_is_the_one_word_and_is_written_as_given(build):
     make = (lambda t: build(t, 64)) if build is ridge else build
     spec = make("auto")
     assert spec["model"]["gram_threads"] == "auto"
-    assert po.ModelBank([spec]).specs[0]["model"]["gram_threads"] == "auto"
+    assert rp.ModelBank([spec]).specs[0]["model"]["gram_threads"] == "auto"
     with pytest.raises(ValueError, match='gram_threads must be an int or "auto", but it is "AUTO"'):
         make("AUTO")
     with pytest.raises(TypeError, match='gram_threads must be an int or "auto", but it is bool'):
@@ -260,7 +260,7 @@ def test_auto_is_the_one_word_and_is_written_as_given(build):
     for bad in ("x", True, -1):
         hand = {**spec, "model": {**spec["model"], "gram_threads": bad}}
         with pytest.raises(ValueError, match="gram_threads"):
-            po.ModelBank([hand])
+            rp.ModelBank([hand])
 
 
 #: Groups a bank runs side by side, for ``"auto"``'s share of the pool: one

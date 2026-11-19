@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
 K = 20
 ROWS = 150
@@ -67,7 +67,7 @@ def main() -> None:
         kw["huber_refit_rows"] = 0
     elif a.budget != "default":
         kw["refit_budget"] = float(a.budget)
-    spec = po.spec.huber(
+    spec = rp.spec.huber(
         "m",
         targets=["y", "z"],
         features=[f"x{i}" for i in range(K)],
@@ -75,7 +75,7 @@ def main() -> None:
         half_life=float("inf"),
         **kw,  # type: ignore[arg-type]
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         for batch in pl.scan_parquet(path).collect_batches():

@@ -18,8 +18,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from reference import robust_ref
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -62,22 +62,22 @@ def _field(out: pl.DataFrame, name: str) -> np.ndarray:
 
 class TestFeatureSets:
     def test_the_fields_are_ewridges(self):
-        spec = po.spec.huber("m", feature_sets=SETS, **COMMON)
-        fields = po.spec.output_index(spec)["field"].to_list()
+        spec = rp.spec.huber("m", feature_sets=SETS, **COMMON)
+        fields = rp.spec.output_index(spec)["field"].to_list()
         for t in ("y0", "y1"):
             for name in SETS:
                 assert f"pred_{t}__{name}" in fields and f"resid_{t}__{name}" in fields
         assert "pred_y0" not in fields
-        one = po.spec.huber("m", feature_sets={"a": ["x0"]}, **COMMON)
-        assert "pred_y0" in po.spec.output_index(one)["field"].to_list()
+        one = rp.spec.huber("m", feature_sets={"a": ["x0"]}, **COMMON)
+        assert "pred_y0" in rp.spec.output_index(one)["field"].to_list()
 
     def test_the_largest_set_is_the_plain_fit_to_the_bit(self):
         """The rows enter the sums at the largest set's Huber weight, so the
         largest set's slot is the fit of a ``huber`` on those features, to
         the bit; a smaller set is a fit of its own from the same sums."""
         df = _frame()
-        sets = po.ModelBank([po.spec.huber("m", feature_sets=SETS, **COMMON)]).fit_predict(df)
-        plain = po.ModelBank([po.spec.huber("m", **COMMON)]).fit_predict(df)
+        sets = rp.ModelBank([rp.spec.huber("m", feature_sets=SETS, **COMMON)]).fit_predict(df)
+        plain = rp.ModelBank([rp.spec.huber("m", **COMMON)]).fit_predict(df)
         for t in ("y0", "y1"):
             a, b = _field(sets, f"pred_{t}__all"), _field(plain, f"pred_{t}")
             assert np.array_equal(a, b, equal_nan=True), t
@@ -100,11 +100,11 @@ class TestFeatureSets:
         sets = {"a": ["x0", "x1"], "b": ["x2"]}
 
         def pair(**kw):
-            wide = po.spec.huber(
+            wide = rp.spec.huber(
                 "m", features=FEATURES, feature_sets=sets, emit_huber_scale=True, **base, **kw
             )
-            alone = po.spec.huber("m", features=["x0", "x1"], emit_huber_scale=True, **base, **kw)
-            return (po.ModelBank([wide]).fit_predict(df), po.ModelBank([alone]).fit_predict(df))
+            alone = rp.spec.huber("m", features=["x0", "x1"], emit_huber_scale=True, **base, **kw)
+            return (rp.ModelBank([wide]).fit_predict(df), rp.ModelBank([alone]).fit_predict(df))
 
         wide, alone = pair(min_weight=6.0)
         for t in ("y0", "y1"):
@@ -138,8 +138,8 @@ class TestFeatureSets:
         hub = dict(
             huber_scale="rms", huber_delta=1.345, ridge=1e-4, huber_refit_rows=0, min_weight=0.0
         )
-        out = po.ModelBank([po.spec.huber("m", feature_sets=sets, **hub, **c)]).fit_predict(df)
-        plain = po.ModelBank([po.spec.huber("m", **hub, **c)]).fit_predict(df)
+        out = rp.ModelBank([rp.spec.huber("m", feature_sets=sets, **hub, **c)]).fit_predict(df)
+        plain = rp.ModelBank([rp.spec.huber("m", **hub, **c)]).fit_predict(df)
         pred = _field(plain, "pred_y0")
         y, w, t = (df[col].to_numpy() for col in ("y0", "w", "t"))
         # The scale's recursion (robust.rs): its weight ages by the decay on
@@ -159,9 +159,9 @@ class TestFeatureSets:
                     s2 = (ws * s2 + w[i] * r * r) / (ws + w[i])
                     ws += w[i]
         assert (w_rob < 1.0).sum() > 30, "the cut must bind"
-        ref = po.ModelBank(
+        ref = rp.ModelBank(
             [
-                po.spec.ewridge(
+                rp.spec.ewridge(
                     "m",
                     ridge=1e-4,
                     **dict(c, features=["x1"], weight="wr"),
@@ -177,20 +177,20 @@ class TestFeatureSets:
     @pytest.mark.parametrize("rows", [1, 7, 600])
     def test_one_chunk_or_many_give_one_run(self, rows):
         df = _frame()
-        spec = po.spec.huber("m", feature_sets=SETS, **COMMON)
-        whole = po.ModelBank([spec]).fit_predict(df)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.huber("m", feature_sets=SETS, **COMMON)
+        whole = rp.ModelBank([spec]).fit_predict(df)
+        bank = rp.ModelBank([spec])
         parts = [bank.fit_predict(df.slice(i, rows)) for i in range(0, df.height, rows)]
         assert pl.concat(parts).equals(whole, null_equal=True), rows
 
     def test_a_bank_saved_with_sets_resumes_to_the_bit(self):
         df = _frame()
-        spec = po.spec.huber("m", feature_sets=SETS, **COMMON)
-        whole = po.ModelBank([spec]).fit_predict(df)
+        spec = rp.spec.huber("m", feature_sets=SETS, **COMMON)
+        whole = rp.ModelBank([spec]).fit_predict(df)
         for cut in (3, 600):
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             head = bank.fit_predict(df.slice(0, cut))
-            loaded = po.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
+            loaded = rp.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
             tail = loaded.fit_predict(df.slice(cut))
             assert pl.concat([head, tail]).equals(whole, null_equal=True), cut
 
@@ -198,11 +198,11 @@ class TestFeatureSets:
         with pytest.raises(
             ValueError, match='feature set "a" lists "z", which is not one of features'
         ):
-            po.spec.huber("m", feature_sets={"a": ["z"]}, **COMMON)
+            rp.spec.huber("m", feature_sets={"a": ["z"]}, **COMMON)
         with pytest.raises(ValueError, match="feature_sets must name at least one set"):
-            po.spec.huber("m", feature_sets={}, **COMMON)
+            rp.spec.huber("m", feature_sets={}, **COMMON)
         with pytest.raises(ValueError, match='feature set "a" lists "x0" more than once'):
-            po.spec.huber("m", feature_sets={"a": ["x0", "x0"]}, **COMMON)
+            rp.spec.huber("m", feature_sets={"a": ["x0", "x0"]}, **COMMON)
 
 
 class TestRidgeScale:
@@ -225,14 +225,14 @@ class TestRidgeScale:
         )
 
     def _three(self, df, common, ridge):
-        hub = po.spec.huber(
+        hub = rp.spec.huber(
             "m", huber_delta=float("inf"), ridge=ridge, ridge_scale="sum", solve_every=0.0, **common
         )
-        rls = po.spec.rls("m", delta=ridge, **common)
-        ew = po.spec.ewridge(
+        rls = rp.spec.rls("m", delta=ridge, **common)
+        ew = rp.spec.ewridge(
             "m", ridge=ridge, ridge_scale="sum", max_rows_between_solves=1, **common
         )
-        return [_field(po.ModelBank([s]).fit_predict(df), "pred_y0") for s in (hub, rls, ew)]
+        return [_field(rp.ModelBank([s]).fit_predict(df), "pred_y0") for s in (hub, rls, ew)]
 
     def test_at_an_infinite_cut_it_is_rls_and_ewridge(self):
         from data import synthetic
@@ -271,9 +271,9 @@ class TestRidgeScale:
         within 3.7 in the last 200, as ``ewridge``'s two forms part."""
         df = _frame()
         c = dict(COMMON, targets=["y0"], half_life=float("inf"))
-        mean = _field(po.ModelBank([po.spec.huber("m", ridge=1.0, **c)]).fit_predict(df), "pred_y0")
+        mean = _field(rp.ModelBank([rp.spec.huber("m", ridge=1.0, **c)]).fit_predict(df), "pred_y0")
         summed = _field(
-            po.ModelBank([po.spec.huber("m", ridge=1.0, ridge_scale="sum", **c)]).fit_predict(df),
+            rp.ModelBank([rp.spec.huber("m", ridge=1.0, ridge_scale="sum", **c)]).fit_predict(df),
             "pred_y0",
         )
         early = np.nanmax(np.abs(mean[10:60] - summed[10:60]))
@@ -282,13 +282,13 @@ class TestRidgeScale:
 
     def test_it_is_refused_where_ewridges_is(self):
         with pytest.raises(ValueError, match="but standardize is set"):
-            po.spec.huber("m", ridge_scale="sum", standardize=True, **COMMON)
+            rp.spec.huber("m", ridge_scale="sum", standardize=True, **COMMON)
         with pytest.raises(ValueError, match="the spec has two or more feature sets"):
-            po.spec.huber("m", ridge_scale="sum", feature_sets=SETS, **COMMON)
+            rp.spec.huber("m", ridge_scale="sum", feature_sets=SETS, **COMMON)
         with pytest.raises(
             ValueError, match='ridge_scale must be "mean" or "sum", but it is "median"'
         ):
-            po.spec.huber("m", ridge_scale="median", **COMMON)  # type: ignore[arg-type]
+            rp.spec.huber("m", ridge_scale="median", **COMMON)  # type: ignore[arg-type]
 
 
 class TestEmittedScale:
@@ -296,12 +296,12 @@ class TestEmittedScale:
     reads it, before the row's own residual, as ``huber_scale_<t>``."""
 
     def test_the_field_is_there_only_when_asked(self):
-        on = po.spec.output_index(po.spec.huber("m", emit_huber_scale=True, **COMMON))
-        off = po.spec.output_index(po.spec.huber("m", **COMMON))
+        on = rp.spec.output_index(rp.spec.huber("m", emit_huber_scale=True, **COMMON))
+        off = rp.spec.output_index(rp.spec.huber("m", **COMMON))
         assert {"huber_scale_y0", "huber_scale_y1"} <= set(on["field"].to_list())
         assert not any(f.startswith("huber_scale") for f in off["field"].to_list())
-        sets = po.spec.huber("m", emit_huber_scale=True, feature_sets=SETS, **COMMON)
-        fields = po.spec.output_index(sets)["field"].to_list()
+        sets = rp.spec.huber("m", emit_huber_scale=True, feature_sets=SETS, **COMMON)
+        fields = rp.spec.output_index(sets)["field"].to_list()
         assert [f for f in fields if f.startswith("huber_scale")] == [
             "huber_scale_y0",
             "huber_scale_y1",
@@ -313,13 +313,13 @@ class TestEmittedScale:
         the root mean square, which a wild residual moves by its size; the
         MAD's median moves by one row's weight, often within its bucket."""
         df = _frame()
-        spec = po.spec.huber("m", emit_huber_scale=True, huber_scale="rms", **COMMON)
+        spec = rp.spec.huber("m", emit_huber_scale=True, huber_scale="rms", **COMMON)
         at = 700
         wild = df.with_columns(
             y0=pl.when(pl.int_range(pl.len()) == at).then(1e6).otherwise(pl.col("y0"))
         )
-        a = _field(po.ModelBank([spec]).fit_predict(df), "huber_scale_y0")
-        b = _field(po.ModelBank([spec]).fit_predict(wild), "huber_scale_y0")
+        a = _field(rp.ModelBank([spec]).fit_predict(df), "huber_scale_y0")
+        b = _field(rp.ModelBank([spec]).fit_predict(wild), "huber_scale_y0")
         assert np.isnan(a[0]) and np.isfinite(a[50:]).all()
         assert np.array_equal(a[: at + 1], b[: at + 1], equal_nan=True)
         assert b[at + 1] > a[at + 1]
@@ -330,12 +330,12 @@ class TestEmittedScale:
         the rows around it read the scale as it stands (task 272 (e),
         R5-3)."""
         df = _frame()
-        spec = po.spec.huber("m", emit_huber_scale=True, **COMMON)
+        spec = rp.spec.huber("m", emit_huber_scale=True, **COMMON)
         idx = pl.int_range(pl.len())
         bad = df.with_columns(
             x0=pl.when(idx == 150).then(float("nan")).when(idx == 151).then(None).otherwise("x0")
         )
-        s = _field(po.ModelBank([spec]).fit_predict(bad), "huber_scale_y0")
+        s = _field(rp.ModelBank([spec]).fit_predict(bad), "huber_scale_y0")
         assert np.isfinite(s[149]) and np.isfinite(s[152])
         assert np.isnan(s[150]) and np.isnan(s[151])
 
@@ -350,8 +350,8 @@ class TestEmittedScale:
         sets = {"one": ["x1"], "all": FEATURES}
         # The recursion below is the one pass: the refit (task 277) is off.
         one = dict(ridge=1e-4, huber_refit_rows=0)
-        out = po.ModelBank([po.spec.huber("m", feature_sets=sets, **one, **c)]).fit_predict(df)
-        plain = po.ModelBank([po.spec.huber("m", emit_huber_scale=True, **one, **c)]).fit_predict(
+        out = rp.ModelBank([rp.spec.huber("m", feature_sets=sets, **one, **c)]).fit_predict(df)
+        plain = rp.ModelBank([rp.spec.huber("m", emit_huber_scale=True, **one, **c)]).fit_predict(
             df
         )
         pred, scale = _field(plain, "pred_y0"), _field(plain, "huber_scale_y0")
@@ -360,9 +360,9 @@ class TestEmittedScale:
         w_rob = np.where(np.isfinite(r) & np.isfinite(cut) & (r > cut), cut / r, 1.0)
         assert (w_rob < 1.0).sum() > 30, "the cut must bind"
         assert np.array_equal(_field(out, "pred_y0__all"), pred, equal_nan=True)
-        ref = po.ModelBank(
+        ref = rp.ModelBank(
             [
-                po.spec.ewridge(
+                rp.spec.ewridge(
                     "m",
                     ridge=1e-4,
                     **dict(c, features=["x1"], weight="wr"),
@@ -378,15 +378,15 @@ class TestEmittedScale:
     @pytest.mark.parametrize("rows", [1, 7, 600])
     def test_one_chunk_or_many_give_one_run(self, rows):
         df = _frame()
-        spec = po.spec.huber("m", emit_huber_scale=True, feature_sets=SETS, **COMMON)
-        whole = po.ModelBank([spec]).fit_predict(df)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.huber("m", emit_huber_scale=True, feature_sets=SETS, **COMMON)
+        whole = rp.ModelBank([spec]).fit_predict(df)
+        bank = rp.ModelBank([spec])
         parts = [bank.fit_predict(df.slice(i, rows)) for i in range(0, df.height, rows)]
         assert pl.concat(parts).equals(whole, null_equal=True), rows
 
     def test_it_is_refused_on_quantile(self):
         with pytest.raises(TypeError):
-            po.spec.quantile("m", quantile=0.5, emit_huber_scale=True, **COMMON)  # type: ignore[call-arg]
+            rp.spec.quantile("m", quantile=0.5, emit_huber_scale=True, **COMMON)  # type: ignore[call-arg]
 
 
 class TestDelayedLabels:
@@ -409,8 +409,8 @@ class TestDelayedLabels:
         c = dict(COMMON, clock=None, gap_cap=None)
         c = {k: v for k, v in c.items() if v is not None}
         spec = dict(feature_sets=SETS, emit_huber_scale=True, **c)
-        plain = po.ModelBank([po.spec.huber("m", **spec)]).fit_predict(df)
-        held = po.ModelBank([po.spec.huber("m", embargo=self.E, **spec)]).fit_predict(df)
+        plain = rp.ModelBank([rp.spec.huber("m", **spec)]).fit_predict(df)
+        held = rp.ModelBank([rp.spec.huber("m", embargo=self.E, **spec)]).fit_predict(df)
         return df, plain, held
 
     def test_the_fit_is_the_undelayed_fit_a_delay_behind(self):
@@ -499,11 +499,11 @@ class TestParameterRelations:
         c = dict(COMMON, targets=targets, min_weight=4.0, ridge=ridge, **schedule)
         with warnings.catch_warnings():
             # A ridge of 5 sets most of x2's coefficient, as the notice says.
-            warnings.simplefilter("ignore", po.ReadinessWarning)
-            hub = po.ModelBank([po.spec.huber("m", huber_delta=INF, **c)]).fit_predict(df)
-            ew = po.ModelBank([po.spec.ewridge("m", **c)]).fit_predict(df)
-            off = po.spec.huber("m", huber_delta=INF, huber_refit_rows=0, **c)
-            assert po.ModelBank([off]).fit_predict(df).equals(hub, null_equal=True)
+            warnings.simplefilter("ignore", rp.ReadinessWarning)
+            hub = rp.ModelBank([rp.spec.huber("m", huber_delta=INF, **c)]).fit_predict(df)
+            ew = rp.ModelBank([rp.spec.ewridge("m", **c)]).fit_predict(df)
+            off = rp.spec.huber("m", huber_delta=INF, huber_refit_rows=0, **c)
+            assert rp.ModelBank([off]).fit_predict(df).equals(hub, null_equal=True)
         h, e = hub.unnest("m"), ew.unnest("m")
         fits = ["coef", "support_coef"]
         assert h.drop(fits).equals(e.drop(fits), null_equal=True)
@@ -521,8 +521,8 @@ class TestParameterRelations:
         # fit, so the refit could have run and the relation is not vacuous.
         assert int((df["w"] > 0).sum()) > 1000
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", po.ReadinessWarning)
-            finite = po.ModelBank([po.spec.huber("m", **c)]).fit_predict(df)
+            warnings.simplefilter("ignore", rp.ReadinessWarning)
+            finite = rp.ModelBank([rp.spec.huber("m", **c)]).fit_predict(df)
         assert not np.allclose(_field(finite, "pred_y0"), _field(hub, "pred_y0"), equal_nan=True)
 
     def test_an_infinite_cut_refuses_a_refit(self):
@@ -531,7 +531,7 @@ class TestParameterRelations:
             match="huber_refit_rows refits a target's first rows to a Huber fit, but huber_delta "
             "is inf, which makes that fit least squares",
         ):
-            po.ModelBank([po.spec.huber("m", huber_delta=INF, huber_refit_rows=10, **COMMON)])
+            rp.ModelBank([rp.spec.huber("m", huber_delta=INF, huber_refit_rows=10, **COMMON)])
 
     @pytest.mark.parametrize(
         "kw",
@@ -543,8 +543,8 @@ class TestParameterRelations:
         every other field the same to the bit, the refit of the first rows
         included (a target here passes its 500 learned rows)."""
         df = _frame()
-        plain = po.ModelBank([po.spec.huber("m", **COMMON, **kw)]).fit_predict(df)
-        on = po.ModelBank([po.spec.huber("m", emit_huber_scale=True, **COMMON, **kw)]).fit_predict(
+        plain = rp.ModelBank([rp.spec.huber("m", **COMMON, **kw)]).fit_predict(df)
+        on = rp.ModelBank([rp.spec.huber("m", emit_huber_scale=True, **COMMON, **kw)]).fit_predict(
             df
         )
         added = [f for f in on["m"].struct.fields if f not in plain["m"].struct.fields]
@@ -575,10 +575,10 @@ class TestParameterRelations:
         common = {k: v for k, v in common.items() if v is not None}
 
         def bank(r):
-            spec = po.spec.huber("m", ridge=r, huber_scale=scale, huber_refit_rows=0, **common)
+            spec = rp.spec.huber("m", ridge=r, huber_scale=scale, huber_refit_rows=0, **common)
             with warnings.catch_warnings():
-                warnings.simplefilter("ignore", po.ReadinessWarning)
-                return po.ModelBank([spec]).fit_predict(df)
+                warnings.simplefilter("ignore", rp.ReadinessWarning)
+                return rp.ModelBank([spec]).fit_predict(df)
 
         out = bank(ridge)
         ref = robust_ref(
@@ -647,7 +647,7 @@ class TestHuberSolveEvery:
             "solve_every": cls.EVERY,
             **kw,
         }
-        return po.spec.huber(
+        return rp.spec.huber(
             "m", targets=["y"], features=["x0", "x1"], max_rows_between_coefs=1, **kw
         )
 
@@ -675,7 +675,7 @@ class TestHuberSolveEvery:
     def test_the_fit_moves_on_the_scheduled_rows_and_holds_between(self, refit):
         df = self.frame()
         kw = {} if refit is None else {"huber_refit_rows": refit}
-        out = po.ModelBank([self.spec(**kw)]).fit_predict(df).unnest("m")
+        out = rp.ModelBank([self.spec(**kw)]).fit_predict(df).unnest("m")
         t, coef = df["t"].to_numpy(), out["coef"].to_list()
         moved = [
             i for i in range(self.N) if coef[i] is not None and (i == 0 or coef[i] != coef[i - 1])
@@ -713,10 +713,10 @@ class TestHuberSolveEvery:
     def test_zero_is_every_row(self):
         """``solve_every = 0`` solves every row: the row cap of 1."""
         df = self.frame()
-        zero = po.ModelBank([self.spec(solve_every=0.0)]).fit_predict(df)
-        cap = po.ModelBank([self.spec(solve_every=1e18, max_rows_between_solves=1)]).fit_predict(df)
+        zero = rp.ModelBank([self.spec(solve_every=0.0)]).fit_predict(df)
+        cap = rp.ModelBank([self.spec(solve_every=1e18, max_rows_between_solves=1)]).fit_predict(df)
         assert zero.equals(cap, null_equal=True)
-        assert not zero.equals(po.ModelBank([self.spec()]).fit_predict(df), null_equal=True)
+        assert not zero.equals(rp.ModelBank([self.spec()]).fit_predict(df), null_equal=True)
 
     def test_chunks_and_a_save_between_solves_keep_the_schedule(self):
         """The clock since the last solve is state, across the refit's row
@@ -724,15 +724,15 @@ class TestHuberSolveEvery:
         either side of a solve and of the refit, give the one run to the
         bit."""
         df, spec = self.frame(), self.spec()
-        whole = po.ModelBank([spec]).fit_predict(df)
+        whole = rp.ModelBank([spec]).fit_predict(df)
         for rows in (1, 7, 600):
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             parts = [bank.fit_predict(df.slice(i, rows)) for i in range(0, df.height, rows)]
             assert pl.concat(parts).equals(whole, null_equal=True), rows
         for cut in (3, 101, 499, 500, 650):
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             head = bank.fit_predict(df.slice(0, cut))
-            loaded = po.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
+            loaded = rp.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
             tail = loaded.fit_predict(df.slice(cut))
             assert pl.concat([head, tail]).equals(whole, null_equal=True), cut
 
@@ -749,8 +749,8 @@ class TestPowersOfTwo:
         def run(frame):
             with warnings.catch_warnings():
                 # A ridge of 1 sets half of x0's coefficient, as the notice says.
-                warnings.simplefilter("ignore", po.ReadinessWarning)
-                return po.ModelBank([po.spec.huber("m", **COMMON, **kw)]).fit_predict(frame)
+                warnings.simplefilter("ignore", rp.ReadinessWarning)
+                return rp.ModelBank([rp.spec.huber("m", **COMMON, **kw)]).fit_predict(frame)
 
         base = run(df)
         coef = _coefs(base, 8)

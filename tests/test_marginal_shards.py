@@ -20,7 +20,7 @@ import polars as pl
 import pytest
 
 import child
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -102,11 +102,11 @@ def spec(shape: str, shards, p: int = P, shapes=SHAPES, **kw):
         **shapes[shape],
     )
     settings.update(kw)
-    return po.spec.marginal("m", **settings)
+    return rp.spec.marginal("m", **settings)
 
 
 def run(shape: str, shards, df: pl.DataFrame, chunks: int = 1, **kw):
-    bank = po.ModelBank([spec(shape, shards, **kw)])
+    bank = rp.ModelBank([spec(shape, shards, **kw)])
     parts = [bank.fit_predict(c) for c in _split(df, chunks)]
     return pl.concat(parts), bank.marginal("m")
 
@@ -183,7 +183,7 @@ def test_closed_groups_read_flushed_pairs_under_shards():
             # The close is the session's prescription, so no gap beside it;
             # the monotone close reads no session at all.
             session = "s" if close == "session" else None
-            bank = po.ModelBank(
+            bank = rp.ModelBank(
                 [spec("lags", shards, group_close=close, session=session, session_gap=None)]
             )
             for part in _split(df, 3):
@@ -203,7 +203,7 @@ def test_one_row_chunks_flush_every_row():
     2026-09-26, E missing 3)."""
     df = frame(300)
     out, pairs = run("bins", None, df)
-    bank = po.ModelBank([spec("bins", 4)])
+    bank = rp.ModelBank([spec("bins", 4)])
     got = pl.concat([bank.fit_predict(df[i : i + 1]) for i in range(len(df))])
     assert got.equals(out, null_equal=True)
     assert bank.marginal("m").equals(pairs, null_equal=True)
@@ -215,9 +215,9 @@ def test_scoring_never_holds_rows():
     bank's (review 2026-09-26, E missing 5)."""
     df = frame()
     head, tail = df[:1000], df[1000:]
-    want = po.ModelBank([spec("lags", None)])
+    want = rp.ModelBank([spec("lags", None)])
     want.fit_predict(head)
-    bank = po.ModelBank([spec("lags", 4)])
+    bank = rp.ModelBank([spec("lags", 4)])
     bank.fit_predict(head)
     before = bank.marginal("m")
     scored = bank.predict(tail)
@@ -231,10 +231,10 @@ def test_a_save_inside_the_bin_warm_up_resumes_under_shards(tmp_path):
     unsplit bank's numbers (review 2026-09-26, E missing 6)."""
     df = frame()
     out, pairs = run("bins", None, df)
-    bank = po.ModelBank([spec("bins", 5)])
+    bank = rp.ModelBank([spec("bins", 5)])
     first = bank.fit_predict(df[:30])
     bank.save(tmp_path / "warm.state")
-    resumed = po.ModelBank.load(tmp_path / "warm.state")
+    resumed = rp.ModelBank.load(tmp_path / "warm.state")
     second = resumed.fit_predict(df[30:])
     assert pl.concat([first, second]).equals(out, null_equal=True)
     assert resumed.marginal("m").equals(pairs, null_equal=True)
@@ -268,7 +268,7 @@ def test_more_groups_than_threads_under_auto(tmp_path):
     script.write_text(
         "import sys, hashlib\n"
         "import polars as pl\n"
-        "import rheon as po\n"
+        "import rheon.polars as po\n"
         f"features = [f'x{{j}}' for j in range({p})]\n"
         "df = pl.read_parquet(sys.argv[1])\n"
         "out = []\n"
@@ -304,10 +304,10 @@ def test_a_saved_bank_resumes_whatever_its_count(tmp_path):
     head, tail = df[:800], df[800:]
     tables = []
     for i, shards in enumerate([None, 5, "auto"]):
-        bank = po.ModelBank([spec("lags", shards)])
+        bank = rp.ModelBank([spec("lags", shards)])
         bank.fit_predict(head)
         bank.save(tmp_path / f"{i}.state")
-        resumed = po.ModelBank.load(tmp_path / f"{i}.state")
+        resumed = rp.ModelBank.load(tmp_path / f"{i}.state")
         resumed.fit_predict(tail)
         tables.append(resumed.marginal("m"))
     for t in tables[1:]:
@@ -321,26 +321,26 @@ def test_a_saved_bank_resumes_under_another_count(tmp_path):
     counts and refused the specs)."""
     df = frame()
     head, tail = df[:800], df[800:]
-    want = po.ModelBank([spec("lags", None)])
+    want = rp.ModelBank([spec("lags", None)])
     want.fit_predict(df)
-    bank = po.ModelBank([spec("lags", 3)])
+    bank = rp.ModelBank([spec("lags", 3)])
     bank.fit_predict(head)
     bank.save(tmp_path / "three.state")
     for shards in [None, "auto", 7]:
-        resumed = po.ModelBank.load(tmp_path / "three.state", specs=[spec("lags", shards)])
+        resumed = rp.ModelBank.load(tmp_path / "three.state", specs=[spec("lags", shards)])
         assert resumed.specs[0]["model"].get("shards") == shards
         resumed.fit_predict(tail)
         assert resumed.marginal("m").equals(want.marginal("m"), null_equal=True), shards
-    kept = po.ModelBank.load(tmp_path / "three.state")
+    kept = rp.ModelBank.load(tmp_path / "three.state")
     assert kept.specs[0]["model"]["shards"] == 3
 
 
 def test_a_lazy_frame_is_split_the_same_way():
     """``fit(lf)`` streams the frame in batches through the same bank."""
     df = frame(900)
-    want = po.ModelBank([spec("bins", None)])
+    want = rp.ModelBank([spec("bins", None)])
     want.fit(df.lazy())
-    got = po.ModelBank([spec("bins", 4)])
+    got = rp.ModelBank([spec("bins", 4)])
     got.fit(df.lazy())
     assert got.marginal("m").equals(want.marginal("m"), null_equal=True)
 
@@ -392,9 +392,9 @@ def test_the_cli_reads_shards(tmp_path, rheon_cli, shards):
         encoding="utf-8",
     )
     subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
-    want_bank = po.ModelBank(
+    want_bank = rp.ModelBank(
         [
-            po.spec.marginal(
+            rp.spec.marginal(
                 "m",
                 targets=["y0", "y1", "y2"],
                 features=FEATURES,
@@ -409,5 +409,5 @@ def test_the_cli_reads_shards(tmp_path, rheon_cli, shards):
     )
     want = want_bank.fit_predict(df)
     assert pl.read_parquet(dst)["m"].equals(want["m"], null_equal=True)
-    saved = po.ModelBank.load(state)
+    saved = rp.ModelBank.load(state)
     assert saved.marginal("m").equals(want_bank.marginal("m"), null_equal=True)

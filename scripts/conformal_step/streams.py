@@ -27,7 +27,7 @@ sys.path.insert(0, str(SLOT / "scripts" / "tree_features"))
 CACHE = SLOT / ".cache" / "conformal-step"
 CACHE.mkdir(parents=True, exist_ok=True)
 
-import rheon as po  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 
 N_ROWS = 100_000
 GAP = 10.0  # the generator's mean step of clock
@@ -83,7 +83,7 @@ def generated(seed: int, noise: str, rate: str, delay: str):
     frame = pl.DataFrame(
         {"t": t, "avail": avail, "x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y}
     )
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1", "x2"],
@@ -134,7 +134,7 @@ def flights(delay: str):
     frame = pl.DataFrame(
         {"c": t, "avail": avail, "y": df["r"].to_numpy(), "zero": np.zeros(len(t))}
     )
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["zero"],
@@ -150,7 +150,7 @@ def flights(delay: str):
 
 
 def run(frame, spec, half_life, gap_cap, mask):
-    out = po.ModelBank([spec]).fit_predict(frame)["m"].struct
+    out = rp.ModelBank([spec]).fit_predict(frame)["m"].struct
     pred = out.field("pred_y").to_numpy().astype(float)
     y = frame["y"].to_numpy()
     return {

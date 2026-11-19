@@ -26,8 +26,9 @@ from pathlib import Path
 
 import pytest
 
-from doc_recipes import differences, fenced_blocks, shown_outputs, untimed
+from doc_recipes import differences, fenced_blocks, shown_outputs, untimed, with_private_gbdt
 from polars_version import needs_polars
+from rheon.polars import _gbdt
 from test_production_hardening import _as_a_terminal_shows, _readme_namespace
 
 TIER = "mixed"
@@ -74,7 +75,11 @@ def test_the_pages_are_found():
 @pytest.mark.parametrize("page", [_page_param(p) for p in PAGES])
 def test_a_pages_python_runs_in_order_and_prints_what_it_shows(page, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # a block writes its files where it runs
-    ns: dict[str, object] = {"__name__": "__recipe__", **_readme_namespace(tmp_path)}
+    ns: dict[str, object] = {
+        "__name__": "__recipe__",
+        "_gbdt": _gbdt,
+        **_readme_namespace(tmp_path),
+    }
     blocks = fenced_blocks(page)
     problems: list[str] = []
     for j, (kind, line, code) in enumerate(blocks):
@@ -83,7 +88,10 @@ def test_a_pages_python_runs_in_order_and_prints_what_it_shows(page, tmp_path, m
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             # A block inside a numbered step is indented with the step.
-            exec(compile(textwrap.dedent(code), f"{_rel(page)}:{line}", "exec"), ns)
+            exec(
+                compile(with_private_gbdt(textwrap.dedent(code)), f"{_rel(page)}:{line}", "exec"),
+                ns,
+            )
         after = blocks[j + 1] if j + 1 < len(blocks) else None
         if after is not None and after[0] == "text":
             # A line that reports a time is the machine's: its words are held, as the README's are.

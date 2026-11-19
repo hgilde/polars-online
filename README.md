@@ -37,7 +37,7 @@ with `pip install "polars-online[numpy]"` ([Install](#install) has the
 requirements).
 
 A *spec* describes one model. A *model bank*
-([`ModelBank`](https://hgilde.github.io/polars-online/rheon.html#rheon.ModelBank))
+([`ModelBank`](https://hgilde.github.io/polars-online/rheon.html#rheon.polars.ModelBank))
 fits a set of models together in one pass over the rows, one for each spec
 and each group (the rows that share one value of the column `group=` names,
 here each stock). `.online.fit_predict`, chained on a query (a chain of Polars
@@ -49,7 +49,7 @@ from datetime import datetime
 
 import numpy as np                              # only to make up the rows
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # 1. Make up the input: a trading day, 9:30 to 16:00, a row a second for stocks A, B and C in turn.
 rng = np.random.default_rng(0)
@@ -266,7 +266,7 @@ the library:
 | term | meaning |
 |---|---|
 | **spec** | the description of one model: which model, which columns it reads, and how it treats time. `po.spec.ewridge(...)` builds one |
-| **model bank**, or *the bank* | a set of models, one for each spec and each group, fitted together over the same rows, and the Python object that holds them, [`ModelBank`](https://hgilde.github.io/polars-online/rheon.html#rheon.ModelBank). *The bank* always means a model bank |
+| **model bank**, or *the bank* | a set of models, one for each spec and each group, fitted together over the same rows, and the Python object that holds them, [`ModelBank`](https://hgilde.github.io/polars-online/rheon.html#rheon.polars.ModelBank). *The bank* always means a model bank |
 | **stream** | the rows in the order the bank reads them |
 | **chunk** | one of the pieces the bank takes the stream in, one at a time: `chunk_size` rows in a query, 100,000 by default, or each frame passed to `ModelBank.fit_predict` |
 | **state** | everything a bank has learned |

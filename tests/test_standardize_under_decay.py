@@ -26,7 +26,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -46,14 +46,14 @@ def _frame(k: int, r: float, seed: int = 0) -> tuple[pl.DataFrame, np.ndarray]:
 def _spec(kind: str, standardize: bool, features: list[str], **kw) -> dict:
     common = dict(targets=["y"], features=features, standardize=standardize, **kw)
     if kind == "sgd":
-        return po.spec.sgd("m", **common)
+        return rp.spec.sgd("m", **common)
     if kind == "pa":
-        return po.spec.pa("m", **common)
-    return po.spec.kalman("m", coef_half_life=50.0, **common)
+        return rp.spec.pa("m", **common)
+    return rp.spec.kalman("m", coef_half_life=50.0, **common)
 
 
 def _excess(spec: dict, df: pl.DataFrame, e: np.ndarray, lo: int = 10_000, hi: int = N):
-    out = po.ModelBank([spec]).fit_predict(df)["m"]
+    out = rp.ModelBank([spec]).fit_predict(df)["m"]
     p = out.struct.field("pred_y").to_numpy().astype(float)[lo:hi]
     noise = float(np.mean(e[lo:hi] ** 2))
     y = df["y"].to_numpy()[lo:hi]
@@ -120,7 +120,7 @@ def test_a_short_history_learns_as_it_did(kind):
     kw = dict(group="g", half_life=float("inf"), min_weight=25.0)
     if kind == "sgd":
         kw["learning_rate"] = 0.01
-    out = po.ModelBank([_spec(kind, True, features, **kw)]).fit_predict(df)
+    out = rp.ModelBank([_spec(kind, True, features, **kw)]).fit_predict(df)
     pred = out["m"].struct.field("pred_y").to_numpy().astype(float)
     ok = (pos >= 25) & (pos < 50)
     err = y[ok] - pred[ok]
@@ -149,11 +149,11 @@ def test_a_feature_level_of_1e8_predicts_as_level_0(kind):
         df, _ = _shift_frame(level)
         kw = dict(half_life=20.0, min_weight=3.0)
         spec = (
-            po.spec.kalman("m", targets=["y"], features=["x0", "x1"], coef_half_life=100.0, **kw)
+            rp.spec.kalman("m", targets=["y"], features=["x0", "x1"], coef_half_life=100.0, **kw)
             if kind == "kalman"
             else _spec(kind, True, ["x0", "x1"], **kw)
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         return out.struct.field("pred_y").to_numpy().astype(float)
 
     base, shifted = preds(0.0), preds(1e8)
@@ -231,9 +231,9 @@ def _chunk_stream(n=600):
 def _specs():
     common = dict(targets=["y"], features=["x0", "x1"], half_life=20.0, min_weight=3.0)
     return [
-        po.spec.sgd("sgd", **common),
-        po.spec.pa("pa", **common),
-        po.spec.kalman("kalman", coef_half_life=50.0, **common),
+        rp.spec.sgd("sgd", **common),
+        rp.spec.pa("pa", **common),
+        rp.spec.kalman("kalman", coef_half_life=50.0, **common),
     ]
 
 
@@ -260,12 +260,12 @@ def test_a_chunk_boundary_around_the_switch_moves_nothing(cuts):
     either side, into 7 chunks (three of them those cuts) or into 600 chunks
     of one row gives every float field of the one-chunk run, to the bit."""
     df = _chunk_stream()
-    whole = _floats(po.ModelBank(_specs()).fit_predict(df))
+    whole = _floats(rp.ModelBank(_specs()).fit_predict(df))
     if cuts == "7":
         cuts = [21, 22, 23, 150, 300, 450]
     elif cuts == "600":
         cuts = list(range(1, 600))
-    bank = po.ModelBank(_specs())
+    bank = rp.ModelBank(_specs())
     bounds = [0, *cuts, df.height]
     parts = [bank.fit_predict(df[a:b]) for a, b in zip(bounds, bounds[1:], strict=False)]
     assert _floats(pl.concat(parts)).equals(whole)
@@ -277,9 +277,9 @@ def test_a_bank_saved_around_the_switch_goes_on_to_the_bit(cut):
     past it, and loaded from its bytes, goes on as the bank that never
     stopped: every float field to the bit."""
     df = _chunk_stream()
-    whole = _floats(po.ModelBank(_specs()).fit_predict(df))
-    first = po.ModelBank(_specs())
+    whole = _floats(rp.ModelBank(_specs()).fit_predict(df))
+    first = rp.ModelBank(_specs())
     head = first.fit_predict(df[:cut])
-    back = po.ModelBank.load_bytes(first.save_bytes())
+    back = rp.ModelBank.load_bytes(first.save_bytes())
     tail = back.fit_predict(df[cut:])
     assert _floats(pl.concat([head, tail])).equals(whole)

@@ -19,8 +19,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from rheon import gram as pg
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -42,8 +42,8 @@ def stream(n=3000, k=5, seed=0, constant=False, offset=0.0):
 def gram(df, targets=("y",), **kw) -> dict[str, Any]:
     kw.setdefault("lam", 1.0)
     features = [c for c in df.columns if c.startswith("x")]
-    spec = po.spec.ewridge("m", targets=list(targets), features=features, min_weight=5.0, **kw)
-    bank = po.ModelBank([spec])
+    spec = rp.spec.ewridge("m", targets=list(targets), features=features, min_weight=5.0, **kw)
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     return bank.gram("m")[0]
 
@@ -149,7 +149,7 @@ class TestLassoPathIsTheLoopItReplaced:
         g = gram(stream(seed=3, **data), targets=("y", "y2"), **spec)
         if "max_iter" in case:
             # Three sweeps leave penalties short of the rule, which is said.
-            with pytest.warns(po.ReadinessWarning, match="ran out of sweeps"):
+            with pytest.warns(rp.ReadinessWarning, match="ran out of sweeps"):
                 got = pg.lasso_path(g, PENALTIES, **case)
         else:
             got = pg.lasso_path(g, PENALTIES, **case)
@@ -323,7 +323,7 @@ class TestLarsPath:
 class TestLarsPaths:
     def test_each_path_is_lars_paths_to_the_bit(self):
         df = stream(seed=15, k=6).with_columns(grp=pl.int_range(pl.len()) % 4)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y", "y2"],
             features=[f"x{i}" for i in range(6)],
@@ -331,7 +331,7 @@ class TestLarsPaths:
             group="grp",
             min_weight=5.0,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         grams = bank.gram("m")
         assert len(grams) == 4
@@ -368,14 +368,14 @@ class TestLarsPaths:
             }
         ).with_columns(pl.col("y2").fill_nan(None))
         # The docstring's example, with a second target.
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "ridge", targets=["y", "y2"], features=["x0", "x1"], half_life=100.0, group="stock_id"
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         grams = bank.gram("ridge")
         assert len({tuple(g["targets"]) for g in grams}) > 1, [g["targets"] for g in grams]
-        paths = po.gram.lars_paths(bank.gram("ridge"), max_active=1)  # one list per group
+        paths = rp.gram.lars_paths(bank.gram("ridge"), max_active=1)  # one list per group
         firsts = [per_gram[0]["active"][-1] for per_gram in paths]
         assert len(firsts) == len(grams)
         for g, per in zip(grams, paths, strict=True):
@@ -409,7 +409,7 @@ def blocks(n_blocks=6, seed=20, gaps=False, **kw) -> list[dict[str, Any]]:
             y2=pl.when(pl.int_range(pl.len()) % 4 == 0).then(None).otherwise(pl.col("y2"))
         )
         kw.setdefault("target_gaps", "pairwise")
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y", "y2"],
         features=[c for c in df.columns if c.startswith("x")],
@@ -418,7 +418,7 @@ def blocks(n_blocks=6, seed=20, gaps=False, **kw) -> list[dict[str, Any]]:
         min_weight=5.0,
         **kw,
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     return bank.gram("m")
 
@@ -496,7 +496,7 @@ class TestSolveSubsets:
         df = stream(n=1200, seed=21).with_columns(
             x4=pl.lit(3.0), block=pl.int_range(pl.len()) // 600
         )
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=[f"x{i}" for i in range(5)],
@@ -505,7 +505,7 @@ class TestSolveSubsets:
             min_weight=5.0,
             ridge=1e-3,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         grams = bank.gram("m")
         (fit,) = pg.solve_subsets(grams, [[0, 1]])[0]
@@ -567,7 +567,7 @@ class TestCompactGram:
     @staticmethod
     def bank(df=None, **kw):
         df = stream(n=2000, k=6, seed=30, offset=50.0) if df is None else df
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y", "y2"],
             features=[c for c in df.columns if c.startswith("x")],
@@ -575,7 +575,7 @@ class TestCompactGram:
             min_weight=5.0,
             **kw,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         return bank
 
@@ -628,8 +628,8 @@ class TestCompactGram:
 
     def test_a_lagged_matrix_takes_the_dtype_and_is_never_packed(self):
         df = stream(n=800, k=3, seed=31)
-        spec = po.spec.ew_cov("c", features=["x0", "x1", "x2"], lam=0.99, lags=[1, 2])
-        bank = po.ModelBank([spec])
+        spec = rp.spec.ew_cov("c", features=["x0", "x1", "x2"], lam=0.99, lags=[1, 2])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         (g,), (h,) = bank.gram("c"), bank.gram("c", dtype="float32", layout="packed")
         assert h["lag_comoments"].shape == g["lag_comoments"].shape == (2, 3, 3)
@@ -679,7 +679,7 @@ class TestCompactGram:
     def test_merges_and_subset_fits_read_each_form_in_float64(self):
         bank_forms = {}
         df = stream(n=1800, seed=20).with_columns(block=pl.int_range(pl.len()) // 600)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y", "y2"],
             features=[c for c in df.columns if c.startswith("x")],
@@ -687,7 +687,7 @@ class TestCompactGram:
             group="block",
             min_weight=5.0,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         for name, form in {
             "full": {},
@@ -743,13 +743,13 @@ class TestCompactGram:
         n = 500
         x = rng.normal(size=(n, 2)) * [scale, 1.0]
         df = pl.DataFrame({"x0": x[:, 1], "x1": x[:, 0], "y": x[:, 1] + rng.normal(size=n)})
-        bank = po.ModelBank([po.spec.ewridge("r", targets=["y"], features=["x0", "x1"], lam=1.0)])
+        bank = rp.ModelBank([rp.spec.ewridge("r", targets=["y"], features=["x0", "x1"], lam=1.0)])
         bank.fit_predict(df)
         (g,) = bank.gram("r", layout=layout)
         assert np.isfinite(g["comoments"]).all()
         with pytest.raises(ValueError, match=f'"x1".*{says}'):
             bank.gram("r", dtype="float32", layout=layout)
-        lagged = po.ModelBank([po.spec.ew_cov("c", features=["x0", "x1"], lam=1.0, lags=[1])])
+        lagged = rp.ModelBank([rp.spec.ew_cov("c", features=["x0", "x1"], lam=1.0, lags=[1])])
         lagged.fit_predict(df)
         with pytest.raises(ValueError, match=says):
             lagged.gram("c", dtype="float32")
@@ -761,13 +761,13 @@ class TestCompactGram:
         rng = np.random.default_rng(0)
         x = rng.normal(size=(500, 2)) * [1.0, 3e-19]
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
-        bank = po.ModelBank([po.spec.ew_cov("c", features=["x0", "x1"], lam=1.0, lags=[1])])
+        bank = rp.ModelBank([rp.spec.ew_cov("c", features=["x0", "x1"], lam=1.0, lags=[1])])
         bank.fit_predict(df)
         (g,) = bank.gram("c")
         assert np.float32(g["comoments"][1, 1]) >= np.finfo(np.float32).tiny
         with pytest.raises(ValueError, match='lag-1 co-moment of "x1" with itself'):
             bank.gram("c", dtype="float32")
-        no_lags = po.ModelBank([po.spec.ew_cov("c", features=["x0", "x1"], lam=1.0)])
+        no_lags = rp.ModelBank([rp.spec.ew_cov("c", features=["x0", "x1"], lam=1.0)])
         no_lags.fit_predict(df)
         (h,) = no_lags.gram("c", dtype="float32")
         assert h["comoments"][1, 1] == np.float32(g["comoments"][1, 1])
@@ -793,7 +793,7 @@ class TestCompactGram:
 def grouped_grams(seed: int = 15, k: int = 6) -> list[dict[str, Any]]:
     """Four Grams of one spec, one per group, two targets each."""
     df = stream(seed=seed, k=k).with_columns(grp=pl.int_range(pl.len()) % 4)
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y", "y2"],
         features=[f"x{i}" for i in range(k)],
@@ -801,7 +801,7 @@ def grouped_grams(seed: int = 15, k: int = 6) -> list[dict[str, Any]]:
         group="grp",
         min_weight=5.0,
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     return bank.gram("m")
 
@@ -955,7 +955,7 @@ def certificate(
 
 def short_penalties(caught: list[warnings.WarningMessage]) -> list[float]:
     """The penalties a ``ReadinessWarning`` names as out of sweeps."""
-    said = [str(w.message) for w in caught if issubclass(w.category, po.ReadinessWarning)]
+    said = [str(w.message) for w in caught if issubclass(w.category, rp.ReadinessWarning)]
     assert len(said) <= 1, said
     if not said:
         return []

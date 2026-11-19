@@ -15,7 +15,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -36,21 +36,21 @@ def frame(n=400, seed=0, groups=("a", "b", "c")):
 def spec(name="m", **kw):
     d = dict(targets=["y"], features=["x0"], clock="t", half_life=50.0, gap_cap=10.0)
     d.update(kw)
-    return po.spec.ewridge(name, **d)
+    return rp.spec.ewridge(name, **d)
 
 
 def test_a_rerun_learns_each_row_once():
     df = frame()
     specs = [spec(group="g")]
-    whole = po.ModelBank(specs).fit_predict(df)
-    bank = po.ModelBank(specs)
+    whole = rp.ModelBank(specs).fit_predict(df)
+    bank = rp.ModelBank(specs)
     bank.fit_predict(df.head(250))
     saved = bank.save_bytes()
     # The rerun starts 100 rows before the save.
     rerun = df.slice(150)
     with pytest.raises(ValueError, match="skip_learned"):
-        po.ModelBank.load_bytes(saved, specs).fit_predict(rerun)
-    resumed = po.ModelBank.load_bytes(saved, specs)
+        rp.ModelBank.load_bytes(saved, specs).fit_predict(rerun)
+    resumed = rp.ModelBank.load_bytes(saved, specs)
     kept = resumed.skip_learned(rerun)
     assert kept.equals(df.slice(250))
     out = resumed.fit_predict(kept)
@@ -59,7 +59,7 @@ def test_a_rerun_learns_each_row_once():
 
 def test_a_lazy_frame_stays_lazy_and_keeps_its_order():
     df = frame()
-    bank = po.ModelBank([spec(group="g")])
+    bank = rp.ModelBank([spec(group="g")])
     bank.fit_predict(df.head(200))
     lazy = bank.skip_learned(df.lazy())
     assert isinstance(lazy, pl.LazyFrame)
@@ -70,7 +70,7 @@ def test_a_group_the_bank_has_not_seen_keeps_every_row_and_a_null_group_is_one()
     df = frame().with_columns(
         g=pl.when(pl.col("g") == "c").then(None).otherwise(pl.col("g")).alias("g")
     )
-    bank = po.ModelBank([spec(group="g")])
+    bank = rp.ModelBank([spec(group="g")])
     bank.fit_predict(df.head(90))
     later = pl.concat([df.slice(60, 60), frame(9, 1, ("new",)).with_columns(t=pl.lit(70.0))])
     kept = bank.skip_learned(later)
@@ -84,7 +84,7 @@ def test_a_group_the_bank_has_not_seen_keeps_every_row_and_a_null_group_is_one()
 
 def test_a_row_at_the_last_clock_counts_as_learned_and_a_null_clock_is_kept():
     df = frame(groups=("a",))
-    bank = po.ModelBank([spec(group="g")])
+    bank = rp.ModelBank([spec(group="g")])
     bank.fit_predict(df.head(50))
     last = df["t"][49]
     probe = pl.DataFrame(
@@ -108,7 +108,7 @@ def test_a_temporal_clock_is_compared_in_exact_nanoseconds(tz):
     if tz is not None:
         t = t.dt.convert_time_zone(tz)
     df = pl.DataFrame({"t": t, "x0": np.arange(6.0), "y": np.arange(6.0)})
-    bank = po.ModelBank([spec(half_life="1s", gap_cap="1s")])
+    bank = rp.ModelBank([spec(half_life="1s", gap_cap="1s")])
     bank.fit_predict(df.head(3))
     assert bank.skip_learned(df).equals(df.slice(3))
 
@@ -116,7 +116,7 @@ def test_a_temporal_clock_is_compared_in_exact_nanoseconds(tz):
 def test_a_date_clock():
     days = pl.date_range(datetime(2024, 1, 1), datetime(2024, 1, 20), eager=True)
     df = pl.DataFrame({"d": days, "x0": np.arange(20.0), "y": np.arange(20.0)})
-    bank = po.ModelBank([spec(clock="d", half_life="5d", gap_cap="3d")])
+    bank = rp.ModelBank([spec(clock="d", half_life="5d", gap_cap="3d")])
     bank.fit_predict(df.head(12))
     assert bank.skip_learned(df.slice(5)).equals(df.slice(12))
     shifted = df.with_columns(d=pl.col("d") - timedelta(days=1))
@@ -127,7 +127,7 @@ def test_a_row_is_kept_only_where_every_spec_has_not_learned_it():
     """Two specs, one grouped and one not: a row is new only after the last
     clock of its group in the first and of the whole stream in the second."""
     df = frame()
-    bank = po.ModelBank([spec("grouped", group="g"), spec("whole")])
+    bank = rp.ModelBank([spec("grouped", group="g"), spec("whole")])
     bank.fit_predict(df.head(100))
     extra = pl.DataFrame({"g": ["a"], "t": [98.5], "x0": [0.0], "y": [0.0]})
     # After group a's last clock (97) but before the stream's (99): not new.
@@ -136,10 +136,10 @@ def test_a_row_is_kept_only_where_every_spec_has_not_learned_it():
 
 
 def test_what_it_refuses():
-    counted = po.ModelBank([po.spec.ewridge("n", targets=["y"], features=["x0"], half_life=5.0)])
+    counted = rp.ModelBank([rp.spec.ewridge("n", targets=["y"], features=["x0"], half_life=5.0)])
     with pytest.raises(ValueError, match="no spec reads a clock"):
         counted.skip_learned(frame())
-    bank = po.ModelBank([spec(group="g")])
+    bank = rp.ModelBank([spec(group="g")])
     bank.fit_predict(frame().head(20))
     with pytest.raises(ValueError, match="clock column 't' is not in the input"):
         bank.skip_learned(frame().drop("t"))
@@ -157,7 +157,7 @@ def test_what_it_refuses():
 
 def test_an_empty_bank_keeps_everything():
     df = frame()
-    assert po.ModelBank([spec(group="g")]).skip_learned(df).equals(df)
+    assert rp.ModelBank([spec(group="g")]).skip_learned(df).equals(df)
 
 
 def test_an_instant_nanoseconds_cannot_hold_is_kept_for_the_bank_to_refuse():
@@ -167,7 +167,7 @@ def test_an_instant_nanoseconds_cannot_hold_is_kept_for_the_bank_to_refuse():
     by name. The comparison is in the column's own unit now."""
     t = pl.Series("t", [1_700_000_000_000 + i for i in range(4)]).cast(pl.Datetime("ms"))
     df = pl.DataFrame({"t": t, "x0": np.arange(4.0), "y": np.arange(4.0)})
-    bank = po.ModelBank([spec(half_life="1s", gap_cap="1s")])
+    bank = rp.ModelBank([spec(half_life="1s", gap_cap="1s")])
     bank.fit_predict(df.head(2))
     far = pl.DataFrame(
         {
@@ -224,7 +224,7 @@ def test_the_command_line_is_told_its_own_way_out(rheon_cli, tmp_path):
         args=["--load-state", str(state), "--skip-learned"],
     )
     got = pl.read_parquet(tmp_path / "skipped-out.parquet")
-    bank = po.ModelBank.load(state)
+    bank = rp.ModelBank.load(state)
     rerun = pl.read_parquet(tmp_path / "rerun.parquet")
     want = bank.fit_predict(bank.skip_learned(rerun))
     assert got.height == want.height == 150

@@ -15,8 +15,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from reference_paths import WindowRing
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -43,7 +43,7 @@ def _frame(n: int = 300) -> pl.DataFrame:
 
 def _spec(**kw):
     kw.setdefault("half_life", 1e9)
-    return po.spec.ewridge(
+    return rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0"],
@@ -55,7 +55,7 @@ def _spec(**kw):
 
 
 def _n_eff(spec, df):
-    return po.ModelBank([spec]).fit_predict(df).unnest("m")["weight_sum"].to_numpy()
+    return rp.ModelBank([spec]).fit_predict(df).unnest("m")["weight_sum"].to_numpy()
 
 
 def test_past_the_budget_the_ring_thins_and_never_keeps_an_older_row():
@@ -78,7 +78,7 @@ def test_past_the_budget_the_chunk_is_refused_whole_and_the_bank_goes_on():
     learned before, and every later ``fit_predict``, ``predict`` and ``save``
     was refused."""
     df = _frame()
-    bank = po.ModelBank([_spec(window_budget={"refuse": TINY})])
+    bank = rp.ModelBank([_spec(window_budget={"refuse": TINY})])
     bank.fit_predict(df.head(1))
     before = bank.save_bytes()
     with pytest.raises(ValueError, match="window_budget") as exc:
@@ -89,7 +89,7 @@ def test_past_the_budget_the_chunk_is_refused_whole_and_the_bank_goes_on():
     bank.fit_predict(df.slice(1, 2))
     # The same rows fed one chunk at a time reach the budget on the same row,
     # refused there: the prediction is the ring's, whatever the chunking.
-    fed = po.ModelBank([_spec(window_budget={"refuse": TINY})])
+    fed = rp.ModelBank([_spec(window_budget={"refuse": TINY})])
     fed.fit_predict(df.head(1))
     reached = None
     for i in range(1, df.height):
@@ -99,7 +99,7 @@ def test_past_the_budget_the_chunk_is_refused_whole_and_the_bank_goes_on():
             reached = (i, str(e))
             break
     assert reached is not None and "window_budget" in reached[1]
-    whole = po.ModelBank([_spec(window_budget={"refuse": TINY})])
+    whole = rp.ModelBank([_spec(window_budget={"refuse": TINY})])
     whole.fit_predict(df.head(1))
     whole.fit_predict(df.slice(1, reached[0] - 1))
     with pytest.raises(ValueError, match="window_budget"):
@@ -123,7 +123,7 @@ def test_a_broken_bank_names_itself_before_a_bad_column(tmp_path):
     while casting, which is what the old order ran first. A missing column
     would not tell the orders apart: the adapter leaves that to the bank."""
     df = _frame()
-    bank = po.ModelBank(
+    bank = rp.ModelBank(
         [_spec(window_budget={"refuse": TINY}, emit_drift=True, drift_action="reset")]
     )
     bank.fit_predict(df.head(1))
@@ -148,11 +148,11 @@ def test_a_broken_bank_names_itself_before_a_bad_column(tmp_path):
         pickle.dumps(bank)
     # A filesystem's refusal is still the OSError of its kind.
     with pytest.raises(FileNotFoundError, match="nowhere"):
-        po.ModelBank([_spec()]).save(tmp_path / "nowhere" / "b.state")
+        rp.ModelBank([_spec()]).save(tmp_path / "nowhere" / "b.state")
     bad = df.head(1).with_columns(pl.col("x0").cast(pl.String))
     # The frame is bad on its own: a healthy bank refuses it for the column.
     with pytest.raises(TypeError, match='"x0" must be a number, but it is String'):
-        po.ModelBank([_spec()]).fit_predict(bad)
+        rp.ModelBank([_spec()]).fit_predict(bad)
     for call in (bank.fit_predict, bank.predict):
         with pytest.raises(ValueError, match="window_budget.*cannot go on"):
             call(bad)
@@ -160,9 +160,9 @@ def test_a_broken_bank_names_itself_before_a_bad_column(tmp_path):
 
 def test_a_budget_the_ring_stays_under_changes_nothing():
     df = _frame()
-    plain = po.ModelBank([_spec()]).fit_predict(df)
+    plain = rp.ModelBank([_spec()]).fit_predict(df)
     for action in ("thin", "refuse"):
-        roomy = po.ModelBank([_spec(window_budget={action: 64.0})]).fit_predict(df)
+        roomy = rp.ModelBank([_spec(window_budget={action: 64.0})]).fit_predict(df)
         assert roomy.equals(plain), action
 
 
@@ -182,15 +182,15 @@ def test_a_bad_budget_is_refused_by_name(budget, message):
 
 def test_a_budget_without_a_window_is_refused():
     with pytest.raises(ValueError, match="window_budget applies only under a hard window"):
-        po.spec.ewridge(
+        rp.spec.ewridge(
             "m", targets=["y"], features=["x0"], half_life=10.0, window_budget={"thin": 1.0}
         )
 
 
 def test_an_infinite_budget_is_no_bound_and_survives_a_save():
-    bank = po.ModelBank([_spec(window_budget={"thin": math.inf})])
+    bank = rp.ModelBank([_spec(window_budget={"thin": math.inf})])
     bank.fit_predict(_frame())
-    loaded = po.ModelBank.load_bytes(bank.save_bytes())
+    loaded = rp.ModelBank.load_bytes(bank.save_bytes())
     assert loaded.specs == bank.specs
     assert loaded.specs[0]["model"]["window_budget"] == {"thin": math.inf}
 
@@ -200,10 +200,10 @@ def test_the_budget_holds_after_a_load():
     file thins where the bank that wrote it would have."""
     df = _frame(400)
     spec = _spec(window_budget={"thin": TINY})
-    whole = po.ModelBank([spec]).fit_predict(df).unnest("m")
-    first = po.ModelBank([spec])
+    whole = rp.ModelBank([spec]).fit_predict(df).unnest("m")
+    first = rp.ModelBank([spec])
     head = first.fit_predict(df.head(150)).unnest("m")
-    tail = po.ModelBank.load_bytes(first.save_bytes()).fit_predict(df.tail(250)).unnest("m")
+    tail = rp.ModelBank.load_bytes(first.save_bytes()).fit_predict(df.tail(250)).unnest("m")
     both = pl.concat([head, tail])
     for col in ("weight_sum", "pred_y"):
         assert both[col].equals(whole[col]), col
@@ -213,13 +213,13 @@ def test_the_budget_holds_after_a_load():
 
 #: One spec of each windowed kind, over ``_frame``'s columns and a label.
 WINDOWED = {
-    "ewridge": lambda **kw: po.spec.ewridge("m", targets=["y"], features=["x0"], **kw),
-    "lasso": lambda **kw: po.spec.lasso("m", targets=["y"], features=["x0"], penalties=[0.1], **kw),
-    "ew_cov": lambda **kw: po.spec.ew_cov("m", features=["x0", "y"], **kw),
-    "ew_class": lambda **kw: po.spec.ew_class(
+    "ewridge": lambda **kw: rp.spec.ewridge("m", targets=["y"], features=["x0"], **kw),
+    "lasso": lambda **kw: rp.spec.lasso("m", targets=["y"], features=["x0"], penalties=[0.1], **kw),
+    "ew_cov": lambda **kw: rp.spec.ew_cov("m", features=["x0", "y"], **kw),
+    "ew_class": lambda **kw: rp.spec.ew_class(
         "m", features=["x0"], label="c", classes=["a", "b"], precision_prior=1.0, **kw
     ),
-    "marginal": lambda **kw: po.spec.marginal("m", targets=["y"], features=["x0"], **kw),
+    "marginal": lambda **kw: rp.spec.marginal("m", targets=["y"], features=["x0"], **kw),
 }
 
 
@@ -234,15 +234,15 @@ def test_every_windowed_model_holds_its_budget(kind):
         half_life=1e9, window_size=50.0, snapshot_every=1, window_budget={"refuse": TINY}
     )
     with pytest.raises(ValueError, match="window_budget"):
-        po.ModelBank([spec]).fit_predict(df)
+        rp.ModelBank([spec]).fit_predict(df)
 
 
 def test_the_budget_table_names_every_windowed_builder():
     """A new builder that takes ``window_budget`` belongs in ``WINDOWED``, or
     the test above cannot check it."""
     takes = set()
-    for name in dir(po.spec):
-        builder = getattr(po.spec, name)
+    for name in dir(rp.spec):
+        builder = getattr(rp.spec, name)
         if name.startswith("_") or not callable(builder):
             continue
         try:
@@ -268,7 +268,7 @@ def _labelled(n: int = 300) -> pl.DataFrame:
 
 
 def _run(spec, df: pl.DataFrame) -> pl.DataFrame:
-    return po.ModelBank([spec]).fit_predict(df).unnest("m")
+    return rp.ModelBank([spec]).fit_predict(df).unnest("m")
 
 
 def _capacity(kind: str, df: pl.DataFrame) -> int:
@@ -276,7 +276,7 @@ def _capacity(kind: str, df: pl.DataFrame) -> int:
     refusing budget of as much refuses, fed a row at a time on a window no
     row leaves, each row adding one snapshot. A thinning budget counts the
     same bytes."""
-    bank = po.ModelBank(
+    bank = rp.ModelBank(
         [WINDOWED[kind](**(THIN | {"window_size": 1e9}), window_budget={"refuse": TINY})]
     )
     for i in range(df.height):
@@ -342,13 +342,13 @@ def test_a_thinned_ring_does_not_depend_on_the_chunking_or_a_save(kind):
     whole = _run(spec, df)
     floats = [c for c, t in whole.schema.items() if t.is_float()]
     for rows in (1, 7, 37):
-        parts = pl.concat(po.ModelBank([spec]).fit_predict_batches(df, chunk_size=rows))
+        parts = pl.concat(rp.ModelBank([spec]).fit_predict_batches(df, chunk_size=rows))
         parts = parts.unnest("m")
         for f in floats:
             assert whole[f].equals(parts[f]), (kind, rows, f)
     for cut in (23, 151):
-        first = po.ModelBank([spec])
+        first = rp.ModelBank([spec])
         first.fit_predict(df.head(cut))
-        tail = po.ModelBank.load_bytes(first.save_bytes()).fit_predict(df.slice(cut)).unnest("m")
+        tail = rp.ModelBank.load_bytes(first.save_bytes()).fit_predict(df.slice(cut)).unnest("m")
         for f in floats:
             assert whole[f].slice(cut).equals(tail[f]), (kind, cut, f)

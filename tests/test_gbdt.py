@@ -29,7 +29,7 @@ import xgboost as xgb
 
 import child
 from rheon import _rheon as native
-from rheon import gbdt
+from rheon.polars import _gbdt as gbdt
 
 TIER = "mixed"
 
@@ -1182,7 +1182,7 @@ _PEAK = """
 import threading, time
 import psutil
 import polars as pl
-import rheon as po
+from rheon.polars import _gbdt
 import {lib}
 src = {source}
 proc = psutil.Process()
@@ -1229,9 +1229,9 @@ def _build_peak(big, lib: str, source: str, parts: str = "*") -> int:
     path = str(big / f"part-{parts}.{'arrow' if source == 'ipc' else 'parquet'}")
     src = repr(path) if source == "ipc" else f"pl.scan_parquet({path!r})"
     build = (
-        'po.gbdt.xgboost_matrix(src, label="y")'
+        '_gbdt.xgboost_matrix(src, label="y")'
         if lib == "xgboost"
-        else 'po.gbdt.lightgbm_dataset(src, label="y", params={"verbose": -1}, in_memory=False)'
+        else '_gbdt.lightgbm_dataset(src, label="y", params={"verbose": -1}, in_memory=False)'
     )
     env = child.env(POLARS_ROW_GROUP_PREFETCH_SIZE="1", POLARS_MAX_THREADS="4")
     res = subprocess.run(

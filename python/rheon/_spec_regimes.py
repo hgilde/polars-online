@@ -115,7 +115,7 @@ def hmm(
         together. The count-based learning is off under it, and ``A`` and ``B`` are
         fitted elsewhere. A row whose ``exog_tvtp`` is null or not finite is
         filtered with ``z = 0``, the base transition, and is otherwise an ordinary
-        row. :meth:`rheon.ModelBank.predict` reads the column too.
+        row. :meth:`rheon.polars.ModelBank.predict` reads the column too.
 
     .. rubric:: Output
 
@@ -154,7 +154,7 @@ def hmm(
     Until the states are seeded, every field but ``weight_sum``,
     ``settled_frac``, ``withheld_reason`` and ``coef`` is null. A row whose
     state densities cannot be evaluated is counted in
-    :meth:`rheon.ModelBank.solve_failures` and leaves the filter where
+    :meth:`rheon.polars.ModelBank.solve_failures` and leaves the filter where
     it stands. Each seeding run that stopped at its iteration cap is counted
     there too.
 
@@ -237,7 +237,7 @@ def hmm(
         x = np.where(regime == 1, 2.0, -2.0) + rng.standard_normal(5_000)
         pl.DataFrame({"x": x, "regime": regime}).write_parquet("regimes.parquet")
 
-        h = po.spec.hmm(
+        h = rp.spec.hmm(
             "hmm", features=["x"], half_life=float("inf"),
             n_components=2,
             precision_prior=1e-2,                          # required: a state starts with no spread
@@ -385,7 +385,7 @@ def rcov(
     ``gap_cap`` and ``min_weight``, are in :mod:`rheon.spec`. This
     model reads ``features``, whose rows are returns: compute them with
     Polars' ``diff()`` in the query before the bank (``.diff().over(by)``
-    after :func:`rheon.stream.refresh_time`). It takes no
+    after :func:`rheon.polars.stream.refresh_time`). It takes no
     ``targets``, and ``fit_intercept`` has nothing to act on, as there is no
     regression. It requires ``group`` and ``group_close``, since the
     estimate rides in the row the close emits. It refuses ``half_life`` and
@@ -452,7 +452,7 @@ def rcov(
     record holding ``weight_sum`` alone. `docs/OUTPUTS.md#rcov
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#rcov>`_
     gives its type. The estimate is in the row
-    :meth:`rheon.ModelBank.closed_groups` returns when the group
+    :meth:`rheon.polars.ModelBank.closed_groups` returns when the group
     closes:
 
     ``rcov``, ``rcorr``
@@ -580,9 +580,9 @@ def rcov(
         common = dict(
             features=["p0", "p1"], group="block", group_close="monotone", block_rows=5_000,
         )
-        bank = po.ModelBank([
-            po.spec.rcov("rk", **common),                     # the kernel, the default
-            po.spec.rcov("plain", kind="plain", **common),    # the plain sum, for comparison
+        bank = rp.ModelBank([
+            rp.spec.rcov("rk", **common),                     # the kernel, the default
+            rp.spec.rcov("plain", kind="plain", **common),    # the plain sum, for comparison
         ])
         bank.fit(returns)                                     # each estimate comes at its close
         print("the first block's truth: variance 0.50, correlation 0.50")
@@ -598,9 +598,9 @@ def rcov(
     .. rubric:: See also
 
     - :func:`ew_cov`, running moments that decay, read before each row.
-    - :func:`rheon.stream.refresh_time`, to put the prices of
+    - :func:`rheon.polars.stream.refresh_time`, to put the prices of
       several series on one grid before taking returns.
-    - :meth:`rheon.ModelBank.closed_groups`, which returns each
+    - :meth:`rheon.polars.ModelBank.closed_groups`, which returns each
       block's estimate.
 
     .. rubric:: Notes

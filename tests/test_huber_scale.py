@@ -25,7 +25,7 @@ from scipy.stats import norm
 from statsmodels.robust.norms import HuberT
 
 import ledger
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -46,7 +46,7 @@ NO_DECAY = dict(targets=["y"], features=["x"], half_life=float("inf"))
 
 
 def slope(spec: dict, df: pl.DataFrame) -> float:
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     return float(bank.coef(spec["name"])["coef"].to_list()[1])
 
@@ -72,13 +72,13 @@ def test_sgd_huber_at_a_level_is_robust_under_the_mad(frac):
     5% (seeds 0-4, median): 2.013 under the MAD, 2.557 under the RMS, 3.751
     for the squared loss; at 1%: 1.990, 2.067 and 2.322 (2026-10-26)."""
     df = stream(20_000, frac, 3)
-    squared = slope(po.spec.sgd("s", **NO_DECAY), df)
+    squared = slope(rp.spec.sgd("s", **NO_DECAY), df)
     # One pass under the RMS, as 1.2.0 ran it: the refit of the first rows
     # (task 277) would move it off the squared loss.
     rms = slope(
-        po.spec.sgd("s", loss="huber", huber_scale="rms", huber_refit_rows=0, **NO_DECAY), df
+        rp.spec.sgd("s", loss="huber", huber_scale="rms", huber_refit_rows=0, **NO_DECAY), df
     )
-    mad = slope(po.spec.sgd("s", loss="huber", **NO_DECAY), df)
+    mad = slope(rp.spec.sgd("s", loss="huber", **NO_DECAY), df)
     assert abs(rms - 2.0) < abs(squared - 2.0), (rms, squared)
     assert abs(mad - 2.0) < abs(rms - 2.0), (mad, rms)
     assert abs(mad - 2.0) < 0.25 * abs(squared - 2.0), (mad, squared)
@@ -102,17 +102,17 @@ def test_a_scale_with_a_shorter_memory_follows_a_level_shift():
     c = dict(targets=["y"], features=["x"], clock="t", gap_cap=10.0, half_life=500.0)
 
     def late_error(spec):
-        pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
+        pred = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
         return float(np.abs(y - pred)[10_200:10_400].mean())
 
-    least_squares = late_error(po.spec.huber("m", huber_delta=float("inf"), **c))
-    fit_memory = late_error(po.spec.huber("m", **c))
-    short = late_error(po.spec.huber("m", huber_scale_half_life=100.0, **c))
+    least_squares = late_error(rp.spec.huber("m", huber_delta=float("inf"), **c))
+    fit_memory = late_error(rp.spec.huber("m", **c))
+    short = late_error(rp.spec.huber("m", huber_scale_half_life=100.0, **c))
     assert short < 1.10 * least_squares, (short, least_squares)
     assert fit_memory > 1.3 * least_squares, (fit_memory, least_squares)
     # The same lever on sgd's Huber loss.
-    sgd_fit = late_error(po.spec.sgd("m", loss="huber", **c))
-    sgd_short = late_error(po.spec.sgd("m", loss="huber", huber_scale_half_life=100.0, **c))
+    sgd_fit = late_error(rp.spec.sgd("m", loss="huber", **c))
+    sgd_short = late_error(rp.spec.sgd("m", loss="huber", huber_scale_half_life=100.0, **c))
     assert sgd_short < 0.5 * sgd_fit, (sgd_short, sgd_fit)
 
 
@@ -134,12 +134,12 @@ def test_sgd_follows_a_level_shift_with_a_fifth_of_the_fits_memory():
     c = dict(targets=["y"], features=["x"], clock="t", gap_cap=10.0, half_life=500.0)
 
     def late_error(spec):
-        pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
+        pred = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
         return float(np.abs(y - pred)[10_200:10_400].mean())
 
-    rms = late_error(po.spec.sgd("m", loss="huber", huber_scale="rms", **c))
-    fit_memory = late_error(po.spec.sgd("m", loss="huber", **c))
-    fifth = late_error(po.spec.sgd("m", loss="huber", huber_scale_half_life=100.0, **c))
+    rms = late_error(rp.spec.sgd("m", loss="huber", huber_scale="rms", **c))
+    fit_memory = late_error(rp.spec.sgd("m", loss="huber", **c))
+    fifth = late_error(rp.spec.sgd("m", loss="huber", huber_scale_half_life=100.0, **c))
     assert fifth < 1.3 * rms, (fifth, rms)
     assert fit_memory > 5.0 * rms, (fit_memory, rms)
     assert fit_memory == pytest.approx(17.33, abs=0.01)
@@ -155,10 +155,10 @@ def _specs():
         coef_every=1,
     )
     return [
-        po.spec.huber("m", huber_scale_half_life=60.0, **c),
-        po.spec.huber("m", huber_scale="rms", **c),
-        po.spec.sgd("m", loss="huber", huber_scale_half_life=60.0, **c),
-        po.spec.sgd("m", loss="huber", huber_scale="rms", **c),
+        rp.spec.huber("m", huber_scale_half_life=60.0, **c),
+        rp.spec.huber("m", huber_scale="rms", **c),
+        rp.spec.sgd("m", loss="huber", huber_scale_half_life=60.0, **c),
+        rp.spec.sgd("m", loss="huber", huber_scale="rms", **c),
     ]
 
 
@@ -183,9 +183,9 @@ def test_one_chunk_or_many_give_one_run(spec):
     rows give the one chunk's output to the bit."""
     df = _frame()
     spec = {**spec, "weight": "w"}
-    whole = po.ModelBank([spec]).fit_predict(df)
+    whole = rp.ModelBank([spec]).fit_predict(df)
     for rows in (1, 7, 600):
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         parts = [bank.fit_predict(df.slice(i, rows)) for i in range(0, df.height, rows)]
         assert pl.concat(parts).equals(whole, null_equal=True), rows
 
@@ -197,29 +197,29 @@ def test_a_bank_saved_anywhere_resumes_to_the_bit(spec):
     state."""
     df = _frame()
     spec = {**spec, "weight": "w"}
-    whole = po.ModelBank([spec]).fit_predict(df)
+    whole = rp.ModelBank([spec]).fit_predict(df)
     for cut in (1, 2, 37, 500, 1001, 1399):
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         head = bank.fit_predict(df.slice(0, cut))
-        loaded = po.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
+        loaded = rp.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
         tail = loaded.fit_predict(df.slice(cut))
         assert pl.concat([head, tail]).equals(whole, null_equal=True), cut
 
 
 def test_the_scale_is_refused_beside_another_loss():
     with pytest.raises(ValueError, match='huber_scale applies only under loss="huber"'):
-        po.spec.sgd("s", huber_scale="mad", **NO_DECAY)
+        rp.spec.sgd("s", huber_scale="mad", **NO_DECAY)
     with pytest.raises(ValueError, match='huber_scale_half_life applies only under loss="huber"'):
-        po.spec.sgd("s", loss="quantile", quantile=0.5, huber_scale_half_life=5.0, **NO_DECAY)
+        rp.spec.sgd("s", loss="quantile", quantile=0.5, huber_scale_half_life=5.0, **NO_DECAY)
     with pytest.raises(ValueError, match='huber_scale must be "mad" or "rms", but it is "median"'):
-        po.spec.huber("h", huber_scale="median", **NO_DECAY)  # type: ignore[arg-type]
+        rp.spec.huber("h", huber_scale="median", **NO_DECAY)  # type: ignore[arg-type]
     above = "huber_scale_half_life must be above 0, but it is"
     with pytest.raises(ValueError, match=f"{above} 0"):
-        po.spec.huber("h", huber_scale_half_life=0.0, **NO_DECAY)
+        rp.spec.huber("h", huber_scale_half_life=0.0, **NO_DECAY)
     with pytest.raises(ValueError, match=f"{above} 0"):
-        po.spec.sgd("s", loss="huber", huber_scale_half_life=0.0, **NO_DECAY)
+        rp.spec.sgd("s", loss="huber", huber_scale_half_life=0.0, **NO_DECAY)
     with pytest.raises(ValueError, match=f"{above} -1"):
-        po.spec.sgd("s", loss="huber", huber_scale_half_life=-1.0, **NO_DECAY)
+        rp.spec.sgd("s", loss="huber", huber_scale_half_life=-1.0, **NO_DECAY)
 
 
 #: Four rows on which `huber`'s MAD scale panicked during 1.3.0's
@@ -242,7 +242,7 @@ def test_a_residual_far_below_a_median_at_zero_does_not_panic():
     folds every other bucket into the band's end; every output is finite or
     null, and one chunk or many give the same numbers (`coef` is emitted on
     each chunk's last row, so it is left out)."""
-    spec = po.spec.huber(
+    spec = rp.spec.huber(
         "m",
         targets=["y0"],
         features=["x0", "x1"],
@@ -253,13 +253,13 @@ def test_a_residual_far_below_a_median_at_zero_does_not_panic():
         min_weight=2.0,
         max_rows_between_solves=1,
     )
-    whole = po.ModelBank([spec]).fit_predict(PANIC_ROWS)
+    whole = rp.ModelBank([spec]).fit_predict(PANIC_ROWS)
     fields = whole.select("m").unnest("m")
     for name, dtype in fields.schema.items():
         if dtype.is_float():
             vals = fields[name].drop_nulls().to_numpy()
             assert np.isfinite(vals).all(), name
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     parts = pl.concat([bank.fit_predict(PANIC_ROWS.slice(i, 1)) for i in range(4)])
     numbers = pl.exclude("coef", "support_coef")
     got = parts.select("m").unnest("m").select(numbers)
@@ -288,12 +288,12 @@ def _kind(kind: str, **kw) -> dict:
     )
     c.update(kw)
     if kind == "huber":
-        return po.spec.huber("m", **c)
-    return po.spec.sgd("m", loss="huber", **c)
+        return rp.spec.huber("m", **c)
+    return rp.spec.sgd("m", loss="huber", **c)
 
 
 def _run(spec: dict, df: pl.DataFrame) -> pl.DataFrame:
-    return po.ModelBank([spec]).fit_predict(df)
+    return rp.ModelBank([spec]).fit_predict(df)
 
 
 class TestTheScalesMemory:
@@ -368,10 +368,10 @@ class TestTheSgdInfiniteCut:
             weight="w",
             coef_every=1,
         )
-        inf = _run(po.spec.sgd("m", loss="huber", huber_delta=INF, **c, **kw), df)
-        assert inf.equals(_run(po.spec.sgd("m", **c, **squared), df), null_equal=True)
+        inf = _run(rp.spec.sgd("m", loss="huber", huber_delta=INF, **c, **kw), df)
+        assert inf.equals(_run(rp.spec.sgd("m", **c, **squared), df), null_equal=True)
         # A finite cut moves it, its refit included.
-        assert not inf.equals(_run(po.spec.sgd("m", loss="huber", **c, **kw), df), null_equal=True)
+        assert not inf.equals(_run(rp.spec.sgd("m", loss="huber", **c, **kw), df), null_equal=True)
 
     def test_a_refit_is_refused_beside_it(self):
         with pytest.raises(
@@ -379,8 +379,8 @@ class TestTheSgdInfiniteCut:
             match="huber_refit_rows refits a target's first rows to a Huber fit, but huber_delta "
             "is inf, which makes that fit least squares",
         ):
-            po.ModelBank(
-                [po.spec.sgd("s", loss="huber", huber_delta=INF, huber_refit_rows=10, **NO_DECAY)]
+            rp.ModelBank(
+                [rp.spec.sgd("s", loss="huber", huber_delta=INF, huber_refit_rows=10, **NO_DECAY)]
             )
 
 
@@ -438,7 +438,7 @@ def _cut_spec(kind: str, delta: float) -> dict:
     """``kind`` with no decay at the cut ``delta``, every other keyword the
     default, the refit of the first 500 rows included."""
     c = dict(NO_DECAY, huber_delta=delta)
-    return po.spec.huber("m", **c) if kind == "huber" else po.spec.sgd("m", loss="huber", **c)
+    return rp.spec.huber("m", **c) if kind == "huber" else rp.spec.sgd("m", loss="huber", **c)
 
 
 def _biases(kind: str, share: float, seed: int, n: int = 5000) -> np.ndarray:
@@ -538,7 +538,7 @@ def test_the_cuts_bias_over_fifty_seeds():
                 want = sm.RLM(y, X, M=HuberT(DELTAS[i])).fit(
                     scale_est="mad", conv="coefs", tol=1e-10, maxiter=500
                 )
-                got = slope(po.spec.huber("m", huber_delta=DELTAS[i], **NO_DECAY), df)
+                got = slope(rp.spec.huber("m", huber_delta=DELTAS[i], **NO_DECAY), df)
                 gaps[seed, j] = abs(got - want.params[1])
         for j, i in enumerate(narrow):
             case = f"huber_share_{share:g}_from_rlm_at_{DELTAS[i]:g}".replace(".", "_")

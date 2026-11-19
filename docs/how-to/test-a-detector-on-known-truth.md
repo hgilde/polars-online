@@ -42,7 +42,7 @@ This code simulates four series in two regimes and prints the columns of
 each frame:
 
 ```python
-import rheon as po
+from rheon import polars as po
 
 sim = po.sim.regimes(                                  # 1.
     4, states=[0.2, 0.7],                     # four series; two regimes, at these equicorrelations

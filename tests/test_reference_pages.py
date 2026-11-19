@@ -106,4 +106,4 @@ def test_twins_of_another_case_get_two_files():
     """``Target`` and ``target`` would be one file on macOS and Windows."""
     assert families.page_name("rheon.Target", "class") == "rheon.Target-class"
     assert families.page_name("rheon.target", "function") == "rheon.target"
-    assert families.page_name("rheon.ModelBank", "class") == "rheon.ModelBank"
+    assert families.page_name("rheon.polars.ModelBank", "class") == "rheon.polars.ModelBank"

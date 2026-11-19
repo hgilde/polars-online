@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -290,7 +290,7 @@ _DIRECTIVE = re.compile(r"^\.\. auto(module|class|function):: (\S+)\n((?:[ \t]+:
 
 
 def _resolve(dotted: str) -> object:
-    """``rheon.ModelBank`` or ``rheon._frame.X`` as an object."""
+    """``rheon.polars.ModelBank`` or ``rheon.polars._frame.X`` as an object."""
     parts = dotted.split(".")
     for cut in range(len(parts), 0, -1):
         try:
@@ -343,7 +343,7 @@ def documented() -> Iterator[tuple[str, object]]:
 
     for name in (n for f in families.FAMILIES for n in f.entries):
         yield from visit(name, _resolve(name))
-    modules = [po] + [importlib.import_module(f"rheon.{m}") for m in _helper_modules()]
+    modules = [rp] + [importlib.import_module(path) for path in _helper_modules()]
     for module in modules:
         yield from visit(module.__name__, module)
         for name in getattr(module, "__all__", ()):
@@ -353,7 +353,7 @@ def documented() -> Iterator[tuple[str, object]]:
 def _helper_modules() -> list[str]:
     from test_api_surface import helper_modules
 
-    return [*helper_modules(), "spec"]
+    return [*helper_modules().values(), "rheon.spec"]
 
 
 DOCSTRINGS = [
@@ -367,7 +367,10 @@ def test_the_docstrings_were_found():
     """A check that reads nothing passes: 157 docstrings carried text when
     this was written, every page of the reference among them."""
     assert len(DOCSTRINGS) > 150, len(DOCSTRINGS)
-    pages = {where.split(".")[1] if where.count(".") else where for where, _ in DOCSTRINGS}
+    pages = {
+        where.removeprefix("rheon.").removeprefix("polars.").split(".")[0]
+        for where, _ in DOCSTRINGS
+    }
     assert {"spec", "ops", "stream", "gram", "ModelBank", "ArrowStruct"} <= pages, pages
 
 

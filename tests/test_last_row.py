@@ -11,13 +11,13 @@ leaves the row before them.
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 from test_golden_pipeline import specs, stream
 
 TIER = "essential"
 
 
-def feed(bank: po.ModelBank, df: pl.DataFrame, n_chunks: int) -> pl.DataFrame:
+def feed(bank: rp.ModelBank, df: pl.DataFrame, n_chunks: int) -> pl.DataFrame:
     step = -(-df.height // n_chunks)
     return pl.concat([bank.fit_predict(c) for c in df.iter_slices(step)])
 
@@ -48,9 +48,9 @@ def without_coef(df: pl.DataFrame) -> pl.DataFrame:
 
 
 @pytest.fixture(scope="module")
-def fitted() -> tuple[pl.DataFrame, po.ModelBank, pl.DataFrame]:
+def fitted() -> tuple[pl.DataFrame, rp.ModelBank, pl.DataFrame]:
     df = stream(120)
-    bank = po.ModelBank(specs())
+    bank = rp.ModelBank(specs())
     out = feed(bank, df, 4)
     return df, bank, out
 
@@ -72,7 +72,7 @@ def test_it_is_the_frame_s_last_learned_row_for_every_model(fitted):
     # Narrowed to one spec, by name or position, and to one group.
     ridge = bank.last_row("ridge")
     assert ridge.equals(table.filter(pl.col("spec") == "ridge").select(ridge.columns))
-    assert ridge.columns == ["spec", "group", *po.spec.output_fields(specs()[0])]
+    assert ridge.columns == ["spec", "group", *rp.spec.output_fields(specs()[0])]
     assert bank.last_row(0).equals(ridge)
     assert bank.last_row("ridge", group="b").equals(ridge.filter(pl.col("group") == "b"))
 
@@ -80,9 +80,9 @@ def test_it_is_the_frame_s_last_learned_row_for_every_model(fitted):
 def test_it_travels_with_the_state_file(fitted, tmp_path):
     _, bank, _ = fitted
     table = bank.last_row()
-    assert po.ModelBank.load_bytes(bank.save_bytes()).last_row().equals(table)
+    assert rp.ModelBank.load_bytes(bank.save_bytes()).last_row().equals(table)
     bank.save(tmp_path / "bank.bin")
-    assert po.ModelBank.load(tmp_path / "bank.bin").last_row().equals(table)
+    assert rp.ModelBank.load(tmp_path / "bank.bin").last_row().equals(table)
 
 
 def test_chunking_changes_nothing_but_coef(fitted):
@@ -90,7 +90,7 @@ def test_chunking_changes_nothing_but_coef(fitted):
     group's last learned row carries it is the chunking's to decide -- in the
     frame and here alike. Everything else is chunk-invariant."""
     df, bank, _ = fitted
-    one = po.ModelBank(specs())
+    one = rp.ModelBank(specs())
     feed(one, df, 1)
     a, b = without_coef(one.last_row()), without_coef(bank.last_row())
     assert a.equals(b)
@@ -98,7 +98,7 @@ def test_chunking_changes_nothing_but_coef(fitted):
 
 def test_predict_leaves_it_and_skipped_rows_step_back():
     df = stream(120)
-    bank = po.ModelBank(specs())
+    bank = rp.ModelBank(specs())
     out = feed(bank, df.head(90), 3)
     before = bank.last_row()
 
@@ -123,7 +123,7 @@ def test_predict_leaves_it_and_skipped_rows_step_back():
             i = last_learned(tail, out2, name, g)
             if i is None:
                 assert g == "a", f"{name}: group b has learnable rows"
-                cols = po.spec.output_fields(spec)
+                cols = rp.spec.output_fields(spec)
                 want = bank_row(before, name, g, cols)
                 kept += 1
             else:
@@ -138,16 +138,16 @@ def test_predict_leaves_it_and_skipped_rows_step_back():
 
 def test_a_group_with_no_learned_row_is_a_row_of_nulls():
     spec = specs()[0]
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     df = stream(20).with_columns(pl.lit(None, pl.Float64).alias("x1"))
     bank.fit_predict(df)
     table = bank.last_row()
     assert table["group"].to_list() == ["a", "b"]
     assert table.drop("spec", "group").null_count().sum_horizontal().item() == 2 * (table.width - 2)
     # And a bank that has seen nothing has the columns and no rows.
-    empty = po.ModelBank([spec]).last_row()
+    empty = rp.ModelBank([spec]).last_row()
     assert empty.height == 0
-    assert empty.columns == ["spec", "group", *po.spec.output_fields(spec)]
+    assert empty.columns == ["spec", "group", *rp.spec.output_fields(spec)]
 
 
 def test_a_spec_the_bank_has_not_got_and_a_group_it_has_not_seen(fitted):
@@ -158,4 +158,4 @@ def test_a_spec_the_bank_has_not_got_and_a_group_it_has_not_seen(fitted):
         bank.last_row(len(specs()))
     none = bank.last_row("kalman", group="zzz")
     assert none.height == 0
-    assert none.columns == ["spec", "group", *po.spec.output_fields(specs()[2])]
+    assert none.columns == ["spec", "group", *rp.spec.output_fields(specs()[2])]

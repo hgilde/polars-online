@@ -80,13 +80,13 @@ def check(
     and a distribution is named (a checkout has no distribution of its own)."""
     import polars as pl
 
-    import rheon as po
+    from rheon import polars as rp
 
-    where = Path(po.__file__).resolve()
+    where = Path(rp.__file__).resolve()
     if installed and where.is_relative_to(REPO / "python"):
         raise SystemExit(f"rheon came from the checkout ({where}), not the wheel")
-    if version is not None and po.__version__ != version:
-        raise SystemExit(f"the wheel is polars-online {po.__version__}, not {version}")
+    if version is not None and rp.__version__ != version:
+        raise SystemExit(f"the wheel is polars-online {rp.__version__}, not {version}")
 
     if installed and distribution is not None:
         check_build(distribution, features)
@@ -96,9 +96,9 @@ def check(
     n = 200
     xs = [((i * 37) % 101) / 10.0 - 5.0 for i in range(n)]
     df = pl.DataFrame({"x": xs, "y": [1.0 + 2.0 * x for x in xs]})
-    spec = po.spec.ewridge("m", targets=["y"], features=["x"], half_life=float("inf"))
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x"], half_life=float("inf"))
 
-    whole = po.ModelBank([spec]).fit_predict(df)
+    whole = rp.ModelBank([spec]).fit_predict(df)
     out = whole.unnest("m")
     if out["pred_y"][0] is not None:
         raise SystemExit("the first row has a prediction: nothing came before it")
@@ -106,9 +106,9 @@ def check(
     if not isinstance(worst, float) or worst > 1e-4:
         raise SystemExit(f"the fit misses y = 1 + 2x by {worst}")
 
-    first = po.ModelBank([spec])
+    first = rp.ModelBank([spec])
     first.fit_predict(df.head(120))
-    resumed = po.ModelBank.load_bytes(first.save_bytes(), specs=[spec])
+    resumed = rp.ModelBank.load_bytes(first.save_bytes(), specs=[spec])
     if not resumed.fit_predict(df.tail(80)).equals(whole.tail(80)):
         raise SystemExit("a saved and resumed state parts from the unbroken run")
 
@@ -116,7 +116,7 @@ def check(
     if not streamed.equals(whole):
         raise SystemExit("the streaming plan parts from ModelBank.fit_predict")
 
-    return f"polars-online {po.__version__} on polars {pl.__version__}, from {where.parent}: ok"
+    return f"polars-online {rp.__version__} on polars {pl.__version__}, from {where.parent}: ok"
 
 
 def main() -> None:

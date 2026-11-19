@@ -22,7 +22,7 @@ import pytest
 from scipy.special import logsumexp
 from scipy.stats import multivariate_t
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -37,8 +37,8 @@ def run(x, **kw):
         if extra in kw:
             df = df.with_columns(pl.Series(extra, kw.pop(extra)))
     kw.setdefault("features", [f"x{i}" for i in range(x.shape[1])])
-    spec = po.spec.bocpd("b", **kw)
-    return po.ModelBank([spec]).fit_predict(df)["b"].struct.unnest()
+    spec = rp.spec.bocpd("b", **kw)
+    return rp.ModelBank([spec]).fit_predict(df)["b"].struct.unnest()
 
 
 def normals(n, seed=0, loc=0.0, scale=1.0):
@@ -481,7 +481,7 @@ def test_a_spec_that_leaves_targets_out_reads_the_hazard_column_it_names():
     x = normals(200, 17) + 10.0
     h = np.where(np.arange(200) < 100, 1e9, 5.0)
     df = pl.DataFrame({"x0": x, "h": h})
-    built = po.spec.bocpd(
+    built = rp.spec.bocpd(
         "b",
         features=["x0"],
         hazard_col="h",
@@ -490,8 +490,8 @@ def test_a_spec_that_leaves_targets_out_reads_the_hazard_column_it_names():
         degrees_of_freedom_prior=2.0,
     )
     hand = {k: v for k, v in built.items() if k != "targets"}
-    a = po.ModelBank([built]).fit_predict(df)["b"].struct.unnest()
-    b = po.ModelBank([hand]).fit_predict(df)["b"].struct.unnest()
+    a = rp.ModelBank([built]).fit_predict(df)["b"].struct.unnest()
+    b = rp.ModelBank([hand]).fit_predict(df)["b"].struct.unnest()
     assert a["p_change"].to_list() == b["p_change"].to_list()
 
 
@@ -512,7 +512,7 @@ def test_an_unusable_hazard_in_the_column_is_refused_naming_the_row():
     h = np.full(60, 40.0)
     h[17] = np.nan
     df = pl.DataFrame({"x0": x, "h": h})
-    spec = po.spec.bocpd(
+    spec = rp.spec.bocpd(
         "b",
         features=["x0"],
         hazard=40.0,
@@ -520,7 +520,7 @@ def test_an_unusable_hazard_in_the_column_is_refused_naming_the_row():
         covariance_prior=[1.0],
         degrees_of_freedom_prior=2.0,
     )
-    got = po.ModelBank([spec]).fit_predict(df)["b"].struct.unnest()
+    got = rp.ModelBank([spec]).fit_predict(df)["b"].struct.unnest()
     want = run(x, hazard=40.0, covariance_prior=[1.0], degrees_of_freedom_prior=2.0)
     # Exact (task 252 (b)): the fallback is the spec's hazard, the same
     # double into the same arithmetic.
@@ -534,7 +534,7 @@ def test_predict_reads_the_hazard_column():
     x = normals(200, 23)
     h = np.where(np.arange(200) % 2 == 0, 20.0, 500.0)
     df = pl.DataFrame({"x0": x, "h": h})
-    spec = po.spec.bocpd(
+    spec = rp.spec.bocpd(
         "b",
         features=["x0"],
         hazard=50.0,
@@ -542,8 +542,8 @@ def test_predict_reads_the_hazard_column():
         covariance_prior=[1.0],
         degrees_of_freedom_prior=2.0,
     )
-    step = po.ModelBank([spec]).fit_predict(df)["b"].struct.unnest()
-    bank = po.ModelBank([spec])
+    step = rp.ModelBank([spec]).fit_predict(df)["b"].struct.unnest()
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df.head(150))
     got = bank.predict(df.slice(150, 1))["b"].struct.unnest()
     # Exact (task 252 (b)): `predict` is the step without the step, on the
@@ -666,15 +666,15 @@ def test_the_gaussian_emission_sees_the_correlation_the_diagonal_one_cannot():
 def test_chunks_and_a_reload_do_not_move_it():
     x = np.concatenate([normals(120, 25), normals(120, 26, loc=2.0)])
     df = pl.DataFrame({"x0": x})
-    spec = po.spec.bocpd("b", features=["x0"], hazard=60.0, covariance_prior=[1.0])
-    whole = po.ModelBank([spec]).fit_predict(df)
-    bank = po.ModelBank([spec])
+    spec = rp.spec.bocpd("b", features=["x0"], hazard=60.0, covariance_prior=[1.0])
+    whole = rp.ModelBank([spec]).fit_predict(df)
+    bank = rp.ModelBank([spec])
     parts = [bank.fit_predict(df[i : i + 7]) for i in range(0, 240, 7)]
     assert pl.concat(parts).equals(whole)
     # And across a save/load in the middle.
-    warm = po.ModelBank([spec])
+    warm = rp.ModelBank([spec])
     first = warm.fit_predict(df[:100])
-    reloaded = po.ModelBank.load_bytes(warm.save_bytes())
+    reloaded = rp.ModelBank.load_bytes(warm.save_bytes())
     second = reloaded.fit_predict(df[100:])
     assert pl.concat([first, second]).equals(whole)
 
@@ -724,7 +724,7 @@ def test_chunks_and_a_reload_do_not_move_it():
 )
 def test_bad_parameters_are_refused(kwargs, message):
     with pytest.raises(ValueError, match=message):
-        po.spec.bocpd("b", features=["x0"], **kwargs)
+        rp.spec.bocpd("b", features=["x0"], **kwargs)
 
 
 # --- phase-4 coverage: three features (the diagonal tests above reach d = 2) --
@@ -877,7 +877,7 @@ def run_clock(x, secs, hazard, w=None, **kw):
     if w is not None:
         kw["weight"] = "w"
     kw = dict(dict(gap_cap="1d", prune_below=0.0, max_run=10_000, min_weight=0.0), **kw)
-    spec = po.spec.bocpd(
+    spec = rp.spec.bocpd(
         "b",
         features=["x0"],
         hazard=hazard,
@@ -887,7 +887,7 @@ def run_clock(x, secs, hazard, w=None, **kw):
         covariance_prior=[1.0],
         **kw,
     )
-    return po.ModelBank([spec]).fit_predict(df)["b"].struct.unnest()
+    return rp.ModelBank([spec]).fit_predict(df)["b"].struct.unnest()
 
 
 def _gap_case():
@@ -1008,7 +1008,7 @@ def test_a_number_hazard_on_a_temporal_clock_is_still_per_row():
     without a temporal clock reads the same."""
     x, secs, _, _, _ = _irregular_case()
     with_clock = run_clock(x, secs, 50.0)
-    spec = po.spec.bocpd(
+    spec = rp.spec.bocpd(
         "b",
         features=["x0"],
         hazard=50.0,
@@ -1019,7 +1019,7 @@ def test_a_number_hazard_on_a_temporal_clock_is_still_per_row():
         max_run=10_000,
         min_weight=0.0,
     )
-    without = po.ModelBank([spec]).fit_predict(_clock_frame(x, secs))["b"].struct.unnest()
+    without = rp.ModelBank([spec]).fit_predict(_clock_frame(x, secs))["b"].struct.unnest()
     assert with_clock.equals(without)
 
 
@@ -1057,7 +1057,7 @@ def test_a_hazard_on_the_clock_is_chunk_invariant_and_resumes():
     w = np.where(rng.random(n) < 0.1, 0.0, 1.0)
     g = np.where((np.arange(n) // 50) % 2 == 0, "a", "b")
     df = _clock_frame(x, secs, w, g=g)
-    spec = po.spec.bocpd(
+    spec = rp.spec.bocpd(
         "b",
         features=["x0"],
         hazard="20m",
@@ -1068,15 +1068,15 @@ def test_a_hazard_on_the_clock_is_chunk_invariant_and_resumes():
         degrees_of_freedom_prior=2.0,
         covariance_prior=[1.0],
     )
-    whole = po.ModelBank([spec]).fit_predict(df)
+    whole = rp.ModelBank([spec]).fit_predict(df)
     for size in (1, 7, 37):
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         parts = [bank.fit_predict(df[i : i + size]) for i in range(0, n, size)]
         assert pl.concat(parts).equals(whole), size
     for at in (1, 100, 211):
-        warm = po.ModelBank([spec])
+        warm = rp.ModelBank([spec])
         first = warm.fit_predict(df[:at])
-        second = po.ModelBank.load_bytes(warm.save_bytes()).fit_predict(df[at:])
+        second = rp.ModelBank.load_bytes(warm.save_bytes()).fit_predict(df[at:])
         assert pl.concat([first, second]).equals(whole), at
     # The stream did what it is here for: rows that could not begin a run
     # (a stamp shared with the row before), and a break found.
@@ -1109,7 +1109,7 @@ def test_a_hazard_on_the_clock_is_chunk_invariant_and_resumes():
 )
 def test_a_duration_hazard_is_refused_where_it_cannot_run(kwargs, message):
     with pytest.raises(ValueError, match=message):
-        po.spec.bocpd("b", features=["x0"], **kwargs)
+        rp.spec.bocpd("b", features=["x0"], **kwargs)
 
 
 # --- the prior from the first rows (docs/PLAN.md task 195, U4 and U5) ---------
@@ -1191,15 +1191,15 @@ def test_the_warm_up_is_chunk_invariant_and_resumes():
     loaded there, goes on as the stream that never stopped."""
     x = stepping(3.0, 0.5, n=120)
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
-    spec = po.spec.bocpd("b", features=["x0", "x1"], warm_rows=7)
-    whole = po.ModelBank([spec]).fit_predict(df)
-    bank = po.ModelBank([spec])
+    spec = rp.spec.bocpd("b", features=["x0", "x1"], warm_rows=7)
+    whole = rp.ModelBank([spec]).fit_predict(df)
+    bank = rp.ModelBank([spec])
     parts = pl.concat([bank.fit_predict(df.slice(i, 3)) for i in range(0, df.height, 3)])
     assert parts.equals(whole)
     for at in (2, 6, 7, 8):
-        warm = po.ModelBank([spec])
+        warm = rp.ModelBank([spec])
         first = warm.fit_predict(df[:at])
-        second = po.ModelBank.load_bytes(warm.save_bytes()).fit_predict(df[at:])
+        second = rp.ModelBank.load_bytes(warm.save_bytes()).fit_predict(df[at:])
         assert pl.concat([first, second]).equals(whole), at
 
 
@@ -1408,7 +1408,7 @@ def test_the_prior_from_the_first_rows_is_numpys_weighted_covariance(emission):
     base = dict(features=["x0", "x1"], weight="w", covariance_type=emission)
 
     def fit(**kw):
-        bank = po.ModelBank([po.spec.bocpd("b", **base, **kw)])
+        bank = rp.ModelBank([rp.spec.bocpd("b", **base, **kw)])
         return bank, bank.fit_predict(df)["b"].struct.unnest()
 
     for k in (2, 3, 7):
@@ -1488,17 +1488,17 @@ def test_chunks_of_1_7_and_600_with_a_hazard_column_and_weights():
     )
     common = dict(features=["x0", "x1"], weight="w", hazard_col="h", warm_rows=6)
     specs = [
-        po.spec.bocpd("diag", **common),
-        po.spec.bocpd("full", covariance_type="full", **common),
-        po.spec.bocpd("robust", robust_beta=0.1, max_run=200, **common),
+        rp.spec.bocpd("diag", **common),
+        rp.spec.bocpd("full", covariance_type="full", **common),
+        rp.spec.bocpd("robust", robust_beta=0.1, max_run=200, **common),
     ]
-    whole = po.ModelBank(specs).fit_predict(df)
+    whole = rp.ModelBank(specs).fit_predict(df)
     assert whole["diag"].struct.field("p_change").null_count() == 7  # six held, one weightless
     for size in (1, 7, 600):
-        bank = po.ModelBank(specs)
+        bank = rp.ModelBank(specs)
         parts = [bank.fit_predict(df.slice(i, size)) for i in range(0, n, size)]
         assert pl.concat(parts).equals(whole), size
-    warm = po.ModelBank(specs)
+    warm = rp.ModelBank(specs)
     first = warm.fit_predict(df[:450])
-    second = po.ModelBank.load_bytes(warm.save_bytes()).fit_predict(df[450:])
+    second = rp.ModelBank.load_bytes(warm.save_bytes()).fit_predict(df[450:])
     assert pl.concat([first, second]).equals(whole)

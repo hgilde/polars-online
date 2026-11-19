@@ -12,8 +12,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from polars_version import needs_polars
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -36,10 +36,10 @@ def _frame(seed: int = 0) -> pl.DataFrame:
     )
 
 
-OLS = po.spec.ewridge(
+OLS = rp.spec.ewridge(
     "ols", targets=["y"], features=["x0", "x1"], half_life=50.0, min_weight=5.0, group="g"
 )
-GRID = po.spec.ewridge(
+GRID = rp.spec.ewridge(
     "grid",
     targets=["y", "z"],
     features=["x0", "x1", "x2"],
@@ -48,14 +48,14 @@ GRID = po.spec.ewridge(
     feature_sets={"a": ["x0"], "b": ["x0", "x1", "x2"]},
     min_weight=5.0,
 )
-COV = po.spec.ew_cov(
+COV = rp.spec.ew_cov(
     "cov", features=["x0", "x1"], stats=["mean", "corr"], half_life=50.0, min_weight=2.0
 )
 
 
 class TestCoefFields:
     def test_columns_and_layout(self):
-        cf = po.spec.coef_fields(GRID)
+        cf = rp.spec.coef_fields(GRID)
         assert cf.columns == [
             "field",
             "position",
@@ -87,8 +87,8 @@ class TestCoefFields:
     def test_names_follow_the_field_grammar(self):
         """`coef_{target}_{term}` takes the combo and instance suffix of the
         `pred` field it belongs to, so the two sort together."""
-        cf = po.spec.coef_fields(GRID)
-        idx = po.spec.output_index(GRID).filter(pl.col("kind") == "pred")
+        cf = rp.spec.coef_fields(GRID)
+        idx = rp.spec.output_index(GRID).filter(pl.col("kind") == "pred")
         for row in cf.iter_rows(named=True):
             pred = idx.filter(
                 (pl.col("target") == row["target"])
@@ -100,21 +100,21 @@ class TestCoefFields:
             assert row["name"] == f"coef_{row['target']}_{row['term']}{suffix}"
 
     def test_single_instance_and_no_combo(self):
-        assert po.spec.coef_fields(OLS)["name"].to_list() == [
+        assert rp.spec.coef_fields(OLS)["name"].to_list() == [
             "coef_y_intercept",
             "coef_y_x0",
             "coef_y_x1",
         ]
 
     def test_holt_lasso_and_no_intercept(self):
-        holt = po.spec.holt("h", targets=["y", "z"], half_life=50.0, min_weight=2.0)
-        assert po.spec.coef_fields(holt)["name"].to_list() == [
+        holt = rp.spec.holt("h", targets=["y", "z"], half_life=50.0, min_weight=2.0)
+        assert rp.spec.coef_fields(holt)["name"].to_list() == [
             "coef_y_level",
             "coef_y_trend",
             "coef_z_level",
             "coef_z_trend",
         ]
-        lasso = po.spec.lasso(
+        lasso = rp.spec.lasso(
             "l",
             targets=["y"],
             features=["x0"],
@@ -122,23 +122,23 @@ class TestCoefFields:
             half_life=50.0,
             min_weight=2.0,
         )
-        assert po.spec.coef_fields(lasso)["name"].to_list() == [
+        assert rp.spec.coef_fields(lasso)["name"].to_list() == [
             "coef_y_intercept__p1",
             "coef_y_x0__p1",
             "coef_y_intercept__p0.1",
             "coef_y_x0__p0.1",
         ]
-        bare = po.spec.ewridge(
+        bare = rp.spec.ewridge(
             "m", targets=["y"], features=["x0"], half_life=50.0, min_weight=2.0, fit_intercept=False
         )
-        assert po.spec.coef_fields(bare)["name"].to_list() == ["coef_y_x0"]
+        assert rp.spec.coef_fields(bare)["name"].to_list() == ["coef_y_x0"]
 
     def test_ew_cov_has_none(self):
-        assert po.spec.coef_fields(COV).is_empty()
+        assert rp.spec.coef_fields(COV).is_empty()
 
     def test_coef_index_is_one_instance_of_it(self):
-        cf = po.spec.coef_fields(GRID)
-        ci = po.spec.coef_index(GRID)
+        cf = rp.spec.coef_fields(GRID)
+        ci = rp.spec.coef_index(GRID)
         want = cf.filter(pl.col("field") == "coef@h50").select(
             "position",
             "target",
@@ -154,7 +154,7 @@ class TestCoefFields:
 
     def test_invalid_spec_is_refused(self):
         with pytest.raises(ValueError, match="half_life"):
-            po.spec.coef_fields({**OLS, "half_life": -1.0})
+            rp.spec.coef_fields({**OLS, "half_life": -1.0})
 
 
 class TestUnnest:
@@ -190,14 +190,14 @@ class TestUnnest:
         nested = _frame().online.fit_predict([OLS, GRID])
         lazy = nested.lazy().online.unnest([OLS, GRID]).collect()
         assert nested.online.unnest([OLS, GRID]).equals(lazy)
-        assert po.unnest(nested, [OLS, GRID]).equals(lazy)
-        assert po.unnest(nested.lazy(), [OLS, GRID]).collect().equals(lazy)
+        assert rp.unnest(nested, [OLS, GRID]).equals(lazy)
+        assert rp.unnest(nested.lazy(), [OLS, GRID]).collect().equals(lazy)
         with pytest.raises(TypeError, match="DataFrame or LazyFrame"):
-            po.unnest(nested.to_dict(), [OLS])  # type: ignore[call-overload]
+            rp.unnest(nested.to_dict(), [OLS])  # type: ignore[call-overload]
 
     def test_grid_columns(self):
         flat = _frame().online.fit_predict([GRID]).online.unnest([GRID])
-        names = po.spec.coef_fields(GRID)["name"].to_list()
+        names = rp.spec.coef_fields(GRID)["name"].to_list()
         assert all(n in flat.columns for n in names)
         assert "coef_y_x1__b_r0.5@h200" in names
         # A feature outside its set is reported as 0 (the models scatter each
@@ -208,7 +208,7 @@ class TestUnnest:
 
     def test_bank_and_state_path_carry_the_specs(self, tmp_path):
         df = _frame()
-        bank = po.ModelBank([OLS])
+        bank = rp.ModelBank([OLS])
         nested = bank.fit_predict(df)
         bank.save(tmp_path / "state.bin")
         want = nested.online.unnest([OLS])
@@ -232,10 +232,10 @@ class TestUnnest:
 
     def test_ew_cov_unnests_to_its_statistics(self):
         flat = _frame().online.fit_predict([COV]).online.unnest([COV])
-        assert [c for c in flat.columns if c not in _frame().columns] == po.spec.output_fields(COV)
+        assert [c for c in flat.columns if c not in _frame().columns] == rp.spec.output_fields(COV)
 
     def test_holt(self):
-        holt = po.spec.holt("h", targets=["y"], half_life=50.0, min_weight=2.0)
+        holt = rp.spec.holt("h", targets=["y"], half_life=50.0, min_weight=2.0)
         flat = _frame().online.fit_predict([holt]).online.unnest([holt])
         assert {"coef_y_level", "coef_y_trend"} <= set(flat.columns)
 
@@ -316,7 +316,7 @@ def test_named_coefficients_predict_the_next_row():
     """`pred[t+1] == coef[t] . x[t+1]` per named column, over the whole grid:
     targets, feature sets, ridges and half-lives at once. A wrong slot order,
     or a name on the wrong list position, breaks this for some column."""
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "grid",
         targets=["y", "z"],
         features=["x0", "x1", "x2"],
@@ -329,8 +329,8 @@ def test_named_coefficients_predict_the_next_row():
     )
     df = _frame()
     flat = df.online.fit_predict([spec]).online.unnest([spec])
-    cf = po.spec.coef_fields(spec)
-    idx = po.spec.output_index(spec).filter(pl.col("kind") == "pred")
+    cf = rp.spec.coef_fields(spec)
+    idx = rp.spec.output_index(spec).filter(pl.col("kind") == "pred")
     checked = 0
     for pred in idx.iter_rows(named=True):
         rows = cf.filter(
@@ -357,11 +357,11 @@ class TestSeparator:
     column is named ``{spec}{separator}{name}``, so two specs that write a
     field of one name unnest side by side (task 244, M-18 / C-10 / O-13)."""
 
-    A = po.spec.ewridge("a", targets=["y"], features=["x0"], half_life=50.0)
-    B = po.spec.ewridge("b", targets=["y"], features=["x1"], half_life=50.0)
+    A = rp.spec.ewridge("a", targets=["y"], features=["x0"], half_life=50.0)
+    B = rp.spec.ewridge("b", targets=["y"], features=["x1"], half_life=50.0)
 
     def _out(self) -> pl.DataFrame:
-        return po.ModelBank([self.A, self.B]).fit_predict(_frame())
+        return rp.ModelBank([self.A, self.B]).fit_predict(_frame())
 
     def test_two_specs_of_one_target_unnest_side_by_side(self):
         out = self._out()
@@ -373,8 +373,8 @@ class TestSeparator:
             assert name in flat.columns, name
         lazy = out.lazy().online.unnest([self.A, self.B], separator=".").collect()
         assert lazy.equals(flat)
-        assert po.unnest(out, [self.A, self.B], separator=".").equals(flat)
-        assert po.unnest(out.lazy(), [self.A, self.B], separator=".").collect().equals(flat)
+        assert rp.unnest(out, [self.A, self.B], separator=".").equals(flat)
+        assert rp.unnest(out.lazy(), [self.A, self.B], separator=".").collect().equals(flat)
         # The values are the fields' own.
         assert flat["a.pred_y"].equals(out["a"].struct.field("pred_y").alias("a.pred_y"))
         with pytest.raises(TypeError, match="separator"):
@@ -390,8 +390,8 @@ class TestSeparator:
         theirs = out.unnest("a", separator="::")
         scalar = [c for c in theirs.columns if c not in ("a::coef", "a::support_coef")]
         assert ours.select(scalar).equals(theirs.select(scalar))
-        cov = po.spec.ew_cov("c", features=["x0", "x1"], half_life=50.0)
-        moments = po.ModelBank([cov]).fit_predict(_frame())
+        cov = rp.spec.ew_cov("c", features=["x0", "x1"], half_life=50.0)
+        moments = rp.ModelBank([cov]).fit_predict(_frame())
         assert moments.online.unnest([cov], separator="_").equals(
             moments.unnest("c", separator="_")
         )

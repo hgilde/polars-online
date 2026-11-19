@@ -24,7 +24,7 @@ import pytest
 from sklearn.linear_model import Ridge, enet_path
 
 import ledger
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -50,7 +50,7 @@ def ridge_rows(seed: int, n: int = 400, k: int = 4) -> tuple[np.ndarray, np.ndar
 def gram_of(x: np.ndarray, y: np.ndarray, half_life: float, fit_intercept: bool) -> dict[str, Any]:
     features = [f"x{i}" for i in range(x.shape[1])]
     frame = pl.DataFrame({f: x[:, i] for i, f in enumerate(features)}).with_columns(y=y)
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=features,
@@ -58,7 +58,7 @@ def gram_of(x: np.ndarray, y: np.ndarray, half_life: float, fit_intercept: bool)
         fit_intercept=fit_intercept,
         min_weight=5.0,
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(frame)
     return bank.gram("m")[0]
 
@@ -78,7 +78,7 @@ def ridge_solve(
     """One seed's Gram and ``solve``'s coefficients on it."""
     x, y = ridge_rows(seed)
     g = gram_of(x, y, half_life, fit_intercept)
-    return g, np.asarray(po.gram.solve(g, ridge=ridge, standardize=std))
+    return g, np.asarray(rp.gram.solve(g, ridge=ridge, standardize=std))
 
 
 #: The ledger's inputs (tests/ledger.py): ``solve`` on ten seeds at every
@@ -137,7 +137,7 @@ def check_solve(seed: int, half_life: float, fit_intercept: bool, ridge: float, 
         rounding = 4 * gamma(4 * n) * (abs(ybar) + np.abs(mu) @ np.abs(want))
         ratio = max(ratio, abs(ours[0] - fit.intercept_) / (explained + rounding))
     # The ridge took effect: the fit is not least squares.
-    assert np.abs(want - np.asarray(po.gram.solve(g, standardize=std))[-k:]).max() > 0
+    assert np.abs(want - np.asarray(rp.gram.solve(g, standardize=std))[-k:]).max() > 0
     return ratio
 
 
@@ -188,8 +188,8 @@ def weighted_paths(seed: int) -> tuple[dict[str, Any], np.ndarray, np.ndarray]:
     x, y = lasso_rows(seed)
     g = gram_of(x, y, float("inf"), True)
     kw = dict(tol=1e-14, max_iter=100_000)
-    ours = po.gram.lasso_path(g, PENALTIES, penalty_weights=list(path_weights(seed)), **kw)
-    return g, np.asarray(ours), np.asarray(po.gram.lasso_path(g, PENALTIES, **kw))
+    ours = rp.gram.lasso_path(g, PENALTIES, penalty_weights=list(path_weights(seed)), **kw)
+    return g, np.asarray(ours), np.asarray(rp.gram.lasso_path(g, PENALTIES, **kw))
 
 
 ledger.guard(
@@ -363,7 +363,7 @@ def condition_rows(
 def test_condition_is_numpys_svd_of_the_scaled_rows(seed, eps, half_life, fit_intercept):
     x, y = condition_rows(seed, eps)
     g = gram_of(x, y, half_life, fit_intercept)
-    got = po.gram.condition(g)
+    got = rp.gram.condition(g)
     n = len(y)
     w = 0.5 ** (np.arange(n)[::-1] / half_life)
     design = np.column_stack([np.ones(n), x]) if fit_intercept else x

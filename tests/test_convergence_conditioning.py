@@ -47,9 +47,9 @@ import polars as pl
 import pytest
 
 import ledger
-import rheon as po
 import rheon.gram as gram
 from data import STRD_LINEAR, nist_strd_linear_or_skip
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -68,25 +68,25 @@ def forward_bound(kappa: float, eta: float) -> float:
     return 2.0 * ke / (1.0 - ke) if ke < 1.0 else float("inf")
 
 
-def fit(spec: dict[str, Any], x: np.ndarray, y: np.ndarray) -> tuple[pl.DataFrame, po.ModelBank]:
+def fit(spec: dict[str, Any], x: np.ndarray, y: np.ndarray) -> tuple[pl.DataFrame, rp.ModelBank]:
     """One chunk through a bank of `spec`, its struct unnested, and the bank."""
     cols: dict[str, Any] = {f"x{i}": x[:, i] for i in range(x.shape[1])}
     cols["y"] = y
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", po.ReadinessWarning)
+        warnings.simplefilter("ignore", rp.ReadinessWarning)
         out = bank.fit_predict(pl.DataFrame(cols))["m"].struct.unnest()
     return out, bank
 
 
-def served(bank: po.ModelBank, x: np.ndarray) -> np.ndarray:
+def served(bank: rp.ModelBank, x: np.ndarray) -> np.ndarray:
     """The bank's predictions for the rows `x`, scored against its state
     as it stands (`predict`, which learns nothing)."""
     cols = {f"x{i}": x[:, i] for i in range(x.shape[1])}
     return bank.predict(pl.DataFrame(cols))["m"].struct.field("pred_y").to_numpy()
 
 
-def solve_failures(bank: po.ModelBank) -> int:
+def solve_failures(bank: rp.ModelBank) -> int:
     return int(bank.solve_failures()["solve_failures"].sum())
 
 
@@ -138,11 +138,11 @@ def _strd_specs(k: int, intercept: bool) -> dict[str, dict[str, Any]]:
         fit_intercept=intercept,
     )
     return {
-        "ewridge": po.spec.ewridge("m", ridge=0.0, **common),
-        "ewridge_standardized": po.spec.ewridge("m", ridge=0.0, standardize=True, **common),
+        "ewridge": rp.spec.ewridge("m", ridge=0.0, **common),
+        "ewridge_standardized": rp.spec.ewridge("m", ridge=0.0, standardize=True, **common),
         # A prior of 1e-30 next to sums of order 1 to 1e20: no digit of it
         # reaches a coefficient.
-        "rls": po.spec.rls("m", delta=1e-30, **common),
+        "rls": rp.spec.rls("m", delta=1e-30, **common),
     }
 
 
@@ -402,7 +402,7 @@ class TestSyntheticDesigns:
         n = 800
         x, y = _rows(n, 7, shape, eps)
         s, z, kappa_c, kappa_x = design(x, True)
-        out, bank = fit(po.spec.ewridge("m", ridge=0.0, standardize=standardize, **_SYNTH), x, y)
+        out, bank = fit(rp.spec.ewridge("m", ridge=0.0, standardize=standardize, **_SYNTH), x, y)
         want = _lstsq(x, y)
         err = standardized_error(last_coef(out), want, s, True)
         # The reference's own error, `kappa_x * gamma` of an SVD, beside ours.
@@ -429,7 +429,7 @@ class TestSyntheticDesigns:
         # least-squares predictions, which the column space determines.
         n = 800
         x, y = _rows(n, 8, "duplicate")
-        out, bank = fit(po.spec.ewridge("m", ridge=ridge, standardize=standardize, **_SYNTH), x, y)
+        out, bank = fit(rp.spec.ewridge("m", ridge=ridge, standardize=standardize, **_SYNTH), x, y)
         coef, support = last_coef(out), out["support_coef"].to_list()[-1]
         z = np.column_stack([np.ones(n), x])
         ref = z @ np.linalg.lstsq(z, y, rcond=None)[0]
@@ -450,7 +450,7 @@ class TestSyntheticDesigns:
         n = 800
         x, y = _rows(n, 9, "constant")
         for standardize in (False, True):
-            out, _ = fit(po.spec.ewridge("m", standardize=standardize, **_SYNTH), x, y)
+            out, _ = fit(rp.spec.ewridge("m", standardize=standardize, **_SYNTH), x, y)
             coef, support = last_coef(out), out["support_coef"].to_list()[-1]
             assert coef[2] == 0.0
             assert support[2] == 0.0
@@ -464,7 +464,7 @@ class TestSyntheticDesigns:
         x, y = _rows(n, 10, "collinear", 1e-4)
         s, z, kappa_c, kappa_x = design(x, True)
         want = _lstsq(x, y)
-        out, bank = fit(po.spec.rls("m", delta=1e-30, **_SYNTH), x, y)
+        out, bank = fit(rp.spec.rls("m", delta=1e-30, **_SYNTH), x, y)
         err = standardized_error(last_coef(out), want, s, True)
         tan = float(np.linalg.norm(y - z @ want) / np.linalg.norm(z @ want))
         bound = 4.0 * (kappa_x + kappa_x**2 * tan) * gamma(6 * 4 * n) + 4 * kappa_x * gamma(10 * n)
@@ -474,22 +474,22 @@ class TestSyntheticDesigns:
 
 def _last_row(
     spec: dict[str, Any], x: np.ndarray, y: np.ndarray
-) -> tuple[pl.DataFrame, po.ModelBank, int]:
+) -> tuple[pl.DataFrame, rp.ModelBank, int]:
     """Every row but the last in one chunk, then the last alone, so the
     last row's own solve can be told from the rest: the fit's rows, the
     bank, and the failures counted before the last row."""
     cols = {f"x{i}": x[:, i] for i in range(x.shape[1])}
     frame = pl.DataFrame({**cols, "y": y})
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", po.ReadinessWarning)
+        warnings.simplefilter("ignore", rp.ReadinessWarning)
         head = bank.fit_predict(frame[:-1])["m"].struct.unnest()
         before = solve_failures(bank)
         tail = bank.fit_predict(frame[-1:])["m"].struct.unnest()
     return pl.concat([head, tail]), bank, before
 
 
-def _served_reasons(bank: po.ModelBank, x: np.ndarray) -> tuple[int, list[Any]]:
+def _served_reasons(bank: rp.ModelBank, x: np.ndarray) -> tuple[int, list[Any]]:
     """`predict` on the rows `x` against the fit as it stands -- the rows
     after the stream, the serving path -- its null predictions counted, and
     each row's `withheld_reason`."""
@@ -525,7 +525,7 @@ class TestIllConditioned:
         x, y = _rows(n, 3, "collinear", 1e-11)
         _, _, kappa_c, _ = design(x, True)
         assert kappa_c * U > 0.5, "the design was meant to be numerically singular"
-        out, bank, before = _last_row(po.spec.ewridge("m", ridge=0.0, **_SYNTH), x, y)
+        out, bank, before = _last_row(rp.spec.ewridge("m", ridge=0.0, **_SYNTH), x, y)
         last = out.row(-1, named=True)
         print("last row", {k: last[k] for k in ("coef", "support_coef")})
         assert solve_failures(bank) == before + 1, "the last solve was not counted"
@@ -536,7 +536,7 @@ class TestIllConditioned:
         assert _served_reasons(bank, x[-5:]) == (5, ["ill_conditioned"] * 5)
         cols = {f"x{i}": x[:1, i] for i in range(3)}
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", po.ReadinessWarning)
+            warnings.simplefilter("ignore", rp.ReadinessWarning)
             nxt = bank.fit_predict(pl.DataFrame({**cols, "y": y[:1]}))["m"].struct.unnest()
         assert nxt["pred_y"][0] is None
         assert nxt["withheld_reason"].cast(pl.String)[0] == "ill_conditioned"
@@ -553,7 +553,7 @@ class TestIllConditioned:
         counts = {"withheld": 0, "jittered": 0}
         for seed in range(40):
             x, y = _rows(800, seed, "collinear", eps)
-            out, bank, before = _last_row(po.spec.ewridge("m", ridge=0.0, **_SYNTH), x, y)
+            out, bank, before = _last_row(rp.spec.ewridge("m", ridge=0.0, **_SYNTH), x, y)
             last = out.row(-1, named=True)
             assert solve_failures(bank) > before, (seed, "the last solve was not counted")
             if all(c is None for c in last["coef"]):
@@ -614,7 +614,7 @@ class TestGramSolveScales:
     def test_the_gram_solve_unstandardized_is_free_of_the_features_units(self):
         n = 800
         x, y = _rows(n, 12, "scales")
-        out, bank = fit(po.spec.ewridge("m", ridge=0.0, **_SYNTH), x, y)
+        out, bank = fit(rp.spec.ewridge("m", ridge=0.0, **_SYNTH), x, y)
         want = _lstsq(x, y)
         g = bank.gram("m")[0]
         raw = np.asarray(gram.solve(g, ridge=0.0)).ravel()
@@ -638,7 +638,7 @@ class TestGramSolveScales:
 
         n = 800
         x, y = _rows(n, 12, "scales")
-        _, bank = fit(po.spec.ewridge("m", ridge=0.0, **_SYNTH), x, y)
+        _, bank = fit(rp.spec.ewridge("m", ridge=0.0, **_SYNTH), x, y)
         g = bank.gram("m")[0]
         ridges = [0.0, 1e-24, 1e-18, 1e-6, 1.0]
         grid = np.asarray(gram.solve(g, ridge=ridges))

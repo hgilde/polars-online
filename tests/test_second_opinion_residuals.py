@@ -49,7 +49,7 @@ import statsmodels.api as sm
 from scipy.stats import chi2, pearsonr
 from statsmodels.stats.diagnostic import acorr_ljungbox, het_breuschpagan
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -82,7 +82,7 @@ def spec(kind: str, **kw: Any) -> dict[str, Any]:
     options = {"targets": ["y"], "half_life": float("inf"), "min_weight": 10.0}
     if kind != "holt":
         options["features"] = ["x0", "x1"]
-    return getattr(po.spec, kind)("m", **options, **KINDS[kind], **kw)
+    return getattr(rp.spec, kind)("m", **options, **KINDS[kind], **kw)
 
 
 def stream(n: int, seed: int, shift: float = 0.0) -> pl.DataFrame:
@@ -112,7 +112,7 @@ def rel(got: Any, want: float) -> float:
 def test_calibration_specification_and_ic_are_statsmodels_and_scipy(kind):
     df = stream(700, 61)
     out = (
-        po.ModelBank(
+        rp.ModelBank(
             [
                 spec(
                     kind,
@@ -168,7 +168,7 @@ def test_calibration_specification_and_ic_are_statsmodels_and_scipy(kind):
 @pytest.mark.parametrize("kind", sorted(KINDS))
 def test_studentized_and_cusum_are_brown_durbin_and_evans_with_no_leverage(kind):
     df = stream(900, 41, shift=1.0)
-    out = po.ModelBank([spec(kind, emit_breaks=True)]).fit_predict(df).unnest("m")
+    out = rp.ModelBank([spec(kind, emit_breaks=True)]).fit_predict(df).unnest("m")
     y = df["y"].to_numpy()
     r = out["resid_y"].to_numpy().astype(float)
     p = out["pred_y"].to_numpy().astype(float)
@@ -203,7 +203,7 @@ def test_studentized_and_cusum_are_brown_durbin_and_evans_with_no_leverage(kind)
 def test_break_wald_is_two_wls_fits(kind):
     h = 60.0
     df = stream(900, 41, shift=1.0)
-    out = po.ModelBank([spec(kind, emit_breaks=True, breaks_half_life=h)]).fit_predict(df)
+    out = rp.ModelBank([spec(kind, emit_breaks=True, breaks_half_life=h)]).fit_predict(df)
     out = out.unnest("m")
     y = df["y"].to_numpy()
     X = sm.add_constant(df.select("x0", "x1").to_numpy()) if kind != "holt" else np.ones((900, 1))

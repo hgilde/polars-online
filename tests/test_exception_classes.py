@@ -13,7 +13,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
+from rheon.polars import _gbdt
 
 TIER = "essential"
 
@@ -31,21 +32,21 @@ def _df(n: int = 60) -> pl.DataFrame:
 
 
 def _spec() -> dict[str, Any]:
-    return po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=1e9)
+    return rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=1e9)
 
 
 def _gram() -> Any:
-    bank = po.ModelBank([_spec()])
+    bank = rp.ModelBank([_spec()])
     bank.fit_predict(_df())
     return bank.gram("m")[0]
 
 
 def _embargo_text_clock() -> None:
-    po.stream.embargo(_df().with_columns(t=pl.col("t").cast(pl.String)), clock="t", delay=1.0)
+    rp.stream.embargo(_df().with_columns(t=pl.col("t").cast(pl.String)), clock="t", delay=1.0)
 
 
 def _embargo_wide_clock() -> None:
-    po.stream.embargo(_df().with_columns(t=pl.col("t").cast(pl.Int128)), clock="t", delay=1)
+    rp.stream.embargo(_df().with_columns(t=pl.col("t").cast(pl.Int128)), clock="t", delay=1)
 
 
 def _refresh(clock: pl.DataType, value: pl.DataType) -> Callable[[], None]:
@@ -53,7 +54,7 @@ def _refresh(clock: pl.DataType, value: pl.DataType) -> Callable[[], None]:
         df = pl.DataFrame(
             {"series": ["a", "b"], "t": [1, 2], "v": [1.0, 2.0]},
         ).with_columns(pl.col("t").cast(clock), pl.col("v").cast(value))
-        po.stream.refresh_time(
+        rp.stream.refresh_time(
             df.lazy(), series="series", names=["a", "b"], clock="t", value="v"
         ).collect()
 
@@ -61,51 +62,51 @@ def _refresh(clock: pl.DataType, value: pl.DataType) -> Callable[[], None]:
 
 
 def _uint128() -> None:
-    po.ModelBank([_spec()]).fit_predict(_df().with_columns(w=pl.lit(1, dtype=pl.UInt128)))
+    rp.ModelBank([_spec()]).fit_predict(_df().with_columns(w=pl.lit(1, dtype=pl.UInt128)))
 
 
 def _xgb(**kwargs: Any) -> Callable[[], None]:
     def call() -> None:
-        po.gbdt.xgboost_matrix(_df().lazy(), label="y", **kwargs)
+        _gbdt.xgboost_matrix(_df().lazy(), label="y", **kwargs)
 
     return call
 
 
 def _xgb_frame(df: pl.DataFrame, **kwargs: Any) -> Callable[[], None]:
     def call() -> None:
-        po.gbdt.xgboost_matrix(df.lazy(), label="y", **kwargs)
+        _gbdt.xgboost_matrix(df.lazy(), label="y", **kwargs)
 
     return call
 
 
 def _grid(**kwargs: Any) -> Callable[[], None]:
     def call() -> None:
-        po.eval.grid_search(_df(), **kwargs)
+        rp.eval.grid_search(_df(), **kwargs)
 
     return call
 
 
 def _builder(name: str, **kw: Any) -> dict[str, Any]:
-    return po.spec.ewridge(name, targets=["y"], features=["x0"], **kw)
+    return rp.spec.ewridge(name, targets=["y"], features=["x0"], **kw)
 
 
 def _rewm_without_window() -> None:
-    po.ewm_mean("x0", half_life=10.0, reverse=True)  # type: ignore[call-arg]
+    rp.ewm_mean("x0", half_life=10.0, reverse=True)  # type: ignore[call-arg]
 
 
 def _look_ahead_without_window() -> None:
     """The operator's own check, behind the public ones: no public call
     reaches it without a window today, so it is called directly."""
-    from rheon._formula import operator
+    from rheon.polars._formula import operator
 
     operator("rewm_mean", "x0", half_life=10.0)
 
 
 def _like_clash() -> None:
-    like = po.spec.ewridge(
+    like = rp.spec.ewridge(
         "m", targets=["y"], features=["x0"], half_life=10.0, clock="t", gap_cap=5.0
     )
-    po.stream.with_windows(_df(), f=po.ewm_mean("x0", half_life=5.0), like=like, clock="t")
+    rp.stream.with_windows(_df(), f=rp.ewm_mean("x0", half_life=5.0), like=like, clock="t")
 
 
 def _bank(df: pl.DataFrame, **kw: Any) -> Callable[[], None]:
@@ -113,7 +114,7 @@ def _bank(df: pl.DataFrame, **kw: Any) -> Callable[[], None]:
 
     def call() -> None:
         args: dict[str, Any] = {"targets": ["y"], "features": ["x0"], "half_life": 10.0, **kw}
-        po.ModelBank([po.spec.ewridge("m", **args)]).fit_predict(df)
+        rp.ModelBank([rp.spec.ewridge("m", **args)]).fit_predict(df)
 
     return call
 
@@ -131,7 +132,7 @@ _CLOCKED: dict[str, Any] = {"clock": "t", "gap_cap": 5.0}
 
 def _windows(df: pl.DataFrame, expr: pl.Expr, **kw: Any) -> Callable[[], None]:
     def call() -> None:
-        po.stream.with_windows(df, f=expr, **kw)
+        rp.stream.with_windows(df, f=expr, **kw)
 
     return call
 
@@ -142,13 +143,13 @@ def _ipc_second_file_text(tmp: Any) -> None:
     a, b = tmp / "a.arrow", tmp / "b.arrow"
     _df().write_ipc(a)
     _df().with_columns(x0=pl.col("x0").cast(pl.String)).write_ipc(b)
-    po.gbdt.xgboost_matrix([str(a), str(b)], label="y", features=["x0"])
+    _gbdt.xgboost_matrix([str(a), str(b)], label="y", features=["x0"])
 
 
 def _window_metrics(df: pl.DataFrame, every: Any) -> Callable[[], None]:
     def call() -> None:
-        out = po.ModelBank([_spec()]).fit_predict(_df())
-        po.eval.window_metrics(out.with_columns(t=df["t"]), "m", clock="t", every=every)
+        out = rp.ModelBank([_spec()]).fit_predict(_df())
+        rp.eval.window_metrics(out.with_columns(t=df["t"]), "m", clock="t", every=every)
 
     return call
 
@@ -187,7 +188,7 @@ RUST_SITES: list[tuple[str, Callable[[], Any]]] = [
     (
         "with_windows, a text input",
         _windows(
-            _df().with_columns(x0=pl.col("x0").cast(pl.String)), po.ewm_mean("x0", half_life=5.0)
+            _df().with_columns(x0=pl.col("x0").cast(pl.String)), rp.ewm_mean("x0", half_life=5.0)
         ),
     ),
     (
@@ -195,7 +196,7 @@ RUST_SITES: list[tuple[str, Callable[[], Any]]] = [
         "with_windows, a text clock",
         _windows(
             _df().with_columns(t=pl.col("t").cast(pl.String)),
-            po.ewm_mean("x0", half_life=5.0),
+            rp.ewm_mean("x0", half_life=5.0),
             **_CLOCKED,
         ),
     ),
@@ -203,13 +204,13 @@ RUST_SITES: list[tuple[str, Callable[[], Any]]] = [
         "with_windows, an Int128 clock",
         _windows(
             _df().with_columns(t=pl.col("t").cast(pl.Int128)),
-            po.ewm_mean("x0", half_life=5.0),
+            rp.ewm_mean("x0", half_life=5.0),
             **_CLOCKED,
         ),
     ),
     (
         "with_windows, a time-of-day clock",
-        _windows(_time_of_day(_df()), po.ewm_mean("x0", half_life="5s"), clock="t", gap_cap="5s"),
+        _windows(_time_of_day(_df()), rp.ewm_mean("x0", half_life="5s"), clock="t", gap_cap="5s"),
     ),
     ("refresh_time, an Int128 clock", _refresh(pl.Int128, pl.Float64)),
     ("refresh_time, a time-of-day clock", _refresh(pl.Time, pl.Float64)),
@@ -218,17 +219,17 @@ RUST_SITES: list[tuple[str, Callable[[], Any]]] = [
 
 @pytest.mark.parametrize("call", [s[1] for s in RUST_SITES], ids=[s[0] for s in RUST_SITES])
 def test_each_rust_side_wrong_type_raises_wrong_type_error(call: Callable[[], Any]) -> None:
-    with pytest.raises(po.WrongTypeError) as caught:
+    with pytest.raises(rp.WrongTypeError) as caught:
         call()
-    assert type(caught.value) is po.WrongTypeError
+    assert type(caught.value) is rp.WrongTypeError
     with pytest.raises(TypeError):
         call()
 
 
 def test_the_native_gbdt_reader_raises_wrong_type_error(tmp_path: Any) -> None:
-    with pytest.raises(po.WrongTypeError, match="is Utf8View in the Arrow IPC file") as caught:
+    with pytest.raises(rp.WrongTypeError, match="is Utf8View in the Arrow IPC file") as caught:
         _ipc_second_file_text(tmp_path)
-    assert type(caught.value) is po.WrongTypeError
+    assert type(caught.value) is rp.WrongTypeError
 
 
 def test_a_rust_side_refusal_for_another_reason_stays_a_value_error() -> None:
@@ -254,7 +255,7 @@ _SAME_INPUT: dict[str, list[Callable[[], Any]]] = {
         _window_metrics(_df().with_columns(t=pl.col("t").cast(pl.String)), 10.0),
         _windows(
             _df().with_columns(t=pl.col("t").cast(pl.String)),
-            po.ewm_mean("x0", half_life=5.0),
+            rp.ewm_mean("x0", half_life=5.0),
             **_CLOCKED,
         ),
     ],
@@ -264,15 +265,15 @@ _SAME_INPUT: dict[str, list[Callable[[], Any]]] = {
         _refresh(pl.Int128, pl.Float64),
         _windows(
             _df().with_columns(t=pl.col("t").cast(pl.Int128)),
-            po.ewm_mean("x0", half_life=5.0),
+            rp.ewm_mean("x0", half_life=5.0),
             **_CLOCKED,
         ),
     ],
     "a time-of-day clock": [
         _bank(_time_of_day(_df()), **_CLOCKED),
-        lambda: po.stream.embargo(_time_of_day(_df()), clock="t", delay="1s"),
+        lambda: rp.stream.embargo(_time_of_day(_df()), clock="t", delay="1s"),
         _refresh(pl.Time, pl.Float64),
-        _windows(_time_of_day(_df()), po.ewm_mean("x0", half_life="5s"), clock="t", gap_cap="5s"),
+        _windows(_time_of_day(_df()), rp.ewm_mean("x0", half_life="5s"), clock="t", gap_cap="5s"),
         _window_metrics(_time_of_day(_df()), "5s"),
     ],
 }
@@ -281,9 +282,9 @@ _SAME_INPUT: dict[str, list[Callable[[], Any]]] = {
 @pytest.mark.parametrize("input_", list(_SAME_INPUT))
 def test_python_and_rust_paths_refusing_the_same_clock_raise_one_class(input_: str) -> None:
     for call in _SAME_INPUT[input_]:
-        with pytest.raises(po.WrongTypeError) as caught:
+        with pytest.raises(rp.WrongTypeError) as caught:
             call()
-        assert type(caught.value) is po.WrongTypeError, caught.value
+        assert type(caught.value) is rp.WrongTypeError, caught.value
 
 
 def test_a_text_clock_of_digits_is_refused_by_with_windows() -> None:
@@ -291,8 +292,8 @@ def test_a_text_clock_of_digits_is_refused_by_with_windows() -> None:
     read through a cast that turned the text into numbers, where every other
     path refuses a text clock by its type (task 356)."""
     df = _df().with_columns(t=pl.col("t").cast(pl.String))
-    with pytest.raises(po.WrongTypeError) as caught:
-        po.stream.with_windows(df, f=po.ewm_mean("x0", half_life=5.0), clock="t", gap_cap=5.0)
+    with pytest.raises(rp.WrongTypeError) as caught:
+        rp.stream.with_windows(df, f=rp.ewm_mean("x0", half_life=5.0), clock="t", gap_cap=5.0)
     assert str(caught.value) == (
         'with_windows: clock column "t" must be a number or temporal, but it is String. '
         'Cast it, such as with pl.col("t").cast(pl.Float64), or to a Datetime.'
@@ -301,7 +302,7 @@ def test_a_text_clock_of_digits_is_refused_by_with_windows() -> None:
 
 def test_the_like_clash_names_the_function_in_full() -> None:
     pin = r"^po\.stream\.with_windows: like= takes the clock settings from spec \"m\""
-    with pytest.raises(po.RefusedValueError, match=pin):
+    with pytest.raises(rp.RefusedValueError, match=pin):
         _like_clash()
 
 
@@ -311,200 +312,200 @@ SITES: list[tuple[str, Callable[[], Any], type[Exception], type[Exception], type
     # A value or column of the wrong type: TypeError, once ValueError.
     (
         "ModelBank, one spec",
-        lambda: po.ModelBank(_spec()),  # type: ignore[arg-type]
-        po.WrongTypeError,
+        lambda: rp.ModelBank(_spec()),  # type: ignore[arg-type]
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
     (
         "ModelBank, a str",
-        lambda: po.ModelBank("m"),  # type: ignore[arg-type]
-        po.WrongTypeError,
+        lambda: rp.ModelBank("m"),  # type: ignore[arg-type]
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
-    ("ModelBank, a UInt128 column", _uint128, po.WrongTypeError, ValueError, TypeError),
+    ("ModelBank, a UInt128 column", _uint128, rp.WrongTypeError, ValueError, TypeError),
     (
         "refresh_time, a text clock",
         _refresh(pl.String, pl.Float64),
-        po.WrongTypeError,
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
     (
         "refresh_time, a text value",
         _refresh(pl.Int64, pl.String),
-        po.WrongTypeError,
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
     # The embargo's two clock refusals raised TypeError; one class with the
     # bank's UInt128 refusal, so the ValueError parent is new there.
-    ("embargo, a text clock", _embargo_text_clock, po.WrongTypeError, ValueError, TypeError),
-    ("embargo, an Int128 clock", _embargo_wide_clock, po.WrongTypeError, ValueError, TypeError),
+    ("embargo, a text clock", _embargo_text_clock, rp.WrongTypeError, ValueError, TypeError),
+    ("embargo, an Int128 clock", _embargo_wide_clock, rp.WrongTypeError, ValueError, TypeError),
     (
         "window_metrics, a text clock",
         _window_metrics(_df().with_columns(t=pl.col("t").cast(pl.String)), 10.0),
-        po.WrongTypeError,
+        rp.WrongTypeError,
         TypeError,
         ValueError,
     ),
     (
         "embargo, a time-of-day clock",
-        lambda: po.stream.embargo(_time_of_day(_df()), clock="t", delay="1s"),
-        po.WrongTypeError,
+        lambda: rp.stream.embargo(_time_of_day(_df()), clock="t", delay="1s"),
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
     (
         "window_metrics, a time-of-day clock",
         _window_metrics(_time_of_day(_df()), "5s"),
-        po.WrongTypeError,
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
     (
         "window operator, min_samples=1.5",
-        lambda: po.ewm_mean("x0", half_life=5.0, window_size=10.0, min_samples=1.5),  # type: ignore[arg-type]
-        po.WrongTypeError,
+        lambda: rp.ewm_mean("x0", half_life=5.0, window_size=10.0, min_samples=1.5),  # type: ignore[arg-type]
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
     (
         "grid_search, n_splits=1.5",
         _grid(specs=_spec(), n_splits=1.5),
-        po.WrongTypeError,
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
     (
         "grid_search, gap=0.5",
         _grid(specs=_spec(), gap=0.5),
-        po.WrongTypeError,
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
-    ("xgboost_matrix, max_bin=2.5", _xgb(max_bin=2.5), po.WrongTypeError, ValueError, TypeError),
-    ("xgboost_matrix, threads=1.5", _xgb(threads=1.5), po.WrongTypeError, ValueError, TypeError),
+    ("xgboost_matrix, max_bin=2.5", _xgb(max_bin=2.5), rp.WrongTypeError, ValueError, TypeError),
+    ("xgboost_matrix, threads=1.5", _xgb(threads=1.5), rp.WrongTypeError, ValueError, TypeError),
     (
         "xgboost_matrix, sample_rows=1.5",
         _xgb(sample_rows=1.5),
-        po.WrongTypeError,
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
     (
         "xgboost_matrix, a text feature",
         _xgb_frame(_df().with_columns(s=pl.lit("a"))),
-        po.WrongTypeError,
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
     (
         "xgboost_matrix, a Categorical feature",
         _xgb_frame(_df().with_columns(s=pl.lit("a", dtype=pl.Categorical))),
-        po.WrongTypeError,
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
     (
         "xgboost_matrix, a text label",
         _xgb_frame(_df().with_columns(y=pl.col("y").cast(pl.String)), features=["x0"]),
-        po.WrongTypeError,
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
     (
         "xgboost_matrix, a text margin",
         _xgb_frame(_df().with_columns(m=pl.lit("a")), features=["x0"], base_margin="m"),
-        po.WrongTypeError,
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
     (
         "lightgbm_dataset, a float column as categorical",
-        lambda: po.gbdt.lightgbm_dataset(_df().lazy(), label="y", categorical=["x0"]),
-        po.WrongTypeError,
+        lambda: _gbdt.lightgbm_dataset(_df().lazy(), label="y", categorical=["x0"]),
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
     (
         "lars_path, max_iter=1.5",
-        lambda: po.gram.lars_path(_gram(), max_iter=1.5),  # type: ignore[arg-type]
-        po.WrongTypeError,
+        lambda: rp.gram.lars_path(_gram(), max_iter=1.5),  # type: ignore[arg-type]
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
     (
         "solve_subsets, jobs not a list",
-        lambda: po.gram.solve_subsets([_gram()], [[0]], jobs=5),  # type: ignore[arg-type]
-        po.WrongTypeError,
+        lambda: rp.gram.solve_subsets([_gram()], [[0]], jobs=5),  # type: ignore[arg-type]
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
     (
         "solve_subsets, a job not a mapping",
-        lambda: po.gram.solve_subsets([_gram()], [[0]], jobs=[5]),  # type: ignore[list-item]
-        po.WrongTypeError,
+        lambda: rp.gram.solve_subsets([_gram()], [[0]], jobs=[5]),  # type: ignore[list-item]
+        rp.WrongTypeError,
         ValueError,
         TypeError,
     ),
     # A value out of range or a combination refused: ValueError, once TypeError.
     (
         "ewm_mean, reverse=True without window_size",
-        lambda: po.ewm_mean("x0", half_life=5.0, reverse=True),
-        po.RefusedValueError,
+        lambda: rp.ewm_mean("x0", half_life=5.0, reverse=True),
+        rp.RefusedValueError,
         TypeError,
         ValueError,
     ),
     (
         "ewm_mean(reverse=True) without window_size",
         _rewm_without_window,
-        po.RefusedValueError,
+        rp.RefusedValueError,
         TypeError,
         ValueError,
     ),
     (
         "a look-ahead operator without window_size",
         _look_ahead_without_window,
-        po.RefusedValueError,
+        rp.RefusedValueError,
         TypeError,
         ValueError,
     ),
-    ("with_windows, like= and clock=", _like_clash, po.RefusedValueError, TypeError, ValueError),
+    ("with_windows, like= and clock=", _like_clash, rp.RefusedValueError, TypeError, ValueError),
     (
         "grid_search, param_grid with built specs",
         _grid(specs=_spec(), param_grid={"half_life": [5.0]}),
-        po.RefusedValueError,
+        rp.RefusedValueError,
         TypeError,
         ValueError,
     ),
     (
         "grid_search, an empty param_grid",
         _grid(specs=_builder, param_grid={}),
-        po.RefusedValueError,
+        rp.RefusedValueError,
         TypeError,
         ValueError,
     ),
     (
         "grid_search, an empty list of values",
         _grid(specs=_builder, param_grid={"half_life": []}),
-        po.RefusedValueError,
+        rp.RefusedValueError,
         TypeError,
         ValueError,
     ),
     # A spec's output column the frame has not got: ColumnNotFoundError, once KeyError.
     (
         "unpack, no output column",
-        lambda: po.eval.unpack(_df(), "m"),
-        po.OutputColumnNotFoundError,
+        lambda: rp.eval.unpack(_df(), "m"),
+        rp.OutputColumnNotFoundError,
         KeyError,
         pl.exceptions.ColumnNotFoundError,
     ),
     (
         "seqtest, no output column",
-        lambda: po.eval.seqtest(_df(), a="m", b="n"),
-        po.OutputColumnNotFoundError,
+        lambda: rp.eval.seqtest(_df(), a="m", b="n"),
+        rp.OutputColumnNotFoundError,
         KeyError,
         pl.exceptions.ColumnNotFoundError,
     ),
@@ -528,31 +529,31 @@ def test_wrong_kind_inputs_that_are_also_out_of_range_still_split_by_kind() -> N
     """A whole number out of range stays a plain ``ValueError`` where the check
     for the type and the range was one condition."""
     with pytest.raises(ValueError) as caught:
-        po.ewm_mean("x0", half_life=5.0, window_size=10.0, min_samples=0)
+        rp.ewm_mean("x0", half_life=5.0, window_size=10.0, min_samples=0)
     assert not isinstance(caught.value, TypeError)
     with pytest.raises(ValueError) as caught:
-        po.eval.grid_search(_df(), _spec(), n_splits=0)
+        rp.eval.grid_search(_df(), _spec(), n_splits=0)
     assert not isinstance(caught.value, TypeError)
     with pytest.raises(TypeError) as caught:
-        po.eval.grid_search(_df(), _builder, ["half_life"])  # type: ignore[arg-type]
+        rp.eval.grid_search(_df(), _builder, ["half_life"])  # type: ignore[arg-type]
     assert not isinstance(caught.value, ValueError)
 
 
 def test_each_class_has_the_one_parent_its_problem_names_and_is_exported() -> None:
-    assert po.WrongTypeError.__bases__ == (TypeError,)
-    assert not issubclass(po.WrongTypeError, ValueError)
-    assert po.RefusedValueError.__bases__ == (ValueError,)
-    assert not issubclass(po.RefusedValueError, TypeError)
-    assert issubclass(po.OutputColumnNotFoundError, po.ColumnNotFoundError)
-    assert issubclass(po.OutputColumnNotFoundError, pl.exceptions.ColumnNotFoundError)
-    assert issubclass(po.OutputColumnNotFoundError, ValueError)
-    assert not issubclass(po.OutputColumnNotFoundError, KeyError)
+    assert rp.WrongTypeError.__bases__ == (TypeError,)
+    assert not issubclass(rp.WrongTypeError, ValueError)
+    assert rp.RefusedValueError.__bases__ == (ValueError,)
+    assert not issubclass(rp.RefusedValueError, TypeError)
+    assert issubclass(rp.OutputColumnNotFoundError, rp.ColumnNotFoundError)
+    assert issubclass(rp.OutputColumnNotFoundError, pl.exceptions.ColumnNotFoundError)
+    assert issubclass(rp.OutputColumnNotFoundError, ValueError)
+    assert not issubclass(rp.OutputColumnNotFoundError, KeyError)
     for name in ("WrongTypeError", "RefusedValueError", "OutputColumnNotFoundError"):
-        assert name in po.__all__
+        assert name in rp.__all__
 
 
 def test_a_missing_output_column_prints_its_message_unquoted() -> None:
     """It is no ``KeyError``, whose ``str`` quotes the text."""
-    with pytest.raises(po.OutputColumnNotFoundError) as caught:
-        po.eval.unpack(_df(), "m")
+    with pytest.raises(rp.OutputColumnNotFoundError) as caught:
+        rp.eval.unpack(_df(), "m")
     assert str(caught.value).startswith('po.eval.unpack: spec "m" has no output column')

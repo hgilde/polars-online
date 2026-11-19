@@ -387,7 +387,10 @@ def worker(args: argparse.Namespace) -> None:
         sys.path.insert(0, args.pythonpath)
     import polars as pl
 
-    import rheon as po
+    try:
+        from rheon import polars as po
+    except ImportError:  # a build from before the split: the flat package
+        import rheon as po
 
     native = ""
     try:

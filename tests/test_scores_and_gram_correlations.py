@@ -13,8 +13,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from rheon import corr
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -34,12 +34,12 @@ def _frame(seed: int = 1) -> pl.DataFrame:
     )
 
 
-SPEC = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=100.0)
+SPEC = rp.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=100.0)
 
 
 @pytest.fixture(scope="module")
 def scored() -> pl.DataFrame:
-    return po.ModelBank([SPEC]).fit_predict(_frame())
+    return rp.ModelBank([SPEC]).fit_predict(_frame())
 
 
 # --- window_metrics -----------------------------------------------------------
@@ -50,11 +50,11 @@ def test_a_null_clock_is_in_no_window(scored: pl.DataFrame, every: float) -> Non
     holed = scored.with_columns(
         t=pl.when(pl.int_range(pl.len()) % 10 == 0).then(None).otherwise(pl.col("t"))
     )
-    got = po.eval.window_metrics(holed, "m", clock="t", every=every, min_samples=5)
+    got = rp.eval.window_metrics(holed, "m", clock="t", every=every, min_samples=5)
     assert got["window_start"].null_count() == 0
     # The windows are those of the rows that have a clock, scored alone.
     kept = holed.filter(pl.col("t").is_not_null())
-    want = po.eval.window_metrics(kept, "m", clock="t", every=every, min_samples=5)
+    want = rp.eval.window_metrics(kept, "m", clock="t", every=every, min_samples=5)
     assert got.equals(want)
     predicted = kept.filter(pl.col("m").struct.field("pred_y").is_not_null()).height
     assert (
@@ -70,7 +70,7 @@ def test_a_temporal_null_clock_is_in_no_window(scored: pl.DataFrame) -> None:
         .then(None)
         .otherwise(pl.col("t").cast(pl.Int64).cast(pl.Datetime("ms")))
     )
-    got = po.eval.window_metrics(stamped, "m", clock="t", every="100ms", min_samples=5)
+    got = rp.eval.window_metrics(stamped, "m", clock="t", every="100ms", min_samples=5)
     assert got["window_start"].null_count() == 0
     assert got.height == 4
 
@@ -79,13 +79,13 @@ def test_a_temporal_null_clock_is_in_no_window(scored: pl.DataFrame) -> None:
 
 
 def test_from_sums_is_null_where_no_row_weighs_anything(scored: pl.DataFrame) -> None:
-    s = po.eval.sums(scored.with_columns(w=pl.lit(0.0)), "m", weight="w")
+    s = rp.eval.sums(scored.with_columns(w=pl.lit(0.0)), "m", weight="w")
     assert s["w"][0] == 0.0
-    got = po.eval.from_sums(s).row(0, named=True)
+    got = rp.eval.from_sums(s).row(0, named=True)
     for score in ("r2", "ic", "hit_rate", "mse", "rmse"):
         assert got[score] is None, score
     # One weighted row brings the scores back.
-    some = po.eval.from_sums(po.eval.sums(scored.with_columns(w=pl.lit(1.0)), "m", weight="w")).row(
+    some = rp.eval.from_sums(rp.eval.sums(scored.with_columns(w=pl.lit(1.0)), "m", weight="w")).row(
         0, named=True
     )
     assert all(some[c] is not None and np.isfinite(some[c]) for c in ("r2", "ic", "mse"))
@@ -113,21 +113,21 @@ def test_merge_sums_of_one_frame_returns_it_to_the_bit() -> None:
     s = pl.DataFrame(LONE)
     # The pair this needs: recomputed, `w * mean / w` is not `mean`.
     assert LONE["w"][0] * LONE["mean_y"][0] / LONE["w"][0] != LONE["mean_y"][0]
-    assert po.eval.merge_sums(s).equals(s)
+    assert rp.eval.merge_sums(s).equals(s)
 
 
 def test_merge_sums_keeps_a_key_in_one_part_alone_to_the_bit() -> None:
     lone = pl.DataFrame(LONE)
     other = lone.with_columns(target=pl.lit("z"), mean_y=pl.lit(0.5))
-    got = po.eval.merge_sums(other, lone)
+    got = rp.eval.merge_sums(other, lone)
     assert got.filter(pl.col("target") == "y").equals(lone)
     assert got.filter(pl.col("target") == "z").equals(other)
 
 
 def test_merge_sums_of_one_frame_sorts_it(scored: pl.DataFrame) -> None:
     grouped = scored.with_columns(g=pl.int_range(pl.len()) % 3)
-    s = po.eval.sums(grouped, "m", group="g").sort("g", descending=True)
-    assert po.eval.merge_sums(s).equals(s.sort(["slot", "target", "g"]))
+    s = rp.eval.sums(grouped, "m", group="g").sort("g", descending=True)
+    assert rp.eval.merge_sums(s).equals(s.sort(["slot", "target", "g"]))
 
 
 # --- po.corr on a Gram -------------------------------------------------------------
@@ -135,8 +135,8 @@ def test_merge_sums_of_one_frame_sorts_it(scored: pl.DataFrame) -> None:
 
 @pytest.fixture(scope="module")
 def gram() -> dict:
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=float("inf"))
-    bank = po.ModelBank([spec])
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=float("inf"))
+    bank = rp.ModelBank([spec])
     bank.fit_predict(_frame())
     g = bank.gram("m")[0]
     assert g["columns"] == ["intercept", "x0", "x1"]
@@ -144,8 +144,8 @@ def gram() -> dict:
 
 
 def test_every_function_reads_a_gram_without_its_intercept(gram: dict) -> None:
-    bare = po.gram.subset(gram, ["x0", "x1"])
-    r = po.gram.correlation(bare)
+    bare = rp.gram.subset(gram, ["x0", "x1"])
+    r = rp.gram.correlation(bare)
     x = _frame().select("x0", "x1").to_numpy()
     xs = (x - x.mean(0)) / x.std(0)
     for name, call in {
@@ -182,8 +182,8 @@ def test_epps_invert_drops_the_intercept_too(gram: dict) -> None:
 )
 def test_a_constant_feature_is_refused_by_name(call: object) -> None:
     flat = _frame().with_columns(x1=pl.lit(3.0))
-    bank = po.ModelBank(
-        [po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=100.0)]
+    bank = rp.ModelBank(
+        [rp.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=100.0)]
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")

@@ -26,7 +26,7 @@ A capsule producer can reach the bank **today**, with no new code and no new
 dependency, by letting polars do the import:
 
 ```python
-import duckdb, polars as pl, rheon as po
+import duckdb, polars as pl, rheon.polars as po
 
 rel = duckdb.sql("SELECT t, x0, y FROM read_parquet('ticks/*.parquet') ORDER BY t")
 bank = po.ModelBank([spec])

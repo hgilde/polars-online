@@ -6,7 +6,7 @@ over a whole frame or in windows of the clock. :func:`sums` gives the same
 scores one chunk at a time, and :func:`grid_search` chooses a grid point from
 a stream's own residuals.
 
-Most calls read the frame a :class:`~rheon.ModelBank` returns: the
+Most calls read the frame a :class:`~rheon.polars.ModelBank` returns: the
 input's columns plus one output column per spec, whose value in each row is
 a record of the model's fields, or a query of one. :func:`merge_sums` and
 :func:`from_sums` read the frames :func:`sums` makes. :func:`seqtest` can
@@ -340,13 +340,13 @@ def unpack(
         A plain target is read from its column, and a target renamed with
         :func:`rheon.target`'s ``name=`` from the column it renames.
         A formula target is read from a column of its own name, which
-        :func:`rheon.stream.with_windows` makes, since the bank
+        :func:`rheon.polars.stream.with_windows` makes, since the bank
         computes the formula as it learns and does not write it out.
         Given the name alone, a slot is read against the column named
         after it, the longest name that matches. That rule can attribute a
         slot to the wrong target when a column of the frame is named as a
         target followed by a slot's ``__`` or ``@`` suffix. A renamed target
-        (``po.target("p", name="price")`` writes ``pred_price``) names no
+        (``rp.target("p", name="price")`` writes ``pred_price``) names no
         column. So only the dict can say what either read.
     ``targets``
         The columns the name-based rule may read as targets; every column
@@ -415,9 +415,9 @@ def unpack(
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        out = po.ModelBank([spec]).fit_predict(df)
-        long = po.eval.unpack(out, spec)                       # one row per row of out and slot
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        out = rp.ModelBank([spec]).fit_predict(df)
+        long = rp.eval.unpack(out, spec)                       # one row per row of out and slot
         slot, target, pred, y = long.select("slot", "target", "pred", "y").row(399)
         print(f"{slot} predicts {target}: {pred:.3f} on the last row, where y is {y:.3f}")
 
@@ -528,7 +528,7 @@ def _spec_targets(spec: dict, df: pl.DataFrame, who: str) -> dict[str, tuple[str
 def _target_value(who: str, slot: str, table: Any, name: str, df: pl.DataFrame) -> pl.Expr:
     """A target's value on the frame as the bank reads it: its column, or
     for a formula target the column of its own name that
-    :func:`rheon.stream.with_windows` writes. A value the bank
+    :func:`rheon.polars.stream.with_windows` writes. A value the bank
     would not learn from is dropped by :func:`_scored`."""
 
     def column(c: str) -> pl.Expr:
@@ -862,9 +862,9 @@ def metrics(
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        out = po.ModelBank([spec]).fit_predict(df)
-        scores = po.eval.metrics(out, spec, group="stock_id")  # one row per slot, target and stock
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        out = rp.ModelBank([spec]).fit_predict(df)
+        scores = rp.eval.metrics(out, spec, group="stock_id")  # one row per slot, target and stock
         for row in scores.select("stock_id", "n", "r2", "hit_rate").iter_rows():
             print(f"{row[0]}: {row[1]} rows, r2 {row[2]:.3f}, hit rate {row[3]:.3f}")
 
@@ -1130,12 +1130,12 @@ def window_metrics(
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        out = po.ModelBank([spec]).fit_predict(df)
-        windows = po.eval.window_metrics(out, spec, clock="t", every=100.0)   # 100 units of t each
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        out = rp.ModelBank([spec]).fit_predict(df)
+        windows = rp.eval.window_metrics(out, spec, clock="t", every=100.0)   # 100 units of t each
         for start, n, r2 in windows.select("window_start", "n", "r2").iter_rows():
             print(f"from t = {start:.0f}: {n} rows, r2 {r2:.3f}")
-        by_hour = po.eval.window_metrics(out, spec, clock="ts", every="1h")    # a Datetime clock
+        by_hour = rp.eval.window_metrics(out, spec, clock="ts", every="1h")    # a Datetime clock
         print(by_hour.height, "windows of an hour")
 
     .. code-block:: text
@@ -1488,10 +1488,10 @@ def compare_specs(
 
     .. code-block:: python
 
-        ridge = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        x0_only = po.spec.ewridge("x0_only", targets=["y"], features=["x0"], half_life=100.0)
-        out = po.ModelBank([ridge, x0_only]).fit_predict(df)
-        table = po.eval.compare_specs(out, [ridge, x0_only])   # one row per spec and slot
+        ridge = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        x0_only = rp.spec.ewridge("x0_only", targets=["y"], features=["x0"], half_life=100.0)
+        out = rp.ModelBank([ridge, x0_only]).fit_predict(df)
+        table = rp.eval.compare_specs(out, [ridge, x0_only])   # one row per spec and slot
         for name, n, r2, mse in table.select("spec", "n", "r2", "mse").iter_rows():
             print(f"{name}: {n} rows, r2 {r2:.3f}, mse {mse:.3f}")
 
@@ -1956,7 +1956,7 @@ def grid_search(
     ``specs``
         A spec, a list of specs, or a spec builder called as
         ``specs(name, **point)`` for each point of ``param_grid``, such as
-        ``functools.partial(po.spec.sgd, targets=["y"], features=["x"])``.
+        ``functools.partial(rp.spec.sgd, targets=["y"], features=["x"])``.
         The name a builder is given is the point written out, such as
         ``"learning_rate=0.01"``, and the spec it returns must take that
         name.
@@ -1990,11 +1990,11 @@ def grid_search(
         ``hmm`` and ``deco`` write.
     ``chunk_size``
         The rows read at a time, as
-        :meth:`~rheon.ModelBank.fit_predict_batches` takes it.
+        :meth:`~rheon.polars.ModelBank.fit_predict_batches` takes it.
         ``None``, the default, reads a query 100,000 rows at a time and
         takes a ``DataFrame`` whole, as that method does.
     ``threads``
-        The bank's threads, as :class:`~rheon.ModelBank` takes them.
+        The bank's threads, as :class:`~rheon.polars.ModelBank` takes them.
         ``None``, the default, runs on the threads banks share, one per core
         unless ``POLARS_ONLINE_MAX_THREADS`` is set.
 
@@ -2096,8 +2096,8 @@ def grid_search(
 
         import functools
 
-        sgd = functools.partial(po.spec.sgd, targets=["y"], features=["x0", "x1"], half_life=1000.0)
-        table = po.eval.grid_search(
+        sgd = functools.partial(rp.spec.sgd, targets=["y"], features=["x0", "x1"], half_life=1000.0)
+        table = rp.eval.grid_search(
             pl.scan_parquet("ticks.parquet"), sgd, {"learning_rate": [0.001, 0.01, 0.1]}, n_splits=4
         )
         points = table.filter(pl.col("kind") == "candidate")     # one row per grid point
@@ -2205,7 +2205,7 @@ def grid_search(
          - Keep 1.345, or choose it by a robust loss of your own over
            :func:`unpack`'s residuals.
     """
-    from rheon._bank import ModelBank
+    from rheon.polars._bank import ModelBank
 
     who = "po.eval.grid_search"
     if scoring not in _SCORINGS:
@@ -2567,10 +2567,10 @@ def seqtest(
 
     .. code-block:: python
 
-        ridge = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        x0_only = po.spec.ewridge("x0_only", targets=["y"], features=["x0"], half_life=100.0)
-        out = po.ModelBank([ridge, x0_only]).fit_predict(df)
-        evidence = po.eval.seqtest(out, a="ridge", b="x0_only")
+        ridge = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        x0_only = rp.spec.ewridge("x0_only", targets=["y"], features=["x0"], half_life=100.0)
+        out = rp.ModelBank([ridge, x0_only]).fit_predict(df)
+        evidence = rp.eval.seqtest(out, a="ridge", b="x0_only")
         last = evidence["seqtest"].struct.unnest().row(-1, named=True)    # the last row's fields
         print(f"ridge closer on {last['wins_a_y']:.0f} rows, x0_only on {last['wins_b_y']:.0f}")
         log_e = last["log_e_a_y"]                                        # ridge's log evidence
@@ -2911,7 +2911,7 @@ def _row_query(
     sources hand theirs."""
     from polars.io.plugins import register_io_source
 
-    from rheon._frame import _in_morsels
+    from rheon.polars._frame import _in_morsels
 
     columns = list(lf.collect_schema())
 
@@ -3035,13 +3035,13 @@ def sums(
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        out = po.ModelBank([spec]).fit_predict(df)
-        part = po.eval.sums(out.head(200), spec)         # ten numbers per slot and target
-        rest = po.eval.sums(out.tail(200), spec)
-        running = po.eval.merge_sums(part, rest)         # the two halves, added
-        scores = po.eval.from_sums(running)
-        whole = po.eval.metrics(out, spec)
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        out = rp.ModelBank([spec]).fit_predict(df)
+        part = rp.eval.sums(out.head(200), spec)         # ten numbers per slot and target
+        rest = rp.eval.sums(out.tail(200), spec)
+        running = rp.eval.merge_sums(part, rest)         # the two halves, added
+        scores = rp.eval.from_sums(running)
+        whole = rp.eval.metrics(out, spec)
         print(f"r2 from sums {scores['r2'][0]:.6f}, from the frame {whole['r2'][0]:.6f}")
 
     .. code-block:: text
@@ -3389,11 +3389,11 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        out = po.ModelBank([spec]).fit_predict(df)
-        chunks = [po.eval.sums(out.slice(i, 100), spec) for i in range(0, 400, 100)]
-        merged = po.eval.merge_sums(*chunks)                  # four chunks of 100 rows, added
-        whole = po.eval.sums(out, spec)                       # the 400 rows as one chunk
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        out = rp.ModelBank([spec]).fit_predict(df)
+        chunks = [rp.eval.sums(out.slice(i, 100), spec) for i in range(0, 400, 100)]
+        merged = rp.eval.merge_sums(*chunks)                  # four chunks of 100 rows, added
+        whole = rp.eval.sums(out, spec)                       # the 400 rows as one chunk
         print(f"m2_y {merged['m2_y'][0]:.6f} merged, {whole['m2_y'][0]:.6f} whole")
 
     .. code-block:: text
@@ -3598,10 +3598,10 @@ def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        out = po.ModelBank([spec]).fit_predict(df)
-        s = po.eval.sums(out, spec, group="stock_id")          # ten numbers per stock
-        scores = po.eval.from_sums(s)
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        out = rp.ModelBank([spec]).fit_predict(df)
+        s = rp.eval.sums(out, spec, group="stock_id")          # ten numbers per stock
+        scores = rp.eval.from_sums(s)
         for stock, n, r2 in scores.select("stock_id", "n", "r2").iter_rows():
             print(f"{stock}: {n} rows, r2 {r2:.3f}")
 
@@ -4530,10 +4530,10 @@ def diebold_mariano(
 
     .. code-block:: python
 
-        x0_only = po.spec.ewridge("x0_only", targets=["y"], features=["x0"], half_life=500.0)
-        x1_only = po.spec.ewridge("x1_only", targets=["y"], features=["x1"], half_life=500.0)
-        out = po.ModelBank([x0_only, x1_only]).fit_predict(df)
-        test = po.eval.diebold_mariano(out, a="x0_only", b="x1_only")
+        x0_only = rp.spec.ewridge("x0_only", targets=["y"], features=["x0"], half_life=500.0)
+        x1_only = rp.spec.ewridge("x1_only", targets=["y"], features=["x1"], half_life=500.0)
+        out = rp.ModelBank([x0_only, x1_only]).fit_predict(df)
+        test = rp.eval.diebold_mariano(out, a="x0_only", b="x1_only")
         n, dm, p = test.select("n", "dm", "p_value").row(0)
         print(f"{n} rows, dm {dm:.2f}, p {p:.2g}")   # dm above 1.96: x0_only did better, at 5%
 
@@ -4805,10 +4805,10 @@ def clark_west(
 
     .. code-block:: python
 
-        small = po.spec.ewridge("small", targets=["y"], features=["x0"], half_life=500.0)
-        big = po.spec.ewridge("big", targets=["y"], features=["x0", "x1"], half_life=500.0)
-        out = po.ModelBank([small, big]).fit_predict(df)
-        test = po.eval.clark_west(out, big="big", small="small")
+        small = rp.spec.ewridge("small", targets=["y"], features=["x0"], half_life=500.0)
+        big = rp.spec.ewridge("big", targets=["y"], features=["x0", "x1"], half_life=500.0)
+        out = rp.ModelBank([small, big]).fit_predict(df)
+        test = rp.eval.clark_west(out, big="big", small="small")
         n, cw, p = test.select("n", "cw", "p_value").row(0)
         print(f"{n} rows, cw {cw:.2f}, p {p:.2g}")   # cw above 1.645: x1 helps, at 5%
 

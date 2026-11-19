@@ -73,7 +73,7 @@ from scipy.special import logsumexp
 from scipy.stats import multivariate_normal
 
 import ledger
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -164,7 +164,7 @@ def model_run(
     ``v``), read here as a diagonal matrix."""
     k, d = s["m0"].shape
     features = [f"x{i}" for i in range(d)]
-    spec = po.spec.hmm(
+    spec = rp.spec.hmm(
         "h",
         features=features,
         n_components=k,
@@ -176,7 +176,7 @@ def model_run(
         weight="w",
     )
     frame = pl.DataFrame({f: s["x"][:, i] for i, f in enumerate(features)}).with_columns(w=s["w"])
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     out = bank.fit_predict(frame)["h"].struct.unnest()
     model = json.loads(bank.write_json())["states"][0][0][1]["models"][0]["model"]["Hmm"]
     states = model["diag_states"] if cov == "diag" else model["states"]

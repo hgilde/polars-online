@@ -1,7 +1,10 @@
 ``rheon``
-=================
+=========
 
 .. automodule:: rheon
+   :no-members:
+
+.. automodule:: rheon.polars
    :no-members:
 
 The model bank

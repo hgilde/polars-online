@@ -4,9 +4,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from data import synthetic
 from reference import ftrl_ref
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -29,11 +29,11 @@ def _binary_df(n=6000, seed=21, noise=0.0):
 def _spec(**kw):
     d = dict(targets=["y0"], features=["x0", "x1"], half_life=1e9, min_weight=50.0)
     d.update(kw)
-    return po.spec.ftrl("m", **d)
+    return rp.spec.ftrl("m", **d)
 
 
 def test_predictions_are_probabilities():
-    out = po.ModelBank([_spec()]).fit_predict(_binary_df())
+    out = rp.ModelBank([_spec()]).fit_predict(_binary_df())
     p = _pred(out)
     finite = p[np.isfinite(p)]
     assert finite.size > 1000
@@ -42,7 +42,7 @@ def test_predictions_are_probabilities():
 
 def test_beats_the_base_rate_on_a_learnable_target():
     df = _binary_df()
-    out = po.ModelBank([_spec()]).fit_predict(df)
+    out = rp.ModelBank([_spec()]).fit_predict(df)
     p = _pred(out)
     y = df["y0"].to_numpy()
     m = np.isfinite(p)
@@ -56,7 +56,7 @@ def test_beats_the_base_rate_on_a_learnable_target():
 
 def test_resid_is_y_minus_p():
     df = _binary_df(n=2000)
-    out = po.ModelBank([_spec()]).fit_predict(df)
+    out = rp.ModelBank([_spec()]).fit_predict(df)
     p = _pred(out)
     r = out["m"].struct.field("resid_y0").to_numpy().astype(float)
     y = df["y0"].to_numpy()
@@ -74,7 +74,7 @@ def test_out_of_sample_on_noise():
             "y0": (rng.random(n) < 0.5).astype(float),
         }
     )
-    out = po.ModelBank([_spec(half_life=2000.0)]).fit_predict(df)
+    out = rp.ModelBank([_spec(half_life=2000.0)]).fit_predict(df)
     p = _pred(out)
     m = np.isfinite(p)
     ic = np.corrcoef(p[m], df["y0"].to_numpy()[m])[0, 1]
@@ -87,7 +87,7 @@ def test_forgets_a_regime_flip_on_the_clock():
     x0 = rng.standard_normal(2 * n)
     y = np.concatenate([(x0[:n] > 0).astype(float), (x0[n:] < 0).astype(float)])
     df = pl.DataFrame({"x0": x0, "x1": np.zeros(2 * n), "y0": y})
-    out = po.ModelBank([_spec(half_life=300.0)]).fit_predict(df)
+    out = rp.ModelBank([_spec(half_life=300.0)]).fit_predict(df)
     p = _pred(out)
     late = slice(2 * n - 500, 2 * n)
     hi = p[late][x0[late] > 0.5]
@@ -104,13 +104,13 @@ def _plumbing_case():
         gap_cap=50.0,
         min_weight=10.0,
     )
-    return df, kw, po.spec.ftrl("m", targets=["y0"], group="group", **kw)
+    return df, kw, rp.spec.ftrl("m", targets=["y0"], group="group", **kw)
 
 
 def test_chunk_invariance():
     df, _, spec = _plumbing_case()
-    one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-    bank = po.ModelBank([spec])
+    one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+    bank = rp.ModelBank([spec])
     many = (
         pl.concat([bank.fit_predict(df.slice(i, 25)) for i in range(0, df.height, 25)])
         .select("m")
@@ -131,7 +131,7 @@ def test_strict_binary_refuses_a_target_other_than_0_or_1():
         {"x0": [1.0, 2.0, 3.0, 4.0], "x1": [0.0] * 4, "y0": [0.0, None, 0.5, 1.0]},
         schema={"x0": pl.Float64, "x1": pl.Float64, "y0": pl.Float64},
     )
-    bank = po.ModelBank([_spec(strict_binary=True, min_weight=0.0)])
+    bank = rp.ModelBank([_spec(strict_binary=True, min_weight=0.0)])
     before = bank.save_bytes()
     with pytest.raises(ValueError, match=r"row 2 .*strict_binary") as exc:
         bank.fit_predict(df)
@@ -151,21 +151,21 @@ class TestStrictBinaryEdges:
             y0=pl.when(pl.int_range(pl.len()) % 9 == 4).then(None).otherwise(pl.col("y0"))
         )
         assert df["y0"].null_count() > 200
-        strict = po.ModelBank([_spec(strict_binary=True)]).fit_predict(df)
-        assert strict.equals(po.ModelBank([_spec()]).fit_predict(df), null_equal=True)
+        strict = rp.ModelBank([_spec(strict_binary=True)]).fit_predict(df)
+        assert strict.equals(rp.ModelBank([_spec()]).fit_predict(df), null_equal=True)
 
     def test_negative_zero_is_the_label_zero_and_nan_is_a_null(self):
         df = _binary_df(n=2000)
         signed = df.with_columns(y0=pl.when(pl.col("y0") == 0.0).then(-0.0).otherwise(pl.col("y0")))
         assert np.signbit(signed["y0"].to_numpy()).sum() > 500
         spec = _spec(strict_binary=True)
-        out = po.ModelBank([spec]).fit_predict(signed)["m"]
-        assert out.equals(po.ModelBank([spec]).fit_predict(df)["m"], null_equal=True)
+        out = rp.ModelBank([spec]).fit_predict(signed)["m"]
+        assert out.equals(rp.ModelBank([spec]).fit_predict(df)["m"], null_equal=True)
         nan = df.with_columns(y0=pl.when(pl.col("x1") > 1.5).then(np.nan).otherwise(pl.col("y0")))
         null = nan.with_columns(pl.col("y0").fill_nan(None))
         assert null["y0"].null_count() > 50
-        got = po.ModelBank([spec]).fit_predict(nan)["m"]
-        assert got.equals(po.ModelBank([spec]).fit_predict(null)["m"], null_equal=True)
+        got = rp.ModelBank([spec]).fit_predict(nan)["m"]
+        assert got.equals(rp.ModelBank([spec]).fit_predict(null)["m"], null_equal=True)
 
     def test_a_zero_weight_row_with_a_bad_label_is_refused_too(self):
         """The check reads the label, not the weight: a row of weight 0
@@ -175,7 +175,7 @@ class TestStrictBinaryEdges:
             w=pl.when(pl.int_range(pl.len()) == 17).then(0.0).otherwise(1.0),
             y0=pl.when(pl.int_range(pl.len()) == 17).then(0.5).otherwise(pl.col("y0")),
         )
-        bank = po.ModelBank([_spec(strict_binary=True, weight="w")])
+        bank = rp.ModelBank([_spec(strict_binary=True, weight="w")])
         before = bank.save_bytes()
         with pytest.raises(
             ValueError, match=r"has the value 0.5 at row 17 .*Set the target to null on rows"
@@ -211,7 +211,7 @@ def test_no_smoothing_no_penalty_and_a_zero_weight_first_row_stay_finite(
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y0": y, "w": w})
     kw = dict(half_life=half_life, beta=0.0, l1=0.0, l2=0.0, loss=loss, min_weight=0.0)
     spec = _spec(weight="w", fit_intercept=fit_intercept, coef_every=1, **kw)
-    out = po.ModelBank([spec]).fit_predict(df)
+    out = rp.ModelBank([spec]).fit_predict(df)
     pred = _pred(out)
     coef = np.array(out["m"].struct.field("coef").to_list(), float)
     assert np.isfinite(pred).all() and np.isfinite(coef).all()
@@ -242,7 +242,7 @@ class TestSquaredLoss:
             min_weight=10.0,
         )
         d.update(kw)
-        return po.spec.ftrl("m", **d)
+        return rp.spec.ftrl("m", **d)
 
     def _data(self, n=20000, seed=0, noise=0.1):
         rng = np.random.default_rng(seed)
@@ -253,14 +253,14 @@ class TestSquaredLoss:
 
     def test_recovers_the_coefficients(self):
         df = self._data()
-        out = po.ModelBank([self._spec(coef_every=1)]).fit_predict(df)
+        out = rp.ModelBank([self._spec(coef_every=1)]).fit_predict(df)
         c = np.array(out["m"].struct.field("coef").to_list()[-1], dtype=float)
         assert c[1] == pytest.approx(1.5, abs=0.1)
         assert c[2] == pytest.approx(-0.5, abs=0.1)
 
     def test_l1_zeroes_the_noise_feature(self):
         df = self._data()
-        out = po.ModelBank([self._spec(l1=0.5, coef_every=1)]).fit_predict(df)
+        out = rp.ModelBank([self._spec(l1=0.5, coef_every=1)]).fit_predict(df)
         c = np.array(out["m"].struct.field("coef").to_list()[-1], dtype=float)
         assert abs(c[3]) < 0.05, f"noise feature survived L1: {c[3]}"
         assert abs(c[1]) > 1.0, "the signal feature should survive"
@@ -271,16 +271,16 @@ class TestSquaredLoss:
         n = 5000
         x = rng.standard_normal(n)
         df = pl.DataFrame({"x0": x, "x1": np.zeros(n), "x2": np.zeros(n), "y0": 20.0 * x})
-        out = po.ModelBank([self._spec(min_weight=5.0)]).fit_predict(df)
+        out = rp.ModelBank([self._spec(min_weight=5.0)]).fit_predict(df)
         p = out["m"].struct.field("pred_y0").to_numpy().astype(float)
         assert np.nanmax(p) > 5.0
 
     def test_logistic_is_still_the_default(self):
         df = self._data(n=2000)
         df = df.with_columns(y0=(pl.col("y0") > 0).cast(pl.Float64))
-        out = po.ModelBank(
+        out = rp.ModelBank(
             [
-                po.spec.ftrl(
+                rp.spec.ftrl(
                     "m",
                     targets=["y0"],
                     features=["x0", "x1", "x2"],
@@ -304,7 +304,7 @@ class TestSquaredLoss:
                 "y0": rng.standard_normal(n),
             }
         )
-        out = po.ModelBank([self._spec(half_life=2000.0)]).fit_predict(df)
+        out = rp.ModelBank([self._spec(half_life=2000.0)]).fit_predict(df)
         p = out["m"].struct.field("pred_y0").to_numpy().astype(float)
         m = np.isfinite(p)
         ic = np.corrcoef(p[m], df["y0"].to_numpy()[m])[0, 1]
@@ -313,8 +313,8 @@ class TestSquaredLoss:
     def test_chunk_invariance(self):
         df = self._data(n=400, seed=7)
         spec = self._spec()
-        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-        bank = po.ModelBank([spec])
+        one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = rp.ModelBank([spec])
         many = (
             pl.concat([bank.fit_predict(df.slice(i, 37)) for i in range(0, df.height, 37)])
             .select("m")
@@ -347,14 +347,14 @@ def test_a_feature_scale_is_the_parameters_scaled_without_an_intercept(loss):
     base = dict(alpha=0.1, beta=1.0, l1=0.05, l2=0.5)
     scaled = dict(alpha=0.1 / c, beta=1.0 * c, l1=0.05 * c, l2=0.5 * c**2)
     wide = df.with_columns(pl.col("x0") * c, pl.col("x1") * c)
-    pa = _pred(po.ModelBank([_spec(**kw, **base)]).fit_predict(df))
-    pb = _pred(po.ModelBank([_spec(**kw, **scaled)]).fit_predict(wide))
+    pa = _pred(rp.ModelBank([_spec(**kw, **base)]).fit_predict(df))
+    pb = _pred(rp.ModelBank([_spec(**kw, **scaled)]).fit_predict(wide))
     ok = np.isfinite(pa)
     assert ok.sum() > 2900 and np.array_equal(ok, np.isfinite(pb))
     assert np.max(np.abs(pa[ok] - pb[ok])) < 1e-12
     kw["fit_intercept"] = True
-    qa = _pred(po.ModelBank([_spec(**kw, **base)]).fit_predict(df))
-    qb = _pred(po.ModelBank([_spec(**kw, **scaled)]).fit_predict(wide))
+    qa = _pred(rp.ModelBank([_spec(**kw, **base)]).fit_predict(df))
+    qb = _pred(rp.ModelBank([_spec(**kw, **scaled)]).fit_predict(wide))
     both = np.isfinite(qa) & np.isfinite(qb)
     assert np.max(np.abs(qa[both] - qb[both])) > 1e-3
 
@@ -380,7 +380,7 @@ def _logistic(seed: int, n: int = 4000, noise_features: int = 0) -> tuple[pl.Dat
 
 def _every_coef(df, features, **kw) -> np.ndarray:
     spec = _spec(features=features, half_life=float("inf"), min_weight=0.0, coef_every=1, **kw)
-    out = po.ModelBank([spec]).fit_predict(df)["m"]
+    out = rp.ModelBank([spec]).fit_predict(df)["m"]
     return np.array(out.struct.field("coef").to_list(), float)
 
 

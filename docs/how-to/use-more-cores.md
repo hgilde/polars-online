@@ -59,7 +59,7 @@ import time
 
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # A file of 20 features, and eight specs that differ only in half-life.
 rng = np.random.default_rng(2)
@@ -186,7 +186,7 @@ import os
 os.environ["POLARS_MAX_THREADS"] = "8"          # Polars' readers and writers: read at import polars
 
 import polars as pl
-import rheon as po
+from rheon import polars as po
 from itertools import product
 
 # Three factor sets, each with and without standardizing: six specs.
@@ -250,7 +250,7 @@ data](../EXAMPLE-DATA.md):
 
 ```python
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t",
                        half_life=600.0, gap_cap=300.0, group="stock_id")

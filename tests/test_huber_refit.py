@@ -22,7 +22,7 @@ import pytest
 import statsmodels.api as sm
 from statsmodels.robust.norms import HuberT
 
-import rheon as po
+from rheon import polars as rp
 from test_huber_scale import _frame, stream
 
 TIER = "essential"
@@ -34,12 +34,12 @@ def _model(kind: str, **kw) -> dict:
     under the Huber loss."""
     c = dict(targets=["y"], features=["x"], half_life=INF, **kw)
     if kind == "huber":
-        return po.spec.huber("m", **c)
-    return po.spec.sgd("m", loss="huber", **c)
+        return rp.spec.huber("m", **c)
+    return rp.spec.sgd("m", loss="huber", **c)
 
 
 def _coef(spec: dict, df: pl.DataFrame) -> np.ndarray:
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     return np.array(bank.coef("m")["coef"].to_list())
 
@@ -112,9 +112,9 @@ def _specs() -> list[dict]:
         huber_refit_rows=200,
     )
     return [
-        po.spec.huber("m", huber_scale_half_life=60.0, emit_huber_scale=True, **c),
-        po.spec.sgd("m", loss="huber", schedule="adagrad", learning_rate=0.5, **c),
-        po.spec.sgd("m", loss="huber", schedule="inv_scaling", learning_rate=0.5, **c),
+        rp.spec.huber("m", huber_scale_half_life=60.0, emit_huber_scale=True, **c),
+        rp.spec.sgd("m", loss="huber", schedule="adagrad", learning_rate=0.5, **c),
+        rp.spec.sgd("m", loss="huber", schedule="inv_scaling", learning_rate=0.5, **c),
     ]
 
 
@@ -127,9 +127,9 @@ def test_one_chunk_or_many_give_one_run(spec):
     chunk's end, so chunks of 1, 7 and 600 rows give the one chunk's output
     to the bit."""
     df = _frame()
-    whole = po.ModelBank([spec]).fit_predict(df)
+    whole = rp.ModelBank([spec]).fit_predict(df)
     for rows in (1, 7, 600):
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         parts = [bank.fit_predict(df.slice(i, rows)) for i in range(0, df.height, rows)]
         assert pl.concat(parts).equals(whole, null_equal=True), rows
 
@@ -140,11 +140,11 @@ def test_a_bank_saved_before_at_or_after_the_refit_resumes_to_the_bit(spec):
     around its row and after it, a bank goes on as the one that never
     stopped."""
     df = _frame()
-    whole = po.ModelBank([spec]).fit_predict(df)
+    whole = rp.ModelBank([spec]).fit_predict(df)
     for cut in (1, 37, 150, 220, 250, 1001):
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         head = bank.fit_predict(df.slice(0, cut))
-        loaded = po.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
+        loaded = rp.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
         tail = loaded.fit_predict(df.slice(cut))
         assert pl.concat([head, tail]).equals(whole, null_equal=True), cut
 
@@ -165,11 +165,11 @@ def test_the_refit_moves_the_fit_after_its_row_and_not_the_weight(spec):
     the run without a refit's (hard rule 8). The default at one feature is
     500 rows, so a spec that does not name it is the spec at 500."""
     df = _frame()
-    on = po.ModelBank([spec]).fit_predict(df)["m"]
-    off = po.ModelBank([_without_refit(spec, 0)]).fit_predict(df)["m"]
-    waits = po.ModelBank([_without_refit(spec, df.height)]).fit_predict(df)["m"]
-    default = po.ModelBank([_without_refit(spec, None)]).fit_predict(df)["m"]
-    at_500 = po.ModelBank([_without_refit(spec, 500)]).fit_predict(df)["m"]
+    on = rp.ModelBank([spec]).fit_predict(df)["m"]
+    off = rp.ModelBank([_without_refit(spec, 0)]).fit_predict(df)["m"]
+    waits = rp.ModelBank([_without_refit(spec, df.height)]).fit_predict(df)["m"]
+    default = rp.ModelBank([_without_refit(spec, None)]).fit_predict(df)["m"]
+    at_500 = rp.ModelBank([_without_refit(spec, 500)]).fit_predict(df)["m"]
     assert default.equals(at_500, null_equal=True)
     assert not default.equals(on, null_equal=True), "500 rows refit after 200"
     assert on.struct.field("weight_sum").equals(off.struct.field("weight_sum"))
@@ -198,10 +198,10 @@ def test_the_refit_solves_its_own_target_alone():
     y1 = -3.0 * x + rng.standard_normal(n)
     df = pl.DataFrame({"x": x, "y0": y0, "y1": y1}).with_columns(pl.col("y0").fill_nan(None))
     c = dict(targets=["y0", "y1"], features=["x"], half_life=INF)
-    spec = po.spec.huber("m", huber_refit_rows=100, **c)
-    on = po.ModelBank([spec]).fit_predict(df)["m"]
+    spec = rp.spec.huber("m", huber_refit_rows=100, **c)
+    on = rp.ModelBank([spec]).fit_predict(df)["m"]
     # Each target's refit alone: y1's at its 100th row, y0's at its 100th.
-    off = po.ModelBank([po.spec.huber("m", huber_refit_rows=n, **c)]).fit_predict(df)["m"]
+    off = rp.ModelBank([rp.spec.huber("m", huber_refit_rows=n, **c)]).fit_predict(df)["m"]
     p_on = on.struct.field("pred_y0").to_numpy()
     p_off = off.struct.field("pred_y0").to_numpy()
     y0_fills = int(np.flatnonzero(~np.isnan(y0))[99])
@@ -212,16 +212,16 @@ def test_the_refit_solves_its_own_target_alone():
 
 def test_the_refit_is_refused_where_it_does_not_apply():
     with pytest.raises(ValueError, match='huber_refit_rows applies only under loss="huber"'):
-        po.spec.sgd("s", targets=["y"], features=["x"], half_life=INF, huber_refit_rows=10)
+        rp.spec.sgd("s", targets=["y"], features=["x"], half_life=INF, huber_refit_rows=10)
     c = dict(targets=["y"], features=["x"], half_life=INF, ridge_scale="sum")
     with pytest.raises(
         ValueError, match='huber_refit_rows and ridge_scale="sum" cannot both be set'
     ):
-        po.ModelBank([po.spec.huber("h", huber_refit_rows=10, **c)])
+        rp.ModelBank([rp.spec.huber("h", huber_refit_rows=10, **c)])
     # Unnamed, the sum-scale prior has none, and takes the spec as it did.
     df = pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [1.0, 2.5, 2.0]})
-    off = po.ModelBank([po.spec.huber("h", huber_refit_rows=0, **c)]).fit_predict(df)
-    assert po.ModelBank([po.spec.huber("h", **c)]).fit_predict(df).equals(off)
+    off = rp.ModelBank([rp.spec.huber("h", huber_refit_rows=0, **c)]).fit_predict(df)
+    assert rp.ModelBank([rp.spec.huber("h", **c)]).fit_predict(df).equals(off)
 
 
 def test_the_largest_feature_set_is_the_refit_huber_on_its_features():
@@ -236,14 +236,14 @@ def test_the_largest_feature_set_is_the_refit_huber_on_its_features():
     y[(rng.random(n) < 0.25) & (x > 0)] += 50.0
     df = pl.DataFrame({"x": x, "z": z, "y": y})
     c = dict(targets=["y"], half_life=INF, min_weight=3.0)
-    sets = po.spec.huber(
+    sets = rp.spec.huber(
         "m", features=["x", "z"], feature_sets={"x": ["x"], "all": ["x", "z"]}, **c
     )
-    plain = po.spec.huber("m", features=["x", "z"], **c)
-    a = po.ModelBank([sets]).fit_predict(df)["m"].struct.field("pred_y__all")
-    b = po.ModelBank([plain]).fit_predict(df)["m"].struct.field("pred_y")
+    plain = rp.spec.huber("m", features=["x", "z"], **c)
+    a = rp.ModelBank([sets]).fit_predict(df)["m"].struct.field("pred_y__all")
+    b = rp.ModelBank([plain]).fit_predict(df)["m"].struct.field("pred_y")
     assert a.equals(b, null_equal=True)
-    off = po.ModelBank([{**plain, "model": {**plain["model"], "huber_refit_rows": 0}}])
+    off = rp.ModelBank([{**plain, "model": {**plain["model"], "huber_refit_rows": 0}}])
     assert not off.fit_predict(df)["m"].struct.field("pred_y").equals(b, null_equal=True)
 
 
@@ -262,8 +262,8 @@ def test_the_default_count_grows_with_the_features_and_stops_above_100():
         return pl.DataFrame({**{c: X[:, i] for i, c in enumerate(names)}, "y": y}), names
 
     def preds(df: pl.DataFrame, names: list[str], **kw) -> pl.Series:
-        spec = po.spec.huber("m", targets=["y"], features=names, half_life=INF, **kw)
-        return po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
+        spec = rp.spec.huber("m", targets=["y"], features=names, half_life=INF, **kw)
+        return rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
 
     df, names = frame(60, 700)
     default = preds(df, names)
@@ -299,12 +299,12 @@ def test_the_refit_budget_gives_up_the_later_groups_and_counts_them(kind):
             "z": -x + rng.standard_normal(n),
         }
     )
-    build = po.spec.huber if kind == "huber" else po.spec.sgd
+    build = rp.spec.huber if kind == "huber" else rp.spec.sgd
     loss = {} if kind == "huber" else {"loss": "huber"}
     c = dict(targets=["y", "z"], features=["x"], group="g", half_life=INF, coef_every=0, **loss)
 
-    def bank(**kw) -> tuple[po.ModelBank, pl.DataFrame, list[str]]:
-        b = po.ModelBank([build("m", huber_refit_rows=50, **c, **kw)])
+    def bank(**kw) -> tuple[rp.ModelBank, pl.DataFrame, list[str]]:
+        b = rp.ModelBank([build("m", huber_refit_rows=50, **c, **kw)])
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             out = b.fit_predict(df)
@@ -312,7 +312,7 @@ def test_the_refit_budget_gives_up_the_later_groups_and_counts_them(kind):
 
     bounded, out, notices = bank(refit_budget=0.07)
     free, out_free, none = bank(refit_budget=INF)
-    out_off = po.ModelBank([build("m", huber_refit_rows=0, **c)]).fit_predict(df)
+    out_off = rp.ModelBank([build("m", huber_refit_rows=0, **c)]).fit_predict(df)
     assert len(notices) == 1 and 'at group "3"' in notices[0], notices
     assert none == []
     given = dict(bounded.summary().select("group", "refit_given_up").iter_rows())
@@ -323,9 +323,9 @@ def test_the_refit_budget_gives_up_the_later_groups_and_counts_them(kind):
         like = (out_free if g < 3 else out_off).filter(pl.col("g") == str(g))["m"]
         assert mine.equals(like, null_equal=True), g
     with pytest.raises(ValueError, match="refit_budget must be above 0 MiB"):
-        po.ModelBank([build("m", refit_budget=0.0, **c)])
+        rp.ModelBank([build("m", refit_budget=0.0, **c)])
 
 
 def test_the_refit_budget_is_refused_beside_another_loss():
     with pytest.raises(ValueError, match='refit_budget applies only under loss="huber"'):
-        po.spec.sgd("s", targets=["y"], features=["x"], half_life=INF, refit_budget=10.0)
+        rp.spec.sgd("s", targets=["y"], features=["x"], half_life=INF, refit_budget=10.0)

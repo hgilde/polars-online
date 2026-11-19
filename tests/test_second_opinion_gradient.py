@@ -16,7 +16,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -55,7 +55,7 @@ class TestAPassiveAggressiveInterceptAndTubeAreRivers:
         n, c, eps = 600, 0.3, 0.1
         x = rng.normal(0.0, 1.0, (n, 2))
         y = 3.0 + 1.5 * x[:, 0] - 0.5 * x[:, 1] + rng.normal(0.0, 0.3, n)
-        spec = po.spec.pa(
+        spec = rp.spec.pa(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -69,7 +69,7 @@ class TestAPassiveAggressiveInterceptAndTubeAreRivers:
             standardize=False,
         )
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        out = po.ModelBank([spec]).fit_predict(frame)["m"].struct
+        out = rp.ModelBank([spec]).fit_predict(frame)["m"].struct
         pred = out.field("pred_y").to_numpy()
         coef = np.array(out.field("coef").to_list(), dtype=float)
         ys = pd.Series(y)
@@ -139,7 +139,7 @@ class TestSgdPoissonAndAdaGradAreRivers:
     def ours(
         frame: pl.DataFrame, target: str, half_life: float, weighted: bool, **kw: Any
     ) -> tuple[np.ndarray, np.ndarray]:
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "s",
             targets=[target],
             features=["one", "x0", "x1"],
@@ -152,7 +152,7 @@ class TestSgdPoissonAndAdaGradAreRivers:
             coef_every=1,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(frame)["s"].struct
+        out = rp.ModelBank([spec]).fit_predict(frame)["s"].struct
         coef = np.array(out.field("coef").to_list(), dtype=float)
         return out.field(f"pred_{target}").to_numpy(), coef
 

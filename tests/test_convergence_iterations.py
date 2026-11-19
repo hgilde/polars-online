@@ -67,8 +67,8 @@ from sklearn.linear_model import Lasso
 
 import ledger
 import reference_cluster as ref
-import rheon as po
 import rheon.gram as gram
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -95,7 +95,7 @@ def frame(x: np.ndarray, y: np.ndarray) -> pl.DataFrame:
     return pl.DataFrame({**{f: x[:, i] for i, f in enumerate(FEATURES)}, "y": y})
 
 
-def failures(bank: po.ModelBank) -> int:
+def failures(bank: rp.ModelBank) -> int:
     return int(bank.solve_failures()["solve_failures"].sum())
 
 
@@ -123,7 +123,7 @@ def last_solve(spec: dict[str, Any], x: np.ndarray, y: np.ndarray) -> tuple[np.n
     """The coefficients after the last row, and whether that row's solve
     was counted unconverged: the rows but the last in one chunk, the last
     in another, `solve_failures` read between."""
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(frame(x, y)[:-1])
     before = failures(bank)
     out = bank.fit_predict(frame(x, y)[-1:])["m"].struct.unnest()
@@ -139,7 +139,7 @@ def lasso_case(
     x, y = collinear(n, 1, eps)
     y = y * scale
     lam = lam * scale
-    spec = po.spec.lasso(
+    spec = rp.spec.lasso(
         "m",
         targets=["y"],
         features=FEATURES,
@@ -305,7 +305,7 @@ class TestLassoDescent:
         # from the row whose weight first gives a fit (the second).
         x, y = collinear(300, 2, 0.3)
         points = [0.01, 0.001, 0.0]
-        spec = po.spec.lasso(
+        spec = rp.spec.lasso(
             "m",
             targets=["y"],
             features=FEATURES,
@@ -314,7 +314,7 @@ class TestLassoDescent:
             max_iter=1,
             tol=1e-300,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(frame(x, y))
         assert failures(bank) == len(points) * (len(y) - 1)
 
@@ -332,7 +332,7 @@ def lloyd_fit(seed: int) -> np.ndarray:
     eight overlapping blobs: the library's half of the Lloyd grid."""
     x = eight_blobs(seed)
     x = x[((x - x.mean(0)) ** 2).sum(1) <= 0.8 * 5.0 * ((x - x.mean(0)) ** 2).sum(1).mean()]
-    spec = po.spec.kmeans(
+    spec = rp.spec.kmeans(
         "m",
         features=["x0", "x1"],
         n_clusters=8,
@@ -342,7 +342,7 @@ def lloyd_fit(seed: int) -> np.ndarray:
         split_merge=0.0,
         standardize=False,
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]}))
     return bank.coef()["coef"].to_numpy()
 
@@ -418,7 +418,7 @@ class TestLloydSeeding:
             x = x[((x - x.mean(0)) ** 2).sum(1) <= 0.8 * 5.0 * ((x - x.mean(0)) ** 2).sum(1).mean()]
             d2 = ((x - x.mean(0)) ** 2).sum(1)
             assert d2.max() < 0.95 * 5.0 * d2.mean(), "a row near the model's cut"
-            spec = po.spec.kmeans(
+            spec = rp.spec.kmeans(
                 "m",
                 features=["x0", "x1"],
                 n_clusters=8,
@@ -428,7 +428,7 @@ class TestLloydSeeding:
                 split_merge=0.0,
                 standardize=False,
             )
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             bank.fit(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]}))
             assert failures(bank) == 0
             c = bank.coef()["coef"].to_numpy().reshape(8, 2)
@@ -456,10 +456,10 @@ class TestGramLassoPath:
     @staticmethod
     def path(eps: float, lam: float, **kw: Any) -> tuple[dict[str, Any], list[str]]:
         x, y = collinear(800, 1, eps)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m", targets=["y"], features=FEATURES, ridge=0.0, half_life=float("inf")
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(frame(x, y))
         g = bank.gram("m")[0]
         c, d, s, _ = standardized_system(x, y)
@@ -473,7 +473,7 @@ class TestGramLassoPath:
         bound = tol * float(np.std(y)) * np.abs(c).sum(1)
         bound += 8 * gamma(4 * len(y)) * (np.abs(c) @ np.abs(b) + np.abs(d) + lam)
         case = {"kkt": kkt_violation(c, d, lam, b), "bound": bound}
-        return case, [str(w.message) for w in caught if issubclass(w.category, po.ReadinessWarning)]
+        return case, [str(w.message) for w in caught if issubclass(w.category, rp.ReadinessWarning)]
 
     @pytest.mark.parametrize("max_iter", [5, 1000])
     def test_a_penalty_that_runs_out_of_sweeps_is_named_in_a_warning(self, max_iter):
@@ -531,7 +531,7 @@ class TestHuberRefit:
         extra = {"loss": "huber", "learning_rate": 0.05} if kind == "sgd" else {}
         for trial, rows, want in [(687, None, 1), (0, None, 0), (687, 0, 0)]:
             df = slow_refit_stream(trial)
-            spec = getattr(po.spec, kind)(
+            spec = getattr(rp.spec, kind)(
                 "m",
                 targets=["y"],
                 features=["x0"],
@@ -540,7 +540,7 @@ class TestHuberRefit:
                 huber_refit_rows=df.height if rows is None else rows,
                 **extra,
             )
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 bank.fit_predict(df)

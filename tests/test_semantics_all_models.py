@@ -16,7 +16,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -61,7 +61,7 @@ def build(model, extra, **kw):
     opts.update(kw)
     if opts.get("features", ()) is None:
         del opts["features"]  # a model with no features keyword (holt)
-    return getattr(po.spec, model)("m", **opts)
+    return getattr(rp.spec, model)("m", **opts)
 
 
 def slot(out, prefix, model):
@@ -79,7 +79,7 @@ def frame(n=40, seed=0, binary=False):
 
 
 def run(model, extra, df, **kw):
-    return po.ModelBank([build(model, extra, **kw)]).fit_predict(df)
+    return rp.ModelBank([build(model, extra, **kw)]).fit_predict(df)
 
 
 #: The sweep less ``holt``, which takes no features to null: generated
@@ -313,8 +313,8 @@ class TestUniversalInvariants:
     def test_chunk_invariance(self, model, extra):
         df = frame(n=120, seed=3, binary=model == "ftrl")
         spec = build(model, extra, group=None)
-        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-        bank = po.ModelBank([spec])
+        one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = rp.ModelBank([spec])
         many = (
             pl.concat([bank.fit_predict(df.slice(i, 13)) for i in range(0, df.height, 13)])
             .select("m")
@@ -326,11 +326,11 @@ class TestUniversalInvariants:
     def test_save_load_mid_stream(self, model, extra, tmp_path):
         df = frame(n=120, seed=4, binary=model == "ftrl")
         spec = build(model, extra)
-        a = po.ModelBank([spec])
+        a = rp.ModelBank([spec])
         a.fit_predict(df.slice(0, 60))
         p = tmp_path / f"{model}.state"
         a.save(p)
-        b = po.ModelBank.load(p, specs=[spec])
+        b = rp.ModelBank.load(p, specs=[spec])
         second = df.slice(60, 60)
         ra = a.fit_predict(second).select("m").unnest("m")
         rb = b.fit_predict(second).select("m").unnest("m")
@@ -339,9 +339,9 @@ class TestUniversalInvariants:
     def test_groups_are_independent(self, model, extra):
         df = frame(n=120, seed=5, binary=model == "ftrl").with_columns(g=pl.Series(["a", "b"] * 60))
         spec = build(model, extra, group="g")
-        both = po.ModelBank([spec]).fit_predict(df)
+        both = rp.ModelBank([spec]).fit_predict(df)
         solo_df = df.filter(pl.col("g") == "a")
-        solo = po.ModelBank([spec]).fit_predict(solo_df)
+        solo = rp.ModelBank([spec]).fit_predict(solo_df)
         a = both.filter(pl.col("g") == "a").select("m").unnest("m")
         b = solo.select("m").unnest("m")
         keep = [c for c in a.columns if not c.startswith("coef")]

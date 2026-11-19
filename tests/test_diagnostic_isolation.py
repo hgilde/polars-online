@@ -72,7 +72,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 from test_model_registry import REGRESSIONS
 
 TIER = "mixed"
@@ -85,22 +85,22 @@ Builder = Callable[..., dict]
 #: The linear kinds, each with the keywords its plainest well-behaved fit
 #: needs on these streams.
 KINDS: dict[str, Builder] = {
-    "ewridge": lambda **kw: po.spec.ewridge("m", **kw),
-    "rls": lambda **kw: po.spec.rls("m", **kw),
-    "kalman": lambda **kw: po.spec.kalman("m", coef_half_life=100.0, **kw),
-    "lasso": lambda **kw: po.spec.lasso("m", penalties=[0.1, 0.01], **kw),
-    "quantile": lambda **kw: po.spec.quantile("m", quantile=0.5, **kw),
-    "sgd": lambda **kw: po.spec.sgd("m", learning_rate=0.02, **kw),
-    "pa": lambda **kw: po.spec.pa("m", **kw),
-    "ftrl": lambda **kw: po.spec.ftrl("m", loss="squared", **kw),
+    "ewridge": lambda **kw: rp.spec.ewridge("m", **kw),
+    "rls": lambda **kw: rp.spec.rls("m", **kw),
+    "kalman": lambda **kw: rp.spec.kalman("m", coef_half_life=100.0, **kw),
+    "lasso": lambda **kw: rp.spec.lasso("m", penalties=[0.1, 0.01], **kw),
+    "quantile": lambda **kw: rp.spec.quantile("m", quantile=0.5, **kw),
+    "sgd": lambda **kw: rp.spec.sgd("m", learning_rate=0.02, **kw),
+    "pa": lambda **kw: rp.spec.pa("m", **kw),
+    "ftrl": lambda **kw: rp.spec.ftrl("m", loss="squared", **kw),
     # The trend at the level's half-life: at its default, four times it, the
     # trend settles past the stream's end, and every diagnostic that waits
     # for the fit to settle (calibration, breaks, specification, tails)
     # would be null throughout.
-    "holt": lambda **kw: po.spec.holt("m", trend_half_life=120.0, **kw),
+    "holt": lambda **kw: rp.spec.holt("m", trend_half_life=120.0, **kw),
     # With the refit of their first rows, on by default (task 277).
-    "huber": lambda **kw: po.spec.huber("m", **kw),
-    "sgd_huber": lambda **kw: po.spec.sgd("m", loss="huber", learning_rate=0.02, **kw),
+    "huber": lambda **kw: rp.spec.huber("m", **kw),
+    "sgd_huber": lambda **kw: rp.spec.sgd("m", loss="huber", learning_rate=0.02, **kw),
 }
 
 ESSENTIAL_KINDS = ("ewridge", "sgd", "holt")
@@ -320,8 +320,8 @@ def _run_cached(kind: str, variant: str, key: str, grid: bool) -> pl.DataFrame:
     spec = _spec(_builder(kind), kind, variant, kw, grid)
     with warnings.catch_warnings():
         # A clocked embargo without `horizon_rows` says so once per reader.
-        warnings.simplefilter("ignore", po.ReadinessWarning)
-        out = po.ModelBank([spec], threads=1).fit_predict(_frame())
+        warnings.simplefilter("ignore", rp.ReadinessWarning)
+        out = rp.ModelBank([spec], threads=1).fit_predict(_frame())
     return out.select("m").unnest("m")
 
 
@@ -570,7 +570,7 @@ def test_every_common_diagnostic_parameter_is_a_case():
         # Restarts the model by design: tests/test_drift_reset.py.
         "drift_action",
     }
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=10.0)
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=10.0)
     common = set(spec) - {"name", "model", "targets", "features"}
     assert common - swept - not_diagnostics == set(), "classify these"
     assert (swept | not_diagnostics) - common == set(), "names no spec takes"

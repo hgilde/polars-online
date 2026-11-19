@@ -19,7 +19,7 @@ import polars as pl
 import pytest
 
 import ledger
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -34,11 +34,11 @@ def pair(n, rho, seed=0, k=2):
 def spec(**kw):
     d = {"features": ["x0", "x1"], "window_rows": 200}
     d.update(kw)
-    return po.spec.corrchange("c", **d)
+    return rp.spec.corrchange("c", **d)
 
 
 def run(df, **kw):
-    return po.ModelBank([spec(**kw)]).fit_predict(df)["c"].struct.unnest()
+    return rp.ModelBank([spec(**kw)]).fit_predict(df)["c"].struct.unnest()
 
 
 # --- the monitor -------------------------------------------------------------
@@ -317,7 +317,7 @@ def test_chunk_invariance(kind, size):
     assert want["flag"].fill_null(False).sum() >= 2, kind
     if kw.get("kind") == "window":
         assert want["crit"].drop_nulls().n_unique() > 3, kind
-    bank = po.ModelBank([spec(**kw)])
+    bank = rp.ModelBank([spec(**kw)])
     got = pl.concat([bank.fit_predict(df[i : i + size]) for i in range(0, df.height, size)])
     assert want.equals(got["c"].struct.unnest())
 
@@ -335,9 +335,9 @@ def test_save_load_mid_stream(kind, cut):
     kw = CHUNK_KW[kind]
     s = spec(**kw)
     want = run(df, **kw)
-    bank = po.ModelBank([s])
+    bank = rp.ModelBank([s])
     bank.fit_predict(df[:cut])
-    again = po.ModelBank.load_bytes(bank.save_bytes(), [s])
+    again = rp.ModelBank.load_bytes(bank.save_bytes(), [s])
     got = again.fit_predict(df[cut:])["c"].struct.unnest()
     assert want[cut:].equals(got)
 
@@ -720,8 +720,8 @@ def test_n_perm_tightens_the_critical_value_around_its_limit():
     kw = {"kind": "window", "window_rows": 50, "features": ["x0", "x1", "x2"]}
     spread = {}
     for n in (20, 2000):
-        specs = [po.spec.corrchange(f"s{s}", n_perm=n, seed=s, **kw) for s in range(20)]
-        out = po.ModelBank(specs).fit_predict(df)
+        specs = [rp.spec.corrchange(f"s{s}", n_perm=n, seed=s, **kw) for s in range(20)]
+        out = rp.ModelBank(specs).fit_predict(df)
         spread[n] = np.std([out[f"s{s}"].struct.field("crit")[100] for s in range(20)])
     print(f"crit's spread over 20 seeds: {spread}")
     assert spread[20] > 4 * spread[2000], spread
@@ -738,12 +738,12 @@ def n_perm_crits(n_perm: int, seeds: range) -> np.ndarray:
     df = pair(2 * w + 1, 0.4, seed=280, k=k)
     cols = [f"x{i}" for i in range(k)]
     specs = [
-        po.spec.corrchange(
+        rp.spec.corrchange(
             f"s{s}", features=cols, kind="window", window_rows=w, n_perm=n_perm, seed=s
         )
         for s in seeds
     ]
-    out = po.ModelBank(specs).fit_predict(df)
+    out = rp.ModelBank(specs).fit_predict(df)
     return np.array([out[f"s{s}"].struct.field("crit")[2 * w] for s in seeds])
 
 
@@ -1140,9 +1140,9 @@ def test_a_state_saved_across_a_reset_goes_on_to_the_bit():
     want = run(df, **CHUNK_KW["window, reset"])
     first = want["flag"].to_list().index(True)
     for cut in (first + 1, first + w, first + 2 * w, first + 2 * w + 1):
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         bank.fit_predict(df[:cut])
-        again = po.ModelBank.load_bytes(bank.save_bytes(), [s])
+        again = rp.ModelBank.load_bytes(bank.save_bytes(), [s])
         assert want[cut:].equals(again.fit_predict(df[cut:])["c"].struct.unnest()), cut
 
 

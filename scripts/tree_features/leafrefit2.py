@@ -16,7 +16,7 @@ import common as C  # noqa: E402
 import numpy as np  # noqa: E402
 from leafrefit import bank, leaf_values, rmse, synth, train_trees  # noqa: E402
 
-import rheon as po  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 
 print(C.load_line())
 res = {}
@@ -35,7 +35,7 @@ for seed in (0, 1, 2):
     }
     r = {"frozen": rmse(base[te], y[te])}
     for lr in (0.05, 0.2):
-        sg = lambda cols, lr=lr: po.spec.sgd(  # noqa: E731
+        sg = lambda cols, lr=lr: rp.spec.sgd(  # noqa: E731
             "o",
             targets=["y"],
             features=cols,

@@ -17,7 +17,7 @@ import numpy as np  # noqa: E402
 import polars as pl  # noqa: E402
 from leafrefit import synth, train_trees  # noqa: E402
 
-import rheon as po  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 
 
 def online_interval(clock, r, hl, gap, learn_clock=None):
@@ -37,7 +37,7 @@ def online_interval(clock, r, hl, gap, learn_clock=None):
                 d.with_columns(c=pl.Series(learn_clock), role=pl.lit(1, pl.Int8)),
             ]
         ).sort("c", "role", "rid")
-    s = po.spec.ewridge(
+    s = rp.spec.ewridge(
         "o",
         targets=["y"],
         features=["zero"],
@@ -47,7 +47,7 @@ def online_interval(clock, r, hl, gap, learn_clock=None):
         conformal=0.9,
         ridge=1e-6,
     )
-    o = po.ModelBank([s]).fit_predict(d).filter(pl.col("role") == 0).sort("rid")
+    o = rp.ModelBank([s]).fit_predict(d).filter(pl.col("role") == 0).sort("rid")
     f = o["o"].struct
     return f.field("pred_y").to_numpy(), f.field("lo_y").to_numpy(), f.field("hi_y").to_numpy()
 

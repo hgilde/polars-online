@@ -11,8 +11,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
-from rheon import sim
+from rheon import polars as rp
+from rheon.polars import sim
 
 TIER = "essential"
 
@@ -82,7 +82,7 @@ def test_the_per_state_correlations_are_recovered():
         assert len(rows) >= 100, f"state {s} has {len(rows)} rows: nothing to recover"
         r = np.corrcoef(rows.T)
         off = r[~np.eye(4, dtype=bool)]
-        se = po.corr.fisher_se(len(rows), rho=rho)
+        se = rp.corr.fisher_se(len(rows), rho=rho)
         assert abs(off.mean() - rho) < 3 * se, (s, off.mean(), rho, se)
 
 
@@ -294,7 +294,7 @@ def test_async_rates_drop_ticks_and_the_epps_curve_rises():
 
 
 def test_the_output_feeds_refresh_time():
-    from rheon import stream
+    from rheon.polars import stream
 
     out = sim.regimes(
         3,

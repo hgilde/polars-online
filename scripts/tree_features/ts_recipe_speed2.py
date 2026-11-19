@@ -7,7 +7,7 @@ import common as C
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
 print(C.load_line())
 rng = np.random.default_rng(0)
@@ -22,7 +22,7 @@ for G in (10, 100, 1000, 10000):
         )
         t0 = time.perf_counter()
         s.online.with_windows(
-            S=po.ewm_sum("y", half_life=1000.0, closed="left"), clock="c", gap_cap=1e12, group="g"
+            S=rp.ewm_sum("y", half_life=1000.0, closed="left"), clock="c", gap_cap=1e12, group="g"
         )
         el = time.perf_counter() - t0
         print(f"G={G:6d} n={n:7d}: {el:6.2f}s {el / n * 1e9:8.0f} ns a row", flush=True)

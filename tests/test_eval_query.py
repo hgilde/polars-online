@@ -39,9 +39,9 @@ import polars as pl
 import pytest
 
 import child
-import rheon as po
 from polars_version import needs_polars
-from rheon import _frame
+from rheon import polars as rp
+from rheon.polars import _frame
 
 TIER = "mixed"
 
@@ -66,22 +66,22 @@ def _out(n: int = 3000, seed: int = 0, offset: float = 0.0) -> tuple[pl.DataFram
         }
     )
     specs = {
-        "grid": po.spec.ewridge(
+        "grid": rp.spec.ewridge(
             "grid", targets=["y", "z"], features=["x0", "x1"], half_life=[100.0, 1000.0],
             min_weight=5.0,
         ),
-        "renamed": po.spec.ewridge(
-            "renamed", targets=[po.target("y", name="ret")], features=["x0"], half_life=300.0
+        "renamed": rp.spec.ewridge(
+            "renamed", targets=[rp.target("y", name="ret")], features=["x0"], half_life=300.0
         ),
-        "logistic": po.spec.sgd(
+        "logistic": rp.spec.sgd(
             "logistic", targets=["lab"], features=["x0", "x1"], loss="logistic", half_life=500.0
         ),
-        "poisson": po.spec.sgd(
+        "poisson": rp.spec.sgd(
             "poisson", targets=["count"], features=["x0"], loss="poisson",
             half_life=float("inf"), learning_rate=0.01, min_weight=5.0,
         ),
     }  # fmt: skip
-    return po.ModelBank(list(specs.values())).fit_predict(df), specs
+    return rp.ModelBank(list(specs.values())).fit_predict(df), specs
 
 
 @pytest.fixture(scope="module")
@@ -93,8 +93,8 @@ def fitted():
 def small_chunks(monkeypatch):
     """A query read 97 rows at a time, its sums merged every four chunks:
     every path of the merge in a few thousand rows."""
-    monkeypatch.setattr(po.eval, "_chunk_rows", lambda: 97)
-    monkeypatch.setattr(po.eval, "_MERGE_EVERY", 4)
+    monkeypatch.setattr(rp.eval, "_chunk_rows", lambda: 97)
+    monkeypatch.setattr(rp.eval, "_MERGE_EVERY", 4)
 
 
 def close(got: pl.DataFrame, want: pl.DataFrame, *, rel: float = 1e-9) -> None:
@@ -131,13 +131,13 @@ class TestTheQueryGivesTheFramesNumbers:
     def test_metrics_over_many_chunks(self, fitted, small_chunks, name, kw):
         out, specs = fitted
         close(
-            po.eval.metrics(out.lazy(), specs[name], **kw), po.eval.metrics(out, specs[name], **kw)
+            rp.eval.metrics(out.lazy(), specs[name], **kw), rp.eval.metrics(out, specs[name], **kw)
         )
 
     @pytest.mark.parametrize(("name", "kw"), SUM_CASES)
     def test_sums_over_many_chunks(self, fitted, small_chunks, name, kw):
         out, specs = fitted
-        close(po.eval.sums(out.lazy(), specs[name], **kw), po.eval.sums(out, specs[name], **kw))
+        close(rp.eval.sums(out.lazy(), specs[name], **kw), rp.eval.sums(out, specs[name], **kw))
 
     def test_the_small_chunks_are_read_and_merged(self, fitted, small_chunks, monkeypatch):
         """The fixture's activation: 3,000 rows in 97-row chunks are 31
@@ -145,21 +145,21 @@ class TestTheQueryGivesTheFramesNumbers:
         chunks, then the running sums and three more) and once at the end."""
         out, specs = fitted
         merged = []
-        real = po.eval._merge
+        real = rp.eval._merge
 
         def counting(frames, keys, extra=()):
             merged.append(len(frames))
             return real(frames, keys, extra)
 
-        monkeypatch.setattr(po.eval, "_merge", counting)
-        po.eval.sums(out.lazy(), specs["grid"])
+        monkeypatch.setattr(rp.eval, "_merge", counting)
+        rp.eval.sums(out.lazy(), specs["grid"])
         assert merged == [4] * 10 + [1], merged
 
     @pytest.mark.parametrize(("name", "kw"), SUM_CASES)
     def test_sums_of_one_chunk_are_the_frames_to_the_bit(self, fitted, name, kw):
         out, specs = fitted
-        assert po.eval.sums(out.lazy(), specs[name], **kw).equals(
-            po.eval.sums(out, specs[name], **kw)
+        assert rp.eval.sums(out.lazy(), specs[name], **kw).equals(
+            rp.eval.sums(out, specs[name], **kw)
         )
 
     @pytest.mark.parametrize(("name", "kw"), CASES)
@@ -168,19 +168,19 @@ class TestTheQueryGivesTheFramesNumbers:
         centred sums as a query's (task 382a, A5; ``ic`` was Polars' ``corr``
         over a frame, which rounded apart)."""
         out, specs = fitted
-        got = po.eval.metrics(out.lazy(), specs[name], **kw)
-        want = po.eval.metrics(out, specs[name], **kw)
+        got = rp.eval.metrics(out.lazy(), specs[name], **kw)
+        want = rp.eval.metrics(out, specs[name], **kw)
         assert got.equals(want)
 
     def test_a_name_reads_as_the_dict_does_on_a_plain_target(self, fitted, small_chunks):
         out, specs = fitted
-        close(po.eval.metrics(out.lazy(), "grid"), po.eval.metrics(out, specs["grid"]))
+        close(rp.eval.metrics(out.lazy(), "grid"), rp.eval.metrics(out, specs["grid"]))
 
     def test_min_samples_thins_a_key_as_the_frame_does(self, fitted, small_chunks):
         out, specs = fitted
         kw = {"group": "venue", "min_samples": 1200}
-        got = po.eval.metrics(out.lazy(), specs["grid"], **kw)
-        close(got, po.eval.metrics(out, specs["grid"], **kw))
+        got = rp.eval.metrics(out.lazy(), specs["grid"], **kw)
+        close(got, rp.eval.metrics(out, specs["grid"], **kw))
         assert got["r2"].null_count() > 0, "a key thinned"
         assert got["n"].null_count() == 0
 
@@ -189,16 +189,16 @@ class TestTheQueryGivesTheFramesNumbers:
         """The reason the sums are centred: a target of unit spread about
         1e8, read 97 rows at a time, keeps its variance as the frame does."""
         out, _ = _out(n=4000, seed=4, offset=1e8)
-        spec = po.spec.ewridge("plain", targets=["y"], features=["x0", "x1"], half_life=300.0)
-        out = po.ModelBank([spec]).fit_predict(out.select("x0", "x1", "y"))
-        fn = getattr(po.eval, call)
+        spec = rp.spec.ewridge("plain", targets=["y"], features=["x0", "x1"], half_life=300.0)
+        out = rp.ModelBank([spec]).fit_predict(out.select("x0", "x1", "y"))
+        fn = getattr(rp.eval, call)
         close(fn(out.lazy(), spec), fn(out, spec))
-        r2 = po.eval.metrics(out.lazy(), spec)["r2"][0]
+        r2 = rp.eval.metrics(out.lazy(), spec)["r2"][0]
         assert 0.7 < r2 < 1.0, r2
 
     def test_an_empty_query_gives_the_empty_frames_result(self, fitted):
         out, specs = fitted
-        for call in (po.eval.metrics, po.eval.sums):
+        for call in (rp.eval.metrics, rp.eval.sums):
             got = call(out.lazy().head(0), specs["grid"], group="venue")
             assert got.equals(call(out.head(0), specs["grid"], group="venue"))
             assert got.height == 0 and "slot" in got.columns
@@ -208,23 +208,23 @@ class TestTheQueryGivesTheFramesNumbers:
         source = out.select("x0", "x1", "y", "z", "venue").lazy()
         query = source.online.fit_predict([specs["grid"]])
         before = _frame._source_runs()
-        got = po.eval.metrics(query, specs["grid"], group="venue")
+        got = rp.eval.metrics(query, specs["grid"], group="venue")
         assert _frame._source_runs() == before + 1
-        close(got, po.eval.metrics(out, specs["grid"], group="venue"))
+        close(got, rp.eval.metrics(out, specs["grid"], group="venue"))
 
 
 class TestUnpackIsLazyInLazyOut:
     @pytest.mark.parametrize("name", ["grid", "renamed", "logistic"])
     def test_it_collects_to_the_frames_long_form(self, fitted, name):
         out, specs = fitted
-        got = po.eval.unpack(out.lazy(), specs[name])
+        got = rp.eval.unpack(out.lazy(), specs[name])
         assert isinstance(got, pl.LazyFrame)
-        assert got.collect().equals(po.eval.unpack(out, specs[name]))
+        assert got.collect().equals(rp.eval.unpack(out, specs[name]))
 
     def test_by_name_with_targets(self, fitted):
         out, _ = fitted
-        got = po.eval.unpack(out.lazy(), "grid", targets=["y", "z"]).collect()
-        assert got.equals(po.eval.unpack(out, "grid", targets=["y", "z"]))
+        got = rp.eval.unpack(out.lazy(), "grid", targets=["y", "z"]).collect()
+        assert got.equals(rp.eval.unpack(out, "grid", targets=["y", "z"]))
 
 
 def _boom(s: pl.Series) -> pl.Series:
@@ -262,7 +262,7 @@ def _refusals(out: pl.DataFrame, specs: dict) -> list[tuple[str, tuple, dict, pl
 def test_a_query_is_refused_as_the_frame_is_before_it_runs(fitted, case):
     out, specs = fitted
     call, args, kw, frame = _refusals(out, specs)[case]
-    fn = getattr(po.eval, call)
+    fn = getattr(rp.eval, call)
     with pytest.raises(Exception) as eager:
         fn(frame, *args, **kw)
     # A column whose computation fails if it runs: the refusal comes first.
@@ -283,7 +283,7 @@ def test_the_cases_are_all_counted(fitted):
 def test_something_that_is_not_a_polars_frame_is_refused_by_name(fitted, call):
     out, _ = fitted
     with pytest.raises(TypeError, match=f"po.eval.{call}: the frame must be a Polars DataFrame "):
-        getattr(po.eval, call)(out.to_dict(), "grid")
+        getattr(rp.eval, call)(out.to_dict(), "grid")
 
 
 # --- the calls that read a whole frame: windows, several specs, two specs' tests ------
@@ -313,16 +313,16 @@ def _pair(n: int = 3000, seed: int = 7) -> pl.DataFrame:
         tz=pl.col("ts").dt.replace_time_zone("UTC").dt.convert_time_zone("America/New_York"),
         dur=pl.col("ts") - pl.datetime(2024, 1, 1),
     )
-    small = po.spec.ewridge(
+    small = rp.spec.ewridge(
         "small", targets=["y", "z"], features=["x0"], half_life=200.0, min_weight=5.0
     )
-    big = po.spec.ewridge(
+    big = rp.spec.ewridge(
         "big", targets=["y", "z"], features=["x0", "x1"], half_life=200.0, min_weight=8.0
     )
-    logistic = po.spec.sgd(
+    logistic = rp.spec.sgd(
         "logistic", targets=["lab"], features=["x0", "x1"], loss="logistic", half_life=500.0
     )
-    return po.ModelBank([small, big, logistic]).fit_predict(df)
+    return rp.ModelBank([small, big, logistic]).fit_predict(df)
 
 
 @pytest.fixture(scope="module")
@@ -372,22 +372,22 @@ class TestWindowsOverAQuery:
     def test_window_metrics_over_many_chunks(self, pair, small_chunks, kw):
         spec = "big"
         close(
-            po.eval.window_metrics(pair.lazy(), spec, min_samples=1, **kw),
-            po.eval.window_metrics(pair, spec, min_samples=1, **kw),
+            rp.eval.window_metrics(pair.lazy(), spec, min_samples=1, **kw),
+            rp.eval.window_metrics(pair, spec, min_samples=1, **kw),
         )
 
     @pytest.mark.parametrize("kw", WINDOWS[:3], ids=["t", "ti", "ts"])
     def test_window_metrics_of_one_chunk_are_the_frames_to_the_bit_but_ic(self, pair, kw):
-        got = po.eval.window_metrics(pair.lazy(), "big", **kw)
-        want = po.eval.window_metrics(pair, "big", **kw)
+        got = rp.eval.window_metrics(pair.lazy(), "big", **kw)
+        want = rp.eval.window_metrics(pair, "big", **kw)
         assert got.drop("ic").equals(want.drop("ic"))
         close(got.select("ic"), want.select("ic"), rel=1e-14)
 
     def test_a_binary_fit_in_windows(self, pair, small_chunks):
         kw = {"clock": "t", "every": 500.0, "group": "g", "binary": True}
         close(
-            po.eval.window_metrics(pair.lazy(), "logistic", **kw),
-            po.eval.window_metrics(pair, "logistic", **kw),
+            rp.eval.window_metrics(pair.lazy(), "logistic", **kw),
+            rp.eval.window_metrics(pair, "logistic", **kw),
         )
 
     def test_a_time_zoned_clock_is_windowed_from_each_keys_first_clock(self, pair, small_chunks):
@@ -396,52 +396,52 @@ class TestWindowsOverAQuery:
         their own put rows in other windows than the frame does (shown
         here), and windowed after a row at the key's first clock, in the
         frame's."""
-        long = po.eval.unpack(pair, "big").filter(pl.col("tz").is_not_null())
+        long = rp.eval.unpack(pair, "big").filter(pl.col("tz").is_not_null())
         keys = ["slot", "target"]
-        whole = po.eval._dynamic_windows(long, "tz", "90m", keys)["window_start"]
+        whole = rp.eval._dynamic_windows(long, "tz", "90m", keys)["window_start"]
         apart = pl.concat(
             [
-                po.eval._dynamic_windows(long.slice(o, 97), "tz", "90m", keys)
+                rp.eval._dynamic_windows(long.slice(o, 97), "tz", "90m", keys)
                 for o in range(0, long.height, 97)
             ]
         )["window_start"]
         assert not whole.equals(apart), "the chunks on their own would be windowed alike"
         kw = {"clock": "tz", "every": "90m", "min_samples": 1}
         close(
-            po.eval.window_metrics(pair.lazy(), "big", **kw),
-            po.eval.window_metrics(pair, "big", **kw),
+            rp.eval.window_metrics(pair.lazy(), "big", **kw),
+            rp.eval.window_metrics(pair, "big", **kw),
         )
 
     def test_a_step_back_is_refused_where_it_moves_the_windows(self, pair, small_chunks):
         later_first = pl.concat([pair.slice(500), pair.head(500)]).lazy()
         with pytest.raises(ValueError, match="steps back to .* Sort the query by the clock"):
-            po.eval.window_metrics(later_first, "big", clock="tz", every="90m")
+            rp.eval.window_metrics(later_first, "big", clock="tz", every="90m")
         # A calendar day starts at midnight whatever the first clock was.
         kw = {"clock": "tz", "every": "1d"}
         close(
-            po.eval.window_metrics(later_first, "big", **kw),
-            po.eval.window_metrics(later_first.collect(), "big", **kw),
+            rp.eval.window_metrics(later_first, "big", **kw),
+            rp.eval.window_metrics(later_first.collect(), "big", **kw),
         )
 
 
 class TestSeveralSpecsOverAQuery:
     def test_compare_specs_over_many_chunks(self, pair, small_chunks):
-        got = po.eval.compare_specs(pair.lazy(), ["small", "big"], group="g")
-        close(got, po.eval.compare_specs(pair, ["small", "big"], group="g"))
+        got = rp.eval.compare_specs(pair.lazy(), ["small", "big"], group="g")
+        close(got, rp.eval.compare_specs(pair, ["small", "big"], group="g"))
 
     def test_no_specs_give_an_empty_frame(self, pair):
-        assert po.eval.compare_specs(pair.lazy(), []).equals(po.eval.compare_specs(pair, []))
+        assert rp.eval.compare_specs(pair.lazy(), []).equals(rp.eval.compare_specs(pair, []))
 
     def test_a_query_that_runs_a_bank_runs_it_once_for_every_spec(self, pair):
         specs = [
-            po.spec.ewridge(name, targets=["y"], features=feats, half_life=200.0)
+            rp.spec.ewridge(name, targets=["y"], features=feats, half_life=200.0)
             for name, feats in (("one", ["x0"]), ("two", ["x0", "x1"]))
         ]
         query = pair.select("x0", "x1", "y").lazy().online.fit_predict(specs)
         before = _frame._source_runs()
-        got = po.eval.compare_specs(query, specs)
+        got = rp.eval.compare_specs(query, specs)
         assert _frame._source_runs() == before + 1
-        close(got, po.eval.compare_specs(query.collect(), specs))
+        close(got, rp.eval.compare_specs(query.collect(), specs))
 
 
 TESTS = [
@@ -458,15 +458,15 @@ class TestTwoSpecsOverAQuery:
     def test_the_tests_over_every_row(self, pair, monkeypatch, rows, call, kw):
         """Within 1e-9 relative; measured 1e-12 at the worst, on a mean
         differential near zero read a row at a time."""
-        monkeypatch.setattr(po.eval, "_chunk_rows", lambda: rows)
-        monkeypatch.setattr(po.eval, "_MERGE_EVERY", 4)
-        fn = getattr(po.eval, call)
+        monkeypatch.setattr(rp.eval, "_chunk_rows", lambda: rows)
+        monkeypatch.setattr(rp.eval, "_MERGE_EVERY", 4)
+        fn = getattr(rp.eval, call)
         close(fn(pair.lazy(), **kw), fn(pair, **kw))
 
     @pytest.mark.parametrize(("call", "kw"), TESTS)
     def test_the_tests_per_row_exponentially_weighted(self, pair, small_chunks, call, kw):
         """Within 1e-12 relative; measured 3e-15 in 97-row chunks."""
-        fn = getattr(po.eval, call)
+        fn = getattr(rp.eval, call)
         kw = {**kw, "half_life": 50.0}
         got = fn(pair.lazy(), **kw)
         assert isinstance(got, pl.LazyFrame)
@@ -475,7 +475,7 @@ class TestTwoSpecsOverAQuery:
 
     @pytest.mark.parametrize(("call", "kw"), TESTS)
     def test_one_chunk_per_row_is_the_frames_to_the_bit(self, pair, call, kw):
-        fn = getattr(po.eval, call)
+        fn = getattr(rp.eval, call)
         kw = {**kw, "half_life": 50.0}
         same_bits(fn(pair.lazy(), **kw).collect(), fn(pair, **kw))
 
@@ -492,16 +492,16 @@ class TestTwoSpecsOverAQuery:
         """The log wealth is a sum in row order, carried from chunk to chunk
         into the next chunk's first term, so even a row at a time adds the
         same terms in the same order as the frame."""
-        monkeypatch.setattr(po.eval, "_chunk_rows", lambda: rows)
-        got = po.eval.seqtest(pair.lazy(), **kw)
+        monkeypatch.setattr(rp.eval, "_chunk_rows", lambda: rows)
+        got = rp.eval.seqtest(pair.lazy(), **kw)
         assert isinstance(got, pl.LazyFrame)
-        same_bits(got.collect(), po.eval.seqtest(pair, **kw))
+        same_bits(got.collect(), rp.eval.seqtest(pair, **kw))
 
     def test_a_query_of_the_result_reads_the_rows_it_asks_for(self, pair, small_chunks):
         """Polars hands the source the columns, the filter and the rows the
         query asks for, and applies none of them again."""
         kw = {"a": "big", "b": "small", "group": "g"}
-        lazy, whole = po.eval.seqtest(pair.lazy(), **kw), po.eval.seqtest(pair, **kw)
+        lazy, whole = rp.eval.seqtest(pair.lazy(), **kw), rp.eval.seqtest(pair, **kw)
         same_bits(lazy.select("seqtest").head(250).collect(), whole.select("seqtest").head(250))
         same_bits(lazy.filter(pl.col("g") == "a").collect(), whole.filter(pl.col("g") == "a"))
         same_bits(
@@ -541,7 +541,7 @@ def _refusals2(out: pl.DataFrame) -> list[tuple[str, dict, pl.DataFrame]]:
 @pytest.mark.parametrize("case", range(22))
 def test_a_whole_frame_call_refuses_a_query_as_the_frame_before_it_runs(pair, case):
     call, kw, frame = _refusals2(pair)[case]
-    fn = getattr(po.eval, call)
+    fn = getattr(rp.eval, call)
     with pytest.raises(Exception) as eager:
         fn(frame, **kw)
     first = frame.columns[0]
@@ -579,7 +579,7 @@ def test_the_whole_frame_cases_are_all_counted(pair):
 CHILD = textwrap.dedent(
     """
     import gc, json, os, sys, threading, time
-    import polars as pl, rheon as po, psutil
+    import polars as pl, rheon.polars as po, psutil
 
     proc = psutil.Process()
     case, src = sys.argv[1], sys.argv[2]
@@ -747,7 +747,7 @@ def test_by_is_refused_by_name_on_every_test_of_two_specs(pair, call):
     instead, so ``by=`` reached Python's own "unexpected keyword"."""
     names = {"clark_west": {"big": "big", "small": "small"}}.get(call, {"a": "big", "b": "small"})
     with pytest.raises(TypeError, match=f"po.eval.{call}: by was renamed group"):
-        getattr(po.eval, call)(pair.lazy(), by="g", **names)
+        getattr(rp.eval, call)(pair.lazy(), by="g", **names)
 
 
 # --- the per-row tests where S is zero but for rounding (task 381) -------------
@@ -786,10 +786,10 @@ def _per_row(
     kw.setdefault("min_samples", 1)
     field, sides = CALLS[call]
     if rows is None:
-        got = getattr(po.eval, call)(df, **sides, **kw)
+        got = getattr(rp.eval, call)(df, **sides, **kw)
     else:
-        monkeypatch.setattr(po.eval, "_chunk_rows", lambda: rows)
-        got = getattr(po.eval, call)(df.lazy(), **sides, **kw).collect()
+        monkeypatch.setattr(rp.eval, "_chunk_rows", lambda: rows)
+        got = getattr(rp.eval, call)(df.lazy(), **sides, **kw).collect()
     return got[call].struct.field(f"{field}_y").to_list()
 
 
@@ -998,10 +998,10 @@ class TestRunOnceWhereEveryValueIsTheSame:
         frame and in queries of 37 rows."""
         df, _ = _sides(np.full(500, value))
         field, sides = CALLS[call]
-        fn = getattr(po.eval, call)
+        fn = getattr(rp.eval, call)
         assert fn(df, **sides, lags=lags)[field].to_list() == [None]
         for rows in (37, 10**6):
-            monkeypatch.setattr(po.eval, "_chunk_rows", lambda rows=rows: rows)
+            monkeypatch.setattr(rp.eval, "_chunk_rows", lambda rows=rows: rows)
             assert fn(df.lazy(), **sides, lags=lags)[field].to_list() == [None], rows
         # Two keys, one constant: the other keeps its statistic.
         rng = np.random.default_rng(int(value * 100) + lags)
@@ -1023,8 +1023,8 @@ class TestRunOnceWhereEveryValueIsTheSame:
         want = float(m) * n / math.sqrt(s)
         for rows in (None, 37):
             if rows is None:
-                got = po.eval.diebold_mariano(df, a="a", b="b", lags=lags)
+                got = rp.eval.diebold_mariano(df, a="a", b="b", lags=lags)
             else:
-                monkeypatch.setattr(po.eval, "_chunk_rows", lambda rows=rows: rows)
-                got = po.eval.diebold_mariano(df.lazy(), a="a", b="b", lags=lags)
+                monkeypatch.setattr(rp.eval, "_chunk_rows", lambda rows=rows: rows)
+                got = rp.eval.diebold_mariano(df.lazy(), a="a", b="b", lags=lags)
             assert got["dm"][0] == pytest.approx(want, rel=1e-3), rows

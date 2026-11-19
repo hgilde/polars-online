@@ -9,9 +9,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from data import synthetic
 from reference import EwMedian
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -39,8 +39,8 @@ def test_huber_beats_least_squares_under_outliers():
         # weight, so ask for every row.
         max_rows_between_solves=1,
     )
-    hub = po.ModelBank([po.spec.huber("m", huber_delta=1.5, **common)]).fit_predict(df)
-    ols = po.ModelBank([po.spec.ewridge("m", ridge=1e-8, **common)]).fit_predict(df)
+    hub = rp.ModelBank([rp.spec.huber("m", huber_delta=1.5, **common)]).fit_predict(df)
+    ols = rp.ModelBank([rp.spec.ewridge("m", ridge=1e-8, **common)]).fit_predict(df)
 
     ok = np.isfinite(_pred(hub)) & np.isfinite(_pred(ols)) & ~contaminated
     e_hub = np.mean((_pred(hub)[ok] - clean[ok]) ** 2)
@@ -57,8 +57,8 @@ def test_huge_delta_reduces_to_least_squares():
         min_weight=10.0,
         max_rows_between_solves=1,
     )
-    a = po.ModelBank([po.spec.huber("m", huber_delta=1e9, **common)]).fit_predict(df)
-    b = po.ModelBank([po.spec.ewridge("m", ridge=1e-6, **common)]).fit_predict(df)
+    a = rp.ModelBank([rp.spec.huber("m", huber_delta=1e9, **common)]).fit_predict(df)
+    b = rp.ModelBank([rp.spec.ewridge("m", ridge=1e-6, **common)]).fit_predict(df)
     pa, pb = _pred(a), _pred(b)
     m = np.isfinite(pa) & np.isfinite(pb)
     assert np.max(np.abs(pa[m] - pb[m])) < 1e-6
@@ -81,7 +81,7 @@ def test_the_targets_units_do_not_matter(fit_intercept, standardize):
     df = df.with_columns(pl.when(opening).then(0.0).otherwise(pl.col("y0")).alias("y0"))
 
     def preds(c: float) -> dict[str, np.ndarray]:
-        spec = po.spec.huber(
+        spec = rp.spec.huber(
             "m",
             targets=["y0", "y1"],
             features=["x0", "x1", "x2"],
@@ -93,7 +93,7 @@ def test_the_targets_units_do_not_matter(fit_intercept, standardize):
             fit_intercept=fit_intercept,
             standardize=standardize,
         )
-        out = po.ModelBank([spec]).fit_predict(df.with_columns(pl.col("y0", "y1") * c))
+        out = rp.ModelBank([spec]).fit_predict(df.with_columns(pl.col("y0", "y1") * c))
         return {t: _pred(out, f"pred_{t}") for t in ("y0", "y1")}
 
     base = preds(1.0)
@@ -119,7 +119,7 @@ def test_the_quantile_targets_units_do_not_matter(tau, min_weight):
     df = df.with_columns(pl.when(opening).then(0.0).otherwise(pl.col("y0")).alias("y0"))
 
     def preds(c: float) -> dict[str, np.ndarray]:
-        spec = po.spec.quantile(
+        spec = rp.spec.quantile(
             "m",
             targets=["y0", "y1"],
             features=["x0", "x1", "x2"],
@@ -131,7 +131,7 @@ def test_the_quantile_targets_units_do_not_matter(tau, min_weight):
             quantile=tau,
             min_weight=min_weight,
         )
-        out = po.ModelBank([spec]).fit_predict(df.with_columns(pl.col("y0", "y1") * c))
+        out = rp.ModelBank([spec]).fit_predict(df.with_columns(pl.col("y0", "y1") * c))
         return {t: _pred(out, f"pred_{t}") for t in ("y0", "y1")}
 
     base = preds(1.0)
@@ -154,7 +154,7 @@ def test_quantile_levels_are_ordered():
     )
     preds = {}
     for tau in (0.1, 0.5, 0.9):
-        out = po.ModelBank([po.spec.quantile("m", quantile=tau, **common)]).fit_predict(df)
+        out = rp.ModelBank([rp.spec.quantile("m", quantile=tau, **common)]).fit_predict(df)
         preds[tau] = np.nanmean(_pred(out))
     assert preds[0.1] < preds[0.5] < preds[0.9], preds
 
@@ -163,9 +163,9 @@ def test_quantile_coverage_is_the_level_asked_for():
     rng = np.random.default_rng(13)
     n = 8000
     df = pl.DataFrame({"x0": rng.standard_normal(n), "y0": rng.standard_normal(n)})
-    out = po.ModelBank(
+    out = rp.ModelBank(
         [
-            po.spec.quantile(
+            rp.spec.quantile(
                 "m",
                 quantile=0.9,
                 targets=["y0"],
@@ -202,7 +202,7 @@ def test_quantile_predicts_every_row_under_a_finite_halflife():
     rng = np.random.default_rng(13)
     n = 6000
     df = pl.DataFrame({"x0": rng.standard_normal(n), "y0": rng.standard_normal(n)})
-    spec = po.spec.quantile(
+    spec = rp.spec.quantile(
         "m",
         quantile=0.9,
         targets=["y0"],
@@ -211,7 +211,7 @@ def test_quantile_predicts_every_row_under_a_finite_halflife():
         min_weight=20.0,
         max_rows_between_solves=1,
     )
-    p = _pred(po.ModelBank([spec]).fit_predict(df))
+    p = _pred(rp.ModelBank([spec]).fit_predict(df))
     finite = np.isfinite(p)
     # The decayed weight reaches 20 a row or two after row 20; from there the
     # gate stays open.
@@ -231,7 +231,7 @@ def test_quantile_hits_its_level_under_a_short_halflife(half_life):
     n = 20000
     rng = np.random.default_rng(13)
     df = pl.DataFrame({"x0": rng.standard_normal(n), "y0": rng.standard_normal(n)})
-    spec = po.spec.quantile(
+    spec = rp.spec.quantile(
         "m",
         quantile=0.9,
         targets=["y0"],
@@ -240,7 +240,7 @@ def test_quantile_hits_its_level_under_a_short_halflife(half_life):
         min_weight=5.0,
         max_rows_between_solves=1,
     )
-    p = _pred(po.ModelBank([spec]).fit_predict(df))
+    p = _pred(rp.ModelBank([spec]).fit_predict(df))
     y = df["y0"].to_numpy()
     half = np.isfinite(p) & (np.arange(n) >= n // 2)
     coverage = (y[half] < p[half]).mean()
@@ -253,9 +253,9 @@ def test_out_of_sample_on_noise():
     df = pl.DataFrame(
         {"x0": rng.standard_normal(n), "x1": rng.standard_normal(n), "y0": rng.standard_normal(n)}
     )
-    out = po.ModelBank(
+    out = rp.ModelBank(
         [
-            po.spec.huber(
+            rp.spec.huber(
                 "m",
                 targets=["y0"],
                 features=["x0", "x1"],
@@ -282,13 +282,13 @@ def _plumbing_case():
         min_weight=10.0,
         huber_delta=1.5,
     )
-    return df, kw, po.spec.huber("m", group="group", **kw)
+    return df, kw, rp.spec.huber("m", group="group", **kw)
 
 
 def test_chunk_invariance():
     df, _, spec = _plumbing_case()
-    one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-    bank = po.ModelBank([spec])
+    one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+    bank = rp.ModelBank([spec])
     many = (
         pl.concat([bank.fit_predict(df.slice(i, 25)) for i in range(0, df.height, 25)])
         .select("m")
@@ -302,9 +302,9 @@ def test_chunk_invariance():
 
 def test_bad_config_rejected():
     with pytest.raises(ValueError, match="quantile"):
-        po.spec.quantile("m", quantile=0.0, targets=["y0"], features=["x0"], half_life=10.0)
+        rp.spec.quantile("m", quantile=0.0, targets=["y0"], features=["x0"], half_life=10.0)
     with pytest.raises(ValueError, match="huber_delta"):
-        po.spec.huber("m", huber_delta=-1.0, targets=["y0"], features=["x0"], half_life=10.0)
+        rp.spec.huber("m", huber_delta=-1.0, targets=["y0"], features=["x0"], half_life=10.0)
 
 
 @pytest.mark.parametrize("standardize", [False, True], ids=["plain", "standardized"])
@@ -334,7 +334,7 @@ def test_a_level_costs_the_fit_nothing(standardize):
 
     def fit(level):
         df = pl.DataFrame({"x0": x0 + level, "x1": x1 + level, "y0": y + level})
-        out = po.ModelBank([po.spec.huber("m", **common)]).fit_predict(df)
+        out = rp.ModelBank([rp.spec.huber("m", **common)]).fit_predict(df)
         return np.array(out["m"].struct.field("coef").to_list()[-1]), _pred(out)
 
     coef0, pred0 = fit(0.0)
@@ -367,7 +367,7 @@ def test_a_level_costs_the_quantile_fit_nothing():
 
     def fit(level):
         df = pl.DataFrame({"x0": x0 + level, "y0": y + level})
-        out = po.ModelBank([po.spec.quantile("m", **common)]).fit_predict(df)
+        out = rp.ModelBank([rp.spec.quantile("m", **common)]).fit_predict(df)
         return np.array(out["m"].struct.field("coef").to_list()[-1]), _pred(out)
 
     coef0, pred0 = fit(0.0)
@@ -410,7 +410,7 @@ class TestTheQuantileFitsDefinition:
         return x, y
 
     def fit(self, x, y, tau, half_life):
-        spec = po.spec.quantile(
+        spec = rp.spec.quantile(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -427,7 +427,7 @@ class TestTheQuantileFitsDefinition:
             quantile_refit_rows=0,
         )
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y0": y})
-        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         pred = out["pred_y0"].fill_null(float("nan")).to_numpy()
         coef = np.array([c if c is not None else [np.nan] * 3 for c in out["coef"].to_list()])
         return pred, coef
@@ -569,7 +569,7 @@ class TestTheBandFactorIsState:
 
     @staticmethod
     def spec(standardize):
-        return po.spec.quantile(
+        return rp.spec.quantile(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -588,11 +588,11 @@ class TestTheBandFactorIsState:
         that row's nudge reads it -- a bank goes on as the one that never
         stopped, every field to the bit."""
         df, spec = self.stream(), self.spec(standardize)
-        whole = po.ModelBank([spec]).fit_predict(df)
+        whole = rp.ModelBank([spec]).fit_predict(df)
         for cut in range(990, 1011):
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             head = bank.fit_predict(df.slice(0, cut))
-            loaded = po.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
+            loaded = rp.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
             tail = loaded.fit_predict(df.slice(cut))
             assert pl.concat([head, tail]).equals(whole, null_equal=True), cut
 
@@ -602,9 +602,9 @@ class TestTheBandFactorIsState:
         give the one chunk's output to the bit (``coef`` on every row, so
         the rows that carry it do not depend on the chunking)."""
         df, spec = self.stream(), self.spec(standardize)
-        whole = po.ModelBank([spec]).fit_predict(df)
+        whole = rp.ModelBank([spec]).fit_predict(df)
         for rows in (1, 7, 600):
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             parts = [bank.fit_predict(df.slice(i, rows)) for i in range(0, df.height, rows)]
             assert pl.concat(parts).equals(whole, null_equal=True), rows
 
@@ -614,7 +614,7 @@ class TestTheBandFactorIsState:
         moves -- and reads back to the state's bytes, which ``to_json``
         checks itself."""
         df, spec = self.stream(), self.spec(False)
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df.slice(0, 1000))
         found: list = []
 
@@ -664,12 +664,12 @@ class TestTheQuantilesOwnKeywords:
             "coef_every": 1,
             **kw,
         }
-        spec = po.spec.quantile("m", targets=["y"], features=["x0", "x1"], **kw)
+        spec = rp.spec.quantile("m", targets=["y"], features=["x0", "x1"], **kw)
         # A large ridge or a feature at 1e-3 draws the readiness notice that
         # the ridge, not the data, sets a coefficient: the point of the case.
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", po.ReadinessWarning)
-            return po.ModelBank([spec]).fit_predict(df).unnest("m")
+            warnings.simplefilter("ignore", rp.ReadinessWarning)
+            return rp.ModelBank([spec]).fit_predict(df).unnest("m")
 
     @staticmethod
     def coef(out) -> np.ndarray:
@@ -901,7 +901,7 @@ class TestTheQuantileSolveEvery:
             "quantile_refit_rows": 0,
             **kw,
         }
-        return po.spec.quantile(
+        return rp.spec.quantile(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -912,7 +912,7 @@ class TestTheQuantileSolveEvery:
 
     def test_the_fit_moves_on_the_scheduled_rows_and_holds_between(self):
         df = self.frame()
-        out = po.ModelBank([self.spec()]).fit_predict(df).unnest("m")
+        out = rp.ModelBank([self.spec()]).fit_predict(df).unnest("m")
         t, ws = df["t"].to_numpy(), out["weight_sum"].to_numpy()
         coef = out["coef"].to_list()
         moved = [
@@ -952,10 +952,10 @@ class TestTheQuantileSolveEvery:
     def test_zero_is_every_row(self):
         """``solve_every = 0`` solves every row: the row cap of 1."""
         df = self.frame()
-        zero = po.ModelBank([self.spec(solve_every=0.0)]).fit_predict(df)
-        cap = po.ModelBank([self.spec(solve_every=1e18, max_rows_between_solves=1)]).fit_predict(df)
+        zero = rp.ModelBank([self.spec(solve_every=0.0)]).fit_predict(df)
+        cap = rp.ModelBank([self.spec(solve_every=1e18, max_rows_between_solves=1)]).fit_predict(df)
         assert zero.equals(cap, null_equal=True)
-        assert not zero.equals(po.ModelBank([self.spec()]).fit_predict(df), null_equal=True)
+        assert not zero.equals(rp.ModelBank([self.spec()]).fit_predict(df), null_equal=True)
 
     def test_a_duration_on_a_datetime_clock_is_seconds_on_a_float_one(self):
         df = self.frame()
@@ -963,8 +963,8 @@ class TestTheQuantileSolveEvery:
         stamps = pl.lit(start) + pl.duration(microseconds=(pl.col("t") * 1e6).cast(pl.Int64))
         dated = df.with_columns(stamps.alias("t"))
         spec = self.spec(solve_every="5s", gap_cap="10s", half_life="100s")
-        got = po.ModelBank([spec]).fit_predict(dated)["m"]
-        want = po.ModelBank([self.spec()]).fit_predict(df)["m"]
+        got = rp.ModelBank([spec]).fit_predict(dated)["m"]
+        want = rp.ModelBank([self.spec()]).fit_predict(df)["m"]
         assert got.equals(want, null_equal=True)
 
     def test_chunks_and_a_save_between_solves_keep_the_schedule(self):
@@ -972,18 +972,18 @@ class TestTheQuantileSolveEvery:
         rows, and a bank saved and loaded at rows on either side of solves,
         give the one run to the bit."""
         df, spec = self.frame(), self.spec()
-        whole = po.ModelBank([spec]).fit_predict(df)
+        whole = rp.ModelBank([spec]).fit_predict(df)
         coef = whole["m"].struct.field("coef").to_list()
         solves = [i for i in range(200, 212) if coef[i] != coef[i - 1]]
         assert 2 <= len(solves) <= 10, solves
         for rows in (1, 7, 600):
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             parts = [bank.fit_predict(df.slice(i, rows)) for i in range(0, df.height, rows)]
             assert pl.concat(parts).equals(whole, null_equal=True), rows
         for cut in range(200, 212):
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             head = bank.fit_predict(df.slice(0, cut))
-            loaded = po.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
+            loaded = rp.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
             assert pl.concat([head, loaded.fit_predict(df.slice(cut))]).equals(
                 whole, null_equal=True
             ), cut
@@ -1012,7 +1012,7 @@ def test_on_the_row_clock_solve_every_is_its_row_cap(loss):
     extra = {"huber_refit_rows": 0} if loss == "huber" else {"quantile": 0.5}
 
     def run(**kw):
-        spec = getattr(po.spec, loss)(
+        spec = getattr(rp.spec, loss)(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -1023,8 +1023,8 @@ def test_on_the_row_clock_solve_every_is_its_row_cap(loss):
             **kw,
         )
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", po.ReadinessWarning)
-            return po.ModelBank([spec]).fit_predict(df).unnest("m")
+            warnings.simplefilter("ignore", rp.ReadinessWarning)
+            return rp.ModelBank([spec]).fit_predict(df).unnest("m")
 
     clock = run(solve_every=7.0)
     assert clock.equals(run(solve_every=1e9, max_rows_between_solves=7), null_equal=True)

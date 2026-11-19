@@ -28,9 +28,9 @@ import sys
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
-SPEC = po.spec.ewridge(
+SPEC = rp.spec.ewridge(
     "ridge",
     targets=["y"],
     features=["x0", "x1"],
@@ -71,7 +71,7 @@ class BankOperator:
 
     def __init__(self, spec: dict) -> None:
         self.spec = spec
-        self.bank = po.ModelBank([spec])
+        self.bank = rp.ModelBank([spec])
 
     def __call__(self, batch: pl.DataFrame) -> pl.DataFrame:
         return self.bank.fit_predict(batch)
@@ -81,7 +81,7 @@ class BankOperator:
         return self.bank.save_bytes()
 
     def restore(self, blob: bytes) -> None:
-        self.bank = po.ModelBank.load_bytes(blob, specs=[self.spec])
+        self.bank = rp.ModelBank.load_bytes(blob, specs=[self.spec])
 
 
 def run_without_pathway() -> pl.DataFrame:

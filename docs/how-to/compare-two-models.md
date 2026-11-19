@@ -61,7 +61,7 @@ finds the larger model better:
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # 200 streams of 2,000 rows: y = x0 + c x1 + noise, with c = 0.05 on half of them and 0 on the rest.
 # "small" fits x0 alone; "big" fits x0 and x1, so it nests "small".

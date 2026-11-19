@@ -16,7 +16,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -35,7 +35,7 @@ class TestTheMatrixIsTheOneTheModelSolves:
         """The whole point of E30. No ridge, no standardization, so the normal
         equations are exactly `C beta = r` on the centered columns."""
         df, _ = stream()
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
@@ -45,7 +45,7 @@ class TestTheMatrixIsTheOneTheModelSolves:
             max_rows_between_solves=1,
             standardize=False,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         out = bank.fit_predict(df)
         g = bank.gram("m")[0]
 
@@ -66,10 +66,10 @@ class TestTheMatrixIsTheOneTheModelSolves:
         """With half-life enormous, the EW moments are the plain unweighted
         ones, so numpy can check them directly."""
         df, _ = stream(n=2000, k=3, seed=1)
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "c", features=["x0", "x1", "x2"], stats=["cov"], half_life=1e12, min_weight=2.0
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("c")[0]
 
@@ -81,10 +81,10 @@ class TestTheMatrixIsTheOneTheModelSolves:
     def test_uncentered_second_moment_identity(self):
         """The documented relation: raw = centered + outer(means, means)."""
         df, _ = stream(n=1500, k=3, seed=2)
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "c", features=["x0", "x1", "x2"], stats=["cov"], half_life=1e12, min_weight=2.0
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("c")[0]
         X = df.select("x0", "x1", "x2").to_numpy()
@@ -96,7 +96,7 @@ class TestShape:
     def test_one_entry_per_group_and_instance(self):
         df, _ = stream(n=900)
         df = df.with_columns(gid=pl.Series(["a", "b", "c"] * 300))
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -104,7 +104,7 @@ class TestShape:
             min_weight=3.0,
             group="gid",
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         rows = bank.gram("m")
         assert len(rows) == 6  # 3 groups x 2 half-lives
@@ -115,10 +115,10 @@ class TestShape:
     def test_multi_target_cross_moments(self):
         df, _ = stream()
         df = df.with_columns(z=2 * pl.col("y"))
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m", targets=["y", "z"], features=["x0", "x1"], half_life=1e9, min_weight=3.0
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("m")[0]
         assert g["cross_moments"].shape == (2, len(g["means"]))
@@ -128,10 +128,10 @@ class TestShape:
 
     def test_ew_cov_has_no_cross_moments(self):
         df, _ = stream()
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "c", features=["x0", "x1"], stats=["corr"], half_life=100.0, min_weight=2.0
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("c")[0]
         assert g["cross_moments"].shape == (0, 2)
@@ -139,7 +139,7 @@ class TestShape:
 
     def test_lasso_reports(self):
         df, _ = stream()
-        spec = po.spec.lasso(
+        spec = rp.spec.lasso(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -147,7 +147,7 @@ class TestShape:
             half_life=1e9,
             min_weight=3.0,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         assert len(bank.gram("m")) == 1
 
@@ -159,15 +159,15 @@ class TestShape:
         kw = dict(targets=["y"], features=["x0", "x1"], half_life=100.0, min_weight=3.0)
         if model == "kalman":
             kw["coef_half_life"] = 500.0
-        spec = getattr(po.spec, model)("m", **kw)
-        bank = po.ModelBank([spec])
+        spec = getattr(rp.spec, model)("m", **kw)
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         assert bank.gram("m") == []
 
     def test_spec_by_name_or_index(self):
         df, _ = stream(n=300)
-        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=100.0, min_weight=3.0)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=100.0, min_weight=3.0)
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         assert len(bank.gram(0)) == len(bank.gram("m")) == 1
         # A numpy integer is an index too; it was looked up as a name and
@@ -180,8 +180,8 @@ class TestShape:
         """weight_sum grows with the stream: these are live accumulators, and
         reading them mid-stream is the point."""
         df, _ = stream(n=2000)
-        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=1e9, min_weight=3.0)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=1e9, min_weight=3.0)
+        bank = rp.ModelBank([spec])
         seen = []
         for chunk in df.iter_slices(500):
             bank.fit_predict(chunk)
@@ -196,8 +196,8 @@ def test_missing_numpy_says_what_to_do(monkeypatch):
     import builtins
 
     df, _ = stream(n=200)
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=100.0, min_weight=3.0)
-    bank = po.ModelBank([spec])
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=100.0, min_weight=3.0)
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
 
     real_import = builtins.__import__
@@ -217,7 +217,7 @@ class TestTheCompleteSufficientStatistic:
 
     def test_target_moments_match_a_from_scratch_computation(self):
         df, _ = stream(n=2000, k=3, seed=3)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
@@ -225,7 +225,7 @@ class TestTheCompleteSufficientStatistic:
             min_weight=3.0,
             standardize=False,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("m")[0]
         y = df["y"].to_numpy()
@@ -241,11 +241,11 @@ class TestTheCompleteSufficientStatistic:
         df, _ = stream(n=1200, k=2, seed=4)
         df = df.with_columns(w=pl.Series([0.5 + (i % 4) for i in range(df.height)]))
         common = dict(half_life=80.0, weight="w", min_weight=3.0)
-        ridge = po.spec.ewridge(
+        ridge = rp.spec.ewridge(
             "m", targets=["y"], features=["x0", "x1"], standardize=False, **common
         )
-        cov = po.spec.ew_cov("c", features=["y"], stats=["var"], **common)
-        bank = po.ModelBank([ridge, cov])
+        cov = rp.spec.ew_cov("c", features=["y"], stats=["var"], **common)
+        bank = rp.ModelBank([ridge, cov])
         bank.fit_predict(df)
         g, c = bank.gram("m")[0], bank.gram("c")[0]
         assert g["target_vars"][0] == c["comoments"][0, 0]
@@ -255,11 +255,11 @@ class TestTheCompleteSufficientStatistic:
     def test_kish_is_a_row_count_where_n_eff_is_a_weight(self):
         n, lam = 6000, 0.5 ** (1 / 100.0)
         df, _ = stream(n=n, k=1, seed=5)
-        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=100.0, min_weight=3.0)
-        heavy = po.spec.ewridge(
+        spec = rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=100.0, min_weight=3.0)
+        heavy = rp.spec.ewridge(
             "h", targets=["y"], features=["x0"], half_life=100.0, min_weight=3.0, weight="w"
         )
-        bank = po.ModelBank([spec, heavy])
+        bank = rp.ModelBank([spec, heavy])
         bank.fit_predict(df.with_columns(w=pl.lit(7.0)))
         light, weighty = bank.gram("m")[0], bank.gram("h")[0]
         # The closed form for an exponentially weighted window of unit rows.
@@ -276,7 +276,7 @@ class TestTheCompleteSufficientStatistic:
         h, d, n = 6.0, 0.1, 2400
         df, _ = stream(n=n, k=1, seed=5)
         df = df.with_columns(t=pl.Series(np.arange(n) * d))
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0"],
@@ -285,7 +285,7 @@ class TestTheCompleteSufficientStatistic:
             half_life=h,
             min_weight=3.0,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("m")[0]
         lam_d = 0.5 ** (d / h)
@@ -304,10 +304,10 @@ class TestTheCompleteSufficientStatistic:
         df = df.with_columns(
             y2=pl.when(pl.int_range(pl.len()) < n // 2).then(pl.col("y")).otherwise(None)
         )
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m", targets=["y", "y2"], features=["x0", "x1"], half_life=50.0, min_weight=3.0
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df.head(n // 2))
         (at_the_break,) = bank.gram("m")
         bank.fit_predict(df.tail(n - n // 2))
@@ -339,7 +339,7 @@ class TestTheCompleteSufficientStatistic:
     def test_the_residual_variance_the_docstring_promises(self):
         """The reason the target moments exist: R^2 from a saved Gram."""
         df, _ = stream(n=3000, k=3, seed=7)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
@@ -348,7 +348,7 @@ class TestTheCompleteSufficientStatistic:
             min_weight=5.0,
             standardize=False,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("m")[0]
         raw = g["comoments"] + np.outer(g["means"], g["means"])
@@ -364,7 +364,7 @@ class TestTheCompleteSufficientStatistic:
 
     def test_lasso_reports_them_too(self):
         df, _ = stream(n=1500, k=2, seed=8)
-        spec = po.spec.lasso(
+        spec = rp.spec.lasso(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -372,7 +372,7 @@ class TestTheCompleteSufficientStatistic:
             half_life=1e12,
             min_weight=3.0,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("m")[0]
         y = df["y"].to_numpy()
@@ -384,8 +384,8 @@ class TestTheCompleteSufficientStatistic:
         """Empty says "no targets"; None would say "this state cannot tell
         you", which is a different answer."""
         df, _ = stream(n=500, k=2)
-        spec = po.spec.ew_cov("c", features=["x0", "x1"], stats=["var"], half_life=100.0)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.ew_cov("c", features=["x0", "x1"], stats=["var"], half_life=100.0)
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("c")[0]
         assert g["n_kish"] is not None
@@ -398,10 +398,10 @@ class TestTheCompleteSufficientStatistic:
         way. The feature moments are over the target's rows under
         `"own_rows"`, so there are none, and over every row under
         `"pairwise"`, so there is one (docs/PLAN.md task 81)."""
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m", targets=["y"], features=["x0"], half_life=100.0, target_gaps=target_gaps
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(
             pl.DataFrame({"x0": [1.0], "y": [None]}, schema_overrides={"y": pl.Float64})
         )
@@ -411,25 +411,25 @@ class TestTheCompleteSufficientStatistic:
 
     def test_they_survive_a_save_and_load(self, tmp_path):
         df, _ = stream(n=800, k=2, seed=9)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m", targets=["y"], features=["x0", "x1"], half_life=200.0, min_weight=3.0
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         want = bank.gram("m")[0]
         bank.save(tmp_path / "b.msgpack")
-        got = po.ModelBank.load(tmp_path / "b.msgpack").gram("m")[0]
+        got = rp.ModelBank.load(tmp_path / "b.msgpack").gram("m")[0]
         for key in ("n_kish", "target_means", "target_vars", "target_n_kish"):
             assert np.asarray(got[key]) == pytest.approx(np.asarray(want[key])), key
 
     def test_chunking_cannot_move_them(self):
         df, _ = stream(n=1000, k=2, seed=10)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m", targets=["y"], features=["x0", "x1"], half_life=120.0, min_weight=3.0
         )
-        one = po.ModelBank([spec])
+        one = rp.ModelBank([spec])
         one.fit_predict(df)
-        many = po.ModelBank([spec])
+        many = rp.ModelBank([spec])
         for chunk in df.iter_slices(37):
             many.fit_predict(chunk)
         a, b = one.gram("m")[0], many.gram("m")[0]

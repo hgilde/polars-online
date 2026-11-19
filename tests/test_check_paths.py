@@ -8,7 +8,7 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -21,8 +21,8 @@ def test_a_solve_that_needed_jitter_is_a_warning_with_its_count():
     rng = np.random.default_rng(0)
     x = rng.normal(size=400)
     df = pl.DataFrame({"x": x, "x2": x, "y": 2 * x + rng.normal(size=400) * 0.1})
-    bank = po.ModelBank(
-        [po.spec.ewridge("m", targets=["y"], features=["x", "x2"], half_life=50.0, ridge=0.0)]
+    bank = rp.ModelBank(
+        [rp.spec.ewridge("m", targets=["y"], features=["x", "x2"], half_life=50.0, ridge=0.0)]
     )
     bank.fit_predict(df)
     failed = bank.solve_failures()["solve_failures"].item()
@@ -49,8 +49,8 @@ def test_a_finding_about_the_null_key_names_the_null_group():
         },
         schema={"g": pl.String, "x": pl.Float64, "y": pl.Float64},
     )
-    bank = po.ModelBank(
-        [po.spec.ewridge("m", targets=["y"], features=["x"], half_life=50.0, group="g")]
+    bank = rp.ModelBank(
+        [rp.spec.ewridge("m", targets=["y"], features=["x"], half_life=50.0, group="g")]
     )
     bank.fit_predict(df)
     missing = bank.check().filter(pl.col("code") == "missing")
@@ -61,11 +61,11 @@ def test_a_finding_about_the_null_key_names_the_null_group():
 def test_an_audit_says_nothing_of_the_clock_of_a_group_with_one_row():
     """A group fed one row has taken no step, so the audit's clock counts
     give it no finding, while a group whose rows share a stamp is told so."""
-    audit = po.spec.audit("a", columns=["x"], group="g", clock="t", gap_cap=10.0)
+    audit = rp.spec.audit("a", columns=["x"], group="g", clock="t", gap_cap=10.0)
     df = pl.DataFrame(
         {"g": ["a", "b", "a", "a"], "t": [1.0, 1.0, 2.0, 2.0], "x": [1.0, 2.0, 3.0, 4.0]}
     )
-    bank = po.ModelBank([audit])
+    bank = rp.ModelBank([audit])
     bank.fit_predict(df)
     clock = bank.audit(table="clock")
     assert dict(zip(clock["group"], clock["steps"], strict=True)) == {"a": 2, "b": 0}

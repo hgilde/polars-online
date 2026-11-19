@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -84,7 +84,7 @@ def specs() -> list[dict]:
         min_weight=4.0,
     )
     return [
-        po.spec.ewridge(
+        rp.spec.ewridge(
             "ridge",
             ridge=[1e-6, 0.5],
             standardize=True,
@@ -94,20 +94,20 @@ def specs() -> list[dict]:
             conformal=0.9,
             **common,
         ),
-        po.spec.rls("rls", delta=1.0, **common),
-        po.spec.kalman("kalman", coef_half_life=80.0, **common),
-        po.spec.lasso("lasso", penalties=[0.2, 0.0], max_rows_between_solves=1, **common),
-        po.spec.huber("huber", max_rows_between_solves=1, **common),
-        po.spec.quantile("quantile", quantile=0.75, max_rows_between_solves=1, **common),
-        po.spec.sgd("sgd", learning_rate=0.02, **common),
-        po.spec.pa("pa", **common),
-        po.spec.sgd("sgd_simplex", learning_rate=0.02, coef_min=0.0, coef_sum=1.0, **common),
-        po.spec.pa("pa_box", coef_min=-0.5, coef_max=0.5, **common),
-        po.spec.kalman(
+        rp.spec.rls("rls", delta=1.0, **common),
+        rp.spec.kalman("kalman", coef_half_life=80.0, **common),
+        rp.spec.lasso("lasso", penalties=[0.2, 0.0], max_rows_between_solves=1, **common),
+        rp.spec.huber("huber", max_rows_between_solves=1, **common),
+        rp.spec.quantile("quantile", quantile=0.75, max_rows_between_solves=1, **common),
+        rp.spec.sgd("sgd", learning_rate=0.02, **common),
+        rp.spec.pa("pa", **common),
+        rp.spec.sgd("sgd_simplex", learning_rate=0.02, coef_min=0.0, coef_sum=1.0, **common),
+        rp.spec.pa("pa_box", coef_min=-0.5, coef_max=0.5, **common),
+        rp.spec.kalman(
             "kalman_revert", coef_half_life=80.0, revert_half_life=[INF, 30.0, 8.0], **common
         ),
-        po.spec.ftrl("ftrl", loss="squared", alpha=0.5, **common),
-        po.spec.holt(
+        rp.spec.ftrl("ftrl", loss="squared", alpha=0.5, **common),
+        rp.spec.holt(
             "holt",
             targets=["y0"],
             clock="t",
@@ -117,7 +117,7 @@ def specs() -> list[dict]:
             group="g",
             min_weight=4.0,
         ),
-        po.spec.ew_cov(
+        rp.spec.ew_cov(
             "moments",
             features=["x0", "x1"],
             stats=["mean", "var", "corr"],
@@ -128,7 +128,7 @@ def specs() -> list[dict]:
             group="g",
             min_weight=4.0,
         ),
-        po.spec.kmeans(
+        rp.spec.kmeans(
             "kmeans",
             features=["x0", "x1"],
             n_clusters=2,
@@ -142,7 +142,7 @@ def specs() -> list[dict]:
             group="g",
             min_weight=4.0,
         ),
-        po.spec.micro(
+        rp.spec.micro(
             "micro",
             features=["x0", "x1"],
             eps=0.5,
@@ -155,7 +155,7 @@ def specs() -> list[dict]:
             group="g",
             min_weight=4.0,
         ),
-        po.spec.ew_class(
+        rp.spec.ew_class(
             "ew_class",
             features=["x0", "x1"],
             label="label",
@@ -170,13 +170,13 @@ def specs() -> list[dict]:
             min_weight=4.0,
         ),
         # Only `weight_sum` per row; the pairs are read from the state at the end.
-        po.spec.marginal("marginal", **common),
+        rp.spec.marginal("marginal", **common),
         # A constancy test over spans of 30 rows, so the 120-row stream
         # closes several per group.
         # A cap above the stream's 9-unit gaps: at `gap_cap = 6` every
         # gap is capped, `clear_lags` abandons the span (task 47), and no
         # span ever closes -- which is correct and pins nothing.
-        po.spec.corrchange(
+        rp.spec.corrchange(
             "corrchange",
             features=["x0", "x1"],
             window_rows=20,
@@ -187,7 +187,7 @@ def specs() -> list[dict]:
         ),
         # A hidden Markov model: the states are given, so the pinned
         # numbers are the filter's and not the seeding's.
-        po.spec.hmm(
+        rp.spec.hmm(
             "hmm",
             features=["x0", "x1"],
             n_components=2,
@@ -205,7 +205,7 @@ def specs() -> list[dict]:
         # A block's realised covariance. The stream's groups interleave, so
         # the close is on the session, not monotone; the block itself is
         # pinned below, since nothing but `weight_sum` is emitted per row.
-        po.spec.rcov(
+        rp.spec.rcov(
             "rcov",
             features=["x0", "x1"],
             kind="kernel",
@@ -219,7 +219,7 @@ def specs() -> list[dict]:
         # One number for the whole correlation matrix. The stream has two
         # feature columns, so this is the unblocked form; the block path is
         # pinned by the core golden and by the numpy oracle in test_deco.py.
-        po.spec.deco(
+        rp.spec.deco(
             "deco",
             features=["x0", "x1"],
             dynamics="linear",
@@ -235,7 +235,7 @@ def specs() -> list[dict]:
         # A posterior over run lengths. Weighted rows scale each run's
         # statistics, and a fractional weight is legal here, so the golden
         # pins the weighted recursion and not just the plain one.
-        po.spec.bocpd(
+        rp.spec.bocpd(
             "bocpd",
             features=["x0", "x1"],
             hazard=40.0,
@@ -250,13 +250,13 @@ def specs() -> list[dict]:
             min_weight=4.0,
         ),
         # No weight and no half-life: a test counts trials and does not forget.
-        po.spec.seqtest(
+        rp.spec.seqtest(
             "seqtest", targets=["y0"], clock="t", gap_cap=6.0, group="g", min_weight=4.0
         ),
         # What the columns hold: every row read, the null feature and the
         # null target among them; its counts are pinned below, since nothing
         # but `weight_sum` is emitted per row (docs/PLAN.md task 223 (b)).
-        po.spec.audit(
+        rp.spec.audit(
             "audit",
             columns=["x0", "x1", "y0"],
             pairs=True,
@@ -266,7 +266,7 @@ def specs() -> list[dict]:
         ),
         # The two-phase bank: reads the ridge grid's `resid_y0__r0.5` and
         # kalman's `resid_y0` from the structs assembled above it.
-        po.spec.seqtest(
+        rp.spec.seqtest(
             "seqtest_compare",
             targets=["y0"],
             a="ridge",
@@ -300,12 +300,12 @@ def signature() -> dict[str, float | str | None]:
     """Every non-coefficient output field, at three fixed rows; and, for a
     `marginal`, whose output is its state, every pair's derived values after
     the last row."""
-    bank = po.ModelBank(specs())
+    bank = rp.ModelBank(specs())
     out = bank.fit_predict(stream())
     sig: dict[str, float | str | None] = {}
     for spec in specs():
         name = spec["name"]
-        for field in po.spec.output_fields(spec):
+        for field in rp.spec.output_fields(spec):
             if field.startswith(("coef", "support_coef")):
                 continue  # a list, and a reporting cadence rather than a value
             values = out[name].struct.field(field).to_list()
@@ -382,7 +382,7 @@ def switched_specs() -> list[dict]:
         min_weight=4.0,
     )
     timed = dict(common, clock="ts", gap_cap="6m", half_life="25m")
-    fwd = (po.ewm_mean("mid", half_life=5.0, window_size=10.0, reverse=True) - pl.col("mid")).alias(
+    fwd = (rp.ewm_mean("mid", half_life=5.0, window_size=10.0, reverse=True) - pl.col("mid")).alias(
         "fwd"
     )
     unsupervised = {k: v for k, v in timed.items() if k not in ("targets", "min_weight")}
@@ -391,12 +391,12 @@ def switched_specs() -> list[dict]:
         # so its numbers are the ones pinned; the default `"right"` drops a
         # row exactly 20 old, moving `pred_y0@60` by 7.3e-5, and is held to
         # the definition in `test_window.py` and `test_second_opinion.py`.
-        po.spec.ewridge(
+        rp.spec.ewridge(
             "window", window_size=20.0, closed="both", max_rows_between_solves=1, **common
         ),
-        po.spec.kalman("embargo", coef_half_life=80.0, embargo=3.0, **common),
-        po.spec.ewridge("datetime", max_rows_between_solves=1, **timed),
-        po.spec.ewridge(
+        rp.spec.kalman("embargo", coef_half_life=80.0, embargo=3.0, **common),
+        rp.spec.ewridge("datetime", max_rows_between_solves=1, **timed),
+        rp.spec.ewridge(
             "session_shrink",
             session="session",
             session_gap=3.0,
@@ -405,16 +405,16 @@ def switched_specs() -> list[dict]:
             max_rows_between_solves=1,
             **common,
         ),
-        po.spec.ewridge("pairwise", target_gaps="pairwise", max_rows_between_solves=1, **common),
-        po.spec.ewridge("origin", fit_intercept=False, max_rows_between_solves=1, **common),
-        po.spec.rls("prior", delta=1.0, coef_prior=[[0.2, 1.0, -0.5]], **common),
-        po.spec.ewridge(
+        rp.spec.ewridge("pairwise", target_gaps="pairwise", max_rows_between_solves=1, **common),
+        rp.spec.ewridge("origin", fit_intercept=False, max_rows_between_solves=1, **common),
+        rp.spec.rls("prior", delta=1.0, coef_prior=[[0.2, 1.0, -0.5]], **common),
+        rp.spec.ewridge(
             "feature_sets",
             feature_sets={"one": ["x0"], "both": ["x0", "x1"]},
             max_rows_between_solves=1,
             **common,
         ),
-        po.spec.ewridge(
+        rp.spec.ewridge(
             "diagnostics",
             ridge=[1e-6, 0.5],
             max_rows_between_solves=1,
@@ -433,13 +433,13 @@ def switched_specs() -> list[dict]:
         ),
         # A target resolved once its window has closed, so scored from early
         # on (no `min_weight`) to pin rows 25 and 60 as well as 119.
-        po.spec.kalman(
+        rp.spec.kalman(
             "formula",
             coef_half_life=80.0,
             embargo=12.0,
             **{**common, "targets": [fwd], "min_weight": 0.0},
         ),
-        po.spec.bocpd(
+        rp.spec.bocpd(
             "hazard",
             hazard="40m",
             covariance_type="diag",
@@ -447,19 +447,19 @@ def switched_specs() -> list[dict]:
             max_run=50,
             **{k: v for k, v in unsupervised.items() if k != "half_life"},
         ),
-        po.spec.micro("prune", eps=0.5, beta_mu=2.0, prune_every="10m", **unsupervised),
+        rp.spec.micro("prune", eps=0.5, beta_mu=2.0, prune_every="10m", **unsupervised),
     ]
 
 
 def switched_signature() -> dict[str, float | str | None]:
     """Every non-coefficient output field of the second bank, at the same
     three rows."""
-    bank = po.ModelBank(switched_specs())
+    bank = rp.ModelBank(switched_specs())
     out = bank.fit_predict(switched_stream())
     sig: dict[str, float | str | None] = {}
     for spec in switched_specs():
         name = spec["name"]
-        for field in po.spec.output_fields(spec):
+        for field in rp.spec.output_fields(spec):
             if field.startswith(("coef", "support_coef")):
                 continue
             values = out[name].struct.field(field).to_list()

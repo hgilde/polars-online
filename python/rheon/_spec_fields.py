@@ -20,7 +20,7 @@ def output_fields(spec: dict[str, Any]) -> list[str]:
 
     Use it to see a spec's fields before any row is fed: the fields are fixed
     by the spec. For a whole bank, read
-    :attr:`rheon.ModelBank.output_fields`, and for what each field
+    :attr:`rheon.polars.ModelBank.output_fields`, and for what each field
     is, with the values its name encodes, use :func:`output_index`.
 
     .. rubric:: Parameters
@@ -43,10 +43,10 @@ def output_fields(spec: dict[str, Any]) -> list[str]:
 
     .. code-block:: python
 
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0, ridge=[1e-6, 0.1]
         )
-        fields = po.spec.output_fields(spec)
+        fields = rp.spec.output_fields(spec)
         print(fields[:4])                         # each ridge value's prediction and residual
         print(fields[4:])                         # the fields the ridge values share
 
@@ -93,8 +93,8 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
         The target the field is about, or null.
     ``instance``
         The instance the field belongs to, by its suffix, as
-        :meth:`~rheon.ModelBank.coef`, :meth:`~rheon.ModelBank.gram`
-        and :meth:`~rheon.ModelBank.closed_groups` name it: ``"@h500"``,
+        :meth:`~rheon.polars.ModelBank.coef`, :meth:`~rheon.polars.ModelBank.gram`
+        and :meth:`~rheon.polars.ModelBank.closed_groups` name it: ``"@h500"``,
         or ``""`` for a single instance. Null on a field that chooses across
         the instances (``emit_selected``, ``emit_averaged``) and on the clocks,
         which are the spec's own.
@@ -152,11 +152,11 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
 
     .. code-block:: python
 
-        grid = po.spec.ewridge(
+        grid = rp.spec.ewridge(
             "m", targets=["y"], features=["x0", "x1"], half_life=[100.0, 500.0], ridge=[1e-6, 0.5]
         )
-        out = po.ModelBank([grid]).fit_predict(df)    # a half-life grid by a ridge grid
-        idx = po.spec.output_index(grid)
+        out = rp.ModelBank([grid]).fit_predict(df)    # a half-life grid by a ridge grid
+        idx = rp.spec.output_index(grid)
         name = idx.filter(
             (pl.col("kind") == "pred")
             & (pl.col("target") == "y")
@@ -201,7 +201,7 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
 
     Use it to reach one coefficient in the nested output without writing
     its field's name or its position by hand, or to read the column names
-    :meth:`~rheon._frame.LazyFrameOnlineNamespace.unnest` gives.
+    :meth:`~rheon.polars._frame.LazyFrameOnlineNamespace.unnest` gives.
     For one ``coef`` list's layout alone, use :func:`coef_index`.
 
     .. rubric:: Parameters
@@ -224,7 +224,7 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
         Its index in that list.
     ``name``
         The column
-        :meth:`~rheon._frame.LazyFrameOnlineNamespace.unnest` gives
+        :meth:`~rheon.polars._frame.LazyFrameOnlineNamespace.unnest` gives
         it: ``coef_{target}_{term}{combo}{instance}``, so
         ``coef_y_x1__r0.5@h500`` sits beside ``pred_y__r0.5@h500``. The
         ``coef_`` prefix and the target are there because a bare ``x1``
@@ -257,11 +257,11 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
 
     .. code-block:: python
 
-        grid = po.spec.ewridge(
+        grid = rp.spec.ewridge(
             "m", targets=["y"], features=["x0", "x1"], half_life=[100.0, 500.0], ridge=[1e-6, 0.5]
         )
-        out = po.ModelBank([grid]).fit_predict(df)    # a half-life grid by a ridge grid
-        cf = po.spec.coef_fields(grid)
+        out = rp.ModelBank([grid]).fit_predict(df)    # a half-life grid by a ridge grid
+        cf = rp.spec.coef_fields(grid)
         row = cf.filter(
             (pl.col("target") == "y")
             & (pl.col("term") == "x1")
@@ -279,7 +279,7 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
 
     - :func:`coef_index`, one ``coef`` list's layout.
     - :func:`output_index`, every field with the values its name encodes.
-    - :meth:`~rheon._frame.LazyFrameOnlineNamespace.unnest`, which
+    - :meth:`~rheon.polars._frame.LazyFrameOnlineNamespace.unnest`, which
       writes these columns.
 
     .. rubric:: Notes
@@ -373,11 +373,11 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
 
     .. code-block:: python
 
-        grid = po.spec.ewridge(
+        grid = rp.spec.ewridge(
             "m", targets=["y"], features=["x0", "x1"], half_life=[100.0, 500.0], ridge=[1e-6, 0.5]
         )
-        out = po.ModelBank([grid]).fit_predict(df)    # a half-life grid by a ridge grid
-        ci = po.spec.coef_index(grid)
+        out = rp.ModelBank([grid]).fit_predict(df)    # a half-life grid by a ridge grid
+        ci = rp.spec.coef_index(grid)
         pos = ci.filter(
             (pl.col("target") == "y") & (pl.col("ridge") == 0.5) & (pl.col("term") == "x1")
         )["position"].item()

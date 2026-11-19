@@ -46,7 +46,7 @@ they are and ten times as large:
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # 40 features, each with a small effect, and the same features ten times as large.
 rng = np.random.default_rng(5)
@@ -105,7 +105,7 @@ This code plants forty coefficients that wander about 0:
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # 40 coefficients, each wandering about 0 with a spread of 0.1 (an AR(1) at 0.999 a row).
 rng = np.random.default_rng(6)

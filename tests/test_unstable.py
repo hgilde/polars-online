@@ -21,8 +21,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 from rheon._warnings import UNSTABLE_VAR
+from rheon.polars import _gbdt
 
 TIER = "essential"
 
@@ -44,14 +45,14 @@ def frame(n: int = 60) -> pl.DataFrame:
 
 
 def ridge() -> dict:
-    return po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=20.0)
+    return rp.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=20.0)
 
 
 def formula_spec() -> dict:
     target = (
-        po.ewm_mean("mid", half_life=5.0, window_size=10.0, reverse=True) - pl.col("mid")
+        rp.ewm_mean("mid", half_life=5.0, window_size=10.0, reverse=True) - pl.col("mid")
     ).alias("fwd")
-    return po.spec.ewridge(
+    return rp.spec.ewridge(
         "edge",
         targets=[target],
         features=["x0"],
@@ -66,14 +67,14 @@ def unstable_calls(tmp_path) -> dict[str, Callable[[], object]]:
     """One call of each labelled surface."""
     df = frame()
     corr = np.array([[1.0, 0.5], [0.5, 1.0]])
-    held = po.ModelBank([formula_spec()])
+    held = rp.ModelBank([formula_spec()])
     held.fit_predict(df)
     saved = tmp_path / "held.state"
 
     def windows_state() -> object:
-        out = po.stream.with_windows(
+        out = rp.stream.with_windows(
             df,
-            level=po.ewm_mean("mid", half_life=5.0, window_size=10.0),
+            level=rp.ewm_mean("mid", half_life=5.0, window_size=10.0),
             clock="t",
             gap_cap=50.0,
             save_state=tmp_path / "windows.state",
@@ -86,9 +87,9 @@ def unstable_calls(tmp_path) -> dict[str, Callable[[], object]]:
 
     def load_formula() -> object:
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", po.UnstableWarning)
+            warnings.simplefilter("ignore", rp.UnstableWarning)
             held.save(saved)
-        return po.ModelBank.load(saved)
+        return rp.ModelBank.load(saved)
 
     return {
         "with_windows state": windows_state,
@@ -96,15 +97,15 @@ def unstable_calls(tmp_path) -> dict[str, Callable[[], object]]:
         "save_bytes a formula target": held.save_bytes,
         "write_json a formula target": held.write_json,
         "load a formula target": load_formula,
-        "fit_predict_arrow": lambda: po.ModelBank([ridge()]).fit_predict_arrow(df),
-        "predict_arrow": lambda: po.ModelBank([ridge()]).predict_arrow(df),
-        "po.sim.regimes": lambda: po.sim.regimes(
+        "fit_predict_arrow": lambda: rp.ModelBank([ridge()]).fit_predict_arrow(df),
+        "predict_arrow": lambda: rp.ModelBank([ridge()]).predict_arrow(df),
+        "po.sim.regimes": lambda: rp.sim.regimes(
             2, states=[np.eye(2)], transition=[[1.0]], n_blocks=2, rows_per_block=5, seed=1
         ),
-        "po.corr.nearest": lambda: po.corr.nearest(corr),
-        "po.corr.shrink": lambda: po.corr.shrink(corr, alpha=0.3),
-        "po.gbdt.xgboost_matrix": lambda: po.gbdt.xgboost_matrix(df, label="y"),
-        "po.gbdt.lightgbm_dataset": lambda: po.gbdt.lightgbm_dataset(
+        "po.corr.nearest": lambda: rp.corr.nearest(corr),
+        "po.corr.shrink": lambda: rp.corr.shrink(corr, alpha=0.3),
+        "po.gbdt.xgboost_matrix": lambda: _gbdt.xgboost_matrix(df, label="y"),
+        "po.gbdt.lightgbm_dataset": lambda: _gbdt.lightgbm_dataset(
             df, label="y", params={"verbose": -1}
         ),
     }
@@ -133,15 +134,15 @@ SURFACES = [
 
 
 def test_the_warning_is_exported_and_named_as_polars_names_it():
-    assert issubclass(po.UnstableWarning, Warning)
-    assert "UnstableWarning" in po.__all__
+    assert issubclass(rp.UnstableWarning, Warning)
+    assert "UnstableWarning" in rp.__all__
     assert UNSTABLE_VAR == "POLARS_ONLINE_WARN_UNSTABLE"
 
 
 @pytest.mark.parametrize("surface", SURFACES)
 def test_each_surface_warns_under_the_variable(surface, calls, monkeypatch):
     monkeypatch.setenv(UNSTABLE_VAR, "1")
-    with pytest.warns(po.UnstableWarning, match="this is unstable, so it may change") as caught:
+    with pytest.warns(rp.UnstableWarning, match="this is unstable, so it may change") as caught:
         calls[surface]()
     assert caught, surface
 
@@ -152,7 +153,7 @@ def test_each_surface_is_silent_without_it(surface, value, calls, monkeypatch):
     if value is not None:
         monkeypatch.setenv(UNSTABLE_VAR, value)
     with warnings.catch_warnings():
-        warnings.simplefilter("error", po.UnstableWarning)
+        warnings.simplefilter("error", rp.UnstableWarning)
         calls[surface]()
 
 
@@ -162,16 +163,16 @@ def test_a_promised_surface_never_warns(monkeypatch, tmp_path):
     monkeypatch.setenv(UNSTABLE_VAR, "1")
     df = frame()
     with warnings.catch_warnings():
-        warnings.simplefilter("error", po.UnstableWarning)
-        bank = po.ModelBank([ridge()])
+        warnings.simplefilter("error", rp.UnstableWarning)
+        bank = rp.ModelBank([ridge()])
         out = bank.fit_predict(df)
         bank.save(tmp_path / "plain.state")
-        po.ModelBank.load(tmp_path / "plain.state")
+        rp.ModelBank.load(tmp_path / "plain.state")
         bank.write_json()
-        po.stream.with_windows(
-            df, level=po.ewm_mean("mid", half_life=5.0, window_size=10.0), clock="t", gap_cap=50.0
+        rp.stream.with_windows(
+            df, level=rp.ewm_mean("mid", half_life=5.0, window_size=10.0), clock="t", gap_cap=50.0
         )
-        po.eval.metrics(out, "m")
+        rp.eval.metrics(out, "m")
 
 
 def test_a_corr_call_that_runs_others_warns_once(monkeypatch):
@@ -179,15 +180,15 @@ def test_a_corr_call_that_runs_others_warns_once(monkeypatch):
     corr = np.array([[1.0, 0.5], [0.5, 1.0]])
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        po.corr.shrink(corr, alpha=0.3)
-    got = [w for w in caught if issubclass(w.category, po.UnstableWarning)]
+        rp.corr.shrink(corr, alpha=0.3)
+    got = [w for w in caught if issubclass(w.category, rp.UnstableWarning)]
     assert len(got) == 1, [str(w.message) for w in got]
     assert "rheon.corr.shrink" in str(got[0].message)
 
 
 def test_every_corr_function_is_labelled():
-    for name in po.corr.__all__:
-        fn = getattr(po.corr, name)
+    for name in rp.corr.__all__:
+        fn = getattr(rp.corr, name)
         if callable(fn):
             assert hasattr(fn, "__wrapped__"), name
 
@@ -195,14 +196,14 @@ def test_every_corr_function_is_labelled():
 @pytest.mark.parametrize(
     "obj",
     [
-        po.sim,
-        po.corr,
-        po.gbdt,
-        po.ArrowStruct,
-        po.ModelBank.fit_predict_arrow,
-        po.ModelBank.predict_arrow,
-        po.ModelBank.save,
-        po.stream.with_windows,
+        rp.sim,
+        rp.corr,
+        _gbdt,
+        rp.ArrowStruct,
+        rp.ModelBank.fit_predict_arrow,
+        rp.ModelBank.predict_arrow,
+        rp.ModelBank.save,
+        rp.stream.with_windows,
     ],
     ids=lambda o: getattr(o, "__qualname__", getattr(o, "__name__", str(o))),
 )

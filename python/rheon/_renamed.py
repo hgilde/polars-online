@@ -6,7 +6,7 @@ the error rather than from a changelog. A spec's keyword goes through
 ``_spec._RENAMED``; a helper function's keyword goes through
 :func:`renamed_keywords` on that function, and a renamed function leaves a
 stub from :func:`renamed_function` under its old name (task 197). A keyword
-for something removed, such as ``po.target``'s ``relative_to`` (task 201),
+for something removed, such as ``rp.target``'s ``relative_to`` (task 201),
 is refused by :func:`removed_keywords`, saying what replaces it.
 
 These are the refusals every module uses: the stream functions'

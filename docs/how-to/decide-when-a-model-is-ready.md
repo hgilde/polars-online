@@ -68,7 +68,7 @@ predicts, what held it back, and the error of its predictions before row
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # Ten features, a row a second, y on all of them.
 rng = np.random.default_rng(14)

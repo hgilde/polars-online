@@ -11,7 +11,7 @@ rows through when it runs, and ``df.online`` at once, on a frame in memory.
 ``lf.online`` / ``df.online``
 -----------------------------
 
-.. automodule:: rheon._frame
+.. automodule:: rheon.polars._frame
    :no-members:
 
 .. entries:: namespaces

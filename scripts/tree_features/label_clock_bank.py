@@ -16,7 +16,7 @@ import numpy as np  # noqa: E402
 import polars as pl  # noqa: E402
 from leafrefit import train_trees  # noqa: E402
 
-import rheon as po  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 
 print(C.load_line(), flush=True)
 df = C.load_flights()
@@ -33,7 +33,7 @@ print(f"labels later than 8 hours: {np.mean(av - t > 480):.4f}")
 
 
 def spec(**kw):
-    return po.spec.ewridge(
+    return rp.spec.ewridge(
         "o",
         targets=["y"],
         features=["zero"],
@@ -48,7 +48,7 @@ def spec(**kw):
 
 one = pl.DataFrame({"c": t, "y": r, "zero": np.zeros(n)})
 for kw in ({}, {"conformal_rate": 0.01}, {"conformal_rate": 0.002}, {"resid_quantiles": [0.9]}):
-    o = po.ModelBank([spec(embargo=480.0, **kw)]).fit_predict(one)
+    o = rp.ModelBank([spec(embargo=480.0, **kw)]).fit_predict(one)
     f = o["o"].struct
     p = f.field("pred_y").to_numpy()
     if "resid_quantiles" in kw:

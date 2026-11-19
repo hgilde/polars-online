@@ -85,7 +85,7 @@ reads the cuts back from the matrix:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # A rating of four values beside a continuous feature.
 rng = np.random.default_rng(6)
@@ -121,7 +121,7 @@ and trains each for 20 rounds:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 import xgboost as xgb
 
 # One file, whose target is x0 times x1 plus noise.

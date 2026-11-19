@@ -121,7 +121,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # 1. Make up flights, one every ten minutes, whose delay is known only when each one lands.
 rng = np.random.default_rng(3)

@@ -35,7 +35,7 @@ import polars as pl
 import pytest
 
 import reference
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -91,7 +91,7 @@ def spec(features=("x0", "x1"), classes=("a", "b", "c"), **kw):
         min_weight=5.0,
     )
     d.update(kw)
-    return po.spec.ew_class("m", **d)
+    return rp.spec.ew_class("m", **d)
 
 
 def unnested(out):
@@ -248,7 +248,7 @@ def _same_as_oracle(got: pl.DataFrame, rows, classes, what: str) -> None:
             )
 
 
-def _same_means(bank: po.ModelBank, o: Oracle, what: str) -> None:
+def _same_means(bank: rp.ModelBank, o: Oracle, what: str) -> None:
     got = bank.coef("m")["coef"].to_list()
     want = [v for c in range(o.nc) for v in (o.m[c] if o.n[c] > 0.0 else [None] * o.k)]
     assert got == want, f"{what}: class means"
@@ -266,7 +266,7 @@ class TestOracle:
         X, lab = gaussians(1500, seed=1, **THREE)
         df = frame(X, lab)
         params = dict(half_life=150.0, min_weight=3.0, precision_prior=0.7)
-        bank = po.ModelBank([spec(covariance_type=covariance, **params)])
+        bank = rp.ModelBank([spec(covariance_type=covariance, **params)])
         got = unnested(bank.fit_predict(df))
         rows, o = replay(
             X, lab.tolist(), covariance=covariance, prior=0.7, half_life=150.0, min_weight=3.0
@@ -294,7 +294,7 @@ class TestOracle:
         )
         params = dict(half_life=60.0, min_weight=2.0, precision_prior=0.3)
         s = spec(clock="t", gap_cap=20.0, weight="w", covariance_type=covariance, **params)
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         got = unnested(bank.fit_predict(df))
         rows, o = replay(
             X,
@@ -317,7 +317,7 @@ class TestOracle:
         X, lab = gaussians(800, seed=4, **THREE)
         df = frame(X, lab)
         params = dict(half_life=100.0, min_weight=3.0, precision_prior=1.0)
-        bank = po.ModelBank([spec(**params)])
+        bank = rp.ModelBank([spec(**params)])
         bank.fit_predict(df.slice(0, 500))
         _, o = replay(
             X[:500],
@@ -392,7 +392,7 @@ class TestUnderDecayIsScikitLearnAndScipy:
         w[rng.random(n) < 0.05] = 0.0
         df = frame(X, lab, null_every=13, t=t, w=w)
         out = unnested(
-            po.ModelBank(
+            rp.ModelBank(
                 [
                     spec(
                         covariance_type=covariance,
@@ -450,7 +450,7 @@ class TestLargeData:
             min_weight=50.0,
             precision_prior=0.1,
         )
-        got = unnested(po.ModelBank([s]).fit_predict(df))
+        got = unnested(rp.ModelBank([s]).fit_predict(df))
         truth = np.array(["abc"[v] for v in lab])
         pred = np.array(got["class"].to_list()[100_000:])
         acc = float(np.mean(pred == truth[100_000:]))
@@ -477,7 +477,7 @@ class TestLargeData:
         for shape in ("full", "tied"):
             s = spec(half_life=5000.0, min_weight=20.0, covariance_type=shape, precision_prior=0.1)
             out[shape] = np.array(
-                unnested(po.ModelBank([s]).fit_predict(df))["class"].to_list()[30_000:]
+                unnested(rp.ModelBank([s]).fit_predict(df))["class"].to_list()[30_000:]
             )
         truth = np.array(["abc"[v] for v in lab])[30_000:]
         ceiling = bayes_rate(X[30_000:], lab[30_000:], p["means"], p["covs"])
@@ -498,7 +498,7 @@ class TestLargeData:
         acc = {}
         for shape in SHAPES:
             s = spec(classes=("a", "b"), half_life=5000.0, min_weight=20.0, covariance_type=shape)
-            got = unnested(po.ModelBank([s]).fit_predict(df))["class"].to_list()[20_000:]
+            got = unnested(rp.ModelBank([s]).fit_predict(df))["class"].to_list()[20_000:]
             acc[shape] = float(np.mean(np.array(got) == truth))
         assert acc["full"] >= ceiling - 0.01 and acc["diag"] >= ceiling - 0.01, acc
         assert acc["tied"] < 0.6, acc
@@ -518,7 +518,7 @@ class TestLargeData:
         acc = {}
         for shape in ("full", "diag"):
             s = spec(classes=("a", "b"), half_life=5000.0, min_weight=20.0, covariance_type=shape)
-            got = unnested(po.ModelBank([s]).fit_predict(df))["class"].to_list()[20_000:]
+            got = unnested(rp.ModelBank([s]).fit_predict(df))["class"].to_list()[20_000:]
             acc[shape] = float(np.mean(np.array(got) == truth))
         assert acc["full"] >= ceiling - 0.01, acc
         assert acc["diag"] < 0.6, acc
@@ -530,7 +530,7 @@ class TestLargeData:
         lab2[15_000:] = np.where(lab[15_000:] == 0, 1, np.where(lab[15_000:] == 1, 0, 2))
         df = frame(X, lab2)
         s = spec(half_life=500.0, min_weight=20.0)
-        got = np.array(unnested(po.ModelBank([s]).fit_predict(df))["class"].to_list())
+        got = np.array(unnested(rp.ModelBank([s]).fit_predict(df))["class"].to_list())
         truth = np.array(["abc"[v] for v in lab2])
         before = np.mean(got[10_000:15_000] == truth[10_000:15_000])
         just_after = np.mean(got[15_000:15_500] == truth[15_000:15_500])
@@ -546,14 +546,14 @@ class TestEdgeCases:
     def test_outputs_are_null_until_min_periods_and_until_a_label(self):
         X, lab = gaussians(60, seed=10, **THREE)
         df = frame(X, lab)
-        got = unnested(po.ModelBank([spec(min_weight=5.0)]).fit_predict(df))
+        got = unnested(rp.ModelBank([spec(min_weight=5.0)]).fit_predict(df))
         # weight_sum before rows 0..5 is 0, 1, 1+lam, ... < 5 for the first six rows.
         assert got["class"][:6].null_count() == 6 and got["class"][6] is not None
         assert got["weight_sum"][0] == 0.0
         # No label at all: scored rows stay null until the first labelled one.
         y = [None] * 20 + [str(NAMES[v]) for v in lab[20:]]
         df2 = df.with_columns(pl.Series("y", y, pl.String))
-        got2 = unnested(po.ModelBank([spec(min_weight=0.0)]).fit_predict(df2))
+        got2 = unnested(rp.ModelBank([spec(min_weight=0.0)]).fit_predict(df2))
         assert got2["class"][:21].null_count() == 21 and got2["weight_sum"][20] > 19.0
         assert got2["class"][21] == str(NAMES[lab[20]])
 
@@ -561,7 +561,7 @@ class TestEdgeCases:
         X, lab = gaussians(300, seed=11, **THREE)
         lab = lab % 2  # only a and b ever appear
         df = frame(X, lab)
-        bank = po.ModelBank([spec(classes=("a", "b", "c"), coef_every=50)])
+        bank = rp.ModelBank([spec(classes=("a", "b", "c"), coef_every=50)])
         got = unnested(bank.fit_predict(df))
         assert got["p_c"].drop_nulls().to_list() == [0.0] * (300 - got["p_c"].null_count())
         assert set(got["class"].drop_nulls().to_list()) == {"a", "b"}
@@ -570,7 +570,7 @@ class TestEdgeCases:
         assert coef[4:] == [None, None]
         assert bank.coef("m")["coef"].to_list()[4:] == [None, None]
         # The class means are the means of the rows labelled with the class.
-        idx = po.spec.coef_index(spec(classes=("a", "b", "c")))
+        idx = rp.spec.coef_index(spec(classes=("a", "b", "c")))
         assert idx["class"].to_list() == ["a", "a", "b", "b", "c", "c"]
         assert idx["term"].to_list() == ["x0", "x1"] * 3
 
@@ -579,8 +579,8 @@ class TestEdgeCases:
         full = frame(X, lab)
         holes = frame(X, lab, null_every=5)
         s = spec(half_life=float("inf"), min_weight=1.0)
-        a = po.ModelBank([s])
-        b = po.ModelBank([s])
+        a = rp.ModelBank([s])
+        b = rp.ModelBank([s])
         ga = unnested(a.fit_predict(full))
         gb = unnested(b.fit_predict(holes))
         # Every row is scored in both (b's row 1 excepted: row 0 carried no
@@ -600,23 +600,23 @@ class TestEdgeCases:
     def test_integer_and_boolean_label_columns_are_read_as_keys(self):
         X, lab = gaussians(300, seed=13, **THREE)
         df = frame(X, lab)
-        want = unnested(po.ModelBank([spec()]).fit_predict(df))
+        want = unnested(rp.ModelBank([spec()]).fit_predict(df))
         ints = df.with_columns(pl.Series("y", lab).cast(pl.Int32))
-        got = unnested(po.ModelBank([spec(classes=("0", "1", "2"))]).fit_predict(ints))
+        got = unnested(rp.ModelBank([spec(classes=("0", "1", "2"))]).fit_predict(ints))
         assert got["p_0"].to_list() == want["p_a"].to_list()
         assert got["class"].to_list() == [
             None if v is None else str("abc".index(v)) for v in want["class"].to_list()
         ]
         bools = df.with_columns((pl.Series("y", lab) == 0).alias("y"))
-        gb = unnested(po.ModelBank([spec(classes=("true", "false"))]).fit_predict(bools))
+        gb = unnested(rp.ModelBank([spec(classes=("true", "false"))]).fit_predict(bools))
         assert gb["class"].drop_nulls().is_in(["true", "false"]).all()
         as_str = df.with_columns(pl.Series("y", ["true" if v == 0 else "false" for v in lab]))
         assert gb.equals(
-            unnested(po.ModelBank([spec(classes=("true", "false"))]).fit_predict(as_str)),
+            unnested(rp.ModelBank([spec(classes=("true", "false"))]).fit_predict(as_str)),
             null_equal=True,
         )
         cats = df.with_columns(pl.col("y").cast(pl.Categorical))
-        gc = unnested(po.ModelBank([spec()]).fit_predict(cats))
+        gc = unnested(rp.ModelBank([spec()]).fit_predict(cats))
         assert gc.equals(want, null_equal=True)
 
     def test_an_undeclared_label_names_the_row_the_value_and_the_classes(self):
@@ -624,7 +624,7 @@ class TestEdgeCases:
         df = frame(X, lab)
         first_c = int(np.flatnonzero(lab == 2)[0])
         with pytest.raises(ValueError) as exc:
-            po.ModelBank([spec(classes=("a", "b"))]).fit_predict(df)
+            rp.ModelBank([spec(classes=("a", "b"))]).fit_predict(df)
         msg = str(exc.value)
         assert f'label column "y" has the value "c" at row {first_c}' in msg
         assert 'not one of the classes ["a", "b"]' in msg
@@ -632,13 +632,13 @@ class TestEdgeCases:
         # A nested label column is refused like any key.
         nested = df.with_columns(pl.struct("y").alias("y"))
         with pytest.raises(ValueError, match="label column"):
-            po.ModelBank([spec()]).fit_predict(nested)
+            rp.ModelBank([spec()]).fit_predict(nested)
 
     def test_a_null_feature_row_is_skipped_and_the_clock_still_runs(self):
         X, lab = gaussians(200, seed=15, **THREE)
         X[150, 1] = np.nan
         df = frame(X, lab)
-        got = unnested(po.ModelBank([spec(half_life=20.0, min_weight=1.0)]).fit_predict(df))
+        got = unnested(rp.ModelBank([spec(half_life=20.0, min_weight=1.0)]).fit_predict(df))
         assert got["class"][150] is None and got["weight_sum"][150] is None
         lam = 0.5 ** (1 / 20)
         assert got["weight_sum"][151] == pytest.approx(
@@ -654,7 +654,7 @@ class TestEdgeCases:
         w[0] = 0.0
         w[7] = 0.0
         df = frame(X, lab, w=w)
-        got = unnested(po.ModelBank([spec(weight="w", min_weight=1.0)]).fit_predict(df))
+        got = unnested(rp.ModelBank([spec(weight="w", min_weight=1.0)]).fit_predict(df))
         assert got["weight_sum"][0] == 0.0 and got["weight_sum"][1] == 0.0
         assert got["class"][1] is None  # weight_sum still below min_weight
         assert got["p_a"].drop_nulls().is_finite().all()
@@ -665,7 +665,7 @@ class TestEdgeCases:
         X[100] = [1e100, -1e100]  # at the bound: accepted, and it moves a mean
         X[200] = [1e101, 1e101]  # beyond it: skipped like a null
         df = frame(X, lab)
-        bank = po.ModelBank([spec(min_weight=1.0)])
+        bank = rp.ModelBank([spec(min_weight=1.0)])
         got = unnested(bank.fit_predict(df))
         assert got["class"][100] is not None and got["weight_sum"][101] > got["weight_sum"][99]
         assert got["class"][200] is None and got["weight_sum"][200] is None
@@ -678,9 +678,9 @@ class TestEdgeCases:
         X, lab = gaussians(700, seed=18, **THREE)
         df = frame(X, lab, null_every=9)
         s = spec(min_weight=1.0, covariance_type="tied")
-        one = unnested(po.ModelBank([s]).fit_predict(df))
+        one = unnested(rp.ModelBank([s]).fit_predict(df))
         for size in (1, 7, 97, 350):
-            bank = po.ModelBank([s])
+            bank = rp.ModelBank([s])
             many = unnested(
                 pl.concat([bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)])
             )
@@ -695,11 +695,11 @@ class TestEdgeCases:
         df = frame(X, lab)
         s = spec(min_weight=1.0, covariance_type="diag")
         for cut in (3, 100, 500):
-            a = po.ModelBank([s])
+            a = rp.ModelBank([s])
             a.fit_predict(df.slice(0, cut))
             path = tmp_path / f"c{cut}.state"
             a.save(path)
-            b = po.ModelBank.load(path, specs=[s])
+            b = rp.ModelBank.load(path, specs=[s])
             rest = df.slice(cut, df.height - cut)
             assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True), cut
 
@@ -707,14 +707,14 @@ class TestEdgeCases:
         X, lab = gaussians(800, seed=20, **THREE)
         df = frame(X, lab, g=["p", "q"] * 400)
         s = spec(group="g")
-        both = po.ModelBank([s]).fit_predict(df)
-        solo = po.ModelBank([s]).fit_predict(df.filter(pl.col("g") == "q"))
+        both = rp.ModelBank([s]).fit_predict(df)
+        solo = rp.ModelBank([s]).fit_predict(df.filter(pl.col("g") == "q"))
         assert unnested(both.filter(pl.col("g") == "q")).equals(unnested(solo), null_equal=True)
 
     def test_halflife_grid(self):
         X, lab = gaussians(400, seed=21, **THREE)
         s = spec(classes=("a", "b", "c"), half_life=[50.0, 500.0])
-        assert po.spec.output_fields(s) == [
+        assert rp.spec.output_fields(s) == [
             "class@h50",
             "p_a@h50",
             "p_b@h50",
@@ -732,7 +732,7 @@ class TestEdgeCases:
             "withheld_reason@h500",
             "coef@h500",
         ]
-        out = unnested(po.ModelBank([s]).fit_predict(frame(X, lab)))
+        out = unnested(rp.ModelBank([s]).fit_predict(frame(X, lab)))
         assert out["class@h50"].dtype == pl.Enum(["a", "b", "c"])
         assert out["weight_sum@h50"][-1] < out["weight_sum@h500"][-1]
         assert out["p_a@h50"].to_list() != out["p_a@h500"].to_list()
@@ -740,14 +740,14 @@ class TestEdgeCases:
     def test_coef_is_the_class_means_on_the_cadence(self):
         X, lab = gaussians(300, seed=22, **THREE)
         s = spec(coef_every=50)
-        out = unnested(po.ModelBank([s]).fit_predict(frame(X, lab)))
+        out = unnested(rp.ModelBank([s]).fit_predict(frame(X, lab)))
         coef = out["coef"]
         assert [i for i in range(300) if coef[i] is not None] == sorted({*range(49, 300, 50), 299})
         assert len(coef[299]) == 6
 
     def test_coef_index_and_unnest_name_the_means(self):
         s = spec(features=("u", "v", "w"), classes=("neg", "pos"), half_life=[10.0, 20.0])
-        cf = po.spec.coef_fields(s)
+        cf = rp.spec.coef_fields(s)
         assert cf["name"].to_list()[:6] == [
             "coef_neg_u@h10",
             "coef_neg_v@h10",
@@ -756,7 +756,7 @@ class TestEdgeCases:
             "coef_pos_v@h10",
             "coef_pos_w@h10",
         ]
-        ci = po.spec.coef_index(s)
+        ci = rp.spec.coef_index(s)
         assert ci["class"].to_list() == ["neg"] * 3 + ["pos"] * 3
         assert ci["term"].to_list() == ["u", "v", "w"] * 2
         X, lab = gaussians(200, seed=23, means=[[0, 0, 0], [2, 2, 2]], covs=[np.eye(3), np.eye(3)])
@@ -764,9 +764,9 @@ class TestEdgeCases:
             pl.Series("y", [("neg", "pos")[v] for v in lab])
         )
         s1 = spec(features=("u", "v", "w"), classes=("neg", "pos"), half_life=float("inf"))
-        bank = po.ModelBank([s1])
+        bank = rp.ModelBank([s1])
         flat = bank.fit_predict(df).online.unnest([s1])
-        names = po.spec.coef_fields(s1)["name"].to_list()
+        names = rp.spec.coef_fields(s1)["name"].to_list()
         assert set(names) <= set(flat.columns) and "coef" not in flat.columns
         assert "class" in flat.columns and "p_neg" in flat.columns
         c = bank.coef("m")
@@ -777,7 +777,7 @@ class TestEdgeCases:
         )
 
     def test_output_index_declares_the_dtypes(self):
-        idx = po.spec.output_index(spec())
+        idx = rp.spec.output_index(spec())
         tail = ["weight_sum", "settled_frac", "withheld_reason", "coef"]
         assert idx["field"].to_list() == ["class", "p_a", "p_b", "p_c", *tail]
         assert idx["kind"].to_list() == ["class", "p", "p", "p", *tail]
@@ -798,7 +798,7 @@ class TestEdgeCases:
         X, lab = gaussians(500, seed=25, **THREE)
         df = frame(X, lab, null_every=7)
         s = spec()
-        bank = po.ModelBank([s]).fit_predict(df)
+        bank = rp.ModelBank([s]).fit_predict(df)
         lazy = df.lazy().online.fit_predict([s]).collect()
         assert bank.equals(lazy, null_equal=True)
 
@@ -855,7 +855,7 @@ class TestRefusals:
         def build(**kw):
             d = dict(features=["x0"], label="y", classes=["a", "b"], precision_prior=1.0)
             d.update(kw)
-            return po.spec.ew_class("m", half_life=10.0, **d)
+            return rp.spec.ew_class("m", half_life=10.0, **d)
 
         with pytest.raises(TypeError, match="classes must be a list of strs, but it is str 'ab'"):
             build(classes="ab")
@@ -876,7 +876,7 @@ class TestRefusals:
         with pytest.raises(
             TypeError, match=r"ew_class\(\) takes no targets, since label names the column"
         ):
-            po.spec.ew_class(
+            rp.spec.ew_class(
                 "m",
                 features=["x0"],
                 label="y",
@@ -889,11 +889,11 @@ class TestRefusals:
 
     def test_unpack_says_what_an_ew_class_struct_holds(self):
         X, lab = gaussians(100, seed=27, **THREE)
-        out = po.ModelBank([spec()]).fit_predict(frame(X, lab))
+        out = rp.ModelBank([spec()]).fit_predict(frame(X, lab))
         with pytest.raises(
             TypeError, match="an ew_class model a class and its posterior probabilities"
         ):
-            po.eval.unpack(out, "m")
+            rp.eval.unpack(out, "m")
 
     def test_the_cli_runs_it(self, tmp_path, rheon_cli):
         import subprocess
@@ -926,7 +926,7 @@ class TestRefusals:
         subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
         got = unnested(pl.read_parquet(dst))
         want = unnested(
-            po.ModelBank([spec(covariance_type="tied")]).fit_predict(frame(X, lab, null_every=7))
+            rp.ModelBank([spec(covariance_type="tied")]).fit_predict(frame(X, lab, null_every=7))
         )
         assert got.equals(want, null_equal=True)
         assert got["class"].dtype == pl.Enum(["a", "b", "c"])
@@ -949,7 +949,7 @@ def test_a_wide_class_problem_reaches_the_bayes_rate():
         min_weight=50.0,
         precision_prior=0.1,
     )
-    got = unnested(po.ModelBank([s]).fit_predict(df))
+    got = unnested(rp.ModelBank([s]).fit_predict(df))
     truth = np.array(["abc"[v] for v in lab])
     pred = np.array(got["class"].to_list()[20_000:])
     acc = float(np.mean(pred == truth[20_000:]))
@@ -968,7 +968,7 @@ def test_a_class_seen_once_still_scores_finite_posteriors():
     X = np.vstack([X, [10.0, 10.0]])
     lab = np.append(lab, 2)  # a single row of class "c"
     df = frame(X, lab)
-    got = unnested(po.ModelBank([spec(precision_prior=1.0, min_weight=5.0)]).fit_predict(df))
+    got = unnested(rp.ModelBank([spec(precision_prior=1.0, min_weight=5.0)]).fit_predict(df))
     p = np.column_stack([got[f"p_{c}"].to_numpy() for c in "abc"])
     live = np.isfinite(p).all(axis=1)
     assert live.sum() > 1500
@@ -1068,7 +1068,7 @@ class TestALargePriorIsItsLimit:
                 min_weight=0.0,
                 **stream,
             )
-            got = unnested(po.ModelBank([s]).fit_predict(df))
+            got = unnested(rp.ModelBank([s]).fit_predict(df))
             p = np.column_stack([got[f"p_{c}"].to_numpy().astype(float) for c in "abc"])
             want = _limit(
                 labels,
@@ -1118,8 +1118,8 @@ class TestThePermutedClassesPermuteThePosteriors:
         X, lab = gaussians(1500, means=[[0.0, 0.0], [1.5, 0.5]], covs=THREE["covs"][:2], seed=41)
         df = frame(X, lab, null_every=11)
         kw = dict(covariance_type=covariance, precision_prior=0.5, min_weight=1.0)
-        ab = unnested(po.ModelBank([spec(classes=("a", "b"), **kw)]).fit_predict(df))
-        ba = unnested(po.ModelBank([spec(classes=("b", "a"), **kw)]).fit_predict(df))
+        ab = unnested(rp.ModelBank([spec(classes=("a", "b"), **kw)]).fit_predict(df))
+        ba = unnested(rp.ModelBank([spec(classes=("b", "a"), **kw)]).fit_predict(df))
         for c in "ab":
             assert ab[f"p_{c}"].equals(ba[f"p_{c}"], null_equal=True), c
         assert ab["class"].cast(pl.String).equals(ba["class"].cast(pl.String), null_equal=True)
@@ -1141,8 +1141,8 @@ class TestThePermutedClassesPermuteThePosteriors:
             base_classes = ("a", "b", "c")
         df = frame(X, lab, null_every=11)
         kw = dict(covariance_type=covariance, precision_prior=0.5, min_weight=1.0)
-        base = unnested(po.ModelBank([spec(classes=base_classes, **kw)]).fit_predict(df))
-        perm = unnested(po.ModelBank([spec(classes=order, **kw)]).fit_predict(df))
+        base = unnested(rp.ModelBank([spec(classes=base_classes, **kw)]).fit_predict(df))
+        perm = unnested(rp.ModelBank([spec(classes=order, **kw)]).fit_predict(df))
         for c in base_classes:
             a, b = base[f"p_{c}"].to_numpy(), perm[f"p_{c}"].to_numpy()
             assert np.array_equal(np.isnan(a), np.isnan(b)), c
@@ -1218,16 +1218,16 @@ def _invariance(covariance, extra):
     def fields(out):
         return unnested(out).drop("coef", "support_coef", strict=False)
 
-    whole = fields(po.ModelBank([s]).fit_predict(df))
+    whole = fields(rp.ModelBank([s]).fit_predict(df))
     assert whole["class"].null_count() < 150 and whole["weight_sum"].n_unique() > 1000
     for size in (1, 7, 600):
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         many = pl.concat([bank.fit_predict(df.slice(o, size)) for o in range(0, df.height, size)])
         assert fields(many).equals(whole, null_equal=True), size
     for cut in (5, 611):
-        a = po.ModelBank([s])
+        a = rp.ModelBank([s])
         head = a.fit_predict(df.head(cut))
-        b = po.ModelBank.load_bytes(a.save_bytes(), [s])
+        b = rp.ModelBank.load_bytes(a.save_bytes(), [s])
         got = fields(pl.concat([head, b.fit_predict(df.slice(cut))]))
         assert got.equals(whole, null_equal=True), cut
 

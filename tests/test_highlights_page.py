@@ -21,8 +21,8 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-import rheon as po
 from doc_recipes import differences, fenced_blocks
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -138,7 +138,7 @@ def test_the_signal_task_learns_nothing_from_the_future(tmp_path, monkeypatch):
 
         def fit(**spec: object) -> pl.DataFrame:
             out = features.online.fit_predict(
-                [po.spec.huber("robust", **spec), po.spec.ewridge("ridge", **spec)]
+                [rp.spec.huber("robust", **spec), rp.spec.ewridge("ridge", **spec)]
             ).collect()
             return out.select(
                 "ts",

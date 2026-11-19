@@ -22,8 +22,8 @@ import pytest
 
 import ledger
 import long_run as lr
-import rheon as po
 from public_benchmarks import numacc_or_skip
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -136,8 +136,8 @@ def test_numacc_moments_are_the_certified_ones(i):
     assert abs(mean - cert_mean) <= abs(cert_mean) * EPS
     assert abs(sd - float(cert_sd)) <= 2 * float(np.max(np.abs(x))) * EPS / float(cert_sd)
 
-    spec = po.spec.ew_cov("c", features=["x"], half_life=float("inf"), stats=["mean", "std"])
-    out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x": np.append(x, x[0])})).unnest("c")
+    spec = rp.spec.ew_cov("c", features=["x"], half_life=float("inf"), stats=["mean", "std"])
+    out = rp.ModelBank([spec]).fit_predict(pl.DataFrame({"x": np.append(x, x[0])})).unnest("c")
     got_mean, got_sd = out["mean_x"][-1], out["std_x"][-1]
     assert abs(Fraction(got_mean) - mean) <= abs(mean) * 4 * EPS, (got_mean, float(mean))
     assert abs(got_sd - sd) <= sd * 32 * EPS, (got_sd, sd)
@@ -225,7 +225,7 @@ def test_the_window_discards_what_it_should():
     """Evidence the windowed case exercises the subtraction: its weight is the
     window's, well under the unwindowed steady state ``h / ln 2`` of about 72
     rows at a half-life of 50, three half-lives of window keeping 7/8 of it."""
-    spec = po.spec.ew_cov(
+    spec = rp.spec.ew_cov(
         "c",
         features=["x0"],
         clock="t",
@@ -235,7 +235,7 @@ def test_the_window_discards_what_it_should():
         stats=["mean"],
     )
     chunk = next(lr._stream(20_000, 0, 1, 1e6, None))
-    ws = po.ModelBank([spec]).fit_predict(chunk).unnest("c")["weight_sum"].to_numpy()[-1000:]
+    ws = rp.ModelBank([spec]).fit_predict(chunk).unnest("c")["weight_sum"].to_numpy()[-1000:]
     _record("ewcov_drift", "window_weight_share", ws.mean() / 72.1)
     assert 0.8 * 72.1 < ws.mean() < 0.9 * 72.1, ws.mean()
 

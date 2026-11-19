@@ -78,7 +78,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-import rheon as po
+from rheon import polars as rp
 from test_model_registry import MINIMAL
 
 TIER = "mixed"
@@ -185,7 +185,7 @@ def spec(kind: str, **kw: Any) -> dict:
         a["block_rows"] = 50
     a.update(kw)
     a = {k: v for k, v in a.items() if v is not None}
-    build = getattr(po.spec, builder)
+    build = getattr(rp.spec, builder)
     try:
         # Every row a coefficient row, so `coef` is compared on each.
         return build("m", coef_every=0, **a)
@@ -200,19 +200,19 @@ def clocked(kind: str, **kw: Any) -> dict:
     return spec(kind, clock="t", gap_cap=GAP_CAP, **kw)
 
 
-def run(bank: po.ModelBank, df: pl.DataFrame) -> pl.DataFrame:
+def run(bank: rp.ModelBank, df: pl.DataFrame) -> pl.DataFrame:
     with warnings.catch_warnings():
         # A fresh start's readiness notices are expected here.
         warnings.simplefilter("ignore")
         return bank.fit_predict(df).select("m").unnest("m")
 
 
-def fit(s: dict, df: pl.DataFrame) -> tuple[pl.DataFrame, po.ModelBank]:
-    bank = po.ModelBank([s], threads=1)
+def fit(s: dict, df: pl.DataFrame) -> tuple[pl.DataFrame, rp.ModelBank]:
+    bank = rp.ModelBank([s], threads=1)
     return run(bank, df), bank
 
 
-def closed(bank: po.ModelBank) -> pl.DataFrame:
+def closed(bank: rp.ModelBank) -> pl.DataFrame:
     return bank.closed_groups("m")
 
 
@@ -243,7 +243,7 @@ def test_a_step_back_is_refused_by_default(kind):
     state it had before the call."""
     s = clocked(kind)
     df = stepped(kind)
-    bank = po.ModelBank([s], threads=1)
+    bank = rp.ModelBank([s], threads=1)
     run(bank, df.head(100))
     before = bank.save_bytes()
     with pytest.raises(
@@ -264,7 +264,7 @@ def test_a_step_back_at_or_below_the_threshold_is_a_late_row(kind):
     the stream restarts there, as at a bound of 0."""
     df = stepped(kind)
     for bound in (STEP_BACK, 2 * STEP_BACK):
-        bank = po.ModelBank([clocked(kind, restart_after_step_back=bound)], threads=1)
+        bank = rp.ModelBank([clocked(kind, restart_after_step_back=bound)], threads=1)
         before = bank.save_bytes()
         with pytest.raises(
             ValueError,
@@ -376,8 +376,8 @@ def evidence(
     event: str,
     carried_on: pl.DataFrame,
     after: pl.DataFrame,
-    bank: po.ModelBank,
-    carried_bank: po.ModelBank,
+    bank: rp.ModelBank,
+    carried_bank: rp.ModelBank,
     events: int,
 ) -> None:
     """The event took effect: the run that carried on through it differs
@@ -549,7 +549,7 @@ def test_audit_refuses_group_close_and_rcov_requires_it():
     with pytest.raises(ValueError, match="group_close"):
         spec("audit", group="g", group_close="monotone")
     with pytest.raises(ValueError, match="group_close"):
-        po.spec.rcov("m", features=["x0", "x1"], group="g")
+        rp.spec.rcov("m", features=["x0", "x1"], group="g")
 
 
 # ---------------------------------------------------------------------------

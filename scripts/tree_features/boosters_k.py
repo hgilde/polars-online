@@ -25,7 +25,7 @@ import lightgbm as lgb  # noqa: E402
 import numpy as np  # noqa: E402
 from leafrefit import bank, leaf_values, rmse, synth, train_trees  # noqa: E402
 
-import rheon as po  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 
 
 def structural(seed, steps=3000, per=100):
@@ -74,7 +74,7 @@ def arms(clock, X, y):
     }
 
     def sg(cols):
-        return po.spec.sgd(
+        return rp.spec.sgd(
             "o",
             targets=["y"],
             features=cols,
@@ -108,7 +108,7 @@ def arms(clock, X, y):
     cols = {f"age{k}": np.where(np.isnan(ages[k]), latest, ages[k])[ok] for k in range(K)}
 
     def ew(cs):
-        return po.spec.ewridge(
+        return rp.spec.ewridge(
             "o",
             targets=["y"],
             features=cs,

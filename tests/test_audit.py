@@ -19,7 +19,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -57,37 +57,37 @@ def _frame(seed: int = 0, n: int = N) -> pl.DataFrame:
 def _spec(**kw) -> dict:
     kw.setdefault("clock", "t")
     kw.setdefault("gap_cap", 10.0)
-    return po.spec.audit("audit", columns=["a", "b", "c"], pairs=True, **kw)
+    return rp.spec.audit("audit", columns=["a", "b", "c"], pairs=True, **kw)
 
 
-def _fed(spec: dict, frame: pl.DataFrame, chunks: int = 1) -> po.ModelBank:
-    bank = po.ModelBank([spec])
+def _fed(spec: dict, frame: pl.DataFrame, chunks: int = 1) -> rp.ModelBank:
+    bank = rp.ModelBank([spec])
     size = -(-frame.height // chunks)
     for part in frame.iter_slices(size):
         bank.fit_predict(part)
     return bank
 
 
-def _frames(bank: po.ModelBank) -> list[pl.DataFrame]:
+def _frames(bank: rp.ModelBank) -> list[pl.DataFrame]:
     return [bank.audit(table=t) for t in ("columns", "pairs", "clock")] + [bank.audit(pooled=True)]
 
 
 class TestTheBuilder:
     def test_it_writes_a_spec_a_toml_file_would(self):
-        spec = po.spec.audit("a", columns=["x0", "x1"])
+        spec = rp.spec.audit("a", columns=["x0", "x1"])
         assert spec["model"] == {"type": "audit"}
         assert spec["features"] == ["x0", "x1"] and spec["targets"] == ["x0"]
-        assert po.spec.audit("a", columns=["x0"], pairs=True)["model"]["pairs"] is True
+        assert rp.spec.audit("a", columns=["x0"], pairs=True)["model"]["pairs"] is True
 
     def test_targets_and_features_are_refused_by_name(self):
         with pytest.raises(TypeError, match="audit\\(\\) takes no targets"):
-            po.spec.audit("a", columns=["x0"], targets=["y"])
+            rp.spec.audit("a", columns=["x0"], targets=["y"])
         with pytest.raises(TypeError, match="audit\\(\\) takes no features, since columns names"):
-            po.spec.audit("a", columns=["x0"], features=["x1"])
+            rp.spec.audit("a", columns=["x0"], features=["x1"])
         with pytest.raises(
             ValueError, match="columns must name at least one column, but it is empty"
         ):
-            po.spec.audit("a", columns=[])
+            rp.spec.audit("a", columns=[])
 
     def test_its_refusals_say_columns(self):
         """An audit takes ``columns``, and its refusals name them so: a
@@ -96,12 +96,12 @@ class TestTheBuilder:
             ValueError,
             match='spec "a": columns must name each column once, but it names "x0" more than once',
         ):
-            po.spec.audit("a", columns=["x0", "x1", "x0"])
+            rp.spec.audit("a", columns=["x0", "x1", "x0"])
         with pytest.raises(
             TypeError,
             match='spec "a": audit\\(\\) takes no targets, since it counts what is in the columns',
         ):
-            po.spec.audit("a", columns=["x0"], targets=["y"])
+            rp.spec.audit("a", columns=["x0"], targets=["y"])
 
     @pytest.mark.parametrize(
         ("kw", "says"),
@@ -127,7 +127,7 @@ class TestTheBuilder:
     )
     def test_what_does_not_apply_is_refused(self, kw, says):
         with pytest.raises(ValueError, match=says):
-            po.spec.audit("a", columns=["x0"], **kw)
+            rp.spec.audit("a", columns=["x0"], **kw)
 
 
 class TestEveryRowIsRead:
@@ -153,8 +153,8 @@ class TestEveryRowIsRead:
         )
         # Every row reached the audit, where a model with `a` as a feature
         # skips each null and NaN.
-        model = po.spec.ewridge("m", targets=["b"], features=["a"], half_life=50.0)
-        both = po.ModelBank([_spec(), model])
+        model = rp.spec.ewridge("m", targets=["b"], features=["a"], half_life=50.0)
+        both = rp.ModelBank([_spec(), model])
         both.fit_predict(frame)
         summary = both.summary()
         processed = dict(zip(summary["spec"], summary["rows_processed"], strict=True))
@@ -194,7 +194,7 @@ class TestEveryRowIsRead:
         assert all(a.equals(b) for a, b in zip(_frames(bank), before, strict=True))
 
     def test_each_row_writes_the_rows_before_it(self):
-        out = po.ModelBank([_spec()]).fit_predict(_frame())
+        out = rp.ModelBank([_spec()]).fit_predict(_frame())
         assert out["audit"].struct.fields == ["weight_sum"]
         assert out["audit"].struct.field("weight_sum").to_list() == [float(i) for i in range(N)]
 
@@ -214,7 +214,7 @@ class TestTheChunkingAndTheState:
         whole = _frames(_fed(spec, frame))
         first = _fed(spec, frame.head(700))
         first.save(tmp_path / "audit.state")
-        loaded = po.ModelBank.load(tmp_path / "audit.state")
+        loaded = rp.ModelBank.load(tmp_path / "audit.state")
         loaded.fit_predict(frame.tail(N - 700))
         assert all(a.equals(b) for a, b in zip(_frames(loaded), whole, strict=True))
 
@@ -241,7 +241,7 @@ class TestTheClock:
         """A step of 998 past a ``gap_cap`` of 30 is a gap, and the largest
         step is 998, where it read 30, the cap."""
         df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 1000.0, 1001.0, 1002.0], "x": np.arange(6.0)})
-        bank = _fed(po.spec.audit("a", columns=["x"], clock="t", gap_cap=30.0), df)
+        bank = _fed(rp.spec.audit("a", columns=["x"], clock="t", gap_cap=30.0), df)
         row = bank.audit(table="clock").row(0, named=True)
         assert (row["steps"], row["gaps"], row["regular"]) == (5, 1, 4)
         assert (row["step_max"], row["step_mean"], row["step_std"]) == (998.0, 1.0, 0.0)
@@ -258,7 +258,7 @@ class TestTheClock:
         df = pl.DataFrame({"t": stamps, "x": np.arange(10.0)}).with_columns(
             pl.col("t").cast(pl.Datetime(unit))
         )
-        spec = po.spec.audit("a", columns=["x"], clock="t", gap_cap="1h")
+        spec = rp.spec.audit("a", columns=["x"], clock="t", gap_cap="1h")
         clock = _fed(spec, df).audit(table="clock")
         for c in ("step_mean", "step_std", "step_max"):
             assert clock.schema[c] == pl.Duration(unit), (c, clock.schema)
@@ -275,8 +275,8 @@ class TestTheClock:
         restart instead, which ``summary()`` and ``check()`` report."""
         df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0, 2.5, 4.0, 5.0], "x": np.arange(7.0)})
         with pytest.raises(ValueError, match="clock"):
-            _fed(po.spec.audit("a", columns=["x"], clock="t", gap_cap=10.0), df)
-        spec = po.spec.audit(
+            _fed(rp.spec.audit("a", columns=["x"], clock="t", gap_cap=10.0), df)
+        spec = rp.spec.audit(
             "a", columns=["x"], clock="t", gap_cap=10.0, restart_after_step_back=0.0
         )
         bank = _fed(spec, df)
@@ -327,28 +327,28 @@ class TestGroupsMerge:
 
 class TestTheReader:
     def test_it_finds_the_one_audit_and_refuses_otherwise(self):
-        model = po.spec.ewridge("m", targets=["b"], features=["a"], half_life=50.0)
+        model = rp.spec.ewridge("m", targets=["b"], features=["a"], half_life=50.0)
         frame = _frame()
-        bank = po.ModelBank([model, _spec()])
+        bank = rp.ModelBank([model, _spec()])
         bank.fit_predict(frame)
         assert bank.audit().equals(bank.audit("audit"))
         with pytest.raises(ValueError, match='not "audit"'):
             bank.audit("m")
         with pytest.raises(ValueError, match="no audit spec"):
-            po.ModelBank([model]).audit()
-        two = po.ModelBank([_spec(), po.spec.audit("other", columns=["a"])])
+            rp.ModelBank([model]).audit()
+        two = rp.ModelBank([_spec(), rp.spec.audit("other", columns=["a"])])
         with pytest.raises(ValueError, match="2 audit specs"):
             two.audit()
         with pytest.raises(ValueError, match="table must be"):
             bank.audit(table="rows")
-        no_pairs = po.ModelBank([po.spec.audit("plain", columns=["a", "b"])])
+        no_pairs = rp.ModelBank([rp.spec.audit("plain", columns=["a", "b"])])
         no_pairs.fit_predict(frame)
         with pytest.raises(ValueError, match="pairs=True"):
             no_pairs.audit(table="pairs")
         assert no_pairs.audit(table="clock").is_empty(), "no clock column, no clock row"
 
     def test_a_bank_that_has_seen_nothing_has_the_schemas_and_no_rows(self):
-        bank = po.ModelBank([_spec()])
+        bank = rp.ModelBank([_spec()])
         fed = _fed(_spec(), _frame())
         for table in ("columns", "pairs", "clock"):
             empty, full = bank.audit(table=table), fed.audit(table=table)
@@ -362,7 +362,7 @@ class TestTheOptions:
         """``pairs=True`` adds a table and moves nothing in the others: the
         columns, clock and pooled tables to the bit."""
         frame = _frame()
-        plain = po.spec.audit("audit", columns=["a", "b", "c"], clock="t", gap_cap=10.0)
+        plain = rp.spec.audit("audit", columns=["a", "b", "c"], clock="t", gap_cap=10.0)
         with_pairs, without = _fed(_spec(), frame), _fed(plain, frame)
         for table in ("columns", "clock"):
             assert with_pairs.audit(table=table).equals(without.audit(table=table)), table
@@ -372,7 +372,7 @@ class TestTheOptions:
     @staticmethod
     def _counted(cap: int | None, v: np.ndarray) -> dict:
         kw = {} if cap is None else {"distinct_cap": cap}
-        bank = po.ModelBank([po.spec.audit("au", columns=["v"], **kw)])
+        bank = rp.ModelBank([rp.spec.audit("au", columns=["v"], **kw)])
         bank.fit_predict(pl.DataFrame({"v": v}))
         return bank.audit().row(0, named=True)
 

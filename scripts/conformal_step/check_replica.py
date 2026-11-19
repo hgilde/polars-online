@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fold  # noqa: E402
 import streams  # noqa: E402
 
-import rheon as po  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 
 cases = [("flights", d) for d in streams.FLIGHT_DELAYS] + [
     ("generated", (0, nz, rt, d))
@@ -28,7 +28,7 @@ plain_run = streams.run
 def both_rates(frame, spec, half_life, gap_cap, mask):
     """`streams.run`, and the same spec under "auto": its `lo`."""
     s = plain_run(frame, spec, half_life, gap_cap, mask)
-    auto = po.ModelBank([{**spec, "conformal_rate": "auto"}]).fit_predict(frame)["m"].struct
+    auto = rp.ModelBank([{**spec, "conformal_rate": "auto"}]).fit_predict(frame)["m"].struct
     banked["auto"] = auto.field("lo_y").to_numpy().astype(float)
     return s
 

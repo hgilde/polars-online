@@ -45,7 +45,7 @@ refresh grid they make:
 
 ```python
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 ticks = pl.DataFrame({
     "symbol": ["AAA", "BBB", "AAA", "CCC", "BBB", "AAA", "AAA", "CCC"],  # which series ticked

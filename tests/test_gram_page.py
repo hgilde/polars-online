@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import rheon as po
 from doc_recipes import recipes
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -55,7 +55,7 @@ def test_every_po_gram_function_is_on_the_page():
         p.read_text(encoding="utf-8")
         for p in [PAGE, *sorted((REPO / "docs" / "how-to").glob("*.md"))]
     )
-    functions = [name for name in po.gram.__all__ if callable(getattr(po.gram, name))]
+    functions = [name for name in rp.gram.__all__ if callable(getattr(rp.gram, name))]
     assert len(functions) >= 12, functions
     missing = sorted(name for name in functions if f"po.gram.{name}" not in text)
     assert not missing, f"po.gram functions the page does not name: {missing}"

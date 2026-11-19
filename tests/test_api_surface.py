@@ -43,9 +43,10 @@ from pathlib import Path
 
 import polars as pl
 
-import rheon as po
+import rheon
 from rheon import _rheon as native
 from rheon import _spec
+from rheon import polars as rp
 from rheon import spec as spec_mod
 
 TIER = "essential"
@@ -54,18 +55,22 @@ SNAPSHOT = Path(__file__).parent / "api_surface.txt"
 REPO = Path(__file__).resolve().parent.parent
 
 
-def helper_modules() -> list[str]:
-    """Every public module of the package but `spec`, which has its own section.
+def helper_modules() -> dict[str, str]:
+    """Every public module of the package but `spec`, which has its own section,
+    as short name -> dotted path: the neutral ones under `rheon`, the Polars ones
+    under `rheon.polars`.
 
-    Read from the package's directory rather than listed by hand, so a new
-    module lands in the snapshot's diff: the hand-kept list left `po.sim` out
+    Read from the packages' directories rather than listed by hand, so a new
+    module lands in the snapshot's diff: the hand-kept list left `rp.sim` out
     (docs/PLAN.md task 109).
     """
-    return sorted(
-        m.name
-        for m in pkgutil.iter_modules(po.__path__)
-        if not m.name.startswith("_") and m.name != "spec"
-    )
+    found: dict[str, str] = {}
+    for package, path in (("rheon", rheon.__path__), ("rheon.polars", rp.__path__)):
+        for m in pkgutil.iter_modules(path):
+            if m.name.startswith("_") or m.name in ("spec", "polars"):
+                continue
+            found[m.name] = f"{package}.{m.name}"
+    return dict(sorted(found.items()))
 
 
 def signature_of(obj: object) -> str:
@@ -86,7 +91,7 @@ def signature_of(obj: object) -> str:
 #: task 242). Each is pinned with the label, so the snapshot says which of
 #: its lines carry no promise (review round 5, E7); `tests/test_unstable.py`
 #: holds each to its docstring label and to `UnstableWarning`.
-UNSTABLE = {"ArrowStruct", "corr", "gbdt", "sim", "fit_predict_arrow", "predict_arrow"}
+UNSTABLE = {"ArrowStruct", "corr", "sim", "fit_predict_arrow", "predict_arrow"}
 
 
 def unstable_label(name: str) -> str:
@@ -104,10 +109,15 @@ def describe_api(cli: Path | None = None) -> str:
     w("# polars-online public API surface. Regenerate: UPDATE_API_SURFACE=1 pytest")
     w("")
 
-    w("[package]  # a function with its signature, keyword names and defaults included")
-    for name in sorted(po.__all__):
-        w(f"  {name}{signature_of(getattr(po, name))}{unstable_label(name)}")
-    w(f"  schema_version = {po.schema_version()}")
+    w("[rheon]  # a function with its signature, keyword names and defaults included")
+    for name in sorted(rheon.__all__):
+        w(f"  {name}{signature_of(getattr(rheon, name))}{unstable_label(name)}")
+    w(f"  schema_version = {rheon.schema_version()}")
+    w("")
+
+    w("[rheon.polars]  # what `rheon.polars` adds to the names above, which it re-exports")
+    for name in sorted(set(rp.__all__) - set(rheon.__all__)):
+        w(f"  {name}{signature_of(getattr(rp, name))}{unstable_label(name)}")
     w("")
 
     w("[common parameters]  # every constructor accepts these via **common")
@@ -140,14 +150,14 @@ def describe_api(cli: Path | None = None) -> str:
     w("[ModelBank]  # name and signature: a parameter added or a default moved is a diff here")
     from rheon._renamed import is_renamed
 
-    for name in sorted(dir(po.ModelBank)):
+    for name in sorted(dir(rp.ModelBank)):
         # A name kept only under its old spelling (a refusal stub, or a
         # forwarding with a deprecation warning) is left out, as the module
         # stubs are by `__all__`: the snapshot shows the new name alone.
-        if is_renamed(inspect.getattr_static(po.ModelBank, name)):
+        if is_renamed(inspect.getattr_static(rp.ModelBank, name)):
             continue
         if not name.startswith("_") or name in ("__init__", "__reduce__"):
-            obj = getattr(po.ModelBank, name)
+            obj = getattr(rp.ModelBank, name)
             try:
                 sig = str(inspect.signature(obj)) if callable(obj) else ""
             except (TypeError, ValueError):
@@ -168,9 +178,9 @@ def describe_api(cli: Path | None = None) -> str:
     w("")
 
     w("[helper modules]  # po.<module>.<function> with its signature, keyword names and defaults")
-    for mod in helper_modules():
+    for mod, path in helper_modules().items():
         w(f"  {mod}:{unstable_label(mod)}")
-        module = importlib.import_module(f"rheon.{mod}")
+        module = importlib.import_module(path)
         for name in sorted(module.__all__):
             w(f"    {name}{signature_of(getattr(module, name))}")
     w("")
@@ -228,9 +238,9 @@ def describe_api(cli: Path | None = None) -> str:
             if "_model" in kw
             else ("lasso" if "penalties" in kw else "ewridge")
         )
-        s = getattr(po.spec, model)("m", min_weight=2.0, **kw)
+        s = getattr(rp.spec, model)("m", min_weight=2.0, **kw)
         w(f"  {label}:")
-        for f, dtype in po.spec.output_index(s).select("field", "dtype").iter_rows():
+        for f, dtype in rp.spec.output_index(s).select("field", "dtype").iter_rows():
             w(f"    {f}: {dtype}")
     for model, kw in [
         ("rls", dict(targets=["y"], features=["x0"], half_life=100.0)),
@@ -311,9 +321,9 @@ def describe_api(cli: Path | None = None) -> str:
         # An audit predicts nothing to withhold, and refuses a min_weight
         # (review 6, F-10).
         gate = {} if model == "audit" else {"min_weight": 2.0}
-        s = getattr(po.spec, model.split(" ")[0])("m", **gate, **kw)
+        s = getattr(rp.spec, model.split(" ")[0])("m", **gate, **kw)
         w(f"  {model}{'' if ' ' in model else ' minimal'}:")
-        for f, dtype in po.spec.output_index(s).select("field", "dtype").iter_rows():
+        for f, dtype in rp.spec.output_index(s).select("field", "dtype").iter_rows():
             w(f"    {f}: {dtype}")
     w("")
 
@@ -345,10 +355,10 @@ def describe_api(cli: Path | None = None) -> str:
         kw.update(extra)
         kw.setdefault("group", "g")
         kw.setdefault("group_close", "monotone")
-        s = getattr(po.spec, label.split(" ")[0])(
+        s = getattr(rp.spec, label.split(" ")[0])(
             "m", **{k: v for k, v in kw.items() if v is not None}
         )
-        schema = po.ModelBank([s]).closed_groups().schema
+        schema = rp.ModelBank([s]).closed_groups().schema
         frames.append((label, [f"{c}: {dtype_text(t)}" for c, t in schema.items()]))
     shared = [c for c in frames[0][1] if all(c in cols for _, cols in frames)]
     w("  shared:")
@@ -404,7 +414,7 @@ def _registry_spec(name: str, extra: dict[str, object]) -> tuple[dict, dict]:
     kw.update(MINIMAL[name])
     kw.update(extra)
     kw = {k: v for k, v in kw.items() if v is not None}
-    return getattr(po.spec, name)("m", **kw), kw
+    return getattr(rp.spec, name)("m", **kw), kw
 
 
 def _unneeded(name: str) -> dict[str, object]:
@@ -540,15 +550,15 @@ def frame_columns_section() -> list[str]:
         }
     )
     common = dict(targets=["y"], features=["x0", "x1"], half_life=50.0, group="g")
-    ridge = po.spec.ewridge("ridge", **common)
-    pairs = po.spec.marginal("pairs", **common)
-    pairs_lags_bins = po.spec.marginal(
+    ridge = rp.spec.ewridge("ridge", **common)
+    pairs = rp.spec.marginal("pairs", **common)
+    pairs_lags_bins = rp.spec.marginal(
         "pairs_lags_bins", lags=[1], serial_rule="bartlett", bins=4, **common
     )
-    audit = po.spec.audit("audit", columns=["x0", "x1"], group="g", pairs=True)
-    bank = po.ModelBank([ridge, pairs, pairs_lags_bins, audit])
+    audit = rp.spec.audit("audit", columns=["x0", "x1"], group="g", pairs=True)
+    bank = rp.ModelBank([ridge, pairs, pairs_lags_bins, audit])
     bank.fit_predict(df.with_columns(t=pl.int_range(n).cast(pl.Float64)))
-    timed = po.ModelBank([po.spec.audit("audit", columns=["x0"], clock="t", gap_cap=5.0)])
+    timed = rp.ModelBank([rp.spec.audit("audit", columns=["x0"], clock="t", gap_cap=5.0)])
     timed.fit_predict(df.with_columns(t=pl.int_range(n).cast(pl.Float64)))
     frames = [
         ("ModelBank.groups()", bank.groups()),
@@ -564,9 +574,9 @@ def frame_columns_section() -> list[str]:
         ("ModelBank.audit(pooled=True)", bank.audit("audit", pooled=True)),
         ("ModelBank.check()", bank.check()),
         ("ModelBank.solve_failures()", bank.solve_failures()),
-        ("po.spec.output_index()", po.spec.output_index(ridge)),
-        ("po.spec.coef_index()", po.spec.coef_index(ridge)),
-        ("po.spec.coef_fields()", po.spec.coef_fields(ridge)),
+        ("po.spec.output_index()", rp.spec.output_index(ridge)),
+        ("po.spec.coef_index()", rp.spec.coef_index(ridge)),
+        ("po.spec.coef_fields()", rp.spec.coef_fields(ridge)),
     ]
     out = [
         "[frame columns]  # column: dtype, in order: a column renamed, retyped, moved or added"
@@ -789,13 +799,13 @@ def enum_values_section(cli: Path | None) -> list[str]:
             extra = {**extra, "quantile": 0.5}
         for key in ("closed", "partial"):
             refuse = python_refusal(
-                getattr(po, op),
+                getattr(rp, op),
                 {"input": "X", "half_life": 10.0, "window_size": 5.0, **extra},
                 key,
             )
             out.append(f"  po.{label}.{key}: {', '.join(sorted(taken_words(key, refuse)))}")
     reasons = (
-        po.ModelBank([po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)])
+        rp.ModelBank([rp.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)])
         .fit_predict(pl.DataFrame({"x": [1.0, 2.0], "y": [1.0, 2.0]}))["m"]
         .struct.field("withheld_reason")
         .dtype
@@ -968,7 +978,7 @@ def env_vars() -> list[str]:
             consts[m.group(1)] = m.group(2)
     names: set[str] = set()
     sources = [(p, _RUST_READ) for p in rust] + [
-        (p, _PY_READ) for p in sorted((REPO / "python" / "rheon").glob("*.py"))
+        (p, _PY_READ) for p in sorted((REPO / "python" / "rheon").rglob("*.py"))
     ]
     for path, pattern in sources:
         text = path.read_text(encoding="utf-8")
@@ -1053,7 +1063,7 @@ def test_every_word_valued_parameter_is_probed():
 
     wanted = {f"spec.{p}" for p in worded(_spec._common)}
     for name in MINIMAL:
-        wanted |= {f"{name}.{p}" for p in worded(getattr(po.spec, name))}
+        wanted |= {f"{name}.{p}" for p in worded(getattr(rp.spec, name))}
     assert len(wanted) > 30, sorted(wanted)
     assert wanted - probed == set(), f"word parameters with no probe: {sorted(wanted - probed)}"
     assert probed - wanted == PROBED_BY_HAND, (

@@ -56,7 +56,7 @@ the vanished cluster reaches the new one, under three values of
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Three clusters; at row 4,000 the one at (0, 6) stops and one at (6, 6) starts.
 rng = np.random.default_rng(6)

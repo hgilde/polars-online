@@ -49,7 +49,7 @@ default prior and under a sticky one, and scores the rows after seeding:
 
 ```python
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Two series whose returns take turns, 500 rows a regime, and the regime each row was drawn in.
 sim = po.sim.regimes(
@@ -107,7 +107,7 @@ and fits the filter on the raw rows and on rows clipped to ±5:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # A sticky two-state chain, two overlapping blobs it switches between, and one extreme row.
 rng = np.random.default_rng(12)

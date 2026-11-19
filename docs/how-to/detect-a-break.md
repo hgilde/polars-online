@@ -56,7 +56,7 @@ stable rows before it:
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # Three streams that break at row 3,000 of 6,000, each in one way.
 rng = np.random.default_rng(3)
@@ -161,7 +161,7 @@ This code runs the CUSUM once over a stream whose intercept rises at row
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # y = 0.2 + 1.0 x0 + 0.5 x1 + noise until row 2,000 of 4,000, where the intercept rises to 0.7.
 rng = np.random.default_rng(2)
@@ -279,7 +279,7 @@ rows into the first cycle's monitored rows, and prints the rows each
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # Two columns, uncorrelated until row 560, then correlated at 0.7.
 rng = np.random.default_rng(10)
@@ -360,7 +360,7 @@ stream's:
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # Two stocks whose rows take turns; each one's spread quadruples at a row of its own.
 rng = np.random.default_rng(11)

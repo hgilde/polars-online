@@ -515,7 +515,7 @@ four fits read it at the last row:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # A slope on x that drifts from 1 to 3 over 20,000 rows, one row a clock unit.
 rng = np.random.default_rng(1)
@@ -640,7 +640,7 @@ a stream whose slope drifts:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # y = 0.5 + slope·x0 − x1 plus noise, with x0's slope drifting from 1 to 2.
 rng = np.random.default_rng(2)
@@ -751,7 +751,7 @@ last row keeps exactly those three:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # 20 features, of which only x0, x1 and x2 carry weight in the target.
 rng = np.random.default_rng(3)
@@ -881,7 +881,7 @@ forget at the spec's half-life of 200:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # A slope on x that jumps from 1 to 3 at row 2,000, one row a clock unit.
 rng = np.random.default_rng(4)
@@ -925,7 +925,7 @@ When `kalman`'s fit is not the one you need, or to use it past the data:
 - [`rls`](#rls--recursive-least-squares), the fit this filter gives with
   no drift, a fixed noise, `standardize=False`, no `revert_half_life` and
   `half_life=inf`, at `delta = 1/p0`.
-- [`bank.predict()`](https://hgilde.github.io/polars-online/rheon.html#rheon.ModelBank.predict),
+- [`bank.predict()`](https://hgilde.github.io/polars-online/rheon.html#rheon.polars.ModelBank.predict),
   which moves the coefficients by `Φ` over the clock since the last
   learned row.
 - [Choose a Kalman filter's drift speed](how-to/choose-a-kalman-drift-speed.md),
@@ -1040,7 +1040,7 @@ above 0, so they tilt the line:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # y = 1 + 2x plus noise, and about 2% of the rows wild: 50 too high, on rows where x is above 0.
 rng = np.random.default_rng(5)
@@ -1200,7 +1200,7 @@ is normal with a spread of 1, so the 0.9 quantile of `y` is the line
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # A line with normal noise of spread 1: its 0.9 quantile is 2.28 + 2x.
 rng = np.random.default_rng(4)
@@ -1367,7 +1367,7 @@ adapts each coefficient's rate to its own gradients:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # A count target: y is Poisson with log-rate 0.5 + 0.3·x0 − 0.2·x1.
 rng = np.random.default_rng(6)
@@ -1541,7 +1541,7 @@ to make up for it:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # y = 1 + 2·x0 − x1 plus noise.
 rng = np.random.default_rng(7)
@@ -1646,7 +1646,7 @@ probabilities class the rows of the second half, each before it is learned:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # A 0/1 target from 50 features, of which only x0 to x4 move its probability.
 rng = np.random.default_rng(8)
@@ -1765,7 +1765,7 @@ import math
 
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # A level that wanders and trends, plus 2·x and noise, one row a clock unit.
 rng = np.random.default_rng(9)
@@ -1909,7 +1909,7 @@ This code makes two columns whose correlation jumps from 0.2 to 0.8 at row
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Two columns whose correlation jumps partway through.
 rng = np.random.default_rng(1)
@@ -1958,7 +1958,7 @@ To fit, classify or screen on the same moments:
   on these moments.
 - [`marginal`](#marginal--every-pairs-moments-kept-in-the-state), the same
   arithmetic one (feature, target) pair at a time.
-- [`bank.gram()`](https://hgilde.github.io/polars-online/rheon.html#rheon.ModelBank.gram),
+- [`bank.gram()`](https://hgilde.github.io/polars-online/rheon.html#rheon.polars.ModelBank.gram),
   to read the moments back from the state.
 
 #### Notes
@@ -2003,7 +2003,7 @@ Its parameters, their defaults and what each refuses are in its
 Each row writes only `weight_sum` ([OUTPUTS.md](OUTPUTS.md#marginal)), and
 `bank.marginal()` reads the pairs from the state as a table after the run.
 [Its
-docstring](https://hgilde.github.io/polars-online/rheon.html#rheon.ModelBank.marginal)
+docstring](https://hgilde.github.io/polars-online/rheon.html#rheon.polars.ModelBank.marginal)
 defines each column. The parameters every spec takes are in [What every spec
 takes](#what-every-spec-takes).
 
@@ -2067,7 +2067,7 @@ and prints the six with the largest `|t_stat|`:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Many features, of which only a few move the target.
 rng = np.random.default_rng(2)
@@ -2115,7 +2115,7 @@ The guides to its settings:
 
 To read the pairs, or to fit the features jointly:
 
-- [`bank.marginal()`](https://hgilde.github.io/polars-online/rheon.html#rheon.ModelBank.marginal),
+- [`bank.marginal()`](https://hgilde.github.io/polars-online/rheon.html#rheon.polars.ModelBank.marginal),
   the table of pairs and every column it holds.
 - [`ew_cov`](#ew_cov--exponentially-weighted-moments), the joint
   covariance whose arithmetic each pair uses.
@@ -2267,7 +2267,7 @@ prints `rho` beside the mean of the 45 pairwise correlations:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Ten series whose common correlation rises partway through.
 rng = np.random.default_rng(3)
@@ -2383,7 +2383,7 @@ the blocks:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Blocks of two noisy prices whose underlying returns correlate.
 rng = np.random.default_rng(4)
@@ -2435,7 +2435,7 @@ To put the prices on one grid before taking returns, or to read each block's est
   times](how-to/align-series-that-tick-at-their-own-times.md), to put the
   prices of several series on one grid with `po.stream.refresh_time` before
   taking returns.
-- [`bank.closed_groups()`](https://hgilde.github.io/polars-online/rheon.html#rheon.ModelBank.closed_groups),
+- [`bank.closed_groups()`](https://hgilde.github.io/polars-online/rheon.html#rheon.polars.ModelBank.closed_groups),
   which returns each block's estimate when the block closes.
 
 #### Notes
@@ -2466,7 +2466,7 @@ fits nothing and predicts nothing.
 Use `audit` before choosing a model, to find out what is wrong with the
 data, such as a sentinel value, a frozen feed or a heavy tail. Run it alone,
 or beside the models in the same pass, and
-[`bank.check()`](https://hgilde.github.io/polars-online/rheon.html#rheon.ModelBank.check)
+[`bank.check()`](https://hgilde.github.io/polars-online/rheon.html#rheon.polars.ModelBank.check)
 reads its counts and says what they mean. Use `bank.describe()` for a few
 statistics of the columns a model has already been fed.
 
@@ -2475,7 +2475,7 @@ Its parameters, their defaults and what each refuses are in its
 Each row writes only `weight_sum` ([OUTPUTS.md](OUTPUTS.md#audit)), and
 `bank.audit()` reads the counts from the state as a table after the run.
 [Its
-docstring](https://hgilde.github.io/polars-online/rheon.html#rheon.ModelBank.audit)
+docstring](https://hgilde.github.io/polars-online/rheon.html#rheon.polars.ModelBank.audit)
 defines each column. The parameters every spec takes are in [What every spec
 takes](#what-every-spec-takes).
 
@@ -2507,7 +2507,7 @@ one row in 40. It prints what `bank.audit()` measured, and what
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # A feed with two faults planted: a frozen price and a sentinel size.
 rng = np.random.default_rng(5)
@@ -2545,7 +2545,7 @@ each model and how to fix it with Polars.
 
 To judge the counts, and to fix what they find:
 
-- [`bank.check()`](https://hgilde.github.io/polars-online/rheon.html#rheon.ModelBank.check),
+- [`bank.check()`](https://hgilde.github.io/polars-online/rheon.html#rheon.polars.ModelBank.check),
   what the counts say is wrong.
 - [DATA-QUALITY.md](DATA-QUALITY.md), each finding, what it does to each
   model and how to fix it with Polars.
@@ -2622,7 +2622,7 @@ appears and at the end:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Three round clusters, and a fourth that appears halfway through.
 rng = np.random.default_rng(6)
@@ -2738,7 +2738,7 @@ one row in twenty scattered over the square around them, and reads the last
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Two rings, an inner and an outer, as points in the plane.
 rng = np.random.default_rng(7)
@@ -2854,7 +2854,7 @@ before its own class is learned:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Three Gaussian classes, each with its own spread.
 rng = np.random.default_rng(8)
@@ -2928,9 +2928,9 @@ is enough: whether a column tends to be positive, or whether one spec
 predicts closer than another. A p-value cannot be read that way, because
 checking it repeatedly inflates its error rate, but the *e-process* this
 model keeps can be read at any row. Use
-[`po.eval.seqtest`](https://hgilde.github.io/polars-online/eval.html#rheon.eval.seqtest)
+[`po.eval.seqtest`](https://hgilde.github.io/polars-online/eval.html#rheon.polars.eval.seqtest)
 for the same test over a frame in memory, and
-[`po.eval.compare_specs`](https://hgilde.github.io/polars-online/eval.html#rheon.eval.compare_specs)
+[`po.eval.compare_specs`](https://hgilde.github.io/polars-online/eval.html#rheon.polars.eval.compare_specs)
 for several specs' scores in one table.
 
 Its parameters, their defaults and what each refuses are in its
@@ -2967,7 +2967,7 @@ import math
 
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # One column with a slight positive edge, and one with none.
 rng = np.random.default_rng(9)
@@ -3003,9 +3003,9 @@ The guides to its settings:
 
 For the same test outside a bank, or a comparison of many specs at once:
 
-- [`po.eval.seqtest`](https://hgilde.github.io/polars-online/eval.html#rheon.eval.seqtest),
+- [`po.eval.seqtest`](https://hgilde.github.io/polars-online/eval.html#rheon.polars.eval.seqtest),
   the same computation in Polars expressions over a frame in memory.
-- [`po.eval.compare_specs`](https://hgilde.github.io/polars-online/eval.html#rheon.eval.compare_specs),
+- [`po.eval.compare_specs`](https://hgilde.github.io/polars-online/eval.html#rheon.polars.eval.compare_specs),
   several specs' scores in one table.
 
 #### Notes
@@ -3093,7 +3093,7 @@ correlate at 0.7 after it, and prints each flag:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Two columns that start to correlate partway through.
 rng = np.random.default_rng(10)
@@ -3224,7 +3224,7 @@ row's current run began on, `row - run_mode`:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # A column whose spread quadruples partway through.
 rng = np.random.default_rng(11)
@@ -3364,7 +3364,7 @@ row:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # A sticky two-state chain, and two overlapping blobs it switches between.
 rng = np.random.default_rng(12)

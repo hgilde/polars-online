@@ -30,7 +30,7 @@ import psutil
 import pytest
 
 import child
-import rheon as po
+from rheon import polars as rp
 
 TIER = "extended"
 pytestmark = [
@@ -236,7 +236,7 @@ def frame(n=1500, seed=0):
     return d.with_columns(y=pl.col("x0") * 2)
 
 
-SPEC = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=50.0, min_weight=2.0)
+SPEC = rp.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=50.0, min_weight=2.0)
 
 
 FRESH = "POLARS_ONLINE_FRESH_INTERPRETER"
@@ -278,14 +278,14 @@ def in_a_fresh_interpreter(test):
 
 class TestNothingLeaksAcrossTheBoundary:
     def test_repeated_fit_predict(self):
-        bank, df = po.ModelBank([SPEC]), frame()
+        bank, df = rp.ModelBank([SPEC]), frame()
         assert_plateaus(lambda: bank.fit_predict(df))
 
     def test_bank_churn(self):
         """A new bank per iteration: Rust-side state must be dropped with the
         Python object, not accumulated in the extension."""
         df = frame()
-        assert_plateaus(lambda: po.ModelBank([SPEC]).fit_predict(df))
+        assert_plateaus(lambda: rp.ModelBank([SPEC]).fit_predict(df))
 
     def test_many_tiny_groups(self):
         """Fifty groups of thirty rows: the shape whose per-call fan-out once
@@ -302,7 +302,7 @@ class TestNothingLeaksAcrossTheBoundary:
                 "y": rng.standard_normal(n),
             }
         )
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m", targets=["y"], features=["x0"], half_life=50.0, group="g", min_weight=2.0
         )
         # A wider window than the default: fanning fifty groups across the pool
@@ -310,14 +310,14 @@ class TestNothingLeaksAcrossTheBoundary:
         # a mark is averaged over 240 iterations rather than 120 to keep the
         # wobble under the line. A true leak scales with iterations and still
         # shows; only the noise divides down (review 2026-09-17, T1).
-        assert_plateaus(lambda: po.ModelBank([spec]).fit_predict(df), per_block=240)
+        assert_plateaus(lambda: rp.ModelBank([spec]).fit_predict(df), per_block=240)
 
     def test_multi_chunk_input(self):
         """`SeriesExport` carries `arrays: **ArrowArray` plus a length, so a
         chunked Series exports one ArrowArray per chunk. Each needs releasing."""
         df = pl.concat([frame(300, seed=i) for i in range(5)], rechunk=False)
         assert df.n_chunks() > 1
-        assert_plateaus(lambda: po.ModelBank([SPEC]).fit_predict(df))
+        assert_plateaus(lambda: rp.ModelBank([SPEC]).fit_predict(df))
 
     def test_sliced_frame_sharing_buffers(self):
         """A slice shares its parent's buffers; releasing the export must not
@@ -325,7 +325,7 @@ class TestNothingLeaksAcrossTheBoundary:
         parent = frame(4000)
         before = parent.clone()
         sl = parent.slice(100, 1200)
-        assert_plateaus(lambda: po.ModelBank([SPEC]).fit_predict(sl))
+        assert_plateaus(lambda: rp.ModelBank([SPEC]).fit_predict(sl))
         # Read after, against a copy taken before: the parent's buffers hold
         # what they held. Compared with itself, the sum held on any data.
         assert parent.equals(before)
@@ -340,7 +340,7 @@ class TestNothingLeaksAcrossTheBoundary:
 
         def raises():
             with pytest.raises(TypeError, match="must be a number, but it is Categorical"):
-                po.ModelBank([SPEC]).fit_predict(bad)
+                rp.ModelBank([SPEC]).fit_predict(bad)
 
         assert_plateaus(raises)
 
@@ -349,7 +349,7 @@ class TestNothingLeaksAcrossTheBoundary:
 
         def outlive():
             d = frame(400)
-            out = po.ModelBank([SPEC]).fit_predict(d)
+            out = rp.ModelBank([SPEC]).fit_predict(d)
             del d
             gc.collect()
             return out["m"].struct.field("pred_y").sum()
@@ -357,9 +357,9 @@ class TestNothingLeaksAcrossTheBoundary:
         assert_plateaus(outlive)
 
     def test_state_round_trip(self):
-        bank = po.ModelBank([SPEC])
+        bank = rp.ModelBank([SPEC])
         bank.fit_predict(frame(200))
-        assert_plateaus(lambda: po.ModelBank.load_bytes(bank.save_bytes()))
+        assert_plateaus(lambda: rp.ModelBank.load_bytes(bank.save_bytes()))
 
 
 for _name in [n for n in vars(TestNothingLeaksAcrossTheBoundary) if n.startswith("test_")]:
@@ -378,7 +378,7 @@ class TestAnOutputKeptLeaksFails:
 
     @in_a_fresh_interpreter
     def test_kept_outputs_fail_the_plateau_check(self):
-        bank, df, kept = po.ModelBank([SPEC]), frame(300), []
+        bank, df, kept = rp.ModelBank([SPEC]), frame(300), []
         with pytest.raises(AssertionError, match="RSS still climbing"):
             assert_plateaus(lambda: kept.append(bank.fit_predict(df)))
         assert len(kept) > 1000
@@ -414,7 +414,7 @@ class TestNothingCrashes:
     def test_gc_of_frames_mid_flight(self):
         run_isolated("""
             import gc
-            import numpy as np, polars as pl, rheon as po
+            import numpy as np, polars as pl, rheon.polars as po
             rng = np.random.default_rng(0)
             spec = po.spec.ewridge("m", targets=["y"], features=["x0"],
                                    half_life=20.0, min_weight=2.0)
@@ -438,7 +438,7 @@ class TestNothingCrashes:
     def test_repeated_reference_and_dereference(self):
         run_isolated("""
             import gc, sys
-            import numpy as np, polars as pl, rheon as po
+            import numpy as np, polars as pl, rheon.polars as po
             rng = np.random.default_rng(1)
             spec = po.spec.ewridge("m", targets=["y"], features=["x0"],
                                    half_life=20.0, min_weight=2.0)
@@ -463,7 +463,7 @@ class TestNothingCrashes:
         that would strand Rust state the GC can see but never free."""
         run_isolated("""
             import gc
-            import numpy as np, polars as pl, rheon as po
+            import numpy as np, polars as pl, rheon.polars as po
             # Deliberately NOT gc.DEBUG_SAVEALL: that parks *everything*
             # collected in gc.garbage, so it cannot distinguish "collected" from
             # "uncollectable". Left alone, only genuinely uncollectable objects
@@ -487,7 +487,7 @@ class TestNothingCrashes:
 
     def test_empty_and_degenerate_frames(self):
         run_isolated("""
-            import polars as pl, rheon as po
+            import polars as pl, rheon.polars as po
             spec = po.spec.ewridge("m", targets=["y"], features=["x0"],
                                    half_life=20.0, min_weight=2.0)
             bank = po.ModelBank([spec])
@@ -508,7 +508,7 @@ class TestNothingCrashes:
     def test_pickled_bank_survives_a_round_trip(self):
         run_isolated("""
             import pickle
-            import numpy as np, polars as pl, rheon as po
+            import numpy as np, polars as pl, rheon.polars as po
             rng = np.random.default_rng(4)
             spec = po.spec.ewridge("m", targets=["y"], features=["x0"],
                                    half_life=20.0, min_weight=2.0)

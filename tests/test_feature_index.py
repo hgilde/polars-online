@@ -25,8 +25,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import rheon as po
 from rheon import _rheon as _native
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -66,8 +66,8 @@ def _wanted(snapshot: str) -> list[tuple[str, str]]:
     "" for anywhere, the backticked form it must take there)."""
     sec = _sections(snapshot)
     want: list[tuple[str, str]] = []
-    modules = {"corr", "eval", "gbdt", "gram", "ops", "sim", "spec", "stream"}
-    for line in sec["package"]:
+    modules = {"corr", "eval", "gram", "ops", "sim", "spec", "stream"}
+    for line in sec["rheon"] + sec["rheon.polars"]:
         name = _name(line)
         # A module is listed by its functions; `po.<module>.` stands for it.
         want.append(("", f"po.{name}." if name in modules else f"po.{name}"))
@@ -83,7 +83,7 @@ def _wanted(snapshot: str) -> list[tuple[str, str]]:
             module = line.strip().split(":", 1)[0]
             continue
         want.append(("", f"po.{module}.{_name(line)}"))
-    for name in po.spec.__all__:
+    for name in rp.spec.__all__:
         want.append(("", f"po.spec.{name}"))
     for kind in _native.model_kinds():
         want.append(("Models", f"po.spec.{kind}"))

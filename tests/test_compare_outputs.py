@@ -39,7 +39,7 @@ def _load(name: str):
 
 co = _load("compare_outputs")
 
-#: Appended to the copy's ``__init__``: the ridge's ``pred_y0`` one ulp up, nulls kept.
+#: Appended to the copy's ``polars/__init__``: the ridge's ``pred_y0`` one ulp up, nulls kept.
 NUDGE = """
 
 def _nudge() -> None:
@@ -75,6 +75,8 @@ def _copy_of_package(dest: Path, nudge: bool) -> Path:
     pkg.mkdir(parents=True)
     for f in src.iterdir():
         if f.is_dir():
+            if f.name != "__pycache__":
+                shutil.copytree(f, pkg / f.name, ignore=shutil.ignore_patterns("__pycache__"))
             continue
         if f.suffix in (".so", ".pyd", ".dylib"):
             try:
@@ -84,7 +86,7 @@ def _copy_of_package(dest: Path, nudge: bool) -> Path:
                 pass
         shutil.copy2(f, pkg / f.name)
     if nudge:
-        with open(pkg / "__init__.py", "a", encoding="utf-8") as fh:
+        with open(pkg / "polars" / "__init__.py", "a", encoding="utf-8") as fh:
             fh.write(NUDGE)
     return dest
 

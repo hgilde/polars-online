@@ -220,12 +220,12 @@ def kmeans(
         xy = centers[pick] + 0.5 * rng.standard_normal((4_000, 2))
         pl.DataFrame({"a": xy[:, 0], "b": xy[:, 1]}).write_parquet("blobs.parquet")
 
-        km = po.spec.kmeans(
+        km = rp.spec.kmeans(
             "km", features=["a", "b"], half_life=float("inf"),
             n_clusters=2,
             warm_rows=100,                                    # seed the centers from 100 rows
         )
-        bank = po.ModelBank([km])
+        bank = rp.ModelBank([km])
         bank.fit(pl.scan_parquet("blobs.parquet"))           # learn every row, keep no output
         found = bank.coef().pivot(on="term", index="cluster", values="coef").sort("a")
         for (pa, pb), r in zip(centers, found.iter_rows(named=True)):
@@ -249,7 +249,7 @@ def kmeans(
     group: 56 to 91 ms at 400 features and 8 centers, against 3.9 ms for
     ``"k-means++"``, its placement and the replay of the 500 rows. A
     ``"lloyd"`` start that is still moving rows after 300 passes stops there
-    and is counted in :meth:`rheon.ModelBank.solve_failures`; the
+    and is counted in :meth:`rheon.polars.ModelBank.solve_failures`; the
     starts measured on 500 rows needed at most 54. Under ``"first"``,
     seeding waits past ``warm_rows`` if it must for ``n_clusters`` distinct
     rows, holding up to ``max(warm_rows, 1000)`` rows.
@@ -523,7 +523,7 @@ def micro(
         xy = centers[pick] + 0.3 * rng.standard_normal((6_000, 2))
         pl.DataFrame({"a": xy[:, 0], "b": xy[:, 1]}).write_parquet("blobs3.parquet")
 
-        mc = po.spec.micro(
+        mc = rp.spec.micro(
             "mc", features=["a", "b"], half_life=1_000.0,
             eps=0.1,                                        # the spread one summary holds
         )

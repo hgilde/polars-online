@@ -499,7 +499,7 @@ WHERE_PH = re.compile(
     r"^\{[^}]*\b(?:who|_who|where|spec|name|prefix|ctx|context|what|label|fn|call)\b[^}]*\}", re.I
 )
 WHERE_WORDS = re.compile(
-    r"^(?:spec|target|group|column|feature|clock|session|weight|model|config|po\.[\w.]+|pl\.[\w.]+"
+    r"^(?:spec|target|group|column|feature|clock|session|weight|model|config|(?:po|rp)\.[\w.]+|pl\.[\w.]+"
     r"|ModelBank(?:\.\w+)?|bank\.\w+|lf\.online\.\w+|df\.online\.\w+|[\w.]+\([^)]*\)|[a-z_][\w.]*)"
     r"(?:\s+(?:\{\}|\"[^\"]*\"|'[^']*'|\[[^\]]*\]|[\w.()\[\]-]+)){0,3}$"
 )
@@ -1189,7 +1189,8 @@ def documented() -> list[Documented]:
     methods and properties, and the frame namespaces' methods."""
     import polars as pl
 
-    import rheon as po
+    import rheon
+    from rheon import polars as rp
 
     seen: set[int] = set()
     out: list[Documented] = []
@@ -1230,13 +1231,19 @@ def documented() -> list[Documented]:
             kind = "function"
         out.append(Documented(where, kind, inspect.getdoc(obj), *_source(obj), params, returns))
 
-    for name in po.__all__:
-        add(f"rheon.{name}", getattr(po, name))
-    modules = sorted(
-        m.name for m in pkgutil.iter_modules(po.__path__) if not m.name.startswith("_")
-    )
-    for mod in modules:
-        module = importlib.import_module(f"rheon.{mod}")
+    for name in rp.__all__:
+        add(f"rheon.{name}", getattr(rp, name))
+    # The labels keep the flat spelling (`rheon.eval.metrics`), which the
+    # ratchet's accepted findings are keyed by; the modules are found where
+    # they live, the neutral ones at the top and the Polars ones under `rheon.polars`.
+    modules = {
+        m.name: f"{package}.{m.name}"
+        for package, path in (("rheon", rheon.__path__), ("rheon.polars", rp.__path__))
+        for m in pkgutil.iter_modules(path)
+        if not m.name.startswith("_") and m.name != "polars"
+    }
+    for mod, path in sorted(modules.items()):
+        module = importlib.import_module(path)
         for name in getattr(module, "__all__", ()):
             obj = getattr(module, name)
             kind = None

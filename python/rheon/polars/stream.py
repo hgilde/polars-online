@@ -6,7 +6,7 @@ kind, holding a bounded state in memory rather than the stream, before or
 beside a bank. They share three rules:
 
 - **Frame first, the same kind back.** Chain one with Polars' own ``pipe``, as
-  ``lf.pipe(po.stream.embargo, clock="t", delay=5.0)``.
+  ``lf.pipe(rp.stream.embargo, clock="t", delay=5.0)``.
 - **The clock settings mean what they mean on a spec.** ``clock`` and
   ``group`` read their columns as a spec does, and a clock parameter takes a
   duration on a temporal clock. ``session_gap`` is the one difference, as
@@ -31,7 +31,7 @@ beside a bank. They share three rules:
        ``embargo``, and as an independent check of the bank's own
        ``embargo``.
    * - :func:`with_windows`
-     - adds formulas over the window operators of :mod:`rheon.ops`
+     - adds formulas over the window operators of :mod:`rheon.polars.ops`
        (exponentially weighted means, sums, rates and quantiles looking back
        or ahead, and variances looking back, each with an optional hard
        cutoff), any number in one pass, each row out once every window over
@@ -60,12 +60,14 @@ from typing import Any, overload
 import polars as pl
 from polars.io.plugins import register_io_source
 
-from rheon import _formula
 from rheon import _rheon as _native
-from rheon._bank import _refuse_uint128
 from rheon._duration import Duration, clock_nanoseconds, duration_text
 from rheon._errors import ColumnNotFoundError, RefusedValueError, WrongTypeError
-from rheon._frame import (
+from rheon._spec import _RENAMED, _RENAMED_KEYWORDS, _renamed_keywords
+from rheon._warnings import _user_stacklevel, warn_unstable
+from rheon.polars import _formula
+from rheon.polars._bank import _refuse_uint128
+from rheon.polars._frame import (
     ConsumedSourceWarning,
     State,
     _and_list,
@@ -78,11 +80,8 @@ from rheon._frame import (
     _save_path,
     _source_started,
     _sources_ran_since,
-    _user_stacklevel,
     _warn_if_order_unspecified,
 )
-from rheon._spec import _RENAMED, _RENAMED_KEYWORDS, _renamed_keywords
-from rheon._warnings import warn_unstable
 
 __all__ = ["ROLE", "embargo", "refresh_time", "with_windows"]
 
@@ -231,7 +230,7 @@ def embargo(
         When the query runs, if an integer clock within ``delay`` of its dtype's
         top cannot hold its learn copy. Polars names the column, where wrapping
         the clock around would put the learn copy before the stream.
-    :class:`~rheon.ConsumedSourceWarning`
+    :class:`~rheon.polars.ConsumedSourceWarning`
         A warning, not an error, issued as the query is built when the input
         reads a source written in Python (Notes).
 
@@ -240,7 +239,7 @@ def embargo(
     .. code-block:: python
 
         rows = pl.DataFrame({"t": [0.0, 1.0, 2.0]})
-        doubled = po.stream.embargo(rows, clock="t", delay=1.0)   # adds a weight and a role column
+        doubled = rp.stream.embargo(rows, clock="t", delay=1.0)   # adds a weight and a role column
         for row in doubled.rows():                                # (t, weight, role)
             print(row)
 
@@ -260,9 +259,9 @@ def embargo(
 
     .. code-block:: python
 
-        doubled = po.stream.embargo(lf, clock="t", delay=5.0)
+        doubled = rp.stream.embargo(lf, clock="t", delay=5.0)
         scored = doubled.online.fit_predict(
-            [po.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", gap_cap=10.0,
+            [rp.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", gap_cap=10.0,
                              half_life=50.0, weight="_online_role_weight")]
         ).filter(pl.col("_online_role") == "predict").collect()
         pred = scored["m"].struct.field("pred_y")
@@ -308,7 +307,7 @@ def embargo(
     with no error. Whether a source is spent cannot be seen until the query
     runs. So where the query reads a source written in Python, as such a
     stream does, the function issues a
-    :class:`~rheon.ConsumedSourceWarning` as the query is built. Write
+    :class:`~rheon.polars.ConsumedSourceWarning` as the query is built. Write
     such an input to a file and read that file as a query, or pass it as a
     frame.
 
@@ -415,7 +414,7 @@ def embargo(
                 "second read nothing and half the doubled stream goes missing with no error. "
                 "Write the input to a file and read that file as a query, or pass its result "
                 "as a frame, or, if the source can be read twice, silence this warning with "
-                '`warnings.simplefilter("ignore", rheon.ConsumedSourceWarning)`.'
+                '`warnings.simplefilter("ignore", rheon.polars.ConsumedSourceWarning)`.'
             ),
             stacklevel=_user_stacklevel(),
         )
@@ -632,7 +631,7 @@ def refresh_time(
             "t": [0.4, 0.9, 1.3, 1.6, 2.2, 2.5, 2.8, 3.1],
             "px": [100.0, 20.0, 100.2, 50.0, 20.1, 100.1, 100.4, 49.9],
         })
-        grid = po.stream.refresh_time(      # a DataFrame in, a DataFrame out
+        grid = rp.stream.refresh_time(      # a DataFrame in, a DataFrame out
             ticks, series="symbol", names=["AAA", "BBB", "CCC"], clock="t", value="px"
         )
         for row in grid.rows():             # each point: CCC's tick completes it
@@ -646,7 +645,7 @@ def refresh_time(
 
     .. rubric:: See also
 
-    - ``po.spec.rcov`` and ``po.spec.ew_cov``, the models a grid's returns
+    - ``rp.spec.rcov`` and ``rp.spec.ew_cov``, the models a grid's returns
       feed.
     - :func:`rheon.corr.epps_invert`, which corrects a correlation for
       the Epps effect instead.
@@ -955,7 +954,7 @@ def with_windows(
 
     Use it, as you would Polars' ``with_columns``, for features or targets
     that look back or ahead over the stream's clock, built from the operators
-    of :mod:`rheon.ops`, with one window of rows in memory, never the
+    of :mod:`rheon.polars.ops`, with one window of rows in memory, never the
     whole stream. For a formula that reads only its own row, use Polars'
     ``with_columns``. A spec also takes a formula over the operators as its
     target, computed inside the bank.
@@ -1070,10 +1069,10 @@ def with_windows(
     :class:`~rheon.UnstableWarning`
         A warning, under ``POLARS_ONLINE_WARN_UNSTABLE=1``: a call with
         ``load_state`` or ``save_state``, whose file format is unstable.
-    :class:`~rheon.OrderNotGuaranteedWarning`
+    :class:`~rheon.polars.OrderNotGuaranteedWarning`
         A warning: the query before this call does not keep its rows in order,
         while a window is taken over rows in row order.
-    :class:`~rheon.ConsumedSourceWarning`
+    :class:`~rheon.polars.ConsumedSourceWarning`
         A warning: a run that reads a source written in Python gave no rows,
         the shape of a stream that gives its rows once and was spent by an
         earlier run.
@@ -1083,10 +1082,10 @@ def with_windows(
     .. code-block:: python
 
         rows = pl.DataFrame({"t": [0.0, 1.0, 2.0, 5.0, 6.0], "x": [1.0, 2.0, 3.0, 4.0, 5.0]})
-        out = po.stream.with_windows(
+        out = rp.stream.with_windows(
             rows,
-            trend=pl.col("x") - po.ewm_mean("x", half_life=1.0),   # x above its trailing mean
-            ahead=po.ewm_sum("x", half_life=float("inf"), window_size=1.0, reverse=True),
+            trend=pl.col("x") - rp.ewm_mean("x", half_life=1.0),   # x above its trailing mean
+            ahead=rp.ewm_sum("x", half_life=float("inf"), window_size=1.0, reverse=True),
             clock="t", gap_cap=2.0,                    # the gap from 2 to 5 is a clock break
         )
         print(out["trend"].round(4).to_list())   # 0 at row 3: the windows start over
@@ -1108,13 +1107,13 @@ def with_windows(
         notional = pl.col("price") * pl.col("quantity")
         buys = pl.when(pl.col("side") == "buy")
         ahead = {"half_life": "10s", "window_size": "1m", "reverse": True, "min_samples": 1}
-        out = po.stream.with_windows(
+        out = rp.stream.with_windows(
             trades,
-            mid_trend=po.ewm_mean("mid", half_life="5s", window_size="1m") - pl.col("mid"),
-            fwd_vwap=po.ewm_sum(notional, half_life="10s", window_size="1m", reverse=True)
-                     / po.ewm_sum("quantity", half_life="10s", window_size="1m", reverse=True),
-            fwd_buy_vwap=po.ewm_sum(buys.then(notional), **ahead)
-                         / po.ewm_sum(buys.then("quantity"), **ahead),
+            mid_trend=rp.ewm_mean("mid", half_life="5s", window_size="1m") - pl.col("mid"),
+            fwd_vwap=rp.ewm_sum(notional, half_life="10s", window_size="1m", reverse=True)
+                     / rp.ewm_sum("quantity", half_life="10s", window_size="1m", reverse=True),
+            fwd_buy_vwap=rp.ewm_sum(buys.then(notional), **ahead)
+                         / rp.ewm_sum(buys.then("quantity"), **ahead),
             clock="ts", gap_cap="5m", group="symbol",
         )
         print(out.height, out.columns[-3:], out["fwd_vwap"].count())
@@ -1125,7 +1124,7 @@ def with_windows(
 
     .. rubric:: See also
 
-    - :mod:`rheon.ops`, the operators, and the tables of ``closed`` and
+    - :mod:`rheon.polars.ops`, the operators, and the tables of ``closed`` and
       ``partial``.
     - ``lf.online.with_windows`` and ``df.online.with_windows``, the same call
       on a frame's ``online`` namespace.
@@ -1410,7 +1409,7 @@ def with_windows(
                     "run of the query reads nothing. Build the query again for each run, calling "
                     "`pl.scan_arrow_c_stream(...)` inside the loop, or, if the source "
                     "really is empty, silence this warning with "
-                    '`warnings.simplefilter("ignore", rheon.ConsumedSourceWarning)`.'
+                    '`warnings.simplefilter("ignore", rheon.polars.ConsumedSourceWarning)`.'
                 ),
                 stacklevel=_user_stacklevel(),
             )

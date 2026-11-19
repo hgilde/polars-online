@@ -16,9 +16,9 @@ import json
 import re
 from pathlib import Path
 
-import rheon as po
 from rheon import _rheon as native
 from rheon import _spec
+from rheon import polars as rp
 from test_model_registry import MINIMAL
 
 TIER = "essential"
@@ -69,7 +69,7 @@ def build(name: str, k: int, intercept: bool) -> dict:
         kw["features"] = [f"x{i}" for i in range(k)]
     if not intercept:
         kw["fit_intercept"] = False
-    return getattr(po.spec, name)("m", **{key: v for key, v in kw.items() if v is not None})
+    return getattr(rp.spec, name)("m", **{key: v for key, v in kw.items() if v is not None})
 
 
 def test_the_readme_min_weight_table_is_what_the_bank_resolves():
@@ -109,21 +109,21 @@ def test_the_readme_readiness_gate_defaults_are_what_the_bank_resolves():
         "`max_error_inflation`": "`sqrt(2)` on `ewridge`; off on `rls`, `kalman` and `lasso`",
     }
     kw = {"targets": ["y"], "features": ["x0"], "half_life": 50.0}
-    stream = resolved(po.spec.ewridge("m", **kw))["stream"]
+    stream = resolved(rp.spec.ewridge("m", **kw))["stream"]
     assert stream["min_settled_frac"] == 0.0
     assert stream["max_error_inflation"] == 2**0.5
     for spec in (
-        po.spec.rls("m", **kw),
-        po.spec.kalman("m", coef_half_life=50.0, **kw),
-        po.spec.lasso("m", penalties=[0.1], **kw),
+        rp.spec.rls("m", **kw),
+        rp.spec.kalman("m", coef_half_life=50.0, **kw),
+        rp.spec.lasso("m", penalties=[0.1], **kw),
     ):
         assert resolved(spec)["stream"]["max_error_inflation"] == "inf", spec["model"]
     # The two readiness row fields are opt-in on every model that has them
     # (task 116, F): a builder writes them off, and the bank adds nothing.
     for build, extra in (
-        (po.spec.ewridge, {}),
-        (po.spec.rls, {}),
-        (po.spec.kalman, {"coef_half_life": 50.0}),
+        (rp.spec.ewridge, {}),
+        (rp.spec.rls, {}),
+        (rp.spec.kalman, {"coef_half_life": 50.0}),
     ):
         spec = build("m", **kw, **extra)
         assert (spec["emit_error_inflation"], spec["emit_se_coef"]) == (False, False), spec["model"]
@@ -139,26 +139,26 @@ def test_the_defaults_task_195_decided_are_what_the_bank_resolves():
     is the smallest integer giving each predictive's variance a mean, and
     `rls`'s prior strength is `delta`."""
     kw = {"targets": ["y"], "features": ["x0", "x1", "x2"], "half_life": 50.0}
-    assert resolved(po.spec.huber("m", **kw))["model"]["loss"] == {"huber": {"delta": 1.345}}
-    sgd = resolved(po.spec.sgd("m", **kw, loss="huber"))["model"]
+    assert resolved(rp.spec.huber("m", **kw))["model"]["loss"] == {"huber": {"delta": 1.345}}
+    sgd = resolved(rp.spec.sgd("m", **kw, loss="huber"))["model"]
     assert sgd["loss"] == {"huber": {"delta": 1.345}}
     assert sgd["standardize"] is True
-    eps = resolved(po.spec.sgd("m", **kw, loss="epsilon_insensitive"))["model"]["loss"]
+    eps = resolved(rp.spec.sgd("m", **kw, loss="epsilon_insensitive"))["model"]["loss"]
     assert eps == {"epsilon_insensitive": {"eps": 0.01}}
-    pa = resolved(po.spec.pa("m", **kw))["model"]
+    pa = resolved(rp.spec.pa("m", **kw))["model"]
     assert (pa["eps"], pa["c"], pa["standardize"]) == (0.01, 1.0, True)
-    assert resolved(po.spec.pa("m", **kw, c=0.1))["model"]["c"] == 0.1
-    given = resolved(po.spec.sgd("m", **kw, loss="epsilon_insensitive", eps=0.1))["model"]
+    assert resolved(rp.spec.pa("m", **kw, c=0.1))["model"]["c"] == 0.1
+    given = resolved(rp.spec.sgd("m", **kw, loss="epsilon_insensitive", eps=0.1))["model"]
     assert given["loss"] == {"epsilon_insensitive": {"eps": 0.1}}
-    assert resolved(po.spec.pa("m", **kw, eps=0.1))["model"]["eps"] == 0.1
-    assert resolved(po.spec.rls("m", **kw))["model"]["delta"] == 1.0
+    assert resolved(rp.spec.pa("m", **kw, eps=0.1))["model"]["eps"] == 0.1
+    assert resolved(rp.spec.rls("m", **kw))["model"]["delta"] == 1.0
     feats = {"features": kw["features"]}
     for emission, nu in (
         ({"covariance_type": "diag"}, 3.0),
         ({"robust_beta": 0.1}, 3.0),
         ({"covariance_type": "full"}, 5.0),
     ):
-        derived = resolved(po.spec.bocpd("m", **feats, **emission))["derived"]
+        derived = resolved(rp.spec.bocpd("m", **feats, **emission))["derived"]
         assert derived["degrees_of_freedom_prior"] == nu, emission
         assert derived["warm_rows"] == 5, emission
 
@@ -228,7 +228,7 @@ def test_the_spec_module_states_each_standardize_default():
     takes = {
         name
         for name in MINIMAL
-        if "standardize" in getattr(po.spec, name).__wrapped__.__code__.co_varnames
+        if "standardize" in getattr(rp.spec, name).__wrapped__.__code__.co_varnames
     }
     assert off | on == takes and not off & on, (off, on, takes)
     words = {7: "seven", 8: "eight", 9: "nine", 10: "ten"}

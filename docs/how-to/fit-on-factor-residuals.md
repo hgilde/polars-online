@@ -85,7 +85,7 @@ rows:
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # The stream: per instrument g, a row each unit of the clock t.
 rng = np.random.default_rng(3)

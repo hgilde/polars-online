@@ -41,7 +41,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 from test_bocpd import normals
 from test_bocpd import run as bocpd_run
 from test_corrchange import pair
@@ -95,7 +95,7 @@ def replacement(seed: int, dead_frac: float, every: int) -> dict:
     centre, against the check the state at n/2 predicts."""
     X, lab = stranded(seed=seed, n=KM_N)
     half = KM_N // 2
-    bank = po.ModelBank(
+    bank = rp.ModelBank(
         [
             spec(
                 k=4,
@@ -242,7 +242,7 @@ def test_a_dead_frac_whose_re_placed_centre_is_born_dead_is_refused(dead_frac):
     raw = spec(k=4, half_life=KM_H, split_merge=0.5)
     raw["model"]["dead_frac"] = dead_frac
     with pytest.raises(ValueError, match=BORN_DEAD.format(dead_frac)):
-        po.ModelBank([raw])
+        rp.ModelBank([raw])
 
 
 def test_just_below_one_half_a_centre_is_re_placed_once_one_seed():
@@ -321,7 +321,7 @@ def span_flags(seeds: range, alphas, n_perm: int, perm_block: int) -> dict[float
     df = null_spans(seeds)
     cols = [f"x{i}" for i in range(CC_K)]
     specs = [
-        po.spec.corrchange(
+        rp.spec.corrchange(
             f"a{i}",
             features=cols,
             kind="window",
@@ -334,7 +334,7 @@ def span_flags(seeds: range, alphas, n_perm: int, perm_block: int) -> dict[float
         )
         for i, a in enumerate(alphas)
     ]
-    out = po.ModelBank(specs).fit_predict(df)
+    out = rp.ModelBank(specs).fit_predict(df)
     n = 2 * CC_W * (CC_SPANS + 1)
     rows = 2 * CC_W + 2 * CC_W * np.arange(CC_SPANS)
     counts = {}
@@ -390,9 +390,9 @@ def test_too_few_draws_to_flag_at_alpha_are_refused_with_the_fewest_that_can(alp
             match=f"n_perm = {n} draws are too few for the permutation test to flag at alpha = "
             f"{alpha}\\. Set n_perm to {fewest} or more, or give crit\\.",
         ):
-            po.ModelBank([po.spec.corrchange("m", n_perm=n, **kw)])
-    po.ModelBank([po.spec.corrchange("m", n_perm=fewest, **kw)])
-    po.ModelBank([po.spec.corrchange("m", n_perm=20, crit=0.5, **kw)])
+            rp.ModelBank([rp.spec.corrchange("m", n_perm=n, **kw)])
+    rp.ModelBank([rp.spec.corrchange("m", n_perm=fewest, **kw)])
+    rp.ModelBank([rp.spec.corrchange("m", n_perm=20, crit=0.5, **kw)])
 
 
 #: The levels each `n_perm` is held at: alpha 0.01 needs 99 draws at least.
@@ -551,8 +551,8 @@ def chain(seed: int, n: int) -> np.ndarray:
     return np.asarray(HM_MU)[z] + rng.standard_normal(n)
 
 
-def hmm_bank(tau: float) -> po.ModelBank:
-    s = po.spec.hmm(
+def hmm_bank(tau: float) -> rp.ModelBank:
+    s = rp.spec.hmm(
         "m",
         features=["x"],
         n_components=2,
@@ -562,10 +562,10 @@ def hmm_bank(tau: float) -> po.ModelBank:
         means=HM_MU,
         covs=[1.0, 1.0],
     )
-    return po.ModelBank([s])
+    return rp.ModelBank([s])
 
 
-def counts(bank: po.ModelBank) -> np.ndarray:
+def counts(bank: rp.ModelBank) -> np.ndarray:
     model = json.loads(bank.write_json())["states"][0][0][1]["models"][0]["model"]
     return np.array(model["Hmm"]["a"]).reshape(2, 2)
 

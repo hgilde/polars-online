@@ -33,7 +33,7 @@ import pytest
 from scipy.stats import multivariate_normal
 from statsmodels.regression.rolling import RollingWLS
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -93,7 +93,7 @@ class TestEwRidgeIsRollingWLS:
     )
     def test_pred_is_the_rolling_wls_of_the_rows_inside(self, window, closed, standardize):
         df = self._frame()
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -106,7 +106,7 @@ class TestEwRidgeIsRollingWLS:
             weight="w",
             min_weight=0.0,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         rows = _rows_inside(window, closed)
         want = self._oracle(df, rows)
         got = out["pred_y"].to_numpy()
@@ -136,7 +136,7 @@ class TestEwRidgeIsRollingWLS:
         assert not any((t[i] - t[:i] == window).any() for i in range(len(t)))
 
         def run(closed: str) -> pl.DataFrame:
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "m",
                 targets=["y"],
                 features=["x0", "x1"],
@@ -150,7 +150,7 @@ class TestEwRidgeIsRollingWLS:
                 weight="w",
                 min_weight=0.0,
             )
-            return po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+            return rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
 
         right, both = run("right"), run("both")
         for f in ("pred_y", "resid_y", "weight_sum"):
@@ -194,7 +194,7 @@ class TestEwClassIsScipysGaussianAtTheEdge:
     def test_p_is_the_scipy_posterior_of_the_rows_inside(self, shape, closed):
         n = 400
         x, labels = _class_rows(n, seed=21)
-        spec = po.spec.ew_class(
+        spec = rp.spec.ew_class(
             "m",
             features=["x0", "x1"],
             label="c",
@@ -207,7 +207,7 @@ class TestEwClassIsScipysGaussianAtTheEdge:
             min_weight=0,
         )
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "c": labels})
-        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
 
         def posterior(i: int, edge: str) -> float:
             keep = _ages_inside((i - 1) - np.arange(i), self.WINDOW, edge)
@@ -270,7 +270,7 @@ class TestMarginalTableIsNumpyAtTheEdge:
         y = -1.0 + 2.0 * u * np.linspace(0.2, 1.5, n) + rng.normal(0.0, 0.4, n)
         wt = rng.uniform(0.5, 2.0, n)
         df = pl.DataFrame({"x": x, "y": y, "w": wt})
-        spec = po.spec.marginal(
+        spec = rp.spec.marginal(
             "m",
             features=["x"],
             targets=["y"],
@@ -279,7 +279,7 @@ class TestMarginalTableIsNumpyAtTheEdge:
             closed=closed,
             weight="w",
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         pair = bank.marginal("m").row(0, named=True)
 

@@ -7,7 +7,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -21,7 +21,7 @@ def _grouped(n=300, seed=0):
     return pl.DataFrame({"g": g, "x1": x1, "x2": x2, "y": y})
 
 
-GRID = po.spec.ewridge(
+GRID = rp.spec.ewridge(
     "ols",
     targets=["y"],
     features=["x1", "x2"],
@@ -34,7 +34,7 @@ GRID = po.spec.ewridge(
 
 def test_coef_is_the_output_s_last_coef_per_group_and_instance():
     df = _grouped()
-    bank = po.ModelBank([GRID])
+    bank = rp.ModelBank([GRID])
     out = bank.fit_predict(df)["ols"].struct.unnest()
     c = bank.coef("ols")
     assert c.columns == [
@@ -77,21 +77,21 @@ def test_coef_is_the_output_s_last_coef_per_group_and_instance():
 
 
 def test_a_loaded_state_file_answers_without_data(tmp_path):
-    bank = po.ModelBank([GRID])
+    bank = rp.ModelBank([GRID])
     bank.fit_predict(_grouped())
     bank.save(tmp_path / "s.bin")
-    assert po.ModelBank.load(tmp_path / "s.bin").coef("ols").equals(bank.coef("ols"))
-    assert po.ModelBank.load_bytes(bank.save_bytes()).coef(0).equals(bank.coef("ols"))
+    assert rp.ModelBank.load(tmp_path / "s.bin").coef("ols").equals(bank.coef("ols"))
+    assert rp.ModelBank.load_bytes(bank.save_bytes()).coef(0).equals(bank.coef("ols"))
 
 
 def test_coef_does_not_wait_for_min_periods_but_says_so():
     """`pred` waits for `min_weight`; `coef` holds the last solve, whenever
     the schedule ran it, and `weight_sum` says how much is behind it."""
     df = _grouped().drop("g")
-    early = po.spec.ewridge(
+    early = rp.spec.ewridge(
         "m", targets=["y"], features=["x1", "x2"], half_life=30, min_weight=5, solve_every=0
     )
-    bank = po.ModelBank([early])
+    bank = rp.ModelBank([early])
     out = bank.fit_predict(df.head(2))["m"].struct.unnest()
     assert out["pred_y"].is_null().all() and out["coef"][-1] is not None
     c = bank.coef("m")
@@ -100,17 +100,17 @@ def test_coef_does_not_wait_for_min_periods_but_says_so():
     # weight 0 never solves; a row with weight does on every schedule, the
     # default's (all of its weight is new, task 115 (b)) and a clock's, whose
     # first period runs on the default one (task 278).
-    lazy = po.spec.ewridge(
+    lazy = rp.spec.ewridge(
         "m", targets=["y"], features=["x1", "x2"], half_life=30, solve_every=10.0, weight="w"
     )
-    bank = po.ModelBank([lazy])
+    bank = rp.ModelBank([lazy])
     bank.fit_predict(df.head(1).with_columns(w=pl.lit(0.0)))
     c = bank.coef("m")
     assert c["coef"].is_null().all() and c["term"].to_list() == ["intercept", "x1", "x2"]
 
 
 def test_mistakes_and_edges_are_named():
-    bank = po.ModelBank([GRID])
+    bank = rp.ModelBank([GRID])
     bank.fit_predict(_grouped())
     empty = bank.coef("ols", group="never")
     assert empty.shape == (0, 16) and empty.schema == bank.coef("ols").schema
@@ -118,14 +118,14 @@ def test_mistakes_and_edges_are_named():
         bank.coef("nope")
     with pytest.raises(IndexError, match="spec index 3 is out of range"):
         bank.coef(3)
-    cov = po.ModelBank([po.spec.ew_cov("c", features=["x1", "x2"], half_life=20)])
+    cov = rp.ModelBank([rp.spec.ew_cov("c", features=["x1", "x2"], half_life=20)])
     with pytest.raises(ValueError, match="an ew_cov model gives statistics, not coefficients"):
         cov.coef("c")
 
 
 #: One spec of every kind with a ``coef`` (docs/PLAN.md task 111).
 COEF_SPECS = [
-    po.spec.ewridge(
+    rp.spec.ewridge(
         "m",
         targets=["y", "y2"],
         features=["x1", "x2"],
@@ -133,20 +133,20 @@ COEF_SPECS = [
         feature_sets={"one": ["x1"], "all": ["x1", "x2"]},
         ridge=[0.0, 1.0],
     ),
-    po.spec.lasso("m", targets=["y"], features=["x1", "x2"], half_life=30, penalties=[0.1, 0.0]),
-    po.spec.rls("m", targets=["y"], features=["x1", "x2"], half_life=30),
-    po.spec.kalman("m", targets=["y"], features=["x1", "x2"], half_life=30, coef_half_life=100),
-    po.spec.huber("m", targets=["y"], features=["x1", "x2"], half_life=30),
-    po.spec.ftrl("m", targets=["b"], features=["x1", "x2"], half_life=30),
-    po.spec.sgd("m", targets=["y"], features=["x1", "x2"], half_life=30),
-    po.spec.pa("m", targets=["y"], features=["x1", "x2"], half_life=30),
-    po.spec.holt("m", targets=["y"], half_life=30),
+    rp.spec.lasso("m", targets=["y"], features=["x1", "x2"], half_life=30, penalties=[0.1, 0.0]),
+    rp.spec.rls("m", targets=["y"], features=["x1", "x2"], half_life=30),
+    rp.spec.kalman("m", targets=["y"], features=["x1", "x2"], half_life=30, coef_half_life=100),
+    rp.spec.huber("m", targets=["y"], features=["x1", "x2"], half_life=30),
+    rp.spec.ftrl("m", targets=["b"], features=["x1", "x2"], half_life=30),
+    rp.spec.sgd("m", targets=["y"], features=["x1", "x2"], half_life=30),
+    rp.spec.pa("m", targets=["y"], features=["x1", "x2"], half_life=30),
+    rp.spec.holt("m", targets=["y"], half_life=30),
     # The five it missed until task 111; the test below holds the list
     # to every kind `coef_index` lays out.
-    po.spec.quantile("m", targets=["y"], features=["x1", "x2"], half_life=30, quantile=0.5),
+    rp.spec.quantile("m", targets=["y"], features=["x1", "x2"], half_life=30, quantile=0.5),
     # Seeded well inside the 200 rows, so there are centres to lay out.
-    po.spec.kmeans("m", features=["x1", "x2"], half_life=30, n_clusters=2, warm_rows=50),
-    po.spec.ew_class(
+    rp.spec.kmeans("m", features=["x1", "x2"], half_life=30, n_clusters=2, warm_rows=50),
+    rp.spec.ew_class(
         "m",
         label="c",
         classes=["a", "b"],
@@ -154,8 +154,8 @@ COEF_SPECS = [
         half_life=30,
         precision_prior=1.0,
     ),
-    po.spec.hmm("m", features=["x1", "x2"], half_life=30, n_components=2, precision_prior=0.1),
-    po.spec.deco("m", features=["x1", "x2"], half_life=30),
+    rp.spec.hmm("m", features=["x1", "x2"], half_life=30, n_components=2, precision_prior=0.1),
+    rp.spec.deco("m", features=["x1", "x2"], half_life=30),
 ]
 
 
@@ -181,10 +181,10 @@ def test_every_model_lays_out_as_coef_index(spec):
         }
     )
     spec = {**spec, "coef_every": 1}
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     out = bank.fit_predict(df)["m"].struct.unnest()
     c = bank.coef("m")
-    layout = po.spec.coef_index(spec)
+    layout = rp.spec.coef_index(spec)
     assert c.drop("spec", "group", "instance", "half_life", "lam", "weight_sum", "coef").equals(
         layout
     )
@@ -202,7 +202,7 @@ def test_pred_is_the_weighted_least_squares_fit_of_the_rows_before():
     t = np.arange(n)
     y = 0.3 + np.sin(t / 40) * x1 + np.cos(t / 60) * x2 + 0.1 * rng.normal(size=n)
     df = pl.DataFrame({"x1": x1, "x2": x2, "y": y})
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "ols",
         targets=["y"],
         features=["x1", "x2"],
@@ -211,7 +211,7 @@ def test_pred_is_the_weighted_least_squares_fit_of_the_rows_before():
         solve_every=0,
         coef_every=1,
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     out = bank.fit_predict(df)["ols"].struct.unnest()
     X = np.column_stack([np.ones(n), x1, x2])
 
@@ -238,11 +238,11 @@ def test_coef_takes_every_spec_by_default_and_skips_the_ones_without_any():
     """
     specs = [
         GRID,
-        po.spec.holt("h", targets=["y"], half_life=10.0),
-        po.spec.ew_cov("c", features=["x1", "x2"], half_life=20),
-        po.spec.seqtest("s", targets=["y"]),
+        rp.spec.holt("h", targets=["y"], half_life=10.0),
+        rp.spec.ew_cov("c", features=["x1", "x2"], half_life=20),
+        rp.spec.seqtest("s", targets=["y"]),
     ]
-    bank = po.ModelBank(specs)
+    bank = rp.ModelBank(specs)
     bank.fit_predict(_grouped())
 
     every = bank.coef()
@@ -259,18 +259,18 @@ def test_coef_of_a_bank_with_no_coefficients_is_an_empty_frame():
     with the plain ``concat`` the docstring promises (review round 4, SF3):
     it had 7 columns where every other ``coef()`` has 11, and the concat
     raised ``ShapeError``. The four it lacked are ``coef_index``'s."""
-    bank = po.ModelBank([po.spec.ew_cov("c", features=["x1", "x2"], half_life=20)])
+    bank = rp.ModelBank([rp.spec.ew_cov("c", features=["x1", "x2"], half_life=20)])
     bank.fit_predict(_grouped())
     got = bank.coef()
     assert got.height == 0 and got.columns[0] == "spec" and "coef" in got.columns
-    ridge = po.ModelBank([GRID])
+    ridge = rp.ModelBank([GRID])
     ridge.fit_predict(_grouped())
     some = ridge.coef()
     assert got.schema == some.schema
     assert got.schema == ridge.coef(group="no such group").schema
     for frames in ([got, some], [some, got]):
         assert pl.concat(frames).equals(some)
-    layout = po.spec.coef_index(GRID).schema
+    layout = rp.spec.coef_index(GRID).schema
     assert {k: got.schema[k] for k in layout} == dict(layout)
 
 
@@ -283,6 +283,6 @@ def test_the_layout_test_covers_every_kind_with_a_coef():
     with_coef = set()
     for name in MINIMAL:
         spec = _build(name)
-        if po.spec.coef_index(spec).height:
+        if rp.spec.coef_index(spec).height:
             with_coef.add(spec["model"]["type"])
     assert {s["model"]["type"] for s in COEF_SPECS} == with_coef

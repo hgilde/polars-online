@@ -22,8 +22,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from reference_paths import ewridge_paths_ref
+from rheon import polars as rp
 from test_oracles_lasso_paths import FEATURES, TARGETS, _stream
 
 TIER = "essential"
@@ -65,7 +65,7 @@ def _check(df, half_life, *, sets=None, fit_intercept=True, **kw):
     ``weight_sum``, every held ``coef`` and the rows where each is null. ``sets``
     is ``{name: columns}``; ``half_life`` may be a list, one instance each."""
     spec_only = {k: kw.pop(k) for k in ("gram_block_rows",) if k in kw}
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=TARGETS,
         features=FEATURES,
@@ -80,8 +80,8 @@ def _check(df, half_life, *, sets=None, fit_intercept=True, **kw):
         **spec_only,
         **kw,
     )
-    out = po.ModelBank([spec]).fit_predict(df)["m"]
-    index = po.spec.output_index(spec)
+    out = rp.ModelBank([spec]).fit_predict(df)["m"]
+    index = rp.spec.output_index(spec)
     n = df.height
     dc = np.zeros(n)
     dc[1:] = np.diff(df["t"].to_numpy())

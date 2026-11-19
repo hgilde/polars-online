@@ -49,7 +49,7 @@ every pair, and prints the five with the largest `|t_stat|`:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # 200 features, of which three move the target, and one (f150) moves it in a V.
 rng = np.random.default_rng(2)
@@ -113,7 +113,7 @@ pairs where each statistic passes 1.96:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # 500 smooth features and a smooth target, all independent: no pair is related.
 rng = np.random.default_rng(5)
@@ -231,7 +231,7 @@ This code puts one row of 1,000 into a bin of twenty rows near 0:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Twenty rows near 0 in the middle bin, among rows whose target is -5 or +5, then a spike there.
 rng = np.random.default_rng(3)

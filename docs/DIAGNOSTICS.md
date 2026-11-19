@@ -18,7 +18,7 @@ flips from 0.5 to −0.5 at row 3,000. A ridge regression with a half-life of
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # y = 1.0 x0 + b x1 + noise, where b flips from 0.5 to -0.5 at row 3,000 of 6,000.
 rng = np.random.default_rng(0)
@@ -246,7 +246,7 @@ default if it has one:
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # Two thousand rows of y = x0 + 0.5 x1 + noise.
 rng = np.random.default_rng(16)

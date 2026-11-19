@@ -13,8 +13,8 @@ import typing
 import polars as pl
 import pytest
 
-import rheon as po
 from rheon import _kwargs, _spec
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -80,19 +80,19 @@ def test_each_builder_takes_common_as_the_typed_dict(name):
 
 def test_a_typo_is_still_named_at_runtime():
     with pytest.raises(TypeError, match='ewridge\\(\\) takes no parameter "halflif"'):
-        po.spec.ewridge("m", targets=["y"], features=["x0"], halflif=10.0)
+        rp.spec.ewridge("m", targets=["y"], features=["x0"], halflif=10.0)
 
 
 def test_the_typed_dicts_change_nothing_at_runtime():
     # A TypedDict is a plain dict at runtime: the same kwargs reach the same
     # builder, and a required key missing is still the builder's error.
     df = pl.DataFrame({"y": [1.0, 2.0, 3.0, 4.0], "x0": [1.0, 3.0, 2.0, 5.0]})
-    spec = po.spec.ewridge("f", targets=["y"], features=["x0"], half_life=2.0, min_weight=1.0)
-    out = po.ModelBank([spec]).fit_predict(df)
+    spec = rp.spec.ewridge("f", targets=["y"], features=["x0"], half_life=2.0, min_weight=1.0)
+    out = rp.ModelBank([spec]).fit_predict(df)
     assert isinstance(out.schema["f"], pl.Struct)
     assert out["f"].struct.field("pred_y").null_count() < 4
     with pytest.raises(TypeError, match="missing 1 required keyword-only argument: 'penalties'"):
-        po.spec.lasso("m", targets=["y"], features=["x0"], half_life=2.0)
+        rp.spec.lasso("m", targets=["y"], features=["x0"], half_life=2.0)
 
 
 #: Every form of ``targets`` the docs show, as a caller writes it. A builder's
@@ -102,7 +102,7 @@ def test_the_typed_dicts_change_nothing_at_runtime():
 _TARGET_FORMS = """
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 t = po.target("y", name="m")
 cols: list[str] = ["y"]

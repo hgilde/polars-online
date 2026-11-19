@@ -28,9 +28,9 @@ import statsmodels.api as sm
 from statsmodels.robust.norms import HuberT
 
 import ledger
-import rheon as po
 from rheon import _rheon as native
 from rheon import _spec
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -64,12 +64,12 @@ def spec(**kw) -> dict:
     d.update(kw)
     if d.get("bin_edges") is None:
         d.pop("bin_edges")
-    return po.spec.marginal("m", **d)
+    return rp.spec.marginal("m", **d)
 
 
 def locations(df: pl.DataFrame, cuts: list[int], **kw) -> dict[int, tuple[np.ndarray, list]]:
     """`bin_mean_y` and `bin_edges` after each row count in `cuts`."""
-    bank = po.ModelBank([spec(**kw)])
+    bank = rp.ModelBank([spec(**kw)])
     out, start = {}, 0
     for cut in cuts:
         bank.fit_predict(df.slice(start, cut - start))
@@ -154,20 +154,20 @@ def test_chunk_invariance_and_a_save_before_at_and_after_the_refit(tmp_path):
         w=pl.Series(np.where(np.arange(1_500) % 7 == 3, 0.0, 1.0))
     )
     kw = dict(half_life=400.0, weight="w", bin_refit_rows=300)
-    whole = po.ModelBank([spec(**kw)])
+    whole = rp.ModelBank([spec(**kw)])
     whole.fit_predict(df)
     want = whole.marginal("m")
     for chunks in [7, 600]:
-        bank = po.ModelBank([spec(**kw)])
+        bank = rp.ModelBank([spec(**kw)])
         for part in df.iter_slices(-(-len(df) // chunks)):
             bank.fit_predict(part)
         assert bank.marginal("m").equals(want), f"{chunks} chunks"
     # The 300th learned row is row 349 (one row in seven has no weight).
     for at in [200, 350, 900]:
-        bank = po.ModelBank([spec(**kw)])
+        bank = rp.ModelBank([spec(**kw)])
         bank.fit_predict(df[:at])
         bank.save(tmp_path / f"m{at}.state")
-        resumed = po.ModelBank.load(tmp_path / f"m{at}.state")
+        resumed = rp.ModelBank.load(tmp_path / f"m{at}.state")
         resumed.fit_predict(df[at:])
         assert resumed.marginal("m").equals(want), f"saved at {at}"
 
@@ -178,8 +178,8 @@ def test_the_weights_do_not_move_and_zero_is_the_one_pass():
     pass's to the bit (CLAUDE.md rule 8). `bin_refit_rows=0` is the one pass
     itself, as 1.3.0 fitted it."""
     df = stream(1_200, 0.12, 4)
-    on = po.ModelBank([spec()])
-    off = po.ModelBank([spec(bin_refit_rows=0)])
+    on = rp.ModelBank([spec()])
+    off = rp.ModelBank([spec(bin_refit_rows=0)])
     s_on, s_off = on.fit_predict(df), off.fit_predict(df)
     assert s_on.equals(s_off)
     t_on, t_off = on.marginal("m"), off.marginal("m")
@@ -221,7 +221,7 @@ def test_the_default_count_and_the_resolved_spec():
 )
 def test_refusals(kw, message):
     with pytest.raises(ValueError, match=re.escape(message)):
-        po.ModelBank([spec(**kw)]).fit_predict(stream(50, 0.0, 0))
+        rp.ModelBank([spec(**kw)]).fit_predict(stream(50, 0.0, 0))
 
 
 def test_the_refit_budget_bounds_the_groups_holds():
@@ -243,8 +243,8 @@ def test_the_refit_budget_bounds_the_groups_holds():
     # node in the tree the scale is read from (40).
     budget = 3.5 * 300 * 152 / 2**20
 
-    def bank(**kw) -> tuple[po.ModelBank, list[str]]:
-        b = po.ModelBank([spec(group="g", bin_refit_rows=300, **kw)])
+    def bank(**kw) -> tuple[rp.ModelBank, list[str]]:
+        b = rp.ModelBank([spec(group="g", bin_refit_rows=300, **kw)])
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             b.fit_predict(df)
@@ -252,7 +252,7 @@ def test_the_refit_budget_bounds_the_groups_holds():
 
     bounded, notices = bank(refit_budget=budget)
     free, none = bank(refit_budget=INF)
-    off = po.ModelBank([spec(group="g", bin_refit_rows=0)])
+    off = rp.ModelBank([spec(group="g", bin_refit_rows=0)])
     off.fit_predict(df)
     assert len(notices) == 1 and "bin_refit_rows" in notices[0], notices
     assert none == []

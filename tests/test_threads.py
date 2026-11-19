@@ -40,10 +40,10 @@ import polars as pl
 import pytest
 
 import child
-import rheon as po
 from rheon import _rheon as native
-from rheon._bank import _threads_refusal
+from rheon import polars as rp
 from rheon._spec import _json
+from rheon._threads import _threads_refusal
 from test_model_registry import MINIMAL, fullest
 
 TIER = "mixed"
@@ -78,7 +78,7 @@ def specs() -> list[dict]:
     wide = [f"x{j}" for j in range(K_WIDE)]
     narrow = ["x0", "x1", "x2", "x3"]
     return [
-        po.spec.ewridge(
+        rp.spec.ewridge(
             "wide",
             targets=["y"],
             features=wide,
@@ -93,7 +93,7 @@ def specs() -> list[dict]:
             max_rows_between_solves=100,
             gram_threads="auto",
         ),
-        po.spec.ew_cov(
+        rp.spec.ew_cov(
             "cov",
             features=wide,
             half_life=100.0,
@@ -102,7 +102,7 @@ def specs() -> list[dict]:
             min_weight=1.0,
             gram_threads="auto",
         ),
-        po.spec.ewridge(
+        rp.spec.ewridge(
             "narrow",
             targets=["y"],
             features=narrow,
@@ -110,19 +110,19 @@ def specs() -> list[dict]:
             group="g",
             gram_threads=4,
         ),
-        po.spec.marginal(
+        rp.spec.marginal(
             "screen",
             targets=["y"],
             features=wide[:64],
             half_life=100.0,
             shards="auto",
         ),
-        po.spec.sgd("sgd", targets=["y"], features=narrow, half_life=50.0, group="g"),
+        rp.spec.sgd("sgd", targets=["y"], features=narrow, half_life=50.0, group="g"),
     ]
 
 
 def run(threads: int | None, chunks: int) -> tuple[pl.DataFrame, bytes]:
-    bank = po.ModelBank(specs(), threads=threads)
+    bank = rp.ModelBank(specs(), threads=threads)
     df = stream()
     size = -(-df.height // chunks)
     out = pl.concat([bank.fit_predict(c) for c in df.iter_slices(size)])
@@ -194,8 +194,8 @@ def single_stream() -> tuple[pl.DataFrame, list[dict]]:
     wide = [f"x{j}" for j in range(20)]
     common = dict(clock="t", gap_cap=6.0, weight="w")
     specs = [
-        po.spec.ew_cov("cov", features=wide, half_life=50.0, **common),
-        po.spec.ewridge(
+        rp.spec.ew_cov("cov", features=wide, half_life=50.0, **common),
+        rp.spec.ewridge(
             "grid",
             targets=[f"y{j}" for j in range(4)],
             features=wide[:5],
@@ -207,7 +207,7 @@ def single_stream() -> tuple[pl.DataFrame, list[dict]]:
             resid_quantiles=[0.1, 0.9],
             **common,
         ),
-        po.spec.ewridge(
+        rp.spec.ewridge(
             "grouped", targets=["y0"], features=wide[:3], group="g", half_life=30.0, **common
         ),
     ]
@@ -255,7 +255,7 @@ def test_a_spec_one_stream_serves_is_the_same_at_every_count(chunks):
     size = -(-df.height // chunks)
     want = None
     for threads in (1, 2, 4, 8, None):
-        bank = po.ModelBank(specs, threads=threads)
+        bank = rp.ModelBank(specs, threads=threads)
         out = pl.concat([bank.fit_predict(c) for c in df.iter_slices(size)]).drop(df.columns)
         got = (_bits(out), bank.save_bytes())
         if want is None:
@@ -273,14 +273,14 @@ def test_a_spec_one_stream_serves_is_the_same_at_every_count(chunks):
 
 
 def test_the_count_is_not_state():
-    bank = po.ModelBank(specs()[2:3], threads=8)
+    bank = rp.ModelBank(specs()[2:3], threads=8)
     bank.fit_predict(stream().head(50))
     assert bank.threads == 8
     data = bank.save_bytes()
-    assert po.ModelBank.load(data).threads is None
-    assert po.ModelBank.load(data, threads=2).threads == 2
-    assert po.ModelBank.load_bytes(data, threads=3).threads == 3
-    assert po.ModelBank.load(data, threads=2).save_bytes() == data
+    assert rp.ModelBank.load(data).threads is None
+    assert rp.ModelBank.load(data, threads=2).threads == 2
+    assert rp.ModelBank.load_bytes(data, threads=3).threads == 3
+    assert rp.ModelBank.load(data, threads=2).save_bytes() == data
     # Pickle and deepcopy carry it beside the state.
     assert pickle.loads(pickle.dumps(bank)).threads == 8
 
@@ -288,22 +288,22 @@ def test_the_count_is_not_state():
 def test_a_plan_and_a_frame_take_it(reference):
     want, _ = reference
     df = stream()
-    lazy = po.fit_predict(df.lazy(), specs(), threads=2, chunk_size=10**6).collect()
+    lazy = rp.fit_predict(df.lazy(), specs(), threads=2, chunk_size=10**6).collect()
     eager = df.online.fit_predict(specs(), threads=1)
     assert lazy.drop(df.columns).equals(want, null_equal=True)
     assert eager.drop(df.columns).equals(want, null_equal=True)
-    bank = po.ModelBank(specs())
+    bank = rp.ModelBank(specs())
     bank.fit_predict(df.head(300))
-    plain = po.predict(df.tail(300), bank)
+    plain = rp.predict(df.tail(300), bank)
     for threads in (1, 3):
-        scored = po.predict(df.tail(300), bank, threads=threads)
+        scored = rp.predict(df.tail(300), bank, threads=threads)
         assert scored.equals(plain, null_equal=True)
         lazy = df.tail(300).lazy().online.predict(bank, threads=threads).collect()
         assert lazy.equals(plain, null_equal=True)
     # Scored as a copy: the caller's bank keeps its pool.
     assert bank.threads is None
     # A bank given as load_state keeps its count unless one is given.
-    eight = po.ModelBank(specs(), threads=8)
+    eight = rp.ModelBank(specs(), threads=8)
     assert df.online.fit_predict(load_state=eight, threads=2).height == df.height
 
 
@@ -312,25 +312,25 @@ def test_the_gram_fits_take_it():
     df = pl.DataFrame({f"x{j}": rng.standard_normal(400) for j in range(6)}).with_columns(
         y=pl.Series(rng.standard_normal(400)), g=pl.Series([0, 1, 2, 3] * 100)
     )
-    bank = po.ModelBank(
+    bank = rp.ModelBank(
         [
-            po.spec.ewridge(
+            rp.spec.ewridge(
                 "r", targets=["y"], features=[f"x{j}" for j in range(6)], half_life=100.0, group="g"
             )
         ]
     )
     bank.fit_predict(df)
     grams = bank.gram("r")
-    paths = po.gram.lars_paths(grams, max_active=3)
-    fits = po.gram.solve_subsets(grams, [[0, 1], [2, 3]], ridge=1e-6)
+    paths = rp.gram.lars_paths(grams, max_active=3)
+    fits = rp.gram.solve_subsets(grams, [[0, 1], [2, 3]], ridge=1e-6)
     for threads in (1, 2, 8):
-        again = po.gram.lars_paths(grams, max_active=3, threads=threads)
+        again = rp.gram.lars_paths(grams, max_active=3, threads=threads)
         for a, b in zip(paths, again, strict=True):
             for p, q in zip(a, b, strict=True):
                 assert np.array_equal(p["coef"], q["coef"]) and p["active"] == q["active"]
-        one = po.gram.lars_path(grams[0], max_active=3, threads=threads)
+        one = rp.gram.lars_path(grams[0], max_active=3, threads=threads)
         assert np.array_equal(one["coef"], paths[0][0]["coef"])
-        same = po.gram.solve_subsets(grams, [[0, 1], [2, 3]], ridge=1e-6, threads=threads)
+        same = rp.gram.solve_subsets(grams, [[0, 1], [2, 3]], ridge=1e-6, threads=threads)
         for a, b in zip(fits, same, strict=True):
             for p, q in zip(a, b, strict=True):
                 assert np.array_equal(p["coef"], q["coef"])
@@ -343,27 +343,27 @@ BAD = [(0, ValueError), (-1, ValueError), (2.0, TypeError), (True, TypeError), (
 def test_a_count_that_is_not_one_is_refused_by_name_everywhere(tmp_path, value, error):
     spec = specs()[2]
     df = stream().head(10)
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     data = bank.save_bytes()
     path = str(tmp_path / "bank.state")
     bank.save(path)
     message = _threads_refusal(repr(value))
     calls = {
-        "ModelBank": lambda: po.ModelBank([spec], threads=value),
-        "ModelBank.load": lambda: po.ModelBank.load(data, threads=value),
-        "ModelBank.load_bytes": lambda: po.ModelBank.load_bytes(data, threads=value),
-        "fit_predict(DataFrame)": lambda: po.fit_predict(df, [spec], threads=value),
-        "fit_predict(LazyFrame)": lambda: po.fit_predict(df.lazy(), [spec], threads=value),
-        "predict(DataFrame)": lambda: po.predict(df, bank, threads=value),
-        "predict(LazyFrame)": lambda: po.predict(df.lazy(), bank, threads=value),
+        "ModelBank": lambda: rp.ModelBank([spec], threads=value),
+        "ModelBank.load": lambda: rp.ModelBank.load(data, threads=value),
+        "ModelBank.load_bytes": lambda: rp.ModelBank.load_bytes(data, threads=value),
+        "fit_predict(DataFrame)": lambda: rp.fit_predict(df, [spec], threads=value),
+        "fit_predict(LazyFrame)": lambda: rp.fit_predict(df.lazy(), [spec], threads=value),
+        "predict(DataFrame)": lambda: rp.predict(df, bank, threads=value),
+        "predict(LazyFrame)": lambda: rp.predict(df.lazy(), bank, threads=value),
         "df.online.fit_predict": lambda: df.online.fit_predict([spec], threads=value),
         "df.online.predict": lambda: df.online.predict(path, threads=value),
         "lf.online.fit_predict": lambda: df.lazy().online.fit_predict([spec], threads=value),
         "lf.online.predict": lambda: df.lazy().online.predict(path, threads=value),
-        "thread_pool_size": lambda: po.thread_pool_size(threads=value),
-        "gram.lars_paths": lambda: po.gram.lars_paths([], threads=value),
-        "gram.lars_path": lambda: po.gram.lars_path({}, threads=value),
-        "gram.solve_subsets": lambda: po.gram.solve_subsets([], [[0]], threads=value),
+        "thread_pool_size": lambda: rp.thread_pool_size(threads=value),
+        "gram.lars_paths": lambda: rp.gram.lars_paths([], threads=value),
+        "gram.lars_path": lambda: rp.gram.lars_path({}, threads=value),
+        "gram.solve_subsets": lambda: rp.gram.solve_subsets([], [[0]], threads=value),
         # The native side, reached without the Python check, says the same.
         "native ModelBank": lambda: native.ModelBank(_json([spec]), value),
         "native load_bytes": lambda: native.ModelBank.load_bytes(data, None, value),
@@ -384,7 +384,7 @@ def test_a_count_above_the_bound_is_refused_everywhere_before_a_pool(tmp_path, v
     calls return at once, which building any of them would not."""
     spec = specs()[2]
     df = stream().head(10)
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     data = bank.save_bytes()
     path = str(tmp_path / "bank.state")
     bank.save(path)
@@ -395,18 +395,18 @@ def test_a_count_above_the_bound_is_refused_everywhere_before_a_pool(tmp_path, v
         f"threads: {value!r} is more threads than one pool may have, which is at most {bound}."
     )
     calls = {
-        "ModelBank": lambda: po.ModelBank([spec], threads=value),
-        "ModelBank.load": lambda: po.ModelBank.load(data, threads=value),
-        "ModelBank.load_bytes": lambda: po.ModelBank.load_bytes(data, threads=value),
-        "fit_predict(DataFrame)": lambda: po.fit_predict(df, [spec], threads=value),
-        "fit_predict(LazyFrame)": lambda: po.fit_predict(df.lazy(), [spec], threads=value),
-        "predict(DataFrame)": lambda: po.predict(df, bank, threads=value),
+        "ModelBank": lambda: rp.ModelBank([spec], threads=value),
+        "ModelBank.load": lambda: rp.ModelBank.load(data, threads=value),
+        "ModelBank.load_bytes": lambda: rp.ModelBank.load_bytes(data, threads=value),
+        "fit_predict(DataFrame)": lambda: rp.fit_predict(df, [spec], threads=value),
+        "fit_predict(LazyFrame)": lambda: rp.fit_predict(df.lazy(), [spec], threads=value),
+        "predict(DataFrame)": lambda: rp.predict(df, bank, threads=value),
         "df.online.fit_predict": lambda: df.online.fit_predict([spec], threads=value),
         "lf.online.fit_predict": lambda: df.lazy().online.fit_predict([spec], threads=value),
         "lf.online.predict": lambda: df.lazy().online.predict(path, threads=value),
-        "thread_pool_size": lambda: po.thread_pool_size(threads=value),
-        "gram.lars_paths": lambda: po.gram.lars_paths([], threads=value),
-        "gram.solve_subsets": lambda: po.gram.solve_subsets([], [[0]], threads=value),
+        "thread_pool_size": lambda: rp.thread_pool_size(threads=value),
+        "gram.lars_paths": lambda: rp.gram.lars_paths([], threads=value),
+        "gram.solve_subsets": lambda: rp.gram.solve_subsets([], [[0]], threads=value),
         # The native side, reached without the Python check, says the same.
         "native ModelBank": lambda: native.ModelBank(_json([spec]), value),
         "native load_bytes": lambda: native.ModelBank.load_bytes(data, None, value),
@@ -416,7 +416,7 @@ def test_a_count_above_the_bound_is_refused_everywhere_before_a_pool(tmp_path, v
         with pytest.raises(ValueError) as caught:
             call()
         assert str(caught.value) == message, name
-    assert po.thread_pool_size(threads=bound) == bound
+    assert rp.thread_pool_size(threads=bound) == bound
 
 
 @pytest.mark.parametrize("value", [np.int64(2), np.int32(2), np.uint8(2)], ids=repr)
@@ -426,23 +426,23 @@ def test_a_numpy_integer_is_a_count_everywhere(tmp_path, value):
     one (task 269, D-6)."""
     spec = specs()[2]
     df = stream().head(10)
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     data = bank.save_bytes()
     path = str(tmp_path / "bank.state")
     bank.save(path)
     grams = _grams()
     calls = {
-        "ModelBank": lambda: po.ModelBank([spec], threads=value).threads,
-        "ModelBank.load_bytes": lambda: po.ModelBank.load_bytes(data, threads=value).threads,
-        "fit_predict(DataFrame)": lambda: po.fit_predict(df, [spec], threads=value),
-        "fit_predict(LazyFrame)": lambda: po.fit_predict(
+        "ModelBank": lambda: rp.ModelBank([spec], threads=value).threads,
+        "ModelBank.load_bytes": lambda: rp.ModelBank.load_bytes(data, threads=value).threads,
+        "fit_predict(DataFrame)": lambda: rp.fit_predict(df, [spec], threads=value),
+        "fit_predict(LazyFrame)": lambda: rp.fit_predict(
             df.lazy(), [spec], threads=value
         ).collect(),
         "df.online.predict": lambda: df.online.predict(path, threads=value),
         "lf.online.predict": lambda: df.lazy().online.predict(path, threads=value).collect(),
-        "thread_pool_size": lambda: po.thread_pool_size(threads=value),
-        "gram.lars_paths": lambda: po.gram.lars_paths(grams, threads=value),
-        "gram.solve_subsets": lambda: po.gram.solve_subsets(grams, [[0, 1]], threads=value),
+        "thread_pool_size": lambda: rp.thread_pool_size(threads=value),
+        "gram.lars_paths": lambda: rp.gram.lars_paths(grams, threads=value),
+        "gram.solve_subsets": lambda: rp.gram.solve_subsets(grams, [[0, 1]], threads=value),
         "native ModelBank": lambda: native.ModelBank(_json([spec]), value).threads,
         "native thread_pool_size": lambda: native.thread_pool_size(value),
     }
@@ -452,7 +452,7 @@ def test_a_numpy_integer_is_a_count_everywhere(tmp_path, value):
     assert got["native thread_pool_size"] == 2
     message = _threads_refusal(repr(np.True_))
     for call in (
-        lambda: po.ModelBank([spec], threads=np.True_),
+        lambda: rp.ModelBank([spec], threads=np.True_),
         lambda: native.thread_pool_size(np.True_),
     ):
         with pytest.raises(TypeError) as caught:
@@ -465,9 +465,9 @@ def _grams() -> list:
     df = pl.DataFrame({f"x{j}": rng.standard_normal(80) for j in range(3)}).with_columns(
         y=pl.Series(rng.standard_normal(80)), g=pl.Series([0, 1] * 40)
     )
-    bank = po.ModelBank(
+    bank = rp.ModelBank(
         [
-            po.spec.ewridge(
+            rp.spec.ewridge(
                 "r", targets=["y"], features=["x0", "x1", "x2"], half_life=50.0, group="g"
             )
         ]
@@ -477,9 +477,9 @@ def _grams() -> list:
 
 
 def test_none_is_the_default_pool_and_a_count_is_its_own():
-    assert po.thread_pool_size(threads=None) == po.thread_pool_size()
-    assert po.thread_pool_size(threads=3) == 3
-    assert po.ModelBank(specs()[2:3]).threads is None
+    assert rp.thread_pool_size(threads=None) == rp.thread_pool_size()
+    assert rp.thread_pool_size(threads=3) == 3
+    assert rp.ModelBank(specs()[2:3]).threads is None
 
 
 def _python(code: str, *args: str, **env: str) -> str:
@@ -497,7 +497,7 @@ def _python(code: str, *args: str, **env: str) -> str:
 
 
 SMALL = (
-    "import polars as pl, rheon as po\n"
+    "import polars as pl, rheon.polars as po\n"
     "spec = po.spec.ewridge('m', targets=['y'], features=['x'], half_life=10.0)\n"
     "df = pl.DataFrame({'x': [1.0, 2.0, 3.0], 'y': [2.0, 4.0, 6.0]})\n"
 )
@@ -612,20 +612,20 @@ def kind_specs(case: str) -> list[dict]:
         stream["weight"] = WEIGHT.get(builder, "w")
     kw: dict[str, object] = {"targets": ["y"], "features": ["x0", "x1"], "half_life": 50.0}
     kw |= MINIMAL[builder] | extra | stream
-    lone = getattr(po.spec, builder)("lone", **{k: v for k, v in kw.items() if v is not None})
+    lone = getattr(rp.spec, builder)("lone", **{k: v for k, v in kw.items() if v is not None})
     full = fullest(builder) | {"name": "full"} | stream
     full["model"] = full["model"] | extra
     if full.get("emit_drift"):
         # On a clock the drift detector's threshold is in clock time.
         full["drift_threshold"] = 20.0
-    if any(f.startswith("coef") for f in po.spec.output_fields(lone)):
+    if any(f.startswith("coef") for f in rp.spec.output_fields(lone)):
         lone["coef_every"] = full["coef_every"] = 0
     return [lone, full]
 
 
-def run_kind(case: str, threads: int | None) -> tuple[pl.DataFrame, po.ModelBank]:
+def run_kind(case: str, threads: int | None) -> tuple[pl.DataFrame, rp.ModelBank]:
     df = kind_frame(case)
-    bank = po.ModelBank(kind_specs(case), threads=threads)
+    bank = rp.ModelBank(kind_specs(case), threads=threads)
     with warnings.catch_warnings():
         # The readiness notices of a short warm-up are expected.
         warnings.simplefilter("ignore")
@@ -634,7 +634,7 @@ def run_kind(case: str, threads: int | None) -> tuple[pl.DataFrame, po.ModelBank
     return out, bank
 
 
-def kind_bits(case: str, threads: int | None) -> tuple[po.ModelBank, dict[str, object], bytes]:
+def kind_bits(case: str, threads: int | None) -> tuple[rp.ModelBank, dict[str, object], bytes]:
     """The bank, its output's every field and every table read from it as
     bits, and its saved state."""
     out, bank = run_kind(case, threads)
@@ -645,7 +645,7 @@ def kind_bits(case: str, threads: int | None) -> tuple[po.ModelBank, dict[str, o
     return bank, got, state
 
 
-def _tables(case: str, bank: po.ModelBank) -> list[tuple[str, str, pl.DataFrame]]:
+def _tables(case: str, bank: rp.ModelBank) -> list[tuple[str, str, pl.DataFrame]]:
     reader = READERS.get(CASES[case][0])
     if reader is None:
         return []
@@ -720,7 +720,7 @@ def test_every_kind_is_the_same_at_every_count(case):
 POOL_CHILD = """
 import json, sys, warnings
 sys.path.insert(0, sys.argv[1])
-import polars as pl, rheon as po, psutil
+import polars as pl, rheon.polars as po, psutil
 from test_threads import FIRST_CHUNK, kind_frame, kind_specs
 
 def cpu_by_thread():

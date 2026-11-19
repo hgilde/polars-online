@@ -26,8 +26,8 @@ import typing
 
 import pytest
 
-import rheon as po
 from rheon import _spec
+from rheon import polars as rp
 from test_api_surface import BOGUS, ENUM_PROBES, _registry_spec, _shaped, _spec_refusal, taken_words
 
 TIER = "essential"
@@ -41,7 +41,7 @@ def _hint(label: str) -> object:
     """The annotation of the parameter a probe label names: a builder's
     own, or ``_common``'s for the shared ones."""
     owner, param = label.rsplit(".", 1)
-    fn = _spec._common if owner == "spec" else getattr(po.spec, owner)
+    fn = _spec._common if owner == "spec" else getattr(rp.spec, owner)
     return typing.get_type_hints(fn)[param]
 
 
@@ -123,9 +123,9 @@ def test_a_word_parameter_given_a_value_of_another_kind_is_a_type_error():
         TypeError,
         match=r'mode must be "pa", "pa1" or "pa2", but it is int 3\. Use one of those words\.$',
     ):
-        po.spec.pa("m", targets=["y"], features=["x"], half_life=10.0, mode=3)  # type: ignore[arg-type]
+        rp.spec.pa("m", targets=["y"], features=["x"], half_life=10.0, mode=3)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match=r'stats must be a list of strs, each one of "mean", '):
-        po.spec.ew_cov("m", features=["x", "z"], half_life=10.0, stats="mean")  # type: ignore[arg-type]
+        rp.spec.ew_cov("m", features=["x", "z"], half_life=10.0, stats="mean")  # type: ignore[arg-type]
 
 
 def test_every_enum_string_parameter_of_a_builder_is_a_literal():

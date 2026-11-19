@@ -19,7 +19,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -51,14 +51,14 @@ def spec(**kw):
     """Ten-unit steps under a cap of 100."""
     d = dict(targets=["y"], features=["x0"], half_life=10.0, clock="t", gap_cap=100.0)
     d.update(kw)
-    return po.spec.ewridge("m", **d)
+    return rp.spec.ewridge("m", **d)
 
 
 def spec1(**kw):
     """One-unit ticks under a cap of 300: five minutes of seconds."""
     d = dict(targets=["y"], features=["x0"], half_life=5000.0, clock="t", gap_cap=300.0)
     d.update(kw)
-    return po.spec.ewridge("m", **d)
+    return rp.spec.ewridge("m", **d)
 
 
 def restart(minimum, **kw):
@@ -87,7 +87,7 @@ def resets(bank):
 
 def test_a_transposed_pair_is_refused_by_default_and_names_the_row():
     with pytest.raises(ValueError, match="steps back by 10 at row 21") as e:
-        po.ModelBank([spec()]).fit_predict(swapped(frame(), 20))
+        rp.ModelBank([spec()]).fit_predict(swapped(frame(), 20))
     assert str(e.value) == (
         'spec "m": clock column "t" steps back by 10 at row 21 (counting from 0), and '
         "restart_after_step_back is not set, so the bank refused the chunk and learned none of "
@@ -115,7 +115,7 @@ def test_a_late_row_is_refused_in_the_words_that_say_so():
     """A step back no larger than ``restart_after_step_back`` is a late row,
     and its refusal says so, with its two ways out, whole."""
     df = pl.DataFrame({"t": [0.0, 10.0, 20.0, 15.0, 30.0], "x0": [1.0] * 5, "y": [1.0] * 5})
-    late = po.spec.ewridge(
+    late = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0"],
@@ -125,7 +125,7 @@ def test_a_late_row_is_refused_in_the_words_that_say_so():
         restart_after_step_back=5.0,
     )
     with pytest.raises(ValueError) as e:
-        po.ModelBank([late]).fit_predict(df)
+        rp.ModelBank([late]).fit_predict(df)
     assert str(e.value) == (
         'spec "m": clock column "t" steps back by 5 at row 3 (counting from 0), no more than '
         "restart_after_step_back = 5, so the bank refused the chunk and learned none of it. "
@@ -139,21 +139,21 @@ def test_the_default_refuses_every_step_back_however_large():
     say, or a `session` column's."""
     for k in (30, 240):
         with pytest.raises(ValueError, match="steps back by"):
-            po.ModelBank([spec1()]).fit_predict(late_by(ticks(), 500, k))
+            rp.ModelBank([spec1()]).fit_predict(late_by(ticks(), 500, k))
     day = pl.concat([ticks(1000, 0, 34_200.0), ticks(1000, 1, 34_200.0)])
     with pytest.raises(ValueError, match="steps back by 999 at row 1000"):
-        po.ModelBank([spec1()]).fit_predict(day)
+        rp.ModelBank([spec1()]).fit_predict(day)
 
 
 def test_reset_state_starts_over_past_the_minimum_and_refuses_a_late_row():
     day = pl.concat([ticks(1000, 0, 34_200.0), ticks(1000, 1, 34_200.0)])
-    bank = po.ModelBank([restart(300.0)])
+    bank = rp.ModelBank([restart(300.0)])
     out = bank.fit_predict(day)
     assert out.height == 2000 and resets(bank) == 1
     # The model starts over at the new day: the row after it has no weight.
     assert out["m"].struct.field("weight_sum")[1000] == 0.0
     with pytest.raises(ValueError, match="no more than restart_after_step_back = 300") as e:
-        po.ModelBank([restart(300.0)]).fit_predict(late_by(ticks(), 500, 30))
+        rp.ModelBank([restart(300.0)]).fit_predict(late_by(ticks(), 500, 30))
     assert "no more than restart_after_step_back = 300" in str(e.value)
     assert "row 530 (counting from 0)" in str(e.value)
 
@@ -163,8 +163,8 @@ def test_the_minimum_is_inclusive():
     clock's one-day step back passed a one-day minimum, `<` being strict)."""
     exact = pl.concat([frame(20, 0, 0.0), frame(20, 1, 90.0)])  # 190 -> 90: back by 100
     with pytest.raises(ValueError, match="no more than restart_after_step_back = 100"):
-        po.ModelBank([spec(restart_after_step_back=100.0)]).fit_predict(exact)
-    below = po.ModelBank([spec(restart_after_step_back=99.5)])
+        rp.ModelBank([spec(restart_after_step_back=100.0)]).fit_predict(exact)
+    below = rp.ModelBank([spec(restart_after_step_back=99.5)])
     assert below.fit_predict(exact).height == 40 and resets(below) == 1
 
 
@@ -172,14 +172,14 @@ def test_the_first_backwards_jump_is_judged_like_any_other():
     """No warmup and no first-jump exemption."""
     m = dict(restart_after_step_back=100.0)
     with pytest.raises(ValueError, match="restart_after_step_back"):
-        po.ModelBank([spec(**m)]).fit_predict(pl.concat([frame(1, 0, 5.0), frame(10, 1, 0.0)]))
+        rp.ModelBank([spec(**m)]).fit_predict(pl.concat([frame(1, 0, 5.0), frame(10, 1, 0.0)]))
     df = pl.concat([frame(1, 0, 150.0), frame(10, 1, 0.0)])
-    bank = po.ModelBank([spec(**m)])
+    bank = rp.ModelBank([spec(**m)])
     assert bank.fit_predict(df).height == 11 and resets(bank) == 1
 
 
 def test_zero_starts_over_at_every_step_back():
-    bank = po.ModelBank([spec(restart_after_step_back=0.0)])
+    bank = rp.ModelBank([spec(restart_after_step_back=0.0)])
     assert bank.fit_predict(swapped(frame(), 20)).height == 50 and resets(bank) == 1
 
 
@@ -187,19 +187,19 @@ def test_a_shuffled_frame_is_refused():
     df = frame(200, seed=3)
     df = df[np.random.default_rng(1).permutation(df.height).tolist()]
     with pytest.raises(ValueError, match="steps back by"):
-        po.ModelBank([spec()]).fit_predict(df)
+        rp.ModelBank([spec()]).fit_predict(df)
 
 
 def test_the_refused_chunk_leaves_the_bank_untouched():
     first = frame(40, seed=0)
     bad = swapped(frame(40, seed=1, start=400.0), 10)
     third = frame(40, seed=2, start=800.0)
-    bank = po.ModelBank([spec()])
+    bank = rp.ModelBank([spec()])
     bank.fit_predict(first)
     with pytest.raises(ValueError, match="steps back by"):
         bank.fit_predict(bad)
     got = bank.fit_predict(third)
-    ref = po.ModelBank([spec()])
+    ref = rp.ModelBank([spec()])
     ref.fit_predict(first)
     assert got.equals(ref.fit_predict(third))
 
@@ -210,7 +210,7 @@ def test_the_minimum_is_the_callers_to_give():
     with pytest.raises(
         ValueError, match="restart_after_step_back applies only with a clock, but clock is not set"
     ):
-        po.spec.ewridge(
+        rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0"],
@@ -256,8 +256,8 @@ def test_the_audits_stream_never_hands_a_model_an_infinite_step():
     df = pl.DataFrame({"t": t, "y": np.sin(np.arange(len(t)))})
     holt = dict(targets=["y"], clock="t", gap_cap=5.0, half_life=3.0, min_weight=1.0)
     with pytest.raises(ValueError, match="steps back by 2 at row 4"):
-        po.ModelBank([po.spec.holt("h", **holt)]).fit_predict(df)
-    bank = po.ModelBank([po.spec.holt("h", restart_after_step_back=0.0, **holt)])
+        rp.ModelBank([rp.spec.holt("h", **holt)]).fit_predict(df)
+    bank = rp.ModelBank([rp.spec.holt("h", restart_after_step_back=0.0, **holt)])
     pred = bank.fit_predict(df)["h"].struct.field("pred_y").to_numpy()
     assert np.isfinite(pred[-3:]).all(), pred
     assert resets(bank) == 4
@@ -270,9 +270,9 @@ def test_a_declared_session_change_may_step_the_clock_back():
     b = frame(30, seed=1, start=285.0)  # 5 back from 290
     df = pl.concat([a, b])
     with pytest.raises(ValueError, match="steps back by 5"):
-        po.ModelBank([spec()]).fit_predict(df)
+        rp.ModelBank([spec()]).fit_predict(df)
     declared = df.with_columns(s=pl.Series(["s0"] * 30 + ["s1"] * 30))
-    assert po.ModelBank([spec(session="s", session_gap=1.0)]).fit_predict(declared).height == 60
+    assert rp.ModelBank([spec(session="s", session_gap=1.0)]).fit_predict(declared).height == 60
 
 
 def test_a_step_back_at_a_session_change_with_no_session_gap():
@@ -282,7 +282,7 @@ def test_a_step_back_at_a_session_change_with_no_session_gap():
     a = frame(30, seed=0, start=0.0)
     b = frame(30, seed=1, start=100.0)  # 290 -> 100: back by 190
     df = pl.concat([a, b]).with_columns(s=pl.Series(["s0"] * 30 + ["s1"] * 30), g=pl.lit("a"))
-    bank = po.ModelBank([spec(session="s", group="g", group_close="session")])
+    bank = rp.ModelBank([spec(session="s", group="g", group_close="session")])
     out = bank.fit_predict(df)
     assert out.height == 60
     assert out["m"].struct.field("weight_sum")[30] == 0.0
@@ -294,7 +294,7 @@ def test_a_skipped_row_with_an_out_of_order_clock_is_still_refused():
         pl.when(pl.int_range(pl.len()) == 21).then(None).otherwise(pl.col("x0")).alias("x0")
     )
     with pytest.raises(ValueError, match="steps back by"):
-        po.ModelBank([spec()]).fit_predict(late)
+        rp.ModelBank([spec()]).fit_predict(late)
 
 
 @pytest.mark.parametrize(
@@ -309,7 +309,7 @@ def test_predict_scores_rows_before_the_last_learned_clock_as_they_stand(policy)
     so its score of an early row is its score at the last clock."""
     df = pl.DataFrame({"t": np.arange(60.0), "y": 0.5 * np.arange(60.0)})
     holt = dict(targets=["y"], clock="t", gap_cap=5.0, half_life=10.0, **policy)
-    bank = po.ModelBank([po.spec.holt("h", **holt)])
+    bank = rp.ModelBank([rp.spec.holt("h", **holt)])
     bank.fit_predict(df)
     early = bank.predict(df.slice(10, 20))["h"].struct
     at_last = bank.predict(df.slice(59, 1).with_columns(t=pl.lit(59.0)))["h"].struct
@@ -324,8 +324,8 @@ def test_a_group_column_is_the_remedy_for_interleaved_streams():
     pairs = zip(a.iter_rows(named=True), b.iter_rows(named=True), strict=True)
     df = pl.DataFrame([r for pair in pairs for r in pair])
     with pytest.raises(ValueError, match="steps back by"):
-        po.ModelBank([spec()]).fit_predict(df)
-    assert po.ModelBank([spec(group="g")]).fit_predict(df).height == 60
+        rp.ModelBank([spec()]).fit_predict(df)
+    assert rp.ModelBank([spec(group="g")]).fit_predict(df).height == 60
 
 
 def test_a_long_temporal_step_back_is_named_to_the_nanosecond():
@@ -340,12 +340,12 @@ def test_a_long_temporal_step_back_is_named_to_the_nanosecond():
     )
     temporal = dict(targets=["y"], features=["x0"], clock="t", half_life="1d", gap_cap="1d")
     with pytest.raises(ValueError, match="steps back by 200d1ns at row 2"):
-        po.ModelBank([po.spec.ewridge("m", **temporal)]).fit_predict(df)
-    late = po.spec.ewridge("m", restart_after_step_back="300d", **temporal)
+        rp.ModelBank([rp.spec.ewridge("m", **temporal)]).fit_predict(df)
+    late = rp.spec.ewridge("m", restart_after_step_back="300d", **temporal)
     with pytest.raises(
         ValueError,
         match=re.escape(
             "200d1ns at row 2 (counting from 0), no more than restart_after_step_back = 300d"
         ),
     ):
-        po.ModelBank([late]).fit_predict(df)
+        rp.ModelBank([late]).fit_predict(df)

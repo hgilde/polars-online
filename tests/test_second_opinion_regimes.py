@@ -44,7 +44,7 @@ from scipy.stats import kstwobign
 from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 
 import ledger
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -97,7 +97,7 @@ def hmm_stream(seed: int, k: int, n: int = 300, d: int = 2) -> dict[str, Any]:
 def hmm_run(s: dict[str, Any], cov: str) -> pl.DataFrame:
     k, d = s["means"].shape
     features = [f"x{i}" for i in range(d)]
-    spec = po.spec.hmm(
+    spec = rp.spec.hmm(
         "h",
         features=features,
         n_components=k,
@@ -111,7 +111,7 @@ def hmm_run(s: dict[str, Any], cov: str) -> pl.DataFrame:
         weight="w",
     )
     frame = pl.DataFrame({f: s["x"][:, i] for i, f in enumerate(features)}).with_columns(w=s["w"])
-    return po.ModelBank([spec]).fit_predict(frame)["h"].struct.unnest()
+    return rp.ModelBank([spec]).fit_predict(frame)["h"].struct.unnest()
 
 
 #: The ledger's inputs (tests/ledger.py): the filter's every field on ten
@@ -299,7 +299,7 @@ def tvtp_stream(seed: int, k: int, n: int = 400) -> dict[str, Any]:
 
 def tvtp_run(s: dict[str, Any]) -> pl.DataFrame:
     k = len(s["means"])
-    spec = po.spec.hmm(
+    spec = rp.spec.hmm(
         "h",
         features=["x"],
         n_components=k,
@@ -313,7 +313,7 @@ def tvtp_run(s: dict[str, Any]) -> pl.DataFrame:
         tvtp_coef=[s["a"].ravel().tolist(), s["b"].ravel().tolist()],
     )
     frame = pl.DataFrame({"x": s["x"], "z": s["z"]})
-    return po.ModelBank([spec]).fit_predict(frame)["h"].struct.unnest()
+    return rp.ModelBank([spec]).fit_predict(frame)["h"].struct.unnest()
 
 
 ledger.guard(
@@ -460,7 +460,7 @@ def bocpd_stream(seed: int, offset: float, n: int = 200) -> tuple[np.ndarray, np
 
 
 def bocpd_run(x: np.ndarray, w: np.ndarray, kappa0: float, offset: float) -> pl.DataFrame:
-    spec = po.spec.bocpd(
+    spec = rp.spec.bocpd(
         "b",
         features=["x"],
         hazard=BOCPD_HAZARD,
@@ -473,7 +473,7 @@ def bocpd_run(x: np.ndarray, w: np.ndarray, kappa0: float, offset: float) -> pl.
         min_weight=0.0,
         weight="w",
     )
-    return po.ModelBank([spec]).fit_predict(pl.DataFrame({"x": x, "w": w}))["b"].struct.unnest()
+    return rp.ModelBank([spec]).fit_predict(pl.DataFrame({"x": x, "w": w}))["b"].struct.unnest()
 
 
 ledger.guard(
@@ -583,11 +583,11 @@ def monitor_crit(alpha: float, k: int = 2, alpha_adjust: str = "none") -> float:
     rng = np.random.default_rng(0)
     features = [f"x{i}" for i in range(k)]
     x = rng.standard_normal((8, k))
-    spec = po.spec.corrchange(
+    spec = rp.spec.corrchange(
         "c", features=features, window_rows=8, alpha=alpha, alpha_adjust=alpha_adjust
     )
     frame = pl.DataFrame({f: x[:, i] for i, f in enumerate(features)})
-    return po.ModelBank([spec]).fit_predict(frame)["c"].struct.field("crit")[7]
+    return rp.ModelBank([spec]).fit_predict(frame)["c"].struct.field("crit")[7]
 
 
 #: The levels from the end at which the model leaves the bisection on ``1 -

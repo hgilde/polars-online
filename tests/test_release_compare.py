@@ -159,15 +159,15 @@ def test_the_workload_reaches_every_field_name_and_every_named_path():
     """The release comparison is read as comparing every output: it holds
     the fullest workload's field names (the memory budgets', every output of
     every model switched on), all of them, and every path in `PATHS`."""
-    import rheon as po
     import test_budgets_memory as memory
+    from rheon import polars as rp
 
     probed: set[str] = set()
     for name, builder, kw, _ in probe.WORKLOAD:
-        probed |= set(po.spec.output_fields(probe.build(builder, name, kw)))
+        probed |= set(rp.spec.output_fields(probe.build(builder, name, kw)))
     fullest: set[str] = set()
     for name, builder, kw, _ in memory.WORKLOAD:
-        fullest |= set(po.spec.output_fields(getattr(po.spec, builder)(name, **kw)))
+        fullest |= set(rp.spec.output_fields(getattr(rp.spec, builder)(name, **kw)))
     assert len(fullest) > 300, len(fullest)
     assert fullest <= probed, sorted(fullest - probed)
     missed = [
@@ -184,13 +184,13 @@ def test_the_kalman_unsized_prior_path_is_reached_not_only_named():
     `below_warm_rows`, the rows past `min_weight` before the prior is sized
     (review 9's R4 §6: `kalman_standardized` reported none, so the release
     comparison never compared that path's rows)."""
-    import rheon as po
+    from rheon import polars as rp
 
     specs = [(n, b, kw) for n, b, kw, _ in probe.WORKLOAD if _kalman_unsized(b, kw)]
     assert specs
     df = probe.stream()
     for name, builder, kw in specs:
-        out = po.ModelBank([probe.build(builder, name, kw)]).fit_predict(df).unnest(name)
+        out = rp.ModelBank([probe.build(builder, name, kw)]).fit_predict(df).unnest(name)
         warm = out.filter(pl.col("withheld_reason") == "below_warm_rows")
         assert warm.height >= 1, (name, out["withheld_reason"].value_counts().to_dicts())
         # Nothing is predicted there: null, not the 0.0 of an unsized prior.

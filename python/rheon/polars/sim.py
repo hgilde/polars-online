@@ -169,7 +169,7 @@ def _chain(
     return seq[:n_blocks]
 
 
-@unstable("rheon.sim.regimes")
+@unstable("rheon.polars.sim.regimes")
 def regimes(
     m: int,
     *,
@@ -304,7 +304,7 @@ def regimes(
 
     .. code-block:: python
 
-        sim = po.sim.regimes(
+        sim = rp.sim.regimes(
             3, states=[0.2, 0.7], transition=[[0.9, 0.1], [0.1, 0.9]],
             n_blocks=4, rows_per_block=50, phi=0.3, seed=1,
         )
@@ -319,9 +319,9 @@ def regimes(
 
     .. rubric:: See also
 
-    - ``po.spec.deco``, ``po.spec.hmm``, ``po.spec.corrchange`` and
-      ``po.spec.bocpd``, the detectors it is made to measure.
-    - :func:`rheon.stream.refresh_time`, to put the series on a
+    - ``rp.spec.deco``, ``rp.spec.hmm``, ``rp.spec.corrchange`` and
+      ``rp.spec.bocpd``, the detectors it is made to measure.
+    - :func:`rheon.polars.stream.refresh_time`, to put the series on a
       refresh grid: under ``async_rates``, unpivot ``rows`` to long form and drop the
       nulls to feed it.
     - `Regimes: what the detectors find, measured

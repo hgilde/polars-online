@@ -18,7 +18,7 @@ import numpy as np
 import polars as pl
 from sklearn.linear_model import LinearRegression
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -38,7 +38,7 @@ def stream(n: int = 900, seed: int = 0) -> tuple[np.ndarray, np.ndarray, np.ndar
 
 
 def spec(**kw) -> dict:
-    return po.spec.ewridge(
+    return rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -86,7 +86,7 @@ def test_after_a_step_back_the_fit_is_sklearns_on_the_rows_since():
     t = t.copy()
     t[600:] -= 500.0
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y, "t": t})
-    out = po.ModelBank([spec(restart_after_step_back=10.0)]).fit_predict(df).unnest("m")
+    out = rp.ModelBank([spec(restart_after_step_back=10.0)]).fit_predict(df).unnest("m")
     w = out["weight_sum"].to_numpy()
     assert np.flatnonzero(w == 0.0).tolist() == [0, 600]
     compared = hold_to_sklearn(out, x, y, t, [600])
@@ -108,7 +108,7 @@ def test_after_a_drift_reset_the_fit_is_sklearns_on_the_rows_since():
     x, y, t = stream()
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y, "t": t})
     out = (
-        po.ModelBank([spec(emit_drift=True, drift_threshold=5.0, drift_action="reset")])
+        rp.ModelBank([spec(emit_drift=True, drift_threshold=5.0, drift_action="reset")])
         .fit_predict(df)
         .unnest("m")
     )

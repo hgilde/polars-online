@@ -12,7 +12,7 @@ import re
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -34,140 +34,140 @@ def _df(n: int = 60) -> pl.DataFrame:
 
 # (builder, kwargs beyond BASE, expected message fragment)
 REJECTED = [
-    (po.spec.ewridge, dict(half_life=10.0, ridge=-1.0), "ridge must be finite and at least 0"),
+    (rp.spec.ewridge, dict(half_life=10.0, ridge=-1.0), "ridge must be finite and at least 0"),
     # The builder's own check since S27: `ridge` left the table of what may be
     # infinite, where only Rust refused it (review 2026-09-12).
-    (po.spec.ewridge, dict(half_life=10.0, ridge=INF), "ridge must be finite, but it is inf"),
-    (po.spec.ewridge, dict(half_life=10.0, ridge=NAN), "ridge must be a number, but it is NaN"),
+    (rp.spec.ewridge, dict(half_life=10.0, ridge=INF), "ridge must be finite, but it is inf"),
+    (rp.spec.ewridge, dict(half_life=10.0, ridge=NAN), "ridge must be a number, but it is NaN"),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, ridge=[1e-6, -1.0]),
         "ridge must be finite and at least 0",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, ridge=[1e-6, 1e-6]),
         "but it lists 0.000001 more than once",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, clock="t", gap_cap=-5.0),
         "gap_cap must be finite and above 0",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, clock="t", gap_cap=NAN),
         "gap_cap must be a number, but it is NaN",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, clock="t", gap_cap=10.0, session="s", session_gap=-1.0),
         "session_gap must be at least 0",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, clock="t", gap_cap=10.0, session="s", session_gap=NAN),
         "session_gap must be a number, but it is NaN",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, solve_every=-1.0),
         "solve_every must be at least 0 clock units",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, solve_every=NAN),
         "solve_every must be a number, but it is NaN",
     ),
-    (po.spec.ewridge, dict(half_life=[10.0, 10.0]), "half_life lists 10 more than once"),
-    (po.spec.ewridge, dict(half_life=NAN), "half_life must be a number, but it is NaN"),
-    (po.spec.ewridge, dict(half_life=-1.0), "half_life must be above 0"),
-    (po.spec.ewridge, dict(lam=NAN), "lam must be a number, but it is NaN"),
+    (rp.spec.ewridge, dict(half_life=[10.0, 10.0]), "half_life lists 10 more than once"),
+    (rp.spec.ewridge, dict(half_life=NAN), "half_life must be a number, but it is NaN"),
+    (rp.spec.ewridge, dict(half_life=-1.0), "half_life must be above 0"),
+    (rp.spec.ewridge, dict(lam=NAN), "lam must be a number, but it is NaN"),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, session="s", session_gap=0.0, session_shrink=0.5, long_half_life=-1.0),
         "long_half_life must be above 0",
     ),
-    (po.spec.huber, dict(half_life=10.0, ridge=-1.0), "ridge must be finite and at least 0"),
+    (rp.spec.huber, dict(half_life=10.0, ridge=-1.0), "ridge must be finite and at least 0"),
     (
-        po.spec.huber,
+        rp.spec.huber,
         dict(half_life=10.0, solve_every=-1.0),
         "solve_every must be at least 0 clock units",
     ),
     (
-        po.spec.quantile,
+        rp.spec.quantile,
         dict(half_life=10.0, quantile=0.5, ridge=-1e-3),
         "ridge must be finite and at least 0",
     ),
     # A plain f64 on the Rust side: refused in Python by name (IMPROVEMENTS U2).
-    (po.spec.quantile, dict(half_life=10.0, quantile=0.5, ridge=INF), "ridge must be finite"),
-    (po.spec.rls, dict(half_life=10.0, delta=INF), "delta must be finite"),
+    (rp.spec.quantile, dict(half_life=10.0, quantile=0.5, ridge=INF), "ridge must be finite"),
+    (rp.spec.rls, dict(half_life=10.0, delta=INF), "delta must be finite"),
     (
-        po.spec.kalman,
+        rp.spec.kalman,
         dict(half_life=10.0, coef_half_life=10.0, obs_var=INF),
         "obs_var must be finite",
     ),
     (
-        po.spec.quantile,
+        rp.spec.quantile,
         dict(half_life=10.0, quantile=0.5, quantile_eps=NAN),
         "quantile_eps must be a number, but it is NaN",
     ),
-    (po.spec.rls, dict(half_life=10.0, delta=0.0), "delta must be finite and above 0"),
-    (po.spec.rls, dict(half_life=10.0, delta=-1.0), "delta must be finite and above 0"),
+    (rp.spec.rls, dict(half_life=10.0, delta=0.0), "delta must be finite and above 0"),
+    (rp.spec.rls, dict(half_life=10.0, delta=-1.0), "delta must be finite and above 0"),
     (
-        po.spec.lasso,
+        rp.spec.lasso,
         dict(half_life=10.0, penalties=[0.1, 0.1]),
         "penalties must run from the largest to the smallest",
     ),
     (
-        po.spec.lasso,
+        rp.spec.lasso,
         dict(half_life=10.0, penalties=[0.1, -0.1]),
         "penalties must be finite and at least 0",
     ),
     (
-        po.spec.lasso,
+        rp.spec.lasso,
         dict(half_life=10.0, penalties=[0.1], select_half_life=0.0),
         "select_half_life must be above 0",
     ),
     (
-        po.spec.lasso,
+        rp.spec.lasso,
         dict(half_life=10.0, penalties=[0.1], tol=0.0),
         "tol must be finite and above 0",
     ),
     (
-        po.spec.kalman,
+        rp.spec.kalman,
         dict(half_life=10.0, coef_half_life=NAN),
         "coef_half_life must be a number, but it is NaN",
     ),
     # `q` alone: beside `coef_half_life` the pair is refused (review
     # 2026-10-06, PC6), below.
     (
-        po.spec.kalman,
+        rp.spec.kalman,
         dict(half_life=10.0, q=[-1.0, 1.0]),
         "q must be finite and at least 0",
     ),
     (
-        po.spec.kalman,
+        rp.spec.kalman,
         dict(half_life=10.0, coef_half_life=10.0, q=[0.0, 1.0]),
         "coef_half_life and q cannot both be set",
     ),
-    (po.spec.kalman, dict(half_life=10.0), "kalman needs coef_half_life"),
+    (rp.spec.kalman, dict(half_life=10.0), "kalman needs coef_half_life"),
     # The empties a raw dict is refused for, refused from the builder too
     # (review 2026-10-06, YA5): `{}` read as `None`, "no sets", in silence.
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, feature_sets={}),
         "feature_sets must name at least one set, but it names none",
     ),
     # `-0.0` is `0.0`: two instances under two field names (PC10).
-    (po.spec.ewridge, dict(half_life=10.0, ridge=[0.0, -0.0]), "but it lists 0 more than once"),
+    (rp.spec.ewridge, dict(half_life=10.0, ridge=[0.0, -0.0]), "but it lists 0 more than once"),
     (
-        po.spec.kalman,
+        rp.spec.kalman,
         dict(half_life=10.0, coef_half_life=10.0, obs_var=-1.0),
         "obs_var must be finite and above 0",
     ),
     (
-        po.spec.kalman,
+        rp.spec.kalman,
         dict(half_life=10.0, coef_half_life=10.0, p0=0.0),
         "p0 must be finite and above 0",
     ),
@@ -175,48 +175,48 @@ REJECTED = [
     # column split its coefficient across identical slots, and an empty set
     # was refused as "out-of-range indices".
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, feature_sets={"a": ["x0", "x0"]}),
         'feature set "a" lists "x0" more than once',
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, feature_sets={"a": []}),
         'feature set "a" lists no feature',
     ),
     # A knob whose switch is off did nothing, without a word (S22).
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, drift_action="reset"),
         "applies only when emit_drift is on",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, drift_delta=0.1),
         "drift_delta applies only when emit_drift is on",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, drift_threshold=5.0),
         "drift_threshold applies only when emit_drift is on",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, average_eta=2.0),
         "average_eta applies only when emit_averaged is on",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, resid_autocorr_lag=2),
         "resid_autocorr_lag applies only when emit_autocorr is on",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, long_half_life=100.0),
         "long_half_life sets the half-life of the long-run fit session_shrink blends in",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(
             half_life=10.0,
             clock="t",
@@ -229,7 +229,7 @@ REJECTED = [
         'session_shrink and session_gap="reset" cannot both be set',
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(
             half_life=10.0,
             group="g",
@@ -241,22 +241,22 @@ REJECTED = [
         'session_shrink and group_close="session" cannot both be set',
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, session_gap=5.0),
         "session_gap applies only with a session column",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, restart_after_step_back=1.0),
         "restart_after_step_back applies only with a clock",
     ),
     # The policies that absorbed a step back are gone (task 120); the parser
     # refuses them before a spec has a name, in test_clock_order.py.
     # The cap is finite and above 0; a session gap finite or "reset".
-    (po.spec.ewridge, dict(half_life=10.0, clock="t", gap_cap=INF), "gap_cap must be finite"),
-    (po.spec.ewridge, dict(half_life=10.0, clock="t", gap_cap=0.0), "gap_cap must be above 0"),
+    (rp.spec.ewridge, dict(half_life=10.0, clock="t", gap_cap=INF), "gap_cap must be finite"),
+    (rp.spec.ewridge, dict(half_life=10.0, clock="t", gap_cap=0.0), "gap_cap must be above 0"),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, clock="t", gap_cap=10.0, session="s", session_gap=INF),
         "session_gap must be finite",
     ),
@@ -264,12 +264,12 @@ REJECTED = [
     # clock units, finite and >= 0, and the row cap a count of rows; `0` of
     # either is every row, below.
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, window_size=5.0, snapshot_every=-1.0),
         "snapshot_every must be finite and at least 0 clock units",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, window_size=5.0, max_rows_between_snapshots=-1),
         "max_rows_between_snapshots must be at least 1, but it is -1",
     ),
@@ -277,52 +277,52 @@ REJECTED = [
     # `max_rows_between_coefs` is since task 178; the clock form's `0` is
     # every row (docs/PLAN.md task 196, U7).
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, window_size=5.0, max_rows_between_snapshots=0),
         "max_rows_between_snapshots must be at least 1, but it is 0",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, max_rows_between_solves=0),
         "max_rows_between_solves must be at least 1, but it is 0",
     ),
     (
-        po.spec.lasso,
+        rp.spec.lasso,
         dict(half_life=10.0, penalties=[0.1], max_rows_between_solves=0),
         "max_rows_between_solves must be at least 1, but it is 0",
     ),
     (
-        po.spec.huber,
+        rp.spec.huber,
         dict(half_life=10.0, max_rows_between_solves=0),
         "max_rows_between_solves must be at least 1, but it is 0",
     ),
 ]
 
 ACCEPTED = [
-    (po.spec.ewridge, dict(half_life=10.0, ridge=0.0)),
-    (po.spec.ewridge, dict(half_life=10.0, ridge=[1e-6, 1e-3])),
+    (rp.spec.ewridge, dict(half_life=10.0, ridge=0.0)),
+    (rp.spec.ewridge, dict(half_life=10.0, ridge=[1e-6, 1e-3])),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(half_life=10.0, clock="t", gap_cap=10.0, session="s", session_gap=0.0),
     ),
-    (po.spec.ewridge, dict(half_life=10.0, solve_every=0.0)),
+    (rp.spec.ewridge, dict(half_life=10.0, solve_every=0.0)),
     # Every row, as `solve_every = 0` solves on every row (task 162), and a
     # cap of one row (task 196, U7).
-    (po.spec.ewridge, dict(half_life=10.0, window_size=5.0, snapshot_every=0)),
-    (po.spec.ewridge, dict(half_life=10.0, window_size=5.0, max_rows_between_snapshots=1)),
-    (po.spec.ewridge, dict(half_life=10.0, max_rows_between_solves=1)),
-    (po.spec.ewridge, dict(half_life=INF)),
-    (po.spec.ewridge, dict(half_life=[10.0, 20.0])),
-    (po.spec.huber, dict(half_life=10.0, ridge=0.0)),
-    (po.spec.lasso, dict(half_life=10.0, penalties=[0.1, 0.0])),
-    (po.spec.kalman, dict(half_life=10.0, coef_half_life=INF)),
-    (po.spec.kalman, dict(half_life=10.0, q=[0.0, 0.0])),
-    (po.spec.ewridge, dict(half_life=10.0, feature_sets={"a": ["x0"]})),
-    (po.spec.ewridge, dict(half_life=10.0, emit_drift=True, drift_action="reset")),
-    (po.spec.ewridge, dict(half_life=10.0, ridge=[1e-6, 1.0], emit_averaged=True, average_eta=2.0)),
-    (po.spec.ewridge, dict(half_life=10.0, emit_autocorr=True, resid_autocorr_lag=2)),
+    (rp.spec.ewridge, dict(half_life=10.0, window_size=5.0, snapshot_every=0)),
+    (rp.spec.ewridge, dict(half_life=10.0, window_size=5.0, max_rows_between_snapshots=1)),
+    (rp.spec.ewridge, dict(half_life=10.0, max_rows_between_solves=1)),
+    (rp.spec.ewridge, dict(half_life=INF)),
+    (rp.spec.ewridge, dict(half_life=[10.0, 20.0])),
+    (rp.spec.huber, dict(half_life=10.0, ridge=0.0)),
+    (rp.spec.lasso, dict(half_life=10.0, penalties=[0.1, 0.0])),
+    (rp.spec.kalman, dict(half_life=10.0, coef_half_life=INF)),
+    (rp.spec.kalman, dict(half_life=10.0, q=[0.0, 0.0])),
+    (rp.spec.ewridge, dict(half_life=10.0, feature_sets={"a": ["x0"]})),
+    (rp.spec.ewridge, dict(half_life=10.0, emit_drift=True, drift_action="reset")),
+    (rp.spec.ewridge, dict(half_life=10.0, ridge=[1e-6, 1.0], emit_averaged=True, average_eta=2.0)),
+    (rp.spec.ewridge, dict(half_life=10.0, emit_autocorr=True, resid_autocorr_lag=2)),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(
             half_life=10.0,
             clock="t",
@@ -334,7 +334,7 @@ ACCEPTED = [
         ),
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(
             half_life=10.0,
             clock="t",
@@ -362,7 +362,7 @@ def test_bad_parameters_are_refused_by_name(builder, kw, msg):
 @pytest.mark.parametrize("builder,kw", ACCEPTED, ids=[_label(c) for c in ACCEPTED])
 def test_the_legal_neighbours_still_run(builder, kw):
     spec = builder("m", **BASE, **kw)
-    out = po.ModelBank([spec]).fit_predict(_df()).unnest("m")
+    out = rp.ModelBank([spec]).fit_predict(_df()).unnest("m")
     for col in [c for c in out.columns if c.startswith("weight_sum")]:
         assert all(math.isfinite(v) for v in out[col].to_list()), col
 
@@ -371,17 +371,17 @@ def test_a_nan_deep_in_a_list_names_the_parameter():
     with pytest.raises(
         ValueError, match='spec "m": coef_prior must hold numbers, but one of its values is NaN'
     ):
-        po.spec.ewridge("m", half_life=10.0, coef_prior=[[0.0, NAN]], **BASE)
+        rp.spec.ewridge("m", half_life=10.0, coef_prior=[[0.0, NAN]], **BASE)
 
 
 def test_a_feature_set_named_twice_is_refused_by_name():
     """A hand-written list can name one set twice. The bank's field-name
     tripwire caught it, under a comment saying the case could not arise
     (review 2026-09-12, S7)."""
-    spec = po.spec.ewridge("m", half_life=10.0, **BASE)
+    spec = rp.spec.ewridge("m", half_life=10.0, **BASE)
     spec["model"]["feature_sets"] = [["a", ["x0"]], ["a", ["x0"]]]
     with pytest.raises(ValueError, match='spec "m": feature_sets names "a" more than once'):
-        po.ModelBank([spec])
+        rp.ModelBank([spec])
 
 
 @pytest.mark.parametrize("name", ["", "spec", "group"])
@@ -390,7 +390,7 @@ def test_a_spec_name_the_bank_cannot_carry_is_refused(name):
     after the spec, so a spec of either name collided there, and an empty
     name names no struct at all (S7)."""
     with pytest.raises(ValueError, match="name"):
-        po.spec.ewridge(name, half_life=10.0, **BASE)
+        rp.spec.ewridge(name, half_life=10.0, **BASE)
 
 
 def test_holt_takes_its_level_halflife_once():
@@ -399,35 +399,35 @@ def test_holt_takes_its_level_halflife_once():
     ``weight_sum`` followed one and ``sigma`` the other (S22), and the two
     spellings built two different spec dicts (review TA6)."""
     with pytest.raises(TypeError, match="level_half_life was renamed half_life"):
-        po.spec.holt("m", targets=["y"], level_half_life=20.0)
-    po.spec.holt("m", targets=["y"], half_life=20.0)
+        rp.spec.holt("m", targets=["y"], level_half_life=20.0)
+    rp.spec.holt("m", targets=["y"], half_life=20.0)
 
 
 ROW_CAPS_AT_ZERO = [
-    (po.spec.ewridge, dict(targets=["y"], features=["x0"]), "max_rows_between_solves"),
+    (rp.spec.ewridge, dict(targets=["y"], features=["x0"]), "max_rows_between_solves"),
     (
-        po.spec.lasso,
+        rp.spec.lasso,
         dict(targets=["y"], features=["x0"], penalties=[0.1]),
         "max_rows_between_solves",
     ),
     (
-        po.spec.quantile,
+        rp.spec.quantile,
         dict(targets=["y"], features=["x0"], quantile=0.5),
         "max_rows_between_solves",
     ),
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(targets=["y"], features=["x0"], window_size=5.0),
         "max_rows_between_snapshots",
     ),
     (
-        po.spec.ew_cov,
+        rp.spec.ew_cov,
         dict(features=["x0", "y"], window_size=5.0, stats=["mean"]),
         "max_rows_between_snapshots",
     ),
-    (po.spec.ew_cov, dict(features=["x0", "y"], pca=1), "max_rows_between_pcas"),
-    (po.spec.micro, dict(features=["x0", "y"], eps=1.0), "max_rows_between_prunes"),
-    (po.spec.ewridge, dict(targets=["y"], features=["x0"]), "max_rows_between_coefs"),
+    (rp.spec.ew_cov, dict(features=["x0", "y"], pca=1), "max_rows_between_pcas"),
+    (rp.spec.micro, dict(features=["x0", "y"], eps=1.0), "max_rows_between_prunes"),
+    (rp.spec.ewridge, dict(targets=["y"], features=["x0"]), "max_rows_between_coefs"),
 ]
 
 
@@ -445,7 +445,7 @@ def test_a_row_cap_of_zero_is_refused_by_both_doors(builder, kw, key):
     where = spec if key == "max_rows_between_coefs" else spec["model"]
     where[key] = 0
     with pytest.raises(ValueError, match=f"{key} must be at least 1, but it is 0"):
-        po.ModelBank([spec])
+        rp.ModelBank([spec])
 
 
 def test_ew_cov_refuses_pca_0_by_both_doors():
@@ -453,27 +453,27 @@ def test_ew_cov_refuses_pca_0_by_both_doors():
     it is the accumulate-only use, docs/ENHANCEMENTS.md E43, and stays.)"""
     msg = "pca must be at least 1, but it is 0, which asks for no component"
     with pytest.raises(ValueError, match=re.escape(msg)):
-        po.spec.ew_cov("c", features=["x0", "y"], half_life=10.0, stats=["mean"], pca=0)
-    spec = po.spec.ew_cov("c", features=["x0", "y"], half_life=10.0, stats=["mean"])
+        rp.spec.ew_cov("c", features=["x0", "y"], half_life=10.0, stats=["mean"], pca=0)
+    spec = rp.spec.ew_cov("c", features=["x0", "y"], half_life=10.0, stats=["mean"])
     with pytest.raises(ValueError, match=re.escape(msg)):
-        po.ModelBank([{**spec, "model": {**spec["model"], "pca": 0}}])
+        rp.ModelBank([{**spec, "model": {**spec["model"], "pca": 0}}])
 
 
 def test_holt_takes_a_trend_halflife_only_with_a_trend():
     """``trend=False`` holds the trend at zero (docs/PLAN.md task 115, S30),
     so a ``trend_half_life`` beside it would be read by nothing."""
     with pytest.raises(ValueError, match="trend_half_life sets how fast the trend forgets"):
-        po.spec.holt("m", targets=["y"], half_life=20.0, trend_half_life=80.0, trend=False)
-    po.spec.holt("m", targets=["y"], half_life=20.0, trend=False)
-    po.spec.holt("m", targets=["y"], half_life=20.0, trend_half_life=80.0)
+        rp.spec.holt("m", targets=["y"], half_life=20.0, trend_half_life=80.0, trend=False)
+    rp.spec.holt("m", targets=["y"], half_life=20.0, trend=False)
+    rp.spec.holt("m", targets=["y"], half_life=20.0, trend_half_life=80.0)
 
 
 @pytest.mark.parametrize(
     "builder,kw",
     [
-        (po.spec.ew_cov, dict(features=["x0", "y"], half_life=10.0)),
-        (po.spec.marginal, dict(**BASE, half_life=10.0)),
-        (po.spec.bocpd, dict(features=["x0"], covariance_prior=[1.0])),
+        (rp.spec.ew_cov, dict(features=["x0", "y"], half_life=10.0)),
+        (rp.spec.marginal, dict(**BASE, half_life=10.0)),
+        (rp.spec.bocpd, dict(features=["x0"], covariance_prior=[1.0])),
     ],
     ids=["ew_cov", "marginal", "bocpd"],
 )
@@ -490,10 +490,10 @@ def test_add_intercept_moves_no_warm_up_where_there_is_no_intercept():
     ``k + fit_intercept``, so the flag moved its first reported row (S22)."""
     first = []
     for flag in (True, False):
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "m", features=["x0"], stats=["mean"], half_life=10.0, fit_intercept=flag
         )
-        out = po.ModelBank([spec]).fit_predict(_df(20)).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(_df(20)).unnest("m")
         mean = next(c for c in out.columns if c.startswith("mean"))
         first.append(out[mean].is_not_null().arg_max())
     assert first[0] == first[1], first
@@ -506,17 +506,17 @@ def test_marginal_takes_a_window_with_lags_only_by_name():
     with it, it is taken; ``window_lags`` without both is refused. It was
     refused outright (C18), since the lag ring kept no snapshot."""
     with pytest.raises(ValueError, match="need window_lags=True") as exc:
-        po.spec.marginal("m", half_life=10.0, window_size=50.0, lags=[1], **BASE)
+        rp.spec.marginal("m", half_life=10.0, window_size=50.0, lags=[1], **BASE)
     # BASE's one feature and one target at one lag, the cross lag at it:
     # 2L·T + 2(L + C)·p·T = 2 + 4 = 6 doubles beside (3p + 5)·T = 8.
     assert "6 values beside the 8" in str(exc.value), exc.value
     assert "1.75 times the size" in str(exc.value), exc.value
-    po.spec.marginal("m", half_life=10.0, window_size=50.0, lags=[1], window_lags=True, **BASE)
+    rp.spec.marginal("m", half_life=10.0, window_size=50.0, lags=[1], window_lags=True, **BASE)
     for kw in ({"window_size": 50.0}, {"lags": [1]}, {}):
         with pytest.raises(ValueError, match="window_lags applies only with both"):
-            po.spec.marginal("m", half_life=10.0, window_lags=True, **kw, **BASE)
-    po.spec.marginal("m", half_life=10.0, window_size=50.0, **BASE)
-    po.spec.marginal("m", half_life=10.0, lags=[1], **BASE)
+            rp.spec.marginal("m", half_life=10.0, window_lags=True, **kw, **BASE)
+    rp.spec.marginal("m", half_life=10.0, window_size=50.0, **BASE)
+    rp.spec.marginal("m", half_life=10.0, lags=[1], **BASE)
 
 
 def test_every_door_fills_validates_and_builds_a_spec_alike():
@@ -526,10 +526,10 @@ def test_every_door_fills_validates_and_builds_a_spec_alike():
     fills from ``features[0]`` -- was refused there, and a spec the core
     refuses was given field names there (S25)."""
     e53 = {"name": "c", "model": {"type": "ew_cov"}, "features": ["x0", "y"], "half_life": 10.0}
-    po.ModelBank([e53])
-    assert po.spec.output_fields(e53)
-    assert po.spec.output_index(e53).height > 0
-    assert po.spec.coef_fields(e53).height == 0
+    rp.ModelBank([e53])
+    assert rp.spec.output_fields(e53)
+    assert rp.spec.output_index(e53).height > 0
+    assert rp.spec.coef_fields(e53).height == 0
     refused = {
         "name": "r",
         "model": {"type": "ewridge", "window_size": 10.0, "ridge_scale": "sum"},
@@ -537,10 +537,10 @@ def test_every_door_fills_validates_and_builds_a_spec_alike():
         "features": ["x0"],
         "half_life": 10.0,
     }
-    doors = [po.spec.output_fields, po.spec.output_index, po.spec.coef_fields, po.ModelBank]
+    doors = [rp.spec.output_fields, rp.spec.output_index, rp.spec.coef_fields, rp.ModelBank]
     for door in doors:
         with pytest.raises(ValueError, match="ridge_scale"):
-            door([refused] if door is po.ModelBank else refused)
+            door([refused] if door is rp.ModelBank else refused)
 
 
 _TWO = dict(features=["x0", "y"])
@@ -555,78 +555,78 @@ _KMEANS = dict(**_TWO, half_life=10.0)
 #: `k` in silence where `hmm` refuses it (PC8).
 IGNORED = [
     (
-        po.spec.hmm,
+        rp.spec.hmm,
         dict(**_HMM, **_TVTP, transition=[0.9, 0.1, 0.2, 0.8]),
         'spec "m": transition does not apply under tvtp_coef',
     ),
     (
-        po.spec.hmm,
+        rp.spec.hmm,
         dict(**_HMM, **_TVTP, transition_prior=2.0),
         'spec "m": transition_prior does not apply under tvtp_coef',
     ),
     (
-        po.spec.hmm,
+        rp.spec.hmm,
         dict(**_HMM, **_GIVEN, warm_rows=20),
         'spec "m": warm_rows does not apply when means and covs are given',
     ),
     (
-        po.spec.hmm,
+        rp.spec.hmm,
         dict(**_HMM, **_GIVEN, init="first"),
         'spec "m": init does not apply when means and covs are given',
     ),
     (
-        po.spec.hmm,
+        rp.spec.hmm,
         dict(**_HMM, **_GIVEN, seed=3),
         'spec "m": seed does not apply when means and covs are given',
     ),
     (
-        po.spec.rcov,
+        rp.spec.rcov,
         dict(**_RCOV, kind="plain", jitter=3),
         'jitter applies only under kind="kernel"',
     ),
     (
-        po.spec.rcov,
+        rp.spec.rcov,
         dict(**_RCOV, kind="plain", theta=2.0),
         'theta applies only under kind="preavg"',
     ),
     (
-        po.spec.rcov,
+        rp.spec.rcov,
         dict(**_RCOV, kind="plain", max_bandwidth=5),
         'max_bandwidth applies only under kind="kernel"',
     ),
     (
-        po.spec.rcov,
+        rp.spec.rcov,
         dict(**_RCOV, theta=2.0),
         'theta applies only under kind="preavg", but kind is "kernel"',
     ),
     (
-        po.spec.rcov,
+        rp.spec.rcov,
         dict(**_RCOV, kind="preavg", jitter=3),
         'jitter applies only under kind="kernel"',
     ),
     (
-        po.spec.rcov,
+        rp.spec.rcov,
         dict(**_RCOV, kind="preavg", max_bandwidth=5),
         'max_bandwidth applies only under kind="kernel"',
     ),
     (
-        po.spec.kmeans,
+        rp.spec.kmeans,
         dict(**_KMEANS, n_clusters=3, split_merge=0.0, dead_frac=0.25),
         'spec "m": dead_frac = 0.25 re-places a center only at a split-merge check',
     ),
     (
-        po.spec.kmeans,
+        rp.spec.kmeans,
         dict(**_KMEANS, n_clusters=3, warm_rows=1),
         'spec "m": warm_rows must be at least n_clusters (3) to seed that many centers, but it '
         "is 1",
     ),
     (
-        po.spec.deco,
+        rp.spec.deco,
         dict(**_TWO, half_life=10.0, blocks={}),
         'spec "m": blocks must name at least one block, but it names none',
     ),
     (
-        po.spec.ew_cov,
+        rp.spec.ew_cov,
         dict(**_TWO, half_life=10.0, stats=["mahal"], precision_prior=1.0, mahal_quantiles=[]),
         "mahal_quantiles must list at least one level, but it is empty",
     ),
@@ -634,14 +634,14 @@ IGNORED = [
 
 #: Their legal neighbours, which build.
 IGNORED_NOT = [
-    (po.spec.hmm, dict(**_HMM, **_TVTP)),
-    (po.spec.hmm, dict(**_HMM, **_GIVEN)),
-    (po.spec.rcov, dict(**_RCOV, jitter=3, max_bandwidth=5)),
-    (po.spec.rcov, dict(**_RCOV, kind="preavg", theta=2.0)),
-    (po.spec.rcov, dict(**_RCOV, kind="plain")),
-    (po.spec.kmeans, dict(**_KMEANS, n_clusters=3, split_merge=0.0)),
-    (po.spec.kmeans, dict(**_KMEANS, n_clusters=3, warm_rows=3)),
-    (po.spec.kmeans, dict(**_KMEANS, n_clusters=600)),
+    (rp.spec.hmm, dict(**_HMM, **_TVTP)),
+    (rp.spec.hmm, dict(**_HMM, **_GIVEN)),
+    (rp.spec.rcov, dict(**_RCOV, jitter=3, max_bandwidth=5)),
+    (rp.spec.rcov, dict(**_RCOV, kind="preavg", theta=2.0)),
+    (rp.spec.rcov, dict(**_RCOV, kind="plain")),
+    (rp.spec.kmeans, dict(**_KMEANS, n_clusters=3, split_merge=0.0)),
+    (rp.spec.kmeans, dict(**_KMEANS, n_clusters=3, warm_rows=3)),
+    (rp.spec.kmeans, dict(**_KMEANS, n_clusters=600)),
 ]
 
 
@@ -656,25 +656,25 @@ def test_a_parameter_its_mode_does_not_read_is_refused(builder, kw, msg):
 
 @pytest.mark.parametrize("builder,kw", IGNORED_NOT, ids=[_label(c) for c in IGNORED_NOT])
 def test_the_modes_own_parameters_still_build(builder, kw):
-    po.ModelBank([builder("m", **kw)])
+    rp.ModelBank([builder("m", **kw)])
 
 
 def test_an_empty_target_name_is_refused():
     """``targets=[""]`` wrote fields called ``pred_`` and ``resid_``, where
     ``po.target("")`` is refused (review 2026-10-06, YA5)."""
     with pytest.raises(ValueError, match='spec "m": every target needs a name'):
-        po.spec.ewridge("m", targets=[""], features=["x0"], half_life=10.0)
+        rp.spec.ewridge("m", targets=[""], features=["x0"], half_life=10.0)
 
 
 def test_a_tuple_comes_back_from_the_bank_as_it_went_in():
     """``features=("x0",)`` type-checks, but the dict kept the tuple while the
     bank reports a list, so ``ModelBank([s]).specs[0] != s`` (review
     2026-10-06, YA5). Every tuple a builder takes is a list in its dict."""
-    s = po.spec.ewridge("m", targets=("y",), features=("x0",), ridge=(1e-6, 0.1), half_life=10.0)
+    s = rp.spec.ewridge("m", targets=("y",), features=("x0",), ridge=(1e-6, 0.1), half_life=10.0)
     assert s["features"] == ["x0"] and s["model"]["ridge"] == [1e-6, 0.1]
-    assert po.ModelBank([s]).specs[0] == s
-    m = po.spec.marginal("p", targets=["y"], features=("x0",), lags=(1, 2), half_life=10.0)
-    assert po.ModelBank([m]).specs[0] == m
+    assert rp.ModelBank([s]).specs[0] == s
+    m = rp.spec.marginal("p", targets=["y"], features=("x0",), lags=(1, 2), half_life=10.0)
+    assert rp.ModelBank([m]).specs[0] == m
 
 
 # --- task 278: nonsense values refused by name, each with its reason --------
@@ -688,14 +688,14 @@ NONSENSE = [
     # A floor at inf withheld every row for good, said only by a notice a
     # half-life after the stream settled.
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(**BASE, half_life=10.0, min_weight=INF),
         'spec "m": min_weight must be finite, but it is inf, a floor no weight reaches, so every '
         "prediction would stay withheld. Set min_weight to the weight the model must have "
         "learned before it predicts, or leave it out for the model's default.",
     ),
     (
-        po.spec.marginal,
+        rp.spec.marginal,
         dict(targets=["y"], features=["x0", "x1"], half_life=10.0, min_weight=[INF]),
         'spec "m": min_weight must be finite, but one of its values is inf, a floor no weight '
         "reaches",
@@ -704,14 +704,14 @@ NONSENSE = [
     # was taken, and the "finite and strictly increasing" rule held only
     # because there was nothing to hold it to.
     (
-        po.spec.marginal,
+        rp.spec.marginal,
         dict(targets=["y"], features=["x0"], half_life=10.0, bin_edges=[[]]),
         'spec "m": bin_edges gives no feature an edge, so each feature would be one open bin, '
         "with no response curve and no split to report. Give at least one feature an edge, or "
         "leave bin_edges out for no bins.",
     ),
     (
-        po.spec.marginal,
+        rp.spec.marginal,
         dict(targets=["y"], features=["x0", "x1"], half_life=10.0, bin_edges={"x0": [], "x1": []}),
         "bin_edges gives no feature an edge",
     ),
@@ -720,57 +720,57 @@ NONSENSE = [
     # lost (tests/test_family_f_grids.py measured it; task 278 batch 33).
     # At 1 or more the lightest centre was "dead" at every check.
     (
-        po.spec.kmeans,
+        rp.spec.kmeans,
         dict(**_KM, dead_frac=0.5),
         'spec "m": dead_frac must be below 0.5, but it is 0.5: a re-placed center starts at '
         "half the weight of the cluster it splits from, so at 0.5 or above it can start at or "
         "below the floor dead_frac sets and be re-placed again at the next split-merge check. "
         "Set dead_frac below 0.5, such as the default 0.05.",
     ),
-    (po.spec.kmeans, dict(**_KM, dead_frac=0.6), "dead_frac must be below 0.5, but it is 0.6"),
-    (po.spec.kmeans, dict(**_KM, dead_frac=1.0), "dead_frac must be below 0.5, but it is 1"),
-    (po.spec.kmeans, dict(**_KM, dead_frac=1.5), "dead_frac must be below 0.5, but it is 1.5"),
+    (rp.spec.kmeans, dict(**_KM, dead_frac=0.6), "dead_frac must be below 0.5, but it is 0.6"),
+    (rp.spec.kmeans, dict(**_KM, dead_frac=1.0), "dead_frac must be below 0.5, but it is 1"),
+    (rp.spec.kmeans, dict(**_KM, dead_frac=1.5), "dead_frac must be below 0.5, but it is 1.5"),
     # One slot leaves nothing to average: the field was that slot's
     # prediction under another name, as `emit_selected` was refused for.
     (
-        po.spec.ewridge,
+        rp.spec.ewridge,
         dict(**BASE, half_life=10.0, emit_averaged=True),
         'spec "m": emit_averaged chooses among each target\'s slots, but this spec has one '
         "slot per target.",
     ),
     (
-        po.spec.rls,
+        rp.spec.rls,
         dict(**BASE, half_life=10.0, emit_averaged=True),
         "emit_averaged chooses among each target's slots",
     ),
     # A Bartlett bandwidth past the span adds no lag; it only flattens the
     # weights toward the limit where the long-run variance is 0.
     (
-        po.spec.corrchange,
+        rp.spec.corrchange,
         dict(**_CC, bandwidth=21),
         'spec "m": bandwidth must be at most window_rows (20), but it is 21: past window_rows '
         "there is no further lag to weight, and the statistic grows with the bandwidth rather "
         "than with the data. Lower bandwidth to 20 or below.",
     ),
     (
-        po.spec.corrchange,
+        rp.spec.corrchange,
         dict(**_CC, kind="sequential", bandwidth=10**9),
         "bandwidth must be at most window_rows (20), but it is 1000000000",
     ),
 ]
 
 NONSENSE_NEIGHBOURS = [
-    (po.spec.ewridge, dict(**BASE, half_life=10.0, min_weight=1e300)),
-    (po.spec.marginal, dict(targets=["y"], features=["x0"], half_life=10.0, bin_edges=[[0.0]])),
+    (rp.spec.ewridge, dict(**BASE, half_life=10.0, min_weight=1e300)),
+    (rp.spec.marginal, dict(targets=["y"], features=["x0"], half_life=10.0, bin_edges=[[0.0]])),
     # One feature without edges beside one with them runs: below.
     (
-        po.spec.marginal,
+        rp.spec.marginal,
         dict(targets=["y"], features=["x0", "x1"], half_life=10.0, bin_edges=[[0.0], []]),
     ),
-    (po.spec.kmeans, dict(**_KM, dead_frac=0.499)),
-    (po.spec.ewridge, dict(**BASE, half_life=[10.0, 20.0], emit_averaged=True)),
-    (po.spec.corrchange, dict(**_CC, bandwidth=20)),
-    (po.spec.corrchange, dict(**_CC, kind="sequential", bandwidth=20)),
+    (rp.spec.kmeans, dict(**_KM, dead_frac=0.499)),
+    (rp.spec.ewridge, dict(**BASE, half_life=[10.0, 20.0], emit_averaged=True)),
+    (rp.spec.corrchange, dict(**_CC, bandwidth=20)),
+    (rp.spec.corrchange, dict(**_CC, kind="sequential", bandwidth=20)),
 ]
 
 
@@ -789,7 +789,7 @@ def test_a_nonsense_value_is_refused_with_its_reason(builder, kw, msg):
     value = ["inf" if v == INF else v for v in value] if isinstance(value, list) else value
     (spec if key in _TOP_LEVEL else spec["model"])[key] = "inf" if value == INF else value
     with pytest.raises(ValueError) as exc:
-        po.ModelBank([spec])
+        rp.ModelBank([spec])
     assert msg.removeprefix('spec "m": ') in str(exc.value), str(exc.value)
 
 
@@ -801,7 +801,7 @@ _TOP_LEVEL = frozenset({"min_weight", "emit_averaged"})
     "builder,kw", NONSENSE_NEIGHBOURS, ids=[_label(c) for c in NONSENSE_NEIGHBOURS]
 )
 def test_the_nearest_legal_value_still_builds(builder, kw):
-    po.ModelBank([builder("m", **kw)])
+    rp.ModelBank([builder("m", **kw)])
 
 
 def test_a_feature_left_without_edges_reports_one_bin():
@@ -817,10 +817,10 @@ def test_a_feature_left_without_edges_reports_one_bin():
             "y": [float((i % 7) * 2 + 1) for i in range(60)],
         }
     )
-    spec = po.spec.marginal(
+    spec = rp.spec.marginal(
         "m", targets=["y"], features=["x0", "x1"], half_life=INF, bin_edges=[[0.0], []]
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     got = {r["feature"]: r for r in bank.marginal("m").iter_rows(named=True)}
     assert list(got["x1"]["bin_edges"]) == []
@@ -853,7 +853,7 @@ def test_fit_intercept_is_inert_on_every_kind_without_an_intercept():
 
     def run(name, flag):
         spec = {**_build(name), "fit_intercept": flag}
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         out = bank.fit_predict(frame_for(name))
         tables = [out, bank.closed_groups(drop=False)]
         if name == "marginal":

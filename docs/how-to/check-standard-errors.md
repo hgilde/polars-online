@@ -51,7 +51,7 @@ slope is 0, and a test at 5% should reject on about 5% of the streams:
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # 100 independent streams of 3,000 rows. x is persistent (AR(1) at 0.95); the target sums the next
 # h = 10 shocks, which x knows nothing about, so its true slope is 0.

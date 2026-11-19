@@ -19,7 +19,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -65,11 +65,11 @@ def spec(**kw):
         min_weight=MIN_WEIGHT,
     )
     d.update(kw)
-    return po.spec.ew_cov("c", **d)
+    return rp.spec.ew_cov("c", **d)
 
 
 def run(s, df: pl.DataFrame) -> pl.DataFrame:
-    return po.ModelBank([s]).fit_predict(df).unnest("c")
+    return rp.ModelBank([s]).fit_predict(df).unnest("c")
 
 
 def observed(out: pl.DataFrame) -> list[int]:
@@ -173,7 +173,7 @@ class TestTheSchedule:
         """The clock of a spec without one is the row's number, so a number
         `pca_every` refreshes every that many rows, as it did before."""
         steps = irregular()
-        s = po.spec.ew_cov(
+        s = rp.spec.ew_cov(
             "c",
             features=FEATURES,
             half_life=100.0,
@@ -209,7 +209,7 @@ class TestTheSchedule:
 
     def test_a_number_clock_counts_its_own_units(self):
         steps = irregular()
-        s = po.spec.ew_cov(
+        s = rp.spec.ew_cov(
             "c",
             features=FEATURES,
             clock="t",
@@ -228,9 +228,9 @@ class TestChunkingAndResume:
     def test_the_refreshes_do_not_depend_on_the_chunking(self):
         df = frame(irregular())
         s = spec(pca_every="15m", max_rows_between_pcas=12)
-        whole = po.ModelBank([s]).fit_predict(df)
+        whole = rp.ModelBank([s]).fit_predict(df)
         for rows in (1, 7, 37):
-            parts = pl.concat(po.ModelBank([s]).fit_predict_batches(df, chunk_size=rows))
+            parts = pl.concat(rp.ModelBank([s]).fit_predict_batches(df, chunk_size=rows))
             for f in LOADINGS + ["pc0_score", "pc0_var"]:
                 a = whole["c"].struct.field(f).to_numpy()
                 b = parts["c"].struct.field(f).to_numpy()
@@ -242,9 +242,9 @@ class TestChunkingAndResume:
         whole = run(s, df)
         refreshes = observed(whole)
         for cut in (refreshes[3] + 2, refreshes[8] + 5):
-            first = po.ModelBank([s])
+            first = rp.ModelBank([s])
             first.fit_predict(df.head(cut))
-            resumed = po.ModelBank.load_bytes(first.save_bytes(), specs=[s])
+            resumed = rp.ModelBank.load_bytes(first.save_bytes(), specs=[s])
             tail = resumed.fit_predict(df.slice(cut)).unnest("c")
             for f in LOADINGS + ["pc0_score"]:
                 a = whole[f].to_numpy()[cut:]
@@ -261,7 +261,7 @@ class TestRefusals:
         """The mirror: a spec in plain numbers, read on a number clock, with
         `pca_every` a duration, is one spec mixing the two."""
         with pytest.raises(ValueError, match="pca_every is a duration"):
-            po.spec.ew_cov(
+            rp.spec.ew_cov(
                 "c",
                 features=FEATURES,
                 clock="t",
@@ -274,7 +274,7 @@ class TestRefusals:
 
     def test_a_negative_cadence_is_refused(self):
         with pytest.raises(ValueError, match="pca_every must be finite and at least 0 clock units"):
-            po.spec.ew_cov(
+            rp.spec.ew_cov(
                 "c", features=FEATURES, half_life=100.0, stats=["mean"], pca=1, pca_every=-5.0
             )
 
@@ -285,6 +285,6 @@ def test_the_state_exports_to_json_under_a_row_cap_alone():
     (task 161's miss, fixed in task 163)."""
     df = frame(irregular())
     for kw in ({"max_rows_between_pcas": 12}, {"pca_every": "15m"}, {}):
-        bank = po.ModelBank([spec(**kw)])
+        bank = rp.ModelBank([spec(**kw)])
         bank.fit_predict(df.head(60))
         assert '"pca_every"' in bank.write_json(), kw

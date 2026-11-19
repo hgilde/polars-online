@@ -9,7 +9,8 @@ import time
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
+from rheon.polars import _gbdt
 
 rng = np.random.default_rng(0)
 n = 50_000
@@ -26,7 +27,7 @@ d = d.with_columns(
 with tempfile.TemporaryDirectory() as td:
     p = os.path.join(td, "in.parquet")
     d.write_parquet(p)
-    s = po.spec.ewridge(
+    s = rp.spec.ewridge(
         "te",
         targets=["y"],
         features=["one"],
@@ -45,7 +46,7 @@ with tempfile.TemporaryDirectory() as td:
     )
     t0 = time.perf_counter()
     try:
-        m = po.gbdt.xgboost_matrix(lf, label="y", features=["x", "enc"])
+        m = _gbdt.xgboost_matrix(lf, label="y", features=["x", "enc"])
         print(
             "po.gbdt over the bank's query: rows", m.num_row(), f"{time.perf_counter() - t0:.2f}s"
         )

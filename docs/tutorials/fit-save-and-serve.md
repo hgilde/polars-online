@@ -32,7 +32,7 @@ only, since their target is not known yet. Save each to a parquet file:
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 rng = np.random.default_rng(3)
 # The past rows: the planted answer is an intercept of 0.5, 1.5 on x0 and -2 on x1.
@@ -93,7 +93,7 @@ coefficients it holds:
 ```python
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 bank = po.ModelBank.load("ridge.state")         # the bank, with everything it learned
 for term, coef in bank.coef().select("term", "coef").iter_rows():

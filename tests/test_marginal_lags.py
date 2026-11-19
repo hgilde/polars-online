@@ -18,7 +18,7 @@ import polars as pl
 import pytest
 from scipy.signal import lfilter
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -85,7 +85,7 @@ def pairs(df, chunks=1, **kw):
         lags=LAGS,
     )
     d.update(kw)
-    bank = po.ModelBank([po.spec.marginal("m", **d)])
+    bank = rp.ModelBank([rp.spec.marginal("m", **d)])
     for part in [df] if chunks == 1 else list(df.iter_slices(max(1, len(df) // chunks))):
         bank.fit_predict(part)
     return bank.marginal("m").row(0, named=True)
@@ -118,7 +118,7 @@ def test_over_many_null_streams_t_serial_rejects_at_its_level():
         x = lfilter([math.sqrt(1 - 0.81)], [1.0, -0.9], e[0])  # as `ar1`, from x_0 = 0
         y = lfilter([math.sqrt(1 - 0.64)], [1.0, -0.8], e[1])
         frames.append(pl.DataFrame({"g": seed, "t": np.arange(n, dtype=float), "x": x, "y": y}))
-    spec = po.spec.marginal(
+    spec = rp.spec.marginal(
         "m",
         targets=["y"],
         features=["x"],
@@ -130,7 +130,7 @@ def test_over_many_null_streams_t_serial_rejects_at_its_level():
         serial_rule="geometric",
         group="g",
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(pl.concat(frames))
     table = bank.marginal("m")
     assert table.height == reps
@@ -186,7 +186,7 @@ def test_one_chunk_and_many_agree_through_every_event(size, cross_lags):
     may notice where a chunk ends. With the cross terms at every lag, and at
     two (E70), which runs the other loop."""
     df = eventful()
-    s = po.spec.marginal(
+    s = rp.spec.marginal(
         "m",
         targets=["y"],
         features=["x"],
@@ -195,9 +195,9 @@ def test_one_chunk_and_many_agree_through_every_event(size, cross_lags):
         serial_rule="geometric",
         **EVENTS,
     )
-    ref = po.ModelBank([s])
+    ref = rp.ModelBank([s])
     one = ref.fit_predict(df)
-    bank = po.ModelBank([s])
+    bank = rp.ModelBank([s])
     many = pl.concat([bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)])
     assert many.equals(one, null_equal=True)
     assert bank.marginal("m").equals(ref.marginal("m"), null_equal=True)
@@ -209,13 +209,13 @@ def test_the_lagged_pair_is_ew_cov_lags_to_the_bit():
     ``ew_cov(lags=)`` reports for the same two columns -- unclamped, over the
     same two standard deviations, so to the bit and not to a tolerance."""
     df = eventful(nulls=False)
-    bank = po.ModelBank([po.spec.marginal("m", targets=["y"], features=["x"], lags=LAGS, **EVENTS)])
+    bank = rp.ModelBank([rp.spec.marginal("m", targets=["y"], features=["x"], lags=LAGS, **EVENTS)])
     # `ew_cov` reports before each row; the pair is read after the last
     # row, so it is compared with `ew_cov`'s last-row value over one row more.
     bank.fit_predict(df.head(-1))
     pair = bank.marginal("m").row(0, named=True)
-    cov = po.spec.ew_cov("c", features=["x", "y"], lags=LAGS, stats=["lag_corr"], **EVENTS)
-    last = po.ModelBank([cov]).fit_predict(df)["c"].to_list()[-1]
+    cov = rp.spec.ew_cov("c", features=["x", "y"], lags=LAGS, stats=["lag_corr"], **EVENTS)
+    last = rp.ModelBank([cov]).fit_predict(df)["c"].to_list()[-1]
     for i, lag in enumerate(LAGS):
         assert pair["lag_corr_xx"][i] == last[f"lag_corr_l{lag}_x_x"], lag
         assert pair["lag_corr_yy"][i] == last[f"lag_corr_l{lag}_y_y"], lag
@@ -327,7 +327,7 @@ def test_lag_moments_hold_across_null_targets():
 def test_a_saved_bank_resumes_with_its_ring(tmp_path):
     df = stream(n=600, seed=17)
     whole = pairs(df, serial_rule="geometric")
-    spec = po.spec.marginal(
+    spec = rp.spec.marginal(
         "m",
         targets=["y"],
         features=["x"],
@@ -338,10 +338,10 @@ def test_a_saved_bank_resumes_with_its_ring(tmp_path):
         lags=LAGS,
         serial_rule="geometric",
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df[:300])
     bank.save(tmp_path / "m.state")
-    resumed = po.ModelBank.load(tmp_path / "m.state")
+    resumed = rp.ModelBank.load(tmp_path / "m.state")
     resumed.fit_predict(df[300:])
     got = resumed.marginal("m").row(0, named=True)
     assert got["corr"] == whole["corr"]
@@ -350,9 +350,9 @@ def test_a_saved_bank_resumes_with_its_ring(tmp_path):
 
 def test_without_lags_the_frame_is_what_it_was():
     df = stream(n=300, seed=19)
-    bank = po.ModelBank(
+    bank = rp.ModelBank(
         [
-            po.spec.marginal(
+            rp.spec.marginal(
                 "m",
                 targets=["y"],
                 features=["x"],
@@ -378,9 +378,9 @@ def test_cross_lags_keep_the_default_cross_terms_and_change_nothing_else():
     df = eventful()
 
     def run(**more):
-        bank = po.ModelBank(
+        bank = rp.ModelBank(
             [
-                po.spec.marginal(
+                rp.spec.marginal(
                     "m",
                     targets=["y"],
                     features=["x"],
@@ -444,14 +444,14 @@ def test_a_bad_cross_lags_is_refused_by_name_at_construction(kw, msg):
     )
     d.update(kw)
     with pytest.raises(Exception, match=re.escape(msg)):
-        po.ModelBank([po.spec.marginal("m", **d)])
+        rp.ModelBank([rp.spec.marginal("m", **d)])
 
 
 def test_a_saved_bank_keeps_its_cross_lags(tmp_path):
     df = stream(n=600, seed=17)
     kw = dict(serial_rule="geometric", cross_lags=[2, 13])
     whole = pairs(df, **kw)
-    spec = po.spec.marginal(
+    spec = rp.spec.marginal(
         "m",
         targets=["y"],
         features=["x"],
@@ -462,10 +462,10 @@ def test_a_saved_bank_keeps_its_cross_lags(tmp_path):
         lags=LAGS,
         **kw,
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df[:300])
     bank.save(tmp_path / "m.state")
-    resumed = po.ModelBank.load(tmp_path / "m.state")
+    resumed = rp.ModelBank.load(tmp_path / "m.state")
     resumed.fit_predict(df[300:])
     got = resumed.marginal("m").row(0, named=True)
     assert len(got["lag_corr_xy"]) == 2
@@ -503,7 +503,7 @@ def test_a_bad_lag_spec_is_refused_by_name(kw, msg):
     )
     d.update(kw)
     with pytest.raises(Exception, match=re.escape(msg)):
-        po.ModelBank([po.spec.marginal("m", **d)]).fit_predict(stream(50))
+        rp.ModelBank([rp.spec.marginal("m", **d)]).fit_predict(stream(50))
 
 
 def test_a_timely_feature_beats_corr_one_row_on_against_a_forward_target():
@@ -527,7 +527,7 @@ def test_a_timely_feature_beats_corr_one_row_on_against_a_forward_target():
     w = (1.0 - lam) * lam ** np.arange(big_l)
     y = lfilter(np.concatenate([[0.0], w]), [1.0], r[::-1])[::-1]  # sum_(k=1..L) w_k r_(t+k)
     df = pl.DataFrame({"c": np.arange(n, dtype=float), "x": x[:n], "y": y[:n]})
-    spec = po.spec.marginal(
+    spec = rp.spec.marginal(
         "m",
         features=["x"],
         targets=["y"],
@@ -537,7 +537,7 @@ def test_a_timely_feature_beats_corr_one_row_on_against_a_forward_target():
         lags=[1, 2],
         cross_lags=[1, 2],
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit(df)
     m = bank.marginal("m").row(0, named=True)
     shared = math.sqrt(a * (2 - a) * (1 - lam**2) / (1 - lam ** (2 * big_l)))
@@ -632,25 +632,25 @@ def test_windowed_lags_are_the_same_in_one_chunk_or_many_and_across_a_save(tmp_p
     bit, through `eventful`'s weights, nulls, session change and capped gap.
     The window is live: the table is not the unwindowed one."""
     df = eventful()
-    s = po.spec.marginal("m", targets=["y"], features=["x"], **{**EVENTS, **WINDOWED_LAGS})
-    ref = po.ModelBank([s])
+    s = rp.spec.marginal("m", targets=["y"], features=["x"], **{**EVENTS, **WINDOWED_LAGS})
+    ref = rp.ModelBank([s])
     out = ref.fit_predict(df)
     want = ref.marginal("m")
     for chunks in (7, 600):
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         size = -(-df.height // chunks)
         got = pl.concat([bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)])
         assert got.equals(out, null_equal=True), chunks
         assert bank.marginal("m").equals(want, null_equal=True), chunks
-    bank = po.ModelBank([s])
+    bank = rp.ModelBank([s])
     first = bank.fit_predict(df[:455])
     bank.save(tmp_path / "w.state")
-    resumed = po.ModelBank.load(tmp_path / "w.state")
+    resumed = rp.ModelBank.load(tmp_path / "w.state")
     second = resumed.fit_predict(df[455:])
     assert pl.concat([first, second]).equals(out, null_equal=True)
     assert resumed.marginal("m").equals(want, null_equal=True)
-    unwindowed = po.ModelBank(
-        [po.spec.marginal("m", targets=["y"], features=["x"], lags=[1, 2, 5], **EVENTS)]
+    unwindowed = rp.ModelBank(
+        [rp.spec.marginal("m", targets=["y"], features=["x"], lags=[1, 2, 5], **EVENTS)]
     )
     unwindowed.fit_predict(df)
     full = unwindowed.marginal("m").row(0, named=True)
@@ -677,8 +677,8 @@ def test_the_deepest_lag_on_a_short_stream():
     assert geometric["phi_x"] is None and geometric["n_serial"] is None
 
     def state(lag: int) -> bytes:
-        bank = po.ModelBank(
-            [po.spec.marginal("m", targets=["y"], features=["x"], half_life=50.0, lags=[lag])]
+        bank = rp.ModelBank(
+            [rp.spec.marginal("m", targets=["y"], features=["x"], half_life=50.0, lags=[lag])]
         )
         bank.fit_predict(df)
         return bank.save_bytes()

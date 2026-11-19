@@ -22,7 +22,7 @@ import polars as pl
 import pytest
 from river import linear_model, optim, stats
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -60,7 +60,7 @@ class TestFtrlRecursion:
         return pl.DataFrame({"x0": x0 + at, "x1": x1 + at, "y0": y})
 
     def _ours(self, df, **kw):
-        spec = po.spec.ftrl(
+        spec = rp.spec.ftrl(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -74,7 +74,7 @@ class TestFtrlRecursion:
             coef_every=1,
             **kw,
         )
-        return po.ModelBank([spec]).fit_predict(df)
+        return rp.ModelBank([spec]).fit_predict(df)
 
     @pytest.mark.parametrize("level", [0.0, 1e3, -1e3, "crossing"])
     @pytest.mark.parametrize("l1", [0.0, 0.5])
@@ -209,7 +209,7 @@ class TestEwStatistics:
         has zero variance, so the standardized solve drops it and the intercept
         is exactly the EW mean of the target."""
         df = pl.DataFrame({"x0": np.zeros(len(y)), "y0": y})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0"],
@@ -222,7 +222,7 @@ class TestEwStatistics:
             max_error_inflation=float("inf"),
             max_rows_between_solves=1,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         return np.array(out["m"].struct.field("pred_y0").to_list(), dtype=float)
 
     def test_ew_mean_converges_to_river(self):
@@ -288,10 +288,10 @@ class TestEwStatistics:
         2026-10-05, TC2)."""
         rng = np.random.default_rng(8)
         y = rng.standard_normal(5000) * 2.0
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "c", features=["x0"], stats=["var"], half_life=self.HALFLIFE, bias=True
         )
-        out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x0": y}))
+        out = rp.ModelBank([spec]).fit_predict(pl.DataFrame({"x0": y}))
         ours = out["c"].struct.field("var_x0").to_numpy().astype(float)
         v = stats.EWVar(fading_factor=self.fading)
         theirs = []
@@ -319,7 +319,7 @@ class TestQuantile:
         n = 20000
         y = rng.standard_normal(n) * 2.0 + 1.0
         df = pl.DataFrame({"x0": np.zeros(n), "y0": y})
-        spec = po.spec.quantile(
+        spec = rp.spec.quantile(
             "m",
             targets=["y0"],
             features=["x0"],
@@ -329,7 +329,7 @@ class TestQuantile:
             min_weight=10.0,
             max_rows_between_solves=1,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         ours = np.array(out["m"].struct.field("pred_y0").to_list(), dtype=float)[-1]
 
         q = stats.Quantile(tau)
@@ -365,7 +365,7 @@ class TestHuber:
             min_weight=10.0,
             max_rows_between_solves=1,
         )
-        ours = po.ModelBank([po.spec.huber("m", **common)]).fit_predict(df)
+        ours = rp.ModelBank([rp.spec.huber("m", **common)]).fit_predict(df)
         ours_slope = np.array(ours["m"].struct.field("coef").to_list()[-1], dtype=float)[1]
 
         model = linear_model.LinearRegression(
@@ -375,7 +375,7 @@ class TestHuber:
             model.learn_one({"x0": float(x[i])}, float(y[i]))
         theirs_slope = model.weights["x0"]
 
-        ols = po.ModelBank([po.spec.ewridge("m", ridge=1e-8, **common)]).fit_predict(df)
+        ols = rp.ModelBank([rp.spec.ewridge("m", ridge=1e-8, **common)]).fit_predict(df)
         ols_slope = np.array(ols["m"].struct.field("coef").to_list()[-1], dtype=float)[1]
 
         assert abs(ours_slope - 2.0) < abs(ols_slope - 2.0)
@@ -404,10 +404,10 @@ class TestEwCovAgainstRiver:
 
     def _ours(self, a, b, stats):
         df = pl.DataFrame({"x0": a, "x1": b})
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "c", features=["x0", "x1"], stats=stats, half_life=self.NO_DECAY, min_weight=2.0
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         return {f.name: out["c"].struct.field(f.name).to_list()[-1] for f in out.schema["c"].fields}
 
     def test_mean_and_var_match_river(self):
@@ -480,7 +480,7 @@ class TestKalmanIsBayesianLinearRegression:
 
     def _run_both(self, alpha, beta, n=500, seed=4):
         a, b, y = self._data(n, seed)
-        spec = po.spec.kalman(
+        spec = rp.spec.kalman(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -494,7 +494,7 @@ class TestKalmanIsBayesianLinearRegression:
         )
         df = pl.DataFrame({"x0": a, "x1": b, "y0": y})
         ours = (
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
             .fit_predict(df)["m"]
             .struct.field("pred_y0")
             .to_numpy()
@@ -519,7 +519,7 @@ class TestKalmanIsBayesianLinearRegression:
         # Guards against the switch silently doing nothing: with standardization
         # on, the correspondence must break.
         a, b, y = self._data()
-        spec = po.spec.kalman(
+        spec = rp.spec.kalman(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -533,7 +533,7 @@ class TestKalmanIsBayesianLinearRegression:
         )
         df = pl.DataFrame({"x0": a, "x1": b, "y0": y})
         std_on = (
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
             .fit_predict(df)["m"]
             .struct.field("pred_y0")
             .to_numpy()

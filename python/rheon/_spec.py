@@ -119,7 +119,7 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
 def _from_json(text: str) -> Any:
     """The inverse of :func:`_json`: the ``"inf"`` strings the Rust side writes
     for infinite numeric parameters become floats again, so a loaded bank's
-    ``specs`` compare equal to the dicts that built it (a ``po.target`` table
+    ``specs`` compare equal to the dicts that built it (a ``rp.target`` table
     that names its own column comes back as the column, which is what it is).
     Only the numeric parameters are touched -- a feature column may be called
     ``"inf"``."""
@@ -176,7 +176,7 @@ def _matches(v: Any, hint: Any) -> bool:
     if hint in (timedelta, pl.Expr):
         return isinstance(v, hint)
     if typing.is_typeddict(hint):
-        # A table (`po.target`): its keys and no other, the required ones
+        # A table (`rp.target`): its keys and no other, the required ones
         # present, each value of its annotated shape (review 2026-09-26, F4:
         # a table fell through to "not read", and a wrong entry was named
         # by JSON path).
@@ -767,8 +767,8 @@ class Target(TypedDict):
 
     .. code-block:: python
 
-        price: po.Target = {"column": "y", "name": "price"}   # as po.target("y", name="price")
-        print(price == po.target("y", name="price"))
+        price: rp.Target = {"column": "y", "name": "price"}   # as rp.target("y", name="price")
+        print(price == rp.target("y", name="price"))
 
     .. code-block:: text
 
@@ -786,15 +786,15 @@ class FormulaTarget(TypedDict):
     becomes in a spec's ``targets``, and a ``[[specs]]`` target table with
     ``name`` and ``formula`` in the command line's TOML. ``name`` is the
     expression's alias, which the output fields carry. ``formula`` is the
-    expression's compact tree (:mod:`rheon.ops`), holding at least
+    expression's compact tree (:mod:`rheon.polars.ops`), holding at least
     one window operator that looks ahead (``reverse=True``).
 
     .. rubric:: Examples
 
     .. code-block:: python
 
-        ahead = po.ewm_mean("y", half_life=5.0, window_size=10.0, reverse=True).alias("y_ahead")
-        spec = po.spec.ewridge("m", targets=[ahead], features=["x0"], half_life=50.0)
+        ahead = rp.ewm_mean("y", half_life=5.0, window_size=10.0, reverse=True).alias("y_ahead")
+        spec = rp.spec.ewridge("m", targets=[ahead], features=["x0"], half_life=50.0)
         print(list(spec["targets"][0]), spec["targets"][0]["name"])   # a FormulaTarget
 
     .. code-block:: text
@@ -808,7 +808,7 @@ class FormulaTarget(TypedDict):
 
 #: What a builder's ``targets`` takes: column names, with
 #: :func:`rheon.target` tables and window expressions
-#: (:mod:`rheon.ops`, looking ahead) among them, in a list or a tuple.
+#: (:mod:`rheon.polars.ops`, looking ahead) among them, in a list or a tuple.
 #: A ``Sequence``, which is covariant, so a ``list[str]`` a caller already has
 #: type-checks, and so do a list of tables, a list of expressions and a mix:
 #: ``list`` is invariant, and a union of two lists refused all three (review
@@ -829,7 +829,7 @@ _RELATIVE_REMEDY = (
     "targets."
 )
 
-#: What ``po.target`` says of ``relative_to`` and ``relative``.
+#: What ``rp.target`` says of ``relative_to`` and ``relative``.
 _RELATIVE_REMOVED = (
     "relative targets were removed, and relative_to and relative with them. " + _RELATIVE_REMEDY
 )
@@ -852,7 +852,7 @@ def target_columns(t: str | Target | FormulaTarget) -> list[str]:
     if isinstance(t, str):
         return [t]
     if "formula" in t:
-        from rheon import _formula
+        from rheon.polars import _formula
 
         return _formula.columns(typing.cast(FormulaTarget, t)["formula"])
     return [t["column"]]
@@ -862,8 +862,8 @@ def formula_target(who: str, expr: pl.Expr) -> Target | FormulaTarget:
     """A window expression as a target table (docs/PLAN.md task 104): named by
     its alias, holding at least one operator looking ahead. A bare column
     under an alias, ``pl.col("p").alias("price")``, is Polars' spelling of
-    ``po.target("p", name="price")``, and is read as it (task 244, M-11)."""
-    from rheon import _formula
+    ``rp.target("p", name="price")``, and is read as it (task 244, M-11)."""
+    from rheon.polars import _formula
 
     tree = _formula.to_tree(expr, who)
     name = expr.meta.output_name()
@@ -921,7 +921,7 @@ def target(column: str, *, name: str | None = None) -> Target:
     name you want the fields to carry. For a target computed from its own
     row's columns, make a column with Polars' ``with_columns`` in the query
     before the bank, and for one computed from the rows after it, give a
-    formula target (:mod:`rheon.ops`).
+    formula target (:mod:`rheon.polars.ops`).
 
     .. rubric:: Parameters
 
@@ -929,7 +929,7 @@ def target(column: str, *, name: str | None = None) -> Target:
         The column the model learns, read as it is. A target's column used
         as a feature is refused, whatever its name.
     ``name``
-        The name its output fields carry: ``po.target("p", name="price")``
+        The name its output fields carry: ``rp.target("p", name="price")``
         writes ``pred_price`` and the rest. ``None``, the default, uses the
         column's name, as a string target does, and so does a ``name``
         equal to the column.
@@ -955,10 +955,10 @@ def target(column: str, *, name: str | None = None) -> Target:
 
     .. code-block:: python
 
-        spec = po.spec.ewridge(
-            "m", targets=[po.target("y", name="price")], features=["x0"], half_life=50.0
+        spec = rp.spec.ewridge(
+            "m", targets=[rp.target("y", name="price")], features=["x0"], half_life=50.0
         )
-        print(po.target("y", name="price"), po.spec.output_fields(spec)[:2])
+        print(rp.target("y", name="price"), rp.spec.output_fields(spec)[:2])
 
     .. code-block:: text
 
@@ -966,7 +966,7 @@ def target(column: str, *, name: str | None = None) -> Target:
 
     .. rubric:: See also
 
-    - :mod:`rheon.ops`, the window operators a formula target is
+    - :mod:`rheon.polars.ops`, the window operators a formula target is
       built from.
 
     .. rubric:: Notes
@@ -1381,7 +1381,7 @@ def ewridge(
         Which edge of the hard window holds the row exactly ``window_size``
         old, in Polars' words (``rolling_sum_by(closed=)``). ``"right"``, the
         default, keeps the rows less than ``window_size`` old, as the window
-        operators (:func:`rheon.ewm_mean <rheon.ops.ewm_mean>`)
+        operators (:func:`rheon.polars.ewm_mean <rheon.polars.ops.ewm_mean>`)
         and ``rolling_sum_by`` do. ``"both"`` keeps that row too, and is
         refused without ``window_size``. ``"left"`` and ``"none"`` would
         leave out the row the hard window ends at, which a model cannot do,
@@ -1455,11 +1455,11 @@ def ewridge(
     half-life), and under a ridge or feature-set grid each slot's fields
     (:mod:`rheon.spec`, "What a spec writes"). A combined grid joins
     the suffixes, as ``pred_y__mkt_r0.1``.
-    :meth:`rheon.ModelBank.gram` returns the sums behind the fit,
+    :meth:`rheon.polars.ModelBank.gram` returns the sums behind the fit,
     one entry per Gram (under
     ``target_gaps = "own_rows"``, one per set of targets present on the same
     rows). A group that closes writes one row per Gram to
-    :meth:`rheon.ModelBank.closed_groups`.
+    :meth:`rheon.polars.ModelBank.closed_groups`.
 
     .. rubric:: Raises
 
@@ -1528,11 +1528,11 @@ def ewridge(
         y = slope * x + 0.5 * rng.standard_normal(5_000)
         pl.DataFrame({"x": x, "y": y}).write_parquet("drift.parquet")
 
-        rr = po.spec.ewridge(
+        rr = rp.spec.ewridge(
             "rr", targets=["y"], features=["x"], half_life=500.0,
             ridge=[1e-6, 0.5],                     # one fit per value, from the same sums
         )
-        bank = po.ModelBank([rr])
+        bank = rp.ModelBank([rr])
         bank.fit(pl.scan_parquet("drift.parquet"))  # learn every row, keep no output
         print(f"the true slope at the last row: {slope[-1]:.2f}")
         for r in bank.coef().filter(pl.col("term") == "x").iter_rows(named=True):
@@ -1554,7 +1554,7 @@ def ewridge(
       squares, which loses half as many digits on a nearly collinear design.
     - :func:`huber`, these sums with each row down-weighted by its residual,
       which takes this model's ``feature_sets`` and ``ridge_scale``.
-    - :meth:`rheon.ModelBank.gram` and :mod:`rheon.gram`, to
+    - :meth:`rheon.polars.ModelBank.gram` and :mod:`rheon.gram`, to
       read the sums back, pool them and solve them offline.
 
     .. rubric:: Notes
@@ -1570,7 +1570,7 @@ def ewridge(
     **The solve.** The solve is a Cholesky factorization. A near-singular
     system is retried with a small jitter added to its diagonal, growing at
     each try, so each try is a rung of a ladder of jitters. A solve that
-    needed one is counted in :meth:`rheon.ModelBank.solve_failures`. A
+    needed one is counted in :meth:`rheon.polars.ModelBank.solve_failures`. A
     count above zero points at constant or collinear features, or too few
     rows for the features. A wide solve runs on the bank's threads, and its
     result is the same to the bit whatever their number
@@ -1805,7 +1805,7 @@ def ewridge(
     ``drift_action="reset"``, whose resets that check cannot foresee, the
     ring finds the overrun as the rows go in instead. The bank then refuses
     every later ``fit_predict``, ``predict`` and ``save``: load its last save
-    with :meth:`rheon.ModelBank.load`, and feed it the rows since.
+    with :meth:`rheon.polars.ModelBank.load`, and feed it the rows since.
 
     ``weight_sum``, ``sigma`` and ``zscore`` are read over the hard window
     as well, so the spread describes the rows the fit describes. The spread
@@ -2005,11 +2005,11 @@ def rls(
         y = 1.0 + 2.0 * x0 - 0.5 * x1 + 0.3 * rng.standard_normal(2_000)
         pl.DataFrame({"x0": x0, "x1": x1, "y": y}).write_parquet("plane.parquet")
 
-        rls = po.spec.rls(
+        rls = rp.spec.rls(
             "rls", targets=["y"], features=["x0", "x1"], half_life=float("inf"),
             delta=1e-3,                           # a weak prior, which the rows outweigh
         )
-        bank = po.ModelBank([rls])
+        bank = rp.ModelBank([rls])
         bank.fit(pl.scan_parquet("plane.parquet"))  # learn every row, keep no output
         print("planted: intercept 1.00, x0 2.00, x1 -0.50")
         for r in bank.coef().iter_rows(named=True):
@@ -2189,7 +2189,7 @@ def lasso(
         the target's spread over the rows the fit reads: its standard
         deviation, or its root mean square without an intercept, where the
         fit is not centered. A descent that runs out of sweeps first is
-        counted in :meth:`rheon.ModelBank.solve_failures`, one per
+        counted in :meth:`rheon.polars.ModelBank.solve_failures`, one per
         target and grid point, unless the rows behind its Gram are too few
         for the features to settle in ``max_iter`` sweeps on any data (*The
         descent* in Notes).
@@ -2230,7 +2230,7 @@ def lasso(
     plus the fields of the diagnostics switched on, as
     :mod:`rheon.spec` describes them. ``weight_sum``, ``coef`` and
     ``penalty_selected_<t>`` take no suffix for the grid point.
-    :meth:`rheon.ModelBank.gram` returns the sums behind the path,
+    :meth:`rheon.polars.ModelBank.gram` returns the sums behind the path,
     as for :func:`ewridge`.
 
     .. rubric:: Raises
@@ -2294,11 +2294,11 @@ def lasso(
         frame = pl.DataFrame({f"x{i}": x[:, i] for i in range(4)} | {"y": y})
         frame.write_parquet("sparse.parquet")
 
-        las = po.spec.lasso(
+        las = rp.spec.lasso(
             "las", targets=["y"], features=["x0", "x1", "x2", "x3"], half_life=float("inf"),
             penalties=[0.1, 0.01],                # decreasing; every point is predicted
         )
-        bank = po.ModelBank([las])
+        bank = rp.ModelBank([las])
         bank.fit(pl.scan_parquet("sparse.parquet"))  # learn every row, keep no output
         print("planted: x0 2, x1 -1, x2 0, x3 0")
         slopes = bank.coef().filter(pl.col("term") != "intercept")
@@ -2526,9 +2526,9 @@ def kalman(
         and give it with ``standardize = False``. `Scale a feature by its
         spread
         <https://github.com/hgilde/polars-online/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_
-        builds the column with :func:`rheon.ewm_mean
-        <rheon.ops.ewm_mean>` and :func:`rheon.ewm_std
-        <rheon.ops.ewm_std>`.
+        builds the column with :func:`rheon.polars.ewm_mean
+        <rheon.polars.ops.ewm_mean>` and :func:`rheon.polars.ewm_std
+        <rheon.polars.ops.ewm_std>`.
 
     .. rubric:: Output
 
@@ -2627,7 +2627,7 @@ def kalman(
         y = slope * x + 0.2 * rng.standard_normal(4_000)
         pl.DataFrame({"x": x, "y": y}).write_parquet("step.parquet")
 
-        k = po.spec.kalman(
+        k = rp.spec.kalman(
             "k", targets=["y"], features=["x"], half_life=200.0,
             coef_half_life=20.0,                  # how fast a coefficient may drift, in rows
             coef_every=0,                         # write coef on every row
@@ -2649,7 +2649,7 @@ def kalman(
     - :func:`rls`, the fit this filter gives with no drift, a fixed noise,
       ``standardize=False``, no ``revert_half_life`` and ``half_life=inf``,
       at ``delta = 1 / p0``.
-    - :meth:`rheon.ModelBank.predict`, which moves the coefficients
+    - :meth:`rheon.polars.ModelBank.predict`, which moves the coefficients
       by ``Phi`` over the clock since the last learned row.
 
     .. rubric:: Notes
@@ -2772,7 +2772,7 @@ def kalman(
     unbounded walk. The reversion runs on every row, a row that observes
     nothing included, being the same over a gap however it is cut. A
     prediction propagates the state by the same ``Phi`` over the row's clock
-    gap. :meth:`rheon.ModelBank.predict` moves the coefficients by
+    gap. :meth:`rheon.polars.ModelBank.predict` moves the coefficients by
     ``Phi`` over the clock distance from the last learned row, capped by
     ``gap_cap``. So however far past the data, a coefficient has shrunk by
     ``2 ** (-gap_cap / kappa_i)`` at most, and the prediction is the
@@ -2981,11 +2981,11 @@ def ftrl(
         y = (rng.random(20_000) < p).astype(float)
         pl.DataFrame({"x0": x0, "x1": x1, "y": y}).write_parquet("clicks.parquet")
 
-        click = po.spec.ftrl(
+        click = rp.spec.ftrl(
             "click", targets=["y"], features=["x0", "x1"], half_life=float("inf"),
             l1=50.0,                              # zeroes a coefficient whose evidence is below it
         )
-        bank = po.ModelBank([click])
+        bank = rp.ModelBank([click])
         bank.fit(pl.scan_parquet("clicks.parquet"))  # learn every row, keep no output
         coef = {r["term"]: r["coef"] for r in bank.coef().iter_rows(named=True)}
         print(f"intercept {coef['intercept']:.2f}, x0 {coef['x0']:.2f}")
@@ -3178,8 +3178,8 @@ def ew_cov(
         ``lag_corr`` needs ``lags``, and ``mahal_quantiles`` needs ``mahal``.
         ``[]`` writes no statistic, only ``weight_sum``, ``settled_frac`` and
         ``withheld_reason``, and learns all the same. The spec's value is
-        then its state, read back with :meth:`rheon.ModelBank.gram`
-        and :meth:`rheon.ModelBank.describe`. That is the form for a
+        then its state, read back with :meth:`rheon.polars.ModelBank.gram`
+        and :meth:`rheon.polars.ModelBank.describe`. That is the form for a
         wide set of columns, where even the means are ``k`` values a row
         (``k`` the number of features) that nobody reads.
     ``bias``
@@ -3189,7 +3189,7 @@ def ew_cov(
         default ``adjust=True``. That multiplies the weighted means by the
         factor ``c`` of *The update*, Bessel's correction at Kish's effective
         size (*Bias* in Notes). ``True`` reports the weighted means as kept,
-        which is what :meth:`rheon.ModelBank.gram` returns under
+        which is what :meth:`rheon.polars.ModelBank.gram` returns under
         either. Under ``False``, a second moment is null while the moments
         hold a single row, of any weight, as Polars' is. Under ``True`` it
         reads 0.
@@ -3256,7 +3256,7 @@ def ew_cov(
         per lag and ordered pair, the auto terms included. That is ``k²``
         fields a lag, since a lagged matrix is not symmetric. Or read ``lags``
         and ``lag_comoments`` (an ``(L, k, k)`` array) from
-        :meth:`rheon.ModelBank.gram`.
+        :meth:`rheon.polars.ModelBank.gram`.
     ``gram_threads``
         The largest number of the bank's threads that learning one row into
         the ``k x k`` co-moments may use: a whole number of at least 1, or
@@ -3318,10 +3318,10 @@ def ew_cov(
     needs two rows, so a lower ``min_weight``, ``0`` included,
     is taken as 2, and is not refused. The rows the floor holds back read
     ``below_min_weight``, as the gate's do. The moments themselves are
-    :meth:`rheon.ModelBank.gram`'s ``means``, ``comoments``,
+    :meth:`rheon.polars.ModelBank.gram`'s ``means``, ``comoments``,
     ``lags`` and ``lag_comoments``, the weighted means as kept whatever
     ``bias`` is, with ``n_kish`` to correct them by. A group that closes
-    writes them to :meth:`rheon.ModelBank.closed_groups` with
+    writes them to :meth:`rheon.polars.ModelBank.closed_groups` with
     ``eig_vals`` and ``eig_vecs`` of those ``comoments`` under ``pca``.
 
     .. rubric:: Raises
@@ -3412,7 +3412,7 @@ def ew_cov(
         x1 = 0.6 * a + 0.8 * b                          # correlation 0.6 with x0
         pl.DataFrame({"x0": x0, "x1": x1}).write_parquet("pair.parquet")
 
-        mv = po.spec.ew_cov(
+        mv = rp.spec.ew_cov(
             "mv", features=["x0", "x1"], half_life=float("inf"),
             stats=["std", "corr"],                      # std_x0, std_x1 and corr_x0_x1
         )
@@ -3432,7 +3432,7 @@ def ew_cov(
     - :func:`ew_class` and :func:`hmm`, which classify rows by Gaussians on
       these moments.
     - :func:`rcov`, a block's covariance robust to microstructure noise.
-    - :meth:`rheon.ModelBank.gram`, to read the moments back.
+    - :meth:`rheon.polars.ModelBank.gram`, to read the moments back.
 
     .. rubric:: Notes
 
@@ -3737,11 +3737,11 @@ def pa(
         y = 1.0 + 2.0 * x0 - 0.5 * x1 + 0.3 * rng.standard_normal(5_000)
         pl.DataFrame({"x0": x0, "x1": x1, "y": y}).write_parquet("pa.parquet")
 
-        pa = po.spec.pa(
+        pa = rp.spec.pa(
             "pa", targets=["y"], features=["x0", "x1"], half_life=200.0,
             mode="pa1", c=0.1,                    # each step is capped at c
         )
-        bank = po.ModelBank([pa])
+        bank = rp.ModelBank([pa])
         bank.fit(pl.scan_parquet("pa.parquet"))  # learn every row, keep no output
         for r in bank.coef().iter_rows(named=True):
             print(f"{r['term']}: {r['coef']:.2f}")
@@ -3950,8 +3950,8 @@ def seqtest(
     with ``a`` and ``b``, whether one spec of the bank predicts closer than
     another. You can read the answer at every row and act the first time it
     is enough, which a p-value checked over and over does not allow. Use
-    :func:`rheon.eval.seqtest` for the same test over a frame in
-    memory, and :func:`rheon.eval.compare_specs` for several specs'
+    :func:`rheon.polars.eval.seqtest` for the same test over a frame in
+    memory, and :func:`rheon.polars.eval.compare_specs` for several specs'
     scores over the whole stream in one table.
 
     .. rubric:: Parameters
@@ -4073,7 +4073,7 @@ def seqtest(
         up = 0.2 + rng.standard_normal(2_000)          # positive 58% of the time
         pl.DataFrame({"fair": fair, "up": up}).write_parquet("signs.parquet")
 
-        sign = po.spec.seqtest("sign", targets=["fair", "up"])
+        sign = rp.spec.seqtest("sign", targets=["fair", "up"])
         out = pl.scan_parquet("signs.parquet").online.fit_predict([sign]).collect()
         out = out.unnest("sign")
         for t in ["fair", "up"]:
@@ -4089,9 +4089,9 @@ def seqtest(
 
     .. rubric:: See also
 
-    - :func:`rheon.eval.seqtest`, the same computation in Polars
+    - :func:`rheon.polars.eval.seqtest`, the same computation in Polars
       expressions over a frame in memory.
-    - :func:`rheon.eval.compare_specs`, several specs' scores in one
+    - :func:`rheon.polars.eval.compare_specs`, several specs' scores in one
       table.
 
     .. rubric:: Notes
@@ -4325,7 +4325,7 @@ def marginal(
         and ``float("inf")`` for no bound. Each new group reserves its hold
         when it first appears. The group that would pass the bound keeps the
         one pass, as does every new group after it. A readiness warning says
-        so once, and :meth:`rheon.ModelBank.summary`'s
+        so once, and :meth:`rheon.polars.ModelBank.summary`'s
         ``refit_given_up`` counts their targets.
     ``shards``
         Split the pair work across the bank's threads: a count of ranges of
@@ -4404,12 +4404,12 @@ def marginal(
     `docs/OUTPUTS.md#marginal
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#marginal>`_
     gives its type. The pairs live in the state, and
-    :meth:`rheon.ModelBank.marginal` reads them: one row per (group,
+    :meth:`rheon.polars.ModelBank.marginal` reads them: one row per (group,
     instance, feature, target), an instance being the part of the model
     that fits one half-life, with the moments, ``corr``, ``beta``,
     ``t_stat``, ``n_kish``, and the columns ``lags`` and ``bins`` add. That method
     documents every column. A group that closes writes the same pairs to
-    :meth:`rheon.ModelBank.closed_groups` as ``pair_*`` columns, one
+    :meth:`rheon.polars.ModelBank.closed_groups` as ``pair_*`` columns, one
     entry per pair.
 
     .. rubric:: Raises
@@ -4509,11 +4509,11 @@ def marginal(
         y = 0.5 * x0 + np.where(np.abs(x2) > 1.0, 1.0, -0.5) + rng.standard_normal(5_000)
         pl.DataFrame({"x0": x0, "x1": x1, "x2": x2, "y": y}).write_parquet("screen.parquet")
 
-        pairs = po.spec.marginal(
+        pairs = rp.spec.marginal(
             "pairs", targets=["y"], features=["x0", "x1", "x2"], half_life=float("inf"),
             bins=8,                                   # each pair's response curve, and its best cut
         )
-        bank = po.ModelBank([pairs])
+        bank = rp.ModelBank([pairs])
         bank.fit(pl.scan_parquet("screen.parquet"))   # learn every row, keep no output
         for r in bank.marginal("pairs").iter_rows(named=True):
             print(f"{r['feature']}: corr {r['corr']:+.2f}, split_gain {r['split_gain']:.2f}")
@@ -4526,7 +4526,7 @@ def marginal(
 
     .. rubric:: See also
 
-    - :meth:`rheon.ModelBank.marginal`, the table of pairs and every
+    - :meth:`rheon.polars.ModelBank.marginal`, the table of pairs and every
       column it holds.
     - :func:`ew_cov`, the joint covariance whose arithmetic each pair uses.
     - :func:`huber`, whose weighting ``bin_stat="huber"`` gives each bin.
@@ -4894,7 +4894,7 @@ def deco(
         }
         pl.DataFrame(cols).write_parquet("returns.parquet")
 
-        eq = po.spec.deco("eq", features=list(cols), half_life=500.0)
+        eq = rp.spec.deco("eq", features=list(cols), half_life=500.0)
         out = pl.scan_parquet("returns.parquet").online.fit_predict([eq]).collect().unnest("eq")
         print(f"correlation 0.2: rho {out['rho'][9_999]:.2f}")
         print(f"correlation 0.6: rho {out['rho'][-1]:.2f}")

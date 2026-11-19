@@ -56,7 +56,7 @@ This code chooses a half-life for a stream whose coefficient wanders:
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # y = b x0 + 0.5 x1 + noise, where b wanders as a slow random walk.
 rng = np.random.default_rng(9)

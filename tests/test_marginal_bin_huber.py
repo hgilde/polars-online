@@ -23,7 +23,7 @@ from statsmodels.robust import norms
 from statsmodels.robust.scale import mad
 
 import ledger
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -55,11 +55,11 @@ def spec(**kw):
         bin_stat="huber",
     )
     d.update(kw)
-    return po.spec.marginal("m", **d)
+    return rp.spec.marginal("m", **d)
 
 
 def table(df: pl.DataFrame, chunks: int = 1, **kw) -> pl.DataFrame:
-    bank = po.ModelBank([spec(**kw)])
+    bank = rp.ModelBank([spec(**kw)])
     parts = [df] if chunks == 1 else list(df.iter_slices(-(-len(df) // chunks)))
     for part in parts:
         bank.fit_predict(part)
@@ -152,7 +152,7 @@ def test_a_spike_in_a_thin_bin():
     kw = dict(bin_edges=[[-0.5, 0.5]])
     out = {}
     for stat in ["mean", "huber"]:
-        bank = po.ModelBank([spec(bin_stat=stat, **kw)])
+        bank = rp.ModelBank([spec(bin_stat=stat, **kw)])
         bank.fit_predict(df)
         before = bank.marginal("m").row(0, named=True)
         bank.fit_predict(spike)
@@ -176,9 +176,9 @@ def test_the_default_is_the_mean_and_an_infinite_cut_is_too():
     df = stream(3_000, 0.05, 1)
     kw = dict(half_life=200.0, bin_edges=None, bins=8, bin_warm_rows=300)
     plain = table(df, **{**kw, "bin_stat": "mean"})
-    left_out = po.ModelBank(
+    left_out = rp.ModelBank(
         [
-            po.spec.marginal(
+            rp.spec.marginal(
                 "m",
                 targets=["y"],
                 features=["x"],
@@ -207,7 +207,7 @@ def test_the_count_and_the_weight_are_the_means():
     )
     outs = {}
     for stat in ["mean", "huber"]:
-        bank = po.ModelBank([spec(bin_stat=stat, weight="w", half_life=150.0)])
+        bank = rp.ModelBank([spec(bin_stat=stat, weight="w", half_life=150.0)])
         outs[stat] = (bank.fit_predict(df), bank.marginal("m"))
     (s_mean, t_mean), (s_huber, t_huber) = outs["mean"], outs["huber"]
     assert s_mean.equals(s_huber), "the struct's weight_sum"
@@ -234,10 +234,10 @@ def test_a_saved_bank_resumes_to_the_bit(tmp_path):
     df = stream(3_000, 0.05, 5)
     kw = dict(half_life=300.0, bin_edges=None, bins=8, bin_warm_rows=200)
     whole = table(df, **kw)
-    bank = po.ModelBank([spec(**kw)])
+    bank = rp.ModelBank([spec(**kw)])
     bank.fit_predict(df[:1_100])
     bank.save(tmp_path / "m.state")
-    resumed = po.ModelBank.load(tmp_path / "m.state")
+    resumed = rp.ModelBank.load(tmp_path / "m.state")
     resumed.fit_predict(df[1_100:])
     assert resumed.marginal("m").equals(whole)
 
@@ -249,10 +249,10 @@ def test_rows_of_weight_zero_age_and_teach_nothing():
     rule 9), so the two banks agree to the bit."""
     df = stream(1_500, 0.05, 6)
     kw = dict(half_life=200.0, bin_edges=None, bins=8, bin_warm_rows=300)
-    native = po.ModelBank([spec(embargo=7.0, **kw)])
+    native = rp.ModelBank([spec(embargo=7.0, **kw)])
     native.fit_predict(df)
-    doubled = po.ModelBank([spec(weight=po.stream.ROLE + "_weight", **kw)])
-    twice = po.stream.embargo(df, clock="t", delay=7.0)
+    doubled = rp.ModelBank([spec(weight=rp.stream.ROLE + "_weight", **kw)])
+    twice = rp.stream.embargo(df, clock="t", delay=7.0)
     doubled.fit_predict(twice.filter(pl.col("t") <= df["t"].max()))
     assert native.marginal("m").equals(doubled.marginal("m"))
 
@@ -261,10 +261,10 @@ def test_the_spec_reports_back_what_it_was_given():
     """The bank's spec is the dict the builder made, and a spec left at the
     mean writes neither key, so its bytes are what they were."""
     s = spec(bin_huber_delta=2.0)
-    assert po.ModelBank([s]).specs[0] == s
+    assert rp.ModelBank([s]).specs[0] == s
     assert s["model"]["bin_stat"] == "huber" and s["model"]["bin_huber_delta"] == 2.0
     plain = spec(bin_stat="mean")
-    assert po.ModelBank([plain]).specs[0] == plain
+    assert rp.ModelBank([plain]).specs[0] == plain
     assert "bin_stat" not in plain["model"] and "bin_huber_delta" not in plain["model"]
 
 
@@ -371,7 +371,7 @@ _CUT_GRID = {
 
 def cut_locations(df: pl.DataFrame, delta: float, cuts: list[int]) -> dict[int, np.ndarray]:
     """`bin_mean_y` at the cut `delta` after each row count in `cuts`."""
-    bank = po.ModelBank([spec(bin_huber_delta=delta)])
+    bank = rp.ModelBank([spec(bin_huber_delta=delta)])
     out, start = {}, 0
     for n in cuts:
         bank.fit_predict(df.slice(start, n - start))

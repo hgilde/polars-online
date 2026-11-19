@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fold  # noqa: E402
 import streams  # noqa: E402
 
-import rheon as po  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 
 OUT = streams.CACHE / "startup"
 OUT.mkdir(parents=True, exist_ok=True)
@@ -76,7 +76,7 @@ def regimes(seed, lo, hi, kind, half_life, rows_per_block=5_000):
     """The highlights page's monitor stream: two features whose correlation
     takes turns, a slope that flips half-way, Student's t noise, and each
     label late by U(lo, hi) rows, or an exponential delay of mean `lo`."""
-    sim = po.sim.regimes(
+    sim = rp.sim.regimes(
         2,
         states=[0.0, 0.7],
         transition=[[0.0, 1.0], [1.0, 0.0]],
@@ -99,7 +99,7 @@ def regimes(seed, lo, hi, kind, half_life, rows_per_block=5_000):
         )
         .select("t", "avail", "x_1", "x_2", "y")
     )
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x_1", "x_2"],

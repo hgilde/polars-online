@@ -64,7 +64,7 @@ ridge's prediction, at two half-lives, at the default penalties and at
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # A constant target of 5, and a feature x that is noise.
 n = 20_000

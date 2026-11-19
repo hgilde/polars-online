@@ -30,7 +30,7 @@ import polars as pl  # noqa: E402
 from leafrefit import bank  # noqa: E402
 from sklearn.metrics import roc_auc_score  # noqa: E402
 
-import rheon as po  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 
 
 def trees(X, yy, tr, va, obj):
@@ -61,7 +61,7 @@ def online(clock, cols, yy, loss, hl, gap, lr, pinned, learn_clock=None):
     hi = [1.0 if c in pinned else math.inf for c in names]
 
     def spec(cs):
-        return po.spec.sgd(
+        return rp.spec.sgd(
             "o",
             targets=["y"],
             features=cs,

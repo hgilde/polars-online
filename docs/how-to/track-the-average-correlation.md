@@ -58,7 +58,7 @@ over the banks, beside the truth:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Two sectors: the banks' common correlation rises at row 2,000, the miners' holds at 0.4.
 rng = np.random.default_rng(4)

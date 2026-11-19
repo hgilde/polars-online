@@ -22,7 +22,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -46,11 +46,11 @@ def spec(window_size=None, **kw):
         stats=["mean"],
     )
     d.update(kw)
-    return po.spec.ew_cov("w", window_size=window_size, **d)
+    return rp.spec.ew_cov("w", window_size=window_size, **d)
 
 
 def run(df, window_size=None, chunks=1, **kw):
-    bank = po.ModelBank([spec(window_size, **kw)])
+    bank = rp.ModelBank([spec(window_size, **kw)])
     parts = [df] if chunks == 1 else [d for d in df.iter_slices(max(1, len(df) // chunks))]
     return pl.concat([bank.fit_predict(p) for p in parts]).unnest("w")
 
@@ -136,11 +136,11 @@ def test_a_saved_bank_resumes_mid_window(tmp_path):
     half = len(df) // 2
     whole = run(df, 90.0)
 
-    bank = po.ModelBank([spec(90.0)])
+    bank = rp.ModelBank([spec(90.0)])
     bank.fit_predict(df[:half])
     path = tmp_path / "w.state"
     bank.save(path)
-    resumed = po.ModelBank.load(path)
+    resumed = rp.ModelBank.load(path)
     second = resumed.fit_predict(df[half:]).unnest("w")
     assert second.equals(whole[half:])
 
@@ -184,9 +184,9 @@ def test_a_long_step_empties_the_window(kind, field):
     def fit(gap_cap, frame=df):
         common = dict(clock="t", half_life=40.0, gap_cap=gap_cap, window_size=50.0)
         if kind == "ew_cov":
-            s = po.spec.ew_cov("m", features=["x"], stats=["mean"], **common)
+            s = rp.spec.ew_cov("m", features=["x"], stats=["mean"], **common)
         else:
-            s = po.spec.ewridge(
+            s = rp.spec.ewridge(
                 "m",
                 targets=["y"],
                 features=["x"],
@@ -194,7 +194,7 @@ def test_a_long_step_empties_the_window(kind, field):
                 max_error_inflation=float("inf"),
                 **common,
             )
-        return po.ModelBank([s]).fit_predict(frame).unnest("m")
+        return rp.ModelBank([s]).fit_predict(frame).unnest("m")
 
     after = STEP_ROW + 1
     emptied = fit(100.0)
@@ -237,17 +237,17 @@ def test_a_long_step_empties_the_window(kind, field):
 )
 def test_a_bad_window_is_refused_by_name(kw, msg):
     with pytest.raises(Exception, match=re.escape(msg)):
-        po.ModelBank([spec(**kw)]).fit_predict(stream(20))
+        rp.ModelBank([spec(**kw)]).fit_predict(stream(20))
 
 
 WINDOWED = {
-    "ewridge": lambda **kw: po.spec.ewridge("m", targets=["y"], features=["x"], **kw),
-    "lasso": lambda **kw: po.spec.lasso("m", targets=["y"], features=["x"], penalties=[0.1], **kw),
-    "ew_cov": lambda **kw: po.spec.ew_cov("m", features=["x"], stats=["mean"], **kw),
-    "ew_class": lambda **kw: po.spec.ew_class(
+    "ewridge": lambda **kw: rp.spec.ewridge("m", targets=["y"], features=["x"], **kw),
+    "lasso": lambda **kw: rp.spec.lasso("m", targets=["y"], features=["x"], penalties=[0.1], **kw),
+    "ew_cov": lambda **kw: rp.spec.ew_cov("m", features=["x"], stats=["mean"], **kw),
+    "ew_class": lambda **kw: rp.spec.ew_class(
         "m", features=["x"], label="c", classes=["a", "b"], precision_prior=1.0, **kw
     ),
-    "marginal": lambda **kw: po.spec.marginal("m", targets=["y"], features=["x"], **kw),
+    "marginal": lambda **kw: rp.spec.marginal("m", targets=["y"], features=["x"], **kw),
 }
 
 
@@ -263,7 +263,7 @@ def test_a_closed_that_leaves_out_the_current_row_is_refused_with_the_reason(mod
         WINDOWED[model](half_life=10.0, window_size=5.0, closed=closed)
     with pytest.raises(ValueError, match=said):
         spec = WINDOWED[model](half_life=10.0, window_size=5.0)
-        po.ModelBank([{**spec, "model": {**spec["model"], "closed": closed}}])
+        rp.ModelBank([{**spec, "model": {**spec["model"], "closed": closed}}])
 
 
 @pytest.mark.parametrize("model", sorted(WINDOWED))
@@ -299,7 +299,7 @@ def test_only_the_models_that_can_honour_it_accept_it(model):
     with pytest.raises(
         TypeError, match=f'spec "m": {model}\\(\\) takes no parameter "window_size"'
     ):
-        getattr(po.spec, model)("m", targets=["y"], window_size=10.0, **columns)
+        getattr(rp.spec, model)("m", targets=["y"], window_size=10.0, **columns)
 
 
 # --- the same cutoff on a regression -----------------------------------------
@@ -317,7 +317,7 @@ def ridge_spec(window_size=None, **kw):
         max_rows_between_solves=1,
     )
     d.update(kw)
-    return po.spec.ewridge("w", window_size=window_size, **d)
+    return rp.spec.ewridge("w", window_size=window_size, **d)
 
 
 def regime_stream(n=300, flip=200, seed=1):
@@ -328,7 +328,7 @@ def regime_stream(n=300, flip=200, seed=1):
 
 
 def fit(df, window_size=None, chunks=1, **kw):
-    bank = po.ModelBank([ridge_spec(window_size, **kw)])
+    bank = rp.ModelBank([ridge_spec(window_size, **kw)])
     parts = [df] if chunks == 1 else list(df.iter_slices(max(1, len(df) // chunks)))
     for p in parts:
         bank.fit_predict(p)
@@ -437,12 +437,12 @@ def test_a_row_exactly_one_window_old_on_a_temporal_clock(unit, closed):
     common = dict(clock="t", gap_cap="1d", half_life=float("inf"), min_weight=0.0)
     window = dict(window_size="1s", closed=closed)
     specs = [
-        po.spec.ewridge("ewridge", targets=["y"], features=["x"], **window, **common),
-        po.spec.lasso(
+        rp.spec.ewridge("ewridge", targets=["y"], features=["x"], **window, **common),
+        rp.spec.lasso(
             "lasso", targets=["y"], features=["x"], penalties=[0.1, 0.01], **window, **common
         ),
-        po.spec.ew_cov("ew_cov", features=["x"], stats=["mean"], **window, **common),
-        po.spec.ew_class(
+        rp.spec.ew_cov("ew_cov", features=["x"], stats=["mean"], **window, **common),
+        rp.spec.ew_class(
             "ew_class",
             features=["x"],
             label="c",
@@ -451,9 +451,9 @@ def test_a_row_exactly_one_window_old_on_a_temporal_clock(unit, closed):
             **window,
             **common,
         ),
-        po.spec.marginal("marginal", targets=["y"], features=["x"], **window, **common),
+        rp.spec.marginal("marginal", targets=["y"], features=["x"], **window, **common),
     ]
-    out = po.ModelBank(specs).fit_predict(df)
+    out = rp.ModelBank(specs).fit_predict(df)
     for s in specs:
         got = out[s["name"]].struct.field("weight_sum").to_numpy()[1:]
         bad = np.flatnonzero(got != want)
@@ -469,10 +469,10 @@ def test_a_windowed_fit_resumes_from_a_saved_bank(tmp_path):
     df = regime_stream()
     half = len(df) // 2
     whole = fit(df, 60.0)
-    bank = po.ModelBank([ridge_spec(60.0)])
+    bank = rp.ModelBank([ridge_spec(60.0)])
     bank.fit_predict(df[:half])
     bank.save(tmp_path / "r.state")
-    resumed = po.ModelBank.load(tmp_path / "r.state")
+    resumed = rp.ModelBank.load(tmp_path / "r.state")
     resumed.fit_predict(df[half:])
     assert resumed.coef("w")["coef"].to_list() == whole
 
@@ -494,7 +494,7 @@ def test_a_windowed_fit_resumes_from_a_saved_bank(tmp_path):
 )
 def test_a_window_is_refused_where_the_identity_does_not_hold(kw, msg):
     with pytest.raises(Exception, match=re.escape(msg)):
-        po.ModelBank([ridge_spec(30.0, **kw)]).fit_predict(regime_stream(40))
+        rp.ModelBank([ridge_spec(30.0, **kw)]).fit_predict(regime_stream(40))
 
 
 # --- and on a path that selects ----------------------------------------------
@@ -512,7 +512,7 @@ def lasso_spec(window_size=None, **kw):
         max_rows_between_solves=1,
     )
     d.update(kw)
-    return po.spec.lasso("w", window_size=window_size, **d)
+    return rp.spec.lasso("w", window_size=window_size, **d)
 
 
 def two_regime_features(n=300, flip=200, seed=2):
@@ -524,7 +524,7 @@ def two_regime_features(n=300, flip=200, seed=2):
 
 
 def lasso_coef(df, window_size=None, chunks=1):
-    bank = po.ModelBank([lasso_spec(window_size)])
+    bank = rp.ModelBank([lasso_spec(window_size)])
     for part in [df] if chunks == 1 else list(df.iter_slices(max(1, len(df) // chunks))):
         bank.fit_predict(part)
     return bank.coef("w")["coef"].to_list()
@@ -565,7 +565,7 @@ def test_a_windowed_screen_sees_the_relationship_the_full_history_cancels():
     df = pl.DataFrame({"t": np.arange(n).astype(float), "x": x, "y": y})
 
     def screen(window):
-        spec = po.spec.marginal(
+        spec = rp.spec.marginal(
             "m",
             targets=["y"],
             features=["x"],
@@ -577,7 +577,7 @@ def test_a_windowed_screen_sees_the_relationship_the_full_history_cancels():
             min_weight=2.0,
             window_size=window,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         return bank.marginal("m")
 
@@ -602,7 +602,7 @@ def test_a_windowed_classifier_follows_a_swap_the_full_history_blurs():
     df = pl.DataFrame({"t": np.arange(n).astype(float), "x0": x0, "c": lab})
 
     def accuracy(window):
-        spec = po.spec.ew_class(
+        spec = rp.spec.ew_class(
             "m",
             features=["x0"],
             label="c",
@@ -615,7 +615,7 @@ def test_a_windowed_classifier_follows_a_swap_the_full_history_blurs():
             precision_prior=1e-3,
             window_size=window,
         )
-        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(df).unnest("m")
         return (out["class"].tail(100) == df["c"].tail(100)).mean()
 
     assert accuracy(60.0) > 0.95
@@ -676,14 +676,14 @@ def test_a_windowed_sigma_with_none_of_the_targets_rows_inside_reads_none(
         max_rows_between_solves=1,
     )
     if model == "ewridge":
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m", ridge=1e-6, standardize=True, max_error_inflation=math.inf, **common
         )
     else:
-        spec = po.spec.lasso("m", penalties=[0.1, 0.0], **common)
+        spec = rp.spec.lasso("m", penalties=[0.1, 0.0], **common)
 
     def run(gap: int, fresh: bool) -> pl.DataFrame:
-        out = po.ModelBank([spec]).fit_predict(_absent_then_back(gap, fresh, back))
+        out = rp.ModelBank([spec]).fit_predict(_absent_then_back(gap, fresh, back))
         return out["m"].struct.unnest().tail(41)
 
     a, b, never = run(2_500, False), run(3_000, False), run(3_000, True)

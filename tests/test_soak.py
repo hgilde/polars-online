@@ -14,7 +14,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "soak"
 
@@ -46,7 +46,7 @@ def _chunks(n_rows, chunk, seed=0):
 
 
 def test_ten_million_rows_stay_bounded_and_accurate():
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y0"],
         features=["x0", "x1"],
@@ -55,7 +55,7 @@ def test_ten_million_rows_stay_bounded_and_accurate():
         half_life=1000.0,
         min_weight=20.0,
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     n_eff_seen, last_coef, rows = [], None, 0
     for chunk in _chunks(ROWS, CHUNK):
         out = bank.fit_predict(chunk)
@@ -82,7 +82,7 @@ def test_ten_million_rows_stay_bounded_and_accurate():
 
 
 def test_state_stays_small_and_resumable_after_a_long_run():
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y0"],
         features=["x0", "x1"],
@@ -91,7 +91,7 @@ def test_state_stays_small_and_resumable_after_a_long_run():
         half_life=1000.0,
         min_weight=20.0,
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     last_t = 0.0
     for chunk in _chunks(2_000_000, CHUNK, seed=1):
         bank.fit_predict(chunk)
@@ -101,7 +101,7 @@ def test_state_stays_small_and_resumable_after_a_long_run():
     # Memory is O(state), not O(data): a 2M-row stream still serializes tiny.
     assert len(blob) < 4096, f"state grew to {len(blob)} bytes"
 
-    resumed = po.ModelBank.load_bytes(blob, specs=[spec])
+    resumed = rp.ModelBank.load_bytes(blob, specs=[spec])
     # The tail continues the stream's clock, as a resumed feed does.
     tail = next(_chunks(1000, 1000, seed=2)).with_columns(pl.col("t") + last_t)
     a = bank.fit_predict(tail).select("m").unnest("m")

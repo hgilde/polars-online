@@ -26,15 +26,14 @@ class ColumnNotFoundError(pl.exceptions.ColumnNotFoundError, ValueError):
 
     For a column a spec reads, its message names the spec, the role the
     column plays (target, feature, clock, session, weight, group or label)
-    and the column, and lists the input's columns. ``po.stream.embargo``,
-    ``po.stream.refresh_time`` and ``po.gbdt`` raise it too, for a column
-    they name. ``po.stream.with_windows`` raises a plain ``ValueError``
-    instead.
-    ``po.eval`` raises it for a missing ``group``, ``clock`` or ``weight``
+    and the column, and lists the input's columns. ``rp.stream.embargo``
+    and ``rp.stream.refresh_time`` raise it too, for a column they name.
+    ``rp.stream.with_windows`` raises a plain ``ValueError`` instead.
+    ``rp.eval`` raises it for a missing ``group``, ``clock`` or ``weight``
     column, and for a target column when ``spec`` is the spec dict; a
     plain ``ValueError`` when ``spec`` is the spec's name alone.
 
-    ``po.ColumnNotFoundError`` is a subclass of Polars'
+    ``rp.ColumnNotFoundError`` is a subclass of Polars'
     ``ColumnNotFoundError``, which Polars raises for a column a query names
     that its input does not have, and of ``ValueError``, the class of every
     other value the bank refuses. So either ``except`` catches it.
@@ -46,11 +45,11 @@ class ColumnNotFoundError(pl.exceptions.ColumnNotFoundError, ValueError):
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        bank = rp.ModelBank([spec])
         try:
             bank.fit_predict(df.drop("x1"))
-        except pl.exceptions.ColumnNotFoundError as e:   # or po.ColumnNotFoundError, or ValueError
+        except pl.exceptions.ColumnNotFoundError as e:   # or rp.ColumnNotFoundError, or ValueError
             print(type(e).__name__, str(e).split(",")[0])
 
     .. code-block:: text
@@ -79,7 +78,7 @@ class OutputColumnNotFoundError(ColumnNotFoundError):
     .. code-block:: python
 
         try:
-            po.eval.metrics(df, "ridge")   # a frame without the bank's output
+            rp.eval.metrics(df, "ridge")   # a frame without the bank's output
         except pl.exceptions.ColumnNotFoundError as e:
             print(type(e).__name__)
 
@@ -89,8 +88,8 @@ class OutputColumnNotFoundError(ColumnNotFoundError):
 
     .. rubric:: See also
 
-    - :func:`rheon.eval.metrics` and the other scoring functions of
-      :mod:`rheon.eval`, which raise it.
+    - :func:`rheon.polars.eval.metrics` and the other scoring functions of
+      :mod:`rheon.polars.eval`, which raise it.
     """
 
 
@@ -106,9 +105,9 @@ class WrongTypeError(TypeError):
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=50.0)
+        spec = rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=50.0)
         try:
-            po.ModelBank(spec)                   # one spec, not a list of them
+            rp.ModelBank(spec)                   # one spec, not a list of them
         except TypeError as e:
             print(type(e).__name__, str(e).split(".")[0])
 
@@ -135,7 +134,7 @@ class RefusedValueError(ValueError):
     .. code-block:: python
 
         try:
-            po.ewm_mean("x", half_life=10.0, reverse=True)   # no window_size
+            rp.ewm_mean("x", half_life=10.0, reverse=True)   # no window_size
         except ValueError as e:
             print(type(e).__name__, str(e).split(",")[0])
 

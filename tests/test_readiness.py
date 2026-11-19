@@ -32,7 +32,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 from test_every_kind import frame_for
 from test_model_registry import MINIMAL
 
@@ -62,7 +62,7 @@ def frame(n: int = 300, k: int = 2, seed: int = 0, noise: float = 0.5) -> pl.Dat
 def spec(**kw) -> dict:
     base = dict(targets=["y"], features=["x0", "x1"], half_life=20.0, max_rows_between_solves=1)
     base.update(kw)
-    return po.spec.ewridge("m", **base)
+    return rp.spec.ewridge("m", **base)
 
 
 def field(out: pl.DataFrame, name: str) -> pl.Series:
@@ -83,13 +83,13 @@ class _Fitted(NamedTuple):
     notices: list[str]
 
 
-def _fit_noting(bank: po.ModelBank, df: pl.DataFrame) -> _Fitted:
+def _fit_noting(bank: rp.ModelBank, df: pl.DataFrame) -> _Fitted:
     """``bank.fit_predict(df)``, and the readiness notices it raised."""
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         out = bank.fit_predict(df)
     return _Fitted(
-        out, [str(w.message) for w in caught if issubclass(w.category, po.ReadinessWarning)]
+        out, [str(w.message) for w in caught if issubclass(w.category, rp.ReadinessWarning)]
     )
 
 
@@ -107,7 +107,7 @@ def _says_not_met_at_the_rate_so_far(msg: str) -> None:
 
 class TestSettledFrac:
     def test_is_the_decay_time_seen_before_the_row_as_a_fraction_of_steady_state(self):
-        out = po.ModelBank([spec(half_life=10.0)]).fit_predict(frame(60))
+        out = rp.ModelBank([spec(half_life=10.0)]).fit_predict(frame(60))
         got = field(out, "settled_frac").to_list()
         # A row-count clock: one clock unit per row, and a group's first row
         # decays by nothing, so the decay time seen before row `i` is `i - 1`
@@ -127,7 +127,7 @@ class TestSettledFrac:
             n = 4 * rows_per_halflife
             df = frame(n).with_columns((pl.col("t") * (50.0 / rows_per_halflife)).alias("t"))
             s = spec(clock="t", half_life=50.0, gap_cap=1e9)
-            got = field(po.ModelBank([s]).fit_predict(df), "settled_frac")
+            got = field(rp.ModelBank([s]).fit_predict(df), "settled_frac")
             for half_lives in (1, 2, 3):
                 # One row on: the first row's delta is zero.
                 assert got[half_lives * rows_per_halflife + 1] == pytest.approx(
@@ -135,7 +135,7 @@ class TestSettledFrac:
                 ), rows_per_halflife
 
     def test_is_null_without_decay(self):
-        out = po.ModelBank([spec(half_life=math.inf)]).fit_predict(frame(30))
+        out = rp.ModelBank([spec(half_life=math.inf)]).fit_predict(frame(30))
         assert field(out, "settled_frac").null_count() == 30
 
     def test_counts_a_capped_gap_as_the_cap(self):
@@ -145,7 +145,7 @@ class TestSettledFrac:
             pl.when(pl.col("t") >= 20).then(pl.col("t") + 1e6).otherwise(pl.col("t")).alias("t")
         )
         s = spec(clock="t", half_life=10.0, gap_cap=5.0)
-        got = field(po.ModelBank([s]).fit_predict(df), "settled_frac")
+        got = field(rp.ModelBank([s]).fit_predict(df), "settled_frac")
         # Rows 1..19 are one unit apart (19 units before row 20); the jump
         # at row 20 counts 5, not 1e6, and is seen from row 21 on.
         assert got[20] == pytest.approx(1.0 - 2.0 ** (-19 / 10.0))
@@ -162,7 +162,7 @@ class TestSettledFrac:
             gap_cap=5.0,
             restart_after_step_back=0.0,
         )
-        got = field(po.ModelBank([s]).fit_predict(df), "settled_frac")
+        got = field(rp.ModelBank([s]).fit_predict(df), "settled_frac")
         # The reset row is a first row again: it decays by nothing.
         assert got[20] == 0.0 and got[21] == 0.0
         assert got[22] == pytest.approx(1.0 - 2.0 ** (-1 / 10.0))
@@ -171,7 +171,7 @@ class TestSettledFrac:
 class TestMinSettledFrac:
     def test_withholds_until_the_fraction_and_says_why(self):
         s = spec(half_life=10.0, min_settled_frac=0.5)
-        out = po.ModelBank([s]).fit_predict(frame(40))
+        out = rp.ModelBank([s]).fit_predict(frame(40))
         pred = field(out, "pred_y")
         why = reasons(out)
         # T = row index - 1 on a row-count clock, so 0.5 is reached at row 11.
@@ -181,7 +181,7 @@ class TestMinSettledFrac:
         assert why[11:] == [None] * 29
 
     def test_is_off_by_default(self):
-        out = po.ModelBank([spec()]).fit_predict(frame(40))
+        out = rp.ModelBank([spec()]).fit_predict(frame(40))
         assert "below_min_settled_frac" not in set(reasons(out))
         assert field(out, "pred_y")[4:].null_count() == 0
 
@@ -196,7 +196,7 @@ class TestMinSettledFrac:
 
     def test_predict_withholds_the_same_way(self):
         s = spec(half_life=10.0, min_settled_frac=0.5)
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         bank.fit_predict(frame(5))
         out = bank.predict(frame(3, seed=1))
         assert field(out, "pred_y").null_count() == 3
@@ -210,7 +210,7 @@ class TestMinSettledFrac:
             ]
         )
         s = spec(half_life=10.0, min_settled_frac=0.5, group="g")
-        out = po.ModelBank([s]).fit_predict(df)
+        out = rp.ModelBank([s]).fit_predict(df)
         why = reasons(out)
         assert why[40:51] == ["below_min_settled_frac"] * 11
         assert why[51:] == [None] * 9
@@ -223,12 +223,12 @@ class TestMaxErrorInflation:
         always was. Under a half-life Kish's ``n`` after ``k + 1`` rows is a
         hair under ``k + 1`` -- the gate sits exactly on its boundary -- so
         it opens one row later."""
-        out = po.ModelBank([spec(half_life=math.inf)]).fit_predict(frame(30))
+        out = rp.ModelBank([spec(half_life=math.inf)]).fit_predict(frame(30))
         pred = field(out, "pred_y")
         assert pred[:3].null_count() == 3
         assert pred[3:].null_count() == 0
         assert reasons(out)[:3] == ["above_max_error_inflation"] * 3
-        decayed = field(po.ModelBank([spec()]).fit_predict(frame(30)), "pred_y")
+        decayed = field(rp.ModelBank([spec()]).fit_predict(frame(30)), "pred_y")
         assert decayed[:4].null_count() == 4
         assert decayed[4:].null_count() == 0
 
@@ -239,7 +239,7 @@ class TestMaxErrorInflation:
         df = frame(300).with_columns(
             pl.when(pl.col("t") == 0).then(100.0).otherwise(1.0).alias("w")
         )
-        out = po.ModelBank([spec(weight="w", half_life=math.inf)]).fit_predict(df)
+        out = rp.ModelBank([spec(weight="w", half_life=math.inf)]).fit_predict(df)
         pred = field(out, "pred_y")
         why = reasons(out)
         assert pred[10] is None and pred[50] is None
@@ -255,8 +255,8 @@ class TestMaxErrorInflation:
         gate reads `rls`, `kalman` and `lasso` too
         (`tests/test_readiness_models.py`)."""
         for build, kw in [
-            (po.spec.sgd, dict(learning_rate=0.01)),
-            (po.spec.huber, {}),
+            (rp.spec.sgd, dict(learning_rate=0.01)),
+            (rp.spec.huber, {}),
         ]:
             with pytest.raises(
                 ValueError,
@@ -276,13 +276,13 @@ class TestMaxErrorInflation:
         for bad in (1.0, 0.5, -1.0, math.nan):
             with pytest.raises(ValueError, match="max_error_inflation"):
                 spec(max_error_inflation=bad)
-        out = po.ModelBank([spec(max_error_inflation=math.inf)]).fit_predict(frame(30))
+        out = rp.ModelBank([spec(max_error_inflation=math.inf)]).fit_predict(frame(30))
         assert "above_max_error_inflation" not in set(reasons(out))
 
     def test_a_tighter_ratio_waits_longer(self):
-        loose = field(po.ModelBank([spec()]).fit_predict(frame(200)), "pred_y")
+        loose = field(rp.ModelBank([spec()]).fit_predict(frame(200)), "pred_y")
         tight = field(
-            po.ModelBank([spec(max_error_inflation=1.05)]).fit_predict(frame(200)), "pred_y"
+            rp.ModelBank([spec(max_error_inflation=1.05)]).fit_predict(frame(200)), "pred_y"
         )
         # sqrt(1 + 3 / n_kish) < 1.05 needs n_kish > 29.3 (steady state 57.6).
         assert first_present(loose) == 4
@@ -292,7 +292,7 @@ class TestMaxErrorInflation:
         """The explicit floor is the user's, so it is named ahead of the
         noise gate, whose ratio is infinite until the model has solved."""
         s = spec(min_weight=20.0, half_life=math.inf)
-        out = po.ModelBank([s]).fit_predict(frame(60))
+        out = rp.ModelBank([s]).fit_predict(frame(60))
         pred = field(out, "pred_y")
         assert pred[:20].null_count() == 20
         assert pred[20:].null_count() == 0
@@ -300,7 +300,7 @@ class TestMaxErrorInflation:
 
     def test_settled_takes_precedence_in_the_reason(self):
         s = spec(half_life=10.0, min_settled_frac=0.5)
-        out = po.ModelBank([s]).fit_predict(frame(20))
+        out = rp.ModelBank([s]).fit_predict(frame(20))
         assert reasons(out)[1] == "below_min_settled_frac"
 
     def test_min_weight_is_named_ahead_of_the_noise_gate_where_both_bind(self):
@@ -312,9 +312,9 @@ class TestMaxErrorInflation:
         rows after them (review 2026-10-06, TB8: only row 10, where the
         noise gate had opened, was asserted)."""
         df = frame(60)
-        alone = po.ModelBank([spec(half_life=math.inf)]).fit_predict(df)
+        alone = rp.ModelBank([spec(half_life=math.inf)]).fit_predict(df)
         assert reasons(alone)[:4] == ["above_max_error_inflation"] * 3 + [None]
-        both = po.ModelBank([spec(half_life=math.inf, min_weight=20.0)]).fit_predict(df)
+        both = rp.ModelBank([spec(half_life=math.inf, min_weight=20.0)]).fit_predict(df)
         assert reasons(both)[:21] == ["below_min_weight"] * 20 + [None]
 
 
@@ -341,13 +341,13 @@ def test_every_kind_settles_by_the_formula_and_withholds_until_it(name):
         kw["scalar"] = True  # its half-life parametrises the scalar form's standardiser
 
     def build() -> dict:
-        return getattr(po.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
+        return getattr(rp.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
 
     if name in ("seqtest", "bocpd"):
         with pytest.raises(ValueError, match=f"- half_life does not apply to {name}, "):
             build()
         return
-    out = po.ModelBank([build()]).fit_predict(frame_for(name))["m"].struct.unnest()
+    out = rp.ModelBank([build()]).fit_predict(frame_for(name))["m"].struct.unnest()
     got = out["settled_frac"].to_list()
     assert got == pytest.approx(
         [1.0 - 2.0 ** (-max(i - 1, 0) / 10.0) for i in range(len(got))], abs=1e-12
@@ -398,8 +398,8 @@ def test_a_models_own_floor_and_warm_up_say_why(name, extra, want):
     # `bocpd` takes no half-life: its registry entry drops it.
     kw |= {k: v for k, v in MINIMAL[name].items() if k != "half_life" or v is None}
     kw |= extra
-    spec = getattr(po.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
-    out = po.ModelBank([spec]).fit_predict(frame_for(name))["m"].struct.unnest()
+    spec = getattr(rp.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
+    out = rp.ModelBank([spec]).fit_predict(frame_for(name))["m"].struct.unnest()
     skip = ("weight_sum", "settled_frac", "withheld_reason", "coef", "support_coef")
     first = next(c for c in out.columns if c not in skip)
     why = out["withheld_reason"].cast(pl.String).to_list()
@@ -412,9 +412,9 @@ def test_a_models_own_floor_and_warm_up_say_why(name, extra, want):
 
 class TestErrorInflationField:
     def test_is_opt_in_and_per_slot(self):
-        default = po.ModelBank([spec()]).fit_predict(frame(30))
+        default = rp.ModelBank([spec()]).fit_predict(frame(30))
         assert "error_inflation_y" not in [f.name for f in default.schema["m"].fields]
-        out = po.ModelBank([spec(emit_error_inflation=True)]).fit_predict(frame(300))
+        out = rp.ModelBank([spec(emit_error_inflation=True)]).fit_predict(frame(300))
         got = field(out, "error_inflation_y")
         assert got.null_count() < 5
         tail = got[100:].to_numpy()
@@ -424,7 +424,7 @@ class TestErrorInflationField:
 
     def test_needs_a_model_that_has_one(self):
         with pytest.raises(ValueError, match="emit_error_inflation"):
-            po.spec.sgd(
+            rp.spec.sgd(
                 "m",
                 targets=["y"],
                 features=["x0"],
@@ -438,27 +438,27 @@ class TestSupportCoef:
     def test_a_duplicated_column_reads_half_and_a_clean_one_reads_one(self):
         df = frame(200, k=2).with_columns(pl.col("x0").alias("x2"))
         s = spec(features=["x0", "x1", "x2"], ridge=1e-8, coef_every=1, half_life=math.inf)
-        out = po.ModelBank([s]).fit_predict(df)
+        out = rp.ModelBank([s]).fit_predict(df)
         support = field(out, "support_coef")[-1]
         assert support.to_list() == pytest.approx([None, 0.5, 1.0, 0.5], abs=1e-3)
 
     def test_rides_on_the_coef_schedule(self):
         # Unset, `coef` is on the chunk's last row alone.
-        out = po.ModelBank([spec()]).fit_predict(frame(50))
+        out = rp.ModelBank([spec()]).fit_predict(frame(50))
         assert field(out, "support_coef").null_count() == 49
         assert field(out, "coef")[-1] is not None
         assert field(out, "support_coef")[-1] is not None
 
     def test_a_heavy_ridge_reads_low_everywhere(self):
         s = spec(ridge=5.0, coef_every=1, half_life=math.inf)
-        out = po.ModelBank([s]).fit_predict(frame(200))
+        out = rp.ModelBank([s]).fit_predict(frame(200))
         support = field(out, "support_coef")[-1].to_list()
         assert all(v < 0.3 for v in support[1:]), support
 
 
 class TestSummaryAndWarnings:
     def test_summary_carries_the_readiness_columns(self):
-        bank = po.ModelBank([spec()])
+        bank = rp.ModelBank([spec()])
         bank.fit_predict(frame(100))
         s = bank.summary("m")
         for col in (
@@ -481,12 +481,12 @@ class TestSummaryAndWarnings:
         pair clearly below 0.5, where 1e-8 reads it 0.5 to rounding."""
         df = frame(200, k=2).with_columns(pl.col("x0").alias("x2"))
         s = spec(features=["x0", "x1", "x2"], ridge=0.5, half_life=20.0, coef_every=1)
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             bank.fit_predict(df[:100])
             bank.fit_predict(df[100:])
-        got = [w for w in caught if issubclass(w.category, po.ReadinessWarning)]
+        got = [w for w in caught if issubclass(w.category, rp.ReadinessWarning)]
         assert len(got) == 1, [str(w.message) for w in caught]
         assert "x2" in str(got[0].message) or "x0" in str(got[0].message)
         assert "support_coef" in str(got[0].message)
@@ -518,8 +518,8 @@ class TestSummaryAndWarnings:
         )
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("default")
-            po.ModelBank([s]).fit_predict(df)
-        got = [str(w.message) for w in caught if issubclass(w.category, po.ReadinessWarning)]
+            rp.ModelBank([s]).fit_predict(df)
+        got = [str(w.message) for w in caught if issubclass(w.category, rp.ReadinessWarning)]
         assert len(got) == 2, got
         assert got[0].startswith('spec "m" group "1" session "one": '), got
         assert got[1].startswith('spec "m" group "1" session "two": '), got
@@ -537,7 +537,7 @@ class TestSummaryAndWarnings:
         k = 10
         df = frame(400, k=k)
         s = spec(features=[f"x{j}" for j in range(k)], half_life=2.0)
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         head = _fit_noting(bank, df[:12])
         assert head.notices == [], head.notices
         at = _fit_noting(bank, df[12:13])
@@ -558,17 +558,17 @@ class TestSummaryAndWarnings:
         warned at `weight_sum = 1.00` ("0.27 data and 0.73 ridge") and read
         `support_coef = 1.00` from the next row to the end of the stream."""
         with warnings.catch_warnings():
-            warnings.simplefilter("error", po.ReadinessWarning)
-            po.ModelBank([spec(coef_every=1)]).fit_predict(frame(60))
+            warnings.simplefilter("error", rp.ReadinessWarning)
+            rp.ModelBank([spec(coef_every=1)]).fit_predict(frame(60))
             # `min_weight = 0` puts the first solve at `weight_sum = 0`, where the
             # fit is entirely the ridge -- what `tests/test_window_budget.py`
             # sets, and what made that file warn in CI.
-            po.ModelBank([spec(coef_every=1, min_weight=0.0)]).fit_predict(frame(60))
+            rp.ModelBank([spec(coef_every=1, min_weight=0.0)]).fit_predict(frame(60))
 
     def test_a_reachable_gate_does_not_warn(self):
         with warnings.catch_warnings():
-            warnings.simplefilter("error", po.ReadinessWarning)
-            po.ModelBank([spec()]).fit_predict(frame(300))
+            warnings.simplefilter("error", rp.ReadinessWarning)
+            rp.ModelBank([spec()]).fit_predict(frame(300))
 
     def test_the_notices_and_the_diagnostics_settle_on_two_clocks(self):
         """`settled_frac`, `summary()` and the readiness notices read the
@@ -587,8 +587,8 @@ class TestSummaryAndWarnings:
         rng = np.random.default_rng(1)
         df = pl.DataFrame({"y": 0.5 + rng.standard_normal(n)})
         ceiling = 1.0 / (1.0 - 2.0 ** (-1.0 / h))
-        floored = po.spec.holt("m", targets=["y"], half_life=h, min_weight=ceiling + 1.0)
-        bank = po.ModelBank([floored])
+        floored = rp.spec.holt("m", targets=["y"], half_life=h, min_weight=ceiling + 1.0)
+        bank = rp.ModelBank([floored])
         noticed = []
         for i in range(n):
             if _fit_noting(bank, df.slice(i, 1)).notices:
@@ -599,8 +599,8 @@ class TestSummaryAndWarnings:
         assert 215 <= noticed[0] <= level_settled + h, noticed
         assert bank.summary("m")["settled_frac"][0] == pytest.approx(1.0 - 2.0 ** (-(n - 1) / h))
 
-        plain = po.spec.holt("m", targets=["y"], half_life=h, emit_breaks=True)
-        out = po.ModelBank([plain]).fit_predict(df)
+        plain = rp.spec.holt("m", targets=["y"], half_life=h, emit_breaks=True)
+        out = rp.ModelBank([plain]).fit_predict(df)
         first = first_present(field(out, "cusum_y"))
         trend_settled = 1 + int(np.ceil(4.0 * h * np.log2(20.0)))
         assert trend_settled == 866
@@ -610,12 +610,12 @@ class TestSummaryAndWarnings:
         w = 100.0
         frame_ = frame(600)
         common = dict(half_life=float("inf"), window_size=w)
-        quiet = po.ModelBank([spec(min_weight=w + 1.0, **common)])
+        quiet = rp.ModelBank([spec(min_weight=w + 1.0, **common)])
         fitted = _fit_noting(quiet, frame_)
         assert fitted.notices == [], fitted.notices
         assert field(fitted.out, "settled_frac").null_count() == 600
         assert field(fitted.out, "pred_y").null_count() == 600
-        out = po.ModelBank([spec(emit_tails=True, **common)]).fit_predict(frame_)
+        out = rp.ModelBank([spec(emit_tails=True, **common)]).fit_predict(frame_)
         assert field(out, "settled_frac").null_count() == 600
         kish = math.log(2.0) / math.log((w + 1.0) / (w - 1.0))
         want = int(np.ceil(kish * math.log2(20.0)))
@@ -634,8 +634,8 @@ class TestInvariants:
             min_settled_frac=0.3,
             half_life=15.0,
         )
-        one = po.ModelBank([s]).fit_predict(df)
-        bank = po.ModelBank([s])
+        one = rp.ModelBank([s]).fit_predict(df)
+        bank = rp.ModelBank([s])
         many = pl.concat([bank.fit_predict(df[i : i + 30]) for i in range(0, 210, 30)])
         for name in ("settled_frac", "error_inflation_y", "support_coef", "pred_y"):
             assert field(one, name).equals(field(many, name)), name
@@ -644,10 +644,10 @@ class TestInvariants:
     def test_the_new_fields_survive_the_state_file(self):
         df = frame(300)
         s = spec(coef_every=1, emit_error_inflation=True, min_settled_frac=0.3)
-        one = po.ModelBank([s]).fit_predict(df)
-        bank = po.ModelBank([s])
+        one = rp.ModelBank([s]).fit_predict(df)
+        bank = rp.ModelBank([s])
         head = bank.fit_predict(df[:100])
-        bank = po.ModelBank.load_bytes(bank.save_bytes())
+        bank = rp.ModelBank.load_bytes(bank.save_bytes())
         tail = bank.fit_predict(df[100:])
         two = pl.concat([head, tail])
         for name in ("settled_frac", "error_inflation_y", "support_coef", "pred_y"):
@@ -671,7 +671,7 @@ class TestInvariants:
         )
 
         def run(**cadence: int) -> pl.DataFrame:
-            bank = po.ModelBank([spec(**cadence, **kw)])
+            bank = rp.ModelBank([spec(**cadence, **kw)])
             return pl.concat([bank.fit_predict(df[i : i + 100]) for i in range(0, 400, 100)])
 
         # Every row (`coef_every = 0`), and unset: each chunk's last row.
@@ -687,7 +687,7 @@ class TestInvariants:
         assert "above_max_error_inflation" in why and None in why, set(why)
 
     def test_withheld_reason_is_categorical_not_string(self):
-        out = po.ModelBank([spec()]).fit_predict(frame(30))
+        out = rp.ModelBank([spec()]).fit_predict(frame(30))
         dtype = (
             out.schema["m"]
             .fields[[f.name for f in out.schema["m"].fields].index("withheld_reason")]
@@ -700,7 +700,7 @@ class TestInvariants:
 
     def test_field_order_and_names(self):
         s = spec(coef_every=1, emit_error_inflation=True)
-        assert po.spec.output_fields(s) == [
+        assert rp.spec.output_fields(s) == [
             "pred_y",
             "resid_y",
             "error_inflation_y",
@@ -721,7 +721,7 @@ class TestInvariants:
         from test_model_registry import MINIMAL, _build
 
         for name in sorted(MINIMAL):
-            fields = po.spec.output_fields(_build(name))
+            fields = rp.spec.output_fields(_build(name))
             if name in ("marginal", "rcov", "audit"):
                 assert "settled_frac" not in fields
             else:
@@ -757,7 +757,7 @@ class TestSettledWeight:
         s = spec(clock="t", gap_cap=10.0 * d, half_life=h, **kw)
         ceiling = (weight or 1.0) / (1.0 - 2.0 ** (-d / h))
         for rows in (1, 2, 3, 17, 60):
-            bank = po.ModelBank([s])
+            bank = rp.ModelBank([s])
             bank.fit_predict(df[:rows])
             got = bank.summary("m")["weight_sum_settled"][0]
             if rows == 1:
@@ -768,7 +768,7 @@ class TestSettledWeight:
     def test_weight_sum_settled_is_null_without_a_decay_or_under_a_window(self):
         df = frame(50)
         for s in (spec(half_life=math.inf), spec(window_size=20.0)):
-            bank = po.ModelBank([s])
+            bank = rp.ModelBank([s])
             bank.fit_predict(df)
             assert bank.summary("m")["weight_sum_settled"][0] is None
 
@@ -782,8 +782,8 @@ class TestSettledWeight:
         it did -- once, however many chunks follow."""
         ceiling = 1.0 / (1.0 - 2.0 ** (-1.0 / 5.0))
         df = frame(200)
-        s = po.spec.rls("m", targets=["y"], features=["x0", "x1"], half_life=5.0, min_weight=20.0)
-        bank = po.ModelBank([s])
+        s = rp.spec.rls("m", targets=["y"], features=["x0", "x1"], half_life=5.0, min_weight=20.0)
+        bank = rp.ModelBank([s])
         head = _fit_noting(bank, df[:28])
         assert head.notices == [], head.notices
         at = _fit_noting(bank, df[28:29])
@@ -820,7 +820,7 @@ class TestSettledWeight:
         kw: dict = {"targets": ["y", "z"]} if absent == "null_target" else {"weight": "w"}
         named = '"z"' if absent == "null_target" else '"y"'
         s = spec(min_weight=5.0, max_error_inflation=math.inf, **kw)
-        fitted = _fit_noting(po.ModelBank([s]), df)
+        fitted = _fit_noting(rp.ModelBank([s]), df)
         assert len(fitted.notices) == 1, fitted.notices
         msg = fitted.notices[0]
         assert "min_weight = 5" in msg and named in msg, msg
@@ -853,7 +853,7 @@ class TestSettledWeight:
         if why == "sparse_target":
             y = np.where(np.arange(n) % 50 == 0, 2 * x, np.nan)
             df = pl.DataFrame({"x0": x, "y": y}).with_columns(pl.col("y").fill_nan(None))
-            s = po.spec.ewridge(
+            s = rp.spec.ewridge(
                 "m",
                 targets=["y"],
                 features=["x0"],
@@ -867,7 +867,7 @@ class TestSettledWeight:
             # above pin): the projection reads that row's weight as `w₁`.
             w = np.where(np.arange(n) == 28, 1e90, 1.0)
             df = pl.DataFrame({"x0": x, "y": 2 * x, "w": w})
-            s = po.spec.ewridge(
+            s = rp.spec.ewridge(
                 "m",
                 targets=["y"],
                 features=["x0"],
@@ -876,7 +876,7 @@ class TestSettledWeight:
                 weight="w",
                 max_error_inflation=math.inf,
             )
-        fitted = _fit_noting(po.ModelBank([s]), df)
+        fitted = _fit_noting(rp.ModelBank([s]), df)
         for msg in fitted.notices:
             assert "Lower min_weight below" not in msg, msg
             assert not re.search(r"tops out near -", msg), msg
@@ -909,7 +909,7 @@ class TestSettledWeight:
         if model != "holt":
             kw["features"] = ["x0", "x1"]
         extra = {"kalman": {"coef_half_life": 50.0}, "lasso": {"penalties": [0.1]}}
-        s = getattr(po.spec, model)("m", **kw, **extra.get(model, {}))
+        s = getattr(rp.spec, model)("m", **kw, **extra.get(model, {}))
         df = self._stopped(stop=40)
         want = (
             'spec "m": min_weight = 5 has not been met for target "y" on any row for the last '
@@ -919,14 +919,14 @@ class TestSettledWeight:
             'that weight to 5. Check that rows reach the model with a value of target "y", as '
             f"{READY} explains."
         )
-        fitted = _fit_noting(po.ModelBank([s]), df)
+        fitted = _fit_noting(rp.ModelBank([s]), df)
         assert fitted.notices == [want]
         ws = field(fitted.out, "weight_sum")
         assert ws[39] == pytest.approx(ws[150], rel=0.01), "the shared weight stays"
         # Saved and loaded inside the wait, in chunks either side.
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         head = _fit_noting(bank, df[:46])
-        bank = po.ModelBank.load_bytes(bank.save_bytes())
+        bank = rp.ModelBank.load_bytes(bank.save_bytes())
         tail = _fit_noting(bank, df[46:])
         assert head.notices + tail.notices == [want]
 
@@ -941,7 +941,7 @@ class TestSettledWeight:
         figure = f"{math.floor(ceiling * 100) / 100:.2f}"
         need = 1.0 / -math.log2(1.0 - 1.0 / 10.0)
         s = spec(half_life=5.0, min_weight=10.0, weight="w", max_error_inflation=math.inf)
-        fitted = _fit_noting(po.ModelBank([s]), self._stopped(stop=15))
+        fitted = _fit_noting(rp.ModelBank([s]), self._stopped(stop=15))
         assert fitted.notices == [
             'spec "m": min_weight = 10 has not been met for target "y" on any row for the last '
             "half-life, with the model within 5% of its steady state. The model has not learned "
@@ -958,7 +958,7 @@ class TestSettledWeight:
         weight 0, which adds nothing, so it cannot project where the weight
         tops out; it read "tops out near 2.21"."""
         s = spec(half_life=5.0, min_weight=5.0, weight="w", max_error_inflation=math.inf)
-        fitted = _fit_noting(po.ModelBank([s]), self._stopped(zero_from=40))
+        fitted = _fit_noting(rp.ModelBank([s]), self._stopped(zero_from=40))
         assert fitted.notices == [
             'spec "m": min_weight = 5 has not been met for target "y" on any row for the last '
             "half-life, with the model within 5% of its steady state, so predictions for target "
@@ -979,16 +979,16 @@ class TestSettledWeight:
         df = frame(n).with_columns(
             w=pl.when(pl.int_range(pl.len()) == 25).then(20.0).otherwise(1.0)
         )
-        s = po.spec.rls(
+        s = rp.spec.rls(
             "m", targets=["y"], features=["x0", "x1"], half_life=5.0, min_weight=floor, weight="w"
         )
-        why = reasons(_fit_noting(po.ModelBank([s]), df).out)
+        why = reasons(_fit_noting(rp.ModelBank([s]), df).out)
         met = [i for i in range(23, n) if why[i] is None]
         # The burst lets rows 26 on through, and they end inside the stream.
         assert met and met[0] == 26 and met[-1] < n - 10, met
         again = met[-1] + 1
         assert why[again] == "below_min_weight"
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         assert _fit_noting(bank, df[: again + 5]).notices == []
         at = _fit_noting(bank, df[again + 5 : again + 6])
         assert len(at.notices) == 1 and "min_weight = 10" in at.notices[0], at.notices
@@ -1016,7 +1016,7 @@ class TestSettledWeight:
         row."""
         if gate == "min_weight":
             df = frame(rows)
-            s = po.spec.rls(
+            s = rp.spec.rls(
                 "m", targets=["y"], features=["x0", "x1"], half_life=5.0, min_weight=20.0
             )
         else:
@@ -1026,10 +1026,10 @@ class TestSettledWeight:
         def notice_rows(resume: set[int]) -> list[int]:
             """The rows a notice came on, fed a row at a time, the bank saved
             and loaded before each row in ``resume``."""
-            bank, said = po.ModelBank([s]), []
+            bank, said = rp.ModelBank([s]), []
             for i in range(df.height):
                 if i in resume:
-                    bank = po.ModelBank.load_bytes(bank.save_bytes())
+                    bank = rp.ModelBank.load_bytes(bank.save_bytes())
                 notices = _fit_noting(bank, df[i : i + 1]).notices
                 assert len(notices) <= 1, notices
                 if notices:
@@ -1085,7 +1085,7 @@ class TestSettledWeight:
         )
         assert 'clock="x"' in local and "min_weight=20.0" in local, local
         with warnings.catch_warnings():
-            warnings.simplefilter("error", po.ReadinessWarning)
+            warnings.simplefilter("error", rp.ReadinessWarning)
             exec(compile(kernel, "README.md: A local fit along any feature", "exec"), ns)
             exec(compile(local, "docs/how-to/fit-locally-along-a-feature.md", "exec"), {})
         fitted = ns["fitted"]
@@ -1096,12 +1096,12 @@ class TestSettledWeight:
         """At 95% settled the weight is 95% of the ceiling, so a floor between
         the two is met later: no warning, and predictions once it is."""
         ceiling = 1.0 / (1.0 - 2.0 ** (-1.0 / 5.0))
-        s = po.spec.rls(
+        s = rp.spec.rls(
             "m", targets=["y"], features=["x0", "x1"], half_life=5.0, min_weight=0.99 * ceiling
         )
         with warnings.catch_warnings():
-            warnings.simplefilter("error", po.ReadinessWarning)
-            out = po.ModelBank([s]).fit_predict(frame(200))
+            warnings.simplefilter("error", rp.ReadinessWarning)
+            out = rp.ModelBank([s]).fit_predict(frame(200))
         assert field(out, "pred_y")[-1] is not None
 
     @pytest.mark.parametrize("kind", ["ewridge", "sgd"])
@@ -1129,9 +1129,9 @@ class TestSettledWeight:
         )
         if kind == "sgd":
             kw["learning_rate"] = 0.01
-        bank = po.ModelBank([getattr(po.spec, kind)("m", **kw)])
+        bank = rp.ModelBank([getattr(rp.spec, kind)("m", **kw)])
         with warnings.catch_warnings():
-            warnings.simplefilter("error", po.ReadinessWarning)
+            warnings.simplefilter("error", rp.ReadinessWarning)
             out = bank.fit_predict(frame(n))
         preds = field(out, "pred_y")
         # Row i releases rows 0..i-20, and the floor needs seven of them:
@@ -1157,10 +1157,10 @@ class TestSettledWeight:
         h = 10.0
         df = frame(61)
         kw = {} if embargo is None else {"embargo": embargo}
-        s = po.spec.ewridge(
+        s = rp.spec.ewridge(
             "m", targets=["y"], features=["x0"], clock="t", gap_cap=1e9, half_life=h, **kw
         )
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         _fit_noting(bank, df[:60])
         summary = bank.summary("m")
         after = field(_fit_noting(bank, df[60:]).out, "settled_frac")[0]
@@ -1190,11 +1190,11 @@ class TestSettledWeight:
         kw = {} if limit is None else {"max_error_inflation": limit}
 
         def run(h: float) -> tuple[pl.DataFrame, list[str]]:
-            bank = po.ModelBank([spec(features=features, half_life=h, **kw)])
+            bank = rp.ModelBank([spec(features=features, half_life=h, **kw)])
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 out = bank.fit_predict(df)
-            msgs = [str(w.message) for w in caught if issubclass(w.category, po.ReadinessWarning)]
+            msgs = [str(w.message) for w in caught if issubclass(w.category, rp.ReadinessWarning)]
             return out, msgs
 
         out, msgs = run(h)
@@ -1228,7 +1228,7 @@ class TestSettledWeight:
             else pl.lit(1.0)
         )
         s = spec(features=[f"x{j}" for j in range(k)], half_life=2.0, weight="w")
-        fitted = _fit_noting(po.ModelBank([s]), df)
+        fitted = _fit_noting(rp.ModelBank([s]), df)
         opening = (
             'spec "m": max_error_inflation = 1.41 (its default) has not been met on any row for '
             "the last half-life, with the model within 5% of its steady state"

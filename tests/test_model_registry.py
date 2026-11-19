@@ -19,7 +19,6 @@ from pathlib import Path
 
 import polars as pl
 
-import rheon as po
 import test_api_surface
 import test_budgets_memory
 import test_edge_cases
@@ -29,6 +28,7 @@ import test_portability
 import test_semantics_all_models
 from rheon import _rheon as _native
 from rheon import _spec
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -107,7 +107,7 @@ REGRESSIONS = frozenset(MINIMAL) - {
 def _build(name: str) -> dict:
     kw: dict[str, object] = {"targets": ["y"], "features": ["x0"], "half_life": 50.0}
     kw.update(MINIMAL[name])
-    return getattr(po.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
+    return getattr(rp.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
 
 
 #: Every switch a spec's output can grow by, offered to each kind in turn by
@@ -163,7 +163,7 @@ def fullest(name: str) -> dict:
     kw: dict[str, object] = {"targets": ["y", "z"], "features": ["x0", "x1"], "half_life": 50.0}
     kw.update(MINIMAL[name])
     kw = {k: v for k, v in kw.items() if v is not None}
-    builder = getattr(po.spec, name)
+    builder = getattr(rp.spec, name)
     takes = set(inspect.signature(builder).parameters) | set(
         inspect.signature(_spec._common).parameters
     )
@@ -173,7 +173,7 @@ def fullest(name: str) -> dict:
             continue
         try:
             spec = builder("m", **{**kw, **more})
-            po.spec.output_fields(spec)
+            rp.spec.output_fields(spec)
         except (TypeError, ValueError):
             continue
         kw = {**kw, **more}
@@ -185,7 +185,7 @@ HELPERS = {"output_fields", "coef_fields", "coef_index", "output_index"}
 
 
 def _builders() -> set[str]:
-    return set(po.spec.__all__) - HELPERS
+    return set(rp.spec.__all__) - HELPERS
 
 
 def test_minimal_names_every_builder():
@@ -200,7 +200,7 @@ def test_coef_index_and_coef_fields_agree_for_every_kind():
     of ``coef_fields``, empty for a kind with no named coefficient."""
     for name in sorted(MINIMAL):
         spec = _build(name)
-        index, fields = po.spec.coef_index(spec), po.spec.coef_fields(spec)
+        index, fields = rp.spec.coef_index(spec), rp.spec.coef_fields(spec)
         assert index["position"].to_list() == list(range(index.height)), name
         first = (
             fields.filter(pl.col("field") == fields["field"].first()) if fields.height else fields
@@ -214,11 +214,11 @@ def test_coef_every_is_taken_exactly_where_there_is_a_coef():
     renderer of the fields rather than to a list (review 2026-09-12, S22)."""
     for name in sorted(MINIMAL):
         spec = _build(name)
-        has_coef = any(f.startswith("coef") for f in po.spec.output_fields(spec))
+        has_coef = any(f.startswith("coef") for f in rp.spec.output_fields(spec))
         kw: dict[str, object] = {"targets": ["y"], "features": ["x0"], "half_life": 50.0}
         kw.update(MINIMAL[name])
         kw = {k: v for k, v in kw.items() if v is not None}
-        builder = getattr(po.spec, name)
+        builder = getattr(rp.spec, name)
         if has_coef:
             builder("m", coef_every=5, **kw)
         else:
@@ -293,7 +293,7 @@ def test_each_kind_takes_the_per_model_readings_its_predicates_say():
         kw: dict[str, object] = {"targets": ["y"], "features": ["x0"], "half_life": 50.0}
         kw.update(MINIMAL[name])
         kw = {k: v for k, v in kw.items() if v is not None}
-        builder = getattr(po.spec, name)
+        builder = getattr(rp.spec, name)
         for switch, value in switches.items():
             try:
                 builder("m", **kw, **{switch: value})
@@ -302,7 +302,7 @@ def test_each_kind_takes_the_per_model_readings_its_predicates_say():
             else:
                 took = True
             assert took == (switch in want), (name, switch, took)
-        has_support = any(f.startswith("support_coef") for f in po.spec.output_fields(_build(name)))
+        has_support = any(f.startswith("support_coef") for f in rp.spec.output_fields(_build(name)))
         assert has_support == ("support_coef" in want), (name, has_support)
 
 
@@ -318,7 +318,7 @@ def test_every_float_parameter_survives_a_state_file():
     ``inf`` included -- only if ``_NUMERIC_KEYS`` names it, and that listed
     sixteen builders of twenty-one (review 2026-09-12, D8)."""
     for name in sorted(_builders()):
-        fn = getattr(po.spec, name)
+        fn = getattr(rp.spec, name)
         hints = typing.get_type_hints(getattr(fn, "__wrapped__", fn))
         floats = {k for k, h in hints.items() if float in _float_leaves(h)}
         missing = floats - _spec._NUMERIC_KEYS
@@ -356,13 +356,13 @@ def test_every_kind_reports_back_the_dict_its_builder_made():
     leg in ``tests/test_properties_temporal.py``)."""
     specs = {name: _build(name) for name in MINIMAL}
     for i, given in enumerate(MARGINAL_GIVEN):
-        specs[f"marginal, given {i}"] = po.spec.marginal(
+        specs[f"marginal, given {i}"] = rp.spec.marginal(
             "m", targets=["y"], features=["x0"], half_life=50.0, **given
         )
-    differ = {name: s for name, s in specs.items() if po.ModelBank([s]).specs[0] != s}
+    differ = {name: s for name, s in specs.items() if rp.ModelBank([s]).specs[0] != s}
     assert not differ, sorted(differ)
     for given in MARGINAL_GIVEN:
-        model = po.spec.marginal("m", targets=["y"], features=["x0"], half_life=50.0, **given)[
+        model = rp.spec.marginal("m", targets=["y"], features=["x0"], half_life=50.0, **given)[
             "model"
         ]
         assert set(given) <= set(model), "each key given is written"
@@ -460,8 +460,8 @@ def test_every_builder_has_a_per_model_test_file():
     for builder in MINIMAL:
         path = ROOT / "tests" / f"test_{PER_MODEL_FILE.get(builder, builder)}.py"
         assert path.exists(), f"{builder} has no per-model test file {path.name}"
-        assert f"po.spec.{builder}(" in path.read_text(encoding="utf-8"), (
-            f"{path.name} never builds po.spec.{builder}(...)"
+        assert f"rp.spec.{builder}(" in path.read_text(encoding="utf-8"), (
+            f"{path.name} never builds rp.spec.{builder}(...)"
         )
 
 
@@ -532,7 +532,7 @@ def test_unsupervised_is_the_models_the_bank_fills_a_target_for():
     for name in MINIMAL:
         spec = dict(_build(name), targets=[])
         try:
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
         except ValueError:
             continue
         filled.add(name)
@@ -545,8 +545,8 @@ def test_output_index_names_every_dtype_it_declares():
     `output_index`'s docstring lists; it listed four of the eight."""
     seen: set[str] = set()
     for name in MINIMAL:
-        seen |= set(po.spec.output_index(_build(name))["dtype"].to_list())
-    clocks = po.spec.ewridge(
+        seen |= set(rp.spec.output_index(_build(name))["dtype"].to_list())
+    clocks = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0"],
@@ -555,10 +555,10 @@ def test_output_index_names_every_dtype_it_declares():
         gap_cap=1.0,
         emit_clocks=True,
     )
-    seen |= set(po.spec.output_index(clocks)["dtype"].to_list())
+    seen |= set(rp.spec.output_index(clocks)["dtype"].to_list())
     documented = {"f64", "bool", "list[f64]", "enum", "i64", "clock"}
     assert seen == documented, seen ^ documented
-    doc = po.spec.output_index.__doc__ or ""
+    doc = rp.spec.output_index.__doc__ or ""
     assert all(f"``{d}``" in doc for d in documented)
 
 
@@ -595,9 +595,9 @@ def test_every_builders_output_rubric_names_the_fields_its_plainest_spec_writes(
     named in the rubric, literally or by a template such as ``pred_<t>``."""
     gaps = {}
     for name in MINIMAL:
-        rubric = _rubric(getattr(po.spec, name).__doc__ or "", "Output")
+        rubric = _rubric(getattr(rp.spec, name).__doc__ or "", "Output")
         patterns = _literal_templates(rubric)
-        fields = po.spec.output_fields(_build(name))
+        fields = rp.spec.output_fields(_build(name))
         missing = [f for f in fields if not any(re.fullmatch(p, f) for p in patterns)]
         if missing:
             gaps[name] = missing
@@ -625,7 +625,7 @@ def test_the_field_grammar_names_every_field_a_grid_writes():
         for n in names
         if not n.startswith("|")
     ]
-    grid = po.spec.ewridge(
+    grid = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -634,7 +634,7 @@ def test_the_field_grammar_names_every_field_a_grid_writes():
         half_life=[10.0, 100.0],
         emit_sigma=True,
     )
-    path = po.spec.lasso(
+    path = rp.spec.lasso(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -643,7 +643,7 @@ def test_the_field_grammar_names_every_field_a_grid_writes():
         emit_selected=True,
         emit_averaged=True,
     )
-    fields = po.spec.output_fields(grid) + po.spec.output_fields(path)
+    fields = rp.spec.output_fields(grid) + rp.spec.output_fields(path)
     assert "penalty_selected_y@h10" in fields and "selected_y" in fields, fields
     missing = [f for f in fields if not any(re.fullmatch(p, f) for p in patterns)]
     assert not missing, (missing, names)
@@ -659,7 +659,7 @@ def test_a_field_name_has_one_dtype_across_the_registry():
     refuses an ``i32``."""
     dtypes: dict[str, dict[str, set[str]]] = {}
     for name in MINIMAL:
-        index = po.spec.output_index(_build(name))
+        index = rp.spec.output_index(_build(name))
         for field, dtype in zip(index["field"], index["dtype"], strict=True):
             dtypes.setdefault(field.split("@")[0], {}).setdefault(dtype, set()).add(name)
     split = {field: by for field, by in dtypes.items() if len(by) > 1}
@@ -700,9 +700,9 @@ def test_every_models_realized_dtypes_are_the_ones_output_index_declares():
         df = frame
         if name == "ew_class":
             df = frame.with_columns(pl.Series("y", ["a", "b"] * (n // 2)))
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         declared = dict(
-            zip(*(po.spec.output_index(spec)[c].to_list() for c in ("field", "dtype")), strict=True)
+            zip(*(rp.spec.output_index(spec)[c].to_list() for c in ("field", "dtype")), strict=True)
         )
         for field in out.dtype.fields:
             realized = "enum" if isinstance(field.dtype, pl.Enum) else names.get(field.dtype)

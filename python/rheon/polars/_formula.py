@@ -1,7 +1,7 @@
 """Formulas: a Polars expression over the window operators, kept as this
 library's own compact tree.
 
-An operator such as :func:`~rheon.ops.ewm_mean` returns a genuine
+An operator such as :func:`~rheon.polars.ops.ewm_mean` returns a genuine
 ``pl.Expr``: a column reference whose name carries the operator's compact
 JSON after ``@po:``. So it composes with ``pl.col``, ``pl.lit``, numbers,
 ``when/then`` and the element-wise functions on either side of a Polars

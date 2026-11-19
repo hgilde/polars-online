@@ -11,7 +11,7 @@ import lightgbm as lgb
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
 
 def make(seed, steps=2000, per=100):
@@ -29,7 +29,7 @@ def make(seed, steps=2000, per=100):
 def online(clock, x, y, kind):
     d = pl.DataFrame({"c": clock, **{f"x{i}": x[:, i] for i in range(4)}, "y": y})
     if kind == "gauss":
-        s = po.spec.ewridge(
+        s = rp.spec.ewridge(
             "o",
             targets=["y"],
             features=[f"x{i}" for i in range(4)],
@@ -39,7 +39,7 @@ def online(clock, x, y, kind):
             ridge=1e-3,
         )
     else:
-        s = po.spec.ftrl(
+        s = rp.spec.ftrl(
             "o",
             targets=["y"],
             features=[f"x{i}" for i in range(4)],
@@ -47,7 +47,7 @@ def online(clock, x, y, kind):
             gap_cap=10.0,
             half_life=5.0,
         )
-    p = po.ModelBank([s]).fit_predict(d)["o"].struct.field("pred_y").to_numpy()
+    p = rp.ModelBank([s]).fit_predict(d)["o"].struct.field("pred_y").to_numpy()
     return p
 
 

@@ -46,7 +46,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 from test_oracles_gradient_paths import FEATURES, MAX_DCLOCK, TARGETS, _scaled, _stream
 
 TIER = "mixed"
@@ -117,7 +117,7 @@ COMMON = dict(
 
 def _sgd(loss: str, schedule: str, standardize: bool, variant: str) -> tuple[dict, str, bool]:
     kind, extra = LOSSES[loss]
-    spec = po.spec.sgd(
+    spec = rp.spec.sgd(
         "m",
         loss=loss,
         schedule=schedule,
@@ -133,7 +133,7 @@ def _sgd(loss: str, schedule: str, standardize: bool, variant: str) -> tuple[dic
 
 def _pa(mode: str, standardize: bool, variant: str) -> tuple[dict, str, bool]:
     kw = {} if mode == "pa" else {"c": 0.3}  # "pa" reads no `c`, and refuses one
-    spec = po.spec.pa(
+    spec = rp.spec.pa(
         "m", mode=mode, eps=0.05, standardize=standardize, **kw, **VARIANTS[variant], **COMMON
     )
     return spec, "linear", standardize
@@ -144,7 +144,7 @@ def _ftrl(loss: str, variant: str) -> tuple[dict, str, bool]:
     if loss == "squared":
         kw = {"alpha": 0.2, "l1": 0.2}
     common = COMMON | {"half_life": 150.0}
-    spec = po.spec.ftrl("m", loss=loss, **kw, **VARIANTS[variant], **common)
+    spec = rp.spec.ftrl("m", loss=loss, **kw, **VARIANTS[variant], **common)
     return spec, ("linear" if loss == "squared" else "logistic"), False
 
 
@@ -215,7 +215,7 @@ def _splits(df: pl.DataFrame) -> dict[str, int]:
     return {"inside the warm-up": switch // 2, "after the switch": switch + 1, "gap": GAP_ROW}
 
 
-def _warmups(bank: po.ModelBank) -> list[bool]:
+def _warmups(bank: rp.ModelBank) -> list[bool]:
     """Each scaler's ``switched`` flag, read from the state."""
     found: list[bool] = []
 
@@ -286,7 +286,7 @@ def _binds(fields: pl.DataFrame) -> int:
 def test_chunks_and_saves_give_one_run(cell):
     spec, kind, standardize = _build(cell)
     df = _frame(kind, standardize)
-    whole = po.ModelBank([spec])
+    whole = rp.ModelBank([spec])
     want = _columns(whole.fit_predict(df))
     state = whole.save_bytes()
     assert want["coef"].null_count() < want.height // 2, "coef is reported too little"
@@ -294,14 +294,14 @@ def test_chunks_and_saves_give_one_run(cell):
         assert want[f"pred_{n}"].is_not_null().sum() > N // 2, f"pred_{n} is scored too little"
 
     for chunk in CHUNKS:
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         got = pl.concat([bank.fit_predict(df.slice(i, chunk)) for i in range(0, N, chunk)])
         _same_bits(want, _columns(got), f"{chunk}-row chunks")
         assert bank.save_bytes() == state, f"{chunk}-row chunks moved the state"
 
     splits = _splits(df)
     for where, split in splits.items():
-        a = po.ModelBank([spec])
+        a = rp.ModelBank([spec])
         a.fit_predict(df.slice(0, split))
         saved = a.save_bytes()
         if standardize:
@@ -311,7 +311,7 @@ def test_chunks_and_saves_give_one_run(cell):
             assert flags, "no scaler in the state"
             assert all(flags) == (where != "inside the warm-up"), (where, split, flags)
             assert not any(flags) or where != "inside the warm-up", (where, split, flags)
-        b = po.ModelBank.load_bytes(saved, specs=[spec])
+        b = rp.ModelBank.load_bytes(saved, specs=[spec])
         assert b.save_bytes() == saved, f"a reload at row {split} ({where}) re-saved other bytes"
         rest = _columns(b.fit_predict(df.slice(split)))
         _same_bits(want.slice(split), rest, f"a save at row {split} ({where})")
@@ -341,7 +341,7 @@ def test_the_unstable_rates_gate_cuts_every_way():
     withholds and after it has released the fit, is one run to the bit.
     ``inv_scaling`` from a rate past the bound withholds the first rows as
     ``unstable_rate`` and releases the rest: both are printed as evidence."""
-    spec = po.spec.sgd(
+    spec = rp.spec.sgd(
         "m",
         loss="squared",
         schedule="inv_scaling",
@@ -352,7 +352,7 @@ def test_the_unstable_rates_gate_cuts_every_way():
         **COMMON,
     )
     df = _frame("linear", False)
-    whole = po.ModelBank([spec])
+    whole = rp.ModelBank([spec])
     want = _columns(whole.fit_predict(df))
     state = whole.save_bytes()
     gated = (want["withheld_reason"].cast(pl.String) == "unstable_rate").fill_null(False).to_numpy()
@@ -360,13 +360,13 @@ def test_the_unstable_rates_gate_cuts_every_way():
     print(f"withheld as unstable_rate on {int(gated.sum())} rows, {first} to {last}")
     assert gated.sum() > 20 and last < N // 2, "the gate never withheld, or never released"
     for chunk in CHUNKS:
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         got = pl.concat([bank.fit_predict(df.slice(i, chunk)) for i in range(0, N, chunk)])
         _same_bits(want, _columns(got), f"{chunk}-row chunks")
         assert bank.save_bytes() == state, f"{chunk}-row chunks moved the state"
     for split in ((first + last) // 2, last + 5):
-        a = po.ModelBank([spec])
+        a = rp.ModelBank([spec])
         a.fit_predict(df.slice(0, split))
-        b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
+        b = rp.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
         _same_bits(want.slice(split), _columns(b.fit_predict(df.slice(split))), f"save at {split}")
         assert b.save_bytes() == state, f"a save at row {split} moved the final state"

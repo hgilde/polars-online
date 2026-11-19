@@ -63,7 +63,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bench_header import header  # noqa: E402
@@ -83,7 +83,7 @@ THRESHOLDS = (20.0, 30.0, 50.0, 80.0)
 def _windowed_specs() -> list[dict]:
     common = dict(targets=["y"], features=["x0", "x1"], half_life=200.0)
     specs = [
-        po.spec.ewridge(
+        rp.spec.ewridge(
             "m20",
             emit_breaks=True,
             emit_tails=True,
@@ -93,7 +93,7 @@ def _windowed_specs() -> list[dict]:
         )
     ]
     specs += [
-        po.spec.ewridge(f"m{t:.0f}", emit_drift=True, drift_threshold=t, **common)
+        rp.spec.ewridge(f"m{t:.0f}", emit_drift=True, drift_threshold=t, **common)
         for t in THRESHOLDS[1:]
     ]
     return specs
@@ -185,7 +185,7 @@ def windowed(streams: int = 200, n: int = 25_000) -> None:
             x = rng.standard_normal((n, 2))
             y = 0.5 + x[:, 0] - x[:, 1] + draw(rng, n)  # type: ignore[operator]
             df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-            out = po.ModelBank(specs).fit_predict(df)
+            out = rp.ModelBank(specs).fit_predict(df)
             m = out["m20"].struct.unnest()
             k = m["kurtosis_y"].drop_nulls().drop_nans()
             kurt.append(k.to_numpy())
@@ -233,7 +233,7 @@ def run_once(streams: int = 1_000, n: int = 3_000, at: int = 1_500) -> None:
     from statsmodels.stats.diagnostic import recursive_olsresiduals
 
     print(f"\n## run_once: {streams} streams of {n:,} rows, the break at row {at:,}", flush=True)
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -256,7 +256,7 @@ def run_once(streams: int = 1_000, n: int = 3_000, at: int = 1_500) -> None:
             x = rng.standard_normal((n, 2))
             y = 0.5 + x[:, 0] - x[:, 1] + rng.standard_normal(n) + move(x)
             df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-            z = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("studentized_y")
+            z = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("studentized_y")
             crossed = _crossing(z.to_numpy().astype(float))
             ours += bool(crossed.any())
             if name != "no break" and crossed[at:].any():
@@ -337,7 +337,7 @@ def memories(clean: int = 30, broken: int = 60) -> None:
         features = {} if model == "holt" else {"features": ["x0", "x1"]}
         spreads, sq_spreads, found, wald = [], [], [], []
         for memory in (50.0, 200.0, 800.0):
-            spec = getattr(po.spec, model)(
+            spec = getattr(rp.spec, model)(
                 "m",
                 targets=["y"],
                 half_life=200.0,
@@ -347,7 +347,7 @@ def memories(clean: int = 30, broken: int = 60) -> None:
                 **features,
                 **kw,
             )
-            q = po.ModelBank([spec]).fit_predict(quiet)["m"].struct.unnest()
+            q = rp.ModelBank([spec]).fit_predict(quiet)["m"].struct.unnest()
             c = q["cusum_y"].drop_nulls().drop_nans()
             sq = q["cusum_sq_y"].drop_nulls().drop_nans()
             spreads.append(f"{c.std():.2f}")
@@ -356,7 +356,7 @@ def memories(clean: int = 30, broken: int = 60) -> None:
             bw = q["break_wald_y"].drop_nulls().drop_nans()
             if bw.len():
                 held["break_wald"] = max(held["break_wald"], float((bw > 21.1).mean()))
-            b = po.ModelBank([spec]).fit_predict(moved)["m"].struct.unnest()
+            b = rp.ModelBank([spec]).fit_predict(moved)["m"].struct.unnest()
             for field, cut, into in (("cusum_y", 3.0, found), ("break_wald_y", 21.1, wald)):
                 v = np.nan_to_num(b[field].to_numpy().astype(float)).reshape(broken, n_broken)
                 hit = (np.abs(v[:, at:]) > cut) if field == "cusum_y" else (v[:, at:] > cut)
@@ -383,12 +383,12 @@ def breaks(streams: int = 200, n: int = 3_000, at: int = 1_500) -> None:
     )
     print("| break | flag | streams it fired on | median delay |")
     print("|---|---|---:|---:|")
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m", targets=["y"], features=["x0", "x1"], half_life=200.0, group="g", emit_breaks=True
     )
     for kind in ("mean", "variance", "slope"):
         m = (
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
             .fit_predict(_grouped(streams, n, 4_300, at, kind))["m"]
             .struct.unnest()
         )
@@ -402,7 +402,7 @@ def breaks(streams: int = 200, n: int = 3_000, at: int = 1_500) -> None:
 
 def drift_t3(streams: int = 10, n: int = 200_000) -> None:
     print(f"\n## drift_t3: {streams} streams of {n:,} rows, t(3) noise, threshold 20", flush=True)
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -415,7 +415,7 @@ def drift_t3(streams: int = 10, n: int = 200_000) -> None:
         rng = np.random.default_rng(9000 + s)
         x0, x1 = rng.standard_normal((2, n))
         df = pl.DataFrame({"x0": x0, "x1": x1, "y": x0 + 0.5 * x1 + rng.standard_t(3, n)})
-        counts.append(int(po.ModelBank([spec]).fit_predict(df)["m"].struct.field("drift_y").sum()))
+        counts.append(int(rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("drift_y").sum()))
     print(f"flags per stream: {sorted(counts)}; mean {np.mean(counts):.1f}", flush=True)
 
 

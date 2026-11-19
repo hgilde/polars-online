@@ -1,12 +1,9 @@
 # polars-online public API surface. Regenerate: UPDATE_API_SURFACE=1 pytest
 
-[package]  # a function with its signature, keyword names and defaults included
+[rheon]  # a function with its signature, keyword names and defaults included
   ArrowStruct  # unstable
   ColumnNotFoundError
-  ConsumedSourceWarning
   FormulaTarget
-  ModelBank
-  OrderNotGuaranteedWarning
   OutputColumnNotFoundError
   PolarsOnlineDeprecationWarning
   PolarsOnlineWarning
@@ -17,6 +14,18 @@
   WrongTypeError
   __version__
   corr  # unstable
+  gram
+  native_version()
+  schema_version()
+  spec
+  target(column: 'str', *, name: 'str | None' = None) -> 'Target'
+  thread_pool_size(*, threads: 'int | None' = None) -> 'int'
+  schema_version = 67
+
+[rheon.polars]  # what `rheon.polars` adds to the names above, which it re-exports
+  ConsumedSourceWarning
+  ModelBank
+  OrderNotGuaranteedWarning
   eval
   ewm_mean(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
   ewm_quantile(input: 'str | pl.Expr', *, quantile: 'float', half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
@@ -25,20 +34,12 @@
   ewm_sum(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 0, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
   ewm_var(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, bias: 'bool' = False) -> 'pl.Expr'
   fit_predict(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | None' = None, *, load_state: 'State | ModelBank | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None, threads: 'int | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
-  gbdt  # unstable
-  gram
   increment(input: 'str | pl.Expr') -> 'pl.Expr'
-  native_version()
   ops
   predict(frame: 'pl.LazyFrame | pl.DataFrame', bank: 'ModelBank | State', *, chunk_size: 'int | None' = None, threads: 'int | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
-  schema_version()
   sim  # unstable
-  spec
   stream
-  target(column: 'str', *, name: 'str | None' = None) -> 'Target'
-  thread_pool_size(*, threads: 'int | None' = None) -> 'int'
   unnest(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | ModelBank | State', *, separator: 'str | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
-  schema_version = 67
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -1347,9 +1348,6 @@
     sums(df: 'pl.DataFrame | pl.LazyFrame', spec: 'str | dict', *, group: 'str | Iterable[str] | None' = None, targets: 'Sequence[str] | None' = None, weight: 'str | None' = None, binary: 'bool | None' = None) -> 'pl.DataFrame'
     unpack(df: 'pl.DataFrame | pl.LazyFrame', spec: 'str | dict', *, targets: 'Sequence[str] | None' = None) -> 'pl.DataFrame | pl.LazyFrame'
     window_metrics(df: 'pl.DataFrame | pl.LazyFrame', spec: 'str | dict', *, clock: 'str', every: 'float | Duration', group: 'str | Iterable[str] | None' = None, targets: 'Sequence[str] | None' = None, min_samples: 'int' = 30, binary: 'bool | None' = None) -> 'pl.DataFrame'
-  gbdt:  # unstable
-    lightgbm_dataset(source: 'Source', *, label: 'str', weight: 'str | None' = None, features: 'Sequence[str] | None' = None, categorical: 'Sequence[str] | None' = None, max_bin: 'int' = 255, params: 'dict[str, Any] | None' = None, reference: 'lightgbm.Dataset | None' = None, init_score: 'str | None' = None, in_memory: "bool | Literal['auto']" = 'auto', threads: 'int | None' = None, engine: 'Engine' = 'auto') -> 'lightgbm.Dataset'
-    xgboost_matrix(source: 'Source', *, label: 'str', weight: 'str | None' = None, features: 'Sequence[str] | None' = None, max_bin: 'int' = 256, sample_rows: 'int | None' = 200000, ref: 'xgboost.DMatrix | None' = None, base_margin: 'str | None' = None, threads: 'int | None' = None, seed: 'int' = 0, engine: 'Engine' = 'auto') -> 'xgboost.QuantileDMatrix'
   gram:
     Gram
     INTERCEPT

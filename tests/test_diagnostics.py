@@ -13,7 +13,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -62,7 +62,7 @@ def _spec(model="ewridge", extra=None, **kw):
     # `{} or default` would silently substitute the default.
     d.update({"max_rows_between_solves": 1} if extra is None else extra)
     d.update(kw)
-    return getattr(po.spec, model)("m", **d)
+    return getattr(rp.spec, model)("m", **d)
 
 
 def _slot(out, prefix):
@@ -77,12 +77,12 @@ def _f(out, name):
 
 class TestFieldsAreOptional:
     def test_absent_by_default(self):
-        spec = po.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=100.0)
-        fields = po.spec.output_fields(spec)
+        spec = rp.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=100.0)
+        fields = rp.spec.output_fields(spec)
         assert not any(f.startswith(("sigma_", "zscore_")) for f in fields)
 
     def test_present_when_requested(self):
-        assert po.spec.output_fields(_spec()) == [
+        assert rp.spec.output_fields(_spec()) == [
             "pred_y0",
             "resid_y0",
             "sigma_y0",
@@ -97,13 +97,13 @@ class TestFieldsAreOptional:
     def test_each_flag_is_independent(self):
         only_sigma = _spec(emit_zscore=False)
         only_z = _spec(emit_sigma=False)
-        assert "sigma_y0" in po.spec.output_fields(only_sigma)
-        assert "zscore_y0" not in po.spec.output_fields(only_sigma)
-        assert "zscore_y0" in po.spec.output_fields(only_z)
-        assert "sigma_y0" not in po.spec.output_fields(only_z)
+        assert "sigma_y0" in rp.spec.output_fields(only_sigma)
+        assert "zscore_y0" not in rp.spec.output_fields(only_sigma)
+        assert "zscore_y0" in rp.spec.output_fields(only_z)
+        assert "sigma_y0" not in rp.spec.output_fields(only_z)
 
     def test_one_field_per_slot_in_a_grid(self):
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0", "y1"],
             features=["x0"],
@@ -112,7 +112,7 @@ class TestFieldsAreOptional:
             emit_sigma=True,
             emit_zscore=True,
         )
-        fields = po.spec.output_fields(spec)
+        fields = rp.spec.output_fields(spec)
         assert [f for f in fields if f.startswith("sigma_")] == [
             "sigma_y0__r0.000001",
             "sigma_y0__r1",
@@ -123,19 +123,19 @@ class TestFieldsAreOptional:
 
 class TestValues:
     def test_sigma_recovers_the_noise_level(self):
-        out = po.ModelBank([_spec()]).fit_predict(_df(n=3000, noise=0.5))
+        out = rp.ModelBank([_spec()]).fit_predict(_df(n=3000, noise=0.5))
         # after warmup the EW residual sd should sit near the true noise sd
         assert np.nanmedian(_f(out, "sigma_y0")[500:]) == pytest.approx(0.5, abs=0.1)
 
     def test_resid_z_flags_a_shock(self):
-        out = po.ModelBank([_spec()]).fit_predict(_df(shock_at=300))
+        out = rp.ModelBank([_spec()]).fit_predict(_df(shock_at=300))
         z = _f(out, "zscore_y0")
         assert np.nanmedian(np.abs(z)) < 1.5
         assert abs(z[300]) > 10.0
         assert int(np.nanargmax(np.abs(z))) == 300
 
     def test_resid_z_equals_resid_over_sigma(self):
-        out = po.ModelBank([_spec()]).fit_predict(_df())
+        out = rp.ModelBank([_spec()]).fit_predict(_df())
         r, s, z = (_f(out, f"{k}_y0") for k in ("resid", "sigma", "zscore"))
         m = np.isfinite(r) & np.isfinite(s) & (s > 0)
         np.testing.assert_allclose(z[m], r[m] / s[m], rtol=1e-12)
@@ -143,7 +143,7 @@ class TestValues:
     def test_sigma_is_out_of_sample(self):
         # sigma at row i must not include row i's own residual: a single huge
         # shock must not inflate the sigma reported on that same row.
-        out = po.ModelBank([_spec()]).fit_predict(_df(shock_at=300))
+        out = rp.ModelBank([_spec()]).fit_predict(_df(shock_at=300))
         s = _f(out, "sigma_y0")
         assert s[300] == pytest.approx(s[299], rel=0.05), (
             "the shock leaked into the sigma reported for its own row"
@@ -155,10 +155,10 @@ class TestValues:
         row of its first prediction. A gate withholds output only, so the
         spread folds the predictions ``min_weight`` withholds, and the first
         row the gate lets out reads them (task 278, batch 17)."""
-        out = po.ModelBank([_spec(min_weight=20.0)]).fit_predict(_df())
+        out = rp.ModelBank([_spec(min_weight=20.0)]).fit_predict(_df())
         # The same model with no gate: ``min_weight`` unset, ``ewridge``'s
         # own floor a row per unknown, and the noise gate off.
-        free = po.ModelBank([_spec(min_weight=None, max_error_inflation=float("inf"))]).fit_predict(
+        free = rp.ModelBank([_spec(min_weight=None, max_error_inflation=float("inf"))]).fit_predict(
             _df()
         )
         s = out["m"].struct.field("sigma_y0").to_list()
@@ -176,7 +176,7 @@ class TestValues:
 class TestAllModels:
     def test_fields_are_emitted_and_consistent(self, model, extra):
         df = _df(binary=model == "ftrl")
-        out = po.ModelBank([_spec(model, extra)]).fit_predict(df)
+        out = rp.ModelBank([_spec(model, extra)]).fit_predict(df)
         r, s, z = (_slot(out, f"{k}_y0") for k in ("resid", "sigma", "zscore"))
         m = np.isfinite(r) & np.isfinite(s) & (s > 0)
         assert m.sum() > 50, f"{model}: almost nothing was emitted"
@@ -185,8 +185,8 @@ class TestAllModels:
     def test_chunk_invariance_of_the_new_fields(self, model, extra):
         df = _df(n=200, binary=model == "ftrl")
         spec = _spec(model, extra)
-        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-        bank = po.ModelBank([spec])
+        one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = rp.ModelBank([spec])
         many = (
             pl.concat([bank.fit_predict(df.slice(i, 17)) for i in range(0, df.height, 17)])
             .select("m")
@@ -198,11 +198,11 @@ class TestAllModels:
     def test_survives_save_load(self, model, extra, tmp_path):
         df = _df(n=200, binary=model == "ftrl")
         spec = _spec(model, extra)
-        a = po.ModelBank([spec])
+        a = rp.ModelBank([spec])
         a.fit_predict(df.slice(0, 100))
         p = tmp_path / "s.state"
         a.save(p)
-        b = po.ModelBank.load(p, specs=[spec])
+        b = rp.ModelBank.load(p, specs=[spec])
         rest = df.slice(100, 100)
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
@@ -227,15 +227,15 @@ class TestOnlineSelection:
             emit_selected=True,
         )
         d.update(kw)
-        return po.spec.ewridge("m", **d)
+        return rp.spec.ewridge("m", **d)
 
     def _selection(self, y, x, **kw):
-        out = po.ModelBank([self._grid_spec(**kw)]).fit_predict(pl.DataFrame({"x0": x, "y0": y}))
+        out = rp.ModelBank([self._grid_spec(**kw)]).fit_predict(pl.DataFrame({"x0": x, "y0": y}))
         return out
 
     def test_fields_are_appended_once_per_target(self):
         spec = self._grid_spec(targets=["y0", "y1"])
-        fields = po.spec.output_fields(spec)
+        fields = rp.spec.output_fields(spec)
         assert fields[-4:] == [
             "pred_y0__selected",
             "selected_y0",
@@ -277,7 +277,7 @@ class TestOnlineSelection:
         n = 2000
         x = rng.standard_normal(n)
         spec = self._grid_spec(ridge=1e-6, half_life=[20.0, 2000.0])
-        out = po.ModelBank([spec]).fit_predict(
+        out = rp.ModelBank([spec]).fit_predict(
             pl.DataFrame({"x0": x, "y0": 2 * x + 0.2 * rng.standard_normal(n)})
         )
         sel = {s for s in out["m"].struct.field("selected_y0").to_list() if s}
@@ -297,8 +297,8 @@ class TestOnlineSelection:
         hs = (20.0, 2000.0)
         spec = self._grid_spec(ridge=1e-6, half_life=list(hs), emit_sigma=True)
         df = pl.DataFrame({"x0": x, "y0": 2 * x + 0.5 * rng.standard_normal(n)})
-        out = po.ModelBank([spec]).fit_predict(df)
-        free = po.ModelBank(
+        out = rp.ModelBank([spec]).fit_predict(df)
+        free = rp.ModelBank(
             [
                 self._grid_spec(
                     ridge=1e-6,
@@ -334,13 +334,13 @@ class TestOnlineSelection:
 
     def test_requires_more_than_one_slot(self):
         with pytest.raises(ValueError, match="has one slot per target"):
-            po.spec.ewridge(
+            rp.spec.ewridge(
                 "m", targets=["y0"], features=["x0"], half_life=100.0, emit_selected=True
             )
 
     def test_rejected_for_ew_cov(self):
         with pytest.raises(ValueError, match="does not apply to ew_cov"):
-            po.spec.ew_cov("c", features=["x0", "x1"], half_life=100.0, emit_selected=True)
+            rp.spec.ew_cov("c", features=["x0", "x1"], half_life=100.0, emit_selected=True)
 
     def test_chunk_invariance(self):
         rng = np.random.default_rng(4)
@@ -348,8 +348,8 @@ class TestOnlineSelection:
         x = rng.standard_normal(n)
         df = pl.DataFrame({"x0": x, "y0": 2 * x + rng.standard_normal(n)})
         spec = self._grid_spec()
-        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-        bank = po.ModelBank([spec])
+        one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = rp.ModelBank([spec])
         many = (
             pl.concat([bank.fit_predict(df.slice(i, 29)) for i in range(0, df.height, 29)])
             .select("m")
@@ -383,17 +383,17 @@ class TestDriftDetection:
             emit_drift=True,
         )
         d.update(kw)
-        return po.spec.ewridge("m", **d)
+        return rp.spec.ewridge("m", **d)
 
     def _flags(self, df, **kw):
-        out = po.ModelBank([self._spec(**kw)]).fit_predict(df)
+        out = rp.ModelBank([self._spec(**kw)]).fit_predict(df)
         vals = out["m"].struct.field("drift_y0").fill_null(False).to_list()  # noqa: FBT003
         return np.array([bool(v) for v in vals]), out
 
     def test_field_is_opt_in(self):
-        plain = po.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=100.0)
-        assert not any(f.startswith("drift_") for f in po.spec.output_fields(plain))
-        assert "drift_y0" in po.spec.output_fields(self._spec())
+        plain = rp.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=100.0)
+        assert not any(f.startswith("drift_") for f in rp.spec.output_fields(plain))
+        assert "drift_y0" in rp.spec.output_fields(self._spec())
 
     def test_detects_a_regime_flip_quickly(self):
         flags, _ = self._flags(self._df(flip_at=3000))
@@ -470,8 +470,8 @@ class TestDriftDetection:
     def test_chunk_invariance(self):
         df = self._df(n=600, flip_at=300)
         spec = self._spec()
-        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-        bank = po.ModelBank([spec])
+        one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = rp.ModelBank([spec])
         many = (
             pl.concat([bank.fit_predict(df.slice(i, 47)) for i in range(0, df.height, 47)])
             .select("m")
@@ -483,11 +483,11 @@ class TestDriftDetection:
     def test_survives_save_load(self, tmp_path):
         df = self._df(n=600, flip_at=300)
         spec = self._spec()
-        a = po.ModelBank([spec])
+        a = rp.ModelBank([spec])
         a.fit_predict(df.slice(0, 300))
         p = tmp_path / "d.state"
         a.save(p)
-        b = po.ModelBank.load(p, specs=[spec])
+        b = rp.ModelBank.load(p, specs=[spec])
         rest = df.slice(300, 300)
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
@@ -525,7 +525,7 @@ class TestModelAveraging:
             emit_averaged=True,
         )
         d.update(kw)
-        out = po.ModelBank([po.spec.ewridge("m", **d)]).fit_predict(df)
+        out = rp.ModelBank([rp.spec.ewridge("m", **d)]).fit_predict(df)
         return out, df
 
     @staticmethod
@@ -533,10 +533,10 @@ class TestModelAveraging:
         return out["m"].struct.field(name).to_numpy().astype(float)
 
     def test_field_is_opt_in(self):
-        plain = po.spec.ewridge(
+        plain = rp.spec.ewridge(
             "m", targets=["y0"], features=["x0"], ridge=[1e-6, 1.0], half_life=100.0
         )
-        assert "pred_y0__averaged" not in po.spec.output_fields(plain)
+        assert "pred_y0__averaged" not in rp.spec.output_fields(plain)
 
     def test_is_a_convex_combination_of_the_slots(self):
         out, _ = self._run()
@@ -634,7 +634,7 @@ class TestModelAveraging:
         x = rng.standard_normal(n)
         noise = np.where(np.arange(n) < n // 2, 0.1, 6.0)
         df = pl.DataFrame({"x0": x, "y0": 2 * x + noise * rng.standard_normal(n)})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0"],
@@ -644,7 +644,7 @@ class TestModelAveraging:
             max_rows_between_solves=1,
             emit_averaged=True,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         y = df["y0"].to_numpy()
 
         def mse(name):
@@ -656,11 +656,11 @@ class TestModelAveraging:
 
     def test_rejected_for_ew_cov(self):
         with pytest.raises(ValueError, match="does not apply to ew_cov"):
-            po.spec.ew_cov("c", features=["x0", "x1"], half_life=100.0, emit_averaged=True)
+            rp.spec.ew_cov("c", features=["x0", "x1"], half_life=100.0, emit_averaged=True)
 
     def test_bad_eta_rejected(self):
         with pytest.raises(ValueError, match="average_eta"):
-            po.spec.ewridge(
+            rp.spec.ewridge(
                 "m",
                 targets=["y0"],
                 features=["x0"],
@@ -672,7 +672,7 @@ class TestModelAveraging:
 
     def test_chunk_invariance(self):
         out, df = self._run(n=300)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0"],
@@ -682,8 +682,8 @@ class TestModelAveraging:
             max_rows_between_solves=1,
             emit_averaged=True,
         )
-        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-        bank = po.ModelBank([spec])
+        one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = rp.ModelBank([spec])
         many = (
             pl.concat([bank.fit_predict(df.slice(i, 29)) for i in range(0, df.height, 29)])
             .select("m")
@@ -709,7 +709,7 @@ class TestResidualDistribution:
             max_rows_between_solves=1,
         )
         d.update(kw)
-        return po.ModelBank([po.spec.ewridge("m", **d)]).fit_predict(df)
+        return rp.ModelBank([rp.spec.ewridge("m", **d)]).fit_predict(df)
 
     @staticmethod
     def _last(out, name):
@@ -724,7 +724,7 @@ class TestResidualDistribution:
         return pl.DataFrame({"x0": x, "y0": 2 * x + noise})
 
     def test_fields_are_opt_in_and_named_by_level(self):
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0"],
@@ -732,13 +732,13 @@ class TestResidualDistribution:
             resid_quantiles=[0.5, 0.99],
             emit_autocorr=True,
         )
-        fields = po.spec.output_fields(spec)
+        fields = rp.spec.output_fields(spec)
         assert "abs_resid_q0.5_y0" in fields
         assert "abs_resid_q0.99_y0" in fields
         assert "autocorr_y0" in fields
-        plain = po.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=100.0)
+        plain = rp.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=100.0)
         assert not any(
-            f.startswith(("absresid_", "autocorr_")) for f in po.spec.output_fields(plain)
+            f.startswith(("absresid_", "autocorr_")) for f in rp.spec.output_fields(plain)
         )
 
     def test_quantiles_describe_the_bulk_where_sigma_cannot(self):
@@ -830,7 +830,7 @@ class TestResidualDistribution:
 
     def test_chunk_invariance_and_save_load(self, tmp_path):
         df = self._fat_tailed(n=600, seed=6)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0"],
@@ -840,8 +840,8 @@ class TestResidualDistribution:
             resid_quantiles=[0.5, 0.9],
             emit_autocorr=True,
         )
-        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-        bank = po.ModelBank([spec])
+        one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = rp.ModelBank([spec])
         many = (
             pl.concat([bank.fit_predict(df.slice(i, 61)) for i in range(0, df.height, 61)])
             .select("m")
@@ -850,28 +850,28 @@ class TestResidualDistribution:
         keep = [c for c in one.columns if not c.startswith(("coef", "support_coef"))]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
 
-        a = po.ModelBank([spec])
+        a = rp.ModelBank([spec])
         a.fit_predict(df.slice(0, 300))
         p = tmp_path / "q.state"
         a.save(p)
-        b = po.ModelBank.load(p, specs=[spec])
+        b = rp.ModelBank.load(p, specs=[spec])
         rest = df.slice(300, 300)
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
     def test_bad_config_rejected(self):
         base = dict(targets=["y0"], features=["x0"], half_life=100.0)
         with pytest.raises(ValueError, match="must each be above 0 and below 1"):
-            po.spec.ewridge("m", resid_quantiles=[0.0], **base)
+            rp.spec.ewridge("m", resid_quantiles=[0.0], **base)
         with pytest.raises(ValueError, match="must list at least one level"):
-            po.spec.ewridge("m", resid_quantiles=[], **base)
+            rp.spec.ewridge("m", resid_quantiles=[], **base)
         with pytest.raises(ValueError, match="resid_autocorr_lag"):
-            po.spec.ewridge("m", emit_autocorr=True, resid_autocorr_lag=0, **base)
+            rp.spec.ewridge("m", emit_autocorr=True, resid_autocorr_lag=0, **base)
 
 
 class TestStreamingMetrics:
     """E22: `emit_metrics` — IC, R² and hit rate kept beside the model.
 
-    `rheon.eval` computes the same things in Polars over collected
+    `rheon.polars.eval` computes the same things in Polars over collected
     output, which needs the whole frame. This is the O(state) version, for a
     long-running stream or the CLI.
     """
@@ -886,7 +886,7 @@ class TestStreamingMetrics:
             emit_metrics=True,
         )
         d.update(kw)
-        return po.ModelBank([po.spec.ewridge("m", **d)]).fit_predict(df)
+        return rp.ModelBank([rp.spec.ewridge("m", **d)]).fit_predict(df)
 
     @staticmethod
     def _last(out, name):
@@ -898,21 +898,21 @@ class TestStreamingMetrics:
         return pl.DataFrame({"x0": x, "y0": 2 * x + noise * rng.standard_normal(n)})
 
     def test_fields_are_opt_in(self):
-        plain = po.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=100.0)
+        plain = rp.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=100.0)
         assert not any(
-            f.startswith(("ic_", "r2_", "hit_rate_")) for f in po.spec.output_fields(plain)
+            f.startswith(("ic_", "r2_", "hit_rate_")) for f in rp.spec.output_fields(plain)
         )
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m", targets=["y0"], features=["x0"], half_life=100.0, emit_metrics=True
         )
         for f in ("ic_y0", "r2_y0", "hit_rate_y0"):
-            assert f in po.spec.output_fields(spec)
+            assert f in rp.spec.output_fields(spec)
 
     def test_agrees_with_the_batch_evaluator(self):
         # With no decay the streaming metrics and eval.py measure the same
         # thing, so they must land in the same place.
         out = self._out(self._learnable())
-        batch = po.eval.metrics(out, "m", targets=["y0"]).row(0, named=True)
+        batch = rp.eval.metrics(out, "m", targets=["y0"]).row(0, named=True)
         assert self._last(out, "ic_y0") == pytest.approx(batch["ic"], abs=0.02)
         assert self._last(out, "r2_y0") == pytest.approx(batch["r2"], abs=0.02)
         assert self._last(out, "hit_rate_y0") == pytest.approx(batch["hit_rate"], abs=0.02)
@@ -977,7 +977,7 @@ class TestStreamingMetrics:
         y = (rng.random(n) < 1.0 / (1.0 + np.exp(-1.5 * x))).astype(float)
         df = pl.DataFrame({"x0": x, "y0": y})
         loss = {"loss": "logistic"} if model == "sgd" else {}
-        spec = getattr(po.spec, model)(
+        spec = getattr(rp.spec, model)(
             "m",
             targets=["y0"],
             features=["x0"],
@@ -986,7 +986,7 @@ class TestStreamingMetrics:
             emit_metrics=True,
             **loss,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         p = out["pred_y0"].to_numpy().astype(float)
         scored = np.isfinite(p)
         checked = 0
@@ -1018,7 +1018,7 @@ class TestStreamingMetrics:
 
     def test_chunk_invariance_and_save_load(self, tmp_path):
         df = self._learnable(n=600, seed=4)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0"],
@@ -1027,8 +1027,8 @@ class TestStreamingMetrics:
             max_rows_between_solves=1,
             emit_metrics=True,
         )
-        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-        bank = po.ModelBank([spec])
+        one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = rp.ModelBank([spec])
         many = (
             pl.concat([bank.fit_predict(df.slice(i, 61)) for i in range(0, df.height, 61)])
             .select("m")
@@ -1037,11 +1037,11 @@ class TestStreamingMetrics:
         keep = [c for c in one.columns if not c.startswith(("coef", "support_coef"))]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
 
-        a = po.ModelBank([spec])
+        a = rp.ModelBank([spec])
         a.fit_predict(df.slice(0, 300))
         p = tmp_path / "m.state"
         a.save(p)
-        b = po.ModelBank.load(p, specs=[spec])
+        b = rp.ModelBank.load(p, specs=[spec])
         rest = df.slice(300, 300)
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
@@ -1051,14 +1051,14 @@ def test_quantiles_are_null_until_a_residual_and_span_extreme_levels():
     is that residual's bucket from the next row on (task 146: P² needed
     five); and it accepts levels out at 0.001 / 0.999, ordered (review
     2026-09-18, phase 4)."""
-    out = po.ModelBank([_spec(min_weight=3.0, resid_quantiles=[0.5])]).fit_predict(_df(n=8))
+    out = rp.ModelBank([_spec(min_weight=3.0, resid_quantiles=[0.5])]).fit_predict(_df(n=8))
     st = out["m"].struct
     name = next(f.name for f in out.schema["m"].fields if f.name.startswith("abs_resid_q"))
     got, r = st.field(name).to_list(), st.field("resid_y0").to_list()
     first = next(i for i, v in enumerate(r) if v is not None)
     assert got[: first + 1] == [None] * (first + 1)
     assert got[first + 1] == pytest.approx(abs(r[first]), rel=ALPHA)
-    out2 = po.ModelBank([_spec(resid_quantiles=[0.001, 0.5, 0.999])]).fit_predict(_df(n=500))
+    out2 = rp.ModelBank([_spec(resid_quantiles=[0.001, 0.5, 0.999])]).fit_predict(_df(n=500))
     names = [f.name for f in out2.schema["m"].fields if f.name.startswith("abs_resid_q")]
     last = [out2["m"].struct.field(nm).to_list()[-1] for nm in names]
     assert all(np.isfinite(last)), last
@@ -1143,7 +1143,7 @@ def _layer_spec(kind, half_life=40.0, **kw):
         d.setdefault("learning_rate", 0.02)
     if kind == "ewridge":
         d.setdefault("max_rows_between_solves", 1)
-    return getattr(po.spec, kind)("m", **d)
+    return getattr(rp.spec, kind)("m", **d)
 
 
 def _ew_autocorr(resid, w, clock, run, lag, half_life):
@@ -1206,7 +1206,7 @@ class TestAutocorrByDefinition:
     def test_each_row_reads_the_pairs_before_it(self, lag):
         df = _layer_frame(seed=21)
         spec = _layer_spec("ewridge", emit_autocorr=True, resid_autocorr_lag=lag)
-        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         clock, run = _clock_and_runs(df)
         resid = out["resid_y0"].to_numpy().astype(float)
         got = out["autocorr_y0"].to_numpy().astype(float)
@@ -1237,7 +1237,7 @@ class TestAutocorrByDefinition:
                 u[i] = 0.6 * u[i - 1] + rng.standard_normal()
             df = pl.DataFrame({"x0": x, "y0": 2.0 * x + u + 3.0})
             for lag in (1, 2, 5):
-                spec = po.spec.ewridge(
+                spec = rp.spec.ewridge(
                     "m",
                     targets=["y0"],
                     features=["x0"],
@@ -1246,7 +1246,7 @@ class TestAutocorrByDefinition:
                     emit_autocorr=True,
                     resid_autocorr_lag=lag,
                 )
-                out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+                out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
                 r = out["resid_y0"].to_numpy().astype(float)
                 before = r[np.isfinite(r)][:-1]
                 want = stattools.acf(before, nlags=lag, fft=False)[lag]
@@ -1268,7 +1268,7 @@ class TestAutocorrByDefinition:
         df = pl.DataFrame({"x0": x, "y0": 2.0 * x + u})
         last = {}
         for lag in (1, 2):
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "m",
                 targets=["y0"],
                 features=["x0"],
@@ -1277,7 +1277,7 @@ class TestAutocorrByDefinition:
                 emit_autocorr=True,
                 resid_autocorr_lag=lag,
             )
-            out = po.ModelBank([spec]).fit_predict(df)
+            out = rp.ModelBank([spec]).fit_predict(df)
             last[lag] = out["m"].struct.field("autocorr_y0").to_list()[-1]
         assert abs(last[1]) < 0.15, last
         assert 0.55 < last[2] < 0.85, last
@@ -1290,7 +1290,7 @@ class TestAutocorrByDefinition:
         df = pl.DataFrame({"x0": x, "y0": 2 * x + rng.standard_normal(n), "s": np.arange(n) // 3})
         got = {}
         for lag in (2, 5):
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "m",
                 targets=["y0"],
                 features=["x0"],
@@ -1301,7 +1301,7 @@ class TestAutocorrByDefinition:
                 emit_autocorr=True,
                 resid_autocorr_lag=lag,
             )
-            got[lag] = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("autocorr_y0")
+            got[lag] = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("autocorr_y0")
         assert got[2].is_not_null().sum() > 250
         assert got[5].is_null().all()
 
@@ -1326,7 +1326,7 @@ class TestResidQuantilesAcrossKinds:
     def test_each_level_is_the_weighted_ew_quantile(self, kind):
         df = _layer_frame(seed=22)
         spec = _layer_spec(kind, resid_quantiles=self.LEVELS)
-        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         clock, _ = _clock_and_runs(df)
         w = df["w"].to_numpy()
         absr = np.abs(out["resid_y0"].to_numpy().astype(float))
@@ -1370,7 +1370,7 @@ class TestMetricsByDefinition:
         at most on the three; the tolerance is 1e-12."""
         df = _layer_frame(seed=23, zero_targets=True)
         spec = _layer_spec(kind, emit_metrics=True)
-        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         clock, _ = _clock_and_runs(df)
         pred, y = out["pred_y0"].to_numpy().astype(float), df["y0"].to_numpy().astype(float)
         w = df["w"].to_numpy()
@@ -1396,7 +1396,7 @@ class TestMetricsByDefinition:
         y = 2 * x + rng.standard_normal(n)
         y[rng.choice(n, 200, replace=False)] = 0.0
         df = pl.DataFrame({"x0": x, "y0": y})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0"],
@@ -1404,9 +1404,9 @@ class TestMetricsByDefinition:
             min_weight=20.0,
             emit_metrics=True,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         last = out["m"].struct.unnest().row(n - 1, named=True)
-        batch = po.eval.metrics(out.head(n - 1), "m", targets=["y0"]).row(0, named=True)
+        batch = rp.eval.metrics(out.head(n - 1), "m", targets=["y0"]).row(0, named=True)
         for k in ("ic", "r2", "hit_rate"):
             assert last[f"{k}_y0"] == pytest.approx(batch[k], rel=1e-12, abs=1e-14), k
 
@@ -1440,7 +1440,7 @@ class TestSelectionAndAveragingAcrossKinds:
             average_eta=eta,
             **GRIDS[kind],
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         tags = [f"@h{h:g}" for h in GRIDS[kind]["half_life"]]
         preds = np.array([out[f"pred_y0{t}"].to_numpy().astype(float) for t in tags])
         sig = np.array([out[f"sigma_y0{t}"].to_numpy().astype(float) for t in tags])
@@ -1478,7 +1478,7 @@ class TestSelectionAndAveragingAcrossKinds:
                 emit_averaged=True,
                 average_eta=eta,
             )
-            out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+            out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
             a = out["pred_y0__averaged"].to_numpy().astype(float)
             s = out["pred_y0__selected"].to_numpy().astype(float)
             gaps.append(np.abs(a - s))
@@ -1504,7 +1504,7 @@ class TestSelectionAndAveragingAcrossKinds:
                 emit_averaged=True,
                 average_eta=eta,
             )
-            out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+            out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
             a = out["pred_y0__averaged"].to_numpy().astype(float)
             s = out["pred_y0__selected"].to_numpy().astype(float)
             means.append(np.nanmean(np.abs(a - s)))
@@ -1514,11 +1514,11 @@ class TestSelectionAndAveragingAcrossKinds:
     def test_selection_and_average_survive_a_save_and_load(self, kind, tmp_path):
         df = _layer_frame(seed=28)
         spec = _layer_spec(kind, emit_selected=True, emit_averaged=True, **GRIDS[kind])
-        whole = po.ModelBank([spec]).fit_predict(df)
-        bank = po.ModelBank([spec])
+        whole = rp.ModelBank([spec]).fit_predict(df)
+        bank = rp.ModelBank([spec])
         head = bank.fit_predict(df.slice(0, 250))
         bank.save(tmp_path / "s.state")
-        tail = po.ModelBank.load(tmp_path / "s.state", specs=[spec]).fit_predict(df.slice(250))
+        tail = rp.ModelBank.load(tmp_path / "s.state", specs=[spec]).fit_predict(df.slice(250))
         both = pl.concat([head, tail])["m"].struct.unnest()
         one = whole["m"].struct.unnest()
         for col in ("selected_y0", "pred_y0__selected", "pred_y0__averaged"):

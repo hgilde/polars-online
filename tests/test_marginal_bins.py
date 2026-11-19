@@ -17,7 +17,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -53,11 +53,11 @@ def spec(**kw):
         # refused beside them.
         for k in ("bins", "bin_rule", "bin_warm_rows"):
             d.pop(k, None)
-    return po.spec.marginal("m", **d)
+    return rp.spec.marginal("m", **d)
 
 
 def pairs(df, chunks=1, frame=False, **kw):
-    bank = po.ModelBank([spec(**kw)])
+    bank = rp.ModelBank([spec(**kw)])
     for part in [df] if chunks == 1 else list(df.iter_slices(max(1, len(df) // chunks))):
         bank.fit_predict(part)
     out = bank.marginal("m")
@@ -310,9 +310,9 @@ def test_bin_budget_sets_the_limit():
     features = [f"x{j}" for j in range(400)]
 
     def bank(**kw):
-        return po.ModelBank(
+        return rp.ModelBank(
             [
-                po.spec.marginal(
+                rp.spec.marginal(
                     "m",
                     targets=["y"],
                     features=features,
@@ -347,7 +347,7 @@ def test_given_edges_refuse_the_learned_kinds_knobs(kw):
     d.update(kw)
     (knob,) = kw
     with pytest.raises(ValueError, match=f"bin_edges fixes the bins, but {knob} is also set"):
-        po.ModelBank([po.spec.marginal("m", **d)])
+        rp.ModelBank([rp.spec.marginal("m", **d)])
 
 
 # --- decay, weights, nulls: the histogram is the pair moments' companion ----
@@ -444,11 +444,11 @@ def test_a_clock_gap_past_max_dclock_empties_the_histogram_with_the_moments():
 def test_a_bank_saved_during_the_warm_up_resumes_with_its_held_rows(tmp_path):
     df = stream(n=1500, shape="threshold", seed=8)
     whole = pairs(df, half_life=300.0, frame=True)
-    bank = po.ModelBank([spec(half_life=300.0)])
+    bank = rp.ModelBank([spec(half_life=300.0)])
     bank.fit_predict(df[:300])
     assert list(bank.marginal("m").row(0, named=True)["bin_edges"]) == [], "still warming up"
     bank.save(tmp_path / "m.state")
-    resumed = po.ModelBank.load(tmp_path / "m.state")
+    resumed = rp.ModelBank.load(tmp_path / "m.state")
     resumed.fit_predict(df[300:])
     assert resumed.marginal("m").equals(whole), "the held rows must survive the round trip"
 
@@ -461,12 +461,12 @@ def test_label_delay_is_the_doubled_stream_here_too():
 
     df = stream(n=1200, shape="threshold", seed=9)
     kw = dict(half_life=200.0, bin_warm_rows=300, lags=[1, 2, 3], serial_rule="geometric")
-    native = po.ModelBank([spec(embargo=7.0, **kw)])
+    native = rp.ModelBank([spec(embargo=7.0, **kw)])
     native.fit_predict(df)
-    doubled = po.ModelBank([spec(weight=po.stream.ROLE + "_weight", **kw)])
+    doubled = rp.ModelBank([spec(weight=rp.stream.ROLE + "_weight", **kw)])
     # The doubled stream carries the last rows' lessons past the end of the
     # clock; the native bank is still holding those, so stop where it stops.
-    twice = po.stream.embargo(df, clock="t", delay=7.0)
+    twice = rp.stream.embargo(df, clock="t", delay=7.0)
     doubled.fit_predict(twice.filter(pl.col("t") <= df["t"].max()))
     assert native.marginal("m").equals(doubled.marginal("m"))
 
@@ -532,7 +532,7 @@ def test_a_fixed_bin_no_row_lands_in_is_empty_not_absent():
 
 
 def test_the_columns_are_there_before_any_row_and_for_a_group_never_seen():
-    bank = po.ModelBank([spec(lags=[1, 2], serial_rule="truncated", group="g")])
+    bank = rp.ModelBank([spec(lags=[1, 2], serial_rule="truncated", group="g")])
     want = bank.marginal("m").columns
     assert "bin_edges" in want and "lag_corr_xx" in want and "split_gain_t" in want
     df = stream(n=800, shape="threshold").with_columns(g=pl.lit("a"))
@@ -542,7 +542,7 @@ def test_the_columns_are_there_before_any_row_and_for_a_group_never_seen():
     assert bank.marginal("m", group="never").height == 0
     # `cross_lags=[]` drops the two cross columns and moves nothing else
     # (review 2026-09-26, F missing 9).
-    none = po.ModelBank([spec(lags=[1, 2], serial_rule="truncated", cross_lags=[], group="g")])
+    none = rp.ModelBank([spec(lags=[1, 2], serial_rule="truncated", cross_lags=[], group="g")])
     assert none.marginal("m").columns == [
         c for c in want if c not in ("lag_corr_xy", "lag_corr_yx")
     ]

@@ -113,7 +113,7 @@ import time
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # 4,096 rows of 1,000 features in float32; y is the sum of the first ten, plus noise.
 rng = np.random.default_rng(3)

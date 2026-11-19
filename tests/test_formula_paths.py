@@ -10,8 +10,8 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-import rheon as po
-from rheon._formula import PREFIX, FormulaError, from_tree, to_tree
+from rheon import polars as rp
+from rheon.polars._formula import PREFIX, FormulaError, from_tree, to_tree
 
 TIER = "essential"
 
@@ -38,7 +38,7 @@ TIER = "essential"
 )
 def test_a_node_a_formula_cannot_carry_is_refused_by_name(expr, named):
     with pytest.raises(FormulaError, match="^po.ewm_mean: ") as e:
-        po.ewm_mean(expr, half_life=5.0)
+        rp.ewm_mean(expr, half_life=5.0)
     assert named in str(e.value)
 
 
@@ -47,18 +47,18 @@ def test_the_operators_arguments_are_checked_by_name():
         TypeError,
         match="po.ewm_mean: the input must be a column name or a pl.Expr, but it is of type int",
     ):
-        po.ewm_mean(3, half_life=5.0)  # type: ignore[arg-type]
+        rp.ewm_mean(3, half_life=5.0)  # type: ignore[arg-type]
     for bad, kind in ((True, "bool"), ([1.0], "list")):
         with pytest.raises(
             TypeError,
             match=f"po.ewm_mean: half_life must be a number or a duration, but it is of type "
             f"{kind}",
         ):
-            po.ewm_mean("x", half_life=bad)  # type: ignore[arg-type]
+            rp.ewm_mean("x", half_life=bad)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="po.ewm_mean: half_life is required"):
-        po.ewm_mean("x", half_life=None)  # type: ignore[arg-type]
+        rp.ewm_mean("x", half_life=None)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="po.ewm_sum: reverse must be True or False, but it is 1"):
-        po.ewm_sum("x", half_life=5.0, window_size=10.0, reverse=1)  # type: ignore[arg-type]
+        rp.ewm_sum("x", half_life=5.0, window_size=10.0, reverse=1)  # type: ignore[arg-type]
 
 
 def test_from_tree_rebuilds_a_comparison_and_refuses_what_is_no_node():

@@ -21,9 +21,9 @@ import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
-import rheon as po  # noqa: E402
 from data import VALIDATION_DATES as DATES  # noqa: E402
 from data import public_intraday, synthetic  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 
 #: Every model's memory, in rows of the row clock: `half_life` for each, and
 #: `coef_half_life` for kalman's coefficients too (task 212).
@@ -46,10 +46,10 @@ def zscores(df: pl.DataFrame, feats: list[str]) -> pl.DataFrame:
     per-standard-deviation recipe (README, *Features in units of their
     spread*). Streaming window operators, so nothing looks ahead."""
     z = {
-        f"z_{f}": (pl.col(f) - po.ewm_mean(f, half_life=HL)) / po.ewm_std(f, half_life=HL)
+        f"z_{f}": (pl.col(f) - rp.ewm_mean(f, half_life=HL)) / rp.ewm_std(f, half_life=HL)
         for f in feats
     }
-    return po.stream.with_windows(df, **z)
+    return rp.stream.with_windows(df, **z)
 
 
 def load(rows: int) -> tuple[pl.DataFrame, str, list[str], list[str], dict[str, float | None]]:
@@ -101,9 +101,9 @@ def load(rows: int) -> tuple[pl.DataFrame, str, list[str], list[str], dict[str, 
 
 
 def run(df: pl.DataFrame, specs: list[dict], targets: list[str]) -> pl.DataFrame:
-    bank = po.ModelBank(specs)
+    bank = rp.ModelBank(specs)
     out = bank.fit_predict(df)
-    return po.eval.compare_specs(out, [s["name"] for s in specs], targets=targets)
+    return rp.eval.compare_specs(out, [s["name"] for s in specs], targets=targets)
 
 
 def section(title: str, body: str) -> None:
@@ -128,12 +128,12 @@ def matched(target: str, feats: list[str], embargo: float | None, suffix: str = 
     default solve cadence and solved every row."""
     one = dict(targets=[target], features=feats, half_life=HL, min_weight=50.0, embargo=embargo)
     return [
-        po.spec.ewridge(f"ewridge{suffix}", ridge=1e-4, standardize=True, **one),
-        po.spec.ewridge(
+        rp.spec.ewridge(f"ewridge{suffix}", ridge=1e-4, standardize=True, **one),
+        rp.spec.ewridge(
             f"ewridge_every_row{suffix}", ridge=1e-4, standardize=True, solve_every=1.0, **one
         ),
-        po.spec.rls(f"rls{suffix}", delta=1e-4, **one),
-        po.spec.kalman(f"kalman{suffix}", coef_half_life=HL, **one),
+        rp.spec.rls(f"rls{suffix}", delta=1e-4, **one),
+        rp.spec.kalman(f"kalman{suffix}", coef_half_life=HL, **one),
     ]
 
 
@@ -174,7 +174,7 @@ def main() -> None:
     print()
     print(f"- Data: {source}")
     print(f"- Rows: {df.height}, features: {feats}, targets: {targets}")
-    print(f"- Polars {pl.__version__}, polars-online {po.__version__}")
+    print(f"- Polars {pl.__version__}, polars-online {rp.__version__}")
     section(
         "How the runs are set",
         "The clock is the row count: a row is a minute, and every number in clock units "
@@ -211,9 +211,9 @@ def main() -> None:
     # holds, which on evenly spaced rows is every half-life/50 of clock. The
     # divisors measure the clock cadences; the default is measured beside.
     divisors = [1, 5, 10, 50, 200, 1000]
-    specs = [po.spec.ewridge("default", ridge=1e-4, **common)]
+    specs = [rp.spec.ewridge("default", ridge=1e-4, **common)]
     for d in divisors:
-        specs.append(po.spec.ewridge(f"s{d}", ridge=1e-4, solve_every=HL / d, **common))
+        specs.append(rp.spec.ewridge(f"s{d}", ridge=1e-4, solve_every=HL / d, **common))
     t0 = time.perf_counter()
     res = run(df, specs, [target])
     elapsed = time.perf_counter() - t0
@@ -280,8 +280,8 @@ def main() -> None:
 
     # ---- 2. standardize default ----
     specs = [
-        po.spec.ewridge("plain", ridge=1e-4, **{**common, "standardize": False}),
-        po.spec.ewridge("std", ridge=1e-4, **{**common, "standardize": True}),
+        rp.spec.ewridge("plain", ridge=1e-4, **{**common, "standardize": False}),
+        rp.spec.ewridge("std", ridge=1e-4, **{**common, "standardize": True}),
     ]
     res = run(df, specs, [target])
     plain = res.filter(pl.col("spec") == "plain")["mse"][0]
@@ -300,7 +300,7 @@ def main() -> None:
     # made at the penalized path points, not at lambda = 0.
     path = [1e-2, 1e-3, 1e-4, 0.0]
     specs = [
-        po.spec.lasso(
+        rp.spec.lasso(
             f"l1_{int(r * 100)}",
             penalties=path,
             l1_ratio=r,
@@ -347,8 +347,8 @@ def main() -> None:
         embargo=max(both) if both else None,
     )
     specs = [
-        po.spec.kalman("per_target_p", share_p=False, **kal_multi),
-        po.spec.kalman("shared_p", share_p=True, **kal_multi),
+        rp.spec.kalman("per_target_p", share_p=False, **kal_multi),
+        rp.spec.kalman("shared_p", share_p=True, **kal_multi),
     ]
     t0 = time.perf_counter()
     res = run(df, specs, targets)
@@ -379,7 +379,7 @@ def main() -> None:
     for t in targets:
         specs = matched(t, feats, embargo[t])
         specs.append(
-            po.spec.lasso(
+            rp.spec.lasso(
                 "lasso",
                 penalties=[1e-3, 1e-4, 0.0],
                 targets=[t],

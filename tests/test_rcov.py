@@ -20,7 +20,7 @@ import polars as pl
 import pytest
 from hfhd import hf
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -50,11 +50,11 @@ def spec(**kw):
         "block_rows": 600,
     }
     d.update(kw)
-    return po.spec.rcov("r", **d)
+    return rp.spec.rcov("r", **d)
 
 
 def block(df, **kw):
-    bank = po.ModelBank([spec(**kw)])
+    bank = rp.ModelBank([spec(**kw)])
     bank.fit_predict(df)
     return bank.closed_groups(drop=False), bank
 
@@ -72,7 +72,7 @@ def test_plain_is_n_times_the_raw_second_moment_to_the_bit():
     df = ticks(blocks=2)
     rows, _ = block(df, kind="plain")
     first = df.filter(pl.col("b") == 0)
-    ref = po.ModelBank([po.spec.ew_cov("c", features=COLS, lam=1.0, stats=[])])
+    ref = rp.ModelBank([rp.spec.ew_cov("c", features=COLS, lam=1.0, stats=[])])
     ref.fit_predict(first.select(COLS))
     g = ref.gram("c")[0]
     raw = g["comoments"] + np.outer(g["means"], g["means"])
@@ -185,7 +185,7 @@ def test_the_jittered_kernel_is_hfhds_krvm_on_the_jittered_prices(m, h_bw):
     ret = np.diff(price, axis=0)
     cols = [f"x{i}" for i in range(k)]
     df = pl.DataFrame({**{f: ret[:, i] for i, f in enumerate(cols)}, "b": np.arange(2 * n) // n})
-    bank = po.ModelBank(
+    bank = rp.ModelBank(
         [spec(features=cols, kind="kernel", bandwidth=h_bw, jitter=m, block_rows=n)]
     )
     bank.fit_predict(df)
@@ -342,9 +342,9 @@ def test_the_default_preaveraged_estimate_is_hfhds_mrc(n):
     ret = np.diff(price, axis=0)
     cols = [f"x{i}" for i in range(k)]
     df = pl.DataFrame({**{f: ret[:, i] for i, f in enumerate(cols)}, "b": np.arange(2 * n) // n})
-    bank = po.ModelBank(
+    bank = rp.ModelBank(
         [
-            po.spec.rcov(
+            rp.spec.rcov(
                 "r",
                 features=cols,
                 group="b",
@@ -392,7 +392,7 @@ def test_a_negative_eigenvalue_is_clipped_and_reported(kind):
     extra = {"bandwidth": 1} if kind == "kernel" else {}
 
     def close(psd):
-        bank = po.ModelBank([spec(features=cols, kind=kind, block_rows=rows, psd=psd, **extra)])
+        bank = rp.ModelBank([spec(features=cols, kind=kind, block_rows=rows, psd=psd, **extra)])
         bank.fit_predict(df)
         return bank.closed_groups(drop=False)
 
@@ -421,7 +421,7 @@ def test_a_negative_eigenvalue_is_clipped_and_reported(kind):
 def test_chunk_invariance(kind, size):
     df = ticks(n=600, blocks=2)
     want, _ = block(df, kind=kind)
-    bank = po.ModelBank([spec(kind=kind)])
+    bank = rp.ModelBank([spec(kind=kind)])
     for i in range(0, df.height, size):
         bank.fit_predict(df[i : i + size])
     assert bank.closed_groups().equals(want)
@@ -432,11 +432,11 @@ def test_save_load_mid_block(kind, tmp_path):
     df = ticks(n=400, blocks=2)
     want, _ = block(df, kind=kind)
     s = spec(kind=kind)
-    bank = po.ModelBank([s])
+    bank = rp.ModelBank([s])
     bank.fit_predict(df[:150])
     path = tmp_path / "b.state"
     bank.save(path)
-    again = po.ModelBank.load(path, [s])
+    again = rp.ModelBank.load(path, [s])
     again.fit_predict(df[150:])
     assert again.closed_groups().equals(want)
 
@@ -512,7 +512,7 @@ def test_the_correlation_is_the_covariance_scaled():
 def test_the_block_survives_a_refresh_time_grid():
     """The pipeline E57 is for: asynchronous ticks, a refresh-time grid,
     differences, then a block estimate."""
-    from rheon import stream
+    from rheon.polars import stream
 
     rng = np.random.default_rng(4)
     rows = []
@@ -613,7 +613,7 @@ def test_a_clock_break_splits_the_block_into_stretches():
 
 def test_a_fractional_weight_is_refused_naming_the_row():
     df = ticks(n=50).with_columns(w=pl.when(pl.int_range(pl.len()) == 20).then(0.5).otherwise(1.0))
-    bank = po.ModelBank([spec(kind="plain", weight="w")])
+    bank = rp.ModelBank([spec(kind="plain", weight="w")])
     with pytest.raises(
         ValueError, match=r"row 20 \(counting from 0\), but rcov takes a weight of 0 or 1 only"
     ):
@@ -628,9 +628,9 @@ def test_plain_at_three_columns_is_the_raw_second_moment_over_six_pairs():
     3x3 block, not the three of a 2x2 (review 2026-09-18, phase 4)."""
     cols3 = ["x0", "x1", "x2"]
     df = ticks(k=3, blocks=2)
-    bank = po.ModelBank(
+    bank = rp.ModelBank(
         [
-            po.spec.rcov(
+            rp.spec.rcov(
                 "r",
                 features=cols3,
                 group="b",
@@ -643,7 +643,7 @@ def test_plain_at_three_columns_is_the_raw_second_moment_over_six_pairs():
     bank.fit_predict(df)
     rows = bank.closed_groups(drop=False)
     first = df.filter(pl.col("b") == 0)
-    ref = po.ModelBank([po.spec.ew_cov("c", features=cols3, lam=1.0, stats=[])])
+    ref = rp.ModelBank([rp.spec.ew_cov("c", features=cols3, lam=1.0, stats=[])])
     ref.fit_predict(first.select(cols3))
     g = ref.gram("c")[0]
     raw = np.array(g["comoments"]) + np.outer(g["means"], g["means"])
@@ -659,9 +659,9 @@ def test_the_noise_robust_kinds_differ_from_plain_at_three_columns():
     df = ticks(k=3, noise=0.01)
     var = {}
     for kind in ("plain", "kernel", "preavg"):
-        bank = po.ModelBank(
+        bank = rp.ModelBank(
             [
-                po.spec.rcov(
+                rp.spec.rcov(
                     "r",
                     features=cols3,
                     group="b",

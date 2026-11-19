@@ -13,9 +13,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from data import synthetic
 from reference import compute_dclock, ewridge_ref
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -40,7 +40,7 @@ def _spec(k=3, targets=("y0",), **kw):
         min_weight=5.0,
     )
     defaults.update(kw)
-    return po.spec.ewridge("m", **defaults)
+    return rp.spec.ewridge("m", **defaults)
 
 
 def _oracle_frame(df: pl.DataFrame, k=3, n_targets=1, **ref_kw):
@@ -83,7 +83,7 @@ def _np(df, col):
 class TestOracle:
     def test_ewridge_matches_reference(self):
         df, _ = synthetic(seed=3, n_groups=2, n_rows=350, k=3)
-        bank = po.ModelBank([_spec()])
+        bank = rp.ModelBank([_spec()])
         out = bank.fit_predict(df)
         pred, resid, weight_sum = _oracle_frame(df)
         _close(_np(out, "pred_y0"), pred[:, 0])
@@ -92,7 +92,7 @@ class TestOracle:
 
     def test_multi_target(self):
         df, _ = synthetic(seed=4, n_groups=1, n_rows=250, k=3, n_targets=2)
-        bank = po.ModelBank([_spec(targets=("y0", "y1"))])
+        bank = rp.ModelBank([_spec(targets=("y0", "y1"))])
         out = bank.fit_predict(df)
         pred, resid, _ = _oracle_frame(df, n_targets=2)
         _close(_np(out, "pred_y0"), pred[:, 0])
@@ -101,7 +101,7 @@ class TestOracle:
 
     def test_standardize(self):
         df, _ = synthetic(seed=5, n_groups=1, n_rows=250, k=3)
-        bank = po.ModelBank([_spec(standardize=True)])
+        bank = rp.ModelBank([_spec(standardize=True)])
         out = bank.fit_predict(df)
         pred, _, _ = _oracle_frame(df, standardize=True)
         _close(_np(out, "pred_y0"), pred[:, 0])
@@ -109,7 +109,7 @@ class TestOracle:
     def test_row_count_clock_and_lam(self):
         df, _ = synthetic(seed=6, n_groups=1, n_rows=200, k=2, null_frac=0.0)
         lam = 0.99
-        bank = po.ModelBank(
+        bank = rp.ModelBank(
             [
                 _spec(
                     k=2,
@@ -148,7 +148,7 @@ class TestWarmPriors:
         n = 3000
         x = rng.standard_normal(n)
         df = pl.DataFrame({"x0": x, "y0": 1.5 * x})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0"],
@@ -160,7 +160,7 @@ class TestWarmPriors:
             **kw,
         )
         coefs = np.array(
-            po.ModelBank([spec]).fit_predict(df)["m"].struct.field("coef").to_list(),
+            rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("coef").to_list(),
             dtype=float,
         )
         return coefs[10][1], coefs[-1][1]
@@ -184,7 +184,7 @@ class TestWarmPriors:
         n = 2000
         x = 100.0 * rng.standard_normal(n)
         df = pl.DataFrame({"x0": x, "y0": 0.05 * x})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0"],
@@ -197,14 +197,14 @@ class TestWarmPriors:
             coef_every=0,
         )
         c = np.array(
-            po.ModelBank([spec]).fit_predict(df)["m"].struct.field("coef").to_list()[-1],
+            rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("coef").to_list()[-1],
             dtype=float,
         )
         assert abs(c[1] - 0.02) < 5e-3, f"expected the prior in original units, got {c[1]}"
 
     def test_shape_is_validated(self):
         with pytest.raises(ValueError, match="coef_prior"):
-            po.spec.ewridge(
+            rp.spec.ewridge(
                 "m",
                 targets=["y0"],
                 features=["x0", "x1"],
@@ -239,7 +239,7 @@ class TestSessionShrink:
         )
 
     def _coefs(self, **kw):
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0"],
@@ -253,7 +253,7 @@ class TestSessionShrink:
             coef_every=0,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(self._df())
+        out = rp.ModelBank([spec]).fit_predict(self._df())
         return np.array(out["m"].struct.field("coef").to_list(), dtype=float)
 
     def _jump(self, **kw):
@@ -304,7 +304,7 @@ class TestSessionShrink:
         df = self._df()
         out = {}
         for f in (0.0, 0.25):
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "m",
                 targets=["y0"],
                 features=["x0"],
@@ -318,7 +318,7 @@ class TestSessionShrink:
                 session_shrink=f,
                 long_half_life=1e5,
             )
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             res = bank.fit_predict(df).unnest("m")
             coef = np.array(res["coef"].to_list(), dtype=float)[:, 1]
             open_ = self.N1 + self.N2
@@ -339,7 +339,7 @@ class TestSessionShrink:
         )
 
     def test_chunk_invariance_and_save_load(self, tmp_path):
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0"],
@@ -354,8 +354,8 @@ class TestSessionShrink:
             max_rows_between_solves=1,
         )
         df = self._df().slice(0, 800)
-        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-        bank = po.ModelBank([spec])
+        one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = rp.ModelBank([spec])
         many = (
             pl.concat([bank.fit_predict(df.slice(i, 97)) for i in range(0, df.height, 97)])
             .select("m")
@@ -364,11 +364,11 @@ class TestSessionShrink:
         keep = [c for c in one.columns if not c.startswith(("coef", "support_coef"))]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
 
-        a = po.ModelBank([spec])
+        a = rp.ModelBank([spec])
         a.fit_predict(df.slice(0, 400))
         p = tmp_path / "ss.state"
         a.save(p)
-        b = po.ModelBank.load(p, specs=[spec])
+        b = rp.ModelBank.load(p, specs=[spec])
         rest = df.slice(400, 400)
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
@@ -397,7 +397,7 @@ class TestSessionShrink:
         return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y0": y, "s": seg})
 
     def _session_run(self, schedule, **kw):
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -409,7 +409,7 @@ class TestSessionShrink:
             **schedule,
             **kw,
         )
-        return po.ModelBank([spec], threads=1).fit_predict(self._sessions_df()).unnest("m")
+        return rp.ModelBank([spec], threads=1).fit_predict(self._sessions_df()).unnest("m")
 
     @staticmethod
     def _solve_rows(out) -> np.ndarray:
@@ -504,13 +504,13 @@ class TestSessionShrink:
         with pytest.raises(
             ValueError, match="session_shrink blends in a long-run fit, but long_half_life, the"
         ):
-            po.spec.ewridge("m", session_shrink=0.5, **base)
+            rp.spec.ewridge("m", session_shrink=0.5, **base)
         with pytest.raises(ValueError, match="session_shrink must be from 0 to 1, but it is 1.5"):
-            po.spec.ewridge("m", session_shrink=1.5, long_half_life=1e5, **base)
+            rp.spec.ewridge("m", session_shrink=1.5, long_half_life=1e5, **base)
         with pytest.raises(
             ValueError, match="session_shrink blends at each session change, but session is not set"
         ):
-            po.spec.ewridge(
+            rp.spec.ewridge(
                 "m",
                 targets=["y0"],
                 features=["x0"],
@@ -554,7 +554,7 @@ def test_a_feature_as_the_clock_is_a_local_linear_regression(half_life, ridge):
     n = 1200
     x = np.sort(rng.uniform(-3.0, 3.0, n))
     y = np.sin(x) + 0.1 * rng.standard_normal(n)
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "loc",
         targets=["y"],
         features=["x"],
@@ -566,7 +566,7 @@ def test_a_feature_as_the_clock_is_a_local_linear_regression(half_life, ridge):
         min_weight=20.0,
     )
     got = (
-        po.ModelBank([spec])
+        rp.ModelBank([spec])
         .fit_predict(pl.DataFrame({"x": x, "y": y}))
         .unnest("loc")["pred_y"]
         .to_numpy()
@@ -595,7 +595,7 @@ def test_a_bandwidth_in_the_clock_column_follows_a_curve_a_line_cannot():
     df = pl.DataFrame({"x": x, "y": y})
 
     def local(half_life):
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "loc",
             targets=["y"],
             features=["x"],
@@ -605,7 +605,7 @@ def test_a_bandwidth_in_the_clock_column_follows_a_curve_a_line_cannot():
             max_rows_between_solves=1,
             min_weight=20.0,
         )
-        return po.ModelBank([spec]).fit_predict(df).unnest("loc")["pred_y"].to_numpy()
+        return rp.ModelBank([spec]).fit_predict(df).unnest("loc")["pred_y"].to_numpy()
 
     narrow, wide = local(0.25), local(1.0)
     fit = ~np.isnan(narrow)
@@ -632,7 +632,7 @@ class TestWarmPriorsThroughTheOrigin:
 
     @staticmethod
     def _coef(df, **kw):
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -644,7 +644,7 @@ class TestWarmPriorsThroughTheOrigin:
             standardize=True,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         return np.array(out["m"].struct.field("coef").to_list()[-1])
 
     def test_an_overwhelming_ridge_lands_on_the_prior(self):
@@ -674,7 +674,7 @@ class TestRidgeDecayPenalisesTheIntercept:
         n = 200
         rng = np.random.default_rng(0)
         df = pl.DataFrame({"x": rng.standard_normal(n), "y": np.full(n, 5.0)})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x"],
@@ -686,8 +686,8 @@ class TestRidgeDecayPenalisesTheIntercept:
             **kw,
         )
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", po.ReadinessWarning)
-            out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+            warnings.simplefilter("ignore", rp.ReadinessWarning)
+            out = rp.ModelBank([spec]).fit_predict(df).unnest("m")
         return np.array([c[0] for c in out["coef"].to_list()])
 
     def test_a_plain_ridge_leaves_the_intercept_alone(self):
@@ -726,7 +726,7 @@ class TestTheRowClockSolveCadence:
         n = 60
         x = rng.standard_normal(n)
         df = pl.DataFrame({"x": x, "y": 2.0 * x + rng.standard_normal(n)})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x"],
@@ -736,8 +736,8 @@ class TestTheRowClockSolveCadence:
             **kw,
         )
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", po.ReadinessWarning)
-            return po.ModelBank([spec]).fit_predict(df).unnest("m")
+            warnings.simplefilter("ignore", rp.ReadinessWarning)
+            return rp.ModelBank([spec]).fit_predict(df).unnest("m")
 
     def test_solve_every_is_its_row_cap(self):
         clock = self.run(solve_every=7.0)
@@ -780,7 +780,7 @@ class TestGroupsThatNeverReachTheFloor:
                 "y": 2.0 * x0 - x1 + 0.1 * rng.standard_normal(n),
             }
         )
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "r",
             targets=["y"],
             features=["x0", "x1"],
@@ -789,9 +789,9 @@ class TestGroupsThatNeverReachTheFloor:
             group_close="monotone",
             **kw,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", po.ReadinessWarning)
+            warnings.simplefilter("ignore", rp.ReadinessWarning)
             out = bank.fit_predict(df).unnest("r")
         # Every group but the last has closed; the last is still open.
         return out, bank.coef(), bank.closed_groups()
@@ -876,7 +876,7 @@ class TestParameterRelations:
     written down; an exact one is held to the bit."""
 
     @staticmethod
-    def run(df: pl.DataFrame, **kw) -> tuple[pl.DataFrame, po.ModelBank]:
+    def run(df: pl.DataFrame, **kw) -> tuple[pl.DataFrame, rp.ModelBank]:
         base = dict(
             targets=["y", "z"],
             features=_F,
@@ -887,14 +887,14 @@ class TestParameterRelations:
             coef_every=0,
             max_rows_between_solves=1,
         )
-        bank = po.ModelBank([po.spec.ewridge("m", **{**base, **kw})], threads=1)
+        bank = rp.ModelBank([rp.spec.ewridge("m", **{**base, **kw})], threads=1)
         with warnings.catch_warnings():
             # A heavy ridge on a narrow column is mostly ridge: said, not wrong.
-            warnings.simplefilter("ignore", po.ReadinessWarning)
+            warnings.simplefilter("ignore", rp.ReadinessWarning)
             return bank.fit_predict(df).unnest("m"), bank
 
     @staticmethod
-    def last_coef(bank: po.ModelBank) -> np.ndarray:
+    def last_coef(bank: rp.ModelBank) -> np.ndarray:
         """Every target's coefficients, intercept first, in the bank's order."""
         return bank.coef("m")["coef"].to_numpy()
 

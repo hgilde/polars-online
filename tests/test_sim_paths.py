@@ -8,7 +8,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -19,7 +19,7 @@ def test_a_singular_state_is_factored_with_a_rounding_scale_nudge():
     """Every entry 1: the two series' returns are one draw. The factor of
     a singular matrix needs a jitter (1e-12 on the diagonal), and the
     returns then agree to its square root, a correlation of 1 to rounding."""
-    out = po.sim.regimes(2, states=[np.ones((2, 2))], seed=1, **ARGS)
+    out = rp.sim.regimes(2, states=[np.ones((2, 2))], seed=1, **ARGS)
     rows = out["rows"]
     r1 = np.diff(rows["x_1"].to_numpy(), prepend=0.0)
     r2 = np.diff(rows["x_2"].to_numpy(), prepend=0.0)
@@ -58,4 +58,4 @@ def test_a_singular_state_is_factored_with_a_rounding_scale_nudge():
 def test_a_parameter_that_cannot_be_simulated_is_refused_by_name(kw, match):
     m = len(kw["states"][0]) if np.ndim(kw["states"][0]) else 2
     with pytest.raises(ValueError, match=match):
-        po.sim.regimes(m, **ARGS, **kw)
+        rp.sim.regimes(m, **ARGS, **kw)

@@ -73,7 +73,7 @@ from an `rls` spec of `a`'s own, and from one `ewridge` spec under each
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Two targets on x: a's slope steps from 2 to 3 at row 3,000, where b goes missing.
 rng = np.random.default_rng(3)

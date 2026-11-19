@@ -4,8 +4,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from conftest import run_online
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -18,11 +18,11 @@ def _spec(**kw):
         min_weight=10.0,
     )
     d.update(kw)
-    return po.spec.pa("m", **d)
+    return rp.spec.pa("m", **d)
 
 
 def _fit(df, **kw):
-    out = po.ModelBank([_spec(coef_every=1, **kw)]).fit_predict(df)
+    out = rp.ModelBank([_spec(coef_every=1, **kw)]).fit_predict(df)
     return np.array(out["m"].struct.field("coef").to_list()[-1], dtype=float), out
 
 
@@ -72,9 +72,9 @@ def test_no_learning_rate_is_needed():
     # a badly chosen rate does not.
     df = _linear(n=3000)
     pa_c, _ = _fit(df, eps=0.01)
-    sgd_out = po.ModelBank(
+    sgd_out = rp.ModelBank(
         [
-            po.spec.sgd(
+            rp.spec.sgd(
                 "m",
                 targets=["y0"],
                 features=["x0", "x1"],
@@ -156,8 +156,8 @@ def test_out_of_sample_on_noise():
 def test_chunk_invariance():
     df = _linear(n=400, seed=9, noise=0.1)
     spec = _spec()
-    one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-    bank = po.ModelBank([spec])
+    one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+    bank = rp.ModelBank([spec])
     many = (
         pl.concat([bank.fit_predict(df.slice(i, 37)) for i in range(0, df.height, 37)])
         .select("m")
@@ -170,11 +170,11 @@ def test_chunk_invariance():
 def test_save_load(tmp_path):
     df = _linear(n=400, seed=10, noise=0.1)
     spec = _spec()
-    a = po.ModelBank([spec])
+    a = rp.ModelBank([spec])
     a.fit_predict(df.slice(0, 200))
     p = tmp_path / "pa.state"
     a.save(p)
-    b = po.ModelBank.load(p, specs=[spec])
+    b = rp.ModelBank.load(p, specs=[spec])
     rest = df.slice(200, 200)
     assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
@@ -202,10 +202,10 @@ def test_c_beside_the_mode_that_reads_none_is_refused(c, tmp_path, rheon_cli):
         _spec(mode="pa", c=c)
     spec = _spec(mode="pa")
     assert spec["model"]["c"] is None, spec["model"]
-    po.ModelBank([spec])
+    rp.ModelBank([spec])
     raw = dict(spec, model={**spec["model"], "c": c})
     with pytest.raises(ValueError, match=msg):
-        po.ModelBank([raw])
+        rp.ModelBank([raw])
     _linear(n=50).write_parquet(tmp_path / "in.parquet")
     res = run_online(
         rheon_cli,
@@ -220,7 +220,7 @@ def test_c_beside_the_mode_that_reads_none_is_refused(c, tmp_path, rheon_cli):
     assert msg in res.stderr, res.stderr
     # Either bounded mode takes it.
     for mode in ("pa1", "pa2"):
-        po.ModelBank([_spec(mode=mode, c=c)])
+        rp.ModelBank([_spec(mode=mode, c=c)])
 
 
 def _cc4(scale_y=1.0, scale_x=1.0, n=3000):
@@ -232,8 +232,8 @@ def _cc4(scale_y=1.0, scale_x=1.0, n=3000):
 
 
 def _oos(df, **kw):
-    spec = po.spec.pa("p", targets=["y"], features=["x"], half_life=1e9, min_weight=5.0, **kw)
-    p = po.ModelBank([spec]).fit_predict(df)["p"].struct.field("pred_y").to_numpy()
+    spec = rp.spec.pa("p", targets=["y"], features=["x"], half_life=1e9, min_weight=5.0, **kw)
+    p = rp.ModelBank([spec]).fit_predict(df)["p"].struct.field("pred_y").to_numpy()
     y = df["y"].to_numpy()
     ok = np.isfinite(p)
     return 1.0 - np.sum((y[ok] - p[ok]) ** 2) / np.sum((y[ok] - y[ok].mean()) ** 2), p
@@ -273,8 +273,8 @@ def test_a_target_far_from_zero_is_learned_with_or_without_decay(half_life):
     r2 = {}
     for level in (0.0, 1000.0, -1000.0):
         df = _cc4(n=20_000).with_columns(pl.col("y") + level)
-        spec = po.spec.pa("p", targets=["y"], features=["x"], half_life=half_life)
-        p = po.ModelBank([spec]).fit_predict(df)["p"].struct.field("pred_y").to_numpy()
+        spec = rp.spec.pa("p", targets=["y"], features=["x"], half_life=half_life)
+        p = rp.ModelBank([spec]).fit_predict(df)["p"].struct.field("pred_y").to_numpy()
         r2[level] = _r2_from(p, df["y"].to_numpy(), 10_000)
     for level in (1000.0, -1000.0):
         assert r2[level] > 0.9, r2
@@ -302,12 +302,12 @@ def test_the_band_scales_with_the_target(kind):
         scaled = df.with_columns(pl.col("y") * c)
         common = dict(targets=["y"], features=["x"], half_life=200.0)
         if "loss" in kind:
-            spec = po.spec.sgd(
+            spec = rp.spec.sgd(
                 "m", learning_rate=5.0 * c, clip_gradient=float("inf"), **kind, **common
             )
         else:
-            spec = po.spec.pa("m", **kind, **common)
-        out = po.ModelBank([spec]).fit_predict(scaled)["m"].struct.field("pred_y")
+            spec = rp.spec.pa("m", **kind, **common)
+        out = rp.ModelBank([spec]).fit_predict(scaled)["m"].struct.field("pred_y")
         preds[c] = out.to_numpy() / c
     for c in (2.0**-10, 2.0**10):
         np.testing.assert_array_equal(preds[c], preds[1.0])
@@ -335,8 +335,8 @@ def test_a_well_predicted_target_reaches_its_slope_at_the_default_band(kind):
     x = rng.uniform(-1.0, 1.0, 20_000)
     df = pl.DataFrame({"x": x, "y": 2.0 * x + 0.01 * rng.uniform(-1.0, 1.0, 20_000)})
     common = dict(targets=["y"], features=["x"], half_life=float("inf"))
-    spec = po.spec.sgd("m", **kind, **common) if "loss" in kind else po.spec.pa("m", **common)
-    coef = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("coef").drop_nulls()[-1]
+    spec = rp.spec.sgd("m", **kind, **common) if "loss" in kind else rp.spec.pa("m", **common)
+    coef = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("coef").drop_nulls()[-1]
     b0, b1 = coef.to_list()
     assert abs(b0) + abs(b1 - 2.0) < 0.005, (b0, b1)
 
@@ -349,8 +349,8 @@ def _excess_over_the_noise(r2, **kw):
     x = rng.standard_normal(30_000)
     e = np.sqrt(4.0 * (1.0 - r2) / r2) * rng.standard_normal(30_000)
     df = pl.DataFrame({"x": x, "y": 2.0 * x + e})
-    spec = po.spec.pa("m", targets=["y"], features=["x"], half_life=float("inf"), **kw)
-    p = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
+    spec = rp.spec.pa("m", targets=["y"], features=["x"], half_life=float("inf"), **kw)
+    p = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
     p = p.astype(float)[10_000:]
     noise = np.mean(e[10_000:] ** 2)
     return (np.mean((df["y"].to_numpy()[10_000:] - p) ** 2) - noise) / noise
@@ -418,7 +418,7 @@ def test_sgds_band_holds_no_target_far_from_zero(schedule):
     r2 = {}
     for level in (0.0, 1000.0):
         df = _cc4(n=20_000).with_columns(pl.col("y") + level)
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=["y"],
             features=["x"],
@@ -427,7 +427,7 @@ def test_sgds_band_holds_no_target_far_from_zero(schedule):
             schedule=schedule,
             learning_rate=lr,
         )
-        p = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
+        p = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
         r2[level] = _r2_from(p, df["y"].to_numpy(), 10_000)
     assert r2[1000.0] > 0.9, r2
     assert abs(r2[1000.0] - r2[0.0]) < 0.01, r2
@@ -445,10 +445,10 @@ def test_pa1_keeps_the_hard_rules_where_its_cap_binds():
     df = _cc4(n=1200).with_columns(pl.col("y") + 1000.0)
     w = np.r_[0.0, np.ones(df.height - 1)]
     df = df.with_columns(pl.Series("w", w))
-    spec = po.spec.pa("p", targets=["y"], features=["x"], half_life=50.0, weight="w")
+    spec = rp.spec.pa("p", targets=["y"], features=["x"], half_life=50.0, weight="w")
 
     def run(frame, chunks=1, **kw):
-        bank = po.ModelBank([{**spec, **kw}] if kw else [spec])
+        bank = rp.ModelBank([{**spec, **kw}] if kw else [spec])
         size = -(-frame.height // chunks)
         parts = [bank.fit_predict(frame.slice(i, size)) for i in range(0, frame.height, size)]
         return pl.concat(parts)["p"].struct.unnest().select("pred_y", "weight_sum")
@@ -456,8 +456,8 @@ def test_pa1_keeps_the_hard_rules_where_its_cap_binds():
     one = run(df)
     for chunks in (7, 600):
         assert one.equals(run(df, chunks), null_equal=True), chunks
-    uncapped = po.spec.pa("p", targets=["y"], features=["x"], half_life=50.0, weight="w", c=1e9)
-    other = po.ModelBank([uncapped]).fit_predict(df)["p"].struct.field("pred_y")
+    uncapped = rp.spec.pa("p", targets=["y"], features=["x"], half_life=50.0, weight="w", c=1e9)
+    other = rp.ModelBank([uncapped]).fit_predict(df)["p"].struct.field("pred_y")
     assert not one["pred_y"].equals(other, null_equal=True), "the cap binds"
     np.testing.assert_allclose(
         one["weight_sum"].to_numpy(), _decayed_sums(w, 0.5 ** (1 / 50)), rtol=1e-12
@@ -501,7 +501,7 @@ def _on_the_crossing(features, frame=None, **kw):
 
     df = crossing() if frame is None else frame
     spec = build("pa", kw, features=features, coef_every=1)
-    out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+    out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
     err = out["pred_y"].to_numpy().astype(float) - df["y"].to_numpy()
     return err, out["coef"].to_list()
 
@@ -560,7 +560,7 @@ SEEDS = [0, 1, 2] + [
 
 
 def _every_coef(df, **kw) -> np.ndarray:
-    out = po.ModelBank([_spec(coef_every=1, standardize=False, **kw)]).fit_predict(df)
+    out = rp.ModelBank([_spec(coef_every=1, standardize=False, **kw)]).fit_predict(df)
     rows = out["m"].struct.field("coef").to_list()
     return np.array([[np.nan] * len(rows[-1]) if r is None else r for r in rows], float)
 

@@ -18,7 +18,7 @@ import polars as pl  # noqa: E402
 import xgboost as xgb  # noqa: E402
 from pairs import anova, binned, edges_of, tables  # noqa: E402
 
-import rheon as po  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 
 
 def resid_additive(x, y, e, B, clock, hl):
@@ -27,10 +27,10 @@ def resid_additive(x, y, e, B, clock, hl):
         f"b{j}_{k}": (b[:, j] == k).astype(float) for j in range(x.shape[1]) for k in range(1, B)
     }
     d = pl.DataFrame({"c": clock, "y": y, **cols})
-    s = po.spec.ewridge(
+    s = rp.spec.ewridge(
         "o", targets=["y"], features=list(cols), clock="c", gap_cap=600.0, half_life=hl, ridge=1e-3
     )
-    p = po.ModelBank([s]).fit_predict(d)["o"].struct.field("pred_y").to_numpy()
+    p = rp.ModelBank([s]).fit_predict(d)["o"].struct.field("pred_y").to_numpy()
     return y - np.nan_to_num(p, nan=np.nanmean(p))
 
 
@@ -42,7 +42,7 @@ def lin(x, y, clock, te, pairs, hl):
         | {f"p{i}_{j}": x[:, i] * x[:, j] for i, j in pairs}
     )
     d = pl.DataFrame({"c": clock, "y": y, **cols})
-    s = po.spec.ewridge(
+    s = rp.spec.ewridge(
         "o",
         targets=["y"],
         features=list(cols),
@@ -52,7 +52,7 @@ def lin(x, y, clock, te, pairs, hl):
         ridge=1e-3,
         standardize=True,
     )
-    p = po.ModelBank([s]).fit_predict(d)["o"].struct.field("pred_y").to_numpy()
+    p = rp.ModelBank([s]).fit_predict(d)["o"].struct.field("pred_y").to_numpy()
     ok = te & ~np.isnan(p)
     return float(np.sqrt(np.mean((p[ok] - y[ok]) ** 2)))
 

@@ -24,7 +24,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -49,10 +49,10 @@ def stream(n=4000, seed=0):
 
 
 def slope(model, extra, df, **kw):
-    spec = getattr(po.spec, model)(
+    spec = getattr(rp.spec, model)(
         "m", targets=["y"], features=["x0"], min_weight=20.0, **extra, **kw
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     return bank.coef("m")["coef"][1]
 
@@ -103,7 +103,7 @@ def test_an_explicit_cadences_first_period_is_the_default_schedule(model, extra,
     )
 
     def run(**more):
-        spec = getattr(po.spec, model)(
+        spec = getattr(rp.spec, model)(
             "m",
             targets=["y"],
             features=["x0"],
@@ -113,7 +113,7 @@ def test_an_explicit_cadences_first_period_is_the_default_schedule(model, extra,
             **extra,
             **more,
         )
-        return po.ModelBank([spec]).fit_predict(df).unnest("m")
+        return rp.ModelBank([spec]).fit_predict(df).unnest("m")
 
     explicit, default = run(**kw), run()
     assert explicit.head(149).equals(default.head(149), null_equal=True)
@@ -140,12 +140,12 @@ def test_in_steady_state_the_rule_is_the_clocks_cadence():
     warm-up the two cadences give fits a row apart, and the outputs agree
     closely."""
     df = stream(n=6000, seed=3)
-    by_weight = po.ModelBank(
-        [po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=500.0, min_weight=20.0)]
+    by_weight = rp.ModelBank(
+        [rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=500.0, min_weight=20.0)]
     ).fit_predict(df)
-    by_clock = po.ModelBank(
+    by_clock = rp.ModelBank(
         [
-            po.spec.ewridge(
+            rp.spec.ewridge(
                 "m",
                 targets=["y"],
                 features=["x0"],
@@ -162,8 +162,8 @@ def test_in_steady_state_the_rule_is_the_clocks_cadence():
     # docstring's arithmetic (review 2026-10-05, TC9): the model's share is
     # `ln 2 / 50`, and in steady state its solves fall the clock's ten rows
     # apart, one more at most (ten, measured).
-    bank = po.ModelBank(
-        [po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=500.0, min_weight=20.0)]
+    bank = rp.ModelBank(
+        [rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=500.0, min_weight=20.0)]
     )
     bank.fit_predict(df.slice(0, 3000))
     solved = []
@@ -221,7 +221,7 @@ def test_a_clock_cadence_is_decided_on_the_exact_clock(model, extra, unit):
     from the first row, before which the model solves on the default
     schedule (task 278)."""
     df, ns = millisecond_rows(6_100, unit)
-    spec = getattr(po.spec, model)(
+    spec = getattr(rp.spec, model)(
         "m",
         targets=["y"],
         features=["x0"],
@@ -233,7 +233,7 @@ def test_a_clock_cadence_is_decided_on_the_exact_clock(model, extra, unit):
         coef_every=0,
         **extra,
     )
-    got = solves(po.ModelBank([spec]).fit_predict(df))
+    got = solves(rp.ModelBank([spec]).fit_predict(df))
     end = next(i for i in range(len(ns)) if int(ns[i]) - int(ns[0]) >= 2_000_000_000)
     assert end == 2_000
     explicit = [i for i in got if i >= end]
@@ -300,8 +300,8 @@ SCHEDULES = {
 
 
 def relation_run(model: str, df: pl.DataFrame, **kw) -> pl.DataFrame:
-    spec = getattr(po.spec, model)("m", **{**RELATION, **kw})
-    return po.ModelBank([spec], threads=1).fit_predict(df).unnest("m")
+    spec = getattr(rp.spec, model)("m", **{**RELATION, **kw})
+    return rp.ModelBank([spec], threads=1).fit_predict(df).unnest("m")
 
 
 def coef_rows(out: pl.DataFrame) -> list[np.ndarray | None]:
@@ -417,7 +417,7 @@ def test_on_each_solve_row_lasso_is_the_every_row_path_within_its_rule(schedule)
 NEVER = 1e18
 
 
-def _models(bank: po.ModelBank) -> list:
+def _models(bank: rp.ModelBank) -> list:
     """Each group's model states, the part of a bank's state a spec's value
     builds (the spec itself is kept as written)."""
     doc = json.loads(bank.write_json())
@@ -439,7 +439,7 @@ def test_inf_and_any_value_past_the_threshold_never_solve(model, extra, cap):
     kw = {} if cap is None else {"max_rows_between_solves": cap}
 
     def run(every):
-        spec = getattr(po.spec, model)(
+        spec = getattr(rp.spec, model)(
             "m",
             targets=["y"],
             features=["x0"],
@@ -450,7 +450,7 @@ def test_inf_and_any_value_past_the_threshold_never_solve(model, extra, cap):
             **extra,
             **kw,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         return bank.fit_predict(df).unnest("m"), bank
 
     (inf, b_inf), (big, b_big) = run(float("inf")), run(NEVER)

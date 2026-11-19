@@ -23,8 +23,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from conftest import run_online
+from rheon import polars as rp
 from rheon._rheon import validate_spec
 from test_windows import trades_and_quotes
 
@@ -38,7 +38,7 @@ def fwd(**kw: Any) -> pl.Expr:
     """The formula every test learns: the next window's mean of ``mid``,
     less the row's own."""
     return (
-        po.ewm_mean("mid", half_life=H, window_size=W, **kw, reverse=True) - pl.col("mid")
+        rp.ewm_mean("mid", half_life=H, window_size=W, **kw, reverse=True) - pl.col("mid")
     ).alias("fwd")
 
 
@@ -54,7 +54,7 @@ def spec(target: Any, *, embargo: float | None = W + 2.5, **kw: Any) -> dict[str
         embargo=embargo,
     )
     d.update(kw)
-    return po.spec.ewridge("m", targets=[target], **d)
+    return rp.spec.ewridge("m", targets=[target], **d)
 
 
 def stream(
@@ -78,7 +78,7 @@ def stream(
 
 
 def native(df: pl.DataFrame, s: dict[str, Any], chunk_size: int | None = None) -> pl.DataFrame:
-    bank = po.ModelBank([s])
+    bank = rp.ModelBank([s])
     if chunk_size is None:
         return bank.fit_predict(df)
     return pl.concat(bank.fit_predict_batches(df, chunk_size=chunk_size))
@@ -88,10 +88,10 @@ def column_form(df: pl.DataFrame, s: dict[str, Any], expr: pl.Expr) -> pl.DataFr
     """The reference: the formula as a column (``like=`` the spec, so a row
     the spec skips gets a null), then the plain column as the target."""
     name = expr.meta.output_name()
-    with_col = po.stream.with_windows(df, expr, like=s)
+    with_col = rp.stream.with_windows(df, expr, like=s)
     plain = dict(s)
     plain["targets"] = [name]
-    return po.ModelBank([plain]).fit_predict(with_col)
+    return rp.ModelBank([plain]).fit_predict(with_col)
 
 
 def field(out: pl.DataFrame, name: str) -> list[Any]:
@@ -125,21 +125,21 @@ def test_three_vwaps_on_interleaved_trades_and_quotes() -> None:
     sells = pl.when(pl.col("side") == "sell")
     targets = [
         (
-            po.ewm_sum(notional, **w, reverse=True) / po.ewm_sum("quantity", **w, reverse=True)
+            rp.ewm_sum(notional, **w, reverse=True) / rp.ewm_sum("quantity", **w, reverse=True)
             - pl.col("mid")
         ).alias("all"),
         (
-            po.ewm_sum(buys.then(notional), **w, reverse=True)
-            / po.ewm_sum(buys.then("quantity"), **w, reverse=True)
+            rp.ewm_sum(buys.then(notional), **w, reverse=True)
+            / rp.ewm_sum(buys.then("quantity"), **w, reverse=True)
             - pl.col("mid")
         ).alias("buy"),
         (
-            po.ewm_sum(sells.then(notional), **w, reverse=True)
-            / po.ewm_sum(sells.then("quantity"), **w, reverse=True)
+            rp.ewm_sum(sells.then(notional), **w, reverse=True)
+            / rp.ewm_sum(sells.then("quantity"), **w, reverse=True)
             - pl.col("mid")
         ).alias("sell"),
     ]
-    s = po.spec.ewridge(
+    s = rp.spec.ewridge(
         "m",
         targets=targets,
         features=["x"],
@@ -151,10 +151,10 @@ def test_three_vwaps_on_interleaved_trades_and_quotes() -> None:
         embargo=W + 1,
         emit_clocks=True,
     )
-    with_cols = po.stream.with_windows(df, *targets, like=s)
+    with_cols = rp.stream.with_windows(df, *targets, like=s)
     plain = dict(s)
     plain["targets"] = ["all", "buy", "sell"]
-    want = po.ModelBank([plain]).fit_predict(with_cols)
+    want = rp.ModelBank([plain]).fit_predict(with_cols)
     got = native(df, s, chunk_size=50)
     for name in ["all", "buy", "sell"]:
         assert field(got, f"pred_{name}") == field(want, f"pred_{name}"), name
@@ -297,7 +297,7 @@ def test_a_row_exactly_one_window_later_waits_for_the_window_to_close() -> None:
     # TA8). A longer embargo, W + 2.5, learns six rows here, not seven.
     fitted = {}
     for embargo in (None, W):
-        bank = po.ModelBank([spec(fwd(), embargo=embargo, min_weight=0.0)])
+        bank = rp.ModelBank([spec(fwd(), embargo=embargo, min_weight=0.0)])
         bank.fit(df)
         fitted[embargo] = bank
     plain, embargoed = fitted[None], fitted[W]
@@ -316,18 +316,18 @@ def test_a_row_exactly_one_window_later_waits_for_the_window_to_close() -> None:
 def test_fit_predict_refuses_an_embargo_below_the_window_and_fit_takes_it() -> None:
     df = stream(300, 2)
     for short in [None, 4.0]:
-        bank = po.ModelBank([spec(fwd(), embargo=short)])
+        bank = rp.ModelBank([spec(fwd(), embargo=short)])
         with pytest.raises(ValueError, match="fit_predict needs an embargo of at least 10"):
             bank.fit_predict(df)
         with pytest.raises(ValueError, match="takes any embargo"):
             list(bank.fit_predict_batches(df, chunk_size=10))
         assert bank.rows_fed == 0
     later = df.slice(250, 50)
-    covered = po.ModelBank([spec(fwd(), embargo=W)])
+    covered = rp.ModelBank([spec(fwd(), embargo=W)])
     covered.fit(df.slice(0, 250), chunk_size=40)
     want = covered.predict(later)
     for short in [None, 4.0]:
-        bank = po.ModelBank([spec(fwd(), embargo=short)])
+        bank = rp.ModelBank([spec(fwd(), embargo=short)])
         bank.fit(df.slice(0, 250), chunk_size=40)
         got = bank.predict(later)
         assert field(got, "pred_fwd") == field(want, "pred_fwd"), short
@@ -362,7 +362,7 @@ def test_groups_keep_their_own_clocks_and_cores() -> None:
 
 def test_predict_scores_without_the_target() -> None:
     df = stream(200, 6)
-    bank = po.ModelBank([spec(fwd())])
+    bank = rp.ModelBank([spec(fwd())])
     bank.fit_predict(df.slice(0, 150))
     scored = bank.predict(df.slice(150, 50).drop("mid"))
     assert sum(p is not None for p in field(scored, "pred_fwd")) > 40
@@ -378,15 +378,15 @@ def test_predict_scores_without_the_target() -> None:
 
 def test_what_is_refused() -> None:
     with pytest.raises(ValueError, match="holds no window operator looking ahead"):
-        spec((po.ewm_mean("mid", half_life=H) - pl.col("mid")).alias("back"))
+        spec((rp.ewm_mean("mid", half_life=H) - pl.col("mid")).alias("back"))
 
 
 def test_a_target_formula_a_formula_cannot_carry_names_the_spec() -> None:
     """A node a formula cannot read, in a target's formula, is refused in the
     spec's name: the builder is the call the expression was given to."""
-    from rheon._formula import accepted_text
+    from rheon.polars._formula import accepted_text
 
-    shifted = po.ewm_mean("mid", half_life=H, window_size=W, reverse=True) - pl.col("mid").shift(1)
+    shifted = rp.ewm_mean("mid", half_life=H, window_size=W, reverse=True) - pl.col("mid").shift(1)
     with pytest.raises(ValueError) as err:
         spec(shifted.alias("f"))
     assert str(err.value) == (
@@ -412,13 +412,13 @@ def test_a_window_target_with_group_needs_a_clock_column() -> None:
         "Set clock and gap_cap, or leave group out"
     )
     with pytest.raises(ValueError, match=msg):
-        po.spec.ewridge(
+        rp.spec.ewridge(
             "m", targets=[fwd()], features=["x"], half_life=50.0, embargo=W + 2.5, group="g"
         )
     clocked = spec(fwd(), group="g")
     unclocked = {**clocked, "clock": None, "gap_cap": None}
     with pytest.raises(ValueError, match=msg):
-        po.ModelBank([unclocked])
+        rp.ModelBank([unclocked])
     with pytest.raises(ValueError, match=msg):
         validate_spec(json.dumps(unclocked))
     df = stream(300, 41, groups=2)
@@ -452,11 +452,11 @@ def test_a_reset_keeps_a_target_window_whose_far_edge_is_the_last_row_before_it_
         }
     )
     s = spec(fwd(), restart_after_step_back=1.0)
-    col = po.stream.with_windows(df, fwd(), like=s)["fwd"]
+    col = rp.stream.with_windows(df, fwd(), like=s)["fwd"]
     # The oracle: the same stretch, then a row one step past the far edge
     # and no reset, which closes row 20's window (20, 30].
     past = df.head(31).vstack(df.slice(31, 1).with_columns(t=pl.lit(31.0)))
-    whole = po.stream.with_windows(past, fwd(), like=s)["fwd"][20]
+    whole = rp.stream.with_windows(past, fwd(), like=s)["fwd"][20]
     assert whole is not None
     assert col[20] is not None, "discarded by the reset"
     assert abs(col[20] - whole) <= 1e-12 * (1.0 + abs(whole)), (col[20], whole)
@@ -478,7 +478,7 @@ def test_a_target_known_at_its_own_row_is_pointed_to_the_call_that_makes_its_col
     The refusal used to send both to `with_windows` (docs/README-ITERATIONS.md,
     E11), so following it failed for the second."""
     with pytest.raises(ValueError, match="po.stream.with_windows"):
-        spec((po.ewm_mean("mid", half_life=H) - pl.col("mid")).alias("back"))
+        spec((rp.ewm_mean("mid", half_life=H) - pl.col("mid")).alias("back"))
     with pytest.raises(ValueError, match="with_columns") as plain:
         spec((pl.col("price") - pl.col("mid")).alias("rel"))
     assert "with_windows" not in str(plain.value)
@@ -486,17 +486,17 @@ def test_a_target_known_at_its_own_row_is_pointed_to_the_call_that_makes_its_col
     # message now says, and makes the column from the one that looks back.
     frame = pl.DataFrame({"t": [0.0, 1.0, 2.0], "mid": [1.0, 2.0, 3.0], "price": [1.5, 2.5, 3.5]})
     with pytest.raises(ValueError, match="with_columns"):
-        po.stream.with_windows(frame, rel=pl.col("price") - pl.col("mid"), clock="t", gap_cap=10.0)
-    made = po.stream.with_windows(
-        frame, back=po.ewm_mean("mid", half_life=H) - pl.col("mid"), clock="t", gap_cap=10.0
+        rp.stream.with_windows(frame, rel=pl.col("price") - pl.col("mid"), clock="t", gap_cap=10.0)
+    made = rp.stream.with_windows(
+        frame, back=rp.ewm_mean("mid", half_life=H) - pl.col("mid"), clock="t", gap_cap=10.0
     )
     assert made.columns == ["t", "mid", "price", "back"]
     with pytest.raises(ValueError, match="needs a name"):
-        spec(po.ewm_mean("mid", half_life=H, window_size=W, reverse=True))
+        spec(rp.ewm_mean("mid", half_life=H, window_size=W, reverse=True))
     with pytest.raises(ValueError, match="group_close cannot be set beside a formula target"):
         spec(fwd(), group="g", group_close="monotone", embargo=None)
     with pytest.raises(ValueError, match="a formula target .* does not apply"):
-        po.spec.ftrl("f", targets=[fwd()], features=["x"])  # a probability to a 0/1 target
+        rp.spec.ftrl("f", targets=[fwd()], features=["x"])  # a probability to a 0/1 target
     with pytest.raises(
         TypeError,
         match=r"targets must be a list of column names, po\.target tables or formula targets, "
@@ -504,7 +504,7 @@ def test_a_target_known_at_its_own_row_is_pointed_to_the_call_that_makes_its_col
     ):
         spec(3)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="temporal column can only be a clock"):
-        po.ModelBank([spec(fwd())]).fit_predict(
+        rp.ModelBank([spec(fwd())]).fit_predict(
             stream(20, 1).with_columns(mid=pl.from_epoch(pl.col("t").cast(pl.Int64), time_unit="s"))
         )
 
@@ -526,10 +526,10 @@ def test_the_embargo_and_the_window_are_visible_through_the_clocks() -> None:
 def test_a_state_saved_mid_window_resumes_as_one_run(tmp_path: Any) -> None:
     df = stream(400, 12, gap_at=200)
     whole = native(df, spec(fwd()))
-    bank = po.ModelBank([spec(fwd())])
+    bank = rp.ModelBank([spec(fwd())])
     first = bank.fit_predict(df.slice(0, 203))
     bank.save(tmp_path / "bank.state")
-    resumed = po.ModelBank.load(tmp_path / "bank.state")
+    resumed = rp.ModelBank.load(tmp_path / "bank.state")
     rest = resumed.fit_predict(df.slice(203, 197))
     out = pl.concat([first, rest])
     assert field(out, "pred_fwd") == field(whole, "pred_fwd")
@@ -559,10 +559,10 @@ def test_a_state_saved_inside_a_tied_stamp_resumes_as_one_run(tmp_path: Any) -> 
     cut = 100
     assert df["t"][cut - 1] == df["t"][cut] == df["t"][cut + 1], "the cut is inside a stamp"
     whole = native(df, spec(fwd()))
-    bank = po.ModelBank([spec(fwd())])
+    bank = rp.ModelBank([spec(fwd())])
     first = bank.fit_predict(df.slice(0, cut))
     bank.save(tmp_path / "tied.state")
-    rest = po.ModelBank.load(tmp_path / "tied.state").fit_predict(df.slice(cut))
+    rest = rp.ModelBank.load(tmp_path / "tied.state").fit_predict(df.slice(cut))
     out = pl.concat([first, rest])
     assert field(out, "pred_fwd") == field(whole, "pred_fwd")
     assert field(out, "learned_clock") == field(whole, "learned_clock")
@@ -577,14 +577,14 @@ def test_a_state_saved_inside_a_tied_stamp_resumes_as_one_run(tmp_path: Any) -> 
         }
     )
     target = (
-        po.ewm_mean("mid", half_life="5d", window_size="10d", reverse=True) - pl.col("mid")
+        rp.ewm_mean("mid", half_life="5d", window_size="10d", reverse=True) - pl.col("mid")
     ).alias("fwd")
     s = spec(target, gap_cap="100d", half_life="50d", embargo="13d", group="g")
     whole = native(dd, s)
-    bank = po.ModelBank([s])
+    bank = rp.ModelBank([s])
     first = bank.fit_predict(dd.slice(0, 50))
     bank.save(tmp_path / "days.state")
-    rest = po.ModelBank.load(tmp_path / "days.state").fit_predict(dd.slice(50))
+    rest = rp.ModelBank.load(tmp_path / "days.state").fit_predict(dd.slice(50))
     assert field(pl.concat([first, rest]), "pred_fwd") == field(whole, "pred_fwd")
 
 
@@ -651,7 +651,7 @@ def test_a_formula_target_beside_a_plain_one() -> None:
     """One spec, one `X'X`, a plain column and a formula: the plain target is
     learned at the embargo, the formula once its window has closed too."""
     df = stream(300, 15).with_columns(y=pl.col("mid") * 0.5 + pl.col("x").fill_null(0.0))
-    s = po.spec.ewridge(
+    s = rp.spec.ewridge(
         "m",
         targets=["y", fwd()],
         features=["x"],
@@ -666,10 +666,10 @@ def test_a_formula_target_beside_a_plain_one() -> None:
     got = native(df, s, chunk_size=37)
     plain = dict(s)
     plain["targets"] = ["y", "fwd"]
-    want = po.ModelBank([plain]).fit_predict(po.stream.with_windows(df, fwd(), like=s))
+    want = rp.ModelBank([plain]).fit_predict(rp.stream.with_windows(df, fwd(), like=s))
     for name in ["y", "fwd"]:
         assert field(got, f"pred_{name}") == field(want, f"pred_{name}"), name
-    assert {"pred_y", "pred_fwd", "resid_y", "resid_fwd"} <= set(po.spec.output_fields(s))
+    assert {"pred_y", "pred_fwd", "resid_y", "resid_fwd"} <= set(rp.spec.output_fields(s))
     assert math.isfinite(field(got, "pred_y")[-1])
 
 
@@ -683,7 +683,7 @@ def test_a_dropped_group_starts_cold_in_the_window_core_too() -> None:
     df = stream(200, 31).with_columns(g=pl.lit("a"))
     s = spec(fwd(), group="g")
     fresh = native(df, s)
-    bank = po.ModelBank([s])
+    bank = rp.ModelBank([s])
     bank.fit_predict(df)
     assert bank.drop_groups(["a"]) == 1
     again = bank.fit_predict(df)
@@ -697,7 +697,7 @@ def test_a_boolean_column_reaches_a_formula_target() -> None:
         is_buy=pl.Series(np.random.default_rng(1).random(300) < 0.5), qty=pl.lit(2.0)
     )
     expr = (
-        po.ewm_sum(pl.when(pl.col("is_buy")).then("qty"), half_life=H, window_size=W, reverse=True)
+        rp.ewm_sum(pl.when(pl.col("is_buy")).then("qty"), half_life=H, window_size=W, reverse=True)
         - pl.col("qty")
     ).alias("fwd")
     s = spec(expr)
@@ -715,7 +715,7 @@ def test_rows_learned_counts_a_formula_row_once_its_target_resolved() -> None:
     s = spec(fwd(partial="null"))
     counts = []
     for chunk_size in (None, 7):
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         if chunk_size is None:
             bank.fit_predict(df)
         else:
@@ -725,7 +725,7 @@ def test_rows_learned_counts_a_formula_row_once_its_target_resolved() -> None:
     # The column form says which rows had a target: those the spec accepts
     # whose window closed with a value. The rows still held under the embargo
     # when the input ends are not learned from yet.
-    col = po.stream.with_windows(df, fwd(partial="null"), like=s)["fwd"]
+    col = rp.stream.with_windows(df, fwd(partial="null"), like=s)["fwd"]
     known = col.is_not_null().sum()
     tail = int((df["t"] > df["t"].max() - (W + 2.5)).sum())
     assert known - tail <= counts[0] <= known < df.height
@@ -737,15 +737,15 @@ def test_drop_on_one_target_leaves_the_rows_other_targets() -> None:
     df = stream(240, 34, gap_at=120)
     outs = []
     for pa in ("null", "drop"):
-        s = po.spec.ewridge(
+        s = rp.spec.ewridge(
             "m",
             targets=[
                 (
-                    po.ewm_mean("mid", half_life=H, window_size=20.0, partial=pa, reverse=True)
+                    rp.ewm_mean("mid", half_life=H, window_size=20.0, partial=pa, reverse=True)
                     - pl.col("mid")
                 ).alias("a"),
                 (
-                    po.ewm_mean("mid", half_life=H, window_size=5.0, reverse=True) - pl.col("mid")
+                    rp.ewm_mean("mid", half_life=H, window_size=5.0, reverse=True) - pl.col("mid")
                 ).alias("b"),
             ],
             features=["x"],
@@ -767,11 +767,11 @@ def test_a_formulas_spans_are_the_specs_clock_spans() -> None:
     refused at the spec, as any other mixture is, rather than compared as
     unlike numbers by the embargo check."""
     with pytest.raises(ValueError, match="window_size"):
-        po.spec.ewridge(
+        rp.spec.ewridge(
             "m",
             targets=[
                 (
-                    po.ewm_mean("mid", half_life="5s", window_size=600.0, reverse=True)
+                    rp.ewm_mean("mid", half_life="5s", window_size=600.0, reverse=True)
                     - pl.col("mid")
                 ).alias("f")
             ],
@@ -788,7 +788,7 @@ def test_a_raw_spec_dict_takes_a_window_expression() -> None:
     ``json.dumps``; the bank normalises it as the builders do."""
     s = dict(spec(fwd()))
     s["targets"] = [fwd()]
-    bank = po.ModelBank([s])
+    bank = rp.ModelBank([s])
     assert bank.specs[0]["targets"][0]["name"] == "fwd"
     assert field(bank.fit_predict(stream(120, 35)), "pred_fwd")[-1] is not None
 
@@ -802,7 +802,7 @@ def test_learn_only_is_the_calls_not_the_banks() -> None:
     ``predict`` on another thread held the bank, and ``fit_predict`` then ran
     in sample; the run says so per call, and the bank keeps no such flag."""
     df = stream(120, 41)
-    bank = po.ModelBank([spec(fwd(), embargo=None)])
+    bank = rp.ModelBank([spec(fwd(), embargo=None)])
     assert not hasattr(bank._native, "set_learn_only")
     bank._native.fit_predict(df.slice(0, 60), 0, True)
     with pytest.raises(ValueError, match="fit_predict needs an embargo"):
@@ -814,14 +814,14 @@ def test_learn_only_is_the_calls_not_the_banks() -> None:
 def test_a_formula_target_is_never_order_free() -> None:
     """R2-P2: ``fit`` over accumulator-only specs skips the row-order warning,
     since their sums commute; a target that reads the rows ahead does not."""
-    from rheon._frame import _order_free
+    from rheon.polars._frame import _order_free
 
-    plain = po.spec.ewridge("m", targets=["y"], features=["x"], lam=1.0)
-    ahead = po.spec.ewridge(
+    plain = rp.spec.ewridge("m", targets=["y"], features=["x"], lam=1.0)
+    ahead = rp.spec.ewridge(
         "m",
         targets=[
             (
-                po.ewm_mean("mid", half_life=5.0, window_size=10.0, reverse=True) - pl.col("mid")
+                rp.ewm_mean("mid", half_life=5.0, window_size=10.0, reverse=True) - pl.col("mid")
             ).alias("f")
         ],
         features=["x"],
@@ -831,14 +831,14 @@ def test_a_formula_target_is_never_order_free() -> None:
     df = stream(200, 42).with_columns(y=pl.col("mid"))
     other = pl.DataFrame({"t": df["t"], "z": range(200)})
     plan = df.lazy().join(other.lazy(), on="t")
-    with pytest.warns(po.OrderNotGuaranteedWarning):
-        po.ModelBank([ahead]).fit(plan)
+    with pytest.warns(rp.OrderNotGuaranteedWarning):
+        rp.ModelBank([ahead]).fit(plan)
 
 
 def test_a_null_literal_has_a_form_toml_can_carry(rheon_cli: Any, tmp_path: Any) -> None:
     """R2-P3: ``when/then`` with no ``otherwise`` carries a null literal, which
     TOML has no value for; the tree spells it ``["lit"]``."""
-    from rheon._formula import from_tree, to_tree
+    from rheon.polars._formula import from_tree, to_tree
 
     tree = to_tree(pl.when(pl.col("x") > 0).then("mid"))
     assert tree[-1] == ["lit"]
@@ -849,7 +849,7 @@ def test_a_null_literal_has_a_form_toml_can_carry(rheon_cli: Any, tmp_path: Any)
     )
     df = stream(240, 43)
     target = (
-        po.ewm_sum(pl.when(pl.col("x") > 0).then("mid"), half_life=H, window_size=W, reverse=True)
+        rp.ewm_sum(pl.when(pl.col("x") > 0).then("mid"), half_life=H, window_size=W, reverse=True)
         - pl.col("mid")
     ).alias("fwd")
     s = spec(target)
@@ -874,7 +874,7 @@ def test_no_output_is_the_command_lines_fit(rheon_cli: Any, tmp_path: Any) -> No
         save_state=tmp_path / "bank.state",
         args=["--no-output"],
     )
-    assert po.ModelBank.load(tmp_path / "bank.state").rows_fed == 120
+    assert rp.ModelBank.load(tmp_path / "bank.state").rows_fed == 120
 
 
 def test_every_surface_takes_a_raw_dict_with_a_window_expression() -> None:
@@ -882,10 +882,10 @@ def test_every_surface_takes_a_raw_dict_with_a_window_expression() -> None:
     and a tuple of targets."""
     raw = dict(spec(fwd()))
     raw["targets"] = (fwd(),)
-    assert "pred_fwd" in po.spec.output_fields(raw)
-    bank = po.ModelBank([raw])
+    assert "pred_fwd" in rp.spec.output_fields(raw)
+    bank = rp.ModelBank([raw])
     bank.fit_predict(stream(80, 45))
-    again = po.ModelBank.load_bytes(bank.save_bytes(), [raw])
+    again = rp.ModelBank.load_bytes(bank.save_bytes(), [raw])
     assert again.rows_fed == 80
 
 
@@ -898,14 +898,14 @@ def test_a_raw_dict_takes_a_duration_under_a_clock_parameter() -> None:
     df = stream(80, 45).with_columns(
         ts=pl.from_epoch((pl.col("t") * 1e6).cast(pl.Int64), time_unit="us")
     )
-    built = po.spec.ewridge(
+    built = rp.spec.ewridge(
         "m", targets=["mid"], features=["x"], clock="ts", gap_cap="100s", half_life="50s"
     )
     raw = dict(built, half_life=pl.duration(seconds=50), gap_cap=timedelta(seconds=100))
-    assert po.spec.output_fields(raw) == po.spec.output_fields(built)
-    assert po.ModelBank([raw]).fit_predict(df).equals(po.ModelBank([built]).fit_predict(df))
+    assert rp.spec.output_fields(raw) == rp.spec.output_fields(built)
+    assert rp.ModelBank([raw]).fit_predict(df).equals(rp.ModelBank([built]).fit_predict(df))
     with pytest.raises(TypeError, match='^spec "m": half_life must be a duration that reads no'):
-        po.ModelBank([dict(built, half_life=pl.col("x"))])
+        rp.ModelBank([dict(built, half_life=pl.col("x"))])
 
 
 def test_a_refused_chunk_leaves_every_specs_core_as_it_was() -> None:
@@ -914,11 +914,11 @@ def test_a_refused_chunk_leaves_every_specs_core_as_it_was() -> None:
     df = stream(300, 46).with_columns(ask=pl.col("mid") + 0.01)
     a = spec(fwd())
     b = spec(
-        (po.ewm_mean("ask", half_life=H, window_size=W, reverse=True) - pl.col("ask")).alias("fwd")
+        (rp.ewm_mean("ask", half_life=H, window_size=W, reverse=True) - pl.col("ask")).alias("fwd")
     )
     b["name"] = "b"
-    fresh = po.ModelBank([a, b]).fit_predict(df)
-    bank = po.ModelBank([a, b])
+    fresh = rp.ModelBank([a, b]).fit_predict(df)
+    bank = rp.ModelBank([a, b])
     with pytest.raises(ValueError, match="ask"):
         bank.fit_predict(df.drop("ask"))
     assert bank.rows_fed == 0
@@ -930,16 +930,16 @@ def test_a_non_strict_cast_survives_the_specs_round_trip() -> None:
     """R2-F2: the tree's serializer dropped ``"non_strict"``, so a saved spec
     ran a strict cast."""
     expr = (
-        po.ewm_mean(
+        rp.ewm_mean(
             pl.col("mid").cast(pl.Float32, strict=False), half_life=H, window_size=W, reverse=True
         )
         - pl.col("mid")
     ).alias("fwd")
-    bank = po.ModelBank([spec(expr)])
+    bank = rp.ModelBank([spec(expr)])
     formula = bank.specs[0]["targets"][0]["formula"]
     assert "non_strict" in str(formula)
     bank.fit_predict(stream(60, 47))
-    again = po.ModelBank.load_bytes(bank.save_bytes())
+    again = rp.ModelBank.load_bytes(bank.save_bytes())
     assert again.specs[0]["targets"][0]["formula"] == formula
 
 
@@ -950,7 +950,7 @@ def test_a_boolean_also_read_as_a_number_reaches_the_formula_as_a_boolean() -> N
         is_buy=pl.Series(np.random.default_rng(2).random(300) < 0.5), qty=pl.lit(2.0)
     )
     expr = (
-        po.ewm_sum(pl.when(pl.col("is_buy")).then("qty"), half_life=H, window_size=W, reverse=True)
+        rp.ewm_sum(pl.when(pl.col("is_buy")).then("qty"), half_life=H, window_size=W, reverse=True)
         - pl.col("qty")
     ).alias("fwd")
     s = spec(expr, features=["x", "is_buy"])
@@ -1016,7 +1016,7 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     taken, so 65 loads too; 67 since tasks 340 and 341, for a failed call's
     pending notices and the rows held for their label times, so 66 loads
     too."""
-    bank = po.ModelBank([spec(fwd())])
+    bank = rp.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
     key = b"\xaeschema_version"
@@ -1029,9 +1029,9 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
             match="^state file: it was written by a version of polars-online older than this one "
             "reads",
         ):
-            po.ModelBank.load_bytes(old)
-    po.ModelBank.load_bytes(state[:i] + bytes([61]) + state[i + 1 :])
-    po.ModelBank.load_bytes(state[:i] + bytes([62]) + state[i + 1 :])
+            rp.ModelBank.load_bytes(old)
+    rp.ModelBank.load_bytes(state[:i] + bytes([61]) + state[i + 1 :])
+    rp.ModelBank.load_bytes(state[:i] + bytes([62]) + state[i + 1 :])
 
 
 def test_a_target_named_after_its_own_column_is_refused_at_the_builder(
@@ -1046,7 +1046,7 @@ def test_a_target_named_after_its_own_column_is_refused_at_the_builder(
     with pytest.raises(
         ValueError, match=r"takes its name from a column its formula reads.*\.alias"
     ):
-        spec(pl.col("mid") - po.ewm_mean("mid", half_life=H, window_size=W, reverse=True))
+        spec(pl.col("mid") - rp.ewm_mean("mid", half_life=H, window_size=W, reverse=True))
     # Task 160 (PB5): the same spec as a table, the form a dict or a TOML
     # file writes, passed the Rust validation and was refused only at the
     # first chunk. It is refused where every spec is checked: by
@@ -1056,7 +1056,7 @@ def test_a_target_named_after_its_own_column_is_refused_at_the_builder(
     with pytest.raises(ValueError, match='spec "m": target "mid" is named after a column its'):
         validate_spec(json.dumps(table))
     with pytest.raises(ValueError, match="named after a column its formula reads"):
-        po.ModelBank([table])
+        rp.ModelBank([table])
     stream(50, 17).write_parquet(tmp_path / "in.parquet")
     res = run_online(
         rheon_cli,
@@ -1073,12 +1073,12 @@ def test_a_target_named_after_its_own_column_is_refused_at_the_builder(
     # overflows. The bank's words, not the operator layer's.
     df = stream(60, 3).with_columns(mid=pl.col("mid") * 1e6)
     s = spec(
-        (po.ewm_mean("mid", half_life=H, window_size=W, reverse=True).cast(pl.Int8) * 1.0).alias(
+        (rp.ewm_mean("mid", half_life=H, window_size=W, reverse=True).cast(pl.Int8) * 1.0).alias(
             "fwd"
         )
     )
     with pytest.raises(ValueError, match="conversion from") as err:
-        po.ModelBank([s]).fit_predict(df)
+        rp.ModelBank([s]).fit_predict(df)
     assert "with_windows" not in str(err.value)
 
 
@@ -1087,10 +1087,10 @@ def test_a_clip_bound_left_out_is_the_null_literal_in_a_saved_spec() -> None:
     ``null``, where Python writes ``["lit"]``, the form TOML can carry; a
     saved spec holds no bare null in a formula."""
     target = (
-        po.ewm_mean("mid", half_life=H, window_size=W, reverse=True).clip(lower_bound=0)
+        rp.ewm_mean("mid", half_life=H, window_size=W, reverse=True).clip(lower_bound=0)
         - pl.col("mid")
     ).alias("fwd")
-    saved = json.loads(po.ModelBank([spec(target)]).write_json())
+    saved = json.loads(rp.ModelBank([spec(target)]).write_json())
     formula = saved["specs"][0]["targets"][0]["formula"]
 
     def nodes(tree: Any) -> Any:

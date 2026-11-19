@@ -374,12 +374,12 @@ def sgd(
         y = 0.7 * a + 0.3 * b + 0.1 * rng.standard_normal(20_000)  # c plays no part
         pl.DataFrame({"a": a, "b": b, "c": c, "y": y}).write_parquet("mix.parquet")
 
-        mix = po.spec.sgd(
+        mix = rp.spec.sgd(
             "mix", targets=["y"], features=["a", "b", "c"], half_life=float("inf"),
             learning_rate=0.01,
             coef_min=0.0, coef_sum=1.0,           # the slopes on the simplex
         )
-        bank = po.ModelBank([mix])
+        bank = rp.ModelBank([mix])
         bank.fit(pl.scan_parquet("mix.parquet"))  # learn every row, keep no output
         for r in bank.coef().filter(pl.col("term") != "intercept").iter_rows(named=True):
             print(f"{r['term']}: {r['coef']:.2f}")

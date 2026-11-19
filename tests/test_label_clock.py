@@ -16,8 +16,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from conftest import run_online
+from rheon import polars as rp
 from test_conformal import norm_ppf
 
 TIER = "essential"
@@ -48,7 +48,7 @@ def frame(n=600, seed=0):
 
 def spec(**kw):
     kw.setdefault("label_clock", "avail")
-    return po.spec.ewridge(
+    return rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x"],
@@ -185,7 +185,7 @@ def field(out, name):
 class TestTheServedResidualsInReleaseOrder:
     def test_sigma_the_interval_and_the_coverage_are_the_fold(self):
         df = frame()
-        out = po.ModelBank([spec()]).fit_predict(df)
+        out = rp.ModelBank([spec()]).fit_predict(df)
         pred = field(out, "pred_y")
         want = fold(df, pred)
         for key, exp in want.items():
@@ -203,7 +203,7 @@ class TestTheServedResidualsInReleaseOrder:
 
     def test_the_residual_on_a_row_is_its_served_one(self):
         df = frame()
-        out = po.ModelBank([spec()]).fit_predict(df)
+        out = rp.ModelBank([spec()]).fit_predict(df)
         resid, pred = field(out, "resid_y"), field(out, "pred_y")
         fin = np.isfinite(pred)
         np.testing.assert_array_equal(resid[fin], df["y"].to_numpy()[fin] - pred[fin])
@@ -213,7 +213,7 @@ class TestTheServedResidualsInReleaseOrder:
         learned at its row's own clock plus the longest delay) the coverage
         reads other numbers."""
         df = frame()
-        out = po.ModelBank([spec()]).fit_predict(df)
+        out = rp.ModelBank([spec()]).fit_predict(df)
         pred = field(out, "pred_y")
         shifted = df.with_columns(avail=pl.col("t") + 30)
         other = fold(shifted, pred)["coverage_y"]
@@ -228,7 +228,7 @@ class TestTheAutoStep:
 
     def test_the_interval_and_the_coverage_are_the_fold_to_the_bit(self):
         df = frame(n=2000, seed=1)
-        out = po.ModelBank([spec(conformal_rate="auto")]).fit_predict(df)
+        out = rp.ModelBank([spec(conformal_rate="auto")]).fit_predict(df)
         pred = field(out, "pred_y")
         want = fold(df, pred, auto=True)
         fixed = fold(df, pred)
@@ -264,16 +264,16 @@ class TestTheAutoStep:
         with pytest.raises(
             ValueError, match='conformal_rate must be a number or "auto", but it is "fast"'
         ):
-            po.ModelBank([hand])
+            rp.ModelBank([hand])
         with pytest.raises(ValueError, match="conformal_rate sets how fast the interval adapts"):
-            po.spec.ewridge("m", targets=["y"], features=["x"], conformal_rate="auto")
+            rp.spec.ewridge("m", targets=["y"], features=["x"], conformal_rate="auto")
 
     def test_the_cli_takes_it(self, tmp_path, rheon_cli):
         df = frame(n=300, seed=12)
         src = tmp_path / "in.parquet"
         df.write_parquet(src)
         s = spec(conformal_rate="auto")
-        want = po.ModelBank([s]).fit_predict(df).select("m").unnest("m")
+        want = rp.ModelBank([s]).fit_predict(df).select("m").unnest("m")
         out = tmp_path / "cli.parquet"
         cfg = tmp_path / "c.toml"
         cfg.write_text(
@@ -319,7 +319,7 @@ class TestTheSurfaces:
     def test_the_lazy_plan_reads_the_label_column_and_agrees_with_the_bank(self):
         df = frame(n=300, seed=3)
         s = spec()
-        bank = po.ModelBank([s]).fit_predict(df)
+        bank = rp.ModelBank([s]).fit_predict(df)
         # The plan selects only the output, so the label column is read
         # because the spec names it.
         lazy = df.lazy().online.fit_predict([s]).select("m").collect()
@@ -327,7 +327,7 @@ class TestTheSurfaces:
 
     def test_the_summary_counts_labels_missing_and_dropped(self):
         df = frame(n=400, seed=4)
-        bank = po.ModelBank([spec(max_held_rows=3, held_overflow="drop_oldest")])
+        bank = rp.ModelBank([spec(max_held_rows=3, held_overflow="drop_oldest")])
         bank.fit_predict(df)
         row = bank.summary().row(0, named=True)
         accepted = df.filter(pl.col("x").is_not_null())
@@ -345,7 +345,7 @@ class TestTheSurfaces:
         def fields(frame_):
             return frame_.select("m").unnest("m").drop("coef", "support_coef")
 
-        want = fields(po.ModelBank([s]).fit_predict(df))
+        want = fields(rp.ModelBank([s]).fit_predict(df))
         assert fields(pl.read_parquet(out)).equals(want, null_equal=True)
         cli_out = tmp_path / "cli.parquet"
         cfg = tmp_path / "c.toml"
@@ -389,7 +389,7 @@ class TestRefusals:
             match='label_clock lists "a" and "b", but a spec reads one time a row at which its '
             "targets become known",
         ):
-            po.spec.ewridge(
+            rp.spec.ewridge(
                 "m",
                 targets=["y", "x"],
                 features=["x"],
@@ -401,22 +401,22 @@ class TestRefusals:
 
     def test_holt(self):
         with pytest.raises(ValueError, match="label_clock does not work with holt"):
-            po.spec.holt(
+            rp.spec.holt(
                 "m", targets=["y"], clock="t", gap_cap=5.0, half_life=5.0, label_clock="avail"
             )
 
     def test_a_label_before_its_row(self):
         df = frame(n=50, seed=5).with_columns(avail=pl.col("t") - 1)
-        bank = po.ModelBank([spec()])
+        bank = rp.ModelBank([spec()])
         with pytest.raises(ValueError, match='label_clock column "avail" is 1 before clock column'):
             bank.fit_predict(df)
 
     def test_a_full_buffer(self):
         df = frame(n=200, seed=6)
         with pytest.raises(ValueError, match="above max_held_rows = 2"):
-            po.ModelBank([spec(max_held_rows=2)]).fit_predict(df)
+            rp.ModelBank([spec(max_held_rows=2)]).fit_predict(df)
 
     def test_a_label_column_of_another_kind_than_the_clock(self):
         df = frame(n=50, seed=7).with_columns(avail=pl.col("avail").cast(pl.String))
         with pytest.raises(TypeError, match='label_clock column "avail" is String'):
-            po.ModelBank([spec()]).fit_predict(df)
+            rp.ModelBank([spec()]).fit_predict(df)

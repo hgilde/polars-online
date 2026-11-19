@@ -32,18 +32,19 @@ class Family:
 
 
 _PO = "rheon"
+_RP = "rheon.polars"
 _SPEC = "rheon.spec"
-_FRAME = "rheon._frame"
+_FRAME = "rheon.polars._frame"
 
 FAMILIES: tuple[Family, ...] = (
     Family(
         "bank",
         "rheon",
         (
-            f"{_PO}.ModelBank",
-            f"{_PO}.fit_predict",
-            f"{_PO}.predict",
-            f"{_PO}.unnest",
+            f"{_RP}.ModelBank",
+            f"{_RP}.fit_predict",
+            f"{_RP}.predict",
+            f"{_RP}.unnest",
             f"{_PO}.target",
             f"{_PO}.Target",
             f"{_PO}.FormulaTarget",
@@ -52,7 +53,7 @@ FAMILIES: tuple[Family, ...] = (
             f"{_PO}.native_version",
             f"{_PO}.schema_version",
         ),
-        paged=frozenset({f"{_PO}.ModelBank"}),
+        paged=frozenset({f"{_RP}.ModelBank"}),
     ),
     Family(
         "errors",
@@ -70,8 +71,8 @@ FAMILIES: tuple[Family, ...] = (
         (
             f"{_PO}.PolarsOnlineWarning",
             f"{_PO}.ReadinessWarning",
-            f"{_PO}.OrderNotGuaranteedWarning",
-            f"{_PO}.ConsumedSourceWarning",
+            f"{_RP}.OrderNotGuaranteedWarning",
+            f"{_RP}.ConsumedSourceWarning",
             f"{_PO}.PolarsOnlineDeprecationWarning",
             f"{_PO}.UnstableWarning",
         ),
@@ -118,13 +119,13 @@ FAMILIES: tuple[Family, ...] = (
     Family(
         "stream",
         "stream",
-        tuple(f"{_PO}.stream.{m}" for m in ("with_windows", "embargo", "refresh_time")),
+        tuple(f"{_RP}.stream.{m}" for m in ("with_windows", "embargo", "refresh_time")),
     ),
     Family(
         "ops",
         "ops",
         tuple(
-            f"{_PO}.ops.{m}"
+            f"{_RP}.ops.{m}"
             for m in (
                 "ewm_mean",
                 "ewm_sum",
@@ -140,7 +141,7 @@ FAMILIES: tuple[Family, ...] = (
         "eval-scores",
         "eval",
         tuple(
-            f"{_PO}.eval.{m}"
+            f"{_RP}.eval.{m}"
             for m in ("unpack", "metrics", "window_metrics", "sums", "merge_sums", "from_sums")
         ),
     ),
@@ -148,7 +149,7 @@ FAMILIES: tuple[Family, ...] = (
         "eval-compare",
         "eval",
         tuple(
-            f"{_PO}.eval.{m}"
+            f"{_RP}.eval.{m}"
             for m in ("compare_specs", "grid_search", "diebold_mariano", "clark_west", "seqtest")
         ),
     ),
@@ -205,8 +206,7 @@ FAMILIES: tuple[Family, ...] = (
             for m in ("mp_edge", "mp_density", "signal_share", "loss", "epps_invert")
         ),
     ),
-    Family("sim", "sim", (f"{_PO}.sim.regimes",)),
-    Family("gbdt", "gbdt", (f"{_PO}.gbdt.xgboost_matrix", f"{_PO}.gbdt.lightgbm_dataset")),
+    Family("sim", "sim", (f"{_RP}.sim.regimes",)),
 )
 
 #: The module pages, in the reader's order, each the old address of the
@@ -221,7 +221,6 @@ PAGES: tuple[str, ...] = (
     "gram",
     "corr",
     "sim",
-    "gbdt",
 )
 
 

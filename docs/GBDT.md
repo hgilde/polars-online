@@ -57,7 +57,7 @@ trains each library on them for 50 rounds:
 import lightgbm as lgb
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 import xgboost as xgb
 
 # 1. The training and validation files (Parquet here, read through Polars), with the target planted in x0 and x1.
@@ -116,7 +116,7 @@ writes the refusal to standard error before it raises:
 import lightgbm as lgb
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # One feature and its target, written to a file.
 rng = np.random.default_rng(8)
@@ -167,7 +167,7 @@ bins:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 import xgboost as xgb
 
 # Four venues, each shifting the target by its own amount.
@@ -229,7 +229,7 @@ scores each objective against the planted truth on clean test rows:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 import xgboost as xgb
 
 # Training rows whose targets are in hundreds, 2% of them wild; clean test rows.
@@ -322,7 +322,7 @@ reach, trains on the steps before 1,200 and tests on those from 1,600:
 import lightgbm as lgb
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 import xgboost as xgb
 
 # Rows in clock order, 50 a step over 2,000 steps; a level no feature carries wanders and drifts up.

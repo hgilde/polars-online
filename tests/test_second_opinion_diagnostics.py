@@ -19,7 +19,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -50,7 +50,7 @@ class TestCalibrationIsMincerZarnowitz:
         import statsmodels.api as sm
 
         df = _calibration_rows(600, 11).drop("w")
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -58,7 +58,7 @@ class TestCalibrationIsMincerZarnowitz:
             min_weight=20.0,
             emit_calibration=True,
         )
-        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(df).unnest("m")
         pred, y = out["pred_y"].to_numpy(), df["y"].to_numpy()
         checked = 0
         for t in (60, 250, 599):
@@ -77,7 +77,7 @@ class TestCalibrationIsMincerZarnowitz:
 
         h_model, h_calib = 40.0, 120.0
         df = _calibration_rows(700, 12)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -87,7 +87,7 @@ class TestCalibrationIsMincerZarnowitz:
             emit_calibration=True,
             calibration_half_life=h_calib,
         )
-        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(df).unnest("m")
         pred, y, w = out["pred_y"].to_numpy(), df["y"].to_numpy(), df["w"].to_numpy()
         # Folded once the stream is 95% settled (task 232 (1)).
         ready = out["settled_frac"].to_numpy() >= 0.95
@@ -120,7 +120,7 @@ class TestCalibrationIsMincerZarnowitz:
         import statsmodels.api as sm
 
         df = _calibration_rows(400, 13).drop("w")
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -129,7 +129,7 @@ class TestCalibrationIsMincerZarnowitz:
             emit_calibration=True,
             embargo=3.0,
         )
-        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(df).unnest("m")
         pred, y = out["pred_y"].to_numpy(), df["y"].to_numpy()
         for t in (100, 399):
             upto = t - 2
@@ -165,7 +165,7 @@ class TestBreaksAreBrownDurbinAndEvans:
 
     @staticmethod
     def _run(df: pl.DataFrame, **kw: Any) -> pl.DataFrame:
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -174,7 +174,7 @@ class TestBreaksAreBrownDurbinAndEvans:
             emit_error_inflation=True,
             **{"half_life": float("inf"), **kw},
         )
-        return po.ModelBank([spec]).fit_predict(df).unnest("m")
+        return rp.ModelBank([spec]).fit_predict(df).unnest("m")
 
     def test_the_studentized_residual_is_the_recursive_residual_over_its_spread(self):
         import statsmodels.api as sm
@@ -333,7 +333,7 @@ class TestBreaksAreBrownDurbinAndEvans:
         fwd = np.convolve(u, np.ones(horizon), "valid")[1 : n + 1] / np.sqrt(horizon)
         y = 0.5 + x @ np.array([1.0, -1.0]) + fwd
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        spec = po.spec.quantile(
+        spec = rp.spec.quantile(
             "m",
             quantile=0.5,
             targets=["y"],
@@ -343,7 +343,7 @@ class TestBreaksAreBrownDurbinAndEvans:
             min_weight=10.0,
             emit_breaks=True,
         )
-        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(df).unnest("m")
         z = out["studentized_y"].to_numpy().astype(float)
         pred = out["pred_y"].to_numpy().astype(float)
         c = (np.where(y < pred, 1.0, 0.0) - 0.5) / 0.5
@@ -406,7 +406,7 @@ class TestRobustStandardErrorsAreTheSandwich:
 
     @staticmethod
     def _run(df: pl.DataFrame, lags: int, **kw: Any) -> pl.DataFrame:
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -417,7 +417,7 @@ class TestRobustStandardErrorsAreTheSandwich:
             coef_every=0,
             **kw,
         )
-        return po.ModelBank([spec]).fit_predict(df).unnest("m")
+        return rp.ModelBank([spec]).fit_predict(df).unnest("m")
 
     @pytest.mark.parametrize(("half_life", "weighted"), [(float("inf"), False), (150.0, True)])
     def test_the_sandwich_is_statsmodels_kernel_on_the_out_of_sample_residuals(
@@ -522,7 +522,7 @@ class TestRobustStandardErrorsAreTheSandwich:
                 pl.DataFrame({"g": np.full(n, gi), "x0": x[200:], "y": 0.2 * x[200:] + noise[200:]})
             )
         df = pl.concat(frames)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0"],
@@ -535,7 +535,7 @@ class TestRobustStandardErrorsAreTheSandwich:
             emit_sigma=True,
             coef_every=0,
         )
-        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(df).unnest("m")
         last = out.group_by("g", maintain_order=True).last()
         slope = np.array([c[1] for c in last["coef"].to_list()])
         se = np.array([c[1] for c in last["se_coef"].to_list()]).mean()
@@ -574,7 +574,7 @@ class TestSpecificationTestsAreStatsmodels:
 
     @staticmethod
     def _run(df: pl.DataFrame, **kw: Any) -> pl.DataFrame:
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -584,7 +584,7 @@ class TestSpecificationTestsAreStatsmodels:
             ljung_box_lags=6,
             **kw,
         )
-        return po.ModelBank([spec]).fit_predict(df).unnest("m")
+        return rp.ModelBank([spec]).fit_predict(df).unnest("m")
 
     def test_the_three_statistics_are_statsmodels(self):
         import statsmodels.api as sm
@@ -670,7 +670,7 @@ class TestUnderAHorizonTheTestsAreNeweyWest:
         fwd = np.convolve(u, np.ones(h), "valid")[1 : n + 1] / np.sqrt(h)
         y = 0.4 + x @ np.array([1.2, -0.8]) + fwd * (1.0 + 0.3 * np.abs(x[:, 0]))
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -680,7 +680,7 @@ class TestUnderAHorizonTheTestsAreNeweyWest:
             emit_calibration=True,
             emit_specification=True,
         )
-        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(df).unnest("m")
         p, e = out["pred_y"].to_numpy(), out["resid_y"].to_numpy()
         L = 2 * h
 
@@ -754,7 +754,7 @@ class TestTailsAreScipyAndJarqueBera:
             emit_tails=True,
             emit_error_inflation=True,
         )
-        once = po.ModelBank([po.spec.ewridge("m", half_life=float("inf"), **common)])
+        once = rp.ModelBank([rp.spec.ewridge("m", half_life=float("inf"), **common)])
         out = once.fit_predict(df.drop("w")).unnest("m")
         v = (out["resid_y"] / out["error_inflation_y"]).to_numpy()
         for t in (200, 1199):
@@ -763,8 +763,8 @@ class TestTailsAreScipyAndJarqueBera:
             np.testing.assert_allclose(out["kurtosis_y"][t], stats.kurtosis(vt), rtol=1e-9)
             np.testing.assert_allclose(out["jarque_bera_y"][t], jarque_bera(vt)[0], rtol=1e-9)
         h = 150.0
-        spec = po.spec.ewridge("m", half_life=60.0, tails_half_life=h, weight="w", **common)
-        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        spec = rp.spec.ewridge("m", half_life=60.0, tails_half_life=h, weight="w", **common)
+        out = rp.ModelBank([spec]).fit_predict(df).unnest("m")
         v = (out["resid_y"] / out["error_inflation_y"]).to_numpy()
         # Folded once the stream is 95% settled on the model's half-life
         # (task 232 (1)).
@@ -795,7 +795,7 @@ class TestTailsAreScipyAndJarqueBera:
         x = rng.normal(size=(n, 2))
         y = x @ np.array([1.0, -0.5]) + rng.standard_t(5, size=n)
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -805,7 +805,7 @@ class TestTailsAreScipyAndJarqueBera:
             emit_tails=True,
             emit_error_inflation=True,
         )
-        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(df).unnest("m")
         v = (out["resid_y"] / out["error_inflation_y"]).to_numpy()
         for t in (60, 61, 200, 399):
             released = v[: t - embargo + 1]
@@ -833,7 +833,7 @@ class TestInfluenceIsDffitsAtTheNewestRow:
         x[::37, 0] += 5.0  # rows of high leverage
         y = 0.5 + x @ np.array([1.0, -1.0]) + rng.normal(size=n)
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -842,7 +842,7 @@ class TestInfluenceIsDffitsAtTheNewestRow:
             min_weight=3.0,
             emit_influence=True,
         )
-        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(df).unnest("m")
         X = sm.add_constant(x)
         checked = 0
         for t in range(8, n, 5):
@@ -884,7 +884,7 @@ class TestInfluenceUnderAMemoryIsWlsRowByRow:
         y = 0.3 + x @ np.array([1.2, -0.7]) + e
         w = rng.uniform(0.5, 1.5, n)
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y, "w": w})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -897,7 +897,7 @@ class TestInfluenceUnderAMemoryIsWlsRowByRow:
             emit_influence=True,
             influence_half_life=influence_half_life,
         )
-        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(df).unnest("m")
         X = sm.add_constant(x)
         ready = out["settled_frac"].to_numpy() >= 0.95
         first = int(np.argmax(ready))
@@ -948,7 +948,7 @@ class TestFeatureHealthIsTwoWeightedMoments:
         w[rng.random(n) < 0.05] = 0.0
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": x[:, 0] + rng.normal(size=n), "w": w})
         h = 60.0
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -956,7 +956,7 @@ class TestFeatureHealthIsTwoWeightedMoments:
             weight="w",
             emit_feature_health=True,
         )
-        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(df).unnest("m")
         for t in (100, 560, 899):
             age = (t - 1) - np.arange(t)
             fast = DescrStatsW(x[:t], weights=w[:t] * 0.5 ** (age / h), ddof=0)
@@ -984,7 +984,7 @@ class TestFeatureHealthIsTwoWeightedMoments:
         w = rng.uniform(0.5, 1.5, size=n)
         w[rng.random(n) < 0.05] = 0.0
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": x[:, 0] + rng.normal(size=n), "w": w})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -993,7 +993,7 @@ class TestFeatureHealthIsTwoWeightedMoments:
             emit_feature_health=True,
             feature_health_half_life=h,
         )
-        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(df).unnest("m")
         for t in (100, 560, 899):
             age = (t - 1) - np.arange(t)
             fast = DescrStatsW(x[:t], weights=w[:t] * 0.5 ** (age / h), ddof=0)
@@ -1018,9 +1018,9 @@ def _nested_out(n: int, seed: int, beta2: float, groups: int = 1) -> pl.DataFram
     y = x[:, 0] + beta2 * x[:, 1] + rng.normal(size=groups * n)
     df = pl.DataFrame({"g": g, "x0": x[:, 0], "x1": x[:, 1], "y": y})
     common = dict(targets=["y"], half_life=float("inf"), min_weight=20.0, group="g")
-    small = po.spec.ewridge("small", features=["x0"], **common)
-    big = po.spec.ewridge("big", features=["x0", "x1"], **common)
-    return po.ModelBank([small, big]).fit_predict(df)
+    small = rp.spec.ewridge("small", features=["x0"], **common)
+    big = rp.spec.ewridge("big", features=["x0", "x1"], **common)
+    return rp.ModelBank([small, big]).fit_predict(df)
 
 
 class TestNestedComparisonsAreTheirPapers:
@@ -1043,8 +1043,8 @@ class TestNestedComparisonsAreTheirPapers:
     def test_the_statistics_are_their_definitions(self):
         out = _nested_out(1500, 101, 0.05, groups=2)
         for lags in (0, 3):
-            dm = po.eval.diebold_mariano(out, a="big", b="small", lags=lags, group="g")
-            cw = po.eval.clark_west(out, big="big", small="small", lags=lags, group="g")
+            dm = rp.eval.diebold_mariano(out, a="big", b="small", lags=lags, group="g")
+            cw = rp.eval.clark_west(out, big="big", small="small", lags=lags, group="g")
             for gi in range(2):
                 part = out.filter(pl.col("g") == gi)
                 ra = part["big"].struct.field("resid_y").to_numpy()
@@ -1078,8 +1078,8 @@ class TestNestedComparisonsAreTheirPapers:
         ok = np.isfinite(ra) & np.isfinite(rb)
         ra, rb = ra[ok], rb[ok]
         for lags in (0, 1, 4, 12):
-            dm = po.eval.diebold_mariano(out, a="big", b="small", lags=lags)["dm"][0]
-            cw = po.eval.clark_west(out, big="big", small="small", lags=lags)["cw"][0]
+            dm = rp.eval.diebold_mariano(out, a="big", b="small", lags=lags)["dm"][0]
+            cw = rp.eval.clark_west(out, big="big", small="small", lags=lags)["cw"][0]
             for got, v in ((dm, rb**2 - ra**2), (cw, rb**2 - ra**2 + (ra - rb) ** 2)):
                 fit = sm.OLS(v, np.ones_like(v)).fit(
                     cov_type="HAC", cov_kwds={"maxlags": lags, "use_correction": False}
@@ -1089,7 +1089,7 @@ class TestNestedComparisonsAreTheirPapers:
     def test_the_exponentially_weighted_form_at_each_row(self):
         h, lags = 250.0, 2
         out = _nested_out(1200, 102, 0.1)
-        ew = po.eval.clark_west(out, big="big", small="small", lags=lags, half_life=h)
+        ew = rp.eval.clark_west(out, big="big", small="small", lags=lags, half_life=h)
         got = ew["clark_west"].struct.field("cw_y").to_numpy()
         ra = out["big"].struct.field("resid_y").to_numpy()
         rb = out["small"].struct.field("resid_y").to_numpy()
@@ -1110,7 +1110,7 @@ class TestNestedComparisonsAreTheirPapers:
         252: no test ran it)."""
         h, lags = 150.0, 1
         out = _nested_out(900, 106, 0.1)
-        ew = po.eval.diebold_mariano(out, a="big", b="small", lags=lags, half_life=h)
+        ew = rp.eval.diebold_mariano(out, a="big", b="small", lags=lags, half_life=h)
         got = ew["diebold_mariano"].struct.field("dm_y").to_numpy()
         ra = out["big"].struct.field("resid_y").to_numpy()
         rb = out["small"].struct.field("resid_y").to_numpy()
@@ -1129,29 +1129,29 @@ class TestNestedComparisonsAreTheirPapers:
         reject the smaller one at 5% on every one of 20 streams, Diebold and
         Mariano on fewer; with the coefficient 0, Clark and West on few."""
         alt = _nested_out(3000, 103, 0.1, groups=20)
-        cw = po.eval.clark_west(alt, big="big", small="small", group="g")["cw"].to_numpy()
-        dm = po.eval.diebold_mariano(alt, a="big", b="small", group="g")["dm"].to_numpy()
+        cw = rp.eval.clark_west(alt, big="big", small="small", group="g")["cw"].to_numpy()
+        dm = rp.eval.diebold_mariano(alt, a="big", b="small", group="g")["dm"].to_numpy()
         assert (cw > 1.645).mean() == 1.0
         assert (dm > 1.645).mean() < (cw > 1.645).mean()
         null = _nested_out(3000, 104, 0.0, groups=20)
-        cw0 = po.eval.clark_west(null, big="big", small="small", group="g")["cw"].to_numpy()
+        cw0 = rp.eval.clark_west(null, big="big", small="small", group="g")["cw"].to_numpy()
         assert (cw0 > 1.645).mean() <= 0.15
 
     def test_refusals(self):
         out = _nested_out(200, 105, 0.0)
         with pytest.raises(ValueError, match="lags must be at least 0, but it is -1"):
-            po.eval.diebold_mariano(out, a="big", b="small", lags=-1)
+            rp.eval.diebold_mariano(out, a="big", b="small", lags=-1)
         with pytest.raises(ValueError, match="half_life must be finite and above 0, but it is 0.0"):
-            po.eval.clark_west(out, big="big", small="small", half_life=0.0)
+            rp.eval.clark_west(out, big="big", small="small", half_life=0.0)
         # An infinite half-life reached polars' `ewm_mean` as `alpha = 0`,
         # refused there with no word of the parameter (task 239).
         for test, sides in (
-            (po.eval.diebold_mariano, {"a": "big", "b": "small"}),
-            (po.eval.clark_west, {"big": "big", "small": "small"}),
+            (rp.eval.diebold_mariano, {"a": "big", "b": "small"}),
+            (rp.eval.clark_west, {"big": "big", "small": "small"}),
         ):
             with pytest.raises(
                 ValueError, match="half_life must be finite and above 0, but it is inf"
             ):
                 test(out, half_life=float("inf"), **sides)
         with pytest.raises(ValueError, match="names no residual"):
-            po.eval.diebold_mariano(out, a="big", b="small", targets=["nope"])
+            rp.eval.diebold_mariano(out, a="big", b="small", targets=["nope"])

@@ -6,9 +6,9 @@ import polars as pl
 import pytest
 import statsmodels.api as sm
 
-import rheon as po
 from data import synthetic
 from reference import compute_dclock, rls_ref
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -43,10 +43,10 @@ class TestRls:
             group="group",
             min_weight=5.0,
         )
-        a = po.ModelBank([po.spec.rls("m", delta=0.7, **common)]).fit_predict(df)
-        b = po.ModelBank(
+        a = rp.ModelBank([rp.spec.rls("m", delta=0.7, **common)]).fit_predict(df)
+        b = rp.ModelBank(
             [
-                po.spec.ewridge(
+                rp.spec.ewridge(
                     "m",
                     ridge=0.7,
                     ridge_scale="sum",
@@ -88,10 +88,10 @@ class TestRls:
             weight="w",
             min_weight=2.0,
         )
-        a = po.ModelBank([po.spec.rls("m", delta=5.0, **common)]).fit_predict(df)
-        b = po.ModelBank(
+        a = rp.ModelBank([rp.spec.rls("m", delta=5.0, **common)]).fit_predict(df)
+        b = rp.ModelBank(
             [
-                po.spec.ewridge(
+                rp.spec.ewridge(
                     "m", ridge=5.0, ridge_scale="sum", max_rows_between_solves=1, **common
                 )
             ]
@@ -103,7 +103,7 @@ class TestRls:
 
     def test_matches_numpy_oracle(self):
         df, _ = synthetic(seed=22, n_groups=1, n_rows=250, k=2, null_frac=0.0)
-        spec = po.spec.rls(
+        spec = rp.spec.rls(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -114,7 +114,7 @@ class TestRls:
             delta=1.0,
             min_weight=5.0,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         x = np.column_stack([df["x0"].to_numpy(), df["x1"].to_numpy()])
         y = df["y0"].to_numpy().reshape(-1, 1)
         dc, rs = compute_dclock(df["t"].to_numpy(), None, df.height, gap_cap=MAXD)
@@ -138,8 +138,8 @@ class TestRls:
                 "y0": [2.0, 4.0, 1.0, None, 5.0],
             }
         )
-        spec = po.spec.rls("m", targets=["y0"], features=["x0"], half_life=100.0, min_weight=1.0)
-        out = po.ModelBank([spec]).fit_predict(df)
+        spec = rp.spec.rls("m", targets=["y0"], features=["x0"], half_life=100.0, min_weight=1.0)
+        out = rp.ModelBank([spec]).fit_predict(df)
         row = out.row(3, named=True)["m"]
         assert row["pred_y0"] is not None
         assert row["resid_y0"] is None
@@ -164,7 +164,7 @@ class TestDeltaLimits:
 
     @staticmethod
     def last_coef(df: pl.DataFrame, **kw) -> np.ndarray:
-        spec = po.spec.rls(
+        spec = rp.spec.rls(
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
@@ -173,7 +173,7 @@ class TestDeltaLimits:
             min_weight=10.0,
             **kw,
         )
-        bank = po.ModelBank([spec], threads=1)
+        bank = rp.ModelBank([spec], threads=1)
         bank.fit_predict(df)
         return bank.coef("m")["coef"].to_numpy()
 

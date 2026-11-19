@@ -29,7 +29,7 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # df: 400 rows of numbers and text keys, a minute apart.
 rng = np.random.default_rng(0)

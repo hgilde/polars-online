@@ -38,7 +38,7 @@ import polars as pl
 import pytest
 
 import reference_cluster as ref
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -66,7 +66,7 @@ def frame(X, **cols):
 def spec(features=("x0", "x1"), k=3, **kw):
     d = dict(features=list(features), n_clusters=k, half_life=200.0, min_weight=5.0, warm_rows=30)
     d.update(kw)
-    return po.spec.kmeans("m", **d)
+    return rp.spec.kmeans("m", **d)
 
 
 def unnested(out):
@@ -131,7 +131,7 @@ class TestOracle:
             seed=11,
             standardize=standardize,
         )
-        out = unnested(po.ModelBank([spec(**params)]).fit_predict(df))
+        out = unnested(rp.ModelBank([spec(**params)]).fit_predict(df))
         want = ref.kmeans_ref(X.tolist(), **params)
         _same(out, want, f"{rule}/{standardize}")
         assert out["cluster"].null_count() < df.height
@@ -160,7 +160,7 @@ class TestOracle:
             dead_frac=0.1 if split_merge > 0.0 else 0.0,
             seed=3,
         )
-        out = unnested(po.ModelBank([spec(**params)]).fit_predict(df))
+        out = unnested(rp.ModelBank([spec(**params)]).fit_predict(df))
         want = ref.kmeans_ref(X.tolist(), **params)
         _same(out, want, f"every={update_every_rows}/sm={split_merge}")
         model = want["model"][0]
@@ -192,7 +192,7 @@ class TestOracle:
         )
         params = dict(k=3, half_life=60.0, min_weight=4.0, warm_rows=25, seed=9)
         s = spec(**params, clock="t", gap_cap=10.0, weight="w")
-        out = unnested(po.ModelBank([s]).fit_predict(df))
+        out = unnested(rp.ModelBank([s]).fit_predict(df))
         want = ref.kmeans_ref(rows, clock=t.tolist(), weight=w, gap_cap=10.0, **params)
         _same(out, want, "nulls/weights/clock")
         assert out["cluster"].null_count() > 40, "the fixture skipped fewer rows than it claims"
@@ -206,7 +206,7 @@ class TestOracle:
         rows += X.tolist()
         df = frame(np.array(rows))
         params = dict(k=3, half_life=float("inf"), min_weight=1.0, warm_rows=5, init="first")
-        out = unnested(po.ModelBank([spec(**params)]).fit_predict(df))
+        out = unnested(rp.ModelBank([spec(**params)]).fit_predict(df))
         want = ref.kmeans_ref(rows, **params)
         _same(out, want, "first at the cap")
         first_scored = out["cluster"].is_not_null().arg_max()
@@ -216,7 +216,7 @@ class TestOracle:
         X, _ = blobs(n=600, seed=7)
         df = frame(X)
         params = dict(k=3, half_life=100.0, min_weight=3.0, warm_rows=20)
-        bank = po.ModelBank([spec(**params)])
+        bank = rp.ModelBank([spec(**params)])
         bank.fit_predict(df.slice(0, 400))
         want = ref.kmeans_ref(X[:400].tolist(), **params)
         model = want["model"][0]
@@ -252,7 +252,7 @@ class TestLargeData:
         gaps = [np.linalg.norm(centres[i] - centres[j]) for i in range(k) for j in range(i)]
         assert 4.0 < min(gaps) < 4.5, "the fixture drifted"
         df = frame(X)
-        s = po.spec.kmeans(
+        s = rp.spec.kmeans(
             "m",
             features=[f"x{i}" for i in range(p)],
             n_clusters=k,
@@ -260,7 +260,7 @@ class TestLargeData:
             min_weight=100.0,
             warm_rows=2000,
         )
-        out = unnested(po.ModelBank([s]).fit_predict(df))
+        out = unnested(rp.ModelBank([s]).fit_predict(df))
         got = out["cluster"].to_numpy()
         scored = out["cluster"].is_not_null().to_numpy()
         assert scored.sum() == n - 2000
@@ -278,7 +278,7 @@ class TestLargeData:
         X, lab = blobs(n=n, k=k, seed=12, scale=0.9, spread=6.0)
         df = frame(X)
         s = spec(k=k, half_life=float("inf"), min_weight=50.0, warm_rows=3000, standardize=False)
-        out = unnested(po.ModelBank([s]).fit_predict(df))
+        out = unnested(rp.ModelBank([s]).fit_predict(df))
         got = out["cluster"].to_numpy()
         scored = out["cluster"].is_not_null().to_numpy()
         # Batch Lloyd from the truth, converged: the best possible answer.
@@ -317,7 +317,7 @@ class TestLargeData:
                 split_merge_every_rows=100,
                 **kw,
             )
-            got = unnested(po.ModelBank([s]).fit_predict(df))["cluster"].fill_null(-1).to_numpy()
+            got = unnested(rp.ModelBank([s]).fit_predict(df))["cluster"].fill_null(-1).to_numpy()
             tail = np.arange(n) >= n - n // 4
             recovered = next(
                 (
@@ -362,7 +362,7 @@ class TestLargeData:
                 split_merge=split_merge,
                 split_merge_every_rows=100,
             )
-            got = unnested(po.ModelBank([s]).fit_predict(df))["cluster"].fill_null(-1).to_numpy()
+            got = unnested(rp.ModelBank([s]).fit_predict(df))["cluster"].fill_null(-1).to_numpy()
             keep = (lab >= 0) & (got >= 0)
             for st in range(500, n, 5000):
                 m = keep & (np.arange(n) >= st) & (np.arange(n) < st + 5000)
@@ -397,7 +397,7 @@ class TestScaleFloor:
     @pytest.mark.parametrize("floor", [0.0, 0.1, 1.0])
     def test_the_bank_is_the_oracle_at_every_floor(self, floor):
         X = self.stream()
-        got = unnested(po.ModelBank([self.spec_at(floor)]).fit_predict(frame(X)))
+        got = unnested(rp.ModelBank([self.spec_at(floor)]).fit_predict(frame(X)))
         want = ref.kmeans_ref(
             X.tolist(), k=3, half_life=100.0, min_weight=5.0, warm_rows=50, scale_floor=floor
         )
@@ -406,7 +406,7 @@ class TestScaleFloor:
     def test_the_floor_binds_only_in_the_quiet_spell(self):
         X = self.stream()
         dist = {
-            floor: unnested(po.ModelBank([self.spec_at(floor)]).fit_predict(frame(X)))["dist"]
+            floor: unnested(rp.ModelBank([self.spec_at(floor)]).fit_predict(frame(X)))["dist"]
             .fill_null(-1.0)
             .to_numpy()
             for floor in (0.0, 0.1)
@@ -429,7 +429,7 @@ class TestScaleFloor:
 # the bank does not emit from its exported state.
 
 
-def _state(bank: po.ModelBank) -> dict:
+def _state(bank: rp.ModelBank) -> dict:
     """The model's exported state: one group, one instance."""
     model = json.loads(bank.write_json())["states"][0][0][1]["models"][0]["model"]
     return model["KMeans"]
@@ -555,9 +555,9 @@ class TestDefinitions:
         scored, checkpoints, summarise = self.by_definition(
             X, t, w, k, half_life, update_every_rows, metric
         )
-        out = unnested(po.ModelBank([s]).fit_predict(df))
+        out = unnested(rp.ModelBank([s]).fit_predict(df))
         if standardize:
-            unfloored = unnested(po.ModelBank([spec(**params, scale_floor=0.0)]).fit_predict(df))
+            unfloored = unnested(rp.ModelBank([spec(**params, scale_floor=0.0)]).fit_predict(df))
             assert out.equals(unfloored), "the floor binds: the case holds the variance alone"
             # The metric moved: the second feature's weight is about 1/2500
             # of the first's, and neither is constant.
@@ -580,7 +580,7 @@ class TestDefinitions:
         # The weights and radii, from the exported state between checkpoints:
         # the last checkpoint's centres and radii, its rows' weights decayed
         # to the row the state was read after.
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         compared = 0
         for a in range(0, df.height, 23):
             bank.fit_predict(df.slice(a, 23))
@@ -668,7 +668,7 @@ class TestDefinitions:
             params["split_merge_every_rows"],
             params["dead_frac"],
         )
-        bank = po.ModelBank([spec(min_weight=1.0, standardize=False, **params)])
+        bank = rp.ModelBank([spec(min_weight=1.0, standardize=False, **params)])
         df = frame(X)
         seen = dict.fromkeys(("far", "checks", "merges", "dead"), 0)
 
@@ -827,7 +827,7 @@ class TestDefinitions:
             standardize=False,
             split_merge=0.0,
         )
-        out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
+        out = unnested(rp.ModelBank([s]).fit_predict(frame(X)))
         got = out["cluster"].to_numpy()
         scored = out["cluster"].is_not_null().to_numpy()
         km = KMeans(n_clusters=k, n_init=10, random_state=0).fit(X)
@@ -861,7 +861,7 @@ class TestDefinitions:
         X, _ = blobs(n=n, k=k, seed=12, scale=0.9, spread=6.0)
         X = X * np.array([1.0, 100.0])
         params = dict(k=k, half_life=float("inf"), min_weight=50.0, warm_rows=3000, split_merge=0.0)
-        out = unnested(po.ModelBank([spec(**params)]).fit_predict(frame(X)))
+        out = unnested(rp.ModelBank([spec(**params)]).fit_predict(frame(X)))
         got = out["cluster"].to_numpy()
         scored = out["cluster"].is_not_null().to_numpy()
         scaler = StandardScaler(with_mean=False).fit(X)
@@ -871,7 +871,7 @@ class TestDefinitions:
         dist = np.linalg.norm(coef[:, None, :] - km.cluster_centers_[None, :, :], axis=2)
         assert sorted(dist.argmin(axis=1)) == list(range(k)), "not one centre each"
         assert dist.min(axis=1).max() < 1e-3, dist.min(axis=1)
-        raw = unnested(po.ModelBank([spec(**params, standardize=False)]).fit_predict(frame(X)))
+        raw = unnested(rp.ModelBank([spec(**params, standardize=False)]).fit_predict(frame(X)))
         lost = raw["cluster"].to_numpy()
         assert ari(lost[scored], km.labels_[scored]) < 0.9
 
@@ -985,7 +985,7 @@ class TestScaleFloorDefinition:
         assert rows_bound.min() >= 500 and rows_bound.max() < 1200 + 100
         # The state, read after every 23rd row: the reference and the metric
         # it holds for the next row.
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         compared = 0
         for a in range(0, df.height, 23):
             bank.fit_predict(df.slice(a, 23))
@@ -1000,12 +1000,12 @@ class TestScaleFloorDefinition:
         assert compared > 50
         # The assignment and the distances in the floored metric.
         scored, _, _ = TestDefinitions.by_definition(X, t, w, k, half_life, 1, metric)
-        out = unnested(po.ModelBank([s]).fit_predict(df))
+        out = unnested(rp.ModelBank([s]).fit_predict(df))
         for i, (j, d1, d2) in scored.items():
             assert out["cluster"][i] == j, i
             assert math.isclose(out["dist"][i], d1, rel_tol=1e-12), i
             assert math.isclose(out["dist_second"][i], d2, rel_tol=1e-12), i
-        unfloored = unnested(po.ModelBank([spec(**{**params, "scale_floor": 0.0})]).fit_predict(df))
+        unfloored = unnested(rp.ModelBank([spec(**{**params, "scale_floor": 0.0})]).fit_predict(df))
         moved = (unfloored["dist"] != out["dist"]).to_numpy()
         assert moved[rows_bound].mean() > 0.9 and not moved[:500].any()
 
@@ -1014,7 +1014,7 @@ class TestScaleFloorDefinition:
         and metric are numpy's at every checkpoint, to the same 1e-13."""
         X, t, w = self.stream()
         half_life, scale_floor = 60.0, 0.1
-        s = po.spec.micro(
+        s = rp.spec.micro(
             "m",
             features=["x0", "x1"],
             eps=0.5,
@@ -1026,7 +1026,7 @@ class TestScaleFloorDefinition:
         )
         df = frame(X, t=t, w=w)
         v, v_long, metric = self.by_numpy(X, t, w, half_life, scale_floor)
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         compared = 0
         for a in range(0, df.height, 23):
             bank.fit_predict(df.slice(a, 23))
@@ -1059,7 +1059,7 @@ class TestEdgeCases:
     def test_outputs_are_null_until_seeded_and_until_min_periods(self):
         X, _ = blobs(n=200, seed=20)
         s = spec(warm_rows=40, min_weight=60.0, half_life=float("inf"))
-        out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
+        out = unnested(rp.ModelBank([s]).fit_predict(frame(X)))
         cl = out["cluster"]
         assert cl[:60].null_count() == 60
         assert cl[60:].null_count() == 0
@@ -1068,7 +1068,7 @@ class TestEdgeCases:
 
     def test_k_equals_one_has_no_runner_up(self):
         X, _ = blobs(n=100, seed=21)
-        out = unnested(po.ModelBank([spec(k=1, warm_rows=5, min_weight=1.0)]).fit_predict(frame(X)))
+        out = unnested(rp.ModelBank([spec(k=1, warm_rows=5, min_weight=1.0)]).fit_predict(frame(X)))
         assert out["dist_second"].null_count() == 100
         assert out["dist"].null_count() == 5
         assert set(out["cluster"].drop_nulls().to_list()) == {0}
@@ -1086,7 +1086,7 @@ class TestEdgeCases:
             spec(k=10, warm_rows=1, min_weight=1.0)
         X, _ = blobs(n=100, k=3, seed=22)
         out = unnested(
-            po.ModelBank([spec(k=10, warm_rows=10, min_weight=1.0)]).fit_predict(frame(X))
+            rp.ModelBank([spec(k=10, warm_rows=10, min_weight=1.0)]).fit_predict(frame(X))
         )
         assert out["cluster"].is_not_null().arg_max() == 10
         assert out["coef"][-1] is not None and len(out["coef"][-1]) == 20
@@ -1100,7 +1100,7 @@ class TestEdgeCases:
         X = np.stack(
             [np.array([-6.0, 0.0, 6.0])[lab] + 0.7 * rng.standard_normal(800), np.full(800, 7.0)], 1
         )
-        out = unnested(po.ModelBank([spec(warm_rows=50, min_weight=1.0)]).fit_predict(frame(X)))
+        out = unnested(rp.ModelBank([spec(warm_rows=50, min_weight=1.0)]).fit_predict(frame(X)))
         assert out["dist"].drop_nulls().is_finite().all()
         got = out["cluster"].to_numpy()
         scored = out["cluster"].is_not_null().to_numpy()
@@ -1117,7 +1117,7 @@ class TestEdgeCases:
 
         def score(standardize):
             s = spec(k=2, warm_rows=200, min_weight=1.0, standardize=standardize)
-            out = unnested(po.ModelBank([s]).fit_predict(df))
+            out = unnested(rp.ModelBank([s]).fit_predict(df))
             m = out["cluster"].is_not_null().to_numpy()
             return ari(out["cluster"].to_numpy()[m], lab[m])
 
@@ -1130,7 +1130,7 @@ class TestEdgeCases:
         rows[150][0] = None
         df = pl.DataFrame({"x0": [r[0] for r in rows], "x1": [r[1] for r in rows]})
         out = unnested(
-            po.ModelBank([spec(half_life=20.0, warm_rows=10, min_weight=1.0)]).fit_predict(df)
+            rp.ModelBank([spec(half_life=20.0, warm_rows=10, min_weight=1.0)]).fit_predict(df)
         )
         assert out["cluster"][150] is None and out["weight_sum"][150] is None
         # The skipped row's tick is folded into the next one: row 151 reads
@@ -1150,9 +1150,9 @@ class TestEdgeCases:
         X, _ = blobs(n=700, seed=26)
         df = frame(X)
         s = spec(warm_rows=100, update_every_rows=13, split_merge_every_rows=40, min_weight=1.0)
-        one = unnested(po.ModelBank([s]).fit_predict(df))
+        one = unnested(rp.ModelBank([s]).fit_predict(df))
         for size in (1, 7, 97, 350):
-            bank = po.ModelBank([s])
+            bank = rp.ModelBank([s])
             many = unnested(
                 pl.concat([bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)])
             )
@@ -1167,11 +1167,11 @@ class TestEdgeCases:
         df = frame(X)
         s = spec(warm_rows=200, update_every_rows=5, split_merge_every_rows=30, min_weight=1.0)
         for cut in (100, 250, 500):
-            a = po.ModelBank([s])
+            a = rp.ModelBank([s])
             a.fit_predict(df.slice(0, cut))
             path = tmp_path / f"k{cut}.state"
             a.save(path)
-            b = po.ModelBank.load(path, specs=[s])
+            b = rp.ModelBank.load(path, specs=[s])
             rest = df.slice(cut, df.height - cut)
             assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True), cut
 
@@ -1179,14 +1179,14 @@ class TestEdgeCases:
         X, _ = blobs(n=800, seed=28)
         df = frame(X).with_columns(g=pl.Series(["p", "q"] * 400))
         s = spec(group="g", warm_rows=50)
-        both = po.ModelBank([s]).fit_predict(df)
-        solo = po.ModelBank([s]).fit_predict(df.filter(pl.col("g") == "q"))
+        both = rp.ModelBank([s]).fit_predict(df)
+        solo = rp.ModelBank([s]).fit_predict(df.filter(pl.col("g") == "q"))
         assert unnested(both.filter(pl.col("g") == "q")).equals(unnested(solo), null_equal=True)
 
     def test_halflife_grid(self):
         X, _ = blobs(n=400, seed=29)
         s = spec(half_life=[50.0, 500.0], warm_rows=20)
-        assert po.spec.output_fields(s) == [
+        assert rp.spec.output_fields(s) == [
             "cluster@h50",
             "dist@h50",
             "dist_second@h50",
@@ -1202,26 +1202,26 @@ class TestEdgeCases:
             "withheld_reason@h500",
             "coef@h500",
         ]
-        out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
+        out = unnested(rp.ModelBank([s]).fit_predict(frame(X)))
         assert out["cluster@h50"].dtype == pl.Int64
         assert out["weight_sum@h50"][-1] < out["weight_sum@h500"][-1]
 
     def test_coef_is_the_centres_on_the_cadence(self):
         X, _ = blobs(n=300, seed=30)
         s = spec(warm_rows=20, coef_every=50)
-        out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
+        out = unnested(rp.ModelBank([s]).fit_predict(frame(X)))
         coef = out["coef"]
         # Every 50th learned row, and the last row of the chunk.
         assert [i for i in range(300) if coef[i] is not None] == sorted({*range(49, 300, 50), 299})
         assert len(coef[299]) == 6
         # Before seeding there are no centres: null, not an empty list.
         s2 = spec(warm_rows=200, coef_every=50)
-        out2 = unnested(po.ModelBank([s2]).fit_predict(frame(X)))
+        out2 = unnested(rp.ModelBank([s2]).fit_predict(frame(X)))
         assert out2["coef"][49] is None and out2["coef"][199] is not None
 
     def test_coef_index_and_unnest_name_the_centres(self):
         s = spec(features=("a", "b", "c"), k=2, half_life=[10.0, 20.0])
-        cf = po.spec.coef_fields(s)
+        cf = rp.spec.coef_fields(s)
         assert cf["name"].to_list()[:6] == [
             "coef_cluster0_a@h10",
             "coef_cluster0_b@h10",
@@ -1230,15 +1230,15 @@ class TestEdgeCases:
             "coef_cluster1_b@h10",
             "coef_cluster1_c@h10",
         ]
-        ci = po.spec.coef_index(s)
+        ci = rp.spec.coef_index(s)
         assert ci["cluster"].to_list() == [0] * 3 + [1] * 3
         assert ci["term"].to_list() == ["a", "b", "c"] * 2
         X, _ = blobs(n=200, seed=31, p=3)
         df = pl.DataFrame({"a": X[:, 0], "b": X[:, 1], "c": X[:, 2]})
         s1 = spec(features=("a", "b", "c"), k=2, warm_rows=20)
-        bank = po.ModelBank([s1])
+        bank = rp.ModelBank([s1])
         flat = bank.fit_predict(df).online.unnest([s1])
-        names = po.spec.coef_fields(s1)["name"].to_list()
+        names = rp.spec.coef_fields(s1)["name"].to_list()
         assert names == [
             "coef_cluster0_a",
             "coef_cluster0_b",
@@ -1254,7 +1254,7 @@ class TestEdgeCases:
         assert c["coef"].to_list() == [flat[n][-1] for n in names]
 
     def test_output_index_declares_the_dtypes(self):
-        idx = po.spec.output_index(spec())
+        idx = rp.spec.output_index(spec())
         tail = ["weight_sum", "settled_frac", "withheld_reason", "coef"]
         assert idx["kind"].to_list() == ["cluster", "dist", "dist_second", *tail]
         assert idx["dtype"].to_list() == ["i64", "f64", "f64", "f64", "f64", "enum", "list[f64]"]
@@ -1264,7 +1264,7 @@ class TestEdgeCases:
         X, _ = blobs(n=500, seed=33)
         df = frame(X)
         s = spec(warm_rows=30)
-        bank = po.ModelBank([s]).fit_predict(df)
+        bank = rp.ModelBank([s]).fit_predict(df)
         lazy = df.lazy().online.fit_predict([s]).collect()
         assert bank.equals(lazy, null_equal=True)
 
@@ -1284,8 +1284,8 @@ class TestEdgeCases:
             split_merge_every_rows=100,
             standardize=False,
         )
-        plain = unnested(po.ModelBank([s]).fit_predict(frame(X)))
-        burst = unnested(po.ModelBank([s]).fit_predict(frame(Y)))
+        plain = unnested(rp.ModelBank([s]).fit_predict(frame(X)))
+        burst = unnested(rp.ModelBank([s]).fit_predict(frame(Y)))
         # Same centre before and after the burst (coef on the update cadence).
         assert burst["coef"][299] == plain["coef"][299]
         assert burst["coef"][329] == plain["coef"][299]
@@ -1343,7 +1343,7 @@ class TestEdgeCases:
             dead_frac=0.25,
             standardize=False,
         )
-        out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
+        out = unnested(rp.ModelBank([s]).fit_predict(frame(X)))
         coef = np.array(out["coef"][-1]).reshape(k, 2)
         want = np.array([[0.0, 20.0], [12.0, 0.0]])[:k]
         # Each true centre has a centre within half a noise sd (in any order).
@@ -1368,7 +1368,7 @@ class TestEdgeCases:
         X, _ = blobs(n=300, seed=34)
         X[120] = [1e100, -1e100]
         X[121] = [1e-300, 1e-300]
-        out = unnested(po.ModelBank([spec(warm_rows=30, min_weight=1.0)]).fit_predict(frame(X)))
+        out = unnested(rp.ModelBank([spec(warm_rows=30, min_weight=1.0)]).fit_predict(frame(X)))
         assert out["weight_sum"].is_finite().all()
         assert out["dist"].drop_nulls().is_finite().all()
         coef = np.array(out["coef"][-1])
@@ -1399,7 +1399,7 @@ class TestRefusals:
         with pytest.raises(ValueError, match=f"{name} does not apply to kmeans"):
             spec(**flag)
         with pytest.raises(ValueError, match=f"{name} does not apply to ew_cov"):
-            po.spec.ew_cov("c", features=["x0", "x1"], half_life=10.0, **flag)
+            rp.spec.ew_cov("c", features=["x0", "x1"], half_life=10.0, **flag)
 
     @pytest.mark.parametrize(
         ("kw", "msg"),
@@ -1429,15 +1429,15 @@ class TestRefusals:
 
     def test_no_targets_and_no_intercept_leak(self):
         with pytest.raises(TypeError, match=r"kmeans\(\) takes no targets"):
-            po.spec.kmeans("m", features=["x0"], targets=["x0"], n_clusters=2, half_life=10.0)
+            rp.spec.kmeans("m", features=["x0"], targets=["x0"], n_clusters=2, half_life=10.0)
         # A feature named like the plumbing target is not a leak.
         assert spec(features=("x0",), k=2)["targets"] == ["x0"]
 
     def test_unpack_says_what_a_kmeans_struct_holds(self):
         X, _ = blobs(n=100, seed=35)
-        out = po.ModelBank([spec(warm_rows=10)]).fit_predict(frame(X))
+        out = rp.ModelBank([spec(warm_rows=10)]).fit_predict(frame(X))
         with pytest.raises(TypeError, match="a kmeans or micro model cluster assignments"):
-            po.eval.unpack(out, "m")
+            rp.eval.unpack(out, "m")
 
     def test_the_cli_runs_it(self, tmp_path, rheon_cli):
         import subprocess
@@ -1468,7 +1468,7 @@ class TestRefusals:
         )
         subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
         got = unnested(pl.read_parquet(dst))
-        want = unnested(po.ModelBank([spec(warm_rows=30)]).fit_predict(frame(X)))
+        want = unnested(rp.ModelBank([spec(warm_rows=30)]).fit_predict(frame(X)))
         assert got.equals(want, null_equal=True)
         assert not math.isnan(got["dist"][-1])
 
@@ -1489,7 +1489,7 @@ class TestTheSeed:
     def run(**kw):
         X, _ = blobs(n=2000, k=4, seed=2, scale=1.4, spread=3.0)
         s = spec(k=4, warm_rows=60, **kw)
-        return unnested(po.ModelBank([s]).fit_predict(frame(X)))
+        return unnested(rp.ModelBank([s]).fit_predict(frame(X)))
 
     @pytest.mark.parametrize("rule", RULES)
     def test_reproducible_and_none_is_zero(self, rule):
@@ -1546,14 +1546,14 @@ class TestMergesAcrossChunksAndSaves:
 
     def test_chunk_invariance(self):
         df = self.stream()
-        bank = po.ModelBank([self.SPEC()])
+        bank = rp.ModelBank([self.SPEC()])
         one = unnested(bank.fit_predict(df))
         st = _state(bank)
         # Measured 2026-10-25: three merges, between rows 600 and 800.
         assert st["n_merges"] + st["n_dead"] > 0, st
         for size in (1, 7, 600):
             many = unnested(
-                pl.concat(po.ModelBank([self.SPEC()]).fit_predict_batches(df, chunk_size=size))
+                pl.concat(rp.ModelBank([self.SPEC()]).fit_predict_batches(df, chunk_size=size))
             )
             assert one.drop("coef").equals(many.drop("coef"), null_equal=True), size
             has = one["coef"].is_not_null()
@@ -1563,11 +1563,11 @@ class TestMergesAcrossChunksAndSaves:
         df = self.stream()
         counts = []
         for cut in (550, 700, 1500):
-            a = po.ModelBank([self.SPEC()])
+            a = rp.ModelBank([self.SPEC()])
             a.fit_predict(df.head(cut))
             st = _state(a)
             counts.append(st["n_merges"] + st["n_dead"])
-            b = po.ModelBank.load_bytes(a.save_bytes(), specs=[self.SPEC()])
+            b = rp.ModelBank.load_bytes(a.save_bytes(), specs=[self.SPEC()])
             assert _state(b) == st, cut
             rest = df.slice(cut)
             assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True), cut
@@ -1586,7 +1586,7 @@ class TestTheDefaults:
         df = TestMergesAcrossChunksAndSaves.stream()
         d = dict(features=["x0", "x1"], n_clusters=k, half_life=200.0, min_weight=5.0)
         d.update(kw)
-        return unnested(po.ModelBank([po.spec.kmeans("m", **d)]).fit_predict(df))
+        return unnested(rp.ModelBank([rp.spec.kmeans("m", **d)]).fit_predict(df))
 
     def test_each_default_spelled_out(self):
         default = self.run()
@@ -1622,28 +1622,28 @@ class TestTheDefaults:
             match='spec "m": dead_frac = 0.05 re-places a center only at a split-merge check, but '
             "split_merge = 0 runs none",
         ):
-            po.ModelBank([spec(split_merge=0.0, dead_frac=0.05)])
+            rp.ModelBank([spec(split_merge=0.0, dead_frac=0.05)])
 
 
 class TestTheBoundaries:
     """The ceilings and floors through Python, each value on both sides."""
 
     def test_n_clusters_ceiling(self):
-        po.ModelBank([po.spec.kmeans("m", features=["x0"], n_clusters=65_536, half_life=10.0)])
+        rp.ModelBank([rp.spec.kmeans("m", features=["x0"], n_clusters=65_536, half_life=10.0)])
         with pytest.raises(ValueError, match="n_clusters must be at most 65536, but it is 65537"):
-            po.spec.kmeans("m", features=["x0"], n_clusters=65_537, half_life=10.0)
+            rp.spec.kmeans("m", features=["x0"], n_clusters=65_537, half_life=10.0)
 
     def test_the_warm_up_buffer_ceiling(self):
         # A buffered row of two features is its vector (24 bytes on a
         # 64-bit target), its two values and its weight: 48 bytes, so
         # 5,592,405 rows fit 256 MiB and one more is past it.
-        po.ModelBank([spec(warm_rows=5_592_405)])
+        rp.ModelBank([spec(warm_rows=5_592_405)])
         with pytest.raises(
             ValueError,
             match=r"the first 5592406 rows, which seed the centers, would take 256\.00003 MiB at 2 "
             r"features, over the 256 MiB limit\. Set warm_rows to 5592405 or below",
         ):
-            po.ModelBank([spec(warm_rows=5_592_406)])
+            rp.ModelBank([spec(warm_rows=5_592_406)])
 
     @pytest.mark.parametrize(
         ("kw", "msg"),
@@ -1657,16 +1657,16 @@ class TestTheBoundaries:
     )
     def test_a_value_past_its_bound_is_refused_by_name(self, kw, msg):
         with pytest.raises(ValueError, match=msg):
-            po.ModelBank([spec(**kw)])
+            rp.ModelBank([spec(**kw)])
 
     def test_dead_frac_just_below_one_half_runs(self):
         # 0.5 and above are refused (a re-placed centre would be born at the
         # floor); just below it is legal and re-places on the formula.
         X, _ = blobs(n=600, seed=7)
-        out = unnested(po.ModelBank([spec(dead_frac=0.499, warm_rows=50)]).fit_predict(frame(X)))
+        out = unnested(rp.ModelBank([spec(dead_frac=0.499, warm_rows=50)]).fit_predict(frame(X)))
         assert out["dist"].drop_nulls().is_finite().all()
         with pytest.raises(ValueError, match="dead_frac must be below 0.5, but it is 0.5"):
-            po.ModelBank([spec(dead_frac=0.5, warm_rows=50)])
+            rp.ModelBank([spec(dead_frac=0.5, warm_rows=50)])
 
 
 class TestScaleEquivariance:
@@ -1681,7 +1681,7 @@ class TestScaleEquivariance:
 
     @staticmethod
     def run(X, **kw):
-        return unnested(po.ModelBank([spec(k=4, warm_rows=60, **kw)]).fit_predict(frame(X)))
+        return unnested(rp.ModelBank([spec(k=4, warm_rows=60, **kw)]).fit_predict(frame(X)))
 
     @staticmethod
     def stream():

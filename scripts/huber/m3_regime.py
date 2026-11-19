@@ -5,7 +5,7 @@ import warnings
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
 warnings.simplefilter("ignore")
 rng = np.random.default_rng(1)
@@ -16,11 +16,11 @@ y[10_000:] += 20.0
 df = pl.DataFrame({"x": x, "y": y, "t": np.arange(n, dtype=float)})
 common = dict(targets=["y"], features=["x"], clock="t", gap_cap=10.0, half_life=500.0)
 for name, spec in [
-    ("ewridge", po.spec.ewridge("m", **common)),
-    ("huber", po.spec.huber("m", **common)),
-    ("huber delta=3", po.spec.huber("m", huber_delta=3.0, **common)),
+    ("ewridge", rp.spec.ewridge("m", **common)),
+    ("huber", rp.spec.huber("m", **common)),
+    ("huber delta=3", rp.spec.huber("m", huber_delta=3.0, **common)),
 ]:
-    out = po.ModelBank([spec]).fit_predict(df)
+    out = rp.ModelBank([spec]).fit_predict(df)
     pred = out.select(pl.col("m").struct.field("pred_y")).to_series().to_numpy()
     err = np.abs(y - pred)[10_000:]
     # first row after the shift from which a trailing 200-row mean |err| stays under 1.0

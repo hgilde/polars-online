@@ -27,9 +27,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from reference import ftrl_ref
 from reference_paths import holt_ref, pa_ref, sgd_ref
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -156,7 +156,7 @@ class TestFtrl:
     def test_every_row(self, kw):
         df = _stream(1, kind="linear" if kw.get("loss") == "squared" else "logistic")
         x, y, dc, w = _inputs(df)
-        spec = po.spec.ftrl(
+        spec = rp.spec.ftrl(
             "m",
             targets=TARGETS,
             features=FEATURES,
@@ -166,7 +166,7 @@ class TestFtrl:
             min_weight=8.0,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         ref = ftrl_ref(x, y, dc, w, min_weight=8.0, gap_cap=MAX_DCLOCK, **kw)
         # ftrl_ref reports the weights a row was scored with, the bank's
         # `coef` those after it, which the next row is scored with (below,
@@ -179,7 +179,7 @@ class TestFtrl:
         row ``i + 1`` is scored with."""
         df = _stream(2, kind="logistic")
         x, y, dc, w = _inputs(df)
-        spec = po.spec.ftrl(
+        spec = rp.spec.ftrl(
             "m",
             targets=TARGETS,
             features=FEATURES,
@@ -190,7 +190,7 @@ class TestFtrl:
             l1=1.0,
             coef_every=0,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         ref = ftrl_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, l1=1.0)
         accepted = np.flatnonzero(~np.isnan(ref["weight_sum"]))
         rows = out.struct.field("coef").to_list()
@@ -207,7 +207,7 @@ class TestPassiveAggressive:
         kw = {"mode": mode, "c": 0.3, "eps": 0.1, "half_life": 50.0, "min_weight": 5.0}
         # `"pa"` reads no `c`, and refuses one; the oracle ignores it there.
         given = {k: v for k, v in kw.items() if not (k == "c" and mode == "pa")}
-        spec = po.spec.pa(
+        spec = rp.spec.pa(
             "m",
             targets=TARGETS,
             features=FEATURES,
@@ -218,7 +218,7 @@ class TestPassiveAggressive:
             standardize=False,  # the oracle reads the features as they stand
             **given,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         _held(out, pa_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, **kw), y)
         assert (w > 1.0).any() and ((w > 0.0) & (w < 1.0)).any()
 
@@ -226,7 +226,7 @@ class TestPassiveAggressive:
         df = _stream(2)
         x, y, dc, w = _inputs(df)
         kw = {"mode": "pa1", "c": 0.5, "eps": 0.05, "half_life": 50.0, "min_weight": 5.0}
-        spec = po.spec.pa(
+        spec = rp.spec.pa(
             "m",
             targets=TARGETS,
             features=FEATURES,
@@ -238,7 +238,7 @@ class TestPassiveAggressive:
             fit_intercept=False,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         _held(out, pa_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, fit_intercept=False, **kw), y)
 
 
@@ -272,7 +272,7 @@ class TestSgd:
         x, y, dc, w = _inputs(df)
         kw = {"loss": loss, "schedule": schedule, "half_life": 50.0, "min_weight": 5.0}
         kw |= extra | rate
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=TARGETS,
             features=FEATURES,
@@ -284,14 +284,14 @@ class TestSgd:
             **kw,
             **_one_pass(loss),
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         _held(out, sgd_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, **kw), y)
 
     def test_without_an_intercept(self):
         df = _stream(4)
         x, y, dc, w = _inputs(df)
         kw = {"learning_rate": 0.05, "half_life": 50.0, "min_weight": 5.0}
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=TARGETS,
             features=FEATURES,
@@ -303,7 +303,7 @@ class TestSgd:
             fit_intercept=False,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         _held(out, sgd_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, fit_intercept=False, **kw), y)
 
     @pytest.mark.parametrize(("schedule", "rate"), SCHEDULES, ids=[s for s, _ in SCHEDULES])
@@ -318,7 +318,7 @@ class TestSgd:
         x, y, dc, w = _inputs(df)
         kw = {"schedule": schedule, "half_life": 50.0, "min_weight": 5.0} | rate
         kw |= {"l2": 0.2, "clip_gradient": 0.05}
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=TARGETS,
             features=FEATURES,
@@ -330,7 +330,7 @@ class TestSgd:
             fit_intercept=fit_intercept,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         ref = sgd_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, fit_intercept=fit_intercept, **kw)
         _held(out, ref, y)
         assert ref["clipped"] > 1000, f"the clip bound {ref['clipped']} times"
@@ -367,7 +367,7 @@ class TestTheUnstableRate:
         x, y, dc, w = _inputs(df)
         kw = {"loss": loss, "schedule": "inv_scaling", "power": 1.0, "learning_rate": rate}
         kw |= {"half_life": 50.0, "min_weight": 1.0, "l2": 0.05} | extra
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=TARGETS,
             features=FEATURES,
@@ -381,7 +381,7 @@ class TestTheUnstableRate:
         )
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            out = po.ModelBank([spec]).fit_predict(df)["m"]
+            out = rp.ModelBank([spec]).fit_predict(df)["m"]
         ref = sgd_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, **kw)
         reasons = out.struct.field("withheld_reason").cast(pl.String)
         gated = int((reasons == "unstable_rate").sum())
@@ -430,7 +430,7 @@ class TestStandardized:
         x, y, dc, w = _inputs(df)
         kw = {"loss": loss, "schedule": schedule, "half_life": 50.0, "min_weight": 5.0, "l2": 0.01}
         kw |= rate
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=TARGETS,
             features=FEATURES,
@@ -443,7 +443,7 @@ class TestStandardized:
             **kw,
             **_one_pass(loss),
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         ref = sgd_ref(
             x, y, dc, w, gap_cap=MAX_DCLOCK, standardize=True, fit_intercept=fit_intercept, **kw
         )
@@ -457,7 +457,7 @@ class TestStandardized:
         kw = {"mode": mode, "c": 0.3, "eps": 0.05, "half_life": 50.0, "min_weight": 5.0}
         # `"pa"` reads no `c`, and refuses one; the oracle ignores it there.
         given = {k: v for k, v in kw.items() if not (k == "c" and mode == "pa")}
-        spec = po.spec.pa(
+        spec = rp.spec.pa(
             "m",
             targets=TARGETS,
             features=FEATURES,
@@ -469,7 +469,7 @@ class TestStandardized:
             fit_intercept=fit_intercept,
             **given,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         ref = pa_ref(
             x, y, dc, w, gap_cap=MAX_DCLOCK, standardize=True, fit_intercept=fit_intercept, **kw
         )
@@ -498,7 +498,7 @@ class TestStandardized:
             standardize=True,
         )
         if kind == "sgd":
-            spec = po.spec.sgd("m", learning_rate=0.02, **common, **kw, **bounds)
+            spec = rp.spec.sgd("m", learning_rate=0.02, **common, **kw, **bounds)
             ref = sgd_ref(
                 x,
                 y,
@@ -511,9 +511,9 @@ class TestStandardized:
                 **bounds,
             )
         else:
-            spec = po.spec.pa("m", **common, **kw, **bounds)
+            spec = rp.spec.pa("m", **common, **kw, **bounds)
             ref = pa_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, standardize=True, **kw, **bounds)
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         _held(out, ref, y)
 
 
@@ -573,7 +573,7 @@ class TestStandardizedOtherLosses:
         x, y, dc, w = _inputs(df)
         kw = {"loss": loss, "schedule": schedule, "half_life": 50.0, "min_weight": 5.0, "l2": 0.01}
         kw |= extra | rate
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=TARGETS,
             features=FEATURES,
@@ -585,7 +585,7 @@ class TestStandardizedOtherLosses:
             fit_intercept=fit_intercept,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         ref = sgd_ref(
             x, y, dc, w, gap_cap=MAX_DCLOCK, standardize=True, fit_intercept=fit_intercept, **kw
         )
@@ -605,7 +605,7 @@ class TestStandardizedOtherLosses:
         x, y, dc, w = _inputs(df)
         kw = {"schedule": schedule, "half_life": 50.0, "min_weight": 5.0, "l2": 0.01} | rate
         kw |= {"clip_gradient": 0.05}
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=TARGETS,
             features=FEATURES,
@@ -617,7 +617,7 @@ class TestStandardizedOtherLosses:
             fit_intercept=fit_intercept,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         ref = sgd_ref(
             x, y, dc, w, gap_cap=MAX_DCLOCK, standardize=True, fit_intercept=fit_intercept, **kw
         )
@@ -645,7 +645,7 @@ class TestStandardizedOtherLosses:
         x, y, dc, w = _inputs(df)
         kw = {"loss": loss, "learning_rate": 0.05, "half_life": 50.0, "min_weight": 5.0}
         kw |= extra | bounds
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=TARGETS,
             features=FEATURES,
@@ -656,7 +656,7 @@ class TestStandardizedOtherLosses:
             standardize=standardize,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         ref = sgd_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, standardize=standardize, **kw)
         _held(out, ref, y)
         bound = _on_a_bound(ref["coef"][~np.isnan(ref["weight_sum"])], bounds)
@@ -700,7 +700,7 @@ class TestSgdHuberScale:
         kw |= {"huber_delta": 0.3, "l2": 0.01 if standardize else 0.0} | rate
 
         def bank(**extra):
-            spec = po.spec.sgd(
+            spec = rp.spec.sgd(
                 "m",
                 targets=TARGETS,
                 features=FEATURES,
@@ -713,7 +713,7 @@ class TestSgdHuberScale:
                 **extra,
                 **_one_pass("huber"),
             )
-            return po.ModelBank([spec]).fit_predict(df)["m"]
+            return rp.ModelBank([spec]).fit_predict(df)["m"]
 
         out = bank(**scale)
         ref = sgd_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, standardize=standardize, **kw, **scale)
@@ -749,7 +749,7 @@ class TestHolt:
         its block of nulls."""
         df = _stream(5 if not dup else 6, kind="holt", dup=dup)
         y = df.select(TARGETS).to_numpy().astype(float)
-        spec = po.spec.holt(
+        spec = rp.spec.holt(
             "m",
             targets=TARGETS,
             clock="t",
@@ -758,7 +758,7 @@ class TestHolt:
             coef_every=0,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         ref = holt_ref(y, df["t"].to_numpy(), df["w"].to_numpy(), gap_cap=MAX_DCLOCK, **kw)
         # On every row: before a target's first observation there is no
         # level, and the core's coef is null there, as docs/OUTPUTS.md says

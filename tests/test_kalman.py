@@ -8,8 +8,8 @@ import polars as pl
 import pytest
 import statsmodels.api as sm
 
-import rheon as po
 from data import synthetic
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -25,7 +25,7 @@ def _spec(**kw):
         min_weight=20.0,
     )
     defaults.update(kw)
-    return po.spec.kalman("m", **defaults)
+    return rp.spec.kalman("m", **defaults)
 
 
 def _pred(out, col="pred_y0"):
@@ -36,8 +36,8 @@ def test_tracks_time_varying_beta_better_than_a_pinned_filter():
     # The synthetic generator's beta is a random walk, which is exactly the
     # Kalman model's assumption; a responsive filter must beat a pinned one.
     df, _ = synthetic(seed=41, n_groups=1, n_rows=1500, k=3, null_frac=0.0, beta_sigma=0.03)
-    fast = po.ModelBank([_spec(coef_half_life=50.0)]).fit_predict(df)
-    pinned = po.ModelBank([_spec(coef_half_life=float("inf"))]).fit_predict(df)
+    fast = rp.ModelBank([_spec(coef_half_life=50.0)]).fit_predict(df)
+    pinned = rp.ModelBank([_spec(coef_half_life=float("inf"))]).fit_predict(df)
     y = df["y0"].to_numpy()
     for out, name in ((fast, "fast"), (pinned, "pinned")):
         assert np.isfinite(_pred(out)).sum() > 1000, name
@@ -60,17 +60,17 @@ def test_per_factor_halflife_and_pinning():
     df, _ = synthetic(seed=42, n_groups=1, n_rows=400, k=3, null_frac=0.0)
     # intercept pinned, x0 slow, x1 fast, x2 pinned
     spec = _spec(coef_half_life=[float("inf"), 500.0, 30.0, float("inf")])
-    out = po.ModelBank([spec]).fit_predict(df)
-    scalar = po.ModelBank([_spec(coef_half_life=100.0)]).fit_predict(df)
+    out = rp.ModelBank([spec]).fit_predict(df)
+    scalar = rp.ModelBank([_spec(coef_half_life=100.0)]).fit_predict(df)
     x1_slow = _spec(coef_half_life=[float("inf"), 500.0, 300.0, float("inf")])
     assert _differ(out, scalar) > 1e-6
-    assert _differ(out, po.ModelBank([x1_slow]).fit_predict(df)) > 1e-6
+    assert _differ(out, rp.ModelBank([x1_slow]).fit_predict(df)) > 1e-6
 
 
 def test_explicit_q_overrides_halflife():
     df, _ = synthetic(seed=43, n_groups=1, n_rows=200, k=3, null_frac=0.0)
-    a = po.ModelBank([_spec(q=[0.0, 0.0, 0.0, 0.0])]).fit_predict(df)
-    b = po.ModelBank([_spec(q=[0.01, 0.01, 0.01, 0.01])]).fit_predict(df)
+    a = rp.ModelBank([_spec(q=[0.0, 0.0, 0.0, 0.0])]).fit_predict(df)
+    b = rp.ModelBank([_spec(q=[0.01, 0.01, 0.01, 0.01])]).fit_predict(df)
     # zero process noise converges; nonzero keeps moving, so they differ
     pa, pb = _pred(a), _pred(b)
     m = np.isfinite(pa) & np.isfinite(pb)
@@ -86,8 +86,8 @@ def test_share_p_is_each_targets_own_filter_when_every_target_is_on_every_row():
     the mean ``sigma^2`` parted from two driven by their own on every row.)"""
     df, _ = synthetic(seed=44, n_groups=1, n_rows=300, k=3, n_targets=2, null_frac=0.0)
     kw = dict(targets=["y0", "y1"])
-    a = po.ModelBank([_spec(share_p=False, **kw)]).fit_predict(df)
-    b = po.ModelBank([_spec(share_p=True, **kw)]).fit_predict(df)
+    a = rp.ModelBank([_spec(share_p=False, **kw)]).fit_predict(df)
+    b = rp.ModelBank([_spec(share_p=True, **kw)]).fit_predict(df)
     for col in ("pred_y0", "pred_y1"):
         pa, pb = _pred(a, col), _pred(b, col)
         assert np.isfinite(pa).sum() > 100, col
@@ -95,8 +95,8 @@ def test_share_p_is_each_targets_own_filter_when_every_target_is_on_every_row():
     y1 = df["y1"].to_numpy().copy()
     y1[::4] = np.nan
     gappy = df.with_columns(pl.Series("y1", y1))
-    a = po.ModelBank([_spec(share_p=False, **kw)]).fit_predict(gappy)
-    b = po.ModelBank([_spec(share_p=True, **kw)]).fit_predict(gappy)
+    a = rp.ModelBank([_spec(share_p=False, **kw)]).fit_predict(gappy)
+    b = rp.ModelBank([_spec(share_p=True, **kw)]).fit_predict(gappy)
     # The target on every row is its own filter still; the gappy one parts.
     np.testing.assert_array_equal(_pred(a, "pred_y0"), _pred(b, "pred_y0"))
     pa, pb = _pred(a, "pred_y1"), _pred(b, "pred_y1")
@@ -115,7 +115,7 @@ def test_out_of_sample_on_noise():
             "y0": rng.standard_normal(n),
         }
     )
-    out = po.ModelBank([_spec(coef_half_life=200.0, half_life=500.0)]).fit_predict(df)
+    out = rp.ModelBank([_spec(coef_half_life=200.0, half_life=500.0)]).fit_predict(df)
     p = _pred(out)
     m = np.isfinite(p)
     ic = np.corrcoef(p[m], df["y0"].to_numpy()[m])[0, 1]
@@ -125,8 +125,8 @@ def test_out_of_sample_on_noise():
 def test_chunk_invariance():
     df, _ = synthetic(seed=45, n_groups=2, n_rows=200, k=3, null_frac=0.0)
     spec = _spec(group="group", clock="t", gap_cap=50.0, weight="w")
-    one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-    bank = po.ModelBank([spec])
+    one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+    bank = rp.ModelBank([spec])
     many = (
         pl.concat([bank.fit_predict(df.slice(i, 30)) for i in range(0, df.height, 30)])
         .select("m")
@@ -159,7 +159,7 @@ def test_the_targets_units_do_not_matter(share_p, p0):
             p0=p0,
             share_p=share_p,
         )
-        out = po.ModelBank([spec]).fit_predict(df.with_columns(pl.col("y0", "y1") * c))
+        out = rp.ModelBank([spec]).fit_predict(df.with_columns(pl.col("y0", "y1") * c))
         return {t: _pred(out, f"pred_{t}") for t in ("y0", "y1")}
 
     base = preds(1.0)
@@ -189,14 +189,14 @@ def _gappy(n: int = 400, seed: int = 0) -> pl.DataFrame:
 @pytest.mark.parametrize(
     "build",
     [
-        pytest.param(lambda c: po.spec.kalman("m", coef_half_life=20.0, **c), id="kalman"),
+        pytest.param(lambda c: rp.spec.kalman("m", coef_half_life=20.0, **c), id="kalman"),
         pytest.param(
-            lambda c: po.spec.kalman("m", coef_half_life=20.0, standardize=False, **c),
+            lambda c: rp.spec.kalman("m", coef_half_life=20.0, standardize=False, **c),
             id="kalman unstandardized",
         ),
-        pytest.param(lambda c: po.spec.rls("m", **c), id="rls"),
-        pytest.param(lambda c: po.spec.ewridge("m", **c), id="ewridge"),
-        pytest.param(lambda c: po.spec.sgd("m", **c), id="sgd"),
+        pytest.param(lambda c: rp.spec.rls("m", **c), id="rls"),
+        pytest.param(lambda c: rp.spec.ewridge("m", **c), id="ewridge"),
+        pytest.param(lambda c: rp.spec.sgd("m", **c), id="sgd"),
     ],
 )
 def test_a_zero_weight_row_inside_a_gap_moves_no_prediction(build):
@@ -215,8 +215,8 @@ def test_a_zero_weight_row_inside_a_gap_moves_no_prediction(build):
         targets=["y"], features=["x0", "x1"], clock="t", weight="w", half_life=50.0, gap_cap=1e9
     )
     spec = build(common)
-    a = po.ModelBank([spec]).fit_predict(base)["m"].struct.field("pred_y").to_numpy()
-    out = po.ModelBank([spec]).fit_predict(doubled).filter(pl.col("real"))
+    a = rp.ModelBank([spec]).fit_predict(base)["m"].struct.field("pred_y").to_numpy()
+    out = rp.ModelBank([spec]).fit_predict(doubled).filter(pl.col("real"))
     b = out["m"].struct.field("pred_y").to_numpy()
     ok = np.isfinite(a) & np.isfinite(b)
     assert ok.sum() > 350
@@ -251,12 +251,12 @@ def test_the_doubled_stream_is_the_native_embargo_with_gaps(coef_half_life):
         min_weight=4.0,
         coef_half_life=coef_half_life,
     )
-    native = po.ModelBank([po.spec.kalman("m", embargo=3.0, **common)]).fit_predict(df)
+    native = rp.ModelBank([rp.spec.kalman("m", embargo=3.0, **common)]).fit_predict(df)
     nat = native["m"].struct.field("pred_y").to_numpy()
-    out = po.ModelBank([po.spec.kalman("m", **common)]).fit_predict(
-        po.stream.embargo(df, clock="t", delay=3.0, weight="w")
+    out = rp.ModelBank([rp.spec.kalman("m", **common)]).fit_predict(
+        rp.stream.embargo(df, clock="t", delay=3.0, weight="w")
     )
-    dbl = out.filter(pl.col(po.stream.ROLE) == "predict")["m"].struct.field("pred_y").to_numpy()
+    dbl = out.filter(pl.col(rp.stream.ROLE) == "predict")["m"].struct.field("pred_y").to_numpy()
     np.testing.assert_array_equal(np.isfinite(nat), np.isfinite(dbl))
     ok = np.isfinite(nat)
     assert ok.sum() > 250
@@ -282,7 +282,7 @@ def test_a_short_history_fits_from_its_first_rows(half_life, floor):
     df = pl.DataFrame({**{f: x[:, i] for i, f in enumerate(feats)}, "y": y}).with_columns(
         g=pl.int_range(pl.len()) // rows
     )
-    spec = po.spec.kalman(
+    spec = rp.spec.kalman(
         "m",
         targets=["y"],
         features=feats,
@@ -291,7 +291,7 @@ def test_a_short_history_fits_from_its_first_rows(half_life, floor):
         half_life=half_life,
         min_weight=25.0,
     )
-    pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
+    pred = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
     pos = np.arange(len(y)) % rows
     sel = (pos >= 25) & (pos < 50) & np.isfinite(pred)
     # Under a half-life of 50 the decayed weight reaches 25 on row 31.
@@ -317,7 +317,7 @@ def test_the_first_row_takes_the_level_and_no_prediction_is_zero():
     x = rng.standard_normal(n)
     y = 100.0 + 2.0 * x + 0.5 * rng.standard_normal(n)
     frame = pl.DataFrame({"t": np.arange(n, dtype=float), "x": x, "y": y, "w": np.full(n, 3.0)})
-    spec = po.spec.kalman(
+    spec = rp.spec.kalman(
         "m",
         targets=["y"],
         features=["x"],
@@ -328,7 +328,7 @@ def test_the_first_row_takes_the_level_and_no_prediction_is_zero():
         coef_half_life=100.0,
         emit_sigma=True,
     )
-    out = po.ModelBank([spec]).fit_predict(frame)["m"].struct.unnest()
+    out = rp.ModelBank([spec]).fit_predict(frame)["m"].struct.unnest()
     pred = out["pred_y"].to_numpy().astype(float)
     reason = out["withheld_reason"].cast(pl.String).to_list()
     assert reason[:2] == ["below_min_weight", None]
@@ -367,7 +367,7 @@ def _relations_frame(seed: int = 278, n: int = 2000) -> pl.DataFrame:
 _RF = ["x0", "x1", "x2"]
 
 
-def _run(df: pl.DataFrame, **kw) -> tuple[pl.DataFrame, po.ModelBank]:
+def _run(df: pl.DataFrame, **kw) -> tuple[pl.DataFrame, rp.ModelBank]:
     base = dict(
         targets=["y"],
         features=_RF,
@@ -378,13 +378,13 @@ def _run(df: pl.DataFrame, **kw) -> tuple[pl.DataFrame, po.ModelBank]:
         min_weight=10.0,
         coef_every=0,
     )
-    bank = po.ModelBank([po.spec.kalman("m", **{**base, **kw})], threads=1)
+    bank = rp.ModelBank([rp.spec.kalman("m", **{**base, **kw})], threads=1)
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", po.ReadinessWarning)
+        warnings.simplefilter("ignore", rp.ReadinessWarning)
         return bank.fit_predict(df).unnest("m"), bank
 
 
-def _last_coef(bank: po.ModelBank) -> np.ndarray:
+def _last_coef(bank: rp.ModelBank) -> np.ndarray:
     return bank.coef("m")["coef"].to_numpy()
 
 
@@ -439,9 +439,9 @@ def test_with_no_drift_and_a_fixed_noise_the_filter_is_rls(p0):
     kw = dict(half_life=float("inf"), min_weight=0.0)
     filt, _ = _run(df, q=[0.0] * 4, obs_var=1.0, p0=p0, standardize=False, **kw)
     rls = (
-        po.ModelBank(
+        rp.ModelBank(
             [
-                po.spec.rls(
+                rp.spec.rls(
                     "m",
                     targets=["y"],
                     features=_RF,

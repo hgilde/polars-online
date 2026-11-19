@@ -51,7 +51,7 @@ The recipe has five independent features and a sixth, `x5`, that is
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # Five features, and a sixth that is nearly the sum of two of them: x5 = x1 + x2 + a little noise.
 rng = np.random.default_rng(11)

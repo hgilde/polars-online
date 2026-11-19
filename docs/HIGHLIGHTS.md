@@ -107,7 +107,7 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # 1. Four days of trades, one file per day, with the answers planted.
 rng = np.random.default_rng(1)
@@ -317,7 +317,7 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # 1. Three days of trades, one file per day, with the answer planted.
 rng = np.random.default_rng(2)
@@ -371,7 +371,7 @@ machine that has the state file and the input:
 from pathlib import Path
 
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # 9. Load the state, and keep only the rows it has not read.
 bank = po.ModelBank.load("signal.state")
@@ -497,7 +497,7 @@ from datetime import datetime
 
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # 1. The features' levels, and the regime of each row.
 sim = po.sim.regimes(2, states=[0.0, 0.7], transition=[[0.0, 1.0], [1.0, 0.0]],
@@ -619,7 +619,7 @@ its own as large, so the moves of any two correlate at 0.5.
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # 1. Three prices that share one move, each traded at times of its own, about once a clock unit.
 rng = np.random.default_rng(1)

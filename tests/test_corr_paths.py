@@ -12,8 +12,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from rheon import corr
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -106,7 +106,7 @@ def test_the_epps_inversion_reads_a_closed_row_as_the_gram_it_closed():
     rng = np.random.default_rng(3)
     a = rng.standard_normal(600)
     rows = pl.DataFrame({"x0": a, "x1": np.concatenate([[0.0], a[:-1]]) + 0.1 * a})
-    spec = po.spec.ew_cov(
+    spec = rp.spec.ew_cov(
         "c",
         features=["x0", "x1"],
         lam=1.0,
@@ -117,7 +117,7 @@ def test_the_epps_inversion_reads_a_closed_row_as_the_gram_it_closed():
     )
     first = rows.with_columns(g=pl.lit("a"))
     closing = pl.DataFrame({"g": ["b"], "x0": [0.0], "x1": [0.0]})
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(first)
     open_gram = bank.gram("c")[0]
     bank.fit_predict(closing)
@@ -126,4 +126,4 @@ def test_the_epps_inversion_reads_a_closed_row_as_the_gram_it_closed():
     want = corr.epps_invert(open_gram, L=3)
     got = corr.epps_invert(row, L=3)
     np.testing.assert_array_equal(got, want)
-    assert got[0, 1] != po.gram.correlation(open_gram)[0, 1], "the lags moved it"
+    assert got[0, 1] != rp.gram.correlation(open_gram)[0, 1], "the lags moved it"

@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
 
 def make(rows: int, k: int, m: int, seed: int = 0) -> pl.DataFrame:
@@ -39,7 +39,7 @@ def make(rows: int, k: int, m: int, seed: int = 0) -> pl.DataFrame:
 def rate(df: pl.DataFrame, spec: dict, repeats: int = 2) -> float:
     best = float("inf")
     for _ in range(repeats):
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         t0 = time.perf_counter()
         bank.fit_predict(df)
         best = min(best, time.perf_counter() - t0)
@@ -56,18 +56,18 @@ def main() -> None:
         feats = [f"x{j}" for j in range(k)]
         common = dict(targets=["y0"], features=feats, clock="t", gap_cap=100.0, min_weight=float(k))
         configs = {
-            "ewridge, default schedule (solve ~every 20 rows)": po.spec.ewridge(
+            "ewridge, default schedule (solve ~every 20 rows)": rp.spec.ewridge(
                 "m", half_life=1000.0, **common
             ),
-            "ewridge, solve every 256 rows": po.spec.ewridge(
+            "ewridge, solve every 256 rows": rp.spec.ewridge(
                 "m", half_life=1000.0, solve_every=256.0, **common
             ),
-            "ewridge, solve every 256 rows, gram_block_rows 256": po.spec.ewridge(
+            "ewridge, solve every 256 rows, gram_block_rows 256": rp.spec.ewridge(
                 "m", half_life=1000.0, solve_every=256.0, gram_block_rows=256, **common
             ),
         }
         if k == 200:
-            configs["ewridge, solve every row"] = po.spec.ewridge(
+            configs["ewridge, solve every row"] = rp.spec.ewridge(
                 "m", half_life=1000.0, solve_every=0.0, **common
             )
         for name, spec in configs.items():
@@ -75,7 +75,7 @@ def main() -> None:
         if k in (200, 500):
             # A shorter stream: lasso at these widths is a few hundred rows a second.
             lrows = 4 * k
-            spec = po.spec.lasso("m", half_life=1000.0, penalties=[0.1, 0.01, 0.0], **common)
+            spec = rp.spec.lasso("m", half_life=1000.0, penalties=[0.1, 0.01, 0.0], **common)
             print(
                 f"k={k:5d} | lasso, 3 penalties ({lrows} rows) | "
                 f"{rate(df.head(lrows), spec):,.0f} rows/s",

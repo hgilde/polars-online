@@ -14,7 +14,7 @@ import lightgbm as lgb  # noqa: E402
 import numpy as np  # noqa: E402
 from leafrefit import bank, leaf_values, rmse  # noqa: E402
 
-import rheon as po  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 
 df = C.load_flights()
 t = df["t"].to_numpy()
@@ -80,7 +80,7 @@ print("trees", M, "frozen test RMSE", rmse(base[te], y[te]))
 r = {"trees": M, "frozen trees": rmse(base[te], y[te])}
 hl, gap = 7 * 1440.0, 600.0
 ew = lambda ridge: (  # noqa: E731
-    lambda cols: po.spec.ewridge(
+    lambda cols: rp.spec.ewridge(
         "o", targets=["y"], features=cols, clock="c", gap_cap=gap, half_life=hl, ridge=ridge
     )
 )

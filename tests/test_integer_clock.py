@@ -20,8 +20,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from conftest import run_online
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -69,11 +69,11 @@ def ridge(**kw):
         emit_clocks=True,
     )
     d.update(kw)
-    return po.spec.ewridge("m", **d)
+    return rp.spec.ewridge("m", **d)
 
 
 def run(spec, df: pl.DataFrame, chunks: int = 1) -> pl.DataFrame:
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     size = max(1, math.ceil(df.height / chunks))
     return pl.concat([bank.fit_predict(p) for p in df.iter_slices(size)]).unnest("m")
 
@@ -138,7 +138,7 @@ class TestTheSteps:
         ``closed="right"``, the default, and kept under ``"both"`` (task
         196)."""
         df = frame(steps=(1, 7, 100, 50))
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "m",
             features=["x"],
             clock="t",
@@ -184,7 +184,7 @@ class TestTheSteps:
             {"t": [T0 + 5, T0 + 6, T0 + 5], "x": [1.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0]}
         )
         with pytest.raises(ValueError, match="steps back by 1 at row 2"):
-            po.ModelBank([ridge()]).fit_predict(df)
+            rp.ModelBank([ridge()]).fit_predict(df)
 
     def test_a_step_back_of_exactly_restart_after_step_back_is_a_late_row(self):
         """``restart_after_step_back = 100`` is inclusive: a step back of 100
@@ -196,8 +196,8 @@ class TestTheSteps:
             ValueError,
             match=re.escape("steps back by 100 at row 1 (counting from 0), no more than"),
         ):
-            po.ModelBank([spec]).fit_predict(late)
-        bank = po.ModelBank([spec])
+            rp.ModelBank([spec]).fit_predict(late)
+        bank = rp.ModelBank([spec])
         bank.fit_predict(late.with_columns(t=pl.Series([T0 + 228, T0 + 127])))
         assert bank.summary()["resets"].to_list() == [1]
 
@@ -213,9 +213,9 @@ class TestTheSteps:
             Exception,
             match=r'clock column "t" has the value 9223372036854775808 at row 1 \(counting from 0',
         ):
-            po.ModelBank([ridge()]).fit_predict(df)
+            rp.ModelBank([ridge()]).fit_predict(df)
         ok = df.with_columns(t=pl.Series([5, 2**63 - 1], dtype=pl.UInt64))
-        out = po.ModelBank([ridge()]).fit_predict(ok).unnest("m")
+        out = rp.ModelBank([ridge()]).fit_predict(ok).unnest("m")
         assert out["scored_clock"].dtype == pl.UInt64
         assert out["scored_clock"].to_list() == [5, 2**63 - 1]
 
@@ -232,7 +232,7 @@ def test_the_frames_give_an_integer_clock_in_its_own_dtype(dtype, base):
     df = frame(n=40, dtype=dtype, base=base).with_columns(g=pl.lit("a"))
     off = offsets(40)
     lo, hi = base + off[0], base + off[-1]
-    bank = po.ModelBank([ridge(group="g")])
+    bank = rp.ModelBank([ridge(group="g")])
     bank.fit_predict(df)
     s = bank.summary()
     for col, want in (("clock_min", lo), ("clock_max", hi), ("clock_last", hi)):
@@ -242,7 +242,7 @@ def test_the_frames_give_an_integer_clock_in_its_own_dtype(dtype, base):
     assert g["clock_last"].dtype == dtype
     assert g["clock_last"].to_list() == [hi]
 
-    cov = po.spec.ew_cov(
+    cov = rp.spec.ew_cov(
         "c",
         features=["x", "y"],
         clock="t",
@@ -251,7 +251,7 @@ def test_the_frames_give_an_integer_clock_in_its_own_dtype(dtype, base):
         group="g",
         group_close="monotone",
     )
-    closing = po.ModelBank([cov])
+    closing = rp.ModelBank([cov])
     two = pl.concat([df, df.with_columns(g=pl.lit("b"), t=pl.col("t") + 1000)])
     closing.fit_predict(two)
     closed = closing.closed_groups()
@@ -261,7 +261,7 @@ def test_the_frames_give_an_integer_clock_in_its_own_dtype(dtype, base):
 
 def test_a_float_clock_stays_a_float():
     df = shifted(frame(n=20))
-    bank = po.ModelBank([ridge()])
+    bank = rp.ModelBank([ridge()])
     out = bank.fit_predict(df).unnest("m")
     assert out["scored_clock"].dtype == pl.Float64
     assert bank.summary()["clock_max"].dtype == pl.Float64
@@ -273,7 +273,7 @@ def test_another_number_dtype_than_the_banks_is_refused():
     clock and a float one are two ways of reading every step, so a chunk of
     the other is refused by name, as a key column of another form is."""
     df = frame(n=20)
-    bank = po.ModelBank([ridge()])
+    bank = rp.ModelBank([ridge()])
     bank.fit_predict(df[:10])
     with pytest.raises(Exception, match=r'clock column "t" was Int64 and is now Float64'):
         bank.fit_predict(df[10:].with_columns(pl.col("t").cast(pl.Float64)))
@@ -304,11 +304,11 @@ class TestChunksAndStates:
     def test_a_state_saved_between_two_events_resumes_on_the_integers(self, tmp_path):
         df = frame(n=120)
         whole = run(self.spec(), df)
-        bank = po.ModelBank([self.spec()])
+        bank = rp.ModelBank([self.spec()])
         first = bank.fit_predict(df[:61]).unnest("m")
         path = tmp_path / "int.state"
         bank.save(path)
-        second = po.ModelBank.load(path).fit_predict(df[61:]).unnest("m")
+        second = rp.ModelBank.load(path).fit_predict(df[61:]).unnest("m")
         floats = [c for c in whole.columns if c != "coef"]
         assert pl.concat([first, second]).select(floats).equals(whole.select(floats))
         assert second["learned_clock"].dtype == pl.Int64
@@ -317,7 +317,7 @@ class TestChunksAndStates:
         """A row one nanosecond after the last learned clock is unlearned;
         as doubles the two were one value, and the row was dropped."""
         df = pl.DataFrame({"t": [T0 + 1, T0 + 5], "x": [1.0, 2.0], "y": [1.0, 2.0]})
-        bank = po.ModelBank([ridge()])
+        bank = rp.ModelBank([ridge()])
         bank.fit_predict(df)
         rerun = pl.DataFrame({"t": [T0 + 5, T0 + 6], "x": [2.0, 3.0], "y": [2.0, 3.0]})
         assert bank.skip_learned(rerun)["t"].to_list() == [T0 + 6]
@@ -337,8 +337,8 @@ def test_a_window_holds_what_polars_rolling_holds_on_the_integers(closed):
     with steps of 0, 1, 7 and 100 and a window of 100, rows exactly one
     window apart land on Polars' side of every edge."""
     df = frame(n=150, steps=(0, 1, 7, 100))
-    out = po.stream.with_windows(
-        df, s=po.ewm_sum("x", half_life=math.inf, window_size=100.0, closed=closed), **CLOCK
+    out = rp.stream.with_windows(
+        df, s=rp.ewm_sum("x", half_life=math.inf, window_size=100.0, closed=closed), **CLOCK
     )
     ref = df.select(pl.col("x").rolling_sum_by("t", window_size="100i", closed=closed))["x"]
     # An empty window sums to 0 from Polars 1.41.1 and to null before it
@@ -356,11 +356,11 @@ def test_a_window_holds_what_polars_rolling_holds_on_the_integers(closed):
 def test_a_gap_of_exactly_gap_cap_does_not_cut_a_window():
     """``gap_cap = 100``: a step of exactly 100 keeps the window open, one of
     101 cuts it. As doubles the first was a step of 256."""
-    sums = po.ewm_sum("x", half_life=math.inf, window_size=1000.0)
+    sums = rp.ewm_sum("x", half_life=math.inf, window_size=1000.0)
 
     def run_on(t):
         df = pl.DataFrame({"t": t, "x": [1.0, 10.0, 100.0]})
-        return po.stream.with_windows(df, s=sums, clock="t", gap_cap=100.0)["s"].to_list()
+        return rp.stream.with_windows(df, s=sums, clock="t", gap_cap=100.0)["s"].to_list()
 
     assert run_on([T0 + 27, T0 + 127, T0 + 227]) == [1.0, 11.0, 111.0]
     assert run_on([T0 + 27, T0 + 127, T0 + 228]) == [1.0, 11.0, 100.0]
@@ -372,20 +372,20 @@ def test_an_increment_of_an_integer_input_is_the_integers_step():
     values gave 0."""
     c = [T0, T0 + 1, T0 + 8, T0 + 108, T0 + 108, T0 + 5]
     df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0], "c": c})
-    out = po.stream.with_windows(df, d=po.increment("c"), **CLOCK)
+    out = rp.stream.with_windows(df, d=rp.increment("c"), **CLOCK)
     assert out["d"].to_list() == [None, 1.0, 7.0, 100.0, 0.0, -103.0]
     unsigned = df.with_columns(pl.col("c").cast(pl.UInt64))
-    out = po.stream.with_windows(unsigned, d=po.increment("c"), **CLOCK)
+    out = rp.stream.with_windows(unsigned, d=rp.increment("c"), **CLOCK)
     assert out["d"].to_list() == [None, 1.0, 7.0, 100.0, 0.0, -103.0]
 
 
 def test_a_window_state_resumes_on_the_integers(tmp_path):
     df = frame(n=150, steps=(0, 1, 7, 100))
-    s = po.ewm_sum("x", half_life=math.inf, window_size=100.0)
-    whole = po.stream.with_windows(df, s=s, **CLOCK)["s"]
+    s = rp.ewm_sum("x", half_life=math.inf, window_size=100.0)
+    whole = rp.stream.with_windows(df, s=s, **CLOCK)["s"]
     state = tmp_path / "w.state"
-    a = po.stream.with_windows(df[:70], s=s, save_state=state, **CLOCK)
-    b = po.stream.with_windows(df[70:], s=s, load_state=state, **CLOCK)
+    a = rp.stream.with_windows(df[:70], s=s, save_state=state, **CLOCK)
+    b = rp.stream.with_windows(df[70:], s=s, load_state=state, **CLOCK)
     assert pl.concat([a, b])["s"].equals(whole)
 
 
@@ -399,9 +399,9 @@ def test_refresh_time_orders_an_integer_clock_exactly():
         Exception,
         match=r"at row 2 \(counting from 0\), below the previous row's .* Sort the input by",
     ):
-        po.stream.refresh_time(df, series="series", names=["a", "b"], clock="t", value="v")
+        rp.stream.refresh_time(df, series="series", names=["a", "b"], clock="t", value="v")
     fine = df.with_columns(t=pl.Series([T0 + 5, T0 + 6, T0 + 7]))
-    grid = po.stream.refresh_time(fine, series="series", names=["a", "b"], clock="t", value="v")
+    grid = rp.stream.refresh_time(fine, series="series", names=["a", "b"], clock="t", value="v")
     assert grid["time_refresh"].dtype == pl.Int64
     assert grid["time_refresh"].to_list() == [T0 + 6]
 
@@ -416,7 +416,7 @@ def test_the_command_line_reads_an_integer_clock_as_the_bank_does(rheon_cli, tmp
         rheon_cli, tmp_path, [spec], input=tmp_path / "in.parquet", output=tmp_path / "out.parquet"
     )
     got = pl.read_parquet(tmp_path / "out.parquet").unnest("m")
-    want = po.ModelBank([spec]).fit_predict(df).unnest("m")
+    want = rp.ModelBank([spec]).fit_predict(df).unnest("m")
     assert got["learned_clock"].dtype == pl.Int64
     assert got.select(want.columns).equals(want)
     back = pl.DataFrame({"t": [T0 + 5, T0 + 6, T0 + 5], "x": [1.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0]})
@@ -436,7 +436,7 @@ def test_embargo_moves_an_integer_clock_in_integers():
     """``po.stream.embargo`` adds a whole delay in the clock's own dtype,
     which Polars computes on the integers: exact before this task too."""
     df = frame(n=30)
-    out = po.stream.embargo(df, clock="t", delay=7)
+    out = rp.stream.embargo(df, clock="t", delay=7)
     learn = out.filter(pl.col("_online_role") == "learn")
     assert learn["t"].dtype == pl.Int64
     assert sorted(learn["t"].to_list()) == sorted(T0 + o + 7 for o in offsets(30))
@@ -471,17 +471,17 @@ def test_an_int128_clock_is_refused_by_name(surface):
     ``Int64`` gets."""
     df = _wide(frame(n=5, steps=(1, 7)))
     if surface == "bank":
-        call = lambda: po.ModelBank([ridge()]).fit_predict(df)  # noqa: E731
+        call = lambda: rp.ModelBank([ridge()]).fit_predict(df)  # noqa: E731
     elif surface == "with_windows":
-        s = po.ewm_sum("x", half_life=math.inf, window_size=5.0)
-        call = lambda: po.stream.with_windows(df, s=s, **CLOCK)  # noqa: E731
+        s = rp.ewm_sum("x", half_life=math.inf, window_size=5.0)
+        call = lambda: rp.stream.with_windows(df, s=s, **CLOCK)  # noqa: E731
     elif surface == "refresh_time":
         ticks = df.with_columns(series=pl.Series(["a", "b", "a", "b", "a"]))
-        call = lambda: po.stream.refresh_time(  # noqa: E731
+        call = lambda: rp.stream.refresh_time(  # noqa: E731
             ticks, series="series", names=["a", "b"], clock="t", value="x"
         )
     else:
-        call = lambda: po.stream.embargo(df, clock="t", delay=7)  # noqa: E731
+        call = lambda: rp.stream.embargo(df, clock="t", delay=7)  # noqa: E731
     with pytest.raises((ValueError, TypeError, pl.exceptions.ComputeError), match=WIDE):
         call()
 
@@ -511,12 +511,12 @@ def test_an_increment_of_an_int128_input_is_the_integers_step():
     holds: it is taken whole and rounded once, to ``2**128``."""
     c = [BIG + k for k in (0, 1, 8, 108, 108, 5)]
     df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0], "c": pl.Series(c, dtype=pl.Int128)})
-    out = po.stream.with_windows(df, d=po.increment("c"), **CLOCK)
+    out = rp.stream.with_windows(df, d=rp.increment("c"), **CLOCK)
     assert out["d"].to_list() == [None, 1.0, 7.0, 100.0, 0.0, -103.0]
     ends = pl.DataFrame(
         {"t": [0.0, 1.0, 2.0], "c": pl.Series([-(2**127), 2**127 - 1, -(2**127)], dtype=pl.Int128)}
     )
-    out = po.stream.with_windows(ends, d=po.increment("c"), **CLOCK)
+    out = rp.stream.with_windows(ends, d=rp.increment("c"), **CLOCK)
     assert out["d"].to_list() == [None, 2.0**128, -(2.0**128)]
 
 
@@ -526,10 +526,10 @@ def test_an_int128_increment_resumes_on_the_integers(tmp_path):
     exact too."""
     c = [BIG + k for k in (0, 1, 8, 108, 108, 5)]
     df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0], "c": pl.Series(c, dtype=pl.Int128)})
-    d = po.increment("c")
+    d = rp.increment("c")
     state = tmp_path / "w.state"
-    a = po.stream.with_windows(df[:3], d=d, save_state=state, **CLOCK)
-    b = po.stream.with_windows(df[3:], d=d, load_state=state, **CLOCK)
+    a = rp.stream.with_windows(df[:3], d=d, save_state=state, **CLOCK)
+    b = rp.stream.with_windows(df[3:], d=d, load_state=state, **CLOCK)
     assert pl.concat([a, b])["d"].to_list() == [None, 1.0, 7.0, 100.0, 0.0, -103.0]
 
 
@@ -566,20 +566,20 @@ SURFACES = [
 def _call(surface: str, df: pl.DataFrame):
     """``surface`` run on ``df``, its clock ``t``, as a callable."""
     if surface == "with_windows":
-        s = po.ewm_sum("x", half_life=math.inf, window_size=5.0)
-        return lambda: po.stream.with_windows(df, s=s, **CLOCK)
+        s = rp.ewm_sum("x", half_life=math.inf, window_size=5.0)
+        return lambda: rp.stream.with_windows(df, s=s, **CLOCK)
     if surface == "refresh_time":
         ticks = df.with_columns(series=pl.Series(["a", "b"] * (df.height // 2) + ["a"]))
-        return lambda: po.stream.refresh_time(
+        return lambda: rp.stream.refresh_time(
             ticks, series="series", names=["a", "b"], clock="t", value="x"
         )
     if surface == "lf.online.fit_predict":
         return lambda: df.lazy().online.fit_predict([ridge()]).collect()
     if surface == "lf.online.predict":
-        return lambda: df.lazy().online.predict(po.ModelBank([ridge()])).collect()
+        return lambda: df.lazy().online.predict(rp.ModelBank([ridge()])).collect()
     if surface == "fit_predict_batches":
-        return lambda: list(po.ModelBank([ridge()]).fit_predict_batches(df))
-    bank = po.ModelBank([ridge()])
+        return lambda: list(rp.ModelBank([ridge()]).fit_predict_batches(df))
+    bank = rp.ModelBank([ridge()])
     return lambda: getattr(bank, surface)(df)
 
 

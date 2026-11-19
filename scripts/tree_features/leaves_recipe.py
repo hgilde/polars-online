@@ -13,7 +13,7 @@ import numpy as np  # noqa: E402
 import polars as pl  # noqa: E402
 from leafrefit import synth, train_trees  # noqa: E402
 
-import rheon as po  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 
 clock, X, y = synth(0)
 S = clock.max() + 1
@@ -38,7 +38,7 @@ schema = {
     **dict.fromkeys(names, pl.Float64),
     **dict.fromkeys(onehot, pl.Float64),
 }
-spec = po.spec.sgd(
+spec = rp.spec.sgd(
     "o",
     targets=["y"],
     features=onehot,
@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory() as d:
     )
     t_lazy = time.perf_counter() - t0
     eager = (
-        po.ModelBank([spec])
+        rp.ModelBank([spec])
         .fit_predict(add_leaves(pl.read_parquet(path)))["o"]
         .struct.field("pred_y")
     )

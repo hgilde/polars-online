@@ -36,9 +36,9 @@ from typing import Any
 
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
-SPEC = po.spec.ewridge(
+SPEC = rp.spec.ewridge(
     "m",
     targets=["y"],
     features=["x0"],
@@ -71,7 +71,7 @@ def _ticks(con: Any) -> None:
 def _in_memory(con: Any, where: str) -> pl.DataFrame:
     """The reference: the same rows, fitted from a frame held whole."""
     rows = pl.DataFrame(con.sql(QUERY.format(where=where)))
-    return po.ModelBank([SPEC]).fit_predict(rows)
+    return rp.ModelBank([SPEC]).fit_predict(rows)
 
 
 def _same(got: pl.DataFrame, want: pl.DataFrame) -> bool:
@@ -119,7 +119,7 @@ def the_trap(con: Any) -> None:
         warnings.simplefilter("always")
         n_first = first.collect().height
         n_second = second.collect().height
-    warned = any(issubclass(w.category, po.ConsumedSourceWarning) for w in caught)
+    warned = any(issubclass(w.category, rp.ConsumedSourceWarning) for w in caught)
     _check(
         n_first == 0 and n_second == N and warned,
         "two plans on one connection no longer empty the first; "

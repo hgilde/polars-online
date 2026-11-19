@@ -78,7 +78,7 @@ from scipy.special import logsumexp
 from scipy.stats import t as student_t
 
 import ledger
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -119,7 +119,7 @@ def stream(seed: int, n: int = 600) -> np.ndarray:
 
 
 def spec(**kw: Any) -> dict[str, Any]:
-    return po.spec.bocpd(
+    return rp.spec.bocpd(
         "b",
         features=["x"],
         hazard=HAZARD,
@@ -136,7 +136,7 @@ def model_run(x: np.ndarray, **kw: Any) -> tuple[pl.DataFrame, list[dict[int, fl
     """The model's rows, and after each its log joint over the kept run
     lengths, read from the state the bank writes as JSON (the model emits
     the posterior's mode and mean only)."""
-    bank = po.ModelBank([spec(**kw)])
+    bank = rp.ModelBank([spec(**kw)])
     outs, joints = [], []
     for v in x:
         outs.append(bank.fit_predict(pl.DataFrame({"x": [v]})).unnest("b"))
@@ -150,7 +150,7 @@ def model_run(x: np.ndarray, **kw: Any) -> tuple[pl.DataFrame, list[dict[int, fl
 
 ledger.guard(
     "bocpd_pruning",
-    lambda: [po.ModelBank([spec()]).fit_predict(pl.DataFrame({"x": stream(s)})) for s in range(10)],
+    lambda: [rp.ModelBank([spec()]).fit_predict(pl.DataFrame({"x": stream(s)})) for s in range(10)],
     oracles=["bayesian-changepoint-detection"],
     bits=52,
 )
@@ -341,7 +341,7 @@ def robust_stream(seed: int, n: int = 200) -> np.ndarray:
 def robust_model(x: np.ndarray, beta: float | None) -> pl.DataFrame:
     """The robust emission at ``beta``, or the plain one at ``None``."""
     features = [f"x{i}" for i in range(x.shape[1])]
-    spec = po.spec.bocpd(
+    spec = rp.spec.bocpd(
         "b",
         features=features,
         hazard=ROBUST_HAZARD,
@@ -356,7 +356,7 @@ def robust_model(x: np.ndarray, beta: float | None) -> pl.DataFrame:
         min_weight=0.0,
     )
     frame = pl.DataFrame({f: x[:, i] for i, f in enumerate(features)})
-    return po.ModelBank([spec]).fit_predict(frame).unnest("b")
+    return rp.ModelBank([spec]).fit_predict(frame).unnest("b")
 
 
 def robust_definition(x: np.ndarray, beta: float) -> dict[str, np.ndarray]:

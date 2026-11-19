@@ -12,7 +12,7 @@ import polars as pl
 import pytest
 from polars.io.plugins import register_io_source
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -31,7 +31,7 @@ def test_a_pushed_filter_is_applied_by_the_source():
     not apply it again, so the source applies it: the filtered plan gives
     the rows of the whole output that pass it."""
     lf = _frame().lazy()
-    windows = po.stream.with_windows(lf, m=po.ewm_mean("x", half_life=4.0))
+    windows = rp.stream.with_windows(lf, m=rp.ewm_mean("x", half_life=4.0))
     whole = windows.collect()
     got = windows.filter(pl.col("x") > 0).collect()
     assert got.equals(whole.filter(pl.col("x") > 0))
@@ -42,8 +42,8 @@ def test_a_head_longer_than_the_stream_gives_the_whole_stream():
     """A slice Polars pushes into the source counts output rows; one longer
     than the stream ends with the rows the input's end resolves."""
     lf = _frame().lazy()
-    ahead = po.ewm_mean("x", half_life=4.0, window_size=5.0, reverse=True)
-    windows = po.stream.with_windows(lf, clock="t", gap_cap=10.0, m=ahead)
+    ahead = rp.ewm_mean("x", half_life=4.0, window_size=5.0, reverse=True)
+    windows = rp.stream.with_windows(lf, clock="t", gap_cap=10.0, m=ahead)
     whole = windows.collect()
     assert windows.head(1_000).collect().equals(whole)
     assert windows.head(10).collect().equals(whole.head(10))
@@ -71,10 +71,10 @@ def _single_use(frame: pl.DataFrame) -> pl.LazyFrame:
 
 
 def test_with_windows_over_a_spent_single_use_source_warns():
-    windows = po.stream.with_windows(_single_use(_frame()), m=po.ewm_mean("x", half_life=4.0))
+    windows = rp.stream.with_windows(_single_use(_frame()), m=rp.ewm_mean("x", half_life=4.0))
     assert windows.collect().height == 40
     with pytest.warns(
-        po.ConsumedSourceWarning,
+        rp.ConsumedSourceWarning,
         match="with_windows: the query gave no rows, and it reads a source written in Python",
     ):
         assert windows.collect().height == 0
@@ -88,28 +88,28 @@ def test_with_windows_refuses_what_is_not_an_expression_or_not_a_number():
         r"\(a column computation, such as pl\.col\(\"x\"\) \+ 1\) over the window operators, "
         r"but one is of type int",
     ):
-        po.stream.with_windows(lf, 3)  # type: ignore[arg-type]
+        rp.stream.with_windows(lf, 3)  # type: ignore[arg-type]
     with pytest.raises(
         TypeError,
         match="with_windows: the keyword m names an output column, so it must be a pl.Expr over "
         "the window operators, but it is of type str \\('x'\\)",
     ):
-        po.stream.with_windows(lf, m="x")  # type: ignore[arg-type]
+        rp.stream.with_windows(lf, m="x")  # type: ignore[arg-type]
     with pytest.raises(
         ValueError, match="with_windows: gap_cap is NaN, which is no number of clock units"
     ):
-        po.stream.with_windows(
-            lf, clock="t", gap_cap=float("nan"), m=po.ewm_mean("x", half_life=4.0)
+        rp.stream.with_windows(
+            lf, clock="t", gap_cap=float("nan"), m=rp.ewm_mean("x", half_life=4.0)
         )
 
 
 def test_a_chunk_size_below_one_is_refused():
     lf = _frame().lazy()
     with pytest.raises(ValueError, match="chunk_size must be at least 1, but it is 0"):
-        po.stream.with_windows(lf, chunk_size=0, m=po.ewm_mean("x", half_life=4.0))
+        rp.stream.with_windows(lf, chunk_size=0, m=rp.ewm_mean("x", half_life=4.0))
     ticks = pl.DataFrame({"s": ["a", "b"], "t": [1.0, 2.0], "v": [1.0, 2.0]})
     with pytest.raises(ValueError, match="chunk_size must be at least 1, but it is 0"):
-        po.stream.refresh_time(
+        rp.stream.refresh_time(
             ticks.lazy(), series="s", names=["a", "b"], clock="t", value="v", chunk_size=0
         )
 
@@ -123,4 +123,4 @@ def test_an_embargo_of_no_length_is_refused_on_a_temporal_clock():
     )
     for delay in (timedelta(0), pl.duration(minutes=-1)):
         with pytest.raises(ValueError, match="embargo: delay must be above 0, but it is"):
-            po.stream.embargo(df, clock="t", delay=delay)
+            rp.stream.embargo(df, clock="t", delay=delay)

@@ -23,7 +23,7 @@ import polars as pl
 import statsmodels.api as sm
 from statsmodels.robust.norms import HuberT
 
-import rheon as po
+from rheon import polars as rp
 
 warnings.simplefilter("ignore")
 DELTA = 1.345
@@ -69,8 +69,8 @@ def slope(model, df, half_life, rows, scale):
     if scale != "mad":
         c["huber_scale"] = scale
     huber = model == "huber"
-    spec = po.spec.huber("m", **c) if huber else po.spec.sgd("m", loss="huber", **c)
-    bank = po.ModelBank([spec])
+    spec = rp.spec.huber("m", **c) if huber else rp.spec.sgd("m", loss="huber", **c)
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     return bank.coef("m")["coef"].to_list()[1]
 

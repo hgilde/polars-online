@@ -14,7 +14,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -37,7 +37,7 @@ def spec(**kw):
         emit_clocks=True,
     )
     d.update(kw)
-    return po.spec.ewridge("m", **d)
+    return rp.spec.ewridge("m", **d)
 
 
 def expected(t, accept, learned_at, delay=0.0):
@@ -70,7 +70,7 @@ class TestWithoutADelay:
         df = df.with_columns(
             x=pl.when(pl.int_range(pl.len()).is_in([5, 6, 50])).then(None).otherwise(pl.col("x"))
         )
-        out = po.ModelBank([spec(weight="w")]).fit_predict(df)
+        out = rp.ModelBank([spec(weight="w")]).fit_predict(df)
         t = df["t"].to_numpy()
         accept = df["x"].is_not_null().to_numpy()
         learned_at = accept & (w > 0.0)
@@ -83,13 +83,13 @@ class TestWithoutADelay:
 
     def test_the_fields_are_last_and_typed_clock(self):
         s = spec()
-        names = po.spec.output_fields(s)
+        names = rp.spec.output_fields(s)
         assert names[-2:] == ["scored_clock", "learned_clock"]
-        idx = po.spec.output_index(s)
+        idx = rp.spec.output_index(s)
         assert idx.filter(pl.col("field").is_in(["scored_clock", "learned_clock"]))[
             "dtype"
         ].to_list() == ["clock", "clock"]
-        assert "scored_clock" not in po.spec.output_fields(spec(emit_clocks=False))
+        assert "scored_clock" not in rp.spec.output_fields(spec(emit_clocks=False))
 
 
 class TestUnderADelay:
@@ -100,7 +100,7 @@ class TestUnderADelay:
         t = df["t"].to_numpy().copy()
         t[60:] += 3.0  # a capped gap inside the delay holds the rows (task 153)
         df = df.with_columns(t=pl.Series(t))
-        out = po.ModelBank([spec(embargo=self.DELAY)]).fit_predict(df)
+        out = rp.ModelBank([spec(embargo=self.DELAY)]).fit_predict(df)
         accept = np.ones(df.height, dtype=bool)
         s_want, l_want = expected(t, accept, accept, self.DELAY)
         s_got, l_got = fields(out)
@@ -110,7 +110,7 @@ class TestUnderADelay:
     def test_the_embargo_is_visible_on_every_row(self):
         df = frame(n=150, seed=2)
         t = df["t"].to_numpy()
-        out = po.ModelBank([spec(embargo=self.DELAY)]).fit_predict(df)
+        out = rp.ModelBank([spec(embargo=self.DELAY)]).fit_predict(df)
         s_got, l_got = fields(out)
         for i, (s, lrn) in enumerate(zip(s_got, l_got, strict=True)):
             if lrn is None:
@@ -137,7 +137,7 @@ class TestTypes:
             clock = clock.dt.replace_time_zone(tz)
         x = rng.standard_normal(n)
         df = pl.DataFrame({"t": clock, "x": x, "y": 2 * x + rng.standard_normal(n)})
-        out = po.ModelBank([spec(gap_cap="10s", half_life="20s")]).fit_predict(df)
+        out = rp.ModelBank([spec(gap_cap="10s", half_life="20s")]).fit_predict(df)
         st = out["m"].struct
         assert st.field("scored_clock").dtype == df["t"].dtype
         assert st.field("learned_clock").dtype == df["t"].dtype
@@ -151,7 +151,7 @@ class TestTypes:
         days = [start + timedelta(days=int(i)) for i in range(n)]
         x = rng.standard_normal(n)
         df = pl.DataFrame({"t": days, "x": x, "y": x + rng.standard_normal(n)})
-        out = po.ModelBank([spec(gap_cap="5d", half_life="20d")]).fit_predict(df)
+        out = rp.ModelBank([spec(gap_cap="5d", half_life="20d")]).fit_predict(df)
         st = out["m"].struct
         assert st.field("scored_clock").dtype == pl.Date
         assert st.field("scored_clock").to_list() == days
@@ -165,7 +165,7 @@ class TestTypes:
         df = pl.DataFrame(
             {"t": pl.Series(ms).cast(pl.Duration("ms")), "x": x, "y": x + rng.standard_normal(n)}
         )
-        out = po.ModelBank([spec(gap_cap="10s", half_life="20s")]).fit_predict(df)
+        out = rp.ModelBank([spec(gap_cap="10s", half_life="20s")]).fit_predict(df)
         st = out["m"].struct
         assert st.field("scored_clock").dtype == pl.Duration("ms")
         assert st.field("scored_clock").to_list() == df["t"].to_list()
@@ -177,12 +177,12 @@ class TestTypes:
         rng = np.random.default_rng(6)
         x = rng.standard_normal(n)
         df = pl.DataFrame({"t": np.arange(n), "x": x, "y": x + rng.standard_normal(n)})
-        out = po.ModelBank([spec()]).fit_predict(df)
+        out = rp.ModelBank([spec()]).fit_predict(df)
         st = out["m"].struct
         assert st.field("scored_clock").dtype == pl.Int64
         assert st.field("scored_clock").to_list() == list(range(n))
         df = df.with_columns(pl.col("t").cast(pl.UInt16))
-        out = po.ModelBank([spec()]).fit_predict(df)
+        out = rp.ModelBank([spec()]).fit_predict(df)
         assert out["m"].struct.field("scored_clock").dtype == pl.UInt16
 
     def test_no_clock_is_the_rows_index_in_its_group(self):
@@ -194,7 +194,7 @@ class TestTypes:
         df = pl.DataFrame(
             {"x": x, "y": np.nan_to_num(x) + rng.standard_normal(n), "g": g}
         ).with_columns(x=pl.col("x").fill_nan(None))
-        out = po.ModelBank([spec(clock=None, gap_cap=None, group="g")]).fit_predict(df)
+        out = rp.ModelBank([spec(clock=None, gap_cap=None, group="g")]).fit_predict(df)
         st = out["m"].struct
         assert st.field("scored_clock").dtype == pl.Int64
         s_got, l_got = fields(out)
@@ -217,7 +217,7 @@ class TestEvents:
         t[30:] -= t[30] - 1.0  # the clock jumps back at row 30
         df = df.with_columns(t=pl.Series(t))
         s = spec(restart_after_step_back=0.0)
-        out = po.ModelBank([s]).fit_predict(df)
+        out = rp.ModelBank([s]).fit_predict(df)
         _, l_got = fields(out)
         assert l_got[30] is None
         assert l_got[31] == t[30]
@@ -226,7 +226,7 @@ class TestEvents:
         df = frame(n=60, seed=9).with_columns(
             g=pl.Series(np.where(np.arange(60) % 2 == 0, "a", "b"))
         )
-        out = po.ModelBank([spec(group="g")]).fit_predict(df)
+        out = rp.ModelBank([spec(group="g")]).fit_predict(df)
         _, l_got = fields(out)
         assert l_got[0] is None and l_got[1] is None
         assert l_got[2] == df["t"][0] and l_got[3] == df["t"][1]
@@ -242,8 +242,8 @@ class TestPlumbing:
     def test_chunk_invariance(self, size):
         df = self._df()
         s = spec(weight="w", embargo=4.0)
-        one = po.ModelBank([s]).fit_predict(df)["m"].struct
-        bank = po.ModelBank([s])
+        one = rp.ModelBank([s]).fit_predict(df)["m"].struct
+        bank = rp.ModelBank([s])
         many = pl.concat([bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)])[
             "m"
         ].struct
@@ -253,18 +253,18 @@ class TestPlumbing:
     def test_save_and_load(self, tmp_path):
         df = self._df()
         s = spec(weight="w", embargo=4.0)
-        whole = po.ModelBank([s]).fit_predict(df)["m"].struct
-        a = po.ModelBank([s])
+        whole = rp.ModelBank([s]).fit_predict(df)["m"].struct
+        a = rp.ModelBank([s])
         a.fit_predict(df.head(100))
         a.save(tmp_path / "c.state")
-        b = po.ModelBank.load(tmp_path / "c.state")
+        b = rp.ModelBank.load(tmp_path / "c.state")
         rest = b.fit_predict(df.tail(100))["m"].struct
         for f in ("scored_clock", "learned_clock"):
             assert rest.field(f).to_list() == whole.field(f).to_list()[100:], f
 
     def test_predict_shows_the_fits_last_learned_row(self):
         df = self._df()
-        bank = po.ModelBank([spec(weight="w")])
+        bank = rp.ModelBank([spec(weight="w")])
         bank.fit_predict(df.head(150))
         t = df["t"].to_numpy()
         w = df["w"].to_numpy()
@@ -275,7 +275,7 @@ class TestPlumbing:
 
     def test_last_row_carries_the_clocks(self):
         df = self._df()
-        bank = po.ModelBank([spec(weight="w", embargo=4.0)])
+        bank = rp.ModelBank([spec(weight="w", embargo=4.0)])
         out = bank.fit_predict(df)["m"].struct
         last = bank.last_row()
         # The last row processed is the last row of the frame, scored where it sat.
@@ -290,8 +290,8 @@ def test_predict_without_a_clock_counts_each_row_in_its_group() -> None:
     the rows learned, as ``fit_predict`` would."""
     rng = np.random.default_rng(0)
     df = pl.DataFrame({"x": rng.standard_normal(6), "y": rng.standard_normal(6)})
-    spec = po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0, emit_clocks=True)
-    bank = po.ModelBank([spec])
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0, emit_clocks=True)
+    bank = rp.ModelBank([spec])
     fitted = bank.fit_predict(df)
     assert fitted["m"].struct.field("scored_clock").to_list() == [0, 1, 2, 3, 4, 5]
     scored = bank.predict(df)

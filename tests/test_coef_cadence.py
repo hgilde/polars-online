@@ -31,7 +31,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 from test_model_registry import MINIMAL
 
 TIER = "mixed"
@@ -131,7 +131,7 @@ def kind(name: str, h: float | str, **common) -> dict:
         "hmm": dict(features=two, n_components=2, precision_prior=0.1),
         "deco": dict(features=two),
     }[name]
-    return getattr(po.spec, name)("m", half_life=h, weight="w", **own, **common)
+    return getattr(rp.spec, name)("m", half_life=h, weight="w", **own, **common)
 
 
 def temporal(name: str = "ewridge", **kw) -> dict:
@@ -139,7 +139,7 @@ def temporal(name: str = "ewridge", **kw) -> dict:
 
 
 def run(spec: dict, df: pl.DataFrame) -> pl.DataFrame:
-    return po.ModelBank([spec]).fit_predict(df).unnest("m")
+    return rp.ModelBank([spec]).fit_predict(df).unnest("m")
 
 
 def observed(out: pl.DataFrame) -> list[int]:
@@ -318,7 +318,7 @@ class TestTheRule:
             g=pl.when(pl.int_range(pl.len()) % 3 == 0).then(pl.lit("a")).otherwise(pl.lit("b"))
         )
         spec = temporal(group="g")
-        parts = pl.concat(po.ModelBank([spec]).fit_predict_batches(df, chunk_size=50))
+        parts = pl.concat(rp.ModelBank([spec]).fit_predict_batches(df, chunk_size=50))
         got = observed(parts.unnest("m"))
         fitted = set(observed(run({**spec, "coef_every": 0}, df)))
         acc = accepted_rows(df, spec)
@@ -466,10 +466,10 @@ class TestChunkingAndResume:
         unset, it follows the chunks by design (PLAN §3)."""
         df = frame(irregular())
         spec = temporal(name, coef_every="15m", max_rows_between_coefs=12)
-        whole = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("coef")
+        whole = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("coef")
         assert whole.null_count() < df.height
         for rows in (1, 7, 37):
-            parts = pl.concat(po.ModelBank([spec]).fit_predict_batches(df, chunk_size=rows))
+            parts = pl.concat(rp.ModelBank([spec]).fit_predict_batches(df, chunk_size=rows))
             assert parts["m"].struct.field("coef").to_list() == whole.to_list(), rows
 
     @pytest.mark.parametrize("name", KINDS)
@@ -481,9 +481,9 @@ class TestChunkingAndResume:
         assert len(rows) > 8, rows
         for cut in (rows[3] + 2, rows[7] + 5):
             assert cut not in rows
-            first = po.ModelBank([spec])
+            first = rp.ModelBank([spec])
             first.fit_predict(df.head(cut))
-            resumed = po.ModelBank.load_bytes(first.save_bytes(), specs=[spec])
+            resumed = rp.ModelBank.load_bytes(first.save_bytes(), specs=[spec])
             tail = resumed.fit_predict(df.slice(cut)).unnest("m")
             assert tail["coef"].to_list() == whole["coef"][cut:].to_list(), cut
 
@@ -496,11 +496,11 @@ class TestChunkingAndResume:
             kind("ewridge", 1800.0, clock="t", gap_cap=600.0, coef_every=900.0),
             kind("ewridge", 30.0, max_rows_between_coefs=9),
         ):
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             bank.fit_predict(df.head(77))
             doc = json.loads(bank.write_json())
             assert "coef_cadence" in json.dumps(doc), spec
-        unset = po.ModelBank([temporal()])
+        unset = rp.ModelBank([temporal()])
         unset.fit_predict(df.head(77))
         assert "coef_cadence" not in unset.write_json(), "a default spec writes what it did"
 
@@ -555,7 +555,7 @@ def kind_params(names):
 
 
 def riding(spec: dict) -> set[str]:
-    idx = po.spec.output_index(spec)
+    idx = rp.spec.output_index(spec)
     return set(idx.filter(pl.col("kind").is_in(list(RIDES_THE_CADENCE)))["field"])
 
 
@@ -610,7 +610,7 @@ class TestOnlyTheCoefficientsMove:
         whole = run(zero, df)
         assert whole.equals(run(one, df), null_equal=True)
         assert whole["coef"].null_count() < df.height // 2
-        parts = pl.concat(po.ModelBank([one]).fit_predict_batches(df, chunk_size=37)).unnest("m")
+        parts = pl.concat(rp.ModelBank([one]).fit_predict_batches(df, chunk_size=37)).unnest("m")
         assert parts.equals(whole, null_equal=True)
 
 
@@ -619,7 +619,7 @@ def test_every_kind_with_a_coef_is_swept():
     with_coef = {
         k
         for k in MINIMAL
-        if "coef" in po.spec.output_fields(getattr(po.spec, k)("m", **_minimal(k)))
+        if "coef" in rp.spec.output_fields(getattr(rp.spec, k)("m", **_minimal(k)))
     }
     assert with_coef == set(KINDS), with_coef ^ set(KINDS)
     assert set(SWEPT) - set(VARIANT_OF) == set(KINDS)
@@ -654,14 +654,14 @@ class TestRefusals:
         with pytest.raises(
             ValueError, match=r"coef_every must be finite and at least 0 clock units"
         ):
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
 
     def test_an_infinite_cadence_is_refused(self):
         spec = {**kind("ewridge", 30.0), "coef_every": float("inf")}
         with pytest.raises(
             ValueError, match=r"coef_every must be finite and at least 0 clock units"
         ):
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
 
     def test_a_row_cap_of_zero_is_refused(self):
         with pytest.raises(
@@ -672,9 +672,9 @@ class TestRefusals:
         with pytest.raises(
             ValueError, match="max_rows_between_coefs must be at least 1, but it is 0"
         ):
-            po.ModelBank([spec])
+            rp.ModelBank([spec])
 
     def test_a_model_without_coefficients_refuses_both(self):
         for kw in ({"coef_every": 0}, {"max_rows_between_coefs": 5}):
             with pytest.raises(ValueError, match=next(iter(kw))):
-                po.spec.ew_cov("c", features=["x1", "x2"], half_life=30.0, **kw)
+                rp.spec.ew_cov("c", features=["x1", "x2"], half_life=30.0, **kw)

@@ -4,7 +4,7 @@ A spec is what a model bank runs: one model, the columns it reads, and the
 parameters every model shares -- the clock, the decay, the groups, the weights
 and the warm-up. It is a plain dict, JSON-able, and the same thing as a
 ``[[specs]]`` entry in the CLI's TOML. A builder assembles one, checks it and
-returns it. :class:`rheon.ModelBank`, the ``online`` namespaces and
+returns it. :class:`rheon.polars.ModelBank`, the ``online`` namespaces and
 the ``polars-online`` command line take lists of them.
 
 The builders are the documented way to write a spec. A dict written by hand is
@@ -30,12 +30,12 @@ shows them at work.
     pl.col("mid")).log()`` or a difference sits about zero, where ``hit_rate``
     takes its sign. A :func:`rheon.target` is a column under a name of
     its own. A target may also be a window expression looking ahead
-    (:mod:`rheon.ops`), named by its alias: ``(po.ewm_mean("mid",
+    (:mod:`rheon.polars.ops`), named by its alias: ``(rp.ewm_mean("mid",
     half_life="10s", window_size="1m", reverse=True) - pl.col("mid")).alias("fwd")``. The
     bank resolves it when the row's window closes, and learns the row then,
     under the ``embargo``. ``fit_predict`` asks the embargo to cover the
     longest forward ``window_size``. Under ``group`` it needs a ``clock``.
-    :func:`rheon.stream.with_windows` with ``like=`` the spec writes
+    :func:`rheon.polars.stream.with_windows` with ``like=`` the spec writes
     the same target as a column.
 ``fit_intercept``
     Whether the fit has a level of its own: a constant 1 is put in front of
@@ -224,7 +224,7 @@ shows them at work.
     ``label_clock = clock + d``, and gives the same numbers wherever the
     clock adds up exactly. A row with weight 0 is scored and not held, and
     so is a row whose label time is null: its label never arrives, and
-    :meth:`~rheon.ModelBank.summary` counts it in
+    :meth:`~rheon.polars.ModelBank.summary` counts it in
     ``labels_missing``. A label time before its row's clock is refused,
     naming the row. A list gives one column per target; this version takes
     a list only when every entry names the same column. ``max_held_rows``
@@ -244,7 +244,7 @@ shows them at work.
     key column never decreases, so a key below the largest one fed is done.
     ``"session"``: a key's span ends where its ``session`` value changes. A
     finished group's accumulators are emitted through
-    :meth:`rheon.ModelBank.closed_groups`, which is what keeps a bank
+    :meth:`rheon.polars.ModelBank.closed_groups`, which is what keeps a bank
     over an unbounded key space bounded. Without it every key ever seen stays
     in memory.
 the diagnostics
@@ -377,9 +377,9 @@ cover. A ``Date`` or a coarse ``Datetime`` past that is refused, naming the
 row. A time zone changes nothing, because a ``Datetime`` is stored in UTC, so a
 change of clocks for summer time neither stretches nor folds the clock. Where a
 clock quantity reaches an output, it is in seconds: ``holt``'s trend is per
-second. :meth:`rheon.ModelBank.summary`,
-:meth:`rheon.ModelBank.groups` and
-:meth:`rheon.ModelBank.closed_groups` give clock values in the clock
+second. :meth:`rheon.polars.ModelBank.summary`,
+:meth:`rheon.polars.ModelBank.groups` and
+:meth:`rheon.polars.ModelBank.closed_groups` give clock values in the clock
 column's own type, as ``emit_clocks``' two fields do. A ``Time`` column is
 refused, because a time of day starts again at midnight.
 
@@ -628,7 +628,7 @@ The diagnostics add, per slot:
      - Exponentially weighted correlation of prediction with target,
        out-of-sample R² against the running mean, and the share of rows
        whose sign the prediction got right, a row whose target or
-       prediction is exactly 0 left out, as ``po.eval.metrics`` leaves it
+       prediction is exactly 0 left out, as ``rp.eval.metrics`` leaves it
        out. On a logistic ``sgd`` or
        ``ftrl`` fit: the point-biserial correlation, the Brier skill score
        and accuracy at a 0.5 threshold, under the same names. On a Poisson
@@ -1022,7 +1022,7 @@ the bank's tables use for their own columns.
 A spec that came back from a builder is valid. One edited afterwards is
 checked again wherever it is used, and a key no spec has is refused there
 rather than ignored. Every way in checks a spec the same way, so a spec one of
-them refuses is refused by all of them. :class:`rheon.ModelBank`,
+them refuses is refused by all of them. :class:`rheon.polars.ModelBank`,
 :func:`output_fields`, :func:`output_index`, :func:`coef_fields` and a run
 config each fill its defaults and build its models.
 """

@@ -35,8 +35,8 @@ import warnings
 import numpy as np
 import polars as pl
 
-try:  # this build is `rheon`; a release before 2.0 is `polars_online`
-    import rheon as po
+try:  # this build is `rheon.polars`; a release before 2.0 is `polars_online`
+    from rheon import polars as po
 except ImportError:
     import polars_online as po
 

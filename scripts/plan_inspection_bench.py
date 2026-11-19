@@ -24,7 +24,7 @@ from pathlib import Path
 
 import polars as pl
 
-from rheon import _frame
+from rheon.polars import _frame
 
 REPS = 2000
 

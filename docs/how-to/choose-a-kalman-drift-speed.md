@@ -72,7 +72,7 @@ data:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # y = 2 + b·x0 + 0.5·x1 + noise of variance 1, where b wanders as a random walk.
 rng = np.random.default_rng(5)

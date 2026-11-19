@@ -18,7 +18,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -57,12 +57,12 @@ def _orders(df: pl.DataFrame) -> dict[str, pl.DataFrame]:
 )
 def test_no_decay_is_least_squares_in_any_row_order(decay):
     df = _frame()
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "ols", targets=["y"], features=FEATURES, ridge=0.0, group="g", min_weight=K + 1, **decay
     )
     expected = {g: _ols(df.filter(pl.col("g") == g)) for g in (0, 1)}
     for order, frame in _orders(df).items():
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(frame)
         coef = bank.coef("ols")
         for g in (0, 1):
@@ -89,7 +89,7 @@ def test_a_row_halflife_without_a_clock_discounts_by_position():
     squares of that order."""
     df = _frame(n=600).drop("g")
     h = 150.0
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "ew", targets=["y"], features=FEATURES, ridge=0.0, half_life=h, solve_every=0
     )
     x = np.column_stack([np.ones(df.height), df.select(FEATURES).to_numpy()])
@@ -97,7 +97,7 @@ def test_a_row_halflife_without_a_clock_discounts_by_position():
         (df, x, df["y"].to_numpy()),
         (df.reverse(), x[::-1], df["y"].to_numpy()[::-1]),
     ):
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(frame)
         w = np.sqrt(0.5 ** ((frame.height - 1 - np.arange(frame.height)) / h))
         wls = np.linalg.lstsq(xs * w[:, None], ys * w, rcond=None)[0]
@@ -120,8 +120,8 @@ def test_a_huge_finite_halflife_is_not_inf():
     ols = _ols(df)
 
     def coef(**kw):
-        bank = po.ModelBank(
-            [po.spec.ewridge("m", targets=["y"], features=FEATURES, ridge=0.0, min_weight=30, **kw)]
+        bank = rp.ModelBank(
+            [rp.spec.ewridge("m", targets=["y"], features=FEATURES, ridge=0.0, min_weight=30, **kw)]
         )
         bank.fit_predict(df)
         return bank.coef("m").sort("position")["coef"].to_numpy()

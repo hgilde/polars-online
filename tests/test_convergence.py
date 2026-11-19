@@ -32,7 +32,7 @@ import pytest
 
 import convergence as cv
 import ledger
-import rheon as po
+from rheon import polars as rp
 from test_model_registry import REGRESSIONS
 
 TIER = "mixed"
@@ -74,7 +74,7 @@ GUARD_ROWS = 2_000
 
 def _fields(spec: dict, frame) -> object:
     """Every field ``fit_predict`` emits for a spec named ``m`` on a frame."""
-    return po.ModelBank([spec]).fit_predict(frame).unnest("m")
+    return rp.ModelBank([spec]).fit_predict(frame).unnest("m")
 
 
 def guard_outputs(key: str) -> dict:
@@ -121,7 +121,7 @@ def guard_kalman() -> dict:
     """``guard_outputs`` and K1's spec at its level."""
     out = guard_outputs("kalman")
     out["k1"] = _fields(
-        po.spec.kalman("m", **K1_SPEC), cv.linear(GUARD_ROWS, 0, level=K1_LEVEL).frame
+        rp.spec.kalman("m", **K1_SPEC), cv.linear(GUARD_ROWS, 0, level=K1_LEVEL).frame
     )
     return out
 
@@ -176,7 +176,7 @@ def guard_robust_sets() -> dict:
 
 def robust_spec(features: list[str]) -> dict:
     """The spec the robust datasets run."""
-    return po.spec.quantile(
+    return rp.spec.quantile(
         "m", targets=["y"], features=features, half_life=cv.INF, quantile=0.5, solve_every=0.0
     )
 
@@ -943,11 +943,11 @@ K1_LEVEL = 1e4
 def _k1_level_deviation(seed: int, n: int, level: float) -> tuple[float, float]:
     """The largest |pred at level L - L - pred at level 0| over a stream's
     rows, in units of the target's spread and in ``u (|L| + max|y|)``."""
-    spec = po.spec.kalman("m", **K1_SPEC)
+    spec = rp.spec.kalman("m", **K1_SPEC)
     base = cv.linear(n, seed)
     preds = []
     for s in (base, cv.linear(n, seed, level=level)):
-        out = po.ModelBank([spec]).fit_predict(s.frame).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(s.frame).unnest("m")
         preds.append(out["pred_y"].to_numpy().astype(float))
     p0, p1 = preds
     assert np.array_equal(np.isnan(p0), np.isnan(p1)), "the level withholds no other row"
@@ -982,7 +982,7 @@ def test_kalman_reaches_the_oracle_at_a_level_as_at_zero():
     0.00051 at 32,000 (seed 3), rate -1.01, the same as at level 0; before
     task 278's fix 0.402 at 8,000 (seed 40)."""
     cuts = [1000, 2000, 4000, 8000, 12000]
-    spec = po.spec.kalman("m", **K1_SPEC)
+    spec = rp.spec.kalman("m", **K1_SPEC)
     gaps: dict[float, dict[int, dict[int, float]]] = {
         L: {c: {} for c in cuts} for L in (0.0, K1_LEVEL)
     }

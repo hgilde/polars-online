@@ -59,7 +59,7 @@ import polars as pl
 import statsmodels.api as sm
 from sklearn.linear_model import Lasso, Ridge
 
-import rheon as po
+from rheon import polars as rp
 
 INF = float("inf")
 FEATURES = ["x0", "x1"]
@@ -445,7 +445,7 @@ def _spec(builder: str, **fixed: object) -> Callable[..., dict]:
             args["features"] = FEATURES
         args.update(fixed)
         args.update(kw)
-        return getattr(po.spec, builder)("m", **args)
+        return getattr(rp.spec, builder)("m", **args)
 
     return build
 
@@ -736,10 +736,10 @@ NOT_REGISTERED: dict[str, str] = {}
 def losses(builder: str) -> tuple[str, ...]:
     """The values a builder's ``loss=`` takes, read from its signature, or
     ``()`` for a builder without one."""
-    p = inspect.signature(getattr(po.spec, builder)).parameters.get("loss")
+    p = inspect.signature(getattr(rp.spec, builder)).parameters.get("loss")
     if p is None:
         return ()
-    hints = typing.get_type_hints(getattr(po.spec, builder))
+    hints = typing.get_type_hints(getattr(rp.spec, builder))
     return typing.get_args(hints["loss"])
 
 
@@ -756,7 +756,7 @@ def keys_for(builder: str) -> list[str]:
 def fit(spec: dict, frame: pl.DataFrame, cuts: Iterable[int]) -> dict[int, np.ndarray]:
     """The model's ``coef`` after each row count in ``cuts``, fed as slices
     of one stream (chunk invariance makes that the same as one pass)."""
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     out: dict[int, np.ndarray] = {}
     start = 0
     for cut in sorted(cuts):
@@ -766,7 +766,7 @@ def fit(spec: dict, frame: pl.DataFrame, cuts: Iterable[int]) -> dict[int, np.nd
     return out
 
 
-def coef(bank: po.ModelBank) -> np.ndarray:
+def coef(bank: rp.ModelBank) -> np.ndarray:
     return np.array(bank.coef("m")["coef"].to_list(), dtype=float)
 
 
@@ -890,9 +890,9 @@ def from_state(
 ) -> dict[int, np.ndarray]:
     """``fit`` from a bank that learned ``start``, was saved and was loaded:
     the start is a state from elsewhere, not the rows of this stream."""
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(start)
-    bank = po.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
+    bank = rp.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
     out: dict[int, np.ndarray] = {}
     begin = 0
     for cut in sorted(cuts):

@@ -12,7 +12,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -38,11 +38,11 @@ def spec(**kw):
     if "means" not in kw and "covs" not in kw:
         d |= {"warm_rows": 100, "init": "lloyd"}
     d.update(kw)
-    return po.spec.hmm("h", **d)
+    return rp.spec.hmm("h", **d)
 
 
 def run(df, **kw):
-    return po.ModelBank([spec(**kw)]).fit_predict(df)["h"].struct.unnest()
+    return rp.ModelBank([spec(**kw)]).fit_predict(df)["h"].struct.unnest()
 
 
 def test_the_filter_finds_the_states_and_the_chain():
@@ -132,13 +132,13 @@ def test_nothing_is_reported_before_the_states_are_seeded():
 
 def test_the_state_means_are_the_coef():
     df = blobs(n=2000, run=100, sep=8.0, seed=5)
-    bank = po.ModelBank([spec(warm_rows=200)])
+    bank = rp.ModelBank([spec(warm_rows=200)])
     bank.fit_predict(df)
     coef = bank.coef("h")["coef"].to_list()
     centres = sorted([coef[0], coef[2]])
     assert centres[0] == pytest.approx(-4.0, abs=0.4)
     assert centres[1] == pytest.approx(4.0, abs=0.4)
-    names = po.spec.coef_fields(spec())["name"].to_list()
+    names = rp.spec.coef_fields(spec())["name"].to_list()
     assert names == ["coef_state0_x0", "coef_state0_x1", "coef_state1_x0", "coef_state1_x1"]
 
 
@@ -146,7 +146,7 @@ def test_the_state_means_are_the_coef():
 def test_chunk_invariance(size):
     df = blobs(n=2000, run=100, seed=6)
     want = run(df, warm_rows=200)
-    bank = po.ModelBank([spec(warm_rows=200)])
+    bank = rp.ModelBank([spec(warm_rows=200)])
     parts = [bank.fit_predict(df[i : i + size]) for i in range(0, df.height, size)]
     got = pl.concat(parts)["h"].struct.unnest()
     assert want.drop("coef").equals(got.drop("coef"))
@@ -156,9 +156,9 @@ def test_save_load_mid_stream():
     df = blobs(n=1200, run=100, seed=7)
     s = spec(warm_rows=200)
     want = run(df, warm_rows=200)
-    bank = po.ModelBank([s])
+    bank = rp.ModelBank([s])
     bank.fit_predict(df[:600])
-    again = po.ModelBank.load_bytes(bank.save_bytes(), [s])
+    again = rp.ModelBank.load_bytes(bank.save_bytes(), [s])
     got = again.fit_predict(df[600:])["h"].struct.unnest()
     assert want[600:].drop("coef").equals(got.drop("coef"))
 
@@ -186,9 +186,9 @@ def test_the_clock_is_a_number(c):
     df = blobs(n=600, run=50, seed=9).with_columns(t=pl.int_range(pl.len()).cast(pl.Float64))
     base = spec(half_life=200.0, clock="t", gap_cap=1e12, warm_rows=100)
     scaled = spec(half_life=200.0 * c, clock="t", gap_cap=1e12, warm_rows=100)
-    want = po.ModelBank([base]).fit_predict(df)["h"].struct.unnest()
+    want = rp.ModelBank([base]).fit_predict(df)["h"].struct.unnest()
     got = (
-        po.ModelBank([scaled]).fit_predict(df.with_columns(t=pl.col("t") * c))["h"].struct.unnest()
+        rp.ModelBank([scaled]).fit_predict(df.with_columns(t=pl.col("t") * c))["h"].struct.unnest()
     )
     if c in (2.0, 8.0):
         assert want.equals(got)
@@ -280,7 +280,7 @@ def test_predict_reads_the_exogenous_column():
         warm_rows=50,
     )
     step = run(df, **kw)
-    bank = po.ModelBank([spec(**kw)])
+    bank = rp.ModelBank([spec(**kw)])
     bank.fit_predict(df.head(300))
     got = bank.predict(df.slice(300, 1))["h"].struct.unnest()
     for col in ("filtered_state0", "predicted_state0", "predicted_state1", "state", "loglik"):
@@ -537,13 +537,13 @@ def test_tvtp_is_chunk_and_save_invariant(size):
         exog_tvtp="z", tvtp_coef=[[2.0, -2.0, -2.0, 2.0], [1.5, -1.5, -1.5, 1.5]], warm_rows=100
     )
     want = run(df, **kw).drop("coef")
-    bank = po.ModelBank([spec(**kw)])
+    bank = rp.ModelBank([spec(**kw)])
     parts = [bank.fit_predict(df[i : i + size]) for i in range(0, df.height, size)]
     assert want.equals(pl.concat(parts)["h"].struct.unnest().drop("coef"))
     for cut in (60, 450):
-        bank = po.ModelBank([spec(**kw)])
+        bank = rp.ModelBank([spec(**kw)])
         head = bank.fit_predict(df[:cut])["h"].struct.unnest().drop("coef")
-        again = po.ModelBank.load_bytes(bank.save_bytes(), [spec(**kw)])
+        again = rp.ModelBank.load_bytes(bank.save_bytes(), [spec(**kw)])
         tail = again.fit_predict(df[cut:])["h"].struct.unnest().drop("coef")
         assert want.equals(pl.concat([head, tail])), cut
 
@@ -605,10 +605,10 @@ def seeded_means(df, model, **kw):
     """The centres or state means right after the seeding: the whole frame
     is the warm-up, and at no decay the replay weighs every row as one."""
     if model == "hmm":
-        s = po.spec.hmm("m", features=["x0", "x1"], n_components=3, precision_prior=1e-2, **kw)
+        s = rp.spec.hmm("m", features=["x0", "x1"], n_components=3, precision_prior=1e-2, **kw)
     else:
-        s = po.spec.kmeans("m", features=["x0", "x1"], n_clusters=3, standardize=False, **kw)
-    bank = po.ModelBank([s])
+        s = rp.spec.kmeans("m", features=["x0", "x1"], n_clusters=3, standardize=False, **kw)
+    bank = rp.ModelBank([s])
     bank.fit_predict(df)
     return np.array(bank.coef("m")["coef"].to_list())
 
@@ -663,9 +663,9 @@ def test_seed_is_reproducible_none_is_zero_and_moves_only_the_drawn_rules(rule):
         assert not zero.equals(go(seed=5))
     if rule == "lloyd":
         default = (
-            po.ModelBank(
+            rp.ModelBank(
                 [
-                    po.spec.hmm(
+                    rp.spec.hmm(
                         "h",
                         features=["x0", "x1"],
                         n_components=2,
@@ -683,10 +683,10 @@ def test_seed_is_reproducible_none_is_zero_and_moves_only_the_drawn_rules(rule):
 
 def plain(df, **kw):
     """An ``hmm`` with every seeding parameter at its default."""
-    s = po.spec.hmm(
+    s = rp.spec.hmm(
         "h", features=["x0", "x1"], n_components=2, precision_prior=1e-2, half_life=1e9, **kw
     )
-    return po.ModelBank([s]).fit_predict(df)["h"].struct.unnest()
+    return rp.ModelBank([s]).fit_predict(df)["h"].struct.unnest()
 
 
 def test_warm_rows_defaults_to_1000():
@@ -709,7 +709,7 @@ def test_warm_rows_defaults_to_n_components_above_1000():
     df = pl.DataFrame({"x0": np.random.default_rng(1).standard_normal(1010)})
 
     def big(**kw):
-        return po.spec.hmm(
+        return rp.spec.hmm(
             "h",
             features=["x0"],
             n_components=1001,
@@ -719,7 +719,7 @@ def test_warm_rows_defaults_to_n_components_above_1000():
             **kw,
         )
 
-    out = po.ModelBank([big()]).fit_predict(df)["h"].struct.unnest()
+    out = rp.ModelBank([big()]).fit_predict(df)["h"].struct.unnest()
     reported = out["filtered_state0"].is_not_null().to_numpy()
     assert not reported[:1001].any() and reported[1001:].all()
     with pytest.raises(
@@ -741,13 +741,13 @@ def test_chunks_and_a_save_inside_the_warm_up(size):
     run, the seeding included."""
     df = blobs(n=400, run=40, seed=23)
     want = run(df, warm_rows=200).drop("coef")
-    bank = po.ModelBank([spec(warm_rows=200)])
+    bank = rp.ModelBank([spec(warm_rows=200)])
     parts = [bank.fit_predict(df[i : min(i + size, 260)]) for i in range(0, 260, size)]
     parts.append(bank.fit_predict(df[260:]))
     assert want.equals(pl.concat(parts)["h"].struct.unnest().drop("coef"))
-    bank = po.ModelBank([spec(warm_rows=200)])
+    bank = rp.ModelBank([spec(warm_rows=200)])
     head = bank.fit_predict(df[:120])["h"].struct.unnest().drop("coef")
-    again = po.ModelBank.load_bytes(bank.save_bytes(), [spec(warm_rows=200)])
+    again = rp.ModelBank.load_bytes(bank.save_bytes(), [spec(warm_rows=200)])
     tail = again.fit_predict(df[120:])["h"].struct.unnest().drop("coef")
     assert want.equals(pl.concat([head, tail]))
 

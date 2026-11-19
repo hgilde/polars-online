@@ -14,7 +14,7 @@ import common as C  # noqa: E402
 import numpy as np  # noqa: E402
 import polars as pl  # noqa: E402
 
-import rheon as po  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 
 df = C.load_flights().with_row_index("rid")
 rows = pl.concat(
@@ -32,8 +32,8 @@ rows = pl.concat(
     ]
 ).sort("c", "role", "rid")
 nowcast = dict(
-    S=po.ewm_sum("y", half_life=60.0, closed="left"),
-    W=po.ewm_sum("one", half_life=60.0, closed="left"),
+    S=rp.ewm_sum("y", half_life=60.0, closed="left"),
+    W=rp.ewm_sum("one", half_life=60.0, closed="left"),
 )
 cut = 273 * 1440.0
 with tempfile.TemporaryDirectory() as d:

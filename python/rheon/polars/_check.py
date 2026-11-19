@@ -1,12 +1,12 @@
 """``ModelBank.check``: findings about the data a bank was fed, read from what
 every bank already keeps (docs/PLAN.md task 223 (a)).
 
-Nothing here runs during :meth:`~rheon.ModelBank.fit_predict`. Each
+Nothing here runs during :meth:`~rheon.polars.ModelBank.fit_predict`. Each
 check reads a table the bank keeps anyway (``summary``, ``describe``,
 ``solve_failures``, ``last_row``, ``gram``, ``marginal``, ``audit``). So it
 adds no work to the run, and a bank loaded from a file gives the same findings
 as the bank that saved it. Every threshold in this module was measured before
-it shipped, and the docstring of :meth:`~rheon.ModelBank.check` gives
+it shipped, and the docstring of :meth:`~rheon.polars.ModelBank.check` gives
 each one with its rates.
 """
 
@@ -20,8 +20,8 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 if TYPE_CHECKING:
-    from rheon._bank import ModelBank
     from rheon.gram import Gram
+    from rheon.polars._bank import ModelBank
 
 #: The page that explains each finding, with a recipe for it: a message ends
 #: with this address and ``#<code>``, the anchor of that code's section
@@ -239,7 +239,7 @@ def check(
     bank: ModelBank, spec: str | int | None, group: str | Iterable[str | None] | None
 ) -> pl.DataFrame:
     """The findings frame :meth:`ModelBank.check` returns."""
-    from rheon._bank import _group_keys
+    from rheon.polars._bank import _group_keys
 
     names = bank._native.spec_names()
     picked = range(len(names)) if spec is None else [bank._spec_index(spec, "ModelBank.check")]

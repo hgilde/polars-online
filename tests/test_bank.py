@@ -7,8 +7,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from data import synthetic
+from rheon import polars as rp
 from test_model_registry import REGRESSIONS
 
 TIER = "essential"
@@ -39,7 +39,7 @@ def _spec(k=3, targets=("y0",), **kw):
         min_weight=5.0,
     )
     defaults.update(kw)
-    return po.spec.ewridge("m", **defaults)
+    return rp.spec.ewridge("m", **defaults)
 
 
 def _np(df, col):
@@ -50,9 +50,9 @@ class TestChunkInvariance:
     @pytest.mark.parametrize("n_chunks", [7, 100])
     def test_chunked_equals_single(self, n_chunks):
         df, _ = synthetic(seed=7, n_groups=3, n_rows=200, k=3)
-        one = po.ModelBank([_spec()]).fit_predict(df)
+        one = rp.ModelBank([_spec()]).fit_predict(df)
 
-        bank = po.ModelBank([_spec()])
+        bank = rp.ModelBank([_spec()])
         step = -(-df.height // n_chunks)
         outs = [bank.fit_predict(df.slice(i, step)) for i in range(0, df.height, step)]
         many = pl.concat(outs)
@@ -65,40 +65,40 @@ class TestChunkInvariance:
         df, _ = synthetic(seed=8, n_groups=2, n_rows=300, k=3)
         first, second = df.slice(0, 150), df.slice(150, 150)
 
-        b1 = po.ModelBank([_spec()])
+        b1 = rp.ModelBank([_spec()])
         b1.fit_predict(first)
         p = tmp_path / "bank.state"
         b1.save(p)
-        b2 = po.ModelBank.load(p, specs=[_spec()])
+        b2 = rp.ModelBank.load(p, specs=[_spec()])
         a = b1.fit_predict(second).unnest("m").drop("coef", "support_coef", strict=False)
         b = b2.fit_predict(second).unnest("m").drop("coef", "support_coef", strict=False)
         assert a.equals(b, null_equal=True)
 
     def test_load_rejects_wrong_specs(self, tmp_path):
-        b1 = po.ModelBank([_spec()])
+        b1 = rp.ModelBank([_spec()])
         p = tmp_path / "bank.state"
         b1.save(p)
         with pytest.raises(ValueError, match="do not match"):
-            po.ModelBank.load(p, specs=[_spec(ridge=0.5)])
+            rp.ModelBank.load(p, specs=[_spec(ridge=0.5)])
 
     def test_load_tells_a_missing_file_from_a_bad_one(self, tmp_path):
         # The two failure modes a resuming job has to tell apart: no state
         # yet (start fresh) is the OSError for the path; a file that is not
         # a bank is a ValueError saying so, never mistaken for a missing one.
         with pytest.raises(FileNotFoundError):
-            po.ModelBank.load(tmp_path / "nope.state")
+            rp.ModelBank.load(tmp_path / "nope.state")
         garbage = tmp_path / "garbage.state"
         garbage.write_bytes(b"not a bank")
         with pytest.raises(ValueError, match="not a polars-online bank state file"):
-            po.ModelBank.load(garbage)
+            rp.ModelBank.load(garbage)
         # A directory is the OSError the platform gives for reading one --
         # IsADirectoryError on macOS/Linux, PermissionError on Windows --
         # and in neither case FileNotFoundError.
         with pytest.raises((IsADirectoryError, PermissionError)):
-            po.ModelBank.load(tmp_path)
+            rp.ModelBank.load(tmp_path)
 
     def test_save_names_the_path_it_could_not_write(self, tmp_path):
-        bank = po.ModelBank([_spec()])
+        bank = rp.ModelBank([_spec()])
         missing = tmp_path / "nope" / "bank.state"
         with pytest.raises(FileNotFoundError, match="nope"):
             bank.save(missing)
@@ -122,7 +122,7 @@ class TestChunkInvariance:
             json.dumps({"formulas": [{"name": "f", "tree": tree}]}),
             pl.DataFrame(schema={"x": pl.Float64}),
         )
-        for save in (po.ModelBank([_spec()]).save, refresh.save, windows.save):
+        for save in (rp.ModelBank([_spec()]).save, refresh.save, windows.save):
             missing = tmp_path / "nope" / "x.state"
             with pytest.raises(FileNotFoundError, match="nope"):
                 save(str(missing))
@@ -142,7 +142,7 @@ class TestOutOfSample:
                 "y0": rng.standard_normal(n),
             }
         )
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -150,7 +150,7 @@ class TestOutOfSample:
             max_rows_between_solves=1,
             min_weight=10.0,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         pred = _np(out, "pred_y0")
         m = np.isfinite(pred)
         ic = np.corrcoef(pred[m], df["y0"].to_numpy()[m])[0, 1]
@@ -168,7 +168,7 @@ class TestNullPolicyAndWarmup:
         )
 
     def _out(self, min_weight=3.0):
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -176,7 +176,7 @@ class TestNullPolicyAndWarmup:
             max_rows_between_solves=1,
             min_weight=min_weight,
         )
-        return po.ModelBank([spec]).fit_predict(self._df())
+        return rp.ModelBank([spec]).fit_predict(self._df())
 
     def test_feature_null_skips_row_entirely(self):
         out = self._out()
@@ -205,7 +205,7 @@ class TestNullPolicyAndWarmup:
 
     def test_null_weight_skips_row(self):
         df = self._df().with_columns(w=pl.Series([1.0, 1.0, 1.0, None, 1.0, 1.0, 1.0]))
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -213,7 +213,7 @@ class TestNullPolicyAndWarmup:
             weight="w",
             max_rows_between_solves=1,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         assert out.row(3, named=True)["m"]["weight_sum"] is None
 
 
@@ -228,7 +228,7 @@ class TestClockSemantics:
         if session is not None:
             data["session"] = session
         df = pl.DataFrame(data)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0"],
@@ -242,7 +242,7 @@ class TestClockSemantics:
             min_weight=1.0,
             **kw,
         )
-        return po.ModelBank([spec]).fit_predict(df)
+        return rp.ModelBank([spec]).fit_predict(df)
 
     @staticmethod
     def _neff(out):
@@ -303,7 +303,7 @@ class TestClockSemantics:
             {"t": t, "x0": x0, "y0": [1.0] * len(t)},
             schema={"t": pl.Float64, "x0": pl.Float64, "y0": pl.Float64},
         )
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0"],
@@ -313,7 +313,7 @@ class TestClockSemantics:
             max_rows_between_solves=1,
             min_weight=1.0,
         )
-        n = self._neff(po.ModelBank([spec]).fit_predict(df))
+        n = self._neff(rp.ModelBank([spec]).fit_predict(df))
         assert n[12] == pytest.approx(0.5 ** (50.0 / 10.0) + 1.0, abs=1e-12)
 
 
@@ -328,7 +328,7 @@ class TestPerTargetMinPeriods:
         rng = np.random.default_rng(0)
         x = rng.standard_normal(n)
         df = pl.DataFrame({"x0": x, "y0": 2 * x, "y1": -x})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0", "y1"],
             features=["x0"],
@@ -336,7 +336,7 @@ class TestPerTargetMinPeriods:
             min_weight=min_weight,
             max_rows_between_solves=1,
         )
-        return po.ModelBank([spec]).fit_predict(df)
+        return rp.ModelBank([spec]).fit_predict(df)
 
     @staticmethod
     def _first(out, field):
@@ -381,20 +381,20 @@ class TestPerTargetMinPeriods:
         common = dict(targets=["y0", "y1"], half_life=float("inf"), min_weight=[5.0, late])
         solves = dict(features=["x0"], max_rows_between_solves=1)
         spec = {
-            "ewridge": lambda: po.spec.ewridge("m", **solves, **common),
-            "lasso": lambda: po.spec.lasso("m", penalties=[1e-6], **solves, **common),
-            "kalman": lambda: po.spec.kalman(
+            "ewridge": lambda: rp.spec.ewridge("m", **solves, **common),
+            "lasso": lambda: rp.spec.lasso("m", penalties=[1e-6], **solves, **common),
+            "kalman": lambda: rp.spec.kalman(
                 "m", features=["x0"], coef_half_life=float("inf"), **common
             ),
-            "huber": lambda: po.spec.huber("m", **solves, **common),
-            "quantile": lambda: po.spec.quantile("m", quantile=0.5, **solves, **common),
-            "holt": lambda: po.spec.holt("m", **common),
-            "rls": lambda: po.spec.rls("m", features=["x0"], **common),
-            "ftrl": lambda: po.spec.ftrl("m", features=["x0"], loss="squared", **common),
-            "sgd": lambda: po.spec.sgd("m", features=["x0"], learning_rate=0.01, **common),
-            "pa": lambda: po.spec.pa("m", features=["x0"], **common),
+            "huber": lambda: rp.spec.huber("m", **solves, **common),
+            "quantile": lambda: rp.spec.quantile("m", quantile=0.5, **solves, **common),
+            "holt": lambda: rp.spec.holt("m", **common),
+            "rls": lambda: rp.spec.rls("m", features=["x0"], **common),
+            "ftrl": lambda: rp.spec.ftrl("m", features=["x0"], loss="squared", **common),
+            "sgd": lambda: rp.spec.sgd("m", features=["x0"], learning_rate=0.01, **common),
+            "pa": lambda: rp.spec.pa("m", features=["x0"], **common),
         }[kind]()
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         names = out["m"].struct.fields
         pred = {
             t: f"pred_{t}"
@@ -418,7 +418,7 @@ class TestPerTargetMinPeriods:
         df = pl.DataFrame({"x0": x, "y0": 2 * x, "y1": -x + 0.1 * rng.standard_normal(n)})
 
         def fit(floors):
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "m",
                 targets=["y0", "y1"],
                 features=["x0"],
@@ -427,7 +427,7 @@ class TestPerTargetMinPeriods:
                 max_rows_between_solves=1,
                 emit_sigma=True,
             )
-            return po.ModelBank([spec]).fit_predict(df)["m"].struct
+            return rp.ModelBank([spec]).fit_predict(df)["m"].struct
 
         late, eager = fit([5.0, 60.0]), fit([5.0, 5.0])
         assert all(v is None for v in late.field("resid_y1").to_list()[:55]), "resid leaked"
@@ -448,7 +448,7 @@ class TestPerTargetMinPeriods:
             ValueError,
             match="min_weight must list one value per target \\(2\\), but it lists 3",
         ):
-            po.spec.ewridge(
+            rp.spec.ewridge(
                 "m",
                 targets=["y0", "y1"],
                 features=["x0"],
@@ -458,4 +458,4 @@ class TestPerTargetMinPeriods:
 
     def test_negative_is_rejected(self):
         with pytest.raises(ValueError, match="min_weight must be finite and at least 0"):
-            po.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=100.0, min_weight=-1.0)
+            rp.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=100.0, min_weight=-1.0)

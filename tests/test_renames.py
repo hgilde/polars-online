@@ -21,7 +21,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 from rheon._spec import _RENAMED
 
 TIER = "essential"
@@ -99,14 +99,14 @@ def test_an_old_parameter_is_refused_naming_the_new_one(old):
     kind = _TAKES_THE_NEW_NAME.get(old, "ewridge")
     kw = _KW.get(kind, {"targets": ["y"], "features": ["x"]})
     with pytest.raises(TypeError, match=f"{old} was renamed {RENAMED[old]}"):
-        getattr(po.spec, kind)("m", **kw, **{old: 1.0})
+        getattr(rp.spec, kind)("m", **kw, **{old: 1.0})
 
 
 def test_an_old_name_a_builder_does_not_take_under_its_new_name_is_unknown():
     """``window`` was renamed ``window_size``, which ``sgd`` does not take, so
     the refusal does not send the reader to it."""
     with pytest.raises(TypeError, match='sgd\\(\\) takes no parameter "window"') as e:
-        po.spec.sgd("m", targets=["y"], features=["x"], window=5)
+        rp.spec.sgd("m", targets=["y"], features=["x"], window=5)
     assert "window_size" not in str(e.value)
 
 
@@ -141,7 +141,7 @@ def test_an_old_name_a_builder_does_not_take_under_its_new_name_is_unknown():
 def test_a_spec_dict_with_an_old_name_is_refused_naming_the_new_one(spec, old):
     """The Rust side, shared with the command line's TOML."""
     with pytest.raises(ValueError, match=old):
-        po.ModelBank([spec])
+        rp.ModelBank([spec])
 
 
 def test_rls_ridge_is_refused_naming_delta(tmp_path, rheon_cli):
@@ -156,12 +156,12 @@ def test_rls_ridge_is_refused_naming_delta(tmp_path, rheon_cli):
 
     kw = {"targets": ["y"], "features": ["x"], "half_life": 10.0}
     with pytest.raises(TypeError, match="ridge was renamed delta"):
-        po.spec.rls("m", **kw, ridge=1.0)
-    spec = po.spec.rls("m", **kw, delta=2.0)
+        rp.spec.rls("m", **kw, ridge=1.0)
+    spec = rp.spec.rls("m", **kw, delta=2.0)
     assert spec["model"]["delta"] == 2.0
     raw = dict(spec, model={"type": "rls", "ridge": 1.0})
     with pytest.raises(ValueError, match="ridge was renamed delta"):
-        po.ModelBank([raw])
+        rp.ModelBank([raw])
     df = pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0]})
     df.write_parquet(tmp_path / "in.parquet")
     res = run_online(
@@ -174,10 +174,10 @@ def test_rls_ridge_is_refused_naming_delta(tmp_path, rheon_cli):
         check=False,
     )
     assert res.returncode != 0 and "ridge was renamed delta" in res.stderr, res.stderr
-    po.spec.ewridge("m", **kw, ridge=1.0)
-    sgd = po.spec.sgd("m", **kw)
+    rp.spec.ewridge("m", **kw, ridge=1.0)
+    sgd = rp.spec.sgd("m", **kw)
     with pytest.raises(ValueError) as refused:
-        po.ModelBank([dict(sgd, model={**sgd["model"], "ridge": 1.0})])
+        rp.ModelBank([dict(sgd, model={**sgd["model"], "ridge": 1.0})])
     assert "unknown field `ridge`" in str(refused.value), refused.value
     assert "renamed" not in str(refused.value), refused.value
 
@@ -185,7 +185,7 @@ def test_rls_ridge_is_refused_naming_delta(tmp_path, rheon_cli):
 def test_no_output_carries_an_old_name():
     """Every spec of the release probe's workload, every kind the bank builds."""
     for name, builder, kw, _ in probe.WORKLOAD:
-        fields = po.spec.output_fields(probe.build(builder, name, kw))
+        fields = rp.spec.output_fields(probe.build(builder, name, kw))
         # `resid_z__p0.2` is target `z`'s residual under a grid's suffix, not
         # the old z-score `resid_z_<target>`.
         bad = [
@@ -199,7 +199,7 @@ def test_no_output_carries_an_old_name():
 def _workload(name: str) -> dict:
     kw = next(kw for n, b, kw, _ in probe.WORKLOAD if n == name)
     builder = next(b for n, b, kw, _ in probe.WORKLOAD if n == name)
-    return po.spec.output_fields(probe.build(builder, name, kw))
+    return rp.spec.output_fields(probe.build(builder, name, kw))
 
 
 def test_the_new_output_names():
@@ -220,13 +220,13 @@ def test_the_collisions_the_old_grammar_had_are_gone():
     """A target ``z_y`` beside ``y`` under ``emit_zscore`` (``resid_z_y`` was
     both the z-score of ``y`` and the residual of ``z_y``), and a feature
     named ``var``, ``share`` or ``score`` beside ``pca``."""
-    s = po.spec.ewridge("m", targets=["y", "z_y"], features=["x"], half_life=10.0, emit_zscore=True)
-    fields = po.spec.output_fields(s)
+    s = rp.spec.ewridge("m", targets=["y", "z_y"], features=["x"], half_life=10.0, emit_zscore=True)
+    fields = rp.spec.output_fields(s)
     assert fields.count("resid_z_y") == 1 and "zscore_y" in fields and "zscore_z_y" in fields
-    c = po.spec.ew_cov(
+    c = rp.spec.ew_cov(
         "c", features=["var", "share", "score"], stats=["mean"], pca=1, half_life=10.0
     )
-    fields = po.spec.output_fields(c)
+    fields = rp.spec.output_fields(c)
     assert len(fields) == len(set(fields))
     assert "pc0_var" in fields and "pc0_loading_var" in fields
 
@@ -235,7 +235,7 @@ def test_two_outputs_with_one_name_are_refused_by_the_builder_naming_the_inputs(
     """``corr_a_b_c`` is the correlation of ``a_b`` with ``c`` and of ``a``
     with ``b_c``: the one collision the columns' own names can still make."""
     with pytest.raises(ValueError, match="two outputs render to the same field name") as e:
-        po.spec.ew_cov("c", features=["a_b", "c", "a", "b_c"], stats=["corr"], half_life=10.0)
+        rp.spec.ew_cov("c", features=["a_b", "c", "a", "b_c"], stats=["corr"], half_life=10.0)
     msg = str(e.value)
     assert (
         "corr_a_b_c" in msg
@@ -249,10 +249,10 @@ def _fit():
     n = 60
     x = rng.standard_normal(n)
     df = pl.DataFrame({"x": x, "y": 2.0 * x + 0.1 * rng.standard_normal(n), "g": ["a"] * n})
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m", targets=["y"], features=["x"], half_life=10.0, min_weight=5.0, group="g"
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     return bank, bank.fit_predict(df)
 
 
@@ -275,10 +275,10 @@ def test_window_metrics_takes_every():
     197 renamed the function ``window_metrics`` and the keyword ``every``."""
     bank, out = _fit()
     df = out.with_columns(pl.int_range(pl.len()).cast(pl.Float64).alias("t"))
-    windows = po.eval.window_metrics(df, "m", clock="t", every=20.0, min_samples=5)
+    windows = rp.eval.window_metrics(df, "m", clock="t", every=20.0, min_samples=5)
     assert "window_start" in windows.columns and len(windows) >= 2
     with pytest.raises(TypeError):
-        po.eval.window_metrics(df, "m", clock="t", window=20.0)  # type: ignore[call-arg]
+        rp.eval.window_metrics(df, "m", clock="t", window=20.0)  # type: ignore[call-arg]
 
 
 def test_restart_after_step_back_is_one_rule():
@@ -289,13 +289,13 @@ def test_restart_after_step_back_is_one_rule():
     with pytest.raises(
         ValueError, match="restart_after_step_back is not set.*set restart_after_step_back below 5"
     ):
-        po.ModelBank([po.spec.ewridge("m", **base)]).fit_predict(df)
+        rp.ModelBank([rp.spec.ewridge("m", **base)]).fit_predict(df)
     with pytest.raises(ValueError, match="no more than restart_after_step_back = 5"):
-        po.ModelBank([po.spec.ewridge("m", restart_after_step_back=5.0, **base)]).fit_predict(df)
-    out = po.ModelBank([po.spec.ewridge("m", restart_after_step_back=4.0, **base)]).fit_predict(df)
+        rp.ModelBank([rp.spec.ewridge("m", restart_after_step_back=5.0, **base)]).fit_predict(df)
+    out = rp.ModelBank([rp.spec.ewridge("m", restart_after_step_back=4.0, **base)]).fit_predict(df)
     assert out["m"].struct.field("weight_sum")[3] == 0.0
     with pytest.raises(ValueError, match="restart_after_step_back applies only with a clock"):
-        po.spec.ewridge(
+        rp.spec.ewridge(
             "m", targets=["y"], features=["x"], half_life=10.0, restart_after_step_back=1.0
         )
 
@@ -311,7 +311,7 @@ def test_the_restart_edge_is_inclusive_at_a_millisecond_on_a_temporal_clock():
     for ms in (1, 3, 100):
         t = [base + timedelta(milliseconds=m) for m in (0, 10 * ms, 20 * ms, 19 * ms, 30 * ms)]
         df = pl.DataFrame({"t": t, "x": [1.0] * 5, "y": [1.0] * 5})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x"],
@@ -321,7 +321,7 @@ def test_the_restart_edge_is_inclusive_at_a_millisecond_on_a_temporal_clock():
             restart_after_step_back=timedelta(milliseconds=ms),
         )
         with pytest.raises(ValueError, match="no more than restart_after_step_back"):
-            po.ModelBank([spec]).fit_predict(df)
+            rp.ModelBank([spec]).fit_predict(df)
 
 
 def test_with_windows_refuses_an_old_clock_name_in_like_and_in_a_keyword():
@@ -338,9 +338,9 @@ def test_with_windows_refuses_an_old_clock_name_in_like_and_in_a_keyword():
         "min_backwards_jump": 1.0,
     }
     with pytest.raises(TypeError, match="on_clock_reset was renamed restart_after_step_back"):
-        po.stream.with_windows(df, f=po.ewm_mean("x", half_life=2.0), like=like)
+        rp.stream.with_windows(df, f=rp.ewm_mean("x", half_life=2.0), like=like)
     with pytest.raises(TypeError, match="max_dclock was renamed gap_cap"):
-        po.stream.with_windows(df, f=po.ewm_mean("x", half_life=2.0), clock="t", max_dclock=5.0)
+        rp.stream.with_windows(df, f=rp.ewm_mean("x", half_life=2.0), clock="t", max_dclock=5.0)
 
 
 @pytest.mark.parametrize("name", ["window", "halflife", "min_periods", "reset", "label_delay"])
@@ -350,10 +350,10 @@ def test_with_windows_takes_an_old_spec_parameter_name_as_an_output_name(name):
     took it (task 352). Only the old names of its own keywords are refused,
     as above; any other is an output name, on every surface."""
     df = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x": [1.0, 2.0, 3.0]})
-    window = po.ewm_mean("x", half_life=2.0)
-    want = po.stream.with_windows(df, f=window, clock="t", gap_cap=5.0).rename({"f": name})
+    window = rp.ewm_mean("x", half_life=2.0)
+    want = rp.stream.with_windows(df, f=window, clock="t", gap_cap=5.0).rename({"f": name})
     got = [
-        po.stream.with_windows(df, **{name: window}, clock="t", gap_cap=5.0),
+        rp.stream.with_windows(df, **{name: window}, clock="t", gap_cap=5.0),
         df.online.with_windows(**{name: window}, clock="t", gap_cap=5.0),
         df.lazy().online.with_windows(**{name: window}, clock="t", gap_cap=5.0).collect(),
     ]
@@ -382,10 +382,10 @@ def test_the_task_196_renames_are_in_the_builders_table():
 @pytest.mark.parametrize(
     ("builder", "kw", "old"),
     [
-        (po.spec.kmeans, dict(features=["x0", "x1"], n_clusters=2), "update_every"),
-        (po.spec.kmeans, dict(features=["x0", "x1"], n_clusters=2), "split_merge_every"),
-        (po.spec.corrchange, dict(features=["x0", "x1"], kind="window"), "permute_every"),
-        (po.spec.holt, dict(targets=["y"], half_life=None), "level_half_life"),
+        (rp.spec.kmeans, dict(features=["x0", "x1"], n_clusters=2), "update_every"),
+        (rp.spec.kmeans, dict(features=["x0", "x1"], n_clusters=2), "split_merge_every"),
+        (rp.spec.corrchange, dict(features=["x0", "x1"], kind="window"), "permute_every"),
+        (rp.spec.holt, dict(targets=["y"], half_life=None), "level_half_life"),
     ],
 )
 def test_a_task_196_parameter_is_refused_by_its_own_builder_naming_the_new_one(builder, kw, old):
@@ -424,14 +424,14 @@ def test_a_task_196_name_in_a_spec_dict_is_refused_naming_the_new_one(model, old
     if model["type"] == "ew_ridge":
         spec |= {"targets": ["y"], "features": ["x0"]}
     with pytest.raises(ValueError, match=old):
-        po.ModelBank([spec])
+        rp.ModelBank([spec])
 
 
 def test_the_model_type_is_ewridge_everywhere():
     """N1: the builder's, the README's and the core's spelling is the tag."""
-    s = po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)
+    s = rp.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)
     assert s["model"]["type"] == "ewridge"
-    bank = po.ModelBank(
+    bank = rp.ModelBank(
         [
             {
                 "name": "m",
@@ -449,9 +449,9 @@ def test_lagcorr_is_refused_naming_lag_corr_and_lag_corr_is_written_everywhere()
     """N10: the `stats` value, the field prefix and the state say `lag_corr`,
     as `partial_corr` does, and `marginal`'s lists follow."""
     with pytest.raises(ValueError, match='but it is "lagcorr", the old name of "lag_corr"'):
-        po.spec.ew_cov("c", features=["x0", "x1"], stats=["lagcorr"], lags=[1], half_life=10.0)
+        rp.spec.ew_cov("c", features=["x0", "x1"], stats=["lagcorr"], lags=[1], half_life=10.0)
     with pytest.raises(ValueError, match='stats lists "lagcorr", which was renamed "lag_corr"'):
-        po.ModelBank(
+        rp.ModelBank(
             [
                 {
                     "name": "c",
@@ -461,14 +461,14 @@ def test_lagcorr_is_refused_naming_lag_corr_and_lag_corr_is_written_everywhere()
                 }
             ]
         )
-    s = po.spec.ew_cov("c", features=["x0", "x1"], stats=["lag_corr"], lags=[1], half_life=10.0)
-    fields = po.spec.output_fields(s)
+    s = rp.spec.ew_cov("c", features=["x0", "x1"], stats=["lag_corr"], lags=[1], half_life=10.0)
+    fields = rp.spec.output_fields(s)
     assert "lag_corr_l1_x0_x1" in fields and not any("lagcorr" in f for f in fields)
-    assert "lagcorr" not in po.ModelBank([s]).write_json()
-    m = po.spec.marginal("m", targets=["y"], features=["x"], lags=[1], half_life=10.0)
+    assert "lagcorr" not in rp.ModelBank([s]).write_json()
+    m = rp.spec.marginal("m", targets=["y"], features=["x"], lags=[1], half_life=10.0)
     rng = np.random.default_rng(196)
     df = pl.DataFrame({"x": rng.standard_normal(50), "y": rng.standard_normal(50)})
-    bank = po.ModelBank([m])
+    bank = rp.ModelBank([m])
     bank.fit_predict(df)
     cols = bank.marginal("m").columns
     assert {"lag_corr_xx", "lag_corr_yy", "lag_corr_xy", "lag_corr_yx"} <= set(cols)
@@ -478,42 +478,42 @@ def test_lagcorr_is_refused_naming_lag_corr_and_lag_corr_is_written_everywhere()
 def test_kmeans_writes_dist_second():
     """N7: the distance to the second-nearest centre, which `dist2` read as
     the square of `dist`."""
-    s = po.spec.kmeans("k", features=["x0", "x1"], n_clusters=2, half_life=50.0)
-    fields = po.spec.output_fields(s)
+    s = rp.spec.kmeans("k", features=["x0", "x1"], n_clusters=2, half_life=50.0)
+    fields = rp.spec.output_fields(s)
     assert "dist_second" in fields and "dist2" not in fields
 
 
 def test_holt_takes_one_half_life():
     """N16: one knob, one dict shape, one TOML key."""
-    s = po.spec.holt("m", targets=["y"], half_life=20.0)
+    s = rp.spec.holt("m", targets=["y"], half_life=20.0)
     assert "level_half_life" not in s["model"] and s["half_life"] == 20.0
 
 
 _FRAME = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x": [1.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0]})
-_SPEC = po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)
+_SPEC = rp.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)
 
 
 def _chunk_calls():
     """Every call that takes the chunk size, as (name, call taking **kw)."""
     lf = _FRAME.lazy()
-    fitted = po.ModelBank([_SPEC])
+    fitted = rp.ModelBank([_SPEC])
     fitted.fit_predict(_FRAME)
-    window = po.ewm_mean("x", half_life=2.0)
+    window = rp.ewm_mean("x", half_life=2.0)
     refresh = pl.DataFrame({"s": ["a", "b"], "t": [0.0, 1.0], "v": [1.0, 2.0]})
     refresh_kw = dict(series="s", names=["a", "b"], clock="t", value="v")
     return [
-        ("ModelBank.fit", lambda **kw: po.ModelBank([_SPEC]).fit(lf, **kw)),
+        ("ModelBank.fit", lambda **kw: rp.ModelBank([_SPEC]).fit(lf, **kw)),
         (
             "ModelBank.fit_predict_batches",
-            lambda **kw: list(po.ModelBank([_SPEC]).fit_predict_batches(lf, **kw)),
+            lambda **kw: list(rp.ModelBank([_SPEC]).fit_predict_batches(lf, **kw)),
         ),
         ("lf.online.fit_predict", lambda **kw: lf.online.fit_predict([_SPEC], **kw).collect()),
         ("lf.online.predict", lambda **kw: lf.online.predict(fitted, **kw).collect()),
-        ("po.fit_predict", lambda **kw: po.fit_predict(lf, [_SPEC], **kw).collect()),
-        ("po.predict", lambda **kw: po.predict(lf, fitted, **kw).collect()),
+        ("po.fit_predict", lambda **kw: rp.fit_predict(lf, [_SPEC], **kw).collect()),
+        ("po.predict", lambda **kw: rp.predict(lf, fitted, **kw).collect()),
         (
             "po.stream.with_windows",
-            lambda **kw: po.stream.with_windows(lf, f=window, clock="t", gap_cap=5.0, **kw),
+            lambda **kw: rp.stream.with_windows(lf, f=window, clock="t", gap_cap=5.0, **kw),
         ),
         (
             "lf.online.with_windows",
@@ -525,7 +525,7 @@ def _chunk_calls():
         ),
         (
             "po.stream.refresh_time",
-            lambda **kw: po.stream.refresh_time(refresh.lazy(), **refresh_kw, **kw).collect(),
+            lambda **kw: rp.stream.refresh_time(refresh.lazy(), **refresh_kw, **kw).collect(),
         ),
     ]
 
@@ -557,41 +557,41 @@ def _scored_fit() -> pl.DataFrame:
         }
     )
     common = dict(targets=["y"], features=["x"], half_life=20.0, min_weight=5.0, group="g")
-    return po.ModelBank(
-        [po.spec.ewridge("m", **common), po.spec.ewridge("k", ridge=1.0, **common)]
+    return rp.ModelBank(
+        [rp.spec.ewridge("m", **common), rp.spec.ewridge("k", ridge=1.0, **common)]
     ).fit_predict(df)
 
 
 #: Each ``po.eval`` function with a renamed keyword, called with the
 #: keyword's old name: N3's ``by`` and ``min_obs``, and N4's ``window_size``.
 _OLD_EVAL_KEYWORDS = {
-    "metrics by": (lambda o: po.eval.metrics(o, "m", by=["g"]), "by", "group"),
-    "metrics min_obs": (lambda o: po.eval.metrics(o, "m", min_obs=1), "min_obs", "min_samples"),
+    "metrics by": (lambda o: rp.eval.metrics(o, "m", by=["g"]), "by", "group"),
+    "metrics min_obs": (lambda o: rp.eval.metrics(o, "m", min_obs=1), "min_obs", "min_samples"),
     "window_metrics by": (
-        lambda o: po.eval.window_metrics(o, "m", clock="t", every=50.0, by=["g"]),
+        lambda o: rp.eval.window_metrics(o, "m", clock="t", every=50.0, by=["g"]),
         "by",
         "group",
     ),
     "window_metrics min_obs": (
-        lambda o: po.eval.window_metrics(o, "m", clock="t", every=50.0, min_obs=1),
+        lambda o: rp.eval.window_metrics(o, "m", clock="t", every=50.0, min_obs=1),
         "min_obs",
         "min_samples",
     ),
     "window_metrics window_size": (
-        lambda o: po.eval.window_metrics(o, "m", clock="t", window_size=50.0),
+        lambda o: rp.eval.window_metrics(o, "m", clock="t", window_size=50.0),
         "window_size",
         "every",
     ),
-    "compare_specs by": (lambda o: po.eval.compare_specs(o, ["m"], by=["g"]), "by", "group"),
+    "compare_specs by": (lambda o: rp.eval.compare_specs(o, ["m"], by=["g"]), "by", "group"),
     "compare_specs min_obs": (
-        lambda o: po.eval.compare_specs(o, ["m"], min_obs=1),
+        lambda o: rp.eval.compare_specs(o, ["m"], min_obs=1),
         "min_obs",
         "min_samples",
     ),
-    "sums by": (lambda o: po.eval.sums(o, "m", by=["g"]), "by", "group"),
-    "seqtest by": (lambda o: po.eval.seqtest(o, a="m", b="k", by=["g"]), "by", "group"),
+    "sums by": (lambda o: rp.eval.sums(o, "m", by=["g"]), "by", "group"),
+    "seqtest by": (lambda o: rp.eval.seqtest(o, a="m", b="k", by=["g"]), "by", "group"),
     "from_sums min_obs": (
-        lambda o: po.eval.from_sums(po.eval.sums(o, "m"), min_obs=1),
+        lambda o: rp.eval.from_sums(rp.eval.sums(o, "m"), min_obs=1),
         "min_obs",
         "min_samples",
     ),
@@ -613,28 +613,28 @@ def test_an_eval_keyword_renamed_is_refused_naming_the_new_one(case):
 
 def test_the_new_eval_keywords_are_the_old_ones_renamed():
     out = _scored_fit()
-    m = po.eval.metrics(out, "m", group=["g"], min_samples=150)  # too few: null, not dropped
+    m = rp.eval.metrics(out, "m", group=["g"], min_samples=150)  # too few: null, not dropped
     assert m.height == 2 and m["r2"].null_count() == 2
-    m = po.eval.metrics(out, "m", group=["g"], min_samples=50)
+    m = rp.eval.metrics(out, "m", group=["g"], min_samples=50)
     scored = out.group_by("g").agg(pl.col("m").struct.field("pred_y").is_not_null().sum()).sort("g")
     assert m["g"].to_list() == ["a", "b"] and m["n"].to_list() == scored["pred_y"].to_list()
-    s = po.eval.from_sums(po.eval.sums(out, "m", group=["g"]), min_samples=50)
+    s = rp.eval.from_sums(rp.eval.sums(out, "m", group=["g"]), min_samples=50)
     assert s["g"].to_list() == ["a", "b"]
-    w = po.eval.window_metrics(out, "m", clock="t", every=50.0, group=["g"], min_samples=5)
+    w = rp.eval.window_metrics(out, "m", clock="t", every=50.0, group=["g"], min_samples=5)
     assert w["window_start"].unique().sort().to_list() == [0.0, 50.0, 100.0, 150.0]
-    c = po.eval.compare_specs(out, ["m", "k"], group=["g"], min_samples=50)
+    c = rp.eval.compare_specs(out, ["m", "k"], group=["g"], min_samples=50)
     assert c["spec"].to_list() == ["m", "m", "k", "k"]
 
 
 #: Each function taking ``group``, called with a bare string and with a list.
 _GROUPED = {
-    "metrics": lambda o, g: po.eval.metrics(o, "m", group=g, min_samples=1),
-    "window_metrics": lambda o, g: po.eval.window_metrics(
+    "metrics": lambda o, g: rp.eval.metrics(o, "m", group=g, min_samples=1),
+    "window_metrics": lambda o, g: rp.eval.window_metrics(
         o, "m", clock="t", every=50.0, group=g, min_samples=1
     ),
-    "compare_specs": lambda o, g: po.eval.compare_specs(o, ["m", "k"], group=g, min_samples=1),
-    "sums": lambda o, g: po.eval.sums(o, "m", group=g),
-    "seqtest": lambda o, g: po.eval.seqtest(o, a="m", b="k", group=g),
+    "compare_specs": lambda o, g: rp.eval.compare_specs(o, ["m", "k"], group=g, min_samples=1),
+    "sums": lambda o, g: rp.eval.sums(o, "m", group=g),
+    "seqtest": lambda o, g: rp.eval.seqtest(o, a="m", b="k", group=g),
 }
 
 
@@ -659,9 +659,9 @@ def test_rolling_metrics_is_window_metrics_with_every():
         TypeError,
         match="^po.eval.rolling_metrics: this function was renamed po.eval.window_metrics",
     ):
-        po.eval.rolling_metrics(out, "m", clock="t", window_size=50.0)
-    assert "rolling_metrics" not in po.eval.__all__ and "window_metrics" in po.eval.__all__
-    got = po.eval.window_metrics(out, "m", clock="t", every=50.0, min_samples=1)
+        rp.eval.rolling_metrics(out, "m", clock="t", window_size=50.0)
+    assert "rolling_metrics" not in rp.eval.__all__ and "window_metrics" in rp.eval.__all__
+    got = rp.eval.window_metrics(out, "m", clock="t", every=50.0, min_samples=1)
     assert got["window_start"].to_list() == [0.0, 50.0, 100.0, 150.0]
     bucket = (pl.col("t") // 50.0).alias("bucket")
     scored = out.group_by(bucket).agg(pl.col("m").struct.field("pred_y").is_not_null().sum())
@@ -672,7 +672,7 @@ def test_rows_seen_is_rows_fed():
     """Task 194 (N9, PA11): the count the frames call ``rows_fed``. The old
     method stays as a stub that raises naming the new one, as the helpers'
     renamed functions do (``tests/test_state_frames.py`` holds the count)."""
-    bank = po.ModelBank([po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)])
+    bank = rp.ModelBank([rp.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)])
     with pytest.raises(
         AttributeError,
         match=r"^ModelBank\.rows_seen: it was renamed rows_fed, a property\. Read bank\.rows_fed, "
@@ -691,30 +691,30 @@ def test_corr_shift_is_absorption_shift():
         match="^po.corr.shift: this function was renamed po.corr.absorption_shift\\. "
         "Call po.corr.absorption_shift instead\\.$",
     ):
-        po.corr.shift(fast, slow)
-    assert "shift" not in po.corr.__all__ and "absorption_shift" in po.corr.__all__
-    assert np.allclose(po.corr.absorption_shift(fast, slow, scale=0.1), [1.0, 2.0, 2.0])
+        rp.corr.shift(fast, slow)
+    assert "shift" not in rp.corr.__all__ and "absorption_shift" in rp.corr.__all__
+    assert np.allclose(rp.corr.absorption_shift(fast, slow, scale=0.1), [1.0, 2.0, 2.0])
 
 
 def test_lasso_path_takes_penalties():
     """N6 (YB20): the spec takes the path as ``penalties=`` and ``coef()``
     reports each as ``penalty``; the offline path took them as ``lambdas``."""
-    bank = po.ModelBank(
-        [po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=50.0)]
+    bank = rp.ModelBank(
+        [rp.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=50.0)]
     )
     rng = np.random.default_rng(6)
     x = rng.standard_normal((100, 2))
     bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": x @ [1.0, -0.5] + 0.1}))
     g = bank.gram("m")[0]
-    want = po.gram.lasso_path(g, [0.1, 0.01])
-    assert np.array_equal(po.gram.lasso_path(g, penalties=[0.1, 0.01]), want)
+    want = rp.gram.lasso_path(g, [0.1, 0.01])
+    assert np.array_equal(rp.gram.lasso_path(g, penalties=[0.1, 0.01]), want)
     with pytest.raises(
         TypeError,
         match="^po.gram.lasso_path: lambdas was renamed penalties\\. Use penalties instead\\.$",
     ):
-        po.gram.lasso_path(g, lambdas=[0.1, 0.01])
+        rp.gram.lasso_path(g, lambdas=[0.1, 0.01])
     with pytest.raises(ValueError, match="penalties must be finite and at least 0"):
-        po.gram.lasso_path(g, [-1.0])
+        rp.gram.lasso_path(g, [-1.0])
 
 
 @pytest.mark.parametrize(
@@ -731,4 +731,4 @@ def test_a_module_constant_the_docs_name_is_exported(module, name):
     """N24 (YB9): docstrings link these with ``:data:``, tests and readers
     use them, and outside ``__all__`` the reference rendered none of them,
     so every ``:data:`` link was dead."""
-    assert name in getattr(po, module).__all__
+    assert name in getattr(rp, module).__all__

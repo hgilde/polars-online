@@ -20,8 +20,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from rheon import gram as pg
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -53,7 +53,7 @@ def frame(n_blocks: int = 6, per: int = 300, seed: int = 0, absent: int | None =
 
 
 def blocks(df: pl.DataFrame, **gram) -> list[dict[str, Any]]:
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y", "y2"],
         features=FEATURES,
@@ -62,7 +62,7 @@ def blocks(df: pl.DataFrame, **gram) -> list[dict[str, Any]]:
         min_weight=5.0,
         target_gaps="pairwise",
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     return bank.gram("m", **gram)
 

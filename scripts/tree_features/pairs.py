@@ -18,7 +18,7 @@ import common as C  # noqa: E402
 import numpy as np  # noqa: E402
 import polars as pl  # noqa: E402
 
-import rheon as po  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 
 P = 20
 TRUE = {(4, 5), (6, 7), (8, 9), (10, 11)}
@@ -133,10 +133,10 @@ def residual_online(x, y, e, B):
     b = binned(x, e)
     cols = {f"b{j}_{k}": (b[:, j] == k).astype(float) for j in range(P) for k in range(1, B)}
     d = pl.DataFrame({"c": np.arange(len(y), dtype=float), "y": y, **cols})
-    s = po.spec.ewridge(
+    s = rp.spec.ewridge(
         "o", targets=["y"], features=list(cols), clock="c", gap_cap=10.0, half_life=1e9, ridge=1e-3
     )
-    p = po.ModelBank([s]).fit_predict(d)["o"].struct.field("pred_y").to_numpy()
+    p = rp.ModelBank([s]).fit_predict(d)["o"].struct.field("pred_y").to_numpy()
     return y - np.nan_to_num(p, nan=0.0)
 
 

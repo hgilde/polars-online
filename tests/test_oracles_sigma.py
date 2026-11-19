@@ -27,7 +27,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 from test_oracles_lasso_paths import FEATURES, TARGETS, _stream
 
 TIER = "essential"
@@ -95,32 +95,32 @@ def _spec(model, half_life, *, gated=True):
     elif model != "ewridge":
         kw["min_weight"] = 0.0
     if model == "ewridge":
-        return po.spec.ewridge("m", ridge=[1e-6, 0.5], max_error_inflation=float("inf"), **kw)
+        return rp.spec.ewridge("m", ridge=[1e-6, 0.5], max_error_inflation=float("inf"), **kw)
     if model == "lasso":
-        return po.spec.lasso("m", penalties=[0.1, 0.0], **kw)
+        return rp.spec.lasso("m", penalties=[0.1, 0.0], **kw)
     if model == "huber":
-        return po.spec.huber("m", **kw)
+        return rp.spec.huber("m", **kw)
     if model == "rls":
         # ``rls`` learns only from a row with every target (its documented
         # null policy), so on this stream its targets' weight tops out near
         # 9.4: the floor is lowered to keep 150 scored rows of each.
         if gated:
             kw["min_weight"] = [5.0, 5.0, 5.0]
-        return po.spec.rls("m", delta=1.0, **kw)
+        return rp.spec.rls("m", delta=1.0, **kw)
     if model == "kalman":
         # `min_weight` withholds kalman's output alone (task 278, D10), so
         # the ungated run's residuals are the gated run's own predictions'.
-        return po.spec.kalman("m", coef_half_life=100.0, **kw)
+        return rp.spec.kalman("m", coef_half_life=100.0, **kw)
     if model == "quantile":
-        return po.spec.quantile("m", quantile=0.5, **kw)
+        return rp.spec.quantile("m", quantile=0.5, **kw)
     if model == "pa":
-        return po.spec.pa("m", **kw)
+        return rp.spec.pa("m", **kw)
     if model == "ftrl":
-        return po.spec.ftrl("m", loss="squared", **kw)
+        return rp.spec.ftrl("m", loss="squared", **kw)
     if model == "holt":
         kw.pop("features")
-        return po.spec.holt("m", **kw)
-    return po.spec.sgd("m", learning_rate=0.02, **kw)
+        return rp.spec.holt("m", **kw)
+    return rp.spec.sgd("m", learning_rate=0.02, **kw)
 
 
 # The 0.5 slot is ridge-dominated on purpose, which ReadinessWarning says.
@@ -157,9 +157,9 @@ def _spec(model, half_life, *, gated=True):
 def test_sigma_is_the_ew_rms_of_the_residuals_before_the_row(model, half_life):
     df = _stream(61)
     spec = _spec(model, half_life)
-    out = po.ModelBank([spec]).fit_predict(df)["m"]
-    free = po.ModelBank([_spec(model, half_life, gated=False)]).fit_predict(df)["m"]
-    index = po.spec.output_index(spec)
+    out = rp.ModelBank([spec]).fit_predict(df)["m"]
+    free = rp.ModelBank([_spec(model, half_life, gated=False)]).fit_predict(df)["m"]
+    index = rp.spec.output_index(spec)
     clock, w = _capped_clock(df, features=model != "holt"), df["w"].to_numpy()
     slots = index.filter(pl.col("kind") == "sigma")
     assert slots.height >= 3

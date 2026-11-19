@@ -62,7 +62,7 @@ from the eleventh session on:
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # 40 sessions of 300 rows. Each session's slope is drawn around a long-run slope of 2.
 rng = np.random.default_rng(5)

@@ -10,8 +10,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from conftest import run_online
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -25,11 +25,11 @@ def _spec(**kw):
         learning_rate=0.05,
     )
     d.update(kw)
-    return po.spec.sgd("m", **d)
+    return rp.spec.sgd("m", **d)
 
 
 def _fit(df, **kw):
-    out = po.ModelBank([_spec(coef_every=1, **kw)]).fit_predict(df)
+    out = rp.ModelBank([_spec(coef_every=1, **kw)]).fit_predict(df)
     return np.array(out["m"].struct.field("coef").to_list()[-1], dtype=float), out
 
 
@@ -168,8 +168,8 @@ class TestSchedules:
         278, batch 18)."""
         df = _linear(n=3000, seed=12, noise=0.5)
         kw = dict(half_life=200.0, learning_rate=lr, standardize=standardize)
-        power0 = po.ModelBank([_spec(schedule="inv_scaling", power=0.0, **kw)]).fit_predict(df)
-        constant = po.ModelBank([_spec(**kw)]).fit_predict(df)
+        power0 = rp.ModelBank([_spec(schedule="inv_scaling", power=0.0, **kw)]).fit_predict(df)
+        constant = rp.ModelBank([_spec(**kw)]).fit_predict(df)
         assert power0.equals(constant, null_equal=True)
 
 
@@ -177,8 +177,8 @@ class TestPlumbing:
     def test_chunk_invariance(self):
         df = _linear(n=400, seed=9)
         spec = _spec()
-        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-        bank = po.ModelBank([spec])
+        one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = rp.ModelBank([spec])
         many = (
             pl.concat([bank.fit_predict(df.slice(i, 37)) for i in range(0, df.height, 37)])
             .select("m")
@@ -190,11 +190,11 @@ class TestPlumbing:
     def test_save_load(self, tmp_path):
         df = _linear(n=400, seed=10)
         spec = _spec(schedule="adagrad", learning_rate=0.5)
-        a = po.ModelBank([spec])
+        a = rp.ModelBank([spec])
         a.fit_predict(df.slice(0, 200))
         p = tmp_path / "s.state"
         a.save(p)
-        b = po.ModelBank.load(p, specs=[spec])
+        b = rp.ModelBank.load(p, specs=[spec])
         rest = df.slice(200, 200)
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
@@ -301,7 +301,7 @@ class TestFeatureScaling:
         x0 = 1000.0 * rng.standard_normal(n)
         x1 = 0.001 * rng.standard_normal(n)
         df = pl.DataFrame({"x0": x0, "x1": x1, "y0": 0.002 * x0 + 900.0 * x1})
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -311,7 +311,7 @@ class TestFeatureScaling:
             standardize=scale,
             coef_every=1,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         return np.array(out["m"].struct.field("coef").to_list()[-1], dtype=float)
 
     @staticmethod
@@ -331,7 +331,7 @@ class TestFeatureScaling:
     def test_on_by_default(self):
         """As for ``kalman`` (docs/PLAN.md task 195, U2): one learning rate has
         to suit every feature, which only standardized features let it do."""
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m", targets=["y0"], features=["x0"], half_life=100.0, learning_rate=0.01
         )
         assert spec["model"]["standardize"] is True
@@ -341,7 +341,7 @@ class TestFeatureScaling:
         n = 400
         x0 = 100.0 * rng.standard_normal(n)
         df = pl.DataFrame({"x0": x0, "x1": rng.standard_normal(n), "y0": 0.01 * x0})
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -350,8 +350,8 @@ class TestFeatureScaling:
             min_weight=5.0,
             standardize=True,
         )
-        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-        bank = po.ModelBank([spec])
+        one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = rp.ModelBank([spec])
         many = (
             pl.concat([bank.fit_predict(df.slice(i, 37)) for i in range(0, df.height, 37)])
             .select("m")
@@ -393,7 +393,7 @@ class TestFeatureScaling:
         n_groups, rows_per, k = 500, 200, 20
         x, y, df = self._groups(n_groups, rows_per, k)
         pos = np.tile(np.arange(rows_per), n_groups)
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=["y0"],
             features=[f"x{j}" for j in range(k)],
@@ -403,7 +403,7 @@ class TestFeatureScaling:
             min_weight=25.0,
             standardize=True,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         pred = out["m"].struct.field("pred_y0").to_numpy().astype(float)
         early = self._r2(pred, y, (pos >= 25) & (pos < 50))
         late = self._r2(pred, y, (pos >= 100) & (pos < 200))
@@ -430,7 +430,7 @@ class TestFeatureScaling:
         n_groups, rows_per, k = 40, 200, 20
         x, y, df = self._groups(n_groups, rows_per, k)
         pos = np.tile(np.arange(rows_per), n_groups)
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=["y0"],
             features=[f"x{j}" for j in range(k)],
@@ -440,7 +440,7 @@ class TestFeatureScaling:
             min_weight=25.0,
             standardize=True,
         )
-        ours = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y0").to_numpy()
+        ours = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y0").to_numpy()
         theirs = np.full(len(y), np.nan)
         for gi in range(n_groups):
             lo = gi * rows_per
@@ -475,7 +475,7 @@ class TestFeatureScaling:
         n_groups, rows_per, k = 3, 200, 5
         lr, min_weight = 0.03, 10
         x, y, df = self._groups(n_groups, rows_per, k, seed=1)
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=["y0"],
             features=[f"x{j}" for j in range(k)],
@@ -485,7 +485,7 @@ class TestFeatureScaling:
             min_weight=float(min_weight),
             standardize=True,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         pred = out["m"].struct.field("pred_y0").to_numpy().astype(float)
 
         want = np.full(len(y), np.nan)
@@ -536,7 +536,7 @@ class TestFeatureScaling:
         df = pl.DataFrame({f"x{j}": x[:, j] for j in range(k)}).with_columns(y0=pl.Series(y))
         preds = {}
         for scale in (False, True):
-            spec = po.spec.sgd(
+            spec = rp.spec.sgd(
                 "m",
                 targets=["y0"],
                 features=[f"x{j}" for j in range(k)],
@@ -545,7 +545,7 @@ class TestFeatureScaling:
                 min_weight=50.0,
                 standardize=scale,
             )
-            out = po.ModelBank([spec]).fit_predict(df)
+            out = rp.ModelBank([spec]).fit_predict(df)
             preds[scale] = out["m"].struct.field("pred_y0").to_numpy().astype(float)
         ok = np.arange(n) >= 50
         unscaled, scaled = self._r2(preds[False], y, ok), self._r2(preds[True], y, ok)
@@ -579,7 +579,7 @@ def test_a_raw_spec_with_a_parameter_nothing_reads_is_refused(extra, msg, tmp_pa
     spec = _spec()
     raw = dict(spec, model={**spec["model"], **extra})
     with pytest.raises(ValueError, match=f'spec "m": {msg}, which does not use it'):
-        po.ModelBank([raw])
+        rp.ModelBank([raw])
     _linear(n=50).write_parquet(tmp_path / "in.parquet")
     res = run_online(
         rheon_cli,
@@ -595,7 +595,7 @@ def test_a_raw_spec_with_a_parameter_nothing_reads_is_refused(extra, msg, tmp_pa
     # The builder's own dict carries each as a null, which is the default,
     # not a value given.
     assert all(spec["model"][k] is None for k in extra), spec["model"]
-    po.ModelBank([spec])
+    rp.ModelBank([spec])
 
 
 def _cc4(scale_y=1.0, scale_x=1.0, n=3000):
@@ -607,8 +607,8 @@ def _cc4(scale_y=1.0, scale_x=1.0, n=3000):
 
 
 def _oos_r2(df, **kw):
-    spec = po.spec.sgd("s", targets=["y"], features=["x"], half_life=1e9, min_weight=5.0, **kw)
-    p = po.ModelBank([spec]).fit_predict(df)["s"].struct.field("pred_y").to_numpy()
+    spec = rp.spec.sgd("s", targets=["y"], features=["x"], half_life=1e9, min_weight=5.0, **kw)
+    p = rp.ModelBank([spec]).fit_predict(df)["s"].struct.field("pred_y").to_numpy()
     y = df["y"].to_numpy()
     ok = np.isfinite(p)
     return 1.0 - np.sum((y[ok] - p[ok]) ** 2) / np.sum((y[ok] - y[ok].mean()) ** 2)
@@ -637,7 +637,7 @@ class TestUnitFreeDefaults:
         for c in (2.0**-10, 1.0, 2.0**10):
             df = _cc4(scale_y=c)
             for loss in ("huber", "squared"):
-                spec = po.spec.sgd(
+                spec = rp.spec.sgd(
                     "s",
                     targets=["y"],
                     features=["x"],
@@ -646,7 +646,7 @@ class TestUnitFreeDefaults:
                     loss=loss,
                     clip_gradient=float("inf"),
                 )
-                out = po.ModelBank([spec]).fit_predict(df)["s"].struct.field("pred_y")
+                out = rp.ModelBank([spec]).fit_predict(df)["s"].struct.field("pred_y")
                 preds[c, loss] = out.to_numpy() / c
             differ = np.sum(preds[c, "huber"][5:] != preds[c, "squared"][5:])
             assert differ > 2000, f"scale {c}: the cut bound on {differ} rows"
@@ -666,15 +666,15 @@ class TestLogisticLabels:
         return pl.DataFrame({"x": x, "y": np.where(x + 0.5 * rng.normal(size=600) > 0, hi, 0.0)})
 
     def test_a_label_above_one_is_clamped_to_one(self):
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m", targets=["y"], features=["x"], half_life=1e9, min_weight=5.0, loss="logistic"
         )
-        five = po.ModelBank([spec]).fit_predict(self._frame(5.0))
-        one = po.ModelBank([spec]).fit_predict(self._frame(1.0))
+        five = rp.ModelBank([spec]).fit_predict(self._frame(5.0))
+        one = rp.ModelBank([spec]).fit_predict(self._frame(1.0))
         assert five["m"].struct.field("pred_y").equals(one["m"].struct.field("pred_y"))
 
     def test_strict_binary_refuses_the_chunk_naming_the_row(self):
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=["y"],
             features=["x"],
@@ -682,20 +682,20 @@ class TestLogisticLabels:
             loss="logistic",
             strict_binary=True,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         with pytest.raises(
             ValueError, match=r"has the value .* but strict_binary takes only 0 or 1"
         ):
             bank.fit_predict(self._frame(5.0))
-        po.ModelBank([spec]).fit_predict(self._frame(1.0))
+        rp.ModelBank([spec]).fit_predict(self._frame(1.0))
 
     def test_strict_binary_is_for_the_logistic_loss(self):
         with pytest.raises(ValueError, match="strict_binary"):
-            po.spec.sgd("m", targets=["y"], features=["x"], half_life=1e9, strict_binary=True)
+            rp.spec.sgd("m", targets=["y"], features=["x"], half_life=1e9, strict_binary=True)
 
     @staticmethod
     def _strict(strict=True, **kw):
-        return po.spec.sgd(
+        return rp.spec.sgd(
             "m",
             targets=["y"],
             features=["x"],
@@ -713,8 +713,8 @@ class TestLogisticLabels:
             y=pl.when(pl.int_range(pl.len()) % 7 == 3).then(None).otherwise(pl.col("y"))
         )
         assert df["y"].null_count() > 50
-        strict = po.ModelBank([self._strict()]).fit_predict(df)
-        assert strict.equals(po.ModelBank([self._strict(False)]).fit_predict(df), null_equal=True)
+        strict = rp.ModelBank([self._strict()]).fit_predict(df)
+        assert strict.equals(rp.ModelBank([self._strict(False)]).fit_predict(df), null_equal=True)
 
     def test_negative_zero_is_the_label_zero_and_nan_is_a_null(self):
         """``-0.0`` equals 0 and is taken as it; a NaN label is no label, a
@@ -722,13 +722,13 @@ class TestLogisticLabels:
         df = self._frame(1.0)
         signed = df.with_columns(y=pl.when(pl.col("y") == 0.0).then(-0.0).otherwise(pl.col("y")))
         assert np.signbit(signed["y"].to_numpy()).sum() > 200
-        out = po.ModelBank([self._strict()]).fit_predict(signed)["m"]
-        assert out.equals(po.ModelBank([self._strict()]).fit_predict(df)["m"], null_equal=True)
+        out = rp.ModelBank([self._strict()]).fit_predict(signed)["m"]
+        assert out.equals(rp.ModelBank([self._strict()]).fit_predict(df)["m"], null_equal=True)
         nan = df.with_columns(y=pl.when(pl.col("x") > 1.5).then(np.nan).otherwise(pl.col("y")))
         null = nan.with_columns(pl.col("y").fill_nan(None))
         assert null["y"].null_count() > 20
-        got = po.ModelBank([self._strict()]).fit_predict(nan)["m"]
-        assert got.equals(po.ModelBank([self._strict()]).fit_predict(null)["m"], null_equal=True)
+        got = rp.ModelBank([self._strict()]).fit_predict(nan)["m"]
+        assert got.equals(rp.ModelBank([self._strict()]).fit_predict(null)["m"], null_equal=True)
 
     @pytest.mark.parametrize("row", [0, 299], ids=["first-row", "last-row"])
     def test_a_refused_chunk_leaves_the_bank_as_it_was(self, row):
@@ -738,7 +738,7 @@ class TestLogisticLabels:
         one."""
         df = self._frame(1.0)
         first, second = df.slice(0, 300), df.slice(300, 300)
-        bank = po.ModelBank([self._strict()])
+        bank = rp.ModelBank([self._strict()])
         bank.fit_predict(first)
         before = bank.save_bytes()
         bad = second.with_columns(
@@ -750,14 +750,14 @@ class TestLogisticLabels:
         ):
             bank.fit_predict(bad)
         assert bank.save_bytes() == before, "the refused chunk touched the bank"
-        clean = po.ModelBank([self._strict()])
+        clean = rp.ModelBank([self._strict()])
         clean.fit_predict(first)
         assert bank.fit_predict(second).equals(clean.fit_predict(second), null_equal=True)
 
     def test_a_refusal_under_a_group_touches_no_group(self):
         df = self._frame(1.0).with_columns(g=pl.int_range(pl.len()) % 3)
         spec = self._strict(group="g")
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df.slice(0, 300))
         before = bank.save_bytes()
         bad = df.slice(300, 300).with_columns(
@@ -779,7 +779,7 @@ class TestLogisticLabels:
         with pytest.raises(
             ValueError, match=r"has the value 0.5 at row 40 .*Set the target to null on rows"
         ):
-            po.ModelBank([self._strict(weight="w")]).fit_predict(df)
+            rp.ModelBank([self._strict(weight="w")]).fit_predict(df)
 
 
 class TestATargetBelowZero:
@@ -804,10 +804,10 @@ class TestATargetBelowZero:
 
     @staticmethod
     def _pred(df, **kw):
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m", targets=["y0"], features=["x0", "x1"], half_life=500.0, min_weight=10.0, **kw
         )
-        return po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y0").to_numpy()
+        return rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y0").to_numpy()
 
     @pytest.mark.parametrize(
         ("kw", "mirrored"),
@@ -861,41 +861,41 @@ class TestNegativeCounts:
 
     @staticmethod
     def _spec():
-        return po.spec.sgd(
+        return rp.spec.sgd(
             "m", targets=["y"], features=["x"], half_life=1e9, min_weight=2.0, loss="poisson"
         )
 
     def test_a_negative_count_refuses_the_chunk_naming_the_row(self):
         counts = [1.0, 0.0, 3.0, 2.0, -1.0, 4.0]
-        bank = po.ModelBank([self._spec()])
+        bank = rp.ModelBank([self._spec()])
         with pytest.raises(
             ValueError, match=r'"y" has the value -1 at row 4 .*poisson.*never negative'
         ):
             bank.fit_predict(self._frame(counts))
         # Before any stream is touched: the bank goes on as a new one does.
         good = self._frame([2.0, 0.0, 1.0, 5.0])
-        assert bank.fit_predict(good).equals(po.ModelBank([self._spec()]).fit_predict(good))
+        assert bank.fit_predict(good).equals(rp.ModelBank([self._spec()]).fit_predict(good))
 
     def test_the_row_is_counted_across_one_inputs_chunks(self):
         chunks = [self._frame([1.0, 2.0, 3.0]), self._frame([0.0, -0.5, 2.0])]
         with pytest.raises(ValueError, match=r"has the value -0\.5 at row 4 \(counting from 0\)"):
-            list(po.ModelBank([self._spec()]).fit_predict_batches(iter(chunks)))
+            list(rp.ModelBank([self._spec()]).fit_predict_batches(iter(chunks)))
 
     def test_negative_zero_is_the_count_zero_and_a_null_is_scored(self):
         """`-0.0` is not below zero: it fits as `0.0` does. A null target is
         scored and not learned, as everywhere."""
         y = [1.0, 0.0, 2.0, -0.0, None, 3.0, 1.0]
         df = self._frame([0.0] * len(y)).with_columns(y=pl.Series(y, dtype=pl.Float64))
-        out = po.ModelBank([self._spec()]).fit_predict(df)["m"].struct.field("pred_y")
+        out = rp.ModelBank([self._spec()]).fit_predict(df)["m"].struct.field("pred_y")
         zero = df.with_columns(y=pl.col("y").abs())
         assert out.equals(
-            po.ModelBank([self._spec()]).fit_predict(zero)["m"].struct.field("pred_y")
+            rp.ModelBank([self._spec()]).fit_predict(zero)["m"].struct.field("pred_y")
         )
         assert out[4] is not None, "the null target's row is scored"
 
     def test_another_loss_takes_a_negative_target(self):
-        spec = po.spec.sgd("m", targets=["y"], features=["x"], half_life=1e9, min_weight=2.0)
-        po.ModelBank([spec]).fit_predict(self._frame([1.0, -2.0, -3.0, 4.0]))
+        spec = rp.spec.sgd("m", targets=["y"], features=["x"], half_life=1e9, min_weight=2.0)
+        rp.ModelBank([spec]).fit_predict(self._frame([1.0, -2.0, -3.0, 4.0]))
 
 
 def test_a_poisson_fits_hit_rate_is_null():
@@ -907,7 +907,7 @@ def test_a_poisson_fits_hit_rate_is_null():
     rng = np.random.default_rng(3)
     n = 2000
     df = pl.DataFrame({"x": rng.normal(size=n), "y": rng.poisson(2.0, size=n).astype(float)})
-    spec = po.spec.sgd(
+    spec = rp.spec.sgd(
         "s",
         targets=["y"],
         features=["x"],
@@ -916,7 +916,7 @@ def test_a_poisson_fits_hit_rate_is_null():
         loss="poisson",
         emit_metrics=True,
     )
-    out = po.ModelBank([spec]).fit_predict(df)["s"].struct.unnest()
+    out = rp.ModelBank([spec]).fit_predict(df)["s"].struct.unnest()
     assert out["hit_rate_y"].null_count() == n
     assert out["r2_y"].drop_nulls().len() > n - 20
 
@@ -932,7 +932,7 @@ SEEDS = [0, 1, 2] + [
 
 def _coefs(df, **kw) -> tuple[np.ndarray, pl.DataFrame]:
     """Every row's coefficients after it, and the output."""
-    out = po.ModelBank([_spec(coef_every=1, **kw)]).fit_predict(df)
+    out = rp.ModelBank([_spec(coef_every=1, **kw)]).fit_predict(df)
     rows = out["m"].struct.field("coef").to_list()
     width = len(rows[-1])
     return np.array([[np.nan] * width if r is None else r for r in rows], float), out
@@ -1058,7 +1058,7 @@ class TestARateOf1e300:
         )
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            out = po.ModelBank([spec]).fit_predict(_stream_for(loss))["m"].struct.unnest()
+            out = rp.ModelBank([spec]).fit_predict(_stream_for(loss))["m"].struct.unnest()
         coef = np.array([r for r in out["coef"].to_list() if r is not None], float)
         assert np.isfinite(coef).all(), "a coefficient left the doubles"
         assert np.abs(coef).max() > 1e250, "the rate never reached the fit"

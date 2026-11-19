@@ -60,8 +60,6 @@ are in its builder's docstring.
        scored
    * - :doc:`sim`
      - a seeded simulator of correlation regimes, its truth beside the data
-   * - :doc:`gbdt`
-     - XGBoost's and LightGBM's training inputs, binned from a stream
 
 .. toctree::
    :maxdepth: 2
@@ -76,4 +74,3 @@ are in its builder's docstring.
    gram
    corr
    sim
-   gbdt

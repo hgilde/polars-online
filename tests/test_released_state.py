@@ -48,8 +48,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from data import Offline, is_transient, pypi_releases
+from rheon import polars as rp
 
 TIER = "extended"
 
@@ -460,7 +460,7 @@ def test_every_spec_was_saved_by_the_release_at_an_older_schema(refused):
         if name not in reach and not _parameter_newer(name, version):
             assert why.startswith("AttributeError") and name in why, (name, why)
     # An older schema: the refusal below is by the version, not the layout.
-    assert manifest["schema"] < po.schema_version()
+    assert manifest["schema"] < rp.schema_version()
 
 
 def test_a_pre_1_0_state_is_refused_by_its_version(refused):
@@ -471,7 +471,7 @@ def test_a_pre_1_0_state_is_refused_by_its_version(refused):
             continue
         specs = [built[r] for r in reads] + [built[name]]
         with pytest.raises(ValueError) as e:
-            po.ModelBank.load(states / f"{name}.state", specs=specs)
+            rp.ModelBank.load(states / f"{name}.state", specs=specs)
         message = str(e.value)
         assert "written by a version of polars-online older than this one reads" in message, message
         assert "fit it on its input" in message, message
@@ -523,7 +523,7 @@ def _worst_gap(got: pl.DataFrame, want: pl.DataFrame) -> float:
     return worst
 
 
-def _tables(bank: po.ModelBank, name: str) -> list[pl.DataFrame]:
+def _tables(bank: rp.ModelBank, name: str) -> list[pl.DataFrame]:
     """What a model keeps and a row does not show (``probe.tables``): the
     rows a closed group emits, the coefficients where the kind has them (the
     rest refuse by name), and ``marginal``'s pairs table."""
@@ -550,8 +550,8 @@ def test_a_released_state_loads_and_goes_on_as_this_builds_own(loaded):
         if name not in manifest["saved"]:
             continue
         specs = [built[r] for r in reads] + [built[name]]
-        file_bank = po.ModelBank.load(states / f"{name}.state", specs=specs)
-        own = po.ModelBank(specs)
+        file_bank = rp.ModelBank.load(states / f"{name}.state", specs=specs)
+        own = rp.ModelBank(specs)
         own.fit_predict(first)
         got_rows = file_bank.fit_predict(second).select(name)
         want_rows = own.fit_predict(second).select(name)
@@ -851,7 +851,7 @@ def _fresh(spec: list[dict], second: pl.DataFrame, after: np.ndarray, name: str)
     the stream's order."""
     rows = second.with_row_index("_at").filter(pl.Series(after))
     parts = [
-        po.ModelBank(spec).fit_predict(rows.filter(pl.col("g") == g)).select("_at", name)
+        rp.ModelBank(spec).fit_predict(rows.filter(pl.col("g") == g)).select("_at", name)
         for g in rows["g"].unique(maintain_order=True)
     ]
     return pl.concat(parts).sort("_at").drop("_at")
@@ -874,7 +874,7 @@ def test_a_moved_spec_goes_on_as_its_release_did(resumed):
     used: dict[str, int] = {"young": 0, "reset": 0, "conformal": 0, "converted": 0}
     for name in names:
         specs = [built[r] for r in work[name]] + [built[name]]
-        bank = po.ModelBank.load(states / f"{name}.state", specs=specs)
+        bank = rp.ModelBank.load(states / f"{name}.state", specs=specs)
         got = {"rows": bank.fit_predict(second).select(name), **probe.tables(bank, name)}
         young = (YOUNG if name in ABSORBS else YOUNG_SQ) if name.startswith("full_") else None
         rule = dict(within=_within(name, version), young=young)
@@ -1109,11 +1109,11 @@ def test_no_refit_is_the_release_before_it_to_the_bit(tmp_path):
     df.head(half).write_parquet(head)
     c = dict(targets=["y0", "y1"], features=["x", "z"], half_life=float("inf"), weight="w")
     released = [
-        po.spec.huber("h_mad", **c),
-        po.spec.huber("h_rms", huber_scale="rms", **c),
-        po.spec.huber("h_sets", feature_sets={"x": ["x"], "both": ["x", "z"]}, **c),
+        rp.spec.huber("h_mad", **c),
+        rp.spec.huber("h_rms", huber_scale="rms", **c),
+        rp.spec.huber("h_sets", feature_sets={"x": ["x"], "both": ["x", "z"]}, **c),
         *[
-            po.spec.sgd(f"s_{s}", loss="huber", schedule=s, learning_rate=0.05, **c)
+            rp.spec.sgd(f"s_{s}", loss="huber", schedule=s, learning_rate=0.05, **c)
             for s in ("constant", "inv_scaling", "adagrad")
         ],
     ]
@@ -1141,7 +1141,7 @@ def test_no_refit_is_the_release_before_it_to_the_bit(tmp_path):
             if rows is not None:
                 model["huber_refit_rows"] = rows
             spec = {**s, "model": model}
-            frames.append(po.ModelBank([spec]).fit_predict(df).select(s["name"]))
+            frames.append(rp.ModelBank([spec]).fit_predict(df).select(s["name"]))
         return pl.concat(frames, how="horizontal")
 
     def plain(frame: pl.DataFrame) -> pl.DataFrame:
@@ -1154,7 +1154,7 @@ def test_no_refit_is_the_release_before_it_to_the_bit(tmp_path):
     # A state 1.3.0 saved goes on to the bit, every spec, past the 500 rows
     # the default would refit at.
     names = [s["name"] for s in released]
-    resumed = po.ModelBank.load(saved, specs=released).fit_predict(df.slice(half))
+    resumed = rp.ModelBank.load(saved, specs=released).fit_predict(df.slice(half))
     assert plain(resumed.select(names)).equals(
         plain(then.slice(half).select(names)), null_equal=True
     )
@@ -1216,7 +1216,7 @@ def test_a_bank_of_the_release_before_the_refit_resumes_without_it_in_its_groups
     data = tmp_path / "head.parquet"
     head.write_parquet(data)
     c = dict(targets=["y"], features=["x"], group="g", clock="t", gap_cap=10.0)
-    spec = po.spec.huber("m", half_life=float("inf"), **c)
+    spec = rp.spec.huber("m", half_life=float("inf"), **c)
     saved = tmp_path / "bank.state"
     whole = tmp_path / "whole.parquet"
     pl.concat([head, tail]).write_parquet(whole)
@@ -1236,12 +1236,12 @@ def test_a_bank_of_the_release_before_the_refit_resumes_without_it_in_its_groups
         )
     # 1.3.0's own run over both parts, its rows after the save.
     then = pl.read_parquet(went_on).with_columns(g=pl.concat([head, tail])["g"]).slice(head.height)
-    resumed = po.ModelBank.load(saved, specs=[spec]).fit_predict(tail)
+    resumed = rp.ModelBank.load(saved, specs=[spec]).fit_predict(tail)
     waits = {**spec, "model": {**spec["model"], "huber_refit_rows": 10_000}}
-    one_pass = po.ModelBank([waits])
+    one_pass = rp.ModelBank([waits])
     one_pass.fit_predict(head)
     restored = one_pass.fit_predict(tail)
-    fresh_c = po.ModelBank([spec]).fit_predict(tail.filter(pl.col("g") == "c"))
+    fresh_c = rp.ModelBank([spec]).fit_predict(tail.filter(pl.col("g") == "c"))
 
     def plain(frame: pl.DataFrame) -> pl.DataFrame:
         # `withheld_reason`'s Enum gained categories after the release (task

@@ -11,15 +11,15 @@ import json
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
 
 @pytest.fixture
-def bank() -> po.ModelBank:
-    spec = po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)
-    b = po.ModelBank([spec])
+def bank() -> rp.ModelBank:
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)
+    b = rp.ModelBank([spec])
     b.fit_predict(pl.DataFrame({"x": [1.0, 3.0, 5.0, 2.0], "y": [1.0, 2.0, 4.0, 1.5]}))
     return b
 
@@ -78,15 +78,15 @@ def test_load_refuses_a_text_mode_file_and_what_is_not_a_source(bank):
         match=r"ModelBank.load: the file object gave an object of type str, not bytes\. Open the "
         r"file in binary mode \('rb'\)",
     ):
-        po.ModelBank.load(io.StringIO("not msgpack"))  # type: ignore[arg-type]
+        rp.ModelBank.load(io.StringIO("not msgpack"))  # type: ignore[arg-type]
     with pytest.raises(
         TypeError,
         match="ModelBank.load: source must be a path, bytes or a file object opened for binary "
         "reading, but it is of type int",
     ):
-        po.ModelBank.load(123)  # type: ignore[arg-type]
+        rp.ModelBank.load(123)  # type: ignore[arg-type]
     # The binary file object of the same state loads.
-    back = po.ModelBank.load(io.BytesIO(bank.save_bytes()))
+    back = rp.ModelBank.load(io.BytesIO(bank.save_bytes()))
     assert back.save_bytes() == bank.save_bytes()
 
 
@@ -107,17 +107,17 @@ def test_one_spec_or_a_string_in_place_of_the_list_is_refused_by_name():
     """A dict and a string are iterable, so either read as a list was its
     keys or its characters, refused as an invalid spec of type string; the
     refusal now names the mistake and the fix."""
-    spec = po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)
     with pytest.raises(
         TypeError,
         match=r"ModelBank: specs must be a list of specs, but it is one spec\. Pass the spec in a "
         r"list, as \[spec\]",
     ):
-        po.ModelBank(spec)  # type: ignore[arg-type]
+        rp.ModelBank(spec)  # type: ignore[arg-type]
     with pytest.raises(
         TypeError,
         match=r"ModelBank: specs must be a list of specs, such as \[po.spec.ewridge\(...\)\], "
         r"but it is of type str",
     ):
-        po.ModelBank("m")  # type: ignore[arg-type]
-    assert po.ModelBank([spec]).specs[0]["name"] == "m"
+        rp.ModelBank("m")  # type: ignore[arg-type]
+    assert rp.ModelBank([spec]).specs[0]["name"] == "m"

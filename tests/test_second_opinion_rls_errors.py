@@ -35,7 +35,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -71,7 +71,7 @@ class TestRlsSeCoefIsLeastSquares:
         import statsmodels.api as sm
 
         x, y, df = _leverage_rows(200, 53)
-        spec = po.spec.rls(
+        spec = rp.spec.rls(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -82,7 +82,7 @@ class TestRlsSeCoefIsLeastSquares:
             emit_sigma=True,
             coef_every=1,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         se, sigma = out["se_coef"].to_list(), out["sigma_y"].to_numpy()
         checked = 0
         for i in (8, 20, 60, 199):
@@ -110,7 +110,7 @@ class TestRlsRobustStandardErrorsAreTheSandwich:
         kw: dict[str, Any] = {"half_life": half_life}
         if weighted:
             kw["weight"] = "w"
-        spec = po.spec.rls(
+        spec = rp.spec.rls(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -121,7 +121,7 @@ class TestRlsRobustStandardErrorsAreTheSandwich:
             coef_every=0,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(df if weighted else df.drop("w")).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(df if weighted else df.drop("w")).unnest("m")
         resid = out["resid_y"].to_numpy()
         w = df["w"].to_numpy() if weighted else np.ones(df.height)
         X = sm.add_constant(df.select("x0", "x1").to_numpy())
@@ -162,12 +162,12 @@ class TestInfluenceIsDffitsAtTheNewestRow:
             targets=["y"], features=["x0", "x1"], half_life=float("inf"), emit_influence=True
         )
         if kind == "rls":
-            spec = po.spec.rls("m", delta=1e-10, min_weight=3.0, **common)
+            spec = rp.spec.rls("m", delta=1e-10, min_weight=3.0, **common)
         else:
             # No `min_weight`: how it meets kalman's learning is being
             # changed elsewhere; with the noise given, the first prediction
             # comes as soon as the fit is determined either way.
-            spec = po.spec.kalman(
+            spec = rp.spec.kalman(
                 "m",
                 coef_half_life=float("inf"),
                 p0=1e7,
@@ -175,7 +175,7 @@ class TestInfluenceIsDffitsAtTheNewestRow:
                 standardize=False,
                 **common,
             )
-        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        out = rp.ModelBank([spec]).fit_predict(df).unnest("m")
         got = out["influence_y"].to_numpy().astype(float)
         X = sm.add_constant(x)
         rows = np.flatnonzero(np.isfinite(got))

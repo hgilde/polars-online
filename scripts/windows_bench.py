@@ -64,10 +64,10 @@ def one(out: Path, case: str, n: int, h: str) -> None:
     """Run one case in this process and print its line."""
     import polars as pl
 
-    import rheon as po
+    from rheon import polars as rp
 
     lf = pl.scan_parquet(out / f"ticks_{n}.parquet")
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "fwd",
         targets=["fwd_vwap"],
         features=["signal_a", "signal_b"],
@@ -77,7 +77,7 @@ def one(out: Path, case: str, n: int, h: str) -> None:
         embargo=h,
     )
     notional = pl.col("price") * pl.col("quantity")
-    fwd_vwap = po.ewm_sum(notional, half_life="10s", window_size=h, reverse=True) / po.ewm_sum(
+    fwd_vwap = rp.ewm_sum(notional, half_life="10s", window_size=h, reverse=True) / rp.ewm_sum(
         "quantity", half_life="10s", window_size=h, reverse=True
     )
     columns = out / f"windows_{n}_{h}.parquet"
@@ -88,7 +88,7 @@ def one(out: Path, case: str, n: int, h: str) -> None:
     elif case.startswith(("shared", "separate")):
         kind, k = case.split()
         ops = {
-            f"m{i}": po.ewm_mean(
+            f"m{i}": rp.ewm_mean(
                 pl.col("mid") * (i + 1),
                 half_life="10s" if kind == "shared" else f"{10 + i}s",
                 window_size=h,
@@ -101,7 +101,7 @@ def one(out: Path, case: str, n: int, h: str) -> None:
         plan = lf.online.with_windows(fwd_vwap=fwd_vwap, like=spec).online.fit_predict([spec])
         target = out / "embargoed.parquet"
     elif case == "target":
-        native = po.spec.ewridge(
+        native = rp.spec.ewridge(
             "fwd",
             targets=[fwd_vwap.alias("fwd_vwap")],
             features=["signal_a", "signal_b"],

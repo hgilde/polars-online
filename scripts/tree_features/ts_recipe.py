@@ -14,7 +14,7 @@ import common as C
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
 df = C.load_flights()
 hl = 30 * 1440.0
@@ -34,8 +34,8 @@ stream = pl.concat([pred_rows, learn_rows]).sort("c", "role", "rid")
 r0 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 t0 = time.perf_counter()
 out = stream.online.with_windows(
-    S=po.ewm_sum("y", half_life=hl, closed="left"),
-    W=po.ewm_sum("one", half_life=hl, closed="left"),
+    S=rp.ewm_sum("y", half_life=hl, closed="left"),
+    W=rp.ewm_sum("one", half_life=hl, closed="left"),
     clock="c",
     gap_cap=1e12,
     group="tailnum",

@@ -21,11 +21,11 @@ import common as C  # noqa: E402
 import numpy as np  # noqa: E402
 import polars as pl  # noqa: E402
 
-import rheon as po  # noqa: E402
+from rheon.polars import _gbdt  # noqa: E402
 
 
 def cuts_of(frame, label, features):
-    m = po.gbdt.xgboost_matrix(frame, label=label, features=features, max_bin=32, engine="python")
+    m = _gbdt.xgboost_matrix(frame, label=label, features=features, max_bin=32, engine="python")
     ptr, cuts = m.get_quantile_cut()
     return [np.asarray(cuts[ptr[j] + 1 : ptr[j + 1]]) for j in range(len(features))]
 

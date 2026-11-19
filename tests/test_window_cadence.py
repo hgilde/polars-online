@@ -36,8 +36,8 @@ import pytest
 from scipy.stats import multivariate_normal
 from sklearn.linear_model import Ridge
 
-import rheon as po
 from reference_paths import WindowRing, window_starts
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -178,7 +178,7 @@ def ew_cov(**kw):
         weight="w",
     )
     d.update(kw)
-    return po.spec.ew_cov("c", **d)
+    return rp.spec.ew_cov("c", **d)
 
 
 def ridge(**kw):
@@ -195,7 +195,7 @@ def ridge(**kw):
         weight="w",
     )
     d.update(kw)
-    return po.spec.ewridge("r", **d)
+    return rp.spec.ewridge("r", **d)
 
 
 def lasso(**kw):
@@ -211,7 +211,7 @@ def lasso(**kw):
         weight="w",
     )
     d.update(kw)
-    return po.spec.lasso("l", **d)
+    return rp.spec.lasso("l", **d)
 
 
 def marginal(**kw):
@@ -225,7 +225,7 @@ def marginal(**kw):
         weight="w",
     )
     d.update(kw)
-    return po.spec.marginal("g", **d)
+    return rp.spec.marginal("g", **d)
 
 
 def label(df: pl.DataFrame) -> pl.DataFrame:
@@ -252,11 +252,11 @@ def ew_class(**kw):
         weight="w",
     )
     d.update(kw)
-    return po.spec.ew_class("k", **d)
+    return rp.spec.ew_class("k", **d)
 
 
 def run(spec, df: pl.DataFrame) -> pl.DataFrame:
-    return po.ModelBank([spec]).fit_predict(df).unnest(spec["name"])
+    return rp.ModelBank([spec]).fit_predict(df).unnest(spec["name"])
 
 
 def floats(out: pl.DataFrame) -> list[str]:
@@ -477,7 +477,7 @@ def capacity(make, df: pl.DataFrame, mib: float) -> int:
     """How many of ``make``'s snapshots a budget of ``mib`` holds: the row at
     which ``{"refuse": mib}`` refuses, fed a row at a time with a snapshot on
     every row and a window no row leaves, so each row adds one snapshot."""
-    bank = po.ModelBank(
+    bank = rp.ModelBank(
         [make(window_size="1000d", snapshot_every=0, window_budget={"refuse": mib})]
     )
     for i in range(df.height):
@@ -631,7 +631,7 @@ class TestEveryWindowedModelsRing:
         ]
         assert len(ends) >= 5, ends
         for n in ends[:5]:
-            bank = po.ModelBank([marginal(closed="both", **cadence(every, cap))])
+            bank = rp.ModelBank([marginal(closed="both", **cadence(every, cap))])
             bank.fit_predict(df.head(n))
             got = bank.marginal("g").filter(pl.col("feature") == "x0").row(0, named=True)
             want = table(n, starts[n - 1])
@@ -704,7 +704,7 @@ class TestChunkingAndResume:
         s = make(snapshot_every="1m", max_rows_between_snapshots=25)
         whole = run(s, df)
         for rows in (1, 7, 37):
-            parts = pl.concat(po.ModelBank([s]).fit_predict_batches(df, chunk_size=rows))
+            parts = pl.concat(rp.ModelBank([s]).fit_predict_batches(df, chunk_size=rows))
             parts = parts.unnest(s["name"])
             for f in floats(whole):
                 a, b = whole[f].to_numpy(), parts[f].to_numpy()
@@ -728,9 +728,9 @@ class TestChunkingAndResume:
 
         cuts = [next(c for c in range(start, len(steps)) if between(c)) for start in (90, 333)]
         for cut in cuts:
-            first = po.ModelBank([s])
+            first = rp.ModelBank([s])
             first.fit_predict(df.head(cut))
-            resumed = po.ModelBank.load_bytes(first.save_bytes(), specs=[s])
+            resumed = rp.ModelBank.load_bytes(first.save_bytes(), specs=[s])
             tail = resumed.fit_predict(df.slice(cut)).unnest(s["name"])
             for f in floats(whole):
                 a, b = whole[f].to_numpy()[cut:], tail[f].to_numpy()
@@ -793,7 +793,7 @@ class TestRefusals:
     )
     def test_the_refusal_past_a_budget_names_the_cadence_in_force(self, kw, named):
         df = frame(stream_steps())
-        bank = po.ModelBank([ridge(window_budget={"refuse": 0.001}, **kw)])
+        bank = rp.ModelBank([ridge(window_budget={"refuse": 0.001}, **kw)])
         with pytest.raises(ValueError, match="window_budget") as e:
             bank.fit_predict(df)
         for words in named:
@@ -817,7 +817,7 @@ class TestTheJsonExport:
         state, so a spacing of none, an infinity JSON has no literal for, must
         be written as the word (``humanfloat``): every ring here holds one
         but where a clock spacing is given."""
-        bank = po.ModelBank([make(**kw)])
+        bank = rp.ModelBank([make(**kw)])
         bank.fit_predict(frame(stream_steps()))
         found: list[Any] = []
 

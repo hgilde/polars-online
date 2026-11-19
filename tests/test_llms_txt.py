@@ -14,8 +14,8 @@ import re
 import sys
 from pathlib import Path
 
-import rheon as po
 from rheon import _rheon as _native
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -35,7 +35,7 @@ README = (ROOT / "README.md").read_text(encoding="utf-8")
 CHUNK_PAGE = (ROOT / "docs" / "how-to" / "set-the-chunk-size.md").read_text(encoding="utf-8")
 
 # The builders a caller writes, and the `type` strings a spec dict or TOML uses.
-BUILDERS = {n for n in dir(po.spec) if not n.startswith("_")} - {
+BUILDERS = {n for n in dir(rp.spec) if not n.startswith("_")} - {
     "output_fields",
     "coef_fields",
     "coef_index",
@@ -142,7 +142,7 @@ def test_it_says_a_clock_needs_a_gap_cap():
     rules = TEXT.split("**Rules that are easy to get wrong.**", 1)[1].split("\n\n", 2)[1]
     assert "gap_cap is required when clock is given" in rules
     try:
-        po.spec.ewridge("m", targets=["y"], features=["x"], clock="t", half_life=10.0)
+        rp.spec.ewridge("m", targets=["y"], features=["x"], clock="t", half_life=10.0)
     except ValueError as e:
         assert "gap_cap is required when clock is given" in str(e)
     else:

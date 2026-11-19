@@ -36,8 +36,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from reference_paths import lasso_paths_ref
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -128,7 +128,7 @@ def _close(got, exp, tol, what):
 def _fit(df: pl.DataFrame, **kw):
     """The bank's output and the reference's, for one spec that ``kw``
     completes, with the descent run to where its start cannot matter."""
-    spec = po.spec.lasso(
+    spec = rp.spec.lasso(
         "m",
         targets=TARGETS,
         features=FEATURES,
@@ -141,7 +141,7 @@ def _fit(df: pl.DataFrame, **kw):
         max_iter=100_000,
         **kw,
     )
-    out = po.ModelBank([spec]).fit_predict(df)["m"]
+    out = rp.ModelBank([spec]).fit_predict(df)["m"]
     n = df.height
     dc = np.zeros(n)
     dc[1:] = np.diff(df["t"].to_numpy())
@@ -163,7 +163,7 @@ def _held_to_the_reference(df, spec, out, ref, lam_selected=True, min_selected=1
     ``min_selected`` rows of each target; then two probes that the
     comparison can fail."""
     n, kt = df.height, len(ref["coef"][0, 0, 0])
-    index = po.spec.output_index(spec)
+    index = rp.spec.output_index(spec)
     y = df.select(TARGETS).to_numpy().astype(float)
     got = np.full_like(ref["pred"], np.nan)
     for j, t in enumerate(TARGETS):
@@ -351,7 +351,7 @@ class TestWindow:
             max_rows_between_solves=1,
             window_size=24.0,
         )
-        index = po.spec.output_index(spec)
+        index = rp.spec.output_index(spec)
         for j, t in enumerate(TARGETS):
             for p, lam in enumerate(PATH):
                 rows = index.filter(

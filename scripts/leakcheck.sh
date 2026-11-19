@@ -36,7 +36,7 @@ echo "interpreter: $PYBIN"
 
 WORK=$(cat <<'PY'
 import gc, os, sys
-import numpy as np, polars as pl, rheon as po
+import numpy as np, polars as pl, rheon.polars as po
 n = int(sys.argv[1])
 control = os.environ.get("LEAKCHECK_CONTROL") == "1"
 if control:

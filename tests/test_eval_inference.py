@@ -28,7 +28,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -60,10 +60,10 @@ def _two_specs(
 def _run(df: pl.DataFrame, call: str, monkeypatch, rows: int | None, **kw) -> pl.DataFrame:
     """The call over ``df``, or over a query of it read ``rows`` at a time."""
     _, sides = CALLS[call]
-    fn = getattr(po.eval, call)
+    fn = getattr(rp.eval, call)
     if rows is None:
         return fn(df, **sides, **kw)
-    monkeypatch.setattr(po.eval, "_chunk_rows", lambda: rows)
+    monkeypatch.setattr(rp.eval, "_chunk_rows", lambda: rows)
     got = fn(df.lazy(), **sides, **kw)
     return got.collect() if isinstance(got, pl.LazyFrame) else got
 
@@ -323,12 +323,12 @@ class TestAHalfLifeTooLongForADouble:
         rng = np.random.default_rng(1)
         df = _two_specs(*rng.normal(size=(2, 50)))
         with pytest.raises(ValueError, match=f"^po.eval.{call}: half_life must be finite"):
-            getattr(po.eval, call)(df.lazy() if lazy else df, **sides, half_life=half_life)
+            getattr(rp.eval, call)(df.lazy() if lazy else df, **sides, half_life=half_life)
 
     def test_the_longest_a_double_tells_from_none_is_taken(self):
         longest = 1.2e16
         assert 0.5 ** (1.0 / longest) < 1.0
         rng = np.random.default_rng(2)
         df = _two_specs(*rng.normal(size=(2, 80)))
-        got = po.eval.diebold_mariano(df, a="a", b="b", half_life=longest, min_samples=1)
+        got = rp.eval.diebold_mariano(df, a="a", b="b", half_life=longest, min_samples=1)
         assert got["diebold_mariano"].struct.field("dm_y")[40:].null_count() == 0

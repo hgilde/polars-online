@@ -25,8 +25,8 @@ import polars as pl
 import pytest
 
 import child
-import rheon as po
 from conftest import run_online
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -105,11 +105,11 @@ def kitchen_sink_spec(**overrides):
         emit_feature_health=True,
     )
     d.update(overrides)
-    return po.spec.ewridge("m", **d)
+    return rp.spec.ewridge("m", **d)
 
 
 def run_chunked(df, spec, chunk):
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     if chunk is None:
         return bank.fit_predict(df).select("m").unnest("m")
     parts = [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
@@ -133,7 +133,7 @@ class TestKitchenSinkAtScale:
     """Every output at once, 30k rows, 16 slots x 2 instances, 5 groups."""
 
     def test_the_spec_is_as_wide_as_it_claims(self, frame):
-        fields = po.spec.output_fields(kitchen_sink_spec())
+        fields = rp.spec.output_fields(kitchen_sink_spec())
         # 2 instances x (2 targets x 4 combos x (pred,resid,sigma,zscore,
         # drift,ic,r2,hit_rate,autocorr,2 quantiles) + weight_sum + coef) + selection.
         assert len(fields) > 150, f"only {len(fields)} fields -- the stress is gone"
@@ -158,11 +158,11 @@ class TestKitchenSinkAtScale:
         spec = kitchen_sink_spec()
         whole = drop_coef(run_chunked(frame, spec, None))
 
-        a = po.ModelBank([spec])
+        a = rp.ModelBank([spec])
         first = a.fit_predict(frame.slice(0, 17_777))
         p = tmp_path / "ks.state"
         a.save(p)
-        b = po.ModelBank.load(p, specs=[spec])
+        b = rp.ModelBank.load(p, specs=[spec])
         rest = b.fit_predict(frame.slice(17_777, frame.height))
         joined = drop_coef(pl.concat([first, rest]).select("m").unnest("m"))
         assert whole.equals(joined, null_equal=True)
@@ -176,7 +176,7 @@ class TestKitchenSinkAtScale:
         data = tmp_path / "ks.parquet"
         frame.write_parquet(data)
         script.write_text(
-            "import sys, hashlib, polars as pl, rheon as po\n"
+            "import sys, hashlib, polars as pl, rheon.polars as po\n"
             "sys.path.insert(0, sys.argv[2])\n"
             "from test_hardening import kitchen_sink_spec, run_chunked, drop_coef\n"
             "df = pl.read_parquet(sys.argv[1])\n"
@@ -227,10 +227,10 @@ class TestCoupledDriftPath:
             drift_action="reset",
         )
         d.update(kw)
-        return po.spec.ewridge("m", **d)
+        return rp.spec.ewridge("m", **d)
 
     def _run(self, df, spec, chunk=None):
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         if chunk is None:
             return bank.fit_predict(df).select("m").unnest("m")
         return (
@@ -297,17 +297,17 @@ class TestParameterRanges:
             max_rows_between_solves=1,
         )
         d.update(kw)
-        return po.spec.ewridge("m", **d)
+        return rp.spec.ewridge("m", **d)
 
     def test_halflife_extremes_give_the_exact_limits(self):
         n = 5000
         df = self._df(n)
         # Infinite half-life: no forgetting, weight_sum counts every accepted row.
-        out = po.ModelBank([self._spec(half_life=float("inf"))]).fit_predict(df)
+        out = rp.ModelBank([self._spec(half_life=float("inf"))]).fit_predict(df)
         weight_sum = out["m"].struct.field("weight_sum").to_list()
         assert weight_sum[-1] == pytest.approx(n - 1, abs=1e-9)
         # Tiny half-life: everything before this row has decayed to nothing.
-        out = po.ModelBank([self._spec(half_life=1e-3)]).fit_predict(df)
+        out = rp.ModelBank([self._spec(half_life=1e-3)]).fit_predict(df)
         weight_sum = out["m"].struct.field("weight_sum").to_list()
         assert weight_sum[-1] == pytest.approx(1.0, abs=1e-6), "only the previous row survives"
         preds = out["m"].struct.field("pred_y0").to_list()
@@ -322,8 +322,8 @@ class TestParameterRanges:
         base = self._df().with_columns(w=pl.lit(1.0))
         for c in (1e-6, 1e6):
             scaled = base.with_columns(w=pl.lit(float(c)))
-            a = po.ModelBank([self._spec(weight="w", min_weight=3.0)]).fit_predict(base)
-            b = po.ModelBank([self._spec(weight="w", min_weight=3.0 * c)]).fit_predict(scaled)
+            a = rp.ModelBank([self._spec(weight="w", min_weight=3.0)]).fit_predict(base)
+            b = rp.ModelBank([self._spec(weight="w", min_weight=3.0 * c)]).fit_predict(scaled)
             pa_ = a["m"].struct.field("pred_y0").to_numpy().astype(float)
             pb = b["m"].struct.field("pred_y0").to_numpy().astype(float)
             mask = np.isfinite(pa_) | np.isfinite(pb)
@@ -342,7 +342,7 @@ class TestParameterRanges:
         cols = {f"x{i}": x[:, i] for i in range(k)}
         cols["y0"] = x @ beta + 0.01 * rng.standard_normal(n)
         df = pl.DataFrame(cols)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=[f"x{i}" for i in range(k)],
@@ -350,7 +350,7 @@ class TestParameterRanges:
             min_weight=float(k + 5),
             max_rows_between_solves=64,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         coef = out["m"].struct.field("coef").to_list()[-1]
         got = np.array(coef[1:])  # drop intercept
         np.testing.assert_allclose(got, beta, atol=0.05)
@@ -364,7 +364,7 @@ class TestParameterRanges:
             cols[f"y{j}"] = (j + 1) * x
         df = pl.DataFrame(cols)
         thresholds = [5.0 * (j + 1) for j in range(m)]
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=[f"y{j}" for j in range(m)],
             features=["x0"],
@@ -372,7 +372,7 @@ class TestParameterRanges:
             min_weight=thresholds,
             max_rows_between_solves=1,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         for j, thr in enumerate(thresholds):
             preds = out["m"].struct.field(f"pred_y{j}").to_list()
             first = next(i for i, v in enumerate(preds) if v is not None)
@@ -383,7 +383,7 @@ class TestParameterRanges:
     def test_extreme_quantile_levels(self):
         df = self._df(8000)
         spec = self._spec(resid_quantiles=[0.001, 0.999])
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         lo = out["m"].struct.field("abs_resid_q0.001_y0").to_list()[-1]
         hi = out["m"].struct.field("abs_resid_q0.999_y0").to_list()[-1]
         assert 0.0 <= lo <= hi, f"{lo} vs {hi}"
@@ -411,7 +411,7 @@ class TestParameterRanges:
         df = self._df(n)
         spec = self._spec(**kw)
         for chunk in (None, 700):
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             if chunk is None:
                 out = bank.fit_predict(df)
                 boundaries = 1
@@ -429,7 +429,7 @@ class TestRunnerErrorPaths:
     already died, would hang the whole process."""
 
     def _spec(self):
-        return po.spec.ewridge(
+        return rp.spec.ewridge(
             "m", targets=["y0"], features=["x0"], half_life=100.0, min_weight=3.0
         )
 
@@ -458,7 +458,7 @@ class TestRunnerErrorPaths:
         df = pl.DataFrame({"x0": rng.standard_normal(n), "y0": rng.standard_normal(n), "w": w})
         src = tmp_path / "in.parquet"
         df.write_parquet(src)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0"],
@@ -494,7 +494,7 @@ class TestRunnerErrorPaths:
         w[3777] = -2.0
         bad = good.with_columns(pl.Series("w", w))
         bad.write_parquet(src)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m", targets=["y0"], features=["x0"], half_life=100.0, min_weight=3.0, weight="w"
         )
         res = run_online(
@@ -523,13 +523,13 @@ class TestExpressionSpecCache:
         df = pl.DataFrame(
             {"x0": x, "y": 2 * x + 0.1 * rng.standard_normal(n), "g": np.arange(n) % 8}
         )
-        fast = po.spec.ewridge(
+        fast = rp.spec.ewridge(
             "fast", targets=["y"], features=["x0"], half_life=50.0, min_weight=5.0, group="g"
         )
-        slow = po.spec.ewridge(
+        slow = rp.spec.ewridge(
             "slow", targets=["y"], features=["x0"], half_life=5000.0, min_weight=5.0, group="g"
         )
-        out = po.ModelBank([fast, slow]).fit_predict(df)
+        out = rp.ModelBank([fast, slow]).fit_predict(df)
         pf = out["fast"].struct.field("weight_sum").to_numpy().astype(float)
         ps = out["slow"].struct.field("weight_sum").to_numpy().astype(float)
         mask = np.isfinite(pf) & np.isfinite(ps) & (np.arange(n) > 800)
@@ -549,7 +549,7 @@ def test_an_infinity_in_a_later_chunk_of_a_column_is_skipped():
     tail = pl.DataFrame({"x0": x_tail, "y": y[20:]})
     df = pl.concat([head, tail], rechunk=False)
     assert df["x0"].n_chunks() == 2
-    bank = po.ModelBank([po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=50.0)])
+    bank = rp.ModelBank([rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=50.0)])
     out = bank.fit_predict(df).unnest("m")
     assert bank.summary()["rows_skipped"].to_list() == [1]
     last = out["pred_y"][-1]

@@ -34,8 +34,8 @@ and does the arithmetic that comes after a pass:
 
 Every function is a pure function of its inputs: arrays or numbers, or a
 Gram or a closed group's row. Where it takes a correlation matrix, it also
-takes one of the Grams :meth:`~rheon.ModelBank.gram` returns, or a row of
-:meth:`~rheon.ModelBank.closed_groups`, and reads its correlation
+takes one of the Grams :meth:`~rheon.polars.ModelBank.gram` returns, or a row of
+:meth:`~rheon.polars.ModelBank.closed_groups`, and reads its correlation
 matrix as :func:`rheon.gram.correlation` does, **without the
 intercept's row and column**. The intercept is the constant column a spec's
 ``fit_intercept`` adds, and a constant has no correlation with anything, so
@@ -125,9 +125,9 @@ def _matrix(obj: Any, who: str = "po.corr", param: str = "r") -> Any:
     what every function here reads its matrix argument through.
 
     An array is returned as a float array; a mapping from
-    :meth:`~rheon.ModelBank.gram` or :func:`rheon.gram.from_row`
+    :meth:`~rheon.polars.ModelBank.gram` or :func:`rheon.gram.from_row`
     gives its ``comoments`` scaled, without the intercept's row and column;
-    a one-row frame from :meth:`~rheon.ModelBank.closed_groups` is
+    a one-row frame from :meth:`~rheon.polars.ModelBank.closed_groups` is
     read through :func:`rheon.gram.from_row` first. ``ValueError``
     for an array that is not square, and for a Gram column other than the
     intercept with no variance, named.
@@ -207,7 +207,7 @@ def to_z(rho: Any) -> Any:
 
     .. code-block:: python
 
-        print(po.corr.to_z([0.0, 0.5, 1.0]).round(3))
+        print(rp.corr.to_z([0.0, 0.5, 1.0]).round(3))
 
     .. code-block:: text
 
@@ -248,8 +248,8 @@ def from_z(z: Any) -> Any:
 
     .. code-block:: python
 
-        z = po.corr.to_z([0.2, 0.6])
-        print(po.corr.from_z(z.mean()).round(3))     # the mean correlation on the z scale
+        z = rp.corr.to_z([0.2, 0.6])
+        print(rp.corr.from_z(z.mean()).round(3))     # the mean correlation on the z scale
 
     .. code-block:: text
 
@@ -280,8 +280,8 @@ def nearest(
 
     ``a``
         A square, finite matrix, symmetrized on the way in; or a Gram from
-        :meth:`~rheon.ModelBank.gram`, or a row of
-        :meth:`~rheon.ModelBank.closed_groups`. **A Gram is repaired
+        :meth:`~rheon.polars.ModelBank.gram`, or a row of
+        :meth:`~rheon.polars.ModelBank.closed_groups`. **A Gram is repaired
         without its intercept column**, the constant a spec's
         ``fit_intercept`` adds, since a constant has no correlation with
         anything. It is read as :func:`rheon.gram.correlation` reads
@@ -327,7 +327,7 @@ def nearest(
     .. code-block:: python
 
         almost = np.array([[1.0, 0.9, 0.7], [0.9, 1.0, 0.3], [0.7, 0.3, 1.0]])   # not PSD
-        fixed, dist, iters = po.corr.nearest(almost)
+        fixed, dist, iters = rp.corr.nearest(almost)
         print(fixed.round(3), round(dist, 4), iters)
 
     .. code-block:: text
@@ -519,7 +519,7 @@ def shrink(
         rng = np.random.default_rng(0)
         x = rng.standard_normal((20, 30))                 # fewer rows than columns
         r = np.corrcoef(x, rowvar=False)                  # singular
-        shrunk, alpha = po.corr.shrink(r, x=(x - x.mean(0)) / x.std(0))
+        shrunk, alpha = rp.corr.shrink(r, x=(x - x.mean(0)) / x.std(0))
         print(round(alpha, 3), np.linalg.eigvalsh(shrunk).min() > 0)
 
     .. code-block:: text
@@ -687,7 +687,7 @@ def equicorr(r: Any) -> float:
     .. code-block:: python
 
         r = np.array([[1.0, 0.4, 0.2], [0.4, 1.0, 0.3], [0.2, 0.3, 1.0]])
-        print(round(po.corr.equicorr(r), 3))
+        print(round(rp.corr.equicorr(r), 3))
 
     .. code-block:: text
 
@@ -735,7 +735,7 @@ def equicorr_row(row: Any) -> float:
 
     .. code-block:: python
 
-        print(round(po.corr.equicorr_row([1.2, 0.8, 1.0, -0.2]), 3))
+        print(round(rp.corr.equicorr_row([1.2, 0.8, 1.0, -0.2]), 3))
 
     .. code-block:: text
 
@@ -790,8 +790,8 @@ def equicorr_loglik(row: Any, rho: float) -> float:
     .. code-block:: python
 
         row = [1.2, 0.8, 1.0, -0.2]
-        independent = po.corr.equicorr_loglik(row, 0.0)
-        common = po.corr.equicorr_loglik(row, 0.4)
+        independent = rp.corr.equicorr_loglik(row, 0.0)
+        common = rp.corr.equicorr_loglik(row, 0.4)
         print(round(independent, 3), round(common, 3))
 
     .. code-block:: text
@@ -850,7 +850,7 @@ def absorption(r: Any, k: int) -> float:
     .. code-block:: python
 
         r = np.array([[1.0, 0.8, 0.7], [0.8, 1.0, 0.75], [0.7, 0.75, 1.0]])
-        print(round(po.corr.absorption(r, 1), 3))
+        print(round(rp.corr.absorption(r, 1), 3))
 
     .. code-block:: text
 
@@ -905,7 +905,7 @@ def absorption_shift(ar_fast: Any, ar_slow: Any, *, scale: float | None = None) 
 
         fast = np.array([0.60, 0.62, 0.70, 0.80])
         slow = np.array([0.60, 0.61, 0.63, 0.66])
-        print(po.corr.absorption_shift(fast, slow).round(2))
+        print(rp.corr.absorption_shift(fast, slow).round(2))
 
     .. code-block:: text
 
@@ -978,7 +978,7 @@ def spectral(r: Any, k: int) -> tuple[Any, Any]:
     .. code-block:: python
 
         r = np.array([[1.0, 0.8, 0.7], [0.8, 1.0, 0.75], [0.7, 0.75, 1.0]])
-        values, vectors = po.corr.spectral(r, 1)
+        values, vectors = rp.corr.spectral(r, 1)
         print(values.round(3), vectors.round(3))
 
     .. code-block:: text
@@ -1054,7 +1054,7 @@ def from_spectral(vals: Any, vecs: Any, *, unit_diag: bool = True) -> Any:
     .. code-block:: python
 
         r = np.array([[1.0, 0.8, 0.7], [0.8, 1.0, 0.75], [0.7, 0.75, 1.0]])
-        top = po.corr.from_spectral(*po.corr.spectral(r, 1))   # the one-factor matrix
+        top = rp.corr.from_spectral(*rp.corr.spectral(r, 1))   # the one-factor matrix
         print(top.round(3))
 
     .. code-block:: text
@@ -1137,7 +1137,7 @@ def block_means(r: Any, labels: Sequence[Any]) -> tuple[Any, Any]:
                       [0.6, 1.0, 0.2, 0.1],
                       [0.1, 0.2, 1.0, 0.5],
                       [0.0, 0.1, 0.5, 1.0]])
-        means, counts = po.corr.block_means(r, ["a", "a", "b", "b"])
+        means, counts = rp.corr.block_means(r, ["a", "a", "b", "b"])
         print(means, counts.tolist())
 
     .. code-block:: text
@@ -1216,7 +1216,7 @@ def from_blocks(b: Any, labels: Sequence[Any]) -> Any:
     .. code-block:: python
 
         b = np.array([[0.6, 0.1], [0.1, 0.5]])
-        print(po.corr.from_blocks(b, ["a", "a", "b", "b"]))
+        print(rp.corr.from_blocks(b, ["a", "a", "b", "b"]))
 
     .. code-block:: text
 
@@ -1296,7 +1296,7 @@ def mp_edge(n: int, m: int, sigma2: float = 1.0) -> tuple[float, float]:
 
     .. code-block:: python
 
-        lo, hi = po.corr.mp_edge(n=400, m=100)
+        lo, hi = rp.corr.mp_edge(n=400, m=100)
         print(round(lo, 3), round(hi, 3))
 
     .. code-block:: text
@@ -1356,7 +1356,7 @@ def mp_density(lam: Any, n: int, m: int, sigma2: float = 1.0) -> Any:
 
     .. code-block:: python
 
-        print(po.corr.mp_density([0.1, 1.0, 3.0], n=400, m=100).round(3))
+        print(rp.corr.mp_density([0.1, 1.0, 3.0], n=400, m=100).round(3))
 
     .. code-block:: text
 
@@ -1398,7 +1398,7 @@ def signal_share(z_blocks: Any, n_kish_blocks: Any) -> Any:
     ``n_kish_blocks``
         Each block's sample size, a vector of ``B``: Kish's effective sample
         size ``(sum w)**2 / sum w**2``, as
-        :meth:`~rheon.ModelBank.gram`'s ``n_kish`` reports it, or a
+        :meth:`~rheon.polars.ModelBank.gram`'s ``n_kish`` reports it, or a
         plain block's row count. Not ``weight_sum``, which is a weight,
         about half the Kish size in a steady state.
 
@@ -1423,8 +1423,8 @@ def signal_share(z_blocks: Any, n_kish_blocks: Any) -> Any:
 
     .. code-block:: python
 
-        z = po.corr.to_z(np.array([0.10, 0.35, 0.05, 0.40]))   # one pair's weekly correlations
-        print(round(po.corr.signal_share(z, [200, 200, 200, 200]), 3))
+        z = rp.corr.to_z(np.array([0.10, 0.35, 0.05, 0.40]))   # one pair's weekly correlations
+        print(round(rp.corr.signal_share(z, [200, 200, 200, 200]), 3))
 
     .. code-block:: text
 
@@ -1520,7 +1520,7 @@ def loss(
         real = np.array([[1.0, 0.5], [0.5, 1.0]])
         good = np.array([[1.0, 0.4], [0.4, 1.0]])
         flat = np.eye(2)
-        print(round(po.corr.loss(good, real), 4), round(po.corr.loss(flat, real), 4))
+        print(round(rp.corr.loss(good, real), 4), round(rp.corr.loss(flat, real), 4))
 
     .. code-block:: text
 
@@ -1600,9 +1600,9 @@ def epps_invert(gram_or_row: Any, *, L: int) -> Any:  # noqa: N803 - the paper's
     .. rubric:: Parameters
 
     ``gram_or_row``
-        A Gram from :meth:`~rheon.ModelBank.gram`, or a closed
+        A Gram from :meth:`~rheon.polars.ModelBank.gram`, or a closed
         group's row, with ``lags`` and ``lag_comoments`` holding every lag
-        ``1 .. L-1``. Build it with ``po.spec.ew_cov(..., lags=list(range(1,
+        ``1 .. L-1``. Build it with ``rp.spec.ew_cov(..., lags=list(range(1,
         L)))``.
     ``L``
         The coarser interval, in rows, at least 1. ``L = 1`` gives the plain
@@ -1631,12 +1631,12 @@ def epps_invert(gram_or_row: Any, *, L: int) -> Any:  # noqa: N803 - the paper's
             ret=pl.col("mid").diff().over("symbol")
         )
         pair = quotes.pivot(on="symbol", index="ts", values="ret").fill_null(0.0)
-        spec = po.spec.ew_cov("cov", features=["AAA", "BBB"], half_life=float("inf"), lags=[1, 2])
-        bank = po.ModelBank([spec])
+        spec = rp.spec.ew_cov("cov", features=["AAA", "BBB"], half_life=float("inf"), lags=[1, 2])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(pair)
         g = bank.gram("cov")[0]
-        print(round(float(po.corr.epps_invert(g, L=1)[0, 1]), 3),
-              round(float(po.corr.epps_invert(g, L=3)[0, 1]), 3))
+        print(round(float(rp.corr.epps_invert(g, L=1)[0, 1]), 3),
+              round(float(rp.corr.epps_invert(g, L=3)[0, 1]), 3))
 
     .. code-block:: text
 
@@ -1743,8 +1743,8 @@ def fisher_se(
 
     .. code-block:: python
 
-        print(round(po.corr.fisher_se(103), 4), round(po.corr.fisher_se(103, rho=0.5), 4),
-              round(po.corr.fisher_se(103, phi_a=0.5, phi_b=0.5), 4))
+        print(round(rp.corr.fisher_se(103), 4), round(rp.corr.fisher_se(103, rho=0.5), 4),
+              round(rp.corr.fisher_se(103, phi_a=0.5, phi_b=0.5), 4))
 
     .. code-block:: text
 

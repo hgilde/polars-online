@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-import rheon as po
 from doc_recipes import differences, recipes, run
+from rheon.polars import _gbdt
 
 TIER = "mixed"
 
@@ -50,7 +50,7 @@ def test_a_recipe_prints_what_the_page_shows(line, code, shown, tmp_path, monkey
 
 def test_every_po_gbdt_function_is_on_the_page():
     text = PAGE.read_text(encoding="utf-8")
-    missing = [name for name in po.gbdt.__all__ if f"po.gbdt.{name}" not in text]
+    missing = [name for name in _gbdt.__all__ if f"po.gbdt.{name}" not in text]
     assert not missing, f"po.gbdt functions the page does not name: {missing}"
 
 

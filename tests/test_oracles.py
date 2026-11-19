@@ -18,9 +18,9 @@ import polars as pl
 import pytest
 
 import ledger
-import rheon as po
 from data import synthetic
 from reference import NORMAL_Q3, ftrl_ref, kalman_ref, lasso_ref, robust_ref
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -56,7 +56,7 @@ class TestKalmanOracle:
         x, dc, w = _arrays(df, k)
         y = np.column_stack([df[t].to_numpy() for t in targets])
         ref = kalman_ref(x, y, dc, w, gap_cap=MAXD, **kw)
-        spec = po.spec.kalman(
+        spec = rp.spec.kalman(
             "m",
             targets=list(targets),
             features=[f"x{j}" for j in range(k)],
@@ -72,7 +72,7 @@ class TestKalmanOracle:
             share_p=kw.get("share_p", False),
             min_weight=kw.get("min_weight", 10.0),
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         for j, t in enumerate(targets):
             for field, key in (("pred_", "pred"), ("resid_", "resid")):
                 got = out["m"].struct.field(f"{field}{t}").to_numpy().astype(float)
@@ -160,7 +160,7 @@ class TestKalmanOracle:
         x, dc, w = _arrays(df, 2)
         y = df["y0"].to_numpy().reshape(-1, 1)
         ref = kalman_ref(x, y, dc, w, fit_intercept=False, min_weight=10.0, gap_cap=MAXD)
-        spec = po.spec.kalman(
+        spec = rp.spec.kalman(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -172,7 +172,7 @@ class TestKalmanOracle:
             coef_half_life=100.0,
             min_weight=10.0,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         _close(
             out["m"].struct.field("pred_y0").to_numpy().astype(float),
             ref["pred"][:, 0],
@@ -246,7 +246,7 @@ class TestLassoOptimality:
     def test_kkt_conditions_hold(self, lam_value, l1_ratio):
         df, _ = synthetic(seed=81, n_groups=1, n_rows=400, k=4, null_frac=0.0)
         path = sorted({0.1, 0.01, 0.0} | {lam_value}, reverse=True)
-        spec = po.spec.lasso(
+        spec = rp.spec.lasso(
             "m",
             targets=["y0"],
             features=[f"x{j}" for j in range(4)],
@@ -258,7 +258,7 @@ class TestLassoOptimality:
             max_iter=2000,
             tol=1e-14,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
 
         # coef is emitted on the last row of the chunk: flat, (path x k_total)
         flat = out["m"].struct.field("coef").to_list()[-1]
@@ -289,7 +289,7 @@ class TestLassoOptimality:
         # A larger penalty can never produce more non-zero coefficients.
         df, _ = synthetic(seed=82, n_groups=1, n_rows=400, k=4, null_frac=0.0)
         path = [1.0, 0.1, 0.01, 0.0]
-        spec = po.spec.lasso(
+        spec = rp.spec.lasso(
             "m",
             targets=["y0"],
             features=[f"x{j}" for j in range(4)],
@@ -298,7 +298,7 @@ class TestLassoOptimality:
             min_weight=10.0,
             max_rows_between_solves=1,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         flat = np.array(out["m"].struct.field("coef").to_list()[-1]).reshape(len(path), 5)
         nnz = [(np.abs(row[1:]) > 1e-12).sum() for row in flat]
         assert nnz == sorted(nnz), f"sparsity not monotone along the path: {nnz}"
@@ -307,7 +307,7 @@ class TestLassoOptimality:
         # lambda = 0 must satisfy the *unpenalized* stationarity condition
         # exactly: C b = c on the standardized stats.
         df, _ = synthetic(seed=83, n_groups=1, n_rows=400, k=3, null_frac=0.0)
-        spec = po.spec.lasso(
+        spec = rp.spec.lasso(
             "m",
             targets=["y0"],
             features=["x0", "x1", "x2"],
@@ -318,7 +318,7 @@ class TestLassoOptimality:
             max_iter=5000,
             tol=1e-15,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         coefs = out["m"].struct.field("coef").to_list()[-1]
         x = np.column_stack([df[f"x{j}"].to_numpy() for j in range(3)])
         dc, w = _rowcount_clock(df.height)
@@ -331,7 +331,7 @@ def test_intercept_matches_the_weighted_means():
     for every path point."""
     df, _ = synthetic(seed=84, n_groups=1, n_rows=300, k=3, null_frac=0.0)
     path = [0.05, 0.0]
-    spec = po.spec.lasso(
+    spec = rp.spec.lasso(
         "m",
         targets=["y0"],
         features=["x0", "x1", "x2"],
@@ -340,7 +340,7 @@ def test_intercept_matches_the_weighted_means():
         min_weight=10.0,
         max_rows_between_solves=1,
     )
-    out = po.ModelBank([spec]).fit_predict(df)
+    out = rp.ModelBank([spec]).fit_predict(df)
     flat = np.array(out["m"].struct.field("coef").to_list()[-1]).reshape(len(path), 4)
 
     x = np.column_stack([df[f"x{j}"].to_numpy() for j in range(3)])
@@ -414,7 +414,7 @@ class TestLassoPredPath:
         the reference given the same ``kw``. ``default_descent`` leaves
         ``tol`` and ``max_iter`` at the library's defaults."""
         descent = {} if default_descent else {"tol": 1e-14, "max_iter": 100_000}
-        spec = po.spec.lasso(
+        spec = rp.spec.lasso(
             "m",
             targets=["y"],
             features=self.FEATURES,
@@ -426,7 +426,7 @@ class TestLassoPredPath:
             **descent,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        out = rp.ModelBank([spec]).fit_predict(df)["m"]
         n, npath, kt = df.height, len(self.PATH), len(self.FEATURES) + 1
         x = df.select(self.FEATURES).to_numpy()
         y = df["y"].to_numpy()
@@ -436,7 +436,7 @@ class TestLassoPredPath:
         assert ref["solved"].sum() >= 5, "the stream should span several solves"
 
         # One pred and one resid field per path point, in path order.
-        index = po.spec.output_index(spec)
+        index = rp.spec.output_index(spec)
         assert index.filter(pl.col("kind") == "pred")["penalty"].to_list() == self.PATH
         fields = {
             k: index.filter(pl.col("kind") == k)["field"].to_list() for k in ("pred", "resid")
@@ -596,7 +596,7 @@ class TestRobustOracles:
             gap_cap=MAXD,
             **(ref_kw or {}),
         )
-        spec = getattr(po.spec, model)(
+        spec = getattr(rp.spec, model)(
             "m",
             targets=list(targets),
             features=[f"x{j}" for j in range(k)],
@@ -608,7 +608,7 @@ class TestRobustOracles:
             max_rows_between_solves=1,
             **spec_kw,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         for j, t in enumerate(targets):
             _close(
                 out["m"].struct.field(f"pred_{t}").to_numpy().astype(float),
@@ -743,7 +743,7 @@ class TestRobustOracles:
         the readiness notice reports; the case means it to."""
         df, _ = synthetic(seed=93, n_groups=1, n_rows=250, k=2, null_frac=0.0)
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", po.ReadinessWarning)
+            warnings.simplefilter("ignore", rp.ReadinessWarning)
             out = self._compare(
                 df,
                 model="quantile",
@@ -804,7 +804,7 @@ class TestRobustOracles:
         the sketch's buckets here moved the oracle's bandwidth by a bucket
         with any change of anchor). ``min_weight = 0`` reports every
         residual the scale learned from (it withholds the output alone)."""
-        spec = po.spec.quantile(
+        spec = rp.spec.quantile(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -813,10 +813,10 @@ class TestRobustOracles:
             max_rows_between_solves=1,
             **{"min_weight": 0.0, **kw},
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         with warnings.catch_warnings():
             # A ridge of 1e9 makes the ridge, not the data, set the slopes.
-            warnings.simplefilter("ignore", po.ReadinessWarning)
+            warnings.simplefilter("ignore", rp.ReadinessWarning)
             out = bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y}))
         resid = out["m"].struct.field("resid_y").drop_nulls().to_numpy()
         med = np.quantile(np.abs(resid), 0.5, method="inverted_cdf")
@@ -1088,7 +1088,7 @@ class TestFtrlOracle:
             gap_cap=30.0,
             **kw,
         )
-        spec = po.spec.ftrl(
+        spec = rp.spec.ftrl(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -1104,7 +1104,7 @@ class TestFtrlOracle:
             fit_intercept=kw.get("fit_intercept", True),
             loss=kw.get("loss", "logistic"),
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         _close(
             out["m"].struct.field("pred_y0").to_numpy().astype(float),
             ref["pred"][:, 0],
@@ -1159,7 +1159,7 @@ class TestFtrlOracle:
             min_weight=10.0,
             gap_cap=30.0,
         )
-        spec = po.spec.ftrl(
+        spec = rp.spec.ftrl(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -1169,7 +1169,7 @@ class TestFtrlOracle:
             min_weight=10.0,
             half_life=float("inf"),
         )
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         _close(
             out["m"].struct.field("pred_y0").to_numpy().astype(float),
             ref["pred"][:, 0],

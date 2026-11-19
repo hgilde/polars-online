@@ -77,7 +77,7 @@ refresh grid, and by the lag inversion at `L = 64`:
 
 ```python
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Two series whose returns correlate at 0.8, each observed on about a quarter of the rows.
 sim = po.sim.regimes(2, states=[0.8], transition=[[1.0]], n_blocks=1, rows_per_block=40_000,

@@ -40,9 +40,9 @@ from typing import Any
 
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
-SPEC = po.spec.ewridge(
+SPEC = rp.spec.ewridge(
     "m",
     targets=["y"],
     features=["x0"],
@@ -79,7 +79,7 @@ def _ticks() -> pl.DataFrame:
 def _in_memory(ticks: pl.DataFrame, where: str) -> pl.DataFrame:
     """The reference: the same rows, sorted, fitted from a frame held whole."""
     rows = ticks.filter(pl.sql_expr(where)).sort("t")
-    return po.ModelBank([SPEC]).fit_predict(rows)
+    return rp.ModelBank([SPEC]).fit_predict(rows)
 
 
 def _same(got: pl.DataFrame, want: pl.DataFrame) -> bool:

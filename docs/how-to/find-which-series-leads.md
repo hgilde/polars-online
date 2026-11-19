@@ -58,7 +58,7 @@ directions at each lag, read before the last row:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # follow repeats lead three rows later, with noise: the truth is 0.8 at a lag of 3.
 rng = np.random.default_rng(9)

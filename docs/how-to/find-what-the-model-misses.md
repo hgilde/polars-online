@@ -56,7 +56,7 @@ with Polars before the bank, and reads each statistic's median over rows
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # y = 1.0 x0 + 0.5 x1 + noise on every stream, but for one fault each.
 rng = np.random.default_rng(5)

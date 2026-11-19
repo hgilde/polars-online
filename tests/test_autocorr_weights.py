@@ -28,7 +28,7 @@ import math
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -81,7 +81,7 @@ def _hand(resid: list[float | None], weights: list[float], *, weighed: bool) -> 
 
 
 def _fit() -> pl.DataFrame:
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -90,7 +90,7 @@ def _fit() -> pl.DataFrame:
         emit_autocorr=True,
         resid_autocorr_lag=1,
     )
-    return po.ModelBank([spec], threads=1).fit_predict(_frame())["m"].struct.unnest()
+    return rp.ModelBank([spec], threads=1).fit_predict(_frame())["m"].struct.unnest()
 
 
 def test_the_residual_autocorrelation_weighs_each_residual_by_its_row():
@@ -113,7 +113,7 @@ def test_at_a_weight_of_one_the_residual_autocorrelation_is_the_unweighed_one():
     """With every row at weight 1 the two rules are one, to the bit: the
     rows that move are only those an uneven weight reaches."""
     df = _frame().with_columns(w=pl.lit(1.0))
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -121,10 +121,10 @@ def test_at_a_weight_of_one_the_residual_autocorrelation_is_the_unweighed_one():
         weight="w",
         emit_autocorr=True,
     )
-    plain = po.spec.ewridge(
+    plain = rp.spec.ewridge(
         "m", targets=["y"], features=["x0", "x1"], half_life=HALF_LIFE, emit_autocorr=True
     )
-    a = po.ModelBank([spec], threads=1).fit_predict(df)["m"].struct.field("autocorr_y")
-    b = po.ModelBank([plain], threads=1).fit_predict(df)["m"].struct.field("autocorr_y")
+    a = rp.ModelBank([spec], threads=1).fit_predict(df)["m"].struct.field("autocorr_y")
+    b = rp.ModelBank([plain], threads=1).fit_predict(df)["m"].struct.field("autocorr_y")
     assert a.is_not_null().sum() > N // 2
     assert a.equals(b, null_equal=True) and (a.fill_null(0.0) == b.fill_null(0.0)).all()

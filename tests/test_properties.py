@@ -36,7 +36,7 @@ import pytest
 from hypothesis import HealthCheck, assume, example, given, settings
 from hypothesis import strategies as st
 
-import rheon as po
+from rheon import polars as rp
 from test_model_registry import MINIMAL, REGRESSIONS, _build
 from test_properties_temporal import CLOCK_MODELS
 from tiers import examples
@@ -323,7 +323,7 @@ def build(model, extra, **kw):
     opts.update(kw)
     if opts.get("features", ()) is None:
         del opts["features"]  # a model with no features keyword (holt)
-    return getattr(po.spec, model)("m", **opts)
+    return getattr(rp.spec, model)("m", **opts)
 
 
 def binarize(df, model):
@@ -353,8 +353,8 @@ class TestUniversalProperties:
         def prop(df, chunk):
             df = binarize(df, model)
             spec = build(model, extra)
-            one = unnested(po.ModelBank([spec]).fit_predict(df))
-            bank = po.ModelBank([spec])
+            one = unnested(rp.ModelBank([spec]).fit_predict(df))
+            bank = rp.ModelBank([spec])
             parts = [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
             many = unnested(pl.concat(parts))
             assert one.equals(many, null_equal=True)
@@ -369,8 +369,8 @@ class TestUniversalProperties:
         def prop(df, chunk):
             df = binarize(df, model)
             spec = build(model, extra, restart_after_step_back=MINIMUM)
-            one = unnested(po.ModelBank([spec]).fit_predict(df))
-            bank = po.ModelBank([spec])
+            one = unnested(rp.ModelBank([spec]).fit_predict(df))
+            bank = rp.ModelBank([spec])
             parts = [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
             assert one.equals(unnested(pl.concat(parts)), null_equal=True)
 
@@ -409,10 +409,10 @@ class TestUniversalProperties:
                 "restart_after_step_back = 5"
             )
             with pytest.raises(ValueError, match=says):
-                po.ModelBank([spec]).fit_predict(df)
+                rp.ModelBank([spec]).fit_predict(df)
             chunks = [df.slice(k, chunk) for k in range(0, df.height, chunk)]
             with pytest.raises(ValueError, match=says):
-                list(po.ModelBank([spec]).fit_predict_batches(iter(chunks)))
+                list(rp.ModelBank([spec]).fit_predict_batches(iter(chunks)))
 
         _given(sign, prop, df=_streams(model, sign, min_rows=2), chunk=CHUNKS, data=st.data())
 
@@ -421,9 +421,9 @@ class TestUniversalProperties:
             assume(split < df.height)
             df = binarize(df, model)
             spec = build(model, extra)
-            a = po.ModelBank([spec])
+            a = rp.ModelBank([spec])
             a.fit_predict(df.slice(0, split))
-            b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
+            b = rp.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
             rest = df.slice(split, df.height - split)
             got = unnested(b.fit_predict(rest))
             assert unnested(a.fit_predict(rest)).equals(got, null_equal=True)
@@ -434,7 +434,7 @@ class TestUniversalProperties:
     def test_outputs_are_finite_or_null(self, model, extra, sign):
         def prop(df):
             df = binarize(df, model)
-            out = po.ModelBank([build(model, extra)]).fit_predict(df)
+            out = rp.ModelBank([build(model, extra)]).fit_predict(df)
             for f in out.schema["m"].fields:
                 # `coef`/`support_coef` are lists; `withheld_reason` is an enum.
                 if f.name.startswith(("coef", "support_coef")) or not f.dtype.is_float():
@@ -455,7 +455,7 @@ class TestUniversalProperties:
         def prop(df):
             df = binarize(df, model)
             spec = build(model, extra)
-            out = po.ModelBank([spec]).fit_predict(df)
+            out = rp.ModelBank([spec]).fit_predict(df)
             # Only the columns this spec actually declares can skip a row --
             # holt reads no features, so an unused null column must not
             # disturb it. A value the bank reads as missing skips a row as a
@@ -478,9 +478,9 @@ class TestUniversalProperties:
             keys = df["g"].unique().to_list()
             assert len(keys) > 1, keys
             spec = build(model, extra)
-            both = po.ModelBank([spec]).fit_predict(df)
+            both = rp.ModelBank([spec]).fit_predict(df)
             for key in keys:
-                solo = po.ModelBank([spec]).fit_predict(df.filter(pl.col("g") == key))
+                solo = rp.ModelBank([spec]).fit_predict(df.filter(pl.col("g") == key))
                 a = unnested(both.filter(pl.col("g") == key))
                 b = unnested(solo)
                 assert a.equals(b, null_equal=True), f"group {key} was affected by the others"
@@ -510,7 +510,7 @@ class TestUniversalProperties:
         def check(df, data):
             df = binarize(df, model)
             spec = build(model, extra, **kw)
-            base = po.ModelBank([spec]).fit_predict(df)
+            base = rp.ModelBank([spec]).fit_predict(df)
             field = next(f.name for f in base.schema["m"].fields if f.name.startswith("pred_"))
             preds = base["m"].struct.field(field).to_list()
             y = df["y0"].to_list()
@@ -532,7 +532,7 @@ class TestUniversalProperties:
                 # moves every finite value and stays inside the bound.
                 y[idx] = was / 2.0
             assert y[idx] != was
-            perturbed = po.ModelBank([spec]).fit_predict(
+            perturbed = rp.ModelBank([spec]).fit_predict(
                 df.with_columns(y0=pl.Series(y, dtype=pl.Float64))
             )
             a = preds[idx]
@@ -655,13 +655,13 @@ def _holds_under(model: str, extra: dict, switch: str, df, chunk: int, split: in
     df = binarize(df, model)
     spec = build(model, extra, **SWITCHES[switch])
     df = _switched(df, spec)
-    one = po.ModelBank([spec]).fit_predict(df)
-    bank = po.ModelBank([spec])
+    one = rp.ModelBank([spec]).fit_predict(df)
+    bank = rp.ModelBank([spec])
     many = pl.concat([bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)])
     assert unnested(one).equals(unnested(many), null_equal=True), "chunking moved a number"
-    a = po.ModelBank([spec])
+    a = rp.ModelBank([spec])
     a.fit_predict(df.slice(0, split))
-    b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
+    b = rp.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
     rest = df.slice(split)
     got = unnested(b.fit_predict(rest))
     assert unnested(a.fit_predict(rest)).equals(got, null_equal=True)
@@ -809,12 +809,12 @@ def test_every_switch_moves_an_output(model, extra):
     df = _ordinary()
     if model == "ftrl":
         df = df.with_columns(y0=(pl.col("y0") > 1).cast(pl.Float64))
-    shared = unnested(po.ModelBank([build(model, extra)]).fit_predict(df))
+    shared = unnested(rp.ModelBank([build(model, extra)]).fit_predict(df))
     for name in SWITCHES_FOR[model]:
         if name == "plain":
             continue
         spec = build(model, extra, **SWITCHES[name])
-        got = unnested(po.ModelBank([spec]).fit_predict(_switched(df, spec)))
+        got = unnested(rp.ModelBank([spec]).fit_predict(_switched(df, spec)))
         moved = _moved(shared, got)
         values = [c for c in moved if c in got.columns and _new_value(c, shared, got)]
         print(f"{model} {name}: moved {moved}")
@@ -825,7 +825,7 @@ def test_every_switch_moves_an_output(model, extra):
         if "window_size" in SWITCHES[name] and name != "window":
             # Against the window alone: the switch itself moves the ring.
             window = build(model, extra, **SWITCHES["window"])
-            alone = unnested(po.ModelBank([window]).fit_predict(df))
+            alone = unnested(rp.ModelBank([window]).fit_predict(df))
             assert "weight_sum" in _moved(alone, got), f"{name} left {model}'s ring as it was"
 
 
@@ -856,7 +856,7 @@ def _kind_spec(kind: str) -> dict:
     return {**_build(kind), "model": {**_build(kind)["model"], **KIND_ARGS.get(kind, {})}}
 
 
-def _state(bank: po.ModelBank, kind: str) -> pl.DataFrame | None:
+def _state(bank: rp.ModelBank, kind: str) -> pl.DataFrame | None:
     """What a kind that reports through its state reports: `marginal`'s
     pairs, `rcov`'s closed blocks and `audit`'s counts."""
     if kind == "marginal":
@@ -911,18 +911,18 @@ class TestEveryOtherKind:
             df = data.draw(kind_streams(kind, **SIGNS[sign]), label="stream")
             split = data.draw(st.integers(1, df.height - 1), label="split")
             spec = _kind_spec(kind)
-            whole = po.ModelBank([spec])
+            whole = rp.ModelBank([spec])
             one = whole.fit_predict(df)
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             many = pl.concat(
                 [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
             )
             assert unnested(one).equals(unnested(many), null_equal=True), "chunking moved a number"
             if (state := _state(whole, kind)) is not None:
                 assert state.equals(_state(bank, kind), null_equal=True), "chunking moved the state"
-            a = po.ModelBank([spec])
+            a = rp.ModelBank([spec])
             a.fit_predict(df.slice(0, split))
-            b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
+            b = rp.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
             rest = df.slice(split)
             got = unnested(b.fit_predict(rest))
             assert unnested(a.fit_predict(rest)).equals(got, null_equal=True)
@@ -967,9 +967,9 @@ class TestEveryOtherKind:
         spec = {**_kind_spec(kind), "weight": "w"}
         if kind in ("seqtest", "audit"):
             with pytest.raises(ValueError, match=f"weight does not apply to {kind}"):
-                po.ModelBank([spec])
+                rp.ModelBank([spec])
             return
-        po.ModelBank([spec]).fit_predict(df)
+        rp.ModelBank([spec]).fit_predict(df)
         w = df["w"].to_list()
         w[8] = -0.5
         bad = df.with_columns(w=pl.Series(w, dtype=pl.Float64))
@@ -978,7 +978,7 @@ class TestEveryOtherKind:
             r"but a weight must be at least 0"
         )
         with pytest.raises((pl.exceptions.ComputeError, ValueError), match=says):
-            po.ModelBank([spec]).fit_predict(bad)
+            rp.ModelBank([spec]).fit_predict(bad)
 
 
 #: The models with the Huber refit of the first rows (task 277), at a count
@@ -1019,8 +1019,8 @@ class TestRefitProperties:
     def test_chunking_never_changes_the_output(self, model, extra):
         def prop(df, chunk):
             spec = build(model, extra)
-            one = unnested(po.ModelBank([spec]).fit_predict(df))
-            bank = po.ModelBank([spec])
+            one = unnested(rp.ModelBank([spec]).fit_predict(df))
+            bank = rp.ModelBank([spec])
             parts = [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
             assert one.equals(unnested(pl.concat(parts)), null_equal=True)
 
@@ -1031,9 +1031,9 @@ class TestRefitProperties:
         def prop(df, split):
             split = min(split, df.height - 1)
             spec = build(model, extra)
-            a = po.ModelBank([spec])
+            a = rp.ModelBank([spec])
             a.fit_predict(df.slice(0, split))
-            b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
+            b = rp.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
             rest = df.slice(split, df.height - split)
             assert unnested(a.fit_predict(rest)).equals(
                 unnested(b.fit_predict(rest)), null_equal=True
@@ -1050,7 +1050,7 @@ class TestRefitProperties:
 
     def test_outputs_are_finite_or_null(self, model, extra):
         def prop(df):
-            out = po.ModelBank([build(model, extra)]).fit_predict(df)
+            out = rp.ModelBank([build(model, extra)]).fit_predict(df)
             for f in out.schema["m"].fields:
                 if f.name.startswith(("coef", "support_coef")) or not f.dtype.is_float():
                     continue
@@ -1068,8 +1068,8 @@ class TestRefitProperties:
         so its predictions part from the run without it after the fourth
         learned row and not before."""
         df = REFIT_FOUND[0]
-        on = po.ModelBank([build(model, extra)]).fit_predict(df)["m"]
-        off = po.ModelBank([build(model, {**extra, "huber_refit_rows": 0})]).fit_predict(df)["m"]
+        on = rp.ModelBank([build(model, extra)]).fit_predict(df)["m"]
+        off = rp.ModelBank([build(model, {**extra, "huber_refit_rows": 0})]).fit_predict(df)["m"]
         a, b = (o.struct.field("pred_y0").to_numpy() for o in (on, off))
         same = (a == b) | (np.isnan(a) & np.isnan(b))
         assert not same.all()
@@ -1117,7 +1117,7 @@ def _cut_spec(kind: str, names: tuple[str, ...]) -> dict:
     for name in names:
         kw.update(STREAM_PARAMETERS[name])
     kw = {k: v for k, v in kw.items() if v is not None}
-    build = getattr(po.spec, kind)
+    build = getattr(rp.spec, kind)
     try:
         return build("m", coef_every=0, **kw)
     except ValueError as e:
@@ -1130,7 +1130,7 @@ def _cuts(kind: str, names: tuple[str, ...]) -> bool:
     """Whether ``kind`` runs under ``names``: the builder and the bank both
     take it."""
     try:
-        po.ModelBank([_cut_spec(kind, names)])
+        rp.ModelBank([_cut_spec(kind, names)])
     except (TypeError, ValueError):
         return False
     return True
@@ -1235,18 +1235,18 @@ def _cut_holds(kind: str, names: tuple[str, ...], df: pl.DataFrame, chunks, spli
     ``splits`` is transparent, every number is finite or null, and a skipped
     row reports nothing."""
     spec = _cut_spec(kind, names)
-    whole = po.ModelBank([spec])
+    whole = rp.ModelBank([spec])
     one = _fields(whole.fit_predict(df))
     for chunk in chunks:
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         many = pl.concat([bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)])
         assert one.equals(_fields(many), null_equal=True), f"{chunk}-row chunks moved a number"
         if (state := _state(whole, kind)) is not None:
             assert state.equals(_state(bank, kind), null_equal=True), "chunking moved the state"
     for split in splits:
-        a = po.ModelBank([spec])
+        a = rp.ModelBank([spec])
         a.fit_predict(df.slice(0, split))
-        b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
+        b = rp.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
         rest = df.slice(split)
         got = _fields(b.fit_predict(rest))
         assert _fields(a.fit_predict(rest)).equals(got, null_equal=True), f"a load at {split}"
@@ -1339,9 +1339,9 @@ def test_one_seven_and_six_hundred_chunks_and_a_save_at_each_event(kind, session
         # A restart's and a reset's readiness notices are expected here.
         warnings.simplefilter("ignore")
         _cut_holds(kind, names, df, chunks, splits)
-        bank = po.ModelBank([_cut_spec(kind, names)])
+        bank = rp.ModelBank([_cut_spec(kind, names)])
         cut = _fields(bank.fit_predict(df))
-        plain_bank = po.ModelBank([_kind_spec(kind)])
+        plain_bank = rp.ModelBank([_kind_spec(kind)])
         plain = _fields(plain_bank.fit_predict(df))
     moved = _moved(plain, cut)
     print(f"{kind} under {names}: {moved} moved against the plain spec")
@@ -1397,7 +1397,7 @@ def test_a_weight_past_the_bound_is_missing(kind, value):
     spec = {**_kind_spec(kind), "weight": "w"}
     w = df["w"].to_list()
     w[8] = None
-    null = po.ModelBank([spec]).fit_predict(df.with_columns(w=pl.Series(w, dtype=pl.Float64)))
+    null = rp.ModelBank([spec]).fit_predict(df.with_columns(w=pl.Series(w, dtype=pl.Float64)))
     w[8] = value
-    got = po.ModelBank([spec]).fit_predict(df.with_columns(w=pl.Series(w, dtype=pl.Float64)))
+    got = rp.ModelBank([spec]).fit_predict(df.with_columns(w=pl.Series(w, dtype=pl.Float64)))
     assert got["m"].equals(null["m"], null_equal=True)

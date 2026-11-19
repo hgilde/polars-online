@@ -275,7 +275,7 @@ def gram_path_jobs(
     threads: int | None = None,
 ) -> list[_PathOut]: ...
 
-# `po.gbdt`'s native engine (python/rheon/gbdt.py, docs/PLAN.md task
+# `po.gbdt`'s native engine (python/rheon/polars/_gbdt.py, docs/PLAN.md task
 # 242). `batches` returns a fresh iterator of frames for each pass; each
 # build returns the library's handle, which the caller owns, and its counts
 # and timings.

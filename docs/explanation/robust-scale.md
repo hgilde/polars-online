@@ -176,7 +176,7 @@ This code fits one such stream of 2,000 rows, at about
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # y = 1000 + 2x plus noise, with about 12.5% of the rows 50 too high, all where x is above 0.
 rng = np.random.default_rng(6)

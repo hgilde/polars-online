@@ -287,7 +287,7 @@ directory where [a plain run](how-to/run-a-bank-from-the-command-line.md#run-a-b
 import tomllib
 
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 with open("job.toml", "rb") as f:
     bank = po.ModelBank(tomllib.load(f)["specs"])

@@ -22,7 +22,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -66,7 +66,7 @@ def spec(block: int | None, **kw):
         gram_block_rows=block,
     )
     opts.update(kw)
-    return po.spec.ewridge("m", **opts)
+    return rp.spec.ewridge("m", **opts)
 
 
 def fields(out: pl.DataFrame) -> pl.DataFrame:
@@ -74,13 +74,13 @@ def fields(out: pl.DataFrame) -> pl.DataFrame:
 
 
 def run(df: pl.DataFrame, block: int | None, chunk: int | None = None, **kw):
-    bank = po.ModelBank([spec(block, **kw)])
+    bank = rp.ModelBank([spec(block, **kw)])
     if chunk is None:
         return fields(bank.fit_predict(df)), bank
     return fields(pl.concat([bank.fit_predict(c) for c in df.iter_slices(chunk)])), bank
 
 
-def ridge_state(bank: po.ModelBank) -> dict:
+def ridge_state(bank: rp.ModelBank) -> dict:
     """The one `ewridge` instance's state in the JSON export: spec 0, its
     one group, model instance 0."""
     doc = json.loads(bank.write_json())
@@ -181,13 +181,13 @@ def test_chunking_cannot_move_a_block(chunk):
 def test_a_save_mid_block_resumes_bit_for_bit(tmp_path):
     df = stream()
     whole, _ = run(df, 16)
-    a = po.ModelBank([spec(16)])
+    a = rp.ModelBank([spec(16)])
     a.fit_predict(df.slice(0, 101))
     assert ridge_state(a)["acc"]["grams"]["grams"][0]["pending"]["lam"], (
         "row 101 should sit mid-block"
     )
     a.save(tmp_path / "blocked.state")
-    b = po.ModelBank.load(tmp_path / "blocked.state")
+    b = rp.ModelBank.load(tmp_path / "blocked.state")
     rest = fields(b.fit_predict(df.slice(101)))
     assert rest.equals(whole.slice(101), null_equal=True)
 
@@ -346,7 +346,7 @@ def test_a_state_written_before_the_field_loads_with_blocking_off(tmp_path):
     before = _msgpack_write(_without_key(tree, "gram_block_rows"))
     assert b"gram_block_rows" not in before
     (tmp_path / "before.state").write_bytes(before)
-    old = po.ModelBank.load(tmp_path / "before.state")
+    old = rp.ModelBank.load(tmp_path / "before.state")
     assert old.specs[0]["model"].get("gram_block_rows") is None
     assert fields(old.fit_predict(rest)).equals(whole.slice(101), null_equal=True)
     old.save(tmp_path / "again.state")
@@ -414,10 +414,10 @@ def test_a_group_closed_mid_block_carries_the_merged_rows():
     assert ridge_state(alone)["acc"]["grams"]["grams"][0]["pending"]["lam"], (
         "'a' should close mid-block"
     )
-    bank = po.ModelBank([spec(16, group="g", group_close="monotone")])
+    bank = rp.ModelBank([spec(16, group="g", group_close="monotone")])
     bank.fit_predict(df)
-    row = po.gram.from_row(bank.closed_groups())
-    plain = po.ModelBank([spec(0, group="g")])
+    row = rp.gram.from_row(bank.closed_groups())
+    plain = rp.ModelBank([spec(0, group="g")])
     plain.fit_predict(df.slice(0, 341))
     g = plain.gram("m", "a")[0]
     assert row["weight_sum"] == g["weight_sum"]
@@ -495,7 +495,7 @@ def targets_spec(block: int | None, gaps: str, **kw):
     return spec(block, targets=["y0", "y1", "y2"], target_gaps=gaps, **kw)
 
 
-def gram_bits(bank: po.ModelBank) -> list:
+def gram_bits(bank: rp.ModelBank) -> list:
     """Every float array and scalar of every Gram, as its bits."""
     out = []
     for g in bank.gram("m"):
@@ -517,11 +517,11 @@ def test_several_targets_blocked_are_the_per_row_fit(gaps):
     per-row one to rounding, every weight to the bit, and the Gram export's
     target moments too."""
     df = targets_stream()
-    plain = fields(po.ModelBank([targets_spec(0, gaps)]).fit_predict(df))
-    a = po.ModelBank([targets_spec(16, gaps)])
+    plain = fields(rp.ModelBank([targets_spec(0, gaps)]).fit_predict(df))
+    a = rp.ModelBank([targets_spec(16, gaps)])
     blocked = fields(a.fit_predict(df))
     assert_same_fit(plain, blocked)
-    b = po.ModelBank([targets_spec(0, gaps)])
+    b = rp.ModelBank([targets_spec(0, gaps)])
     b.fit_predict(df)
     for ga, gb in zip(a.gram("m"), b.gram("m"), strict=True):
         assert ga["targets"] == gb["targets"]
@@ -538,21 +538,21 @@ def test_several_targets_held_mid_block_resume_and_rechunk_to_the_bit(gaps, tmp_
     resumes to the bit, and every chunking is the one-chunk stream, the
     Gram export included."""
     df = targets_stream()
-    whole_bank = po.ModelBank([targets_spec(16, gaps)])
+    whole_bank = rp.ModelBank([targets_spec(16, gaps)])
     whole = fields(whole_bank.fit_predict(df))
     want = gram_bits(whole_bank)
     for chunk in (1, 7, 133):
-        bank = po.ModelBank([targets_spec(16, gaps)])
+        bank = rp.ModelBank([targets_spec(16, gaps)])
         got = fields(pl.concat([bank.fit_predict(c) for c in df.iter_slices(chunk)]))
         assert got.equals(whole, null_equal=True), f"chunks of {chunk}"
         assert gram_bits(bank) == want, f"chunks of {chunk}"
     saw_held = False
     for cut in (3, 16, 17, 101, 302, 599):
-        a = po.ModelBank([targets_spec(16, gaps)])
+        a = rp.ModelBank([targets_spec(16, gaps)])
         a.fit_predict(df.slice(0, cut))
         saw_held |= bool(ridge_state(a)["acc"].get("held"))
         a.save(tmp_path / f"cut{cut}.state")
-        b = po.ModelBank.load(tmp_path / f"cut{cut}.state")
+        b = rp.ModelBank.load(tmp_path / f"cut{cut}.state")
         rest = fields(b.fit_predict(df.slice(cut)))
         assert rest.equals(whole.slice(cut), null_equal=True), f"saved after row {cut}"
         assert gram_bits(b) == want, f"saved after row {cut}"

@@ -13,8 +13,8 @@ import math
 import polars as pl
 import pytest
 
-import rheon as po
 from rheon import _spec
+from rheon import polars as rp
 from test_golden_pipeline import specs, stream
 
 TIER = "essential"
@@ -72,7 +72,7 @@ DESCRIBE_SCHEMA = {
 }
 
 
-def feed(bank: po.ModelBank, df: pl.DataFrame, n_chunks: int) -> pl.DataFrame:
+def feed(bank: rp.ModelBank, df: pl.DataFrame, n_chunks: int) -> pl.DataFrame:
     step = -(-df.height // n_chunks)
     return pl.concat([bank.fit_predict(c) for c in df.iter_slices(step)])
 
@@ -98,9 +98,9 @@ def columns_of(spec: dict) -> list[tuple[str, str]]:
 
 
 @pytest.fixture(scope="module")
-def fitted() -> tuple[pl.DataFrame, po.ModelBank, pl.DataFrame]:
+def fitted() -> tuple[pl.DataFrame, rp.ModelBank, pl.DataFrame]:
     df = stream(150)
-    bank = po.ModelBank(specs())
+    bank = rp.ModelBank(specs())
     out = feed(bank, df, 5)
     return df, bank, out
 
@@ -267,7 +267,7 @@ def test_events_zero_weights_sessions_and_backwards_clocks():
     )
     # The steps back are what the summary counts, and the default policy
     # refuses them, so both specs start over at one instead.
-    reset_on_session = po.spec.ewridge(
+    reset_on_session = rp.spec.ewridge(
         "rs",
         targets=["y"],
         features=["x"],
@@ -279,7 +279,7 @@ def test_events_zero_weights_sessions_and_backwards_clocks():
         weight="w",
         restart_after_step_back=0.0,
     )
-    reset_on_backwards = po.spec.ewridge(
+    reset_on_backwards = rp.spec.ewridge(
         "rb",
         targets=["y"],
         features=["x"],
@@ -288,7 +288,7 @@ def test_events_zero_weights_sessions_and_backwards_clocks():
         gap_cap=5.0,
         restart_after_step_back=0.0,
     )
-    bank = po.ModelBank([reset_on_session, reset_on_backwards])
+    bank = rp.ModelBank([reset_on_session, reset_on_backwards])
     feed(bank, df, 3)
     s = bank.summary().sort("spec")
     rb, rs = s.rows(named=True)
@@ -306,8 +306,8 @@ def test_events_zero_weights_sessions_and_backwards_clocks():
 
 def test_a_row_count_clock_has_no_range():
     df = stream(40)
-    spec = po.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=10.0, group="g")
-    bank = po.ModelBank([spec])
+    spec = rp.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=10.0, group="g")
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     s = bank.summary()
     assert s["clock_min"].null_count() == 2
@@ -320,12 +320,12 @@ def test_it_travels_with_the_state_file_and_a_re_save_is_the_same_bytes(fitted, 
     _, bank, _ = fitted
     s, d = bank.summary(), bank.describe()
     raw = bank.save_bytes()
-    loaded = po.ModelBank.load_bytes(raw)
+    loaded = rp.ModelBank.load_bytes(raw)
     assert loaded.summary().equals(s)
     assert loaded.describe().equals(d)
     assert loaded.save_bytes() == raw, "a loaded bank saves to the same bytes"
     bank.save(tmp_path / "bank.bin")
-    from_file = po.ModelBank.load(tmp_path / "bank.bin")
+    from_file = rp.ModelBank.load(tmp_path / "bank.bin")
     assert from_file.summary().equals(s)
     assert from_file.describe().equals(d)
     assert (tmp_path / "bank.bin").read_bytes() == raw
@@ -335,7 +335,7 @@ def test_chunking_cannot_move_a_bit(fitted):
     _, bank, _ = fitted
     df = stream(150)
     for n_chunks in (1, 150):
-        other = po.ModelBank(specs())
+        other = rp.ModelBank(specs())
         feed(other, df, n_chunks)
         # `equals` compares values; the bits too, for the floats.
         assert other.summary().equals(bank.summary()), n_chunks
@@ -373,14 +373,14 @@ def test_narrowing_errors_and_the_empty_cases(fitted):
     assert none.height == 0 and none.schema == SUMMARY_SCHEMA
     none = bank.describe("kalman", group="zzz")
     assert none.height == 0 and none.schema == DESCRIBE_SCHEMA
-    fresh = po.ModelBank(specs())
+    fresh = rp.ModelBank(specs())
     assert fresh.summary().height == 0 and fresh.summary().schema == SUMMARY_SCHEMA
     assert fresh.describe().height == 0 and fresh.describe().schema == DESCRIBE_SCHEMA
 
 
 def test_dropped_groups_start_their_count_over():
     df = stream(60)
-    bank = po.ModelBank(specs()[:1])
+    bank = rp.ModelBank(specs()[:1])
     bank.fit_predict(df)
     before = bank.summary()
     assert before["rows_fed"].to_list() == [30, 30]

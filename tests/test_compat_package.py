@@ -344,9 +344,9 @@ def test_the_smoke_test_refuses_a_runner_without_a_feature_the_wheel_needs(insta
 def test_a_checkout_is_smoke_tested_without_a_distribution():
     """The check this suite runs on the build in this environment, which has
     no distribution to hold to a name."""
-    import rheon as po
+    from rheon import polars as rp
 
-    assert wheel_smoke.check(po.__version__, installed=False).endswith(": ok")
+    assert wheel_smoke.check(rp.__version__, installed=False).endswith(": ok")
 
 
 def test_the_wheel_size_check_reads_the_compat_wheels_like_any_other(tmp_path):

@@ -15,7 +15,7 @@ The two Python surfaces, in full:
 
 ```python
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 spec = po.spec.ewridge(
     "ridge",
@@ -132,9 +132,6 @@ Windows alike.
   `lf.online.with_windows(*exprs, **named, clock=...)` in one pass. A look-ahead one
   is also a spec's target, learned once its window has passed: `fit_predict`
   refuses an `embargo` shorter than its `window_size`
-- [Training inputs for XGBoost and LightGBM](https://hgilde.github.io/polars-online/gbdt.html):
-  `po.gbdt.xgboost_matrix`, `po.gbdt.lightgbm_dataset`, binned from Arrow IPC, Parquet
-  or a query one chunk at a time, for data larger than memory (unstable)
 - [Simulation](https://hgilde.github.io/polars-online/sim.html)
 
 ## Tutorials

@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
-import rheon as po  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 from test_model_registry import MINIMAL, _build  # noqa: E402
 
 #: The keywords `_build` gives every model before `MINIMAL`'s own.
@@ -438,7 +438,7 @@ FIELD_HEAD = ("field", "dtype", "what it holds", "also null")
 
 def dtypes(spec: dict) -> dict[str, str]:
     """Each field's dtype, as the bank declares it to polars."""
-    index = po.spec.output_index(spec)
+    index = rp.spec.output_index(spec)
     return dict(zip(index["field"], index["dtype"], strict=True))
 
 
@@ -483,7 +483,7 @@ DTYPES: list[tuple[str, str]] = [
 
 #: The recipe in *The fields of your own spec*: run here, so the page shows what it prints.
 RECIPE = """\
-import rheon as po
+from rheon import polars as po
 
 grid = po.spec.ewridge(
     "ridge", targets=["y"], features=["x0", "x1"],
@@ -687,7 +687,7 @@ def main() -> None:
                 switch, extra = SWITCHED[name]
                 kw = {**BASE_KWARGS, **MINIMAL[name], **extra}
                 more = dtypes(
-                    getattr(po.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
+                    getattr(rp.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
                 )
                 rows = []
                 for f, dtype in more.items():

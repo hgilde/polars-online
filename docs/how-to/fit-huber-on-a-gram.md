@@ -61,7 +61,7 @@ to a tenth of the rows with `x` above 0, and leaves their Gram:
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # y = 1000 + 2x plus noise, and 50 added to a tenth of the rows with x above 0: 5% of all rows.
 rng = np.random.default_rng(3)

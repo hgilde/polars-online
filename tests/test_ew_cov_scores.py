@@ -27,7 +27,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -151,7 +151,7 @@ def spec(k, **kw):
         min_weight=5.0,
     )
     d.update(kw)
-    return po.spec.ew_cov("c", **d)
+    return rp.spec.ew_cov("c", **d)
 
 
 def gaussian(n, k, seed, *, chol=None):
@@ -171,7 +171,7 @@ class TestMahalOracle:
         n, k = 400, 4
         X, _ = gaussian(n, k, 1)
         prior = 1e-3
-        out = po.ModelBank([spec(k, precision_prior=prior, half_life=50.0)]).fit_predict(frame(X))
+        out = rp.ModelBank([spec(k, precision_prior=prior, half_life=50.0)]).fit_predict(frame(X))
         got = field(out, "mahal")
         lam = np.full(n, math.exp2(-1.0 / 50.0))
         lam[0] = 1.0
@@ -217,7 +217,7 @@ class TestMahalOracle:
             weight="w",
             min_weight=3.0,
         )
-        out = po.ModelBank([s]).fit_predict(df)
+        out = rp.ModelBank([s]).fit_predict(df)
         got = field(out, "mahal")
         accepted = np.array([x1[i] is not None and w_col[i] is not None for i in range(n)])
         lam = np.ones(n)
@@ -251,7 +251,7 @@ class TestMahalOracle:
         rng = np.random.default_rng(4)
         x = 3.0 + 2.0 * rng.standard_normal(n)
         df = pl.DataFrame({"x0": x})
-        out = po.ModelBank(
+        out = rp.ModelBank(
             [spec(1, stats=["mean", "std", "mahal"], precision_prior=1e-12)]
         ).fit_predict(df)
         got = field(out, "mahal")
@@ -267,7 +267,7 @@ class TestMahalOracle:
         n, k = 400, 3
         X, _ = gaussian(n, k, 5)
         X[300] += 8.0
-        out = po.ModelBank([spec(k, stats=["mahal"])]).fit_predict(frame(X))
+        out = rp.ModelBank([spec(k, stats=["mahal"])]).fit_predict(frame(X))
         got = field(out, "mahal")
         assert got[300] > 10 * np.nanmedian(got)
         assert got[301] < got[300] / 3, (
@@ -287,7 +287,7 @@ class TestPcaOracle:
         s = spec(
             k, stats=["mean"], precision_prior=None, pca=r, pca_every=every, half_life=half_life
         )
-        out = po.ModelBank([s]).fit_predict(frame(X))
+        out = rp.ModelBank([s]).fit_predict(frame(X))
         lam = np.full(n, math.exp2(-1.0 / half_life))
         lam[0] = 1.0
         states = replay(X, lam, np.ones(n), prior=1.0)
@@ -338,7 +338,7 @@ class TestPcaOracle:
         F = rng.standard_normal((n, f)) * np.array([3.0, 2.0, 1.0])
         X = F @ Q.T + 0.1 * rng.standard_normal((n, k))
         s = spec(k, stats=["mean"], precision_prior=None, pca=4, pca_every=1000, half_life=NO_DECAY)
-        out = po.ModelBank([s]).fit_predict(frame(X))
+        out = rp.ModelBank([s]).fit_predict(frame(X))
         last = out["c"][-1]
         var = np.array([last[f"pc{j}_var"] for j in range(4)])
         np.testing.assert_allclose(var[:3], [9.0, 4.0, 1.0], rtol=0.03)
@@ -362,8 +362,8 @@ class TestPcaOracle:
         R, _ = np.linalg.qr(np.random.default_rng(9).standard_normal((k, k)))
         Y = X @ R.T
         s = spec(k, stats=["mean"], precision_prior=None, pca=k, pca_every=50)
-        a = po.ModelBank([s]).fit_predict(frame(X))
-        b = po.ModelBank([s]).fit_predict(frame(Y))
+        a = rp.ModelBank([s]).fit_predict(frame(X))
+        b = rp.ModelBank([s]).fit_predict(frame(Y))
         for j in range(k):
             np.testing.assert_allclose(
                 field(a, f"pc{j}_var"), field(b, f"pc{j}_var"), rtol=1e-8, equal_nan=True
@@ -386,7 +386,7 @@ class TestPcaOracle:
         n, k = 3000, 5
         X, _ = gaussian(n, k, 10)
         s = spec(k, stats=["mean"], precision_prior=None, pca=2, pca_every=1, half_life=200.0)
-        out = po.ModelBank([s]).fit_predict(frame(X))
+        out = rp.ModelBank([s]).fit_predict(frame(X))
         V1 = np.column_stack([field(out, f"pc1_loading_x{c}") for c in range(k)])[100:]
         lead = np.argmax(np.abs(V1), axis=1)
         assert len(set(lead.tolist())) > 1, (
@@ -413,7 +413,7 @@ class TestCalibration:
         s = spec(
             k, stats=["mahal"], mahal_quantiles=[0.5, 0.99], half_life=20_000.0, min_weight=50.0
         )
-        out = po.ModelBank([s]).fit_predict(frame(X))
+        out = rp.ModelBank([s]).fit_predict(frame(X))
         d2 = field(out, "mahal")[10_000:] ** 2
         assert np.mean(d2) == pytest.approx(k, rel=0.02)
         assert np.mean(d2 > CHI2_99[k]) == pytest.approx(0.01, abs=0.002)
@@ -433,7 +433,7 @@ class TestCalibration:
         X, _ = gaussian(n, k, 21)
         X[1500:] *= 4.0
         s = spec(k, stats=["mahal"], mahal_quantiles=[0.5, 0.9], half_life=h, min_weight=5.0)
-        out = po.ModelBank([s]).fit_predict(frame(X))
+        out = rp.ModelBank([s]).fit_predict(frame(X))
         d = field(out, "mahal")
         lam = 0.5 ** (1 / h)
         alpha = math.tanh(1 / 128)
@@ -454,7 +454,7 @@ class TestCalibration:
         bad = rng.choice(np.arange(5_000, n), 500, replace=False)
         X[bad] += rng.standard_normal((500, k)) * 4.0
         s = spec(k, stats=["mahal"], mahal_quantiles=[0.99], half_life=NO_DECAY, min_weight=50.0)
-        out = po.ModelBank([s]).fit_predict(frame(X))
+        out = rp.ModelBank([s]).fit_predict(frame(X))
         d2 = field(out, "mahal") ** 2
         flag = d2 > CHI2_99[k]
         assert flag[bad].mean() > 0.9
@@ -477,7 +477,7 @@ class TestCalibration:
         B = 2.5 * gaussian(n // 2, k, 16)[0] @ R.T
         X = np.vstack([A, B])
         s = spec(k, stats=["mahal"], half_life=500.0, min_weight=50.0)
-        d2 = field(po.ModelBank([s]).fit_predict(frame(X)), "mahal") ** 2
+        d2 = field(rp.ModelBank([s]).fit_predict(frame(X)), "mahal") ** 2
         assert np.mean(d2[n // 2 : n // 2 + 200]) > 1.5 * k, "the switch is visible"
         assert np.mean(d2[-10_000:]) == pytest.approx(k, rel=0.1)
 
@@ -505,9 +505,9 @@ class TestStreamContract:
     def test_chunk_invariance_with_a_refresh_cadence(self):
         df = self._df()
         s = self._spec()
-        one = po.ModelBank([s]).fit_predict(df).select("c").unnest("c")
+        one = rp.ModelBank([s]).fit_predict(df).select("c").unnest("c")
         for size in (1, 7, 13, 100):
-            bank = po.ModelBank([s])
+            bank = rp.ModelBank([s])
             many = (
                 pl.concat([bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)])
                 .select("c")
@@ -518,17 +518,17 @@ class TestStreamContract:
     def test_save_load(self, tmp_path):
         df = self._df()
         s = self._spec()
-        a = po.ModelBank([s])
+        a = rp.ModelBank([s])
         a.fit_predict(df.slice(0, 401))  # mid-cadence: 401 % 7 != 0
         a.save(tmp_path / "c.state")
-        b = po.ModelBank.load(tmp_path / "c.state", specs=[s])
+        b = rp.ModelBank.load(tmp_path / "c.state", specs=[s])
         rest = df.slice(401)
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
     def test_predict_reads_frozen_components_and_moves_nothing(self):
         df = self._df()
         s = self._spec()
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         bank.fit_predict(df.slice(0, 400))
         snap = bank.save_bytes()
         scored = bank.predict(df.slice(400))
@@ -550,7 +550,7 @@ class TestStreamContract:
         s = spec(
             2, half_life=[50.0, 500.0], stats=["mahal"], mahal_quantiles=[0.5], pca=1, pca_every=1
         )
-        assert po.spec.output_fields(s) == [
+        assert rp.spec.output_fields(s) == [
             "mahal@h50",
             "mahal_q0.5@h50",
             "pc0_var@h50",
@@ -572,7 +572,7 @@ class TestStreamContract:
             "settled_frac@h500",
             "withheld_reason@h500",
         ]
-        out = po.ModelBank([s]).fit_predict(self._df(k=2))
+        out = rp.ModelBank([s]).fit_predict(self._df(k=2))
         assert field(out, "pc0_var@h50")[-1] != field(out, "pc0_var@h500")[-1]
 
     def test_a_toml_config_carries_the_new_keys(self, tmp_path, rheon_cli):
@@ -607,7 +607,7 @@ class TestStreamContract:
         )
         assert res.returncode == 0, res.stderr
         got = pl.read_parquet(dst).select("c").unnest("c")
-        want = po.ModelBank([self._spec()]).fit_predict(df).select("c").unnest("c")
+        want = rp.ModelBank([self._spec()]).fit_predict(df).select("c").unnest("c")
         assert got.equals(want, null_equal=True)
 
 
@@ -619,7 +619,7 @@ class TestFields:
         s = spec(
             3, stats=["mean", "mahal", "corr"], mahal_quantiles=[0.5, 0.99], pca=1, pca_every=1
         )
-        assert po.spec.output_fields(s) == [
+        assert rp.spec.output_fields(s) == [
             "mean_x0",
             "mean_x1",
             "mean_x2",
@@ -639,7 +639,7 @@ class TestFields:
             "settled_frac",
             "withheld_reason",
         ]
-        idx = po.spec.output_index(s)
+        idx = rp.spec.output_index(s)
         rows = {r["field"]: r for r in idx.to_dicts()}
         assert rows["mahal"]["kind"] == "mahal"
         assert rows["mahal"]["columns"] == ["x0", "x1", "x2"]
@@ -655,7 +655,7 @@ class TestFields:
         assert set(idx["dtype"].to_list()) == {"f64", "enum"}
 
     def test_absent_by_default(self):
-        assert po.spec.output_fields(spec(2, stats=["mean"], precision_prior=None)) == [
+        assert rp.spec.output_fields(spec(2, stats=["mean"], precision_prior=None)) == [
             "mean_x0",
             "mean_x1",
             "weight_sum",
@@ -670,7 +670,7 @@ class TestFields:
         # asserted here against the surface a caller can actually reach.
         import inspect
 
-        keys = set(inspect.signature(po.spec.ew_cov).parameters)
+        keys = set(inspect.signature(rp.spec.ew_cov).parameters)
         assert {"mahal_quantiles", "pca", "pca_every"} <= keys
 
 
@@ -745,7 +745,7 @@ class TestValidation:
         ):
             spec(2, stats=["mean"], precision_prior=None, pca=0)
         s = spec(2, stats=["mean"], precision_prior=None)
-        assert po.spec.output_fields(s) == [
+        assert rp.spec.output_fields(s) == [
             "mean_x0",
             "mean_x1",
             "weight_sum",
@@ -760,13 +760,13 @@ class TestValidation:
             ValueError,
             match="mahal_quantiles must each be above 0 and below 1, but one of them is 2",
         ):
-            po.ModelBank([s])
+            rp.ModelBank([s])
         s = spec(2, stats=["mean"], precision_prior=None, pca=1)
         s["model"]["pca"] = 5
         with pytest.raises(
             ValueError, match=r"pca must be at most the number of features \(2\), but it is 5"
         ):
-            po.ModelBank([s])
+            rp.ModelBank([s])
 
     def test_mahal_is_listed_as_a_statistic(self):
         with pytest.raises(
@@ -783,7 +783,7 @@ class TestEdgeCases:
         n = 200
         x = np.random.default_rng(18).standard_normal(n) * 3.0
         s = spec(1, stats=["var"], precision_prior=None, pca=1, pca_every=1)
-        out = po.ModelBank([s]).fit_predict(pl.DataFrame({"x0": x}))
+        out = rp.ModelBank([s]).fit_predict(pl.DataFrame({"x0": x}))
         ok = np.isfinite(field(out, "pc0_var"))
         assert ok.sum() > 190
         np.testing.assert_allclose(field(out, "pc0_loading_x0")[ok], 1.0)
@@ -798,7 +798,7 @@ class TestEdgeCases:
         X, _ = gaussian(n, 2, 19)
         X[:, 1] = 7.0
         s = spec(2, stats=["mean"], precision_prior=None, pca=2, pca_every=1)
-        out = po.ModelBank([s]).fit_predict(frame(X))
+        out = rp.ModelBank([s]).fit_predict(frame(X))
         assert field(out, "pc1_var")[-1] == pytest.approx(0.0, abs=1e-12)
         assert field(out, "pc0_share")[-1] == pytest.approx(1.0)
         assert abs(field(out, "pc0_loading_x0")[-1]) == pytest.approx(1.0)
@@ -807,13 +807,13 @@ class TestEdgeCases:
     def test_an_all_constant_stream_has_nan_shares_and_a_finite_mahal(self):
         df = pl.DataFrame({"x0": [1.0] * 40, "x1": [2.0] * 40})
         s = spec(2, stats=["mahal"], precision_prior=1e-3, pca=1, pca_every=1)
-        out = po.ModelBank([s]).fit_predict(df)
+        out = rp.ModelBank([s]).fit_predict(df)
         assert np.isnan(field(out, "pc0_share")[-1]), "0/0 is NaN, not 0"
         assert field(out, "pc0_var")[-1] == 0.0
         assert field(out, "mahal")[-1] == 0.0, "a row at the mean is at distance 0"
         # An off-mean row on a degenerate history: the prior alone sets the
         # scale, so the distance is finite and large.
-        d = po.ModelBank([s]).fit_predict(df.vstack(pl.DataFrame({"x0": [2.0], "x1": [2.0]})))
+        d = rp.ModelBank([s]).fit_predict(df.vstack(pl.DataFrame({"x0": [2.0], "x1": [2.0]})))
         last = field(d, "mahal")[-1]
         assert np.isfinite(last) and last > 10.0
 
@@ -824,7 +824,7 @@ class TestEdgeCases:
         w[150:170] = 0.0
         df = frame(X, w=w)
         s = spec(k, weight="w", pca=1, pca_every=1, precision_prior=1e-4)
-        out = po.ModelBank([s]).fit_predict(df)
+        out = rp.ModelBank([s]).fit_predict(df)
         for name in ("mean_x0", "pc0_var", "pc0_loading_x0"):
             v = field(out, name)
             assert np.ptp(v[150:171]) == 0.0, name
@@ -835,7 +835,7 @@ class TestEdgeCases:
         n, k = 200, 2
         X, _ = gaussian(n, k, 21)
         s = spec(k, mahal_quantiles=[0.5], min_weight=2.0)
-        out = po.ModelBank([s]).fit_predict(frame(X))
+        out = rp.ModelBank([s]).fit_predict(frame(X))
         m, q = field(out, "mahal"), field(out, "mahal_q0.5")
         first_score = int(np.argmax(np.isfinite(m)))
         first_q = int(np.argmax(np.isfinite(q)))
@@ -848,7 +848,7 @@ class TestEdgeCases:
         n, k = 5_000, 40
         X, _ = gaussian(n, k, 22)
         s = spec(k, stats=["mahal"], pca=3, pca_every=100, half_life=NO_DECAY, min_weight=200.0)
-        out = po.ModelBank([s]).fit_predict(frame(X))
+        out = rp.ModelBank([s]).fit_predict(frame(X))
         d2 = field(out, "mahal")[1000:] ** 2
         assert np.mean(d2) == pytest.approx(k, rel=0.05)
         share = [field(out, f"pc{j}_share")[-1] for j in range(3)]
@@ -860,8 +860,8 @@ class TestEdgeCases:
         # of 1e3 is a ridge of 1e3/400 = 2.5 on the diagonal, no more.
         n, k = 400, 3
         X, _ = gaussian(n, k, 23)
-        small = field(po.ModelBank([spec(k, precision_prior=1e-9)]).fit_predict(frame(X)), "mahal")
-        big = field(po.ModelBank([spec(k, precision_prior=1e3)]).fit_predict(frame(X)), "mahal")
+        small = field(rp.ModelBank([spec(k, precision_prior=1e-9)]).fit_predict(frame(X)), "mahal")
+        big = field(rp.ModelBank([spec(k, precision_prior=1e3)]).fit_predict(frame(X)), "mahal")
         ok = np.isfinite(small)
         assert (big[ok] < small[ok]).all()
         lam = np.ones(n)
@@ -882,7 +882,7 @@ def test_pca_variance_scales_and_the_shares_are_invariant_at_a_tiny_scale():
 
     def pcs(scale):
         s = spec(4, stats=["mean"], precision_prior=None, pca=4, pca_every=10, half_life=NO_DECAY)
-        out = po.ModelBank([s]).fit_predict(frame(X * scale))
+        out = rp.ModelBank([s]).fit_predict(frame(X * scale))
         var = [field(out, f"pc{j}_var")[-1] for j in range(4)]
         share = [field(out, f"pc{j}_share")[-1] for j in range(4)]
         return var, share
@@ -937,7 +937,7 @@ class TestMahalQuantilesUnderWeightsAndAClock:
             weight="w",
             min_weight=3.0,
         )
-        out = po.ModelBank([s]).fit_predict(frame(X, t=t, w=w))
+        out = rp.ModelBank([s]).fit_predict(frame(X, t=t, w=w))
         d = field(out, "mahal")
         clock = np.cumsum(np.minimum(steps, cap))
         alpha = math.tanh(1 / 128)
@@ -980,7 +980,7 @@ class TestEverythingOnIsChunkAndResumeInvariant:
 
     def test_chunks_and_saves(self):
         df = self._stream()
-        s = po.spec.ew_cov(
+        s = rp.spec.ew_cov(
             "c",
             features=["x0", "x1", "x2"],
             stats=["mean", "var", "corr", "partial_corr", "mahal", "lag_corr"],
@@ -996,20 +996,20 @@ class TestEverythingOnIsChunkAndResumeInvariant:
             weight="w",
             min_weight=2.0,
         )
-        whole = po.ModelBank([s]).fit_predict(df)
+        whole = rp.ModelBank([s]).fit_predict(df)
         inner = whole["c"].struct.unnest()
         for name in ("lag_corr_l4_x0_x1", "mahal_q0.95", "pc1_score", "partial_corr_x0_x2"):
             assert inner[name].drop_nulls().drop_nans().len() > 2000, name
         for size in (1, 7, 600):
-            bank = po.ModelBank([s])
+            bank = rp.ModelBank([s])
             many = pl.concat(
                 [bank.fit_predict(df.slice(o, size)) for o in range(0, df.height, size)]
             )
             assert many.equals(whole, null_equal=True), size
         for cut in (5, 1001):
-            a = po.ModelBank([s])
+            a = rp.ModelBank([s])
             head = a.fit_predict(df.head(cut))
-            b = po.ModelBank.load_bytes(a.save_bytes(), [s])
+            b = rp.ModelBank.load_bytes(a.save_bytes(), [s])
             got = pl.concat([head, b.fit_predict(df.slice(cut))])
             assert got.equals(whole, null_equal=True), cut
 
@@ -1029,7 +1029,7 @@ class TestALargePrior:
         X, _ = gaussian(n, k, 3)
         runs = [
             field(
-                po.ModelBank(
+                rp.ModelBank(
                     [spec(k, precision_prior=prior, half_life=80.0, min_weight=3.0)]
                 ).fit_predict(frame(X)),
                 "mahal",
@@ -1049,7 +1049,7 @@ class TestALargePrior:
         error = {}
         for prior in (1e9, 1e12):
             got = field(
-                po.ModelBank(
+                rp.ModelBank(
                     [spec(k, precision_prior=prior, half_life=h, min_weight=3.0)]
                 ).fit_predict(frame(X)),
                 "mahal",
@@ -1072,7 +1072,7 @@ class TestALargePrior:
         error = {}
         for prior in (1e9, 1e12):
             s = spec(k, stats=["partial_corr"], precision_prior=prior, half_life=h, min_weight=3.0)
-            out = po.ModelBank([s]).fit_predict(frame(X))
+            out = rp.ModelBank([s]).fit_predict(frame(X))
             states = replay(X, lam, np.ones(n), prior=prior)
             rel = []
             for a, b in ((0, 1), (0, 2), (1, 2)):

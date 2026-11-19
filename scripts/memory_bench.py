@@ -115,9 +115,9 @@ def repeat(d: Path, size: str) -> None:
 
 
 def _spec():
-    import rheon as po
+    from rheon import polars as rp
 
-    return po.spec.ewridge(
+    return rp.spec.ewridge(
         "m",
         targets=["y"],
         features=FEATURES,
@@ -134,14 +134,14 @@ def run(d: Path, case: str, size: str) -> None:
     """One case, in this process."""
     import polars as pl
 
-    import rheon as po
+    from rheon import polars as rp
 
     spec = _spec()
     keep = pl.col("w") > 0  # every row
     lf = pl.scan_parquet(d / f"r{size}.parquet")
     out = d / f"out_{case}_{size}.parquet"
     if case == "loop":
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         for chunk in lf.collect_batches():
             bank.fit_predict(chunk)
         return

@@ -83,7 +83,7 @@ estimator's mean correlation over the blocks:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Two noisy prices whose returns correlate at 0.6; p2 is observed on about 30% of the rows.
 rng = np.random.default_rng(4)

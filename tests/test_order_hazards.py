@@ -22,7 +22,7 @@ import warnings
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -30,7 +30,7 @@ TIER = "essential"
 # backwards again and again, which is refused unless `restart_after_step_back`
 # reads it as a new start. These tests are about the *plan* warning, which must fire before
 # any row is read, so the spec starts over at every step back instead.
-SPEC = po.spec.ewridge(
+SPEC = rp.spec.ewridge(
     "m",
     targets=["y"],
     features=["x0"],
@@ -60,7 +60,7 @@ def right() -> pl.LazyFrame:
 def quiet(fn):
     """Run ``fn`` and fail on any ``OrderNotGuaranteedWarning``."""
     with warnings.catch_warnings():
-        warnings.simplefilter("error", po.OrderNotGuaranteedWarning)
+        warnings.simplefilter("error", rp.OrderNotGuaranteedWarning)
         return fn()
 
 
@@ -69,8 +69,8 @@ def quiet(fn):
 
 def test_a_join_without_maintain_order_is_flagged():
     lf = left().join(right(), on="k")
-    with pytest.warns(po.OrderNotGuaranteedWarning, match="row order is not guaranteed") as rec:
-        po.ModelBank([SPEC]).fit(lf, chunk_size=4)
+    with pytest.warns(rp.OrderNotGuaranteedWarning, match="row order is not guaranteed") as rec:
+        rp.ModelBank([SPEC]).fit(lf, chunk_size=4)
     text = str(rec[0].message)
     assert "join" in text
     assert 'maintain_order="left"' in text
@@ -78,13 +78,13 @@ def test_a_join_without_maintain_order_is_flagged():
 
 def test_a_join_that_keeps_the_left_order_is_not():
     lf = left().join(right(), on="k", maintain_order="left")
-    quiet(lambda: po.ModelBank([SPEC]).fit(lf, chunk_size=4))
+    quiet(lambda: rp.ModelBank([SPEC]).fit(lf, chunk_size=4))
 
 
 def test_a_group_by_without_maintain_order_is_flagged():
     lf = left().group_by("k").agg(pl.col("y").sum(), pl.col("x0").mean(), pl.col("t").min())
-    with pytest.warns(po.OrderNotGuaranteedWarning, match="group_by") as rec:
-        po.ModelBank([SPEC]).fit(lf)
+    with pytest.warns(rp.OrderNotGuaranteedWarning, match="group_by") as rec:
+        rp.ModelBank([SPEC]).fit(lf)
     assert "maintain_order=True" in str(rec[0].message)
 
 
@@ -94,7 +94,7 @@ def test_a_group_by_that_keeps_order_is_not():
         .group_by("k", maintain_order=True)
         .agg(pl.col("y").sum(), pl.col("x0").mean(), pl.col("t").min())
     )
-    quiet(lambda: po.ModelBank([SPEC]).fit(lf))
+    quiet(lambda: rp.ModelBank([SPEC]).fit(lf))
 
 
 @pytest.mark.parametrize("maintain_order", [False, True])
@@ -103,8 +103,8 @@ def test_unique_is_flagged_whatever_its_flag(maintain_order):
     (polars' own note on ``DistinctOptionsDSL``), so the flag is no fix and the
     advice is to sort after it."""
     lf = left().unique("k", maintain_order=maintain_order)
-    with pytest.warns(po.OrderNotGuaranteedWarning, match="unique") as rec:
-        po.ModelBank([SPEC]).fit(lf)
+    with pytest.warns(rp.OrderNotGuaranteedWarning, match="unique") as rec:
+        rp.ModelBank([SPEC]).fit(lf)
     assert "sort" in str(rec[0].message)
 
 
@@ -112,19 +112,19 @@ def test_a_sort_above_the_node_settles_the_order():
     """A sort defines the order of everything beneath it, so a join under a
     sort is not a hazard."""
     lf = left().join(right(), on="k").sort("t")
-    quiet(lambda: po.ModelBank([SPEC]).fit(lf, chunk_size=4))
+    quiet(lambda: rp.ModelBank([SPEC]).fit(lf, chunk_size=4))
 
 
 def test_a_sort_below_the_node_does_not():
     """... but a join above a sort reorders what the sort arranged."""
     lf = left().sort("t").join(right(), on="k")
-    with pytest.warns(po.OrderNotGuaranteedWarning):
-        po.ModelBank([SPEC]).fit(lf, chunk_size=4)
+    with pytest.warns(rp.OrderNotGuaranteedWarning):
+        rp.ModelBank([SPEC]).fit(lf, chunk_size=4)
 
 
 def test_a_plan_with_no_reordering_node_is_quiet():
     lf = left().filter(pl.col("t") > 0).with_columns(w=pl.lit(1.0)).select("t", "x0", "y")
-    quiet(lambda: po.ModelBank([SPEC]).fit(lf))
+    quiet(lambda: rp.ModelBank([SPEC]).fit(lf))
 
 
 # ------------------------------------------------------------- where it fires
@@ -132,16 +132,16 @@ def test_a_plan_with_no_reordering_node_is_quiet():
 
 def test_every_plan_entry_point_warns():
     lf = left().join(right(), on="k")
-    with pytest.warns(po.OrderNotGuaranteedWarning, match="fit_predict_batches"):
-        list(po.ModelBank([SPEC]).fit_predict_batches(lf, chunk_size=4))
-    with pytest.warns(po.OrderNotGuaranteedWarning, match="fit"):
-        po.ModelBank([SPEC]).fit(lf, chunk_size=4)
+    with pytest.warns(rp.OrderNotGuaranteedWarning, match="fit_predict_batches"):
+        list(rp.ModelBank([SPEC]).fit_predict_batches(lf, chunk_size=4))
+    with pytest.warns(rp.OrderNotGuaranteedWarning, match="fit"):
+        rp.ModelBank([SPEC]).fit(lf, chunk_size=4)
     # The plan form warns when the plan is built, before anything runs.
-    with pytest.warns(po.OrderNotGuaranteedWarning, match="online.fit_predict"):
+    with pytest.warns(rp.OrderNotGuaranteedWarning, match="online.fit_predict"):
         lf.online.fit_predict([SPEC])
-    bank = po.ModelBank([SPEC])
+    bank = rp.ModelBank([SPEC])
     bank.fit(left())
-    with pytest.warns(po.OrderNotGuaranteedWarning, match="online.predict"):
+    with pytest.warns(rp.OrderNotGuaranteedWarning, match="online.predict"):
         lf.online.predict(bank)
 
 
@@ -149,8 +149,8 @@ def test_a_frame_and_an_iterator_are_not_inspected():
     """Only a plan has an order that is still to be decided; a frame or a
     sequence of frames arrives in the order it arrives."""
     df = left().join(right(), on="k").collect()
-    quiet(lambda: po.ModelBank([SPEC]).fit(df))
-    quiet(lambda: po.ModelBank([SPEC]).fit([df.slice(0, 4), df.slice(4)]))
+    quiet(lambda: rp.ModelBank([SPEC]).fit(df))
+    quiet(lambda: rp.ModelBank([SPEC]).fit([df.slice(0, 4), df.slice(4)]))
 
 
 # ------------------------------------------------------------- what it must not do
@@ -162,10 +162,10 @@ def test_polars_deprecation_of_json_serialize_is_not_leaked():
     lf = left().join(right(), on="k")
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
-        po.ModelBank([SPEC]).fit(lf, chunk_size=4)
+        rp.ModelBank([SPEC]).fit(lf, chunk_size=4)
     leaked = [w for w in rec if "serialization format" in str(w.message)]
     assert not leaked, [str(w.message) for w in leaked]
-    assert any(isinstance(w.message, po.OrderNotGuaranteedWarning) for w in rec)
+    assert any(isinstance(w.message, rp.OrderNotGuaranteedWarning) for w in rec)
 
 
 def test_it_falls_silent_rather_than_raise_when_the_plan_cannot_be_read(monkeypatch):
@@ -177,7 +177,7 @@ def test_it_falls_silent_rather_than_raise_when_the_plan_cannot_be_read(monkeypa
 
     monkeypatch.setattr(pl.LazyFrame, "serialize", unreadable)
     lf = left().join(right(), on="k")
-    quiet(lambda: po.ModelBank([SPEC]).fit(lf, chunk_size=4))
+    quiet(lambda: rp.ModelBank([SPEC]).fit(lf, chunk_size=4))
 
 
 def test_a_plan_already_holding_a_bank_still_runs_under_another():
@@ -185,7 +185,7 @@ def test_a_plan_already_holding_a_bank_still_runs_under_another():
     outer bank, and with no node that reorders it says nothing, whether or
     not polars can serialize the plan."""
     inner = left().online.fit_predict([SPEC])
-    outer = po.spec.ewridge(
+    outer = rp.spec.ewridge(
         "n",
         targets=["y"],
         features=["x0"],
@@ -194,7 +194,7 @@ def test_a_plan_already_holding_a_bank_still_runs_under_another():
         gap_cap=5.0,
         min_weight=1.0,
     )
-    bank = po.ModelBank([outer])
+    bank = rp.ModelBank([outer])
     quiet(lambda: bank.fit(inner))
     assert bank.rows_fed == 9
 
@@ -223,10 +223,10 @@ def test_a_join_above_a_bank_is_reported_where_polars_serializes_the_plan():
     # reported branch is the one taken, not the silent one.
     assert _serializes(lf) or pl.__version__ != BUILT_AGAINST
     if _serializes(lf):
-        with pytest.warns(po.OrderNotGuaranteedWarning, match="a join without maintain_order"):
-            po.ModelBank([outer]).fit(lf)
+        with pytest.warns(rp.OrderNotGuaranteedWarning, match="a join without maintain_order"):
+            rp.ModelBank([outer]).fit(lf)
     else:
-        quiet(lambda: po.ModelBank([outer]).fit(lf))
+        quiet(lambda: rp.ModelBank([outer]).fit(lf))
 
 
 def test_the_prefilter_and_the_walk_cannot_drift_apart():
@@ -238,7 +238,7 @@ def test_the_prefilter_and_the_walk_cannot_drift_apart():
     import inspect
     import re
 
-    from rheon import _frame
+    from rheon.polars import _frame
 
     handled = set(re.findall(r'tag == "(\w+)"', inspect.getsource(_frame._walk)))
     assert handled, "the walk's tags could not be read; this guard is not checking anything"
@@ -255,10 +255,10 @@ def test_a_sort_by_several_keys_without_maintain_order_is_warned_about():
     particular order -- rows of one group at one clock value, whose order is
     the order a stream learns them in. By one key polars sorted stably here;
     that is pinned below rather than promised."""
-    with pytest.warns(po.OrderNotGuaranteedWarning, match="maintain_order=True"):
-        po.ModelBank([SPEC]).fit(left().sort(["k", "t"]), chunk_size=4)
-    quiet(lambda: po.ModelBank([SPEC]).fit(left().sort(["k", "t"], maintain_order=True)))
-    quiet(lambda: po.ModelBank([SPEC]).fit(left().sort("t")))
+    with pytest.warns(rp.OrderNotGuaranteedWarning, match="maintain_order=True"):
+        rp.ModelBank([SPEC]).fit(left().sort(["k", "t"]), chunk_size=4)
+    quiet(lambda: rp.ModelBank([SPEC]).fit(left().sort(["k", "t"], maintain_order=True)))
+    quiet(lambda: rp.ModelBank([SPEC]).fit(left().sort("t")))
 
 
 @pytest.mark.pins
@@ -301,7 +301,7 @@ def test_every_join_variant_carries_its_marker(how, marker):
     without a warning and without a failure."""
     other = right()
     lf = left().join(other, on=None if how == "cross" else "k", how=how)
-    from rheon._frame import _order_hazards
+    from rheon.polars._frame import _order_hazards
 
     assert marker in lf.explain(optimized=False)
     assert _order_hazards(lf), "a join without maintain_order should still be a hazard"
@@ -314,7 +314,7 @@ def test_the_other_join_forms_carry_the_marker_too(form):
     the walk reports, so the test above cannot reach them by parameter.
     Measured filter-against-raw-walk with no disagreement, and pinned so the
     ``_HAZARD_TAGS`` comment has a test behind every form it names."""
-    from rheon._frame import _order_hazards
+    from rheon.polars._frame import _order_hazards
 
     other = right()
     if form == "asof":
@@ -333,7 +333,7 @@ def test_an_empty_plan_text_falls_through_rather_than_skipping():
     "inspected, no markers" and skipped the JSON walk, missing a real hazard.
     polars never explains a plan to nothing, so it was unreachable -- but the
     filter's contract is "never blinder", so it is closed here and pinned."""
-    from rheon._frame import _order_hazards
+    from rheon.polars._frame import _order_hazards
 
     lf = left().join(right(), on="k")
     assert _order_hazards(lf, plan_text=""), "an empty explain must fall through to the walk"
@@ -342,7 +342,7 @@ def test_an_empty_plan_text_falls_through_rather_than_skipping():
 def test_a_plan_with_no_hazard_node_skips_the_json_read(monkeypatch):
     """The saving itself: a plan whose ``explain`` holds no marker must not
     touch ``serialize``, which is the deprecated format this avoids."""
-    from rheon import _frame
+    from rheon.polars import _frame
 
     # A `BaseException`, deliberately: `_order_hazards` wraps the JSON path in
     # `except Exception`, so an `AssertionError` raised here would be swallowed
@@ -356,14 +356,14 @@ def test_a_plan_with_no_hazard_node_skips_the_json_read(monkeypatch):
     monkeypatch.setattr(pl.LazyFrame, "serialize", forbidden)
     lf = left().filter(pl.col("t") > 0).select("t", "x0", "y")
     assert _frame._order_hazards(lf) == []
-    quiet(lambda: po.ModelBank([SPEC]).fit(lf))
+    quiet(lambda: rp.ModelBank([SPEC]).fit(lf))
 
 
 def test_a_plan_that_cannot_be_explained_still_reads_the_json(monkeypatch):
     """Fail open: if ``explain`` raises, the filter must fall through to the
     JSON path rather than skip the check, so it can only make the inspection
     cheaper, never blinder."""
-    from rheon import _frame
+    from rheon.polars import _frame
 
     monkeypatch.setattr(
         pl.LazyFrame, "explain", lambda self, **kw: (_ for _ in ()).throw(RuntimeError("no plan"))
@@ -375,14 +375,14 @@ def test_a_plan_that_cannot_be_explained_still_reads_the_json(monkeypatch):
 def test_the_warning_is_a_user_warning_shown_by_default():
     """A ``DeprecationWarning`` is hidden outside ``__main__``, i.e. in the
     pipeline module where this matters; a ``UserWarning`` is shown."""
-    assert issubclass(po.OrderNotGuaranteedWarning, UserWarning)
-    assert not issubclass(po.OrderNotGuaranteedWarning, DeprecationWarning)
+    assert issubclass(rp.OrderNotGuaranteedWarning, UserWarning)
+    assert not issubclass(rp.OrderNotGuaranteedWarning, DeprecationWarning)
 
 
 def test_the_warning_points_at_the_caller_not_the_library():
     lf = left().join(right(), on="k")
-    with pytest.warns(po.OrderNotGuaranteedWarning) as rec:
-        po.ModelBank([SPEC]).fit(lf, chunk_size=4)
+    with pytest.warns(rp.OrderNotGuaranteedWarning) as rec:
+        rp.ModelBank([SPEC]).fit(lf, chunk_size=4)
     assert rec[0].filename == __file__, rec[0].filename
 
 
@@ -392,7 +392,7 @@ def test_the_warning_points_at_the_caller_not_the_library():
 #: No decay, no window, nothing that reads a sequence: an accumulation, whose
 #: sums commute. `SPEC` above has a `half_life`, so every test before this one
 #: is disqualified and warns exactly as it did.
-FREE = po.spec.ewridge("m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0)
+FREE = rp.spec.ewridge("m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0)
 
 
 def _free(model: str, decay: str) -> dict:
@@ -403,7 +403,7 @@ def _free(model: str, decay: str) -> dict:
         kw: dict = {"lam": 1.0}
     else:
         kw = {"half_life": math.inf}
-    spec = getattr(po.spec, model)("m", targets=["y"], features=["x0"], min_weight=1.0, **kw)
+    spec = getattr(rp.spec, model)("m", targets=["y"], features=["x0"], min_weight=1.0, **kw)
     # The builder stores a float; a hand-written dict may carry the text.
     return {**spec, "half_life": "inf"} if decay == "half_life='inf'" else spec
 
@@ -433,7 +433,7 @@ def _rows(n: int = 200) -> pl.DataFrame:
 
 
 def _coefs(spec, frame) -> list[float]:
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit(frame.lazy())
     return bank.coef("m")["coef"].to_list()
 
@@ -448,7 +448,7 @@ def _spread(spec, frame) -> float:
 
 @pytest.mark.parametrize("free", FREE_SPECS)
 def test_an_accumulator_with_no_decay_is_recognised_as_order_free(free):
-    from rheon._frame import _order_free
+    from rheon.polars._frame import _order_free
 
     assert _order_free([free])
 
@@ -458,25 +458,25 @@ def test_an_accumulator_with_no_decay_is_recognised_as_order_free(free):
     [
         pytest.param(SPEC, id="half_life"),
         pytest.param(
-            po.spec.ewridge(
+            rp.spec.ewridge(
                 "m", targets=["y"], features=["x0"], lam=1.0, window_size=50, min_weight=1.0
             ),
             id="window",
         ),
         pytest.param(
-            po.spec.sgd("m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0),
+            rp.spec.sgd("m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0),
             id="gradient-model",
         ),
         pytest.param(
-            po.spec.huber("m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0),
+            rp.spec.huber("m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0),
             id="reweighting-model",
         ),
         pytest.param(
-            po.spec.lasso("m", targets=["y"], features=["x0"], lam=1.0, penalties=[0.1, 0.01]),
+            rp.spec.lasso("m", targets=["y"], features=["x0"], lam=1.0, penalties=[0.1, 0.01]),
             id="selecting-model",
         ),
         pytest.param(
-            po.spec.ewridge(
+            rp.spec.ewridge(
                 "m",
                 targets=["y"],
                 features=["x0"],
@@ -495,7 +495,7 @@ def test_what_is_not_order_free(spec):
     """``window`` lives *inside* the nested ``model`` dict, so a check that
     read only top-level keys would let a windowed spec through -- the worst
     case after a drift reset, which moves the coefficients by 8.9e-01."""
-    from rheon._frame import _order_free
+    from rheon.polars._frame import _order_free
 
     assert not _order_free([spec])
 
@@ -503,15 +503,15 @@ def test_what_is_not_order_free(spec):
 def test_an_unrecognised_spec_key_is_not_order_free():
     """The property that makes this safe to ship: a key in neither table fails
     the check, so an option added later cannot quietly become exempt."""
-    from rheon._frame import _order_free
+    from rheon.polars._frame import _order_free
 
     assert not _order_free([{**FREE, "an_option_added_later": 7}])
 
 
 def test_one_disqualifying_spec_disqualifies_the_bank():
-    from rheon._frame import _order_free
+    from rheon.polars._frame import _order_free
 
-    grad = po.spec.sgd("m2", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0)
+    grad = rp.spec.sgd("m2", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0)
     assert not _order_free([FREE, grad])
     assert not _order_free([])
 
@@ -520,23 +520,23 @@ def test_one_disqualifying_spec_disqualifies_the_bank():
 def test_fit_over_an_order_free_spec_says_nothing(free):
     """The false positive this removes: the plan's order is unspecified, and
     for this fit it cannot matter."""
-    quiet(lambda: po.ModelBank([free]).fit(left().join(right(), on="k")))
+    quiet(lambda: rp.ModelBank([free]).fit(left().join(right(), on="k")))
 
 
 def test_the_same_spec_still_warns_wherever_predictions_are_handed_back():
     """`fit` keeps only the state; everything else returns predictions, and a
     prediction is out-of-sample -- so reordering moves all of them."""
     lf = left().join(right(), on="k")
-    with pytest.warns(po.OrderNotGuaranteedWarning):
-        list(po.ModelBank([FREE]).fit_predict_batches(lf))
-    with pytest.warns(po.OrderNotGuaranteedWarning):
+    with pytest.warns(rp.OrderNotGuaranteedWarning):
+        list(rp.ModelBank([FREE]).fit_predict_batches(lf))
+    with pytest.warns(rp.OrderNotGuaranteedWarning):
         lf.online.fit_predict([FREE]).collect()
 
 
 def test_a_disqualified_fit_still_warns():
     lf = left().join(right(), on="k")
-    with pytest.warns(po.OrderNotGuaranteedWarning):
-        po.ModelBank([SPEC]).fit(lf)
+    with pytest.warns(rp.OrderNotGuaranteedWarning):
+        rp.ModelBank([SPEC]).fit(lf)
 
 
 # --------------------------------------------- the premise, re-derived here so
@@ -561,13 +561,13 @@ def test_the_docstrings_quote_the_figures_held_here():
     to."""
     import inspect
 
-    from rheon._frame import _order_free
+    from rheon.polars._frame import _order_free
 
     (ew_coef, ew_pred), (rls_coef, rls_pred) = QUOTED["ewridge"], QUOTED["rls"]
     quoting = {
-        "ModelBank.fit": (po.ModelBank.fit, (ew_coef, rls_coef, ew_pred)),
+        "ModelBank.fit": (rp.ModelBank.fit, (ew_coef, rls_coef, ew_pred)),
         "OrderNotGuaranteedWarning": (
-            po.OrderNotGuaranteedWarning,
+            rp.OrderNotGuaranteedWarning,
             (ew_coef, rls_coef, ew_pred, rls_pred),
         ),
         "_order_free": (_order_free, (ew_coef, ew_pred)),
@@ -595,7 +595,7 @@ def test_an_accumulators_coefficients_commute(free):
 def test_a_gradient_models_coefficients_do_not_commute_even_with_no_decay():
     """Why "no half-life" is not on its own a reason to expect order not to
     matter: this update is not commutative, and no decay does not change that."""
-    grad = po.spec.sgd("m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0)
+    grad = rp.spec.sgd("m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0)
     assert _spread(grad, _rows()) > 1e-6
 
 
@@ -615,14 +615,14 @@ def test_a_robust_fits_coefficients_do_not_commute_once_it_reweights():
     green number from a path that never ran is not evidence, so the premise is
     checked first: here the down-weighting fires, on dozens of rows."""
     frame = _rows_with_outliers()
-    seen = po.spec.huber(
+    seen = rp.spec.huber(
         "m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0, emit_sigma=True
     )
-    out = po.ModelBank([seen]).fit_predict(frame)["m"]
+    out = rp.ModelBank([seen]).fit_predict(frame)["m"]
     resid, sigma = out.struct.field("resid_y"), out.struct.field("sigma_y")
     reweighted = int(((resid.abs() > 1.5 * sigma) & sigma.is_not_null()).sum())
     assert reweighted > 20, f"only {reweighted} rows beyond delta * sigma: nothing was reweighted"
-    rob = po.spec.huber("m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0)
+    rob = rp.spec.huber("m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0)
     assert _spread(rob, frame) > 1e-6
 
 
@@ -632,12 +632,12 @@ def test_a_lasso_selects_by_the_order_where_its_path_commutes():
     error, and an out-of-sample error depends on the order. So the penalty a
     `fit` leaves selected moves with a shuffle where no coefficient does."""
     frame = _rows_with_outliers()
-    spec = po.spec.lasso(
+    spec = rp.spec.lasso(
         "m", targets=["y"], features=["x0"], lam=1.0, penalties=[1.0, 0.1, 0.01, 0.001]
     )
 
     def fitted(f: pl.DataFrame) -> tuple[list[float], float]:
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit(f.lazy())
         return bank.coef("m")["coef"].to_list(), bank.last_row("m")["penalty_selected_y"].item()
 
@@ -661,7 +661,7 @@ def test_predictions_move_even_where_the_coefficients_do_not(model):
     shuffled = frame.sample(fraction=1.0, shuffle=True, seed=7)
 
     def preds(f: pl.DataFrame) -> list[float]:
-        out = po.ModelBank([spec]).fit_predict(f)
+        out = rp.ModelBank([spec]).fit_predict(f)
         field = next(x for x in out["m"].struct.fields if x.startswith("pred"))
         return f.with_columns(p=out["m"].struct.field(field)).sort("t")["p"].to_list()
 
@@ -678,7 +678,7 @@ def test_only_a_plan_level_sort_ends_the_walk():
     a plan's has `input`. The walk took it for a plan node and stopped there,
     harmless only because nothing below an expression is a plan step; it
     reads `input` now, so the rule is deliberate (review 2026-09-28)."""
-    from rheon._frame import _walk
+    from rheon.polars._frame import _walk
 
     hazard = {"Distinct": {"input": {"DataFrameScan": {}}, "options": {}}}
     expression_sort = {"Sort": {"expr": hazard, "options": {}}}

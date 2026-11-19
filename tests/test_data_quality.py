@@ -17,9 +17,9 @@ import polars as pl
 import pytest
 
 import check_streams as cs
-import rheon as po
 from doc_recipes import differences, recipes, run
-from rheon import _check
+from rheon import polars as rp
+from rheon.polars import _check
 
 TIER = "essential"
 
@@ -84,7 +84,7 @@ def test_every_code_has_a_section_on_the_page():
 
 
 def test_the_docstring_lists_the_same_codes():
-    doc = po.ModelBank.check.__doc__ or ""
+    doc = rp.ModelBank.check.__doc__ or ""
     listed = set(re.findall(r"\* - ``(\w+)``\n\s+- (?:error|warning|info)", doc))
     assert listed == _check.CODES, listed ^ _check.CODES
 

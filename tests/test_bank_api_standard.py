@@ -18,7 +18,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -38,8 +38,8 @@ def _df(n: int = 120, groups: tuple[str, ...] = ("a", "b")) -> pl.DataFrame:
     )
 
 
-def _bank() -> po.ModelBank:
-    return po.ModelBank([po.spec.ewridge("m", **BASE)])
+def _bank() -> rp.ModelBank:
+    return rp.ModelBank([rp.spec.ewridge("m", **BASE)])
 
 
 # --- M-1: a missing column ---------------------------------------------------
@@ -47,28 +47,28 @@ def _bank() -> po.ModelBank:
 
 def test_m1_a_missing_column_is_polars_column_not_found_and_a_value_error():
     bank = _bank()
-    with pytest.raises(po.ColumnNotFoundError) as caught:
+    with pytest.raises(rp.ColumnNotFoundError) as caught:
         bank.fit_predict(_df().drop("x0"))
     err = caught.value
     assert isinstance(err, pl.exceptions.ColumnNotFoundError)
     assert isinstance(err, ValueError)
-    assert issubclass(po.ColumnNotFoundError, pl.exceptions.ColumnNotFoundError)
-    assert issubclass(po.ColumnNotFoundError, ValueError)
+    assert issubclass(rp.ColumnNotFoundError, pl.exceptions.ColumnNotFoundError)
+    assert issubclass(rp.ColumnNotFoundError, ValueError)
     assert "x0" in str(err)
     assert not str(err).startswith("not found: "), str(err)
-    assert "ColumnNotFoundError" in po.__all__
+    assert "ColumnNotFoundError" in rp.__all__
 
 
 def test_m1_the_target_predict_and_plan_forms_raise_the_same_class():
-    with pytest.raises(po.ColumnNotFoundError, match="y"):
+    with pytest.raises(rp.ColumnNotFoundError, match="y"):
         _bank().fit_predict(_df().drop("y"))
-    with pytest.raises(po.ColumnNotFoundError, match="x0"):
+    with pytest.raises(rp.ColumnNotFoundError, match="x0"):
         _bank().predict(_df().drop("x0"))
-    with pytest.raises(po.ColumnNotFoundError, match="x0"):
-        po.fit_predict(_df().drop("x0"), [po.spec.ewridge("m", **BASE)])
+    with pytest.raises(rp.ColumnNotFoundError, match="x0"):
+        rp.fit_predict(_df().drop("x0"), [rp.spec.ewridge("m", **BASE)])
     lf = _df().drop("x0").lazy()
-    with pytest.raises(po.ColumnNotFoundError, match="x0"):
-        lf.online.fit_predict([po.spec.ewridge("m", **BASE)])
+    with pytest.raises(rp.ColumnNotFoundError, match="x0"):
+        lf.online.fit_predict([rp.spec.ewridge("m", **BASE)])
 
 
 # --- M-2 and M-21: one base for every warning ---------------------------------
@@ -85,15 +85,15 @@ def test_m1_the_target_predict_and_plan_forms_raise_the_same_class():
     ],
 )
 def test_m2_every_warning_shares_one_exported_base(name, second):
-    cls = getattr(po, name)
-    assert issubclass(cls, po.PolarsOnlineWarning)
+    cls = getattr(rp, name)
+    assert issubclass(cls, rp.PolarsOnlineWarning)
     assert issubclass(cls, second)
-    assert "PolarsOnlineWarning" in po.__all__
-    assert issubclass(po.PolarsOnlineWarning, Warning)
+    assert "PolarsOnlineWarning" in rp.__all__
+    assert issubclass(rp.PolarsOnlineWarning, Warning)
 
 
 def test_m21_unstable_warning_is_also_polars_own():
-    assert issubclass(po.UnstableWarning, pl.exceptions.UnstableWarning)
+    assert issubclass(rp.UnstableWarning, pl.exceptions.UnstableWarning)
 
 
 # --- M-3: the batch methods' options by keyword --------------------------------
@@ -101,7 +101,7 @@ def test_m21_unstable_warning_is_also_polars_own():
 
 @pytest.mark.parametrize("method", ["fit", "fit_predict_batches"])
 def test_m3_options_are_keyword_only(method):
-    params = inspect.signature(getattr(po.ModelBank, method)).parameters
+    params = inspect.signature(getattr(rp.ModelBank, method)).parameters
     assert params["closed_groups"].kind is inspect.Parameter.KEYWORD_ONLY
     assert params["chunk_size"].kind is inspect.Parameter.KEYWORD_ONLY
 
@@ -115,7 +115,7 @@ def test_m3_a_positional_option_is_refused():
 
 
 def test_m9_fit_predict_batches_returns_an_iterator():
-    sig = inspect.signature(po.ModelBank.fit_predict_batches)
+    sig = inspect.signature(rp.ModelBank.fit_predict_batches)
     assert "Iterator" in str(sig.return_annotation)
 
 
@@ -124,7 +124,7 @@ def test_m9_fit_predict_batches_returns_an_iterator():
 
 def test_m10_chunk_size_on_the_frame_forms():
     df = _df()
-    specs = [po.spec.ewridge("m", **BASE)]
+    specs = [rp.spec.ewridge("m", **BASE)]
     whole = df.online.fit_predict(specs)
     chunked = df.online.fit_predict(specs, chunk_size=7)
     pred = pl.col("m").struct.field("pred_y")
@@ -132,12 +132,12 @@ def test_m10_chunk_size_on_the_frame_forms():
     # Chunked, coef is reported at each chunk's last row, as a plan reports it.
     coef = pl.col("m").struct.field("coef")
     assert chunked.select(coef.is_not_null().sum()).item() == len(range(0, 120, 7))
-    assert po.fit_predict(df, specs, chunk_size=7).equals(chunked)
+    assert rp.fit_predict(df, specs, chunk_size=7).equals(chunked)
     bank = _bank()
     bank.fit_predict(df)
     scored = df.online.predict(bank, chunk_size=7)
     assert scored.select(pred).equals(df.online.predict(bank).select(pred))
-    assert po.predict(df, bank, chunk_size=7).equals(scored)
+    assert rp.predict(df, bank, chunk_size=7).equals(scored)
     with pytest.raises(ValueError, match="chunk_size must be at least 1"):
         df.online.fit_predict(specs, chunk_size=0)
 
@@ -159,11 +159,11 @@ def test_m25_load_state_takes_a_bank_snapshotted_when_built(tmp_path):
     plan = rest.lazy().online.fit_predict(load_state=bank)
     bank.fit_predict(rest)  # moving the bank after the plan is built changes nothing
     assert plan.collect().equals(want)
-    assert po.fit_predict(rest, load_state=_reload(before)).equals(want)
+    assert rp.fit_predict(rest, load_state=_reload(before)).equals(want)
 
 
-def _reload(data: bytes) -> po.ModelBank:
-    return po.ModelBank.load_bytes(data)
+def _reload(data: bytes) -> rp.ModelBank:
+    return rp.ModelBank.load_bytes(data)
 
 
 # --- M-14: file objects, and write_json ----------------------------------------
@@ -176,14 +176,14 @@ def test_m14_save_and_load_take_file_objects_and_bytes(tmp_path):
     bank.save(buf)
     assert buf.getvalue() == bank.save_bytes()
     buf.seek(0)
-    assert po.ModelBank.load(buf).save_bytes() == bank.save_bytes()
-    assert po.ModelBank.load(bank.save_bytes()).save_bytes() == bank.save_bytes()
+    assert rp.ModelBank.load(buf).save_bytes() == bank.save_bytes()
+    assert rp.ModelBank.load(bank.save_bytes()).save_bytes() == bank.save_bytes()
     path = tmp_path / "b.state"
     with open(path, "wb") as f:
         bank.save(f)
     with open(path, "rb") as f:
-        assert po.ModelBank.load(f).save_bytes() == bank.save_bytes()
-    assert po.ModelBank.load(str(path)).save_bytes() == bank.save_bytes()
+        assert rp.ModelBank.load(f).save_bytes() == bank.save_bytes()
+    assert rp.ModelBank.load(str(path)).save_bytes() == bank.save_bytes()
 
 
 def test_m14_write_json_returns_the_text_without_a_file(tmp_path):
@@ -217,15 +217,15 @@ def test_m14_save_and_load_keyword_path_is_refused(tmp_path):
     with pytest.raises(TypeError, match="ModelBank.save: path was renamed file"):
         bank.save(path=path)
     with pytest.raises(TypeError, match="ModelBank.load: path was renamed source"):
-        po.ModelBank.load(path=path)
+        rp.ModelBank.load(path=path)
 
 
 # --- M-15: properties -----------------------------------------------------------
 
 
 def test_m15_rows_fed_and_output_fields_are_properties():
-    assert isinstance(inspect.getattr_static(po.ModelBank, "rows_fed"), property)
-    assert isinstance(inspect.getattr_static(po.ModelBank, "output_fields"), property)
+    assert isinstance(inspect.getattr_static(rp.ModelBank, "rows_fed"), property)
+    assert isinstance(inspect.getattr_static(rp.ModelBank, "output_fields"), property)
     bank = _bank()
     bank.fit_predict(_df())
     assert bank.rows_fed == 120
@@ -245,57 +245,57 @@ def test_m15_the_call_form_is_refused():
 
 
 def _scored(n: int = 120):
-    spec = po.spec.ewridge("m", group="g", **BASE)
-    return spec, po.ModelBank([spec]).fit_predict(_df(n))
+    spec = rp.spec.ewridge("m", group="g", **BASE)
+    return spec, rp.ModelBank([spec]).fit_predict(_df(n))
 
 
 def test_m5_group_none_is_the_default_and_accepted():
     _, out = _scored()
-    for fn in (po.eval.metrics, po.eval.sums):
+    for fn in (rp.eval.metrics, rp.eval.sums):
         assert inspect.signature(fn).parameters["group"].default is None
         assert fn(out, "m", group=None).equals(fn(out, "m"))
-    assert po.eval.diebold_mariano(out, a="m", b="m", group=None).height == 1
+    assert rp.eval.diebold_mariano(out, a="m", b="m", group=None).height == 1
 
 
 def test_m6_a_thin_key_keeps_its_row_with_null_metrics():
     _, out = _scored()
-    full = po.eval.metrics(out, "m", group="g", min_samples=1)
+    full = rp.eval.metrics(out, "m", group="g", min_samples=1)
     n = full["n"].to_list()
     assert len(n) == 2 and full["r2"].null_count() == 0
-    got = po.eval.metrics(out, "m", group="g", min_samples=max(n) + 1)
+    got = rp.eval.metrics(out, "m", group="g", min_samples=max(n) + 1)
     assert got.height == 2
     assert got["n"].to_list() == n
     for col in ("r2", "ic", "hit_rate", "mse", "rmse"):
         assert got[col].null_count() == 2, col
-    s = po.eval.sums(out, "m", group="g")
-    thin = po.eval.from_sums(s, min_samples=max(n) + 1)
+    s = rp.eval.sums(out, "m", group="g")
+    thin = rp.eval.from_sums(s, min_samples=max(n) + 1)
     assert thin.height == 2 and thin["r2"].null_count() == 2 and thin["n"].to_list() == n
-    dm = po.eval.diebold_mariano(out, a="m", b="m", group="g", min_samples=61)
+    dm = rp.eval.diebold_mariano(out, a="m", b="m", group="g", min_samples=61)
     assert dm.height == 2 and dm["dm"].null_count() == 2 and dm["mean"].null_count() == 2
     assert dm["p_value"].null_count() == 2
 
 
 def test_m8_rmse_in_every_metric_frame():
     _, out = _scored()
-    m = po.eval.metrics(out, "m")
+    m = rp.eval.metrics(out, "m")
     assert m["rmse"].item() == pytest.approx(m["mse"].item() ** 0.5)
-    assert "rmse" in po.eval.window_metrics(out, "m", clock="t", every=60.0).columns
-    assert "rmse" in po.eval.compare_specs(out, ["m"]).columns
+    assert "rmse" in rp.eval.window_metrics(out, "m", clock="t", every=60.0).columns
+    assert "rmse" in rp.eval.compare_specs(out, ["m"]).columns
     assert m.columns[-2:] == ["mse", "rmse"]
-    assert po.eval.from_sums(po.eval.sums(out, "m")).columns[-2:] == ["mse", "rmse"]
+    assert rp.eval.from_sums(rp.eval.sums(out, "m")).columns[-2:] == ["mse", "rmse"]
 
 
 def _logistic():
     rng = np.random.default_rng(3)
     x = rng.normal(size=200)
     df = pl.DataFrame({"x0": x, "y": (x + rng.normal(scale=0.5, size=200) > 0).astype(float)})
-    spec = po.spec.sgd("c", targets=["y"], features=["x0"], loss="logistic", half_life=50.0)
-    return spec, po.ModelBank([spec]).fit_predict(df)
+    spec = rp.spec.sgd("c", targets=["y"], features=["x0"], loss="logistic", half_life=50.0)
+    return spec, rp.ModelBank([spec]).fit_predict(df)
 
 
 def test_m19_binary_is_inferred_from_the_spec_and_its_columns_are_named():
     spec, out = _logistic()
-    got = po.eval.metrics(out, spec, min_samples=1)
+    got = rp.eval.metrics(out, spec, min_samples=1)
     assert got.columns == [
         "slot",
         "target",
@@ -307,29 +307,29 @@ def test_m19_binary_is_inferred_from_the_spec_and_its_columns_are_named():
         "mse",
         "rmse",
     ]
-    assert inspect.signature(po.eval.metrics).parameters["binary"].default is None
-    explicit = po.eval.metrics(out, "c", binary=True, min_samples=1)
+    assert inspect.signature(rp.eval.metrics).parameters["binary"].default is None
+    explicit = rp.eval.metrics(out, "c", binary=True, min_samples=1)
     assert explicit.equals(got)
-    plain = po.eval.metrics(out, spec, binary=False, min_samples=1)
+    plain = rp.eval.metrics(out, spec, binary=False, min_samples=1)
     assert "hit_rate" in plain.columns and "r2" in plain.columns
-    s = po.eval.sums(out, spec)
-    assert po.eval.from_sums(s, binary=True, min_samples=1)["accuracy"].item() == pytest.approx(
+    s = rp.eval.sums(out, spec)
+    assert rp.eval.from_sums(s, binary=True, min_samples=1)["accuracy"].item() == pytest.approx(
         got["accuracy"].item()
     )
 
 
 def test_m20_spec_takes_a_name_or_the_dict():
     spec, out = _scored()
-    by_name = po.eval.metrics(out, "m")
-    assert po.eval.metrics(out, spec).equals(by_name)
-    assert "spec_name" not in inspect.signature(po.eval.metrics).parameters
+    by_name = rp.eval.metrics(out, "m")
+    assert rp.eval.metrics(out, spec).equals(by_name)
+    assert "spec_name" not in inspect.signature(rp.eval.metrics).parameters
     with pytest.raises(TypeError, match="spec_name was merged into spec"):
-        po.eval.metrics(out, spec_name="m")
+        rp.eval.metrics(out, spec_name="m")
     with pytest.raises(TypeError, match="beside spec= was merged into spec"):
-        po.eval.metrics(out, "m", spec=spec)
-    assert po.eval.compare_specs(out, [spec]).equals(po.eval.compare_specs(out, ["m"]))
+        rp.eval.metrics(out, "m", spec=spec)
+    assert rp.eval.compare_specs(out, [spec]).equals(rp.eval.compare_specs(out, ["m"]))
     with pytest.raises(TypeError, match="spec_names was merged into specs"):
-        po.eval.compare_specs(out, spec_names=["m"])
+        rp.eval.compare_specs(out, spec_names=["m"])
 
 
 def test_m23_a_lazyframe_is_read_where_a_call_reads_a_query_and_refused_by_name_elsewhere():
@@ -342,47 +342,47 @@ def test_m23_a_lazyframe_is_read_where_a_call_reads_a_query_and_refused_by_name_
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         # To the bit but `ic`, which rounds apart (tests/test_eval_query.py).
-        got, want = po.eval.metrics(out.lazy(), "m"), po.eval.metrics(out, "m")
+        got, want = rp.eval.metrics(out.lazy(), "m"), rp.eval.metrics(out, "m")
         assert got.drop("ic").equals(want.drop("ic"))
         assert got["ic"][0] == pytest.approx(want["ic"][0], rel=1e-14)
-        assert po.eval.unpack(out.lazy(), "m").collect().equals(po.eval.unpack(out, "m"))
+        assert rp.eval.unpack(out.lazy(), "m").collect().equals(rp.eval.unpack(out, "m"))
         with pytest.raises(
             TypeError, match="must be a Polars DataFrame, but it is a LazyFrame. Pass the query"
         ):
-            po.eval.from_sums(po.eval.sums(out, "m").lazy())
+            rp.eval.from_sums(rp.eval.sums(out, "m").lazy())
 
 
 # --- M-9 and M-17: the operators -------------------------------------------------
 
 
 def test_m9_operator_parameters_are_typed():
-    params = inspect.signature(po.ewm_mean).parameters
+    params = inspect.signature(rp.ewm_mean).parameters
     assert "Duration" in str(params["half_life"].annotation)
     assert "Duration" in str(params["window_size"].annotation)
     assert "Literal" in str(params["closed"].annotation)
     assert "Literal" in str(params["partial"].annotation)
-    assert "Literal" in str(inspect.signature(po.ModelBank.audit).parameters["table"].annotation)
-    assert "Literal" in str(inspect.signature(po.ModelBank.gram).parameters["layout"].annotation)
+    assert "Literal" in str(inspect.signature(rp.ModelBank.audit).parameters["table"].annotation)
+    assert "Literal" in str(inspect.signature(rp.ModelBank.gram).parameters["layout"].annotation)
 
 
 @pytest.mark.parametrize("kind", ["mean", "sum", "rate"])
 def test_m17_reverse_is_the_window_looking_ahead(kind):
-    new = getattr(po, f"ewm_{kind}")("x0", half_life=2.0, window_size=5.0, reverse=True)
+    new = getattr(rp, f"ewm_{kind}")("x0", half_life=2.0, window_size=5.0, reverse=True)
     with pytest.raises(TypeError, match=f"rewm_{kind}.*renamed.*reverse=True"):
-        getattr(po, f"rewm_{kind}")("x0", half_life=2.0, window_size=5.0)
+        getattr(rp, f"rewm_{kind}")("x0", half_life=2.0, window_size=5.0)
     assert new.meta.eq(new)
-    assert f"rewm_{kind}" not in po.__all__
-    assert f"rewm_{kind}" not in po.ops.__all__
+    assert f"rewm_{kind}" not in rp.__all__
+    assert f"rewm_{kind}" not in rp.ops.__all__
     with pytest.raises(ValueError, match="reverse=True needs window_size"):
-        getattr(po, f"ewm_{kind}")("x0", half_life=2.0, reverse=True)
+        getattr(rp, f"ewm_{kind}")("x0", half_life=2.0, reverse=True)
 
 
 def test_m17_reverse_runs_through_with_windows_and_targets():
     df = _df()
-    fwd = po.ewm_mean("y", half_life=2.0, window_size=5.0, reverse=True)
-    out = po.stream.with_windows(df, fwd_y=fwd, clock="t", gap_cap=10.0)
+    fwd = rp.ewm_mean("y", half_life=2.0, window_size=5.0, reverse=True)
+    out = rp.stream.with_windows(df, fwd_y=fwd, clock="t", gap_cap=10.0)
     assert out["fwd_y"].null_count() < df.height
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=[fwd.alias("fwd")],
         features=["x0"],
@@ -399,13 +399,13 @@ def test_m17_reverse_runs_through_with_windows_and_targets():
 
 def test_m11_a_bare_col_target_is_told_to_write_the_string():
     with pytest.raises(ValueError, match="Write the string 'p' in targets"):
-        po.spec.ewridge("m", targets=[pl.col("p")], features=["x0"], half_life=10.0)
+        rp.spec.ewridge("m", targets=[pl.col("p")], features=["x0"], half_life=10.0)
 
 
 def test_m11_an_aliased_col_target_is_po_target():
-    got = po.spec.ewridge("m", targets=[pl.col("p").alias("price")], features=["x0"], half_life=1.0)
-    want = po.spec.ewridge(
-        "m", targets=[po.target("p", name="price")], features=["x0"], half_life=1.0
+    got = rp.spec.ewridge("m", targets=[pl.col("p").alias("price")], features=["x0"], half_life=1.0)
+    want = rp.spec.ewridge(
+        "m", targets=[rp.target("p", name="price")], features=["x0"], half_life=1.0
     )
     assert got == want
 
@@ -417,9 +417,9 @@ def test_m13_renamed_and_deprecated_members_are_marked():
     from rheon._renamed import is_renamed
 
     for name in ("rows_seen", "to_json", "save_json"):
-        assert is_renamed(getattr(po.ModelBank, name)), name
+        assert is_renamed(getattr(rp.ModelBank, name)), name
     for name in ("fit", "save", "write_json"):
-        assert not is_renamed(getattr(po.ModelBank, name)), name
+        assert not is_renamed(getattr(rp.ModelBank, name)), name
     snapshot = (Path(__file__).parent / "api_surface.txt").read_text(encoding="utf-8")
     section = snapshot.split("[ModelBank]")[1].split("\n[")[0]
     for name in ("rows_seen", "to_json", "save_json"):
@@ -430,65 +430,65 @@ def test_m13_renamed_and_deprecated_members_are_marked():
 
 
 def _gram():
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=1e9)
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=1e9)
     df = _df().with_columns(x1=pl.col("x0") ** 2)
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     return bank.gram("m")[0]
 
 
 def test_m24_subset_takes_columns_and_refuses_cols():
     g = _gram()
-    assert list(inspect.signature(po.gram.subset).parameters)[1] == "columns"
-    want = po.gram.subset(g, columns=["intercept", "x0"])
+    assert list(inspect.signature(rp.gram.subset).parameters)[1] == "columns"
+    want = rp.gram.subset(g, columns=["intercept", "x0"])
     assert want["columns"] == ["intercept", "x0"]
     with pytest.raises(TypeError, match="cols was renamed columns"):
-        po.gram.subset(g, cols=["intercept", "x0"])  # type: ignore[call-arg]
+        rp.gram.subset(g, cols=["intercept", "x0"])  # type: ignore[call-arg]
 
 
 def test_m24_lars_takes_max_iter_and_refuses_max_steps():
     g = _gram()
-    assert "max_iter" in inspect.signature(po.gram.lars_path).parameters
-    assert "max_iter" in inspect.signature(po.gram.lars_paths).parameters
-    po.gram.lars_path(g, max_iter=1)
+    assert "max_iter" in inspect.signature(rp.gram.lars_path).parameters
+    assert "max_iter" in inspect.signature(rp.gram.lars_paths).parameters
+    rp.gram.lars_path(g, max_iter=1)
     with pytest.raises(TypeError, match="max_steps was renamed max_iter"):
-        po.gram.lars_path(g, max_steps=1)  # type: ignore[call-arg]
+        rp.gram.lars_path(g, max_steps=1)  # type: ignore[call-arg]
     with pytest.raises(TypeError, match="max_steps was renamed max_iter"):
-        po.gram.lars_paths([g], max_steps=1)  # type: ignore[call-arg]
+        rp.gram.lars_paths([g], max_steps=1)  # type: ignore[call-arg]
     with pytest.raises(TypeError, match="path has max_steps, which was renamed max_iter"):
-        po.gram.solve_subsets([g], [[0]], path={"max_steps": 1})
+        rp.gram.solve_subsets([g], [[0]], path={"max_steps": 1})
 
 
 def test_m24_solve_and_solve_subsets_take_the_same_ridge():
     g = _gram()
     ann = {
         str(inspect.signature(f).parameters["ridge"].annotation)
-        for f in (po.gram.solve, po.gram.solve_subsets)
+        for f in (rp.gram.solve, rp.gram.solve_subsets)
     }
     assert len(ann) == 1, ann
-    grid = po.gram.solve_subsets([g], [[0]], ridge=[0.0, 0.5])
-    one = po.gram.solve_subsets([g], [[0]], ridge=0.5)
+    grid = rp.gram.solve_subsets([g], [[0]], ridge=[0.0, 0.5])
+    one = rp.gram.solve_subsets([g], [[0]], ridge=0.5)
     assert np.allclose(grid[0][0]["coef"][1], one[0][0]["coef"])
-    assert np.allclose(grid[0][0]["coef"], po.gram.solve(g, ridge=[0.0, 0.5]), rtol=1e-9)
+    assert np.allclose(grid[0][0]["coef"], rp.gram.solve(g, ridge=[0.0, 0.5]), rtol=1e-9)
 
 
 def test_m24_a_gram_typed_dict():
-    assert "Gram" in po.gram.__all__
-    assert po.gram.Gram.__annotations__["columns"]
-    ret = str(inspect.signature(po.ModelBank.gram).return_annotation)
+    assert "Gram" in rp.gram.__all__
+    assert rp.gram.Gram.__annotations__["columns"]
+    ret = str(inspect.signature(rp.ModelBank.gram).return_annotation)
     assert "Gram" in ret
 
 
 def test_one_correlation_of_a_gram():
     g = _gram()
     with pytest.raises(TypeError, match="po.corr.matrix.*renamed po.gram.correlation"):
-        po.corr.matrix(g)
-    assert po.gram.correlation(g).shape[0] == len(g["columns"])
-    assert "matrix" not in po.corr.__all__
+        rp.corr.matrix(g)
+    assert rp.gram.correlation(g).shape[0] == len(g["columns"])
+    assert "matrix" not in rp.corr.__all__
 
 
 # --- M-16: fit's docstring ------------------------------------------------------
 
 
 def test_m16_fit_says_it_continues():
-    assert "partial_fit" in (po.ModelBank.fit.__doc__ or "")
+    assert "partial_fit" in (rp.ModelBank.fit.__doc__ or "")

@@ -200,7 +200,7 @@ file](#run-a-bank-over-a-file):
 ```python
 import tomllib
 
-import rheon as po
+from rheon import polars as po
 
 with open("job.toml", "rb") as f:                      # tomllib reads a file opened in binary mode
     bank = po.ModelBank(tomllib.load(f)["specs"])

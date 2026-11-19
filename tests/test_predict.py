@@ -23,9 +23,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from conftest import run_online
 from data import synthetic
+from rheon import polars as rp
 from test_semantics_all_models import IDS, SWEEP
 
 TIER = "essential"
@@ -57,7 +57,7 @@ def assert_row_oracle(
     assert bank.save_bytes() == snap, "predict changed the bank"
     names = [s["name"] for s in specs]
     for i in range(df.height):
-        fresh = po.ModelBank.load_bytes(snap, specs)
+        fresh = rp.ModelBank.load_bytes(snap, specs)
         want = fresh.fit_predict(df.slice(i, 1))
         for name in names:
             a, b = got[name][i], want[name][0]
@@ -109,7 +109,7 @@ def _spec(model, extra, **kw):
     opts.update(kw)
     if opts.get("features", ()) is None:
         del opts["features"]  # a model with no features keyword (holt)
-    return getattr(po.spec, model)("m", **opts)
+    return getattr(rp.spec, model)("m", **opts)
 
 
 @pytest.mark.parametrize(("model", "extra"), SWEEP, ids=IDS)
@@ -118,7 +118,7 @@ def test_predict_is_fit_predict_of_the_next_row(model, extra):
     and weights in play."""
     df = _frame(binary=model == "ftrl")
     specs = [_spec(model, extra)]
-    bank = po.ModelBank(specs)
+    bank = rp.ModelBank(specs)
     bank.fit_predict(df.head(40))
     later = df.tail(20).with_columns(pl.col("t") + 3.0)
     # Some rows lack a target, some a feature: resid null vs. row skipped.
@@ -134,7 +134,7 @@ def test_all_the_shared_options_at_once():
     lasso path and a trend model in one bank, over the synthetic stream."""
     df, _ = synthetic(seed=3, n_groups=2, n_rows=120, k=2)
     specs = [
-        po.spec.ewridge(
+        rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
@@ -158,7 +158,7 @@ def test_all_the_shared_options_at_once():
             emit_averaged=True,
             max_rows_between_coefs=10,
         ),
-        po.spec.holt(
+        rp.spec.holt(
             "h",
             targets=["y0"],
             half_life=20.0,
@@ -166,7 +166,7 @@ def test_all_the_shared_options_at_once():
             group="group",
             gap_cap=30.0,
         ),
-        po.spec.lasso(
+        rp.spec.lasso(
             "l",
             targets=["y0"],
             features=["x0", "x1"],
@@ -177,7 +177,7 @@ def test_all_the_shared_options_at_once():
             penalties=[1.0, 0.1, 0.0],
         ),
     ]
-    bank = po.ModelBank(specs)
+    bank = rp.ModelBank(specs)
     bank.fit_predict(df.head(150))
     assert_row_oracle(bank, specs, df.tail(90))
 
@@ -214,7 +214,7 @@ def test_session_and_clock_policies_hold(policy):
     a row scores as it would at the last learned clock (task 120)."""
     df = _frame(n=60, groups=("a",)).with_columns(s=pl.lit("one"))
     specs = [_spec("ewridge", {"max_rows_between_solves": 1}, **policy)]
-    bank = po.ModelBank(specs)
+    bank = rp.ModelBank(specs)
     bank.fit_predict(df.head(40))
     later = df.tail(20)
     # Rows 5..9 start a new session; rows 12..14 are dated before the last
@@ -259,7 +259,7 @@ def test_a_backwards_clock_is_scored_and_refused_only_when_learned():
     stands, as it would a row at the last learned clock (task 120)."""
     df = _frame(n=60, groups=("a",))
     specs = [_spec("ewridge", {})]
-    bank = po.ModelBank(specs)
+    bank = rp.ModelBank(specs)
     bank.fit_predict(df.head(40))
     bad = df.tail(20).with_columns(
         t=pl.when(pl.arange(0, 20) == 7).then(pl.col("t") - 200.0).otherwise(pl.col("t"))
@@ -272,7 +272,7 @@ def test_a_backwards_clock_is_scored_and_refused_only_when_learned():
     back = bad["t"][6] - bad["t"][7]
     # Three significant figures of the step.
     with pytest.raises(ValueError, match=f"steps back by {back:.3g} at row 7"):
-        po.ModelBank.load_bytes(snap, specs).fit_predict(bad)
+        rp.ModelBank.load_bytes(snap, specs).fit_predict(bad)
 
 
 # --- what predict does not need, and does not do -------------------------------
@@ -282,7 +282,7 @@ class TestInputs:
     def setup_method(self):
         self.df = _frame()
         self.specs = [_spec("ewridge", {"max_rows_between_solves": 1})]
-        self.bank = po.ModelBank(self.specs)
+        self.bank = rp.ModelBank(self.specs)
         self.trained = self.bank.fit_predict(self.df.head(40))
         self.later = self.df.tail(20)
 
@@ -301,7 +301,7 @@ class TestInputs:
     def test_session_is_optional_and_feeds_the_gap(self):
         df = self.df.with_columns(s=pl.lit("one"))
         specs = [_spec("ewridge", {}, session="s", session_gap="reset")]
-        bank = po.ModelBank(specs)
+        bank = rp.ModelBank(specs)
         bank.fit_predict(df.head(40))
         same = bank.predict(df.tail(20))
         # A new session resets the stream before the row: nothing learned yet.
@@ -325,7 +325,7 @@ class TestInputs:
             assert out["m"].struct.field(f).is_null().all(), f
 
     def test_a_fresh_bank_predicts_nothing(self):
-        out = po.ModelBank(self.specs).predict(self.later)
+        out = rp.ModelBank(self.specs).predict(self.later)
         assert out["m"].struct.field("pred_y0").is_null().all()
 
     def test_an_empty_frame(self):
@@ -356,7 +356,7 @@ class TestInputs:
         assert self.bank.rows_fed == before
         assert self.bank.save_bytes() == snap
         # ...and the stream picks up exactly where it was.
-        want = po.ModelBank.load_bytes(snap, self.specs).fit_predict(self.later)
+        want = rp.ModelBank.load_bytes(snap, self.specs).fit_predict(self.later)
         assert self.bank.fit_predict(self.later).equals(want, null_equal=True)
 
     def test_coef_is_on_each_groups_last_accepted_row(self):
@@ -399,13 +399,13 @@ def test_the_e31_scenario_no_longer_goes_null():
     rng = np.random.default_rng(1)
     x = rng.standard_normal(200)
     df = pl.DataFrame({"x0": x, "y": 2 * x, "t": np.arange(200.0), "w": np.ones(200)})
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m", targets=["y"], features=["x0"], half_life=20.0, min_weight=10.0, weight="w"
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df.head(n))
     batch = df.tail(n)
-    zero_w = po.ModelBank.load_bytes(bank.save_bytes(), [spec]).fit_predict(
+    zero_w = rp.ModelBank.load_bytes(bank.save_bytes(), [spec]).fit_predict(
         batch.with_columns(w=pl.lit(0.0))
     )
     assert zero_w["m"].struct.field("pred_y").is_null().sum() > 30, "the scenario changed"
@@ -422,8 +422,8 @@ def test_holt_extrapolates_over_the_clock_distance():
     previous scored row. `coef` is `[level, trend]`, so the oracle is exact."""
     t = np.arange(50.0)
     df = pl.DataFrame({"y": 3.0 + 0.5 * t, "t": t})
-    spec = po.spec.holt("h", targets=["y"], half_life=10.0, clock="t", gap_cap=20.0)
-    bank = po.ModelBank([spec])
+    spec = rp.spec.holt("h", targets=["y"], half_life=10.0, clock="t", gap_cap=20.0)
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     last = bank.groups()["clock_last"][0]
     assert last == 49.0
@@ -448,8 +448,8 @@ def test_predict_from_many_threads_at_once():
     n = 400_000
     rng = np.random.default_rng(0)
     df = pl.DataFrame({"x0": rng.standard_normal(n), "y": rng.standard_normal(n)})
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=[10.0, 100.0, 1000.0])
-    bank = po.ModelBank([spec])
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=[10.0, 100.0, 1000.0])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df.head(1000))
     start = threading.Barrier(4)
     results: list[pl.DataFrame] = []
@@ -517,8 +517,8 @@ def test_fit_predict_is_refused_while_scoring():
     n = 2_000_000
     rng = np.random.default_rng(0)
     df = pl.DataFrame({"x0": rng.standard_normal(n), "y": rng.standard_normal(n)})
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=[10.0, 100.0, 1000.0])
-    bank = po.ModelBank([spec])
+    spec = rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=[10.0, 100.0, 1000.0])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df.head(1000))
     refused = _refused_while_scoring(bank, df)
     assert "in use on another thread" in str(refused)
@@ -531,7 +531,7 @@ def test_fit_predict_is_refused_while_scoring():
 
 class TestRunner:
     def _spec(self):
-        return po.spec.ewridge(
+        return rp.spec.ewridge(
             "ridge",
             targets=["y"],
             features=["x0"],
@@ -583,7 +583,7 @@ class TestRunner:
         )
         got = pl.read_parquet(tmp_path / "scored.parquet")
         assert got.height == 1000
-        want = po.ModelBank.load(state, [self._spec()]).predict(score)
+        want = rp.ModelBank.load(state, [self._spec()]).predict(score)
         # `coef` is a reporting cadence (once per chunk per group), so it
         # lands on more rows in the chunked run; every other field is equal.
         for f in _fields(got, "ridge"):
@@ -766,7 +766,7 @@ def test_predict_reads_no_coefficient_cadence():
     df = pl.DataFrame(
         {"t": np.arange(600.0), "x0": x[:, 0], "x1": x[:, 1], "y": x @ [1.0, -0.5]}
     ).with_columns(y=pl.col("y") + 0.1 * pl.Series(rng.standard_normal(600)))
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -775,7 +775,7 @@ def test_predict_reads_no_coefficient_cadence():
         gap_cap=5.0,
         coef_every=0,
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df.head(300))
     rows = df.slice(300)
     eager = rows.online.predict(bank)
@@ -789,7 +789,7 @@ def test_predict_reads_no_coefficient_cadence():
     # on the first rows, below a row per coefficient, are not run, since no
     # row could read them before the next comes due, so those rows carry no
     # fit yet.
-    learned = po.ModelBank([spec]).fit_predict(rows).unnest("m")
+    learned = rp.ModelBank([spec]).fit_predict(rows).unnest("m")
     none = learned["coef"].is_null().arg_true().to_list()
     assert none == list(range(len(none))) and 0 < len(none) < 3
     assert (learned["weight_sum"].gather(none) < 3.0).all()

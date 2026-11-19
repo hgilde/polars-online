@@ -21,7 +21,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -69,7 +69,7 @@ def _fit(c: float) -> pl.DataFrame:
         if builder not in ("seqtest", "audit"):
             kw["min_weight"] = kw.get("min_weight", 4.0) * c
         specs.append(probe.build(builder, name, kw))
-    return po.ModelBank(specs).fit_predict(probe.stream().with_columns(pl.col("w") * c))
+    return rp.ModelBank(specs).fit_predict(probe.stream().with_columns(pl.col("w") * c))
 
 
 def _moved(a: pl.DataFrame, b: pl.DataFrame, name: str) -> list[str]:
@@ -94,10 +94,10 @@ def test_the_docs_say_what_each_unit_is():
     """Task 151: ``ftrl``'s penalties are a prior of fixed mass, with
     ``lasso`` named for the mean scale, and ``micro``'s ``beta_mu`` is a point
     density with the rule to set it from the arrival rate."""
-    ftrl = inspect.cleandoc(po.spec.ftrl.__doc__ or "")
+    ftrl = inspect.cleandoc(rp.spec.ftrl.__doc__ or "")
     assert "a prior of fixed\nmass against evidence that grows with weight and density" in ftrl
     assert ":func:`lasso`" in ftrl
-    micro = inspect.cleandoc(po.spec.micro.__doc__ or "")
+    micro = inspect.cleandoc(rp.spec.micro.__doc__ or "")
     assert "``1.44 * s * v * h``" in micro
     assert "DBSCAN's\n    ``MinPts``" in micro or "DBSCAN's ``MinPts``" in micro
 

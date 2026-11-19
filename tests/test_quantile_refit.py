@@ -27,7 +27,7 @@ import polars as pl
 import pytest
 import statsmodels.api as sm
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 INF = float("inf")
@@ -44,11 +44,11 @@ def _stream(n: int, seed: int, wild: int = 0) -> pl.DataFrame:
 
 def _spec(**kw) -> dict:
     c = dict(targets=["y"], features=["x", "z"], half_life=INF, quantile=0.5, solve_every=0.0)
-    return po.spec.quantile("m", **{**c, **kw})
+    return rp.spec.quantile("m", **{**c, **kw})
 
 
 def _coef(spec: dict, df: pl.DataFrame) -> np.ndarray:
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     bank.fit_predict(df)
     return np.array(bank.coef("m")["coef"].to_list())
 
@@ -114,8 +114,8 @@ def _specs() -> list[dict]:
         quantile_refit_rows=200,
     )
     return [
-        po.spec.quantile("m", quantile=0.5, half_life=INF, **c),
-        po.spec.quantile("m", quantile=0.8, half_life=300.0, standardize=True, **c),
+        rp.spec.quantile("m", quantile=0.5, half_life=INF, **c),
+        rp.spec.quantile("m", quantile=0.8, half_life=300.0, standardize=True, **c),
     ]
 
 
@@ -128,9 +128,9 @@ def test_one_chunk_or_many_give_one_run(spec):
     chunk's end, so chunks of 1, 7 and 600 rows give the one chunk's output
     to the bit."""
     df = _frame()
-    whole = po.ModelBank([spec]).fit_predict(df)
+    whole = rp.ModelBank([spec]).fit_predict(df)
     for rows in (1, 7, 600):
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         parts = [bank.fit_predict(df.slice(i, rows)) for i in range(0, df.height, rows)]
         assert pl.concat(parts).equals(whole, null_equal=True), rows
 
@@ -140,11 +140,11 @@ def test_a_bank_saved_before_at_or_after_the_refit_resumes_to_the_bit(spec):
     """The buffer is state: saved and loaded mid-buffer, around the refit's
     row and after it, a bank goes on as the one that never stopped."""
     df = _frame()
-    whole = po.ModelBank([spec]).fit_predict(df)
+    whole = rp.ModelBank([spec]).fit_predict(df)
     for cut in (1, 37, 150, 220, 250, 1001):
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         head = bank.fit_predict(df.slice(0, cut))
-        loaded = po.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
+        loaded = rp.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
         tail = loaded.fit_predict(df.slice(cut))
         assert pl.concat([head, tail]).equals(whole, null_equal=True), cut
 
@@ -166,11 +166,11 @@ def test_the_refit_moves_the_fit_after_its_row_and_not_the_weight(spec):
     rule 8). A spec that does not name the count is the spec at 500, the
     default at one feature."""
     df = _frame()
-    on = po.ModelBank([spec]).fit_predict(df)["m"]
-    off = po.ModelBank([_with_rows(spec, 0)]).fit_predict(df)["m"]
-    waits = po.ModelBank([_with_rows(spec, df.height)]).fit_predict(df)["m"]
-    default = po.ModelBank([_with_rows(spec, None)]).fit_predict(df)["m"]
-    at_500 = po.ModelBank([_with_rows(spec, 500)]).fit_predict(df)["m"]
+    on = rp.ModelBank([spec]).fit_predict(df)["m"]
+    off = rp.ModelBank([_with_rows(spec, 0)]).fit_predict(df)["m"]
+    waits = rp.ModelBank([_with_rows(spec, df.height)]).fit_predict(df)["m"]
+    default = rp.ModelBank([_with_rows(spec, None)]).fit_predict(df)["m"]
+    at_500 = rp.ModelBank([_with_rows(spec, 500)]).fit_predict(df)["m"]
     assert default.equals(at_500, null_equal=True)
     assert not default.equals(on, null_equal=True), "500 rows refit after 200"
     assert on.struct.field("weight_sum").equals(off.struct.field("weight_sum"))
@@ -188,14 +188,14 @@ def test_a_count_inside_the_warm_up_is_refused():
     one feature and an intercept), and the budget above 0."""
     df = _frame(50)
     c = dict(targets=["y0"], features=["x"], half_life=INF, quantile=0.5)
-    po.ModelBank([po.spec.quantile("m", quantile_refit_rows=6, **c)]).fit_predict(df)
+    rp.ModelBank([rp.spec.quantile("m", quantile_refit_rows=6, **c)]).fit_predict(df)
     with pytest.raises(
         ValueError,
         match="quantile_refit_rows must be 0 or at least 6, three rows for each coefficient",
     ):
-        po.ModelBank([po.spec.quantile("m", quantile_refit_rows=5, **c)])
+        rp.ModelBank([rp.spec.quantile("m", quantile_refit_rows=5, **c)])
     with pytest.raises(ValueError, match="refit_budget must be above 0 MiB"):
-        po.ModelBank([po.spec.quantile("m", refit_budget=0.0, **c)])
+        rp.ModelBank([rp.spec.quantile("m", refit_budget=0.0, **c)])
 
 
 def test_the_refit_budget_gives_up_the_later_groups_and_counts_them():
@@ -220,8 +220,8 @@ def test_the_refit_budget_gives_up_the_later_groups_and_counts_them():
     )
     c = dict(targets=["y", "z"], features=["x"], group="g", half_life=INF, coef_every=0)
 
-    def bank(**kw) -> tuple[po.ModelBank, pl.DataFrame, list[str]]:
-        b = po.ModelBank([po.spec.quantile("m", quantile=0.5, quantile_refit_rows=50, **c, **kw)])
+    def bank(**kw) -> tuple[rp.ModelBank, pl.DataFrame, list[str]]:
+        b = rp.ModelBank([rp.spec.quantile("m", quantile=0.5, quantile_refit_rows=50, **c, **kw)])
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             out = b.fit_predict(df)
@@ -229,8 +229,8 @@ def test_the_refit_budget_gives_up_the_later_groups_and_counts_them():
 
     bounded, out, notices = bank(refit_budget=0.07)
     free, out_free, none = bank(refit_budget=INF)
-    off_spec = po.spec.quantile("m", quantile=0.5, quantile_refit_rows=0, **c)
-    out_off = po.ModelBank([off_spec]).fit_predict(df)
+    off_spec = rp.spec.quantile("m", quantile=0.5, quantile_refit_rows=0, **c)
+    out_off = rp.ModelBank([off_spec]).fit_predict(df)
     assert len(notices) == 1 and 'at group "3"' in notices[0], notices
     assert "quantile_refit_rows" in notices[0], notices
     assert none == []

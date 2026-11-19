@@ -109,11 +109,11 @@ def run_ew_mean(y, d_clock, half_life):
 def run_ewridge(X, y, d_clock, half_life):
     import polars as pl
 
-    import rheon as po
+    from rheon import polars as rp
 
     t = np.cumsum(d_clock)
     df = pl.DataFrame({"t": t, "y": y, **{f"x{j}": X[:, j] for j in range(X.shape[1])}})
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         name="r",
         targets=["y"],
         features=[f"x{j}" for j in range(X.shape[1])],
@@ -122,7 +122,7 @@ def run_ewridge(X, y, d_clock, half_life):
         gap_cap=100.0,
         min_weight=X.shape[1] + 1,
     )
-    out = po.fit_predict(df, [spec])
+    out = rp.fit_predict(df, [spec])
     return out.select(pl.col("r").struct.field("pred_y")).to_numpy().ravel()
 
 

@@ -30,7 +30,7 @@ pytestmark = pytest.mark.extended(reason="four child interpreters, each fitting 
 SCRIPT = """\
 import sys, hashlib
 import polars as pl
-import rheon as po
+from rheon import polars as po
 df = pl.read_parquet(sys.argv[1])
 k = int(sys.argv[2])
 features = [f"x{j}" for j in range(k)]

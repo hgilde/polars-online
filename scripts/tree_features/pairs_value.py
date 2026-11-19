@@ -16,7 +16,7 @@ import polars as pl  # noqa: E402
 import xgboost as xgb  # noqa: E402
 from pairs import TRUE, P, anova, binned, edges_of, make, residual_online, tables  # noqa: E402
 
-import rheon as po  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 
 
 def xgb_rmse(x, y, tr, va, te, cons, n_train=None):
@@ -43,10 +43,10 @@ def lin_rmse(x, y, te, pairs):
         | {f"p{i}_{j}": x[:, i] * x[:, j] for i, j in pairs}
     )
     d = pl.DataFrame({"c": np.arange(len(y), dtype=float), "y": y, **cols})
-    s = po.spec.ewridge(
+    s = rp.spec.ewridge(
         "o", targets=["y"], features=list(cols), clock="c", gap_cap=10.0, half_life=1e9, ridge=1e-4
     )
-    p = po.ModelBank([s]).fit_predict(d)["o"].struct.field("pred_y").to_numpy()
+    p = rp.ModelBank([s]).fit_predict(d)["o"].struct.field("pred_y").to_numpy()
     return float(np.sqrt(np.mean((p[te] - y[te]) ** 2)))
 
 

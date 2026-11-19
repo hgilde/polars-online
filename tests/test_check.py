@@ -19,10 +19,10 @@ import polars as pl
 import pytest
 
 import check_streams as cs
-import rheon as po
-from rheon import _check
 from rheon import _rheon as _native
 from rheon import gram as pg
+from rheon import polars as rp
+from rheon.polars import _check
 
 TIER = "essential"
 
@@ -113,15 +113,15 @@ def _troubled() -> tuple[pl.DataFrame, list[dict]]:
 class TestStateAndChunks:
     def test_a_loaded_bank_finds_what_the_live_bank_found(self, tmp_path):
         df, specs = _troubled()
-        bank = po.ModelBank(specs)
-        with pytest.warns(po.ReadinessWarning):
+        bank = rp.ModelBank(specs)
+        with pytest.warns(rp.ReadinessWarning):
             bank.fit_predict(df)
         live = bank.check()
         assert {"missing", "constant", "level_over_spread", "collinear", "leakage"} <= set(
             live["code"]
         )
         bank.save(tmp_path / "bank.state")
-        loaded = po.ModelBank.load(tmp_path / "bank.state").check()
+        loaded = rp.ModelBank.load(tmp_path / "bank.state").check()
         assert loaded.equals(live)
 
     @pytest.mark.parametrize("chunks", [7, 600])
@@ -134,8 +134,8 @@ class TestStateAndChunks:
 
     def test_predict_moves_nothing(self):
         df, specs = _troubled()
-        bank = po.ModelBank(specs)
-        with pytest.warns(po.ReadinessWarning):
+        bank = rp.ModelBank(specs)
+        with pytest.warns(rp.ReadinessWarning):
             bank.fit_predict(df.head(2000))
         before = bank.check()
         bank.predict(df.tail(1000))
@@ -145,8 +145,8 @@ class TestStateAndChunks:
 class TestNarrowing:
     def test_spec_and_group_narrow_the_frame(self):
         df, specs = _troubled()
-        bank = po.ModelBank(specs)
-        with pytest.warns(po.ReadinessWarning):
+        bank = rp.ModelBank(specs)
+        with pytest.warns(rp.ReadinessWarning):
             bank.fit_predict(df)
         every = bank.check()
         one = bank.check("rls")
@@ -159,14 +159,14 @@ class TestNarrowing:
         assert bank.check("ewridge", group="never").is_empty()
 
     def test_an_unknown_spec_is_refused_as_the_other_readers_refuse_it(self):
-        bank = po.ModelBank(cs.every_model(cs.FEATURES))
+        bank = rp.ModelBank(cs.every_model(cs.FEATURES))
         with pytest.raises(KeyError, match="no spec named"):
             bank.check("nope")
         with pytest.raises(IndexError):
             bank.check(99)
 
     def test_a_bank_that_has_seen_nothing_has_nothing_to_say(self):
-        assert po.ModelBank(cs.every_model(cs.FEATURES)).check().is_empty()
+        assert rp.ModelBank(cs.every_model(cs.FEATURES)).check().is_empty()
 
 
 class TestValues:
@@ -174,7 +174,7 @@ class TestValues:
 
     def test_missing_is_describes_null_share(self):
         df, specs = cs.planted_missing(0)
-        bank = po.ModelBank(specs[:1])
+        bank = rp.ModelBank(specs[:1])
         bank.fit_predict(df)
         row = bank.check().filter(code="missing").row(0, named=True)
         d = bank.describe().filter(column="x1").row(0, named=True)
@@ -184,8 +184,8 @@ class TestValues:
 
     def test_leakage_is_the_grams_correlation(self):
         df, specs = cs.planted_leakage(0)
-        spec = po.spec.ewridge("m", targets=["y"], features=["x0", "leak"], lam=1.0)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.ewridge("m", targets=["y"], features=["x0", "leak"], lam=1.0)
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         row = bank.check().filter(code="leakage").row(0, named=True)
         # lam = 1 weighs every row alike, so numpy's correlation is the oracle.
@@ -203,10 +203,10 @@ class TestValues:
         walk = np.cumsum(rng.standard_normal(100_001))
         df = pl.DataFrame({"y": walk[1:], "lag": walk[:-1]})
         specs = [
-            po.spec.ewridge("ridge", targets=["y"], features=["lag"], half_life=float("inf")),
-            po.spec.marginal("pairs", targets=["y"], features=["lag"], half_life=float("inf")),
+            rp.spec.ewridge("ridge", targets=["y"], features=["lag"], half_life=float("inf")),
+            rp.spec.marginal("pairs", targets=["y"], features=["lag"], half_life=float("inf")),
         ]
-        bank = po.ModelBank(specs)
+        bank = rp.ModelBank(specs)
         bank.fit(df)
         f = bank.check().filter(code="leakage")
         assert set(f["spec"]) == {"ridge", "pairs"}, f
@@ -226,12 +226,12 @@ class TestValues:
         df = pl.DataFrame({"p1": p1, "p2": p2, "y": 0.5 * (p1 - 5000) + rng.standard_normal(n)})
         c = dict(targets=["y"], features=["p1", "p2"], half_life=500.0)
         specs = [
-            po.spec.ewridge("ewridge", **c),
-            po.spec.lasso("lasso", penalties=[1e-3], **c),
-            po.spec.ew_cov("ew_cov", features=["p1", "p2"], half_life=500.0),
-            po.spec.ewridge("through_origin", fit_intercept=False, **c),
+            rp.spec.ewridge("ewridge", **c),
+            rp.spec.lasso("lasso", penalties=[1e-3], **c),
+            rp.spec.ew_cov("ew_cov", features=["p1", "p2"], half_life=500.0),
+            rp.spec.ewridge("through_origin", fit_intercept=False, **c),
         ]
-        bank = po.ModelBank(specs)
+        bank = rp.ModelBank(specs)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             bank.fit(df)
@@ -247,7 +247,7 @@ class TestValues:
         the correlation matrix's largest eigenvalue over its smallest:
         Belsley's index of the centred, column-scaled design."""
         df, _ = cs.planted_collinear(0)
-        bank = po.ModelBank([po.spec.ewridge("m", targets=["y"], features=cs.FEATURES, lam=1.0)])
+        bank = rp.ModelBank([rp.spec.ewridge("m", targets=["y"], features=cs.FEATURES, lam=1.0)])
         bank.fit(df)
         row = bank.check().filter(code="collinear").row(0, named=True)
         g = bank.gram("m")[0]
@@ -270,9 +270,9 @@ class TestValues:
             y = 0.5 * (x - level) + 0.5 * x2 + rng.standard_normal(n)
             df = pl.DataFrame({"x": x, "x2": x2, "y": y})
             c = dict(targets=["y"], features=["x", "x2"])
-            specs = [po.spec.rls(f"rls_{hl:g}", half_life=hl, **c) for hl in (20.0, 200.0)]
-            specs.append(po.spec.rls("rls_inf", half_life=float("inf"), delta=4.0, **c))
-            bank = po.ModelBank(specs)
+            specs = [rp.spec.rls(f"rls_{hl:g}", half_life=hl, **c) for hl in (20.0, 200.0)]
+            specs.append(rp.spec.rls("rls_inf", half_life=float("inf"), delta=4.0, **c))
+            bank = rp.ModelBank(specs)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 bank.fit(df)
@@ -305,11 +305,11 @@ class TestValues:
         df, _ = cs.clean_independent(0)
         c = dict(targets=["y"], features=cs.FEATURES, half_life=200.0)
         specs = [
-            po.spec.ewridge("big", ridge=1.0, **c),
-            po.spec.ewridge("grid", ridge=[1e-6, 1.0], **c),
-            po.spec.ewridge("sum", ridge=1.0, ridge_scale="sum", **c),
-            po.spec.ewridge("std", ridge=1.0, standardize=True, **c),
-            po.spec.huber("huber", ridge=1.0, **c),
+            rp.spec.ewridge("big", ridge=1.0, **c),
+            rp.spec.ewridge("grid", ridge=[1e-6, 1.0], **c),
+            rp.spec.ewridge("sum", ridge=1.0, ridge_scale="sum", **c),
+            rp.spec.ewridge("std", ridge=1.0, standardize=True, **c),
+            rp.spec.huber("huber", ridge=1.0, **c),
         ]
         f = cs.findings(df, specs)
         assert _codes(f, "ridge_shrinks") == {"big", "huber"}
@@ -324,7 +324,7 @@ class TestValues:
         docstring said "half the rows or more")."""
         df, _ = cs.clean_independent(0)
         df = df.head(200)
-        spec = po.spec.ewridge("m", targets=["y"], features=cs.FEATURES, half_life=50.0)
+        spec = rp.spec.ewridge("m", targets=["y"], features=cs.FEATURES, half_life=50.0)
         row = pl.int_range(pl.len())
         for skipped, fires in ((100, False), (101, True)):
             holed = df.with_columns(
@@ -332,7 +332,7 @@ class TestValues:
             )
             f = cs.findings(holed, [spec])
             assert (not f.filter(code="few_learned").is_empty()) is fires, (skipped, f)
-            summary = po.ModelBank([spec])
+            summary = rp.ModelBank([spec])
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 summary.fit_predict(holed)
@@ -340,8 +340,8 @@ class TestValues:
 
     def test_low_support_is_not_repeated_for_a_constant_feature(self):
         df, specs = cs.planted_constant_feature(0)
-        bank = po.ModelBank(specs[:1])
-        with pytest.warns(po.ReadinessWarning):
+        bank = rp.ModelBank(specs[:1])
+        with pytest.warns(rp.ReadinessWarning):
             bank.fit_predict(df)
         assert bank.summary()["support_coef_min"][0] < _check.SUPPORT
         f = bank.check()
@@ -370,7 +370,7 @@ class TestAudit:
 
     def test_the_value_is_the_audits_own_number(self):
         df = cs.AUDIT_PLANTED["minus_999_on_5pct"][0](0)
-        bank = po.ModelBank([cs.audit_spec(df)])
+        bank = rp.ModelBank([cs.audit_spec(df)])
         bank.fit_predict(df)
         row = bank.check().filter(code="sentinel", column="x1").row(0, named=True)
         a = bank.audit().filter(column="x1").row(0, named=True)
@@ -378,7 +378,7 @@ class TestAudit:
         assert row["threshold"] == _check.SENTINEL_SHARE
         assert "-999" in row["message"]
         df = cs.AUDIT_PLANTED["random_walk"][0](0)
-        bank = po.ModelBank([cs.audit_spec(df)])
+        bank = rp.ModelBank([cs.audit_spec(df)])
         bank.fit_predict(df)
         row = bank.check().filter(code="random_walk").row(0, named=True)
         assert row["value"] == bank.audit().filter(column="x1")["unit_root_t"][0]
@@ -393,7 +393,7 @@ class TestAudit:
         told; nor is a sentinel on a fifth of the rows, whose repeats are
         chance's."""
         df = cs.AUDIT_PLANTED["stuck_50_rows"][0](0)
-        bank = po.ModelBank([cs.audit_spec(df)])
+        bank = rp.ModelBank([cs.audit_spec(df)])
         bank.fit_predict(df)
         row = bank.check().filter(code="frozen").row(0, named=True)
         a = bank.audit().filter(column="x1").row(0, named=True)
@@ -403,7 +403,7 @@ class TestAudit:
         assert row["value"] == (repeats - chance - at_step) / math.sqrt(repeats + at_step)
         assert row["threshold"] == _check.FROZEN_SIGMAS
         df = cs.AUDIT_CLEAN["persistent_discrete"](0)
-        bank = po.ModelBank([cs.audit_spec(df)])
+        bank = rp.ModelBank([cs.audit_spec(df)])
         bank.fit_predict(df)
         moves = bank.audit().select(
             "column", share=pl.col("min_change_count") / (pl.col("adjacent") - pl.col("equal_prev"))
@@ -424,7 +424,7 @@ class TestAudit:
         far = rng.normal(size=n)
         far[n // 2] = 30.0
         df = pl.DataFrame({"t": np.arange(n, dtype=float), "kurt": kurt, "far": far})
-        bank = po.ModelBank([cs.audit_spec(df)])
+        bank = rp.ModelBank([cs.audit_spec(df)])
         bank.fit_predict(df)
         a = {r["column"]: r for r in bank.audit().iter_rows(named=True)}
         assert a["kurt"]["kurtosis"] >= _check.HEAVY_KURTOSIS > 0
@@ -448,7 +448,7 @@ class TestAudit:
         t[1200:] -= 600.0  # a restart
         df = cs.AUDIT_CLEAN["model_independent"](0).with_columns(t=pl.Series(t))
         audit = cs.audit_spec(df, restart_after_step_back=100.0)
-        model = po.spec.ewridge(
+        model = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -491,7 +491,7 @@ class TestAudit:
         assert set(beside.filter(spec="audit")["code"]) <= {"duplicate"}
 
     def test_every_code_is_in_the_docstring(self):
-        doc = po.ModelBank.check.__doc__ or ""
+        doc = rp.ModelBank.check.__doc__ or ""
         codes = {code for _, code, _ in cs.AUDIT_PLANTED.values()}
         assert {f"``{c}``" for c in codes | {"missing", "constant"}} <= {
             w for w in doc.split() if w.startswith("``")
@@ -532,7 +532,7 @@ def test_check_places_every_regression():
 
 def test_without_numpy_the_gram_checks_say_they_did_not_run(monkeypatch):
     df, specs = cs.planted_collinear(0)
-    bank = po.ModelBank(specs[:1])
+    bank = rp.ModelBank(specs[:1])
     bank.fit_predict(df)
     assert "collinear" in set(bank.check()["code"])
     real_import = builtins.__import__
@@ -550,7 +550,7 @@ def test_without_numpy_the_gram_checks_say_they_did_not_run(monkeypatch):
     assert "polars-online[numpy]" in row["message"]
     # A bank that has seen no rows says nothing: there is no group whose
     # Gram the checks would have read, so nothing was left unchecked.
-    unfed = po.ModelBank(specs[:1]).check()
+    unfed = rp.ModelBank(specs[:1]).check()
     assert unfed.is_empty(), unfed
     monkeypatch.setattr(builtins, "__import__", real_import)
-    assert po.ModelBank(specs[:1]).check().is_empty()
+    assert rp.ModelBank(specs[:1]).check().is_empty()

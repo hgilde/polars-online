@@ -13,8 +13,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
-from rheon import _frame
+from rheon import polars as rp
+from rheon.polars import _frame
 
 TIER = "essential"
 
@@ -32,7 +32,7 @@ def _groups() -> pl.DataFrame:
     )
 
 
-SPEC = po.spec.ew_cov("c", features=["x0", "x1"], half_life=20.0, group="g", group_close="monotone")
+SPEC = rp.spec.ew_cov("c", features=["x0", "x1"], half_life=20.0, group="g", group_close="monotone")
 
 
 def test_the_frame_namespace_writes_the_closed_groups_sidecar(tmp_path):
@@ -41,7 +41,7 @@ def test_the_frame_namespace_writes_the_closed_groups_sidecar(tmp_path):
     df = _groups()
     side = tmp_path / "closed.parquet"
     out = df.online.fit_predict([SPEC], closed_groups=side, chunk_size=25)
-    driver = po.ModelBank([SPEC])
+    driver = rp.ModelBank([SPEC])
     frames, outs = [], []
     for i in range(0, df.height, 25):
         outs.append(driver.fit_predict(df[i : i + 25]))
@@ -62,7 +62,7 @@ def test_a_closed_groups_sidecar_in_a_missing_directory_is_refused_before_the_fi
     assert not side.parent.exists()
 
 
-SPEC_ORDER = po.spec.ewridge(
+SPEC_ORDER = rp.spec.ewridge(
     "m",
     targets=["y"],
     features=["x0"],
@@ -94,8 +94,8 @@ def _shuffled() -> pl.LazyFrame:
 def _flagged(lf: pl.LazyFrame) -> list[str]:
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
-        po.ModelBank([SPEC_ORDER]).fit(lf)
-    return [str(w.message) for w in rec if issubclass(w.category, po.OrderNotGuaranteedWarning)]
+        rp.ModelBank([SPEC_ORDER]).fit(lf)
+    return [str(w.message) for w in rec if issubclass(w.category, rp.OrderNotGuaranteedWarning)]
 
 
 def test_a_join_that_keeps_the_right_order_reads_the_right_side_alone():

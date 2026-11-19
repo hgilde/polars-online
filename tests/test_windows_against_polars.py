@@ -21,8 +21,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
 from polars_version import needs_polars
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -69,8 +69,8 @@ def test_the_mean_is_polars_ewm_mean_by(unit: str, epoch: str, nulls: float, tie
     df = _stream(800, 17, unit, epoch, nulls, ties)
     valued = df["x"].is_not_null().to_list()
     for h in HALF_LIVES:
-        out = po.stream.with_windows(
-            df, m=po.ewm_mean("x", half_life=h), clock="ts", gap_cap="1000h"
+        out = rp.stream.with_windows(
+            df, m=rp.ewm_mean("x", half_life=h), clock="ts", gap_cap="1000h"
         )
         ref = df.select(pl.col("x").ewm_mean_by("ts", half_life=h))["x"].to_list()
         seen = _close(out["m"].to_list(), ref, valued, f"{unit} {epoch} {h}")
@@ -99,9 +99,9 @@ def test_the_plain_sum_over_a_window_is_polars_rolling_sum_by(
     kw = {} if min_samples is None else {"min_samples": min_samples}
     empty = 0
     for w in ("5ms", "1s", "5s"):
-        out = po.stream.with_windows(
+        out = rp.stream.with_windows(
             df,
-            s=po.ewm_sum("x", half_life=math.inf, window_size=w, closed=closed, **kw),
+            s=rp.ewm_sum("x", half_life=math.inf, window_size=w, closed=closed, **kw),
             clock="ts",
             gap_cap="1000h",
         )["s"].to_list()
@@ -149,9 +149,9 @@ def test_a_window_with_no_row_sums_to_zero_as_polars_does() -> None:
     )
     clock = {"clock": "ts", "gap_cap": "1000h"}
     for min_samples in (0, 1):
-        got = po.stream.with_windows(
+        got = rp.stream.with_windows(
             df,
-            s=po.ewm_sum(
+            s=rp.ewm_sum(
                 "x", half_life=math.inf, window_size="2s", closed="left", min_samples=min_samples
             ),
             **clock,

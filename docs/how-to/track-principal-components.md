@@ -59,7 +59,7 @@ the ones read before the last row:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # Four columns moved by one factor with known loadings, each with noise of its own.
 rng = np.random.default_rng(8)

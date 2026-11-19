@@ -21,7 +21,7 @@ import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
-import rheon as po  # noqa: E402
+from rheon import polars as rp  # noqa: E402
 
 
 def make(rows: int, k: int, m: int, seed: int = 0) -> pl.DataFrame:
@@ -52,7 +52,7 @@ def time_spec(df: pl.DataFrame, spec: dict, repeats: int = 3) -> float:
     """Best-of-N rows/sec (best, not mean: it is the least noisy estimate)."""
     best = float("inf")
     for _ in range(repeats):
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         t0 = time.perf_counter()
         bank.fit_predict(df)
         best = min(best, time.perf_counter() - t0)
@@ -86,7 +86,7 @@ def main() -> None:
     for k in (5, 20, 50):
         df = make(rows, k, 1)
         feats = [f"x{j}" for j in range(k)]
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=feats,
@@ -101,7 +101,7 @@ def main() -> None:
     for m in (1, 10):
         df = make(rows, 20, m)
         feats = [f"x{j}" for j in range(20)]
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=[f"y{j}" for j in range(m)],
             features=feats,
@@ -117,7 +117,7 @@ def main() -> None:
         df = make(rows, 20, 1)
         feats = [f"x{j}" for j in range(20)]
         hl = [500.0 * (i + 1) for i in range(n_hl)]
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y0"],
             features=feats,
@@ -140,12 +140,12 @@ def main() -> None:
         min_weight=20.0,
     )
     models = {
-        "ewridge": po.spec.ewridge("m", **common),
-        "rls": po.spec.rls("m", delta=1.0, **common),
-        "kalman": po.spec.kalman("m", coef_half_life=2000.0, **common),
-        "lasso": po.spec.lasso("m", penalties=[0.1, 0.01, 0.0], **common),
-        "huber": po.spec.huber("m", **common),
-        "ftrl": po.spec.ftrl("m", **common),
+        "ewridge": rp.spec.ewridge("m", **common),
+        "rls": rp.spec.rls("m", delta=1.0, **common),
+        "kalman": rp.spec.kalman("m", coef_half_life=2000.0, **common),
+        "lasso": rp.spec.lasso("m", penalties=[0.1, 0.01, 0.0], **common),
+        "huber": rp.spec.huber("m", **common),
+        "ftrl": rp.spec.ftrl("m", **common),
     }
     for name, spec in models.items():
         results.append((name, "k=20, 1 target", time_spec(df, spec)))
@@ -170,33 +170,33 @@ def main() -> None:
         (
             "ewridge + conformal",
             "k=20, 90% interval",
-            po.spec.ewridge("m", conformal=0.9, **common),
+            rp.spec.ewridge("m", conformal=0.9, **common),
         ),
         # The raw step, as the README's figures were measured before `standardize`
         # became the default (docs/PLAN.md task 195, U2).
         (
             "sgd",
             "k=20, squared loss, standardize=False",
-            po.spec.sgd("m", learning_rate=0.01, standardize=False, **common),
+            rp.spec.sgd("m", learning_rate=0.01, standardize=False, **common),
         ),
         (
             "sgd, simplex",
             "k=20, coef >= 0, sum 1",
-            po.spec.sgd(
+            rp.spec.sgd(
                 "m", learning_rate=0.01, coef_min=0.0, coef_sum=1.0, standardize=False, **common
             ),
         ),
-        ("pa", "k=20, standardize=False", po.spec.pa("m", standardize=False, **common)),
+        ("pa", "k=20, standardize=False", rp.spec.pa("m", standardize=False, **common)),
         (
             "kalman + revert",
             "k=20, revert_half_life",
-            po.spec.kalman("m", coef_half_life=2000.0, revert_half_life=5000.0, **common),
+            rp.spec.kalman("m", coef_half_life=2000.0, revert_half_life=5000.0, **common),
         ),
-        ("ew_cov", "k=20: mean, std, corr (230 statistics)", po.spec.ew_cov("m", **no_target)),
+        ("ew_cov", "k=20: mean, std, corr (230 statistics)", rp.spec.ew_cov("m", **no_target)),
         (
             "ew_cov, mahal",
             "k=20: mean, mahal, mahal_q0.99",
-            po.spec.ew_cov(
+            rp.spec.ew_cov(
                 "m",
                 stats=["mean", "mahal"],
                 precision_prior=1.0,
@@ -207,12 +207,12 @@ def main() -> None:
         (
             "ew_class, full",
             "k=20, 3 classes (QDA)",
-            po.spec.ew_class("m", label="label", classes=classes, precision_prior=1.0, **no_target),
+            rp.spec.ew_class("m", label="label", classes=classes, precision_prior=1.0, **no_target),
         ),
         (
             "ew_class, shared",
             "k=20, 3 classes (LDA)",
-            po.spec.ew_class(
+            rp.spec.ew_class(
                 "m",
                 label="label",
                 classes=classes,
@@ -224,7 +224,7 @@ def main() -> None:
         (
             "ew_class, diagonal",
             "k=20, 3 classes (naive Bayes)",
-            po.spec.ew_class(
+            rp.spec.ew_class(
                 "m",
                 label="label",
                 classes=classes,
@@ -233,38 +233,38 @@ def main() -> None:
                 **no_target,
             ),
         ),
-        ("kmeans", "4 features, K=8", po.spec.kmeans("m", n_clusters=8, **four)),
-        ("kmeans", "k=20, K=8", po.spec.kmeans("m", n_clusters=8, **no_target)),
-        ("micro", "4 features, eps=1", po.spec.micro("m", eps=1.0, **four)),
+        ("kmeans", "4 features, K=8", rp.spec.kmeans("m", n_clusters=8, **four)),
+        ("kmeans", "k=20, K=8", rp.spec.kmeans("m", n_clusters=8, **no_target)),
+        ("micro", "4 features, eps=1", rp.spec.micro("m", eps=1.0, **four)),
         (
             "seqtest",
             "sign of one column",
-            po.spec.seqtest("m", targets=["y0"], clock="t", gap_cap=100.0),
+            rp.spec.seqtest("m", targets=["y0"], clock="t", gap_cap=100.0),
         ),
         # The correlation families (tasks 45-56). `rcov` and `corrchange`
         # need a group that closes and a span that closes; `bocpd`'s cost is
         # the length of its run vector, which is what `max_run` bounds.
-        ("deco", "k=20, ew dynamics", po.spec.deco("m", **no_target)),
+        ("deco", "k=20, ew dynamics", rp.spec.deco("m", **no_target)),
         (
             "deco, blocks",
             "k=20 in 4 blocks",
-            po.spec.deco(
+            rp.spec.deco(
                 "m",
                 blocks={f"b{j}": [f"x{5 * j + i}" for i in range(5)] for j in range(4)},
                 **no_target,
             ),
         ),
-        ("hmm", "4 features, K=2", po.spec.hmm("m", n_components=2, precision_prior=1.0, **four)),
-        ("hmm", "k=20, K=2", po.spec.hmm("m", n_components=2, precision_prior=1.0, **no_target)),
+        ("hmm", "4 features, K=2", rp.spec.hmm("m", n_components=2, precision_prior=1.0, **four)),
+        ("hmm", "k=20, K=2", rp.spec.hmm("m", n_components=2, precision_prior=1.0, **no_target)),
         (
             "corrchange, monitor",
             "4 features, horizon 500",
-            po.spec.corrchange("m", window_rows=500, **no_decay(four)),
+            rp.spec.corrchange("m", window_rows=500, **no_decay(four)),
         ),
         (
             "corrchange, window",
             "4 features, window 100, permute every 500",
-            po.spec.corrchange(
+            rp.spec.corrchange(
                 "m",
                 kind="window",
                 window_rows=100,
@@ -277,17 +277,17 @@ def main() -> None:
         (
             "bocpd",
             "4 features, diag, max_run 200",
-            po.spec.bocpd("m", prune_below=1e-6, max_run=200, **no_decay(four)),
+            rp.spec.bocpd("m", prune_below=1e-6, max_run=200, **no_decay(four)),
         ),
         (
             "bocpd",
             "4 features, diag, max_run 20",
-            po.spec.bocpd("m", prune_below=1e-6, max_run=20, **no_decay(four)),
+            rp.spec.bocpd("m", prune_below=1e-6, max_run=20, **no_decay(four)),
         ),
         (
             "bocpd, gaussian",
             "4 features, full covariance, max_run 200",
-            po.spec.bocpd(
+            rp.spec.bocpd(
                 "m",
                 covariance_type="full",
                 degrees_of_freedom_prior=6.0,
@@ -299,7 +299,7 @@ def main() -> None:
         (
             "rcov",
             "4 features, kernel, groups of 1000",
-            po.spec.rcov(
+            rp.spec.rcov(
                 "m",
                 kind="kernel",
                 group="block",
@@ -311,21 +311,21 @@ def main() -> None:
         (
             "ew_cov, lags",
             "k=20: mean, cov, lags 1-5",
-            po.spec.ew_cov("m", stats=["mean", "cov"], lags=[1, 2, 3, 4, 5], **no_target),
+            rp.spec.ew_cov("m", stats=["mean", "cov"], lags=[1, 2, 3, 4, 5], **no_target),
         ),
         # The kinds the release's comparison of throughput could not see
         # (review 9, J-3).
-        ("quantile", "k=20, the median", po.spec.quantile("m", quantile=0.5, **common)),
+        ("quantile", "k=20, the median", rp.spec.quantile("m", quantile=0.5, **common)),
         (
             "holt",
             "level and trend of one column",
-            po.spec.holt("m", targets=["y0"], clock="t", half_life=1000.0, gap_cap=100.0),
+            rp.spec.holt("m", targets=["y0"], clock="t", half_life=1000.0, gap_cap=100.0),
         ),
-        ("marginal", "20 features against one target", po.spec.marginal("m", **common)),
+        ("marginal", "20 features against one target", rp.spec.marginal("m", **common)),
         (
             "audit",
             "20 continuous columns, 256 counters",
-            po.spec.audit("m", columns=feats, clock="t", gap_cap=100.0),
+            rp.spec.audit("m", columns=feats, clock="t", gap_cap=100.0),
         ),
     ]
     other_results: list[tuple[str, str, float]] = []
@@ -336,8 +336,8 @@ def main() -> None:
     # bank emits and unnested: the writer encodes a struct's fields at several
     # times the cost of flat columns, so it, not the bank, set the pace of a
     # wide run's `sink_parquet` (review 9, M-1).
-    wide = po.spec.ew_cov("m", **no_target)
-    out = po.ModelBank([wide]).fit_predict(df).select("m")
+    wide = rp.spec.ew_cov("m", **no_target)
+    out = rp.ModelBank([wide]).fit_predict(df).select("m")
     flat = out.unnest("m")
     with tempfile.TemporaryDirectory() as tmp:
         for layout, frame in (("struct", out), ("flat", flat)):

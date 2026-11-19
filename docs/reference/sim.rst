@@ -1,7 +1,7 @@
-``rheon.sim``
-=====================
+``rheon.polars.sim``
+====================
 
-.. automodule:: rheon.sim
+.. automodule:: rheon.polars.sim
    :no-members:
 
 Simulation

@@ -35,7 +35,7 @@ import time
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
 ROWS = 100_000
 K = 20
@@ -96,7 +96,7 @@ def run_bank(spec, df):
     """A grid suffixes the output fields, so the first `pred_y*` is the one
     to read: with one setting it is the fit, with a grid it is the grid's
     first point, and either way the timing is the whole bank's."""
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     t0 = time.perf_counter()
     out = bank.fit_predict(df).unnest("m")
     dt = time.perf_counter() - t0
@@ -150,13 +150,13 @@ def accuracy():
         for rate, hl in itertools.product(
             [0.001, 0.003, 0.01, 0.03], [5e2, 2e3, 2e4, float("inf")]
         ):
-            spec = po.spec.sgd("m", half_life=hl, learning_rate=rate, standardize=True, **common)
+            spec = rp.spec.sgd("m", half_life=hl, learning_rate=rate, standardize=True, **common)
             pred, dt, _ = run_bank(spec, df)
             runs.setdefault("po.spec.sgd", []).append(
                 (r2(pred, y, ok), f"learning_rate={rate}, half_life={hl:g}", dt)
             )
         for hl in [50.0, 100.0, 200.0, 500.0, 2e3, 2e4, float("inf")]:
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "m", half_life=hl, ridge=1e-6, max_rows_between_solves=1, **common
             )
             pred, dt, _ = run_bank(spec, df)
@@ -215,10 +215,10 @@ def short():
         rows.append((f"SGDRegressor per group, {lr}, eta0={eta}", pred, dt))
     common = dict(targets=["y"], features=feats, group="g", half_life=float("inf"), min_weight=25.0)
     for rate in (0.01, 0.03):
-        spec = po.spec.sgd("m", learning_rate=rate, standardize=True, **common)
+        spec = rp.spec.sgd("m", learning_rate=rate, standardize=True, **common)
         pred, dt, _ = run_bank(spec, df)
         rows.append((f"po.spec.sgd, learning_rate={rate}", pred, dt))
-    spec = po.spec.ewridge("m", ridge=1e-6, max_rows_between_solves=1, **common)
+    spec = rp.spec.ewridge("m", ridge=1e-6, max_rows_between_solves=1, **common)
     pred, dt, _ = run_bank(spec, df)
     rows.append(("po.spec.ewridge, refit every row", pred, dt))
 
@@ -272,20 +272,20 @@ def wide():
         for name, spec in (
             (
                 "po.spec.sgd, standardize=False",
-                po.spec.sgd("m", learning_rate=eta, standardize=False, **common),
+                rp.spec.sgd("m", learning_rate=eta, standardize=False, **common),
             ),
             (
                 "po.spec.sgd, standardize=True",
-                po.spec.sgd("m", learning_rate=eta, standardize=True, **common),
+                rp.spec.sgd("m", learning_rate=eta, standardize=True, **common),
             ),
-            ("po.spec.ewridge, solve every 1000 rows", po.spec.ewridge("m", **ew, **common)),
+            ("po.spec.ewridge, solve every 1000 rows", rp.spec.ewridge("m", **ew, **common)),
             (
                 "po.spec.ewridge, gram_block_rows=256",
-                po.spec.ewridge("m", gram_block_rows=256, **ew, **common),
+                rp.spec.ewridge("m", gram_block_rows=256, **ew, **common),
             ),
             (
                 "po.spec.ewridge, gram_block_rows=1024",
-                po.spec.ewridge("m", gram_block_rows=1024, **ew, **common),
+                rp.spec.ewridge("m", gram_block_rows=1024, **ew, **common),
             ),
             # The co-moment update alone: a `min_weight` above the row count
             # runs no solve. Until the first solve the explicit cadence brings
@@ -293,10 +293,10 @@ def wide():
             # solves too, each time the weight grows by ln 2 / 50, so the rows
             # above include those solves: at k = 10,000 they are most of the
             # time.
-            ("po.spec.ewridge, no solve", po.spec.ewridge("m", **ew, **no_solve)),
+            ("po.spec.ewridge, no solve", rp.spec.ewridge("m", **ew, **no_solve)),
             (
                 "po.spec.ewridge, no solve, block=1024",
-                po.spec.ewridge("m", gram_block_rows=1024, **ew, **no_solve),
+                rp.spec.ewridge("m", gram_block_rows=1024, **ew, **no_solve),
             ),
         ):
             pred, dt, bank = run_bank(spec, df)
@@ -334,7 +334,7 @@ def grid():
         return time.perf_counter() - t0
 
     def bank_grid(ridges):
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=feats,

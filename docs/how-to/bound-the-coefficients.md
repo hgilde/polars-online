@@ -94,7 +94,7 @@ This code builds its own data:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # y = 0.9·a + 0.6·b plus noise: weights that sum to 1.5, outside a sum of 1.
 rng = np.random.default_rng(12)

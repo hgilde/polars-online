@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common as C
 import polars as pl
 
-import rheon as po
+from rheon import polars as rp
 
 df = C.load_flights()
 print(C.load_line())
@@ -31,8 +31,8 @@ for g in ("origin", "dest", "tailnum", "flight_id"):
         t0 = time.perf_counter()
         src = s.lazy() if lazy else s
         o = src.online.with_windows(
-            S=po.ewm_sum("y", half_life=43200.0, closed="left"),
-            W=po.ewm_sum("one", half_life=43200.0, closed="left"),
+            S=rp.ewm_sum("y", half_life=43200.0, closed="left"),
+            W=rp.ewm_sum("one", half_life=43200.0, closed="left"),
             clock="c",
             gap_cap=1e12,
             group=g,

@@ -61,7 +61,7 @@ own data:
 ```python
 import numpy as np
 import polars as pl
-import rheon as po
+from rheon import polars as po
 
 # 10 features, of which only x0, x1 and x2 carry weight in y; y10 is ten times y.
 rng = np.random.default_rng(3)
@@ -220,7 +220,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import polars as pl
 
-import rheon as po
+from rheon import polars as po
 
 # 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
 # two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is

@@ -16,7 +16,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -79,7 +79,7 @@ def frame(
 def spec(name: str = "m", targets=("y0", "y1"), features=("x0", "x1", "x2"), **kw) -> dict:
     d: dict = dict(targets=list(targets), features=list(features), half_life=60.0)
     d.update(kw)
-    return po.spec.marginal(name, **d)
+    return rp.spec.marginal(name, **d)
 
 
 def oracle(
@@ -174,7 +174,7 @@ class TestArithmetic:
             n=500, null_feature_every=23, null_target_every=7, weights=True, clock=True, seed=1
         )
         s = spec(weight="w", clock="t", gap_cap=10.0, half_life=40.0, min_weight=5.0)
-        bank = po.ModelBank([s])
+        bank = rp.ModelBank([s])
         out = bank.fit_predict(df)
         want, weight_sum = oracle(df, s)
         got = bank.marginal("m")
@@ -197,15 +197,15 @@ class TestArithmetic:
         common = dict(weight="w", clock="t", gap_cap=10.0, half_life=40.0, min_weight=5.0)
         # `ew_cov` reports before each row; the pair is read after the last
         # row, so it is compared with `ew_cov`'s last-row value over one row more.
-        bank = po.ModelBank([spec(**common)])
+        bank = rp.ModelBank([spec(**common)])
         bank.fit_predict(df.head(-1))
         got = bank.marginal("m")
         for f in ("x0", "x1", "x2"):
             for t in ("y0", "y1"):
-                cov = po.spec.ew_cov(
+                cov = rp.spec.ew_cov(
                     "c", features=[f, t], stats=["mean", "var", "cov", "corr"], bias=True, **common
                 )
-                last = po.ModelBank([cov]).fit_predict(df)["c"].to_list()[-1]
+                last = rp.ModelBank([cov]).fit_predict(df)["c"].to_list()[-1]
                 pair = got.filter((pl.col("feature") == f) & (pl.col("target") == t)).row(
                     0, named=True
                 )
@@ -219,7 +219,7 @@ class TestArithmetic:
 
     def test_kish_size_of_unit_weights_tends_to_the_closed_form(self):
         df = frame(n=3000, seed=3)
-        bank = po.ModelBank([spec(half_life=20.0)])
+        bank = rp.ModelBank([spec(half_life=20.0)])
         bank.fit_predict(df)
         lam = 0.5 ** (1.0 / 20.0)
         got = bank.marginal("m")
@@ -233,7 +233,7 @@ class TestArithmetic:
         y1 = [None] * 40
         y1[10], y1[20], y1[30] = 1.0, 2.0, 3.0
         df = frame(n=40, seed=4).with_columns(y1=pl.Series(y1))
-        bank = po.ModelBank([spec(half_life=float("inf"), min_weight=5.0)])
+        bank = rp.ModelBank([spec(half_life=float("inf"), min_weight=5.0)])
         bank.fit_predict(df)
         got = bank.marginal("m")
         y0 = got.filter(pl.col("target") == "y0")
@@ -243,14 +243,14 @@ class TestArithmetic:
         assert y1_["mean_y"].to_list() == [2.0] * 3
         assert y1_.select("corr", "beta", "t_stat").null_count().sum_horizontal().item() == 9
         # A per-target list applies per target.
-        bank = po.ModelBank([spec(half_life=float("inf"), min_weight=[5.0, 3.0])])
+        bank = rp.ModelBank([spec(half_life=float("inf"), min_weight=[5.0, 3.0])])
         bank.fit_predict(df)
         y1_ = bank.marginal("m").filter(pl.col("target") == "y1")
         assert y1_["corr"].null_count() == 0
 
     def test_a_constant_feature_has_null_corr_and_beta_and_a_two_row_target_no_t(self):
         df = frame(n=50, seed=5).with_columns(x2=pl.lit(1.0))
-        bank = po.ModelBank([spec(half_life=float("inf"))])
+        bank = rp.ModelBank([spec(half_life=float("inf"))])
         bank.fit_predict(df)
         got = bank.marginal("m").filter(pl.col("feature") == "x2")
         assert got["var_x"].to_list() == [0.0, 0.0]
@@ -259,13 +259,13 @@ class TestArithmetic:
         # Two rows: n_kish = 2, so the t-statistic is undefined, and the
         # correlation is +-1 by construction -- which is why min_weight
         # defaults to 3.
-        bank = po.ModelBank([spec(half_life=float("inf"), min_weight=2.0)])
+        bank = rp.ModelBank([spec(half_life=float("inf"), min_weight=2.0)])
         bank.fit_predict(df.head(2))
         two = bank.marginal("m").filter(pl.col("feature") == "x0")
         assert [abs(c) for c in two["corr"].to_list()] == pytest.approx([1.0, 1.0])
         assert two["t_stat"].null_count() == 2
         for rows, nulls in ((2, 2), (3, 0)):
-            bank = po.ModelBank([spec(half_life=float("inf"))])
+            bank = rp.ModelBank([spec(half_life=float("inf"))])
             bank.fit_predict(df.head(rows))
             x0 = bank.marginal("m").filter(pl.col("feature") == "x0")
             assert x0["corr"].null_count() == nulls, rows
@@ -312,8 +312,8 @@ class TestMinSettledFrac:
         # `T` is the half-life and the fraction exactly 0.5 (the gate
         # withholds strictly below it, as the row gate does).
         for rows, withheld in ((10, True), (50, True), (51, False), (200, False)):
-            gated = po.ModelBank([spec(**self.kw(min_settled_frac=0.5))])
-            plain = po.ModelBank([spec(**self.kw())])
+            gated = rp.ModelBank([spec(**self.kw(min_settled_frac=0.5))])
+            plain = rp.ModelBank([spec(**self.kw())])
             gated.fit_predict(df.head(rows))
             plain.fit_predict(df.head(rows))
             got, want = gated.marginal("m"), plain.marginal("m")
@@ -341,8 +341,8 @@ class TestMinSettledFrac:
         # "b" after 80 (79, 0.67); a lone "c" row closes "b".
         df = frame(n=111, seed=8).with_columns(g=pl.Series(["a"] * 30 + ["b"] * 80 + ["c"]))
         kw = self.kw(group="g", group_close="monotone")
-        gated = po.ModelBank([spec(**kw, min_settled_frac=0.5)])
-        plain = po.ModelBank([spec(**kw)])
+        gated = rp.ModelBank([spec(**kw, min_settled_frac=0.5)])
+        plain = rp.ModelBank([spec(**kw)])
         gated.fit_predict(df)
         plain.fit_predict(df)
         got, want = gated.closed_groups(), plain.closed_groups()
@@ -363,7 +363,7 @@ class TestMinSettledFrac:
         df = frame(n=60, seed=9)
         lam = 0.5 ** (1 / 50)
         for rows, withheld in ((50, True), (52, False)):
-            bank = po.ModelBank(
+            bank = rp.ModelBank(
                 [spec(**{**self.kw(min_settled_frac=0.5), "half_life": None, "lam": lam})]
             )
             bank.fit_predict(df.head(rows))
@@ -375,7 +375,7 @@ class TestPlumbing:
     def test_every_surface_runs_it(self, tmp_path, rheon_cli):
         df = frame(n=500, null_target_every=7, weights=True, clock=True, seed=10)
         s = spec(weight="w", clock="t", gap_cap=10.0, half_life=40.0)
-        ref = po.ModelBank([s])
+        ref = rp.ModelBank([s])
         one = ref.fit_predict(df).select("m").unnest("m")
         pairs = ref.marginal("m")
         # Lazy plan.
@@ -385,7 +385,7 @@ class TestPlumbing:
         src, state = tmp_path / "in.parquet", tmp_path / "s.state"
         df.write_parquet(src)
         ref.save(state)
-        assert po.ModelBank.load(state).marginal("m").equals(pairs, null_equal=True)
+        assert rp.ModelBank.load(state).marginal("m").equals(pairs, null_equal=True)
         # The CLI, from TOML.
         cli_dst, cli_state = tmp_path / "cli.parquet", tmp_path / "cli.state"
         cfg = tmp_path / "bank.toml"
@@ -412,24 +412,24 @@ class TestPlumbing:
         )
         subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
         assert pl.read_parquet(cli_dst).select("m").unnest("m").equals(one, null_equal=True)
-        assert po.ModelBank.load(cli_state).marginal("m").equals(pairs, null_equal=True)
+        assert rp.ModelBank.load(cli_state).marginal("m").equals(pairs, null_equal=True)
 
     def test_the_struct_holds_n_eff_alone(self):
         s = spec()
-        assert po.spec.output_fields(s) == ["weight_sum"]
-        idx = po.spec.output_index(s)
+        assert rp.spec.output_fields(s) == ["weight_sum"]
+        idx = rp.spec.output_index(s)
         assert idx["kind"].to_list() == ["weight_sum"] and idx["dtype"].to_list() == ["f64"]
-        assert po.spec.coef_fields(s).height == 0
-        out = po.ModelBank([s]).fit_predict(frame(n=20))
+        assert rp.spec.coef_fields(s).height == 0
+        out = rp.ModelBank([s]).fit_predict(frame(n=20))
         assert out.schema["m"] == pl.Struct({"weight_sum": pl.Float64})
 
     def test_chunk_invariance_to_the_bit(self):
         df = frame(n=700, null_feature_every=23, null_target_every=7, weights=True, clock=True)
         s = spec(weight="w", clock="t", gap_cap=10.0)
-        ref = po.ModelBank([s])
+        ref = rp.ModelBank([s])
         one = ref.fit_predict(df).select("m").unnest("m")
         for size in (1, 31, 250):
-            bank = po.ModelBank([s])
+            bank = rp.ModelBank([s])
             parts = [bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)]
             many = pl.concat(parts)
             assert many.select("m").unnest("m").equals(one, null_equal=True)
@@ -438,24 +438,24 @@ class TestPlumbing:
     def test_save_load_continues_and_reports_the_same_pairs(self, tmp_path):
         df = frame(n=600, null_target_every=7, weights=True, clock=True)
         s = spec(weight="w", clock="t", gap_cap=10.0)
-        a = po.ModelBank([s])
+        a = rp.ModelBank([s])
         a.fit_predict(df.slice(0, 300))
         path = tmp_path / "m.state"
         a.save(path)
-        b = po.ModelBank.load(path, specs=[s])
+        b = rp.ModelBank.load(path, specs=[s])
         assert b.marginal("m").equals(a.marginal("m"), null_equal=True)
         rest = df.slice(300, 300)
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
         assert b.marginal("m").equals(a.marginal("m"), null_equal=True)
         # A file written on any OS loads here: the pairs travel in the state.
-        c = po.ModelBank.load_bytes(a.save_bytes())
+        c = rp.ModelBank.load_bytes(a.save_bytes())
         assert c.marginal("m").equals(a.marginal("m"), null_equal=True)
 
     def test_groups_and_the_halflife_grid(self):
         df = frame(n=600, groups=["q", "p"], seed=6)
         s = spec(group="g", half_life=[20.0, 200.0], features=["x0", "x1"])
-        assert po.spec.output_fields(s) == ["weight_sum@h20", "weight_sum@h200"]
-        bank = po.ModelBank([s])
+        assert rp.spec.output_fields(s) == ["weight_sum@h20", "weight_sum@h200"]
+        bank = rp.ModelBank([s])
         bank.fit_predict(df)
         got = bank.marginal("m")
         assert got.height == 2 * 2 * 2 * 2
@@ -465,7 +465,7 @@ class TestPlumbing:
         assert got["feature"].to_list() == ["x0", "x1"] * 8, "features inner, in spec order"
         # Each group's pairs are what a bank over that group alone reports.
         for g in ("p", "q"):
-            solo = po.ModelBank([s])
+            solo = rp.ModelBank([s])
             solo.fit_predict(df.filter(pl.col("g") == g))
             assert bank.marginal("m", group=g).equals(solo.marginal("m"), null_equal=True)
         assert bank.marginal("m", group="never").height == 0
@@ -477,7 +477,7 @@ class TestPlumbing:
 
     def test_zero_weight_rows_learn_nothing_and_keep_the_state_finite(self):
         df = frame(n=30, seed=7).with_columns(w=pl.lit(0.0))
-        bank = po.ModelBank([spec(weight="w")])
+        bank = rp.ModelBank([spec(weight="w")])
         out = bank.fit_predict(df)
         assert out["m"].struct.field("weight_sum").to_list() == [0.0] * 30
         got = bank.marginal("m")
@@ -489,15 +489,15 @@ class TestPlumbing:
         )
         # A zero-weight first row, then real rows: the zero row left no trace.
         w = [0.0] + [1.0] * 29
-        with_zero = po.ModelBank([spec(weight="w")])
+        with_zero = rp.ModelBank([spec(weight="w")])
         with_zero.fit_predict(df.with_columns(w=pl.Series(w)))
-        without = po.ModelBank([spec()])
+        without = rp.ModelBank([spec()])
         without.fit_predict(df.slice(1))
         assert with_zero.marginal("m").equals(without.marginal("m"), null_equal=True)
 
     def test_predict_moves_nothing(self):
         df = frame(n=200, seed=8)
-        bank = po.ModelBank([spec()])
+        bank = rp.ModelBank([spec()])
         bank.fit_predict(df.head(100))
         before = bank.marginal("m")
         scored = bank.predict(df.tail(100))
@@ -506,7 +506,7 @@ class TestPlumbing:
 
     def test_describe_and_summary_see_the_pairs_columns(self):
         df = frame(n=100, null_target_every=7, seed=9)
-        bank = po.ModelBank([spec()])
+        bank = rp.ModelBank([spec()])
         bank.fit_predict(df)
         desc = bank.describe("m")
         assert desc["column"].to_list() == ["x0", "x1", "x2", "y0", "y1"]
@@ -534,8 +534,8 @@ class TestPlumbing:
             spec(targets=[])
         with pytest.raises(TypeError):
             spec(stats=["corr"])  # ew_cov's keyword, not this model's
-        ridge = po.spec.ewridge("r", targets=["y0"], features=["x0"], half_life=10.0)
-        bank = po.ModelBank([ridge, spec()])
+        ridge = rp.spec.ewridge("r", targets=["y0"], features=["x0"], half_life=10.0)
+        bank = rp.ModelBank([ridge, spec()])
         with pytest.raises(ValueError, match=r'spec "r": its model is "ewridge", not "marginal"'):
             bank.marginal("r")
         with pytest.raises(KeyError):
@@ -547,7 +547,7 @@ class TestPlumbing:
         df = frame(n=800, groups=["p", "q"], seed=11)
         runs = []
         for _ in range(3):
-            bank = po.ModelBank([spec(group="g")])
+            bank = rp.ModelBank([spec(group="g")])
             bank.fit_predict(df)
             runs.append(bank.marginal("m"))
         assert runs[0].equals(runs[1]) and runs[0].equals(runs[2])
@@ -561,14 +561,14 @@ def test_a_wide_pair_set_matches_ew_cov():
     common = dict(weight="w", clock="t", gap_cap=10.0, half_life=40.0, min_weight=5.0)
     feats = [f"x{j}" for j in range(12)]
     targs = [f"y{t}" for t in range(3)]
-    bank = po.ModelBank([spec(features=feats, targets=targs, **common)])
+    bank = rp.ModelBank([spec(features=feats, targets=targs, **common)])
     bank.fit_predict(df.head(-1))
     got = bank.marginal("m")
     for f, t in (("x0", "y0"), ("x7", "y2"), ("x11", "y1")):
-        cov = po.spec.ew_cov(
+        cov = rp.spec.ew_cov(
             "c", features=[f, t], stats=["mean", "var", "cov", "corr"], bias=True, **common
         )
-        last = po.ModelBank([cov]).fit_predict(df)["c"].to_list()[-1]
+        last = rp.ModelBank([cov]).fit_predict(df)["c"].to_list()[-1]
         pair = got.filter((pl.col("feature") == f) & (pl.col("target") == t)).row(0, named=True)
         assert abs(pair["corr"] - last[f"corr_{f}_{t}"]) <= ROUNDINGS, (f, t)
         assert pair["var_x"] == last[f"var_{f}"], (f, t)
@@ -586,9 +586,9 @@ class TestSharedFeatureMoments:
         """Zero-weight rows and clock gaps included: each target's mix is then
         the row's, and each target's feature means the shared ones."""
         df = frame(n=600, weights=True, clock=True, seed=5)
-        per = po.ModelBank([spec(**self.COMMON)])
+        per = rp.ModelBank([spec(**self.COMMON)])
         per.fit_predict(df)
-        shared = po.ModelBank([spec(feature_moments="shared", **self.COMMON)])
+        shared = rp.ModelBank([spec(feature_moments="shared", **self.COMMON)])
         shared.fit_predict(df)
         assert shared.marginal("m").equals(per.marginal("m"), null_equal=True)
 
@@ -598,16 +598,16 @@ class TestSharedFeatureMoments:
         the bit, for both targets; ``"per_target"`` reads ``y1``'s over its
         own rows, and so reports others there."""
         df = frame(n=600, weights=True, clock=True, null_target_every=3, seed=6)
-        shared = po.ModelBank([spec(feature_moments="shared", **self.COMMON)])
+        shared = rp.ModelBank([spec(feature_moments="shared", **self.COMMON)])
         shared.fit_predict(df.head(-1))
-        per = po.ModelBank([spec(**self.COMMON)])
+        per = rp.ModelBank([spec(**self.COMMON)])
         per.fit_predict(df.head(-1))
         got, other = shared.marginal("m"), per.marginal("m")
         for f in ("x0", "x1", "x2"):
             # `ew_cov` reports before each row; the pairs are read after the
             # last row, so it runs one row further (as the test above does).
-            cov = po.spec.ew_cov("c", features=[f], stats=["mean", "var"], bias=True, **self.COMMON)
-            last = po.ModelBank([cov]).fit_predict(df)["c"].to_list()[-1]
+            cov = rp.spec.ew_cov("c", features=[f], stats=["mean", "var"], bias=True, **self.COMMON)
+            last = rp.ModelBank([cov]).fit_predict(df)["c"].to_list()[-1]
             for t in ("y0", "y1"):
                 pick = (pl.col("feature") == f) & (pl.col("target") == t)
                 pair = got.filter(pick).row(0, named=True)
@@ -632,9 +632,9 @@ class TestSharedFeatureMoments:
         """The lagged moments, the lead/lag terms and ``n_serial`` included."""
         df = frame(n=600, weights=True, clock=True, seed=7)
         kw = dict(lags=[1, 2, 5], cross_lags=[1], serial_rule="geometric", **self.COMMON)
-        per = po.ModelBank([spec(**kw)])
+        per = rp.ModelBank([spec(**kw)])
         per.fit_predict(df)
-        shared = po.ModelBank([spec(feature_moments="shared", **kw)])
+        shared = rp.ModelBank([spec(feature_moments="shared", **kw)])
         shared.fit_predict(df)
         assert shared.marginal("m").equals(per.marginal("m"), null_equal=True)
 
@@ -702,7 +702,7 @@ class TestSharedFeatureMoments:
         present = ~absent
         tables = {}
         for fm in ("shared", "per_target"):
-            bank = po.ModelBank(
+            bank = rp.ModelBank(
                 [
                     spec(
                         targets=["y"],
@@ -739,10 +739,10 @@ class TestSharedFeatureMoments:
         the same struct and table, to the bit."""
         df = frame(n=600, weights=True, clock=True, null_target_every=3, seed=8)
         s = spec(feature_moments="shared", lags=[1, 3], serial_rule="geometric", **self.COMMON)
-        ref = po.ModelBank([s])
+        ref = rp.ModelBank([s])
         out = ref.fit_predict(df)
         for chunks in (7, 600):
-            bank = po.ModelBank([s])
+            bank = rp.ModelBank([s])
             size = -(-df.height // chunks)
             got = pl.concat(
                 [bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)]
@@ -765,7 +765,7 @@ def test_auto_shards_are_the_unsplit_numbers_at_one_thread_and_at_four():
     df = wide(n=600, p=P_AUTO)
 
     def run(shards, threads: int, chunks: int) -> tuple[pl.DataFrame, pl.DataFrame]:
-        bank = po.ModelBank(
+        bank = rp.ModelBank(
             [wide_spec("lags", shards, p=P_AUTO, shapes=AUTO_SHAPES)], threads=threads
         )
         size = -(-df.height // chunks)

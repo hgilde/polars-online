@@ -74,7 +74,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -110,8 +110,8 @@ def fit(spec: dict[str, Any], x: np.ndarray, y: np.ndarray) -> pl.DataFrame:
     with warnings.catch_warnings():
         # A ReadinessWarning about a ridge-held coefficient is the spec's,
         # and the same at every scale; it is not what is tested here.
-        warnings.simplefilter("ignore", po.ReadinessWarning)
-        return po.ModelBank([spec]).fit_predict(pl.DataFrame(cols))["m"].struct.unnest()
+        warnings.simplefilter("ignore", rp.ReadinessWarning)
+        return rp.ModelBank([spec]).fit_predict(pl.DataFrame(cols))["m"].struct.unnest()
 
 
 def floats(s: pl.Series) -> np.ndarray:
@@ -143,56 +143,56 @@ def preds(out: pl.DataFrame) -> list[str]:
 Builder = Callable[..., dict[str, Any]]
 
 Y_SCALE: dict[str, Builder] = {
-    "ewridge": lambda c, **kw: po.spec.ewridge("m", **_COMMON, **kw),
-    "ewridge_standardized": lambda c, **kw: po.spec.ewridge("m", standardize=True, **_COMMON, **kw),
-    "ewridge_window": lambda c, **kw: po.spec.ewridge("m", window_size=200.0, **_COMMON, **kw),
-    "rls": lambda c, **kw: po.spec.rls("m", **_COMMON, **kw),
+    "ewridge": lambda c, **kw: rp.spec.ewridge("m", **_COMMON, **kw),
+    "ewridge_standardized": lambda c, **kw: rp.spec.ewridge("m", standardize=True, **_COMMON, **kw),
+    "ewridge_window": lambda c, **kw: rp.spec.ewridge("m", window_size=200.0, **_COMMON, **kw),
+    "rls": lambda c, **kw: rp.spec.rls("m", **_COMMON, **kw),
     # The L1 threshold is in the target's units; the descent's `tol` is
     # relative to the target's spread, so the default is the same at every
     # scale (task 278, D3: it was in the target's units, and mapped here).
-    "lasso": lambda c, **kw: po.spec.lasso(
+    "lasso": lambda c, **kw: rp.spec.lasso(
         "m", penalties=[0.1 * c, 0.01 * c, 0.0], **_COMMON, **kw
     ),
-    "kalman": lambda c, **kw: po.spec.kalman("m", coef_half_life=200.0, **_COMMON, **kw),
-    "kalman_obs_var": lambda c, **kw: po.spec.kalman(
+    "kalman": lambda c, **kw: rp.spec.kalman("m", coef_half_life=200.0, **_COMMON, **kw),
+    "kalman_obs_var": lambda c, **kw: rp.spec.kalman(
         "m", coef_half_life=200.0, obs_var=0.25 * c * c, **_COMMON, **kw
     ),
-    "kalman_raw": lambda c, **kw: po.spec.kalman(
+    "kalman_raw": lambda c, **kw: rp.spec.kalman(
         "m", coef_half_life=200.0, standardize=False, **_COMMON, **kw
     ),
-    "quantile_median": lambda c, **kw: po.spec.quantile("m", quantile=0.5, **_COMMON, **kw),
-    "quantile_tail_standardized": lambda c, **kw: po.spec.quantile(
+    "quantile_median": lambda c, **kw: rp.spec.quantile("m", quantile=0.5, **_COMMON, **kw),
+    "quantile_tail_standardized": lambda c, **kw: rp.spec.quantile(
         "m", quantile=0.9, standardize=True, **_COMMON, **kw
     ),
     # The clip is in units of the target's spread, so the default is the
     # same at every scale (task 278, D1).
-    "sgd_squared": lambda c, **kw: po.spec.sgd("m", loss="squared", **_COMMON, **kw),
-    "sgd_inv_scaling": lambda c, **kw: po.spec.sgd(
+    "sgd_squared": lambda c, **kw: rp.spec.sgd("m", loss="squared", **_COMMON, **kw),
+    "sgd_inv_scaling": lambda c, **kw: rp.spec.sgd(
         "m", loss="squared", schedule="inv_scaling", learning_rate=0.05, **_COMMON, **kw
     ),
     # AdaGrad's step is the rate in the coefficient's units; its epsilon is
     # in units of the target's spread (task 278, D2).
-    "sgd_adagrad": lambda c, **kw: po.spec.sgd(
+    "sgd_adagrad": lambda c, **kw: rp.spec.sgd(
         "m", loss="squared", schedule="adagrad", learning_rate=0.1 * c, **_COMMON, **kw
     ),
     # A sign-valued loss's gradient has no target units, its step does: the
     # rate is the target over the feature squared.
-    "sgd_quantile": lambda c, **kw: po.spec.sgd(
+    "sgd_quantile": lambda c, **kw: rp.spec.sgd(
         "m", loss="quantile", quantile=0.7, learning_rate=0.01 * c, **_COMMON, **kw
     ),
-    "sgd_epsilon_insensitive": lambda c, **kw: po.spec.sgd(
+    "sgd_epsilon_insensitive": lambda c, **kw: rp.spec.sgd(
         "m", loss="epsilon_insensitive", learning_rate=0.01 * c, **_COMMON, **kw
     ),
-    "pa": lambda c, **kw: po.spec.pa("m", mode="pa", **_COMMON, **kw),
-    "pa1": lambda c, **kw: po.spec.pa("m", mode="pa1", c=1.0 * c, **_COMMON, **kw),
-    "pa2": lambda c, **kw: po.spec.pa("m", mode="pa2", **_COMMON, **kw),
-    "ftrl": lambda c, **kw: po.spec.ftrl(
+    "pa": lambda c, **kw: rp.spec.pa("m", mode="pa", **_COMMON, **kw),
+    "pa1": lambda c, **kw: rp.spec.pa("m", mode="pa1", c=1.0 * c, **_COMMON, **kw),
+    "pa2": lambda c, **kw: rp.spec.pa("m", mode="pa2", **_COMMON, **kw),
+    "ftrl": lambda c, **kw: rp.spec.ftrl(
         "m", loss="squared", alpha=0.1 * c, beta=1.0 * c, **_COMMON, **kw
     ),
-    "holt": lambda c, **kw: po.spec.holt("m", targets=["y"], half_life=300.0, **kw),
+    "holt": lambda c, **kw: rp.spec.holt("m", targets=["y"], half_life=300.0, **kw),
     # With the refit of their first rows on (task 277).
-    "huber": lambda c, **kw: po.spec.huber("m", **_COMMON, **kw),
-    "sgd_huber": lambda c, **kw: po.spec.sgd("m", loss="huber", **_COMMON, **kw),
+    "huber": lambda c, **kw: rp.spec.huber("m", **_COMMON, **kw),
+    "sgd_huber": lambda c, **kw: rp.spec.sgd("m", loss="huber", **_COMMON, **kw),
 }
 
 #: Every diagnostic and gate a regression takes, switched on together, and
@@ -296,7 +296,7 @@ class TestPowerOfTwoTargetScale:
         x, y = stream(0, N_FULL)
 
         def run(c: float) -> tuple[pl.DataFrame, int]:
-            bank = po.ModelBank([Y_SCALE["lasso"](c, max_iter=2)])
+            bank = rp.ModelBank([Y_SCALE["lasso"](c, max_iter=2)])
             cols: dict[str, Any] = {f: x[:, i] for i, f in enumerate(FEATURES)}
             out = bank.fit_predict(pl.DataFrame({**cols, "y": y * c}))["m"].struct.unnest()
             return out, int(bank.solve_failures()["solve_failures"].sum())
@@ -539,25 +539,25 @@ class TestRegressionShift:
         prior = [[0.0, *SHIFT[1:]]]
         base_spec, shifted_spec = {
             "ewridge": (
-                po.spec.ewridge("m", **_COMMON),
-                po.spec.ewridge("m", coef_prior=prior, **_COMMON),
+                rp.spec.ewridge("m", **_COMMON),
+                rp.spec.ewridge("m", coef_prior=prior, **_COMMON),
             ),
             "ewridge_standardized": (
-                po.spec.ewridge("m", standardize=True, **_COMMON),
-                po.spec.ewridge("m", standardize=True, coef_prior=prior, **_COMMON),
+                rp.spec.ewridge("m", standardize=True, **_COMMON),
+                rp.spec.ewridge("m", standardize=True, coef_prior=prior, **_COMMON),
             ),
             # `rls`'s prior penalizes the intercept too, so it shifts as well.
             "rls": (
-                po.spec.rls("m", **_COMMON),
-                po.spec.rls("m", coef_prior=[list(SHIFT)], **_COMMON),
+                rp.spec.rls("m", **_COMMON),
+                rp.spec.rls("m", coef_prior=[list(SHIFT)], **_COMMON),
             ),
             "quantile_median": (
-                po.spec.quantile("m", quantile=0.5, ridge=0.0, **_COMMON),
-                po.spec.quantile("m", quantile=0.5, ridge=0.0, **_COMMON),
+                rp.spec.quantile("m", quantile=0.5, ridge=0.0, **_COMMON),
+                rp.spec.quantile("m", quantile=0.5, ridge=0.0, **_COMMON),
             ),
             "quantile_tail": (
-                po.spec.quantile("m", quantile=0.9, ridge=0.0, **_COMMON),
-                po.spec.quantile("m", quantile=0.9, ridge=0.0, **_COMMON),
+                rp.spec.quantile("m", quantile=0.9, ridge=0.0, **_COMMON),
+                rp.spec.quantile("m", quantile=0.9, ridge=0.0, **_COMMON),
             ),
         }[model]
         p0 = floats(fit(base_spec, x, y)["pred_y"])
@@ -567,7 +567,7 @@ class TestRegressionShift:
 
     def test_the_lasso_moves_by_the_shift_while_no_sign_changes_and_not_after(self):
         x, y = stream(2, N_FULL)
-        spec = po.spec.lasso("m", penalties=[0.1], tol=1e-14, max_iter=10_000, **_COMMON)
+        spec = rp.spec.lasso("m", penalties=[0.1], tol=1e-14, max_iter=10_000, **_COMMON)
         z = np.column_stack([np.ones(len(y)), x])
         base = coefs(fit(spec, x, y))
         moved = coefs(fit(spec, x, y + z @ SHIFT))
@@ -597,7 +597,7 @@ class TestRegressionShift:
         x, y = stream(3, 600)
         z = np.column_stack([np.ones(len(y)), x])
         noise, p0 = 0.25, 1.0
-        spec = po.spec.kalman("m", q=[0.0] * 4, obs_var=noise, p0=p0, standardize=False, **_COMMON)
+        spec = rp.spec.kalman("m", q=[0.0] * 4, obs_var=noise, p0=p0, standardize=False, **_COMMON)
         d = coefs(fit(spec, x, y + z @ SHIFT)) - coefs(fit(spec, x, y)) - SHIFT
         info = np.eye(4) / (p0 * noise)
         want = np.empty_like(d)
@@ -620,9 +620,9 @@ class TestRegressionShift:
         z = np.column_stack([np.ones(len(y)), x])
         lr = 0.002
         spec = (
-            po.spec.pa("m", mode="pa", eps=0.0, standardize=False, **_COMMON)
+            rp.spec.pa("m", mode="pa", eps=0.0, standardize=False, **_COMMON)
             if model == "pa"
-            else po.spec.sgd(
+            else rp.spec.sgd(
                 "m",
                 loss="squared",
                 learning_rate=lr,
@@ -658,11 +658,11 @@ FEATURE_POWERS = np.array([-20, 10, 20])
 #: and unstandardized ones with nothing in the features' units (ridge 0).
 X_SCALE: dict[str, Builder] = {
     "ewridge_standardized": Y_SCALE["ewridge_standardized"],
-    "ewridge_ridge_0": lambda c, **kw: po.spec.ewridge("m", ridge=0.0, **_COMMON, **kw),
+    "ewridge_ridge_0": lambda c, **kw: rp.spec.ewridge("m", ridge=0.0, **_COMMON, **kw),
     "lasso": Y_SCALE["lasso"],
     "kalman": Y_SCALE["kalman"],
     "kalman_obs_var": Y_SCALE["kalman_obs_var"],
-    "quantile_ridge_0": lambda c, **kw: po.spec.quantile(
+    "quantile_ridge_0": lambda c, **kw: rp.spec.quantile(
         "m", quantile=0.5, ridge=0.0, **_COMMON, **kw
     ),
     "quantile_tail_standardized": Y_SCALE["quantile_tail_standardized"],
@@ -681,12 +681,12 @@ X_SCALE: dict[str, Builder] = {
 #: a`, `l1 * a`, `l2 * a^2`) and the raw Kalman prior and process noise,
 #: in one over the features' squared units.
 UNIFORM_X_SCALE: dict[str, Callable[[float], dict[str, Any]]] = {
-    "ewridge": lambda a: po.spec.ewridge("m", ridge=1e-6 * a * a, **_COMMON),
-    "quantile": lambda a: po.spec.quantile("m", quantile=0.5, ridge=1e-6 * a * a, **_COMMON),
-    "rls_no_intercept": lambda a: po.spec.rls(
+    "ewridge": lambda a: rp.spec.ewridge("m", ridge=1e-6 * a * a, **_COMMON),
+    "quantile": lambda a: rp.spec.quantile("m", quantile=0.5, ridge=1e-6 * a * a, **_COMMON),
+    "rls_no_intercept": lambda a: rp.spec.rls(
         "m", delta=1.0 * a * a, fit_intercept=False, **_COMMON
     ),
-    "ftrl_no_intercept": lambda a: po.spec.ftrl(
+    "ftrl_no_intercept": lambda a: rp.spec.ftrl(
         "m",
         loss="squared",
         alpha=0.1 / a,
@@ -696,7 +696,7 @@ UNIFORM_X_SCALE: dict[str, Callable[[float], dict[str, Any]]] = {
         fit_intercept=False,
         **_COMMON,
     ),
-    "kalman_raw_no_intercept": lambda a: po.spec.kalman(
+    "kalman_raw_no_intercept": lambda a: rp.spec.kalman(
         "m",
         q=[1e-6 / (a * a)] * K,
         p0=1.0 / (a * a),
@@ -829,8 +829,8 @@ class TestTheGradientsConstantsAreRelative:
     def test_a_clip_that_binds_scales_to_the_bit(self):
         x, y = stream(0, N_FULL)
         for loss in ("squared", "huber"):
-            tight = po.spec.sgd("m", loss=loss, clip_gradient=0.5, **_COMMON)
-            free = po.spec.sgd("m", loss=loss, clip_gradient=float("inf"), **_COMMON)
+            tight = rp.spec.sgd("m", loss=loss, clip_gradient=0.5, **_COMMON)
+            free = rp.spec.sgd("m", loss=loss, clip_gradient=float("inf"), **_COMMON)
             base = fit(tight, x, y)
             moved = np.nanmax(np.abs(floats(base["pred_y"]) - floats(fit(free, x, y)["pred_y"])))
             print(f"{loss}: the clip at 0.5 of the target's spread moves a prediction {moved:.3g}")
@@ -843,7 +843,7 @@ class TestTheGradientsConstantsAreRelative:
         x, y = stream(0, N_FULL)
 
         def spec(c: float) -> dict[str, Any]:
-            return po.spec.sgd(
+            return rp.spec.sgd(
                 "m", loss="squared", schedule="adagrad", learning_rate=0.1 * c, **_COMMON
             )
 

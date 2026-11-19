@@ -6,7 +6,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -14,11 +14,11 @@ TIER = "essential"
 def _spec(**kw):
     d = dict(targets=["y0"], clock="t", gap_cap=100.0, half_life=5.0, min_weight=3.0)
     d.update(kw)
-    return po.spec.holt("m", **d)
+    return rp.spec.holt("m", **d)
 
 
 def _run(df, **kw):
-    return po.ModelBank([_spec(coef_every=0, **kw)]).fit_predict(df)
+    return rp.ModelBank([_spec(coef_every=0, **kw)]).fit_predict(df)
 
 
 def _trending(n=500, slope=2.0, noise=0.5, step=1.0, seed=0):
@@ -30,7 +30,7 @@ def _trending(n=500, slope=2.0, noise=0.5, step=1.0, seed=0):
 def test_needs_no_features():
     spec = _spec()
     assert spec["features"] == []
-    assert po.spec.output_fields(spec) == [
+    assert rp.spec.output_fields(spec) == [
         "pred_y0",
         "resid_y0",
         "weight_sum",
@@ -72,8 +72,8 @@ def test_lam_one_is_an_infinite_halflife():
     df = _trending(n=200)
     kw = dict(targets=["y0"], clock="t", gap_cap=100.0, min_weight=3.0)
     kw["trend_half_life"] = float("inf")
-    by_lam = po.ModelBank([po.spec.holt("m", lam=1.0, **kw)]).fit_predict(df)
-    by_inf = po.ModelBank([po.spec.holt("m", half_life=float("inf"), **kw)]).fit_predict(df)
+    by_lam = rp.ModelBank([rp.spec.holt("m", lam=1.0, **kw)]).fit_predict(df)
+    by_inf = rp.ModelBank([rp.spec.holt("m", half_life=float("inf"), **kw)]).fit_predict(df)
     assert by_lam.equals(by_inf, null_equal=True)
 
 
@@ -86,10 +86,10 @@ def test_the_level_halflife_has_one_name():
     S27)."""
     kw = dict(targets=["y0"], clock="t", gap_cap=100.0, min_weight=3.0)
     with pytest.raises(TypeError, match="level_half_life was renamed half_life"):
-        po.spec.holt("m", level_half_life=float("inf"), **kw)
-    spec = po.spec.holt("m", half_life=float("inf"), **kw)
+        rp.spec.holt("m", level_half_life=float("inf"), **kw)
+    spec = rp.spec.holt("m", half_life=float("inf"), **kw)
     assert "level_half_life" not in spec["model"]
-    out = po.ModelBank([spec]).fit_predict(_trending(n=200))
+    out = rp.ModelBank([spec]).fit_predict(_trending(n=200))
     assert out["m"].struct.field("weight_sum")[-1] == 199.0, "no forgetting"
 
 
@@ -118,9 +118,9 @@ def test_is_a_baseline_a_regression_should_beat():
     df = pl.DataFrame({"t": t, "x0": x, "y0": 0.05 * t + 3.0 * x + 0.1 * rng.standard_normal(n)})
 
     holt_out = _run(df, half_life=20.0)
-    ridge_out = po.ModelBank(
+    ridge_out = rp.ModelBank(
         [
-            po.spec.ewridge(
+            rp.spec.ewridge(
                 "m",
                 targets=["y0"],
                 features=["x0"],
@@ -145,8 +145,8 @@ def test_is_a_baseline_a_regression_should_beat():
 def test_chunk_invariance_and_save_load(tmp_path):
     df = _trending(n=300, seed=4)
     spec = _spec()
-    one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-    bank = po.ModelBank([spec])
+    one = rp.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+    bank = rp.ModelBank([spec])
     many = (
         pl.concat([bank.fit_predict(df.slice(i, 31)) for i in range(0, df.height, 31)])
         .select("m")
@@ -155,11 +155,11 @@ def test_chunk_invariance_and_save_load(tmp_path):
     keep = [c for c in one.columns if not c.startswith("coef")]
     assert one.select(keep).equals(many.select(keep), null_equal=True)
 
-    a = po.ModelBank([spec])
+    a = rp.ModelBank([spec])
     a.fit_predict(df.slice(0, 150))
     p = tmp_path / "h.state"
     a.save(p)
-    b = po.ModelBank.load(p, specs=[spec])
+    b = rp.ModelBank.load(p, specs=[spec])
     rest = df.slice(150, 150)
     assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
@@ -171,23 +171,23 @@ def test_the_spec_halflife_alone_is_enough(tmp_path):
     U6); the second name is gone (docs/PLAN.md task 196)."""
     df = _trending(n=200)
     d = dict(targets=["y0"], clock="t", gap_cap=100.0, min_weight=3.0, trend_half_life=80.0)
-    by_halflife = po.spec.holt("m", half_life=20.0, **d)
-    a = po.ModelBank([by_halflife]).fit_predict(df)
+    by_halflife = rp.spec.holt("m", half_life=20.0, **d)
+    a = rp.ModelBank([by_halflife]).fit_predict(df)
     assert a["m"].struct.field("pred_y0").drop_nulls().len() > 150
     # And the field names stay ungridded -- no `@h` suffix from a phantom grid.
-    assert [f.name for f in a.schema["m"].fields] == po.spec.output_fields(by_halflife)
+    assert [f.name for f in a.schema["m"].fields] == rp.spec.output_fields(by_halflife)
 
 
 def test_a_holt_spec_still_needs_one_of_them():
     with pytest.raises(ValueError, match="this model needs a half_life, and none is given"):
-        po.spec.holt("m", targets=["y0"], trend_half_life=100.0)
+        rp.spec.holt("m", targets=["y0"], trend_half_life=100.0)
     with pytest.raises(ValueError, match="half_life must be above 0"):
-        po.spec.holt("m", targets=["y0"], half_life=-1.0)
+        rp.spec.holt("m", targets=["y0"], half_life=-1.0)
 
 
 def test_other_models_do_not_get_the_exemption():
     with pytest.raises(ValueError, match="this model needs a half_life, and none is given"):
-        po.spec.kalman("m", targets=["y0"], features=["x0"], coef_half_life=50.0)
+        rp.spec.kalman("m", targets=["y0"], features=["x0"], coef_half_life=50.0)
 
 
 def test_bad_config_rejected():
@@ -199,7 +199,7 @@ def test_bad_config_rejected():
 
 def test_other_models_still_require_features():
     with pytest.raises(ValueError, match="features must name at least one column, but it is empty"):
-        po.spec.ewridge("m", targets=["y0"], features=[], half_life=10.0)
+        rp.spec.ewridge("m", targets=["y0"], features=[], half_life=10.0)
 
 
 @pytest.mark.parametrize("half_life", [5.0, 50.0, 1e9])
@@ -228,9 +228,9 @@ def test_the_default_trend_half_life_follows_lam_and_inf():
     df = _trending(n=600, step=1.0)
     lam = 0.98
     kw = dict(targets=["y0"], min_weight=3.0, coef_every=0)
-    by_lam = po.ModelBank([po.spec.holt("m", lam=lam, **kw)]).fit_predict(df)
-    spelled = po.ModelBank(
-        [po.spec.holt("m", lam=lam, trend_half_life=4.0 * -math.log(2) / math.log(lam), **kw)]
+    by_lam = rp.ModelBank([rp.spec.holt("m", lam=lam, **kw)]).fit_predict(df)
+    spelled = rp.ModelBank(
+        [rp.spec.holt("m", lam=lam, trend_half_life=4.0 * -math.log(2) / math.log(lam), **kw)]
     ).fit_predict(df)
     assert by_lam.equals(spelled, null_equal=True)
     inf = float("inf")

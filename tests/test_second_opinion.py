@@ -29,7 +29,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -87,7 +87,7 @@ class TestWindowAtALargeOffset:
         x[:, 1] += 0.5 * x[:, 0]
         x += offset
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "m",
             features=["x0", "x1"],
             stats=["mean", "var", "cov"],
@@ -96,7 +96,7 @@ class TestWindowAtALargeOffset:
             window_size=window,
             bias=bias,
         )
-        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         tol = 1e-12 if offset == 0.0 else 1e-6
         for i in range(100, n, 11):
             # The report on row i is the state after the rows before it, with
@@ -126,10 +126,10 @@ class TestWindowAtALargeOffset:
         u = rng.normal(0.0, 1.0, n)
         x = offset + u
         y = offset + 2.0 * u + rng.normal(0.0, 0.2, n)
-        spec = po.spec.marginal(
+        spec = rp.spec.marginal(
             "m", features=["x"], targets=["y"], half_life=half_life, window_size=window
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(pl.DataFrame({"x": x, "y": y}))
         pair = bank.marginal("m").row(0, named=True)
         # A readout is referenced at the last learned row, which is inside.
@@ -177,7 +177,7 @@ class TestWindowedFit:
             1.0 + 2.0 * x[:, 0] - x[:, 1],
             -1.0 + 0.5 * x[:, 0] + 1.5 * x[:, 1],
         ) + rng.normal(0.0, 0.1, n)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -188,7 +188,7 @@ class TestWindowedFit:
             solve_every=1e-9,  # solve on every row, so every pred is comparable
         )
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
+        pred = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
         for i in range(260, n, 9):
             # Out of sample: the fit on the rows before row i predicts row i.
             keep, w = _window((i - 1) - np.arange(i), half_life, window)
@@ -228,16 +228,16 @@ class TestTheWindowIsAllTheModelSees:
         common = {"half_life": self.HALFLIFE, "window_size": window}
         feats = ["x0", "x1"]
         if kind == "ewridge":
-            return po.spec.ewridge("m", targets=["y0"], features=feats, ridge=1e-10, **common)
+            return rp.spec.ewridge("m", targets=["y0"], features=feats, ridge=1e-10, **common)
         if kind == "lasso":
-            return po.spec.lasso("m", targets=["y0"], features=feats, penalties=[0.0], **common)
+            return rp.spec.lasso("m", targets=["y0"], features=feats, penalties=[0.0], **common)
         if kind == "marginal":
-            return po.spec.marginal("m", targets=["y0"], features=feats, **common)
+            return rp.spec.marginal("m", targets=["y0"], features=feats, **common)
         if kind == "ew_class":
-            return po.spec.ew_class(
+            return rp.spec.ew_class(
                 "m", features=feats, label="c", classes=["a", "b"], precision_prior=1e-6, **common
             )
-        return po.spec.ew_cov("m", features=feats, stats=["mean"], **common)
+        return rp.spec.ew_cov("m", features=feats, stats=["mean"], **common)
 
     @pytest.mark.parametrize("window", [None, 60.0])
     @pytest.mark.parametrize("kind", ["ewridge", "lasso", "marginal", "ew_class", "ew_cov"])
@@ -246,7 +246,7 @@ class TestTheWindowIsAllTheModelSees:
         n = len(y0)
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y0": y0, "c": labels})
         weight_sum = (
-            po.ModelBank([self._spec(kind, window)]).fit_predict(df)["m"].struct.field("weight_sum")
+            rp.ModelBank([self._spec(kind, window)]).fit_predict(df)["m"].struct.field("weight_sum")
         )
         for i in range(100, n, 13):
             # The weight_sum a row reports is the weight before it, with ages
@@ -264,12 +264,12 @@ class TestTheWindowIsAllTheModelSees:
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y0": y0, "y1": y1_sparse})
         feats, common = ["x0", "x1"], {"half_life": self.HALFLIFE, "window_size": self.WINDOW}
         if kind == "ewridge":
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "m", targets=["y0", "y1"], features=feats, ridge=1e-10, solve_every=1e-9, **common
             )
             f0, f1, tol = "pred_y0", "pred_y1", 1e-8
         else:
-            spec = po.spec.lasso(
+            spec = rp.spec.lasso(
                 "m",
                 targets=["y0", "y1"],
                 features=feats,
@@ -278,7 +278,7 @@ class TestTheWindowIsAllTheModelSees:
                 **common,
             )
             f0, f1, tol = "pred_y0", "pred_y1", 1e-6
-        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         for i in range(170, n, 7):
             keep, w = _window((i - 1) - np.arange(i), self.HALFLIFE, self.WINDOW)
             b = _wls(x[:i][keep], y0[:i][keep], w)
@@ -334,19 +334,19 @@ class TestWindowedSpread:
             **kw,
         )
         if kind == "lasso":
-            return po.spec.lasso("m", penalties=[0.01], **common)
-        return po.spec.ewridge("m", **common)
+            return rp.spec.lasso("m", penalties=[0.01], **common)
+        return rp.spec.ewridge("m", **common)
 
     @staticmethod
     def _field(out, spec, prefix):
-        name = next(n for n in po.spec.output_fields(spec) if n.startswith(prefix))
+        name = next(n for n in rp.spec.output_fields(spec) if n.startswith(prefix))
         return out["m"].struct.field(name).to_numpy().astype(float)
 
     @pytest.mark.parametrize("kind", ["ewridge", "lasso"])
     def test_sigma_is_the_spread_of_the_residuals_inside_the_window(self, kind):
         df = self._frame()
         spec = self._spec(kind)
-        out = po.ModelBank([spec]).fit_predict(df)
+        out = rp.ModelBank([spec]).fit_predict(df)
         resid = self._field(out, spec, "resid_y")
         sigma = self._field(out, spec, "sigma_y")
         z = self._field(out, spec, "zscore_y")
@@ -356,7 +356,7 @@ class TestWindowedSpread:
         free_spec = self._spec(kind, **({"min_weight": 0.0} if kind == "lasso" else {}))
         if kind == "ewridge":
             free_spec = self._spec(kind, max_error_inflation=float("inf"))
-        own = self._field(po.ModelBank([free_spec]).fit_predict(df), free_spec, "resid_y")
+        own = self._field(rp.ModelBank([free_spec]).fit_predict(df), free_spec, "resid_y")
         ok = np.isfinite(own)
         checked = 0
         for i in range(1, len(resid)):
@@ -390,15 +390,15 @@ class TestWindowedSpread:
         df = self._frame()
         spec = self._spec("ewridge")
         cols = ["pred_y", "resid_y", "sigma_y", "zscore_y", "weight_sum"]
-        whole = po.ModelBank([spec]).fit_predict(df)
-        bank = po.ModelBank([spec])
+        whole = rp.ModelBank([spec]).fit_predict(df)
+        bank = rp.ModelBank([spec])
         parts = [bank.fit_predict(df[:97]), bank.fit_predict(df[97:180])]
         path = tmp_path / "bank.bin"
         bank.save(path)
-        parts.append(po.ModelBank.load(path, specs=[spec]).fit_predict(df[180:]))
+        parts.append(rp.ModelBank.load(path, specs=[spec]).fit_predict(df[180:]))
         got = pl.concat(parts)["m"].struct.unnest().select(cols)
         assert got.equals(whole["m"].struct.unnest().select(cols), null_equal=True)
-        scorer = po.ModelBank([spec])
+        scorer = rp.ModelBank([spec])
         scorer.fit_predict(df[:250])
         scored = scorer.predict(df[250:251])["m"].struct.field("sigma_y")[0]
         assert scored == whole["m"].struct.field("sigma_y")[250]
@@ -413,7 +413,7 @@ class TestWindowedSpread:
         n = 3000
         x = rng.normal(0.0, 1.0, n)
         df = pl.DataFrame({"x0": x, "y": x + rng.normal(0.0, 0.1, n)})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0"],
@@ -424,7 +424,7 @@ class TestWindowedSpread:
             window_budget={"refuse": 1.0},
         )
         with pytest.raises(ValueError, match="window_budget"):
-            po.ModelBank([spec]).fit_predict(df)
+            rp.ModelBank([spec]).fit_predict(df)
 
 
 class TestWindowedGaussian:
@@ -456,7 +456,7 @@ class TestWindowedGaussian:
         n = 400
         x = _regime_rows(n, seed=21)
         labels = np.where(x[:, 0] + 0.5 * x[:, 1] > 0.0, "a", "b")
-        spec = po.spec.ew_class(
+        spec = rp.spec.ew_class(
             "m",
             features=["x0", "x1"],
             label="c",
@@ -469,7 +469,7 @@ class TestWindowedGaussian:
             coef_every=0,
         )
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "c": labels})
-        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         for i in range(250, n, 17):
             keep, _ = _window((i - 1) - np.arange(i), float("inf"), window)
             rows, lab = x[:i][keep], labels[:i][keep]
@@ -504,7 +504,7 @@ class TestWindowedGaussian:
 
         n = 400
         x = _regime_rows(n, seed=22)
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "m",
             features=["x0", "x1"],
             stats=["mean", "mahal"],
@@ -515,7 +515,7 @@ class TestWindowedGaussian:
             window_size=window,
             min_weight=0,
         )
-        out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]}))
+        out = rp.ModelBank([spec]).fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]}))
         out = out["m"].struct.unnest()
         for i in range(250, n, 17):
             keep, _ = _window((i - 1) - np.arange(i), float("inf"), window)
@@ -545,7 +545,7 @@ class TestMahalQuantiles:
         rng = np.random.default_rng(23)
         n = 3000
         x = rng.normal(0.0, 1.0, (n, 2))
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "m",
             features=["x0", "x1"],
             stats=stats,
@@ -555,7 +555,7 @@ class TestMahalQuantiles:
             half_life=float("inf"),
             min_weight=5,
         )
-        out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]}))
+        out = rp.ModelBank([spec]).fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]}))
         out = out["m"].struct.unnest()
         mahal = out["mahal"].drop_nulls().drop_nans().to_numpy()
         assert out["mahal_q0.5"][-1] == pytest.approx(np.quantile(mahal[:-1], 0.5), rel=0.1)
@@ -593,7 +593,7 @@ class TestSessionShrinkBlend:
         # One session, then a second that starts on the last row: the blend
         # runs as that row arrives, and the row is learned after it.
         session = np.where(np.arange(n) < n - 1, 1, 2)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -603,7 +603,7 @@ class TestSessionShrinkBlend:
             session_shrink=f,
             long_half_life=self.H_SLOW,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y, "s": session}))
         g = bank.gram("m")[0]
         # Rows before the last: blended at their ages, then aged one step at
@@ -646,16 +646,16 @@ class TestSessionShrinkBlend:
             session_gap=1.0,
             max_rows_between_solves=1,  # a solve on every row: the open's included
         )
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             session_shrink=1.0,  # the blend is the slow twin itself
             long_half_life=long_half_life,
             **kw,
         )
-        pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
+        pred = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
         # The open's own row is scored with the solve before it: the blend
         # moves no fit (the row's prediction is the no-blend stream's).
-        plain = po.ModelBank([po.spec.ewridge("m", **kw)]).fit_predict(df)
+        plain = rp.ModelBank([rp.spec.ewridge("m", **kw)]).fit_predict(df)
         assert pred[n1] == plain["m"].struct.field("pred_y")[n1]
         # The solve after it reads the blend: the slow twin's rows -- every
         # row of session 1 at 0.5 ** (age / H), scaled to today's weight --
@@ -671,7 +671,7 @@ class TestSessionShrinkBlend:
         assert pred[n1 + 1] == pytest.approx(b[0] + b[1] * x[n1 + 1], abs=1e-8)
         # E31: scoring the open's row against the bank fitted to the end of
         # session 1 gives the same number, from a blended copy.
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df[:n1])
         scored = bank.predict(df[n1 : n1 + 1])["m"].struct.field("pred_y")[0]
         assert scored == pred[n1]
@@ -703,7 +703,7 @@ class TestNoInterceptIsNotCentred:
         # C8, exact: at a zero penalty the elastic net is least squares.
         x, y = _no_intercept_rows(400, seed=41)
         for intercept in (False, True):
-            spec = po.spec.lasso(
+            spec = rp.spec.lasso(
                 "m",
                 targets=["y"],
                 features=["x0", "x1"],
@@ -715,7 +715,7 @@ class TestNoInterceptIsNotCentred:
                 fit_intercept=intercept,
             )
             df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-            pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
+            pred = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
             for i in range(100, 400, 23):
                 b = _wls(x[:i], y[:i], np.ones(i), intercept=intercept)
                 want = b[0] + x[i] @ b[1:] if intercept else x[i] @ b
@@ -728,7 +728,7 @@ class TestNoInterceptIsNotCentred:
         # and the Huber fit is least squares. At `inf` that is the definition
         # (review 2026-09-12, S27), which the builder refused, so it was 1e9.
         x, y = _no_intercept_rows(400, seed=42)
-        spec = po.spec.huber(
+        spec = rp.spec.huber(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -740,7 +740,7 @@ class TestNoInterceptIsNotCentred:
             fit_intercept=False,
         )
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
+        pred = rp.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
         for i in range(100, 400, 23):
             b = _wls(x[:i], y[:i], np.ones(i), intercept=False)
             assert pred[i] == pytest.approx(x[i] @ b, abs=1e-8), (standardize, delta, i)
@@ -759,7 +759,7 @@ class TestNoInterceptIsNotCentred:
         # rows 1.25e-2, where the build before task 206, reading its state
         # through the moments as they stood, missed by 7.3e-3.
         x, y = _no_intercept_rows(20_000, seed=43)
-        spec = po.spec.kalman(
+        spec = rp.spec.kalman(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -771,7 +771,7 @@ class TestNoInterceptIsNotCentred:
             fit_intercept=False,
         )
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         coef = np.array(out["coef"].to_list(), dtype=float)
         pred = out["pred_y"].to_numpy()
         np.testing.assert_allclose(np.sum(coef[99:-1] * x[100:], axis=1), pred[100:], rtol=1e-9)
@@ -788,7 +788,7 @@ class TestNoInterceptIsNotCentred:
         # two thousands of times apart. The library check is the statistical
         # one: the fit settles at numpy's no-intercept least squares.
         x, y = _no_intercept_rows(20_000, seed=44)
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -799,7 +799,7 @@ class TestNoInterceptIsNotCentred:
             fit_intercept=False,
         )
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         coef = np.array(out["coef"].to_list(), dtype=float)
         pred = out["pred_y"].to_numpy()
         via_coef = np.sum(coef[999:-1] * x[1000:], axis=1)
@@ -844,7 +844,7 @@ class TestAZeroWeightRowIsNotSeen:
         w = np.ones(n)
         w[k0] = 0.0
         y[k0] += jump
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x"],
@@ -860,7 +860,7 @@ class TestAZeroWeightRowIsNotSeen:
             emit_metrics=True,
         )
         df = pl.DataFrame({"x": x, "y": y, "w": w})
-        return po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest(), k0, w
+        return rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest(), k0, w
 
     @pytest.mark.parametrize("drift_action", ["flag", "reset"])
     def test_its_target_changes_nothing_after_it(self, drift_action):
@@ -939,7 +939,7 @@ class TestLabelDelayFoldsWhatWasScored:
         return level + rng.normal(0.0, 0.3, n)
 
     def _spec(self, **kw):
-        return po.spec.ewridge(
+        return rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["zero"],  # no information: the fit is the running mean
@@ -958,7 +958,7 @@ class TestLabelDelayFoldsWhatWasScored:
         y = self._rows()
         n = len(y)
         df = pl.DataFrame({"zero": np.zeros(n), "y": y})
-        out = po.ModelBank([self._spec()]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([self._spec()]).fit_predict(df)["m"].struct.unnest()
         pred = out["pred_y"].to_numpy()
         resid = out["resid_y"].to_numpy()
         sigma = out["sigma_y"].to_numpy()
@@ -982,7 +982,7 @@ class TestLabelDelayFoldsWhatWasScored:
         # noise gate withheld it (a gate withholds output only: task 278,
         # batch 17) -- the residuals of the same spec with the gate off, its
         # predictions river's too.
-        free = po.ModelBank([self._spec(max_error_inflation=float("inf"))]).fit_predict(df)
+        free = rp.ModelBank([self._spec(max_error_inflation=float("inf"))]).fit_predict(df)
         free = free["m"].struct.unnest()
         own = free["resid_y"].to_numpy()
         held = np.isfinite(own) & ~np.isfinite(resid)
@@ -1006,7 +1006,7 @@ class TestLabelDelayFoldsWhatWasScored:
         y = self._rows()
         n = len(y)
         df = pl.DataFrame({"zero": np.zeros(n), "y": y})
-        out = po.ModelBank([self._spec(emit_metrics=True)]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([self._spec(emit_metrics=True)]).fit_predict(df)["m"].struct.unnest()
         pred, r2 = out["pred_y"].to_numpy(), out["r2_y"].to_numpy()
         checked = 0
         for t in range(3 * self.DELAY, n, 7):
@@ -1025,7 +1025,7 @@ class TestLabelDelayFoldsWhatWasScored:
         y = self._rows()
         n = len(y)
         df = pl.DataFrame({"zero": np.zeros(n), "y": y})
-        out = po.ModelBank([self._spec(conformal=0.9)]).fit_predict(df)["m"].struct.unnest()
+        out = rp.ModelBank([self._spec(conformal=0.9)]).fit_predict(df)["m"].struct.unnest()
         lo, hi, cov = (out[c].to_numpy() for c in ("lo_y", "hi_y", "coverage_y"))
         inside = (lo <= y) & (y <= hi)
         checked = 0
@@ -1042,10 +1042,10 @@ class TestLabelDelayFoldsWhatWasScored:
         y = self._rows()
         n = len(y)
         df = pl.DataFrame({"zero": np.zeros(n), "y": y})
-        whole = po.ModelBank([self._spec()]).fit_predict(df)["m"].struct.field("sigma_y")
-        bank = po.ModelBank([self._spec()])
+        whole = rp.ModelBank([self._spec()]).fit_predict(df)["m"].struct.field("sigma_y")
+        bank = rp.ModelBank([self._spec()])
         first = bank.fit_predict(df[: n // 2 + 3])["m"].struct.field("sigma_y")
-        bank = po.ModelBank.load_bytes(bank.save_bytes())
+        bank = rp.ModelBank.load_bytes(bank.save_bytes())
         second = bank.fit_predict(df[n // 2 + 3 :])["m"].struct.field("sigma_y")
         assert pl.concat([first, second]).equals(whole, null_equal=True)
 
@@ -1057,7 +1057,7 @@ class TestLabelDelayFoldsWhatWasScored:
         x_col = [float(v) for v in x]
         x_col[n1] = None  # the first row of session 2 is skipped
         df = pl.DataFrame({"x": x_col, "y": y, "s": [1] * n1 + [2] * n2})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x"],
@@ -1067,8 +1067,8 @@ class TestLabelDelayFoldsWhatWasScored:
             embargo=5.0,
             min_weight=2,
         )
-        whole = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
-        fresh = po.ModelBank([spec]).fit_predict(df[n1:])["m"].struct.unnest()
+        whole = rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        fresh = rp.ModelBank([spec]).fit_predict(df[n1:])["m"].struct.unnest()
         tail = whole[n1:]
         for col in ("pred_y", "weight_sum"):
             assert tail[col].equals(fresh[col], null_equal=True), col
@@ -1113,7 +1113,7 @@ class TestPcaSignsRunAlongOneGroup:
                     )
                 )
         df = pl.concat(parts)
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "m",
             features=["x0", "x1"],
             stats=["mean"],
@@ -1123,7 +1123,7 @@ class TestPcaSignsRunAlongOneGroup:
             session="s",
             group_close="session",
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         closed = bank.closed_groups()
         assert closed.height == 10
@@ -1168,7 +1168,7 @@ class TestTheGramIsTheWindowsToo:
             1.0 + 2.0 * x[:, 0] - x[:, 1],
             -1.0 + 0.5 * x[:, 0] + 1.5 * x[:, 1],
         ) + rng.normal(0.0, 0.1, n)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -1177,7 +1177,7 @@ class TestTheGramIsTheWindowsToo:
             window_size=window,
             solve_every=1e-9,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y}))
         # The last fit was solved after the last row: ages count from it.
         keep, w = _window((n - 1) - np.arange(n), half_life, window)
@@ -1186,7 +1186,7 @@ class TestTheGramIsTheWindowsToo:
         np.testing.assert_allclose(coef, want, atol=1e-6)
         g = bank.gram("m")[0]
         assert g["weight_sum"] == pytest.approx(w.sum(), rel=1e-10)
-        np.testing.assert_allclose(po.gram.solve(g, ridge=1e-10), want, atol=1e-6)
+        np.testing.assert_allclose(rp.gram.solve(g, ridge=1e-10), want, atol=1e-6)
         from statsmodels.stats.weightstats import DescrStatsW
 
         moments = DescrStatsW(y[keep], weights=w)
@@ -1222,7 +1222,7 @@ class TestTheCrossMomentsAreCentred:
         x = offset + u
         # y = 2·x0 − x1 + noise: the target sits at the level too.
         y = offset + 2.0 * u[:, 0] - u[:, 1] + rng.normal(0.0, 0.1, n)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -1232,7 +1232,7 @@ class TestTheCrossMomentsAreCentred:
             solve_every=1e-9,
         )
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        pred = po.ModelBank([spec]).fit_predict(frame)["m"].struct.field("pred_y").to_numpy()
+        pred = rp.ModelBank([spec]).fit_predict(frame)["m"].struct.field("pred_y").to_numpy()
         worst = 0.0
         for t in range(100, n, 50):
             # Row t is predicted by the fit of the rows before it.
@@ -1277,7 +1277,7 @@ class TestTheGramIsCentredToo:
 
     @staticmethod
     def _spec(standardize=False, **kw):
-        return po.spec.ewridge(
+        return rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -1307,9 +1307,9 @@ class TestTheGramIsCentredToo:
     def test_solve_on_the_gram_is_the_numpy_fit_at_any_level(self, standardize, offset):
         x, y = _level_rows(600, offset, seed=98)
         spec = self._spec(standardize)
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y}))
-        got = po.gram.solve(bank.gram("m")[0], standardize=standardize)
+        got = rp.gram.solve(bank.gram("m")[0], standardize=standardize)
         self._same_fit(got, _centred_fit(x, y), x, self._tol(offset), "numpy")
         # And the model's own fit, which read the centred system all along.
         coef = bank.coef("m")["coef"].to_numpy()
@@ -1325,26 +1325,26 @@ class TestTheGramIsCentredToo:
         # co-moments do.
         halves = []
         for part in (frame.head(700), frame.tail(500)):
-            bank = po.ModelBank([self._spec()])
+            bank = rp.ModelBank([self._spec()])
             bank.fit_predict(part)
             halves.append(bank.gram("m")[0])
-        merged = po.gram.merge(halves)
+        merged = rp.gram.merge(halves)
         want = _centred_fit(x, y)
-        self._same_fit(po.gram.solve(merged), want, x, tol, "merge")
+        self._same_fit(rp.gram.solve(merged), want, x, tol, "merge")
         # A closed row is the Gram it was written from.
         spec = self._spec(group="g", group_close="monotone")
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(frame.with_columns(g=pl.Series(["a"] * 700 + ["b"] * 500)))
         (row,) = bank.closed_groups().iter_rows(named=True)
-        got = po.gram.solve(po.gram.from_row(row))
+        got = rp.gram.solve(rp.gram.from_row(row))
         self._same_fit(got, _centred_fit(x[:700], y[:700]), x[:700], tol, "closed row")
         # The lasso path at no penalty is the same fit, and the residual
         # variance coef_stats reads is numpy's.
         g = halves[0]
         want_h = _centred_fit(x[:700], y[:700])
-        path = po.gram.lasso_path(g, [0.0], max_iter=100_000, tol=1e-15)[0]
+        path = rp.gram.lasso_path(g, [0.0], max_iter=100_000, tol=1e-15)[0]
         self._same_fit(path, want_h, x[:700], 1e3 * tol, "penalties")
-        stats = po.gram.coef_stats(g, want_h)
+        stats = rp.gram.coef_stats(g, want_h)
         z = np.column_stack([np.ones(700), x[:700]])
         resid = y[:700] - z @ want_h
         # The data resolves a variance of 0.01 to about 1e-6 of itself at 1e8.
@@ -1357,10 +1357,10 @@ def _holt(
 ) -> tuple[np.ndarray, float, float]:
     """``holt``'s ``pred`` on a row-count clock, and its final level and
     trend. ``NaN`` in ``y`` is a null target."""
-    spec = po.spec.holt(
+    spec = rp.spec.holt(
         "h", targets=["y"], half_life=half_life, trend_half_life=trend_half_life, min_weight=0.0
     )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     frame = pl.DataFrame(
         {"y": [None if np.isnan(v) else float(v) for v in y]}, schema={"y": pl.Float64}
     )
@@ -1480,7 +1480,7 @@ class TestHoltAcrossAMissingObservation:
             },
             schema={"t": pl.Float64, "y": pl.Float64, "w": pl.Float64},
         )
-        spec = po.spec.holt(
+        spec = rp.spec.holt(
             "h",
             targets=["y"],
             half_life=self.H_LEVEL,
@@ -1490,11 +1490,11 @@ class TestHoltAcrossAMissingObservation:
             weight="w",
             min_weight=0.0,
         )
-        got = po.ModelBank([spec]).fit_predict(full)["h"].struct.field("pred_y").to_numpy()
+        got = rp.ModelBank([spec]).fit_predict(full)["h"].struct.field("pred_y").to_numpy()
         # The same stream with those rows removed: the clock folds their
         # deltas into the next row's.
         kept = full.filter(pl.Series(~skip))
-        want = po.ModelBank([spec]).fit_predict(kept)["h"].struct.field("pred_y").to_numpy()
+        want = rp.ModelBank([spec]).fit_predict(kept)["h"].struct.field("pred_y").to_numpy()
         np.testing.assert_allclose(got[~skip], want, rtol=1e-12)
 
 
@@ -1523,7 +1523,7 @@ class TestALevelOnlyHoltIsAnEwMean:
 
     def fit(self, t, y, w, **kw):
         frame = pl.DataFrame({"t": t, "y": y, "w": w}).with_columns(pl.col("y").fill_nan(None))
-        spec = po.spec.holt(
+        spec = rp.spec.holt(
             "m",
             targets=["y"],
             clock="t",
@@ -1534,7 +1534,7 @@ class TestALevelOnlyHoltIsAnEwMean:
             coef_every=0,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(frame)["m"].struct
+        out = rp.ModelBank([spec]).fit_predict(frame)["m"].struct
         return out.field("pred_y").to_numpy(), np.array(out.field("coef").to_list(), float)
 
     def test_the_level_is_pandas_ewm(self):
@@ -1599,11 +1599,11 @@ class TestHoltWithoutDecayIsTheWeightedLineFit:
         t, y, w = self.rows()
         frame = pl.DataFrame({"t": t, "y": y, "w": w}).with_columns(pl.col("y").fill_nan(None))
         inf = float("inf")
-        spec = po.spec.holt(
+        spec = rp.spec.holt(
             "m", targets=["y"], clock="t", gap_cap=1e9, half_life=inf,
             trend_half_life=inf, min_weight=0.0, weight="w",
         )  # fmt: skip
-        pred = po.ModelBank([spec]).fit_predict(frame)["m"].struct.field("pred_y").to_numpy()
+        pred = rp.ModelBank([spec]).fit_predict(frame)["m"].struct.field("pred_y").to_numpy()
         seen = ~np.isnan(y) & (w > 0.0)
         checked, worst = 0, 0.0
         for i in range(1, len(y)):
@@ -1648,7 +1648,7 @@ class TestBocpdAtALevel:
         n, hazard = 120, 40.0
         nu0, psi0, kappa0 = 2.0, 1.0, 1.0
         x = offset + np.where(np.arange(n) < 60, 0.0, 3.0) + rng.normal(0.0, 1.0, n)
-        spec = po.spec.bocpd(
+        spec = rp.spec.bocpd(
             "b",
             features=["x"],
             hazard=hazard,
@@ -1661,7 +1661,7 @@ class TestBocpdAtALevel:
             max_run=n + 2,
             min_weight=0.0,
         )
-        out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x": x}))["b"]
+        out = rp.ModelBank([spec]).fit_predict(pl.DataFrame({"x": x}))["b"]
         r, maxes = bcd.online_changepoint_detection(
             x,
             functools.partial(bcd.constant_hazard, hazard),
@@ -1761,7 +1761,7 @@ class TestKalmanZeroWeightRow:
                 "w": pl.Float64,
             },
         )
-        spec = po.spec.kalman(
+        spec = rp.spec.kalman(
             "k",
             targets=["y"],
             features=["x0", "x1"],
@@ -1774,7 +1774,7 @@ class TestKalmanZeroWeightRow:
             half_life=half_life,
             min_weight=0.0,
         )
-        got = po.ModelBank([spec]).fit_predict(frame)["k"].struct.field("pred_y").to_numpy()
+        got = rp.ModelBank([spec]).fit_predict(frame)["k"].struct.field("pred_y").to_numpy()
         Z = np.column_stack([np.ones(n), x])
         want = self.filterpy_pred(kalman, t, Z, y_seen, w, half_life, coef_hl)
         np.testing.assert_allclose(got, want, rtol=1e-9, atol=1e-12)
@@ -1855,7 +1855,7 @@ class TestAStandardizedKalmanIsFilterpy:
             },
             schema={c: pl.Float64 for c in ("t", "x0", "x1", "y", "w")},
         )
-        spec = po.spec.kalman(
+        spec = rp.spec.kalman(
             "k",
             targets=["y"],
             features=["x0", "x1"],
@@ -1868,7 +1868,7 @@ class TestAStandardizedKalmanIsFilterpy:
             min_weight=0.0,
             coef_every=0,
         )
-        out = po.ModelBank([spec]).fit_predict(frame)["k"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(frame)["k"].struct.unnest()
         got = out["pred_y"].to_numpy()
         Z, F, usable = self.standardized(t, x, w, half_life)
         want = TestKalmanZeroWeightRow.filterpy_pred(
@@ -1924,7 +1924,7 @@ class TestAStandardizedKalmanIsFilterpy:
 
         def fit(level):
             y = level + 0.5 + 1.5 * raw[:, 0] - 0.8 * raw[:, 1] + noise
-            spec = po.spec.kalman(
+            spec = rp.spec.kalman(
                 "k",
                 targets=["y"],
                 features=["x0", "x1"],
@@ -1933,7 +1933,7 @@ class TestAStandardizedKalmanIsFilterpy:
                 min_weight=0.0,
             )
             frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-            out = po.ModelBank([spec]).fit_predict(frame)["k"].struct.field("pred_y")
+            out = rp.ModelBank([spec]).fit_predict(frame)["k"].struct.field("pred_y")
             return out.to_numpy().astype(float), y
 
         def rmse(p, y):
@@ -2066,7 +2066,7 @@ class TestASharedCovarianceIsFilterpy:
             },
             schema={c: pl.Float64 for c in ("t", "x0", "x1", "a", "b", "w")},
         )
-        spec = po.spec.kalman(
+        spec = rp.spec.kalman(
             "k",
             targets=list(order),
             features=["x0", "x1"],
@@ -2080,7 +2080,7 @@ class TestASharedCovarianceIsFilterpy:
             half_life=half_life,
             min_weight=0.0,
         )
-        out = po.ModelBank([spec]).fit_predict(frame)["k"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(frame)["k"].struct.unnest()
         Z = np.column_stack([np.ones(n), x])
         want = self.filterpy_pred(kalman, t, Z, [targets[c] for c in order], w, half_life, coef_hl)
         for c, p in zip(order, want, strict=True):
@@ -2122,7 +2122,7 @@ class TestASharedCovariancesStandardErrorsAreEachTargets:
             b = np.array([0.5, -0.3, 0.2]) + np.cumsum(np.sqrt(q) * rng.normal(size=(n, 3)), 0)
             ys[f"y{j}"] = (Z * b).sum(axis=1) + np.sqrt(r) * rng.normal(size=n)
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], **ys})
-        spec = po.spec.kalman(
+        spec = rp.spec.kalman(
             "k",
             targets=["y0", "y1"],
             features=["x0", "x1"],
@@ -2135,7 +2135,7 @@ class TestASharedCovariancesStandardErrorsAreEachTargets:
             coef_every=1,
         )
         se = np.array(
-            po.ModelBank([spec]).fit_predict(frame)["k"].struct.field("se_coef").to_list(),
+            rp.ModelBank([spec]).fit_predict(frame)["k"].struct.field("se_coef").to_list(),
             dtype=float,
         )
         for j, r in enumerate(noise):
@@ -2185,7 +2185,7 @@ class TestAHopelessSerialFactorSaysSo:
             return out
 
         x, y = ar1(0.8), ar1(phi_y)
-        spec = po.spec.marginal(
+        spec = rp.spec.marginal(
             "m",
             targets=["y"],
             features=["x"],
@@ -2193,7 +2193,7 @@ class TestAHopelessSerialFactorSaysSo:
             serial_rule="truncated",
             half_life=float("inf"),
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(pl.DataFrame({"x": x, "y": y}))
         row = bank.marginal("m").row(0, named=True)
         rho_x = stattools.acf(x, nlags=1)[1]
@@ -2237,7 +2237,7 @@ class TestAWindowedLagIsTheWindows:
         for t in range(1, n):
             x[t] = (0.2 if t < change else 0.8) * x[t - 1] + e[t]
         y = rng.normal(0.0, 1.0, n)
-        spec = po.spec.marginal(
+        spec = rp.spec.marginal(
             "m",
             targets=["y"],
             features=["x"],
@@ -2248,7 +2248,7 @@ class TestAWindowedLagIsTheWindows:
             window_size=float(window),
             window_lags=True,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         frame = pl.DataFrame({"t": np.arange(n, dtype=float), "x": x, "y": y})
         bank.fit_predict(frame)
         row = bank.marginal("m").row(0, named=True)
@@ -2286,7 +2286,7 @@ class TestTheBartlettSerialFactor:
             return out
 
         x, y = ar1(0.8), ar1(phi_y)
-        spec = po.spec.marginal(
+        spec = rp.spec.marginal(
             "m",
             targets=["y"],
             features=["x"],
@@ -2294,7 +2294,7 @@ class TestTheBartlettSerialFactor:
             serial_rule="bartlett",
             half_life=float("inf"),
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(pl.DataFrame({"x": x, "y": y}))
         row = bank.marginal("m").row(0, named=True)
         acf_x = stattools.acf(x, nlags=4)[1:]
@@ -2375,7 +2375,7 @@ class TestATargetWithGaps:
 
     @staticmethod
     def _pred(spec: dict[str, Any], frame: pl.DataFrame, field: str) -> np.ndarray:
-        out = po.ModelBank([spec]).fit_predict(frame)
+        out = rp.ModelBank([spec]).fit_predict(frame)
         return out[spec["name"]].struct.field(field).to_numpy()
 
     @pytest.mark.parametrize("level", [0.0, 50.0])
@@ -2383,7 +2383,7 @@ class TestATargetWithGaps:
     def test_own_rows_is_the_numpy_fit_of_the_targets_rows(self, standardize, level):
         n, h = 600, 40.0
         x, y = _gappy(n, 7, level)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -2415,7 +2415,7 @@ class TestATargetWithGaps:
             "yb": np.where(x[:, 0] > -0.5, 5.0 + base, np.nan),
             "yc": np.where(x[:, 1] < 0.3, -4.0 + 0.5 * base, np.nan),
         }
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=list(ys),
             features=["x0", "x1"],
@@ -2424,7 +2424,7 @@ class TestATargetWithGaps:
             standardize=standardize,
             solve_every=1e-9,
         )
-        out = po.ModelBank([spec]).fit_predict(_gappy_frame(x, **ys))["m"]
+        out = rp.ModelBank([spec]).fit_predict(_gappy_frame(x, **ys))["m"]
         for name, y in ys.items():
             pred = out.struct.field(f"pred_{name}").to_numpy()
             worst = max(abs(pred[t] - _own_rows_pred(x, y, t, h)) for t in range(100, n, 29))
@@ -2438,7 +2438,7 @@ class TestATargetWithGaps:
 
         n = 500
         x, y = _gappy(n, 11, 0.0)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -2466,7 +2466,7 @@ class TestATargetWithGaps:
     def test_pairwise_under_decay_is_numpy_weighted_covariance(self, level):
         n, h = 600, 40.0
         x, y = _gappy(n, 13, level)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -2487,7 +2487,7 @@ class TestATargetWithGaps:
         centred now, as ``ewridge`` does since N1 (N2)."""
         n, h = 500, 50.0
         x, y = _gappy(n, 19, 20.0)
-        spec = po.spec.lasso(
+        spec = rp.spec.lasso(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -2517,7 +2517,7 @@ class TestATargetWithGaps:
         x, y = _gappy(n, 41, 3.0)
         rng = np.random.default_rng(43)
         ya = 2.0 + x @ np.array([1.0, 0.5]) + rng.normal(0.0, 0.1, n)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["ya", "y"],
             features=["x0", "x1"],
@@ -2554,7 +2554,7 @@ class TestATargetWithGaps:
 
         n, h, level = 500, 30.0, 40.0
         x, y = _gappy(n, 23, level)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -2584,7 +2584,7 @@ class TestATargetWithGaps:
 
         n, ridge = 400, 0.3
         x, y = _gappy(n, 29, 10.0)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -2623,7 +2623,7 @@ class TestATargetWithGaps:
         x = rng.normal(0.0, 1.0, (n, 3))
         y = 5.0 + 2.0 * x[:, 0] - x[:, 1] + rng.normal(0.0, 0.3, n)
         y = np.where(x[:, 0] > -0.5, y, np.nan)
-        spec = po.spec.lasso(
+        spec = rp.spec.lasso(
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
@@ -2643,7 +2643,7 @@ class TestATargetWithGaps:
             },
             schema={c: pl.Float64 for c in ("x0", "x1", "x2", "y")},
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(frame)
         got = bank.coef("m")["coef"].to_numpy()
         keep = ~np.isnan(y)
@@ -2707,7 +2707,7 @@ class TestPassiveAggressiveIsRivers:
         n, c, eps = 500, 0.3, 0.0
         x = rng.normal(0.0, 1.0, (n, 2)) + np.reshape(_level(level, n), (-1, 1))
         y = 1.5 * x[:, 0] - 0.5 * x[:, 1] + rng.normal(0.0, 0.3, n)
-        spec = po.spec.pa(
+        spec = rp.spec.pa(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -2722,7 +2722,7 @@ class TestPassiveAggressiveIsRivers:
             standardize=False,
         )
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        out = po.ModelBank([spec]).fit_predict(frame)["m"].struct
+        out = rp.ModelBank([spec]).fit_predict(frame)["m"].struct
         pred = out.field("pred_y").to_numpy()
         coef = np.array(out.field("coef").to_list(), dtype=float)
         river = _river_pa(C=c, mode=river_mode, eps=eps, learn_intercept=False)
@@ -2743,7 +2743,7 @@ class TestPassiveAggressiveIsRivers:
         ``tau`` to its bias outside the norm, and overshoots by ``ℓ/‖x‖²``."""
         x, y, eps = {"x0": 1.0, "x1": 0.5}, 2.0, 0.0
         frame = pl.DataFrame({"x0": [1.0, 1.0], "x1": [0.5, 0.5], "y": [y, y]})
-        spec = po.spec.pa(
+        spec = rp.spec.pa(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -2753,7 +2753,7 @@ class TestPassiveAggressiveIsRivers:
             min_weight=0.0,
             standardize=False,
         )
-        again = po.ModelBank([spec]).fit_predict(frame)["m"].struct.field("pred_y")[1]
+        again = rp.ModelBank([spec]).fit_predict(frame)["m"].struct.field("pred_y")[1]
         assert again == pytest.approx(y - eps, abs=1e-12)
         river = _river_pa(mode=0, eps=eps, learn_intercept=True)
         river.learn_one(x, y)
@@ -2785,7 +2785,7 @@ class TestTheEwMomentsArePandas:
         rng = np.random.default_rng(7)
         n = 400
         x = offset + rng.normal(0.0, 1.0, (n, 2))
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "m",
             features=["x0", "x1"],
             half_life=self.H,
@@ -2794,7 +2794,7 @@ class TestTheEwMomentsArePandas:
             bias=bias,
         )
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
-        out = po.ModelBank([spec]).fit_predict(frame)["m"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(frame)["m"].struct.unnest()
         pdf = pd.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
         ew, pair = pdf.ewm(halflife=self.H), pdf["x0"].ewm(halflife=self.H)
         want = {
@@ -2822,7 +2822,7 @@ class TestTheEwMomentsArePandas:
         n = 300
         t = np.cumsum(rng.uniform(0.2, 3.0, n))
         x = rng.normal(0.0, 1.0, n)
-        spec = po.spec.ew_cov(
+        spec = rp.spec.ew_cov(
             "m",
             features=["x0"],
             half_life=self.H,
@@ -2832,7 +2832,7 @@ class TestTheEwMomentsArePandas:
             stats=["mean"],
             min_weight=0.0,
         )
-        out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"t": t, "x0": x}))
+        out = rp.ModelBank([spec]).fit_predict(pl.DataFrame({"t": t, "x0": x}))
         got = out["m"].struct.field("mean_x0").to_numpy().astype(float)[1:]
         times = pd.to_datetime(t, unit="s")
         ref = pd.Series(x).ewm(halflife=pd.Timedelta(seconds=self.H), times=times).mean()
@@ -2851,16 +2851,16 @@ class TestTheEwMomentsArePandas:
         x = rng.normal(0.0, 1.0, n)
         y = 0.7 * x + rng.normal(0.0, 1.0, n)
         frame = pl.DataFrame({"x0": x, "y": y})
-        bank = po.ModelBank(
-            [po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=self.H)]
+        bank = rp.ModelBank(
+            [rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=self.H)]
         )
         bank.fit_predict(frame)
         g = bank.gram("m")[0]
         ys = pd.Series(y).ewm(halflife=self.H)
         assert g["target_means"][0] == pytest.approx(ys.mean().iloc[-1], rel=1e-12)
         assert g["target_vars"][0] == pytest.approx(ys.var(bias=True).iloc[-1], rel=1e-12)
-        spec = po.spec.marginal("m", targets=["y"], features=["x0"], half_life=self.H)
-        pair = po.ModelBank([spec])
+        spec = rp.spec.marginal("m", targets=["y"], features=["x0"], half_life=self.H)
+        pair = rp.ModelBank([spec])
         pair.fit_predict(frame)
         corr = pd.Series(x).ewm(halflife=self.H).corr(pd.Series(y)).iloc[-1]
         assert pair.marginal("m")["corr"][0] == pytest.approx(corr, rel=1e-12)
@@ -2885,7 +2885,7 @@ class TestSgdQuantileIsQuantReg:
         n = 100_000
         x = rng.normal(0.0, 1.0, (n, 2))
         y = 1.0 + 2.0 * x[:, 0] - x[:, 1] + rng.exponential(1.0, n)
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -2895,7 +2895,7 @@ class TestSgdQuantileIsQuantReg:
             learning_rate=0.5,
             half_life=float("inf"),
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y}))
         got = bank.coef("m")["coef"].to_numpy()
         z = sm.add_constant(x)
@@ -2926,7 +2926,7 @@ class TestQuantileIsQuantReg:
 
     @staticmethod
     def _fit(x, y, tau, **kw):
-        spec = po.spec.quantile(
+        spec = rp.spec.quantile(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -2934,7 +2934,7 @@ class TestQuantileIsQuantReg:
             max_rows_between_solves=1,
             **kw,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y}))
         return bank.coef("m")["coef"].to_numpy()
 
@@ -3045,7 +3045,7 @@ class TestHuberAgainstScikitLearn:
 
     @staticmethod
     def fit(df, **kw):
-        spec = po.spec.huber(
+        spec = rp.spec.huber(
             "h",
             targets=["y"],
             features=["x0", "x1"],
@@ -3054,7 +3054,7 @@ class TestHuberAgainstScikitLearn:
             min_weight=0.0,
             **kw,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         return np.array(bank.coef("h")["coef"].to_list())
 
@@ -3136,8 +3136,8 @@ class TestHuberMadAgainstStatsmodels:
 
     @staticmethod
     def slope(df: pl.DataFrame, **kw: Any) -> float:
-        spec = po.spec.huber("h", targets=["y"], features=["x"], half_life=float("inf"), **kw)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.huber("h", targets=["y"], features=["x"], half_life=float("inf"), **kw)
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         return float(bank.coef("h")["coef"].to_list()[1])
 
@@ -3193,7 +3193,7 @@ class TestTheMadScaleIsNumpysWeightedMedian:
 
     @classmethod
     def run(cls, x: np.ndarray, y: np.ndarray, refit: int = 0) -> pl.DataFrame:
-        spec = po.spec.huber(
+        spec = rp.spec.huber(
             "h",
             targets=["y"],
             features=["x"],
@@ -3204,7 +3204,7 @@ class TestTheMadScaleIsNumpysWeightedMedian:
             # `min_weight` withholds the output alone.
             min_weight=0.0,
         )
-        out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x": x, "y": y}))
+        out = rp.ModelBank([spec]).fit_predict(pl.DataFrame({"x": x, "y": y}))
         return out.unnest("h")
 
     @classmethod
@@ -3288,15 +3288,15 @@ class TestAlgorithmHOnAGramAgainstStatsmodels:
         y[(rng.random(n) < 0.10) & (x > 0)] += 50.0
         path = tmp_path / "level.parquet"
         pl.DataFrame({"x": x, "y": y}).write_parquet(path)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "g", targets=["y"], features=["x"], half_life=float("inf"), solve_every=1e18
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit(pl.scan_parquet(path))
         g = bank.gram("g")[0]
         m = float(np.asarray(g["means"])[1])
         var = float(np.asarray(g["comoments"])[1, 1])
-        coef = np.asarray(po.gram.solve(g), dtype=float)
+        coef = np.asarray(rp.gram.solve(g), dtype=float)
         for _ in range(30):
             fit = coef[0] + coef[1] * pl.col("x")
             r = pl.col("y") - fit
@@ -3343,7 +3343,7 @@ class TestTheBinsAgainstScipyAndAStump:
         # Values exactly on each edge, which go to the bin above in both.
         x[:40] = np.repeat(edges, 10)
         y = np.where(x >= 0.5, 2.0, 0.0) + 0.3 * rng.standard_normal(n)
-        spec = po.spec.marginal(
+        spec = rp.spec.marginal(
             "m",
             targets=["y"],
             features=["x"],
@@ -3351,7 +3351,7 @@ class TestTheBinsAgainstScipyAndAStump:
             bin_edges=[edges],
             min_weight=2.0,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(pl.DataFrame({"x": x, "y": y}))
         row = bank.marginal("m").row(0, named=True)
 
@@ -3397,7 +3397,7 @@ class TestAMeanRevertingKalmanIsFilterpy:
         t = np.arange(n, dtype=float)
         t[150:] += 5.0
         frame = pl.DataFrame({"t": t, "x0": x[:, 0], "x1": x[:, 1], "y": y})
-        spec = po.spec.kalman(
+        spec = rp.spec.kalman(
             "k",
             targets=["y"],
             features=["x0", "x1"],
@@ -3410,7 +3410,7 @@ class TestAMeanRevertingKalmanIsFilterpy:
             gap_cap=1e9,
             min_weight=0.0,
         )
-        got = po.ModelBank([spec]).fit_predict(frame)["k"].struct.field("pred_y").to_numpy()
+        got = rp.ModelBank([spec]).fit_predict(frame)["k"].struct.field("pred_y").to_numpy()
 
         r = np.broadcast_to(np.asarray(revert, dtype=float), (3,))
         kf = kalman.KalmanFilter(dim_x=3, dim_z=1)
@@ -3483,7 +3483,7 @@ class TestEwRidgeIsSklearnsRidge:
         standardize = "standardized" in mode
         prior = np.array([0.4, -1.0, 2.0, 0.5]) if with_prior else np.zeros(4)
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y, "w": w})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
@@ -3496,7 +3496,7 @@ class TestEwRidgeIsSklearnsRidge:
             weight="w",
             min_weight=0.0,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         got = bank.coef("m").sort("position")["coef"].to_numpy()
         sw = w.sum()
@@ -3592,7 +3592,7 @@ class TestFtrlIsVowpalWabbits:
 
     def ours(self, frame, loss, intercept, weighted, penalties):
         alpha, beta, l1, l2 = self.PENALTIES[penalties]
-        spec = po.spec.ftrl(
+        spec = rp.spec.ftrl(
             "m",
             targets=list(self.TARGETS),
             features=list(self.FEATURES),
@@ -3607,7 +3607,7 @@ class TestFtrlIsVowpalWabbits:
             coef_every=0,
             **({"weight": "w"} if weighted else {}),
         )
-        out = po.ModelBank([spec]).fit_predict(frame)["m"].struct
+        out = rp.ModelBank([spec]).fit_predict(frame)["m"].struct
         pred = np.column_stack([out.field(f"pred_{t}").to_numpy() for t in self.TARGETS])
         coef = np.array(out.field("coef").to_list(), dtype=float)
         return pred, coef.reshape(frame.height, len(self.TARGETS), -1)
@@ -3710,8 +3710,8 @@ class TestPoEvalIsSklearnsMetrics:
                 "w": rng.uniform(0.2, 3.0, n),
             }
         )
-        spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=200.0)
-        out = po.ModelBank([spec]).fit_predict(df)
+        spec = rp.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=200.0)
+        out = rp.ModelBank([spec]).fit_predict(df)
         scored = out.with_columns(pred=pl.col("m").struct.field("pred_y")).drop_nulls("pred")
         return out, scored
 
@@ -3725,7 +3725,7 @@ class TestPoEvalIsSklearnsMetrics:
         )
 
         out, scored = self.regression()
-        got = po.eval.metrics(out, "m", group=["g"], min_samples=1)
+        got = rp.eval.metrics(out, "m", group=["g"], min_samples=1)
         assert got["g"].to_list() == ["a", "b"]
         for row in got.iter_rows(named=True):
             part = scored.filter(pl.col("g") == row["g"])
@@ -3743,7 +3743,7 @@ class TestPoEvalIsSklearnsMetrics:
         from sklearn.metrics import accuracy_score, mean_squared_error, r2_score
 
         out, scored = self.regression()
-        got = po.eval.from_sums(po.eval.sums(out, "m", weight="w"), min_samples=1).row(
+        got = rp.eval.from_sums(rp.eval.sums(out, "m", weight="w"), min_samples=1).row(
             0, named=True
         )
         y, pred, w = (scored[c].to_numpy() for c in ("y", "pred", "w"))
@@ -3764,7 +3764,7 @@ class TestPoEvalIsSklearnsMetrics:
         x0, x1 = rng.standard_normal(n), rng.standard_normal(n)
         label = (rng.random(n) < 1.0 / (1.0 + np.exp(-(1.2 * x0 - 0.8 * x1)))).astype(float)
         df = pl.DataFrame({"x0": x0, "x1": x1, "y": label})
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -3773,8 +3773,8 @@ class TestPoEvalIsSklearnsMetrics:
             half_life=float("inf"),
             min_weight=50.0,
         )
-        out = po.ModelBank([spec]).fit_predict(df)
-        got = po.eval.metrics(out, spec, min_samples=1).row(0, named=True)  # binary, by its loss
+        out = rp.ModelBank([spec]).fit_predict(df)
+        got = rp.eval.metrics(out, spec, min_samples=1).row(0, named=True)  # binary, by its loss
         scored = out.with_columns(pred=pl.col("m").struct.field("pred_y")).drop_nulls("pred")
         y, p = scored["y"].to_numpy(), scored["pred"].to_numpy()
         assert p.min() > 1e-15 and p.max() < 1.0 - 1e-15, "the clip is not in play"
@@ -3807,7 +3807,7 @@ class TestShrinkToTheIdentityIsSklearnsLedoitWolf:
                 + [0.3 * f[:, 1] + 0.954 * e[:, i] for i in range(k // 2, k)]
             )
             d = x - x.mean(axis=0)
-            got, alpha = po.corr.shrink(d.T @ d / n, target="identity", x=x)
+            got, alpha = rp.corr.shrink(d.T @ d / n, target="identity", x=x)
             want, want_alpha = ledoit_wolf(x)
             assert alpha == pytest.approx(want_alpha, rel=1e-12), (n, k)
             np.testing.assert_allclose(got, want, rtol=0.0, atol=1e-13)
@@ -3844,7 +3844,7 @@ class TestNearestIsStatsmodelsCorrNearest:
             inputs.append(m)
         repaired = 0
         for a in inputs:
-            ours, _, iters = po.corr.nearest(a, tol=1e-12, max_iter=10_000)
+            ours, _, iters = rp.corr.nearest(a, tol=1e-12, max_iter=10_000)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", IterationLimitWarning)
                 theirs = corr_nearest(a, n_fact=300)
@@ -4194,7 +4194,7 @@ class TestKalmanSettingsAreFilterpy:
 
     @staticmethod
     def ours(frame: pl.DataFrame, **kw: Any) -> np.ndarray:
-        spec = po.spec.kalman(
+        spec = rp.spec.kalman(
             "k",
             targets=["y"],
             features=["x0", "x1"],
@@ -4205,7 +4205,7 @@ class TestKalmanSettingsAreFilterpy:
             min_weight=0.0,
             **kw,
         )
-        return po.ModelBank([spec]).fit_predict(frame)["k"].struct.field("pred_y").to_numpy()
+        return rp.ModelBank([spec]).fit_predict(frame)["k"].struct.field("pred_y").to_numpy()
 
     CASES = {
         # `q` alone: it is the process noise `coef_half_life` would derive,
@@ -4307,7 +4307,7 @@ class TestSgdIsScikitLearnsSgd:
 
     @staticmethod
     def ours(frame: pl.DataFrame, target: str, weighted: bool, **kw: Any) -> np.ndarray:
-        spec = po.spec.sgd(
+        spec = rp.spec.sgd(
             "s",
             targets=[target],
             features=["x0", "x1"],
@@ -4317,7 +4317,7 @@ class TestSgdIsScikitLearnsSgd:
             standardize=False,
             **kw,
         )
-        out = po.ModelBank([spec]).fit_predict(frame)["s"].struct
+        out = rp.ModelBank([spec]).fit_predict(frame)["s"].struct
         return out.field(f"pred_{target}").to_numpy().astype(float)
 
     @staticmethod
@@ -4478,7 +4478,7 @@ class TestHmmIsHmmlearns:
         covs = [1.0, 0.3, 0.3, 0.8, 1.4, -0.2, -0.2, 0.7]
         pi = np.array([[0.93, 0.07], [0.12, 0.88]])
         ridge = 1e-2
-        spec = po.spec.hmm(
+        spec = rp.spec.hmm(
             "h",
             features=["x0", "x1"],
             n_components=2,
@@ -4491,7 +4491,7 @@ class TestHmmIsHmmlearns:
             transition_prior=1.0,
         )
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
-        out = po.ModelBank([spec]).fit_predict(frame)["h"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(frame)["h"].struct.unnest()
 
         model = GaussianHMM(n_components=2, covariance_type="full", init_params="", params="")
         model.startprob_ = np.array([0.5, 0.5]) @ pi
@@ -4539,7 +4539,7 @@ class TestRlsIsPadasips:
         n = 400
         x = rng.normal(size=(n, 2))
         y = _level(level, n) + 0.5 + 1.5 * x[:, 0] - 0.8 * x[:, 1] + 0.3 * rng.normal(size=n)
-        spec = po.spec.rls(
+        spec = rp.spec.rls(
             "r",
             targets=["y"],
             features=["x0", "x1"],
@@ -4548,7 +4548,7 @@ class TestRlsIsPadasips:
             min_weight=0.0,
         )
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        got = po.ModelBank([spec]).fit_predict(frame)["r"].struct.field("pred_y").to_numpy()
+        got = rp.ModelBank([spec]).fit_predict(frame)["r"].struct.field("pred_y").to_numpy()
         mu = 0.5 ** (1.0 / half_life)
         rls = padasip.filters.FilterRLS(n=3, mu=mu, eps=ridge / mu, w="zeros")
         want = np.empty(n)
@@ -4633,7 +4633,7 @@ class TestKalmansErrorInflationIsFilterpysPrior:
         import filterpy.kalman as kalman
 
         frame, t, x, y, w = TestKalmanSettingsAreFilterpy.rows(47, scaled=case["standardize"])
-        spec = po.spec.kalman(
+        spec = rp.spec.kalman(
             "k",
             targets=["y"],
             features=["x0", "x1"],
@@ -4651,7 +4651,7 @@ class TestKalmansErrorInflationIsFilterpysPrior:
             coef_every=0,
             **({"emit_se_coef": True} if se else {}),
         )
-        out = po.ModelBank([spec]).fit_predict(frame)["k"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(frame)["k"].struct.unnest()
         remap, usable = None, None
         if case["standardize"]:
             # One row before has no spread, and the filter takes a scale of 1
@@ -4741,7 +4741,7 @@ class TestRlsErrorInflationIsPadasips:
         n = 400
         x = rng.normal(size=(n, 2))
         y = 0.5 + 1.5 * x[:, 0] - 0.8 * x[:, 1] + 0.3 * rng.normal(size=n)
-        spec = po.spec.rls(
+        spec = rp.spec.rls(
             "r",
             targets=["y"],
             features=["x0", "x1"],
@@ -4754,7 +4754,7 @@ class TestRlsErrorInflationIsPadasips:
             **({"emit_se_coef": True} if se else {}),
         )
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        out = po.ModelBank([spec]).fit_predict(frame)["r"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(frame)["r"].struct.unnest()
         mu = 0.5 ** (1.0 / half_life)
         rls = padasip.filters.FilterRLS(n=3, mu=mu, eps=ridge / mu, w="zeros")
         return out, x, y, mu, rls
@@ -4812,7 +4812,7 @@ class TestEwRidgeSeCoefIsStatsmodels:
         n = 200
         x = rng.normal(size=(n, 2)) * np.array([3.0, 0.5]) + np.array([10.0, -2.0])
         y = 1.0 + 0.5 * x[:, 0] - 2.0 * x[:, 1] + rng.normal(size=n)
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -4825,7 +4825,7 @@ class TestEwRidgeSeCoefIsStatsmodels:
             max_rows_between_solves=1,
         )
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        out = po.ModelBank([spec]).fit_predict(frame)["m"].struct.unnest()
+        out = rp.ModelBank([spec]).fit_predict(frame)["m"].struct.unnest()
         se = out["se_coef"].to_list()
         sigma = out["sigma_y"].to_numpy()
         checked = 0
@@ -4852,10 +4852,10 @@ class TestVarianceInflation:
         x = rng.normal(size=(n, 3)) * np.array([1.0, 4.0, 0.2]) + np.array([5.0, -1.0, 0.0])
         x[:, 2] = x[:, 0] + noise * rng.normal(size=n)
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": rng.normal(size=n)})
-        spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1", "x2"], lam=1.0)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.ewridge("m", targets=["y"], features=["x0", "x1", "x2"], lam=1.0)
+        bank = rp.ModelBank([spec])
         bank.fit_predict(frame)
-        got = po.gram.vif(bank.gram("m")[0])
+        got = rp.gram.vif(bank.gram("m")[0])
         design = np.c_[np.ones(n), x]
         want = [variance_inflation_factor(design, j) for j in (1, 2, 3)]
         np.testing.assert_allclose(got, want, rtol=1e-7)
@@ -4887,11 +4887,11 @@ class TestLarsPathIsSklearns:
         beta = rng.standard_normal(self.K)
         y = x @ beta + 1.0 + 2.0 * rng.standard_normal(self.N)
         features = [f"x{i}" for i in range(self.K)]
-        spec = po.spec.ewridge("m", targets=["y"], features=features, lam=1.0, min_weight=5.0)
+        spec = rp.spec.ewridge("m", targets=["y"], features=features, lam=1.0, min_weight=5.0)
         frame = pl.DataFrame({f: x[:, i] for i, f in enumerate(features)}).with_columns(
             y=pl.Series(y)
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(frame)
         return x, y, bank.gram("m")[0]
 
@@ -4911,7 +4911,7 @@ class TestLarsPathIsSklearns:
         alphas, _, coefs = lars_path_gram(
             xs.T @ yc, xs.T @ xs, n_samples=self.N, method="lasso", eps=1e-15
         )
-        path = po.gram.lars_path(g)
+        path = rp.gram.lars_path(g)
         assert len(path["penalties"]) == len(alphas)
         np.testing.assert_allclose(path["penalties"], alphas, rtol=1e-9, atol=1e-12)
         ours = path["coef"][:, 1:] * sd  # back to the standardized basis
@@ -4933,7 +4933,7 @@ class TestLarsPathIsSklearns:
         alphas, _, coefs = lars_path_gram(
             xw.T @ yc, xw.T @ xw, n_samples=self.N, method="lasso", eps=1e-15
         )
-        path = po.gram.lars_path(g, penalty_weights=w)
+        path = rp.gram.lars_path(g, penalty_weights=w)
         np.testing.assert_allclose(path["penalties"], alphas, rtol=1e-9, atol=1e-12)
         np.testing.assert_allclose(path["coef"][:, 1:] * sd, (coefs / w[:, None]).T, atol=1e-10)
 
@@ -4947,7 +4947,7 @@ class TestLarsPathIsSklearns:
         _, coefs, _ = enet_path(
             xs, yc, l1_ratio=l1_ratio, alphas=penalties, tol=1e-14, max_iter=100_000
         )
-        ours = po.gram.lasso_path(g, penalties, l1_ratio=l1_ratio, tol=1e-14, max_iter=100_000)
+        ours = rp.gram.lasso_path(g, penalties, l1_ratio=l1_ratio, tol=1e-14, max_iter=100_000)
         np.testing.assert_allclose(ours[:, 1:] * sd, coefs.T, atol=1e-8)
         # The intercept: the target's mean less the slopes at the column means.
         np.testing.assert_allclose(ours[:, 0], y.mean() - ours[:, 1:] @ x.mean(axis=0), atol=1e-8)
@@ -4970,7 +4970,7 @@ class TestSolveSubsetsIsStatsmodelsOnThePooledRows:
         y = x @ np.array([0.5, -1.0, 0.25]) + 3.0 + rng.standard_normal(n_blocks * per)
         block = np.repeat(np.arange(n_blocks), per)
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y, "block": block})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
@@ -4978,12 +4978,12 @@ class TestSolveSubsetsIsStatsmodelsOnThePooledRows:
             group="block",
             min_weight=5.0,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(frame)
         grams = bank.gram("m")
         assert [g["group"] for g in grams] == ["0", "1", "2", "3", "4"]
         subsets = [[0, 2], [1, 3, 4], [4]]
-        fits = po.gram.solve_subsets(grams, subsets)
+        fits = rp.gram.solve_subsets(grams, subsets)
         for subset, (fit,) in zip(subsets, fits, strict=True):
             rows = np.isin(block, subset)
             ols = sm.OLS(y[rows], sm.add_constant(x[rows])).fit()
@@ -5015,10 +5015,10 @@ class TestCoefStatsIsStatsmodelsOls:
 
     def _gram(self, x, y):
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m", targets=["y"], features=["x0", "x1"], half_life=float("inf"), min_weight=5.0
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(frame)
         return bank.gram("m")[0]
 
@@ -5036,25 +5036,25 @@ class TestCoefStatsIsStatsmodelsOls:
         x, y = self._rows()
         g = self._gram(x, y)
         ols = sm.OLS(y, sm.add_constant(x)).fit()
-        b = po.gram.solve(g)
+        b = rp.gram.solve(g)
         np.testing.assert_allclose(b, ols.params, rtol=1e-9)
-        self._same(po.gram.coef_stats(g, b), ols)
-        ((fit,),) = po.gram.solve_subsets([g], [[0]])
+        self._same(rp.gram.coef_stats(g, b), ols)
+        ((fit,),) = rp.gram.solve_subsets([g], [[0]])
         self._same(fit, ols)
 
     def test_through_the_origin_it_is_ols_without_a_constant(self):
         import statsmodels.api as sm
 
         x, y = self._rows()
-        g = po.gram.subset(self._gram(x, y), ["x0", "x1"])
-        assert po.gram.INTERCEPT not in g["columns"]
+        g = rp.gram.subset(self._gram(x, y), ["x0", "x1"])
+        assert rp.gram.INTERCEPT not in g["columns"]
         ols = sm.OLS(y, x).fit()
         assert not ols.k_constant, "statsmodels fits no constant, and reads R^2 uncentred"
-        b = po.gram.solve(g)
+        b = rp.gram.solve(g)
         np.testing.assert_allclose(b, ols.params, rtol=1e-9)
-        st = po.gram.coef_stats(g, b)
+        st = rp.gram.coef_stats(g, b)
         self._same(st, ols)
-        ((fit,),) = po.gram.solve_subsets([g], [[0]])
+        ((fit,),) = rp.gram.solve_subsets([g], [[0]])
         self._same(fit, ols)
         # The centred reading of the same fit, which this replaced.
         resid = y - x @ b
@@ -5076,20 +5076,20 @@ class TestCoefStatsIsStatsmodelsOls:
 
         x, y = self._rows(n=500)
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "c": np.full(len(y), 3.0), "y": y})
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m", targets=["y"], features=["x0", "x1", "c"], half_life=float("inf"), min_weight=5.0
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(frame)
         g = bank.gram("m")[0]
-        ((fit,),) = po.gram.solve_subsets([g], [[0]], ridge=ridge, standardize=True)
+        ((fit,),) = rp.gram.solve_subsets([g], [[0]], ridge=ridge, standardize=True)
         ols = sm.OLS(y, sm.add_constant(x)).fit()
         n = len(y)
         assert fit["coef"][3] == 0.0
         assert np.isnan(fit["se"][3]) and np.isnan(fit["t"][3])
         assert fit["sigma2"] == pytest.approx(fit["resid_var"] * n / (n - 3), rel=1e-12)
         np.testing.assert_allclose(fit["t"][:3], fit["coef"][:3] / fit["se"][:3], rtol=1e-12)
-        st = po.gram.coef_stats(g, fit["coef"])
+        st = rp.gram.coef_stats(g, fit["coef"])
         assert np.isnan(st["se"][3])
         assert st["sigma2"] == pytest.approx(fit["sigma2"], rel=1e-12)
         np.testing.assert_allclose(st["se"][:3], fit["se"][:3], rtol=1e-12)
@@ -5120,22 +5120,22 @@ class TestCoefStatsIsStatsmodelsOls:
             frame = pl.DataFrame(
                 {"x0": x[rows, 0], "x1": x[rows, 1], "c": np.full(rows.sum(), 3.0), "y": y[rows]}
             )
-            spec = po.spec.ewridge(
+            spec = rp.spec.ewridge(
                 "m",
                 targets=["y"],
                 features=["x0", "x1", "c"],
                 half_life=float("inf"),
                 min_weight=5.0,
             )
-            bank = po.ModelBank([spec])
+            bank = rp.ModelBank([spec])
             bank.fit_predict(frame)
             return bank.gram("m")[0]
 
-        g = po.gram.merge([gram(part == p) for p in range(4)], within=True)
-        b = po.gram.solve(g, standardize=True)
+        g = rp.gram.merge([gram(part == p) for p in range(4)], within=True)
+        b = rp.gram.solve(g, standardize=True)
         assert b[3] == 0.0
-        st = po.gram.coef_stats(g, b)
-        ((fit,),) = po.gram.solve_subsets([g], [[0]], ridge=0.0, standardize=True)
+        st = rp.gram.coef_stats(g, b)
+        ((fit,),) = rp.gram.solve_subsets([g], [[0]], ridge=0.0, standardize=True)
         dummies = (part[:, None] == np.arange(4)).astype(float)
         ols = sm.OLS(y, np.column_stack([x, dummies])).fit()
         for got in (st, fit):
@@ -5153,10 +5153,10 @@ class TestCoefStatsIsStatsmodelsOls:
         part = np.arange(len(y)) // 1000
         y = y + 2.0 * part
         grams = [self._gram(x[part == p], y[part == p]) for p in range(4)]
-        g = po.gram.merge(grams, within=True)
-        origin = po.gram.subset(g, ["x0", "x1"])
-        with_icept = po.gram.coef_stats(g, po.gram.solve(g))
-        through = po.gram.coef_stats(origin, po.gram.solve(origin))
+        g = rp.gram.merge(grams, within=True)
+        origin = rp.gram.subset(g, ["x0", "x1"])
+        with_icept = rp.gram.coef_stats(g, rp.gram.solve(g))
+        through = rp.gram.coef_stats(origin, rp.gram.solve(origin))
         for key in ("resid_var", "sigma2", "r2", "n"):
             assert through[key] == with_icept[key], key
         assert np.array_equal(through["se"], with_icept["se"][1:])
@@ -5179,8 +5179,8 @@ class TestAuditIsScipyAndStatsmodels:
     @staticmethod
     def _audit(x: np.ndarray, **kw: Any) -> dict[str, Any]:
         frame = pl.DataFrame({"t": np.arange(len(x), dtype=float), "x": x})
-        spec = po.spec.audit("a", columns=["x"], clock="t", gap_cap=10.0, **kw)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.audit("a", columns=["x"], clock="t", gap_cap=10.0, **kw)
+        bank = rp.ModelBank([spec])
         bank.fit_predict(frame)
         return bank.audit().row(0, named=True)
 

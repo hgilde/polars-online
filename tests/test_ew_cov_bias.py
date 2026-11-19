@@ -23,7 +23,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import rheon as po
+from rheon import polars as rp
 
 TIER = "essential"
 
@@ -41,8 +41,8 @@ def _frame(n: int, seed: int) -> pl.DataFrame:
 
 
 def _fit(df: pl.DataFrame, **kw: Any) -> pl.DataFrame:
-    spec = po.spec.ew_cov("m", features=["a", "b"], min_weight=0.0, **kw)
-    return po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+    spec = rp.spec.ew_cov("m", features=["a", "b"], min_weight=0.0, **kw)
+    return rp.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
 
 
 def _close(got: np.ndarray, want: np.ndarray, scale: np.ndarray, what: str) -> None:
@@ -102,9 +102,9 @@ def test_the_default_is_unbiased_and_one_number_moves_by_the_correction() -> Non
     at the Kish size ``(1 + lam) / (1 - lam)``, 57.7 rows in steady state."""
     rng = np.random.default_rng(0)
     df = pl.DataFrame({"a": rng.normal(size=400), "b": rng.normal(size=400)})
-    spec = po.spec.ew_cov("c", features=["a", "b"], half_life=20, stats=["var", "std", "cov"])
+    spec = rp.spec.ew_cov("c", features=["a", "b"], half_life=20, stats=["var", "std", "cov"])
     assert spec["model"]["bias"] is False
-    unbiased = po.ModelBank([spec]).fit_predict(df)["c"].struct.field("var_a")
+    unbiased = rp.ModelBank([spec]).fit_predict(df)["c"].struct.field("var_a")
     biased = _fit(df, half_life=20, bias=True, stats=["var"])["var_a"]
     assert unbiased[-1] == pytest.approx(df["a"][:-1].ewm_var(half_life=20)[-1], rel=1e-12)
     assert biased[-1] == pytest.approx(df["a"][:-1].ewm_var(half_life=20, bias=True)[-1], rel=1e-12)
@@ -288,7 +288,7 @@ def test_chunk_invariance_and_a_mid_stream_save_to_the_bit(
     and a bank saved mid-stream and loaded goes on to the same bits as one
     that never stopped."""
     df, _ = _weighted_rows(600, seed=37)
-    spec = po.spec.ew_cov(
+    spec = rp.spec.ew_cov(
         "m",
         features=["a", "b"],
         half_life=8.0,
@@ -301,16 +301,16 @@ def test_chunk_invariance_and_a_mid_stream_save_to_the_bit(
         pca=1,
         min_weight=0.0,
     )
-    whole = po.ModelBank([spec]).fit_predict(df)
+    whole = rp.ModelBank([spec]).fit_predict(df)
     for chunks in (7, 600):
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         size = -(-df.height // chunks)
         parts = [bank.fit_predict(df.slice(o, size)) for o in range(0, df.height, size)]
         assert pl.concat(parts).equals(whole), chunks
-    first = po.ModelBank([spec])
+    first = rp.ModelBank([spec])
     head = first.fit_predict(df.head(311))
     first.save(tmp_path / "bank.msgpack")
-    resumed = po.ModelBank.load(tmp_path / "bank.msgpack", specs=[spec])
+    resumed = rp.ModelBank.load(tmp_path / "bank.msgpack", specs=[spec])
     tail = resumed.fit_predict(df.slice(311))
     assert pl.concat([head, tail]).equals(whole)
     assert whole["m"].struct.field("var_a").null_count() < 10
@@ -321,11 +321,11 @@ def test_bias_is_a_bool_and_reaches_the_spec_and_the_cli_form() -> None:
     the spec it writes, and a spec without it -- a TOML file's -- reads as
     the default."""
     with pytest.raises(TypeError, match="bias must be"):
-        po.spec.ew_cov("m", features=["a", "b"], half_life=5.0, bias=1)  # type: ignore[arg-type]
-    spec = po.spec.ew_cov("m", features=["a", "b"], half_life=5.0)
+        rp.spec.ew_cov("m", features=["a", "b"], half_life=5.0, bias=1)  # type: ignore[arg-type]
+    spec = rp.spec.ew_cov("m", features=["a", "b"], half_life=5.0)
     assert spec["model"]["bias"] is False
-    assert po.spec.ew_cov("m", features=["a", "b"], half_life=5.0, bias=True)["model"]["bias"]
+    assert rp.spec.ew_cov("m", features=["a", "b"], half_life=5.0, bias=True)["model"]["bias"]
     df = _frame(80, seed=38)
     stripped = {**spec, "model": {k: v for k, v in spec["model"].items() if k != "bias"}}
-    got = po.ModelBank([stripped]).fit_predict(df)
-    assert got.equals(po.ModelBank([spec]).fit_predict(df))
+    got = rp.ModelBank([stripped]).fit_predict(df)
+    assert got.equals(rp.ModelBank([spec]).fit_predict(df))

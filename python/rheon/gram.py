@@ -2,7 +2,7 @@
 
 A Gram is the set of sums behind a least-squares fit: the weight of the
 rows, the columns' means and co-moments, and each target's moments.
-:meth:`~rheon.ModelBank.gram` returns one for each group and each
+:meth:`~rheon.polars.ModelBank.gram` returns one for each group and each
 instance of a spec (the part of a model that fits one half-life), from one
 pass over data that is never held in memory.
 This module works on them after the pass, in five kinds of call:
@@ -35,7 +35,7 @@ read its ``columns``, ``targets``, ``means``, ``comoments``,
 ``cross_centered``, ``target_weights``, ``target_means``, ``target_vars``,
 ``weight_sum``, ``n_kish`` and ``target_n_kish``. :func:`merge`, :func:`subset` and
 :func:`from_row` return a mapping of the same shape, so a closed group's
-row (:meth:`~rheon.ModelBank.closed_groups`) is read the same way.
+row (:meth:`~rheon.polars.ModelBank.closed_groups`) is read the same way.
 The compact forms ``gram()`` returns under ``dtype="float32"`` or
 ``layout="packed"`` are taken too, and read in float64. :func:`merge` with
 ``within=True`` returns two more keys, ``within_parts`` and
@@ -75,10 +75,10 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
 from rheon import _rheon as _native
-from rheon._bank import _check_threads
 from rheon._errors import WrongTypeError
-from rheon._frame import ReadinessWarning, _user_stacklevel
 from rheon._renamed import renamed_keywords
+from rheon._threads import _check_threads
+from rheon._warnings import ReadinessWarning, _user_stacklevel
 
 if TYPE_CHECKING:
     import polars as pl
@@ -100,19 +100,19 @@ __all__ = [
     "vif",
 ]
 
-#: The name :meth:`~rheon.ModelBank.gram` gives the constant column a
+#: The name :meth:`~rheon.polars.ModelBank.gram` gives the constant column a
 #: spec's ``fit_intercept`` puts in front of the features, matching the
 #: ``term`` column of :func:`rheon.spec.coef_index`.
 INTERCEPT = "intercept"
 
 
 class Gram(TypedDict):
-    """The mapping that :meth:`~rheon.ModelBank.gram` returns and the functions here take.
+    """The mapping that :meth:`~rheon.polars.ModelBank.gram` returns and the functions here take.
 
     It holds the Gram behind one fit as numpy arrays: the weight of the rows,
     the columns' means and co-moments, and each target's moments. Use it as
     the type of a Gram you pass between the functions of this module.
-    :meth:`~rheon.ModelBank.gram` says what each key holds and its
+    :meth:`~rheon.polars.ModelBank.gram` says what each key holds and its
     shape.
 
     .. rubric:: Examples
@@ -122,8 +122,8 @@ class Gram(TypedDict):
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("ridge")[0]                  # the spec has no groups: one Gram
         print(g["columns"], g["targets"], g["comoments"].shape)
@@ -134,7 +134,7 @@ class Gram(TypedDict):
 
     .. rubric:: See also
 
-    - :meth:`~rheon.ModelBank.gram`, which returns it and describes
+    - :meth:`~rheon.polars.ModelBank.gram`, which returns it and describes
       each key.
     - :func:`from_row`, which builds one from a closed group's row.
 
@@ -401,7 +401,7 @@ def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
     .. rubric:: Parameters
 
     ``grams``
-        The parts, each as :meth:`~rheon.ModelBank.gram` returns it,
+        The parts, each as :meth:`~rheon.polars.ModelBank.gram` returns it,
         all with the same ``columns`` and ``targets``. Merging one Gram
         without ``within`` returns it unchanged. Parts in a compact form
         (``ModelBank.gram(dtype="float32")`` or ``layout="packed"``) merge in
@@ -429,7 +429,7 @@ def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
       instance (the part of a model that fits one half-life).
     - ``n_kish``, where a part has none, such as a part under a hard window
       whose sum of squared weights kept no digit
-      (:meth:`~rheon.ModelBank.gram`): the sum behind it is not
+      (:meth:`~rheon.polars.ModelBank.gram`): the sum behind it is not
       there to add. A part that learned nothing is the one case apart: it
       has no ``n_kish`` and adds nothing to the sum.
     - the target moments, where a part has none, such as a mapping built by
@@ -465,14 +465,14 @@ def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
 
     .. code-block:: python
 
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0, group="stock_id"
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         parts = bank.gram("ridge")                      # one Gram per stock
-        pooled = po.gram.merge(parts)                   # the Gram of every stock's rows together
-        within = po.gram.merge(parts, within=True)      # each stock's level left out
+        pooled = rp.gram.merge(parts)                   # the Gram of every stock's rows together
+        within = rp.gram.merge(parts, within=True)      # each stock's level left out
         print(len(parts), round(pooled["weight_sum"], 2), within["within_parts"])
 
     .. code-block:: text
@@ -573,11 +573,11 @@ def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
 
     .. code-block:: python
 
-        halves = po.spec.ewridge("h", targets=["y"], features=["x0", "x1"],
+        halves = rp.spec.ewridge("h", targets=["y"], features=["x0", "x1"],
                                  clock="t", gap_cap=10.0, half_life=100.0)
 
         def gram_of(rows):                               # the Gram of a new bank fed these rows
-            fitted = po.ModelBank([halves])
+            fitted = rp.ModelBank([halves])
             fitted.fit_predict(rows)
             return fitted.gram("h")[0]
 
@@ -587,7 +587,7 @@ def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
         decay = 0.5 ** (dt / 100.0)
         early = dict(early, weight_sum=early["weight_sum"] * decay,
                      target_weights=early["target_weights"] * decay)
-        aged = po.gram.merge([early, late])              # the Gram of one bank over all 400 rows
+        aged = rp.gram.merge([early, late])              # the Gram of one bank over all 400 rows
         whole = gram_of(df)
         print(np.allclose(aged["comoments"], whole["comoments"], rtol=1e-12, atol=1e-12),
               round(float(aged["weight_sum"]), 6), round(float(whole["weight_sum"]), 6))
@@ -913,18 +913,18 @@ def _floats(np: Any, v: Any) -> Any:
 
 
 def from_row(row: Any) -> Gram:
-    """Read a closed group's row as the Gram :meth:`~rheon.ModelBank.gram` would return.
+    """Read a closed group's row as the Gram :meth:`~rheon.polars.ModelBank.gram` would return.
 
-    Use it on the rows :meth:`~rheon.ModelBank.closed_groups` writes,
+    Use it on the rows :meth:`~rheon.polars.ModelBank.closed_groups` writes,
     or on those rows read back from a file, so that every function in this
     module works on them. For a group still open in the bank, use
-    :meth:`~rheon.ModelBank.gram` itself.
+    :meth:`~rheon.polars.ModelBank.gram` itself.
 
     .. rubric:: Parameters
 
     ``row``
         One closed group's row: a one-row frame of
-        :meth:`~rheon.ModelBank.closed_groups`, a row of its
+        :meth:`~rheon.polars.ModelBank.closed_groups`, a row of its
         ``iter_rows(named=True)``, or a mapping. A closed group writes one
         row per Gram, so a row's ``targets`` are the targets of that one
         Gram. A row that names ``cross_centered`` by its old British spelling,
@@ -954,15 +954,15 @@ def from_row(row: Any) -> Gram:
 
     .. code-block:: python
 
-        blocks = po.spec.ew_cov(
+        blocks = rp.spec.ew_cov(
             "cov", features=["x0", "x1"], lam=1.0, group="block", group_close="monotone"
         )
-        bank = po.ModelBank([blocks])
+        bank = rp.ModelBank([blocks])
         bank.fit_predict(df.with_columns(block=pl.int_range(pl.len()) // 100))
         closed = bank.closed_groups()                 # one row per closed block
         for row in closed.iter_rows(named=True):
-            g = po.gram.from_row(row)
-            r = po.gram.correlation(g)
+            g = rp.gram.from_row(row)
+            r = rp.gram.correlation(g)
             print(row["group"], round(float(r[0, 1]), 3))
 
     .. code-block:: text
@@ -973,7 +973,7 @@ def from_row(row: Any) -> Gram:
 
     .. rubric:: See also
 
-    - :meth:`~rheon.ModelBank.closed_groups`, which writes the rows.
+    - :meth:`~rheon.polars.ModelBank.closed_groups`, which writes the rows.
     - `Read Grams from saved files
       <https://github.com/hgilde/polars-online/blob/main/docs/how-to/read-grams-from-saved-files.md>`__,
       a recipe that runs, with numpy alone too.
@@ -1076,7 +1076,7 @@ def subset(g: Gram, columns: Sequence[str | int]) -> Gram:
     .. rubric:: Parameters
 
     ``g``
-        The Gram, as :meth:`~rheon.ModelBank.gram` returns it.
+        The Gram, as :meth:`~rheon.polars.ModelBank.gram` returns it.
     ``columns``
         The columns to keep, by name or by position, as the Gram's own
         ``columns`` key names them. A negative position counts from the
@@ -1114,14 +1114,14 @@ def subset(g: Gram, columns: Sequence[str | int]) -> Gram:
 
     .. code-block:: python
 
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "ridge", targets=["y"], features=["x0", "x1", "x2"], half_life=100.0
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("ridge")[0]
-        narrow = po.gram.subset(g, ["intercept", "x0"])     # the fit on x0 alone
-        print(narrow["columns"], po.gram.solve(narrow).round(2))
+        narrow = rp.gram.subset(g, ["intercept", "x0"])     # the fit on x0 alone
+        print(narrow["columns"], rp.gram.solve(narrow).round(2))
 
     .. code-block:: text
 
@@ -1181,7 +1181,7 @@ def correlation(g: Gram) -> Any:
     .. rubric:: Parameters
 
     ``g``
-        The Gram, as :meth:`~rheon.ModelBank.gram` returns it, in
+        The Gram, as :meth:`~rheon.polars.ModelBank.gram` returns it, in
         any of its forms.
 
     .. rubric:: Returns
@@ -1200,12 +1200,12 @@ def correlation(g: Gram) -> Any:
 
     .. code-block:: python
 
-        spec = po.spec.ew_cov("cov", features=["x0", "x1", "x2"], half_life=100.0)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.ew_cov("cov", features=["x0", "x1", "x2"], half_life=100.0)
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("cov")[0]
         print(g["columns"])
-        print(po.gram.correlation(g).round(2))
+        print(rp.gram.correlation(g).round(2))
 
     .. code-block:: text
 
@@ -1261,7 +1261,7 @@ def solve(
     .. rubric:: Parameters
 
     ``g``
-        The Gram, as :meth:`~rheon.ModelBank.gram` returns it, or as
+        The Gram, as :meth:`~rheon.polars.ModelBank.gram` returns it, or as
         :func:`merge`, :func:`subset` or :func:`from_row` return one.
     ``ridge``
         The penalty, added to the co-moments, which are weighted means. It
@@ -1317,15 +1317,15 @@ def solve(
 
     .. code-block:: python
 
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0,
             ridge=0.1, standardize=True,
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("ridge")[0]
-        coef = po.gram.solve(g, target="y", ridge=0.1, standardize=True)   # the spec's own fit
-        grid = po.gram.solve(g, target="y", ridge=[1e-6, 0.01, 0.1, 1.0])  # one row per ridge
+        coef = rp.gram.solve(g, target="y", ridge=0.1, standardize=True)   # the spec's own fit
+        grid = rp.gram.solve(g, target="y", ridge=[1e-6, 0.01, 0.1, 1.0])  # one row per ridge
         print(coef.round(3), grid.shape)
 
     .. code-block:: text
@@ -1521,7 +1521,7 @@ def lasso_path(
     .. rubric:: Parameters
 
     ``g``
-        The Gram, as :meth:`~rheon.ModelBank.gram` returns it.
+        The Gram, as :meth:`~rheon.polars.ModelBank.gram` returns it.
     ``penalties``
         The penalties ``l``, from large to small, as a path is meant to be
         walked: each penalty's descent starts from the fit at the one before
@@ -1587,11 +1587,11 @@ def lasso_path(
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("ridge")[0]
-        path = po.gram.lasso_path(g, [1.0, 0.1, 0.001], target="y")   # one row per penalty
+        path = rp.gram.lasso_path(g, [1.0, 0.1, 0.001], target="y")   # one row per penalty
         print(path.round(3) + 0.0)                                  # + 0.0 prints -0.0 as 0.0
 
     .. code-block:: text
@@ -1853,7 +1853,7 @@ def lars_path(
     .. rubric:: Parameters
 
     ``g``
-        The Gram, as :meth:`~rheon.ModelBank.gram` returns it.
+        The Gram, as :meth:`~rheon.polars.ModelBank.gram` returns it.
     ``target``, ``features``
         As for :func:`solve`.
     ``max_iter``
@@ -1876,7 +1876,7 @@ def lars_path(
         column. Use :func:`lasso_path` for that, and for an elastic net, whose
         path is not piecewise linear. Default ``None``, every weight 1. Refused at the wrong length.
     ``threads``
-        How many threads the path runs on, as :class:`~rheon.ModelBank`
+        How many threads the path runs on, as :class:`~rheon.polars.ModelBank`
         takes it: ``None``, the default, is the process's threads, and an
         integer that many threads. One path is one thread's work, so it
         matters only to :func:`lars_paths`. The numbers are the same at any
@@ -1930,13 +1930,13 @@ def lars_path(
 
     .. code-block:: python
 
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "ridge", targets=["y"], features=["x0", "x1", "x2"], half_life=100.0
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("ridge")[0]
-        path = po.gram.lars_path(g, target="y")
+        path = rp.gram.lars_path(g, target="y")
         for l, active in zip(path["penalties"], path["active"]):
             print(f"{l:.3f}", active)       # a knot's penalty, and the columns active below it
         print(path["stop"])
@@ -2052,7 +2052,7 @@ def lars_paths(
     .. rubric:: Parameters
 
     ``grams``
-        The Grams, each as :meth:`~rheon.ModelBank.gram` returns it,
+        The Grams, each as :meth:`~rheon.polars.ModelBank.gram` returns it,
         all with the same ``columns``. Each is fitted as it is: nothing is
         merged, and a Gram pooled within parts has its intercept ``nan``.
     ``targets``
@@ -2065,7 +2065,7 @@ def lars_paths(
         How many threads the Grams run on, beside each other: ``None``, the
         default, is the process's threads, which
         ``POLARS_ONLINE_MAX_THREADS`` sizes, and an integer that many
-        threads, as :class:`~rheon.ModelBank` takes it. Refused
+        threads, as :class:`~rheon.polars.ModelBank` takes it. Refused
         unless an integer of at least 1, or ``None``.
 
     .. rubric:: Returns
@@ -2087,11 +2087,11 @@ def lars_paths(
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
                                half_life=100.0, group="stock_id")
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
-        paths = po.gram.lars_paths(bank.gram("ridge"), max_active=1)   # one list per stock
+        paths = rp.gram.lars_paths(bank.gram("ridge"), max_active=1)   # one list per stock
         # the first column to enter each stock's path
         print([per_gram[0]["active"][-1] for per_gram in paths])
 
@@ -2212,7 +2212,7 @@ def solve_subsets(
     .. rubric:: Parameters
 
     ``grams``
-        The Grams, each as :meth:`~rheon.ModelBank.gram` returns
+        The Grams, each as :meth:`~rheon.polars.ModelBank.gram` returns
         it, all with the same ``columns`` and ``targets``, and each with
         ``means_by_target`` and ``cross_centered``.
     ``subsets``
@@ -2257,7 +2257,7 @@ def solve_subsets(
     ``threads``
         How many threads the subsets are fitted on, beside each other:
         ``None``, the default, is the process's threads, and an integer
-        that many threads, as :class:`~rheon.ModelBank` takes it.
+        that many threads, as :class:`~rheon.polars.ModelBank` takes it.
         Each fit is one thread's arithmetic, so the numbers are the same at
         any count. Refused unless an integer of at least 1, or ``None``.
     ``jobs``
@@ -2334,13 +2334,13 @@ def solve_subsets(
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
                                half_life=float("inf"), group="stock_id")
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         blocks = bank.gram("ridge")                     # one Gram per stock
         # A ridge fit in each block alone, and x0's t in each.
-        each = po.gram.solve_subsets(blocks, [[i] for i in range(len(blocks))], ridge=1e-6)
+        each = rp.gram.solve_subsets(blocks, [[i] for i in range(len(blocks))], ridge=1e-6)
         print([round(float(fits[0]["t"][1]), 1) for fits in each])
 
     .. code-block:: text
@@ -2370,18 +2370,18 @@ def solve_subsets(
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
                                half_life=float("inf"), group="stock_id")
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         blocks = bank.gram("ridge")                     # one Gram per stock
-        halves = po.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1})
+        halves = rp.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1})
         signs = np.random.default_rng(0).choice([-1.0, 1.0], size=(len(blocks), 20))
-        null = po.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1},
+        null = rp.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1},
                                      within=True, target_signs=signs)   # a list per draw
         jobs = [{"subset": 0, "draw": 0, "target": "y", "features": ["x0"]},
                 {"subset": 1, "draw": 3, "target": "y", "features": ["x1", "x0"]}]
-        screened = po.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1},
+        screened = rp.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1},
                                          within=True, target_signs=signs, jobs=jobs)
         print([h[0]["active"][-1] for h in halves],          # each half's first column
               len(null), len(null[0]),                       # 20 draws of 2 subsets
@@ -2924,7 +2924,7 @@ def coef_stats(
     .. rubric:: Parameters
 
     ``g``
-        The Gram, as :meth:`~rheon.ModelBank.gram` returns it, with
+        The Gram, as :meth:`~rheon.polars.ModelBank.gram` returns it, with
         its target moments (``target_vars`` and ``target_n_kish``).
     ``coef``
         The fit, one entry per Gram column, as :func:`solve` returns it.
@@ -2961,7 +2961,7 @@ def coef_stats(
     ``ValueError``
         A ``coef`` without one entry per Gram column; a Gram without target
         moments, such as a mapping built by hand without them
-        (:meth:`~rheon.ModelBank.gram` reports both); the intercept
+        (:meth:`~rheon.polars.ModelBank.gram` reports both); the intercept
         or a column named twice among ``features``, as for :func:`solve`.
     ``KeyError``, ``IndexError``
         As for :func:`solve`.
@@ -2973,12 +2973,12 @@ def coef_stats(
 
     .. code-block:: python
 
-        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
-        bank = po.ModelBank([spec])
+        spec = rp.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("ridge")[0]
-        coef = po.gram.solve(g, target="y")                 # least squares
-        stats = po.gram.coef_stats(g, coef, target="y")
+        coef = rp.gram.solve(g, target="y")                 # least squares
+        stats = rp.gram.coef_stats(g, coef, target="y")
         print(stats["se"].round(3), stats["t"].round(1), round(stats["r2"], 3))
 
     .. code-block:: text
@@ -3151,7 +3151,7 @@ def vif(g: Gram, *, features: Sequence[str | int] | None = None) -> Any:
     .. rubric:: Parameters
 
     ``g``
-        The Gram, as :meth:`~rheon.ModelBank.gram` returns it.
+        The Gram, as :meth:`~rheon.polars.ModelBank.gram` returns it.
     ``features``
         The columns to diagnose, by name or position. Default ``None``, the
         Gram's columns without the intercept: a constant is explained
@@ -3185,12 +3185,12 @@ def vif(g: Gram, *, features: Sequence[str | int] | None = None) -> Any:
 
     .. code-block:: python
 
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "ridge", targets=["y"], features=["x0", "x1", "x2"], half_life=100.0
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df.with_columns(x2=pl.col("x0") + 0.01 * pl.col("x2")))  # x2 nearly x0
-        print([f"{v:.0f}" for v in po.gram.vif(bank.gram("ridge")[0])])   # x0, x1, x2
+        print([f"{v:.0f}" for v in rp.gram.vif(bank.gram("ridge")[0])])   # x0, x1, x2
 
     .. code-block:: text
 
@@ -3261,7 +3261,7 @@ def condition(g: Gram, *, features: Sequence[str | int] | None = None) -> dict[s
     .. rubric:: Parameters
 
     ``g``
-        The Gram, as :meth:`~rheon.ModelBank.gram` returns it.
+        The Gram, as :meth:`~rheon.polars.ModelBank.gram` returns it.
     ``features``
         The columns to diagnose, by name or position. Default ``None``,
         every column of the Gram, the intercept included.
@@ -3304,12 +3304,12 @@ def condition(g: Gram, *, features: Sequence[str | int] | None = None) -> dict[s
 
     .. code-block:: python
 
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "ridge", targets=["y"], features=["x0", "x1", "x2"], half_life=100.0
         )
-        bank = po.ModelBank([spec])
+        bank = rp.ModelBank([spec])
         bank.fit_predict(df.with_columns(x2=pl.col("x0") + 0.01 * pl.col("x2")))  # x2 nearly x0
-        diag = po.gram.condition(bank.gram("ridge")[0])
+        diag = rp.gram.condition(bank.gram("ridge")[0])
         print(round(diag["kappa"]), diag["proportions"][-1].round(2))  # the last component's
 
     .. code-block:: text

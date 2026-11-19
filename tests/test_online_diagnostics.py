@@ -17,7 +17,7 @@ import polars as pl
 import pytest
 
 import ledger
-import rheon as po
+from rheon import polars as rp
 
 TIER = "mixed"
 
@@ -76,11 +76,11 @@ def _spec(switch: str, **kw):
     )
     base[switch] = True
     base.update(kw)
-    return po.spec.ewridge("m", **base)
+    return rp.spec.ewridge("m", **base)
 
 
 def _run(df: pl.DataFrame, spec, chunk: int | None = None) -> pl.DataFrame:
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     if chunk is None:
         return bank.fit_predict(df).unnest("m")
     parts = [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
@@ -157,9 +157,9 @@ def test_the_state_goes_on_across_a_save(switch):
     _, fields = SWITCHES[switch]
     df = _frame()
     whole = _run(df, _spec(switch)).select(fields)
-    bank = po.ModelBank([_spec(switch)])
+    bank = rp.ModelBank([_spec(switch)])
     first = bank.fit_predict(df.slice(0, 500))
-    resumed = po.ModelBank.load_bytes(bank.save_bytes())
+    resumed = rp.ModelBank.load_bytes(bank.save_bytes())
     rest = resumed.fit_predict(df.slice(500))
     got = pl.concat([first, rest]).unnest("m").select(fields)
     assert got.equals(whole, null_equal=True)
@@ -175,7 +175,7 @@ def test_a_reset_starts_the_diagnostic_over(switch):
     x = rng.normal(size=n)
     y = np.where(np.arange(n) < 300, 2.0 * x, -2.0 * x + 8.0) + 0.1 * rng.normal(size=n)
     df = pl.DataFrame({"x0": x, "y": y})
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0"],
@@ -208,22 +208,22 @@ def test_a_memory_is_refused_without_its_switch_or_out_of_range(switch):
 def test_a_model_with_no_prediction_refuses_the_switch(switch):
     # A switch that reads a row's leverage is refused for that first.
     with pytest.raises(ValueError, match=f"{switch} (does not apply to|needs a model).*ew_cov"):
-        po.spec.ew_cov("c", features=["x0", "x1"], half_life=10.0, **{switch: True})
+        rp.spec.ew_cov("c", features=["x0", "x1"], half_life=10.0, **{switch: True})
 
 
 @pytest.mark.parametrize("switch", SWITCHES)
 @pytest.mark.parametrize(
     ("build", "extra"),
     [
-        (po.spec.ewridge, {}),
-        (po.spec.rls, {}),
-        (po.spec.lasso, {"penalties": [0.01]}),
-        (po.spec.kalman, {"coef_half_life": 100.0}),
-        (po.spec.huber, {}),
-        (po.spec.quantile, {"quantile": 0.5}),
-        (po.spec.sgd, {}),
-        (po.spec.pa, {}),
-        (po.spec.ftrl, {"loss": "squared"}),
+        (rp.spec.ewridge, {}),
+        (rp.spec.rls, {}),
+        (rp.spec.lasso, {"penalties": [0.01]}),
+        (rp.spec.kalman, {"coef_half_life": 100.0}),
+        (rp.spec.huber, {}),
+        (rp.spec.quantile, {"quantile": 0.5}),
+        (rp.spec.sgd, {}),
+        (rp.spec.pa, {}),
+        (rp.spec.ftrl, {"loss": "squared"}),
     ],
 )
 def test_every_linear_model_takes_it(switch, build, extra):
@@ -232,13 +232,13 @@ def test_every_linear_model_takes_it(switch, build, extra):
     _, fields = SWITCHES[switch]
     df = _frame()
     kw = dict(targets=["y"], features=["x0", "x1"], half_life=60.0, **extra, **{switch: True})
-    if switch in LEVERAGE and build not in (po.spec.ewridge, po.spec.rls, po.spec.kalman):
+    if switch in LEVERAGE and build not in (rp.spec.ewridge, rp.spec.rls, rp.spec.kalman):
         with pytest.raises(ValueError, match=f"{switch} needs a model that reads one row"):
             build("m", **kw)
         return
     spec = build("m", **kw)
     out = _run(df, spec)
-    if build is po.spec.quantile and switch == "emit_calibration":
+    if build is rp.spec.quantile and switch == "emit_calibration":
         # A quantile fit's calibration is its coverage (task 232 (6)).
         fields = ["calibration_coverage_y", "calibration_wald_y"]
     for f in fields:
@@ -257,9 +257,9 @@ def test_holt_takes_it(switch):
     kw = dict(targets=["y"], half_life=60.0, trend_half_life=60.0, **{switch: True})
     if switch in LEVERAGE:
         with pytest.raises(ValueError, match="needs a model that reads one row"):
-            po.spec.holt("m", **kw)
+            rp.spec.holt("m", **kw)
         return
-    out = _run(df, po.spec.holt("m", **kw))
+    out = _run(df, rp.spec.holt("m", **kw))
     for f in fields:
         if f == "breusch_pagan_y":
             # No feature for a spread to move with.
@@ -278,7 +278,7 @@ def test_a_feature_set_compares_its_own_coefficients():
     slope = np.where(np.arange(n) < 900, 1.0, 2.5)
     y = slope * x[:, 0] - x[:, 1] + rng.normal(size=n)
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -309,7 +309,7 @@ def _robust_spec(**kw):
         coef_every=0,
     )
     base.update(kw)
-    return po.spec.ewridge("m", **base)
+    return rp.spec.ewridge("m", **base)
 
 
 @pytest.mark.parametrize("memory", [None, 150.0, float("inf")])
@@ -342,9 +342,9 @@ def test_robust_se_zero_weight_rows_only_advance_the_clock():
 def test_robust_se_goes_on_across_a_save():
     df = _frame()
     whole = _run(df, _robust_spec()).select(ROBUST)
-    bank = po.ModelBank([_robust_spec()])
+    bank = rp.ModelBank([_robust_spec()])
     first = bank.fit_predict(df.slice(0, 500))
-    resumed = po.ModelBank.load_bytes(bank.save_bytes())
+    resumed = rp.ModelBank.load_bytes(bank.save_bytes())
     rest = resumed.fit_predict(df.slice(500))
     got = pl.concat([first, rest]).unnest("m").select(ROBUST)
     assert got.equals(whole, null_equal=True)
@@ -374,9 +374,9 @@ def test_a_session_change_breaks_the_lags():
 
 
 def test_robust_se_lags_default_to_twice_the_embargo_without_a_clock():
-    fields = po.spec.output_fields(_robust_spec(robust_se_lags=None, embargo=5.0))
+    fields = rp.spec.output_fields(_robust_spec(robust_se_lags=None, embargo=5.0))
     assert "se_coef_hac" in fields
-    assert "se_coef_hac" not in po.spec.output_fields(_robust_spec(robust_se_lags=None))
+    assert "se_coef_hac" not in rp.spec.output_fields(_robust_spec(robust_se_lags=None))
     from rheon import _rheon as native
     from rheon import _spec
 
@@ -400,16 +400,16 @@ def test_robust_se_lags_default_to_the_horizons_twice_its_rows():
 @pytest.mark.parametrize(
     ("build", "extra", "why"),
     [
-        (po.spec.kalman, {"coef_half_life": 100.0}, "its own posterior"),
-        (po.spec.lasso, {"penalties": [0.01]}, "chooses its coefficients from the same rows"),
-        (po.spec.huber, {}, "a robust fit weighs each row by its loss"),
-        (po.spec.sgd, {}, "gradient fit"),
+        (rp.spec.kalman, {"coef_half_life": 100.0}, "its own posterior"),
+        (rp.spec.lasso, {"penalties": [0.01]}, "chooses its coefficients from the same rows"),
+        (rp.spec.huber, {}, "a robust fit weighs each row by its loss"),
+        (rp.spec.sgd, {}, "gradient fit"),
     ],
 )
 def test_robust_se_is_the_least_squares_fits(build, extra, why):
     with pytest.raises(ValueError, match=f"emit_robust_se needs a least-squares fit.*{why}"):
         build("m", targets=["y"], features=["x0"], half_life=60.0, emit_robust_se=True, **extra)
-    for ok in (po.spec.ewridge, po.spec.rls):
+    for ok in (rp.spec.ewridge, rp.spec.rls):
         ok("m", targets=["y"], features=["x0"], half_life=60.0, emit_robust_se=True)
 
 
@@ -433,7 +433,7 @@ def test_the_calibrations_memory_defaults_to_four_half_lives():
     from rheon import _spec
 
     def stream(**kw):
-        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], **kw)
+        spec = rp.spec.ewridge("m", targets=["y"], features=["x0"], **kw)
         return json.loads(native.resolved_defaults(_spec._json(spec)))["stream"]
 
     s = stream(half_life=60.0)
@@ -491,7 +491,7 @@ def test_feature_health_is_refused_where_it_would_be_null():
     for kw in ({"half_life": float("inf")}, {"feature_health_half_life": float("inf")}):
         with pytest.raises(ValueError, match="emit_feature_health.*feature_health_half_life"):
             _spec("emit_feature_health", **kw)
-    windowed = po.spec.ewridge(
+    windowed = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -513,9 +513,9 @@ def test_feature_health_zero_weights_and_a_save():
         np.testing.assert_allclose(
             out[f][2:].to_numpy(), rest[f].to_numpy(), rtol=1e-12, atol=0, equal_nan=True
         )
-    bank = po.ModelBank([spec])
+    bank = rp.ModelBank([spec])
     first = bank.fit_predict(df.slice(0, 500))
-    resumed = po.ModelBank.load_bytes(bank.save_bytes())
+    resumed = rp.ModelBank.load_bytes(bank.save_bytes())
     got = pl.concat([first, resumed.fit_predict(df.slice(500))]).unnest("m").select(HEALTH)
     assert got.equals(out.select(HEALTH), null_equal=True)
 
@@ -531,7 +531,7 @@ def test_a_held_feature_goes_quiet_long_before_rls_winds_up():
     y = x0 + 0.5 * x1 + 0.2 * rng.standard_normal(n)
     held = (t >= 300) & (t < 3_300)
     df = pl.DataFrame({"t": t, "x0": x0, "x1": np.where(held, x1[299], x1), "y": y})
-    spec = po.spec.rls(
+    spec = rp.spec.rls(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -550,7 +550,7 @@ def test_a_held_feature_goes_quiet_long_before_rls_winds_up():
 def test_feature_health_fields_name_their_feature():
     """``output_index`` tells the health fields apart by the feature each
     reads (review round 6, F-9): ``columns`` holds it."""
-    idx = po.spec.output_index(_spec("emit_feature_health"))
+    idx = rp.spec.output_index(_spec("emit_feature_health"))
     rows = idx.filter(pl.col("kind").is_in(["spread_ratio", "mean_shift"]))
     assert rows.height == 4
     for field, columns in rows.select("field", "columns").iter_rows():
@@ -561,7 +561,7 @@ def test_feature_health_is_refused_on_a_model_with_no_features():
     """``holt`` has no features, so the switch would write no field: it is
     refused by name rather than ignored (review round 6, F6)."""
     with pytest.raises(ValueError, match="emit_feature_health.*holt"):
-        po.spec.holt("m", targets=["y"], half_life=60.0, emit_feature_health=True)
+        rp.spec.holt("m", targets=["y"], half_life=60.0, emit_feature_health=True)
 
 
 def test_unnest_takes_the_robust_standard_errors_apart():
@@ -611,7 +611,7 @@ def test_ljung_box_under_a_memory_is_box_pierce_at_kishs_size():
     x = rng.normal(size=(n, 2))
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": x @ [0.5, -0.3] + rng.normal(size=n)})
     for half_life in (10.0, 20.0, 200.0):
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -644,7 +644,7 @@ def test_an_embargo_reads_the_scored_fits_inflation():
     df = pl.DataFrame({"g": np.repeat(np.arange(groups), n), "y": y} | cols)
     read = []
     for embargo in (None, 50.0):
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=list(cols),
@@ -677,7 +677,7 @@ def _at_a_level(groups: int, n: int, level: float = 5_000.0, seed: int = 232) ->
     return pl.DataFrame({"g": g, "x0": x[:, 0], "x1": x[:, 1], "y": y})
 
 
-@pytest.mark.parametrize("build", [po.spec.rls, po.spec.kalman])
+@pytest.mark.parametrize("build", [rp.spec.rls, rp.spec.kalman])
 def test_a_diagnostic_folds_from_readiness(build):
     """A diagnostic folds a row only once its instance is ready: its
     prediction past every gate and the stream 95% settled on the fit's
@@ -690,7 +690,7 @@ def test_a_diagnostic_folds_from_readiness(build):
     n = 2_000
     df = _at_a_level(4, n)
     kw = dict(targets=["y"], features=["x0", "x1"], half_life=50.0, group="g")
-    if build is po.spec.kalman:
+    if build is rp.spec.kalman:
         kw["coef_half_life"] = 50.0
     spec = build("m", emit_tails=True, emit_breaks=True, emit_specification=True, **kw)
     out = _run(df, spec).with_columns(r=pl.int_range(pl.len()).over("g"))
@@ -714,21 +714,21 @@ _FEATURES = dict(_LEVEL, features=["x0", "x1"])
 @pytest.mark.parametrize(
     ("build", "kw", "longest"),
     [
-        (po.spec.holt, _LEVEL, 80.0),
-        (po.spec.holt, dict(_LEVEL, trend_half_life=50.0), 50.0),
-        (po.spec.holt, dict(_LEVEL, trend_half_life=5.0), 20.0),
-        (po.spec.holt, dict(_LEVEL, trend=False), 20.0),
-        (po.spec.kalman, dict(_FEATURES, coef_half_life=[10.0, 60.0, 10.0]), 60.0),
-        (po.spec.kalman, dict(_FEATURES, coef_half_life=[10.0, float("inf"), 10.0]), 20.0),
+        (rp.spec.holt, _LEVEL, 80.0),
+        (rp.spec.holt, dict(_LEVEL, trend_half_life=50.0), 50.0),
+        (rp.spec.holt, dict(_LEVEL, trend_half_life=5.0), 20.0),
+        (rp.spec.holt, dict(_LEVEL, trend=False), 20.0),
+        (rp.spec.kalman, dict(_FEATURES, coef_half_life=[10.0, 60.0, 10.0]), 60.0),
+        (rp.spec.kalman, dict(_FEATURES, coef_half_life=[10.0, float("inf"), 10.0]), 20.0),
         (
-            po.spec.ewridge,
+            rp.spec.ewridge,
             dict(
                 _FEATURES, session="s", session_gap=1000.0, session_shrink=0.5, long_half_life=70.0
             ),
             70.0,
         ),
-        (po.spec.lasso, dict(_FEATURES, penalties=[0.01], select_half_life=90.0), 90.0),
-        (po.spec.ewridge, _FEATURES, 20.0),
+        (rp.spec.lasso, dict(_FEATURES, penalties=[0.01], select_half_life=90.0), 90.0),
+        (rp.spec.ewridge, _FEATURES, 20.0),
     ],
 )
 def test_readiness_reads_the_longest_memory_the_model_keeps(build, kw, longest):
@@ -762,7 +762,7 @@ def test_holts_cusum_waits_for_its_trend():
     df = pl.DataFrame(
         {"g": np.repeat(np.arange(groups), n), "y": 0.5 + rng.standard_normal(groups * n)}
     )
-    spec = po.spec.holt("m", targets=["y"], half_life=50.0, group="g", emit_breaks=True)
+    spec = rp.spec.holt("m", targets=["y"], half_life=50.0, group="g", emit_breaks=True)
     out = _run(df, spec).with_columns(r=pl.int_range(pl.len()).over("g"))
     start = out.filter(pl.col("cusum_y").is_not_null())["r"].min()
     early = out.filter((pl.col("r") >= start) & (pl.col("r") < start + 500))["cusum_y"].drop_nulls()
@@ -777,7 +777,7 @@ def test_a_standardizing_fit_folds_once_its_scaler_has_warmed_up():
     a diagnostic folds from the row after the switch, not from the first
     prediction (task 232 (1))."""
     df = _frame().with_columns(pl.lit(1.0).alias("w"))
-    spec = po.spec.sgd(
+    spec = rp.spec.sgd(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -817,13 +817,13 @@ def test_a_diagnostics_memory_follows_the_fits():
 
     common = dict(targets=["y"], features=["x0"], emit_breaks=True, emit_calibration=True)
     w = 500.0
-    s = _resolved(po.spec.ewridge("m", half_life=float("inf"), window_size=w, **common))
+    s = _resolved(rp.spec.ewridge("m", half_life=float("inf"), window_size=w, **common))
     want = math.log(2) / math.log((w + 1) / (w - 1))
     assert s["breaks_half_life"] == pytest.approx(want, rel=1e-12)
     assert s["calibration_half_life"] == pytest.approx(4 * want, rel=1e-12)
     assert want == pytest.approx(w / 2.885, rel=2e-3)
     clocked = _resolved(
-        po.spec.ewridge(
+        rp.spec.ewridge(
             "m", half_life=float("inf"), window_size=w, clock="t", gap_cap=5.0, **common
         )
     )
@@ -832,14 +832,14 @@ def test_a_diagnostics_memory_follows_the_fits():
     # of the decay's weights cut at the window.
     h = 200.0
     lam = 0.5 ** (1 / h)
-    both = _resolved(po.spec.ewridge("m", half_life=h, window_size=w, **common))
+    both = _resolved(rp.spec.ewridge("m", half_life=h, window_size=w, **common))
     i = np.arange(w)
     n = (lam**i).sum() ** 2 / (lam ** (2 * i)).sum()
     mu = (n - 1) / (n + 1)
     assert both["breaks_half_life"] == pytest.approx(-math.log(2) / math.log(mu), rel=1e-9)
     assert both["breaks_half_life"] < min(h, want)
     k = _resolved(
-        po.spec.kalman(
+        rp.spec.kalman(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -851,7 +851,7 @@ def test_a_diagnostics_memory_follows_the_fits():
     )
     assert k["breaks_half_life"] == 30.0
     assert k["calibration_half_life"] == 120.0
-    plain = _resolved(po.spec.ewridge("m", half_life=60.0, **common))
+    plain = _resolved(rp.spec.ewridge("m", half_life=60.0, **common))
     assert plain["breaks_half_life"] == 60.0
 
 
@@ -865,7 +865,7 @@ def test_beside_a_window_the_robust_errors_read_the_windows_spread():
     x = rng.standard_normal(groups * n)
     y = 0.3 * x + rng.standard_normal(groups * n)
     df = pl.DataFrame({"g": np.repeat(np.arange(groups), n), "x0": x, "y": y})
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0"],
@@ -893,7 +893,7 @@ def test_kalmans_diagnostics_forget_at_its_coefficients_memory():
     df = pl.DataFrame(
         {"x0": x[:, 0], "x1": x[:, 1], "y": x[:, 0] + b1 * x[:, 1] + rng.standard_normal(n)}
     )
-    spec = po.spec.kalman(
+    spec = rp.spec.kalman(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -941,8 +941,8 @@ def test_horizon_rows_gives_a_clocked_spec_its_horizon():
     df = df.with_columns(pl.int_range(pl.len()).over("g").cast(pl.Float64).alias("t"))
     kw = dict(targets=["y"], features=["x0", "x1"], half_life=200.0, group="g", clock="t")
     kw |= dict(gap_cap=10.0, embargo=5.0, emit_specification=True, emit_robust_se=True)
-    clocked = po.spec.ewridge("m", horizon_rows=5, **kw)
-    plain = po.spec.ewridge("m", **{k: v for k, v in kw.items() if k not in ("clock", "gap_cap")})
+    clocked = rp.spec.ewridge("m", horizon_rows=5, **kw)
+    plain = rp.spec.ewridge("m", **{k: v for k, v in kw.items() if k not in ("clock", "gap_cap")})
     a, b = _run(df, clocked), _run(df.drop("t"), plain)
     assert a["ljung_box_y"].equals(b["ljung_box_y"], null_equal=True)
     late = a.filter(pl.int_range(pl.len()).over("g") >= 1_000)
@@ -956,9 +956,9 @@ def test_a_clocked_embargo_without_a_horizon_says_so():
     `horizon_rows` (review round 6, B-2, A-8)."""
     df = pl.DataFrame({"t": np.arange(50.0), "x0": np.arange(50.0) % 7, "y": np.arange(50.0) % 5})
     kw = dict(targets=["y"], features=["x0"], half_life=20.0, clock="t", gap_cap=5.0, embargo=3.0)
-    spec = po.spec.ewridge("m", emit_specification=True, emit_breaks=True, **kw)
-    with pytest.warns(po.ReadinessWarning) as caught:
-        po.ModelBank([spec]).fit_predict(df)
+    spec = rp.spec.ewridge("m", emit_specification=True, emit_breaks=True, **kw)
+    with pytest.warns(rp.ReadinessWarning) as caught:
+        rp.ModelBank([spec]).fit_predict(df)
     said = [str(w.message) for w in caught if "horizon_rows" in str(w.message)]
     assert len(said) == 2, said
     assert any("emit_specification" in m for m in said) and any("emit_breaks" in m for m in said)
@@ -966,13 +966,13 @@ def test_a_clocked_embargo_without_a_horizon_says_so():
 
     for quiet in (dict(horizon_rows=3), dict(embargo=None), dict(clock=None, gap_cap=None)):
         with warnings.catch_warnings():
-            warnings.simplefilter("error", po.ReadinessWarning)
-            po.ModelBank([po.spec.ewridge("m", emit_breaks=True, **(kw | quiet))]).fit_predict(df)
+            warnings.simplefilter("error", rp.ReadinessWarning)
+            rp.ModelBank([rp.spec.ewridge("m", emit_breaks=True, **(kw | quiet))]).fit_predict(df)
 
 
 def test_horizon_rows_is_refused_without_a_diagnostic_that_reads_it():
     with pytest.raises(ValueError, match="horizon_rows applies only when emit_calibration"):
-        po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=20.0, horizon_rows=5)
+        rp.spec.ewridge("m", targets=["y"], features=["x0"], half_life=20.0, horizon_rows=5)
     with pytest.raises(ValueError, match="horizon_rows must be"):
         _spec("emit_breaks", horizon_rows=2**19 + 1)
     assert _resolved(_spec("emit_breaks", horizon_rows=4))["horizon_rows"] == 4
@@ -992,7 +992,7 @@ def test_under_a_horizon_each_test_is_near_its_size(phi):
     rows of a persistent feature, and a run-once statistic keeps it."""
     df = _look_ahead(30, 3_000, 5, phi, 21)
     for half_life in (200.0, float("inf")):
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -1038,8 +1038,8 @@ def test_a_quantile_fits_break_wald_under_a_horizon_is_near_its_size():
     )
     rates = {}
     for name, spec in (
-        ("ewridge", po.spec.ewridge("m", **common)),
-        ("quantile", po.spec.quantile("m", quantile=0.5, **common)),
+        ("ewridge", rp.spec.ewridge("m", **common)),
+        ("quantile", rp.spec.quantile("m", quantile=0.5, **common)),
     ):
         out = _run(df, spec).filter(pl.int_range(pl.len()).over("g") >= 1_500)
         bw = out["break_wald_y"].drop_nulls()
@@ -1076,7 +1076,7 @@ def test_a_windowed_cusum_reads_its_own_null():
     and 1/2, and reads a spread of about 1 (task 232 (4))."""
     df = _clean(20, 5_000, 4)
     for memory in (None, 800.0):
-        spec = po.spec.ewridge(
+        spec = rp.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -1111,7 +1111,7 @@ def test_kalmans_cusum_null_share_reads_the_intercepts_memory(coef_half_life, be
     1.03. The CUSUM of squares reads the scale's memory, and does not
     move."""
     df = _clean(20, 6_000, 7)
-    spec = po.spec.kalman(
+    spec = rp.spec.kalman(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -1156,7 +1156,7 @@ def test_a_windows_cusum_null_share_reads_the_window(window_size, half_life, clo
     if clock:
         df = df.with_columns(t=pl.int_range(pl.len()).over("g") / 2.0)
         extra = {"clock": "t", "gap_cap": 1.0}
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -1183,10 +1183,10 @@ def test_the_cusum_of_squares_reads_the_measured_fourth_moment():
     Over the measured `E[z⁴] − 1` it passes on about 5% (task 232 (4))."""
     df = _clean(40, 4_000, 3, df=4)
     common = dict(targets=["y"], features=["x0", "x1"], group="g", emit_breaks=True)
-    windowed = _run(df, po.spec.ewridge("m", half_life=200.0, **common))
+    windowed = _run(df, rp.spec.ewridge("m", half_life=200.0, **common))
     late = windowed.filter(pl.int_range(pl.len()).over("g") >= 2_000)
     assert (late["cusum_sq_y"].drop_nulls().abs() > 1.96).mean() < 0.09
-    once = po.spec.ewridge("m", half_life=float("inf"), min_weight=10.0, **common)
+    once = rp.spec.ewridge("m", half_life=float("inf"), min_weight=10.0, **common)
     last = _run(df, once).group_by("g").last()
     assert (last["cusum_sq_y"].abs() > 1.96).mean() < 0.15
 
@@ -1208,7 +1208,7 @@ def test_a_feature_gone_quiet_is_no_break():
     x[r >= at, 1] *= 0.1
     y = 0.5 + x @ np.array([1.0, -1.0]) + rng.standard_normal(groups * n)
     df = pl.DataFrame({"g": np.repeat(np.arange(groups), n), "x0": x[:, 0], "x1": x[:, 1], "y": y})
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -1252,9 +1252,9 @@ def test_a_quantile_fits_calibration_is_its_coverage(q, build):
         emit_breaks=True,
     )
     if build == "quantile":
-        spec = po.spec.quantile("m", quantile=q, **common)
+        spec = rp.spec.quantile("m", quantile=q, **common)
     else:
-        spec = po.spec.sgd("m", loss="quantile", quantile=q, **common)
+        spec = rp.spec.sgd("m", loss="quantile", quantile=q, **common)
     out = _run(df, spec)
     assert "calibration_slope_y" not in out.columns
     late = out.filter(pl.int_range(pl.len()).over("g") >= 2_000)
@@ -1273,19 +1273,19 @@ def test_lags_read_from_an_embargo_are_capped():
     at 64, with a notice that names the way to more; `horizon_rows`, given,
     takes them all, and `robust_se_lags` sets `se_coef_hac`'s alone."""
     kw = dict(targets=["y"], features=["x0", "x1"], half_life=60.0, emit_robust_se=True)
-    capped = po.spec.ewridge("m", embargo=100.0, emit_breaks=True, **kw)
+    capped = rp.spec.ewridge("m", embargo=100.0, emit_breaks=True, **kw)
     assert _resolved(capped)["robust_se_lags"] == 64
-    with pytest.warns(po.ReadinessWarning, match="horizon_rows to take them all"):
-        po.ModelBank([capped]).fit_predict(_frame().drop("w"))
-    full = po.spec.ewridge("m", embargo=100.0, horizon_rows=100, **kw)
+    with pytest.warns(rp.ReadinessWarning, match="horizon_rows to take them all"):
+        rp.ModelBank([capped]).fit_predict(_frame().drop("w"))
+    full = rp.spec.ewridge("m", embargo=100.0, horizon_rows=100, **kw)
     assert _resolved(full)["robust_se_lags"] == 200
     import warnings
 
-    for quiet in (full, po.spec.ewridge("m", embargo=30.0, **kw)):
+    for quiet in (full, rp.spec.ewridge("m", embargo=30.0, **kw)):
         with warnings.catch_warnings():
-            warnings.simplefilter("error", po.ReadinessWarning)
-            po.ModelBank([quiet]).fit_predict(_frame().drop("w"))
-    own = po.spec.ewridge("m", embargo=100.0, robust_se_lags=150, **kw)
+            warnings.simplefilter("error", rp.ReadinessWarning)
+            rp.ModelBank([quiet]).fit_predict(_frame().drop("w"))
+    own = rp.spec.ewridge("m", embargo=100.0, robust_se_lags=150, **kw)
     assert _resolved(own)["robust_se_lags"] == 150
 
 
@@ -1294,7 +1294,7 @@ def test_feature_health_is_refused_for_what_it_reads():
     prediction says what it does read, where it said "no residuals"
     (review round 6, F-8)."""
     with pytest.raises(ValueError, match="watches the features a fit's coefficients lean on"):
-        po.spec.ew_cov("c", features=["x0", "x1"], half_life=10.0, emit_feature_health=True)
+        rp.spec.ew_cov("c", features=["x0", "x1"], half_life=10.0, emit_feature_health=True)
 
 
 #: Task 232's new forms, each with the fields it writes: the Newey-West
@@ -1318,7 +1318,7 @@ FORMS = {
         ],
     ),
     "quantile": (
-        lambda **kw: po.spec.quantile(
+        lambda **kw: rp.spec.quantile(
             "m",
             targets=["y"],
             features=["x0", "x1"],
@@ -1352,9 +1352,9 @@ def test_the_new_forms_keep_the_hard_rules(form):
             assert not plain[f].equals(whole[f], null_equal=True), f"{f} did not move"
     for chunk in (7, 600):
         assert _run(df, build(), chunk).select(fields).equals(whole, null_equal=True), chunk
-    bank = po.ModelBank([build()])
+    bank = rp.ModelBank([build()])
     first = bank.fit_predict(df.slice(0, 500))
-    rest = po.ModelBank.load_bytes(bank.save_bytes()).fit_predict(df.slice(500))
+    rest = rp.ModelBank.load_bytes(bank.save_bytes()).fit_predict(df.slice(500))
     assert pl.concat([first, rest]).unnest("m").select(fields).equals(whole, null_equal=True)
     at = 400
     moved = df.with_columns(
@@ -1439,8 +1439,8 @@ def _every_switch(model: str, **kw) -> pl.DataFrame:
     if "robust_se_half_life" in TAKES[model]:
         base["robust_se_lags"] = 2
     base.update(kw)
-    spec = getattr(po.spec, model)("m", **base)
-    return po.ModelBank([spec], threads=1).fit_predict(_crossed()).unnest("m")
+    spec = getattr(rp.spec, model)("m", **base)
+    return rp.ModelBank([spec], threads=1).fit_predict(_crossed()).unnest("m")
 
 
 @pytest.mark.parametrize(
@@ -1500,10 +1500,10 @@ def test_every_memory_and_lag_is_refused_out_of_range_or_without_its_switch():
     base = dict(targets=["y"], features=["x0", "x1"], half_life=60.0)
     for key, (switch, _) in MEMORIES.items():
         with pytest.raises(ValueError, match=f"{key} applies only when {switch} is on"):
-            po.spec.ewridge("m", **base, **{key: 30.0})
+            rp.spec.ewridge("m", **base, **{key: 30.0})
         for bad in (0.0, -1.0):
             with pytest.raises(ValueError, match=f"{key} must be above 0, but it is"):
-                po.spec.ewridge("m", **base, **{switch: True, key: bad})
+                rp.spec.ewridge("m", **base, **{switch: True, key: bad})
     for kw, says in (
         (
             dict(ljung_box_lags=3),
@@ -1524,14 +1524,14 @@ def test_every_memory_and_lag_is_refused_out_of_range_or_without_its_switch():
         (dict(emit_breaks=True, horizon_rows=-1), "horizon_rows must be at least 0, but it is -1"),
     ):
         with pytest.raises(ValueError, match=says):
-            po.spec.ewridge("m", **base, **kw)
+            rp.spec.ewridge("m", **base, **kw)
     # The edges themselves are taken.
     for kw in (
         dict(emit_robust_se=True, robust_se_lags=0),
         dict(emit_robust_se=True, robust_se_lags=2**20),
         dict(emit_breaks=True, horizon_rows=0),
     ):
-        po.ModelBank([po.spec.ewridge("m", **base, **kw)])
+        rp.ModelBank([rp.spec.ewridge("m", **base, **kw)])
 
 
 def test_the_influence_scale_reads_its_own_memory():
@@ -1541,7 +1541,7 @@ def test_the_influence_scale_reads_its_own_memory():
     weight aged at 30. The rows folded are the fit's: 95% settled at 120."""
     n = 1_500
     df = _crossed(n, 31)
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -1576,7 +1576,7 @@ def test_the_studentized_scale_reads_the_breaks_memory():
     once those weights have a Kish size of 10."""
     n, h = 1_500, 40.0
     df = _crossed(n, 32)
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -1613,7 +1613,7 @@ def test_box_pierce_at_a_memory_of_its_own():
     n = 2_000
     x = rng.normal(size=(n, 2))
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": x @ [0.5, -0.3] + rng.normal(size=n)})
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -1649,7 +1649,7 @@ def break_streams() -> pl.DataFrame:
 
 def break_cusum(df: pl.DataFrame, memory: float) -> np.ndarray:
     """The CUSUM beside a fit at 200 on each stream, a row a stream."""
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -1659,7 +1659,7 @@ def break_cusum(df: pl.DataFrame, memory: float) -> np.ndarray:
         emit_breaks=True,
         breaks_half_life=memory,
     )
-    out = po.ModelBank([spec]).fit_predict(df)
+    out = rp.ModelBank([spec]).fit_predict(df)
     c = out["m"].struct.field("cusum_y").fill_null(0.0).fill_nan(0.0).to_numpy()
     return c.reshape(df["g"].n_unique(), -1)
 
@@ -1711,7 +1711,7 @@ def test_a_windowed_cusum_is_near_its_size_from_its_first_rows(field):
     the first 150 rows."""
     groups, n = 100, 1_500
     df = _clean(groups, n, 5)
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -1811,7 +1811,7 @@ def test_a_young_windowed_cusum_reads_its_shares_definition(memory):
             "y": 0.5 + x @ np.array([1.0, -1.0]) + rng.standard_normal(n),
         }
     )
-    spec = po.spec.ewridge(
+    spec = rp.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
@@ -1855,7 +1855,7 @@ def size_out(model: str, df: pl.DataFrame, memory: float) -> pl.DataFrame:
         "quantile": {"quantile": 0.5},
         "window": {"window_size": 400.0},
     }.get(model, {})
-    builder = getattr(po.spec, "ewridge" if model == "window" else model)
+    builder = getattr(rp.spec, "ewridge" if model == "window" else model)
     spec = builder(
         "m",
         targets=["y"],
