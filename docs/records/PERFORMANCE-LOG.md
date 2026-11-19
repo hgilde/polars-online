@@ -5220,6 +5220,135 @@ because one thread is 87% faster, not because more threads are slower.
 | 12M rows, 14 Polars and 14 bank threads | 1.9 s, 0.85 GB | 1.63 s, 0.86 GB |
 | 12M rows, 4 Polars and 14 bank threads | 2.1 s, 0.61 GB | 1.87 s, 0.58 GB |
 
+### 50. 1.6.0 against 1.5.0 (2026-11-18)
+
+*Provenance: measured at `ca9f9383`, 1.6.0's code (the release's own commits
+change its version, its fixtures and its documents, not the wheel), on an
+Apple M4 Pro. Three builds in their own environments: 1.5.0's wheel from
+PyPI (Python 3.12.13, beside polars 2.1.0, the newest that environment
+resolved), 1.5.0 built here from its tag (Python 3.14.6, polars 2.0.0) and
+this build (Python 3.12.13, polars 2.0.0). Load: a 1-minute load average of
+4.6 to 6.6 at the start of the nine benchmark runs (the 5-minute average
+4.2 to 4.6, the 15-minute 3.4 to 3.6); each round ran this build, PyPI's
+wheel and the tag's build in turn. The wide benchmark ran once for each
+build, at a 1-minute load average of 3.7 to 4.6.*
+
+Release step 2 (`docs/contributing/cut-a-release.md`). Step 1, the bit for
+bit comparison with 1.5.0 (`scripts/compare_release.py`), compared 1,296
+fields of 74 specs over 400 rows and found 27 that differ: the break-test's
+Wald distance in every model that emits it (`break_wald_y`, `break_wald_z`
+and `break_wald_hit`, from the eleventh decimal place on) and `bocpd`'s
+`p_change`, `run_mean`, `pred_x1`, `pred_x2` and `loglik` under the diagonal
+covariance. The CHANGELOG's 1.6.0 section declares each. Nothing here is
+slower than 1.5.0 built here past the runs' scatter.
+
+#### The benchmark
+
+`scripts/benchmark.py`, three rounds, each run the best of 3 over 200k
+rows (this build's runs with `--markdown`, which `docs/PERFORMANCE.md`'s
+table now carries). Each build's column is the best of its three runs;
+*the medians* compares the medians of the three; *spread* is the gap
+between this build's fastest and slowest run of the row, over its fastest:
+
+| configuration | notes | 1.5.0, PyPI's wheel | 1.5.0, built here | 1.6.0 | 1.6.0 against 1.5.0 built here | the medians | 1.6.0's spread |
+|---|---|---:|---:|---:|---:|---:|---:|
+| ewridge k=5 | 1 target, 1 half_life | 5,726,550 | 5,725,949 | 6,112,703 | +6.8% | +6.2% | 1.8% |
+| ewridge k=20 | 1 target, 1 half_life | 3,382,726 | 3,426,533 | 3,503,905 | +2.3% | +3.3% | 0.4% |
+| ewridge k=50 | 1 target, 1 half_life | 1,225,186 | 1,221,514 | 1,250,905 | +2.4% | +2.1% | 1.3% |
+| ewridge k=20, 1 target(s) | 1 half_life | 3,360,039 | 3,401,544 | 3,496,129 | +2.8% | +2.8% | 1.7% |
+| ewridge k=20, 10 target(s) | 1 half_life | 1,565,888 | 1,579,027 | 1,640,709 | +3.9% | +4.4% | 1.5% |
+| ewridge k=20, 1 half_life(s) | 1 target | 2,673,862 | 2,745,259 | 2,845,417 | +3.6% | +5.9% | 1.3% |
+| ewridge k=20, 5 half_life(s) | 1 target | 1,911,096 | 1,905,017 | 1,965,133 | +3.2% | +0.5% | 4.3% |
+| ewridge | k=20, 1 target | 3,411,873 | 3,432,524 | 3,491,694 | +1.7% | +1.5% | 0.8% |
+| rls | k=20, 1 target | 1,738,725 | 1,754,173 | 2,539,602 | +44.8% | +46.1% | 2.3% |
+| kalman | k=20, 1 target | 1,828,025 | 1,818,893 | 2,337,128 | +28.5% | +29.5% | 0.7% |
+| lasso | k=20, 1 target | 1,927,163 | 1,949,423 | 2,063,977 | +5.9% | +6.0% | 1.7% |
+| huber | k=20, 1 target | 3,576,498 | 3,613,576 | 3,647,946 | +1.0% | +1.2% | 1.8% |
+| ftrl | k=20, 1 target | 5,165,300 | 5,119,552 | 5,165,879 | +0.9% | +0.2% | 1.6% |
+| ewridge + conformal | k=20, 90% interval | 3,265,926 | 3,310,288 | 3,377,506 | +2.0% | +1.6% | 1.4% |
+| sgd | k=20, squared loss, standardize=False | 7,755,482 | 7,630,578 | 7,659,509 | +0.4% | −1.6% | 2.7% |
+| sgd, simplex | k=20, coef >= 0, sum 1 | 2,428,115 | 2,398,682 | 2,384,288 | −0.6% | −0.4% | 1.5% |
+| pa | k=20, standardize=False | 8,568,598 | 8,453,145 | 8,440,213 | −0.2% | −0.6% | 1.4% |
+| kalman + revert | k=20, revert_half_life | 1,593,198 | 1,580,964 | 1,947,419 | +23.2% | +22.8% | 1.4% |
+| ew_cov | k=20: mean, std, corr (230 statistics) | 2,184,985 | 2,197,505 | 2,680,949 | +22.0% | +21.0% | 2.0% |
+| ew_cov, mahal | k=20: mean, mahal, mahal_q0.99 | 834,793 | 835,568 | 829,125 | −0.8% | −0.6% | 1.2% |
+| ew_class, full | k=20, 3 classes (QDA) | 583,443 | 584,625 | 612,146 | +4.7% | +5.0% | 0.8% |
+| ew_class, shared | k=20, 3 classes (LDA) | 643,977 | 646,119 | 647,622 | +0.2% | −0.7% | 1.9% |
+| ew_class, diagonal | k=20, 3 classes (naive Bayes) | 3,202,607 | 3,132,303 | 3,684,293 | +17.6% | +17.3% | 1.7% |
+| kmeans | 4 features, K=8 | 5,410,786 | 5,320,305 | 5,491,419 | +3.2% | +3.1% | 1.7% |
+| kmeans | k=20, K=8 | 3,241,576 | 3,207,821 | 3,536,936 | +10.3% | +9.6% | 1.2% |
+| micro | 4 features, eps=1 | 8,001,627 | 7,884,272 | 8,134,642 | +3.2% | +3.7% | 0.4% |
+| seqtest | sign of one column | 15,054,242 | 14,815,226 | 14,797,688 | −0.1% | +1.1% | 0.7% |
+| deco | k=20, ew dynamics | 4,790,395 | 5,100,707 | 5,195,570 | +1.9% | −9.9% | 13.5% |
+| deco, blocks | k=20 in 4 blocks | 2,836,139 | 2,836,923 | 3,038,948 | +7.1% | +7.5% | 0.6% |
+| hmm | 4 features, K=2 | 2,566,241 | 2,546,268 | 3,012,929 | +18.3% | +16.7% | 1.9% |
+| hmm | k=20, K=2 | 439,216 | 439,195 | 474,339 | +8.0% | +8.0% | 0.9% |
+| corrchange, monitor | 4 features, horizon 500 | 6,082,440 | 6,102,647 | 6,554,503 | +7.4% | +7.1% | 2.2% |
+| corrchange, window | 4 features, window 100, permute every 500 | 1,277,785 | 1,313,953 | 2,334,461 | +77.7% | +77.3% | 1.1% |
+| bocpd | 4 features, diag, max_run 200 | 713,333 | 718,475 | 981,965 | +36.7% | +36.9% | 0.6% |
+| bocpd | 4 features, diag, max_run 20 | 714,071 | 720,013 | 978,797 | +35.9% | +35.9% | 1.0% |
+| bocpd, gaussian | 4 features, full covariance, max_run 200 | 1,164,533 | 1,166,486 | 1,428,516 | +22.5% | +22.4% | 1.0% |
+| rcov | 4 features, kernel, groups of 1000 | 4,485,277 | 4,486,962 | 11,438,539 | +154.9% | +155.3% | 3.5% |
+| ew_cov, lags | k=20: mean, cov, lags 1-5 | 1,636,222 | 1,660,070 | 1,674,166 | +0.8% | +0.3% | 1.0% |
+| quantile | k=20, the median | 1,748,968 | 1,735,766 | 1,754,714 | +1.1% | +0.1% | 1.3% |
+| holt | level and trend of one column | 12,348,124 | 12,211,876 | 12,138,224 | −0.6% | −0.9% | 3.3% |
+| marginal | 20 features against one target | 10,450,504 | 10,434,238 | 10,338,522 | −0.9% | −1.1% | 1.4% |
+| audit | 20 continuous columns, 256 counters | 976,056 | 975,198 | 1,612,055 | +65.3% | +64.9% | 1.0% |
+| ew_cov, write_parquet struct | k=20, 230 statistics: the writer alone | 2,738,938 | 253,854 | 254,249 | +0.2% | −0.0% | 6.3% |
+| ew_cov, write_parquet flat | k=20, 230 statistics: the writer alone | 2,730,900 | 2,942,332 | 2,713,141 | −7.8% | −4.7% | 41.0% |
+
+The two `write_parquet` rows time Polars' writer on a frame this library
+produced, so they differ between builds by the Polars they ran. PyPI's
+wheel ran polars 2.1.0 and the other two builds polars 2.0.0: the struct
+row, 2,738,938 rows a second in PyPI's environment, reads 253,854 and
+254,249 in the two builds on 2.0.0, which are level. The flat row's rounds
+are the machine's scatter (this build's lay between 1,601,807 and
+2,713,141, the tag's between 2,277,216 and 2,942,332), so its best-of-three
+gap says nothing. The writer is Polars', not this library's.
+
+**1.6.0 is faster where this release changed the row's path, and level
+elsewhere.** The CHANGELOG's 1.6.0 *Performance* section gives each
+change. The rows that moved past their scatter, 1.6.0 against 1.5.0 built
+here: `rcov` +155%, `corrchange`'s window kind +78%, `audit` +65%, `rls`
++45% (this includes the packed factor), `bocpd` at four features with the
+diagonal covariance +36% to +37% and with the full covariance +23%,
+`kalman` +29% (+23% with `revert_half_life`), `ew_cov` with every
+statistic +22%, `ew_class`'s diagonal covariance +18% and `hmm` at four
+features +18%. Every other row is between −0.9% and +10.3% (`kmeans` at 20
+features), apart from `deco`'s single equicorrelation, which is the
+table's one row whose rounds disagree: this build read 5,195,570,
+4,496,677 and 4,566,310 rows a second, the tag's 5,066,230, 5,057,881 and
+5,100,707, so the best of three is +1.9% and the medians are −9.9%. The
+code of `deco` is the tag's, unchanged (no commit since 1.5.0 touches
+`deco.rs`), PyPI's wheel read 4,387,998 to 4,790,395 on the same row, and
+`deco`'s blocks, which run the same code, are +7%. The row's scatter is
+the machine's.
+
+#### The wide benchmark
+
+`scripts/wide_benchmark.py`, one run of each build, rows a second:
+
+| features | configuration | 1.5.0, PyPI's wheel | 1.5.0, built here | 1.6.0 | 1.6.0 against 1.5.0 built here |
+|---:|---|---:|---:|---:|---:|
+| 200 | ewridge, default schedule (solve ~every 20 rows) | 88,691 | 88,724 | 89,054 | +0.4% |
+| 200 | ewridge, solve every 256 rows | 215,945 | 217,158 | 215,960 | −0.6% |
+| 200 | ewridge, solve every 256 rows, gram_block_rows 256 | 384,899 | 396,274 | 398,406 | +0.5% |
+| 200 | ewridge, solve every row | 7,295 | 7,316 | 7,331 | +0.2% |
+| 200 | lasso, 3 penalties (800 rows) | 988 | 976 | 2,329 | +138.6% |
+| 500 | ewridge, default schedule (solve ~every 20 rows) | 12,979 | 12,982 | 13,134 | +1.2% |
+| 500 | ewridge, solve every 256 rows | 39,582 | 39,585 | 39,493 | −0.2% |
+| 500 | ewridge, solve every 256 rows, gram_block_rows 256 | 95,206 | 93,744 | 94,228 | +0.5% |
+| 500 | lasso, 3 penalties (2000 rows) | 274 | 274 | 800 | +192.0% |
+| 1,000 | ewridge, default schedule (solve ~every 20 rows) | 11,348 | 10,907 | 11,589 | +6.3% |
+| 1,000 | ewridge, solve every 256 rows | 17,361 | 16,326 | 16,218 | −0.7% |
+| 1,000 | ewridge, solve every 256 rows, gram_block_rows 256 | 26,588 | 25,345 | 26,445 | +4.3% |
+
+`lasso` is 2.39 times as fast at 200 features and 2.92 times at 500, against
+1.5.0 built here. Every `ewridge` row is within 1.2% of 1.5.0 built here
+except the 1,000-feature fits, whose run-to-run spread is 6-10% on this
+machine (section 49), and which read +6.3%, −0.7% and +4.3% in this run:
+nothing here is slower than 1.5.0, so none was rerun.
+
 ### 49. 1.5.0 against 1.4.0 (2026-11-10)
 
 *Provenance: measured at `ebfde144`, 1.5.0's code (the release's own commit
