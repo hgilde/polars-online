@@ -307,7 +307,7 @@ pip install polars-online      # or: uv add polars-online
 | numpy | needed only by `ModelBank.gram()`, the `po.gram`, `po.corr`, `po.sim` and `po.gbdt` helpers, and `bank.check()`'s collinearity and leakage checks: to use them, install it with the package, as `pip install "polars-online[numpy]"`. Without it, those calls raise `ModuleNotFoundError`, and `bank.check()` reports one `not_checked` finding for the two checks |
 | wheels | macOS (arm64, x86_64), Windows x64, and Linux (x64 glibc and musl, aarch64 glibc), on PyPI and on each GitHub release beside the command-line binaries. On any other platform, the install builds the package from its source distribution, which needs a stable Rust toolchain ([rustup](https://rustup.rs)) |
 | x86-64 CPUs | the x86-64 wheels are built for CPUs with AVX2 and FMA, which most Intel and AMD processors since about 2013 have (Intel Haswell, AMD Excavator and Zen), as Polars' own default wheels do; some low-end Intel Celeron, Pentium and Atom parts of later years lack them. On an older CPU, or in a virtual machine that hides those features, importing the package warns which feature is missing, and the first model that runs would crash with an illegal instruction. Install `polars-online-compat` there instead (next paragraph). Apple silicon and ARM Linux are not affected; a Python running under Rosetta on an Apple silicon Mac is x86-64, and the warning says so |
-| size | 25 to 31 MB to download and 71 to 102 MB installed, by platform |
+| size | 25 to 32 MB to download and 71 to 105 MB installed, by platform |
 
 **On a CPU without AVX2, install `polars-online-compat` instead of `polars-online`.**
 It is the same source and the same version, built for every x86-64 CPU, and
