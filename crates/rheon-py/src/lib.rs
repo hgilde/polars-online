@@ -346,10 +346,11 @@ fn refused_err(r: rheon_polars::Refused) -> PyErr {
     }
 }
 
-/// `rheon.ColumnNotFoundError(msg)`. The class is defined in Python
-/// (`_errors.py`), since it derives from Polars' Python class; should the
-/// module not import, the `ValueError` the class derives from is raised
-/// instead, with the same message.
+/// `rheon.ColumnNotFoundError(msg)`, or `rheon.polars`' subclass of it, which
+/// derives from Polars' Python class too, once `rheon.polars` is imported
+/// (`_errors.py`, `flavoured`); should the module not import, the
+/// `ValueError` the class derives from is raised instead, with the same
+/// message.
 fn column_not_found(msg: String) -> PyErr {
     errors_class("ColumnNotFoundError", msg)
 }
@@ -361,13 +362,14 @@ pub(crate) fn wrong_type(msg: String) -> PyErr {
     errors_class("WrongTypeError", msg)
 }
 
-/// An instance of the class `name` of `rheon._errors`, or the
-/// `ValueError` each of them derives from where it cannot be had.
+/// An instance of the class `name` that `rheon._errors.flavoured` picks (the
+/// Polars-parented one once `rheon.polars` is imported, else the neutral
+/// one), or the `ValueError` each of them derives from where it cannot be had.
 fn errors_class(name: &str, msg: String) -> PyErr {
     Python::attach(|py| {
         match py
             .import("rheon._errors")
-            .and_then(|m| m.getattr(name))
+            .and_then(|m| m.call_method1("flavoured", (name,)))
             .and_then(|c| Ok(c.cast_into::<pyo3::types::PyType>()?))
         {
             Ok(cls) => PyErr::from_type(cls, msg),

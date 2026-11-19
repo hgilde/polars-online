@@ -105,8 +105,9 @@ from typing import TYPE_CHECKING, Any, Literal
 import polars as pl
 
 from rheon import _rheon as _native
-from rheon._errors import ColumnNotFoundError, WrongTypeError
+from rheon._errors import WrongTypeError
 from rheon._warnings import unstable
+from rheon.polars._errors import ColumnNotFoundError
 
 if TYPE_CHECKING:
     import lightgbm

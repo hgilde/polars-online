@@ -121,14 +121,11 @@ from typing import Any, Literal, overload
 import polars as pl
 
 from rheon import _rheon as _native
-from rheon._duration import Duration, clock_nanoseconds
-from rheon._errors import (
-    ColumnNotFoundError,
-    OutputColumnNotFoundError,
-    RefusedValueError,
-    WrongTypeError,
-)
+from rheon._duration import Duration
+from rheon._errors import RefusedValueError, WrongTypeError
 from rheon._renamed import renamed_function, renamed_keywords
+from rheon.polars._clock import clock_nanoseconds
+from rheon.polars._errors import ColumnNotFoundError, OutputColumnNotFoundError
 
 __all__ = [
     "metrics",

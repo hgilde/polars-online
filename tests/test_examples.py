@@ -146,7 +146,9 @@ def test_database_drivers_are_dev_dependencies_only():
     on the packaging, as the pathway separation is, rather than trusted to a
     comment."""
     meta = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
-    runtime = " ".join(meta["project"]["dependencies"]).lower()
+    runtime = " ".join(
+        [*meta["project"]["dependencies"], *meta["project"]["optional-dependencies"]["polars"]]
+    ).lower()
     dev = " ".join(meta["dependency-groups"]["dev"]).lower()
     for name in ("duckdb", "adbc-driver-manager", "adbc-driver-sqlite"):
         assert name not in runtime, f"{name} became a package dependency"

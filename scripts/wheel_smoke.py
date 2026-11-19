@@ -8,6 +8,7 @@ from PyPI as ``pip install`` gives them to a user, and runs this:
 
     python scripts/wheel_smoke.py --version 0.14.0 [--distribution polars-online-compat]
                                   [--features +avx2,+fma,...]
+    python scripts/wheel_smoke.py --bare [--version 0.14.0]
 
 It checks that the package comes from that environment rather than a
 checkout, that it is the version being released, and that the native module
@@ -24,6 +25,12 @@ to the CPU features it was built to need (``--features``: the list the build
 recorded for the import-time CPU check, empty for the compat build, the ARM
 wheels and the sdist, and the release's list for an x86-64 ``polars-online``
 wheel) and, where it needs any, to the machine it runs on having them.
+
+``--bare`` checks the install without the ``polars`` extra instead: with
+Polars made unimportable in this process, as for ``pip install rheon``,
+``import rheon`` works and its neutral names run (a spec, a Gram, a
+correlation matrix, the versions), and ``from rheon import polars`` raises an
+``ImportError`` naming ``rheon[polars]``.
 """
 
 from __future__ import annotations
@@ -119,6 +126,56 @@ def check(
     return f"polars-online {rp.__version__} on polars {pl.__version__}, from {where.parent}: ok"
 
 
+class _WithoutPolars:
+    """A ``sys.meta_path`` finder that makes Polars unimportable, as if the
+    ``polars`` extra were not installed."""
+
+    @staticmethod
+    def find_spec(name: str, path: object = None, target: object = None) -> None:
+        top = name.split(".")[0]
+        if top == "polars" or top.startswith(("polars_runtime", "_polars_runtime")):
+            raise ModuleNotFoundError(f"No module named {name!r} (--bare)", name=name)
+
+
+def check_bare(version: str | None = None, installed: bool = True) -> str:
+    """Raise on the first failed check of ``import rheon`` without Polars;
+    return a line naming what ran. Must run in a process that has not
+    imported Polars or ``rheon``."""
+    if "polars" in sys.modules or "rheon" in sys.modules:
+        raise SystemExit("--bare needs a process that has imported neither polars nor rheon")
+    sys.meta_path.insert(0, _WithoutPolars)
+    import rheon
+
+    where = Path(rheon.__file__).resolve()
+    if installed and where.is_relative_to(REPO / "python"):
+        raise SystemExit(f"rheon came from the checkout ({where}), not the wheel")
+    if version is not None and rheon.__version__ != version:
+        raise SystemExit(f"the wheel is rheon {rheon.__version__}, not {version}")
+    spec = rheon.spec.ewridge("m", targets=["y"], features=["x"], half_life=50.0)
+    if not rheon.spec.output_fields(spec):
+        raise SystemExit("a spec has no output fields")
+    if rheon.schema_version() <= 0 or not rheon.native_version():
+        raise SystemExit("the versions do not read")
+    try:
+        import numpy as np
+    except ImportError:
+        pass  # the numpy extra is optional too; the Gram tools need it
+    else:
+        g = {"columns": ["a", "b"], "comoments": np.array([[2.0, 1.0], [1.0, 2.0]])}
+        if abs(rheon.gram.correlation(g)[0, 1] - 0.5) > 1e-12:
+            raise SystemExit("rheon.gram.correlation is wrong")
+    try:
+        from rheon import polars  # noqa: F401
+    except ImportError as e:
+        if "rheon[polars]" not in str(e):
+            raise SystemExit(f"rheon.polars refused without naming the extra: {e}") from None
+    else:
+        raise SystemExit("rheon.polars imported without Polars")
+    if "polars" in sys.modules:
+        raise SystemExit("polars is in sys.modules")
+    return f"rheon {rheon.__version__} without Polars: ok"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--version", help="the version the wheel must be")
@@ -133,7 +190,15 @@ def main() -> None:
         default="",
         help="the CPU features the build must have recorded, as +a,+b; empty for none",
     )
+    parser.add_argument(
+        "--bare",
+        action="store_true",
+        help="check the install without the polars extra: import rheon with Polars unimportable",
+    )
     args = parser.parse_args()
+    if args.bare:
+        print(check_bare(args.version, True), flush=True)
+        return
     print(check(args.version, True, args.distribution, args.features), flush=True)
 
 

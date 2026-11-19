@@ -102,14 +102,24 @@ as it was, apart from the two cases :meth:`ModelBank.fit_predict` names.
   four use cases run end to end.
 """
 
-# ruff: noqa: E402  (the imports below follow the docstring on purpose)
+# ruff: noqa: E402  (the imports below follow the docstring and the gate on purpose)
+# The gate: `rheon` needs no Polars, and this module is the part that does, so
+# it says how to install it rather than failing on the first Polars name.
+try:
+    import polars as _polars
+except ImportError:
+    raise ImportError(
+        "rheon.polars: this module runs on Polars, which is not installed. Install it "
+        'with the extra: pip install "rheon[polars]".'
+    ) from None
+del _polars
+
+# `rp.ColumnNotFoundError`, `rp.OutputColumnNotFoundError` and
+# `rp.UnstableWarning` are the Polars-parented subclasses: once their modules
+# are imported, the extension and `warn_unstable` raise them
+# (`rheon._errors.flavoured`). The other names are `rheon`'s own objects.
 from rheon import __version__, corr, gram, spec
-from rheon._errors import (
-    ColumnNotFoundError,
-    OutputColumnNotFoundError,
-    RefusedValueError,
-    WrongTypeError,
-)
+from rheon._errors import RefusedValueError, WrongTypeError
 from rheon._rheon import (
     ArrowStruct,
     native_version,
@@ -121,7 +131,6 @@ from rheon._warnings import (
     PolarsOnlineDeprecationWarning,
     PolarsOnlineWarning,
     ReadinessWarning,
-    UnstableWarning,
 )
 from rheon.polars import (
     _frame,  # noqa: F401  (registers the frame namespaces)
@@ -131,6 +140,7 @@ from rheon.polars import (
     stream,
 )
 from rheon.polars._bank import ModelBank
+from rheon.polars._errors import ColumnNotFoundError, OutputColumnNotFoundError
 from rheon.polars._frame import (
     ConsumedSourceWarning,
     OrderNotGuaranteedWarning,
@@ -138,6 +148,7 @@ from rheon.polars._frame import (
     predict,
     unnest,
 )
+from rheon.polars._warnings import UnstableWarning
 from rheon.polars.ops import (
     ewm_mean,
     ewm_quantile,

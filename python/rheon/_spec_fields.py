@@ -2,17 +2,34 @@
 :func:`output_index`, :func:`coef_fields` and :func:`coef_index`, exported
 as ``rheon.spec``'s. They read a spec as the bank does, through the
 extension, and live apart from the builders in ``_spec.py``.
+
+Three of them return a Polars frame, so they import Polars when called, and
+refuse without it, naming the extra that installs it; ``import rheon``
+imports no Polars.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
-import polars as pl
+from typing import TYPE_CHECKING, Any
 
 from rheon import _spec
 from rheon._rheon import spec_coef_fields, spec_output_fields, spec_output_index
 from rheon._spec import _json
+
+if TYPE_CHECKING:
+    import polars as pl
+
+
+def _need_polars(who: str) -> None:
+    """Refuse, naming the extra, when Polars cannot be imported: ``who``
+    returns a Polars frame, which the extension makes through Polars."""
+    try:
+        import polars  # noqa: F401
+    except ImportError:
+        raise ImportError(
+            f"{who}: it returns a Polars frame, and Polars is not installed. Install it "
+            'with the extra: pip install "rheon[polars]".'
+        ) from None
 
 
 def output_fields(spec: dict[str, Any]) -> list[str]:
@@ -193,6 +210,7 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
     The table is made by the Rust code that writes the names, so it cannot
     drift from them.
     """
+    _need_polars("rheon.spec.output_index")
     return spec_output_index(_json(spec))
 
 
@@ -290,6 +308,7 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
     in turn, in the order the ``pred`` fields are declared. A feature
     outside a feature set reads zero.
     """
+    _need_polars("rheon.spec.coef_fields")
     return spec_coef_fields(_json(spec))
 
 
@@ -394,6 +413,9 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
       column name.
     - :func:`output_index`, every field with the values its name encodes.
     """
+    _need_polars("rheon.spec.coef_index")
+    import polars as pl
+
     cf = coef_fields(spec)
     if cf.is_empty():
         return _index_columns(cf)

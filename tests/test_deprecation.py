@@ -16,6 +16,7 @@ import warnings
 import polars as pl
 import pytest
 
+import rheon
 from rheon import _warnings
 from rheon import polars as rp
 
@@ -125,5 +126,10 @@ def test_a_numeric_session_gap_is_refused():
 def test_the_exception_classes_have_the_one_parent_their_problem_names():
     assert rp.WrongTypeError.__bases__ == (TypeError,)
     assert rp.RefusedValueError.__bases__ == (ValueError,)
-    assert rp.OutputColumnNotFoundError.__bases__ == (rp.ColumnNotFoundError,)
+    # `rheon.polars`' class is `rheon`'s too, which needs no Polars
+    # (tests/test_exception_types.py holds the split).
+    assert rp.OutputColumnNotFoundError.__bases__ == (
+        rp.ColumnNotFoundError,
+        rheon.OutputColumnNotFoundError,
+    )
     assert not issubclass(rp.OutputColumnNotFoundError, KeyError)

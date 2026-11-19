@@ -70,6 +70,7 @@ from __future__ import annotations
 import math
 import numbers
 import operator
+import sys
 import warnings
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
@@ -2765,9 +2766,10 @@ def _subset_jobs(
     draw and set, each a position. ``default`` is the slots of the call's
     ``features``, a job's columns when it names none."""
     if not isinstance(jobs, Sequence):
-        import polars as pl
-
-        if not isinstance(jobs, pl.DataFrame):
+        # A frame exists only once Polars is imported, so it is looked up
+        # rather than imported: `rheon.gram` needs no Polars.
+        pl = sys.modules.get("polars")
+        if pl is None or not isinstance(jobs, pl.DataFrame):
             msg = (
                 "po.gram.solve_subsets: jobs must be a list of mappings, one for each fit, or "
                 f"a frame of them, but its type is {type(jobs).__name__}. Pass a list of dicts or "

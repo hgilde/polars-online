@@ -61,12 +61,14 @@ import polars as pl
 from polars.io.plugins import register_io_source
 
 from rheon import _rheon as _native
-from rheon._duration import Duration, clock_nanoseconds, duration_text
-from rheon._errors import ColumnNotFoundError, RefusedValueError, WrongTypeError
+from rheon._duration import Duration, duration_text
+from rheon._errors import RefusedValueError, WrongTypeError
 from rheon._spec import _RENAMED, _RENAMED_KEYWORDS, _renamed_keywords
 from rheon._warnings import _user_stacklevel, warn_unstable
 from rheon.polars import _formula
 from rheon.polars._bank import _refuse_uint128
+from rheon.polars._clock import clock_nanoseconds
+from rheon.polars._errors import ColumnNotFoundError
 from rheon.polars._frame import (
     ConsumedSourceWarning,
     State,

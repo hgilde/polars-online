@@ -1862,13 +1862,13 @@ wheels = [
 name = "rheon"
 version = "1.6.0"
 source = { editable = "." }
-dependencies = [
-    { name = "polars" },
-]
 
 [package.optional-dependencies]
 numpy = [
     { name = "numpy" },
+]
+polars = [
+    { name = "polars" },
 ]
 
 [package.dev-dependencies]
@@ -1895,6 +1895,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-xdist" },
     { name = "pyyaml" },
+    { name = "rheon", extra = ["polars"] },
     { name = "river" },
     { name = "ruff" },
     { name = "scikit-learn" },
@@ -1907,15 +1908,16 @@ dev = [
 ]
 docs = [
     { name = "furo" },
+    { name = "rheon", extra = ["polars"] },
     { name = "sphinx" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "numpy", marker = "extra == 'numpy'", specifier = ">=1.26" },
-    { name = "polars", specifier = ">=1.37.0,<3" },
+    { name = "polars", marker = "extra == 'polars'", specifier = ">=1.37.0,<3" },
 ]
-provides-extras = ["numpy"]
+provides-extras = ["polars", "numpy"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1941,6 +1943,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rheon", extras = ["polars"] },
     { name = "river", specifier = ">=0.26.1" },
     { name = "ruff", specifier = ">=0.14" },
     { name = "scikit-learn", specifier = ">=1.9.1" },
@@ -1953,6 +1956,7 @@ dev = [
 ]
 docs = [
     { name = "furo", specifier = ">=2024.8" },
+    { name = "rheon", extras = ["polars"] },
     { name = "sphinx", specifier = ">=8.2" },
 ]
 

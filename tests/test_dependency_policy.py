@@ -65,18 +65,24 @@ def _imports() -> dict[str, set[str]]:
 
 
 def test_the_package_depends_on_polars_alone() -> None:
-    assert [_name(r) for r in META["project"]["dependencies"]] == ["polars"]
-    # The extras too: numpy for the few accessors that need it, and nothing
-    # else rides in on an extra (review 2026-09-25).
+    """`import rheon` needs nothing; `rheon.polars` needs the `polars` extra,
+    and the dev and docs groups take Polars through it, so its range is
+    written once."""
+    assert META["project"]["dependencies"] == []
+    # The extras: polars for `rheon.polars`, numpy for the few accessors that
+    # need it, and nothing else rides in on an extra (review 2026-09-25).
     extras = {k: [_name(r) for r in v] for k, v in META["project"]["optional-dependencies"].items()}
-    assert extras == {"numpy": ["numpy"]}, extras
+    assert extras == {"polars": ["polars"], "numpy": ["numpy"]}, extras
+    for group in ("dev", "docs"):
+        assert "rheon[polars]" in META["dependency-groups"][group], group
+        assert not [r for r in META["dependency-groups"][group] if _name(r) == "polars"], group
 
 
 def test_every_library_a_test_imports_is_declared_in_the_dev_group() -> None:
     """By name: pandas and scipy used to arrive through statsmodels, so
     dropping statsmodels would have broken tests that never mention it."""
     declared = {_name(r) for r in META["dependency-groups"]["dev"]}
-    declared |= {_name(r) for r in META["project"]["dependencies"]}
+    declared |= {_name(r) for v in META["project"]["optional-dependencies"].values() for r in v}
     dists = importlib.metadata.packages_distributions()
     imports = _imports()
     assert {"numpy", "pandas", "pyarrow", "river"} <= set(imports), sorted(imports)

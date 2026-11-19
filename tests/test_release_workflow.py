@@ -157,7 +157,7 @@ def test_numpy_is_tested_at_its_newest_and_its_next_release_candidate():
 def _polars_floor() -> str:
     """The floor of the polars range `pyproject.toml` declares."""
     meta = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    (polars,) = [d for d in meta["dependencies"] if re.match(r"polars\b", d)]
+    (polars,) = [d for d in meta["optional-dependencies"]["polars"] if re.match(r"polars\b", d)]
     m = re.fullmatch(r"polars>=([\d.]+),<\d+", polars)
     assert m, polars
     return m.group(1)
@@ -266,12 +266,14 @@ def test_the_floor_script_reads_the_range_it_is_given(tmp_path):
         ('"polars>=2.1.4,<4"', "2.1.4"),
     ):
         (tmp_path / "pyproject.toml").write_text(
-            f'[project]\nname = "x"\ndependencies = [{line}]\n', encoding="utf-8"
+            f'[project]\nname = "x"\n[project.optional-dependencies]\npolars = [{line}]\n',
+            encoding="utf-8",
         )
         assert floor.version(tmp_path) == want
     for line in ('"polars"', '"polars~=1.34"', '"polars-lts-cpu>=1.0,<2"'):
         (tmp_path / "pyproject.toml").write_text(
-            f'[project]\nname = "x"\ndependencies = [{line}]\n', encoding="utf-8"
+            f'[project]\nname = "x"\n[project.optional-dependencies]\npolars = [{line}]\n',
+            encoding="utf-8",
         )
         with pytest.raises(SystemExit, match="polars"):
             floor.version(tmp_path)

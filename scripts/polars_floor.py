@@ -25,9 +25,11 @@ RANGE = re.compile(r"polars>=(\d+\.\d+\.\d+),<\d+")
 
 
 def version(root: Path = REPO) -> str:
-    """The floor of the polars dependency in ``root``'s ``pyproject.toml``."""
+    """The floor of the polars dependency in ``root``'s ``pyproject.toml``:
+    its ``polars`` extra, which ``rheon.polars`` needs."""
     meta = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    found = [d for d in meta.get("dependencies", []) if re.match(r"polars(?![\w-])", d)]
+    extra = meta.get("optional-dependencies", {}).get("polars", [])
+    found = [d for d in extra if re.match(r"polars(?![\w-])", d)]
     if len(found) != 1:
         sys.exit(f"pyproject.toml declares {len(found)} polars dependencies, not one: {found}")
     (line,) = found

@@ -15,7 +15,7 @@ from typing import IO, TYPE_CHECKING, Any, Literal, NoReturn, overload
 import polars as pl
 
 from rheon import _rheon as _native
-from rheon._errors import ColumnNotFoundError, WrongTypeError
+from rheon._errors import WrongTypeError
 from rheon._renamed import renamed_keywords, renamed_method
 from rheon._rheon import ArrowStruct
 from rheon._spec import (
@@ -29,6 +29,7 @@ from rheon._spec import (
 )
 from rheon._threads import _check_threads
 from rheon._warnings import warn_unstable
+from rheon.polars._errors import ColumnNotFoundError
 
 if TYPE_CHECKING:
     from rheon.gram import Gram

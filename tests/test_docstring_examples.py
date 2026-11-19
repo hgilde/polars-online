@@ -18,6 +18,7 @@ import textwrap
 
 import pytest
 
+import rheon
 from doc_recipes import differences
 from polars_version import block_marks
 from rheon import polars as rp
@@ -52,7 +53,9 @@ def _blocks(doc: str) -> list[tuple[str, str]]:
 
 def _documented() -> list[tuple[str, object]]:
     """The public objects whose docstrings the API reference is built from."""
-    modules = [rp, rp.spec, rp._bank, rp._frame]
+    # `rheon` first: the neutral classes `rheon.polars` subclasses keep
+    # docstrings of their own, run here too.
+    modules = [rheon, rp, rp.spec, rp._bank, rp._frame]
     modules += [rp.gram, rp.eval, rp.corr, rp.stream, rp.sim]
     seen: set[int] = set()
     out: list[tuple[str, object]] = []

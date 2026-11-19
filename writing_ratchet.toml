@@ -626,4 +626,24 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "remedy" = 2
 "where" = 2
 
+[messages."python/rheon/_spec_fields.py"]
+
+[messages."python/rheon/polars/__init__.py"]
+
+[messages."python/rheon/polars/_clock.py"]
+
+[docstrings."python/rheon/polars/_errors.py"]
+
+[docstrings."python/rheon/polars/_warnings.py"]
+
 [vocabulary."python/rheon/_cpu_check.py#messages"]
+
+[vocabulary."python/rheon/_spec_fields.py#messages"]
+
+[vocabulary."python/rheon/polars/__init__.py#messages"]
+
+[vocabulary."python/rheon/polars/_clock.py#messages"]
+
+[vocabulary."python/rheon/polars/_errors.py#docstrings"]
+
+[vocabulary."python/rheon/polars/_warnings.py#docstrings"]

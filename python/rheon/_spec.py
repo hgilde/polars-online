@@ -20,11 +20,9 @@ import types
 import typing
 from collections.abc import Callable, Sequence
 from datetime import timedelta
-from typing import Any, Literal, NotRequired, TypedDict, Unpack
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, Unpack
 
-import polars as pl
-
-from rheon._duration import Duration, duration_text, infinity_as_number
+from rheon._duration import Duration, _Expr, _is_expr, duration_text, infinity_as_number
 from rheon._kwargs import CommonKwargs
 from rheon._renamed import removed_keywords, renamed_keywords
 from rheon._rheon import validate_spec
@@ -40,6 +38,9 @@ from rheon._spec_words import (
     word_reason,
     words_refusal,
 )
+
+if TYPE_CHECKING:
+    import polars as pl
 
 
 def _who(name: Any) -> str:
@@ -92,11 +93,11 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
             return {k: enc(x, key, who, inner=True) for k, x in v.items()}
         if isinstance(v, (list, tuple)):
             return [enc(x, key, who, inner=True) for x in v]
-        if isinstance(v, pl.Expr) and key == "targets":
+        if key == "targets" and _is_expr(v):
             # A window expression in `targets`, as the builders take one
             # (review R2, P5: every surface that writes a spec dict).
             return enc(formula_target(_who(who), v), key, who)
-        if isinstance(v, (pl.Expr, timedelta)):
+        if isinstance(v, timedelta) or _is_expr(v):
             if key in _CLOCK_KEYS:
                 return duration_text(v, _who(who), key)
             raise TypeError(
@@ -173,8 +174,12 @@ def _matches(v: Any, hint: Any) -> bool:
         return isinstance(v, numbers.Integral) and not isinstance(v, bool)
     if hint is str:
         return isinstance(v, str)
-    if hint in (timedelta, pl.Expr):
-        return isinstance(v, hint)
+    if hint is timedelta:
+        return isinstance(v, timedelta)
+    if hint is _Expr:
+        # The run time's stand-in for `pl.Expr` (rheon._duration): an
+        # expression exists only once Polars is imported.
+        return _is_expr(v)
     if typing.is_typeddict(hint):
         # A table (`rp.target`): its keys and no other, the required ones
         # present, each value of its annotated shape (review 2026-09-26, F4:
@@ -814,7 +819,13 @@ class FormulaTarget(TypedDict):
 #: ``list`` is invariant, and a union of two lists refused all three (review
 #: 2026-10-05, YA4). A ``str`` is a sequence of strs to a type checker; the
 #: builders refuse one by name when they run.
-TargetList = Sequence[str | Target | FormulaTarget | pl.Expr]
+#: A type checker reads ``pl.Expr``; the run time reads the stand-in
+#: ``rheon._duration._Expr``, so the builders' annotations resolve without
+#: Polars.
+if TYPE_CHECKING:
+    TargetList = Sequence[str | Target | FormulaTarget | pl.Expr]
+else:
+    TargetList = Sequence[str | Target | FormulaTarget | _Expr]
 
 #: The keys of task 107a's relative target, removed in task 201: a target
 #: table naming one is refused by name, with :data:`_RELATIVE_REMOVED`.
@@ -1069,7 +1080,10 @@ def _common(
     group_close: Literal["monotone", "session"] | None = None,
 ) -> dict[str, Any]:
     written: list[str | Target | FormulaTarget] = [
-        formula_target(f"spec {quoted(name)}", t) if isinstance(t, pl.Expr) else t for t in targets
+        formula_target(f"spec {quoted(name)}", t)
+        if _is_expr(t)
+        else typing.cast("str | Target | FormulaTarget", t)
+        for t in targets
     ]
     spec = {
         "name": name,

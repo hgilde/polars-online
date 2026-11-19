@@ -36,6 +36,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+import rheon
 from doc_recipes import TIMED, differences, shown_outputs, untimed
 from doc_recipes import run as run_recipe
 from polars_version import block_marks
@@ -943,6 +944,7 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
         "np": np,
         "po": rp,
         "rp": rp,
+        "rheon": rheon,
         "df": df,
         # docs/how-to/close-groups.md introduces both, and its check block
         # reuses them.

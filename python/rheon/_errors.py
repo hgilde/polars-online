@@ -4,14 +4,22 @@ Each is a subclass of the one class the problem calls for, which its docstring
 names: :class:`WrongTypeError` is a ``TypeError``, :class:`RefusedValueError` a
 ``ValueError`` and :class:`OutputColumnNotFoundError` a
 :class:`ColumnNotFoundError`.
+
+These need no Polars. ``rheon.polars`` adds a subclass of
+:class:`ColumnNotFoundError` and of :class:`OutputColumnNotFoundError` that
+is Polars' ``ColumnNotFoundError`` too (``rheon/polars/_errors.py``), and
+raises those, so an ``except`` on Polars' class catches what a Polars call
+of this library raises.
 """
 
 # Nothing here imports the rest of the package, so the extension can raise
-# these by name (crates/rheon-py/src/lib.rs, `column_not_found`).
+# these by name (crates/rheon-py/src/lib.rs, `errors_class`, through
+# `flavoured`).
 
 from __future__ import annotations
 
-import polars as pl
+import sys
+from typing import cast
 
 __all__ = [
     "ColumnNotFoundError",
@@ -20,8 +28,22 @@ __all__ = [
     "WrongTypeError",
 ]
 
+#: The module that holds the Polars-parented classes, once `rheon.polars`
+#: has imported it.
+_POLARS_ERRORS = "rheon.polars._errors"
 
-class ColumnNotFoundError(pl.exceptions.ColumnNotFoundError, ValueError):
+
+def flavoured(name: str) -> type[Exception]:
+    """The class ``name`` that a raise should use: the Polars-parented one
+    of ``rheon.polars`` once that is imported, where it defines one, and
+    this module's otherwise. A dict lookup, so the extension can call it on
+    every refusal (crates/rheon-py/src/lib.rs, ``errors_class``)."""
+    polars_errors = sys.modules.get(_POLARS_ERRORS)
+    cls = getattr(polars_errors, name, None) if polars_errors is not None else None
+    return cast(type[Exception], cls if cls is not None else globals()[name])
+
+
+class ColumnNotFoundError(ValueError):
     """The error raised when a column a call reads is not in its input.
 
     For a column a spec reads, its message names the spec, the role the
@@ -33,10 +55,13 @@ class ColumnNotFoundError(pl.exceptions.ColumnNotFoundError, ValueError):
     column, and for a target column when ``spec`` is the spec dict; a
     plain ``ValueError`` when ``spec`` is the spec's name alone.
 
-    ``rp.ColumnNotFoundError`` is a subclass of Polars'
-    ``ColumnNotFoundError``, which Polars raises for a column a query names
-    that its input does not have, and of ``ValueError``, the class of every
-    other value the bank refuses. So either ``except`` catches it.
+    It is a ``ValueError``, the class of every other value the bank
+    refuses. ``rp.ColumnNotFoundError``, the class ``rheon.polars`` raises,
+    is a subclass of this one and of Polars' ``ColumnNotFoundError``, which
+    Polars raises for a column a query names that its input does not have.
+    So ``except rheon.ColumnNotFoundError``, ``except
+    rp.ColumnNotFoundError``, Polars' class and ``ValueError`` each catch
+    what a call of ``rheon.polars`` raises.
 
     .. rubric:: Examples
 
@@ -49,7 +74,7 @@ class ColumnNotFoundError(pl.exceptions.ColumnNotFoundError, ValueError):
         bank = rp.ModelBank([spec])
         try:
             bank.fit_predict(df.drop("x1"))
-        except pl.exceptions.ColumnNotFoundError as e:   # or rp.ColumnNotFoundError, or ValueError
+        except rheon.ColumnNotFoundError as e:   # or rp.ColumnNotFoundError, or ValueError
             print(type(e).__name__, str(e).split(",")[0])
 
     .. code-block:: text
@@ -66,9 +91,9 @@ class ColumnNotFoundError(pl.exceptions.ColumnNotFoundError, ValueError):
 class OutputColumnNotFoundError(ColumnNotFoundError):
     """The error raised when a spec's output column is not in the frame a scoring function reads.
 
-    It is a :class:`ColumnNotFoundError`, so Polars' own
-    ``ColumnNotFoundError`` and ``ValueError`` catch it, as they catch any
-    other missing column.
+    It is a :class:`ColumnNotFoundError`, so ``ValueError`` catches it,
+    and, from ``rheon.polars``, Polars' own ``ColumnNotFoundError``, as they
+    catch any other missing column.
 
     .. rubric:: Examples
 
@@ -79,7 +104,7 @@ class OutputColumnNotFoundError(ColumnNotFoundError):
 
         try:
             rp.eval.metrics(df, "ridge")   # a frame without the bank's output
-        except pl.exceptions.ColumnNotFoundError as e:
+        except rheon.OutputColumnNotFoundError as e:
             print(type(e).__name__)
 
     .. code-block:: text

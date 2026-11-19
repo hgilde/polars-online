@@ -9,21 +9,47 @@ duration text such as ``"10m"``. The spec keeps it as text, the form a TOML
 config writes and a state file stores; a ``timedelta`` or an expression is
 written as that text here, by the Rust side's formatter, so the two sides
 cannot disagree about it.
+
+Nothing here imports Polars: a polars expression exists only once Polars is
+imported, so :func:`_is_expr` asks ``sys.modules`` and the one function that
+evaluates an expression imports Polars inside. The helpers that measure a
+duration against a clock column's dtype are ``rheon/polars/_clock.py``.
 """
 
 from __future__ import annotations
 
 import math
+import sys
 from datetime import timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeGuard
 
-import polars as pl
-
-from rheon._errors import WrongTypeError
 from rheon._rheon import format_duration, parse_duration
 
-#: What a clock parameter may be given as besides a number.
-Duration = timedelta | str | pl.Expr
+if TYPE_CHECKING:
+    import polars as pl
+
+
+class _Expr:
+    """What ``Duration`` holds in place of ``pl.Expr`` at run time, where
+    ``typing.get_type_hints`` reads the builders' annotations and Polars may
+    be absent: a class no value is an instance of. Every check of a value
+    against it asks :func:`_is_expr` instead (``_spec._matches``)."""
+
+
+def _is_expr(value: Any) -> TypeGuard[pl.Expr]:
+    """Whether ``value`` is a polars expression: never without Polars
+    imported, since an expression is made by Polars."""
+    pl = sys.modules.get("polars")
+    return pl is not None and isinstance(value, pl.Expr)
+
+
+#: What a clock parameter may be given as besides a number. A type checker
+#: reads ``pl.Expr``; the run time reads :class:`_Expr`, so that the
+#: builders' annotations resolve without Polars.
+if TYPE_CHECKING:
+    Duration = timedelta | str | pl.Expr
+else:
+    Duration = timedelta | str | _Expr
 
 #: The infinity words, in lower case, and the number each names.
 _INFINITY = {
@@ -61,7 +87,7 @@ def duration_text(value: Any, who: str, key: str) -> Any:
         return [duration_text(v, who, key) for v in value]
     if isinstance(value, timedelta):
         return format_duration(_fits(value // timedelta(microseconds=1) * 1_000, who, key))
-    if isinstance(value, pl.Expr):
+    if _is_expr(value):
         return format_duration(_fits(_nanoseconds(value, who, key), who, key))
     if isinstance(value, str):
         # The text names a grid's fields (`@h10m`), so no padding travels.
@@ -75,7 +101,10 @@ def duration_text(value: Any, who: str, key: str) -> Any:
 
 
 def _nanoseconds(expr: pl.Expr, who: str, key: str) -> int:
-    """The one duration an expression that reads no column evaluates to."""
+    """The one duration an expression that reads no column evaluates to.
+    Reached only with an expression, so Polars is already imported."""
+    import polars as pl
+
     try:
         s = pl.select(expr).to_series()
     except Exception as e:  # a column it reads, an argument polars refuses
@@ -116,66 +145,3 @@ def _fits(ns: int, who: str, key: str) -> int:
             f"Give {key} a shorter duration."
         )
     return ns
-
-
-def _tick_ns(dtype: pl.DataType) -> int:
-    """The smallest step a temporal column can take, in nanoseconds."""
-    if isinstance(dtype, pl.Date):
-        return 86_400 * 10**9
-    unit = getattr(dtype, "time_unit", "ns")
-    return {"ms": 10**6, "us": 10**3, "ns": 1}[unit]
-
-
-def clock_nanoseconds(value: Any, dtype: pl.DataType, who: str, key: str, clock: str) -> int | None:
-    """A helper's parameter measured against a clock column: its length in
-    nanoseconds when the clock is temporal, and ``None`` when the clock is
-    numeric and the value a plain number. Either mixture is refused, as a
-    spec refuses it, and so is a duration that is not a whole number of the
-    column's own steps, which adding to the column would cut short."""
-    duration = isinstance(value, (timedelta, str, pl.Expr))
-    if isinstance(dtype, pl.Time):
-        raise WrongTypeError(
-            f"{who}: clock column {clock!r} is a time of day, which starts again at "
-            "midnight, so it cannot be a clock. Combine it with its date into a Datetime, "
-            f'such as pl.col("date").dt.combine(pl.col({clock!r})).'
-        )
-    if not dtype.is_temporal():
-        if duration:
-            raise ValueError(
-                f"{who}: {key} is a duration, but clock column {clock!r} is {dtype}, which "
-                f"has no unit to measure it in. Use a numeric clock with {key} as a number of "
-                f"its units, or a temporal clock with {key} as a duration."
-            )
-        return None
-    if not duration and isinstance(dtype, pl.Date):
-        raise ValueError(
-            f"{who}: clock column {clock!r} is {dtype}, a temporal clock, so {key} must be "
-            f"a duration, but it is {value!r}. Give {key} as a duration of whole days, "
-            f'such as timedelta(days=1) or "1d".'
-        )
-    if not duration:
-        raise ValueError(
-            f"{who}: clock column {clock!r} is {dtype}, a temporal clock, so {key} must be "
-            f"a duration, but it is {value!r}. Give {key} as a duration, such as "
-            f'pl.duration(minutes=5), timedelta(minutes=5) or "5m".'
-        )
-    text = duration_text(value, who, key)
-    try:
-        ns = parse_duration(text)
-    except ValueError as e:
-        # The words a spec's clock parameter takes in place of a number pass
-        # the text check, and none is a duration here: the parse says so,
-        # under the helper's name and the parameter's (review 2026-10-05, YA6).
-        raise ValueError(f"{who}: {key} {e}") from None
-    if ns <= 0:
-        raise ValueError(
-            f"{who}: {key} must be above 0, but it is {text}. Give {key} a positive duration."
-        )
-    tick = _tick_ns(dtype)
-    if ns % tick:
-        raise ValueError(
-            f"{who}: {key} is {text}, which is not a whole number of steps of clock column "
-            f"{clock!r} ({dtype}, one step is {format_duration(tick)}), so the column cannot "
-            f"hold the result. Give {key} as a multiple of {format_duration(tick)}."
-        )
-    return int(ns)

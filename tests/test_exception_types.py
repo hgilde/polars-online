@@ -49,9 +49,11 @@ import numpy as np
 import polars as pl
 import pytest
 
+import rheon
 from rheon import _errors
 from rheon import _rheon as native
 from rheon import polars as rp
+from rheon.polars import _errors as polars_errors
 from rheon.polars import _gbdt
 from rheon.polars._formula import FormulaError
 
@@ -762,19 +764,32 @@ def test_the_library_s_own_classes_keep_their_parents_in_the_rule_s_order() -> N
 
     assert rp.WrongTypeError.__bases__ == (TypeError,)
     assert rp.RefusedValueError.__bases__ == (ValueError,)
-    assert rp.ColumnNotFoundError.__bases__ == (pl.exceptions.ColumnNotFoundError, ValueError)
-    assert rp.OutputColumnNotFoundError.__bases__ == (rp.ColumnNotFoundError,)
-    assert FormulaError.__bases__ == (ValueError,)
-    for cls in (
-        rp.WrongTypeError,
-        rp.RefusedValueError,
+    # `rheon`'s classes need no Polars; `rheon.polars` raises subclasses that
+    # are Polars' `ColumnNotFoundError` too, so every `except` that caught a
+    # missing column before catches it from either namespace.
+    assert rheon.ColumnNotFoundError.__bases__ == (ValueError,)
+    assert rheon.OutputColumnNotFoundError.__bases__ == (rheon.ColumnNotFoundError,)
+    assert rp.ColumnNotFoundError.__bases__ == (
+        rheon.ColumnNotFoundError,
+        pl.exceptions.ColumnNotFoundError,
+    )
+    assert rp.OutputColumnNotFoundError.__bases__ == (
         rp.ColumnNotFoundError,
-        rp.OutputColumnNotFoundError,
+        rheon.OutputColumnNotFoundError,
+    )
+    assert FormulaError.__bases__ == (ValueError,)
+    for ns, module, errors in (
+        (rheon, "rheon._errors", _errors),
+        (rp, "rheon.polars._errors", polars_errors),
     ):
-        assert cls.__module__ == "rheon._errors"
-        assert cls.__mro__[1] is cls.__bases__[0]
-        assert getattr(rp, cls.__name__) is cls
-        assert cls.__name__ in _errors.__all__
+        for name in errors.__all__:
+            cls = getattr(ns, name)
+            assert cls is getattr(errors, name)
+            assert cls.__module__ == (
+                "rheon._errors" if name in ("WrongTypeError", "RefusedValueError") else module
+            )
+            assert cls.__mro__[1] is cls.__bases__[0]
+            assert _errors.flavoured(name) is getattr(rp, name)  # rheon.polars is imported
 
 
 # --- The CLI: an exit code and a message for each kind -------------------------
@@ -985,6 +1000,13 @@ PY_CLASSES: dict[str, Raised] = {
             "module-not-found-po-gram",
             "module-not-found-po-corr",
             "module-not-found-po-sim",
+        )
+    ),
+    # `rheon.polars` and the spec helpers that return a frame, without Polars:
+    # each case runs in a child interpreter with Polars unimportable.
+    "ImportError": Raised(
+        elsewhere=(
+            "test_polars_free_import.py::test_the_polars_parts_without_polars_name_the_extra",
         )
     ),
     "pl.exceptions.DuplicateError": Raised(cases=("duplicate-error-unnest-shares-a-name",)),

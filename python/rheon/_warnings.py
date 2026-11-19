@@ -13,8 +13,6 @@ import warnings
 from collections.abc import Callable
 from types import FrameType
 
-from polars.exceptions import UnstableWarning as _PolarsUnstableWarning
-
 #: The environment variable that turns :class:`UnstableWarning` on, as
 #: ``POLARS_WARN_UNSTABLE`` does Polars' own: ``1`` and nothing else.
 UNSTABLE_VAR = "POLARS_ONLINE_WARN_UNSTABLE"
@@ -90,14 +88,16 @@ class PolarsOnlineDeprecationWarning(PolarsOnlineWarning, DeprecationWarning):
     """
 
 
-class UnstableWarning(PolarsOnlineWarning, UserWarning, _PolarsUnstableWarning):
+class UnstableWarning(PolarsOnlineWarning, UserWarning):
     """A warning that a part of the API not yet promised to stay the same was used.
 
     It is issued only when the environment variable
     ``POLARS_ONLINE_WARN_UNSTABLE`` is ``1``, as Polars issues its own
-    ``UnstableWarning`` under ``POLARS_WARN_UNSTABLE``. It is a subclass of
-    Polars' class too, so a filter on ``polars.exceptions.UnstableWarning``
-    covers this library's unstable parts as well.
+    ``UnstableWarning`` under ``POLARS_WARN_UNSTABLE``. Once
+    ``rheon.polars`` is imported, the warning issued is
+    ``rp.UnstableWarning``, a subclass of this class and of Polars' class,
+    so a filter on either, or on ``polars.exceptions.UnstableWarning``,
+    covers this library's unstable parts.
 
     Each unstable part says so in its docstring, and may change in any
     release without that counting as a breaking change:
@@ -117,7 +117,7 @@ class UnstableWarning(PolarsOnlineWarning, UserWarning, _PolarsUnstableWarning):
 
     .. code-block:: python
 
-        print(issubclass(rp.UnstableWarning, pl.exceptions.UnstableWarning))
+        print(issubclass(rheon.UnstableWarning, rheon.PolarsOnlineWarning))
 
     .. code-block:: text
 
@@ -128,6 +128,22 @@ class UnstableWarning(PolarsOnlineWarning, UserWarning, _PolarsUnstableWarning):
     - :class:`PolarsOnlineWarning`, the base class every warning of this
       library shares.
     """
+
+
+#: The module that holds the Polars-parented :class:`UnstableWarning`, once
+#: `rheon.polars` has imported it.
+_POLARS_WARNINGS = "rheon.polars._warnings"
+
+
+def _unstable_class() -> type[UnstableWarning]:
+    """The :class:`UnstableWarning` to issue: ``rheon.polars``'s, a Polars
+    ``UnstableWarning`` too, once that is imported, and this module's
+    otherwise."""
+    polars_warnings = sys.modules.get(_POLARS_WARNINGS)
+    if polars_warnings is None:
+        return UnstableWarning
+    cls: type[UnstableWarning] = polars_warnings.UnstableWarning
+    return cls
 
 
 def _unstable_on() -> bool:
@@ -143,7 +159,7 @@ def warn_unstable(what: str, *, stacklevel: int = 3) -> None:
     warnings.warn(
         f"{what}: this is unstable, so it may change in any release without that counting "
         f"as a breaking change. Set {UNSTABLE_VAR}=0, or unset it, to silence this warning.",
-        UnstableWarning,
+        _unstable_class(),
         stacklevel=stacklevel,
     )
 
