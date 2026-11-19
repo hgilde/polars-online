@@ -180,7 +180,7 @@ budget = 92396795
 
 [instructions.rls]
 what = "rls, 20 features, delta 1, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 7498026
+budget = 7194026
 
 [instructions.quantile]
 what = "quantile, the median, 20 features, half-life 1000: AnyModel::step_into, into one kept Step"
@@ -1605,3 +1605,111 @@ key = "instructions.corrchange_window_w100"
 version = "1.5.0"
 reason = "-61.0% since 1.4.0 (about 100565668 -> 39,230,667), a gain: a window spanning four blocks or more merges its correlations from the blocks' moments instead of reading every row in it (task 328)"
 changelog = "`corrchange(kind=\"window\")` merges each window's correlations from"
+
+[[signoff]]
+key = "instructions.ewridge_k5"
+version = "1.6.0"
+reason = "-15.2% since 1.5.0 (2,500,630 -> 2,119,477), a gain: ewridge's solves no longer allocate (the lists a solve formed and dropped, about 22 at five features, are kept and written over), and its small Cholesky factor is written out for 12 or fewer features (tasks 415, 456)"
+changelog = "`ewridge`'s solves no longer allocate: the lists a solve formed and"
+
+[[signoff]]
+key = "instructions.bocpd"
+version = "1.6.0"
+reason = "-15.0% since 1.5.0 (12,746,712 -> 10,838,815), a gain: with the diagonal covariance and two features or more, the log densities are taken as the logs of products of blocks of 8 features and one held for each run length, where it took two logarithms for each feature of each run; the prune is decided without an exp where the answer cannot depend on it, and a run's gamma terms are held in a table (tasks 462, 419, 389)"
+changelog = "`bocpd` with `covariance_type=\"diag\"` and two features or more takes fewer"
+
+[[signoff]]
+key = "instructions.kalman"
+version = "1.6.0"
+reason = "-37.6% since 1.5.0 (18,514,994 -> 11,552,994), a gain: P z is formed as four independent sums at a time and each row of P is updated along its own memory (task 420)"
+changelog = "`kalman` forms `P z` as four independent sums at a time and updates"
+
+[[signoff]]
+key = "instructions.rls"
+version = "1.6.0"
+reason = "-18.0% since 1.5.0 (8,770,026 -> 7,194,026), a gain: each rotation's working entry stays in a register, the decay is folded into the rotations, and each coefficient's terms come off as the coefficients arrive, with targets sharing each pass, and the factor is kept as the packed upper triangle it reads (tasks 416, 477)"
+changelog = "`rls` keeps each rotation's working entry in a register, folds the"
+
+[[signoff]]
+key = "instructions.deco"
+version = "1.6.0"
+reason = "-14.2% since 1.5.0 (3,504,026 -> 3,006,026), a gain: the Cholesky factor of a matrix of 12 or fewer features is written out, with no faer scratch or dispatch (task 456)"
+changelog = "A model that factorizes a matrix of 12 or fewer features each row (`hmm`,"
+
+[[signoff]]
+key = "instructions.hmm"
+version = "1.6.0"
+reason = "-18.8% since 1.5.0 (8,331,026 -> 6,764,026), a gain: the Cholesky factor of a matrix of 12 or fewer features is written out, with no faer scratch or dispatch (task 456), and each state is factorized straight from its packed co-moment triangle (task 387)"
+changelog = "A model that factorizes a matrix of 12 or fewer features each row (`hmm`,"
+
+[[signoff]]
+key = "instructions.rcov"
+version = "1.6.0"
+reason = "-66.1% since 1.5.0 (71,666,026 -> 24,292,035), a gain: the lagged-product update is unrolled for the common feature counts, and the rows its ring lets go are kept and reused (tasks 404, 425)"
+changelog = "`rcov` is up to 3.8 times as fast a row at 4 features and 1.5 times at"
+
+[[signoff]]
+key = "instructions.bocpd_full"
+version = "1.6.0"
+reason = "-18.7% since 1.5.0 (20,130,544 -> 16,362,446), a gain: the Cholesky factor of a matrix of 12 or fewer features, which each run's 4 x 4 scale factors every row, is written out with no faer scratch or dispatch, and a run's gamma terms are held in a table (tasks 456, 389)"
+changelog = "A model that factorizes a matrix of 12 or fewer features each row (`hmm`,"
+
+[[signoff]]
+key = "instructions.corrchange_window_w100"
+version = "1.6.0"
+reason = "-61.5% since 1.5.0 (39,230,667 -> 15,114,775), a gain: the permutation redraw reads the pooled rows from one flat copy and sums each window in unrolled loops up to 8 columns, its shuffle takes a bounded draw by multiply-shift where it took a division, and the summaries are built at a fixed width (tasks 408, 464)"
+changelog = "`corrchange(kind=\"window\")` redraws its permutation critical value about"
+
+[[signoff]]
+key = "instructions.bank_seqtest_groups"
+version = "1.6.0"
+reason = "-14.1% since 1.5.0 (11,231,731 -> 9,652,388), a gain: a chunk's groups are one flat list of rows with each group looked up by its key's value, where the bank allocated a list of rows and a key for each group of each chunk, and the bank's per-group plumbing is cut (tasks 434, 421)"
+changelog = "A grouped bank no longer allocates a list of rows and a key for each"
+
+[[signoff]]
+key = "instructions.bank_ewridge_k5_groups"
+version = "1.6.0"
+reason = "-15.9% since 1.5.0 (17,466,366 -> 14,689,540), a gain: ewridge's solves no longer allocate, and a chunk's groups are one flat list of rows rather than a list and a key for each group (tasks 415, 434, 421)"
+changelog = "`ewridge`'s solves no longer allocate: the lists a solve formed and"
+
+[[signoff]]
+key = "instructions.formula_target_held1k"
+version = "1.6.0"
+reason = "-17.1% since 1.5.0 (14,815,597 -> 12,282,499), a gain: ewridge's solves no longer allocate, and its per-row shares and the predictions of rows it does not learn from go into buffers the bank keeps (tasks 415, 436)"
+changelog = "`ewridge`'s solves no longer allocate: the lists a solve formed and"
+
+[[signoff]]
+key = "instructions.bank_ew_cov_wide_t1"
+version = "1.6.0"
+reason = "-27.0% since 1.5.0 (126,516,490 -> 92,347,209), a gain: the bank writes a run of 16 or more processed, finite rows of an output column in one copy and fills the column's unused tail where it is completed rather than up front (task 439)"
+changelog = "The bank writes a run of an output column in one pass again: a run of"
+
+[[signoff]]
+key = "instructions.window_ewm_mean_w10k"
+version = "1.6.0"
+reason = "-83.0% since 1.5.0 (12,837,634 -> 2,182,947), a gain: a chunk's formulas that are bare operators no longer run a lazy plan, an input column without nulls is read where it lies, and an operator's values are handed to Polars as the list itself (task 432)"
+changelog = "Window operators: a chunk's formulas that are bare operators no longer"
+
+[[signoff]]
+key = "instructions.window_ewm_sum_w10k"
+version = "1.6.0"
+reason = "-87.3% since 1.5.0 (12,164,304 -> 1,539,704), a gain: a chunk's formulas that are bare operators no longer run a lazy plan, an input column without nulls is read where it lies, and an operator's values are handed to Polars as the list itself (task 432)"
+changelog = "Window operators: a chunk's formulas that are bare operators no longer"
+
+[[signoff]]
+key = "instructions.window_ewm_quantile_w10k"
+version = "1.6.0"
+reason = "-72.9% since 1.5.0 (15,952,335 -> 4,329,318), a gain: a chunk's formulas that are bare operators no longer run a lazy plan, an input column without nulls is read where it lies, and an operator's values are handed to Polars as the list itself, and a rolling quantile reads an octave's buckets a row at a time and skips the empty ones (tasks 432, 453)"
+changelog = "Window operators: a chunk's formulas that are bare operators no longer"
+
+[[signoff]]
+key = "instructions.window_ewm_quantile_running"
+version = "1.6.0"
+reason = "-80.7% since 1.5.0 (13,180,448 -> 2,550,105), a gain: a chunk's formulas that are bare operators no longer run a lazy plan, an input column without nulls is read where it lies, and an operator's values are handed to Polars as the list itself, and a rolling quantile reads an octave's buckets a row at a time and skips the empty ones (tasks 432, 453)"
+changelog = "Window operators: a chunk's formulas that are bare operators no longer"
+
+[[signoff]]
+key = "instructions.window_ewm_sum_groups10k"
+version = "1.6.0"
+reason = "-81.3% since 1.5.0 (11,867,155 -> 2,215,124), a gain: a chunk's formulas that are bare operators no longer run a lazy plan, an input column without nulls is read where it lies, and an operator's values are handed to Polars as the list itself (task 432)"
+changelog = "Window operators: a chunk's formulas that are bare operators no longer"
