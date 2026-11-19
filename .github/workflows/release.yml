@@ -1,803 +1,114 @@
 name: Release
 
-# A release is dispatched, never tagged by hand (the user, 2026-09-27, after
-# the 0.11.0 tag: CI first met the branch on the tag, failed there, and the
-# tag could not be moved). Dispatched on `main` with `publish` off it is the
-# rehearsal: CI on all three OSes, every wheel and the CLI, the state
-# hand-off and the suite on the newest Polars, and nothing tagged or uploaded.
-# With `publish` on, the same run then waits for approval, uploads to PyPI,
-# and only then creates the tag `v<version>` on the sha it tested and the
-# GitHub release. So a tag always names what was published, and a version
-# whose tag exists is refused before anything is built (`version`, below).
+# From 2.0.0 this repository publishes two forwarding packages and nothing
+# else: `polars-online` and `polars-online-compat` each hold one small module
+# that warns and forwards `polars_online` to `rheon` and `rheon-compat`. The
+# library itself, with its wheels and its CLI, is released from the rheon
+# repository. A forwarder's wheel is pure Python, so one job builds both.
+#
+# The trigger and the gate are the ones this file always had: dispatched on
+# `main`, never tagged by hand. With `publish` off it is a rehearsal (both
+# distributions are built and checked, nothing is uploaded). With `publish`
+# on, the run waits for approval on the `pypi` environment and uploads.
 on:
   workflow_dispatch:
     inputs:
       publish:
         description: >-
-          Publish: after every job passes, upload to PyPI (on approval), then
-          tag v<version> and make the GitHub release. Off: a rehearsal.
+          Publish: after the build and the rheon check pass, upload to PyPI
+          (on approval). Off: a rehearsal.
         type: boolean
         default: false
 
-# Least privilege: no token scope by default, granted per job. This matters more
-# once the repo is public, when a fork's pull request can trigger these.
+# Least privilege: no token scope by default, granted per job.
 permissions: {}
 
-# Releases queue, they do not cancel. `cancel-in-progress: true` everywhere
-# else saves money by throwing away superseded work; here the "superseded" run
-# may be halfway through uploading wheels or publishing to PyPI, and a
-# half-published release costs far more than the runner minutes it saves.
+# Releases queue, they do not cancel: a run may be halfway through an upload.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 env:
-  CARGO_TERM_COLOR: always
-  # The CPU features the x86-64 wheels of `polars-online` are built to need:
-  # the set Polars builds its own default runtime for (`BUILD_FEATURE_FLAGS`
-  # of `polars-runtime-32`, the same in its 2.0.0 and 2.1.0 wheels), which is x86-64-v3
-  # less F16C and XSAVE and plus PCLMULQDQ. `polars-online-compat` is built
-  # without them. The import-time CPU check reads every one of these
-  # (python/polars_online/_cpu_check.py); a test holds the two lists equal.
-  X86_FEATURES: "+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,+cmpxchg16b,+avx,+avx2,+fma,+bmi1,+bmi2,+lzcnt,+pclmulqdq,+movbe"
+  # The version of the forwarders, and of the rheon they depend on.
+  VERSION: "2.0.0"
 
 jobs:
-  # The version this run would publish, checked before anything is built:
-  # agreed in all six places, a CHANGELOG section for it, and the README's
-  # example pin on its minor; and -- publishing -- nothing left under the
-  # CHANGELOG's `[Unreleased]`, a tag that does not exist yet, since release
-  # tags are immutable, and only from `main` (scripts/release_version.py).
-  version:
-    name: the version
+  # An sdist and a pure wheel of each forwarder.
+  build:
+    name: build ${{ matrix.package }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
-    outputs:
-      version: ${{ steps.v.outputs.version }}
-      tag: ${{ steps.v.outputs.tag }}
-      # The state schema the build writes, which `verify` holds the package
-      # installed from PyPI to.
-      schema: ${{ steps.v.outputs.schema }}
-      # What the README's links point at on PyPI: the tag a published run
-      # creates on this sha, and the sha itself for a rehearsal.
-      readme_ref: ${{ inputs.publish && steps.v.outputs.tag || github.sha }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-      - name: publishing is from main only
-        if: inputs.publish && github.ref != 'refs/heads/main'
-        run: |
-          echo "::error::a release is published from main, not ${{ github.ref }}"
-          exit 1
-      - id: v
-        name: the version agrees everywhere, and its tag is new
-        run: >-
-          uv run --no-project --python 3.12 python scripts/release_version.py
-          ${{ inputs.publish && '--publish' || '' }} >> "$GITHUB_OUTPUT"
-
-  # CI itself, on all three OSes (a dispatch takes its macOS and Windows
-  # legs): the unit and integration tests and pytest, which none of the jobs
-  # below run. The 0.11.0 tag failed there. `docs` in ci.yml asks for
-  # `pages` and `id-token`, and a called workflow may ask for no more than
-  # its caller grants, checked at start whether the job runs or not; it runs
-  # only on a push to main, so under this call it is skipped and the grant is
-  # inert (tests/test_release_workflow.py holds both to that). `actions:
-  # read` is the test job's: it reads the dataset artifact of an oracle run
-  # when its cache misses (.github/actions/last-datasets).
-  ci:
-    name: CI
-    uses: ./.github/workflows/ci.yml
-    permissions:
-      contents: read
-      actions: read
-      pages: write
-      id-token: write
-
-  # The instruction-count budgets, with the sign-off: a case that moved
-  # past `drift_signoff` since the last release, either way, fails without
-  # a `[[signoff]]` for this version in budgets.toml (budgets.yml).
-  budgets:
-    name: budgets
-    needs: version
-    uses: ./.github/workflows/budgets.yml
-    with:
-      release-check: ${{ needs.version.outputs.version }}
-    permissions:
-      contents: read
-
-  # A source distribution, so a platform with no wheel above can still build
-  # from source (it needs a Rust toolchain, which is exactly why the wheel
-  # matrix is wide). The job then builds it as such a user would, from the
-  # file, so it compiles the whole workspace cold: 60 minutes, where the
-  # sdist alone took seconds.
-  sdist:
-    name: build the sdist
-    needs: version
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The install below compiles the Rust, so it needs a toolchain the
-      # workspace's `rust-version` admits: the one every other job uses,
-      # not whichever the image carries.
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-      # PyPI shows README.md as the project page, where a relative link to
-      # another file resolves against pypi.org and is a 404. Rewritten to the
-      # repository at the tag this run will create (the sha, rehearsing)
-      # before maturin reads the file into the package metadata; the README
-      # on GitHub keeps its relative links (scripts/pypi_readme.py).
-      # `--no-project`: no sync, no extension build.
-      - name: the README's links point at GitHub, at this ref
-        run: uv run --no-project --python 3.12 python scripts/pypi_readme.py --ref "${{ needs.version.outputs.readme_ref }}"
-      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
-        with:
-          command: sdist
-          args: --out dist -m crates/online-py/Cargo.toml
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: sdist
-          path: dist/*.tar.gz
-
-      # The same source under the other name, for a platform with no wheel
-      # that asks for `polars-online-compat`: the checkout renamed in place
-      # (scripts/compat_package.py), then the second sdist into a folder of
-      # its own, so the install below finds one file in `dist`. It is built
-      # and not installed: the first sdist's install above compiles the same
-      # source, and the rename touches the metadata alone.
-      - name: the compat package's source distribution
-        run: |
-          uv run --no-project --python 3.12 python scripts/compat_package.py
-      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
-        with:
-          command: sdist
-          args: --out dist-compat -m crates/online-py/Cargo.toml
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: sdist-compat
-          path: dist-compat/*.tar.gz
-
-      # The sdist, installed into a fresh environment with its dependencies
-      # from PyPI, which builds the extension from the file as a platform
-      # with no wheel does, and run as each wheel is (scripts/wheel_smoke.py).
-      # It was built and uploaded without ever being installed (review
-      # 2026-10-06, CI5). Last, so a failed run leaves the artifact to look
-      # at; `publish` needs this job either way.
-      - name: install the sdist and run it
-        shell: bash
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          uv venv --python 3.12 smoke
-          uv pip install --python smoke dist/*.tar.gz
-          uv run --no-project --python smoke python scripts/wheel_smoke.py --version "$VERSION"
-
-  # Wheels + the CLI binary (docs/PLAN.md §10).
-  #
-  # The matrix is about what a user gets from `pip install`. A platform missing
-  # here falls back to the sdist, which means the user needs a Rust toolchain --
-  # the single most common way a pyo3 package fails to be "easily installable".
-  # So it covers Intel and Apple-silicon macOS, Windows x64, and Linux x64 and
-  # aarch64 glibc (for Graviton and for Docker on Apple silicon) and Linux x64
-  # musl (for Alpine images).
-  #
-  # `abi3-py312` means one wheel per platform serves 3.12, 3.13, 3.14 and up,
-  # rather than one per interpreter version.
-  build:
-    name: build (${{ matrix.target }}, ${{ matrix.variant }})
-    needs: version
-    runs-on: ${{ matrix.os }}
-    # Cold, the slowest runner (Intel macOS) needs ~40 min for the wheel and
-    # ~30 for the CLI; Windows ~35 and ~25. 90 was cut by the first rehearsal.
-    timeout-minutes: 120
-    permissions:
-      contents: read
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
-        # Every target is built twice: `default` is `polars-online`, whose
-        # x86-64 wheels need AVX2 and FMA (`X86_FEATURES`), and `compat` is
-        # `polars-online-compat`, the same source under that name, built for
-        # every x86-64 CPU. The ARM targets build alike under both names
-        # (RUSTFLAGS is empty for them), as Polars' own
-        # `polars-runtime-compat` ships ARM wheels too, so that either
-        # package installs wherever the other does. Only `default` builds
-        # the command-line binary.
-        target:
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
-          - x86_64-pc-windows-msvc
-          - x86_64-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
-        variant: [default, compat]
-        include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            bin: polars-online
-            cli: true
-          # Intel: `macos-13` was retired from the hosted pool; `macos-15-intel`
-          # is the label GitHub lists for x64 macOS now (actions/runner-images).
-          - target: x86_64-apple-darwin
-            os: macos-15-intel
-            bin: polars-online
-            cli: true
-            x86: true
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            bin: polars-online.exe
-            cli: true
-            x86: true
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            manylinux: auto
-            bin: polars-online
-            cli: true
-            x86: true
-          # Built natively on GitHub's arm64 runner, as polars builds its own.
-          # Cross-compiling from x64 uses `manylinux2014-cross:aarch64`, whose
-          # GCC 4.8.5 does not define `__ARM_ARCH`, and `ring` 0.17 (reached
-          # through polars-io's cloud feature) refuses to assemble without it
-          # (briansmith/ring#1728). On an arm64 host maturin-action picks the
-          # native `manylinux2014_aarch64` image, with a current GCC, and the
-          # wheel keeps the same `manylinux_2_17` tag.
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            manylinux: auto
-            bin: polars-online
-            cli: true
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            manylinux: musllinux_1_2
-            bin: polars-online
-            x86: true
+        package: [polars-online, polars-online-compat]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # First, so a failure names its machine (ci.yml's test job says why).
-      - name: the machine this job ran on
-        uses: ./.github/actions/machine-report
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          # A timed-out or failed job still leaves a valid compile behind;
-          # without this the next run starts cold again (same as ci.yml).
-          cache-on-failure: true
-          # The two variants of an x86-64 target compile with other flags, so
-          # each keeps a cache of its own instead of replacing the other's.
-          key: ${{ matrix.variant }}
-
-      # No `uv sync` here: it builds the extension into a venv nobody uses --
-      # maturin-action brings its own Python, and the CLI has no pyo3 in its
-      # tree (`cargo tree -p online-cli` finds none). That was 26 minutes of
-      # the Intel macOS job in the first rehearsal.
-
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-      # PyPI shows README.md as the project page, where a relative link to
-      # another file resolves against pypi.org and is a 404. Rewritten to the
-      # repository at the tag this run will create (the sha, rehearsing)
-      # before maturin reads the file into the package metadata; the README
-      # on GitHub keeps its relative links (scripts/pypi_readme.py).
-      # `--no-project`: no sync, no extension build.
-      - name: the README's links point at GitHub, at this ref
-        run: uv run --no-project --python 3.12 python scripts/pypi_readme.py --ref "${{ needs.version.outputs.readme_ref }}"
-
-      # The compat package: this checkout renamed to `polars-online-compat`
-      # in place, before maturin reads the name, the description and the
-      # README into the wheel's metadata (scripts/compat_package.py). The
-      # import name, `polars_online`, does not change.
-      - name: the project is polars-online-compat
-        if: matrix.variant == 'compat'
-        run: uv run --no-project --python 3.12 python scripts/compat_package.py
-
-      # maturin-action supplies the manylinux/musllinux container and the
-      # cross-compilation toolchain; on macOS and Windows it is a thin wrapper
-      # over the same `maturin build`. `--locked`, here and on every cargo
-      # build below: a `Cargo.lock` that no longer matches the manifests is
-      # refused, not re-resolved into crates nobody committed (review
-      # 2026-10-06, CI12).
-      #
-      # `polars-online`'s x86-64 wheels are built for AVX2, FMA and the rest of
-      # `X86_FEATURES`, through RUSTFLAGS, which maturin-action hands on to
-      # the manylinux and musllinux containers (it forwards every variable
-      # that starts with RUST). Nothing else sets rustflags for this build.
-      # Cargo then hands the same flags to crates/online-py/build.rs, which
-      # records them in the wheel for the import-time CPU check, and the
-      # smoke test below holds the record to `X86_FEATURES`. The compat
-      # wheels and the ARM wheels get no flag: an empty RUSTFLAGS is none.
-      - name: build the wheel
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
-        env:
-          RUSTFLAGS: ${{ matrix.x86 && matrix.variant == 'default' && format('-C target-feature={0}', env.X86_FEATURES) || '' }}
+      - name: build the sdist and the wheel
+        working-directory: forwarders/${{ matrix.package }}
+        run: uv build --out-dir dist
+      - name: one sdist, one pure wheel, at the version
+        working-directory: forwarders/${{ matrix.package }}/dist
+        run: |
+          ls -la
+          name="${{ matrix.package }}"; name="${name//-/_}"
+          test "$(ls | wc -l)" = 2
+          test -f "${name}-${VERSION}.tar.gz"
+          test -f "${name}-${VERSION}-py3-none-any.whl"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          target: ${{ matrix.target }}
-          manylinux: ${{ matrix.manylinux || 'auto' }}
-          args: --release --locked --out dist -m crates/online-py/Cargo.toml
-          sccache: "true"
+          name: dist-${{ matrix.package }}
+          path: forwarders/${{ matrix.package }}/dist/*
+          if-no-files-found: error
 
-      # Only on targets the runner builds natively. The musl wheel is
-      # cross-compiled and ships without a prebuilt CLI; `cargo build
-      # --release -p online-cli` from a checkout covers it, and the wheel is
-      # the artifact that matters for `pip install`.
-      #
-      # On Linux the CLI is built in the manylinux2014 image the wheel comes
-      # from (docs/PLAN.md task 115 (i)). Built on the runner, it took the
-      # runner's glibc: 0.11.1's binaries needed 2.39, so they did not start
-      # on Ubuntu 22.04, Debian 12 or RHEL 9, and the floor would have risen
-      # with `ubuntu-latest`. In the image it is 2.17, the wheels' own
-      # `manylinux_2_17`. A `docker run` step, not a job `container:`: the
-      # image's glibc is too old for the actions' own JavaScript. Rust is
-      # installed inside it as maturin-action installs it there. The image
-      # is `manylinux2014_<arch>` for the runner's own architecture, so the
-      # arm64 build stays native (see the matrix note). As root, into the
-      # bind-mounted workspace; the ownership step below takes it back.
-      #
-      # The binary's allocator is jemalloc, which fixes its page size when it
-      # is built: built on this 4 KiB-page runner, it refuses to start under
-      # an arm64 kernel with 64 KiB pages (some RHEL and Oracle Linux
-      # images), so the arm64 build takes 64 KiB, which runs under 4 KiB and
-      # 16 KiB pages too, as polars' own arm64 builds do. x86-64 kernels use
-      # 4 KiB pages alone.
-      - name: build the CLI (Linux, in the manylinux2014 image)
-        if: matrix.cli && matrix.variant == 'default' && runner.os == 'Linux'
+  # The forwarders depend on `rheon[polars]>=2.0.0` and
+  # `rheon-compat[polars]>=2.0.0`: a forwarder uploaded before they exist
+  # installs nowhere, and PyPI never lets a version be uploaded twice.
+  rheon-on-pypi:
+    name: rheon is on PyPI at the forwarders' version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: rheon and rheon-compat at the forwarders' version
         run: |
-          lg_page=()
-          if [ "$(uname -m)" = aarch64 ]; then lg_page=(-e JEMALLOC_SYS_WITH_LG_PAGE=16); fi
-          docker run --rm -v "$PWD":/io -w /io \
-            -e CARGO_TARGET_DIR=/io/target-cli "${lg_page[@]}" \
-            "quay.io/pypa/manylinux2014_$(uname -m)" bash -euxc '
-              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
-                | sh -s -- -y --profile minimal --default-toolchain stable
-              . "$HOME/.cargo/env"
-              cargo build --release --locked -p online-cli
-            '
-
-      # maturin-action's container runs as root with the workspace
-      # bind-mounted, and so does the CLI's build above, so `target/` and
-      # `target-cli/` come back root-owned: rust-cache's post step could not
-      # tar the tree, and every Linux job ran cold (the fourth rehearsal).
-      # Passwordless sudo is a given on the hosted Ubuntu images.
-      - name: take back ownership of the build tree
-        if: runner.os == 'Linux'
-        run: |
-          for d in target target-cli; do
-            if [ -d "$d" ]; then sudo chown -R "$(id -u):$(id -g)" "$d"; fi
+          for project in rheon rheon-compat; do
+            url="https://pypi.org/pypi/${project}/${VERSION}/json"
+            if ! curl -sf --retry 3 --retry-all-errors -o /dev/null "$url"; then
+              echo "::error::${project}==${VERSION} is not on PyPI ($url); publish it first"
+              exit 1
+            fi
           done
 
-      # The binary's floor, read from its version requirements, refused above
-      # the wheels' 2.17: a weak symbol under a requirement that is not weak
-      # still stops the loader, which is how 0.11.1's `pidfd_*` set 2.39.
-      # Before any upload: the publish job needs this one.
-      - name: the Linux CLI needs glibc 2.17 at most
-        if: matrix.cli && matrix.variant == 'default' && runner.os == 'Linux'
-        run: python3 scripts/glibc_floor.py target-cli/release/${{ matrix.bin }} --max 2.17
-
-      # macOS and Windows build the CLI on the runner, which is what their
-      # binaries are for.
-      #
-      # maturin-action exports `RUSTC_WRAPPER=sccache` into the job, but for a
-      # container build it installs sccache inside the container, not on the
-      # runner, so a host `cargo build` after it cannot execute the wrapper
-      # (the first rehearsal failed exactly there). An empty wrapper is treated
-      # as none — measured on cargo 1.98, the stable this workflow installs.
-      - name: build the CLI
-        if: matrix.cli && matrix.variant == 'default' && runner.os != 'Linux'
-        env:
-          RUSTC_WRAPPER: ""
-        run: cargo build --release --locked -p online-cli
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: wheel-${{ matrix.target }}-${{ matrix.variant }}
-          path: dist/*.whl
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: matrix.cli && matrix.variant == 'default'
-        with:
-          name: cli-${{ matrix.target }}
-          path: ${{ runner.os == 'Linux' && 'target-cli' || 'target' }}/release/${{ matrix.bin }}
-
-      # The wheel this job built, installed into a fresh environment with its
-      # dependencies from PyPI, as `pip install` gives them to a user, and
-      # run: the version, the native module, a state round trip and the
-      # streaming plan (scripts/wheel_smoke.py). Three of the six wheels were
-      # built and uploaded without ever being imported, and none was run as
-      # the file that ships (task 160, CI3). Each runner runs its own wheel.
-      # The musl wheel runs in Alpine, the platform it is for, where polars'
-      # own `musllinux_1_2_x86_64` runtime wheel installs without a build.
-      # Last, so a failed run leaves the artifacts to look at; `publish`
-      # needs this job either way.
-      #
-      # Each wheel is also held to its package and its build: the
-      # distribution installed is `polars-online` or `polars-online-compat`,
-      # the features the build recorded are `X86_FEATURES` for the default
-      # x86-64 wheels and none for the rest, and the runner's CPU (GitHub's
-      # have AVX2 and FMA) has every one of them, which also runs the CPU
-      # check's own machine code on each x86-64 OS.
-      - name: install the wheel and run it
-        if: matrix.manylinux != 'musllinux_1_2'
-        shell: bash
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-          DISTRIBUTION: ${{ matrix.variant == 'compat' && 'polars-online-compat' || 'polars-online' }}
-          FEATURES: ${{ matrix.x86 && matrix.variant == 'default' && env.X86_FEATURES || '' }}
-        run: |
-          uv venv --python 3.12 smoke
-          uv pip install --python smoke dist/*.whl
-          uv run --no-project --python smoke python scripts/wheel_smoke.py --version "$VERSION" --distribution "$DISTRIBUTION" --features "$FEATURES"
-      - name: install the wheel and run it (musl, in Alpine)
-        if: matrix.manylinux == 'musllinux_1_2'
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-          DISTRIBUTION: ${{ matrix.variant == 'compat' && 'polars-online-compat' || 'polars-online' }}
-          FEATURES: ${{ matrix.x86 && matrix.variant == 'default' && env.X86_FEATURES || '' }}
-        run: |
-          docker run --rm -e VERSION -e DISTRIBUTION -e FEATURES -v "$PWD":/io -w /io python:3.12-alpine sh -euxc '
-            pip install --no-cache-dir --root-user-action=ignore dist/*.whl
-            python scripts/wheel_smoke.py --version "$VERSION" --distribution "$DISTRIBUTION" --features "$FEATURES"
-          '
-
-  # docs/PLAN.md §9 class 7: a state written on macOS must load on Windows.
-  write-state:
-    name: write state (macOS)
-    runs-on: macos-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      # No Python here either: `online-polars` has no pyo3 in its tree and
-      # the test is pure Rust. The `uv sync` this used to run built the
-      # extension into a venv the test never touched (17 minutes on macOS,
-      # 23 on Windows in the first rehearsal). `--include-ignored` here and
-      # below: a release runs the extended tier, everything, and a Rust test
-      # of that tier is `#[ignore = "extended: ..."]` (docs/TESTING.md, "Two
-      # tiers"); `ci` above runs the rest of the suite the same way.
-      - name: write the hand-off state
-        env:
-          ONLINE_WRITE_STATE: ${{ github.workspace }}/handoff.state
-        run: cargo test --locked -p online-polars --test state_portability -- --include-ignored
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: handoff-state
-          path: handoff.state
-          if-no-files-found: error
-
-  read-state:
-    name: read state (${{ matrix.os }})
-    needs: write-state
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-latest]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # First, so a failure names its machine (ci.yml's test job says why).
-      - name: the machine this job ran on
-        uses: ./.github/actions/machine-report
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: handoff-state
-      - name: load the macOS-written state and continue the stream
-        # Absolute on purpose: the artifact lands in the workspace root, but
-        # cargo runs an integration test with the *package* root as its
-        # working directory (crates/online-polars/), so a bare
-        # `handoff.state` is "No such file or directory". The first
-        # rehearsal failed here on both OSes.
-        env:
-          ONLINE_FOREIGN_STATE: ${{ github.workspace }}/handoff.state
-        run: cargo test --locked -p online-polars --test state_portability -- --include-ignored
-
-  next-polars:
-    name: the suite on ${{ matrix.leg }} polars
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    # The floor Python, so the interpreter is not a second thing that moves:
-    # unpinned, `uv sync` takes whatever the runner image carries, as the
-    # canary did until it pinned the same (review 2026-10-06, CI19).
-    env:
-      UV_PYTHON: "3.12"
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Blocking. The top of the range the wheel actually declares --
-          # newest stable, `<3` still honoured.
-          - leg: the newest in-range
-            unpin: false
-            prerelease: ""
-            blocking: true
-          # Advisory. Everything above the ceiling: the next major, and its
-          # release candidates and betas.
-          - leg: the next major
-            unpin: true
-            prerelease: --prerelease=allow
-            blocking: false
-    # A red advisory leg must not withhold a wheel, and `needs` counts a
-    # `continue-on-error` leg as passing, so this is the whole mechanism.
-    continue-on-error: ${{ !matrix.blocking }}
-    # The wheel declares a *range* of py-polars and is built against one of
-    # them, so the release that ships is only known to work on the pinned
-    # version until `polars-canary.yml` runs on the following Monday. That is
-    # up to six days of a published wheel nobody has run on the newest
-    # Polars. This job closes the window by running the same check at the one
-    # moment it matters -- the release.
-    #
-    # Two legs, because "newest" means two different things and only one of
-    # them is a promise we made:
-    #
-    # - *The newest in-range* blocks the publish (`release` needs this job).
-    #   `<3` admits every 1.x and 2.x, so a resolver can hand a user a Polars newer
-    #   than the one this wheel was built against, the day after it ships.
-    #   That is inside what we declared, so it has to be green before the
-    #   wheel goes out -- red means cap the range or fix the code (README,
-    #   *Versioning and the Polars pin*), decided before publishing.
-    # - *The next major* is advisory. It unpins entirely and allows
-    #   prereleases, so it is the early warning the canary gives weekly,
-    #   taken again at the release. A 3.0 beta that breaks us is worth knowing
-    #   about and is not a reason to withhold a patch release for a range
-    #   that ends below 3.
-    #
-    # The split also keeps the blocking leg honest across a major bump: an
-    # unpinned blocking job would resolve to 3.0 the day it ships and block
-    # every release on a major nobody had adopted yet.
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-
-      # Same treatment as ci.yml's test job and the canary's: linking this
-      # workspace's polars-laden test binaries exhausts the runner without it.
-      - name: free disk and use a leaner linker
-        uses: ./.github/actions/linux-build-prep
-
-      # Advisory leg only: the same unpin the canary does, dropping the range
-      # rather than widening it so a new major is tested the week it appears
-      # rather than silently excluded by the `<3` in pyproject.toml. The
-      # blocking leg skips this on purpose -- it tests the range as declared.
-      - name: unpin py-polars
-        if: matrix.unpin
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import re, pathlib
-          p = pathlib.Path("pyproject.toml")
-          s, n = re.subn(r'"polars[<>=~!][^"]*"', '"polars"', p.read_text(), count=1)
-          assert n == 1, "the polars dependency line moved; fix this unpin"
-          p.write_text(s)
-          PY
-
-      # `--prerelease=allow` is what makes a 2.0rc visible. The blocking leg
-      # passes no flag, and must not pass `--prerelease=disallow`: that mode
-      # applies to every package, and the docs group's `furo` needs
-      # `sphinx-basic-ng>=1.0.0b2`, so the whole resolution fails (the 0.5.0
-      # tag's first run). uv's default already declines a prerelease wherever
-      # a stable version satisfies the range -- polars resolves to the newest
-      # stable under the ceiling -- which is what an ordinary install gets.
-      - run: uv sync ${{ matrix.prerelease }} --upgrade-package polars
-      - name: versions in play
-        run: uv run python -c "import polars; print('py-polars', polars.__version__)"
-
-      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
-      # `pins` marks the tests that can only pass on the pinned polars; see
-      # the marker's description in pyproject.toml.
-      - run: uv run pytest -q -m "not soak and not pins and not oracle_grid"
-
-  # The floor of the declared range, `polars>=1.37.0`: the suite on exactly
-  # that py-polars and its runtime package. The legs above move polars up,
-  # and nothing ran the floor: its last whole run, on 2026-09-27, came before
-  # the window operators (review 2026-10-06, AP7 and CI2). Blocking, since
-  # the floor is as much a promise as the ceiling. The version is read from
-  # pyproject.toml, so raising the floor moves this leg with it. A test that
-  # needs a newer polars skips here by version, naming the version and why
-  # (tests/polars_version.py). The canary runs the same leg monthly.
-  floor-polars:
-    name: the suite on the floor of the polars range
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    env:
-      UV_PYTHON: "3.12"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-      - name: free disk and use a leaner linker
-        uses: ./.github/actions/linux-build-prep
-      - name: the floor, from pyproject.toml
-        id: floor
-        run: python3 scripts/polars_floor.py >> "$GITHUB_OUTPUT"
-      # Only polars and its runtime package move; the rest of the lock stays
-      # as CI tests it, so a red leg means the floor broke this library.
-      - run: uv sync --upgrade-package "polars==${{ steps.floor.outputs.version }}" --upgrade-package "polars-runtime-32==${{ steps.floor.outputs.version }}"
-      # Refused unless it is the floor: a leg that resolved anything else
-      # would pass without having tested the promise.
-      - name: versions in play
-        env:
-          FLOOR: ${{ steps.floor.outputs.version }}
-        run: uv run python -c "import os, polars; print('py-polars', polars.__version__); assert polars.__version__ == os.environ['FLOOR']"
-      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
-      - run: uv run pytest -q -m "not soak and not pins and not oracle_grid"
-
-  next-numpy:
-    name: the suite on ${{ matrix.leg }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    env:
-      UV_PYTHON: "3.12"
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Blocking. The optional extra declares `numpy>=1.26` with no
-          # ceiling, so the newest stable NumPy is inside the promise.
-          - leg: the newest NumPy
-            prerelease: ""
-            blocking: true
-          # Advisory. NumPy's next release candidate while one is out;
-          # otherwise this resolves to the newest stable again.
-          - leg: NumPy's next release candidate
-            prerelease: --prerelease=allow
-            blocking: false
-    continue-on-error: ${{ !matrix.blocking }}
-    # NumPy is this package's one optional dependency (`polars-online[numpy]`,
-    # which `po.sim`, `po.corr`, `po.gram` and `ModelBank.gram` import).
-    # Every other job runs on the locked NumPy, so, as with Polars
-    # above, a release could otherwise ship untested on the NumPy a user's
-    # resolver picks the day after (the user, 2026-09-30: "we should test on
-    # the next release candidate of that too as we do with polars"). Only
-    # NumPy moves: `--upgrade-package numpy` keeps every other package at
-    # its locked version, so a red leg means NumPy broke this library.
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-      - name: free disk and use a leaner linker
-        uses: ./.github/actions/linux-build-prep
-      - run: uv sync ${{ matrix.prerelease }} --upgrade-package numpy
-      - name: versions in play
-        run: uv run python -c "import numpy, polars; print('numpy', numpy.__version__, '| py-polars', polars.__version__)"
-      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
-      - run: uv run pytest -q -m "not soak and not pins and not oracle_grid"
-
-  # The run's own measurements, merged into the asset the next release's
-  # drift is read from (scripts/budgets.py, "the baseline"): the
-  # instruction counts the `budgets` call made and each OS's floor-Python
-  # memory, which `ci` wrote. The release job attaches it to the GitHub
-  # release, so no commit after the release records its numbers. Merged
-  # here, before the upload, so a missing or disagreeing measurement stops
-  # the release while it can still be dispatched again.
-  baseline:
-    name: the budgets baseline
-    needs: [version, ci, budgets]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: budgets-*
-          path: artifacts
-      # Each OS's resident memory is written at its floor Python alone, and
-      # every leg's bytes per row are the same, so the floor legs carry all
-      # of it; `baseline` refuses a key two of them disagree on.
-      - name: merge the run's measurements
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          floor="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["requires-python"].removeprefix(">="))')"
-          python3 scripts/budgets.py baseline \
-            "artifacts/budgets-instructions-$GITHUB_SHA/measured.json" \
-            artifacts/budgets-memory-*-python-"$floor"/*.json \
-            --version "$VERSION" --sha "$GITHUB_SHA" --out budgets-baseline.json
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: budgets-baseline
-          path: budgets-baseline.json
-          if-no-files-found: error
-
-  # Every wheel against the README's install *size* row, before the upload:
-  # a wheel outside the stated range stops the release, so the row is
-  # corrected by the change that moved the size, never after the release
-  # (scripts/wheel_size.py). The exact sizes go into the release's notes.
-  wheel-size:
-    name: the wheels against the README's size row
-    needs: [version, build]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: wheel-*
-          path: dist
-          merge-multiple: true
-      - name: each wheel within the README's range
-        run: python3 scripts/wheel_size.py --notes sizes.md dist/*.whl
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: wheel-sizes
-          path: sizes.md
-          if-no-files-found: error
-
-  # THE HUMAN GATE IS HERE. Since 2026-09-06 the `pypi` environment has the
-  # owner as a required reviewer (self-review allowed -- with one reviewer,
-  # preventing it would deadlock every release), so this job parks on "Review
-  # deployments" until someone approves, and it only ever asks once every
-  # other job is green. That is deliberate: the gate sits in front of the one
-  # step nothing can undo, and in front of nothing else. PyPI never lets a
-  # version number be reused, and `v*` tags cannot be deleted or moved
-  # (ruleset "release tags are immutable", no bypass), so a broken release is
-  # superseded by the next version rather than replaced; declined here, the
-  # run creates no tag, and the version can be dispatched again.
+  # THE HUMAN GATE IS HERE: the `pypi` environment has the owner as a required
+  # reviewer, so this job parks on "Review deployments" until someone approves,
+  # and only asks once the jobs above are green.
   #
-  # Trusted publishing (OIDC), so there is no API token to store or rotate.
-  # Registered on PyPI on 2026-09-03 as a pending trusted publisher for
-  # `polars-online` (owner hgilde, repository polars-online, workflow
-  # release.yml, environment pypi); the first publish claimed the name.
-  # `polars-online-compat` is a second PyPI project, uploaded from this job
-  # as well, and needs the same trusted publisher registered on it (a
-  # pending one, before its first upload: docs/contributing/cut-a-release.md,
-  # Prerequisites).
+  # Trusted publishing (OIDC), so there is no API token to store or rotate: the
+  # trusted publisher of each project names this repository, this file
+  # (release.yml) and the environment `pypi`. `skip-existing` lets the job run
+  # again after a failure between the two uploads.
   publish:
     name: publish to PyPI
-    needs:
-      - version
-      - ci
-      - budgets
-      - baseline
-      - sdist
-      - build
-      - wheel-size
-      - read-state
-      - next-polars
-      - floor-polars
-      - next-numpy
+    needs: [build, rheon-on-pypi]
     if: inputs.publish
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: pypi
     permissions:
-      # PyPI trusted publishing (OIDC). This job does not check out, so it
-      # needs no `contents` scope at all.
+      # PyPI trusted publishing (OIDC). This job does not check out.
       id-token: write
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          path: artifacts
-      # Two projects, so two folders: the files of `polars-online-compat`
-      # are `polars_online_compat-*` and the others `polars_online-*`, and
-      # each upload step names the one folder, so a file goes to the project
-      # its name says. The compat package goes first: it is the one whose
-      # PyPI setup is newest, and a refusal there should leave nothing of
-      # this version on PyPI. `skip-existing` lets the job run again, after
-      # a failure between the two, and finish what it began: PyPI refuses a
-      # file name used before, and this version's files are all this run's.
-      - name: collect the wheels
-        run: |
-          mkdir -p dist dist-compat
-          find artifacts \( -name 'polars_online_compat-*.whl' -o -name 'polars_online_compat-*.tar.gz' \) -exec cp {} dist-compat/ \;
-          find artifacts \( -name '*.whl' -o -name '*.tar.gz' \) ! -name 'polars_online_compat-*' -exec cp {} dist/ \;
-          ls -la dist dist-compat
+          name: dist-polars-online-compat
+          path: dist-compat
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist-polars-online
+          path: dist
       - name: upload polars-online-compat
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
         with:
@@ -808,167 +119,3 @@ jobs:
         with:
           packages-dir: dist
           skip-existing: true
-
-  # The tag, once what it names is on PyPI: on the sha every job above
-  # tested, never a moving `HEAD`. Annotated, with the CHANGELOG's section,
-  # kept verbatim: `git tag -F` strips every line that starts with `#` by
-  # default, and `v0.13.0`'s annotation lost the section's `###` headings
-  # that way (review 2026-10-06, CI7).
-  #
-  # The push is tried three times, with a pause between: 1.4.0's got a 500
-  # from GitHub after the upload. A push whose answer was lost may have
-  # landed, so after each failure the remote is asked: the tag there on
-  # this sha is success, on another sha a failure no retry can fix.
-  tag:
-    name: tag the release
-    needs: [version, publish]
-    if: inputs.publish
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: the CHANGELOG's section for this version
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          python3 - <<'PY' > notes.md
-          import os, re, pathlib
-          v = os.environ["VERSION"]
-          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
-          m = re.search(rf"^## \[{re.escape(v)}\] .*?$(.*?)(?=^## \[|\Z)", text, re.M | re.S)
-          assert m, f"no CHANGELOG section for {v}"
-          print(f"polars-online {v}\n{m.group(1).rstrip()}")
-          PY
-          head -5 notes.md
-      - name: create and push the tag
-        env:
-          TAG: ${{ needs.version.outputs.tag }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a --cleanup=verbatim "$TAG" -F notes.md "$GITHUB_SHA"
-          pause="${RETRY_PAUSE:-15}"
-          for attempt in 1 2 3; do
-            if git push origin "refs/tags/$TAG"; then exit 0; fi
-            there="$(git ls-remote origin "refs/tags/$TAG^{}" | cut -f1 || true)"
-            if [ -z "$there" ]; then
-              there="$(git ls-remote origin "refs/tags/$TAG" | cut -f1 || true)"
-            fi
-            if [ "$there" = "$GITHUB_SHA" ]; then
-              echo "the tag $TAG is on the remote at $GITHUB_SHA already"
-              exit 0
-            elif [ -n "$there" ]; then
-              echo "::error::the tag $TAG is on the remote at $there, not $GITHUB_SHA"
-              exit 1
-            fi
-            if [ "$attempt" != 3 ]; then sleep $((pause * attempt)); fi
-          done
-          echo "::error::the tag $TAG could not be pushed in three attempts"
-          exit 1
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: notes
-          path: notes.md
-
-  # The GitHub release: the wheels, the sdist, the command-line binaries
-  # and the budgets baseline as its assets, and as its notes the CHANGELOG's
-  # section and the wheels' exact sizes. Created with `gh` so it can be
-  # tried three times, as the tag is: a creation whose answer was lost
-  # leaves the release there, so a retry that finds it uploads the assets
-  # again over whatever landed, and sets its notes, instead of failing.
-  release:
-    name: publish the release
-    needs: [version, tag]
-    if: inputs.publish
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      # creating the GitHub release and uploading its assets
-      contents: write
-    steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          path: artifacts
-      - name: collect the files
-        run: |
-          mkdir -p release
-          find artifacts \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp {} release/ \;
-          for d in artifacts/cli-*; do
-            target="${d#artifacts/cli-}"
-            for f in "$d"/*; do
-              cp "$f" "release/$(basename "$f" .exe)-$target$([ "${f##*.}" = exe ] && echo .exe)"
-            done
-          done
-          cp artifacts/budgets-baseline/budgets-baseline.json release/
-          ls -la release
-      - name: the notes
-        run: |
-          cat artifacts/notes/notes.md > release-notes.md
-          printf '\n' >> release-notes.md
-          cat artifacts/wheel-sizes/sizes.md >> release-notes.md
-      - name: create the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.version.outputs.tag }}
-        run: |
-          pause="${RETRY_PAUSE:-15}"
-          for attempt in 1 2 3; do
-            if gh release view "$TAG" > /dev/null 2>&1; then
-              if gh release upload "$TAG" release/* --clobber \
-                && gh release edit "$TAG" --draft=false --title "$TAG" --notes-file release-notes.md; then
-                exit 0
-              fi
-            elif gh release create "$TAG" release/* --verify-tag --title "$TAG" --notes-file release-notes.md; then
-              exit 0
-            fi
-            if [ "$attempt" != 3 ]; then sleep $((pause * attempt)); fi
-          done
-          echo "::error::the release $TAG could not be made in three attempts"
-          exit 1
-
-  # The release as a user gets it, on each OS: `polars-online==<version>`
-  # installed from PyPI into a fresh environment, its three versions held
-  # to the run's, and one fit through the streaming plan
-  # (scripts/verify_release.py). PyPI's index can take minutes to show a new
-  # upload, so the install is retried for up to ten. It gates nothing --
-  # the upload is done -- and reports: a failure here is a release to fix
-  # with the next version.
-  verify:
-    name: verify from PyPI (${{ matrix.distribution }}, ${{ matrix.os }})
-    needs: [version, publish]
-    if: inputs.publish
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        distribution: [polars-online, polars-online-compat]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # First, so a failure names its machine (ci.yml's test job says why).
-      - name: the machine this job ran on
-        uses: ./.github/actions/machine-report
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-      - name: install from PyPI and run it
-        shell: bash
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-          SCHEMA: ${{ needs.version.outputs.schema }}
-          DISTRIBUTION: ${{ matrix.distribution }}
-        run: |
-          uv venv --python 3.12 fresh
-          deadline=$((SECONDS + 600))
-          until uv pip install --python fresh --no-cache "$DISTRIBUTION==$VERSION"; do
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "::error::$DISTRIBUTION $VERSION did not install from PyPI in ten minutes"
-              exit 1
-            fi
-            sleep 30
-          done
-          uv run --no-project --python fresh python -I scripts/verify_release.py --version "$VERSION" --schema "$SCHEMA" --distribution "$DISTRIBUTION"
